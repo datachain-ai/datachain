@@ -74,8 +74,6 @@ if TYPE_CHECKING:
     P = ParamSpec("P")
 
 
-INSERT_BATCH_SIZE = 10000
-
 PartitionByType = (
     str | Function | ColumnElement | Sequence[str | Function | ColumnElement]
 )
@@ -351,7 +349,7 @@ def process_udf_outputs(
     udf_results: Iterator[Iterable["UDFResult"]],
     udf: "UDFAdapter",
     cb: Callback = DEFAULT_CALLBACK,
-    batch_size: int = INSERT_BATCH_SIZE,
+    batch_size: int | None = None,
 ) -> None:
     # Optimization: Compute row types once, rather than for every row.
     udf_col_types = get_col_types(warehouse, udf.output)
@@ -515,7 +513,7 @@ class UDFStep(Step, ABC):
                         is_generator=self.is_generator,
                         cache=self.cache,
                         rows_total=rows_total,
-                        batch_size=self.batch_size or INSERT_BATCH_SIZE,
+                        batch_size=self.batch_size,
                     )
 
                     # Run the UDFDispatcher in another process to avoid needing
@@ -564,7 +562,7 @@ class UDFStep(Step, ABC):
                                 udf_results,
                                 self.udf,
                                 cb=generated_cb,
-                                batch_size=self.batch_size or INSERT_BATCH_SIZE,
+                                batch_size=self.batch_size,
                             )
                     finally:
                         download_cb.close()

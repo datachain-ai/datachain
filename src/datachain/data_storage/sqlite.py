@@ -20,10 +20,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects import sqlite
 from sqlalchemy.schema import CreateIndex, CreateTable, DropTable
 from sqlalchemy.sql import func
-from sqlalchemy.sql.elements import (
-    BinaryExpression,
-    BooleanClauseList,
-)
+from sqlalchemy.sql.elements import BinaryExpression, BooleanClauseList
 from sqlalchemy.sql.expression import bindparam, cast
 from sqlalchemy.sql.selectable import Select
 from tqdm.auto import tqdm
@@ -32,7 +29,6 @@ import datachain.sql.sqlite
 from datachain.data_storage import AbstractDBMetastore, AbstractWarehouse
 from datachain.data_storage.db_engine import DatabaseEngine
 from datachain.data_storage.schema import DefaultSchema
-from datachain.data_storage.warehouse import INSERT_BATCH_SIZE
 from datachain.dataset import DatasetRecord, StorageURI
 from datachain.error import DataChainError, OutdatedDatabaseSchemaError
 from datachain.namespace import Namespace
@@ -55,6 +51,8 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger("datachain")
+
+INSERT_BATCH_SIZE = 10_000  # number of rows to insert at a time
 
 RETRY_START_SEC = 0.01
 RETRY_MAX_TIMES = 10
@@ -773,8 +771,9 @@ class SQLiteWarehouse(AbstractWarehouse):
         self,
         table: Table,
         rows: Iterable[dict[str, Any]],
-        batch_size: int = INSERT_BATCH_SIZE,
+        batch_size: int | None = None,
     ) -> None:
+        batch_size = batch_size if batch_size is not None else INSERT_BATCH_SIZE
         for row_chunk in batched(rows, batch_size):
             with self.db.transaction() as conn:
                 # transactions speeds up inserts significantly as there is no separate

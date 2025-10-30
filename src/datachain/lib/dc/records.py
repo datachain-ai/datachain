@@ -16,8 +16,6 @@ if TYPE_CHECKING:
 
     P = ParamSpec("P")
 
-READ_RECORDS_BATCH_SIZE = 10000
-
 
 def read_records(
     to_insert: dict | Iterable[dict] | None,
@@ -94,7 +92,7 @@ def read_records(
         {c.name: c.type for c in columns if isinstance(c.type, SQLType)},
     )
     records = (adjust_outputs(warehouse, record, col_types) for record in to_insert)
-    warehouse.insert_rows(table, records, batch_size=READ_RECORDS_BATCH_SIZE)
+    warehouse.insert_rows(table, records)
     warehouse.insert_rows_done(table)
 
     # Mark dataset as COMPLETE since it's fully created

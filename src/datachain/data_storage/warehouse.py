@@ -44,7 +44,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger("datachain")
 
 SELECT_BATCH_SIZE = 100_000  # number of rows to fetch at a time
-INSERT_BATCH_SIZE = 10_000  # number of rows to insert at a time
 
 
 class AbstractWarehouse(ABC, Serializable):
@@ -506,7 +505,7 @@ class AbstractWarehouse(ABC, Serializable):
         self,
         table: sa.Table,
         rows: Iterable[dict[str, Any]],
-        batch_size: int = INSERT_BATCH_SIZE,
+        batch_size: int | None = None,
     ) -> None:
         """Does batch inserts of any kind of rows into table"""
 
