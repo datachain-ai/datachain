@@ -1,5 +1,4 @@
 import builtins
-import json
 from dataclasses import dataclass, fields
 from datetime import datetime
 from functools import cached_property
@@ -9,7 +8,7 @@ from urllib.parse import urlparse
 from packaging.specifiers import SpecifierSet
 from packaging.version import Version
 
-from datachain import semver
+from datachain import json, semver
 from datachain.error import DatasetVersionNotFoundError, InvalidDatasetNameError
 from datachain.namespace import Namespace
 from datachain.project import Project

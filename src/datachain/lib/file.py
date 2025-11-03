@@ -1,7 +1,6 @@
 import errno
 import hashlib
 import io
-import json
 import logging
 import os
 import posixpath
@@ -21,6 +20,7 @@ from fsspec.callbacks import DEFAULT_CALLBACK, Callback
 from fsspec.utils import stringify_path
 from pydantic import Field, field_validator
 
+from datachain import json
 from datachain.client.fileslice import FileSlice
 from datachain.lib.data_model import DataModel
 from datachain.lib.utils import DataChainError, rebase_path

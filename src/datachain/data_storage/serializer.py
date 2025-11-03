@@ -1,9 +1,9 @@
 import base64
-import json
 from abc import abstractmethod
 from collections.abc import Callable
 from typing import Any, ClassVar
 
+from datachain import json
 from datachain.plugins import ensure_plugins_loaded
 
 

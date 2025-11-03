@@ -1,8 +1,8 @@
 import sqlite3
 
-import ujson as json
 from sqlalchemy import types
 
+from datachain import json
 from datachain.sql.types import TypeConverter, TypeReadConverter
 
 try:

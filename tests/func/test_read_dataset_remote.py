@@ -2,18 +2,18 @@
 Functional tests for read_dataset when accessing remote (Studio) datasets.
 """
 
-import json
 from urllib.parse import parse_qs, urlparse
 
 import pytest
 
 import datachain as dc
+from datachain import json
 from datachain.error import (
     DataChainError,
     DatasetNotFoundError,
     DatasetVersionNotFoundError,
 )
-from datachain.utils import STUDIO_URL, JSONSerialize
+from datachain.utils import STUDIO_URL
 from tests.conftest import (
     REMOTE_DATASET_UUID,
     REMOTE_DATASET_UUID_V2,
@@ -40,7 +40,9 @@ def remote_dataset_version_v1(
         "error_stack": "",
         "num_objects": 1,
         "size": 1024,
-        "preview": json.loads(json.dumps(dataset_rows, cls=JSONSerialize)),
+        "preview": json.loads(
+            json.dumps(dataset_rows, preview_bytes=json.DEFAULT_PREVIEW_BYTES)
+        ),
         "script_output": "",
         "schema": remote_dataset_schema,
         "sources": "",
@@ -69,7 +71,9 @@ def remote_dataset_version_v2(
         "error_stack": "",
         "num_objects": 1,
         "size": 2048,
-        "preview": json.loads(json.dumps(dataset_rows, cls=JSONSerialize)),
+        "preview": json.loads(
+            json.dumps(dataset_rows, preview_bytes=json.DEFAULT_PREVIEW_BYTES)
+        ),
         "script_output": "",
         "schema": remote_dataset_schema,
         "sources": "",

@@ -18,9 +18,9 @@ from types import MappingProxyType
 from typing import Any, Union
 
 import sqlalchemy as sa
-import ujson as jsonlib
 from sqlalchemy import TypeDecorator, types
 
+from datachain import json as jsonlib
 from datachain.lib.data_model import StandardType
 
 _registry: dict[str, "TypeConverter"] = {}

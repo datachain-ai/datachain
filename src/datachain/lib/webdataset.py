@@ -1,4 +1,3 @@
-import json
 import tarfile
 import types
 import warnings
@@ -8,6 +7,7 @@ from typing import Any, ClassVar, Union, get_args, get_origin
 
 from pydantic import Field
 
+from datachain import json
 from datachain.lib.data_model import DataModel
 from datachain.lib.file import File
 from datachain.lib.tar import build_tar_member

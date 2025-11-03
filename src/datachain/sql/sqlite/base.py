@@ -8,13 +8,13 @@ from functools import cache
 from types import MappingProxyType
 
 import sqlalchemy as sa
-import ujson as json
 from sqlalchemy.dialects import sqlite
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.sql.elements import literal
 from sqlalchemy.sql.expression import case
 from sqlalchemy.sql.functions import func
 
+from datachain import json
 from datachain.sql.functions import (
     aggregate,
     array,

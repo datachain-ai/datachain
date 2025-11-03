@@ -1,5 +1,4 @@
 import csv
-import json
 import tempfile
 import uuid
 from collections.abc import Callable, Iterator
@@ -8,6 +7,7 @@ from pathlib import Path
 import jmespath as jsp
 from pydantic import BaseModel, ConfigDict, Field, ValidationError  # noqa: F401
 
+from datachain import json
 from datachain.lib.data_model import DataModel  # noqa: F401
 from datachain.lib.file import TextFile
 

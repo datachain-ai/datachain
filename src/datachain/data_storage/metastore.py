@@ -1,5 +1,4 @@
 import copy
-import json
 import logging
 import os
 from abc import ABC, abstractmethod
@@ -27,6 +26,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.sql import func as f
 
+from datachain import json
 from datachain.catalog.dependency import DatasetDependencyNode
 from datachain.checkpoint import Checkpoint
 from datachain.data_storage import JobQueryType, JobStatus
@@ -53,7 +53,6 @@ from datachain.error import (
 from datachain.job import Job
 from datachain.namespace import Namespace
 from datachain.project import Project
-from datachain.utils import JSONSerialize
 
 if TYPE_CHECKING:
     from sqlalchemy import CTE, Delete, Insert, Select, Subquery, Update
@@ -1194,7 +1193,9 @@ class AbstractDBMetastore(AbstractMetastore):
                         f"Field '{field}' must be a list, got {type(value).__name__}"
                     )
                 else:
-                    values[field] = json.dumps(value, cls=JSONSerialize)
+                    values[field] = json.dumps(
+                        value, preview_bytes=json.DEFAULT_PREVIEW_BYTES
+                    )
                 version_values["_preview_data"] = value
             else:
                 values[field] = value
