@@ -34,9 +34,7 @@ def remote_dataset_version(
         "error_stack": "",
         "num_objects": 5,
         "size": 1073741824,
-        "preview": json.loads(
-            json.dumps(dataset_rows, preview_bytes=json.DEFAULT_PREVIEW_BYTES)
-        ),
+        "preview": json.loads(json.dumps(dataset_rows, serialize_bytes=True)),
         "script_output": "",
         "schema": remote_dataset_schema,
         "sources": "",

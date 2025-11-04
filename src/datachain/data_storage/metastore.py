@@ -1193,9 +1193,7 @@ class AbstractDBMetastore(AbstractMetastore):
                         f"Field '{field}' must be a list, got {type(value).__name__}"
                     )
                 else:
-                    values[field] = json.dumps(
-                        value, preview_bytes=json.DEFAULT_PREVIEW_BYTES
-                    )
+                    values[field] = json.dumps(value, serialize_bytes=True)
                 version_values["_preview_data"] = value
             else:
                 values[field] = value

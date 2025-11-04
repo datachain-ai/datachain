@@ -1,11 +1,11 @@
 import io
-import json
-import os.path
+import os
 import sys
 from uuid import uuid4
 
 import pytest
 
+from datachain import json
 from datachain.catalog.catalog import (
     QUERY_SCRIPT_CANCELED_EXIT_CODE,
     TerminationSignal,

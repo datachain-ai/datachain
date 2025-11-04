@@ -1707,56 +1707,22 @@ def test_to_json_features_nested(tmp_dir, test_session):
     ]
 
 
-def test_to_json_storage_files(tmp_dir, test_session):
-    a_path = tmp_dir / "a.txt"
-    a_path.write_text("a")
-    b_path = tmp_dir / "b.txt"
-    b_path.write_text("bb")
+def test_to_json_datetime(tmp_dir, test_session):
+    timestamp = datetime.datetime.now(datetime.timezone.utc)
+    chain = dc.read_values(ts=[timestamp], session=test_session)
 
-    chain = dc.read_storage(tmp_dir.as_uri(), session=test_session).filter(
-        dc.C("file.path").glob("*.txt")
+    path = tmp_dir / "dt.json"
+    chain.to_json(path)
+
+    with path.open() as fh:
+        values = json.load(fh)
+
+    expected_ts = timestamp.isoformat().replace("+00:00", "Z")
+    assert values == [{"ts": expected_ts}]
+    assert (
+        datetime.datetime.fromisoformat(values[0]["ts"].replace("Z", "+00:00"))
+        == timestamp
     )
-    path = tmp_dir / "files.json"
-    chain.order_by("file.path").to_json(path)
-
-    with open(path) as f:
-        values = json.load(f)
-
-    assert [row["file"]["path"] for row in values] == ["a.txt", "b.txt"]
-
-    expected_sizes = {
-        a_path.name: a_path.stat().st_size,
-        b_path.name: b_path.stat().st_size,
-    }
-    assert {
-        row["file"]["path"]: row["file"].get("size") for row in values
-    } == expected_sizes
-
-    expected_last_modified = {
-        a_path.name: datetime.datetime.fromtimestamp(
-            a_path.stat().st_mtime, datetime.timezone.utc
-        ).replace(microsecond=0),
-        b_path.name: datetime.datetime.fromtimestamp(
-            b_path.stat().st_mtime, datetime.timezone.utc
-        ).replace(microsecond=0),
-    }
-
-    for row in values:
-        file_info = row["file"]
-        path = file_info.get("path")
-        assert path in {a_path.name, b_path.name}
-        assert isinstance(path, str) and path
-
-        last_modified = file_info.get("last_modified")
-        assert last_modified is not None
-        assert isinstance(last_modified, str)
-        parsed_last_modified = datetime.datetime.fromisoformat(last_modified)
-        assert parsed_last_modified == expected_last_modified[path]
-
-        restored = File(**file_info)
-        assert restored.path == path
-        assert restored.size == expected_sizes[path]
-        assert restored.last_modified == expected_last_modified[path]
 
 
 # These deprecation warnings occur in the datamodel-code-generator package.
