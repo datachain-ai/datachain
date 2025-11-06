@@ -579,17 +579,27 @@ class Aggregator(UDFBase):
         self.setup()
 
         for batch in udf_inputs:
-            udf_args = zip(
-                *[
-                    self._prepare_row(row, udf_fields, catalog, cache, download_cb)
-                    for row in batch
-                ],
-                strict=False,
-            )
+            # Prepare rows and extract sys__ids in single pass
+            # This allows tracking which input rows were processed when aggregator succeeds
+            prepared_rows_with_ids = [
+                self._prepare_row_and_id(row, udf_fields, catalog, cache, download_cb)
+                for row in batch
+            ]
+
+            # Extract sys__ids and prepared rows
+            # _prepare_row_and_id returns (sys__id, *prepared_values)
+            batch_sys_ids = [row[0] for row in prepared_rows_with_ids]
+            prepared_rows = [row[1:] for row in prepared_rows_with_ids]
+
+            udf_args = zip(*prepared_rows, strict=False)
             result_objs = self.process_safe(udf_args)
             udf_outputs = (self._flatten_row(row) for row in result_objs)
             output = (
-                dict(zip(self.signal_names, row, strict=False)) for row in udf_outputs
+                # Include list of all input sys__ids for this partition
+                # Enables checkpoint continuation by tracking processed inputs
+                {"_input_sys_id": batch_sys_ids}
+                | dict(zip(self.signal_names, row, strict=False))
+                for row in udf_outputs
             )
             processed_cb.relative_update(len(batch))
             yield output

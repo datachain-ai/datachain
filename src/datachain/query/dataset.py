@@ -388,9 +388,14 @@ def process_udf_outputs(
         if processed_table is None:
             return
 
-        # Extract sys__ids from ACTUAL inserted rows (tracking_field preserved in
-        # callback)
-        sys_ids = {row["_input_sys_id"] for row in batch if "_input_sys_id" in row}
+        # Extract sys__ids from ACTUAL inserted rows (tracking_field preserved in callback)
+        # Handle both single values (Generator) and lists (Aggregator)
+        sys_ids = set()
+        for row in batch:
+            if "_input_sys_id" in row:
+                val = row["_input_sys_id"]
+                # Always treat as iterable - wrap single values in list
+                sys_ids.update(val if isinstance(val, list) else [val])
 
         # Only insert sys__ids that we haven't already inserted
         new_sys_ids = sys_ids - all_processed_sys_ids
@@ -488,7 +493,7 @@ class UDFStep(Step, ABC):
     def create_output_table(self, name: str) -> "Table":
         """Method that creates a table where temp udf results will be saved"""
 
-    def get_input_query(self, input_table_name: str, original_query: Select) -> Select:
+    def old_get_input_query(self, input_table_name: str, original_query: Select) -> Select:
         """
         Get a select query for UDF input.
         If query cache is enabled, use the cached table; otherwise use the original
@@ -514,6 +519,42 @@ class UDFStep(Step, ABC):
             # Use SQLType from original query if available, otherwise use table's type
             col_type = orig_col_types.get(table_col.name, table_col.type)
             select_columns.append(sqlalchemy.column(table_col.name, col_type))
+
+        return sqlalchemy.select(*select_columns).select_from(table)
+
+
+    def get_input_query(self, input_table_name: str, original_query: Select) -> Select:
+        """
+        Get a select query for UDF input.
+        If query cache is enabled, use the cached table; otherwise use the original
+        query.
+        """
+        if os.getenv("DATACHAIN_DISABLE_QUERY_CACHE", "") not in ("", "0"):
+            return original_query
+
+        # Table was created from original_query by create_pre_udf_table,
+        # so they should have the same columns. However, get_table() reflects
+        # the table with database-specific types (e.g ClickHouse types) instead of
+        # SQLTypes.
+        # To preserve SQLTypes for proper type conversion while keeping columns bound
+        # to the table (to avoid ambiguous column names), we use type_coerce.
+        table = self.warehouse.db.get_table(input_table_name)
+
+        # Create a mapping of column names to SQLTypes from original query
+        orig_col_types = {col.name: col.type for col in original_query.selected_columns}
+
+        # Build select using bound columns from table, with type coercion for SQLTypes
+        select_columns = []
+        for table_col in table.c:
+            if table_col.name in orig_col_types:
+                # Use type_coerce to preserve SQLType while keeping column bound to table
+                # Use label() to preserve the column name
+                select_columns.append(
+                    sqlalchemy.type_coerce(table_col, orig_col_types[table_col.name]).label(table_col.name)
+                )
+            else:
+                # Column not in original query (e.g., sys columns), use as-is
+                select_columns.append(table_col)
 
         return sqlalchemy.select(*select_columns).select_from(table)
 
@@ -684,9 +725,15 @@ class UDFStep(Step, ABC):
                 catalog.warehouse.close()
                 raise
 
-    def create_partitions_table(self, query: Select) -> "Table":
+    def create_partitions_table(
+        self, query: Select, table_name: str | None = None
+    ) -> "Table":
         """
-        Create temporary table with group by partitions.
+        Create table with partition mappings (sys__id -> partition_id).
+
+        Args:
+            query: Input query with sys__id column
+            table_name: Optional name for the partition table. If None, creates temp table.
         """
         catalog = self.session.catalog
 
@@ -705,7 +752,7 @@ class UDFStep(Step, ABC):
         ]
 
         # create table with partitions
-        tbl = catalog.warehouse.create_udf_table(partition_columns())
+        tbl = catalog.warehouse.create_udf_table(partition_columns(), name=table_name)
 
         # fill table with partitions
         cols = [
@@ -794,6 +841,11 @@ class UDFStep(Step, ABC):
         """Job-specific processed tracking table name (includes job_id)."""
         return f"udf_{job_id}_{_hash}_processed"
 
+    @staticmethod
+    def partition_table_name(job_id: str, _hash: str) -> str:
+        """Job-specific partition table name (includes job_id)."""
+        return f"udf_{job_id}_{_hash}_partition"
+
     def get_or_create_input_table(self, query: Select, _hash: str) -> "Table":
         """
         Get or create input table for the given hash.
@@ -824,6 +876,72 @@ class UDFStep(Step, ABC):
         # Not found in any ancestor, create for current job from original query
         return self.warehouse.create_pre_udf_table(query, current_input_table_name)
 
+    def get_or_create_partition_table(
+        self, input_query: Select, _hash: str
+    ) -> "Table":
+        """
+        Get or create partition table for the given hash.
+
+        The partition table must be created from the FULL unfiltered input query
+        and cached to maintain consistent partition_ids across checkpoint runs.
+
+        First checks if current job has the partition table.
+        If not, searches ancestor jobs and copies their table to current job.
+        If not found in any ancestor, creates it for current job from input query.
+
+        Returns the partition table for current job.
+        """
+        current_partition_table_name = UDFStep.partition_table_name(
+            self.job.id, _hash
+        )
+
+        # Check if current job already has the partition table
+        if self.warehouse.db.has_table(current_partition_table_name):
+            print(f"DEBUG: Reusing existing partition table: {current_partition_table_name}", flush=True)
+            tbl = self.warehouse.get_table(current_partition_table_name)
+            rows = list(self.warehouse.db.execute(sa.select(tbl)))
+            print(f"DEBUG: Partition table has {len(rows)} rows", flush=True)
+            return tbl
+
+        # Search ancestor jobs for the partition table
+        if self.job.parent_job_id:
+            print(f"DEBUG: Searching ancestors for partition table, parent_job_id={self.job.parent_job_id}", flush=True)
+            ancestor_job_ids = self.metastore.get_ancestor_job_ids(self.job.id)
+            print(f"DEBUG: Found {len(ancestor_job_ids)} ancestor jobs", flush=True)
+            for ancestor_job_id in ancestor_job_ids:
+                ancestor_partition_table_name = UDFStep.partition_table_name(
+                    ancestor_job_id, _hash
+                )
+                print(f"DEBUG: Looking for ancestor table: {ancestor_partition_table_name}", flush=True)
+                if self.warehouse.db.has_table(ancestor_partition_table_name):
+                    print(f"DEBUG: Found ancestor partition table, copying to current job", flush=True)
+                    # Found partition table in ancestor, copy it to current job
+                    ancestor_table = self.warehouse.get_table(
+                        ancestor_partition_table_name
+                    )
+                    # Create empty table with same schema
+                    current_table = self.session.catalog.warehouse.create_udf_table(
+                        partition_columns(), name=current_partition_table_name
+                    )
+                    # Copy data from ancestor
+                    self.warehouse.copy_table(
+                        current_table, sa.select(ancestor_table)
+                    )
+                    rows = list(self.warehouse.db.execute(sa.select(current_table)))
+                    print(f"DEBUG: Copied partition table has {len(rows)} rows", flush=True)
+                    return current_table
+                else:
+                    print(f"DEBUG: Ancestor table not found", flush=True)
+
+        # Not found in any ancestor, create for current job from input query
+        print(f"DEBUG: Creating new partition table: {current_partition_table_name}", flush=True)
+        tbl = self.create_partitions_table(
+            input_query, table_name=current_partition_table_name
+        )
+        rows = list(self.warehouse.db.execute(sa.select(tbl)))
+        print(f"DEBUG: New partition table has {len(rows)} rows", flush=True)
+        return tbl
+
     def apply(
         self,
         query_generator: QueryGenerator,
@@ -843,15 +961,22 @@ class UDFStep(Step, ABC):
         # If partition_by is set, we need to create input table first to ensure
         # consistent sys__id
         if self.partition_by is not None:
+            # Save original query for type preservation
+            original_query = query
+
             # Create input table first so partition table can reference the
             # same sys__id values
             input_table = self.get_or_create_input_table(query, hash_input)
 
             # Now query from the input table for partition creation
-            query = sa.select(input_table)
+            # Use get_input_query to preserve SQLTypes from original query
+            query = self.get_input_query(input_table.name, original_query)
 
-            partition_tbl = self.create_partitions_table(query)
-            temp_tables.append(partition_tbl.name)
+            # Get or create partition table - cached to maintain consistent partition_ids
+            # across checkpoint runs
+            partition_tbl = self.get_or_create_partition_table(query, hash_input)
+
+            # Join with partition table to add partition_id column
             query = query.outerjoin(
                 partition_tbl,
                 partition_tbl.c.sys__id == query.selected_columns.sys__id,

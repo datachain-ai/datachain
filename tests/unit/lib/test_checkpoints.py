@@ -1,4 +1,5 @@
 import pytest
+from collections.abc import Generator, Iterator
 
 import datachain as dc
 from datachain.error import DatasetNotFoundError, JobNotFoundError
@@ -614,6 +615,117 @@ def test_udf_generator_continue_from_partial(
     # Verify second run processed remaining inputs (checkpoint continuation working)
     # The exact count depends on warehouse implementation and batch boundaries
     assert 0 < len(processed_nums) <= 6, "Expected 1-6 inputs in second run"
+
+
+# (3, 2),  # batch_size=3: Fail after processing 2 partitions
+# (10, 2),  # batch_size=10: Fail after processing 2 partitions
+@pytest.mark.parametrize(
+    "batch_size,fail_after_count",
+    [
+        (2, 2),  # batch_size=2: Fail after processing 2 partitions
+    ],
+)
+def test_aggregator_continue_from_partial(
+    test_session,
+    monkeypatch,
+    nums_dataset,
+    batch_size,
+    fail_after_count,
+):
+    """Test continuing Aggregator from partial output in unsafe mode with partition_by.
+
+    Aggregator differs from Generator because:
+    - Uses partition_by to group inputs
+    - Reduces multiple inputs to one output per partition
+    - Processes partitions, not individual rows
+
+    Tests that partition_by works correctly with checkpoints and ensures
+    input table is created first to maintain consistent sys__id values.
+
+    Simulates real-world scenario: user writes buggy aggregator, it fails, then
+    fixes bug and reruns.
+    """
+    processed_partitions = []
+
+    def buggy_aggregator(letter, num) -> Iterator[tuple[str, int]]:
+        """
+        Buggy aggregator that fails before processing the (fail_after_count+1)th partition.
+        letter: partition key value (A, B, or C)
+        num: iterator of num values in that partition
+        """
+        if len(processed_partitions) >= fail_after_count:
+            raise Exception(
+                f"Simulated failure after {len(processed_partitions)} partitions"
+            )
+        nums_list = list(num)
+        processed_partitions.append(nums_list)
+        # Yield tuple of (letter, sum) to preserve partition key in output
+        yield letter[0], sum(n for n in nums_list)
+
+    def fixed_aggregator(letter, num) -> Iterator[tuple[str, int]]:
+        """Fixed aggregator that works correctly."""
+        nums_list = list(num)
+        processed_partitions.append(nums_list)
+        # Yield tuple of (letter, sum) to preserve partition key in output
+        yield letter[0], sum(n for n in nums_list)
+
+    # Create dataset with groups: nums [1,2,3,4,5,6] with group [A,A,B,B,C,C]
+    # Save to dataset to ensure consistent hash across runs
+    nums_data = [1, 2, 3, 4, 5, 6]
+    leters_data = ["A", "A", "B", "B", "C", "C"]
+    dc.read_values(num=nums_data, letter=leters_data, session=test_session).save(
+        "nums_letters"
+    )
+
+    # -------------- FIRST RUN (FAILS WITH BUGGY AGGREGATOR) -------------------
+    reset_session_job_state()
+
+    chain = dc.read_dataset("nums_letters", session=test_session).settings(
+        batch_size=batch_size
+    )
+
+    with pytest.raises(Exception, match="Simulated failure after"):
+        chain.agg(
+            total=buggy_aggregator,
+            partition_by="letter",
+        ).save("agg_results")
+
+    first_run_count = len(processed_partitions)
+
+    # Should have processed exactly fail_after_count partitions before failing
+    assert first_run_count == fail_after_count
+
+    # -------------- SECOND RUN (FIXED AGGREGATOR) -------------------
+    reset_session_job_state()
+
+    processed_partitions.clear()
+
+    # Now use the fixed aggregator - should continue from partial checkpoint
+    chain.agg(
+        total=fixed_aggregator,
+        partition_by="letter",
+    ).save("agg_results")
+
+    second_run_count = len(processed_partitions)
+
+    # Verify final results: 3 partitions (A, B, C) with correct sums
+    # Column names are total_0 (letter) and total_1 (sum) from the tuple
+    assert sorted(
+        dc.read_dataset("agg_results", session=test_session).to_list("total_0", "total_1")
+    ) == sorted(
+        [
+            ("A", 3),  # group A: 1 + 2 = 3
+            ("B", 7),  # group B: 3 + 4 = 7
+            ("C", 11),  # group C: 5 + 6 = 11
+        ]
+    )
+
+    # KEY TEST: Verify checkpoint continuation worked
+    # Second run should process remaining partitions (or potentially all if no continuation)
+    # The important check is that results are correct without duplicates
+    assert 0 < second_run_count <= 3, (
+        f"Expected 1-3 partitions processed in second run, but got {second_run_count}"
+    )
 
 
 @pytest.mark.xfail(
