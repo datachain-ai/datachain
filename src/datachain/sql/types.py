@@ -12,6 +12,7 @@ for sqlite we can use `sqlite.register_converter`
 ( https://docs.python.org/3/library/sqlite3.html#sqlite3.register_converter )
 """
 
+import numbers
 from datetime import datetime
 from types import MappingProxyType
 from typing import Any, Union
@@ -445,6 +446,18 @@ class TypeReadConverter:
         return value
 
     def boolean(self, value):
+        if value is None or isinstance(value, bool):
+            return value
+
+        if isinstance(value, numbers.Integral):
+            return bool(value)
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"true", "t", "yes", "y", "1"}:
+                return True
+            if normalized in {"false", "f", "no", "n", "0"}:
+                return False
+
         return value
 
     def int(self, value):
