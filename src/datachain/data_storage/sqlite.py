@@ -723,7 +723,6 @@ class SQLiteWarehouse(AbstractWarehouse):
         table: Table,
         rows: Iterable[dict[str, Any]],
         batch_size: int = INSERT_BATCH_SIZE,
-        batch_callback: Callable[[list[dict[str, Any]]], None] | None = None,
         tracking_field: str | None = None,
     ) -> None:
         for row_chunk in batched(rows, batch_size):
@@ -744,16 +743,13 @@ class SQLiteWarehouse(AbstractWarehouse):
                     conn=conn,
                 )
 
-            # After transaction commits, restore tracking field and call callback
+            # After transaction commits, restore tracking field
             # Only restore if value is not None (avoid adding field to rows that didn't
             # have it)
             if tracking_field and tracking_values:
                 for row, val in zip(row_list, tracking_values, strict=True):
                     if val is not None:
                         row[tracking_field] = val
-
-            if batch_callback:
-                batch_callback(row_list)
 
     def insert_dataset_rows(self, df, dataset: DatasetRecord, version: str) -> int:
         dr = self.dataset_rows(dataset, version)

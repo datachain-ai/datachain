@@ -498,7 +498,6 @@ class AbstractWarehouse(ABC, Serializable):
         table: sa.Table,
         rows: Iterable[dict[str, Any]],
         batch_size: int = INSERT_BATCH_SIZE,
-        batch_callback: "Callable[[list[dict[str, Any]]], None] | None" = None,
         tracking_field: str | None = None,
     ) -> None:
         """Does batch inserts of any kind of rows into table
@@ -507,9 +506,7 @@ class AbstractWarehouse(ABC, Serializable):
             table: Table to insert into
             rows: Rows to insert
             batch_size: Number of rows per batch
-            batch_callback: Optional callback called after each batch commits
-            tracking_field: Optional field name to exclude from insertion but include
-                in batch_callback for tracking correlation between inputs and outputs
+            tracking_field: Optional field name to exclude from insertion
         """
 
     def insert_rows_done(self, table: sa.Table) -> None:
