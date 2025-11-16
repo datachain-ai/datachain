@@ -1,7 +1,7 @@
 import glob
 import logging
 import posixpath
-import random
+import secrets
 import string
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
@@ -1045,7 +1045,5 @@ class AbstractWarehouse(ABC, Serializable):
 
 
 def _random_string(length: int) -> str:
-    return "".join(
-        random.choice(string.ascii_letters + string.digits)  # noqa: S311
-        for i in range(length)
-    )
+    alphabet = string.ascii_letters + string.digits
+    return "".join(secrets.choice(alphabet) for _ in range(length))
