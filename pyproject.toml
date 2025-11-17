@@ -91,7 +91,7 @@ hf = [
   # Until datasets solve the issue, run test_hf_audio test to see if this can be removed
   # https://github.com/meta-pytorch/torchcodec/issues/912
   # https://github.com/huggingface/transformers/pull/41610
-  "torch<2.9.0",
+  "torch<2.10.0",
   "torchcodec<0.8.0 ; (sys_platform == 'linux' or sys_platform == 'darwin')"
 ]
 video = [
