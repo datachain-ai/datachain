@@ -142,7 +142,7 @@ examples = [
   # Transformers still require it
   # Remove this after HF tests and example work w/o these restrictions,
   # make them >= probably
-  "torchaudio<2.9.0"
+  "torchaudio<2.10.0"
 ]
 
 [project.urls]
