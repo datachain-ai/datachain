@@ -713,7 +713,7 @@ def test_udf_reuse_on_error(cloud_test_catalog_tmpfile):
         .select("file.path", "path_len")
     )
 
-    with pytest.raises(DataChainError, match="Test Error!"):
+    with pytest.raises(RuntimeError, match="Test Error!"):
         chain.show()
 
     # Simulate fixing the error

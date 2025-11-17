@@ -1,6 +1,4 @@
 import hashlib
-import sys
-import traceback
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import closing, nullcontext
 from functools import partial
@@ -16,7 +14,7 @@ from datachain.dataset import RowDict
 from datachain.hash_utils import hash_callable
 from datachain.lib.convert.flatten import flatten
 from datachain.lib.file import DataModel, File
-from datachain.lib.utils import AbstractUDF, DataChainError, DataChainParamsError
+from datachain.lib.utils import AbstractUDF, DataChainParamsError
 from datachain.query.batch import (
     Batch,
     BatchingStrategy,
@@ -42,8 +40,34 @@ T = TypeVar("T", bound=Sequence[Any])
 
 
 class UdfError(DataChainParamsError):
-    def __init__(self, msg):
+    """Exception raised for UDF-related errors."""
+
+    def __init__(self, msg: str) -> None:
         super().__init__(f"UDF error: {msg}")
+
+
+class UdfRunError(Exception):
+    """Exception raised when UDF execution fails."""
+
+    def __init__(
+        self,
+        error: Exception | str,
+        stacktrace: str | None = None,
+        udf_name: str | None = None,
+    ) -> None:
+        self.error = error
+        self.stacktrace = stacktrace
+        self.udf_name = udf_name
+        super().__init__(str(error))
+
+    def __str__(self) -> str:
+        if isinstance(self.error, Exception):
+            return f"{self.error.__class__.__name__!s}: {self.error!s}"
+        return f"{self.__class__.__name__!s}: {self!s}"
+
+    def __reduce__(self):
+        """Custom reduce method for pickling."""
+        return self.__class__, (self.error, self.stacktrace, self.udf_name)
 
 
 ColumnType = Any
@@ -312,20 +336,6 @@ class UDFBase(AbstractUDF):
         udf_input = self._parse_row(row_dict, catalog, cache, download_cb)
         return row_dict["sys__id"], *udf_input
 
-    def process_safe(self, obj_rows):
-        try:
-            result_objs = self.process(*obj_rows)
-        except Exception as e:  # noqa: BLE001
-            msg = f"============== Error in user code: '{self.name}' =============="
-            print(msg)
-            exc_type, exc_value, exc_traceback = sys.exc_info()
-            traceback.print_exception(exc_type, exc_value, exc_traceback.tb_next)
-            print("=" * len(msg))
-            raise DataChainError(
-                f"Error in user code in class '{self.name}': {e!s}"
-            ) from None
-        return result_objs
-
 
 def noop(*args, **kwargs):
     pass
@@ -424,7 +434,7 @@ class Mapper(UDFBase):
 
         with closing(prepared_inputs):
             for id_, *udf_args in prepared_inputs:
-                result_objs = self.process_safe(udf_args)
+                result_objs = self.process(*udf_args)
                 udf_output = self._flatten_row(result_objs)
                 output = [
                     {"sys__id": id_}
@@ -480,7 +490,7 @@ class BatchMapper(UDFBase):
                 ],
                 strict=False,
             )
-            result_objs = list(self.process_safe(udf_args))
+            result_objs = list(self.process(*udf_args))
             n_objs = len(result_objs)
             assert n_objs == n_rows, (
                 f"{self.name} returns {n_objs} rows, but {n_rows} were expected"
@@ -522,7 +532,7 @@ class Generator(UDFBase):
                     )
 
         def _process_row(row):
-            with safe_closing(self.process_safe(row)) as result_objs:
+            with safe_closing(self.process(*row)) as result_objs:
                 for result_obj in result_objs:
                     udf_output = self._flatten_row(result_obj)
                     yield dict(zip(self.signal_names, udf_output, strict=False))
@@ -570,7 +580,7 @@ class Aggregator(UDFBase):
             udf_args = [
                 list(arg) if isinstance(arg, tuple) else arg for arg in batched_args
             ]
-            result_objs = self.process_safe(udf_args)
+            result_objs = self.process(*udf_args)
             udf_outputs = (self._flatten_row(row) for row in result_objs)
             output = (
                 dict(zip(self.signal_names, row, strict=False)) for row in udf_outputs
