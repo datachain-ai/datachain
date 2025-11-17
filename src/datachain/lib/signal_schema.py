@@ -34,7 +34,7 @@ from datachain.lib.convert.unflatten import unflatten_to_json_pos
 from datachain.lib.data_model import DataModel, DataType, DataValue
 from datachain.lib.file import File
 from datachain.lib.model_store import ModelStore
-from datachain.lib.utils import DataChainParamsError
+from datachain.lib.utils import DataChainColumnError, DataChainParamsError
 from datachain.query.schema import DEFAULT_DELIMITER, C, Column, ColumnMeta
 from datachain.sql.types import SQLType
 
@@ -1038,7 +1038,28 @@ class SignalSchema:
         ], max_length
 
     def __or__(self, other):
-        return self.__class__(self.values | other.values)
+        new_values = dict(self.values)
+
+        for name, new_type in other.values.items():
+            if name in new_values:
+                current_type = new_values[name]
+                if current_type != new_type:
+                    raise DataChainColumnError(
+                        name,
+                        "signal already exists with a different type",
+                    )
+                continue
+
+            root = self._extract_root(name)
+            if any(self._extract_root(existing) == root for existing in new_values):
+                raise DataChainColumnError(
+                    name,
+                    "signal root already exists in schema",
+                )
+
+            new_values[name] = new_type
+
+        return self.__class__(new_values)
 
     def __contains__(self, name: str):
         return name in self.values

@@ -17,6 +17,7 @@ from datachain.lib.signal_schema import (
     SignalSchemaError,
     SignalSchemaWarning,
 )
+from datachain.lib.utils import DataChainColumnError
 from datachain.sql.types import (
     JSON,
     Array,
@@ -183,6 +184,45 @@ def test_feature_schema_serialize_list():
 
     deserialized_schema = SignalSchema.deserialize(signals)
     assert deserialized_schema.values == schema
+
+
+def test_schema_or_rejects_type_change():
+    base = SignalSchema({"foo": int})
+    new = SignalSchema({"foo": str})
+
+    with pytest.raises(DataChainColumnError, match="different type"):
+        _ = base | new
+
+
+def test_schema_or_rejects_root_conflict():
+    base = SignalSchema({"feature": MyType1})
+    new = SignalSchema({"feature.extra": int})
+
+    with pytest.raises(DataChainColumnError, match="root"):
+        _ = base | new
+
+
+def test_schema_or_allows_sys_root():
+    base = SignalSchema({"foo": int})
+    new = SignalSchema({"sys": Sys})
+
+    combined = base | new
+    assert combined.values["sys"] is Sys
+
+
+def test_schema_or_rejects_sys_override():
+    base = SignalSchema({"sys": Sys})
+    new = SignalSchema({"sys": dict})
+
+    with pytest.raises(DataChainColumnError, match="different type"):
+        _ = base | new
+
+
+def test_schema_or_allows_identical_signal():
+    base = SignalSchema({"foo": int})
+    combined = base | SignalSchema({"foo": int})
+
+    assert combined.values["foo"] is int
 
 
 def test_feature_schema_serialize_list_old():

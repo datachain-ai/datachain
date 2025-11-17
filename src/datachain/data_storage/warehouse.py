@@ -83,7 +83,9 @@ class AbstractWarehouse(ABC, Serializable):
         """
 
         if ModelStore.is_pydantic(type(obj)):
-            return obj.model_dump()
+            # Use Pydantic's JSON mode to ensure datetime and other non-JSON
+            # native types are serialized in a compatible way.
+            return obj.model_dump(mode="json")
 
         if isinstance(obj, dict):
             out: dict[str, Any] = {}

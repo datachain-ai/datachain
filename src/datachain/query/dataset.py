@@ -1075,11 +1075,26 @@ class UDFSignal(UDFStep):
         signal_name_cols = {c.name: c for c in signal_cols}
         cols = signal_cols
 
-        overlap = {c.name for c in original_cols} & {c.name for c in cols}
+        original_names = {c.name for c in original_cols}
+        new_names = {c.name for c in cols}
+
+        overlap = original_names & new_names
         if overlap:
             raise ValueError(
                 "Column already exists or added in the previous steps: "
-                + ", ".join(overlap)
+                + ", ".join(sorted(overlap))
+            )
+
+        def _root(name: str) -> str:
+            return name.split(DEFAULT_DELIMITER, 1)[0]
+
+        existing_roots = {_root(name) for name in original_names}
+        new_roots = {_root(name) for name in new_names}
+        root_conflicts = existing_roots & new_roots
+        if root_conflicts:
+            raise ValueError(
+                "Signals already exist in the previous steps: "
+                + ", ".join(sorted(root_conflicts))
             )
 
         def q(*columns):

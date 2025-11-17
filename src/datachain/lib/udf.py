@@ -586,13 +586,16 @@ class Aggregator(UDFBase):
         self.setup()
 
         for batch in udf_inputs:
-            udf_args = zip(
-                *[
-                    self._prepare_row(row, udf_fields, catalog, cache, download_cb)
-                    for row in batch
-                ],
-                strict=False,
-            )
+            prepared_rows = [
+                self._prepare_row(row, udf_fields, catalog, cache, download_cb)
+                for row in batch
+            ]
+            batched_args = zip(*prepared_rows, strict=False)
+            # Convert aggregated column values to lists. This keeps behavior
+            # consistent with the type hints promoted in the public API.
+            udf_args = [
+                list(arg) if isinstance(arg, tuple) else arg for arg in batched_args
+            ]
             result_objs = self.process_safe(udf_args)
             udf_outputs = (self._flatten_row(row) for row in result_objs)
             output = (

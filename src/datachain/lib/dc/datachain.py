@@ -855,14 +855,13 @@ class DataChain:
         if (prefetch := self._settings.prefetch) is not None:
             udf_obj.prefetch = prefetch
 
+        sys_schema = SignalSchema({"sys": Sys})
         return self._evolve(
             query=self._query.add_signals(
                 udf_obj.to_udf_wrapper(self._settings.batch_size),
                 **self._settings.to_dict(),
             ),
-            signal_schema=SignalSchema({"sys": Sys})
-            | self.signals_schema
-            | udf_obj.output,
+            signal_schema=sys_schema | self.signals_schema | udf_obj.output,
         )
 
     def gen(
@@ -2703,7 +2702,19 @@ class DataChain:
             output: Path to the target directory for exporting files.
             signal: Name of the signal to export files from.
             placement: The method to use for naming exported files.
-                The possible values are: "filename", "etag", "fullpath", and "checksum".
+                The possible values are: "filename", "etag", "fullpath",
+                "filepath", and "checksum".
+                Example path translations for an object located at
+                ``s3://bucket/data/img.jpg`` and exported to ``./out``:
+
+                - "filename" -> ``./out/img.jpg`` (no directories)
+                - "filepath" -> ``./out/data/img.jpg`` (relative path kept)
+                - "fullpath" -> ``./out/bucket/data/img.jpg`` (remote host kept)
+                - "etag" -> ``./out/<etag>.jpg`` (unique name via object digest)
+
+                Local sources behave like "filepath" for "fullpath" placement.
+                Relative destinations such as "." or ".." and absolute paths
+                are supported for every strategy.
             link_type: Method to use for exporting files.
                 Falls back to `'copy'` if symlinking fails.
             num_threads: number of threads to use for exporting files.
