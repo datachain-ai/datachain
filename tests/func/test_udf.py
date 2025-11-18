@@ -13,7 +13,7 @@ import datachain as dc
 from datachain.func import path as pathfunc
 from datachain.lib.file import AudioFile, AudioFragment, File
 from datachain.lib.udf import Mapper
-from datachain.lib.utils import DataChainColumnError, DataChainError
+from datachain.lib.utils import DataChainColumnError
 from tests.utils import LARGE_TREE, NUM_TREE
 
 
@@ -849,7 +849,7 @@ def test_udf_distributed_exec_error(
         .settings(parallel=parallel, workers=workers)
         .map(name_len_error, params=["file.path"], output={"name_len": int})
     )
-    with pytest.raises(DataChainError, match="Test Error!"):
+    with pytest.raises(RuntimeError, match="Test Error!"):
         chain.show()
 
 
