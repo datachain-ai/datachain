@@ -63,7 +63,7 @@ class UdfRunError(Exception):
     def __str__(self) -> str:
         if isinstance(self.error, Exception):
             return f"{self.error.__class__.__name__!s}: {self.error!s}"
-        return f"{self.__class__.__name__!s}: {self!s}"
+        return f"{self.__class__.__name__!s}: {self.error!s}"
 
     def __reduce__(self):
         """Custom reduce method for pickling."""
