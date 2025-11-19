@@ -802,8 +802,8 @@ def test_udf_distributed(
 ):
     session = cloud_test_catalog_tmpfile.session
 
-    def name_len(name):
-        return (len(name),)
+    def name_len(name: str) -> int:
+        return len(name)
 
     chain = (
         dc.read_storage(cloud_test_catalog_tmpfile.src_uri, session=session)
