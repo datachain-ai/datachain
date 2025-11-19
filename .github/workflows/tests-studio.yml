@@ -69,6 +69,12 @@ jobs:
           ref: ${{ env.STUDIO_BRANCH }}
           token: ${{ secrets.ITERATIVE_STUDIO_READ_ACCESS_TOKEN }}
 
+      - name: Update DataChain requirement in Studio
+        env:
+          DATACHAIN_BRANCH: ${{ env.BRANCH }}
+        working-directory: backend
+        run: make update_datachain_deps "$DATACHAIN_BRANCH"
+
       - name: Check out repository
         uses: actions/checkout@v5
         with:
