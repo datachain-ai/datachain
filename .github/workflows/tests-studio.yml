@@ -52,7 +52,7 @@ jobs:
           STUDIO_READ_ACCESS_TOKEN: ${{ secrets.ITERATIVE_STUDIO_READ_ACCESS_TOKEN }}
         run: |
           echo "DataChain branch: $BRANCH"
-          if git ls-remote --heads https://"$STUDIO_READ_ACCESS_TOKEN"@github.com/iterative/studio.git "$BRANCH" | grep -F "$BRANCH" 2>&1>/dev/null
+          if git ls-remote --heads https://"$STUDIO_READ_ACCESS_TOKEN"@github.com/datachain-ai/studio.git "$BRANCH" | grep -F "$BRANCH" 2>&1>/dev/null
           then
               STUDIO_BRANCH="$BRANCH"
           else
@@ -65,7 +65,7 @@ jobs:
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
-          repository: iterative/studio
+          repository: datachain-ai/studio
           ref: ${{ env.STUDIO_BRANCH }}
           token: ${{ secrets.ITERATIVE_STUDIO_READ_ACCESS_TOKEN }}
 
