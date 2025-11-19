@@ -69,6 +69,8 @@ jobs:
           ref: ${{ env.STUDIO_BRANCH }}
           token: ${{ secrets.ITERATIVE_STUDIO_READ_ACCESS_TOKEN }}
 
+      - uses: astral-sh/setup-uv@v6
+
       - name: Update DataChain requirement in Studio
         env:
           DATACHAIN_BRANCH: ${{ env.BRANCH }}
