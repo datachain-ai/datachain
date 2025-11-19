@@ -500,7 +500,6 @@ class AbstractWarehouse(ABC, Serializable):
         table: sa.Table,
         rows: Iterable[dict[str, Any]],
         batch_size: int = INSERT_BATCH_SIZE,
-        tracking_field: str | None = None,
     ) -> None:
         """Does batch inserts of any kind of rows into table
 
@@ -508,7 +507,6 @@ class AbstractWarehouse(ABC, Serializable):
             table: Table to insert into
             rows: Rows to insert
             batch_size: Number of rows per batch
-            tracking_field: Optional field name to exclude from insertion
         """
 
     def insert_rows_done(self, table: sa.Table) -> None:
