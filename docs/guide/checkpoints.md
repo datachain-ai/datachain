@@ -209,14 +209,14 @@ For `.agg()`, checkpoints are only created upon successful completion, without i
 ```python
 from datachain import File
 
-def process_image(file: File) -> dict[str, int]:
+def process_image(file: File) -> int:
     # Bug: this will fail on some images
     img = Image.open(file.get_local_path())
-    return {"width": img.size[0], "height": img.size[1]}
+    return img.size[0]
 
 result = (
     dc.read_dataset("images")
-    .map(process_image, output={"width": int, "height": int})
+    .map(width=process_image, output=int)
     .save("image_dimensions")
 )
 ```
@@ -228,13 +228,13 @@ result = (
 ```python
 from datachain import File
 
-def process_image(file: File) -> dict[str, int]:
+def process_image(file: File) -> int:
     # Fixed: handle corrupted images gracefully
     try:
         img = Image.open(file.get_local_path())
-        return {"width": img.size[0], "height": img.size[1]}
+        return img.size[0]
     except Exception:
-        return {"width": 0, "height": 0}
+        return 0
 ```
 
 **Second run:** DataChain automatically skips the 50% of images that were already processed successfully, and continues processing the remaining images using the fixed code. You don't lose any progress from the first run.
@@ -318,7 +318,7 @@ This forces all UDFs to restart from scratch, discarding any checkpointed progre
 
 DataChain uses two levels of checkpoints:
 
-- **Dataset checkpoints** (via `.save()`) - Skip recreating entire datasets if the chain hasn't changed
+- **Dataset checkpoints** (via `.save()`) - Skip recreating entire datasets if the chains code hasn't changed
 - **UDF checkpoints** (automatic) - Resume in-progress UDFs from where they left off
 
 Both work together: if you have multiple `.map()` calls followed by a `.save()`, DataChain will resume from the last incomplete UDF. If all UDFs completed but the script failed before `.save()`, the next run will skip all UDFs and go straight to the save.

@@ -1924,7 +1924,6 @@ class AbstractDBMetastore(AbstractMetastore):
         This is idempotent - calling it multiple times with the same job_id and hash
         will not create duplicates.
         """
-        # First check if checkpoint already exists
         query = self._checkpoints_insert().values(
             id=str(uuid4()),
             job_id=job_id,
@@ -1934,10 +1933,12 @@ class AbstractDBMetastore(AbstractMetastore):
         )
 
         # Use on_conflict_do_nothing to handle race conditions
-        if hasattr(query, "on_conflict_do_nothing"):
-            query = query.on_conflict_do_nothing(
-                index_elements=["job_id", "hash", "partial"]
-            )
+        assert hasattr(query, "on_conflict_do_nothing"), (
+            "Database must support on_conflict_do_nothing"
+        )
+        query = query.on_conflict_do_nothing(
+            index_elements=["job_id", "hash", "partial"]
+        )
 
         self.db.execute(query, conn=conn)
 

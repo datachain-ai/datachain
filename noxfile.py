@@ -38,9 +38,6 @@ def bench(session: nox.Session) -> None:
 def tests(session: nox.Session) -> None:
     session.install(".[tests]")
     env = {"COVERAGE_FILE": f".coverage.{session.python}"}
-    # Note: Previously used COVERAGE_CORE=sysmon for Python 3.12/3.13 performance,
-    # but sysmon doesn't support branch coverage in those versions.
-    # Removed to avoid: "Can't use core=sysmon: sys.monitoring can't measure branches"
     if session.python in ("3.12", "3.13"):
         # improve performance of tests in Python>=3.12 when used with coverage
         # https://github.com/nedbat/coveragepy/issues/1665
