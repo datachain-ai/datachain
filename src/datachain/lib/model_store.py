@@ -1,10 +1,7 @@
 import inspect
-import logging
 from typing import Any, ClassVar
 
 from pydantic import BaseModel
-
-logger = logging.getLogger(__name__)
 
 
 class ModelStore:
@@ -14,7 +11,7 @@ class ModelStore:
     def get_version(cls, model: type[BaseModel]) -> int:
         if not hasattr(model, "_version"):
             return 0
-        return model._version
+        return model._version  # type: ignore[attr-defined]
 
     @classmethod
     def get_name(cls, model) -> str:
@@ -98,6 +95,21 @@ class ModelStore:
         (e.g. from by-value cloudpickle in workers) reports built state but
         nested model field schemas aren't fully resolved yet.
         """
+        visited: set[type[BaseModel]] = set()
+        visiting: set[type[BaseModel]] = set()
+
+        def visit(model: type[BaseModel]) -> None:
+            if model in visited or model in visiting:
+                return
+            visiting.add(model)
+            for field in model.model_fields.values():
+                child = cls.to_pydantic(field.annotation)
+                if child is not None:
+                    visit(child)
+            visiting.remove(model)
+            model.model_rebuild(force=True)
+            visited.add(model)
+
         for versions in cls.store.values():
             for model in versions.values():
-                model.model_rebuild(force=True)
+                visit(model)

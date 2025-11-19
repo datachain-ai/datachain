@@ -187,29 +187,153 @@ for ds in dc.datasets():
     print(ds.name)
 ```
 
-## Limitations
+## UDF-Level Checkpoints
 
-- **Script-based:** Code must be run as a script (not interactively or as a module).
-- **Hash-based matching:** Any change to the chain will create a different hash, preventing checkpoint reuse.
-- **Same script path:** The script must be run from the same absolute path for parent job linking to work.
+DataChain automatically creates checkpoints for UDFs (`.map()`, `.gen()`, `.agg()`), not just at `.save()` calls. For `.map()` and `.gen()`, **DataChain saves processed rows continuously during UDF execution**, not only when the UDF completes. If your script fails partway through a UDF, the next run will skip already-processed rows and continue where it left off - even if you've modified the UDF code to fix a bug.
 
-## Future Plans
+**Note:** For `.agg()`, checkpoints are created when the aggregation completes successfully, but partial results are not tracked. If an aggregation fails partway through, it will restart from scratch on the next run.
 
-### UDF-Level Checkpoints
+### How It Works
 
-Currently, checkpoints are created only when datasets are saved using `.save()`. This means that if a script fails during a long-running UDF operation (like `.map()`, `.gen()`, or `.agg()`), the entire UDF computation must be rerun on the next execution.
+When executing `.map()` or `.gen()`, DataChain:
 
-Future versions will support **UDF-level checkpoints**, creating checkpoints after each UDF step in the chain. This will provide much more granular recovery:
+1. **Saves processed rows incrementally** as the UDF processes your dataset
+2. **Creates a checkpoint** when the UDF completes successfully
+3. **Allows you to fix bugs and continue** - if the UDF fails, you can modify the code and re-run, skipping already-processed rows
+4. **Invalidates the checkpoint if you change the UDF after successful completion** - completed UDFs are recomputed from scratch if the code changes
+
+For `.agg()`, checkpoints are only created upon successful completion, without incremental progress tracking.
+
+### Example: Fixing a Bug Mid-Execution
 
 ```python
-# Future behavior with UDF-level checkpoints
+from datachain import File
+
+def process_image(file: File) -> int:
+    # Bug: this will fail on some images
+    img = Image.open(file.get_local_path())
+    return img.size[0]
+
 result = (
-    dc.read_csv("data.csv")
-    .map(heavy_computation_1)  # Checkpoint created after this UDF
-    .map(heavy_computation_2)  # Checkpoint created after this UDF
-    .map(heavy_computation_3)  # Checkpoint created after this UDF
-    .save("result")
+    dc.read_dataset("images")
+    .map(width=process_image, output=int)
+    .save("image_dimensions")
 )
 ```
 
-If the script fails during `heavy_computation_3`, the next run will skip re-executing `heavy_computation_1` and `heavy_computation_2`, resuming only the work that wasn't completed.
+**First run:** Script processes 50% of images successfully, then fails on a corrupted image.
+
+**After fixing the bug:**
+
+```python
+from datachain import File
+
+def process_image(file: File) -> int:
+    # Fixed: handle corrupted images gracefully
+    try:
+        img = Image.open(file.get_local_path())
+        return img.size[0]
+    except Exception:
+        return 0
+```
+
+**Second run:** DataChain automatically skips the 50% of images that were already processed successfully, and continues processing the remaining images using the fixed code. You don't lose any progress from the first run.
+
+### When UDF Checkpoints Are Invalidated
+
+DataChain distinguishes between two types of UDF changes:
+
+#### 1. Code-Only Changes (Bug Fixes) - Continues from Partial Results
+
+When you fix a bug in your UDF code **without changing the output schema**, DataChain allows you to continue from where the UDF failed. This is the key benefit of UDF-level checkpoints - you don't lose progress when fixing bugs.
+
+**Example: Bug fix without schema change**
+```python
+# First run - fails partway through
+def process(num) -> int:
+    if num > 100:
+        raise Exception("Bug!")  # Oops, a bug!
+    return num * 10
+
+# Second run - continues from where it failed
+def process(num) -> int:
+    return num * 10  # Bug fixed! ✓ Continues from partial results
+```
+
+In this case, DataChain will skip already-processed rows and continue processing the remaining rows with your fixed code.
+
+#### 2. Output Schema Changes - Forces Re-run from Scratch
+
+When you change the **output type or schema** of your UDF, DataChain automatically detects this and reruns the entire UDF from scratch. This prevents schema mismatches that would cause errors or corrupt data.
+
+**Example: Schema change**
+```python
+# First run - fails partway through
+def process(num) -> int:
+    if num > 100:
+        raise Exception("Bug!")
+    return num * 10
+
+# Second run - output type changed
+def process(num) -> str:
+    return f"value_{num * 10}"  # Output type changed! ✗ Reruns from scratch
+```
+
+In this case, DataChain detects that the output changed from `int` to `str` and discards partial results to avoid schema incompatibility. All rows will be reprocessed with the new output schema.
+
+#### Changes That Invalidate In-Progress UDF Checkpoints
+
+Partial results are automatically discarded when you change:
+
+- **Output type or schema** - Changes to the `output` parameter or return type annotations
+- **Operations before the UDF** - Any changes to the data processing chain before the UDF
+
+#### Changes That Invalidate Completed UDF Checkpoints
+
+Once a UDF completes successfully, its checkpoint is tied to the UDF function code. If you modify the function and re-run the script, DataChain will detect the change and recompute the entire UDF from scratch.
+
+Changes that invalidate completed UDF checkpoints:
+
+- **Modifying the UDF function logic** - Any code changes inside the function
+- **Changing function parameters or output types** - Changes to input/output specifications
+- **Altering any operations before the UDF in the chain** - Changes to upstream data processing
+
+**Key takeaway:** For in-progress (partial) UDFs, you can fix bugs freely as long as the output schema stays the same. For completed UDFs, any code change triggers a full recomputation.
+
+### Forcing UDF to Start from Scratch
+
+If you want to ignore any in-progress UDF work and recompute from the beginning, set the `DATACHAIN_UDF_RESET` environment variable:
+
+```bash
+DATACHAIN_UDF_RESET=1 python my_script.py
+```
+
+This forces all UDFs to restart from scratch, discarding any checkpointed progress. This is useful when:
+
+- You've changed the UDF logic and want to reprocess already-completed rows
+- You suspect the checkpointed data is corrupted
+- You want to ensure a clean computation for debugging
+
+### UDF Checkpoints vs Dataset Checkpoints
+
+DataChain uses two levels of checkpoints:
+
+- **Dataset checkpoints** (via `.save()`) - Skip recreating entire datasets if the chains code hasn't changed
+- **UDF checkpoints** (automatic) - Resume in-progress UDFs from where they left off
+
+Both work together: if you have multiple `.map()` calls followed by a `.save()`, DataChain will resume from the last incomplete UDF. If all UDFs completed but the script failed before `.save()`, the next run will skip all UDFs and go straight to the save.
+
+## Limitations
+
+When running locally:
+
+- **Script-based:** Code must be run as a script (not interactively or as a module).
+- **Same script path:** The script must be run from the same absolute path for parent job linking to work.
+
+These limitations don't apply when running on Studio, where parent-child job linking is handled automatically by the platform.
+
+## Future Plans
+
+### Partial Result Tracking for Aggregations
+
+Currently, `.agg()` creates checkpoints only upon successful completion, without tracking partial progress. Future versions will extend the same incremental progress tracking that `.map()` and `.gen()` have to aggregations, allowing them to resume from where they failed rather than restarting from scratch.

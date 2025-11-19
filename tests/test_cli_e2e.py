@@ -158,9 +158,7 @@ E2E_STEPS = (
     },
     {
         "command": ("datachain", "gc"),
-        "expected": (
-            "Cleaning up outdated checkpoints.\nNo temporary tables to clean up.\n"
-        ),
+        "expected": ("No temporary tables to clean up.\n"),
     },
 )
 

@@ -55,6 +55,7 @@ from datachain.query.dataset import (
     DatasetQuery,
     PartitionByType,
     RegenerateSystemColumns,
+    UnionSchemaMismatchError,
 )
 from datachain.query.schema import DEFAULT_DELIMITER, Column
 from datachain.sql.functions import path as pathfunc
@@ -647,7 +648,7 @@ class DataChain:
         project = self._get_or_create_project(namespace_name, project_name)
 
         # Calculate hash including dataset name and job context to avoid conflicts
-        _hash = self.hash(name=name, in_job=True)
+        _hash = self.hash(name=f"{namespace_name}/{project_name}/{name}", in_job=True)
 
         # Checkpoint handling
         result = self._resolve_checkpoint(name, project, _hash, kwargs)
@@ -675,7 +676,7 @@ class DataChain:
                 )
             )
 
-        catalog.metastore.create_checkpoint(self.job.id, _hash)
+        catalog.metastore.get_or_create_checkpoint(self.job.id, _hash)
         return result
 
     def _validate_version(self, version: str | None) -> None:
@@ -854,14 +855,13 @@ class DataChain:
         if (prefetch := self._settings.prefetch) is not None:
             udf_obj.prefetch = prefetch
 
+        sys_schema = SignalSchema({"sys": Sys})
         return self._evolve(
             query=self._query.add_signals(
                 udf_obj.to_udf_wrapper(self._settings.batch_size),
                 **self._settings.to_dict(),
             ),
-            signal_schema=SignalSchema({"sys": Sys})
-            | self.signals_schema
-            | udf_obj.output,
+            signal_schema=sys_schema | self.signals_schema | udf_obj.output,
         )
 
     def gen(
@@ -1719,7 +1719,16 @@ class DataChain:
         Parameters:
             other: chain whose rows will be added to `self`.
         """
-        self.signals_schema = self.signals_schema.clone_without_sys_signals()
+        self_schema = self.signals_schema
+        other_schema = other.signals_schema
+        missing_left, missing_right = self_schema.compare_signals(other_schema)
+        if missing_left or missing_right:
+            raise UnionSchemaMismatchError.from_column_sets(
+                missing_left,
+                missing_right,
+            )
+
+        self.signals_schema = self_schema.clone_without_sys_signals()
         return self._evolve(query=self._query.union(other._query))
 
     def subtract(  # type: ignore[override]
@@ -2693,7 +2702,19 @@ class DataChain:
             output: Path to the target directory for exporting files.
             signal: Name of the signal to export files from.
             placement: The method to use for naming exported files.
-                The possible values are: "filename", "etag", "fullpath", and "checksum".
+                The possible values are: "filename", "etag", "fullpath",
+                "filepath", and "checksum".
+                Example path translations for an object located at
+                ``s3://bucket/data/img.jpg`` and exported to ``./out``:
+
+                - "filename" -> ``./out/img.jpg`` (no directories)
+                - "filepath" -> ``./out/data/img.jpg`` (relative path kept)
+                - "fullpath" -> ``./out/bucket/data/img.jpg`` (remote host kept)
+                - "etag" -> ``./out/<etag>.jpg`` (unique name via object digest)
+
+                Local sources behave like "filepath" for "fullpath" placement.
+                Relative destinations such as "." or ".." and absolute paths
+                are supported for every strategy.
             link_type: Method to use for exporting files.
                 Falls back to `'copy'` if symlinking fails.
             num_threads: number of threads to use for exporting files.

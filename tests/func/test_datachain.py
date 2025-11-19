@@ -7,7 +7,9 @@ import uuid
 from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
+from typing import cast
 from unittest.mock import patch
+from urllib.parse import urlparse
 
 import numpy as np
 import pandas as pd
@@ -259,7 +261,7 @@ def test_read_file(cloud_test_catalog, use_cache):
         assert bool(file.get_local_path()) is use_cache
 
 
-@pytest.mark.parametrize("placement", ["fullpath", "filename"])
+@pytest.mark.parametrize("placement", ["fullpath", "filename", "filepath"])
 @pytest.mark.parametrize("use_map", [True, False])
 @pytest.mark.parametrize("use_cache", [True, False])
 @pytest.mark.parametrize("file_type", ["", "binary", "text"])
@@ -309,13 +311,28 @@ def test_to_storage(
         "dog4": "ruff",
     }
 
-    for file in df.to_values("file"):
+    def _expected_destination_rel(file_obj: File, placement: str) -> Path:
+        rel_path = PurePosixPath(file_obj.path).as_posix()
+
         if placement == "filename":
-            file_path = file.name
-        else:
-            file_path = file.get_full_name()
-        with open(tmp_dir / "output" / file_path) as f:
-            assert f.read() == expected[file.name]
+            return Path(file_obj.name)
+        if placement == "filepath":
+            return Path(rel_path)
+        if placement == "fullpath":
+            parsed = urlparse(file_obj.source)
+            full_rel = rel_path
+            if parsed.scheme and parsed.scheme != "file":
+                full_rel = posixpath.join(parsed.netloc, rel_path)
+            return Path(full_rel)
+        raise AssertionError(f"Unsupported placement: {placement}")
+
+    output_root = tmp_dir / "output"
+    for file_record in df.to_values("file"):
+        file_obj = cast("File", file_record)
+        destination_rel = _expected_destination_rel(file_obj, placement)
+
+        with (output_root / destination_rel).open() as f:
+            assert f.read() == expected[file_obj.name]
 
     assert call_count["count"] == len(expected)
 

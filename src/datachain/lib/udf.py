@@ -66,6 +66,10 @@ class UDFAdapter:
     def hash(self) -> str:
         return self.inner.hash()
 
+    def output_schema_hash(self) -> str:
+        """Hash of just the output schema (not including code or inputs)."""
+        return self.inner.output_schema_hash()
+
     def get_batching(self, use_partitioning: bool = False) -> BatchingStrategy:
         if use_partitioning:
             return Partition()
@@ -176,6 +180,14 @@ class UDFBase(AbstractUDF):
         return hashlib.sha256(
             b"".join([bytes.fromhex(part) for part in parts])
         ).hexdigest()
+
+    def output_schema_hash(self) -> str:
+        """Hash of just the output schema (not including code or inputs).
+
+        Used for partial checkpoint hash to detect schema changes while
+        allowing code-only bug fixes to continue from partial results.
+        """
+        return self.output.hash()
 
     def process(self, *args, **kwargs):
         """Processing function that needs to be defined by user"""
@@ -514,48 +526,43 @@ class Generator(UDFBase):
     ) -> Iterator[Iterable[UDFResult]]:
         self.setup()
 
-        def _prepare_rows(
-            udf_inputs,
-        ) -> "abc.Generator[tuple[int, Sequence[Any]], None, None]":
+        def _prepare_rows(udf_inputs) -> "abc.Generator[Sequence[Any], None, None]":
             with safe_closing(udf_inputs):
                 for row in udf_inputs:
-                    row_id, *prepared_row = self._prepare_row_and_id(
+                    yield self._prepare_row_and_id(
                         row, udf_fields, catalog, cache, download_cb
                     )
-                    yield (row_id, prepared_row)
 
-        def _process_row(row_id, row):
-            # TODO: Fix limitation where inputs yielding nothing are not tracked in
-            # processed table. Currently, if process() yields nothing for an input,
-            # that input's sys__id is never added to the processed table, causing it
-            # to be re-processed on checkpoint recovery. Solution: yield a marker row
-            # with _input_sys_id when process() yields nothing, then filter these
-            # marker rows before inserting to output table.
-            with safe_closing(self.process_safe(row)) as result_objs:
-                for result_obj in result_objs:
-                    udf_output = self._flatten_row(result_obj)
-                    # Include _input_sys_id to track which input generated this output
-                    yield (
-                        {"_input_sys_id": row_id}
-                        | dict(zip(self.signal_names, udf_output, strict=False))
-                    )
-
-        # Prepare inputs and extract row_id for tracking
-        prepared_inputs_with_id = list(_prepare_rows(udf_inputs))
-
-        # Prefetch only the row data (not the IDs)
-        prefetched_rows = _prefetch_inputs(
-            [row for _, row in prepared_inputs_with_id],
+        # Prepare and prefetch inputs (ID is included and harmlessly skipped by
+        # prefetch)
+        prepared_inputs = _prepare_rows(udf_inputs)
+        prepared_inputs = _prefetch_inputs(
+            prepared_inputs,
             self.prefetch,
             download_cb=download_cb,
             remove_prefetched=bool(self.prefetch) and not cache,
         )
 
-        # Recombine row_ids with prefetched rows and process
-        row_ids = [row_id for row_id, _ in prepared_inputs_with_id]
-        with closing(prefetched_rows):
-            for row_id, row in zip(row_ids, prefetched_rows, strict=False):
-                yield _process_row(row_id, row)
+        # Process rows, extracting ID for checkpoint tracking
+        with closing(prepared_inputs):
+            for row_id, *udf_args in prepared_inputs:
+                # TODO: Fix limitation where inputs yielding nothing are not tracked in
+                # processed table. Currently, if process() yields nothing for an input,
+                # that input's sys__id is never added to the processed table, causing it
+                # to be re-processed on checkpoint recovery. Solution: yield a marker
+                # row with sys__input_id when process() yields nothing, then filter
+                # these marker rows before inserting to output table.
+                output_batch = []
+                with safe_closing(self.process_safe(udf_args)) as result_objs:
+                    for result_obj in result_objs:
+                        udf_output = self._flatten_row(result_obj)
+                        # Include sys__input_id to track which input generated this
+                        # output
+                        output_batch.append(
+                            {"sys__input_id": row_id}
+                            | dict(zip(self.signal_names, udf_output, strict=False))
+                        )
+                yield output_batch
                 processed_cb.relative_update(1)
 
         self.teardown()
@@ -579,13 +586,16 @@ class Aggregator(UDFBase):
         self.setup()
 
         for batch in udf_inputs:
-            udf_args = zip(
-                *[
-                    self._prepare_row(row, udf_fields, catalog, cache, download_cb)
-                    for row in batch
-                ],
-                strict=False,
-            )
+            prepared_rows = [
+                self._prepare_row(row, udf_fields, catalog, cache, download_cb)
+                for row in batch
+            ]
+            batched_args = zip(*prepared_rows, strict=False)
+            # Convert aggregated column values to lists. This keeps behavior
+            # consistent with the type hints promoted in the public API.
+            udf_args = [
+                list(arg) if isinstance(arg, tuple) else arg for arg in batched_args
+            ]
             result_objs = self.process_safe(udf_args)
             udf_outputs = (self._flatten_row(row) for row in result_objs)
             output = (

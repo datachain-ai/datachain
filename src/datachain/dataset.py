@@ -383,10 +383,26 @@ class DatasetRecord:
     def parse_schema(
         ct: dict[str, Any],
     ) -> dict[str, SQLType | type[SQLType]]:
-        return {
-            c_name: NAME_TYPES_MAPPING[c_type["type"]].from_dict(c_type)  # type: ignore [attr-defined]
-            for c_name, c_type in ct.items()
-        }
+        if not isinstance(ct, dict):
+            raise TypeError("Schema definition must be a dictionary")
+        res = {}
+        for c_name, c_type in ct.items():
+            if not isinstance(c_type, dict):
+                raise TypeError(f"Schema column '{c_name}' type must be a dictionary")
+            if "type" not in c_type:
+                raise ValueError(f"Schema column '{c_name}' type is not defined")
+            if c_type["type"] not in NAME_TYPES_MAPPING:
+                raise ValueError(
+                    f"Schema column '{c_name}' type '{c_type['type']}' is not supported"
+                )
+            try:
+                res[c_name] = NAME_TYPES_MAPPING[c_type["type"]].from_dict(c_type)  # type: ignore [attr-defined]
+            except Exception as e:
+                raise ValueError(
+                    f"Schema column '{c_name}' type '{c_type['type']}' "
+                    f"parsing error: {e}"
+                ) from e
+        return res
 
     @staticmethod
     def validate_name(name: str) -> None:

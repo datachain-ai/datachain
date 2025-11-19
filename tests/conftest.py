@@ -217,12 +217,7 @@ def cleanup_udf_tables(warehouse):
     """
     from datachain.data_storage.sqlite import quote_schema
 
-    udf_table_names = [
-        t
-        for t in warehouse.db.list_tables()
-        if t.startswith(warehouse.UDF_TABLE_NAME_PREFIX)
-    ]
-    for table_name in udf_table_names:
+    for table_name in warehouse.db.list_tables(prefix=warehouse.UDF_TABLE_NAME_PREFIX):
         quoted_name = quote_schema(table_name)
         warehouse.db.execute_str(f"DROP TABLE IF EXISTS {quoted_name}")
         # Remove from metadata to avoid stale references

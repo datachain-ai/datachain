@@ -61,7 +61,7 @@ def test_db_defaults(col_type, default_value, catalog):
         nullable=False,
         server_default=col_type.db_default_value(warehouse.db.dialect),
     )
-    table = warehouse.create_udf_table([table_col])
+    table, _ = warehouse.create_udf_table([table_col])
     warehouse.insert_rows(table, [{"sys__id": 1}])
     warehouse.insert_rows_done(table)
 

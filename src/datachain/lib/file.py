@@ -42,7 +42,7 @@ sha256 = partial(hashlib.sha256, usedforsecurity=False)
 logger = logging.getLogger("datachain")
 
 # how to create file path when exporting
-ExportPlacement = Literal["filename", "etag", "fullpath", "checksum"]
+ExportPlacement = Literal["filename", "etag", "fullpath", "checksum", "filepath"]
 
 FileType = Literal["binary", "text", "image", "video", "audio"]
 EXPORT_FILES_MAX_THREADS = 5
@@ -644,6 +644,8 @@ class File(DataModel):
             source = urlparse(self.source)
             if source.scheme and source.scheme != "file":
                 path = posixpath.join(source.netloc, path)
+        elif placement == "filepath":
+            path = unquote(self.get_path_normalized())
         elif placement == "checksum":
             raise NotImplementedError("Checksum placement not implemented yet")
         else:
