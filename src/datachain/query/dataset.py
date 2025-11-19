@@ -3,7 +3,7 @@ import hashlib
 import inspect
 import logging
 import os
-import random
+import secrets
 import string
 import subprocess
 import sys
@@ -1826,10 +1826,7 @@ class DatasetQuery:
 
     @staticmethod
     def get_table() -> "TableClause":
-        table_name = "".join(
-            random.choice(string.ascii_letters)  # noqa: S311
-            for _ in range(16)
-        )
+        table_name = "".join(secrets.choice(string.ascii_letters) for _ in range(16))
         return sqlalchemy.table(table_name)
 
     @property

@@ -3,6 +3,7 @@ import json
 import math
 import os
 import re
+import uuid
 from collections import Counter
 from collections.abc import Generator, Iterator
 from unittest.mock import ANY, patch
@@ -2849,6 +2850,35 @@ def test_filter_basic(test_session):
     assert sorted(filtered_chain.to_values("numbers")) == [1, 2, 3, 4, 6, 7, 8, 9, 10]
 
 
+def test_filter_with_booleans_read_values(test_session):
+    """Ensure boolean columns from read_values work with filters."""
+    chain = dc.read_values(
+        flags=[True, False, True],
+        labels=["keep", "skip", "keep"],
+        session=test_session,
+    )
+
+    # Direct column filter defaults to truthy rows
+    true_rows = chain.filter(C("flags"))
+    assert true_rows.count() == 2
+    assert true_rows.to_values("labels") == ["keep", "keep"]
+
+    # Equality predicate
+    true_rows_eq = chain.filter(C("flags") == True)  # noqa: E712
+    assert true_rows_eq.to_values("labels") == ["keep", "keep"]
+
+    # Inclusion predicate
+    true_rows_in = chain.filter(C("flags").in_([True]))
+    assert true_rows_in.to_values("labels") == ["keep", "keep"]
+
+    # False branch
+    false_rows = chain.filter(C("flags") == False)  # noqa: E712
+    assert false_rows.to_values("labels") == ["skip"]
+
+    false_rows_in = chain.filter(C("flags").in_([False]))
+    assert false_rows_in.to_values("labels") == ["skip"]
+
+
 def test_filter_with_strings(test_session):
     """Test filter with string conditions."""
     chain = dc.read_values(
@@ -3061,6 +3091,34 @@ def test_filter_with_empty_results(test_session):
     assert filtered_chain.to_values("numbers") == []
 
 
+def test_filter_with_booleans_round_trip_dataset(test_session):
+    """Boolean columns remain filterable after save/read round trip."""
+    ds_name = f"bool-filter-{uuid.uuid4().hex}"
+    chain = dc.read_values(
+        published=[True, False, True],
+        identifiers=[1, 2, 3],
+        session=test_session,
+    )
+
+    chain.save(ds_name)
+    reloaded = dc.read_dataset(name=ds_name, session=test_session)
+
+    published_rows = reloaded.filter(C("published"))
+    assert sorted(published_rows.to_values("identifiers")) == [1, 3]
+
+    published_rows_eq = reloaded.filter(C("published") == True)  # noqa: E712
+    assert sorted(published_rows_eq.to_values("identifiers")) == [1, 3]
+
+    published_rows_in = reloaded.filter(C("published").in_([True]))
+    assert sorted(published_rows_in.to_values("identifiers")) == [1, 3]
+
+    draft_rows = reloaded.filter(C("published") == False)  # noqa: E712
+    assert draft_rows.to_values("identifiers") == [2]
+
+    draft_rows_in = reloaded.filter(C("published").in_([False]))
+    assert draft_rows_in.to_values("identifiers") == [2]
+
+
 def test_filter_chaining(test_session):
     """Test chaining multiple filter operations."""
     chain = dc.read_values(
@@ -3097,6 +3155,41 @@ def test_filter_with_func_operations(test_session):
     filtered_chain = chain.filter(string.length(C("names")) > 4)
     assert filtered_chain.count() == 3
     assert sorted(filtered_chain.to_values("names")) == ["Alice", "Charlie", "David"]
+
+
+def test_filter_with_boolean_nested_model(test_session):
+    """Boolean fields inside nested DataModels are filterable."""
+
+    class ReviewMeta(DataModel):
+        passed: bool
+        notes: str
+
+    class Item(DataModel):
+        name: str
+        meta: ReviewMeta
+
+    items = [
+        Item(name="doc-1", meta=ReviewMeta(passed=True, notes="looks good")),
+        Item(name="doc-2", meta=ReviewMeta(passed=False, notes="needs work")),
+        Item(name="doc-3", meta=ReviewMeta(passed=True, notes="approved")),
+    ]
+
+    chain = dc.read_values(records=items, session=test_session)
+
+    approved = chain.filter(C("records.meta.passed"))
+    assert sorted(approved.to_values("records.name")) == ["doc-1", "doc-3"]  # type: ignore[arg-type]
+
+    approved_eq = chain.filter(C("records.meta.passed") == True)  # noqa: E712
+    assert sorted(approved_eq.to_values("records.name")) == ["doc-1", "doc-3"]  # type: ignore[arg-type]
+
+    approved_in = chain.filter(C("records.meta.passed").in_([True]))
+    assert sorted(approved_in.to_values("records.name")) == ["doc-1", "doc-3"]  # type: ignore[arg-type]
+
+    rejected = chain.filter(C("records.meta.passed") == False)  # noqa: E712
+    assert rejected.to_values("records.name") == ["doc-2"]
+
+    rejected_in = chain.filter(C("records.meta.passed").in_([False]))
+    assert rejected_in.to_values("records.name") == ["doc-2"]
 
 
 @skip_if_not_sqlite
