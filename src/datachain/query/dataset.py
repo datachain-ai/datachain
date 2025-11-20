@@ -867,7 +867,7 @@ class UDFStep(Step, ABC):
             (hash_input + self.udf.output_schema_hash()).encode()
         ).hexdigest()
 
-        udf_reset = env2bool("DATACHAIN_UDF_RESET", undefined=False)
+        udf_reset = env2bool("DATACHAIN_UDF_CHECKPOINT_RESET", undefined=False)
 
         ch = self._checkpoint_exist(hash_output)
         ch_partial = self._checkpoint_exist(partial_hash, partial=True)
