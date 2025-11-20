@@ -1049,8 +1049,8 @@ def test_select_except(test_session):
 
 
 def test_select_except_after_gen(test_session):
-    # https://github.com/iterative/datachain/issues/1359
-    # fixed by https://github.com/iterative/datachain/pull/1400
+    # https://github.com/datachain-ai/datachain/issues/1359
+    # fixed by https://github.com/datachain-ai/datachain/pull/1400
     chain = dc.read_values(id=range(10), session=test_session)
 
     chain = chain.gen(lambda id: [(id, 0)], output={"id": int, "x": int})

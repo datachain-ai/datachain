@@ -12,14 +12,14 @@
 .. |Python Version| image:: https://img.shields.io/pypi/pyversions/datachain
    :target: https://pypi.org/project/datachain
    :alt: Python Version
-.. |Codecov| image:: https://codecov.io/gh/iterative/datachain/graph/badge.svg?token=byliXGGyGB
-   :target: https://codecov.io/gh/iterative/datachain
+.. |Codecov| image:: https://codecov.io/gh/datachain-ai/datachain/graph/badge.svg?token=byliXGGyGB
+   :target: https://codecov.io/gh/datachain-ai/datachain
    :alt: Codecov
-.. |Tests| image:: https://github.com/iterative/datachain/actions/workflows/tests.yml/badge.svg
-   :target: https://github.com/iterative/datachain/actions/workflows/tests.yml
+.. |Tests| image:: https://github.com/datachain-ai/datachain/actions/workflows/tests.yml/badge.svg
+   :target: https://github.com/datachain-ai/datachain/actions/workflows/tests.yml
    :alt: Tests
 .. |DeepWiki| image:: https://deepwiki.com/badge.svg
-   :target: https://deepwiki.com/iterative/datachain
+   :target: https://deepwiki.com/datachain-ai/datachain
    :alt: DeepWiki
 
 DataChain is a Python-based AI-data warehouse for transforming and analyzing unstructured
@@ -222,7 +222,7 @@ DataChain Studio Platform
 - **Access control** including SSO and team based collaboration.
 
 .. _PyPI: https://pypi.org/
-.. _file an issue: https://github.com/iterative/datachain/issues
+.. _file an issue: https://github.com/datachain-ai/datachain/issues
 .. github-only
 .. _Contributor Guide: https://docs.datachain.ai/contributing
 .. _Pydantic: https://github.com/pydantic/pydantic
