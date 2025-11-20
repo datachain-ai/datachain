@@ -204,7 +204,7 @@ def test_cp_local_dataset(cloud_test_catalog, dogs_dataset):
 )
 def test_cp_subdir(cloud_test_catalog, recursive, star, slash, dir_exists):
     if not star and not slash and dir_exists:
-        pytest.skip("Fix in https://github.com/iterative/datachain/issues/535")
+        pytest.skip("Fix in https://github.com/datachain-ai/datachain/issues/535")
 
     src_uri = f"{cloud_test_catalog.src_uri}/dogs"
     working_dir = cloud_test_catalog.working_dir
@@ -254,10 +254,10 @@ def test_cp_subdir(cloud_test_catalog, recursive, star, slash, dir_exists):
 )
 def test_cp_multi_subdir(cloud_test_catalog, recursive, star, slash, cloud_type):
     if recursive and not star and not slash:
-        pytest.skip("Fix in https://github.com/iterative/datachain/issues/535")
+        pytest.skip("Fix in https://github.com/datachain-ai/datachain/issues/535")
 
     if cloud_type == "file" and recursive and not star and slash:
-        pytest.skip("Fix in https://github.com/iterative/datachain/issues/535")
+        pytest.skip("Fix in https://github.com/datachain-ai/datachain/issues/535")
 
     sources = [
         f"{cloud_test_catalog.src_uri}/cats",

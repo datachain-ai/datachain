@@ -16,11 +16,11 @@ title: Welcome to DataChain
   <a href="https://pypi.org/project/datachain/" target="_blank">
     <img src="https://img.shields.io/pypi/pyversions/datachain" alt="Python Version">
   </a>
-  <a href="https://codecov.io/gh/iterative/datachain" target="_blank">
-    <img src="https://codecov.io/gh/iterative/datachain/graph/badge.svg?token=byliXGGyGB" alt="Codecov">
+  <a href="https://codecov.io/gh/datachain-ai/datachain" target="_blank">
+    <img src="https://codecov.io/gh/datachain-ai/datachain/graph/badge.svg?token=byliXGGyGB" alt="Codecov">
   </a>
-  <a href="https://github.com/iterative/datachain/actions/workflows/tests.yml" target="_blank">
-    <img src="https://github.com/iterative/datachain/actions/workflows/tests.yml/badge.svg" alt="Tests">
+  <a href="https://github.com/datachain-ai/datachain/actions/workflows/tests.yml" target="_blank">
+    <img src="https://github.com/datachain-ai/datachain/actions/workflows/tests.yml/badge.svg" alt="Tests">
   </a>
 </p>
 
@@ -103,5 +103,5 @@ DataChain is available as an open source project and Studio as a proprietary sol
     - **UI for Multimodal Data** like images, videos, and PDFs.
     - **Scalable Compute** to handle large datasets (100M+ files) and in-house AI model inference.
     - **Access control** including SSO and team based collaboration.
-- [DataChain Open Source](https://github.com/iterative/datachain):
+- [DataChain Open Source](https://github.com/datachain-ai/datachain):
     - Python-based AI-data warehouse for transforming and analyzing unstructured data like images, audio, videos, text and PDFs.
