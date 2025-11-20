@@ -1087,11 +1087,9 @@ class UDFStep(Step, ABC):
 
         # Filter original query to only include unprocessed rows
         # For Aggregator with partition_by: filter by partition_id
-        # For Generator/Mapper: filter by sys__id
-        if (
-            partition_id_col := original_query.selected_columns.get(PARTITION_COLUMN_ID)
-        ) is not None:
+        if self.partition_by is not None:
             # Aggregator case: sys__input_id contains partition_id
+            partition_id_col = original_query.selected_columns[PARTITION_COLUMN_ID]
             return original_query.where(
                 partition_id_col.notin_(
                     sa.select(processed_input_ids_subquery.c.sys_id)
