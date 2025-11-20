@@ -42,8 +42,16 @@ T = TypeVar("T", bound=Sequence[Any])
 class UdfError(DataChainParamsError):
     """Exception raised for UDF-related errors."""
 
-    def __init__(self, msg: str) -> None:
-        super().__init__(f"UDF error: {msg}")
+    def __init__(self, message: str) -> None:
+        self.message = message
+        super().__init__(message)
+
+    def __str__(self) -> str:
+        return f"{self.__class__.__name__!s}: {self.message!s}"
+
+    def __reduce__(self):
+        """Custom reduce method for pickling."""
+        return self.__class__, (self.message,)
 
 
 class UdfRunError(Exception):
@@ -61,6 +69,8 @@ class UdfRunError(Exception):
         super().__init__(str(error))
 
     def __str__(self) -> str:
+        if isinstance(self.error, UdfRunError):
+            return str(self.error)
         if isinstance(self.error, Exception):
             return f"{self.error.__class__.__name__!s}: {self.error!s}"
         return f"{self.__class__.__name__!s}: {self.error!s}"
