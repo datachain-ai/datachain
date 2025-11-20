@@ -786,39 +786,30 @@ class UDFStep(Step, ABC):
         The partition table must be created from the FULL unfiltered input query
         and cached to maintain consistent partition_ids across checkpoint runs.
 
-        First checks if current job has the partition table.
-        If not, searches ancestor jobs and copies their table to current job.
-        If not found in any ancestor, creates it for current job from input query.
+        Checks parent job and copies their table to current job.
+        If not found in parent, creates it for current job from input query.
 
         Returns the partition table for current job.
         """
         current_partition_table_name = UDFStep.partition_table_name(self.job.id, _hash)
 
-        # Check if current job already has the partition table
-        if self.warehouse.db.has_table(current_partition_table_name):
-            return self.warehouse.get_table(current_partition_table_name)
-
-        # Search ancestor jobs for the partition table
+        # Check parent job for the partition table
         if self.job.parent_job_id:
-            ancestor_job_ids = self.metastore.get_ancestor_job_ids(self.job.id)
-            for ancestor_job_id in ancestor_job_ids:
-                ancestor_partition_table_name = UDFStep.partition_table_name(
-                    ancestor_job_id, _hash
+            parent_partition_table_name = UDFStep.partition_table_name(
+                self.job.parent_job_id, _hash
+            )
+            if self.warehouse.db.has_table(parent_partition_table_name):
+                # Found partition table in parent, copy it to current job
+                parent_table = self.warehouse.get_table(parent_partition_table_name)
+                # Create empty table with same schema
+                current_table, _ = self.session.catalog.warehouse.create_udf_table(
+                    partition_columns(), name=current_partition_table_name
                 )
-                if self.warehouse.db.has_table(ancestor_partition_table_name):
-                    # Found partition table in ancestor, copy it to current job
-                    ancestor_table = self.warehouse.get_table(
-                        ancestor_partition_table_name
-                    )
-                    # Create empty table with same schema
-                    current_table, _ = self.session.catalog.warehouse.create_udf_table(
-                        partition_columns(), name=current_partition_table_name
-                    )
-                    # Copy data from ancestor
-                    self.warehouse.copy_table(current_table, sa.select(ancestor_table))
-                    return current_table
+                # Copy data from parent
+                self.warehouse.copy_table(current_table, sa.select(parent_table))
+                return current_table
 
-        # Not found in any ancestor, create for current job from input query
+        # Not found in parent, create for current job from input query
         return self.create_partitions_table(input_query, current_partition_table_name)
 
     def apply(
