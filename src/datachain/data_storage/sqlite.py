@@ -346,9 +346,6 @@ class SQLiteDatabaseEngine(DatabaseEngine):
         comp_old_name = quote_schema(old_name)
         comp_new_name = quote_schema(new_name)
         self.execute_str(f"ALTER TABLE {comp_old_name} RENAME TO {comp_new_name}")
-        # Remove old table from metadata to avoid stale references
-        if old_name in self.metadata.tables:
-            self.metadata.remove(self.metadata.tables[old_name])
 
 
 class SQLiteMetastore(AbstractDBMetastore):
