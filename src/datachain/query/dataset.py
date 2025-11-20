@@ -789,7 +789,7 @@ class UDFStep(Step, ABC):
             (hash_input + self.udf.output_schema_hash()).encode()
         ).hexdigest()
 
-        udf_reset = env2bool("DATACHAIN_UDF_RESET", undefined=False)
+        udf_reset = env2bool("DATACHAIN_UDF_CHECKPOINT_RESET", undefined=False)
 
         # If partition_by is set, we need to create input table first to ensure
         # consistent sys__id

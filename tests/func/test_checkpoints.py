@@ -739,10 +739,10 @@ def test_multiple_udf_chain_continue(test_session, monkeypatch):
 
 
 def test_udf_generator_reset_udf(test_session, monkeypatch):
-    """Test that when DATACHAIN_UDF_RESET=True, we don't continue from partial
-    checkpoints but re-run from scratch.
+    """Test that when DATACHAIN_UDF_CHECKPOINT_RESET=True, we don't continue
+    from partial checkpoints but re-run from scratch.
     """
-    monkeypatch.setenv("DATACHAIN_UDF_RESET", "true")
+    monkeypatch.setenv("DATACHAIN_UDF_CHECKPOINT_RESET", "true")
     dc.read_values(num=[1, 2, 3, 4, 5, 6], session=test_session).save("nums")
     processed_nums = []
 

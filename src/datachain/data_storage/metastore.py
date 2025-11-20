@@ -1763,8 +1763,9 @@ class AbstractDBMetastore(AbstractMetastore):
     def get_ancestor_job_ids(self, job_id: str, conn=None) -> list[str]:
         # Use recursive CTE to walk up the parent chain
         # Format: WITH RECURSIVE ancestors(id, parent_job_id) AS (...)
+        # Note: _jobs_select is overridden in Studio to add team_id filter
         ancestors_cte = (
-            select(
+            self._jobs_select(
                 self._jobs.c.id.label("id"),
                 self._jobs.c.parent_job_id.label("parent_job_id"),
             )
@@ -1773,8 +1774,9 @@ class AbstractDBMetastore(AbstractMetastore):
         )
 
         # Recursive part: join with parent jobs
+        # _jobs_select ensures team_id filtering in Studio
         ancestors_recursive = ancestors_cte.union_all(
-            select(
+            self._jobs_select(
                 self._jobs.c.id.label("id"),
                 self._jobs.c.parent_job_id.label("parent_job_id"),
             ).select_from(

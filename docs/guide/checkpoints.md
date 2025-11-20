@@ -302,10 +302,10 @@ Changes that invalidate completed UDF checkpoints:
 
 ### Forcing UDF to Start from Scratch
 
-If you want to ignore any in-progress UDF work and recompute from the beginning, set the `DATACHAIN_UDF_RESET` environment variable:
+If you want to ignore any in-progress UDF work and recompute from the beginning, set the `DATACHAIN_UDF_CHECKPOINT_RESET` environment variable:
 
 ```bash
-DATACHAIN_UDF_RESET=1 python my_script.py
+DATACHAIN_UDF_CHECKPOINT_RESET=1 python my_script.py
 ```
 
 This forces all UDFs to restart from scratch, discarding any checkpointed progress. This is useful when:
