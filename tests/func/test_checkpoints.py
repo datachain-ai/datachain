@@ -936,40 +936,14 @@ def test_mapper_output_schema_change_triggers_rerun(test_session, monkeypatch):
     assert result == expected
 
 
-@pytest.mark.parametrize(
-    "batch_size,fail_after_count",
-    [
-        (
-            1,
-            2,
-        ),  # batch_size=1: Commit each output immediately, ensures checkpoint works
-    ],
-)
-def test_aggregator_continue_from_partial(
-    test_session,
-    monkeypatch,
-    nums_dataset,
-    batch_size,
-    fail_after_count,
-):
+def test_aggregator_continue_from_partial(test_session):
     """Test continuing Aggregator from partial output with partition_by.
-
-    Aggregator differs from Generator because:
-    - Uses partition_by to group inputs
-    - Reduces multiple inputs to one output per partition
-    - Processes partitions, not individual rows
-
-    Tests that partition_by works correctly with checkpoints and ensures
-    input table is created first to maintain consistent sys__id values.
 
     Simulates real-world scenario: user writes buggy aggregator, it fails, then
     fixes bug and reruns.
     """
-    # Reduce INSERT_BATCH_SIZE to 1 so each output is committed immediately
-    # This ensures partial outputs are saved before failure
-    monkeypatch.setattr("datachain.query.dataset.INSERT_BATCH_SIZE", 1)
-    monkeypatch.setattr("datachain.data_storage.warehouse.INSERT_BATCH_SIZE", 1)
-
+    warehouse = test_session.catalog.warehouse
+    fail_after_count = 2
     processed_partitions = []
 
     def buggy_aggregator(letter, num) -> Iterator[tuple[str, int]]:
@@ -995,8 +969,6 @@ def test_aggregator_continue_from_partial(
         # Yield tuple of (letter, sum) to preserve partition key in output
         yield letter[0], sum(n for n in nums_list)
 
-    # Create dataset with groups: nums [1,2,3,4,5,6] with group [A,A,B,B,C,C]
-    # Save to dataset to ensure consistent hash across runs
     nums_data = [1, 2, 3, 4, 5, 6]
     leters_data = ["A", "A", "B", "B", "C", "C"]
     dc.read_values(num=nums_data, letter=leters_data, session=test_session).save(
@@ -1006,10 +978,7 @@ def test_aggregator_continue_from_partial(
     # -------------- FIRST RUN (FAILS WITH BUGGY AGGREGATOR) -------------------
     reset_session_job_state()
 
-    chain = dc.read_dataset("nums_letters", session=test_session).settings(
-        batch_size=batch_size
-    )
-
+    chain = dc.read_dataset("nums_letters", session=test_session).settings(batch_size=1)
     with pytest.raises(Exception, match="Simulated failure after"):
         chain.agg(
             total=buggy_aggregator,
@@ -1018,25 +987,12 @@ def test_aggregator_continue_from_partial(
 
     first_run_count = len(processed_partitions)
 
-    # Should have processed exactly fail_after_count partitions before failing
     assert first_run_count == fail_after_count
-
-    catalog = test_session.catalog
-    warehouse = catalog.warehouse
-
     _, partial_table = get_partial_tables(test_session)
-
-    # Count processed partitions (via sys__input_id which should track partition_id)
-    # For Aggregator with partition_by, sys__input_id tracks which partition produced
-    # output
     processed_count_first = _count_processed(warehouse, partial_table, generator=True)
 
     # Must be > 0 to verify sys__input_id tracking is working
-    assert 0 < processed_count_first <= fail_after_count, (
-        f"Expected 1-{fail_after_count} processed partitions tracked, "
-        f"but got {processed_count_first}. sys__input_id tracking may not be working."
-    )
-
+    assert 0 < processed_count_first <= fail_after_count
     # -------------- SECOND RUN (FIXED AGGREGATOR) -------------------
     reset_session_job_state()
 
@@ -1072,7 +1028,4 @@ def test_aggregator_continue_from_partial(
     # Second run should only process remaining partitions
     # Total processed across both runs should equal 3 partitions
     total_processed = processed_count_first + second_run_count
-    assert total_processed == 3, (
-        f"Expected 3 total partitions processed, but got {total_processed} "
-        f"(first run: {processed_count_first}, second run: {second_run_count})"
-    )
+    assert total_processed == 3
