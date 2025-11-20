@@ -4,6 +4,7 @@ import pickle
 import posixpath
 import sys
 import time
+from collections.abc import Iterator
 
 import multiprocess as mp
 import pytest
@@ -12,7 +13,7 @@ import datachain as dc
 from datachain.func import path as pathfunc
 from datachain.lib.file import AudioFile, AudioFragment, File
 from datachain.lib.udf import Mapper
-from datachain.lib.utils import DataChainError
+from datachain.lib.utils import DataChainColumnError, DataChainError
 from tests.utils import LARGE_TREE, NUM_TREE
 
 
@@ -390,6 +391,23 @@ def test_udf_different_types(cloud_test_catalog):
     ]
 
 
+def test_udf_rejects_root_override(test_session):
+    class X(dc.DataModel):
+        x: int
+
+    chain = dc.read_values(x=[X(x=0), X(x=1)], session=test_session)
+
+    with pytest.raises(
+        DataChainColumnError,
+        match="Error for column x: signal already exists with a different type",
+    ):
+        chain.map(
+            lambda x: x.model_dump(),
+            params=["x"],
+            output={"x": dict},
+        )
+
+
 @pytest.mark.parametrize("use_cache", [False, True])
 @pytest.mark.parametrize("prefetch", [0, 2])
 def test_map_file(cloud_test_catalog, use_cache, prefetch, monkeypatch):
@@ -553,14 +571,8 @@ def test_udf_parallel_exec_error(cloud_test_catalog_tmpfile):
         .map(name_len_error, params=["file.path"], output={"name_len": int})
     )
 
-    if os.environ.get("DATACHAIN_DISTRIBUTED"):
-        # in distributed mode we expect DataChainError with the error message
-        with pytest.raises(DataChainError, match="Test Error!"):
-            chain.show()
-    else:
-        # while in local mode we expect RuntimeError with the error message
-        with pytest.raises(RuntimeError, match="UDF Execution Failed!"):
-            chain.show()
+    with pytest.raises(RuntimeError, match="UDF Execution Failed!"):
+        chain.show()
 
 
 @pytest.mark.parametrize(
@@ -736,12 +748,8 @@ def test_udf_parallel_interrupt(cloud_test_catalog_tmpfile, capfd):
         .settings(parallel=True)
         .map(name_len_interrupt, params=["file.path"], output={"name_len": int})
     )
-    if os.environ.get("DATACHAIN_DISTRIBUTED"):
-        with pytest.raises(KeyboardInterrupt):
-            chain.show()
-    else:
-        with pytest.raises(RuntimeError, match="UDF Execution Failed!"):
-            chain.show()
+    with pytest.raises(RuntimeError, match="UDF Execution Failed!"):
+        chain.show()
     captured = capfd.readouterr()
     assert "semaphore" not in captured.err
 
@@ -874,7 +882,7 @@ def test_udf_distributed_interrupt(
         .settings(parallel=parallel, workers=workers)
         .map(name_len_interrupt, params=["file.path"], output={"name_len": int})
     )
-    with pytest.raises(KeyboardInterrupt):
+    with pytest.raises(Exception, match="UDF task failed with exit code"):
         chain.show()
     captured = capfd.readouterr()
     assert "semaphore" not in captured.err
@@ -1021,3 +1029,80 @@ def test_agg_works_after_merge(test_session_tmpfile, monkeypatch, full):
         for g in range(groups)
     }
     assert {row["partition"]: row["total"] for row in records} == expected_totals
+
+
+def test_agg_list_file_and_map_count(tmp_dir, test_session):
+    names = [
+        "hotdogs.txt",
+        "dogs.txt",
+        "dog.txt",
+        "1dog.txt",
+        "dogatxt.txt",
+        "dog.txtx",
+    ]
+
+    for name in names:
+        (tmp_dir / name).write_text(name, encoding="utf-8")
+
+    base_chain = dc.read_storage(tmp_dir.as_uri(), session=test_session).order_by(
+        "file.path"
+    )
+
+    expected_files: list[File] = []
+    for (file_obj,) in base_chain.select("file").to_iter():
+        assert isinstance(file_obj, File)
+        expected_files.append(file_obj)
+
+    def collect_files(file: list[File]) -> Iterator[list[File]]:
+        # Return the full collection for the partition
+        yield file
+
+    def count_files(files: list[File]) -> int:
+        return len(files)
+
+    (
+        base_chain.agg(files=collect_files)
+        .map(num_files=count_files)
+        .save("temp_udf_types")
+    )
+
+    # Validate result
+    ds = dc.read_dataset("temp_udf_types", session=test_session)
+    rows = ds.select("num_files").to_list()
+    assert rows == [(len(expected_files),)]
+
+
+def test_agg_list_file_persist_and_read(tmp_dir, test_session):
+    names = ["a.txt", "b.txt", "c.txt"]
+
+    for name in names:
+        (tmp_dir / name).write_text(name, encoding="utf-8")
+
+    base_chain = dc.read_storage(tmp_dir.as_uri(), session=test_session).order_by(
+        "file.path"
+    )
+
+    expected_files: list[File] = []
+    for (file_obj,) in base_chain.select("file").to_iter():
+        assert isinstance(file_obj, File)
+        expected_files.append(file_obj)
+
+    def collect_files(file: list[File]) -> Iterator[list[File]]:
+        yield file
+
+    (base_chain.agg(files=collect_files).save("temp_files_only"))
+
+    # When reading back, we should get a list of File objects
+    ds = dc.read_dataset("temp_files_only", session=test_session)
+    vals = ds.select("files").to_list()
+    assert len(vals) == 1
+    files_list = vals[0][0]
+    assert isinstance(files_list, list)
+    assert all(isinstance(f, File) for f in files_list)
+
+    expected_sorted: list[File] = sorted(expected_files, key=lambda f: f.path)
+    actual_sorted: list[File] = sorted(files_list, key=lambda f: f.path)
+
+    assert [f.model_dump() for f in actual_sorted] == [
+        f.model_dump() for f in expected_sorted
+    ]

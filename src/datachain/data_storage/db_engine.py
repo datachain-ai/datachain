@@ -91,7 +91,7 @@ class DatabaseEngine(ABC, Serializable):
                 table = self.metadata.tables.get(name)
                 if table is None:
                     raise TableMissingError(f"Table '{name}' not found")
-            except (KeyError, sa.exc.NoSuchTableError) as e:
+            except sa.exc.NoSuchTableError as e:
                 raise TableMissingError(f"Table '{name}' not found") from e
         return table
 
@@ -135,7 +135,9 @@ class DatabaseEngine(ABC, Serializable):
         if_not_exists: bool = True,
         *,
         kind: str | None = None,
-    ) -> None: ...
+    ) -> bool:
+        """Create table and return True if created, False if already existed."""
+        ...
 
     @abstractmethod
     def drop_table(self, table: "Table", if_exists: bool = False) -> None: ...

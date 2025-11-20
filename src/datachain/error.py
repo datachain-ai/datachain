@@ -2,6 +2,10 @@ class DataChainError(RuntimeError):
     pass
 
 
+class SchemaDriftError(DataChainError):
+    pass
+
+
 class InvalidDatasetNameError(RuntimeError):
     pass
 

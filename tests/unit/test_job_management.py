@@ -31,7 +31,9 @@ def test_reuse_job_from_env_var(test_session, monkeypatch):
     assert Session._JOB_STATUS is None
 
 
-def test_get_or_create_creates_job(test_session, patch_argv):
+def test_get_or_create_creates_job(test_session, patch_argv, monkeypatch):
+    monkeypatch.delenv("DATACHAIN_JOB_ID", raising=False)
+
     job = test_session.get_or_create_job()
 
     db_job = test_session.catalog.metastore.get_job(job.id)
@@ -41,7 +43,9 @@ def test_get_or_create_creates_job(test_session, patch_argv):
     assert db_job.status == JobStatus.RUNNING
 
 
-def test_finalize_success(test_session, patch_argv):
+def test_finalize_success(test_session, patch_argv, monkeypatch):
+    monkeypatch.delenv("DATACHAIN_JOB_ID", raising=False)
+
     job = test_session.get_or_create_job()
 
     test_session._finalize_job_success()
@@ -64,7 +68,10 @@ def test_finalize_failure(
     exception_type,
     expected_status,
     should_have_error,
+    monkeypatch,
 ):
+    monkeypatch.delenv("DATACHAIN_JOB_ID", raising=False)
+
     job = test_session.get_or_create_job()
 
     try:
@@ -87,7 +94,9 @@ def test_finalize_failure(
         assert db_job.error_stack == ""
 
 
-def test_get_or_create_is_idempotent(test_session, patch_argv):
+def test_get_or_create_is_idempotent(test_session, patch_argv, monkeypatch):
+    monkeypatch.delenv("DATACHAIN_JOB_ID", raising=False)
+
     job1 = test_session.get_or_create_job()
     job2 = test_session.get_or_create_job()
 
@@ -95,7 +104,9 @@ def test_get_or_create_is_idempotent(test_session, patch_argv):
     assert Session._CURRENT_JOB is job1
 
 
-def test_get_or_create_links_to_parent(test_session, patch_argv):
+def test_get_or_create_links_to_parent(test_session, patch_argv, monkeypatch):
+    monkeypatch.delenv("DATACHAIN_JOB_ID", raising=False)
+
     job1 = test_session.get_or_create_job()
     test_session._finalize_job_success()
 
@@ -109,8 +120,10 @@ def test_get_or_create_links_to_parent(test_session, patch_argv):
     assert job2.parent_job_id == job1.id
 
 
-def test_nested_sessions_share_same_job(test_session, patch_argv):
+def test_nested_sessions_share_same_job(test_session, patch_argv, monkeypatch):
     """Test that nested sessions share the same job (one job per process)."""
+    monkeypatch.delenv("DATACHAIN_JOB_ID", raising=False)
+
     # Outer session creates a job
     job1 = test_session.get_or_create_job()
 
@@ -132,8 +145,10 @@ def test_nested_sessions_share_same_job(test_session, patch_argv):
     assert job3 is job1
 
 
-def test_except_hook_delegates_to_original(test_session, patch_argv):
+def test_except_hook_delegates_to_original(test_session, patch_argv, monkeypatch):
     """Test that Session.except_hook delegates to ORIGINAL_EXCEPT_HOOK."""
+    monkeypatch.delenv("DATACHAIN_JOB_ID", raising=False)
+
     # Set up global session for this test
     Session.GLOBAL_SESSION_CTX = test_session
     test_session.get_or_create_job()

@@ -1,5 +1,6 @@
 import os
 import uuid
+from typing import Any
 
 import pytest
 import regex as re
@@ -7,7 +8,7 @@ from PIL import Image
 
 import datachain as dc
 from datachain import func
-from datachain.error import DatasetNotFoundError
+from datachain.error import DatasetNotFoundError, SchemaDriftError
 from datachain.lib.dc import C
 from datachain.lib.file import File, ImageFile
 
@@ -319,6 +320,126 @@ def test_delta_replay_regenerates_system_columns(test_session):
     assert set(
         dc.read_dataset(result_name, session=test_session).to_values("measurement_id")
     ) == {1, 2}
+
+
+@pytest.mark.parametrize(
+    (
+        "initial_has_confidence",
+        "updated_has_confidence",
+        "scenario",
+        "expected_detail",
+    ),
+    [
+        pytest.param(
+            False,
+            True,
+            "added",
+            "new columns detected: item.confidence",
+            id="column_added",
+        ),
+        pytest.param(
+            True,
+            False,
+            "removed",
+            "columns missing in updated data: item.confidence",
+            id="column_removed",
+        ),
+    ],
+)
+def test_delta_update_fails_on_schema_change(
+    test_session,
+    initial_has_confidence: bool,
+    updated_has_confidence: bool,
+    scenario: str,
+    expected_detail: str,
+):
+    source_name = f"delta_schema_change_source_{scenario}_{uuid.uuid4().hex[:8]}"
+    result_name = f"delta_schema_change_result_{scenario}_{uuid.uuid4().hex[:8]}"
+
+    dc.read_values(id=[1, 2], session=test_session).save(source_name)
+
+    def build_chain(include_confidence: bool):
+        class ItemBase(dc.DataModel):
+            label: str
+            score: int
+            error: str
+
+        class ItemWithConfidence(ItemBase):
+            confidence: float
+
+        item_model = ItemWithConfidence if include_confidence else ItemBase
+
+        def mark_error(id: int) -> str:
+            return "retry" if id == 2 else ""
+
+        def build_item(id: int) -> ItemBase:
+            data: dict[str, Any] = {
+                "label": f"item-{id}",
+                "score": id * 10,
+                "error": mark_error(id),
+            }
+            if include_confidence:
+                data["confidence"] = float(id)
+            return item_model(**data)
+
+        return dc.read_dataset(
+            source_name,
+            session=test_session,
+            delta=True,
+            delta_on="id",
+            delta_retry="item.error",
+        ).map(item=build_item, output=item_model)
+
+    build_chain(include_confidence=initial_has_confidence).save(result_name)
+
+    dc.read_values(id=[1, 2, 3], session=test_session).save(source_name)
+
+    with pytest.raises(SchemaDriftError) as excinfo:
+        build_chain(include_confidence=updated_has_confidence).save(result_name)
+
+    msg = str(excinfo.value)
+    assert "schema drift" in msg.lower()
+    assert "item.confidence" in msg
+    assert expected_detail in msg
+
+
+def test_delta_update_retry_union_detects_source_schema_change(test_session):
+    source_name = f"delta_retry_drift_source_{uuid.uuid4().hex[:8]}"
+    result_name = f"delta_retry_drift_result_{uuid.uuid4().hex[:8]}"
+
+    dc.read_values(
+        id=[1, 2],
+        err=["retry", ""],
+        session=test_session,
+    ).save(source_name)
+
+    dc.read_dataset(
+        source_name,
+        session=test_session,
+        delta=True,
+        delta_on="id",
+        delta_retry="err",
+    ).save(result_name)
+
+    dc.read_values(
+        id=[1, 2, 3],
+        err=["retry", "", ""],
+        extra=["a", "b", "c"],
+        session=test_session,
+    ).save(source_name)
+
+    with pytest.raises(SchemaDriftError) as excinfo:
+        dc.read_dataset(
+            source_name,
+            session=test_session,
+            delta=True,
+            delta_on="id",
+            delta_retry="err",
+        ).save(result_name)
+
+    msg = str(excinfo.value)
+    assert "combining retry records with delta changes" in msg
+    assert "columns missing in updated data: extra" in msg
 
 
 def test_storage_delta_replay_regenerates_system_columns(test_session, tmp_dir):

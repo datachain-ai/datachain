@@ -39,7 +39,7 @@ def test_serialize(sqlite_db):
 
 def test_is_temp_table_name(warehouse):
     assert warehouse.is_temp_table_name("tmp_vc12F") is True
-    assert warehouse.is_temp_table_name("udf_jh653") is True
+    assert warehouse.is_temp_table_name("udf_jh653") is False
     assert warehouse.is_temp_table_name("ds_my_dataset") is False
     assert warehouse.is_temp_table_name("src_my_bucket") is False
     assert warehouse.is_temp_table_name("ds_ds_my_query_script_1_1") is False

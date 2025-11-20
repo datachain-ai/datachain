@@ -20,7 +20,7 @@ Create a DNS record pointing to the IP address of the EC2 instance. This hostnam
 
 4. Provide a name for your EC2 instance
 
-5. Select **datachain-studio-selfhosted** from the AMI catalog
+5. Select **studio-selfhosted** from the AMI catalog
 
 6. Select an appropriate instance type.
    - Minimum requirements: 16 GB RAM, 4 vCPUs

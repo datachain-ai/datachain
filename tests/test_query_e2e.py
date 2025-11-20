@@ -111,14 +111,11 @@ E2E_STEPS = (
         "expected_in_stderr": "KeyboardInterrupt",
         "expected_not_in_stderr": "Warning",
     },
+    {
+        "command": ("datachain", "gc"),
+        "expected": ("No temporary tables to clean up.\n"),
+    },
 )
-# TODO return  garbage collect test when we fix garbage collecting with UDF checkpoints
-"""
-{
-    "command": ("datachain", "gc"),
-    "expected": "Nothing to clean up.\n",
-},
-"""
 
 
 def communicate_and_interrupt_process(

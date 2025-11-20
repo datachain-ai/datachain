@@ -20,6 +20,7 @@ from datachain.catalog import Catalog
 from datachain.catalog.loader import get_metastore, get_warehouse
 from datachain.cli.utils import CommaSeparatedArgs
 from datachain.config import Config, ConfigLevel
+from datachain.data_storage import AbstractMetastore, JobQueryType, JobStatus
 from datachain.data_storage.sqlite import (
     SQLiteDatabaseEngine,
     SQLiteMetastore,
@@ -129,6 +130,15 @@ def clean_environment(
     monkeypatch_session.delenv(DataChainDir.ENV_VAR_DATACHAIN_ROOT, raising=False)
 
 
+def _create_job(metastore: AbstractMetastore) -> str:
+    return metastore.create_job(
+        "my-job",
+        'import datachain as dc; dc.read_values(num=[1, 2, 3]).save("nums")',
+        query_type=JobQueryType.PYTHON,
+        status=JobStatus.RUNNING,
+    )
+
+
 @pytest.fixture
 def sqlite_db():
     if os.environ.get("DATACHAIN_METASTORE") or os.environ.get("DATACHAIN_WAREHOUSE"):
@@ -162,9 +172,13 @@ def cleanup_sqlite_db(
 
 
 @pytest.fixture
-def metastore():
+def metastore(monkeypatch):
     if os.environ.get("DATACHAIN_METASTORE"):
         _metastore = get_metastore()
+
+        job_id = _create_job(_metastore)
+        monkeypatch.setenv("DATACHAIN_JOB_ID", job_id)
+
         yield _metastore
 
         _metastore.cleanup_for_tests()
@@ -203,12 +217,7 @@ def cleanup_udf_tables(warehouse):
     """
     from datachain.data_storage.sqlite import quote_schema
 
-    udf_table_names = [
-        t
-        for t in warehouse.db.list_tables()
-        if t.startswith(warehouse.UDF_TABLE_NAME_PREFIX)
-    ]
-    for table_name in udf_table_names:
+    for table_name in warehouse.db.list_tables(prefix=warehouse.UDF_TABLE_NAME_PREFIX):
         quoted_name = quote_schema(table_name)
         warehouse.db.execute_str(f"DROP TABLE IF EXISTS {quoted_name}")
         # Remove from metadata to avoid stale references
@@ -258,14 +267,18 @@ def test_session(catalog):
 
 
 @pytest.fixture
-def metastore_tmpfile(tmp_path):
+def metastore_tmpfile(monkeypatch, tmp_path):
     if os.environ.get("DATACHAIN_METASTORE"):
         _metastore = get_metastore()
+
+        job_id = _create_job(_metastore)
+        monkeypatch.setenv("DATACHAIN_JOB_ID", job_id)
+
         yield _metastore
 
         _metastore.cleanup_for_tests()
     else:
-        _metastore = SQLiteMetastore(db_file=tmp_path / "test.db")
+        _metastore = SQLiteMetastore(db_file=str(tmp_path / "test.db"))
         yield _metastore
 
         cleanup_sqlite_db(_metastore.db.clone(), _metastore.default_table_names)
@@ -287,7 +300,7 @@ def warehouse_tmpfile(tmp_path, metastore_tmpfile):
             _warehouse.cleanup_for_tests()
         yield _warehouse
     else:
-        _warehouse = SQLiteWarehouse(db_file=tmp_path / "test.db")
+        _warehouse = SQLiteWarehouse(db_file=str(tmp_path / "test.db"))
         yield _warehouse
         try:
             check_temp_tables_cleaned_up(_warehouse)
@@ -496,26 +509,21 @@ def cloud_server(request, tmp_upath_factory, cloud_type, version_aware, tree):
 
 @pytest.fixture
 def datachain_job_id(test_session, monkeypatch):
-    job_id = test_session.catalog.metastore.create_job(
-        "my-job",
-        'import datachain as dc; dc.read_values(num=[1, 2, 3].save("nums")',
-    )
-    monkeypatch.setenv("DATACHAIN_JOB_ID", job_id)
-    return job_id
+    yield _create_job(test_session.catalog.metastore)
 
 
-@pytest.fixture
-def cloud_server_credentials(cloud_server, monkeypatch):
+@pytest.fixture(scope="session")
+def cloud_server_credentials(cloud_server):
     if cloud_server.kind == "s3":
         cfg = cloud_server.src.fs.client_kwargs
         try:
-            monkeypatch.delenv("AWS_PROFILE")
+            os.environ.pop("AWS_PROFILE")
         except KeyError:
             pass
-        monkeypatch.setenv("AWS_ACCESS_KEY_ID", cfg.get("aws_access_key_id"))
-        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", cfg.get("aws_secret_access_key"))
-        monkeypatch.setenv("AWS_SESSION_TOKEN", cfg.get("aws_session_token"))
-        monkeypatch.setenv("AWS_DEFAULT_REGION", cfg.get("region_name"))
+        os.environ["AWS_ACCESS_KEY_ID"] = cfg.get("aws_access_key_id")
+        os.environ["AWS_SECRET_ACCESS_KEY"] = cfg.get("aws_secret_access_key")
+        os.environ["AWS_SESSION_TOKEN"] = cfg.get("aws_session_token")
+        os.environ["AWS_DEFAULT_REGION"] = cfg.get("region_name")
 
 
 def get_cloud_test_catalog(cloud_server, tmp_path, metastore, warehouse):
@@ -880,34 +888,22 @@ def pseudo_random_ds(test_session):
 
 
 @pytest.fixture()
-def run_datachain_worker(datachain_job_id):
+def run_datachain_worker(monkeypatch):
     if not os.environ.get("DATACHAIN_DISTRIBUTED"):
         pytest.skip("Distributed tests are disabled")
 
     job_id = os.environ.get("DATACHAIN_JOB_ID")
     assert job_id, "DATACHAIN_JOB_ID environment variable is required for this test"
 
+    monkeypatch.delenv("DATACHAIN_DISTRIBUTED_DISABLED", raising=False)
+
     # This worker can take several tasks in parallel, as it's very handy
     # for testing, where we don't want [yet] to constrain the number of
     # available workers.
-    workers = []
-    worker_cmd = [
-        "celery",
-        "-A",
-        "datachain_worker.tasks",
-        "worker",
-        "--loglevel=INFO",
-        "--hostname=tests-datachain-worker-main",
-        "--pool=solo",
-        "--concurrency=1",
-        "--max-tasks-per-child=1",
-        "--prefetch-multiplier=1",
-        "-Q",
-        f"datachain-worker-main-{job_id}",
-    ]
-    print(f"Starting worker with command: {' '.join(worker_cmd)}")
-    workers.append(subprocess.Popen(worker_cmd, shell=False))  # noqa: S603
+    workers: list[subprocess.Popen] = []
+    queues: list[str] = []
     for i in range(2):
+        queue_name = f"udf-{uuid.uuid4()}"
         worker_cmd = [
             "celery",
             "-A",
@@ -920,10 +916,16 @@ def run_datachain_worker(datachain_job_id):
             "--max-tasks-per-child=1",
             "--prefetch-multiplier=1",
             "-Q",
-            "udf_runner_queue",
+            queue_name,
         ]
+        queues.append(queue_name)
         print(f"Starting worker with command: {' '.join(worker_cmd)}")
-        workers.append(subprocess.Popen(worker_cmd, shell=False))  # noqa: S603
+        worker_proc = subprocess.Popen(  # noqa: S603
+            worker_cmd,
+            env=os.environ,
+            shell=False,
+        )
+        workers.append(worker_proc)
     try:
         from datachain_worker.utils.celery import celery_app
 
@@ -937,6 +939,9 @@ def run_datachain_worker(datachain_job_id):
 
         if attempts == 10:
             raise RuntimeError("Celery worker(s) did not start in time")
+
+        monkeypatch.setenv("DATACHAIN_STEP_ID", "1")
+        monkeypatch.setenv("UDF_RUNNER_QUEUE_NAME_LIST", ",".join(queues))
 
         yield workers
     finally:
