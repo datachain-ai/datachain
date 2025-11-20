@@ -834,7 +834,7 @@ class DatasetListRecord:
         from datachain.client import Client
 
         # TODO refactor and maybe remove method in
-        # https://github.com/iterative/datachain/issues/318
+        # https://github.com/datachain-ai/datachain/issues/318
         return Client.is_data_source_uri(self.name) or self.name.startswith(
             LISTING_PREFIX
         )

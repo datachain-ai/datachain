@@ -373,7 +373,7 @@ def test_file_resolve_no_catalog():
 
 
 def test_file_resolve_sets_catalog(tmp_path, catalog):
-    # https://github.com/iterative/datachain/pull/1393
+    # https://github.com/datachain-ai/datachain/pull/1393
     file_name = "myfile"
     file_path = tmp_path / file_name
     file_path.write_text("this is a TexT data...")

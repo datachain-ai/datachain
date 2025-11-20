@@ -139,8 +139,8 @@ examples = [
 
 [project.urls]
 Documentation = "https://datachain.dvc.ai"
-Issues = "https://github.com/iterative/datachain/issues"
-Source = "https://github.com/iterative/datachain"
+Issues = "https://github.com/datachain-ai/datachain/issues"
+Source = "https://github.com/datachain-ai/datachain"
 
 [project.scripts]
 datachain = "datachain.cli:main"
