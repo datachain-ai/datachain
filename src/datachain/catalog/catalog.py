@@ -785,6 +785,7 @@ class Catalog:
         *,
         columns: Sequence[Column],
         feature_schema: dict | None = None,
+        flat_schema: dict | None = None,
         query_script: str = "",
         create_rows: bool | None = True,
         validate_version: bool | None = True,
@@ -833,15 +834,17 @@ class Catalog:
                 )
 
         except DatasetNotFoundError:
+            """
             schema = {
                 c.name: c.type.to_dict() for c in columns if isinstance(c.type, SQLType)
             }
+            """
             dataset = self.metastore.create_dataset(
                 name,
                 project.id if project else None,
                 feature_schema=feature_schema,
                 query_script=query_script,
-                schema=schema,
+                schema=flat_schema,
                 ignore_if_exists=True,
                 description=description,
                 attrs=attrs,

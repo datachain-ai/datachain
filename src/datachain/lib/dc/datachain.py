@@ -60,6 +60,7 @@ from datachain.query.dataset import (
 )
 from datachain.query.schema import DEFAULT_DELIMITER, Column
 from datachain.sql.functions import path as pathfunc
+from datachain.sql.types import SQLType
 from datachain.utils import batched_it, env2bool, inside_notebook, row_to_nested_dict
 
 from .database import DEFAULT_DATABASE_BATCH_SIZE
@@ -647,6 +648,13 @@ class DataChain:
 
         # Schema preparation
         schema = self.signals_schema.clone_without_sys_signals().serialize()
+        flat_schema = {
+            c.name: c.type.to_dict()  # type: ignore[union-attr]
+            for c in self.signals_schema.clone_with_sys_signals().db_signals(
+                as_columns=True
+            )
+            if isinstance(c.type, SQLType)  # type: ignore[union-attr]
+        }
 
         # Handle retry and delta functionality
         if not result:
@@ -662,6 +670,7 @@ class DataChain:
                     description=description,
                     attrs=attrs,
                     feature_schema=schema,
+                    flat_schema=flat_schema,
                     update_version=update_version,
                     job_id=job.id,
                     **kwargs,

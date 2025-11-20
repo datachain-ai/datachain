@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field, ValidationError, create_model
 from sqlalchemy import ColumnElement
 from typing_extensions import Literal as LiteralEx
 
+from datachain.data_storage.schema import DataTable
 from datachain.func import literal
 from datachain.func.func import Func
 from datachain.lib.convert.python_to_sql import python_to_sql
@@ -912,6 +913,11 @@ class SignalSchema:
         schema = copy.deepcopy(self.values)
         schema.pop("sys", None)
         return SignalSchema(schema)
+
+    def clone_with_sys_signals(self) -> "SignalSchema":
+        sys_cols = {c.name: c.type for c in DataTable.sys_columns()}
+        sys_schema = SignalSchema.from_column_types(sys_cols)
+        return sys_schema.merge(self.clone_without_sys_signals(), "")
 
     def merge(
         self,
