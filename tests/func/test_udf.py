@@ -12,8 +12,8 @@ import pytest
 import datachain as dc
 from datachain.func import path as pathfunc
 from datachain.lib.file import AudioFile, AudioFragment, File
-from datachain.lib.udf import Mapper
-from datachain.lib.utils import DataChainColumnError, DataChainError
+from datachain.lib.udf import Mapper, UdfRunError
+from datachain.lib.utils import DataChainColumnError
 from tests.utils import LARGE_TREE, NUM_TREE
 
 
@@ -713,7 +713,7 @@ def test_udf_reuse_on_error(cloud_test_catalog_tmpfile):
         .select("file.path", "path_len")
     )
 
-    with pytest.raises(DataChainError, match="Test Error!"):
+    with pytest.raises(RuntimeError, match="Test Error!"):
         chain.show()
 
     # Simulate fixing the error
@@ -802,8 +802,8 @@ def test_udf_distributed(
 ):
     session = cloud_test_catalog_tmpfile.session
 
-    def name_len(name):
-        return (len(name),)
+    def name_len(name: str) -> int:
+        return len(name)
 
     chain = (
         dc.read_storage(cloud_test_catalog_tmpfile.src_uri, session=session)
@@ -849,7 +849,7 @@ def test_udf_distributed_exec_error(
         .settings(parallel=parallel, workers=workers)
         .map(name_len_error, params=["file.path"], output={"name_len": int})
     )
-    with pytest.raises(DataChainError, match="Test Error!"):
+    with pytest.raises(UdfRunError, match="Test Error!"):
         chain.show()
 
 
