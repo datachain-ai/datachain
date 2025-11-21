@@ -834,7 +834,7 @@ class UDFStep(Step, ABC):
         if ch_partial := self.metastore.find_checkpoint(
             self.job.id, partial_hash, partial=True
         ):
-            self.metastore.remove_checkpoint(ch_partial)
+            self.metastore.remove_checkpoint(ch_partial.id)
 
         # Create final checkpoint for current job
         self.metastore.get_or_create_checkpoint(self.job.id, hash_output)

@@ -494,10 +494,8 @@ class AbstractMetastore(ABC, Serializable):
         """Creates new checkpoint"""
 
     @abstractmethod
-    def remove_checkpoint(
-        self, checkpoint: Checkpoint, conn: Any | None = None
-    ) -> None:
-        """Removes a checkpoint by checkpoint object"""
+    def remove_checkpoint(self, checkpoint_id: str, conn: Any | None = None) -> None:
+        """Removes a checkpoint by ID"""
 
 
 class AbstractDBMetastore(AbstractMetastore):
@@ -1989,12 +1987,9 @@ class AbstractDBMetastore(AbstractMetastore):
             return None
         return self.checkpoint_class.parse(*rows[0])
 
-    def remove_checkpoint(
-        self, checkpoint: Checkpoint, conn: Any | None = None
-    ) -> None:
-        """Removes a checkpoint by checkpoint object"""
-        ch = self._checkpoints
+    def remove_checkpoint(self, checkpoint_id: str, conn: Any | None = None) -> None:
+        """Removes a checkpoint by ID"""
         self.db.execute(
-            self._checkpoints_delete().where(ch.c.id == checkpoint.id),
+            self._checkpoints_delete().where(self._checkpoints.c.id == checkpoint_id),
             conn=conn,
         )
