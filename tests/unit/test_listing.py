@@ -58,7 +58,7 @@ def listing(test_session):
 
 
 def test_get_listing_returns_exact_math_on_update(test_session):
-    # Context: https://github.com/iterative/datachain/pull/726
+    # Context: https://github.com/datachain-ai/datachain/pull/726
     # On update it should be returning the exact match (not a "bigger" one)
     catalog = test_session.catalog
     listing_namespace_name = catalog.metastore.system_namespace_name

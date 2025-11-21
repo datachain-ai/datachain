@@ -1128,7 +1128,8 @@ class DataChain:
             the order of the records in the chain is important.
             Using `order_by` directly before `limit`, `to_list` and similar methods
             will give expected results.
-            See https://github.com/iterative/datachain/issues/477 for further details.
+            See https://github.com/datachain-ai/datachain/issues/477
+            for further details.
         """
         if descending:
             args = tuple(sqlalchemy.desc(a) for a in args)

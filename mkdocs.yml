@@ -2,8 +2,8 @@ site_name: 'DataChain'
 site_url: https://docs.datachain.ai
 site_description: Wrangle unstructured AI data at scale
 
-repo_url: "https://github.com/iterative/datachain"
-repo_name: "iterative/datachain"
+repo_url: "https://github.com/datachain-ai/datachain"
+repo_name: "datachain-ai/datachain"
 edit_uri: edit/main/docs/
 
 strict: true
@@ -214,7 +214,7 @@ extra_css:
 extra:
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/iterative/datachain
+      link: https://github.com/datachain-ai/datachain
     - icon: fontawesome/brands/twitter
       link: https://twitter.com/DVCorg
     - icon: fontawesome/brands/linkedin
