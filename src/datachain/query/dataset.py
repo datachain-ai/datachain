@@ -661,7 +661,7 @@ class UDFStep(Step, ABC):
         ]
 
         # create table with partitions
-        tbl, _ = catalog.warehouse.create_udf_table(partition_columns())
+        tbl = catalog.warehouse.create_udf_table(partition_columns())
 
         # fill table with partitions
         cols = [
@@ -1061,8 +1061,7 @@ class UDFSignal(UDFStep):
                 sa.Column("sys__input_id", sa.Integer, nullable=True)
             )
 
-        table, _ = self.warehouse.create_udf_table(udf_output_columns, name=name)
-        return table
+        return self.warehouse.create_udf_table(udf_output_columns, name=name)
 
     def create_result_query(
         self, udf_table, query

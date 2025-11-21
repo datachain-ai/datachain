@@ -333,12 +333,11 @@ class SQLiteDatabaseEngine(DatabaseEngine):
         if_not_exists: bool = True,
         *,
         kind: str | None = None,
-    ) -> bool:
-        """Create table and return True if created, False if already existed."""
-        table_existed = self.has_table(table.name)
-        if not table_existed or not if_not_exists:
-            self.execute(CreateTable(table, if_not_exists=if_not_exists))
-        return not table_existed
+    ) -> None:
+        """
+        Create table. Does nothing if table already exists when if_not_exists=True.
+        """
+        self.execute(CreateTable(table, if_not_exists=if_not_exists))
 
     def drop_table(self, table: "Table", if_exists: bool = False) -> None:
         self.execute(DropTable(table, if_exists=if_exists))
@@ -873,16 +872,14 @@ class SQLiteWarehouse(AbstractWarehouse):
     def create_pre_udf_table(self, query: "Select", name: str) -> "Table":
         """
         Create a temporary table from a query for use in a UDF.
-        If table already exists (shared tables), skip population and just return it.
+        Populates the table from the query.
         """
         columns = [sqlalchemy.Column(c.name, c.type) for c in query.selected_columns]
 
-        table, created = self.create_udf_table(columns, name=name)
+        table = self.create_udf_table(columns, name=name)
 
-        # Only populate if table was just created (not if it already existed) to
-        # avoid inserting duplicates
-        if created:
-            with tqdm(desc="Preparing", unit=" rows", leave=False) as pbar:
-                self.copy_table(table, query, progress_cb=pbar.update)
+        # Populate table from query
+        with tqdm(desc="Preparing", unit=" rows", leave=False) as pbar:
+            self.copy_table(table, query, progress_cb=pbar.update)
 
         return table

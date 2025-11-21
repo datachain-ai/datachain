@@ -135,8 +135,10 @@ class DatabaseEngine(ABC, Serializable):
         if_not_exists: bool = True,
         *,
         kind: str | None = None,
-    ) -> bool:
-        """Create table and return True if created, False if already existed."""
+    ) -> None:
+        """
+        Create table. Does nothing if table already exists when if_not_exists=True.
+        """
         ...
 
     @abstractmethod
