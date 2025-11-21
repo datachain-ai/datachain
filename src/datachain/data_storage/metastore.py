@@ -1988,7 +1988,6 @@ class AbstractDBMetastore(AbstractMetastore):
         return self.checkpoint_class.parse(*rows[0])
 
     def remove_checkpoint(self, checkpoint_id: str, conn: Any | None = None) -> None:
-        """Removes a checkpoint by ID"""
         self.db.execute(
             self._checkpoints_delete().where(self._checkpoints.c.id == checkpoint_id),
             conn=conn,
