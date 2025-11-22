@@ -84,10 +84,9 @@ jobs:
             backend/datachain/pyproject.toml
 
       - name: Update DataChain requirement in Studio
-        env:
-          DATACHAIN_BRANCH: ${{ env.BRANCH }}
+        if: ${{ env.BRANCH != 'main' }}
         working-directory: backend
-        run: make update_datachain_deps "$DATACHAIN_BRANCH"
+        run: make update_datachain_deps "$BRANCH"
 
       - name: Check out repository
         uses: actions/checkout@v5
