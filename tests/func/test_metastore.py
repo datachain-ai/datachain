@@ -945,3 +945,41 @@ def test_get_ancestor_job_ids(metastore, depth):
 
     assert ancestors == expected_ancestors
     assert len(ancestors) == depth
+
+
+@pytest.mark.parametrize("depth", [0, 1, 2, 3, 5])
+def test_get_descendant_job_ids(metastore, depth):
+    """Test get_descendant_job_ids with different hierarchy depths."""
+    # Create a chain of jobs with parent relationships
+    # depth=0: single job with no children
+    # depth=1: root -> child
+    # depth=2: root -> child -> grandchild
+    # etc.
+
+    job_ids = []
+    parent_id = None
+
+    # Create jobs from root to leaf
+    for i in range(depth + 1):
+        job_id = metastore.create_job(
+            name=f"job_{i}",
+            query=f"SELECT {i}",
+            query_type=JobQueryType.PYTHON,
+            status=JobStatus.CREATED,
+            workers=1,
+            parent_job_id=parent_id,
+        )
+        job_ids.append(job_id)
+        parent_id = job_id
+
+    # The first job is the root (oldest)
+    root_job_id = job_ids[0]
+
+    # Get descendants of the root job
+    descendants = metastore.get_descendant_job_ids(root_job_id)
+
+    # Should return all descendants except the root itself
+    expected_descendants = job_ids[1:]
+
+    assert set(descendants) == set(expected_descendants)
+    assert len(descendants) == depth

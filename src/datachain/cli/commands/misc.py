@@ -18,6 +18,9 @@ def garbage_collect(catalog: "Catalog"):
     else:
         print("No temporary tables to clean up.")
 
+    print("Cleaning up outdated checkpoints.")
+    catalog.cleanup_checkpoints()
+
 
 def completion(shell: str) -> str:
     from datachain.cli import get_parser
