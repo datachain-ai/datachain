@@ -80,12 +80,19 @@ class DatabaseEngine(ABC, Serializable):
     ) -> Iterator[tuple[Any, ...]]: ...
 
     def get_table(self, name: str) -> "Table":
+        from datachain.error import TableMissingError
+
         table = self.metadata.tables.get(name)
         if table is None:
-            sa.Table(name, self.metadata, autoload_with=self.engine)
-            # ^^^ This table may not be correctly initialised on some dialects
-            # Grab it from metadata instead.
-            table = self.metadata.tables[name]
+            try:
+                sa.Table(name, self.metadata, autoload_with=self.engine)
+                # ^^^ This table may not be correctly initialised on some dialects
+                # Grab it from metadata instead.
+                table = self.metadata.tables.get(name)
+                if table is None:
+                    raise TableMissingError(f"Table '{name}' not found")
+            except sa.exc.NoSuchTableError as e:
+                raise TableMissingError(f"Table '{name}' not found") from e
         return table
 
     @abstractmethod
@@ -111,6 +118,16 @@ class DatabaseEngine(ABC, Serializable):
         """
         return sa.inspect(self.engine).has_table(name)
 
+    def list_tables(self, prefix: str = "") -> list[str]:
+        """
+        Return a list of table names that start with the given prefix.
+        If no prefix is provided, returns all table names.
+        """
+        all_tables = sa.inspect(self.engine).get_table_names()
+        if not prefix:
+            return all_tables
+        return [table for table in all_tables if table.startswith(prefix)]
+
     @abstractmethod
     def create_table(
         self,
@@ -118,7 +135,11 @@ class DatabaseEngine(ABC, Serializable):
         if_not_exists: bool = True,
         *,
         kind: str | None = None,
-    ) -> None: ...
+    ) -> None:
+        """
+        Create table. Does nothing if table already exists when if_not_exists=True.
+        """
+        ...
 
     @abstractmethod
     def drop_table(self, table: "Table", if_exists: bool = False) -> None: ...

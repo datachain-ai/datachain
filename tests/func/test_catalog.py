@@ -645,12 +645,12 @@ def test_enlist_source_handles_file(cloud_test_catalog):
 
 
 @pytest.mark.parametrize("from_cli", [False, True])
-def test_garbage_collect(cloud_test_catalog, from_cli, capsys):
+def test_garbage_collect_temp_tables(cloud_test_catalog, from_cli, capsys):
     catalog = cloud_test_catalog.catalog
     assert catalog.get_temp_table_names() == []
     temp_tables = [
         "tmp_vc12F",
-        "udf_jh653",
+        "tmp_jh653",
     ]
     for t in temp_tables:
         catalog.warehouse.create_udf_table(name=t)
@@ -658,7 +658,7 @@ def test_garbage_collect(cloud_test_catalog, from_cli, capsys):
     if from_cli:
         garbage_collect(catalog)
         captured = capsys.readouterr()
-        assert captured.out == "Garbage collecting 2 tables.\n"
+        assert captured.out == "Garbage collecting 2 temporary tables.\n"
     else:
         catalog.cleanup_tables(temp_tables)
     assert catalog.get_temp_table_names() == []

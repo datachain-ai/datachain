@@ -158,7 +158,7 @@ E2E_STEPS = (
     },
     {
         "command": ("datachain", "gc"),
-        "expected": "Nothing to clean up.\n",
+        "expected": ("No temporary tables to clean up.\n"),
     },
 )
 

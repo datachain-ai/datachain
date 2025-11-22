@@ -370,3 +370,27 @@ def test_lambda_different_hashes():
 
     # Ensure hashes are all different
     assert len({h1, h2, h3}) == 3
+
+
+def test_hash_callable_objects():
+    """Test hashing of callable objects (instances with __call__)."""
+
+    class MyCallable:
+        def __call__(self, x):
+            return x * 2
+
+    class AnotherCallable:
+        def __call__(self, y):
+            return y + 1
+
+    obj1 = MyCallable()
+    obj2 = AnotherCallable()
+
+    assert (
+        hash_callable(obj1)
+        == "41dd7a38058975b10d5604beb5b60041e5b9d7de0f85c2364c11c3907b4ee9fc"
+    )
+    assert (
+        hash_callable(obj2)
+        == "7ae5ff45f5acd08e75373bb332b99a8c30d931645c98d18b5bef16ad638a205e"
+    )

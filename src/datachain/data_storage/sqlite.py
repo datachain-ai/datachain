@@ -68,7 +68,7 @@ quote_schema = sqlite_dialect.identifier_preparer.quote_schema
 quote = sqlite_dialect.identifier_preparer.quote
 
 # NOTE! This should be manually increased when we change our DB schema in codebase
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 OUTDATED_SCHEMA_ERROR_MESSAGE = (
     "You have an old version of the database schema. Please refer to the documentation"
@@ -334,15 +334,29 @@ class SQLiteDatabaseEngine(DatabaseEngine):
         *,
         kind: str | None = None,
     ) -> None:
+        """
+        Create table. Does nothing if table already exists when if_not_exists=True.
+        """
         self.execute(CreateTable(table, if_not_exists=if_not_exists))
 
     def drop_table(self, table: "Table", if_exists: bool = False) -> None:
         self.execute(DropTable(table, if_exists=if_exists))
+        # Remove the table from metadata to avoid stale references
+        if table.name in self.metadata.tables:
+            self.metadata.remove(table)
 
     def rename_table(self, old_name: str, new_name: str):
         comp_old_name = quote_schema(old_name)
         comp_new_name = quote_schema(new_name)
-        self.execute_str(f"ALTER TABLE {comp_old_name} RENAME TO {comp_new_name}")
+        try:
+            self.execute_str(f"ALTER TABLE {comp_old_name} RENAME TO {comp_new_name}")
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to rename table from '{old_name}' to '{new_name}': {e}"
+            ) from e
+        # Remove old table from metadata to avoid stale references
+        if old_name in self.metadata.tables:
+            self.metadata.remove(self.metadata.tables[old_name])
 
 
 class SQLiteMetastore(AbstractDBMetastore):
@@ -676,6 +690,10 @@ class SQLiteWarehouse(AbstractWarehouse):
         columns: Sequence["sqlalchemy.Column"] = (),
         if_not_exists: bool = True,
     ) -> Table:
+        # Return existing table if it exists (and caller allows it)
+        if if_not_exists and self.db.has_table(name):
+            return self.db.get_table(name)
+
         table = self.schema.dataset_row_cls.new_table(
             name,
             columns=columns,
@@ -851,13 +869,16 @@ class SQLiteWarehouse(AbstractWarehouse):
     def _system_random_expr(self):
         return self._system_row_number_expr() * 1103515245 + 12345
 
-    def create_pre_udf_table(self, query: "Select") -> "Table":
+    def create_pre_udf_table(self, query: "Select", name: str) -> "Table":
         """
         Create a temporary table from a query for use in a UDF.
+        Populates the table from the query.
         """
         columns = [sqlalchemy.Column(c.name, c.type) for c in query.selected_columns]
-        table = self.create_udf_table(columns)
 
+        table = self.create_udf_table(columns, name=name)
+
+        # Populate table from query
         with tqdm(desc="Preparing", unit=" rows", leave=False) as pbar:
             self.copy_table(table, query, progress_cb=pbar.update)
 
