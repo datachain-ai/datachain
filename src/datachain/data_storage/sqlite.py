@@ -872,14 +872,20 @@ class SQLiteWarehouse(AbstractWarehouse):
     def create_pre_udf_table(self, query: "Select", name: str) -> "Table":
         """
         Create a temporary table from a query for use in a UDF.
-        Populates the table from the query.
+        Populates the table from the query, using a staging pattern for atomicity.
+
+        This ensures that if the process crashes during population, the next run
+        won't find a partially-populated table and incorrectly reuse it.
         """
+        staging_name = f"{name}_staging"
+
+        # Create staging table
         columns = [sqlalchemy.Column(c.name, c.type) for c in query.selected_columns]
+        staging_table = self.create_udf_table(columns, name=staging_name)
 
-        table = self.create_udf_table(columns, name=name)
-
-        # Populate table from query
+        # Populate staging table
         with tqdm(desc="Preparing", unit=" rows", leave=False) as pbar:
-            self.copy_table(table, query, progress_cb=pbar.update)
+            self.copy_table(staging_table, query, progress_cb=pbar.update)
 
-        return table
+        # Atomically rename staging → final and return the renamed table
+        return self.rename_table(staging_table, name)
