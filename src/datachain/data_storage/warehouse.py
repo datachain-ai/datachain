@@ -10,9 +10,9 @@ from urllib.parse import urlparse
 
 import attrs
 import sqlalchemy as sa
-import ujson as json
 from sqlalchemy.sql.expression import true
 
+from datachain import json
 from datachain.client import Client
 from datachain.data_storage.schema import convert_rows_custom_column_types
 from datachain.data_storage.serializer import Serializable

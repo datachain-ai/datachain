@@ -69,17 +69,6 @@ jobs:
           ref: ${{ env.STUDIO_BRANCH }}
           token: ${{ secrets.ITERATIVE_STUDIO_READ_ACCESS_TOKEN }}
 
-      - name: Check out repository
-        uses: actions/checkout@v5
-        with:
-          path: './backend/datachain'
-          fetch-depth: 0
-
-      - name: Install FFmpeg
-        run: |
-          sudo apt update
-          sudo apt install -y ffmpeg
-
       - name: Set up Python ${{ matrix.pyv }}
         uses: actions/setup-python@v6
         with:
@@ -93,6 +82,22 @@ jobs:
           cache-dependency-glob: |
             backend/datachain_server/pyproject.toml
             backend/datachain/pyproject.toml
+
+      - name: Update DataChain requirement in Studio
+        if: ${{ env.BRANCH != 'main' }}
+        working-directory: backend
+        run: make update_datachain_deps "${{ env.BRANCH }}"
+
+      - name: Check out repository
+        uses: actions/checkout@v5
+        with:
+          path: './backend/datachain'
+          fetch-depth: 0
+
+      - name: Install FFmpeg
+        run: |
+          sudo apt update
+          sudo apt install -y ffmpeg
 
       - name: Install dependencies
         run: uv pip install --system ./backend/datachain_server[tests] ./backend/datachain[tests]

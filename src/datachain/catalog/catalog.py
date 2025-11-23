@@ -1,5 +1,4 @@
 import io
-import json
 import logging
 import os
 import os.path
@@ -21,6 +20,7 @@ import sqlalchemy as sa
 from sqlalchemy import Column
 from tqdm.auto import tqdm
 
+from datachain import json
 from datachain.cache import Cache
 from datachain.client import Client
 from datachain.dataset import (

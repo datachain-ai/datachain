@@ -62,7 +62,7 @@ preview = [
     {"sys__id": 2, "signal_name": "bar"},
     {"sys__id": 3, "signal_name": "baz"},
 ]
-preview_json = json.dumps(preview)
+preview_json = json.dumps(preview, separators=(",", ":"))
 
 
 def test_create_dataset(metastore):

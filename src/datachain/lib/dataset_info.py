@@ -1,10 +1,10 @@
-import json
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from pydantic import Field, field_validator
 
+from datachain import json
 from datachain.dataset import (
     DEFAULT_DATASET_VERSION,
     DatasetListRecord,

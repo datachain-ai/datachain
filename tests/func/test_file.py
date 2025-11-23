@@ -1,10 +1,8 @@
 import io
 
 import pytest
-import pytz
 
 import datachain as dc
-from datachain.data_storage.sqlite import SQLiteWarehouse
 from datachain.lib.file import File, FileError
 from datachain.query import C
 from datachain.utils import TIME_ZERO
@@ -21,8 +19,6 @@ def test_get_path_cloud(cloud_test_catalog):
 def test_resolve_file(cloud_test_catalog, caching_enabled):
     ctc = cloud_test_catalog
 
-    is_sqlite = isinstance(cloud_test_catalog.catalog.warehouse, SQLiteWarehouse)
-
     chain = dc.read_storage(ctc.src_uri, session=ctc.session)
     for orig_file in chain.to_values("file"):
         file = File(
@@ -31,10 +27,6 @@ def test_resolve_file(cloud_test_catalog, caching_enabled):
         )
         file._set_stream(catalog=ctc.catalog, caching_enabled=caching_enabled)
         resolved_file = file.resolve()
-        if not is_sqlite:
-            resolved_file.last_modified = resolved_file.last_modified.replace(
-                microsecond=0, tzinfo=pytz.UTC
-            )
         assert orig_file == resolved_file
 
         file.ensure_cached()
