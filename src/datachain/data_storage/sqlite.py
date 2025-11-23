@@ -338,6 +338,9 @@ class SQLiteDatabaseEngine(DatabaseEngine):
 
     def drop_table(self, table: "Table", if_exists: bool = False) -> None:
         self.execute(DropTable(table, if_exists=if_exists))
+        # Remove the table from metadata to avoid stale references
+        if table.name in self.metadata.tables:
+            self.metadata.remove(self.metadata.tables[table.name])
 
     def rename_table(self, old_name: str, new_name: str):
         comp_old_name = quote_schema(old_name)
