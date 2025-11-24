@@ -214,16 +214,15 @@ For `.agg()`, checkpoints are only created upon successful completion, without i
 ### Example: Fixing a Bug Mid-Execution
 
 ```python
-from datachain import File
 
 def process_image(file: File) -> int:
     # Bug: this will fail on some images
     img = Image.open(file.get_local_path())
     return img.size[0]
 
-result = (
+(
     dc.read_dataset("images")
-    .map(width=process_image, output=int)
+    .map(width=process_image)
     .save("image_dimensions")
 )
 ```
@@ -252,18 +251,18 @@ DataChain distinguishes between two types of UDF changes:
 
 #### 1. Code-Only Changes (Bug Fixes) - Continues from Partial Results
 
-When you fix a bug in your UDF code **without changing the output schema**, DataChain allows you to continue from where the UDF failed. This is the key benefit of UDF-level checkpoints - you don't lose progress when fixing bugs.
+When you fix a bug in your UDF code **without changing the output type**, DataChain allows you to continue from where the UDF failed. This is the key benefit of UDF-level checkpoints - you don't lose progress when fixing bugs.
 
-**Example: Bug fix without schema change**
+**Example: Bug fix without output change**
 ```python
 # First run - fails partway through
-def process(num) -> int:
+def process(num: int) -> int:
     if num > 100:
         raise Exception("Bug!")  # Oops, a bug!
     return num * 10
 
 # Second run - continues from where it failed
-def process(num) -> int:
+def process(num: int) -> int:
     return num * 10  # Bug fixed! ✓ Continues from partial results
 ```
 
@@ -271,28 +270,28 @@ In this case, DataChain will skip already-processed rows and continue processing
 
 #### 2. Output Schema Changes - Forces Re-run from Scratch
 
-When you change the **output type or schema** of your UDF, DataChain automatically detects this and reruns the entire UDF from scratch. This prevents schema mismatches that would cause errors or corrupt data.
+When you change the **output type** of your UDF, DataChain automatically detects this and reruns the entire UDF from scratch. This prevents schema mismatches that would cause errors or corrupt data.
 
-**Example: Schema change**
+**Example: Output change**
 ```python
 # First run - fails partway through
-def process(num) -> int:
+def process(num: int) -> int:
     if num > 100:
         raise Exception("Bug!")
     return num * 10
 
 # Second run - output type changed
-def process(num) -> str:
+def process(num: int) -> str:
     return f"value_{num * 10}"  # Output type changed! ✗ Reruns from scratch
 ```
 
-In this case, DataChain detects that the output changed from `int` to `str` and discards partial results to avoid schema incompatibility. All rows will be reprocessed with the new output schema.
+In this case, DataChain detects that the output changed from `int` to `str` and discards partial results to avoid schema incompatibility. All rows will be reprocessed with the new output.
 
 #### Changes That Invalidate In-Progress UDF Checkpoints
 
 Partial results are automatically discarded when you change:
 
-- **Output type or schema** - Changes to the `output` parameter or return type annotations
+- **Output type** - Changes to the `output` parameter or return type annotations
 - **Operations before the UDF** - Any changes to the data processing chain before the UDF
 
 #### Changes That Invalidate Completed UDF Checkpoints
@@ -305,7 +304,7 @@ Changes that invalidate completed UDF checkpoints:
 - **Changing function parameters or output types** - Changes to input/output specifications
 - **Altering any operations before the UDF in the chain** - Changes to upstream data processing
 
-**Key takeaway:** For in-progress (partial) UDFs, you can fix bugs freely as long as the output schema stays the same. For completed UDFs, any code change triggers a full recomputation.
+**Key takeaway:** For in-progress (partial) UDFs, you can fix bugs freely as long as the output stays the same. For completed UDFs, any code change triggers a full recomputation.
 
 ### Forcing UDF to Start from Scratch
 
