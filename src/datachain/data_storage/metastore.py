@@ -424,10 +424,7 @@ class AbstractMetastore(ABC, Serializable):
 
     @abstractmethod
     def get_ancestor_job_ids(self, job_id: str, conn=None) -> list[str]:
-        """
-        Returns list of ancestor job IDs in order from parent to root.
-        Uses recursive CTE to get all ancestors in a single query.
-        """
+        """Returns list of ancestor job IDs in order from parent to root."""
 
     @abstractmethod
     def update_job(
@@ -490,7 +487,11 @@ class AbstractMetastore(ABC, Serializable):
         partial: bool = False,
         conn: Any | None = None,
     ) -> Checkpoint:
-        """Creates new checkpoint"""
+        """
+        Creates a new checkpoint or returns existing one if already exists.
+        This is idempotent - calling it multiple times with the same job_id and hash
+        will not create duplicates.
+        """
 
     @abstractmethod
     def remove_checkpoint(self, checkpoint_id: str, conn: Any | None = None) -> None:
@@ -1918,11 +1919,6 @@ class AbstractDBMetastore(AbstractMetastore):
         partial: bool = False,
         conn: Any | None = None,
     ) -> Checkpoint:
-        """
-        Creates a new checkpoint or returns existing one if already exists.
-        This is idempotent - calling it multiple times with the same job_id and hash
-        will not create duplicates.
-        """
         query = self._checkpoints_insert().values(
             id=str(uuid4()),
             job_id=job_id,
