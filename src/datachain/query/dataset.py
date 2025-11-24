@@ -773,14 +773,11 @@ class UDFStep(Step, ABC):
         query_generator: QueryGenerator,
         temp_tables: list[str],
         *args,
+        hash_input: str,
+        hash_output: str,
         **kwargs,
     ) -> "StepResult":
         _query = query = query_generator.select()
-
-        hash_input: str | None = kwargs.get("hash_input")
-        hash_output: str | None = kwargs.get("hash_output")
-        assert hash_input
-        assert hash_output
 
         # Calculate partial hash that includes output schema
         # This allows continuing from partial when only code changes (bug fix),
