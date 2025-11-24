@@ -12,11 +12,11 @@ def clear_cache(catalog: "Catalog"):
 
 def garbage_collect(catalog: "Catalog"):
     temp_tables = catalog.get_temp_table_names()
-    if temp_tables:
+    if not temp_tables:
+        print("Nothing to clean up.")
+    else:
         print(f"Garbage collecting {len(temp_tables)} tables.")
         catalog.cleanup_tables(temp_tables)
-    else:
-        print("Nothing to clean up.")
 
 
 def completion(shell: str) -> str:
