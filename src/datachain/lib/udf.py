@@ -315,14 +315,14 @@ class UDFBase(AbstractUDF):
                 if isinstance(field_value, DataModel):
                     self._set_stream_recursive(field_value, catalog, cache, download_cb)
 
-    def _prepare_row(self, row, udf_fields, catalog, cache, download_cb):
-        row_dict = RowDict(zip(udf_fields, row, strict=False))
-        return self._parse_row(row_dict, catalog, cache, download_cb)
-
-    def _prepare_row_and_id(self, row, udf_fields, catalog, cache, download_cb):
+    def _prepare_row(
+        self, row, udf_fields, catalog, cache, download_cb, include_id=False
+    ):
         row_dict = RowDict(zip(udf_fields, row, strict=False))
         udf_input = self._parse_row(row_dict, catalog, cache, download_cb)
-        return row_dict["sys__id"], *udf_input
+        if include_id:
+            return row_dict["sys__id"], *udf_input
+        return udf_input
 
     def process_safe(self, obj_rows):
         try:
@@ -422,8 +422,8 @@ class Mapper(UDFBase):
         def _prepare_rows(udf_inputs) -> "abc.Generator[Sequence[Any], None, None]":
             with safe_closing(udf_inputs):
                 for row in udf_inputs:
-                    yield self._prepare_row_and_id(
-                        row, udf_fields, catalog, cache, download_cb
+                    yield self._prepare_row(
+                        row, udf_fields, catalog, cache, download_cb, include_id=True
                     )
 
         prepared_inputs = _prepare_rows(udf_inputs)
@@ -485,8 +485,8 @@ class BatchMapper(UDFBase):
             n_rows = len(batch)
             row_ids, *udf_args = zip(
                 *[
-                    self._prepare_row_and_id(
-                        row, udf_fields, catalog, cache, download_cb
+                    self._prepare_row(
+                        row, udf_fields, catalog, cache, download_cb, include_id=True
                     )
                     for row in batch
                 ],
@@ -529,8 +529,8 @@ class Generator(UDFBase):
         def _prepare_rows(udf_inputs) -> "abc.Generator[Sequence[Any], None, None]":
             with safe_closing(udf_inputs):
                 for row in udf_inputs:
-                    yield self._prepare_row_and_id(
-                        row, udf_fields, catalog, cache, download_cb
+                    yield self._prepare_row(
+                        row, udf_fields, catalog, cache, download_cb, include_id=True
                     )
 
         # Prepare and prefetch inputs (ID is included and harmlessly skipped by
