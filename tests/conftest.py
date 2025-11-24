@@ -215,15 +215,11 @@ def cleanup_udf_tables(warehouse):
     UDF tables are shared across jobs and persist after chain finishes,
     so we need to clean them up after each test to prevent interference.
     """
-    from datachain.data_storage.sqlite import quote_schema
     from tests.utils import list_tables
 
     for table_name in list_tables(warehouse.db, prefix=warehouse.UDF_TABLE_NAME_PREFIX):
-        quoted_name = quote_schema(table_name)
-        warehouse.db.execute_str(f"DROP TABLE IF EXISTS {quoted_name}")
-        # Remove from metadata to avoid stale references
-        if table_name in warehouse.db.metadata.tables:
-            warehouse.db.metadata.remove(warehouse.db.metadata.tables[table_name])
+        table = warehouse.db.get_table(table_name)
+        warehouse.db.drop_table(table, if_exists=True)
 
 
 @pytest.fixture
