@@ -985,8 +985,8 @@ class UDFStep(Step, ABC):
             partial_table: The UDF partial table
 
         Returns:
-            A subquery with a single column labeled 'sys_id' containing processed
-            input IDs
+            A subquery with a single column labeled 'sys__processed_id' containing
+            processed input IDs
         """
 
     def calculate_unprocessed_rows(
@@ -1013,7 +1013,9 @@ class UDFStep(Step, ABC):
         # Use the sys__id column from the query's selected columns, not from input_table
         sys_id_col = original_query.selected_columns.sys__id
         return original_query.where(
-            sys_id_col.notin_(sa.select(processed_input_ids_subquery.c.sys_id))
+            sys_id_col.notin_(
+                sa.select(processed_input_ids_subquery.c.sys__processed_id)
+            )
         )
 
 
@@ -1037,7 +1039,7 @@ class UDFSignal(UDFStep):
         Since mappers have a 1:1 relationship between input and output,
         the sys__id in the partial table directly corresponds to input sys__ids.
         """
-        return sa.select(partial_table.c.sys__id.label("sys_id")).subquery()
+        return sa.select(partial_table.c.sys__id.label("sys__processed_id")).subquery()
 
     def create_output_table(self, name: str, is_partial: bool = False) -> "Table":
         udf_output_columns: list[sqlalchemy.Column[Any]] = [
@@ -1147,7 +1149,7 @@ class RowGenerator(UDFStep):
         we use sys__input_id which tracks which input created each output row.
         """
         return sa.select(
-            sa.distinct(partial_table.c.sys__input_id).label("sys_id")
+            sa.distinct(partial_table.c.sys__input_id).label("sys__processed_id")
         ).subquery()
 
     def create_output_table(self, name: str, is_partial: bool = False) -> "Table":
