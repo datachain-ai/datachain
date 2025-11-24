@@ -265,8 +265,6 @@ def get_partial_tables(test_session) -> tuple[Table, Table]:
     """Helper function that returns partial udf tables left when UDF fails.
 
     Returns input_table and partial_output_table.
-    Note: processed_table is no longer created - sys__input_id in partial_output_table
-    tracks which inputs have been processed.
     """
     catalog = test_session.catalog
     warehouse = catalog.warehouse
