@@ -877,22 +877,27 @@ def test_agg_tuple_result_generator(test_session):
     assert ds.order_by("x_1.size").to_values("x_1.size") == [5, 10]
 
 
+_batch_mapper_warn = pytest.mark.filterwarnings("ignore:BatchMapper is deprecated.*")
+
+
+@_batch_mapper_warn
 def test_batch_map(test_session):
     class _TestFr(BaseModel):
         sqrt: float
         my_name: str
 
-    chain = dc.read_values(t1=features, session=test_session).batch_map(
-        x=lambda m_frs: [
-            _TestFr(
-                sqrt=math.sqrt(m_fr.count),
-                my_name=m_fr.nnn + "_suf",
-            )
-            for m_fr in m_frs
-        ],
-        params="t1",
-        output={"x": _TestFr},
-    )
+    with pytest.deprecated_call(match=r"batch_map\(\) is deprecated"):
+        chain = dc.read_values(t1=features, session=test_session).batch_map(
+            x=lambda m_frs: [
+                _TestFr(
+                    sqrt=math.sqrt(m_fr.count),
+                    my_name=m_fr.nnn + "_suf",
+                )
+                for m_fr in m_frs
+            ],
+            params="t1",
+            output={"x": _TestFr},
+        )
 
     x_list = chain.order_by("x.my_name", "x.sqrt").to_values("x")
     test_frs = [
@@ -906,26 +911,29 @@ def test_batch_map(test_session):
         assert x.my_name == test_fr.my_name
 
 
+@_batch_mapper_warn
 def test_batch_map_wrong_size(test_session):
     class _TestFr(BaseModel):
         total: int
         names: str
 
-    chain = dc.read_values(t1=features, session=test_session).batch_map(
-        x=lambda m_frs: [
-            _TestFr(
-                total=sum(m_fr.count for m_fr in m_frs),
-                names="-".join([m_fr.nnn for m_fr in m_frs]),
-            )
-        ],
-        params="t1",
-        output={"x": _TestFr},
-    )
+    with pytest.deprecated_call(match=r"batch_map\(\) is deprecated"):
+        chain = dc.read_values(t1=features, session=test_session).batch_map(
+            x=lambda m_frs: [
+                _TestFr(
+                    total=sum(m_fr.count for m_fr in m_frs),
+                    names="-".join([m_fr.nnn for m_fr in m_frs]),
+                )
+            ],
+            params="t1",
+            output={"x": _TestFr},
+        )
 
     with pytest.raises(AssertionError):
         chain.to_list()
 
 
+@_batch_mapper_warn
 def test_batch_map_two_params(test_session):
     class _TestFr(BaseModel):
         f: File
@@ -938,18 +946,19 @@ def test_batch_map_two_params(test_session):
         MyFr(nnn="n1", count=2),
     ]
 
-    ds = dc.read_values(t1=features, t2=features2, session=test_session).batch_map(
-        x=lambda frs1, frs2: [
-            _TestFr(
-                f=File(path=""),
-                cnt=f1.count + f2.count,
-                my_name=f"{f1.nnn}-{f2.nnn}",
-            )
-            for f1, f2 in zip(frs1, frs2, strict=False)
-        ],
-        params=("t1", "t2"),
-        output={"x": _TestFr},
-    )
+    with pytest.deprecated_call(match=r"batch_map\(\) is deprecated"):
+        ds = dc.read_values(t1=features, t2=features2, session=test_session).batch_map(
+            x=lambda frs1, frs2: [
+                _TestFr(
+                    f=File(path=""),
+                    cnt=f1.count + f2.count,
+                    my_name=f"{f1.nnn}-{f2.nnn}",
+                )
+                for f1, f2 in zip(frs1, frs2, strict=False)
+            ],
+            params=("t1", "t2"),
+            output={"x": _TestFr},
+        )
 
     assert ds.order_by("x.my_name").to_values("x.my_name") == [
         "n1-n1",
@@ -959,12 +968,14 @@ def test_batch_map_two_params(test_session):
     assert ds.order_by("x.cnt").to_values("x.cnt") == [7, 7, 13]
 
 
+@_batch_mapper_warn
 def test_batch_map_tuple_result_iterator(test_session):
     def sqrt(t1: list[int]) -> Iterator[float]:
         for val in t1:
             yield math.sqrt(val)
 
-    chain = dc.read_values(t1=[1, 4, 9], session=test_session).batch_map(x=sqrt)
+    with pytest.deprecated_call(match=r"batch_map\(\) is deprecated"):
+        chain = dc.read_values(t1=[1, 4, 9], session=test_session).batch_map(x=sqrt)
 
     assert chain.order_by("x").to_values("x") == [1, 2, 3]
 

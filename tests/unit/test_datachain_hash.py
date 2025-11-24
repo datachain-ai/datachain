@@ -112,8 +112,8 @@ def test_read_parquet(test_session, tmp_dir):
     assert dc.read_parquet(path.as_uri(), session=test_session).hash() is not None
 
 
-def test_read_storage(mock_get_listing):
-    assert dc.read_storage("s3://bucket").hash() == (
+def test_read_storage(mock_get_listing, test_session):
+    assert dc.read_storage("s3://bucket", session=test_session).hash() == (
         "811e7089ead93a572d75d242220f6b94fd30f21def1bbcf37f095f083883bc41"
     )
 
