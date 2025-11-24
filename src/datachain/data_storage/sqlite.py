@@ -374,11 +374,12 @@ class SQLiteMetastore(AbstractDBMetastore):
 
         self.db = db or SQLiteDatabaseEngine.from_db_file(db_file)
 
-        self._init_meta_table()
-        self._init_meta_schema_value()
-        self._check_schema_version()
-        self._init_tables()
-        self._init_namespaces_projects()
+        with self._init_guard():
+            self._init_meta_table()
+            self._init_meta_schema_value()
+            self._check_schema_version()
+            self._init_tables()
+            self._init_namespaces_projects()
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
         """Close connection upon exit from context manager."""

@@ -58,7 +58,7 @@ def test_catalog_anon(tmp_dir, catalog, anon):
     assert chain.session.catalog.client_config.get("anon", False) is anon
 
 
-def test_read_storage_client_config(tmp_dir, catalog):
+def test_read_storage_client_config(tmp_dir):
     chain = dc.read_storage(tmp_dir.as_uri())
     assert chain.session.catalog.client_config == {}  # Default client config is set.
 

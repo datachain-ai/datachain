@@ -39,7 +39,11 @@ def running_img_masks() -> torch.Tensor:
     mask1_file = os.path.join(os.path.dirname(__file__), "data", "running-mask1.png")
     mask1_np = np.array(Image.open(mask1_file))
 
-    return torch.tensor([mask0_np.astype(np.float32), mask1_np.astype(np.float32)])
+    stacked = np.stack(
+        [mask0_np.astype(np.float32), mask1_np.astype(np.float32)],
+        axis=0,
+    )
+    return torch.from_numpy(stacked)
 
 
 def test_yolo_bbox_from_results_empty(running_img):

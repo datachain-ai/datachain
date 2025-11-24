@@ -6,6 +6,7 @@ import posixpath
 import time
 import traceback
 from collections.abc import Callable, Iterable, Iterator, Sequence
+from contextlib import ExitStack
 from copy import copy
 from dataclasses import dataclass
 from functools import cached_property, reduce
@@ -237,6 +238,16 @@ class NodeGroup:
         """
         if self.sources:
             self.client.fetch_nodes(self.iternodes(recursive), shared_progress_bar=pbar)
+
+    def close(self) -> None:
+        if self.listing:
+            self.listing.close()
+
+    def __enter__(self) -> "NodeGroup":
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self.close()
 
 
 def prepare_output_for_cp(
@@ -1728,38 +1739,40 @@ class Catalog:
             no_glob,
             client_config=client_config,
         )
+        with ExitStack() as stack:
+            for node_group in node_groups:
+                stack.enter_context(node_group)
+            always_copy_dir_contents, copy_to_filename = prepare_output_for_cp(
+                node_groups, output, force, no_cp
+            )
+            total_size, total_files = collect_nodes_for_cp(node_groups, recursive)
+            if not total_files:
+                return
 
-        always_copy_dir_contents, copy_to_filename = prepare_output_for_cp(
-            node_groups, output, force, no_cp
-        )
-        total_size, total_files = collect_nodes_for_cp(node_groups, recursive)
-        if not total_files:
-            return
+            desc_max_len = max(len(output) + 16, 19)
+            bar_format = (
+                "{desc:<"
+                f"{desc_max_len}"
+                "}{percentage:3.0f}%|{bar}| {n_fmt:>5}/{total_fmt:<5} "
+                "[{elapsed}<{remaining}, {rate_fmt:>8}]"
+            )
 
-        desc_max_len = max(len(output) + 16, 19)
-        bar_format = (
-            "{desc:<"
-            f"{desc_max_len}"
-            "}{percentage:3.0f}%|{bar}| {n_fmt:>5}/{total_fmt:<5} "
-            "[{elapsed}<{remaining}, {rate_fmt:>8}]"
-        )
+            if not no_cp:
+                with get_download_bar(bar_format, total_size) as pbar:
+                    for node_group in node_groups:
+                        node_group.download(recursive=recursive, pbar=pbar)
 
-        if not no_cp:
-            with get_download_bar(bar_format, total_size) as pbar:
-                for node_group in node_groups:
-                    node_group.download(recursive=recursive, pbar=pbar)
-
-        instantiate_node_groups(
-            node_groups,
-            output,
-            bar_format,
-            total_files,
-            force,
-            recursive,
-            no_cp,
-            always_copy_dir_contents,
-            copy_to_filename,
-        )
+            instantiate_node_groups(
+                node_groups,
+                output,
+                bar_format,
+                total_files,
+                force,
+                recursive,
+                no_cp,
+                always_copy_dir_contents,
+                copy_to_filename,
+            )
 
     def du(
         self,

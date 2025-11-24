@@ -393,7 +393,8 @@ def test_resolve_function():
     mock_file = Mock(spec=File)
     mock_file.resolve.return_value = "resolved_file"
 
-    result = resolve(mock_file)
+    with pytest.deprecated_call(match=r"resolve\(\) is deprecated"):
+        result = resolve(mock_file)
 
     assert result == "resolved_file"
     mock_file.resolve.assert_called_once()
