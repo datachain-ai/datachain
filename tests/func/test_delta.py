@@ -642,7 +642,6 @@ def test_delta_update_check_num_calls(test_session, tmp_dir, tmp_path, capsys):
     create_delta_dataset()
 
     captured = capsys.readouterr()
-    # assert captured.out == "Garbage collecting 2 tables.\n"
     assert captured.out == "\n".join([map_print] * 20) + "\n"
 
 
