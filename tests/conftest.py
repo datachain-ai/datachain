@@ -216,8 +216,9 @@ def cleanup_udf_tables(warehouse):
     so we need to clean them up after each test to prevent interference.
     """
     from datachain.data_storage.sqlite import quote_schema
+    from tests.utils import list_tables
 
-    for table_name in warehouse.db.list_tables(prefix=warehouse.UDF_TABLE_NAME_PREFIX):
+    for table_name in list_tables(warehouse.db, prefix=warehouse.UDF_TABLE_NAME_PREFIX):
         quoted_name = quote_schema(table_name)
         warehouse.db.execute_str(f"DROP TABLE IF EXISTS {quoted_name}")
         # Remove from metadata to avoid stale references

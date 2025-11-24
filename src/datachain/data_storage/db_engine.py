@@ -118,16 +118,6 @@ class DatabaseEngine(ABC, Serializable):
         """
         return sa.inspect(self.engine).has_table(name)
 
-    def list_tables(self, prefix: str = "") -> list[str]:
-        """
-        Return a list of table names that start with the given prefix.
-        If no prefix is provided, returns all table names.
-        """
-        all_tables = sa.inspect(self.engine).get_table_names()
-        if not prefix:
-            return all_tables
-        return [table for table in all_tables if table.startswith(prefix)]
-
     @abstractmethod
     def create_table(
         self,

@@ -333,10 +333,12 @@ def test_udf_tables_naming(test_session, monkeypatch):
 
     # Record initial UDF tables (from numbers dataset which uses read_values
     # internally)
-    initial_udf_tables = set(warehouse.db.list_tables(prefix="udf_"))
+    from tests.utils import list_tables
+
+    initial_udf_tables = set(list_tables(warehouse.db, prefix="udf_"))
 
     def get_udf_tables():
-        tables = set(warehouse.db.list_tables(prefix="udf_"))
+        tables = set(list_tables(warehouse.db, prefix="udf_"))
         return sorted(tables - initial_udf_tables)
 
     def square_num(num) -> int:

@@ -284,3 +284,11 @@ def get_partial_tables(test_session) -> tuple[Table, Table]:
     partial_output_table = warehouse.get_table(partial_table_name)
 
     return input_table, partial_output_table
+
+
+def list_tables(db_engine, prefix: str = "") -> list[str]:
+    """List tables that start with the given prefix."""
+    all_tables = sa.inspect(db_engine.engine).get_table_names()
+    if not prefix:
+        return all_tables
+    return [table for table in all_tables if table.startswith(prefix)]
