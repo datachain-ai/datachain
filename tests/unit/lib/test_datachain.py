@@ -1707,6 +1707,24 @@ def test_to_json_features_nested(tmp_dir, test_session):
     ]
 
 
+def test_to_json_datetime(tmp_dir, test_session):
+    timestamp = datetime.datetime.now(datetime.timezone.utc)
+    chain = dc.read_values(ts=[timestamp], session=test_session)
+
+    path = tmp_dir / "dt.json"
+    chain.to_json(path)
+
+    with path.open() as fh:
+        values = json.load(fh)
+
+    expected_ts = timestamp.isoformat().replace("+00:00", "Z")
+    assert values == [{"ts": expected_ts}]
+    assert (
+        datetime.datetime.fromisoformat(values[0]["ts"].replace("Z", "+00:00"))
+        == timestamp
+    )
+
+
 # These deprecation warnings occur in the datamodel-code-generator package.
 @pytest.mark.filterwarnings("ignore::pydantic.warnings.PydanticDeprecatedSince20")
 def test_to_read_jsonl(tmp_dir, test_session):

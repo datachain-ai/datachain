@@ -21,11 +21,11 @@ from typing import (
     get_origin,
 )
 
-import ujson as json
 from pydantic import BaseModel, Field, ValidationError, create_model
 from sqlalchemy import ColumnElement
 from typing_extensions import Literal as LiteralEx
 
+from datachain import json
 from datachain.func import literal
 from datachain.func.func import Func
 from datachain.lib.convert.python_to_sql import python_to_sql

@@ -136,6 +136,8 @@ def test_convert_type(test_session):
     assert run_convert_type([[1, 2], [3, 4]], JSON()) == "[[1,2],[3,4]]"
     assert run_convert_type(None, JSON()) == "null"
     assert run_convert_type({"a": None}, JSON()) == '{"a":null}'
+    dt_value = datetime(2024, 1, 2, 3, 4, 5)
+    assert run_convert_type({"ts": dt_value}, JSON()) == '{"ts":"2024-01-02T03:04:05"}'
     # primitives should serialize to valid JSON
     assert run_convert_type(0.5, JSON()) == "0.5"
 

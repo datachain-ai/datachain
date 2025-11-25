@@ -18,12 +18,11 @@ from typing import (
 )
 
 import sqlalchemy
-import ujson as json
 from pydantic import BaseModel
 from sqlalchemy.sql.elements import ColumnElement
 from tqdm import tqdm
 
-from datachain import semver
+from datachain import json, semver
 from datachain.dataset import DatasetRecord
 from datachain.delta import delta_disabled
 from datachain.error import (

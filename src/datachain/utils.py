@@ -1,6 +1,5 @@
 import glob
 import io
-import json
 import logging
 import os
 import os.path as osp
@@ -10,9 +9,8 @@ import sys
 import time
 from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, TypeVar
-from uuid import UUID
 
 import cloudpickle
 import platformdirs
@@ -402,18 +400,6 @@ def show_records(
     return show_df(df, collapse_columns=collapse_columns, system_columns=system_columns)
 
 
-class JSONSerialize(json.JSONEncoder):
-    def default(self, obj):
-        if isinstance(obj, bytes):
-            return list(obj[:1024])
-        if isinstance(obj, (datetime, date)):
-            return obj.isoformat()
-        if isinstance(obj, UUID):
-            return str(obj)
-
-        return super().default(obj)
-
-
 def inside_colab() -> bool:
     try:
         from google import colab  # type: ignore[attr-defined]  # noqa: F401
@@ -433,7 +419,7 @@ def inside_notebook() -> bool:
 
     if shell == "ZMQInteractiveShell":
         try:
-            import IPython
+            import IPython  # type: ignore[import-not-found]
 
             return IPython.__version__ >= "6.0.0"
         except ImportError:
@@ -529,7 +515,7 @@ def safe_closing(thing: T) -> Iterator[T]:
         yield thing
     finally:
         if hasattr(thing, "close"):
-            thing.close()
+            thing.close()  # type: ignore[attr-defined]
 
 
 def getenv_bool(name: str, default: bool = False) -> bool:

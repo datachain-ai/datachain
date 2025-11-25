@@ -14,12 +14,10 @@ from urllib.parse import urlparse
 import numpy as np
 import pandas as pd
 import pytest
-import pytz
 from PIL import Image
 
 import datachain as dc
 from datachain import DataModel, func
-from datachain.data_storage.sqlite import SQLiteWarehouse
 from datachain.dataset import DatasetDependencyType
 from datachain.lib.file import File, ImageFile
 from datachain.lib.listing import LISTING_TTL, is_listing_dataset, parse_listing_uri
@@ -714,13 +712,9 @@ def test_read_storage_check_rows(tmp_dir, test_session):
 
     chain = dc.read_storage(tmp_dir.as_uri(), session=test_session).save("test-data")
 
-    is_sqlite = isinstance(test_session.catalog.warehouse, SQLiteWarehouse)
-    tz = timezone.utc if is_sqlite else pytz.UTC
-
     for file in chain.to_values("file"):
         assert isinstance(file, File)
         stat = stats[file.name]
-        mtime = stat.st_mtime if is_sqlite else float(math.floor(stat.st_mtime))
         assert file == File(
             source=Path(tmp_dir).as_uri(),
             path=file.path,
@@ -728,7 +722,7 @@ def test_read_storage_check_rows(tmp_dir, test_session):
             version="",
             etag=stat.st_mtime.hex(),
             is_latest=True,
-            last_modified=datetime.fromtimestamp(mtime, tz=tz),
+            last_modified=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
             location=None,
         )
 
