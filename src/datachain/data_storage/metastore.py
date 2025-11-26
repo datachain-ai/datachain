@@ -2073,20 +2073,34 @@ class AbstractDBMetastore(AbstractMetastore):
         # Get job ancestry (current job + all ancestors)
         job_ancestry = [job_id, *self.get_ancestor_job_ids(job_id, conn=conn)]
 
-        dataset = self.get_dataset(
-            dataset_name, namespace_name, project_name, conn=conn
-        )
-        if not dataset or not dataset.versions:
-            return None
-
-        # Query dataset_version_jobs for any version created by these jobs
+        # Join tables to find dataset version created by ancestor jobs
+        # without expensive get_dataset() call
         query = (
-            select(self._dataset_version_jobs.c.dataset_version_id)
+            self._datasets_versions_select()
+            .select_from(
+                self._dataset_version_jobs.join(
+                    self._datasets_versions,
+                    self._dataset_version_jobs.c.dataset_version_id
+                    == self._datasets_versions.c.id,
+                )
+                .join(
+                    self._datasets,
+                    self._datasets_versions.c.dataset_id == self._datasets.c.id,
+                )
+                .join(
+                    self._projects,
+                    self._datasets.c.project_id == self._projects.c.id,
+                )
+                .join(
+                    self._namespaces,
+                    self._projects.c.namespace_id == self._namespaces.c.id,
+                )
+            )
             .where(
+                self._datasets.c.name == dataset_name,
+                self._namespaces.c.name == namespace_name,
+                self._projects.c.name == project_name,
                 self._dataset_version_jobs.c.job_id.in_(job_ancestry),
-                self._dataset_version_jobs.c.dataset_version_id.in_(
-                    [v.id for v in dataset.versions]
-                ),
                 self._dataset_version_jobs.c.is_creator == True,  # noqa: E712
             )
             .order_by(desc(self._dataset_version_jobs.c.created_at))
@@ -2097,7 +2111,27 @@ class AbstractDBMetastore(AbstractMetastore):
         if not results:
             return None
 
-        dataset_version_id = results[0][0]
+        row = results[0]
+        # Parse schema from JSON
+        schema = DatasetRecord.parse_schema(json.loads(row[14]) if row[14] else {})
 
-        # Find and return the matching version
-        return next((v for v in dataset.versions if v.id == dataset_version_id), None)
+        return DatasetVersion.parse(
+            id=row[0],
+            uuid=row[1],
+            dataset_id=row[2],
+            version=row[3],
+            status=row[4],
+            feature_schema=row[5],
+            created_at=row[6],
+            finished_at=row[7],
+            error_message=row[8],
+            error_stack=row[9],
+            script_output=row[10],
+            num_objects=row[11],
+            size=row[12],
+            preview=row[13],
+            schema=schema,
+            sources=row[15],
+            query_script=row[16],
+            job_id=row[17],
+        )
