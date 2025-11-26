@@ -356,3 +356,40 @@ def test_dataset_job_linking_with_reset(test_session, monkeypatch, nums_dataset)
     job1_datasets = get_dataset_versions_for_job(metastore, job1_id)
     assert len(job1_datasets) == 1
     assert job1_datasets[0] == ("nums_reset", "1.0.0", True)
+
+
+def test_dataset_version_job_id_updates_to_latest(
+    test_session, monkeypatch, nums_dataset
+):
+    """Test that dataset_version.job_id is updated to the latest job that used it."""
+    catalog = test_session.catalog
+    monkeypatch.setenv("DATACHAIN_CHECKPOINTS_RESET", str(False))
+
+    chain = dc.read_dataset("nums", session=test_session)
+    name = "nums_jobid"
+
+    # -------------- FIRST RUN -------------------
+    reset_session_job_state()
+    chain.save(name)
+    job1_id = test_session.get_or_create_job().id
+
+    dataset = catalog.get_dataset(name)
+    assert dataset.get_version(dataset.latest_version).job_id == job1_id
+
+    # -------------- SECOND RUN: Reuse via checkpoint -------------------
+    reset_session_job_state()
+    chain.save(name)
+    job2_id = test_session.get_or_create_job().id
+
+    # job_id should now point to job2 (latest)
+    dataset = catalog.get_dataset(name)
+    assert dataset.get_version(dataset.latest_version).job_id == job2_id
+
+    # -------------- THIRD RUN: Another reuse -------------------
+    reset_session_job_state()
+    chain.save(name)
+    job3_id = test_session.get_or_create_job().id
+
+    # job_id should now point to job3 (latest)
+    dataset = catalog.get_dataset(name)
+    assert dataset.get_version(dataset.latest_version).job_id == job3_id

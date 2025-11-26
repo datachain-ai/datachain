@@ -740,6 +740,12 @@ class DataChain:
                 dataset_version.id, job.id, is_creator=False
             )
 
+            # Update dataset_version.job_id to point to the latest job
+            dataset = metastore.get_dataset(name, project.namespace.name, project.name)
+            metastore.update_dataset_version(
+                dataset, dataset_version.version, job_id=job.id
+            )
+
             return _hash, chain
 
         return _hash, None
