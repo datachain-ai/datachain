@@ -719,7 +719,7 @@ class DataChain:
                 name,
                 project.namespace.name,
                 project.name,
-                [job.id, *metastore.get_ancestor_job_ids(job.id)],
+                job.id,
             )
 
             if not dataset_version:

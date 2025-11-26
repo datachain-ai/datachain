@@ -502,12 +502,7 @@ class AbstractMetastore(ABC, Serializable):
 
     @abstractmethod
     def get_ancestor_job_ids(self, job_id: str, conn=None) -> list[str]:
-        """
-        Get all ancestor job IDs for a given job.
-
-        Returns:
-            List of ancestor job IDs
-        """
+        """Get all ancestor job IDs for a given job."""
 
     @abstractmethod
     def get_dataset_version_for_job_ancestry(
@@ -515,7 +510,7 @@ class AbstractMetastore(ABC, Serializable):
         dataset_name: str,
         namespace_name: str,
         project_name: str,
-        job_ids: list[str],
+        job_id: str,
         conn=None,
     ) -> DatasetVersion | None:
         """
@@ -526,7 +521,7 @@ class AbstractMetastore(ABC, Serializable):
             dataset_name: Name of the dataset
             namespace_name: Name of the namespace
             project_name: Name of the project
-            job_ids: List of job IDs in ancestry (including current job)
+            job_id: Job ID to search ancestry for
             conn: Optional database connection
 
         Returns:
@@ -2072,9 +2067,12 @@ class AbstractDBMetastore(AbstractMetastore):
         dataset_name: str,
         namespace_name: str,
         project_name: str,
-        job_ids: list[str],
+        job_id: str,
         conn=None,
     ) -> DatasetVersion | None:
+        # Get job ancestry (current job + all ancestors)
+        job_ancestry = [job_id, *self.get_ancestor_job_ids(job_id, conn=conn)]
+
         dataset = self.get_dataset(
             dataset_name, namespace_name, project_name, conn=conn
         )
@@ -2085,7 +2083,7 @@ class AbstractDBMetastore(AbstractMetastore):
         query = (
             select(self._dataset_version_jobs.c.dataset_version_id)
             .where(
-                self._dataset_version_jobs.c.job_id.in_(job_ids),
+                self._dataset_version_jobs.c.job_id.in_(job_ancestry),
                 self._dataset_version_jobs.c.dataset_version_id.in_(
                     [v.id for v in dataset.versions]
                 ),

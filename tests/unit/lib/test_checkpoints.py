@@ -11,6 +11,43 @@ def mapper_fail(num) -> int:
     raise Exception("Error")
 
 
+def get_dataset_versions_for_job(metastore, job_id):
+    """Helper to get all dataset versions associated with a job.
+
+    Returns:
+        List of tuples (dataset_name, version, is_creator)
+    """
+    query = (
+        sa.select(
+            metastore._datasets_versions.c.dataset_id,
+            metastore._datasets_versions.c.version,
+            metastore._dataset_version_jobs.c.is_creator,
+        )
+        .select_from(
+            metastore._dataset_version_jobs.join(
+                metastore._datasets_versions,
+                metastore._dataset_version_jobs.c.dataset_version_id
+                == metastore._datasets_versions.c.id,
+            )
+        )
+        .where(metastore._dataset_version_jobs.c.job_id == job_id)
+    )
+
+    results = list(metastore.db.execute(query))
+
+    # Get dataset names
+    dataset_versions = []
+    for dataset_id, version, is_creator in results:
+        dataset_query = sa.select(metastore._datasets.c.name).where(
+            metastore._datasets.c.id == dataset_id
+        )
+        dataset_name = next(metastore.db.execute(dataset_query))[0]
+        # Convert is_creator to boolean for consistent assertions across databases
+        dataset_versions.append((dataset_name, version, bool(is_creator)))
+
+    return sorted(dataset_versions)
+
+
 @pytest.fixture(autouse=True)
 def mock_is_script_run(monkeypatch):
     """Mock is_script_run to return True for stable job names in tests."""
@@ -230,7 +267,11 @@ def test_checkpoints_invalid_parent_job_id(test_session, monkeypatch, nums_datas
 
 
 def test_dataset_job_linking(test_session, monkeypatch, nums_dataset):
-    """Test that dataset versions are correctly linked to jobs via many-to-many."""
+    """Test that dataset versions are correctly linked to jobs via many-to-many.
+
+    This test verifies the core fix: datasets should appear in ALL jobs that use them,
+    not just the job that created them.
+    """
     catalog = test_session.catalog
     metastore = catalog.metastore
     monkeypatch.setenv("DATACHAIN_CHECKPOINTS_RESET", str(False))
@@ -242,57 +283,76 @@ def test_dataset_job_linking(test_session, monkeypatch, nums_dataset):
     chain.save("nums_linked")
     job1_id = test_session.get_or_create_job().id
 
-    # Get dataset version
-    dataset = catalog.get_dataset("nums_linked")
-    version = dataset.get_version(dataset.latest_version)
-
-    # Check that job1 is linked with is_creator=True
-    query = sa.select(
-        metastore._dataset_version_jobs.c.job_id,
-        metastore._dataset_version_jobs.c.is_creator,
-    ).where(metastore._dataset_version_jobs.c.dataset_version_id == version.id)
-    results = list(metastore.db.execute(query))
-
-    assert len(results) == 1
-    assert results[0][0] == job1_id
-    assert results[0][1]  # is_creator
+    # Verify job1 has the dataset associated (as creator)
+    job1_datasets = get_dataset_versions_for_job(metastore, job1_id)
+    assert len(job1_datasets) == 1
+    assert job1_datasets[0] == ("nums_linked", "1.0.0", True)
 
     # -------------- SECOND RUN: Reuse dataset via checkpoint -------------------
     reset_session_job_state()
     chain.save("nums_linked")
     job2_id = test_session.get_or_create_job().id
 
-    # Check that both jobs are now linked
-    results = list(metastore.db.execute(query))
-    results_dict = {row[0]: row[1] for row in results}
+    # Verify job2 also has the dataset associated (not creator)
+    job2_datasets = get_dataset_versions_for_job(metastore, job2_id)
+    assert len(job2_datasets) == 1
+    assert job2_datasets[0] == ("nums_linked", "1.0.0", False)
 
-    assert len(results) == 2
-    assert results_dict[job1_id]  # job1 is creator
-    assert not results_dict[job2_id]  # job2 is not creator
+    # Verify job1 still has it
+    job1_datasets = get_dataset_versions_for_job(metastore, job1_id)
+    assert len(job1_datasets) == 1
+    assert job1_datasets[0][2]  # still creator
 
     # -------------- THIRD RUN: Another reuse -------------------
     reset_session_job_state()
     chain.save("nums_linked")
     job3_id = test_session.get_or_create_job().id
 
-    # Check that all three jobs are linked
-    results = list(metastore.db.execute(query))
-    results_dict = {row[0]: row[1] for row in results}
-
-    assert len(results) == 3
-    assert results_dict[job1_id]  # job1 is creator
-    assert not results_dict[job2_id]  # job2 reused
-    assert not results_dict[job3_id]  # job3 reused
+    # Verify job3 also has the dataset associated (not creator)
+    job3_datasets = get_dataset_versions_for_job(metastore, job3_id)
+    assert len(job3_datasets) == 1
+    assert job3_datasets[0] == ("nums_linked", "1.0.0", False)
 
     # Verify get_dataset_version_for_job_ancestry works correctly
-    # Job3's ancestry should find the version created by job1
-    ancestor_ids = metastore.get_ancestor_job_ids(job3_id)
-    job_ancestry = [job3_id, *ancestor_ids]
+    dataset = catalog.get_dataset("nums_linked")
     found_version = metastore.get_dataset_version_for_job_ancestry(
         "nums_linked",
         dataset.project.namespace.name,
         dataset.project.name,
-        job_ancestry,
+        job3_id,
     )
-    assert found_version is not None
-    assert found_version.id == version.id
+    assert found_version.version == "1.0.0"
+
+
+def test_dataset_job_linking_with_reset(test_session, monkeypatch, nums_dataset):
+    """Test that with CHECKPOINTS_RESET=True, new versions are created each run."""
+    catalog = test_session.catalog
+    metastore = catalog.metastore
+    monkeypatch.setenv("DATACHAIN_CHECKPOINTS_RESET", str(True))
+
+    chain = dc.read_dataset("nums", session=test_session)
+
+    # -------------- FIRST RUN -------------------
+    reset_session_job_state()
+    chain.save("nums_reset")
+    job1_id = test_session.get_or_create_job().id
+
+    # Verify job1 created version 1.0.0
+    job1_datasets = get_dataset_versions_for_job(metastore, job1_id)
+    assert len(job1_datasets) == 1
+    assert job1_datasets[0] == ("nums_reset", "1.0.0", True)
+
+    # -------------- SECOND RUN -------------------
+    reset_session_job_state()
+    chain.save("nums_reset")
+    job2_id = test_session.get_or_create_job().id
+
+    # Verify job2 created NEW version 1.0.1 (not reusing 1.0.0)
+    job2_datasets = get_dataset_versions_for_job(metastore, job2_id)
+    assert len(job2_datasets) == 1
+    assert job2_datasets[0] == ("nums_reset", "1.0.1", True)
+
+    # Verify job1 still only has version 1.0.0
+    job1_datasets = get_dataset_versions_for_job(metastore, job1_id)
+    assert len(job1_datasets) == 1
+    assert job1_datasets[0] == ("nums_reset", "1.0.0", True)
