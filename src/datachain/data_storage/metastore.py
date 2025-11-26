@@ -2072,8 +2072,6 @@ class AbstractDBMetastore(AbstractMetastore):
         # Get job ancestry (current job + all ancestors)
         job_ancestry = [job_id, *self.get_ancestor_job_ids(job_id, conn=conn)]
 
-        # Join tables to find dataset version created by ancestor jobs
-        # without expensive get_dataset() call
         query = (
             self._datasets_versions_select()
             .select_from(
