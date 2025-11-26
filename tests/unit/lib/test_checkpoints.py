@@ -1,4 +1,5 @@
 import pytest
+import sqlalchemy as sa
 
 import datachain as dc
 from datachain.error import DatasetNotFoundError, JobNotFoundError
@@ -226,3 +227,72 @@ def test_checkpoints_invalid_parent_job_id(test_session, monkeypatch, nums_datas
     monkeypatch.setenv("DATACHAIN_JOB_ID", "caee6c54-6328-4bcd-8ca6-2b31cb4fff94")
     with pytest.raises(JobNotFoundError):
         dc.read_dataset("nums", session=test_session).save("nums1")
+
+
+def test_dataset_job_linking(test_session, monkeypatch, nums_dataset):
+    """Test that dataset versions are correctly linked to jobs via many-to-many."""
+    catalog = test_session.catalog
+    metastore = catalog.metastore
+    monkeypatch.setenv("DATACHAIN_CHECKPOINTS_RESET", str(False))
+
+    chain = dc.read_dataset("nums", session=test_session)
+
+    # -------------- FIRST RUN: Create dataset -------------------
+    reset_session_job_state()
+    chain.save("nums_linked")
+    job1_id = test_session.get_or_create_job().id
+
+    # Get dataset version
+    dataset = catalog.get_dataset("nums_linked")
+    version = dataset.get_version(dataset.latest_version)
+
+    # Check that job1 is linked with is_creator=True
+    query = sa.select(
+        metastore._dataset_version_jobs.c.job_id,
+        metastore._dataset_version_jobs.c.is_creator,
+    ).where(metastore._dataset_version_jobs.c.dataset_version_id == version.id)
+    results = list(metastore.db.execute(query))
+
+    assert len(results) == 1
+    assert results[0][0] == job1_id
+    assert results[0][1]  # is_creator
+
+    # -------------- SECOND RUN: Reuse dataset via checkpoint -------------------
+    reset_session_job_state()
+    chain.save("nums_linked")
+    job2_id = test_session.get_or_create_job().id
+
+    # Check that both jobs are now linked
+    results = list(metastore.db.execute(query))
+    results_dict = {row[0]: row[1] for row in results}
+
+    assert len(results) == 2
+    assert results_dict[job1_id]  # job1 is creator
+    assert not results_dict[job2_id]  # job2 is not creator
+
+    # -------------- THIRD RUN: Another reuse -------------------
+    reset_session_job_state()
+    chain.save("nums_linked")
+    job3_id = test_session.get_or_create_job().id
+
+    # Check that all three jobs are linked
+    results = list(metastore.db.execute(query))
+    results_dict = {row[0]: row[1] for row in results}
+
+    assert len(results) == 3
+    assert results_dict[job1_id]  # job1 is creator
+    assert not results_dict[job2_id]  # job2 reused
+    assert not results_dict[job3_id]  # job3 reused
+
+    # Verify get_dataset_version_for_job_ancestry works correctly
+    # Job3's ancestry should find the version created by job1
+    ancestor_ids = metastore.get_ancestor_job_ids(job3_id)
+    job_ancestry = [job3_id, *ancestor_ids]
+    found_version = metastore.get_dataset_version_for_job_ancestry(
+        "nums_linked",
+        dataset.project.namespace.name,
+        dataset.project.name,
+        job_ancestry,
+    )
+    assert found_version is not None
+    assert found_version.id == version.id

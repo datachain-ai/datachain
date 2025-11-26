@@ -1931,6 +1931,7 @@ class DatasetQuery:
         description: str | None = None,
         attrs: list[str] | None = None,
         update_version: str | None = "patch",
+        job_id: str | None = None,
         **kwargs,
     ) -> "Self":
         """Save the query as a dataset."""
@@ -1976,6 +1977,7 @@ class DatasetQuery:
                 description=description,
                 attrs=attrs,
                 update_version=update_version,
+                job_id=job_id,
                 **kwargs,
             )
             version = version or dataset.latest_version
@@ -1988,6 +1990,13 @@ class DatasetQuery:
                 dataset, DatasetStatus.COMPLETE, version=version
             )
             self.catalog.update_dataset_version_with_warehouse_info(dataset, version)
+
+            # Link this dataset version to the job that created it
+            if job_id and dataset.has_version(version):
+                dataset_version = dataset.get_version(version)
+                self.catalog.metastore.link_dataset_version_to_job(
+                    dataset_version.id, job_id, is_creator=True
+                )
 
             if dependencies:
                 # overriding dependencies

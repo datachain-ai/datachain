@@ -712,10 +712,34 @@ class DataChain:
             and not checkpoints_reset
             and metastore.find_checkpoint(job.parent_job_id, _hash)
         ):
-            # checkpoint found → reuse dataset
-            chain = read_dataset(
-                name, namespace=project.namespace.name, project=project.name, **kwargs
+            # checkpoint found → find which dataset version to reuse
+
+            # Find dataset version that was created by any ancestor job
+            dataset_version = metastore.get_dataset_version_for_job_ancestry(
+                name,
+                project.namespace.name,
+                project.name,
+                [job.id, *metastore.get_ancestor_job_ids(job.id)],
             )
+
+            if not dataset_version:
+                # Dataset version not found or deleted - skip checkpoint, recreate
+                return _hash, None
+
+            # Read the specific version from ancestry
+            chain = read_dataset(
+                name,
+                namespace=project.namespace.name,
+                project=project.name,
+                version=dataset_version.version,
+                **kwargs,
+            )
+
+            # Link current job to this dataset version (not creator)
+            metastore.link_dataset_version_to_job(
+                dataset_version.id, job.id, is_creator=False
+            )
+
             return _hash, chain
 
         return _hash, None
