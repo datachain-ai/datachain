@@ -41,6 +41,7 @@ from datachain.dataset import (
     DatasetStatus,
     DatasetVersion,
     StorageURI,
+    parse_schema,
 )
 from datachain.error import (
     CheckpointNotFoundError,
@@ -1170,7 +1171,7 @@ class AbstractDBMetastore(AbstractMetastore):
                     dataset_values[field] = None
                 else:
                     values[field] = json.dumps(value)
-                    dataset_values[field] = DatasetRecord.parse_schema(value)
+                    dataset_values[field] = parse_schema(value)
             elif field == "project_id":
                 if not value:
                     raise ValueError("Cannot set empty project_id for dataset")
@@ -1221,9 +1222,7 @@ class AbstractDBMetastore(AbstractMetastore):
 
             if field == "schema":
                 values[field] = json.dumps(value) if value else None
-                version_values[field] = (
-                    DatasetRecord.parse_schema(value) if value else None
-                )
+                version_values[field] = parse_schema(value) if value else None
             elif field == "feature_schema":
                 if value is None:
                     values[field] = None
@@ -2111,27 +2110,4 @@ class AbstractDBMetastore(AbstractMetastore):
         if not results:
             return None
 
-        row = results[0]
-        # Parse schema from JSON
-        schema = DatasetRecord.parse_schema(json.loads(row[14]) if row[14] else {})
-
-        return DatasetVersion.parse(
-            id=row[0],
-            uuid=row[1],
-            dataset_id=row[2],
-            version=row[3],
-            status=row[4],
-            feature_schema=row[5],
-            created_at=row[6],
-            finished_at=row[7],
-            error_message=row[8],
-            error_stack=row[9],
-            script_output=row[10],
-            num_objects=row[11],
-            size=row[12],
-            preview=row[13],
-            schema=schema,
-            sources=row[15],
-            query_script=row[16],
-            job_id=row[17],
-        )
+        return DatasetVersion.parse(*results[0])

@@ -35,6 +35,7 @@ from datachain.dataset import (
     create_dataset_uri,
     parse_dataset_name,
     parse_dataset_uri,
+    parse_schema,
 )
 from datachain.error import (
     DataChainError,
@@ -1657,7 +1658,7 @@ class Catalog:
             leave=False,
         )
 
-        schema = DatasetRecord.parse_schema(remote_ds_version.schema)
+        schema = parse_schema(remote_ds_version.schema)
 
         local_ds = self.create_dataset(
             local_ds_name,
