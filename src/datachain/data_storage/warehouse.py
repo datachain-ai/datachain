@@ -71,8 +71,8 @@ class AbstractWarehouse(ABC, Serializable):
         return self
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
-        # Default behavior is to do nothing, as connections may be shared.
-        pass
+        # Release DB handles for clones used via context manager.
+        self.close_on_exit()
 
     def cleanup_for_tests(self):
         """Cleanup for tests."""

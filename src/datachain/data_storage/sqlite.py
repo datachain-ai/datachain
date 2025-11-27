@@ -1,6 +1,10 @@
 import logging
 import os
 import sqlite3
+import sys
+import time
+import traceback
+import weakref
 from collections.abc import Callable, Iterable, Sequence
 from contextlib import contextmanager
 from functools import cached_property, wraps
@@ -60,6 +64,19 @@ RETRY_START_SEC = 0.01
 RETRY_MAX_TIMES = 10
 RETRY_FACTOR = 2
 
+
+def _env_flag(name: str) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return False
+    return value.lower() in {"1", "true", "yes", "on"}
+
+
+LOG_CONNECTION_EVENTS = _env_flag("DATACHAIN_LOG_SQLITE_CONNECTIONS")
+MAX_CONNECTION_EVENT_HISTORY = int(
+    os.environ.get("DATACHAIN_CONNECTION_EVENT_HISTORY", "256")
+)
+
 DETECT_TYPES = sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES
 
 datachain.sql.sqlite.setup()
@@ -117,6 +134,53 @@ class SQLiteDatabaseEngine(DatabaseEngine):
     db: sqlite3.Connection
     db_file: str | None
     is_closed: bool
+    _open_connections: ClassVar[dict[int, dict[str, Any]]] = {}
+    _connection_events: ClassVar[list[dict[str, Any]]] = []
+    _max_connection_events: ClassVar[int] = MAX_CONNECTION_EVENT_HISTORY
+
+    @classmethod
+    def _record_connection_event(
+        cls,
+        *,
+        action: str,
+        connection_id: int,
+        engine_id: int | None,
+        db_file: str | None,
+        reason: str | None,
+        creation_stack: list[str] | None,
+    ) -> None:
+        if cls._max_connection_events <= 0:
+            return
+        event = {
+            "timestamp": time.time(),
+            "action": action,
+            "connection_id": connection_id,
+            "engine_id": engine_id,
+            "db_file": db_file,
+            "reason": reason,
+            "creation_stack": creation_stack,
+            "event_stack": traceback.format_stack(limit=10),
+        }
+        cls._connection_events.append(event)
+        overflow = len(cls._connection_events) - cls._max_connection_events
+        if overflow > 0:
+            del cls._connection_events[:overflow]
+        if LOG_CONNECTION_EVENTS:
+            logger.info(
+                "SQLite connection %s (conn=%s engine=%s reason=%s db=%s)",
+                action,
+                connection_id,
+                engine_id,
+                reason,
+                db_file,
+            )
+
+    @classmethod
+    def connection_event_log(cls, *, clear: bool = False) -> list[dict[str, Any]]:
+        events = list(cls._connection_events)
+        if clear:
+            cls._connection_events.clear()
+        return events
 
     def __init__(
         self,
@@ -132,6 +196,7 @@ class SQLiteDatabaseEngine(DatabaseEngine):
         self.db_file = db_file
         self.is_closed = False
         self.max_variable_number = max_variable_number
+        self._register_open_connection(reason="init")
 
     @classmethod
     def from_db_file(cls, db_file: str | None = None) -> "SQLiteDatabaseEngine":
@@ -205,6 +270,85 @@ class SQLiteDatabaseEngine(DatabaseEngine):
     def serialize_callable_name(cls) -> str:
         return "sqlite.from_db_file"
 
+    def _connection_key(self) -> int:
+        return id(self.db)
+
+    def _register_open_connection(self, *, reason: str) -> None:
+        if getattr(self, "db", None) is None:
+            return
+        cls = type(self)
+        key = self._connection_key()
+        try:
+            engine_ref = weakref.ref(self)
+        except TypeError:  # pragma: no cover - defensive
+            engine_ref = None
+        stack = traceback.format_stack(limit=10)
+        meta = {
+            "engine": engine_ref,
+            "db_file": self.db_file,
+            "engine_id": id(self),
+            "reason": reason,
+            "created_at": time.time(),
+            "stack": stack,
+        }
+        cls._open_connections[key] = meta
+        cls._record_connection_event(
+            action="open",
+            connection_id=key,
+            engine_id=id(self),
+            db_file=self.db_file,
+            reason=reason,
+            creation_stack=stack,
+        )
+
+    def _unregister_open_connection(self) -> None:
+        if getattr(self, "db", None) is None:
+            return
+        cls = type(self)
+        key = self._connection_key()
+        meta = cls._open_connections.pop(key, None)
+        cls._record_connection_event(
+            action="close",
+            connection_id=key,
+            engine_id=(meta or {}).get("engine_id"),
+            db_file=(meta or {}).get("db_file"),
+            reason=(meta or {}).get("reason"),
+            creation_stack=(meta or {}).get("stack"),
+        )
+
+    @classmethod
+    def open_connection_snapshot(cls) -> list[dict[str, Any]]:
+        snapshot: list[dict[str, Any]] = []
+        stale_keys: list[int] = []
+        for key, meta in cls._open_connections.items():
+            engine_ref = meta.get("engine")
+            engine = (
+                engine_ref() if isinstance(engine_ref, weakref.ReferenceType) else None
+            )
+            if engine is None or engine.is_closed:
+                stale_keys.append(key)
+                continue
+            conn = engine.db
+            refcount = sys.getrefcount(conn) if conn is not None else None
+            snapshot.append(
+                {
+                    "connection_id": key,
+                    "db_file": meta.get("db_file"),
+                    "engine_id": meta.get("engine_id"),
+                    "reason": meta.get("reason"),
+                    "created_at": meta.get("created_at"),
+                    "refcount": refcount,
+                    "stack": meta.get("stack"),
+                }
+            )
+        for key in stale_keys:
+            cls._open_connections.pop(key, None)
+        return snapshot
+
+    @classmethod
+    def count_open_connections(cls) -> int:
+        return len(cls.open_connection_snapshot())
+
     def _reconnect(self) -> None:
         if not self.is_closed:
             raise RuntimeError("Cannot reconnect on still-open DB!")
@@ -217,6 +361,7 @@ class SQLiteDatabaseEngine(DatabaseEngine):
         self.db_file = db_file
         self.max_variable_number = max_variable_number
         self.is_closed = False
+        self._register_open_connection(reason="reconnect")
 
     def get_table(self, name: str) -> Table:
         if self.is_closed:
@@ -291,8 +436,11 @@ class SQLiteDatabaseEngine(DatabaseEngine):
         return self.db.cursor(factory)
 
     def close(self) -> None:
+        if self.is_closed:
+            return
         self.db.close()
         self.is_closed = True
+        self._unregister_open_connection()
 
     @contextmanager
     def transaction(self):

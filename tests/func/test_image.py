@@ -37,9 +37,9 @@ def test_image_save(tmp_path, image_file, format):
     filename = f"{tmp_path}/test.jpg"
     image_file.save(filename, format=format)
 
-    img = PILImage.open(filename)
-    assert img.format == (format or "JPEG")
-    assert img.size == (256, 256)
+    with PILImage.open(filename) as img:
+        assert img.format == (format or "JPEG")
+        assert img.size == (256, 256)
 
 
 def test_image_save_no_extension(tmp_path, image_file):
