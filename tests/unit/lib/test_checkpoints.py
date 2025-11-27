@@ -119,7 +119,6 @@ def test_checkpoints(
 
     expected_versions = 1 if with_delta or not reset_checkpoints else 2
     assert len(catalog.get_dataset("nums1").versions) == expected_versions
-    assert 1 == 2
     assert len(catalog.get_dataset("nums2").versions) == expected_versions
     assert len(catalog.get_dataset("nums3").versions) == 1
 
