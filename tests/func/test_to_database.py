@@ -181,7 +181,7 @@ def sqlite_session(sqlite_engine, ensure_sqlite_adapter):
 
 @pytest.fixture
 def sqlite3_connection(ensure_sqlite_adapter):
-    with sqlite3.connect(":memory:") as conn:
+    with closing(sqlite3.connect(":memory:")) as conn:
         yield conn
 
 

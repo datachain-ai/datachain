@@ -6,7 +6,7 @@ import posixpath
 import time
 import traceback
 from collections.abc import Callable, Iterable, Iterator, Sequence
-from contextlib import ExitStack
+from contextlib import contextmanager, suppress
 from copy import copy
 from dataclasses import dataclass
 from functools import cached_property, reduce
@@ -503,6 +503,25 @@ class Catalog:
             result.warehouse = None
         return result
 
+    def close(self) -> None:
+        """Release underlying metastore and warehouse connections."""
+        if self.metastore is not None:
+            try:
+                self.metastore.close_on_exit()
+            except Exception:
+                logger.exception("Failed to close metastore")
+        if self._warehouse is not None:
+            try:
+                self._warehouse.close_on_exit()
+            except Exception:
+                logger.exception("Failed to close warehouse")
+
+    def __enter__(self) -> "Catalog":
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self.close()
+
     @classmethod
     def generate_query_dataset_name(cls) -> str:
         return f"{QUERY_DATASET_PREFIX}_{uuid4().hex}"
@@ -556,6 +575,7 @@ class Catalog:
             **kwargs,
         )
 
+    @contextmanager
     def enlist_sources(
         self,
         sources: list[str],
@@ -563,34 +583,41 @@ class Catalog:
         skip_indexing=False,
         client_config=None,
         only_index=False,
-    ) -> list["DataSource"] | None:
-        enlisted_sources = []
-        for src in sources:  # Opt: parallel
-            listing, client, file_path = self.enlist_source(
-                src,
-                update,
-                client_config=client_config or self.client_config,
-                skip_indexing=skip_indexing,
-            )
-            enlisted_sources.append((listing, client, file_path))
+    ) -> Iterator[list["DataSource"] | None]:
+        enlisted_sources: list[tuple[Listing | None, Client, str]] = []
+        try:
+            for src in sources:  # Opt: parallel
+                listing, client, file_path = self.enlist_source(
+                    src,
+                    update,
+                    client_config=client_config or self.client_config,
+                    skip_indexing=skip_indexing,
+                )
+                enlisted_sources.append((listing, client, file_path))
 
-        if only_index:
-            # sometimes we don't really need listing result (e.g on indexing process)
-            # so this is to improve performance
-            return None
+            if only_index:
+                # sometimes we don't really need listing result (e.g. on indexing
+                # process) so this is to improve performance
+                yield None
+                return
 
-        dsrc_all: list[DataSource] = []
-        for listing, client, file_path in enlisted_sources:
-            if not listing:
-                nodes = [Node.from_file(client.get_file_info(file_path))]
-                dir_only = False
-            else:
-                nodes = listing.expand_path(file_path)
-                dir_only = file_path.endswith("/")
-            dsrc_all.extend(
-                DataSource(listing, client, node, dir_only) for node in nodes
-            )
-        return dsrc_all
+            dsrc_all: list[DataSource] = []
+            for listing, client, file_path in enlisted_sources:
+                if not listing:
+                    nodes = [Node.from_file(client.get_file_info(file_path))]
+                    dir_only = False
+                else:
+                    nodes = listing.expand_path(file_path)
+                    dir_only = file_path.endswith("/")
+                dsrc_all.extend(
+                    DataSource(listing, client, node, dir_only) for node in nodes
+                )
+            yield dsrc_all
+        finally:
+            for listing, _, _ in enlisted_sources:
+                if listing:
+                    with suppress(Exception):
+                        listing.close()
 
     def enlist_sources_grouped(
         self,
@@ -1430,15 +1457,17 @@ class Catalog:
         *,
         client_config=None,
     ) -> Iterator[tuple[DataSource, Iterable[tuple]]]:
-        data_sources = self.enlist_sources(
+        with self.enlist_sources(
             sources,
             update,
             skip_indexing=skip_indexing,
             client_config=client_config or self.client_config,
-        )
+        ) as data_sources:
+            if data_sources is None:
+                return
 
-        for source in data_sources:  # type: ignore [union-attr]
-            yield source, source.ls(fields)
+            for source in data_sources:
+                yield source, source.ls(fields)
 
     def pull_dataset(  # noqa: C901, PLR0915
         self,
@@ -1702,11 +1731,12 @@ class Catalog:
         else:
             # since we don't call cp command, which does listing implicitly,
             # it needs to be done here
-            self.enlist_sources(
+            with self.enlist_sources(
                 sources,
                 update,
                 client_config=client_config or self.client_config,
-            )
+            ):
+                pass
 
         self.create_dataset_from_sources(
             output,
@@ -1739,9 +1769,7 @@ class Catalog:
             no_glob,
             client_config=client_config,
         )
-        with ExitStack() as stack:
-            for node_group in node_groups:
-                stack.enter_context(node_group)
+        try:
             always_copy_dir_contents, copy_to_filename = prepare_output_for_cp(
                 node_groups, output, force, no_cp
             )
@@ -1773,6 +1801,10 @@ class Catalog:
                 always_copy_dir_contents,
                 copy_to_filename,
             )
+        finally:
+            for node_group in node_groups:
+                with suppress(Exception):
+                    node_group.close()
 
     def du(
         self,
@@ -1782,24 +1814,26 @@ class Catalog:
         *,
         client_config=None,
     ) -> Iterable[tuple[str, float]]:
-        sources = self.enlist_sources(
+        with self.enlist_sources(
             sources,
             update,
             client_config=client_config or self.client_config,
-        )
+        ) as matched_sources:
+            if matched_sources is None:
+                return
 
-        def du_dirs(src, node, subdepth):
-            if subdepth > 0:
-                subdirs = src.listing.get_dirs_by_parent_path(node.path)
-                for sd in subdirs:
-                    yield from du_dirs(src, sd, subdepth - 1)
-            yield (
-                src.get_node_full_path(node),
-                src.listing.du(node)[0],
-            )
+            def du_dirs(src, node, subdepth):
+                if subdepth > 0:
+                    subdirs = src.listing.get_dirs_by_parent_path(node.path)
+                    for sd in subdirs:
+                        yield from du_dirs(src, sd, subdepth - 1)
+                yield (
+                    src.get_node_full_path(node),
+                    src.listing.du(node)[0],
+                )
 
-        for src in sources:
-            yield from du_dirs(src, src.node, depth)
+            for src in matched_sources:
+                yield from du_dirs(src, src.node, depth)
 
     def find(
         self,
@@ -1815,39 +1849,42 @@ class Catalog:
         *,
         client_config=None,
     ) -> Iterator[str]:
-        sources = self.enlist_sources(
+        with self.enlist_sources(
             sources,
             update,
             client_config=client_config or self.client_config,
-        )
-        if not columns:
-            columns = ["path"]
-        field_set = set()
-        for column in columns:
-            if column == "du":
-                field_set.add("dir_type")
-                field_set.add("size")
-                field_set.add("path")
-            elif column == "name":
-                field_set.add("path")
-            elif column == "path":
-                field_set.add("dir_type")
-                field_set.add("path")
-            elif column == "size":
-                field_set.add("size")
-            elif column == "type":
-                field_set.add("dir_type")
-        fields = list(field_set)
-        field_lookup = {f: i for i, f in enumerate(fields)}
-        for src in sources:
-            results = src.listing.find(
-                src.node, fields, names, inames, paths, ipaths, size, typ
-            )
-            for row in results:
-                yield "\t".join(
-                    find_column_to_str(row, field_lookup, src, column)
-                    for column in columns
+        ) as matched_sources:
+            if matched_sources is None:
+                return
+
+            if not columns:
+                columns = ["path"]
+            field_set = set()
+            for column in columns:
+                if column == "du":
+                    field_set.add("dir_type")
+                    field_set.add("size")
+                    field_set.add("path")
+                elif column == "name":
+                    field_set.add("path")
+                elif column == "path":
+                    field_set.add("dir_type")
+                    field_set.add("path")
+                elif column == "size":
+                    field_set.add("size")
+                elif column == "type":
+                    field_set.add("dir_type")
+            fields = list(field_set)
+            field_lookup = {f: i for i, f in enumerate(fields)}
+            for src in matched_sources:
+                results = src.listing.find(
+                    src.node, fields, names, inames, paths, ipaths, size, typ
                 )
+                for row in results:
+                    yield "\t".join(
+                        find_column_to_str(row, field_lookup, src, column)
+                        for column in columns
+                    )
 
     def index(
         self,
@@ -1856,9 +1893,10 @@ class Catalog:
         *,
         client_config=None,
     ) -> None:
-        self.enlist_sources(
+        with self.enlist_sources(
             sources,
             update,
             client_config=client_config or self.client_config,
             only_index=True,
-        )
+        ):
+            pass

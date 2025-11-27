@@ -239,10 +239,13 @@ def warehouse(metastore):
 @pytest.fixture
 def catalog(metastore, warehouse):
     catalog = Catalog(metastore=metastore, warehouse=warehouse)
-    yield catalog
+    try:
+        yield catalog
+    finally:
+        catalog.close()
 
-    # Clean up job-related atexit hooks to prevent errors during pytest shutdown
-    reset_session_job_state()
+        # Clean up job-related atexit hooks to prevent errors during pytest shutdown
+        reset_session_job_state()
 
 
 @pytest.fixture
@@ -307,7 +310,11 @@ def warehouse_tmpfile(tmp_path, metastore_tmpfile):
 def catalog_tmpfile(metastore_tmpfile, warehouse_tmpfile):
     # For testing parallel and distributed processing, as these cannot use
     # in-memory databases.
-    return Catalog(metastore=metastore_tmpfile, warehouse=warehouse_tmpfile)
+    catalog = Catalog(metastore=metastore_tmpfile, warehouse=warehouse_tmpfile)
+    try:
+        yield catalog
+    finally:
+        catalog.close()
 
 
 @pytest.fixture
@@ -540,9 +547,12 @@ def cloud_test_catalog(
     warehouse,
 ):
     catalog = get_cloud_test_catalog(cloud_server, tmp_path, metastore, warehouse)
-    yield catalog
-
-    reset_session_job_state()
+    try:
+        yield catalog
+    finally:
+        # Ensure catalog shuts down its metastore/warehouse connections between tests
+        catalog.catalog.close()
+        reset_session_job_state()
 
 
 @pytest.fixture
@@ -579,12 +589,14 @@ def cloud_test_catalog_tmpfile(
         metastore_tmpfile,
         warehouse_tmpfile,
     )
-    yield catalog
+    try:
+        yield catalog
+    finally:
+        # Clean up job-related atexit hooks to prevent errors during pytest shutdown
+        from tests.utils import reset_session_job_state
 
-    # Clean up job-related atexit hooks to prevent errors during pytest shutdown
-    from tests.utils import reset_session_job_state
-
-    reset_session_job_state()
+        catalog.catalog.close()
+        reset_session_job_state()
 
 
 @pytest.fixture

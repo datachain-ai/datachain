@@ -97,7 +97,8 @@ class AbstractMetastore(ABC, Serializable):
         return self
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
-        """Default behavior is to do nothing, as connections may be shared."""
+        """Ensure cloned instances release DB resources when leaving contexts."""
+        self.close_on_exit()
 
     @abstractmethod
     def clone(
