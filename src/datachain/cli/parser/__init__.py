@@ -515,14 +515,7 @@ def get_parser() -> ArgumentParser:  # noqa: PLR0915
     add_anon_arg(parse_gc)
 
     subp.add_parser("internal-run-udf", parents=[parent_parser])
-    run_udf_worker = subp.add_parser("internal-run-udf-worker", parents=[parent_parser])
-    run_udf_worker.add_argument(
-        "--fd",
-        type=int,
-        action="store",
-        default=None,
-        help="File descriptor to write results to",
-    )
+    subp.add_parser("internal-run-udf-worker", parents=[parent_parser])
 
     add_completion_parser(subp, [parent_parser])
     return parser

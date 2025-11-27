@@ -93,14 +93,14 @@ def udf_entrypoint() -> int:
     return 0
 
 
-def udf_worker_entrypoint(fd: int | None = None) -> int:
+def udf_worker_entrypoint() -> int:
     if not (udf_distributor_class := get_udf_distributor_class()):
         raise RuntimeError(
             f"{DISTRIBUTED_IMPORT_PATH} import path is required "
             "for distributed UDF processing."
         )
 
-    return udf_distributor_class.run_udf(fd)
+    return udf_distributor_class.run_udf()
 
 
 class UDFDispatcher:
