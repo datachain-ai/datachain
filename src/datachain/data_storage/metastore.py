@@ -81,6 +81,7 @@ class AbstractMetastore(ABC, Serializable):
     namespace_class: type[Namespace] = Namespace
     project_class: type[Project] = Project
     dataset_class: type[DatasetRecord] = DatasetRecord
+    dataset_version_class: type[DatasetVersion] = DatasetVersion
     dataset_list_class: type[DatasetListRecord] = DatasetListRecord
     dataset_list_version_class: type[DatasetListVersion] = DatasetListVersion
     dependency_class: type[DatasetDependency] = DatasetDependency
@@ -1908,8 +1909,8 @@ class AbstractDBMetastore(AbstractMetastore):
             Column("is_creator", Boolean, nullable=False, default=False),
             Column("created_at", DateTime(timezone=True)),
             UniqueConstraint("dataset_version_id", "job_id"),
-            Index("idx_dvj_job", "job_id"),
-            Index("idx_dvj_creator", "dataset_version_id", "is_creator"),
+            Index("dc_idx_dvj_job", "job_id"),
+            Index("dc_idx_dvj_creator", "dataset_version_id", "is_creator"),
         ]
 
     @cached_property
@@ -2061,18 +2062,18 @@ class AbstractDBMetastore(AbstractMetastore):
         results = list(self.db.execute(query, conn=conn))
         return [str(row[0]) for row in results]
 
-    def get_dataset_version_for_job_ancestry(
+    def _get_dataset_version_for_job_ancestry_query(
         self,
         dataset_name: str,
         namespace_name: str,
         project_name: str,
-        job_id: str,
-        conn=None,
-    ) -> DatasetVersion | None:
-        # Get job ancestry (current job + all ancestors)
-        job_ancestry = [job_id, *self.get_ancestor_job_ids(job_id, conn=conn)]
+        job_ancestry: list[str],
+    ) -> "Select":
+        """Build query to find dataset version created by job ancestry.
 
-        query = (
+        Can be overridden in subclasses to add additional filters (e.g., team_id).
+        """
+        return (
             self._datasets_versions_select()
             .select_from(
                 self._dataset_version_jobs.join(
@@ -2104,8 +2105,23 @@ class AbstractDBMetastore(AbstractMetastore):
             .limit(1)
         )
 
+    def get_dataset_version_for_job_ancestry(
+        self,
+        dataset_name: str,
+        namespace_name: str,
+        project_name: str,
+        job_id: str,
+        conn=None,
+    ) -> DatasetVersion | None:
+        # Get job ancestry (current job + all ancestors)
+        job_ancestry = [job_id, *self.get_ancestor_job_ids(job_id, conn=conn)]
+
+        query = self._get_dataset_version_for_job_ancestry_query(
+            dataset_name, namespace_name, project_name, job_ancestry
+        )
+
         results = list(self.db.execute(query, conn=conn))
         if not results:
             return None
 
-        return DatasetVersion.parse(*results[0])
+        return self.dataset_version_class.parse(*results[0])

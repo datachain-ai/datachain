@@ -133,6 +133,7 @@ class Session:
         if Session._CURRENT_JOB:
             return Session._CURRENT_JOB
 
+        print(f"ENV JOB ID IS {os.getenv('DATACHAIN_JOB_ID')}")
         if env_job_id := os.getenv("DATACHAIN_JOB_ID"):
             # SaaS run: just fetch existing job
             Session._CURRENT_JOB = self.catalog.metastore.get_job(env_job_id)
@@ -154,6 +155,7 @@ class Session:
             # try to find the parent job
             parent = self.catalog.metastore.get_last_job_by_name(script)
 
+            print(f"script for job is {script}")
             job_id = self.catalog.metastore.create_job(
                 name=script,
                 query="",

@@ -706,6 +706,12 @@ class DataChain:
         checkpoints_reset = env2bool("DATACHAIN_CHECKPOINTS_RESET", undefined=True)
 
         _hash = self._calculate_job_hash(job.id)
+        print("-----------------------------")
+        print(f"hash is {_hash}")
+        print(f"job parent id is {job.parent_job_id}")
+        print(
+            f"metastore.find_checkpoint result is {metastore.find_checkpoint(job.parent_job_id, _hash)}"
+        )
 
         if (
             job.parent_job_id
