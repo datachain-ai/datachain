@@ -475,6 +475,7 @@ class Catalog:
         }
         self._warehouse_ready_callback = warehouse_ready_callback
         self.in_memory = in_memory
+        self._owns_connections = True  # False for copies, prevents double-close
 
     @cached_property
     def warehouse(self) -> "AbstractWarehouse":
@@ -496,7 +497,14 @@ class Catalog:
         }
 
     def copy(self, cache=True, db=True):
+        """
+        Create a shallow copy of this catalog.
+
+        The copy shares metastore and warehouse with the original but will not
+        close them - only the original catalog owns the connections.
+        """
         result = copy(self)
+        result._owns_connections = False
         if not db:
             result.metastore = None
             result._warehouse = None
@@ -504,17 +512,14 @@ class Catalog:
         return result
 
     def close(self) -> None:
-        """Release underlying metastore and warehouse connections."""
+        if not self._owns_connections:
+            return
         if self.metastore is not None:
-            try:
+            with suppress(Exception):
                 self.metastore.close_on_exit()
-            except Exception:
-                logger.exception("Failed to close metastore")
         if self._warehouse is not None:
-            try:
+            with suppress(Exception):
                 self._warehouse.close_on_exit()
-            except Exception:
-                logger.exception("Failed to close warehouse")
 
     def __enter__(self) -> "Catalog":
         return self
