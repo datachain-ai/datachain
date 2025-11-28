@@ -518,16 +518,6 @@ class AbstractMetastore(ABC, Serializable):
         """
         Find the dataset version that was created by any job in the ancestry.
         Returns the most recently linked version from these jobs.
-
-        Args:
-            dataset_name: Name of the dataset
-            namespace_name: Name of the namespace
-            project_name: Name of the project
-            job_id: Job ID to search ancestry for
-            conn: Optional database connection
-
-        Returns:
-            DatasetVersion if found, None otherwise
         """
 
 
@@ -1909,8 +1899,7 @@ class AbstractDBMetastore(AbstractMetastore):
             Column("is_creator", Boolean, nullable=False, default=False),
             Column("created_at", DateTime(timezone=True)),
             UniqueConstraint("dataset_version_id", "job_id"),
-            Index("dc_idx_dvj_job", "job_id"),
-            Index("dc_idx_dvj_creator", "dataset_version_id", "is_creator"),
+            Index("dc_idx_dvj_query", "job_id", "is_creator", "created_at"),
         ]
 
     @cached_property
@@ -2069,10 +2058,7 @@ class AbstractDBMetastore(AbstractMetastore):
         project_name: str,
         job_ancestry: list[str],
     ) -> "Select":
-        """Build query to find dataset version created by job ancestry.
-
-        Can be overridden in subclasses to add additional filters (e.g., team_id).
-        """
+        """Build query to find dataset version created by job ancestry."""
         return (
             self._datasets_versions_select()
             .select_from(

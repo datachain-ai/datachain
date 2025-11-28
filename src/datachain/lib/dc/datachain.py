@@ -723,7 +723,8 @@ class DataChain:
             )
 
             if not dataset_version:
-                # Dataset version not found or deleted - skip checkpoint, recreate
+                # Dataset version not found (e.g deleted by user) - skip checkpoint
+                # and recreate
                 return _hash, None
 
             # Read the specific version from ancestry
