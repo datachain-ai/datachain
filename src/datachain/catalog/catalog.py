@@ -860,7 +860,7 @@ class Catalog:
                 f"Version {version} must be higher than the current latest one"
             )
 
-        return self.create_new_dataset_version(
+        return self.create_dataset_version(
             dataset,
             version,
             feature_schema=feature_schema,
@@ -871,7 +871,7 @@ class Catalog:
             job_id=job_id,
         )
 
-    def create_new_dataset_version(
+    def create_dataset_version(
         self,
         dataset: DatasetRecord,
         version: str,
@@ -899,7 +899,7 @@ class Catalog:
         dataset = self.metastore.create_dataset_version(
             dataset,
             version,
-            status=DatasetStatus.PENDING,
+            status=DatasetStatus.CREATED,
             sources=sources,
             feature_schema=feature_schema,
             query_script=query_script,
