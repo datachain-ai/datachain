@@ -1,5 +1,4 @@
 import copy
-import hashlib
 import os
 import os.path
 import sys
@@ -215,13 +214,28 @@ class DataChain:
         self.print_schema(file=file)
         return file.getvalue()
 
-    def hash(self) -> str:
+    def hash(
+        self,
+        name: str | None = None,
+        in_job: bool = False,
+    ) -> str:
         """
         Calculates SHA hash of this chain. Hash calculation is fast and consistent.
         It takes into account all the steps added to the chain and their inputs.
         Order of the steps is important.
+
+        Args:
+            name: Optional dataset name to include in hash (for save operations).
+            in_job: If True, includes the last checkpoint hash from the job context.
         """
-        return self._query.hash()
+        base_hash = self._query.hash(in_job=in_job)
+
+        if name:
+            import hashlib
+
+            return hashlib.sha256((base_hash + name).encode("utf-8")).hexdigest()
+
+        return base_hash
 
     def _as_delta(
         self,
@@ -288,6 +302,13 @@ class DataChain:
     def session(self) -> Session:
         """Session of the chain."""
         return self._query.session
+
+    @property
+    def job(self) -> Job:
+        """
+        Get existing job if running in SaaS, or creating new one if running locally
+        """
+        return self.session.get_or_create_job()
 
     @property
     def name(self) -> str | None:
@@ -585,19 +606,6 @@ class DataChain:
             signal_schema=self.signals_schema | SignalSchema({"sys": Sys}),
         )
 
-    def _calculate_job_hash(self, job_id: str) -> str:
-        """
-        Calculates hash of the job at the place of this chain's save method.
-        Hash is calculated using previous job checkpoint hash (if exists) and
-        adding hash of this chain to produce new hash.
-        """
-        last_checkpoint = self.session.catalog.metastore.get_last_checkpoint(job_id)
-
-        return hashlib.sha256(
-            (bytes.fromhex(last_checkpoint.hash) if last_checkpoint else b"")
-            + bytes.fromhex(self.hash())
-        ).hexdigest()
-
     def save(  # type: ignore[override]
         self,
         name: str,
@@ -631,9 +639,6 @@ class DataChain:
         self._validate_version(version)
         self._validate_update_version(update_version)
 
-        # get existing job if running in SaaS, or creating new one if running locally
-        job = self.session.get_or_create_job()
-
         namespace_name, project_name, name = catalog.get_full_dataset_name(
             name,
             namespace_name=self._settings.namespace,
@@ -641,8 +646,11 @@ class DataChain:
         )
         project = self._get_or_create_project(namespace_name, project_name)
 
+        # Calculate hash including dataset name and job context to avoid conflicts
+        _hash = self.hash(name=f"{namespace_name}/{project_name}/{name}", in_job=True)
+
         # Checkpoint handling
-        _hash, result = self._resolve_checkpoint(name, project, job, kwargs)
+        result = self._resolve_checkpoint(name, project, _hash, kwargs)
 
         # Schema preparation
         schema = self.signals_schema.clone_without_sys_signals().serialize()
@@ -662,12 +670,12 @@ class DataChain:
                     attrs=attrs,
                     feature_schema=schema,
                     update_version=update_version,
-                    job_id=job.id,
+                    job_id=self.job.id,
                     **kwargs,
                 )
             )
 
-        catalog.metastore.create_checkpoint(job.id, _hash)  # type: ignore[arg-type]
+        catalog.metastore.get_or_create_checkpoint(self.job.id, _hash)
         return result
 
     def _validate_version(self, version: str | None) -> None:
@@ -696,29 +704,26 @@ class DataChain:
         self,
         name: str,
         project: Project,
-        job: Job,
+        job_hash: str,
         kwargs: dict,
-    ) -> tuple[str, "DataChain | None"]:
+    ) -> "DataChain | None":
         """Check if checkpoint exists and return cached dataset if possible."""
         from .datasets import read_dataset
 
         metastore = self.session.catalog.metastore
-        checkpoints_reset = env2bool("DATACHAIN_CHECKPOINTS_RESET", undefined=True)
-
-        _hash = self._calculate_job_hash(job.id)
+        checkpoints_reset = env2bool("DATACHAIN_CHECKPOINTS_RESET", undefined=False)
 
         if (
-            job.parent_job_id
+            self.job.parent_job_id
             and not checkpoints_reset
-            and metastore.find_checkpoint(job.parent_job_id, _hash)
+            and metastore.find_checkpoint(self.job.parent_job_id, job_hash)
         ):
             # checkpoint found → reuse dataset
-            chain = read_dataset(
+            return read_dataset(
                 name, namespace=project.namespace.name, project=project.name, **kwargs
             )
-            return _hash, chain
 
-        return _hash, None
+        return None
 
     def _handle_delta(
         self,
@@ -1760,16 +1765,18 @@ class DataChain:
 
         if on is None and right_on is None:
             other_columns = set(other._effective_signals_schema.db_signals())
-            signals = [
+            common_signals = [
                 c
                 for c in self._effective_signals_schema.db_signals()
                 if c in other_columns
             ]
-            if not signals:
+            if not common_signals:
                 raise DataChainParamsError("subtract(): no common columns")
+            signals = list(zip(common_signals, common_signals, strict=False))
         elif on is not None and right_on is None:
             right_on = on
-            signals = list(self.signals_schema.resolve(*on).db_signals())
+            resolved_signals = list(self.signals_schema.resolve(*on).db_signals())
+            signals = list(zip(resolved_signals, resolved_signals, strict=False))  # type: ignore[arg-type]
         elif on is None and right_on is not None:
             raise DataChainParamsError(
                 "'on' must be specified when 'right_on' is provided"

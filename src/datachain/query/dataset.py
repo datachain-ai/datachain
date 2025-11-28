@@ -29,15 +29,22 @@ from tqdm.auto import tqdm
 
 from datachain.asyn import ASYNC_WORKERS, AsyncMapper, OrderedMapper
 from datachain.catalog.catalog import clone_catalog_with_cache
+from datachain.checkpoint import Checkpoint
 from datachain.data_storage.schema import (
     PARTITION_COLUMN_ID,
     partition_col_names,
     partition_columns,
 )
 from datachain.dataset import DatasetDependency, DatasetStatus, RowDict
-from datachain.error import DatasetNotFoundError, QueryScriptCancelError
+from datachain.error import (
+    DataChainError,
+    DatasetNotFoundError,
+    QueryScriptCancelError,
+    TableMissingError,
+)
 from datachain.func.base import Function
 from datachain.hash_utils import hash_column_elements
+from datachain.job import Job
 from datachain.lib.listing import is_listing_dataset, listing_dataset_expired
 from datachain.lib.signal_schema import SignalSchema, generate_merge_root_mapping
 from datachain.lib.udf import UDFAdapter, _get_cache
@@ -52,6 +59,7 @@ from datachain.utils import (
     determine_processes,
     determine_workers,
     ensure_sequence,
+    env2bool,
     filtered_cloudpickle_dumps,
     get_datachain_executable,
     safe_closing,
@@ -156,7 +164,11 @@ class Step(ABC):
 
     @abstractmethod
     def apply(
-        self, query_generator: "QueryGenerator", temp_tables: list[str]
+        self,
+        query_generator: QueryGenerator,
+        temp_tables: list[str],
+        *args,
+        **kwargs,
     ) -> "StepResult":
         """Apply the processing step."""
 
@@ -229,7 +241,13 @@ class DatasetDiffOperation(Step):
         Should return select query that calculates desired diff between dataset queries
         """
 
-    def apply(self, query_generator, temp_tables: list[str]) -> "StepResult":
+    def apply(
+        self,
+        query_generator: QueryGenerator,
+        temp_tables: list[str],
+        *args,
+        **kwargs,
+    ) -> "StepResult":
         source_query = query_generator.exclude(("sys__id",))
         right_before = len(self.dq.temp_table_names)
         target_query = self.dq.apply_steps().select()
@@ -252,7 +270,8 @@ class DatasetDiffOperation(Step):
         diff_q = self.query(source_query, target_query)
 
         insert_q = temp_table.insert().from_select(
-            source_query.selected_columns, diff_q
+            source_query.selected_columns,  # type: ignore[arg-type]
+            diff_q,
         )
 
         self.catalog.warehouse.db.execute(insert_q)
@@ -364,10 +383,20 @@ def process_udf_outputs(
             with safe_closing(udf_output):
                 for row in udf_output:
                     cb.relative_update()
+                    # sys__input_id is now a regular column in partial tables
+                    # It will be removed when partial table is renamed to final
                     yield adjust_outputs(warehouse, row, udf_col_types)
 
-    warehouse.insert_rows(udf_table, _insert_rows(), batch_size=batch_size)
-    warehouse.insert_rows_done(udf_table)
+    try:
+        warehouse.insert_rows(
+            udf_table,
+            _insert_rows(),
+            batch_size=batch_size,
+        )
+    finally:
+        # Always flush the buffer even if an exception occurs
+        # This ensures partial results are visible for checkpoint continuation
+        warehouse.insert_rows_done(udf_table)
 
 
 def get_download_callback(suffix: str = "", **kwargs) -> CombinedDownloadCallback:
@@ -401,7 +430,7 @@ def get_generated_callback(is_generator: bool = False) -> Callback:
 @frozen
 class UDFStep(Step, ABC):
     udf: "UDFAdapter"
-    catalog: "Catalog"
+    session: "Session"
     partition_by: PartitionByType | None = None
     is_generator = False
     # Parameters from Settings
@@ -422,14 +451,45 @@ class UDFStep(Step, ABC):
         return hashlib.sha256(b"".join(parts)).hexdigest()
 
     @abstractmethod
-    def create_udf_table(self, query: Select) -> "Table":
+    def create_output_table(self, name: str, is_partial: bool = False) -> "Table":
         """Method that creates a table where temp udf results will be saved"""
 
-    def process_input_query(self, query: Select) -> tuple[Select, list["Table"]]:
-        """Materialize inputs, ensure sys columns are available, needed for checkpoints,
-        needed for map to work (merge results)"""
-        table = self.catalog.warehouse.create_pre_udf_table(query)
-        return sqlalchemy.select(*table.c), [table]
+    def get_input_query(self, input_table_name: str, original_query: Select) -> Select:
+        """
+        Get a select query for UDF input.
+        If query cache is enabled, use the cached table; otherwise use the original
+        query.
+        """
+        if os.getenv("DATACHAIN_DISABLE_QUERY_CACHE", "") not in ("", "0"):
+            return original_query
+
+        # Table was created from original_query by create_pre_udf_table,
+        # so they should have the same columns. However, get_table() reflects
+        # the table with database-specific types (e.g ClickHouse types) instead of
+        # SQLTypes.
+        # To preserve SQLTypes for proper type conversion while keeping columns bound
+        # to the table (to avoid ambiguous column names), we use type_coerce.
+        table = self.warehouse.db.get_table(input_table_name)
+
+        # Create a mapping of column names to SQLTypes from original query
+        orig_col_types = {col.name: col.type for col in original_query.selected_columns}
+
+        # Build select using bound columns from table, with type coercion for SQLTypes
+        select_columns = []
+        for table_col in table.c:
+            if table_col.name in orig_col_types:
+                # Use type_coerce to preserve SQLType while keeping column bound
+                # to table. Use label() to preserve the column name
+                select_columns.append(
+                    sqlalchemy.type_coerce(
+                        table_col, orig_col_types[table_col.name]
+                    ).label(table_col.name)
+                )
+            else:
+                # Column not in original query (e.g., sys columns), use as-is
+                select_columns.append(table_col)
+
+        return sqlalchemy.select(*select_columns).select_from(table)
 
     @abstractmethod
     def create_result_query(
@@ -440,8 +500,9 @@ class UDFStep(Step, ABC):
         to select
         """
 
-    def populate_udf_table(self, udf_table: "Table", query: Select) -> None:
-        if (rows_total := self.catalog.warehouse.query_count(query)) == 0:
+    def populate_udf_output_table(self, udf_table: "Table", query: Select) -> None:
+        catalog = self.session.catalog
+        if (rows_total := catalog.warehouse.query_count(query)) == 0:
             return
 
         from datachain.catalog import QUERY_SCRIPT_CANCELED_EXIT_CODE
@@ -459,8 +520,8 @@ class UDFStep(Step, ABC):
         udf_distributor_class = get_udf_distributor_class()
 
         prefetch = self.udf.prefetch
-        with _get_cache(self.catalog.cache, prefetch, use_cache=self.cache) as _cache:
-            catalog = clone_catalog_with_cache(self.catalog, _cache)
+        with _get_cache(catalog.cache, prefetch, use_cache=self.cache) as _cache:
+            catalog = clone_catalog_with_cache(catalog, _cache)
 
             try:
                 if udf_distributor_class and not catalog.in_memory:
@@ -572,17 +633,19 @@ class UDFStep(Step, ABC):
                         generated_cb.close()
 
             except QueryScriptCancelError:
-                self.catalog.warehouse.close()
+                catalog.warehouse.close()
                 sys.exit(QUERY_SCRIPT_CANCELED_EXIT_CODE)
             except (Exception, KeyboardInterrupt):
                 # Close any open database connections if an error is encountered
-                self.catalog.warehouse.close()
+                catalog.warehouse.close()
                 raise
 
     def create_partitions_table(self, query: Select) -> "Table":
         """
         Create temporary table with group by partitions.
         """
+        catalog = self.session.catalog
+
         if self.partition_by is None:
             raise RuntimeError("Query must have partition_by set to use partitioning")
         if (id_col := query.selected_columns.get("sys__id")) is None:
@@ -598,14 +661,14 @@ class UDFStep(Step, ABC):
         ]
 
         # create table with partitions
-        tbl = self.catalog.warehouse.create_udf_table(partition_columns())
+        tbl = catalog.warehouse.create_udf_table(partition_columns())
 
         # fill table with partitions
         cols = [
             id_col,
             f.dense_rank().over(order_by=partition_by).label(PARTITION_COLUMN_ID),
         ]
-        self.catalog.warehouse.db.execute(
+        catalog.warehouse.db.execute(
             tbl.insert().from_select(
                 cols,
                 query.offset(None).limit(None).with_only_columns(*cols),
@@ -618,43 +681,348 @@ class UDFStep(Step, ABC):
         if partition_by is not None:
             return self.__class__(
                 self.udf,
-                self.catalog,
+                self.session,
                 partition_by=partition_by,
                 parallel=self.parallel,
                 workers=self.workers,
                 min_task_size=self.min_task_size,
                 batch_size=self.batch_size,
             )
-        return self.__class__(self.udf, self.catalog)
+        return self.__class__(self.udf, self.session)
+
+    def _checkpoint_exist(self, _hash: str, partial: bool = False) -> Checkpoint | None:
+        """
+        Check if checkpoint exists for given hash.
+        Returns the Checkpoint object if found, None otherwise.
+        Checks current job first, then parent job if it exists.
+        """
+        checkpoints_reset = env2bool("DATACHAIN_CHECKPOINTS_RESET", undefined=False)
+
+        if (
+            self.job.parent_job_id
+            and not checkpoints_reset
+            and (
+                checkpoint := self.metastore.find_checkpoint(
+                    self.job.parent_job_id, _hash, partial=partial
+                )
+            )
+        ):
+            return checkpoint
+
+        return None
+
+    @property
+    def job(self) -> Job:
+        return self.session.get_or_create_job()
+
+    @property
+    def metastore(self):
+        return self.session.catalog.metastore
+
+    @property
+    def warehouse(self):
+        return self.session.catalog.warehouse
+
+    @staticmethod
+    def input_table_name(job_id: str, _hash: str) -> str:
+        """Job-specific input table name."""
+        return f"udf_{job_id}_{_hash}_input"
+
+    @staticmethod
+    def output_table_name(job_id: str, _hash: str) -> str:
+        """Job-specific final output table name."""
+        return f"udf_{job_id}_{_hash}_output"
+
+    @staticmethod
+    def partial_output_table_name(job_id: str, _hash: str) -> str:
+        """Job-specific partial output table name."""
+        return f"udf_{job_id}_{_hash}_output_partial"
+
+    def get_or_create_input_table(self, query: Select, _hash: str) -> "Table":
+        """
+        Get or create input table for the given hash.
+
+        First checks if current job has the input table.
+        If not, searches ancestor jobs and uses their table directly.
+        If not found in any ancestor, creates it for current job from query.
+
+        Returns the input table (may belong to current job or an ancestor).
+        """
+        current_input_table_name = UDFStep.input_table_name(self.job.id, _hash)
+
+        # Check if current job already has the input table
+        if self.warehouse.db.has_table(current_input_table_name):
+            return self.warehouse.get_table(current_input_table_name)
+
+        # Search ancestor jobs for the input table
+        if self.job.parent_job_id:
+            ancestor_job_ids = self.metastore.get_ancestor_job_ids(self.job.id)
+            for ancestor_job_id in ancestor_job_ids:
+                ancestor_input_table_name = UDFStep.input_table_name(
+                    ancestor_job_id, _hash
+                )
+                if self.warehouse.db.has_table(ancestor_input_table_name):
+                    # Found input table in ancestor, use it directly
+                    return self.warehouse.get_table(ancestor_input_table_name)
+
+        # Not found in any ancestor, create for current job from original query
+        return self.warehouse.create_pre_udf_table(query, current_input_table_name)
 
     def apply(
-        self, query_generator: QueryGenerator, temp_tables: list[str]
+        self,
+        query_generator: QueryGenerator,
+        temp_tables: list[str],
+        *args,
+        hash_input: str,
+        hash_output: str,
+        **kwargs,
     ) -> "StepResult":
-        query, tables = self.process_input_query(query_generator.select())
-        _query = query
+        _query = query = query_generator.select()
 
-        # Apply partitioning if needed.
+        # Calculate partial hash that includes output schema
+        # This allows continuing from partial when only code changes (bug fix),
+        # but forces re-run when output schema changes (incompatible)
+        partial_hash = hashlib.sha256(
+            (hash_input + self.udf.output_schema_hash()).encode()
+        ).hexdigest()
+
+        udf_reset = env2bool("DATACHAIN_UDF_CHECKPOINT_RESET", undefined=False)
+
+        # If partition_by is set, we need to create input table first to ensure
+        # consistent sys__id
         if self.partition_by is not None:
+            # Create input table first so partition table can reference the
+            # same sys__id values
+            input_table = self.get_or_create_input_table(query, hash_input)
+
+            # Now query from the input table for partition creation
+            # Use get_input_query to preserve SQLTypes from original query
+            query = self.get_input_query(input_table.name, query)
+
             partition_tbl = self.create_partitions_table(query)
+            temp_tables.append(partition_tbl.name)
             query = query.outerjoin(
                 partition_tbl,
                 partition_tbl.c.sys__id == query.selected_columns.sys__id,
             ).add_columns(*partition_columns())
-            tables = [*tables, partition_tbl]
 
-        temp_tables.extend(t.name for t in tables)
-        udf_table = self.create_udf_table(_query)
-        temp_tables.append(udf_table.name)
-        self.populate_udf_table(udf_table, query)
-        q, cols = self.create_result_query(udf_table, query)
+            # always run from scratch as Aggregator checkpoints are not implemented yet
+            udf_reset = True
 
+        if ch := self._checkpoint_exist(hash_output):
+            # Skip UDF execution by reusing existing output table
+            output_table, input_table = self._skip_udf(ch, partial_hash, query)
+        elif (
+            (ch_partial := self._checkpoint_exist(partial_hash, partial=True))
+            and not udf_reset
+            and ch_partial.job_id != self.job.id
+        ):
+            # Only continue from partial if it's from a parent job, not our own
+            output_table, input_table = self._continue_udf(
+                ch_partial, hash_output, query
+            )
+        else:
+            output_table, input_table = self._run_from_scratch(
+                partial_hash, hash_output, query
+            )
+
+        # After UDF completes successfully, clean up partial checkpoint and
+        # processed table
+        if ch_partial := self.metastore.find_checkpoint(
+            self.job.id, partial_hash, partial=True
+        ):
+            self.metastore.remove_checkpoint(ch_partial.id)
+
+        # Create final checkpoint for current job
+        self.metastore.get_or_create_checkpoint(self.job.id, hash_output)
+
+        # Create result query from output table
+        input_query = self.get_input_query(input_table.name, query)
+        q, cols = self.create_result_query(output_table, input_query)
         return step_result(q, cols)
+
+    def _skip_udf(
+        self, checkpoint: Checkpoint, partial_hash: str, query
+    ) -> tuple["Table", "Table"]:
+        """
+        Skip UDF execution by reusing existing output table.
+
+        If checkpoint is from same job, reuse table directly.
+        If checkpoint is from different job, copy table to current job.
+
+        Returns tuple of (output_table, input_table).
+        """
+        if checkpoint.job_id == self.job.id:
+            # Same job - recreate output table object
+            output_table = self.create_output_table(
+                UDFStep.output_table_name(checkpoint.job_id, checkpoint.hash)
+            )
+        else:
+            # Different job - copy the output table to current job
+            existing_output_table = self.warehouse.get_table(
+                UDFStep.output_table_name(checkpoint.job_id, checkpoint.hash)
+            )
+            current_output_table_name = UDFStep.output_table_name(
+                self.job.id, checkpoint.hash
+            )
+            output_table = self.create_output_table(current_output_table_name)
+            # Select only columns that exist in the target table (exclude sys__input_id)
+            select_cols = [
+                c for c in existing_output_table.c if c.name != "sys__input_id"
+            ]
+            self.warehouse.copy_table(output_table, sa.select(*select_cols))
+
+        input_table = self.get_or_create_input_table(query, partial_hash)
+
+        return output_table, input_table
+
+    def _run_from_scratch(
+        self, partial_hash: str, hash_output: str, query
+    ) -> tuple["Table", "Table"]:
+        """
+        Execute UDF from scratch.
+        Gets or creates input table (reuses from ancestors if available).
+        Creates job-specific partial output table.
+        On success, promotes partial table to job-specific final table.
+        Returns tuple of (output_table, input_table).
+        """
+        # Create checkpoint with partial_hash (includes output schema)
+        checkpoint = self.metastore.get_or_create_checkpoint(
+            self.job.id, partial_hash, partial=True
+        )
+
+        # Get or create input table (reuse from ancestors if available)
+        input_table = self.get_or_create_input_table(query, checkpoint.hash)
+
+        # Create job-specific partial output table with sys__input_id column
+        partial_output_table = self.create_output_table(
+            UDFStep.partial_output_table_name(self.job.id, checkpoint.hash),
+            is_partial=True,
+        )
+
+        if self.partition_by is not None:
+            # input table is created before and correct input query is already generated
+            input_query = query
+        else:
+            input_query = self.get_input_query(input_table.name, query)
+
+        # Run UDF to populate partial output table
+        self.populate_udf_output_table(partial_output_table, input_query)
+
+        # Promote partial table to final output table for current job
+        output_table = self.warehouse.rename_table(
+            partial_output_table, UDFStep.output_table_name(self.job.id, hash_output)
+        )
+        return output_table, input_table
+
+    def _continue_udf(
+        self, checkpoint: Checkpoint, hash_output: str, query
+    ) -> tuple["Table", "Table"]:
+        """
+        Continue UDF execution from parent's partial output table.
+
+        Steps:
+        1. Find input table from current job or ancestors
+        2. Find parent's partial output table and copy to current job
+        3. Calculate unprocessed rows (input - partial output)
+        4. Execute UDF only on unprocessed rows
+        5. Promote to job-specific final table on success
+
+        Returns tuple of (output_table, input_table).
+        """
+        # The checkpoint must be from parent job
+        assert self.job.parent_job_id is not None
+        assert checkpoint.job_id == self.job.parent_job_id
+
+        # Create new partial checkpoint in current job
+        self.metastore.get_or_create_checkpoint(
+            self.job.id, checkpoint.hash, partial=True
+        )
+
+        # Find or create input table (may be in current job or ancestor)
+        input_table = self.get_or_create_input_table(query, checkpoint.hash)
+
+        # Copy parent's partial table to current job's partial table
+        try:
+            parent_partial_table = self.warehouse.get_table(
+                UDFStep.partial_output_table_name(
+                    self.job.parent_job_id, checkpoint.hash
+                )
+            )
+        except TableMissingError:
+            raise DataChainError(
+                f"Parent partial table not found for checkpoint {checkpoint}. "
+                "Cannot continue from failed UDF."
+            ) from None
+        partial_table = self.create_output_table(
+            UDFStep.partial_output_table_name(self.job.id, checkpoint.hash),
+            is_partial=True,
+        )
+        self.warehouse.copy_table(partial_table, sa.select(parent_partial_table))
+
+        # Calculate which rows still need processing
+        unprocessed_query = self.calculate_unprocessed_rows(
+            self.warehouse.get_table(input_table.name),
+            partial_table,
+            query,
+        )
+
+        # Execute UDF only on unprocessed rows, appending to partial table
+        self.populate_udf_output_table(partial_table, unprocessed_query)
+
+        # Promote partial table to final output table for current job
+        output_table = self.warehouse.rename_table(
+            partial_table, UDFStep.output_table_name(self.job.id, hash_output)
+        )
+        return output_table, input_table
+
+    @abstractmethod
+    def processed_input_ids_query(self, partial_table: "Table"):
+        """
+        Create a subquery that returns processed input sys__ids from partial table.
+
+        Args:
+            partial_table: The UDF partial table
+
+        Returns:
+            A subquery with a single column labeled 'sys__processed_id' containing
+            processed input IDs
+        """
+
+    def calculate_unprocessed_rows(
+        self,
+        input_table: "Table",
+        partial_table: "Table",
+        original_query,
+    ):
+        """
+        Calculate which input rows haven't been processed yet.
+
+        Args:
+            input_table: The UDF input table
+            partial_table: The UDF partial table
+            original_query: The original query for input data
+
+        Returns:
+            A filtered query containing only unprocessed rows
+        """
+        # Get processed input IDs using subclass-specific logic
+        processed_input_ids_subquery = self.processed_input_ids_query(partial_table)
+
+        # Filter original query to only include unprocessed rows
+        # Use the sys__id column from the query's selected columns, not from input_table
+        sys_id_col = original_query.selected_columns.sys__id
+        return original_query.where(
+            sys_id_col.notin_(
+                sa.select(processed_input_ids_subquery.c.sys__processed_id)
+            )
+        )
 
 
 @frozen
 class UDFSignal(UDFStep):
     udf: "UDFAdapter"
-    catalog: "Catalog"
+    session: "Session"
     partition_by: PartitionByType | None = None
     is_generator = False
     # Parameters from Settings
@@ -664,13 +1032,35 @@ class UDFSignal(UDFStep):
     min_task_size: int | None = None
     batch_size: int | None = None
 
-    def create_udf_table(self, query: Select) -> "Table":
+    def processed_input_ids_query(self, partial_table: "Table"):
+        """
+        For mappers (1:1 mapping): returns sys__id from partial table.
+
+        Since mappers have a 1:1 relationship between input and output,
+        the sys__id in the partial table directly corresponds to input sys__ids.
+        """
+        return sa.select(partial_table.c.sys__id.label("sys__processed_id")).subquery()
+
+    def create_output_table(self, name: str, is_partial: bool = False) -> "Table":
         udf_output_columns: list[sqlalchemy.Column[Any]] = [
             sqlalchemy.Column(col_name, col_type)
             for (col_name, col_type) in self.udf.output.items()
         ]
 
-        return self.catalog.warehouse.create_udf_table(udf_output_columns)
+        # Add sys__input_id column for partial tables to track which input produced
+        # each output. This allows atomic writes and reconstruction of processed table
+        # from output table
+        # Added for both mappers and generators for code consistency
+        # Note: nullable=True because mappers use sys__id (1:1 mapping) while generators
+        # populate this field explicitly (1:N mapping)
+        if is_partial:
+            import sqlalchemy as sa
+
+            udf_output_columns.append(
+                sa.Column("sys__input_id", sa.Integer, nullable=True)
+            )
+
+        return self.warehouse.create_udf_table(udf_output_columns, name=name)
 
     def create_result_query(
         self, udf_table, query
@@ -741,7 +1131,7 @@ class RowGenerator(UDFStep):
     """Extend dataset with new rows."""
 
     udf: "UDFAdapter"
-    catalog: "Catalog"
+    session: "Session"
     partition_by: PartitionByType | None = None
     is_generator = True
     # Parameters from Settings
@@ -751,25 +1141,48 @@ class RowGenerator(UDFStep):
     min_task_size: int | None = None
     batch_size: int | None = None
 
-    def create_udf_table(self, query: Select) -> "Table":
-        warehouse = self.catalog.warehouse
+    def processed_input_ids_query(self, partial_table: "Table"):
+        """
+        For generators (1:N mapping): returns distinct sys__input_id from partial table.
 
-        table_name = self.catalog.warehouse.udf_table_name()
-        columns: tuple[Column, ...] = tuple(
+        Since generators can produce multiple outputs per input (1:N relationship),
+        we use sys__input_id which tracks which input created each output row.
+        """
+        return sa.select(
+            sa.distinct(partial_table.c.sys__input_id).label("sys__processed_id")
+        ).subquery()
+
+    def create_output_table(self, name: str, is_partial: bool = False) -> "Table":
+        columns: list[Column] = [
             Column(name, typ) for name, typ in self.udf.output.items()
-        )
-        return warehouse.create_dataset_rows_table(
-            table_name,
-            columns=columns,
-            if_not_exists=False,
+        ]
+
+        # Add sys__input_id column for partial tables to track which input produced
+        # each output. This allows atomic writes and reconstruction of processed table
+        # from output table
+        # Added for both mappers and generators for code consistency
+        # Note: nullable=True because mappers use sys__id (1:1 mapping) while generators
+        # populate this field explicitly (1:N mapping)
+        if is_partial:
+            import sqlalchemy as sa
+
+            columns.append(sa.Column("sys__input_id", sa.Integer, nullable=True))
+
+        return self.warehouse.create_dataset_rows_table(
+            name,
+            columns=tuple(columns),
+            if_not_exists=True,
         )
 
     def create_result_query(
         self, udf_table, query: Select
     ) -> tuple[QueryGeneratorFunc, list["sqlalchemy.Column"]]:
         udf_table_query = udf_table.select().subquery()
+        # Exclude sys__input_id - it's only needed for tracking during UDF execution
         udf_table_cols: list[sqlalchemy.Label[Any]] = [
-            label(c.name, c) for c in udf_table_query.columns
+            label(c.name, c)
+            for c in udf_table_query.columns
+            if c.name != "sys__input_id"
         ]
 
         def q(*columns):
@@ -778,13 +1191,17 @@ class RowGenerator(UDFStep):
             cols = [c for c in udf_table_cols if c.name in names]
             return sqlalchemy.select(*cols).select_from(udf_table_query)
 
-        return q, udf_table_query.columns
+        return q, [c for c in udf_table_query.columns if c.name != "sys__input_id"]
 
 
 @frozen
 class SQLClause(Step, ABC):
     def apply(
-        self, query_generator: QueryGenerator, temp_tables: list[str]
+        self,
+        query_generator: QueryGenerator,
+        temp_tables: list[str],
+        *args,
+        **kwargs,
     ) -> StepResult:
         query = query_generator.select()
         new_query = self.apply_sql_clause(query)
@@ -813,7 +1230,11 @@ class RegenerateSystemColumns(Step):
         return hashlib.sha256(b"regenerate_system_columns").hexdigest()
 
     def apply(
-        self, query_generator: QueryGenerator, temp_tables: list[str]
+        self,
+        query_generator: QueryGenerator,
+        temp_tables: list[str],
+        *args,
+        **kwargs,
     ) -> StepResult:
         query = query_generator.select()
         new_query = self.catalog.warehouse._regenerate_system_columns(
@@ -976,7 +1397,11 @@ class SQLUnion(Step):
         ).hexdigest()
 
     def apply(
-        self, query_generator: QueryGenerator, temp_tables: list[str]
+        self,
+        query_generator: QueryGenerator,
+        temp_tables: list[str],
+        *args,
+        **kwargs,
     ) -> StepResult:
         left_before = len(self.query1.temp_table_names)
         q1 = self.query1.apply_steps().select().subquery()
@@ -1097,7 +1522,11 @@ class SQLJoin(Step):
             self.validate_expression(c, q1, q2)
 
     def apply(
-        self, query_generator: QueryGenerator, temp_tables: list[str]
+        self,
+        query_generator: QueryGenerator,
+        temp_tables: list[str],
+        *args,
+        **kwargs,
     ) -> StepResult:
         q1 = self.get_query(self.query1, temp_tables)
         q2 = self.get_query(self.query2, temp_tables)
@@ -1347,23 +1776,46 @@ class DatasetQuery:
             self.column_types.pop("sys__id")
         self.project = ds.project
 
+    @property
+    def _starting_step_hash(self) -> str:
+        if self.starting_step:
+            return self.starting_step.hash()
+        assert self.list_ds_name
+        return self.list_ds_name
+
+    @property
+    def job(self) -> Job:
+        """
+        Get existing job if running in SaaS, or creating new one if running locally
+        """
+        return self.session.get_or_create_job()
+
+    @property
+    def _last_checkpoint_hash(self) -> str | None:
+        last_checkpoint = self.catalog.metastore.get_last_checkpoint(self.job.id)
+        return last_checkpoint.hash if last_checkpoint else None
+
     def __iter__(self):
         return iter(self.db_results())
 
     def __or__(self, other):
         return self.union(other)
 
-    def hash(self) -> str:
+    def hash(self, in_job: bool = False) -> str:
         """
         Calculates hash of this class taking into account hash of starting step
         and hashes of each following steps. Ordering is important.
+
+        Args:
+            in_job: If True, includes the last checkpoint hash from the job context.
         """
         hasher = hashlib.sha256()
-        if self.starting_step:
-            hasher.update(self.starting_step.hash().encode("utf-8"))
-        else:
-            assert self.list_ds_name
-            hasher.update(self.list_ds_name.encode("utf-8"))
+
+        start_hash = self._last_checkpoint_hash if in_job else None
+        if start_hash:
+            hasher.update(start_hash.encode("utf-8"))
+
+        hasher.update(self._starting_step_hash.encode("utf-8"))
 
         for step in self.steps:
             hasher.update(step.hash().encode("utf-8"))
@@ -1424,6 +1876,13 @@ class DatasetQuery:
         Apply the steps in the query and return the resulting
         sqlalchemy.SelectBase.
         """
+        hasher = hashlib.sha256()
+        start_hash = self._last_checkpoint_hash
+        if start_hash:
+            hasher.update(start_hash.encode("utf-8"))
+
+        hasher.update(self._starting_step_hash.encode("utf-8"))
+
         self.apply_listing_pre_step()
 
         query = self.clone()
@@ -1448,9 +1907,18 @@ class DatasetQuery:
         result = query.starting_step.apply()
         self.dependencies.update(result.dependencies)
 
+        _hash = hasher.hexdigest()
         for step in query.steps:
+            hash_input = _hash
+            hasher.update(step.hash().encode("utf-8"))
+            _hash = hasher.hexdigest()
+            hash_output = _hash
+
             result = step.apply(
-                result.query_generator, self.temp_table_names
+                result.query_generator,
+                self.temp_table_names,
+                hash_input=hash_input,
+                hash_output=hash_output,
             )  # a chain of steps linked by results
             self.dependencies.update(result.dependencies)
 
@@ -1827,7 +2295,7 @@ class DatasetQuery:
         query.steps.append(
             UDFSignal(
                 udf,
-                self.catalog,
+                self.session,
                 partition_by=partition_by,
                 parallel=parallel,
                 workers=workers,
@@ -1865,7 +2333,7 @@ class DatasetQuery:
         steps.append(
             RowGenerator(
                 udf,
-                self.catalog,
+                self.session,
                 partition_by=partition_by,
                 parallel=parallel,
                 workers=workers,

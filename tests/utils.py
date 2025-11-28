@@ -13,12 +13,14 @@ from typing import Any
 import pytest
 import sqlalchemy as sa
 from PIL import Image
+from sqlalchemy.sql.schema import Table
 
 import datachain as dc
 from datachain.catalog.catalog import Catalog
 from datachain.dataset import DatasetDependency, DatasetRecord
 from datachain.lib.tar import process_tar
 from datachain.query import C
+from datachain.query.dataset import UDFStep
 
 DEFAULT_TREE: dict[str, Any] = {
     "description": "Cats and Dogs",
@@ -253,3 +255,40 @@ def reset_session_job_state():
     Session._JOB_STATUS = None
     Session._OWNS_JOB = None
     Session._JOB_HOOKS_REGISTERED = False
+
+    # Clear DATACHAIN_JOB_ID env var to allow new job creation on next run
+    # This is important for studio/SaaS mode where job_id comes from env var
+    os.environ.pop("DATACHAIN_JOB_ID", None)
+
+
+def get_partial_tables(test_session) -> tuple[Table, Table]:
+    """Helper function that returns partial udf tables left when UDF fails.
+
+    Returns input_table and partial_output_table.
+    """
+    catalog = test_session.catalog
+    warehouse = catalog.warehouse
+    job_id = test_session.get_or_create_job().id
+    checkpoints = list(catalog.metastore.list_checkpoints(job_id))
+    assert len(checkpoints) == 1
+    hash_input = checkpoints[0].hash
+
+    # input table name
+    input_table_name = UDFStep.input_table_name(job_id, hash_input)
+    assert warehouse.db.has_table(input_table_name)
+    input_table = warehouse.get_table(input_table_name)
+
+    # partial output table name
+    partial_table_name = UDFStep.partial_output_table_name(job_id, hash_input)
+    assert warehouse.db.has_table(partial_table_name)
+    partial_output_table = warehouse.get_table(partial_table_name)
+
+    return input_table, partial_output_table
+
+
+def list_tables(db_engine, prefix: str = "") -> list[str]:
+    """List tables that start with the given prefix."""
+    all_tables = sa.inspect(db_engine.engine).get_table_names()
+    if not prefix:
+        return all_tables
+    return [table for table in all_tables if table.startswith(prefix)]

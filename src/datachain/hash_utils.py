@@ -89,8 +89,18 @@ def hash_callable(func):
     if not callable(func):
         raise TypeError("Expected a callable")
 
+    # Handle callable objects (instances with __call__)
+    # If it's not a function or method, it must be a callable object
+    if not inspect.isfunction(func) and not inspect.ismethod(func):
+        # For callable objects, hash the __call__ method instead
+        func = func.__call__
+
     # Determine if it is a lambda
-    is_lambda = func.__name__ == "<lambda>"
+    try:
+        is_lambda = func.__name__ == "<lambda>"
+    except AttributeError:
+        # Some callables (like Mock objects) may not have __name__
+        is_lambda = False
 
     if not is_lambda:
         # Try to get exact source of named function
