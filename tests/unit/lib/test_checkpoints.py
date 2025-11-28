@@ -269,8 +269,8 @@ def test_checkpoints_invalid_parent_job_id(test_session, monkeypatch, nums_datas
 def test_dataset_job_linking(test_session, monkeypatch, nums_dataset):
     """Test that dataset versions are correctly linked to jobs via many-to-many.
 
-    This test verifies the core fix: datasets should appear in ALL jobs that use them,
-    not just the job that created them.
+    This test verifies that datasets should appear in ALL jobs that use them in
+    the single job "chain", not just the job that created them.
     """
     catalog = test_session.catalog
     metastore = catalog.metastore
