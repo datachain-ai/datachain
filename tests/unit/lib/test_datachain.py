@@ -404,7 +404,9 @@ def test_datasets_filtering(test_session, attrs, result):
         "letters", attrs=["letter"]
     )
 
-    assert sorted(dc.datasets(attrs=attrs).to_values("name")) == sorted(result)
+    assert sorted(
+        dc.datasets(attrs=attrs, session=test_session).to_values("name")
+    ) == sorted(result)
 
 
 def test_listings(test_session, tmp_dir):
