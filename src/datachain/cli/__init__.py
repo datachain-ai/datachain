@@ -15,7 +15,6 @@ from .commands import (
     index,
     list_datasets,
     ls,
-    query,
     rm_dataset,
     show,
 )
@@ -90,7 +89,6 @@ def handle_command(args, catalog, client_config) -> int:
         "find": lambda: handle_find_command(args, catalog),
         "index": lambda: handle_index_command(args, catalog),
         "completion": lambda: handle_completion_command(args),
-        "query": lambda: handle_query_command(args, catalog),
         "clear-cache": lambda: clear_cache(catalog),
         "gc": lambda: garbage_collect(catalog),
         "auth": lambda: process_auth_cli_args(args),
@@ -257,15 +255,6 @@ def handle_index_command(args, catalog):
 
 def handle_completion_command(args):
     print(completion(args.shell))
-
-
-def handle_query_command(args, catalog):
-    query(
-        catalog,
-        args.script,
-        parallel=args.parallel,
-        params=args.param,
-    )
 
 
 def handle_broken_pipe_error(exc):

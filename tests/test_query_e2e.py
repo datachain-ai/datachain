@@ -85,8 +85,7 @@ E2E_STEPS = (
     },
     {
         "command": (
-            "datachain",
-            "query",
+            python_exc,
             os.path.join(tests_dir, "scripts", "feature_class.py"),
         ),
         "expected_rows": dedent(
