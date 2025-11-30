@@ -16,10 +16,12 @@ from sqlalchemy import (
     Column,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     Table,
     Text,
     UniqueConstraint,
+    cast,
     desc,
     literal,
     select,
@@ -39,6 +41,7 @@ from datachain.dataset import (
     DatasetStatus,
     DatasetVersion,
     StorageURI,
+    parse_schema,
 )
 from datachain.error import (
     CheckpointNotFoundError,
@@ -78,6 +81,7 @@ class AbstractMetastore(ABC, Serializable):
     namespace_class: type[Namespace] = Namespace
     project_class: type[Project] = Project
     dataset_class: type[DatasetRecord] = DatasetRecord
+    dataset_version_class: type[DatasetVersion] = DatasetVersion
     dataset_list_class: type[DatasetListRecord] = DatasetListRecord
     dataset_list_version_class: type[DatasetListVersion] = DatasetListVersion
     dependency_class: type[DatasetDependency] = DatasetDependency
@@ -484,6 +488,38 @@ class AbstractMetastore(ABC, Serializable):
     ) -> Checkpoint:
         """Creates new checkpoint"""
 
+    #
+    # Dataset Version Jobs (many-to-many)
+    #
+
+    @abstractmethod
+    def link_dataset_version_to_job(
+        self,
+        dataset_version_id: int,
+        job_id: str,
+        is_creator: bool = False,
+        conn=None,
+    ) -> None:
+        """Link dataset version to job (many-to-many)."""
+
+    @abstractmethod
+    def get_ancestor_job_ids(self, job_id: str, conn=None) -> list[str]:
+        """Get all ancestor job IDs for a given job."""
+
+    @abstractmethod
+    def get_dataset_version_for_job_ancestry(
+        self,
+        dataset_name: str,
+        namespace_name: str,
+        project_name: str,
+        job_id: str,
+        conn=None,
+    ) -> DatasetVersion | None:
+        """
+        Find the dataset version that was created by any job in the ancestry.
+        Returns the most recently linked version from these jobs.
+        """
+
 
 class AbstractDBMetastore(AbstractMetastore):
     """
@@ -498,6 +534,7 @@ class AbstractDBMetastore(AbstractMetastore):
     DATASET_TABLE = "datasets"
     DATASET_VERSION_TABLE = "datasets_versions"
     DATASET_DEPENDENCY_TABLE = "datasets_dependencies"
+    DATASET_VERSION_JOBS_TABLE = "dataset_version_jobs"
     JOBS_TABLE = "jobs"
     CHECKPOINTS_TABLE = "checkpoints"
 
@@ -1125,7 +1162,7 @@ class AbstractDBMetastore(AbstractMetastore):
                     dataset_values[field] = None
                 else:
                     values[field] = json.dumps(value)
-                    dataset_values[field] = DatasetRecord.parse_schema(value)
+                    dataset_values[field] = parse_schema(value)
             elif field == "project_id":
                 if not value:
                     raise ValueError("Cannot set empty project_id for dataset")
@@ -1176,9 +1213,7 @@ class AbstractDBMetastore(AbstractMetastore):
 
             if field == "schema":
                 values[field] = json.dumps(value) if value else None
-                version_values[field] = (
-                    DatasetRecord.parse_schema(value) if value else None
-                )
+                version_values[field] = parse_schema(value) if value else None
             elif field == "feature_schema":
                 if value is None:
                     values[field] = None
@@ -1850,6 +1885,38 @@ class AbstractDBMetastore(AbstractMetastore):
     @abstractmethod
     def _checkpoints_insert(self) -> "Insert": ...
 
+    @staticmethod
+    def _dataset_version_jobs_columns() -> "list[SchemaItem]":
+        """Junction table for dataset versions and jobs many-to-many relationship."""
+        return [
+            Column("id", Integer, primary_key=True),
+            Column(
+                "dataset_version_id",
+                Integer,
+                nullable=False,
+            ),
+            Column("job_id", Text, nullable=False),
+            Column("is_creator", Boolean, nullable=False, default=False),
+            Column("created_at", DateTime(timezone=True)),
+            UniqueConstraint("dataset_version_id", "job_id"),
+            Index("dc_idx_dvj_query", "job_id", "is_creator", "created_at"),
+        ]
+
+    @cached_property
+    def _dataset_version_jobs_fields(self) -> list[str]:
+        return [c.name for c in self._dataset_version_jobs_columns() if c.name]  # type: ignore[attr-defined]
+
+    @cached_property
+    def _dataset_version_jobs(self) -> "Table":
+        return Table(
+            self.DATASET_VERSION_JOBS_TABLE,
+            self.db.metadata,
+            *self._dataset_version_jobs_columns(),
+        )
+
+    @abstractmethod
+    def _dataset_version_jobs_insert(self) -> "Insert": ...
+
     def _checkpoints_select(self, *columns) -> "Select":
         if not columns:
             return self._checkpoints.select()
@@ -1928,3 +1995,117 @@ class AbstractDBMetastore(AbstractMetastore):
         if not rows:
             return None
         return self.checkpoint_class.parse(*rows[0])
+
+    def link_dataset_version_to_job(
+        self,
+        dataset_version_id: int,
+        job_id: str,
+        is_creator: bool = False,
+        conn=None,
+    ) -> None:
+        query = self._dataset_version_jobs_insert().values(
+            dataset_version_id=dataset_version_id,
+            job_id=job_id,
+            is_creator=is_creator,
+            created_at=datetime.now(timezone.utc),
+        )
+        if hasattr(query, "on_conflict_do_nothing"):
+            query = query.on_conflict_do_nothing(
+                index_elements=["dataset_version_id", "job_id"]
+            )
+        self.db.execute(query, conn=conn)
+
+    def get_ancestor_job_ids(self, job_id: str, conn=None) -> list[str]:
+        # Use recursive CTE to walk up the parent chain
+        # Format: WITH RECURSIVE ancestors(id, parent_job_id) AS (...)
+        ancestors_cte = (
+            self._jobs_select(
+                self._jobs.c.id.label("id"),
+                self._jobs.c.parent_job_id.label("parent_job_id"),
+            )
+            .where(self._jobs.c.id == job_id)
+            .cte(name="ancestors", recursive=True)
+        )
+
+        # Recursive part: join with parent jobs
+        ancestors_recursive = ancestors_cte.union_all(
+            self._jobs_select(
+                self._jobs.c.id.label("id"),
+                self._jobs.c.parent_job_id.label("parent_job_id"),
+            ).select_from(
+                self._jobs.join(
+                    ancestors_cte,
+                    self._jobs.c.id
+                    == cast(ancestors_cte.c.parent_job_id, self._jobs.c.id.type),
+                )
+            )
+        )
+
+        # Select all ancestor IDs except the starting job itself
+        query = select(ancestors_recursive.c.id).where(
+            ancestors_recursive.c.id != job_id
+        )
+
+        results = list(self.db.execute(query, conn=conn))
+        return [str(row[0]) for row in results]
+
+    def _get_dataset_version_for_job_ancestry_query(
+        self,
+        dataset_name: str,
+        namespace_name: str,
+        project_name: str,
+        job_ancestry: list[str],
+    ) -> "Select":
+        """Build query to find dataset version created by job ancestry."""
+        return (
+            self._datasets_versions_select()
+            .select_from(
+                self._dataset_version_jobs.join(
+                    self._datasets_versions,
+                    self._dataset_version_jobs.c.dataset_version_id
+                    == self._datasets_versions.c.id,
+                )
+                .join(
+                    self._datasets,
+                    self._datasets_versions.c.dataset_id == self._datasets.c.id,
+                )
+                .join(
+                    self._projects,
+                    self._datasets.c.project_id == self._projects.c.id,
+                )
+                .join(
+                    self._namespaces,
+                    self._projects.c.namespace_id == self._namespaces.c.id,
+                )
+            )
+            .where(
+                self._datasets.c.name == dataset_name,
+                self._namespaces.c.name == namespace_name,
+                self._projects.c.name == project_name,
+                self._dataset_version_jobs.c.job_id.in_(job_ancestry),
+                self._dataset_version_jobs.c.is_creator == True,  # noqa: E712
+            )
+            .order_by(desc(self._dataset_version_jobs.c.created_at))
+            .limit(1)
+        )
+
+    def get_dataset_version_for_job_ancestry(
+        self,
+        dataset_name: str,
+        namespace_name: str,
+        project_name: str,
+        job_id: str,
+        conn=None,
+    ) -> DatasetVersion | None:
+        # Get job ancestry (current job + all ancestors)
+        job_ancestry = [job_id, *self.get_ancestor_job_ids(job_id, conn=conn)]
+
+        query = self._get_dataset_version_for_job_ancestry_query(
+            dataset_name, namespace_name, project_name, job_ancestry
+        )
+
+        results = list(self.db.execute(query, conn=conn))
+        if not results:
+            return None
+
+        return self.dataset_version_class.parse(*results[0])
