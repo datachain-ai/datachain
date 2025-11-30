@@ -2,6 +2,7 @@ import os
 import os.path
 import signal
 import subprocess  # nosec B404
+import sys
 import uuid
 from collections.abc import Generator
 from datetime import datetime
@@ -39,6 +40,10 @@ from datachain.utils import (
 )
 
 from .utils import DEFAULT_TREE, instantiate_tree, reset_session_job_state
+
+distributed_pythonpath = os.environ.get("DATACHAIN_DISTRIBUTED_PYTHONPATH")
+if distributed_pythonpath and distributed_pythonpath not in sys.path:
+    sys.path.insert(0, distributed_pythonpath)
 
 DEFAULT_DATACHAIN_BIN = "datachain"
 DEFAULT_DATACHAIN_GIT_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -109,10 +114,11 @@ def monkeypatch_session() -> Generator[MonkeyPatch, None, None]:
 
 
 @pytest.fixture(autouse=True)
-def clean_session() -> None:
+def clean_session() -> Generator[None, None, None]:
     """
-    Make sure we clean leftover session before each test case
+    Clean leftover sessions after each test while storage handles are still open.
     """
+    yield
     Session.cleanup_for_tests()
 
 
@@ -181,11 +187,13 @@ def metastore(monkeypatch):
 
         yield _metastore
 
+        Session.cleanup_for_tests()
         _metastore.cleanup_for_tests()
     else:
         _metastore = SQLiteMetastore(db_file=":memory:")
         yield _metastore
 
+        Session.cleanup_for_tests()
         cleanup_sqlite_db(_metastore.db.clone(), _metastore.default_table_names)
 
     # Close the connection so that the SQLite file is no longer open, to avoid
@@ -231,10 +239,13 @@ def warehouse(metastore):
 @pytest.fixture
 def catalog(metastore, warehouse):
     catalog = Catalog(metastore=metastore, warehouse=warehouse)
-    yield catalog
+    try:
+        yield catalog
+    finally:
+        catalog.close()
 
-    # Clean up job-related atexit hooks to prevent errors during pytest shutdown
-    reset_session_job_state()
+        # Clean up job-related atexit hooks to prevent errors during pytest shutdown
+        reset_session_job_state()
 
 
 @pytest.fixture
@@ -256,11 +267,13 @@ def metastore_tmpfile(monkeypatch, tmp_path):
 
         yield _metastore
 
+        Session.cleanup_for_tests()
         _metastore.cleanup_for_tests()
     else:
         _metastore = SQLiteMetastore(db_file=str(tmp_path / "test.db"))
         yield _metastore
 
+        Session.cleanup_for_tests()
         cleanup_sqlite_db(_metastore.db.clone(), _metastore.default_table_names)
 
     # Close the connection so that the SQLite file is no longer open, to avoid
@@ -297,7 +310,11 @@ def warehouse_tmpfile(tmp_path, metastore_tmpfile):
 def catalog_tmpfile(metastore_tmpfile, warehouse_tmpfile):
     # For testing parallel and distributed processing, as these cannot use
     # in-memory databases.
-    return Catalog(metastore=metastore_tmpfile, warehouse=warehouse_tmpfile)
+    catalog = Catalog(metastore=metastore_tmpfile, warehouse=warehouse_tmpfile)
+    try:
+        yield catalog
+    finally:
+        catalog.close()
 
 
 @pytest.fixture
@@ -529,7 +546,13 @@ def cloud_test_catalog(
     metastore,
     warehouse,
 ):
-    return get_cloud_test_catalog(cloud_server, tmp_path, metastore, warehouse)
+    catalog = get_cloud_test_catalog(cloud_server, tmp_path, metastore, warehouse)
+    try:
+        yield catalog
+    finally:
+        # Ensure catalog shuts down its metastore/warehouse connections between tests
+        catalog.catalog.close()
+        reset_session_job_state()
 
 
 @pytest.fixture
@@ -566,12 +589,14 @@ def cloud_test_catalog_tmpfile(
         metastore_tmpfile,
         warehouse_tmpfile,
     )
-    yield catalog
+    try:
+        yield catalog
+    finally:
+        # Clean up job-related atexit hooks to prevent errors during pytest shutdown
+        from tests.utils import reset_session_job_state
 
-    # Clean up job-related atexit hooks to prevent errors during pytest shutdown
-    from tests.utils import reset_session_job_state
-
-    reset_session_job_state()
+        catalog.catalog.close()
+        reset_session_job_state()
 
 
 @pytest.fixture

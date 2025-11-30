@@ -70,6 +70,7 @@ def test_serialize(sqlite_db):
     assert isinstance(obj3, SQLiteDatabaseEngine)
     assert obj3.db_file == ":memory:"
     assert obj3.clone_params() == sqlite_db.clone_params()
+    obj3.close()
 
 
 def test_table(sqlite_db):

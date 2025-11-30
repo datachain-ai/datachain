@@ -58,7 +58,7 @@ def test_catalog_anon(tmp_dir, catalog, anon):
     assert chain.session.catalog.client_config.get("anon", False) is anon
 
 
-def test_read_storage_client_config(tmp_dir, catalog):
+def test_read_storage_client_config(tmp_dir):
     chain = dc.read_storage(tmp_dir.as_uri())
     assert chain.session.catalog.client_config == {}  # Default client config is set.
 
@@ -349,8 +349,8 @@ def test_export_images_files(test_session, tmp_dir, tmp_path, use_cache):
     ).settings(cache=use_cache).to_storage(tmp_dir / "output", placement="filename")
 
     for img in images:
-        exported_img = Image.open(tmp_dir / "output" / img["name"])
-        assert images_equal(img["data"], exported_img)
+        with Image.open(tmp_dir / "output" / img["name"]) as exported_img:
+            assert images_equal(img["data"], exported_img)
 
 
 @pytest.mark.parametrize("use_cache", [True, False])
@@ -374,8 +374,8 @@ def test_read_storage_multiple_uris_files(test_session, tmp_dir, tmp_path, use_c
     ).to_storage(tmp_dir / "output", placement="filename")
 
     for img in images:
-        exported_img = Image.open(tmp_dir / "output" / img["name"])
-        assert images_equal(img["data"], exported_img)
+        with Image.open(tmp_dir / "output" / img["name"]) as exported_img:
+            assert images_equal(img["data"], exported_img)
 
     chain = dc.read_storage(
         [
@@ -445,8 +445,8 @@ def test_read_storage_path_object(test_session, tmp_dir, tmp_path):
     dc.read_storage(tmp_path).to_storage(tmp_dir / "output", placement="filename")
 
     for img in images:
-        exported_img = Image.open(tmp_dir / "output" / img["name"])
-        assert images_equal(img["data"], exported_img)
+        with Image.open(tmp_dir / "output" / img["name"]) as exported_img:
+            assert images_equal(img["data"], exported_img)
 
 
 def test_to_storage_relative_path(test_session, tmp_path):
@@ -466,8 +466,8 @@ def test_to_storage_relative_path(test_session, tmp_path):
     ).to_storage("output", placement="filename")
 
     for img in images:
-        exported_img = Image.open(Path("output") / img["name"])
-        assert images_equal(img["data"], exported_img)
+        with Image.open(Path("output") / img["name"]) as exported_img:
+            assert images_equal(img["data"], exported_img)
 
 
 def test_to_storage_files_filename_placement_not_unique_files(tmp_dir, test_session):

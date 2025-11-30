@@ -145,7 +145,7 @@ def _ls_urls_flat(
     long: bool,
     catalog: "Catalog",
     **kwargs,
-) -> Iterator[tuple[str, Iterator[str]]]:
+) -> Iterator[tuple[str, Iterable[str]]]:
     from datachain.client import Client
     from datachain.node import long_line_str
 
@@ -154,7 +154,9 @@ def _ls_urls_flat(
         if client_cls.is_root_url(source):
             buckets = client_cls.ls_buckets(**catalog.client_config)
             if long:
-                values = (long_line_str(b.name, b.created) for b in buckets)
+                values: Iterable[str] = (
+                    long_line_str(b.name, b.created) for b in buckets
+                )
             else:
                 values = (b.name for b in buckets)
             yield source, values
@@ -164,7 +166,7 @@ def _ls_urls_flat(
             if long:
                 fields.append("last_modified")
             for data_source, results in catalog.ls([source], fields=fields, **kwargs):
-                values = (_node_data_to_ls_values(r, long) for r in results)
+                values = [_node_data_to_ls_values(r, long) for r in results]
                 found = True
                 yield data_source.dirname(), values
             if not found:

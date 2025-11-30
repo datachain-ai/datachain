@@ -60,6 +60,7 @@ def main(argv: list[str] | None = None) -> int:
 
     error = None
 
+    catalog = None
     try:
         catalog = get_catalog(client_config=client_config)
         return handle_command(args, catalog, client_config)
@@ -70,6 +71,11 @@ def main(argv: list[str] | None = None) -> int:
         error, return_code = handle_general_exception(exc, args, logging_level)
         return return_code
     finally:
+        if catalog is not None:
+            try:
+                catalog.close()
+            except Exception:
+                logger.exception("Failed to close catalog")
         from datachain.telemetry import telemetry
 
         telemetry.send_cli_call(args.command, error=error)
