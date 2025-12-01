@@ -167,12 +167,6 @@ markers = [
 ]
 filterwarnings = [
   "error",  # Treat all warnings as errors by default
-  # Specific warnings we want to be strict about (redundant with error default, but explicit)
-  "error::pandas.errors.PerformanceWarning",
-  "error::pydantic.warnings.PydanticDeprecatedSince20",
-  "error::pytest_mock.PytestMockWarning",
-  "error::pytest.PytestCollectionWarning",
-  "error::sqlalchemy.exc.SADeprecationWarning",
   # Third-party deprecation warnings we can't fix
   "ignore::DeprecationWarning:timm.*",
   "ignore::DeprecationWarning:botocore.auth",
