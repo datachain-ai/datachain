@@ -166,17 +166,22 @@ markers = [
   "incremental_processing: Delta and retry examples"
 ]
 filterwarnings = [
+  "error",  # Treat all warnings as errors by default
+  # Specific warnings we want to be strict about (redundant with error default, but explicit)
   "error::pandas.errors.PerformanceWarning",
   "error::pydantic.warnings.PydanticDeprecatedSince20",
   "error::pytest_mock.PytestMockWarning",
   "error::pytest.PytestCollectionWarning",
   "error::sqlalchemy.exc.SADeprecationWarning",
+  # Third-party deprecation warnings we can't fix
   "ignore::DeprecationWarning:timm.*",
   "ignore::DeprecationWarning:botocore.auth",
   "ignore::DeprecationWarning:datasets.utils._dill",
   "ignore::DeprecationWarning:librosa.core.intervals",
+  # Expected warnings from our code
   "ignore:Field name .* shadows an attribute in parent:UserWarning",  # datachain.lib.feature
-  "ignore:Can't use core=sysmon:coverage.exceptions.CoverageWarning"  # Python 3.13 branch coverage limitation
+  # Coverage limitation on Python 3.13
+  "ignore:Can't use core=sysmon:coverage.exceptions.CoverageWarning"
 ]
 
 [tool.coverage.run]
