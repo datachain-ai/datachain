@@ -3,24 +3,19 @@ import logging
 import os
 import os.path
 import posixpath
-import signal
-import subprocess
-import sys
 import time
 import traceback
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from copy import copy
 from dataclasses import dataclass
 from functools import cached_property, reduce
-from threading import Thread
-from typing import IO, TYPE_CHECKING, Any, NoReturn
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 import sqlalchemy as sa
 from sqlalchemy import Column
 from tqdm.auto import tqdm
 
-from datachain import json
 from datachain.cache import Cache
 from datachain.client import Client
 from datachain.dataset import (
@@ -44,8 +39,6 @@ from datachain.error import (
     DatasetVersionNotFoundError,
     NamespaceNotFoundError,
     ProjectNotFoundError,
-    QueryScriptCancelError,
-    QueryScriptRunError,
 )
 from datachain.lib.listing import get_listing
 from datachain.node import DirType, Node, NodeWithPath
@@ -72,8 +65,6 @@ TTL_INT = 4 * 60 * 60
 
 INDEX_INTERNAL_ERROR_MESSAGE = "Internal error on indexing"
 DATASET_INTERNAL_ERROR_MESSAGE = "Internal error on creating dataset"
-# exit code we use if last statement in query script is not instance of DatasetQuery
-QUERY_SCRIPT_INVALID_LAST_STATEMENT_EXIT_CODE = 10
 # exit code we use if query script was canceled
 QUERY_SCRIPT_CANCELED_EXIT_CODE = 11
 QUERY_SCRIPT_SIGTERM_EXIT_CODE = -15  # if query script was terminated by SIGTERM
@@ -85,76 +76,9 @@ PULL_DATASET_SLEEP_INTERVAL = 0.1  # sleep time while waiting for chunk to be av
 PULL_DATASET_CHECK_STATUS_INTERVAL = 20  # interval to check export status in Studio
 
 
-def noop(_: str):
-    pass
-
-
-class TerminationSignal(RuntimeError):  # noqa: N818
-    def __init__(self, signal):
-        self.signal = signal
-        super().__init__("Received termination signal", signal)
-
-    def __repr__(self):
-        return f"{self.__class__.__name__}({self.signal})"
-
-
-if sys.platform == "win32":
-    SIGINT = signal.CTRL_C_EVENT
-else:
-    SIGINT = signal.SIGINT
-
-
 def is_namespace_local(namespace_name) -> bool:
     """Checks if namespace is from local environment, i.e. is `local`"""
     return namespace_name == "local"
-
-
-def shutdown_process(
-    proc: subprocess.Popen,
-    interrupt_timeout: int | None = None,
-    terminate_timeout: int | None = None,
-) -> int:
-    """Shut down the process gracefully with SIGINT -> SIGTERM -> SIGKILL."""
-
-    logger.info("sending interrupt signal to the process %s", proc.pid)
-    proc.send_signal(SIGINT)
-
-    logger.info("waiting for the process %s to finish", proc.pid)
-    try:
-        return proc.wait(interrupt_timeout)
-    except subprocess.TimeoutExpired:
-        logger.info(
-            "timed out waiting, sending terminate signal to the process %s", proc.pid
-        )
-        proc.terminate()
-        try:
-            return proc.wait(terminate_timeout)
-        except subprocess.TimeoutExpired:
-            logger.info("timed out waiting, killing the process %s", proc.pid)
-            proc.kill()
-            return proc.wait()
-
-
-def process_output(stream: IO[bytes], callback: Callable[[str], None]) -> None:
-    buffer = b""
-
-    try:
-        while byt := stream.read(1):  # Read one byte at a time
-            buffer += byt
-
-            if byt in (b"\n", b"\r"):  # Check for newline or carriage return
-                line = buffer.decode("utf-8", errors="replace")
-                callback(line)
-                buffer = b""  # Clear buffer for the next line
-
-        if buffer:  # Handle any remaining data in the buffer
-            line = buffer.decode("utf-8", errors="replace")
-            callback(line)
-    finally:
-        try:
-            stream.close()  # Ensure output is closed
-        except Exception:  # noqa: BLE001, S110
-            pass
 
 
 class DatasetRowsFetcher(NodesThreadPool):
@@ -1781,120 +1705,6 @@ class Catalog:
             client_config=client_config,
             recursive=recursive,
         )
-
-    @staticmethod
-    def query(
-        query_script: str,
-        env: Mapping[str, str] | None = None,
-        python_executable: str = sys.executable,
-        stdout_callback: Callable[[str], None] | None = None,
-        stderr_callback: Callable[[str], None] | None = None,
-        params: dict[str, str] | None = None,
-        job_id: str | None = None,
-        reset: bool = False,
-        interrupt_timeout: int | None = None,
-        terminate_timeout: int | None = None,
-    ) -> None:
-        if not isinstance(reset, bool):
-            raise TypeError(f"reset must be a bool, got {type(reset).__name__}")
-
-        cmd = [python_executable, "-c", query_script]
-        env = dict(env or os.environ)
-        env.update(
-            {
-                "DATACHAIN_QUERY_PARAMS": json.dumps(params or {}),
-                "DATACHAIN_JOB_ID": job_id or "",
-                "DATACHAIN_CHECKPOINTS_RESET": str(reset),
-            },
-        )
-        popen_kwargs: dict[str, Any] = {}
-
-        if stdout_callback is not None:
-            popen_kwargs = {"stdout": subprocess.PIPE}
-        if stderr_callback is not None:
-            popen_kwargs["stderr"] = subprocess.PIPE
-
-        def raise_termination_signal(sig: int, _: Any) -> NoReturn:
-            raise TerminationSignal(sig)
-
-        stdout_thread: Thread | None = None
-        stderr_thread: Thread | None = None
-
-        with subprocess.Popen(cmd, env=env, **popen_kwargs) as proc:  # noqa: S603
-            logger.info("Starting process %s", proc.pid)
-
-            orig_sigint_handler = signal.getsignal(signal.SIGINT)
-            # ignore SIGINT in the main process.
-            # In the terminal, SIGINTs are received by all the processes in
-            # the foreground process group, so the script will receive the signal too.
-            # (If we forward the signal to the child, it will receive it twice.)
-            signal.signal(signal.SIGINT, signal.SIG_IGN)
-
-            orig_sigterm_handler = signal.getsignal(signal.SIGTERM)
-            signal.signal(signal.SIGTERM, raise_termination_signal)
-            try:
-                if stdout_callback is not None:
-                    stdout_thread = Thread(
-                        target=process_output,
-                        args=(proc.stdout, stdout_callback),
-                        daemon=True,
-                    )
-                    stdout_thread.start()
-                if stderr_callback is not None:
-                    stderr_thread = Thread(
-                        target=process_output,
-                        args=(proc.stderr, stderr_callback),
-                        daemon=True,
-                    )
-                    stderr_thread.start()
-
-                proc.wait()
-            except TerminationSignal as exc:
-                signal.signal(signal.SIGTERM, orig_sigterm_handler)
-                signal.signal(signal.SIGINT, orig_sigint_handler)
-                logger.info("Shutting down process %s, received %r", proc.pid, exc)
-                # Rather than forwarding the signal to the child, we try to shut it down
-                # gracefully. This is because we consider the script to be interactive
-                # and special, so we give it time to cleanup before exiting.
-                shutdown_process(proc, interrupt_timeout, terminate_timeout)
-                if proc.returncode:
-                    raise QueryScriptCancelError(
-                        "Query script was canceled by user", return_code=proc.returncode
-                    ) from exc
-            finally:
-                signal.signal(signal.SIGTERM, orig_sigterm_handler)
-                signal.signal(signal.SIGINT, orig_sigint_handler)
-                # wait for the reader thread
-                thread_join_timeout_seconds = 30
-                if stdout_thread is not None:
-                    stdout_thread.join(timeout=thread_join_timeout_seconds)
-                    if stdout_thread.is_alive():
-                        logger.warning(
-                            "stdout thread is still alive after %s seconds",
-                            thread_join_timeout_seconds,
-                        )
-                if stderr_thread is not None:
-                    stderr_thread.join(timeout=thread_join_timeout_seconds)
-                    if stderr_thread.is_alive():
-                        logger.warning(
-                            "stderr thread is still alive after %s seconds",
-                            thread_join_timeout_seconds,
-                        )
-
-        logger.info("Process %s exited with return code %s", proc.pid, proc.returncode)
-        if proc.returncode in (
-            QUERY_SCRIPT_CANCELED_EXIT_CODE,
-            QUERY_SCRIPT_SIGTERM_EXIT_CODE,
-        ):
-            raise QueryScriptCancelError(
-                "Query script was canceled by user",
-                return_code=proc.returncode,
-            )
-        if proc.returncode:
-            raise QueryScriptRunError(
-                f"Query script exited with error code {proc.returncode}",
-                return_code=proc.returncode,
-            )
 
     def cp(
         self,
