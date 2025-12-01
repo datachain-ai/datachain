@@ -3,11 +3,12 @@ from collections.abc import Iterable, Iterator
 from itertools import chain
 from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from datachain.catalog import Catalog
-
 from datachain.cli.utils import determine_flavors
 from datachain.config import Config
+from datachain.query.session import Session
+
+if TYPE_CHECKING:
+    from datachain.catalog import Catalog
 
 
 def ls(
@@ -32,42 +33,32 @@ def ls(
 def ls_local(
     sources,
     long: bool = False,
-    catalog: "Catalog | None" = None,
+    catalog=None,
     client_config=None,
     **kwargs,
 ):
-    from contextlib import nullcontext
-
     from datachain import listings
 
     if sources:
-        if catalog is None:
-            from datachain.catalog import get_catalog
-
-            catalog_ctx: Catalog | nullcontext[Catalog] = get_catalog(
-                client_config=client_config
-            )
+        session = Session.get(catalog=catalog, client_config=client_config)
+        catalog = session.catalog
+        actual_sources = list(ls_urls(sources, catalog=catalog, long=long, **kwargs))
+        if len(actual_sources) == 1:
+            for _, entries in actual_sources:
+                for entry in entries:
+                    print(format_ls_entry(entry))
         else:
-            catalog_ctx = nullcontext(catalog)
-
-        with catalog_ctx as cat:
-            actual_sources = list(ls_urls(sources, catalog=cat, long=long, **kwargs))
-            if len(actual_sources) == 1:
-                for _, entries in actual_sources:
-                    for entry in entries:
-                        print(format_ls_entry(entry))
-            else:
-                first = True
-                for source, entries in actual_sources:
-                    # print a newline between directory listings
-                    if first:
-                        first = False
-                    else:
-                        print()
-                    if source:
-                        print(f"{source}:")
-                    for entry in entries:
-                        print(format_ls_entry(entry))
+            first = True
+            for source, entries in actual_sources:
+                # print a newline between directory listings
+                if first:
+                    first = False
+                else:
+                    print()
+                if source:
+                    print(f"{source}:")
+                for entry in entries:
+                    print(format_ls_entry(entry))
     else:
         # Collect results in a list here to prevent interference from `tqdm` and `print`
         listing = listings().to_list("listing")

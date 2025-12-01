@@ -2,7 +2,6 @@ import os
 import os.path
 import signal
 import subprocess  # nosec B404
-import sys
 import uuid
 from collections.abc import Generator
 from datetime import datetime
@@ -40,10 +39,6 @@ from datachain.utils import (
 )
 
 from .utils import DEFAULT_TREE, instantiate_tree, reset_session_job_state
-
-distributed_pythonpath = os.environ.get("DATACHAIN_DISTRIBUTED_PYTHONPATH")
-if distributed_pythonpath and distributed_pythonpath not in sys.path:
-    sys.path.insert(0, distributed_pythonpath)
 
 DEFAULT_DATACHAIN_BIN = "datachain"
 DEFAULT_DATACHAIN_GIT_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -238,14 +233,11 @@ def warehouse(metastore):
 
 @pytest.fixture
 def catalog(metastore, warehouse):
-    catalog = Catalog(metastore=metastore, warehouse=warehouse)
-    try:
+    with Catalog(metastore=metastore, warehouse=warehouse) as catalog:
         yield catalog
-    finally:
-        catalog.close()
 
-        # Clean up job-related atexit hooks to prevent errors during pytest shutdown
-        reset_session_job_state()
+    # Clean up job-related atexit hooks to prevent errors during pytest shutdown
+    reset_session_job_state()
 
 
 @pytest.fixture
@@ -310,11 +302,8 @@ def warehouse_tmpfile(tmp_path, metastore_tmpfile):
 def catalog_tmpfile(metastore_tmpfile, warehouse_tmpfile):
     # For testing parallel and distributed processing, as these cannot use
     # in-memory databases.
-    catalog = Catalog(metastore=metastore_tmpfile, warehouse=warehouse_tmpfile)
-    try:
+    with Catalog(metastore=metastore_tmpfile, warehouse=warehouse_tmpfile) as catalog:
         yield catalog
-    finally:
-        catalog.close()
 
 
 @pytest.fixture
