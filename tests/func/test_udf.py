@@ -2,14 +2,18 @@ import functools
 import os
 import pickle
 import posixpath
+import sys
+import time
+from collections.abc import Iterator
 
+import multiprocess as mp
 import pytest
 
 import datachain as dc
 from datachain.func import path as pathfunc
 from datachain.lib.file import AudioFile, AudioFragment, File
-from datachain.lib.udf import Mapper
-from datachain.lib.utils import DataChainError
+from datachain.lib.udf import Mapper, UdfRunError
+from datachain.lib.utils import DataChainColumnError
 from tests.utils import LARGE_TREE, NUM_TREE
 
 
@@ -387,6 +391,23 @@ def test_udf_different_types(cloud_test_catalog):
     ]
 
 
+def test_udf_rejects_root_override(test_session):
+    class X(dc.DataModel):
+        x: int
+
+    chain = dc.read_values(x=[X(x=0), X(x=1)], session=test_session)
+
+    with pytest.raises(
+        DataChainColumnError,
+        match="Error for column x: signal already exists with a different type",
+    ):
+        chain.map(
+            lambda x: x.model_dump(),
+            params=["x"],
+            output={"x": dict},
+        )
+
+
 @pytest.mark.parametrize("use_cache", [False, True])
 @pytest.mark.parametrize("prefetch", [0, 2])
 def test_map_file(cloud_test_catalog, use_cache, prefetch, monkeypatch):
@@ -550,14 +571,121 @@ def test_udf_parallel_exec_error(cloud_test_catalog_tmpfile):
         .map(name_len_error, params=["file.path"], output={"name_len": int})
     )
 
-    if os.environ.get("DATACHAIN_DISTRIBUTED"):
-        # in distributed mode we expect DataChainError with the error message
-        with pytest.raises(DataChainError, match="Test Error!"):
-            chain.show()
-    else:
-        # while in local mode we expect RuntimeError with the error message
-        with pytest.raises(RuntimeError, match="UDF Execution Failed!"):
-            chain.show()
+    with pytest.raises(RuntimeError, match="UDF Execution Failed!"):
+        chain.show()
+
+
+@pytest.mark.parametrize(
+    "failure_mode,expected_exit_code,error_marker",
+    [
+        ("exception", 1, "Worker 1 failure!"),
+        ("keyboard_interrupt", -2, "KeyboardInterrupt"),
+        ("sys_exit", 1, None),
+        ("os_exit", 1, None),  # os._exit - immediate termination
+    ],
+)
+def test_udf_parallel_worker_failure_exits_peers(
+    test_session_tmpfile,
+    tmp_path,
+    capfd,
+    failure_mode,
+    expected_exit_code,
+    error_marker,
+):
+    """
+    Test that when one worker fails, all other workers exit immediately.
+
+    Tests different failure modes:
+    - exception: Worker raises RuntimeError (normal exception)
+    - keyboard_interrupt: Worker raises KeyboardInterrupt (simulates Ctrl+C)
+    - sys_exit: Worker calls sys.exit() (clean Python exit)
+    - os_exit: Worker calls os._exit() (immediate process termination)
+    """
+    import platform
+
+    # Windows uses different exit codes for KeyboardInterrupt
+    # 3221225786 (0xC000013A) is STATUS_CONTROL_C_EXIT on Windows
+    # while POSIX systems use -2 (SIGINT)
+    if platform.system() == "Windows" and failure_mode == "keyboard_interrupt":
+        expected_exit_code = 3221225786
+
+    vals = list(range(100))
+
+    barrier_dir = tmp_path / "udf_workers_barrier"
+    barrier_dir_str = str(barrier_dir)
+    os.makedirs(barrier_dir_str, exist_ok=True)
+    expected_workers = 3
+
+    def slow_process(val: int) -> int:
+        proc_name = mp.current_process().name
+        with open(os.path.join(barrier_dir_str, f"{proc_name}.started"), "w") as f:
+            f.write(str(time.time()))
+
+        # Wait until all expected workers have written their markers
+        deadline = time.time() + 1.0
+        while time.time() < deadline:
+            try:
+                count = len(
+                    [n for n in os.listdir(barrier_dir_str) if n.endswith(".started")]
+                )
+            except FileNotFoundError:
+                count = 0
+            if count >= expected_workers:
+                break
+            time.sleep(0.01)
+
+        if proc_name == "Worker-UDF-1":
+            if failure_mode == "exception":
+                raise RuntimeError("Worker 1 failure!")
+            if failure_mode == "keyboard_interrupt":
+                raise KeyboardInterrupt("Worker interrupted")
+            if failure_mode == "sys_exit":
+                sys.exit(1)
+            if failure_mode == "os_exit":
+                os._exit(1)
+        time.sleep(5)
+        return val * 2
+
+    chain = (
+        dc.read_values(val=vals, session=test_session_tmpfile)
+        .settings(parallel=3)
+        .map(slow_process, output={"result": int})
+    )
+
+    start = time.time()
+    with pytest.raises(RuntimeError, match="UDF Execution Failed!") as exc_info:
+        list(chain.to_iter("result"))
+    elapsed = time.time() - start
+
+    # Verify timing: should exit immediately when worker fails
+    assert elapsed < 10, f"took {elapsed:.1f}s, should exit immediately"
+
+    # Verify multiple workers were started via barrier markers
+    try:
+        started_files = [
+            n for n in os.listdir(barrier_dir_str) if n.endswith(".started")
+        ]
+    except FileNotFoundError:
+        started_files = []
+    assert len(started_files) == 3, (
+        f"Expected all 3 workers to start, but saw markers for: {started_files}"
+    )
+
+    captured = capfd.readouterr()
+
+    # Verify the RuntimeError has a meaningful message with exit code
+    error_message = str(exc_info.value)
+    assert f"UDF Execution Failed! Exit code: {expected_exit_code}" in error_message, (
+        f"Expected exit code {expected_exit_code}, got: {error_message}"
+    )
+
+    if error_marker:
+        assert error_marker in captured.err, (
+            f"Expected '{error_marker}' in stderr for {failure_mode} mode. "
+            f"stderr output: {captured.err[:500]}"
+        )
+
+    assert "semaphore" not in captured.err
 
 
 @pytest.mark.parametrize(
@@ -585,7 +713,7 @@ def test_udf_reuse_on_error(cloud_test_catalog_tmpfile):
         .select("file.path", "path_len")
     )
 
-    with pytest.raises(DataChainError, match="Test Error!"):
+    with pytest.raises(RuntimeError, match="Test Error!"):
         chain.show()
 
     # Simulate fixing the error
@@ -620,12 +748,8 @@ def test_udf_parallel_interrupt(cloud_test_catalog_tmpfile, capfd):
         .settings(parallel=True)
         .map(name_len_interrupt, params=["file.path"], output={"name_len": int})
     )
-    if os.environ.get("DATACHAIN_DISTRIBUTED"):
-        with pytest.raises(KeyboardInterrupt):
-            chain.show()
-    else:
-        with pytest.raises(RuntimeError, match="UDF Execution Failed!"):
-            chain.show()
+    with pytest.raises(RuntimeError, match="UDF Execution Failed!"):
+        chain.show()
     captured = capfd.readouterr()
     assert "semaphore" not in captured.err
 
@@ -678,8 +802,8 @@ def test_udf_distributed(
 ):
     session = cloud_test_catalog_tmpfile.session
 
-    def name_len(name):
-        return (len(name),)
+    def name_len(name: str) -> int:
+        return len(name)
 
     chain = (
         dc.read_storage(cloud_test_catalog_tmpfile.src_uri, session=session)
@@ -725,7 +849,7 @@ def test_udf_distributed_exec_error(
         .settings(parallel=parallel, workers=workers)
         .map(name_len_error, params=["file.path"], output={"name_len": int})
     )
-    with pytest.raises(DataChainError, match="Test Error!"):
+    with pytest.raises(UdfRunError, match="Test Error!"):
         chain.show()
 
 
@@ -758,7 +882,227 @@ def test_udf_distributed_interrupt(
         .settings(parallel=parallel, workers=workers)
         .map(name_len_interrupt, params=["file.path"], output={"name_len": int})
     )
-    with pytest.raises(KeyboardInterrupt):
+    with pytest.raises(Exception, match="UDF task failed with exit code"):
         chain.show()
     captured = capfd.readouterr()
     assert "semaphore" not in captured.err
+
+
+def test_gen_works_after_union(test_session_tmpfile, monkeypatch):
+    """
+    Union drops sys columns, we test that UDF generates them correctly after that.
+    """
+    monkeypatch.setattr("datachain.query.dispatch.DEFAULT_BATCH_SIZE", 5, raising=False)
+    n = 30
+
+    x_ids = list(range(n))
+    y_ids = list(range(n, 2 * n))
+
+    x = dc.read_values(idx=x_ids, session=test_session_tmpfile)
+    y = dc.read_values(idx=y_ids, session=test_session_tmpfile)
+
+    xy = x.union(y)
+
+    def expand(idx):
+        yield f"val-{idx}"
+
+    generated = xy.settings(parallel=2).gen(
+        gen=expand,
+        params=("idx",),
+        output={"val": str},
+    )
+
+    values = generated.to_values("val")
+
+    assert len(values) == 2 * n
+    assert set(values) == {f"val-{i}" for i in range(2 * n)}
+
+
+@pytest.mark.parametrize("full", [False, True])
+def test_gen_works_after_merge(test_session_tmpfile, monkeypatch, full):
+    """Merge drops sys columns as well; ensure UDF generation still works."""
+    monkeypatch.setattr("datachain.query.dispatch.DEFAULT_BATCH_SIZE", 5, raising=False)
+    n = 30
+
+    idxs = list(range(n))
+
+    left = dc.read_values(
+        idx=idxs,
+        left_value=[f"left-{i}" for i in idxs],
+        session=test_session_tmpfile,
+    )
+    right = dc.read_values(
+        idx=idxs,
+        right_value=[f"right-{i}" for i in idxs],
+        session=test_session_tmpfile,
+    )
+
+    merged = left.merge(right, on="idx", full=full)
+
+    def expand(idx, left_value, right_value):
+        yield f"val-{idx}-{left_value}-{right_value}"
+
+    generated = merged.settings(parallel=2).gen(
+        gen=expand,
+        params=("idx", "left_value", "right_value"),
+        output={"val": str},
+    )
+
+    values = generated.to_values("val")
+
+    assert len(values) == n
+    expected = {f"val-{i}-left-{i}-right-{i}" for i in idxs}
+    assert set(values) == expected
+
+
+def test_agg_works_after_union(test_session_tmpfile, monkeypatch):
+    """Union must preserve sys columns for aggregations with functional partitions."""
+    from datachain import func
+
+    monkeypatch.setattr("datachain.query.dispatch.DEFAULT_BATCH_SIZE", 5, raising=False)
+
+    groups = 5
+    n = 30
+
+    x_paths = [f"group-{i % groups}/item-{i}" for i in range(n)]
+    y_paths = [f"group-{i % groups}/item-{n + i}" for i in range(n)]
+
+    x = dc.read_values(path=x_paths, session=test_session_tmpfile)
+    y = dc.read_values(path=y_paths, session=test_session_tmpfile)
+
+    xy = x.union(y)
+
+    def summarize(paths):
+        group = paths[0].split("/")[0]
+        yield group, len(paths)
+
+    aggregated = xy.settings(parallel=2).agg(
+        summarize,
+        params=("path",),
+        output={"partition": str, "count": int},
+        partition_by=func.parent("path"),
+    )
+
+    records = aggregated.to_records()
+    expected_counts = {f"group-{g}": 2 * n // groups for g in range(groups)}
+    assert {row["partition"]: row["count"] for row in records} == expected_counts
+
+
+@pytest.mark.parametrize("full", [False, True])
+def test_agg_works_after_merge(test_session_tmpfile, monkeypatch, full):
+    """Ensure merge keeps sys columns for aggregations with functional partitions."""
+    from datachain import func
+
+    monkeypatch.setattr("datachain.query.dispatch.DEFAULT_BATCH_SIZE", 5, raising=False)
+
+    groups = 5
+    n = 30
+    idxs = list(range(n))
+
+    left = dc.read_values(
+        idx=idxs,
+        left_path=[f"group-{i % groups}/left-{i}" for i in idxs],
+        session=test_session_tmpfile,
+    )
+    right = dc.read_values(
+        idx=idxs,
+        right_value=idxs,
+        session=test_session_tmpfile,
+    )
+
+    merged = left.merge(right, on="idx", full=full)
+
+    def summarize(left_path, right_value):
+        group = left_path[0].split("/")[0]
+        yield group, sum(right_value)
+
+    aggregated = merged.settings(parallel=2).agg(
+        summarize,
+        params=("left_path", "right_value"),
+        output={"partition": str, "total": int},
+        partition_by=func.parent("left_path"),
+    )
+
+    records = aggregated.to_records()
+    expected_totals = {
+        f"group-{g}": sum(val for val in idxs if val % groups == g)
+        for g in range(groups)
+    }
+    assert {row["partition"]: row["total"] for row in records} == expected_totals
+
+
+def test_agg_list_file_and_map_count(tmp_dir, test_session):
+    names = [
+        "hotdogs.txt",
+        "dogs.txt",
+        "dog.txt",
+        "1dog.txt",
+        "dogatxt.txt",
+        "dog.txtx",
+    ]
+
+    for name in names:
+        (tmp_dir / name).write_text(name, encoding="utf-8")
+
+    base_chain = dc.read_storage(tmp_dir.as_uri(), session=test_session).order_by(
+        "file.path"
+    )
+
+    expected_files: list[File] = []
+    for (file_obj,) in base_chain.select("file").to_iter():
+        assert isinstance(file_obj, File)
+        expected_files.append(file_obj)
+
+    def collect_files(file: list[File]) -> Iterator[list[File]]:
+        # Return the full collection for the partition
+        yield file
+
+    def count_files(files: list[File]) -> int:
+        return len(files)
+
+    (
+        base_chain.agg(files=collect_files)
+        .map(num_files=count_files)
+        .save("temp_udf_types")
+    )
+
+    # Validate result
+    ds = dc.read_dataset("temp_udf_types", session=test_session)
+    rows = ds.select("num_files").to_list()
+    assert rows == [(len(expected_files),)]
+
+
+def test_agg_list_file_persist_and_read(tmp_dir, test_session):
+    names = ["a.txt", "b.txt", "c.txt"]
+
+    for name in names:
+        (tmp_dir / name).write_text(name, encoding="utf-8")
+
+    base_chain = dc.read_storage(tmp_dir.as_uri(), session=test_session).order_by(
+        "file.path"
+    )
+
+    expected_files: list[File] = []
+    for (file_obj,) in base_chain.select("file").to_iter():
+        assert isinstance(file_obj, File)
+        expected_files.append(file_obj)
+
+    def collect_files(file: list[File]) -> Iterator[list[File]]:
+        yield file
+
+    (base_chain.agg(files=collect_files).save("temp_files_only"))
+
+    # When reading back, we should get a list of File objects
+    ds = dc.read_dataset("temp_files_only", session=test_session)
+    vals = ds.select("files").to_list()
+    assert len(vals) == 1
+    files_list = vals[0][0]
+    assert isinstance(files_list, list)
+    assert all(isinstance(f, File) for f in files_list)
+
+    expected_sorted: list[File] = sorted(expected_files, key=lambda f: f.path)
+    actual_sorted: list[File] = sorted(files_list, key=lambda f: f.path)
+
+    assert [f.model_dump() for f in actual_sorted] == [
+        f.model_dump() for f in expected_sorted
+    ]

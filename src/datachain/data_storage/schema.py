@@ -11,7 +11,6 @@ from datachain.sql.types import (
     JSON,
     Boolean,
     DateTime,
-    Int,
     Int64,
     SQLType,
     String,
@@ -269,7 +268,7 @@ class DataTable:
     @classmethod
     def sys_columns(cls):
         return [
-            sa.Column("sys__id", Int, primary_key=True),
+            sa.Column("sys__id", UInt64, primary_key=True),
             sa.Column(
                 "sys__rand", UInt64, nullable=False, server_default=f.abs(f.random())
             ),

@@ -1,8 +1,9 @@
-import json
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, TypeVar
+
+from datachain import json
 
 J = TypeVar("J", bound="Job")
 
@@ -56,5 +57,5 @@ class Job:
             python_version,
             error_message,
             error_stack,
-            parent_job_id,
+            str(parent_job_id) if parent_job_id else None,
         )

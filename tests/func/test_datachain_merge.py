@@ -104,8 +104,8 @@ def test_merge_multiple(cloud_test_catalog, inner1, inner2, inner3):
 
 def test_full_outer_join_preserves_all_rows(test_session):
     """Test that full outer join correctly saves all rows including right-only rows.
-    This test verifies the fix for the NULL sys__id bug where right-only rows
-    from a full outer join had NULL sys__id values
+    Checks also that sys columns are dropped on full outer join since it is not safe
+    to carry them over.
     """
     # Create two datasets with no overlapping file paths
     ds1 = dc.read_values(
@@ -122,24 +122,13 @@ def test_full_outer_join_preserves_all_rows(test_session):
 
     merged = ds1.merge(ds2, on="file.path", full=True)
 
-    # Use internal method to get all records including sys columns
-    records = merged._query.to_db_records()
+    chain_with_sys = merged.settings(sys=True)
+    assert "sys__id" not in chain_with_sys.schema
 
-    assert len(records) == 6
+    df = chain_with_sys.to_pandas()
+    assert not any(str(col).startswith("sys__") for col in df.columns)
 
-    # Extract sys__id and sys__rand from records
-    sys_ids = [r["sys__id"] for r in records]
-    sys_rands = [r["sys__rand"] for r in records]
-
-    # All sys__id values should be non-NULL and unique
-    assert all(sid is not None for sid in sys_ids)
-    assert len(set(sys_ids)) == 6
-    assert all(rand is not None for rand in sys_rands)
-
-    count_before = merged.count()
-
-    # Save and verify all rows are persisted
     merged.save("test_merge")
     count_after = dc.read_dataset("test_merge", session=test_session).count()
 
-    assert count_before == count_after == 6
+    assert count_after == 6

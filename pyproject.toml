@@ -45,7 +45,7 @@ dependencies = [
   "pydantic",
   "jmespath>=1.0",
   "datamodel-code-generator>=0.25",
-  "Pillow>=10.0.0,<12",
+  "Pillow>=10.0.0,<13",
   "msgpack>=1.0.4,<2",
   "psutil",
   "huggingface_hub",
@@ -62,9 +62,9 @@ docs = [
   "mkdocs>=1.5.2",
   "mkdocs-gen-files>=0.5.0",
   "mkdocs-material==9.5.22",
-  "mkdocs-section-index>=0.3.6",
   "mkdocstrings-python>=1.6.3",
   "mkdocs-literate-nav>=0.6.1",
+  "mkdocs-section-index>=0.3.10",
   "eval-type-backport"
 ]
 torch = [
@@ -73,7 +73,6 @@ torch = [
   "transformers>=4.36.0"
 ]
 audio = [
-  "torchaudio",
   "soundfile"
 ]
 remote = [
@@ -100,7 +99,7 @@ postgres = [
 ]
 tests = [
   "datachain[torch,audio,remote,vector,hf,video,postgres]",
-  "pytest>=8,<9",
+  "pytest>=8,<10",
   "pytest-asyncio",
   "pytest-sugar>=0.9.6",
   "pytest-cov>=4.1.0",
@@ -134,13 +133,14 @@ examples = [
   "huggingface_hub[hf_transfer]",
   "ultralytics",
   "open_clip_torch",
-  "openai"
+  "openai",
+  "torchaudio"
 ]
 
 [project.urls]
 Documentation = "https://datachain.dvc.ai"
-Issues = "https://github.com/iterative/datachain/issues"
-Source = "https://github.com/iterative/datachain"
+Issues = "https://github.com/datachain-ai/datachain/issues"
+Source = "https://github.com/datachain-ai/datachain"
 
 [project.scripts]
 datachain = "datachain.cli:main"

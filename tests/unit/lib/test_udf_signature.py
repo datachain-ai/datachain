@@ -1,3 +1,4 @@
+import typing as t
 from collections.abc import Callable, Sequence
 from typing import Any
 
@@ -200,3 +201,11 @@ def test_udf_typed_param():
     sign = get_sign(s1=func_typed)
     assert sign.params == {"p1": int}
     assert sign.output_schema.values == {"s1": int}
+
+
+def test_unparameterized_iterator_defaults_to_str():
+    def iter_func(p1) -> t.Iterator:
+        yield "never"
+
+    sign = get_sign(s1=iter_func)
+    assert sign.output_schema.values == {"s1": str}

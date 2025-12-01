@@ -1,5 +1,8 @@
+import pytest
+
 import datachain as dc
 from datachain import func
+from datachain.lib.utils import DataChainParamsError
 from tests.utils import skip_if_not_sqlite
 
 
@@ -174,3 +177,13 @@ def test_conditional_greatest_least(test_session):
         (20, 2.0, 20, 2.0, 40, 4.0, 40, 3.5, 40, 1.5),
         (30, 3.0, 25, 2.5, 60, 6.0, 50, 3.5, 60, 1.5),
     ]
+
+
+def test_conditional_funcs_disallow_complex_object_greatest(test_session):
+    class Rec(dc.DataModel):
+        i: int
+
+    ds = dc.read_values(id=[1, 2], rec=[Rec(i=1), Rec(i=2)], session=test_session)
+
+    with pytest.raises(DataChainParamsError, match="doesn't support complex object"):
+        ds.mutate(t=func.greatest("rec", 1))

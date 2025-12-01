@@ -64,6 +64,9 @@ def is_chain_type(t: type) -> bool:
     if orig is list and len(args) == 1:
         return is_chain_type(get_args(t)[0])
 
+    if orig is dict and len(args) == 2:
+        return is_chain_type(args[0]) and is_chain_type(args[1])
+
     if orig in (Union, types.UnionType) and len(args) == 2 and (type(None) in args):
         return is_chain_type(args[0] if args[1] is type(None) else args[1])
 

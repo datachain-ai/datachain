@@ -1,7 +1,6 @@
 import errno
 import hashlib
 import io
-import json
 import logging
 import os
 import posixpath
@@ -21,6 +20,7 @@ from fsspec.callbacks import DEFAULT_CALLBACK, Callback
 from fsspec.utils import stringify_path
 from pydantic import Field, field_validator
 
+from datachain import json
 from datachain.client.fileslice import FileSlice
 from datachain.lib.data_model import DataModel
 from datachain.lib.utils import DataChainError, rebase_path
@@ -42,7 +42,7 @@ sha256 = partial(hashlib.sha256, usedforsecurity=False)
 logger = logging.getLogger("datachain")
 
 # how to create file path when exporting
-ExportPlacement = Literal["filename", "etag", "fullpath", "checksum"]
+ExportPlacement = Literal["filename", "etag", "fullpath", "checksum", "filepath"]
 
 FileType = Literal["binary", "text", "image", "video", "audio"]
 EXPORT_FILES_MAX_THREADS = 5
@@ -644,6 +644,8 @@ class File(DataModel):
             source = urlparse(self.source)
             if source.scheme and source.scheme != "file":
                 path = posixpath.join(source.netloc, path)
+        elif placement == "filepath":
+            path = unquote(self.get_path_normalized())
         elif placement == "checksum":
             raise NotImplementedError("Checksum placement not implemented yet")
         else:

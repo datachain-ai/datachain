@@ -228,3 +228,28 @@ def table_row_count(db, table_name) -> int | None:
         return None
     query = sa.select(sa.func.count()).select_from(sa.table(table_name))
     return next(db.execute(query), (None,))[0]
+
+
+def reset_session_job_state():
+    """
+    Reset job state for testing purposes.
+    Useful for simulating multiple script runs.
+    """
+    import atexit
+
+    from datachain.query.session import Session
+
+    # Unregister atexit hook if registered
+    if Session._JOB_FINALIZE_HOOK is not None:
+        try:
+            atexit.unregister(Session._JOB_FINALIZE_HOOK)
+        except ValueError:
+            # Hook was already unregistered
+            pass
+        Session._JOB_FINALIZE_HOOK = None
+
+    # Clear job state (class-level attributes)
+    Session._CURRENT_JOB = None
+    Session._JOB_STATUS = None
+    Session._OWNS_JOB = None
+    Session._JOB_HOOKS_REGISTERED = False

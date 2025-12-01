@@ -80,7 +80,9 @@ def test_get_warehouse_in_memory():
         warehouse.close()
 
 
-def test_get_distributed_class():
+def test_get_distributed_class(monkeypatch):
+    monkeypatch.delenv("DATACHAIN_DISTRIBUTED_DISABLED", raising=False)
+
     with patch.dict(os.environ, {"DATACHAIN_DISTRIBUTED": ""}):
         assert get_udf_distributor_class() is None
 

@@ -85,8 +85,7 @@ E2E_STEPS = (
     },
     {
         "command": (
-            "datachain",
-            "query",
+            python_exc,
             os.path.join(tests_dir, "scripts", "feature_class.py"),
         ),
         "expected_rows": dedent(
@@ -159,13 +158,14 @@ def run_step(step, catalog):  # noqa: PLR0912
     """Run an end-to-end query test step with a command and expected output."""
     command = step["command"]
     # Note that a process.returncode of -2 is the same as the shell returncode of 130
-    # (canceled by KeyboardInterrupt)
-    interrupt_exit_code = -2
+    # (canceled by KeyboardInterrupt). Also accept 130 explicitly as some Python
+    # scripts may exit with that code directly.
+    interrupt_exit_codes = (-2, 130)
     if sys.platform == "win32":
         # Windows has a different mechanism of creating a process group.
         popen_args = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
         # This is STATUS_CONTROL_C_EXIT which is equivalent to 0xC000013A
-        interrupt_exit_code = 3221225786
+        interrupt_exit_codes = (3221225786, 130)
     else:
         popen_args = {"start_new_session": True}
     stdin_file = None
@@ -198,7 +198,7 @@ def run_step(step, catalog):  # noqa: PLR0912
             stdin_file.close()
 
     if interrupt_after:
-        if process.returncode not in (interrupt_exit_code, 11):
+        if process.returncode not in (*interrupt_exit_codes, 11):
             print(f"Process stdout: {stdout}")
             print(f"Process stderr: {stderr}")
             raise RuntimeError(

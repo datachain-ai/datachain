@@ -6,7 +6,7 @@ from typing import Any, get_args, get_origin
 from datachain.lib.data_model import DataType, DataTypeNames, is_chain_type
 from datachain.lib.signal_schema import SignalSchema
 from datachain.lib.udf import UDFBase
-from datachain.lib.utils import AbstractUDF, DataChainParamsError
+from datachain.lib.utils import AbstractUDF, DataChainParamsError, callable_name
 
 
 class UdfSignatureError(DataChainParamsError):
@@ -37,15 +37,20 @@ class UdfSignature:  # noqa: PLW1641
         if len(signal_map) > 1:
             raise UdfSignatureError(
                 chain,
-                f"multiple signals '{keys}' are not supported in processors."
-                " Chain multiple processors instead.",
+                (
+                    f"multiple signals '{keys}' are not supported in processors."
+                    " Chain multiple processors instead.",
+                ),
             )
         udf_func: UDFBase | Callable
         if len(signal_map) == 1:
             if func is not None:
                 raise UdfSignatureError(
                     chain,
-                    f"processor can't have signal '{keys}' with function '{func}'",
+                    (
+                        "processor can't have signal "
+                        f"'{keys}' with function '{callable_name(func)}'"
+                    ),
                 )
             signal_name, udf_func = next(iter(signal_map.items()))
         else:
@@ -56,7 +61,10 @@ class UdfSignature:  # noqa: PLW1641
             signal_name = None
 
         if not isinstance(udf_func, UDFBase) and not callable(udf_func):
-            raise UdfSignatureError(chain, f"UDF '{udf_func}' is not callable")
+            raise UdfSignatureError(
+                chain,
+                f"UDF '{callable_name(udf_func)}' is not callable",
+            )
 
         func_params_map_sign, func_outs_sign, is_iterator = cls._func_signature(
             chain, udf_func
@@ -76,14 +84,15 @@ class UdfSignature:  # noqa: PLW1641
             }
 
         if output:
+            # Use the actual resolved function (udf_func) for clearer error messages
             udf_output_map = UdfSignature._validate_output(
-                chain, signal_name, func, func_outs_sign, output
+                chain, signal_name, udf_func, func_outs_sign, output
             )
         else:
             if not func_outs_sign:
                 raise UdfSignatureError(
                     chain,
-                    f"outputs are not defined in function '{udf_func}'"
+                    f"outputs are not defined in function '{callable_name(udf_func)}'"
                     " hints or 'output'",
                 )
 
@@ -97,9 +106,12 @@ class UdfSignature:  # noqa: PLW1641
             if is_generator and not is_iterator:
                 raise UdfSignatureError(
                     chain,
-                    f"function '{func}' cannot be used in generator/aggregator"
-                    " because it returns a type that is not Iterator/Generator."
-                    f" Instead, it returns '{func_outs_sign}'",
+                    (
+                        f"function '{callable_name(udf_func)}' cannot be used in "
+                        "generator/aggregator because it returns a type that is "
+                        "not Iterator/Generator. "
+                        f"Instead, it returns '{func_outs_sign}'"
+                    ),
                 )
 
             if isinstance(func_outs_sign, tuple):
@@ -124,8 +136,11 @@ class UdfSignature:  # noqa: PLW1641
             if len(func_outs_sign) != len(output):
                 raise UdfSignatureError(
                     chain,
-                    f"length of outputs names ({len(output)}) and function '{func}'"
-                    f" return type length ({len(func_outs_sign)}) does not match",
+                    (
+                        f"length of outputs names ({len(output)}) and function "
+                        f"'{callable_name(func)}' return type length "
+                        f"({len(func_outs_sign)}) does not match"
+                    ),
                 )
 
             udf_output_map = dict(zip(output, func_outs_sign, strict=False))
@@ -183,17 +198,27 @@ class UdfSignature:  # noqa: PLW1641
             orig = get_origin(anno)
             if inspect.isclass(orig) and issubclass(orig, Iterator):
                 args = get_args(anno)
-                if len(args) > 1 and not (
-                    issubclass(orig, Generator) and len(args) == 3
-                ):
-                    raise UdfSignatureError(
-                        chain,
-                        f"function '{func}' should return iterator with a single"
-                        f" value while '{args}' are specified",
-                    )
-                is_iterator = True
-                anno = args[0]
-                orig = get_origin(anno)
+                # For typing.Iterator without type args, default to DEFAULT_RETURN_TYPE
+                if len(args) == 0:
+                    is_iterator = True
+                    anno = UdfSignature.DEFAULT_RETURN_TYPE
+                    orig = get_origin(anno)
+                else:
+                    # typing.Generator[T, S, R] has 3 args; allow that shape
+                    if len(args) > 1 and not (
+                        issubclass(orig, Generator) and len(args) == 3
+                    ):
+                        raise UdfSignatureError(
+                            chain,
+                            (
+                                f"function '{callable_name(func)}' should return "
+                                "iterator with a single value while "
+                                f"'{args}' are specified"
+                            ),
+                        )
+                    is_iterator = True
+                    anno = args[0]
+                    orig = get_origin(anno)
 
             if orig and orig is tuple:
                 output_types = tuple(get_args(anno))  # type: ignore[assignment]

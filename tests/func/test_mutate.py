@@ -5,6 +5,7 @@ from datachain import Column, func
 from datachain.func import path as pathfunc
 from datachain.lib.data_model import DataModel
 from datachain.lib.file import File
+from datachain.lib.signal_schema import SignalResolvingError
 from datachain.query.dataset import DatasetQuery
 
 
@@ -63,6 +64,16 @@ def test_mutate_multiple_columns(test_session):
     assert rows[1][1] == 400
     assert rows[1][2] == "file2.txt"
     assert rows[1][3]
+
+
+def test_mutate_references_new_column_in_same_call(test_session):
+    ds = dc.read_values(path=["a/b", "root"], session=test_session)
+
+    with pytest.raises(SignalResolvingError):
+        ds.mutate(
+            path_parts=func.string.split("path", "/"),
+            path_depth=func.array.length("path_parts"),
+        )
 
 
 def test_mutate_chaining_with_different_operations(test_session):

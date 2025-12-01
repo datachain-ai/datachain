@@ -1,3 +1,4 @@
+import inspect
 import re
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
@@ -30,6 +31,25 @@ class DataChainParamsError(DataChainError):
 class DataChainColumnError(DataChainParamsError):
     def __init__(self, col_name: str, msg: str):
         super().__init__(f"Error for column {col_name}: {msg}")
+
+
+def callable_name(obj: object) -> str:
+    """Return a friendly name for a callable or UDF-like instance."""
+    # UDF classes in DataChain inherit from AbstractUDF; prefer class name
+    if isinstance(obj, AbstractUDF):
+        return obj.__class__.__name__
+
+    # Plain functions and bound/unbound methods
+    if inspect.ismethod(obj) or inspect.isfunction(obj):
+        # __name__ exists for functions/methods; includes "<lambda>" for lambdas
+        return obj.__name__  # type: ignore[attr-defined]
+
+    # Generic callable object
+    if callable(obj):
+        return obj.__class__.__name__
+
+    # Fallback for non-callables
+    return str(obj)
 
 
 def normalize_col_names(col_names: Sequence[str]) -> dict[str, str]:

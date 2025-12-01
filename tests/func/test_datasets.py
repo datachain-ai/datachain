@@ -56,7 +56,7 @@ def test_create_dataset_no_version_specified(cloud_test_catalog, project, create
     assert dataset_version.query_script == "script"
     assert dataset.schema["similarity"] == Float32
     assert dataset_version.schema["similarity"] == Float32
-    assert dataset_version.status == DatasetStatus.PENDING
+    assert dataset_version.status == DatasetStatus.CREATED
     assert dataset_version.uuid
     assert dataset.status == DatasetStatus.CREATED  # dataset status is deprecated
     if create_rows:
@@ -86,7 +86,7 @@ def test_create_dataset_with_explicit_version(cloud_test_catalog, project, creat
     assert dataset_version.query_script == "script"
     assert dataset.schema["similarity"] == Float32
     assert dataset_version.schema["similarity"] == Float32
-    assert dataset_version.status == DatasetStatus.PENDING
+    assert dataset_version.status == DatasetStatus.CREATED
     assert dataset_version.uuid
     assert dataset.status == DatasetStatus.CREATED
     if create_rows:
@@ -132,7 +132,7 @@ def test_create_dataset_already_exist(cloud_test_catalog, dogs_dataset, create_r
     assert dataset.project == dogs_dataset.project
     assert dataset_version.query_script == "script"
     assert dataset_version.schema["similarity"] == Float32
-    assert dataset_version.status == DatasetStatus.PENDING
+    assert dataset_version.status == DatasetStatus.CREATED
     assert dataset.status == DatasetStatus.COMPLETE
     if create_rows:
         assert dataset_version.num_objects == 0
@@ -330,7 +330,7 @@ def test_remove_dataset_with_multiple_versions(cloud_test_catalog, dogs_dataset)
     catalog = cloud_test_catalog.catalog
 
     columns = tuple(sa.Column(name, typ) for name, typ in dogs_dataset.schema.items())
-    updated_dogs_dataset = catalog.create_new_dataset_version(
+    updated_dogs_dataset = catalog.create_dataset_version(
         dogs_dataset, "2.0.0", columns=columns
     )
     assert updated_dogs_dataset.has_version("2.0.0")
@@ -464,7 +464,7 @@ def test_move_dataset_wrong_old_project(test_session, project):
         dc.move_dataset("wrong.wrong.numbers", "new.new.numbers", session=test_session)
 
 
-def test_move_dataset_error_in_session_moved_dataset_removed(catalog):
+def test_move_dataset_error_in_session_moved_dataset_persisted(catalog):
     from datachain.query.session import Session
 
     old_name = "old.old.numbers"
@@ -472,16 +472,18 @@ def test_move_dataset_error_in_session_moved_dataset_removed(catalog):
 
     with pytest.raises(DatasetNotFoundError):
         with Session("new", catalog=catalog) as test_session:
-            dc.read_values(num=[1, 2, 3]).save("aa")
             dc.read_values(num=[1, 2, 3], session=test_session).save(old_name)
             dc.move_dataset(old_name, new_name, session=test_session)
 
             # throws DatasetNotFoundError
             dc.read_dataset("wrong", session=test_session)
 
-    ds = dc.datasets(column="dataset")
+    ds = dc.datasets(column="dataset", session=Session.get(catalog=catalog))
     datasets = [d for d in ds.to_values("dataset")]  # noqa: C416
-    assert len(datasets) == 0
+    assert len(datasets) == 1
+    assert datasets[0].name == "numbers"
+    assert datasets[0].project == "new"
+    assert datasets[0].namespace == "new"
 
 
 def test_edit_dataset_same_name(cloud_test_catalog, dogs_dataset):

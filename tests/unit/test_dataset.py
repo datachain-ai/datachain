@@ -180,3 +180,85 @@ def test_parse_dataset_name(full_name, namespace, project, name):
 def test_parse_dataset_name_empty_name():
     with pytest.raises(InvalidDatasetNameError):
         assert parse_dataset_name(None)
+
+
+def test_parse_dataset_schema():
+    schema_dict = {
+        "id": {"type": "Int"},
+        "name": {"type": "String"},
+        "scores": {"type": "Array", "item_type": {"type": "Float32"}},
+    }
+
+    parsed_schema = DatasetRecord.parse_schema(schema_dict)
+    assert list(parsed_schema.keys()) == ["id", "name", "scores"]
+    assert parsed_schema["id"] == Int
+    assert parsed_schema["name"] == String
+    assert isinstance(parsed_schema["scores"], Array)
+    assert isinstance(parsed_schema["scores"].item_type, Float32)
+
+
+def test_parse_empty_dataset_schema():
+    parsed_schema = DatasetRecord.parse_schema({})
+    assert parsed_schema == {}
+
+
+@pytest.mark.parametrize(
+    "schema_dict,exc,match_error",
+    [
+        (
+            "String",
+            TypeError,
+            "Schema definition must be a dictionary",
+        ),
+        ({"id": "Int64"}, TypeError, "Schema column 'id' type must be a dictionary"),
+        ({"id": {}}, ValueError, "Schema column 'id' type is not defined"),
+        (
+            {"id": {"type": "UnknownType"}},
+            ValueError,
+            "Schema column 'id' type 'UnknownType' is not supported",
+        ),
+        (
+            {"values": {"type": "Array"}},
+            ValueError,
+            (
+                "Schema column 'values' type 'Array' parsing error:"
+                " Array type must have 'item_type' field"
+            ),
+        ),
+        (
+            {"values": {"type": "Array", "item_type": "Foo"}},
+            ValueError,
+            (
+                "Schema column 'values' type 'Array' parsing error:"
+                " Array 'item_type' field must be a dictionary"
+            ),
+        ),
+        (
+            {"values": {"type": "Array", "item_type": {"foo": "Bar"}}},
+            ValueError,
+            (
+                "Schema column 'values' type 'Array' parsing error:"
+                " Array 'item_type' must have 'type' field"
+            ),
+        ),
+        (
+            {"values": {"type": "Array", "item_type": {"type": "UnknownType"}}},
+            ValueError,
+            (
+                "Schema column 'values' type 'Array' parsing error:"
+                " Array item type 'UnknownType' is not supported"
+            ),
+        ),
+        (
+            {"data": {"type": "Array", "item_type": {"type": "Array"}}},
+            ValueError,
+            (
+                "Schema column 'data' type 'Array' parsing error:"
+                " Array type must have 'item_type' field"
+            ),
+        ),
+    ],
+)
+def test_parse_invalid_dataset_schema(schema_dict, exc, match_error):
+    with pytest.raises(exc, match=match_error):
+        DatasetRecord.parse_schema(schema_dict)

@@ -7,6 +7,7 @@ from sqlalchemy.sql import func as sa_func
 
 from datachain.lib.convert.python_to_sql import python_to_sql
 from datachain.lib.convert.sql_to_python import sql_to_python
+from datachain.lib.model_store import ModelStore
 from datachain.lib.utils import DataChainColumnError, DataChainParamsError
 from datachain.query.schema import Column, ColumnMeta
 from datachain.sql.functions import numeric
@@ -415,6 +416,20 @@ class Func(Function):  # noqa: PLW1641
         label: str | None = None,
         table: "TableClause | None" = None,
     ) -> Column:
+        # Guard against using complex (pydantic) object columns in SQL funcs
+        if signals_schema and self._db_cols:
+            for arg in self._db_cols:
+                # _db_cols normalizes known columns to strings; skip non-string args
+                if not isinstance(arg, str):
+                    continue
+                t_with_sub = signals_schema.get_column_type(arg, with_subtree=True)
+                if ModelStore.is_pydantic(t_with_sub):
+                    raise DataChainParamsError(
+                        f"Function {self.name} doesn't support complex object "
+                        f"columns like '{arg}'. Use a leaf field (e.g., "
+                        f"'{arg}.path') or use UDFs to operate on complex objects."
+                    )
+
         col_type = self.get_result_type(signals_schema)
         sql_type = python_to_sql(col_type)
 
@@ -434,6 +449,7 @@ class Func(Function):  # noqa: PLW1641
             return col
 
         cols = [get_col(col) for col in self._db_cols]
+
         kwargs = {k: get_col(v, string_as_literal=True) for k, v in self.kwargs.items()}
         func_col = self.inner(*cols, *self.args, **kwargs)
 
@@ -470,9 +486,8 @@ def get_db_col_type(signals_schema: "SignalSchema", col: ColT) -> "DataType":
     if isinstance(col, ColumnElement) and not hasattr(col, "name"):
         return sql_to_python(col)
 
-    return signals_schema.get_column_type(
-        col.name if isinstance(col, ColumnElement) else col  # type: ignore[arg-type]
-    )
+    name = col.name if isinstance(col, ColumnElement) else col  # type: ignore[assignment]
+    return signals_schema.get_column_type(name)  # type: ignore[arg-type]
 
 
 def _truediv(a, b):

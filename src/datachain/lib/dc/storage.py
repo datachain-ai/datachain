@@ -187,6 +187,12 @@ def read_storage(
             project=listing_project_name,
             session=session,
             settings=settings,
+            delta=delta,
+            delta_on=delta_on,
+            delta_result_on=delta_result_on,
+            delta_compare=delta_compare,
+            delta_retry=delta_retry,
+            delta_unsafe=delta_unsafe,
         )
         dc._query.update = update
         dc.signals_schema = dc.signals_schema.mutate({f"{column}": file_type})
@@ -251,14 +257,5 @@ def read_storage(
         storage_chain = storage_chain.union(file_chain) if storage_chain else file_chain
 
     assert storage_chain is not None
-
-    if delta:
-        storage_chain = storage_chain._as_delta(
-            on=delta_on,
-            right_on=delta_result_on,
-            compare=delta_compare,
-            delta_retry=delta_retry,
-            delta_unsafe=delta_unsafe,
-        )
 
     return storage_chain

@@ -54,13 +54,16 @@ def test_atomicity_feature_file(tmp_dir, catalog_tmpfile):
 
     assert process.returncode == 1
 
-    # Local context datasets should be created in the catalog,
-    # but old should not be removed.
+    # All datasets should persist even after exceptions
     dataset_versions = list(catalog_tmpfile.list_datasets_versions())
-    assert len(dataset_versions) == 3
+    dataset_names = sorted([d[0].name for d in dataset_versions])
+    assert len(dataset_versions) == 6
 
-    assert sorted([d[0].name for d in dataset_versions]) == [
+    assert dataset_names == [
         "existing_dataset",
+        "global_error_class_v2",
+        "global_test_datachain_v1",
         "local_test_datachain",
+        "local_test_datachain_v2",
         "passed_as_argument",
     ]

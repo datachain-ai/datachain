@@ -6,7 +6,9 @@ from pydantic import BaseModel
 from sqlalchemy import func
 
 import datachain as dc
+from datachain import DataModel
 from datachain.lib.dc import C, DatasetMergeError
+from datachain.lib.signal_schema import SignalResolvingError
 from datachain.sql.types import Int, String
 from tests.utils import skip_if_not_sqlite
 
@@ -140,7 +142,7 @@ def test_merge_similar_objects(test_session):
     rname = "qq"
     ch = ch1.merge(ch2, "emp.person.name", rname=rname)
 
-    assert list(ch.signals_schema.values.keys()) == ["sys", "emp", rname + "emp"]
+    assert list(ch.signals_schema.values.keys()) == ["emp", rname + "emp"]
 
     empl = list(ch.to_list())
     assert len(empl) == 4
@@ -175,7 +177,7 @@ def test_merge_similar_objects_in_memory():
     assert ch.session.catalog.metastore.db.db_file == ":memory:"
     assert ch.session.catalog.warehouse.db.db_file == ":memory:"
 
-    assert list(ch.signals_schema.values.keys()) == ["sys", "emp", rname + "emp"]
+    assert list(ch.signals_schema.values.keys()) == ["emp", rname + "emp"]
 
     empl = list(ch.to_list())
     assert len(empl) == 4
@@ -198,7 +200,6 @@ def test_merge_values(test_session):
     ch = ch1.merge(ch2, "id")
 
     assert list(ch.signals_schema.values.keys()) == [
-        "sys",
         "id",
         "descr",
         "right_id",
@@ -223,6 +224,161 @@ def test_merge_values(test_session):
 
     assert i == len(order_ids)
     assert j == len(delivery_ids)
+
+
+def test_merge_nested_key_without_collision_matches_schema(test_session):
+    class Item(DataModel):
+        score: float
+
+    class Metadata(DataModel):
+        score: float
+
+    left = dc.read_values(
+        id=[1, 2],
+        item=[Item(score=0.5), Item(score=0.7)],
+        session=test_session,
+    )
+    right = dc.read_values(
+        id=[1, 2],
+        metadata=[Metadata(score=0.3), Metadata(score=0.4)],
+        session=test_session,
+    )
+
+    merged = left.merge(right, "id", rname="right_")
+
+    schema = merged.signals_schema
+    resolved = schema.resolve("id", "item.score", "metadata.score", "right_id")
+
+    assert resolved.values["id"] is int
+    assert resolved.values["item.score"] is float
+    assert resolved.values["metadata.score"] is float
+    assert resolved.values["right_id"] is int
+
+    with pytest.raises(SignalResolvingError):
+        schema.resolve("right_metadata.score")
+
+    rows = (
+        merged.select("id", "item.score", "right_id", "metadata.score")
+        .order_by("id")
+        .results()
+    )
+    assert rows == [(1, 0.5, 1, 0.3), (2, 0.7, 2, 0.4)]
+
+
+def test_merge_prefixed_root_suffix_matches_schema(test_session):
+    class Item(DataModel):
+        score: float
+
+    class RightItem(DataModel):
+        score: float
+
+    class ItemMetrics(DataModel):
+        score: int
+        confidence: int
+
+    left = dc.read_values(
+        id=[1, 2],
+        item=[Item(score=0.5), Item(score=0.7)],
+        right_item=[RightItem(score=0.9), RightItem(score=0.95)],
+        session=test_session,
+    )
+    right = dc.read_values(
+        id=[1, 2],
+        item=[ItemMetrics(score=3, confidence=30), ItemMetrics(score=4, confidence=40)],
+        session=test_session,
+    )
+
+    merged = left.merge(right, "id", rname="right_")
+
+    schema = merged.signals_schema
+    resolved = schema.resolve(
+        "id",
+        "item.score",
+        "right_item.score",
+        "right_item_1.score",
+        "right_item_1.confidence",
+        "right_id",
+    )
+
+    assert resolved.values["id"] is int
+    assert resolved.values["item.score"] is float
+    assert resolved.values["right_item.score"] is float
+    assert resolved.values["right_item_1.score"] is int
+    assert resolved.values["right_item_1.confidence"] is int
+    assert resolved.values["right_id"] is int
+
+    rows = (
+        merged.select(
+            "id",
+            "item.score",
+            "right_item.score",
+            "right_item_1.score",
+            "right_item_1.confidence",
+            "right_id",
+        )
+        .order_by("id")
+        .results()
+    )
+    assert rows == [
+        (1, 0.5, 0.9, 3, 30, 1),
+        (2, 0.7, 0.95, 4, 40, 2),
+    ]
+
+
+def test_merge_rename_collides_with_existing_column_matches_schema(test_session):
+    class ItemFloat(DataModel):
+        score: float
+
+    class ItemInt(DataModel):
+        score: int
+
+    class RightItemStr(DataModel):
+        score: str
+
+    left = dc.read_values(
+        id=[1, 2],
+        item=[ItemFloat(score=0.5), ItemFloat(score=0.7)],
+        session=test_session,
+    )
+    right = dc.read_values(
+        id=[1, 2],
+        item=[ItemInt(score=5), ItemInt(score=6)],
+        right_item=[RightItemStr(score="high"), RightItemStr(score="low")],
+        session=test_session,
+    )
+
+    merged = left.merge(right, "id", rname="right_")
+
+    schema = merged.signals_schema
+    resolved = schema.resolve(
+        "id",
+        "item.score",
+        "right_item.score",
+        "right_item_1.score",
+        "right_id",
+    )
+
+    assert resolved.values["id"] is int
+    assert resolved.values["item.score"] is float
+    assert resolved.values["right_item.score"] is str
+    assert resolved.values["right_item_1.score"] is int
+    assert resolved.values["right_id"] is int
+
+    rows = (
+        merged.select(
+            "id",
+            "item.score",
+            "right_item.score",
+            "right_item_1.score",
+            "right_id",
+        )
+        .order_by("id")
+        .results()
+    )
+    assert rows == [
+        (1, 0.5, "high", 5, 1),
+        (2, 0.7, "low", 6, 2),
+    ]
 
 
 def test_merge_multi_conditions(test_session):
@@ -339,3 +495,42 @@ def test_merge_on_expression(test_session):
         count += 1
 
     assert count == len(team) * len(team)
+
+
+def test_merge_with_drops_sys_columns(test_session):
+    left = dc.read_values(id=[1, 1], lval=[10, 20], session=test_session)
+    right = dc.read_values(id=[1, 1], rval=["a", "b"], session=test_session)
+
+    merged = left.merge(right, on="id")
+
+    assert "sys" not in merged.signals_schema.values
+
+    cols = merged.settings(sys=True).to_pandas(flatten=True).columns
+    assert all(not str(col).startswith("sys") for col in cols)
+
+    ds_name = "merge_left_dups_sys_check_sys"
+    merged.save(ds_name)
+
+    df_with_sys = (
+        dc.read_dataset(ds_name, session=test_session)
+        .settings(sys=True)
+        .to_pandas(flatten=True)
+    )
+
+    sys_cols = [c for c in df_with_sys.columns if str(c).startswith("sys")]
+    assert sys_cols
+
+    def _col(name: str) -> str:
+        for col in df_with_sys.columns:
+            if str(col) == f"sys.{name}":
+                return str(col)
+        raise AssertionError(f"Missing sys column for {name}")
+
+    sys_id_col = _col("id")
+    sys_rand_col = _col("rand")
+
+    sys_ids = list(df_with_sys[sys_id_col])
+    assert len(sys_ids) == len(set(sys_ids))
+
+    sys_rand = list(df_with_sys[sys_rand_col])
+    assert len(sys_rand) == len(set(sys_rand))

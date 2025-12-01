@@ -1,7 +1,6 @@
 import pytest
 
 import datachain as dc
-from datachain.error import DatasetNotFoundError
 from datachain.query.session import Session
 
 
@@ -19,7 +18,11 @@ def test_listing_dataset_lifecycle(tmp_path, catalog):
             dc.read_values(key=["a", "b", "c"]).save(ds_name)
             raise ValueError("This is a test exception")
 
-    with pytest.raises(DatasetNotFoundError):
-        tmp_path, catalog.get_dataset(ds_name)
+    # Datasets persist even if session fails with exception
+    dataset = catalog.get_dataset(ds_name)
+    assert dataset is not None
 
     assert dc.listings(catalog=catalog).count() == 1
+
+    # Cleanup for test
+    catalog.remove_dataset(ds_name, force=True)

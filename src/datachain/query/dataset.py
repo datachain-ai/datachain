@@ -3,7 +3,7 @@ import hashlib
 import inspect
 import logging
 import os
-import random
+import secrets
 import string
 import subprocess
 import sys
@@ -39,11 +39,11 @@ from datachain.error import DatasetNotFoundError, QueryScriptCancelError
 from datachain.func.base import Function
 from datachain.hash_utils import hash_column_elements
 from datachain.lib.listing import is_listing_dataset, listing_dataset_expired
-from datachain.lib.signal_schema import SignalSchema
+from datachain.lib.signal_schema import SignalSchema, generate_merge_root_mapping
 from datachain.lib.udf import UDFAdapter, _get_cache
 from datachain.progress import CombinedDownloadCallback, TqdmCombinedDownloadCallback
 from datachain.project import Project
-from datachain.query.schema import C, UDFParamSpec, normalize_param
+from datachain.query.schema import DEFAULT_DELIMITER, C, UDFParamSpec, normalize_param
 from datachain.query.session import Session
 from datachain.query.udf import UdfInfo
 from datachain.sql.functions.random import rand
@@ -61,7 +61,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
     from typing import Concatenate
 
-    from sqlalchemy.sql.elements import ClauseElement
+    from sqlalchemy.sql.elements import ClauseElement, KeyedColumnElement
     from sqlalchemy.sql.schema import Table
     from sqlalchemy.sql.selectable import GenerativeSelect
     from typing_extensions import ParamSpec, Self
@@ -231,8 +231,9 @@ class DatasetDiffOperation(Step):
 
     def apply(self, query_generator, temp_tables: list[str]) -> "StepResult":
         source_query = query_generator.exclude(("sys__id",))
+        right_before = len(self.dq.temp_table_names)
         target_query = self.dq.apply_steps().select()
-        temp_tables.extend(self.dq.temp_table_names)
+        temp_tables.extend(self.dq.temp_table_names[right_before:])
 
         # creating temp table that will hold subtract results
         temp_table_name = self.catalog.warehouse.temp_table_name()
@@ -425,8 +426,10 @@ class UDFStep(Step, ABC):
         """Method that creates a table where temp udf results will be saved"""
 
     def process_input_query(self, query: Select) -> tuple[Select, list["Table"]]:
-        """Apply any necessary processing to the input query"""
-        return query, []
+        """Materialize inputs, ensure sys columns are available, needed for checkpoints,
+        needed for map to work (merge results)"""
+        table = self.catalog.warehouse.create_pre_udf_table(query)
+        return sqlalchemy.select(*table.c), [table]
 
     @abstractmethod
     def create_result_query(
@@ -438,9 +441,6 @@ class UDFStep(Step, ABC):
         """
 
     def populate_udf_table(self, udf_table: "Table", query: Select) -> None:
-        if "sys__id" not in query.selected_columns:
-            raise RuntimeError("Query must have sys__id column to run UDF")
-
         if (rows_total := self.catalog.warehouse.query_count(query)) == 0:
             return
 
@@ -630,24 +630,18 @@ class UDFStep(Step, ABC):
     def apply(
         self, query_generator: QueryGenerator, temp_tables: list[str]
     ) -> "StepResult":
-        _query = query = query_generator.select()
+        query, tables = self.process_input_query(query_generator.select())
+        _query = query
 
         # Apply partitioning if needed.
         if self.partition_by is not None:
-            if "sys__id" not in query.selected_columns:
-                _query = query = self.catalog.warehouse._regenerate_system_columns(
-                    query,
-                    keep_existing_columns=True,
-                )
-
             partition_tbl = self.create_partitions_table(query)
-            temp_tables.append(partition_tbl.name)
             query = query.outerjoin(
                 partition_tbl,
                 partition_tbl.c.sys__id == query.selected_columns.sys__id,
             ).add_columns(*partition_columns())
+            tables = [*tables, partition_tbl]
 
-        query, tables = self.process_input_query(query)
         temp_tables.extend(t.name for t in tables)
         udf_table = self.create_udf_table(_query)
         temp_tables.append(udf_table.name)
@@ -678,13 +672,6 @@ class UDFSignal(UDFStep):
 
         return self.catalog.warehouse.create_udf_table(udf_output_columns)
 
-    def process_input_query(self, query: Select) -> tuple[Select, list["Table"]]:
-        if os.getenv("DATACHAIN_DISABLE_QUERY_CACHE", "") not in ("", "0"):
-            return query, []
-        table = self.catalog.warehouse.create_pre_udf_table(query)
-        q: Select = sqlalchemy.select(*table.c)
-        return q, [table]
-
     def create_result_query(
         self, udf_table, query
     ) -> tuple[QueryGeneratorFunc, list["sqlalchemy.Column"]]:
@@ -696,11 +683,26 @@ class UDFSignal(UDFStep):
         signal_name_cols = {c.name: c for c in signal_cols}
         cols = signal_cols
 
-        overlap = {c.name for c in original_cols} & {c.name for c in cols}
+        original_names = {c.name for c in original_cols}
+        new_names = {c.name for c in cols}
+
+        overlap = original_names & new_names
         if overlap:
             raise ValueError(
                 "Column already exists or added in the previous steps: "
-                + ", ".join(overlap)
+                + ", ".join(sorted(overlap))
+            )
+
+        def _root(name: str) -> str:
+            return name.split(DEFAULT_DELIMITER, 1)[0]
+
+        existing_roots = {_root(name) for name in original_names}
+        new_roots = {_root(name) for name in new_names}
+        root_conflicts = existing_roots & new_roots
+        if root_conflicts:
+            raise ValueError(
+                "Signals already exist in the previous steps: "
+                + ", ".join(sorted(root_conflicts))
             )
 
         def q(*columns):
@@ -799,8 +801,29 @@ class SQLClause(Step, ABC):
         return tuple(c.get_column() if isinstance(c, Function) else c for c in cols)
 
     @abstractmethod
-    def apply_sql_clause(self, query):
+    def apply_sql_clause(self, query: Any) -> Any:
         pass
+
+
+@frozen
+class RegenerateSystemColumns(Step):
+    catalog: "Catalog"
+
+    def hash_inputs(self) -> str:
+        return hashlib.sha256(b"regenerate_system_columns").hexdigest()
+
+    def apply(
+        self, query_generator: QueryGenerator, temp_tables: list[str]
+    ) -> StepResult:
+        query = query_generator.select()
+        new_query = self.catalog.warehouse._regenerate_system_columns(
+            query, keep_existing_columns=True
+        )
+
+        def q(*columns):
+            return new_query.with_only_columns(*columns)
+
+        return step_result(q, new_query.selected_columns)
 
 
 @frozen
@@ -955,33 +978,30 @@ class SQLUnion(Step):
     def apply(
         self, query_generator: QueryGenerator, temp_tables: list[str]
     ) -> StepResult:
+        left_before = len(self.query1.temp_table_names)
         q1 = self.query1.apply_steps().select().subquery()
-        temp_tables.extend(self.query1.temp_table_names)
+        temp_tables.extend(self.query1.temp_table_names[left_before:])
+        right_before = len(self.query2.temp_table_names)
         q2 = self.query2.apply_steps().select().subquery()
-        temp_tables.extend(self.query2.temp_table_names)
+        temp_tables.extend(self.query2.temp_table_names[right_before:])
 
-        columns1, columns2 = _order_columns(q1.columns, q2.columns)
-
-        union_select = sqlalchemy.select(*columns1).union_all(
-            sqlalchemy.select(*columns2)
-        )
-        union_cte = union_select.cte()
-        regenerated = self.query1.catalog.warehouse._regenerate_system_columns(
-            union_cte
-        )
-        result_columns = tuple(regenerated.selected_columns)
+        columns1 = _drop_system_columns(q1.columns)
+        columns2 = _drop_system_columns(q2.columns)
+        columns1, columns2 = _order_columns(columns1, columns2)
 
         def q(*columns):
-            if not columns:
-                return regenerated
+            selected_names = [c.name for c in columns]
+            col1 = [c for c in columns1 if c.name in selected_names]
+            col2 = [c for c in columns2 if c.name in selected_names]
+            union_query = sqlalchemy.select(*col1).union_all(sqlalchemy.select(*col2))
 
-            names = {c.name for c in columns}
-            selected = [c for c in result_columns if c.name in names]
-            return regenerated.with_only_columns(*selected)
+            union_cte = union_query.cte()
+            select_cols = [union_cte.c[name] for name in selected_names]
+            return sqlalchemy.select(*select_cols)
 
         return step_result(
             q,
-            result_columns,
+            columns1,
             dependencies=self.query1.dependencies | self.query2.dependencies,
         )
 
@@ -995,6 +1015,17 @@ class SQLJoin(Step):
     inner: bool
     full: bool
     rname: str
+
+    @staticmethod
+    def _split_db_name(name: str) -> tuple[str, str]:
+        if DEFAULT_DELIMITER in name:
+            head, tail = name.split(DEFAULT_DELIMITER, 1)
+            return head, tail
+        return name, ""
+
+    @classmethod
+    def _root_name(cls, name: str) -> str:
+        return cls._split_db_name(name)[0]
 
     def hash_inputs(self) -> str:
         predicates = (
@@ -1013,8 +1044,9 @@ class SQLJoin(Step):
         return hashlib.sha256(b"".join(parts)).hexdigest()
 
     def get_query(self, dq: "DatasetQuery", temp_tables: list[str]) -> sa.Subquery:
+        temp_tables_before = len(dq.temp_table_names)
         query = dq.apply_steps().select()
-        temp_tables.extend(dq.temp_table_names)
+        temp_tables.extend(dq.temp_table_names[temp_tables_before:])
 
         if not any(isinstance(step, (SQLJoin, SQLUnion)) for step in dq.steps):
             return query.subquery(dq.table.name)
@@ -1070,22 +1102,39 @@ class SQLJoin(Step):
         q1 = self.get_query(self.query1, temp_tables)
         q2 = self.get_query(self.query2, temp_tables)
 
-        q1_columns = list(q1.c)
-        q1_column_names = {c.name for c in q1_columns}
-
-        q2_columns = []
-        for c in q2.c:
-            if c.name.startswith("sys__"):
+        q1_columns = _drop_system_columns(q1.c)
+        existing_column_names = {c.name for c in q1_columns}
+        right_columns: list[KeyedColumnElement[Any]] = []
+        right_column_names: list[str] = []
+        for column in q2.c:
+            if column.name.startswith("sys__"):
                 continue
+            right_columns.append(column)
+            right_column_names.append(column.name)
 
-            if c.name in q1_column_names:
-                new_name = self.rname.format(name=c.name)
-                new_name_idx = 0
-                while new_name in q1_column_names:
-                    new_name_idx += 1
-                    new_name = self.rname.format(name=f"{c.name}_{new_name_idx}")
-                c = c.label(new_name)
-            q2_columns.append(c)
+        root_mapping = generate_merge_root_mapping(
+            existing_column_names,
+            right_column_names,
+            extract_root=self._root_name,
+            prefix=self.rname,
+        )
+
+        q2_columns: list[KeyedColumnElement[Any]] = []
+        for column in right_columns:
+            original_name = column.name
+            column_root, column_tail = self._split_db_name(original_name)
+            mapped_root = root_mapping[column_root]
+
+            new_name = (
+                mapped_root
+                if not column_tail
+                else DEFAULT_DELIMITER.join([mapped_root, column_tail])
+            )
+
+            if new_name != original_name:
+                column = column.label(new_name)
+
+            q2_columns.append(column)
 
         res_columns = q1_columns + q2_columns
         predicates = (
@@ -1168,6 +1217,27 @@ class SQLGroupBy(SQLClause):
         return sqlalchemy.select(*unique_cols).select_from(subquery).group_by(*group_by)
 
 
+class UnionSchemaMismatchError(ValueError):
+    """Union input columns mismatch."""
+
+    @classmethod
+    def from_column_sets(
+        cls,
+        missing_left: set[str],
+        missing_right: set[str],
+    ) -> "UnionSchemaMismatchError":
+        def _describe(cols: set[str], side: str) -> str:
+            return f"{', '.join(sorted(cols))} only present in {side}"
+
+        parts = []
+        if missing_left:
+            parts.append(_describe(missing_left, "left"))
+        if missing_right:
+            parts.append(_describe(missing_right, "right"))
+
+        return cls(f"Cannot perform union. {'. '.join(parts)}")
+
+
 def _validate_columns(
     left_columns: Iterable[ColumnElement], right_columns: Iterable[ColumnElement]
 ) -> list[str]:
@@ -1180,27 +1250,10 @@ def _validate_columns(
     left_names_set = set(left_names)
     right_names_set = set(right_names)
 
-    missing_right = left_names_set - right_names_set
-    missing_left = right_names_set - left_names_set
-
-    def _prepare_msg_part(missing_columns: set[str], side: str) -> str:
-        return f"{', '.join(sorted(missing_columns))} only present in {side}"
-
-    msg_parts = [
-        _prepare_msg_part(missing_columns, found_side)
-        for missing_columns, found_side in zip(
-            [
-                missing_right,
-                missing_left,
-            ],
-            ["left", "right"],
-            strict=False,
-        )
-        if missing_columns
-    ]
-    msg = f"Cannot perform union. {'. '.join(msg_parts)}"
-
-    raise ValueError(msg)
+    raise UnionSchemaMismatchError.from_column_sets(
+        left_names_set - right_names_set,
+        right_names_set - left_names_set,
+    )
 
 
 def _order_columns(
@@ -1212,6 +1265,10 @@ def _order_columns(
     ]
 
     return [[d[n] for n in column_order] for d in column_dicts]
+
+
+def _drop_system_columns(columns: Iterable[ColumnElement]) -> list[ColumnElement]:
+    return [c for c in columns if not c.name.startswith("sys__")]
 
 
 @attrs.define
@@ -1259,8 +1316,10 @@ class DatasetQuery:
         if version:
             self.version = version
 
-        namespace_name = namespace_name or self.catalog.metastore.default_namespace_name
-        project_name = project_name or self.catalog.metastore.default_project_name
+        if namespace_name is None:
+            namespace_name = self.catalog.metastore.default_namespace_name
+        if project_name is None:
+            project_name = self.catalog.metastore.default_project_name
 
         if is_listing_dataset(name) and not version:
             # not setting query step yet as listing dataset might not exist at
@@ -1316,10 +1375,7 @@ class DatasetQuery:
 
     @staticmethod
     def get_table() -> "TableClause":
-        table_name = "".join(
-            random.choice(string.ascii_letters)  # noqa: S311
-            for _ in range(16)
-        )
+        table_name = "".join(secrets.choice(string.ascii_letters) for _ in range(16))
         return sqlalchemy.table(table_name)
 
     @property
@@ -1501,10 +1557,6 @@ class DatasetQuery:
                 yield from mapper.iterate()
         finally:
             self.cleanup()
-
-    def shuffle(self) -> "Self":
-        # ToDo: implement shaffle based on seed and/or generating random column
-        return self.order_by(C.sys__rand)
 
     def sample(self, n) -> "Self":
         """
@@ -1709,7 +1761,7 @@ class DatasetQuery:
         predicates: JoinPredicateType | Sequence[JoinPredicateType],
         inner=False,
         full=False,
-        rname="{name}_right",
+        rname="right_",
     ) -> "Self":
         left = self.clone(new_table=False)
         if self.table.name == dataset_query.table.name:
@@ -1930,10 +1982,6 @@ class DatasetQuery:
                 **kwargs,
             )
             version = version or dataset.latest_version
-
-            self.session.add_dataset_version(
-                dataset=dataset, version=version, listing=kwargs.get("listing", False)
-            )
 
             dr = self.catalog.warehouse.dataset_rows(dataset)
 

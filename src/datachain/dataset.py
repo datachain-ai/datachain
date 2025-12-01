@@ -1,5 +1,4 @@
 import builtins
-import json
 from dataclasses import dataclass, fields
 from datetime import datetime
 from functools import cached_property
@@ -9,7 +8,7 @@ from urllib.parse import urlparse
 from packaging.specifiers import SpecifierSet
 from packaging.version import Version
 
-from datachain import semver
+from datachain import json, semver
 from datachain.error import DatasetVersionNotFoundError, InvalidDatasetNameError
 from datachain.namespace import Namespace
 from datachain.project import Project
@@ -383,10 +382,26 @@ class DatasetRecord:
     def parse_schema(
         ct: dict[str, Any],
     ) -> dict[str, SQLType | type[SQLType]]:
-        return {
-            c_name: NAME_TYPES_MAPPING[c_type["type"]].from_dict(c_type)  # type: ignore [attr-defined]
-            for c_name, c_type in ct.items()
-        }
+        if not isinstance(ct, dict):
+            raise TypeError("Schema definition must be a dictionary")
+        res = {}
+        for c_name, c_type in ct.items():
+            if not isinstance(c_type, dict):
+                raise TypeError(f"Schema column '{c_name}' type must be a dictionary")
+            if "type" not in c_type:
+                raise ValueError(f"Schema column '{c_name}' type is not defined")
+            if c_type["type"] not in NAME_TYPES_MAPPING:
+                raise ValueError(
+                    f"Schema column '{c_name}' type '{c_type['type']}' is not supported"
+                )
+            try:
+                res[c_name] = NAME_TYPES_MAPPING[c_type["type"]].from_dict(c_type)  # type: ignore [attr-defined]
+            except Exception as e:
+                raise ValueError(
+                    f"Schema column '{c_name}' type '{c_type['type']}' "
+                    f"parsing error: {e}"
+                ) from e
+        return res
 
     @staticmethod
     def validate_name(name: str) -> None:
@@ -818,7 +833,7 @@ class DatasetListRecord:
         from datachain.client import Client
 
         # TODO refactor and maybe remove method in
-        # https://github.com/iterative/datachain/issues/318
+        # https://github.com/datachain-ai/datachain/issues/318
         return Client.is_data_source_uri(self.name) or self.name.startswith(
             LISTING_PREFIX
         )

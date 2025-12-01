@@ -3,6 +3,7 @@ import json
 import math
 import os
 import re
+import uuid
 from collections import Counter
 from collections.abc import Generator, Iterator
 from unittest.mock import ANY, patch
@@ -599,6 +600,11 @@ def test_from_features_more_simple_types(test_session):
         num=range(len(features)),
         bb=[True, True, False],
         dd=[{}, {"ee": 3}, {"ww": 1, "qq": 2}],
+        ll1=[[], [1, 2, 3], [3, 4, 5]],
+        ll=[[None, 1, 2], [3, 4], []],
+        dd2=[{"a": 1}, {"b": 2}, {"c": 3}],
+        nn=[None, None, None],
+        ss=["x", None, "y"],
         time=[
             datetime.datetime.now(),
             datetime.datetime.today(),
@@ -613,6 +619,11 @@ def test_from_features_more_simple_types(test_session):
         "num",
         "bb",
         "dd",
+        "ll1",
+        "ll",
+        "dd2",
+        "nn",
+        "ss",
         "time",
         "f",
     }
@@ -620,7 +631,11 @@ def test_from_features_more_simple_types(test_session):
         MyFr,
         int,
         bool,
-        dict,
+        dict[str, str],  # from dd (starts with empty dict)
+        dict[str, int],  # from dd2
+        list[str],  # from ll1 (starts with empty list)
+        list[int],  # from ll
+        str,  # from nn and ss
         datetime.datetime,
         float,
     }
@@ -954,45 +969,6 @@ def test_batch_map_tuple_result_iterator(test_session):
     assert chain.order_by("x").to_values("x") == [1, 2, 3]
 
 
-def test_iterable_chain(test_session):
-    chain = dc.read_values(f1=features, num=range(len(features)), session=test_session)
-
-    n = 0
-    for sample in chain.order_by("f1.nnn", "f1.count"):
-        assert len(sample) == 2
-        fr, num = sample
-
-        assert isinstance(fr, MyFr)
-        assert isinstance(num, int)
-        assert num == n
-        assert fr == features[n]
-
-        n += 1
-
-    assert n == len(features)
-
-
-def test_to_list_nested_feature(test_session):
-    chain = dc.read_values(sign1=features_nested, session=test_session)
-
-    for n, sample in enumerate(
-        chain.order_by("sign1.fr.nnn", "sign1.fr.count").to_list()
-    ):
-        assert len(sample) == 1
-        nested = sample[0]
-
-        assert isinstance(nested, MyNested)
-        assert nested == features_nested[n]
-
-
-def test_collect_deprecated(test_session):
-    chain = dc.read_values(fib=[1, 1, 2, 3, 5], session=test_session)
-
-    with pytest.warns(DeprecationWarning, match="Method `collect` is deprecated"):
-        vals = list(chain.collect("fib"))
-        assert set(vals) == {1, 2, 3, 5}
-
-
 def test_select_read_hf_without_sys_columns(test_session):
     from datachain import func
 
@@ -1070,6 +1046,19 @@ def test_select_except(test_session):
         assert fr == features_nested[n]
         n += 1
     assert n == len(features_nested)
+
+
+def test_select_except_after_gen(test_session):
+    # https://github.com/datachain-ai/datachain/issues/1359
+    # fixed by https://github.com/datachain-ai/datachain/pull/1400
+    chain = dc.read_values(id=range(10), session=test_session)
+
+    chain = chain.gen(lambda id: [(id, 0)], output={"id": int, "x": int})
+    chain = chain.select_except("x")
+    chain = chain.merge(chain, on="id")
+    chain = chain.select_except("right_id")
+
+    assert set(chain.to_values("id")) == set(range(10))
 
 
 def test_select_wrong_type(test_session):
@@ -1206,6 +1195,36 @@ def test_vector_of_vectors(test_session):
     assert np.allclose(actual[1], vector[1])
 
 
+def test_persist_restores_sys_signals_after_merge(test_session):
+    left = dc.read_values(ids=[1, 2], session=test_session)
+    right = dc.read_values(ids=[1, 2], extra=["x", "y"], session=test_session)
+
+    merged = left.merge(right, on="ids")
+
+    with pytest.raises(SignalResolvingError):
+        merged.signals_schema.resolve("sys.rand")
+
+    persisted = merged.persist()
+
+    sys_schema = persisted.signals_schema.resolve("sys.id", "sys.rand").values
+    assert sys_schema["sys.id"] is int
+    assert sys_schema["sys.rand"] is int
+
+
+def test_shuffle_after_merge(test_session):
+    left = dc.read_values(ids=[1, 2], session=test_session)
+    right = dc.read_values(ids=[1, 2], extra=["x", "y"], session=test_session)
+
+    shuffled = left.merge(right, on="ids").shuffle()
+
+    sys_schema = shuffled.signals_schema.resolve("sys.id", "sys.rand").values
+    assert sys_schema["sys.id"] is int
+    assert sys_schema["sys.rand"] is int
+
+    rows = set(shuffled.to_list("ids", "extra"))
+    assert rows == {(1, "x"), (2, "y")}
+
+
 def test_unsupported_output_type(test_session):
     vector = [3.14, 2.72, 1.62]
 
@@ -1214,34 +1233,6 @@ def test_unsupported_output_type(test_session):
 
     with pytest.raises(TypeError):
         dc.read_values(key=[123], session=test_session).map(emd=get_vector)
-
-
-def test_to_list_single_item(test_session):
-    names = ["f1.jpg", "f1.json", "f1.txt", "f2.jpg", "f2.json"]
-    sizes = [1, 2, 3, 4, 5]
-    files = sort_files(
-        [File(path=name, size=size) for name, size in zip(names, sizes, strict=False)]
-    )
-
-    scores = [0.1, 0.2, 0.3, 0.4, 0.5]
-
-    chain = dc.read_values(file=files, score=scores, session=test_session)
-    chain = chain.order_by("file.path", "file.size")
-
-    assert chain.to_values("file") == files
-    assert chain.to_values("file.path") == names
-    assert chain.to_values("file.size") == sizes
-    assert chain.to_values("file.source") == [""] * len(names)
-    assert np.allclose(chain.to_values("score"), scores)
-
-    for actual, expected in zip(
-        chain.to_list("file.size", "score"),
-        [[x, y] for x, y in zip(sizes, scores, strict=False)],
-        strict=False,
-    ):
-        assert len(actual) == 2
-        assert actual[0] == expected[0]
-        assert math.isclose(actual[1], expected[1], rel_tol=1e-7)
 
 
 def test_default_output_type(test_session):
@@ -1714,6 +1705,24 @@ def test_to_json_features_nested(tmp_dir, test_session):
         {"sign1": {"label": f"label_{n}", "fr": {"nnn": f.nnn, "count": f.count}}}
         for n, f in enumerate(features)
     ]
+
+
+def test_to_json_datetime(tmp_dir, test_session):
+    timestamp = datetime.datetime.now(datetime.timezone.utc)
+    chain = dc.read_values(ts=[timestamp], session=test_session)
+
+    path = tmp_dir / "dt.json"
+    chain.to_json(path)
+
+    with path.open() as fh:
+        values = json.load(fh)
+
+    expected_ts = timestamp.isoformat().replace("+00:00", "Z")
+    assert values == [{"ts": expected_ts}]
+    assert (
+        datetime.datetime.fromisoformat(values[0]["ts"].replace("Z", "+00:00"))
+        == timestamp
+    )
 
 
 # These deprecation warnings occur in the datamodel-code-generator package.
@@ -2451,7 +2460,7 @@ def test_rename_non_object_column_name_with_mutate(test_session):
     ds = dc.read_values(ids=[1, 2, 3], session=test_session)
     ds = ds.mutate(my_ids=Column("ids"))
 
-    assert ds.signals_schema.values == {"my_ids": int}
+    assert ds.schema == {"my_ids": int}
     assert ds.order_by("my_ids").to_values("my_ids") == [1, 2, 3]
 
     assert ds.signals_schema.values.get("my_ids") is int
@@ -2470,7 +2479,7 @@ def test_rename_object_column_name_with_mutate(test_session):
     ds = ds.mutate(fname=Column("file.path"))
 
     assert ds.order_by("fname").to_values("fname") == ["a", "b", "c"]
-    assert ds.signals_schema.values == {"file": File, "ids": int, "fname": str}
+    assert ds.schema == {"file": File, "ids": int, "fname": str}
 
     # check that persist after saving
     ds.save("mutated")
@@ -2859,6 +2868,35 @@ def test_filter_basic(test_session):
     assert sorted(filtered_chain.to_values("numbers")) == [1, 2, 3, 4, 6, 7, 8, 9, 10]
 
 
+def test_filter_with_booleans_read_values(test_session):
+    """Ensure boolean columns from read_values work with filters."""
+    chain = dc.read_values(
+        flags=[True, False, True],
+        labels=["keep", "skip", "keep"],
+        session=test_session,
+    )
+
+    # Direct column filter defaults to truthy rows
+    true_rows = chain.filter(C("flags"))
+    assert true_rows.count() == 2
+    assert true_rows.to_values("labels") == ["keep", "keep"]
+
+    # Equality predicate
+    true_rows_eq = chain.filter(C("flags") == True)  # noqa: E712
+    assert true_rows_eq.to_values("labels") == ["keep", "keep"]
+
+    # Inclusion predicate
+    true_rows_in = chain.filter(C("flags").in_([True]))
+    assert true_rows_in.to_values("labels") == ["keep", "keep"]
+
+    # False branch
+    false_rows = chain.filter(C("flags") == False)  # noqa: E712
+    assert false_rows.to_values("labels") == ["skip"]
+
+    false_rows_in = chain.filter(C("flags").in_([False]))
+    assert false_rows_in.to_values("labels") == ["skip"]
+
+
 def test_filter_with_strings(test_session):
     """Test filter with string conditions."""
     chain = dc.read_values(
@@ -3071,6 +3109,34 @@ def test_filter_with_empty_results(test_session):
     assert filtered_chain.to_values("numbers") == []
 
 
+def test_filter_with_booleans_round_trip_dataset(test_session):
+    """Boolean columns remain filterable after save/read round trip."""
+    ds_name = f"bool-filter-{uuid.uuid4().hex}"
+    chain = dc.read_values(
+        published=[True, False, True],
+        identifiers=[1, 2, 3],
+        session=test_session,
+    )
+
+    chain.save(ds_name)
+    reloaded = dc.read_dataset(name=ds_name, session=test_session)
+
+    published_rows = reloaded.filter(C("published"))
+    assert sorted(published_rows.to_values("identifiers")) == [1, 3]
+
+    published_rows_eq = reloaded.filter(C("published") == True)  # noqa: E712
+    assert sorted(published_rows_eq.to_values("identifiers")) == [1, 3]
+
+    published_rows_in = reloaded.filter(C("published").in_([True]))
+    assert sorted(published_rows_in.to_values("identifiers")) == [1, 3]
+
+    draft_rows = reloaded.filter(C("published") == False)  # noqa: E712
+    assert draft_rows.to_values("identifiers") == [2]
+
+    draft_rows_in = reloaded.filter(C("published").in_([False]))
+    assert draft_rows_in.to_values("identifiers") == [2]
+
+
 def test_filter_chaining(test_session):
     """Test chaining multiple filter operations."""
     chain = dc.read_values(
@@ -3109,6 +3175,41 @@ def test_filter_with_func_operations(test_session):
     assert sorted(filtered_chain.to_values("names")) == ["Alice", "Charlie", "David"]
 
 
+def test_filter_with_boolean_nested_model(test_session):
+    """Boolean fields inside nested DataModels are filterable."""
+
+    class ReviewMeta(DataModel):
+        passed: bool
+        notes: str
+
+    class Item(DataModel):
+        name: str
+        meta: ReviewMeta
+
+    items = [
+        Item(name="doc-1", meta=ReviewMeta(passed=True, notes="looks good")),
+        Item(name="doc-2", meta=ReviewMeta(passed=False, notes="needs work")),
+        Item(name="doc-3", meta=ReviewMeta(passed=True, notes="approved")),
+    ]
+
+    chain = dc.read_values(records=items, session=test_session)
+
+    approved = chain.filter(C("records.meta.passed"))
+    assert sorted(approved.to_values("records.name")) == ["doc-1", "doc-3"]  # type: ignore[arg-type]
+
+    approved_eq = chain.filter(C("records.meta.passed") == True)  # noqa: E712
+    assert sorted(approved_eq.to_values("records.name")) == ["doc-1", "doc-3"]  # type: ignore[arg-type]
+
+    approved_in = chain.filter(C("records.meta.passed").in_([True]))
+    assert sorted(approved_in.to_values("records.name")) == ["doc-1", "doc-3"]  # type: ignore[arg-type]
+
+    rejected = chain.filter(C("records.meta.passed") == False)  # noqa: E712
+    assert rejected.to_values("records.name") == ["doc-2"]
+
+    rejected_in = chain.filter(C("records.meta.passed").in_([False]))
+    assert rejected_in.to_values("records.name") == ["doc-2"]
+
+
 @skip_if_not_sqlite
 def test_filter_in_memory(test_session):
     """Test filter functionality with in-memory database."""
@@ -3134,15 +3235,16 @@ def test_rename_column_with_mutate(test_session):
     ds = ds.mutate(my_file=Column("file"))
 
     assert ds.order_by("my_file.path").to_values("my_file.path") == ["a", "b", "c"]
-    assert ds.signals_schema.values == {"my_file": File, "ids": int}
+    assert ds.schema == {"my_file": File, "ids": int}
 
     # check that persist after saving
     ds.save("mutated")
 
     ds = dc.read_dataset(name="mutated", session=test_session)
-    assert ds.signals_schema.values.get("my_file") is File
-    assert ds.signals_schema.values.get("ids") is int
-    assert "file" not in ds.signals_schema.values
+    schema = ds.schema
+    assert schema.get("my_file") is File
+    assert schema.get("ids") is int
+    assert "file" not in schema
     assert ds.order_by("my_file.path").to_values("my_file.path") == ["a", "b", "c"]
 
 
@@ -3801,14 +3903,15 @@ def test_window_functions(test_session, desc):
         first=func.first("col2").over(window),
     )
 
-    assert ds.signals_schema.serialize() == {
-        "col1": "str",
-        "col2": "int",
-        "row_number": "int",
-        "rank": "int",
-        "dense_rank": "int",
-        "first": "int",
+    assert ds.schema == {
+        "col1": str,
+        "col2": int,
+        "row_number": int,
+        "rank": int,
+        "dense_rank": int,
+        "first": int,
     }
+
     assert sorted_dicts(ds.to_records(), "col1", "col2") == sorted_dicts(
         [
             {
@@ -4501,6 +4604,4 @@ def test_union_does_not_break_schema_order(test_session):
         "file__location",
         "meta__name",
         "meta__count",
-        "sys__id",
-        "sys__rand",
     ]

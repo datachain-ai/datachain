@@ -200,6 +200,10 @@ def read_dataset(
         signals_schema |= SignalSchema.deserialize(query.feature_schema)
     else:
         signals_schema |= SignalSchema.from_column_types(query.column_types or {})
+
+    if delta:
+        signals_schema = signals_schema.clone_without_sys_signals()
+
     chain = DataChain(query, _settings, signals_schema)
 
     if delta:

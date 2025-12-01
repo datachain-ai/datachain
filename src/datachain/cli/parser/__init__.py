@@ -3,7 +3,7 @@ from importlib.metadata import PackageNotFoundError, version
 
 import shtab
 
-from datachain.cli.utils import BooleanOptionalAction, KeyValueArgs
+from datachain.cli.utils import BooleanOptionalAction
 
 from .job import add_jobs_parser
 from .studio import add_auth_parser
@@ -16,9 +16,7 @@ from .utils import (
     add_update_arg,
     find_columns_type,
 )
-from .utils import (
-    CustomArgumentParser as ArgumentParser,
-)
+from .utils import CustomArgumentParser as ArgumentParser
 
 
 def get_parser() -> ArgumentParser:  # noqa: PLR0915
@@ -467,37 +465,6 @@ def get_parser() -> ArgumentParser:  # noqa: PLR0915
     show_parser.add_argument("--schema", action="store_true", help="Show schema")
     add_show_args(show_parser)
 
-    query_parser = subp.add_parser(
-        "query",
-        parents=[parent_parser],
-        description="Create a new dataset with a query script.",
-        formatter_class=CustomHelpFormatter,
-    )
-    add_anon_arg(query_parser)
-    query_parser.add_argument(
-        "script", metavar="<script.py>", type=str, help="Filepath for script"
-    )
-    query_parser.add_argument(
-        "--parallel",
-        nargs="?",
-        type=int,
-        const=-1,
-        default=None,
-        metavar="N",
-        help=(
-            "Use multiprocessing to run any query script UDFs with N worker processes. "
-            "N defaults to the CPU count"
-        ),
-    )
-    query_parser.add_argument(
-        "-p",
-        "--param",
-        metavar="param=value",
-        nargs=1,
-        action=KeyValueArgs,
-        help="Query parameters",
-    )
-
     parse_clear_cache = subp.add_parser(
         "clear-cache",
         parents=[parent_parser],
@@ -515,14 +482,7 @@ def get_parser() -> ArgumentParser:  # noqa: PLR0915
     add_anon_arg(parse_gc)
 
     subp.add_parser("internal-run-udf", parents=[parent_parser])
-    run_udf_worker = subp.add_parser("internal-run-udf-worker", parents=[parent_parser])
-    run_udf_worker.add_argument(
-        "--fd",
-        type=int,
-        action="store",
-        default=None,
-        help="File descriptor to write results to",
-    )
+    subp.add_parser("internal-run-udf-worker", parents=[parent_parser])
 
     add_completion_parser(subp, [parent_parser])
     return parser

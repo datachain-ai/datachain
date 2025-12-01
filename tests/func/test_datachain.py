@@ -7,17 +7,17 @@ import uuid
 from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
+from typing import cast
 from unittest.mock import Mock, patch
+from urllib.parse import urlparse
 
 import numpy as np
 import pandas as pd
 import pytest
-import pytz
 from PIL import Image
 
 import datachain as dc
 from datachain import DataModel, func
-from datachain.data_storage.sqlite import SQLiteWarehouse
 from datachain.dataset import DatasetDependencyType
 from datachain.lib.file import File, ImageFile
 from datachain.lib.listing import LISTING_TTL, is_listing_dataset, parse_listing_uri
@@ -259,7 +259,7 @@ def test_read_file(cloud_test_catalog, use_cache):
         assert bool(file.get_local_path()) is use_cache
 
 
-@pytest.mark.parametrize("placement", ["fullpath", "filename"])
+@pytest.mark.parametrize("placement", ["fullpath", "filename", "filepath"])
 @pytest.mark.parametrize("use_map", [True, False])
 @pytest.mark.parametrize("use_cache", [True, False])
 @pytest.mark.parametrize("file_type", ["", "binary", "text"])
@@ -305,13 +305,28 @@ def test_to_storage(
         "dog4": "ruff",
     }
 
-    for file in df.to_values("file"):
+    def _expected_destination_rel(file_obj: File, placement: str) -> Path:
+        rel_path = PurePosixPath(file_obj.path).as_posix()
+
         if placement == "filename":
-            file_path = file.name
-        else:
-            file_path = file.get_full_name()
-        with open(tmp_dir / "output" / file_path) as f:
-            assert f.read() == expected[file.name]
+            return Path(file_obj.name)
+        if placement == "filepath":
+            return Path(rel_path)
+        if placement == "fullpath":
+            parsed = urlparse(file_obj.source)
+            full_rel = rel_path
+            if parsed.scheme and parsed.scheme != "file":
+                full_rel = posixpath.join(parsed.netloc, rel_path)
+            return Path(full_rel)
+        raise AssertionError(f"Unsupported placement: {placement}")
+
+    output_root = tmp_dir / "output"
+    for file_record in df.to_values("file"):
+        file_obj = cast("File", file_record)
+        destination_rel = _expected_destination_rel(file_obj, placement)
+
+        with (output_root / destination_rel).open() as f:
+            assert f.read() == expected[file_obj.name]
 
     assert mapper.call_count == len(expected)
 
@@ -697,13 +712,9 @@ def test_read_storage_check_rows(tmp_dir, test_session):
 
     chain = dc.read_storage(tmp_dir.as_uri(), session=test_session).save("test-data")
 
-    is_sqlite = isinstance(test_session.catalog.warehouse, SQLiteWarehouse)
-    tz = timezone.utc if is_sqlite else pytz.UTC
-
     for file in chain.to_values("file"):
         assert isinstance(file, File)
         stat = stats[file.name]
-        mtime = stat.st_mtime if is_sqlite else float(math.floor(stat.st_mtime))
         assert file == File(
             source=Path(tmp_dir).as_uri(),
             path=file.path,
@@ -711,7 +722,7 @@ def test_read_storage_check_rows(tmp_dir, test_session):
             version="",
             etag=stat.st_mtime.hex(),
             is_latest=True,
-            last_modified=datetime.fromtimestamp(mtime, tz=tz),
+            last_modified=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
             location=None,
         )
 
@@ -1037,26 +1048,6 @@ def test_process_and_open_tar(cloud_test_catalog, cloud_type):
         ("bark", "animals.tar/dogs/dog3"),
         ("ruff", "animals.tar/dogs/others/dog4"),
     }
-
-
-def test_datachain_save_with_job(test_session, catalog, datachain_job_id):
-    dc.read_values(value=["val1", "val2"], session=test_session).save("my-ds")
-
-    dataset = catalog.get_dataset("my-ds")
-    result_job_id = dataset.get_version(dataset.latest_version).job_id
-    assert result_job_id == datachain_job_id
-
-
-def test_datachain_with_job_and_checkpoint(test_session, catalog, datachain_job_id):
-    dc.read_values(value=["val1", "val2"], session=test_session).save("my-ds")
-
-    checkpoints = list(catalog.metastore.list_checkpoints(datachain_job_id))
-    assert len(checkpoints) == 1
-    checkpoint = checkpoints[0]
-    assert checkpoint.job_id == datachain_job_id
-    assert checkpoint.hash
-    assert checkpoint.partial is False
-    assert checkpoint.created_at
 
 
 def test_group_by_signals(cloud_test_catalog):
@@ -1629,7 +1620,7 @@ def test_read_pandas_multiindex(test_session):
 
     # Check the resulting column names and data
     expected_columns = ["a_cat", "b_dog", "b_cat", "a_dog"]
-    assert set(chain.signals_schema.db_signals()) == set(expected_columns)
+    assert set(chain.schema.keys()) == set(expected_columns)
 
     expected_data = [
         {"a_cat": 1, "b_dog": 2, "b_cat": 3, "a_dog": 4},
@@ -1719,10 +1710,16 @@ def test_agg_offset_limit(catalog_tmpfile, parallel, offset, limit, files):
         value=list(range(100)),
         session=catalog_tmpfile.session,
     )
+    # Read values in general doesn't guarantee order, so we need to order first
+    ds = ds.order_by("filename")
     if offset is not None:
         ds = ds.offset(offset)
     if limit is not None:
         ds = ds.limit(limit)
+
+    limited_filenames = ds.to_values("filename")
+    assert set(limited_filenames) == set(files)
+
     ds = (
         ds.settings(parallel=parallel)
         .agg(

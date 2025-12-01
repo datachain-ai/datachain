@@ -2,8 +2,8 @@ site_name: 'DataChain'
 site_url: https://docs.datachain.ai
 site_description: Wrangle unstructured AI data at scale
 
-repo_url: "https://github.com/iterative/datachain"
-repo_name: "iterative/datachain"
+repo_url: "https://github.com/datachain-ai/datachain"
+repo_name: "datachain-ai/datachain"
 edit_uri: edit/main/docs/
 
 strict: true
@@ -114,14 +114,70 @@ nav:
               - Overview: guide/processing.md
               - Delta Processing: guide/delta.md
               - Errors Handling and Retries: guide/retry.md
+          - Checkpoints: guide/checkpoints.md
           - Environment Variables: guide/env.md
           - Namespaces: guide/namespaces.md
           - Local DB Migrations: guide/db_migrations.md
       - 🔗 Studio:
+          - Overview: studio/index.md
+          - User Guide:
+              - Overview: studio/user-guide/index.md
+              - Account Management: studio/user-guide/account-management.md
+              - Jobs:
+                  - Overview: studio/user-guide/jobs/index.md
+                  - Create and Run: studio/user-guide/jobs/create-and-run.md
+                  - Monitor Jobs: studio/user-guide/jobs/monitor-jobs.md
+              - Experiments (DVC):
+                  - Overview: studio/user-guide/experiments/index.md
+                  - Create a Project: studio/user-guide/experiments/create-a-project.md
+                  - Configure a Project: studio/user-guide/experiments/configure-a-project.md
+                  - Run Experiments: studio/user-guide/experiments/run-experiments.md
+                  - Explore ML Experiments: studio/user-guide/experiments/explore-ml-experiments.md
+                  - Live Metrics and Plots: studio/user-guide/experiments/live-metrics-and-plots.md
+                  - Visualize and Compare: studio/user-guide/experiments/visualize-and-compare.md
+                  - Share a Project: studio/user-guide/experiments/share-a-project.md
+              - Model Registry:
+                  - View and Compare Models: studio/user-guide/model-registry/view-and-compare-models.md
+                  - Add a Model: studio/user-guide/model-registry/add-a-model.md
+                  - Register a Model Version: studio/user-guide/model-registry/register-version.md
+                  - Assign Stage to Model Version: studio/user-guide/model-registry/assign-stage.md
+                  - Use Models: studio/user-guide/model-registry/use-models.md
+                  - Remove a Model, Version, or Stage: studio/user-guide/model-registry/remove-a-model-or-its-details.md
+              - Git Connections:
+                  - Overview: studio/user-guide/git-connections/index.md
+                  - GitHub App: studio/user-guide/git-connections/github-app.md
+                  - Custom GitLab Server: studio/user-guide/git-connections/custom-gitlab-server.md
+              - Team Collaboration: studio/user-guide/team-collaboration.md
+              - Authentication:
+                  - Single Sign-on: studio/user-guide/authentication/single-sign-on.md
+                  - OpenID Connect: studio/user-guide/authentication/openid-connect.md
+              - Troubleshooting: studio/user-guide/troubleshooting.md
           - API: studio/api/index.md
           - Webhooks: studio/webhooks.md
+          - Self-hosting:
+              - Overview: studio/self-hosting/index.md
+              - Installation:
+                  - Overview: studio/self-hosting/installation/index.md
+                  - AWS AMI: studio/self-hosting/installation/aws-ami.md
+                  - Kubernetes (Helm): studio/self-hosting/installation/k8s-helm.md
+              - Configuration:
+                  - Overview: studio/self-hosting/configuration/index.md
+                  - SSL/TLS: studio/self-hosting/configuration/ssl-tls.md
+                  - CA Certificates: studio/self-hosting/configuration/ca-certificates.md
+                  - Git Forges:
+                      - Overview: studio/self-hosting/configuration/git-forges/index.md
+                      - GitHub: studio/self-hosting/configuration/git-forges/github.md
+                      - GitLab: studio/self-hosting/configuration/git-forges/gitlab.md
+                      - Bitbucket: studio/self-hosting/configuration/git-forges/bitbucket.md
+              - Upgrading:
+                  - Overview: studio/self-hosting/upgrading/index.md
+                  - Regular Procedure: studio/self-hosting/upgrading/regular-procedure.md
+                  - Airgap Procedure: studio/self-hosting/upgrading/airgap-procedure.md
+              - Troubleshooting:
+                  - Overview: studio/self-hosting/troubleshooting/index.md
+                  - 502 Errors: studio/self-hosting/troubleshooting/502-errors.md
+                  - Support Bundle: studio/self-hosting/troubleshooting/support-bundle.md
       - 🤝 Contributing: contributing.md
-
   - DataChain Website ↗: https://datachain.ai" target="_blank"
   - Studio ↗: https://studio.datachain.ai" target="_blank"
 
@@ -158,7 +214,7 @@ extra_css:
 extra:
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/iterative/datachain
+      link: https://github.com/datachain-ai/datachain
     - icon: fontawesome/brands/twitter
       link: https://twitter.com/DVCorg
     - icon: fontawesome/brands/linkedin
@@ -172,9 +228,8 @@ plugins:
   - mkdocstrings:
       handlers:
         python:
-          rendering:
-            show_submodules: no
           options:
+            show_submodules: no
             docstring_options:
               ignore_init_summary: true
             docstring_section_style: list
@@ -186,7 +241,7 @@ plugins:
             show_symbol_type_heading: true
             show_symbol_type_toc: true
             signature_crossrefs: true
-          import:
+          inventories:
             - https://docs.python.org/3/objects.inv
             - https://numpy.org/doc/stable/objects.inv
             - https://pandas.pydata.org/docs/objects.inv

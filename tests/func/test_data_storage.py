@@ -2,6 +2,8 @@ from datetime import datetime
 from typing import Any
 
 import pytest
+import ujson as json
+from pydantic import BaseModel, ConfigDict
 
 from datachain.sql.types import (
     JSON,
@@ -93,14 +95,8 @@ def test_dir_expansion(cloud_test_catalog, version_aware, cloud_type):
     assert to_compare == expected
 
 
-@pytest.mark.parametrize(
-    "cloud_type,version_aware",
-    [("s3", True)],
-    indirect=True,
-)
-def test_convert_type(cloud_test_catalog):
-    ctc = cloud_test_catalog
-    catalog = ctc.catalog
+def test_convert_type(test_session):
+    catalog = test_session.catalog
     warehouse = catalog.warehouse
     now = datetime.now()
 
@@ -137,8 +133,49 @@ def test_convert_type(cloud_test_catalog):
     assert run_convert_type('{"a": 1}', JSON()) == '{"a": 1}'
     assert run_convert_type({"a": 1}, JSON()) == '{"a":1}'
     assert run_convert_type([{"a": 1}], JSON()) == '[{"a":1}]'
-    with pytest.raises(ValueError):
-        run_convert_type(0.5, JSON())
+    assert run_convert_type([[1, 2], [3, 4]], JSON()) == "[[1,2],[3,4]]"
+    assert run_convert_type(None, JSON()) == "null"
+    assert run_convert_type({"a": None}, JSON()) == '{"a":null}'
+    dt_value = datetime(2024, 1, 2, 3, 4, 5)
+    assert run_convert_type({"ts": dt_value}, JSON()) == '{"ts":"2024-01-02T03:04:05"}'
+    # primitives should serialize to valid JSON
+    assert run_convert_type(0.5, JSON()) == "0.5"
+
+    # JSON with Pydantic models (values and nested)
+    class MyFr(BaseModel):
+        model_config = ConfigDict(frozen=True)
+        nnn: str
+        count: int
+
+    fr1 = MyFr(nnn="x", count=1)
+    fr2 = MyFr(nnn="y", count=2)
+
+    # Pydantic as dict value
+    out = run_convert_type({"a": fr1}, JSON())
+    assert out == '{"a":{"nnn":"x","count":1}}'
+
+    # Pydantic in list
+    out = run_convert_type([fr1, fr2], JSON())
+    assert out == '[{"nnn":"x","count":1},{"nnn":"y","count":2}]'
+
+    # Nested structures with Pydantic
+    out = run_convert_type({"k": [{"inner": fr1}]}, JSON())
+    assert out == '{"k":[{"inner":{"nnn":"x","count":1}}]}'
+
+    # Complex dict key (tuple) becomes a JSON-encoded string key
+    out = run_convert_type({(1, "a"): 3}, JSON())
+    # Decode and compare to expected mapping using encoded key
+    loaded = json.loads(out)
+    assert loaded == {json.dumps([1, "a"]): 3}
+
+    # Pydantic model as dict key
+    key_model = MyFr(nnn="k", count=7)
+    d: dict[Any, Any] = {}
+    d[key_model] = "v"
+    out = run_convert_type(d, JSON())
+    loaded = json.loads(out)
+    expected_key = json.dumps({"nnn": "k", "count": 7})
+    assert loaded == {expected_key: "v"}
 
     # convert array to compatible type
     converted = run_convert_type([1, 2], Array(Float))

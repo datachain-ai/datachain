@@ -20,13 +20,15 @@ from sqlalchemy import (
 from sqlalchemy.dialects import sqlite
 from sqlalchemy.schema import CreateIndex, CreateTable, DropTable
 from sqlalchemy.sql import func
-from sqlalchemy.sql.elements import BinaryExpression, BooleanClauseList
+from sqlalchemy.sql.elements import (
+    BinaryExpression,
+    BooleanClauseList,
+)
 from sqlalchemy.sql.expression import bindparam, cast
 from sqlalchemy.sql.selectable import Select
 from tqdm.auto import tqdm
 
 import datachain.sql.sqlite
-from datachain import semver
 from datachain.data_storage import AbstractDBMetastore, AbstractWarehouse
 from datachain.data_storage.db_engine import DatabaseEngine
 from datachain.data_storage.schema import DefaultSchema
@@ -41,6 +43,7 @@ from datachain.sql.types import SQLType
 from datachain.utils import DataChainDir, batched, batched_it
 
 if TYPE_CHECKING:
+    from sqlalchemy import CTE, Subquery
     from sqlalchemy.dialects.sqlite import Insert
     from sqlalchemy.engine.base import Engine
     from sqlalchemy.schema import SchemaItem
@@ -324,7 +327,13 @@ class SQLiteDatabaseEngine(DatabaseEngine):
         query = "SELECT name FROM sqlite_master WHERE type='table';"
         return [r[0] for r in self.execute_str(query).fetchall()]
 
-    def create_table(self, table: "Table", if_not_exists: bool = True) -> None:
+    def create_table(
+        self,
+        table: "Table",
+        if_not_exists: bool = True,
+        *,
+        kind: str | None = None,
+    ) -> None:
         self.execute(CreateTable(table, if_not_exists=if_not_exists))
 
     def drop_table(self, table: "Table", if_exists: bool = False) -> None:
@@ -539,6 +548,26 @@ class SQLiteMetastore(AbstractDBMetastore):
             self._datasets_versions.c.created_at,
         ]
 
+    def _dataset_dependency_nodes_select_columns(
+        self,
+        namespaces_subquery: "Subquery",
+        dependency_tree_cte: "CTE",
+        datasets_subquery: "Subquery",
+    ) -> list["ColumnElement"]:
+        return [
+            namespaces_subquery.c.name,
+            self._projects.c.name,
+            dependency_tree_cte.c.id,
+            dependency_tree_cte.c.dataset_id,
+            dependency_tree_cte.c.dataset_version_id,
+            datasets_subquery.c.name,
+            self._datasets_versions.c.version,
+            self._datasets_versions.c.created_at,
+            dependency_tree_cte.c.source_dataset_id,
+            dependency_tree_cte.c.source_dataset_version_id,
+            dependency_tree_cte.c.depth,
+        ]
+
     #
     # Jobs
     #
@@ -667,61 +696,6 @@ class SQLiteWarehouse(AbstractWarehouse):
             StorageURI(row["file__source"])
             for row in self.db.execute(query, cursor=cur)
         ]
-
-    def merge_dataset_rows(
-        self,
-        src: DatasetRecord,
-        dst: DatasetRecord,
-        src_version: str,
-        dst_version: str,
-    ) -> None:
-        dst_empty = False
-
-        if not self.db.has_table(self.dataset_table_name(src, src_version)):
-            # source table doesn't exist, nothing to do
-            return
-
-        src_dr = self.dataset_rows(src, src_version).table
-
-        if not self.db.has_table(self.dataset_table_name(dst, dst_version)):
-            # destination table doesn't exist, create it
-            self.create_dataset_rows_table(
-                self.dataset_table_name(dst, dst_version),
-                columns=src_dr.columns,
-            )
-            dst_empty = True
-
-        dst_dr = self.dataset_rows(dst, dst_version).table
-        merge_fields = [c.name for c in src_dr.columns if c.name != "sys__id"]
-        select_src = select(*(getattr(src_dr.columns, f) for f in merge_fields))
-
-        if dst_empty:
-            # we don't need union, but just select from source to destination
-            insert_query = sqlite.insert(dst_dr).from_select(merge_fields, select_src)
-        else:
-            dst_version_latest = None
-            # find the previous version of the destination dataset
-            dst_previous_versions = [
-                v.version
-                for v in dst.versions  # type: ignore [union-attr]
-                if semver.compare(v.version, dst_version) == -1
-            ]
-            if dst_previous_versions:
-                dst_version_latest = max(dst_previous_versions)
-
-            dst_dr_latest = self.dataset_rows(dst, dst_version_latest).table
-
-            select_dst_latest = select(
-                *(getattr(dst_dr_latest.c, f) for f in merge_fields)
-            )
-            union_query = sqlalchemy.union(select_src, select_dst_latest)
-            insert_query = (
-                sqlite.insert(dst_dr)
-                .from_select(merge_fields, union_query)
-                .prefix_with("OR IGNORE")
-            )
-
-        self.db.execute(insert_query)
 
     def prepare_entries(self, entries: "Iterable[File]") -> Iterable[dict[str, Any]]:
         return (e.model_dump() for e in entries)
@@ -868,11 +842,8 @@ class SQLiteWarehouse(AbstractWarehouse):
                 if isinstance(c, BinaryExpression):
                     right_left_join = add_left_rows_filter(c)
 
-        # Use CTE instead of subquery to force SQLite to materialize the result
-        # This breaks deep nesting and prevents parser stack overflow.
         union_cte = sqlalchemy.union(left_right_join, right_left_join).cte()
-
-        return self._regenerate_system_columns(union_cte)
+        return sqlalchemy.select(*union_cte.c).select_from(union_cte)
 
     def _system_row_number_expr(self):
         return func.row_number().over()
@@ -884,11 +855,7 @@ class SQLiteWarehouse(AbstractWarehouse):
         """
         Create a temporary table from a query for use in a UDF.
         """
-        columns = [
-            sqlalchemy.Column(c.name, c.type)
-            for c in query.selected_columns
-            if c.name != "sys__id"
-        ]
+        columns = [sqlalchemy.Column(c.name, c.type) for c in query.selected_columns]
         table = self.create_udf_table(columns)
 
         with tqdm(desc="Preparing", unit=" rows", leave=False) as pbar:

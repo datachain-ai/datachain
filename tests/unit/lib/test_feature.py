@@ -1,4 +1,4 @@
-from typing import ClassVar, Literal
+from typing import ClassVar, Literal, Optional
 
 import pytest
 from pydantic import BaseModel, Field, ValidationError
@@ -142,6 +142,19 @@ def test_registry_versioned():
     assert ModelStore.get(MyTestXYZ.__name__, version=1) is None
     assert ModelStore.get(MyTestXYZ.__name__, version=42) == MyTestXYZ
     ModelStore.remove(MyTestXYZ)
+
+
+def test_model_store_rebuild_all_recursive():
+    class Node(DataModel):
+        value: int = 0
+        child: Optional["Node"] = None
+
+    try:
+        ModelStore.rebuild_all()
+        root = Node(value=1, child=Node(value=2))
+        assert root.child and root.child.value == 2
+    finally:
+        ModelStore.remove(Node)
 
 
 def test_inheritance():

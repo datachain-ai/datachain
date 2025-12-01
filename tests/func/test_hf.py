@@ -27,7 +27,7 @@ def require_torchcodec(test_case):
     """
     if not importlib.util.find_spec("torchcodec"):
         test_case = pytest.mark.skip(
-            "test requires torchcoded, not available on Windows yet"
+            "test requires torchcodec, not available on Windows yet"
         )(test_case)
     return test_case
 

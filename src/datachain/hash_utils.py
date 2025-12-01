@@ -1,11 +1,12 @@
 import hashlib
 import inspect
-import json
 import textwrap
 from collections.abc import Sequence
 from typing import TypeAlias, TypeVar
 
 from sqlalchemy.sql.elements import ClauseElement, ColumnElement
+
+from datachain import json
 
 T = TypeVar("T", bound=ColumnElement)
 ColumnLike: TypeAlias = str | T
@@ -72,7 +73,9 @@ def hash_column_elements(columns: ColumnLike | Sequence[ColumnLike]) -> str:
         columns = (columns,)
 
     serialized = [serialize_column_element(c) for c in columns]
-    json_str = json.dumps(serialized, sort_keys=True)  # stable JSON
+    json_str = json.dumps(
+        serialized, sort_keys=True, separators=(", ", ": ")
+    )  # stable JSON
     return hashlib.sha256(json_str.encode("utf-8")).hexdigest()
 
 

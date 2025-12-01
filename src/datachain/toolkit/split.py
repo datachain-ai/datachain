@@ -1,6 +1,7 @@
 import random
 
 from datachain import C, DataChain
+from datachain.lib.signal_schema import SignalResolvingError
 
 RESOLUTION = 2**31 - 1  # Maximum positive value for a 32-bit signed integer.
 
@@ -59,7 +60,10 @@ def train_test_split(
         ```
 
     Note:
-        The splits are random but deterministic, based on Dataset `sys__rand` field.
+        Splits reuse the same best-effort shuffle used by `DataChain.shuffle`. Results
+        are typically repeatable, but earlier operations such as `merge`, `union`, or
+        custom SQL that reshuffle rows can change the outcome between runs. Add order by
+        stable keys first when you need strict reproducibility.
     """
     if len(weights) < 2:
         raise ValueError("Weights should have at least two elements")
@@ -68,16 +72,34 @@ def train_test_split(
 
     weights_normalized = [weight / sum(weights) for weight in weights]
 
+    try:
+        dc.signals_schema.resolve("sys.rand")
+    except SignalResolvingError:
+        dc = dc.persist()
+
     rand_col = C("sys.rand")
     if seed is not None:
         uniform_seed = random.Random(seed).randrange(1, RESOLUTION)  # noqa: S311
         rand_col = (rand_col % RESOLUTION) * uniform_seed  # type: ignore[assignment]
     rand_col = rand_col % RESOLUTION  # type: ignore[assignment]
 
-    return [
-        dc.filter(
-            rand_col >= round(sum(weights_normalized[:index]) * (RESOLUTION - 1)),
-            rand_col < round(sum(weights_normalized[: index + 1]) * (RESOLUTION - 1)),
-        )
-        for index, _ in enumerate(weights_normalized)
-    ]
+    boundaries: list[int] = [0]
+    cumulative = 0.0
+    for weight in weights_normalized[:-1]:
+        cumulative += weight
+        boundary = round(cumulative * RESOLUTION)
+        boundaries.append(min(boundary, RESOLUTION))
+    boundaries.append(RESOLUTION)
+
+    splits: list[DataChain] = []
+    last_index = len(weights_normalized) - 1
+    for index in range(len(weights_normalized)):
+        lower = boundaries[index]
+        if index == last_index:
+            condition = rand_col >= lower
+        else:
+            upper = boundaries[index + 1]
+            condition = (rand_col >= lower) & (rand_col < upper)
+        splits.append(dc.filter(condition))
+
+    return splits

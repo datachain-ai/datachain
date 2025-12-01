@@ -1,5 +1,4 @@
 import copy
-import json
 import logging
 import os
 from abc import ABC, abstractmethod
@@ -22,10 +21,13 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     desc,
+    literal,
     select,
 )
 from sqlalchemy.sql import func as f
 
+from datachain import json
+from datachain.catalog.dependency import DatasetDependencyNode
 from datachain.checkpoint import Checkpoint
 from datachain.data_storage import JobQueryType, JobStatus
 from datachain.data_storage.serializer import Serializable
@@ -51,16 +53,17 @@ from datachain.error import (
 from datachain.job import Job
 from datachain.namespace import Namespace
 from datachain.project import Project
-from datachain.utils import JSONSerialize
 
 if TYPE_CHECKING:
-    from sqlalchemy import Delete, Insert, Select, Update
+    from sqlalchemy import CTE, Delete, Insert, Select, Subquery, Update
     from sqlalchemy.schema import SchemaItem
+    from sqlalchemy.sql.elements import ColumnElement
 
     from datachain.data_storage import schema
     from datachain.data_storage.db_engine import DatabaseEngine
 
 logger = logging.getLogger("datachain")
+DEPTH_LIMIT_DEFAULT = 100
 
 
 class AbstractMetastore(ABC, Serializable):
@@ -78,6 +81,7 @@ class AbstractMetastore(ABC, Serializable):
     dataset_list_class: type[DatasetListRecord] = DatasetListRecord
     dataset_list_version_class: type[DatasetListVersion] = DatasetListVersion
     dependency_class: type[DatasetDependency] = DatasetDependency
+    dependency_node_class: type[DatasetDependencyNode] = DatasetDependencyNode
     job_class: type[Job] = Job
     checkpoint_class: type[Checkpoint] = Checkpoint
 
@@ -367,6 +371,12 @@ class AbstractMetastore(ABC, Serializable):
         """Gets direct dataset dependencies."""
 
     @abstractmethod
+    def get_dataset_dependency_nodes(
+        self, dataset_id: int, version_id: int
+    ) -> list[DatasetDependencyNode | None]:
+        """Gets dataset dependency node from database."""
+
+    @abstractmethod
     def remove_dataset_dependencies(
         self, dataset: DatasetRecord, version: str | None = None
     ) -> None:
@@ -436,6 +446,10 @@ class AbstractMetastore(ABC, Serializable):
     @abstractmethod
     def get_job_status(self, job_id: str) -> JobStatus | None:
         """Returns the status of the given job."""
+
+    @abstractmethod
+    def get_last_job_by_name(self, name: str, conn=None) -> "Job | None":
+        """Returns the last job with the given name, ordered by created_at."""
 
     #
     # Checkpoints
@@ -1179,7 +1193,7 @@ class AbstractDBMetastore(AbstractMetastore):
                         f"Field '{field}' must be a list, got {type(value).__name__}"
                     )
                 else:
-                    values[field] = json.dumps(value, cls=JSONSerialize)
+                    values[field] = json.dumps(value, serialize_bytes=True)
                 version_values["_preview_data"] = value
             else:
                 values[field] = value
@@ -1454,6 +1468,18 @@ class AbstractDBMetastore(AbstractMetastore):
         Returns a list of columns to select in a query for fetching dataset dependencies
         """
 
+    @abstractmethod
+    def _dataset_dependency_nodes_select_columns(
+        self,
+        namespaces_subquery: "Subquery",
+        dependency_tree_cte: "CTE",
+        datasets_subquery: "Subquery",
+    ) -> list["ColumnElement"]:
+        """
+        Returns a list of columns to select in a query for fetching
+        dataset dependency nodes.
+        """
+
     def get_direct_dataset_dependencies(
         self, dataset: DatasetRecord, version: str
     ) -> list[DatasetDependency | None]:
@@ -1482,6 +1508,75 @@ class AbstractDBMetastore(AbstractMetastore):
         )
 
         return [self.dependency_class.parse(*r) for r in self.db.execute(query)]
+
+    def get_dataset_dependency_nodes(
+        self, dataset_id: int, version_id: int, depth_limit: int = DEPTH_LIMIT_DEFAULT
+    ) -> list[DatasetDependencyNode | None]:
+        n = self._namespaces_select().subquery()
+        p = self._projects
+        d = self._datasets_select().subquery()
+        dd = self._datasets_dependencies
+        dv = self._datasets_versions
+
+        # Common dependency fields for CTE
+        dep_fields = [
+            dd.c.id,
+            dd.c.source_dataset_id,
+            dd.c.source_dataset_version_id,
+            dd.c.dataset_id,
+            dd.c.dataset_version_id,
+        ]
+
+        # Base case: direct dependencies
+        base_query = select(
+            *dep_fields,
+            literal(0).label("depth"),
+        ).where(
+            (dd.c.source_dataset_id == dataset_id)
+            & (dd.c.source_dataset_version_id == version_id)
+        )
+
+        cte = base_query.cte(name="dependency_tree", recursive=True)
+
+        # Recursive case: dependencies of dependencies
+        # Limit depth to 100 to prevent infinite loops in case of circular dependencies
+        recursive_query = (
+            select(
+                *dep_fields,
+                (cte.c.depth + 1).label("depth"),
+            )
+            .select_from(
+                cte.join(
+                    dd,
+                    (cte.c.dataset_id == dd.c.source_dataset_id)
+                    & (cte.c.dataset_version_id == dd.c.source_dataset_version_id),
+                )
+            )
+            .where(cte.c.depth < depth_limit)
+        )
+
+        cte = cte.union(recursive_query)
+
+        # Fetch all with full details
+        select_cols = self._dataset_dependency_nodes_select_columns(
+            namespaces_subquery=n,
+            dependency_tree_cte=cte,
+            datasets_subquery=d,
+        )
+        final_query = self._datasets_dependencies_select(*select_cols).select_from(
+            # Use outer joins to handle cases where dependent datasets have been
+            # physically deleted. This allows us to return dependency records with
+            # None values instead of silently omitting them, making broken
+            # dependencies visible to callers.
+            cte.join(d, cte.c.dataset_id == d.c.id, isouter=True)
+            .join(dv, cte.c.dataset_version_id == dv.c.id, isouter=True)
+            .join(p, d.c.project_id == p.c.id, isouter=True)
+            .join(n, p.c.namespace_id == n.c.id, isouter=True)
+        )
+
+        return [
+            self.dependency_node_class.parse(*r) for r in self.db.execute(final_query)
+        ]
 
     def remove_dataset_dependencies(
         self, dataset: DatasetRecord, version: str | None = None
@@ -1592,6 +1687,18 @@ class AbstractDBMetastore(AbstractMetastore):
         """List jobs by ids."""
         query = self._jobs_query().where(self._jobs.c.id.in_(ids))
         yield from self._parse_jobs(self.db.execute(query, conn=conn))
+
+    def get_last_job_by_name(self, name: str, conn=None) -> "Job | None":
+        query = (
+            self._jobs_query()
+            .where(self._jobs.c.name == name)
+            .order_by(self._jobs.c.created_at.desc())
+            .limit(1)
+        )
+        results = list(self.db.execute(query, conn=conn))
+        if not results:
+            return None
+        return self._parse_job(results[0])
 
     def create_job(
         self,

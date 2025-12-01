@@ -446,7 +446,6 @@ def test_repeating_errors(test_session):
             .gen(func, output={"id": int, "name": str, "error": str})
             .save("processed_data")
         )
-        return dc.read_dataset("processed_data")
 
     _create_sample_data(
         test_session, ids=list(range(1)), contents=[str(i) for i in range(1)]

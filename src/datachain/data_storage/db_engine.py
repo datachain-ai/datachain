@@ -112,7 +112,13 @@ class DatabaseEngine(ABC, Serializable):
         return sa.inspect(self.engine).has_table(name)
 
     @abstractmethod
-    def create_table(self, table: "Table", if_not_exists: bool = True) -> None: ...
+    def create_table(
+        self,
+        table: "Table",
+        if_not_exists: bool = True,
+        *,
+        kind: str | None = None,
+    ) -> None: ...
 
     @abstractmethod
     def drop_table(self, table: "Table", if_exists: bool = False) -> None: ...

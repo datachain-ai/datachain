@@ -1,4 +1,5 @@
 import posixpath
+import re
 from typing import TYPE_CHECKING
 
 from datachain.lib.file import FileError
@@ -9,7 +10,7 @@ if TYPE_CHECKING:
     from datachain.lib.file import Audio, AudioFile, File
 
 try:
-    import torchaudio
+    import soundfile as sf
 except ImportError as exc:
     raise ImportError(
         "Missing dependencies for processing audio.\n"
@@ -26,18 +27,25 @@ def audio_info(file: "File | AudioFile") -> "Audio":
 
     try:
         with file.open() as f:
-            info = torchaudio.info(f)
+            info = sf.info(f)
 
-            sample_rate = int(info.sample_rate)
-            channels = int(info.num_channels)
-            frames = int(info.num_frames)
-            duration = float(frames / sample_rate) if sample_rate > 0 else 0.0
+            sample_rate = int(info.samplerate)
+            channels = int(info.channels)
+            frames = int(info.frames)
+            duration = float(info.duration)
 
-            codec_name = getattr(info, "encoding", "")
-            file_ext = file.get_file_ext().lower()
-            format_name = _encoding_to_format(codec_name, file_ext)
+            # soundfile provides format and subtype
+            if info.format:
+                format_name = info.format.lower()
+            else:
+                format_name = file.get_file_ext().lower()
 
-            bits_per_sample = getattr(info, "bits_per_sample", 0)
+            if not format_name:
+                format_name = "unknown"
+            codec_name = info.subtype if info.subtype else ""
+
+            # Calculate bit rate from subtype
+            bits_per_sample = _get_bits_per_sample(info.subtype)
             bit_rate = (
                 bits_per_sample * sample_rate * channels if bits_per_sample > 0 else -1
             )
@@ -58,44 +66,39 @@ def audio_info(file: "File | AudioFile") -> "Audio":
     )
 
 
-def _encoding_to_format(encoding: str, file_ext: str) -> str:
+def _get_bits_per_sample(subtype: str) -> int:
     """
-    Map torchaudio encoding to a format name.
+    Map soundfile subtype to bits per sample.
 
     Args:
-        encoding: The encoding string from torchaudio.info()
-        file_ext: The file extension as a fallback
+        subtype: The subtype string from soundfile
 
     Returns:
-        Format name as a string
+        Bits per sample, or 0 if unknown
     """
-    # Direct mapping for formats that match exactly
-    encoding_map = {
-        "FLAC": "flac",
-        "MP3": "mp3",
-        "VORBIS": "ogg",
-        "AMR_WB": "amr",
-        "AMR_NB": "amr",
-        "OPUS": "opus",
-        "GSM": "gsm",
+    if not subtype:
+        return 0
+
+    # Common PCM and floating-point subtypes
+    pcm_bits = {
+        "PCM_16": 16,
+        "PCM_24": 24,
+        "PCM_32": 32,
+        "PCM_S8": 8,
+        "PCM_U8": 8,
+        "FLOAT": 32,
+        "DOUBLE": 64,
     }
 
-    if encoding in encoding_map:
-        return encoding_map[encoding]
+    if subtype in pcm_bits:
+        return pcm_bits[subtype]
 
-    # For PCM variants, use file extension to determine format
-    if encoding.startswith("PCM_"):
-        # Common PCM formats by extension
-        pcm_formats = {
-            "wav": "wav",
-            "aiff": "aiff",
-            "au": "au",
-            "raw": "raw",
-        }
-        return pcm_formats.get(file_ext, "wav")  # Default to wav for PCM
+    # Handle variants such as PCM_S16LE, PCM_F32LE, etc.
+    match = re.search(r"PCM_(?:[A-Z]*?)(\d+)", subtype)
+    if match:
+        return int(match.group(1))
 
-    # Fallback to file extension if encoding is unknown
-    return file_ext if file_ext else "unknown"
+    return 0
 
 
 def audio_to_np(
@@ -114,27 +117,27 @@ def audio_to_np(
 
     try:
         with audio.open() as f:
-            info = torchaudio.info(f)
-            sample_rate = info.sample_rate
+            info = sf.info(f)
+            sample_rate = info.samplerate
 
             frame_offset = int(start * sample_rate)
             num_frames = int(duration * sample_rate) if duration is not None else -1
 
             # Reset file pointer to the beginning
-            # This is important to ensure we read from the correct position later
             f.seek(0)
 
-            waveform, sr = torchaudio.load(
-                f, frame_offset=frame_offset, num_frames=num_frames
+            # Read audio data with offset and frame count
+            audio_np, sr = sf.read(
+                f,
+                start=frame_offset,
+                frames=num_frames,
+                always_2d=False,
+                dtype="float32",
             )
 
-            audio_np = waveform.numpy()
-
-            if audio_np.shape[0] > 1:
-                audio_np = audio_np.T
-            else:
-                audio_np = audio_np.squeeze()
-
+            # soundfile returns shape (frames,) for mono or
+            # (frames, channels) for multi-channel
+            # We keep this format as it matches expected output
             return audio_np, int(sr)
     except Exception as exc:
         raise FileError(
@@ -152,11 +155,9 @@ def audio_to_bytes(
 
     If duration is None, converts from start to end of file.
     If start is 0 and duration is None, converts entire file."""
-    y, sr = audio_to_np(audio, start, duration)
-
     import io
 
-    import soundfile as sf
+    y, sr = audio_to_np(audio, start, duration)
 
     buffer = io.BytesIO()
     sf.write(buffer, y, sr, format=format)

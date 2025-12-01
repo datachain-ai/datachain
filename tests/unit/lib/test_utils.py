@@ -4,7 +4,7 @@ import pytest
 from pydantic import BaseModel
 
 from datachain.lib.convert.python_to_sql import python_to_sql
-from datachain.lib.utils import normalize_col_names, rebase_path
+from datachain.lib.utils import callable_name, normalize_col_names, rebase_path
 from datachain.sql.types import Array, String
 
 
@@ -178,3 +178,62 @@ def test_rebase_path_file_without_extension():
         "/data/audio/file_no_ext", "/data/audio", "/output", extension="txt"
     )
     assert result == "/output/file_no_ext.txt"
+
+
+def test_callable_name_function():
+    def f():
+        return 1
+
+    assert callable_name(f) == "f"
+
+
+def test_callable_name_lambda():
+    g = lambda x: x  # noqa: E731
+    assert callable_name(g) == "<lambda>"
+
+
+def test_callable_name_bound_method():
+    class Bar:
+        def method(self):
+            return 2
+
+    b = Bar()
+    assert callable_name(b.method) == "method"
+
+
+def test_callable_name_callable_instance():
+    class Foo:
+        def __call__(self, x):
+            return x
+
+    foo = Foo()
+    assert callable_name(foo) == "Foo"
+
+
+def test_callable_name_udf_like():
+    from datachain.lib.utils import AbstractUDF
+
+    class MyUDF(AbstractUDF):
+        def process(self, *args, **kwargs):
+            # No return value expected by AbstractUDF interface
+            pass
+
+        def setup(self):
+            pass
+
+        def teardown(self):
+            pass
+
+    u = MyUDF()
+    assert callable_name(u) == "MyUDF"
+
+
+@pytest.mark.parametrize(
+    "obj, expected",
+    [
+        ("hello", "hello"),
+        (42, "42"),
+    ],
+)
+def test_callable_name_non_callable(obj, expected):
+    assert callable_name(obj) == expected

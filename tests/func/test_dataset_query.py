@@ -713,7 +713,7 @@ def test_join_with_binary_expression(
 
     assert (
         sorted(
-            ((r["file__path"], r["file__path_right"]) for r in res), key=lambda x: x[0]
+            ((r["file__path"], r["right_file__path"]) for r in res), key=lambda x: x[0]
         )
         == expected
     )
@@ -765,7 +765,7 @@ def test_join_with_combination_binary_expression_and_column_predicates(
 
     assert (
         sorted(
-            ((r["file__path"], r["file__path_right"]) for r in res), key=lambda x: x[0]
+            ((r["file__path"], r["right_file__path"]) for r in res), key=lambda x: x[0]
         )
         == expected
     )
@@ -792,7 +792,7 @@ def test_join_with_binary_expression_with_arithmetics(
     ).to_db_records()
 
     assert sorted(
-        ((r["file__path"], r["file__path_right"]) for r in res), key=lambda x: x[0]
+        ((r["file__path"], r["right_file__path"]) for r in res), key=lambda x: x[0]
     ) == [
         ("cats/cat1", "dogs/dog2"),
         ("cats/cat2", "dogs/dog2"),
@@ -892,7 +892,7 @@ def test_join_with_using_functions_in_expression(
 
     assert (
         sorted(
-            ((r["file__path"], r["file__path_right"]) for r in res), key=lambda x: x[0]
+            ((r["file__path"], r["right_file__path"]) for r in res), key=lambda x: x[0]
         )
         == expected
     )

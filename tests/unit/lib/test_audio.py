@@ -274,9 +274,7 @@ def test_save_audio_auto_format(tmp_path, catalog):
 
 def test_audio_info_file_error(audio_file):
     """Test audio_info handles file errors properly."""
-    with patch(
-        "datachain.lib.audio.torchaudio.info", side_effect=Exception("Test error")
-    ):
+    with patch("datachain.lib.audio.sf.info", side_effect=Exception("Test error")):
         with pytest.raises(
             FileError, match="unable to extract metadata from audio file"
         ):
@@ -285,9 +283,7 @@ def test_audio_info_file_error(audio_file):
 
 def test_audio_fragment_np_file_error(audio_file):
     """Test audio_fragment_np handles file errors properly."""
-    with patch(
-        "datachain.lib.audio.torchaudio.info", side_effect=Exception("Test error")
-    ):
+    with patch("datachain.lib.audio.sf.info", side_effect=Exception("Test error")):
         with pytest.raises(FileError, match="unable to read audio fragment"):
             audio_to_np(audio_file)
 
@@ -322,34 +318,30 @@ def test_audio_to_bytes_formats(audio_file, format_type):
 
 
 @pytest.mark.parametrize(
-    "encoding,file_ext,expected_format",
+    "format_str,subtype,file_ext,expected_format,expected_bit_rate",
     [
-        # Test direct encoding mappings
-        ("FLAC", "flac", "flac"),
-        ("MP3", "mp3", "mp3"),
-        ("VORBIS", "ogg", "ogg"),
-        ("OPUS", "opus", "opus"),
-        ("AMR_WB", "amr", "amr"),
-        ("AMR_NB", "amr", "amr"),
-        ("GSM", "gsm", "gsm"),
-        # Test PCM variants with different extensions
-        ("PCM_S16LE", "wav", "wav"),
-        ("PCM_S24LE", "aiff", "aiff"),
-        ("PCM_F32LE", "au", "au"),
-        ("PCM_U8", "raw", "raw"),
-        ("PCM_S16BE", "unknown_ext", "wav"),  # Default for PCM
-        # Test unknown encoding falls back to file extension
-        ("UNKNOWN_CODEC", "mp3", "mp3"),
-        ("UNKNOWN_CODEC", "flac", "flac"),
-        # Test files without extension
-        ("UNKNOWN_CODEC", "", "unknown"),
-        ("", "", "unknown"),
+        # Direct format mappings from soundfile
+        ("WAV", "PCM_16", "wav", "wav", 16 * 16000),
+        ("FLAC", "PCM_16", "flac", "flac", 16 * 16000),
+        ("OGG", "VORBIS", "ogg", "ogg", -1),
+        ("AIFF", "PCM_24", "aiff", "aiff", 24 * 16000),
+        # Format fallback to file extension when subtype is PCM
+        (None, "PCM_16", "wav", "wav", 16 * 16000),
+        (None, "PCM_24", "aiff", "aiff", 24 * 16000),
+        (None, "PCM_S16LE", "au", "au", 16 * 16000),
+        (None, "PCM_F32LE", "wav", "wav", 32 * 16000),
+        # Unknown format with extension falls back to extension
+        (None, "UNKNOWN_CODEC", "mp3", "mp3", -1),
+        ("", "UNKNOWN_CODEC", "flac", "flac", -1),
+        # Files without extension should fall back to "unknown"
+        (None, "PCM_16", "", "unknown", 16 * 16000),
+        ("", "UNKNOWN_CODEC", "", "unknown", -1),
     ],
 )
 def test_audio_info_format_detection(
-    tmp_path, catalog, encoding, file_ext, expected_format
+    tmp_path, catalog, format_str, subtype, file_ext, expected_format, expected_bit_rate
 ):
-    """Test audio format detection for different file extensions and encodings."""
+    """Test audio format detection for different file extensions and formats."""
     # Create a test audio file with the specified extension
     filename = f"test_audio.{file_ext}" if file_ext else "test_audio"
     audio_data = generate_test_wav(duration=0.1, sample_rate=16000)
@@ -359,18 +351,20 @@ def test_audio_info_format_detection(
     audio_file = AudioFile(path=str(audio_path), source="file://")
     audio_file._set_stream(catalog, caching_enabled=False)
 
-    # Mock torchaudio.info to return controlled encoding
-    with patch("datachain.lib.audio.torchaudio.info") as mock_info:
-        mock_info.return_value.sample_rate = 16000
-        mock_info.return_value.num_channels = 1
-        mock_info.return_value.num_frames = 1600  # 0.1 seconds
-        mock_info.return_value.encoding = encoding
-        mock_info.return_value.bits_per_sample = 16
+    # Mock soundfile.info to return controlled format
+    with patch("datachain.lib.audio.sf.info") as mock_info:
+        mock_info.return_value.samplerate = 16000
+        mock_info.return_value.channels = 1
+        mock_info.return_value.frames = 1600  # 0.1 seconds
+        mock_info.return_value.duration = 0.1
+        mock_info.return_value.format = format_str
+        mock_info.return_value.subtype = subtype
 
         result = audio_info(audio_file)
 
         assert result.format == expected_format
-        assert result.codec == encoding
+        assert result.codec == subtype
+        assert result.bit_rate == expected_bit_rate
 
 
 def test_audio_info_stereo(stereo_audio_file):

@@ -1,4 +1,6 @@
 import os
+import uuid
+from typing import Any
 
 import pytest
 import regex as re
@@ -6,7 +8,7 @@ from PIL import Image
 
 import datachain as dc
 from datachain import func
-from datachain.error import DatasetNotFoundError
+from datachain.error import DatasetNotFoundError, SchemaDriftError
 from datachain.lib.dc import C
 from datachain.lib.file import File, ImageFile
 
@@ -95,6 +97,70 @@ def test_delta_update_from_dataset(test_session, tmp_dir, tmp_path):
     ]
 
     create_delta_dataset(ds_name)
+
+
+def test_delta_falls_back_when_dependency_missing(test_session):
+    catalog = test_session.catalog
+
+    source_ds = "delta_removed_dep_source"
+    delta_ds = "delta_removed_dep_result"
+    process_log: list[int] = []
+
+    def record_processing(id: int) -> int:
+        process_log.append(id)
+        return id
+
+    # Create first source dataset and initial delta version that depends on it
+    dc.read_values(id=[1, 2], session=test_session).save(source_ds)
+    dc.read_dataset(
+        source_ds,
+        session=test_session,
+        delta=True,
+        delta_on="id",
+    ).map(processed_id=record_processing).save(delta_ds)
+
+    assert _get_dependencies(catalog, delta_ds, "1.0.0") == [(source_ds, "1.0.0")]
+    assert set(
+        dc.read_dataset(delta_ds, version="1.0.0", session=test_session).to_values("id")
+    ) == {1, 2}
+    assert sorted(process_log[:2]) == [1, 2]
+
+    dc.read_values(id=[1, 2, 10, 20, 30], session=test_session).save(source_ds)
+
+    # Drop the previous version so it is clear the dependency targets 1.0.1
+    dc.delete_dataset(source_ds, version="1.0.0", session=test_session)
+
+    with pytest.raises(DatasetNotFoundError):
+        dc.read_dataset(source_ds, session=test_session, version="1.0.0")
+
+    deps_after_removal = catalog.get_dataset_dependencies(
+        delta_ds,
+        "1.0.0",
+        namespace_name=catalog.metastore.default_project.namespace.name,
+        project_name=catalog.metastore.default_project.name,
+        indirect=False,
+    )
+    assert deps_after_removal == [None]
+
+    dc.read_dataset(
+        source_ds,
+        session=test_session,
+        delta=True,
+        delta_on="id",
+    ).map(processed_id=record_processing).save(delta_ds)
+
+    # Delta logic should fall back to rebuilding from scratch with the new dependency
+    assert _get_dependencies(catalog, delta_ds, "1.0.1") == [(source_ds, "1.0.1")]
+    assert set(
+        dc.read_dataset(delta_ds, version="1.0.1", session=test_session).to_values("id")
+    ) == {1, 2, 10, 20, 30}
+    # Previous version remains intact and still reflects the original source dataset
+    assert set(
+        dc.read_dataset(delta_ds, version="1.0.0", session=test_session).to_values("id")
+    ) == {1, 2}
+    # Fallback rebuilds the dataset, so ids 1 and 2 appear twice across both runs.
+    assert sorted(process_log[:2]) == [1, 2]
+    assert sorted(process_log[2:]) == [1, 2, 10, 20, 30]
 
 
 def test_delta_returns_correct_dataset_on_no_changes(test_session):
@@ -222,6 +288,211 @@ def test_delta_update_unsafe(test_session):
         (5, 5),
         (6, 6),
     }
+
+
+def test_delta_replay_regenerates_system_columns(test_session):
+    source_name = f"regen_source_{uuid.uuid4().hex[:8]}"
+    result_name = f"regen_result_{uuid.uuid4().hex[:8]}"
+
+    dc.read_values(
+        measurement_id=[1, 2],
+        err=["", ""],
+        num=[1, 2],
+        session=test_session,
+    ).save(source_name)
+
+    def build_chain(delta: bool):
+        read_kwargs = {"session": test_session}
+        if delta:
+            read_kwargs.update({"delta": True, "delta_on": "measurement_id"})
+        return (
+            dc.read_dataset(source_name, **read_kwargs)
+            .filter(C.err == "")
+            .select_except("err")
+            .map(double=lambda num: num * 2, output=int)
+            .select_except("num")
+        )
+
+    build_chain(delta=False).save(result_name)
+
+    build_chain(delta=True).save(result_name)
+
+    assert set(
+        dc.read_dataset(result_name, session=test_session).to_values("measurement_id")
+    ) == {1, 2}
+
+
+@pytest.mark.parametrize(
+    (
+        "initial_has_confidence",
+        "updated_has_confidence",
+        "scenario",
+        "expected_detail",
+    ),
+    [
+        pytest.param(
+            False,
+            True,
+            "added",
+            "new columns detected: item.confidence",
+            id="column_added",
+        ),
+        pytest.param(
+            True,
+            False,
+            "removed",
+            "columns missing in updated data: item.confidence",
+            id="column_removed",
+        ),
+    ],
+)
+def test_delta_update_fails_on_schema_change(
+    test_session,
+    initial_has_confidence: bool,
+    updated_has_confidence: bool,
+    scenario: str,
+    expected_detail: str,
+):
+    source_name = f"delta_schema_change_source_{scenario}_{uuid.uuid4().hex[:8]}"
+    result_name = f"delta_schema_change_result_{scenario}_{uuid.uuid4().hex[:8]}"
+
+    dc.read_values(id=[1, 2], session=test_session).save(source_name)
+
+    def build_chain(include_confidence: bool):
+        class ItemBase(dc.DataModel):
+            label: str
+            score: int
+            error: str
+
+        class ItemWithConfidence(ItemBase):
+            confidence: float
+
+        item_model = ItemWithConfidence if include_confidence else ItemBase
+
+        def mark_error(id: int) -> str:
+            return "retry" if id == 2 else ""
+
+        def build_item(id: int) -> ItemBase:
+            data: dict[str, Any] = {
+                "label": f"item-{id}",
+                "score": id * 10,
+                "error": mark_error(id),
+            }
+            if include_confidence:
+                data["confidence"] = float(id)
+            return item_model(**data)
+
+        return dc.read_dataset(
+            source_name,
+            session=test_session,
+            delta=True,
+            delta_on="id",
+            delta_retry="item.error",
+        ).map(item=build_item, output=item_model)
+
+    build_chain(include_confidence=initial_has_confidence).save(result_name)
+
+    dc.read_values(id=[1, 2, 3], session=test_session).save(source_name)
+
+    with pytest.raises(SchemaDriftError) as excinfo:
+        build_chain(include_confidence=updated_has_confidence).save(result_name)
+
+    msg = str(excinfo.value)
+    assert "schema drift" in msg.lower()
+    assert "item.confidence" in msg
+    assert expected_detail in msg
+
+
+def test_delta_update_retry_union_detects_source_schema_change(test_session):
+    source_name = f"delta_retry_drift_source_{uuid.uuid4().hex[:8]}"
+    result_name = f"delta_retry_drift_result_{uuid.uuid4().hex[:8]}"
+
+    dc.read_values(
+        id=[1, 2],
+        err=["retry", ""],
+        session=test_session,
+    ).save(source_name)
+
+    dc.read_dataset(
+        source_name,
+        session=test_session,
+        delta=True,
+        delta_on="id",
+        delta_retry="err",
+    ).save(result_name)
+
+    dc.read_values(
+        id=[1, 2, 3],
+        err=["retry", "", ""],
+        extra=["a", "b", "c"],
+        session=test_session,
+    ).save(source_name)
+
+    with pytest.raises(SchemaDriftError) as excinfo:
+        dc.read_dataset(
+            source_name,
+            session=test_session,
+            delta=True,
+            delta_on="id",
+            delta_retry="err",
+        ).save(result_name)
+
+    msg = str(excinfo.value)
+    assert "combining retry records with delta changes" in msg
+    assert "columns missing in updated data: extra" in msg
+
+
+def test_storage_delta_replay_regenerates_system_columns(test_session, tmp_dir):
+    data_dir = tmp_dir / f"regen_storage_{uuid.uuid4().hex[:8]}"
+    data_dir.mkdir()
+    storage_uri = data_dir.as_uri()
+    result_name = f"regen_storage_result_{uuid.uuid4().hex[:8]}"
+
+    def write_payload(index: int) -> None:
+        (data_dir / f"item{index}.txt").write_text(f"payload-{index}")
+
+    write_payload(1)
+    write_payload(2)
+
+    def build_chain(delta: bool):
+        read_kwargs = {"session": test_session, "update": True}
+        if delta:
+            read_kwargs |= {
+                "delta": True,
+                "delta_on": ["file.path"],
+                "delta_result_on": ["file.path"],
+            }
+
+        def get_measurement_id(file: File) -> int:
+            match = re.search(r"item(\d+)\.txt$", file.path)
+            assert match
+            return int(match.group(1))
+
+        def get_num(file: File) -> int:
+            return get_measurement_id(file)
+
+        chain = dc.read_storage(storage_uri, **read_kwargs)
+        return (
+            chain.mutate(num=1)
+            .select_except("num")
+            .map(measurement_id=get_measurement_id)
+            .map(err=lambda file: "")
+            .map(num=get_num)
+            .filter(C.err == "")
+            .select_except("err")
+            .map(double=lambda num: num * 2, output=int)
+            .select_except("num")
+        )
+
+    build_chain(delta=False).save(result_name)
+
+    write_payload(3)
+
+    build_chain(delta=True).save(result_name)
+
+    assert set(
+        dc.read_dataset(result_name, session=test_session).to_values("measurement_id")
+    ) == {1, 2, 3}
 
 
 def test_delta_update_from_storage(test_session, tmp_dir, tmp_path):

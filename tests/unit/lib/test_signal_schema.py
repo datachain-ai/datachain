@@ -17,6 +17,7 @@ from datachain.lib.signal_schema import (
     SignalSchemaError,
     SignalSchemaWarning,
 )
+from datachain.lib.utils import DataChainColumnError
 from datachain.sql.types import (
     JSON,
     Array,
@@ -183,6 +184,45 @@ def test_feature_schema_serialize_list():
 
     deserialized_schema = SignalSchema.deserialize(signals)
     assert deserialized_schema.values == schema
+
+
+def test_schema_or_rejects_type_change():
+    base = SignalSchema({"foo": int})
+    new = SignalSchema({"foo": str})
+
+    with pytest.raises(DataChainColumnError, match="different type"):
+        _ = base | new
+
+
+def test_schema_or_rejects_root_conflict():
+    base = SignalSchema({"feature": MyType1})
+    new = SignalSchema({"feature.extra": int})
+
+    with pytest.raises(DataChainColumnError, match="root"):
+        _ = base | new
+
+
+def test_schema_or_allows_sys_root():
+    base = SignalSchema({"foo": int})
+    new = SignalSchema({"sys": Sys})
+
+    combined = base | new
+    assert combined.values["sys"] is Sys
+
+
+def test_schema_or_rejects_sys_override():
+    base = SignalSchema({"sys": Sys})
+    new = SignalSchema({"sys": dict})
+
+    with pytest.raises(DataChainColumnError, match="different type"):
+        _ = base | new
+
+
+def test_schema_or_allows_identical_signal():
+    base = SignalSchema({"foo": int})
+    combined = base | SignalSchema({"foo": int})
+
+    assert combined.values["foo"] is int
 
 
 def test_feature_schema_serialize_list_old():
@@ -531,6 +571,59 @@ def test_merge():
     assert signals["f"] is MyType1
 
 
+def test_merge_nested_key_without_collision():
+    left = SignalSchema({"item.score": float})
+    right = SignalSchema({"metadata.score": float})
+
+    merged = left.merge(right, "right_")
+
+    assert merged.values["item.score"] is float
+    assert merged.values["metadata.score"] is float
+    assert "right_metadata.score" not in merged.values
+
+
+def test_merge_applies_suffix_when_prefixed_name_exists():
+    left = SignalSchema(
+        {
+            "item.score": float,
+            "right_item.score": float,
+        }
+    )
+    right = SignalSchema(
+        {
+            "item.confidence": int,
+            "item.score": int,
+        }
+    )
+
+    merged = left.merge(right, "right_")
+
+    assert merged.values["item.score"] is float
+    assert merged.values["right_item.score"] is float
+    assert merged.values["right_item_1.score"] is int
+    assert merged.values["right_item_1.confidence"] is int
+
+
+def test_merge_rename_collides_with_existing_column():
+    left = SignalSchema(
+        {
+            "item.score": float,
+        }
+    )
+    right = SignalSchema(
+        {
+            "item.score": int,
+            "right_item.score": str,
+        }
+    )
+
+    merged = left.merge(right, "right_")
+
+    assert merged.values["item.score"] is float
+    assert merged.values["right_item.score"] is str
+    assert merged.values["right_item_1.score"] is int
+
+
 def test_select_custom_type_backward_compatibility():
     schema = SignalSchema.deserialize(
         {
@@ -806,6 +899,80 @@ def test_get_features_nested(test_session, nested_file_schema):
     assert actual_features[3].nested_file._catalog == test_session.catalog
 
 
+def test_row_to_features_list_of_models(test_session):
+    schema = SignalSchema({"items": list[MyType1]})
+    row = ([{"aa": 1, "bb": "x"}, {"aa": 2, "bb": "y"}],)
+
+    features = schema.row_to_features(row, test_session.catalog)
+
+    assert len(features) == 1
+    items = features[0]
+    assert isinstance(items, list)
+    assert [item.aa for item in items] == [1, 2]
+    assert all(isinstance(item, MyType1) for item in items)
+
+
+def test_row_to_features_dict_of_models(test_session):
+    schema = SignalSchema({"lookup": dict[str, MyType2]})
+    row = (
+        {
+            "first": {"name": "a", "deep": {"aa": 1, "bb": "x"}},
+            "second": {"name": "b", "deep": {"aa": 2, "bb": "y"}},
+        },
+    )
+
+    features = schema.row_to_features(row, test_session.catalog)
+
+    assert len(features) == 1
+    lookup = features[0]
+    assert isinstance(lookup, dict)
+    assert set(lookup) == {"first", "second"}
+    assert isinstance(lookup["first"], MyType2)
+    assert lookup["second"].deep.aa == 2
+
+
+def test_row_to_features_optional_collection(test_session):
+    schema = SignalSchema({"items": list[MyType1] | None})
+
+    features_none = schema.row_to_features((None,), test_session.catalog)
+    assert features_none == [None]
+
+    row = ([{"aa": 3, "bb": "z"}],)
+    features = schema.row_to_features(row, test_session.catalog)
+    assert len(features) == 1
+    items = features[0]
+    assert isinstance(items, list)
+    assert isinstance(items[0], MyType1)
+
+
+@pytest.mark.parametrize(
+    "union_type,union_name",
+    [
+        (Union[list[MyType1], None], "Union[list[MyType1], None]"),
+        (list[MyType1] | None, "list[MyType1] | None"),
+    ],
+    ids=["old-style-union", "new-style-union"],
+)
+def test_row_to_features_union_types(test_session, union_type, union_name):
+    """Test that both old-style Union[X, None] and new-style X | None work correctly."""
+    schema = SignalSchema({"items": union_type})
+
+    # Test None case
+    features_none = schema.row_to_features((None,), test_session.catalog)
+    assert features_none == [None], f"Failed for {union_name} with None value"
+
+    # Test non-None case
+    row = ([{"aa": 5, "bb": "test"}],)
+    features = schema.row_to_features(row, test_session.catalog)
+    assert len(features) == 1, f"Failed for {union_name}"
+    items = features[0]
+    assert isinstance(items, list), f"Expected list for {union_name}, got {type(items)}"
+    assert len(items) == 1, f"Expected 1 item for {union_name}"
+    assert isinstance(items[0], MyType1), f"Expected MyType1 instance for {union_name}"
+    assert items[0].aa == 5, f"Wrong value for {union_name}"
+    assert items[0].bb == "test", f"Wrong value for {union_name}"
+
+
 def test_get_signals_subclass(nested_file_schema):
     class NewFile(File):
         pass
@@ -852,16 +1019,18 @@ def test_print_types():
         str | int | bool: "Union[str, int, bool]",
         List: "list",
         list: "list",
+        List[bool]: "list[bool]",
         list[bool]: "list[bool]",
-        list[bool]: "list[bool]",
+        List[bool | None]: "list[Optional[bool]]",
         list[bool | None]: "list[Optional[bool]]",
-        list[bool | None]: "list[Optional[bool]]",
-        list[bool | None]: "list[Optional[bool]]",
-        list[bool | None]: "list[Optional[bool]]",
+        List[int]: "list[int]",
+        list[int]: "list[int]",
         Dict: "dict",
         dict: "dict",
+        Dict[str, bool]: "dict[str, bool]",
         dict[str, bool]: "dict[str, bool]",
-        dict[str, bool]: "dict[str, bool]",
+        Dict[str, int]: "dict[str, int]",
+        dict[str, int]: "dict[str, int]",
         dict[str, MyType1 | None]: "dict[str, Optional[MyType1@v1]]",
         dict[str, MyType1 | None]: "dict[str, Optional[MyType1@v1]]",
         dict[str, MyType1 | None]: "dict[str, Optional[MyType1@v1]]",
@@ -944,6 +1113,32 @@ def test_resolve_types():
     for s, t in mapping_warnings.items():
         with pytest.warns(SignalSchemaWarning):
             assert SignalSchema._resolve_type(s, {}) == t
+
+
+def test_type_to_str_typing_module_vs_builtin_generics():
+    """Test that typing.List/Dict and list/dict behave identically with get_origin().
+
+    This ensures Python 3.10+ compatibility where both old-style (typing.List)
+    and new-style (list[]) generic annotations are normalized by get_origin()
+    to the same built-in types.
+    """
+    from typing import get_origin
+
+    # Verify get_origin() normalizes both forms to built-in types
+    assert get_origin(List[int]) is list
+    assert get_origin(list[int]) is list
+    assert get_origin(Dict[str, int]) is dict
+    assert get_origin(dict[str, int]) is dict
+
+    # Verify _type_to_str produces identical output for both forms
+    assert SignalSchema._type_to_str(List[int]) == SignalSchema._type_to_str(list[int])
+    assert SignalSchema._type_to_str(Dict[str, int]) == SignalSchema._type_to_str(
+        dict[str, int]
+    )
+    assert SignalSchema._type_to_str(List[str]) == "list[str]"
+    assert SignalSchema._type_to_str(list[str]) == "list[str]"
+    assert SignalSchema._type_to_str(Dict[str, bool]) == "dict[str, bool]"
+    assert SignalSchema._type_to_str(dict[str, bool]) == "dict[str, bool]"
 
 
 def test_resolve_types_errors():

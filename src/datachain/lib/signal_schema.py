@@ -1,11 +1,10 @@
 import copy
 import hashlib
-import json
 import logging
 import math
 import types
 import warnings
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from inspect import isclass
@@ -14,9 +13,7 @@ from typing import (
     TYPE_CHECKING,
     Annotated,
     Any,
-    Dict,  # type: ignore[UP035]
     Final,
-    List,  # type: ignore[UP035]
     Literal,
     Optional,
     Union,
@@ -28,6 +25,7 @@ from pydantic import BaseModel, Field, ValidationError, create_model
 from sqlalchemy import ColumnElement
 from typing_extensions import Literal as LiteralEx
 
+from datachain import json
 from datachain.func import literal
 from datachain.func.func import Func
 from datachain.lib.convert.python_to_sql import python_to_sql
@@ -36,7 +34,7 @@ from datachain.lib.convert.unflatten import unflatten_to_json_pos
 from datachain.lib.data_model import DataModel, DataType, DataValue
 from datachain.lib.file import File
 from datachain.lib.model_store import ModelStore
-from datachain.lib.utils import DataChainParamsError
+from datachain.lib.utils import DataChainColumnError, DataChainParamsError
 from datachain.query.schema import DEFAULT_DELIMITER, C, Column, ColumnMeta
 from datachain.sql.types import SQLType
 
@@ -82,6 +80,55 @@ class SignalResolvingError(SignalSchemaError):
 class SetupError(SignalSchemaError):
     def __init__(self, name: str, msg: str):
         super().__init__(f"cannot setup value '{name}': {msg}")
+
+
+def generate_merge_root_mapping(
+    left_names: Iterable[str],
+    right_names: Sequence[str],
+    *,
+    extract_root: Callable[[str], str],
+    prefix: str,
+) -> dict[str, str]:
+    """Compute root renames for schema merges.
+
+    Returns a mapping from each right-side root to the target root name while
+    preserving the order in which right-side roots first appear. The mapping
+    avoids collisions with roots already present on the left side and among
+    the right-side roots themselves. When a conflict is detected, the
+    ``prefix`` string is used to derive candidate root names until a unique
+    one is found.
+    """
+
+    existing_roots = {extract_root(name) for name in left_names}
+
+    right_root_order: list[str] = []
+    right_roots: set[str] = set()
+    for name in right_names:
+        root = extract_root(name)
+        if root not in right_roots:
+            right_roots.add(root)
+            right_root_order.append(root)
+
+    used_roots = set(existing_roots)
+    root_mapping: dict[str, str] = {}
+
+    for root in right_root_order:
+        if root not in used_roots:
+            root_mapping[root] = root
+            used_roots.add(root)
+            continue
+
+        suffix = 0
+        while True:
+            base = prefix if root in prefix else f"{prefix}{root}"
+            candidate_root = base if suffix == 0 else f"{base}_{suffix}"
+            if candidate_root not in used_roots and candidate_root not in right_roots:
+                root_mapping[root] = candidate_root
+                used_roots.add(candidate_root)
+                break
+            suffix += 1
+
+    return root_mapping
 
 
 class SignalResolvingTypeError(SignalResolvingError):
@@ -142,7 +189,7 @@ def create_feature_model(
         **{
             field_name: anno if isinstance(anno, tuple) else (anno, None)
             for field_name, anno in fields.items()
-        },
+        },  # type: ignore[arg-type]
     )
 
 
@@ -569,8 +616,10 @@ class SignalSchema:
         pos = 0
         for fr_cls in self.values.values():
             if (fr := ModelStore.to_pydantic(fr_cls)) is None:
-                res.append(row[pos])
+                value = row[pos]
                 pos += 1
+                converted = self._convert_feature_value(fr_cls, value, catalog, cache)
+                res.append(converted)
             else:
                 json, pos = unflatten_to_json_pos(fr, row, pos)  # type: ignore[union-attr]
                 try:
@@ -584,6 +633,72 @@ class SignalSchema:
                         raise
                 res.append(obj)
         return res
+
+    def _convert_feature_value(
+        self,
+        annotation: DataType,
+        value: Any,
+        catalog: "Catalog",
+        cache: bool,
+    ) -> Any:
+        """Convert raw DB value into declared annotation if needed."""
+        if value is None:
+            return None
+
+        result = value
+        origin = get_origin(annotation)
+
+        if origin in (Union, types.UnionType):
+            non_none_args = [
+                arg for arg in get_args(annotation) if arg is not type(None)
+            ]
+            if len(non_none_args) == 1:
+                annotation = non_none_args[0]
+                origin = get_origin(annotation)
+            else:
+                return result
+
+        if ModelStore.is_pydantic(annotation):
+            if isinstance(value, annotation):
+                obj = value
+            elif isinstance(value, Mapping):
+                obj = annotation(**value)
+            else:
+                return result
+            assert isinstance(obj, BaseModel)
+            SignalSchema._set_file_stream(obj, catalog, cache)
+            result = obj
+        elif origin is list:
+            args = get_args(annotation)
+            if args and isinstance(value, (list, tuple)):
+                item_type = args[0]
+                result = [
+                    self._convert_feature_value(item_type, item, catalog, cache)
+                    if item is not None
+                    else None
+                    for item in value
+                ]
+        elif origin is dict:
+            args = get_args(annotation)
+            if len(args) == 2 and isinstance(value, dict):
+                key_type, val_type = args
+                result = {}
+                for key, val in value.items():
+                    if key_type is str:
+                        converted_key = key
+                    else:
+                        loaded_key = json.loads(key)
+                        converted_key = self._convert_feature_value(
+                            key_type, loaded_key, catalog, cache
+                        )
+                    converted_val = (
+                        self._convert_feature_value(val_type, val, catalog, cache)
+                        if val_type is not Any
+                        else val
+                    )
+                    result[converted_key] = converted_val
+
+        return result
 
     @staticmethod
     def _set_file_stream(
@@ -640,6 +755,35 @@ class SignalSchema:
             ]
 
         return signals  # type: ignore[return-value]
+
+    def user_signals(
+        self,
+        *,
+        include_hidden: bool = True,
+        include_sys: bool = False,
+    ) -> list[str]:
+        return [
+            ".".join(path)
+            for path, _, has_subtree, _ in self.get_flat_tree(
+                include_hidden=include_hidden, include_sys=include_sys
+            )
+            if not has_subtree
+        ]
+
+    def compare_signals(
+        self,
+        other: "SignalSchema",
+        *,
+        include_hidden: bool = True,
+        include_sys: bool = False,
+    ) -> tuple[set[str], set[str]]:
+        left = set(
+            self.user_signals(include_hidden=include_hidden, include_sys=include_sys)
+        )
+        right = set(
+            other.user_signals(include_hidden=include_hidden, include_sys=include_sys)
+        )
+        return left - right, right - left
 
     def resolve(self, *names: str) -> "SignalSchema":
         schema = {}
@@ -774,12 +918,30 @@ class SignalSchema:
         right_schema: "SignalSchema",
         rname: str,
     ) -> "SignalSchema":
-        schema_right = {
-            rname + key if key in self.values else key: type_
-            for key, type_ in right_schema.values.items()
-        }
+        merged_values = dict(self.values)
 
-        return SignalSchema(self.values | schema_right)
+        right_names = list(right_schema.values.keys())
+        root_mapping = generate_merge_root_mapping(
+            self.values.keys(),
+            right_names,
+            extract_root=self._extract_root,
+            prefix=rname,
+        )
+
+        for key, type_ in right_schema.values.items():
+            root = self._extract_root(key)
+            tail = key.partition(".")[2]
+            mapped_root = root_mapping[root]
+            new_name = mapped_root if not tail else f"{mapped_root}.{tail}"
+            merged_values[new_name] = type_
+
+        return SignalSchema(merged_values)
+
+    @staticmethod
+    def _extract_root(name: str) -> str:
+        if "." in name:
+            return name.split(".", 1)[0]
+        return name
 
     def append(self, right: "SignalSchema") -> "SignalSchema":
         missing_schema = {
@@ -799,7 +961,7 @@ class SignalSchema:
         return create_model(
             name,
             __base__=(DataModel,),  # type: ignore[call-overload]
-            **fields,
+            **fields,  # type: ignore[arg-type]
         )
 
     @staticmethod
@@ -812,16 +974,25 @@ class SignalSchema:
         }
 
     def get_flat_tree(
-        self, include_hidden: bool = True
+        self,
+        include_hidden: bool = True,
+        include_sys: bool = True,
     ) -> Iterator[tuple[list[str], DataType, bool, int]]:
-        yield from self._get_flat_tree(self.tree, [], 0, include_hidden)
+        yield from self._get_flat_tree(self.tree, [], 0, include_hidden, include_sys)
 
     def _get_flat_tree(
-        self, tree: dict, prefix: list[str], depth: int, include_hidden: bool
+        self,
+        tree: dict,
+        prefix: list[str],
+        depth: int,
+        include_hidden: bool,
+        include_sys: bool,
     ) -> Iterator[tuple[list[str], DataType, bool, int]]:
         for name, (type_, substree) in tree.items():
             suffix = name.split(".")
             new_prefix = prefix + suffix
+            if not include_sys and new_prefix and new_prefix[0] == "sys":
+                continue
             hidden_fields = getattr(type_, "_hidden_fields", None)
             if hidden_fields and substree and not include_hidden:
                 substree = {
@@ -834,7 +1005,7 @@ class SignalSchema:
             yield new_prefix, type_, has_subtree, depth
             if substree is not None:
                 yield from self._get_flat_tree(
-                    substree, new_prefix, depth + 1, include_hidden
+                    substree, new_prefix, depth + 1, include_hidden, include_sys
                 )
 
     def print_tree(self, indent: int = 2, start_at: int = 0, file: IO | None = None):
@@ -867,7 +1038,28 @@ class SignalSchema:
         ], max_length
 
     def __or__(self, other):
-        return self.__class__(self.values | other.values)
+        new_values = dict(self.values)
+
+        for name, new_type in other.values.items():
+            if name in new_values:
+                current_type = new_values[name]
+                if current_type != new_type:
+                    raise DataChainColumnError(
+                        name,
+                        "signal already exists with a different type",
+                    )
+                continue
+
+            root = self._extract_root(name)
+            if any(self._extract_root(existing) == root for existing in new_values):
+                raise DataChainColumnError(
+                    name,
+                    "signal root already exists in schema",
+                )
+
+            new_values[name] = new_type
+
+        return self.__class__(new_values)
 
     def __contains__(self, name: str):
         return name in self.values
@@ -898,13 +1090,13 @@ class SignalSchema:
             args = get_args(type_)
             type_str = SignalSchema._type_to_str(args[0], subtypes)
             return f"Optional[{type_str}]"
-        if origin in (list, List):  # noqa: UP006
+        if origin is list:
             args = get_args(type_)
             if len(args) == 0:
                 return "list"
             type_str = SignalSchema._type_to_str(args[0], subtypes)
             return f"list[{type_str}]"
-        if origin in (dict, Dict):  # noqa: UP006
+        if origin is dict:
             args = get_args(type_)
             if len(args) == 0:
                 return "dict"

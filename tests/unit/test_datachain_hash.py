@@ -187,7 +187,7 @@ def test_all_possible_steps(test_session):
         .sample(10)
         .offset(2)
         .limit(5)
-        .group_by(age_avg=func.avg("persons.age"), partition_by="persons.name")
+        .group_by(age_avg=func.avg("persons.ages"), partition_by="persons.name")
         .select("persons.name", "age_avg")
         .subtract(
             players_chain,
@@ -195,7 +195,7 @@ def test_all_possible_steps(test_session):
             right_on=["player.name"],
         )
         .hash()
-    ) == "2c8d3fffade5574a418c45545f4c821cbe734f648cfcbfa55843673796bc35eb"
+    ) == "bd685bd97746a8e0e012c7029c7f2c8b17fc7eb5b7a5cd8fa5dacada57d75a07"
 
 
 def test_diff(test_session):
@@ -218,4 +218,4 @@ def test_diff(test_session):
             status_col="diff",
         )
         .hash()
-    ) == "dbaf2277a1af061e98df3090500d3c284280bcf7f44340a315a0e3f3be72eafd"
+    ) == "26c2a097045166837f0e366c78636d83a2a2f92ba1fcc53327954c62cf8be960"

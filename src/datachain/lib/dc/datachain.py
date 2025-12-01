@@ -18,16 +18,14 @@ from typing import (
 )
 
 import sqlalchemy
-import ujson as json
 from pydantic import BaseModel
 from sqlalchemy.sql.elements import ColumnElement
 from tqdm import tqdm
 
-from datachain import semver
+from datachain import json, semver
 from datachain.dataset import DatasetRecord
 from datachain.delta import delta_disabled
 from datachain.error import (
-    JobNotFoundError,
     ProjectCreateNotAllowedError,
     ProjectNotFoundError,
 )
@@ -53,7 +51,12 @@ from datachain.lib.udf_signature import UdfSignature
 from datachain.lib.utils import DataChainColumnError, DataChainParamsError
 from datachain.project import Project
 from datachain.query import Session
-from datachain.query.dataset import DatasetQuery, PartitionByType
+from datachain.query.dataset import (
+    DatasetQuery,
+    PartitionByType,
+    RegenerateSystemColumns,
+    UnionSchemaMismatchError,
+)
 from datachain.query.schema import DEFAULT_DELIMITER, Column
 from datachain.sql.functions import path as pathfunc
 from datachain.utils import batched_it, env2bool, inside_notebook, row_to_nested_dict
@@ -578,7 +581,8 @@ class DataChain:
             create=True,
         )
         return self._evolve(
-            query=self._query.save(project=project, feature_schema=schema)
+            query=self._query.save(project=project, feature_schema=schema),
+            signal_schema=self.signals_schema | SignalSchema({"sys": Sys}),
         )
 
     def _calculate_job_hash(self, job_id: str) -> str:
@@ -627,6 +631,9 @@ class DataChain:
         self._validate_version(version)
         self._validate_update_version(update_version)
 
+        # get existing job if running in SaaS, or creating new one if running locally
+        job = self.session.get_or_create_job()
+
         namespace_name, project_name, name = catalog.get_full_dataset_name(
             name,
             namespace_name=self._settings.namespace,
@@ -635,7 +642,7 @@ class DataChain:
         project = self._get_or_create_project(namespace_name, project_name)
 
         # Checkpoint handling
-        job, _hash, result = self._resolve_checkpoint(name, project, kwargs)
+        _hash, result = self._resolve_checkpoint(name, project, job, kwargs)
 
         # Schema preparation
         schema = self.signals_schema.clone_without_sys_signals().serialize()
@@ -655,13 +662,12 @@ class DataChain:
                     attrs=attrs,
                     feature_schema=schema,
                     update_version=update_version,
+                    job_id=job.id,
                     **kwargs,
                 )
             )
 
-        if job:
-            catalog.metastore.create_checkpoint(job.id, _hash)  # type: ignore[arg-type]
-
+        catalog.metastore.create_checkpoint(job.id, _hash)  # type: ignore[arg-type]
         return result
 
     def _validate_version(self, version: str | None) -> None:
@@ -690,22 +696,14 @@ class DataChain:
         self,
         name: str,
         project: Project,
+        job: Job,
         kwargs: dict,
-    ) -> tuple[Job | None, str | None, "DataChain | None"]:
+    ) -> tuple[str, "DataChain | None"]:
         """Check if checkpoint exists and return cached dataset if possible."""
         from .datasets import read_dataset
 
         metastore = self.session.catalog.metastore
-
-        job_id = os.getenv("DATACHAIN_JOB_ID")
         checkpoints_reset = env2bool("DATACHAIN_CHECKPOINTS_RESET", undefined=True)
-
-        if not job_id:
-            return None, None, None
-
-        job = metastore.get_job(job_id)
-        if not job:
-            raise JobNotFoundError(f"Job with id {job_id} not found")
 
         _hash = self._calculate_job_hash(job.id)
 
@@ -718,9 +716,9 @@ class DataChain:
             chain = read_dataset(
                 name, namespace=project.namespace.name, project=project.name, **kwargs
             )
-            return job, _hash, chain
+            return _hash, chain
 
-        return job, _hash, None
+        return _hash, None
 
     def _handle_delta(
         self,
@@ -851,12 +849,13 @@ class DataChain:
         if (prefetch := self._settings.prefetch) is not None:
             udf_obj.prefetch = prefetch
 
+        sys_schema = SignalSchema({"sys": Sys})
         return self._evolve(
             query=self._query.add_signals(
                 udf_obj.to_udf_wrapper(self._settings.batch_size),
                 **self._settings.to_dict(),
             ),
-            signal_schema=self.signals_schema | udf_obj.output,
+            signal_schema=sys_schema | self.signals_schema | udf_obj.output,
         )
 
     def gen(
@@ -894,7 +893,7 @@ class DataChain:
                 udf_obj.to_udf_wrapper(self._settings.batch_size),
                 **self._settings.to_dict(),
             ),
-            signal_schema=udf_obj.output,
+            signal_schema=SignalSchema({"sys": Sys}) | udf_obj.output,
         )
 
     @delta_disabled
@@ -1031,7 +1030,7 @@ class DataChain:
                 partition_by=processed_partition_by,
                 **self._settings.to_dict(),
             ),
-            signal_schema=udf_obj.output,
+            signal_schema=SignalSchema({"sys": Sys}) | udf_obj.output,
         )
 
     def batch_map(
@@ -1097,11 +1096,7 @@ class DataChain:
         sign = UdfSignature.parse(name, signal_map, func, params, output, is_generator)
         DataModel.register(list(sign.output_schema.values.values()))
 
-        signals_schema = self.signals_schema
-        if self._sys:
-            signals_schema = SignalSchema({"sys": Sys}) | signals_schema
-
-        params_schema = signals_schema.slice(
+        params_schema = self.signals_schema.slice(
             sign.params, self._setup, is_batch=is_batch
         )
 
@@ -1132,7 +1127,8 @@ class DataChain:
             the order of the records in the chain is important.
             Using `order_by` directly before `limit`, `to_list` and similar methods
             will give expected results.
-            See https://github.com/iterative/datachain/issues/477 for further details.
+            See https://github.com/datachain-ai/datachain/issues/477
+            for further details.
         """
         if descending:
             args = tuple(sqlalchemy.desc(a) for a in args)
@@ -1156,11 +1152,9 @@ class DataChain:
             )
         )
 
-    def select(self, *args: str, _sys: bool = True) -> "Self":
+    def select(self, *args: str) -> "Self":
         """Select only a specified set of signals."""
         new_schema = self.signals_schema.resolve(*args)
-        if self._sys and _sys:
-            new_schema = SignalSchema({"sys": Sys}) | new_schema
         columns = new_schema.db_signals()
         return self._evolve(
             query=self._query.select(*columns), signal_schema=new_schema
@@ -1699,20 +1693,17 @@ class DataChain:
             )
 
         query = self._query.join(
-            right_ds._query,
-            sqlalchemy.and_(*ops),
-            inner,
-            full,
-            rname + "{name}",
+            right_ds._query, sqlalchemy.and_(*ops), inner, full, rname
         )
         query.feature_schema = None
         ds = self._evolve(query=query)
 
+        # Note: merge drops sys signals from both sides, make sure to not include it
+        # in the resulting schema
         signals_schema = self.signals_schema.clone_without_sys_signals()
         right_signals_schema = right_ds.signals_schema.clone_without_sys_signals()
-        ds.signals_schema = SignalSchema({"sys": Sys}) | signals_schema.merge(
-            right_signals_schema, rname
-        )
+
+        ds.signals_schema = signals_schema.merge(right_signals_schema, rname)
 
         return ds
 
@@ -1723,6 +1714,16 @@ class DataChain:
         Parameters:
             other: chain whose rows will be added to `self`.
         """
+        self_schema = self.signals_schema
+        other_schema = other.signals_schema
+        missing_left, missing_right = self_schema.compare_signals(other_schema)
+        if missing_left or missing_right:
+            raise UnionSchemaMismatchError.from_column_sets(
+                missing_left,
+                missing_right,
+            )
+
+        self.signals_schema = self_schema.clone_without_sys_signals()
         return self._evolve(query=self._query.union(other._query))
 
     def subtract(  # type: ignore[override]
@@ -2694,7 +2695,19 @@ class DataChain:
             output: Path to the target directory for exporting files.
             signal: Name of the signal to export files from.
             placement: The method to use for naming exported files.
-                The possible values are: "filename", "etag", "fullpath", and "checksum".
+                The possible values are: "filename", "etag", "fullpath",
+                "filepath", and "checksum".
+                Example path translations for an object located at
+                ``s3://bucket/data/img.jpg`` and exported to ``./out``:
+
+                - "filename" -> ``./out/img.jpg`` (no directories)
+                - "filepath" -> ``./out/data/img.jpg`` (relative path kept)
+                - "fullpath" -> ``./out/bucket/data/img.jpg`` (remote host kept)
+                - "etag" -> ``./out/<etag>.jpg`` (unique name via object digest)
+
+                Local sources behave like "filepath" for "fullpath" placement.
+                Relative destinations such as "." or ".." and absolute paths
+                are supported for every strategy.
             link_type: Method to use for exporting files.
                 Falls back to `'copy'` if symlinking fails.
             num_threads: number of threads to use for exporting files.
@@ -2748,8 +2761,20 @@ class DataChain:
         )
 
     def shuffle(self) -> "Self":
-        """Shuffle the rows of the chain deterministically."""
-        return self.order_by("sys.rand")
+        """Shuffle rows with a best-effort deterministic ordering.
+
+        This produces repeatable shuffles. Merge and union operations can
+        lead to non-deterministic results. Use order by or save a dataset
+        afterward to guarantee the same result.
+        """
+        query = self._query.clone(new_table=False)
+        query.steps.append(RegenerateSystemColumns(self._query.catalog))
+
+        chain = self._evolve(
+            query=query,
+            signal_schema=SignalSchema({"sys": Sys}) | self.signals_schema,
+        )
+        return chain.order_by("sys.rand")
 
     def sample(self, n: int) -> "Self":
         """Return a random sample from the chain.
