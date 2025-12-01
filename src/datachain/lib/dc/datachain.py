@@ -707,6 +707,14 @@ class DataChain:
 
         _hash = self._calculate_job_hash(job.id)
 
+        print("RESOLVINGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG")
+        print("RESOLVINGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG")
+        print("RESOLVINGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG")
+        print("RESOLVINGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG")
+        print(
+            f"Resolving checkpoint for dataset {name}, hash is {_hash}, job is {job.id}, job parent id is {job.parent_job_id}, reset is {checkpoints_reset}, found checkpoint is {metastore.find_checkpoint(job.parent_job_id, _hash)}"
+        )
+
         if (
             job.parent_job_id
             and not checkpoints_reset
@@ -720,6 +728,13 @@ class DataChain:
                 project.namespace.name,
                 project.name,
                 job.id,
+            )
+            print("FOUNDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD")
+            print("FOUNDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD")
+            print("FOUNDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD")
+            print("FOUNDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD")
+            print(
+                f"Foind checkpoint, got dataset version from ancestry {dataset_version}"
             )
 
             if not dataset_version:

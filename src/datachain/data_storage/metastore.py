@@ -1893,9 +1893,15 @@ class AbstractDBMetastore(AbstractMetastore):
             Column(
                 "dataset_version_id",
                 Integer,
+                ForeignKey("datasets_versions.id", ondelete="CASCADE"),
                 nullable=False,
             ),
-            Column("job_id", Text, nullable=False),
+            Column(
+                "job_id",
+                Text,
+                ForeignKey("jobs.id", ondelete="CASCADE"),
+                nullable=False,
+            ),
             Column("is_creator", Boolean, nullable=False, default=False),
             Column("created_at", DateTime(timezone=True)),
             UniqueConstraint("dataset_version_id", "job_id"),
