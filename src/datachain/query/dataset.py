@@ -1238,33 +1238,27 @@ class UnionSchemaMismatchError(ValueError):
         return cls(f"Cannot perform union. {'. '.join(parts)}")
 
 
-def _validate_columns(
-    left_columns: Iterable[ColumnElement], right_columns: Iterable[ColumnElement]
-) -> list[str]:
-    left_names = [c.name for c in left_columns]
-    right_names = [c.name for c in right_columns]
-
-    if sorted(left_names) == sorted(right_names):
-        return left_names
-
-    left_names_set = set(left_names)
-    right_names_set = set(right_names)
-
-    raise UnionSchemaMismatchError.from_column_sets(
-        left_names_set - right_names_set,
-        right_names_set - left_names_set,
-    )
-
-
 def _order_columns(
     left_columns: Iterable[ColumnElement], right_columns: Iterable[ColumnElement]
 ) -> list[list[ColumnElement]]:
-    column_order = _validate_columns(left_columns, right_columns)
+    left_names = [c.name for c in left_columns]
+    right_names = [c.name for c in right_columns]
+
+    # validate
+    if sorted(left_names) != sorted(right_names):
+        left_names_set = set(left_names)
+        right_names_set = set(right_names)
+        raise UnionSchemaMismatchError.from_column_sets(
+            left_names_set - right_names_set,
+            right_names_set - left_names_set,
+        )
+
+    # Order columns to match left_names order
     column_dicts = [
         {c.name: c for c in columns} for columns in [left_columns, right_columns]
     ]
 
-    return [[d[n] for n in column_order] for d in column_dicts]
+    return [[d[n] for n in left_names] for d in column_dicts]
 
 
 def _drop_system_columns(columns: Iterable[ColumnElement]) -> list[ColumnElement]:
