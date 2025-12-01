@@ -152,6 +152,13 @@ def communicate_and_interrupt_process(
 
     for th in watch_threads:
         th.join()
+
+    # Close the pipes to avoid ResourceWarnings
+    if process.stdout:
+        process.stdout.close()
+    if process.stderr:
+        process.stderr.close()
+
     return "\n".join(stdout_lines), "\n".join(stderr_lines)
 
 
