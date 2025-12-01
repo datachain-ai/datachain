@@ -500,7 +500,7 @@ class AbstractMetastore(ABC, Serializable):
         is_creator: bool = False,
         conn=None,
     ) -> None:
-        """Link dataset version to job (many-to-many)."""
+        """Link dataset version to job."""
 
     @abstractmethod
     def get_ancestor_job_ids(self, job_id: str, conn=None) -> list[str]:
@@ -1923,6 +1923,14 @@ class AbstractDBMetastore(AbstractMetastore):
     @abstractmethod
     def _dataset_version_jobs_insert(self) -> "Insert": ...
 
+    def _dataset_version_jobs_select(self, *columns) -> "Select":
+        if not columns:
+            return self._dataset_version_jobs.select()
+        return select(*columns)
+
+    def _dataset_version_jobs_delete(self) -> "Delete":
+        return self._dataset_version_jobs.delete()
+
     def _checkpoints_select(self, *columns) -> "Select":
         if not columns:
             return self._checkpoints.select()
@@ -2023,26 +2031,35 @@ class AbstractDBMetastore(AbstractMetastore):
 
     def get_ancestor_job_ids(self, job_id: str, conn=None) -> list[str]:
         # Use recursive CTE to walk up the parent chain
-        # Format: WITH RECURSIVE ancestors(id, parent_job_id) AS (...)
+        # Format: WITH RECURSIVE ancestors(id, parent_job_id, depth) AS (...)
+        # Include depth tracking to prevent infinite recursion in case of
+        # circular dependencies
+        max_depth = 1000
+
         ancestors_cte = (
             self._jobs_select(
                 self._jobs.c.id.label("id"),
                 self._jobs.c.parent_job_id.label("parent_job_id"),
+                literal(0).label("depth"),
             )
             .where(self._jobs.c.id == job_id)
             .cte(name="ancestors", recursive=True)
         )
 
-        # Recursive part: join with parent jobs
+        # Recursive part: join with parent jobs, incrementing depth and checking limit
         ancestors_recursive = ancestors_cte.union_all(
             self._jobs_select(
                 self._jobs.c.id.label("id"),
                 self._jobs.c.parent_job_id.label("parent_job_id"),
+                (ancestors_cte.c.depth + 1).label("depth"),
             ).select_from(
                 self._jobs.join(
                     ancestors_cte,
-                    self._jobs.c.id
-                    == cast(ancestors_cte.c.parent_job_id, self._jobs.c.id.type),
+                    (
+                        self._jobs.c.id
+                        == cast(ancestors_cte.c.parent_job_id, self._jobs.c.id.type)
+                    )
+                    & (ancestors_cte.c.depth < max_depth),
                 )
             )
         )
