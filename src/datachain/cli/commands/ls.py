@@ -36,31 +36,38 @@ def ls_local(
     client_config=None,
     **kwargs,
 ):
+    from contextlib import nullcontext
+
     from datachain import listings
 
     if sources:
         if catalog is None:
             from datachain.catalog import get_catalog
 
-            catalog = get_catalog(client_config=client_config)
-
-        actual_sources = list(ls_urls(sources, catalog=catalog, long=long, **kwargs))
-        if len(actual_sources) == 1:
-            for _, entries in actual_sources:
-                for entry in entries:
-                    print(format_ls_entry(entry))
+            catalog_ctx: Catalog | nullcontext[Catalog] = get_catalog(
+                client_config=client_config
+            )
         else:
-            first = True
-            for source, entries in actual_sources:
-                # print a newline between directory listings
-                if first:
-                    first = False
-                else:
-                    print()
-                if source:
-                    print(f"{source}:")
-                for entry in entries:
-                    print(format_ls_entry(entry))
+            catalog_ctx = nullcontext(catalog)
+
+        with catalog_ctx as cat:
+            actual_sources = list(ls_urls(sources, catalog=cat, long=long, **kwargs))
+            if len(actual_sources) == 1:
+                for _, entries in actual_sources:
+                    for entry in entries:
+                        print(format_ls_entry(entry))
+            else:
+                first = True
+                for source, entries in actual_sources:
+                    # print a newline between directory listings
+                    if first:
+                        first = False
+                    else:
+                        print()
+                    if source:
+                        print(f"{source}:")
+                    for entry in entries:
+                        print(format_ls_entry(entry))
     else:
         # Collect results in a list here to prevent interference from `tqdm` and `print`
         listing = listings().to_list("listing")

@@ -178,6 +178,7 @@ filterwarnings = [
   "ignore::DeprecationWarning:botocore.auth",
   "ignore::DeprecationWarning:datasets.utils._dill",
   "ignore::DeprecationWarning:librosa.core.intervals",
+  "ignore::FutureWarning:google.api_core.client_options",  # Python 3.10 EOL warning
   # Expected warnings from our code
   "ignore:Field name .* shadows an attribute in parent:UserWarning",  # datachain.lib.feature
   # Coverage limitation on Python 3.13
