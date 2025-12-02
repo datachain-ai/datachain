@@ -1,5 +1,6 @@
 import copy
 import hashlib
+import logging
 import os
 import os.path
 import sys
@@ -74,6 +75,8 @@ from .utils import (
     is_studio,
     resolve_columns,
 )
+
+logger = logging.getLogger("datachain")
 
 C = Column
 
@@ -731,9 +734,24 @@ class DataChain:
                 ) from None
 
             if not dataset_version:
-                # Dataset version not found (e.g deleted by user) - skip checkpoint
-                # and recreate
+                logger.debug(
+                    "Checkpoint found but no dataset version for '%s' "
+                    "in job ancestry (job_id=%s). Creating new version.",
+                    name,
+                    job.id,
+                )
+                # Dataset version not found (e.g deleted by user) - skip
+                # checkpoint and recreate
                 return _hash, None
+
+            logger.debug(
+                "Reusing dataset version '%s' v%s from job ancestry "
+                "(job_id=%s, dataset_version_id=%s)",
+                name,
+                dataset_version.version,
+                job.id,
+                dataset_version.id,
+            )
 
             # Read the specific version from ancestry
             chain = read_dataset(
