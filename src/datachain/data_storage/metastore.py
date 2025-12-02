@@ -1686,6 +1686,7 @@ class AbstractDBMetastore(AbstractMetastore):
             Column("params", JSON, nullable=False),
             Column("metrics", JSON, nullable=False),
             Column("parent_job_id", Text, nullable=True),
+            Index("idx_jobs_parent_job_id", "parent_job_id"),
         ]
 
     @cached_property
@@ -2090,7 +2091,15 @@ class AbstractDBMetastore(AbstractMetastore):
         project_name: str,
         job_ancestry: list[str],
     ) -> "Select":
-        """Build query to find dataset version created by job ancestry."""
+        """Find most recent dataset version created by any job in ancestry.
+
+        Searches job ancestry (current + parents) for the newest version of
+        the dataset where is_creator=True. Returns newest by created_at, or
+        None if no version was created by any job in the ancestry chain.
+
+        Used for checkpoint resolution to find which version to reuse when
+        continuing from a parent job.
+        """
         return (
             self._datasets_versions_select()
             .select_from(
