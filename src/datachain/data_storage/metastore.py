@@ -2034,7 +2034,7 @@ class AbstractDBMetastore(AbstractMetastore):
         # Format: WITH RECURSIVE ancestors(id, parent_job_id, depth) AS (...)
         # Include depth tracking to prevent infinite recursion in case of
         # circular dependencies
-        max_depth = 1000
+        max_depth = 100
 
         ancestors_cte = (
             self._jobs_select(
