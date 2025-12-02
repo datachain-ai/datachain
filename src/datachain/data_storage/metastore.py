@@ -1691,7 +1691,7 @@ class AbstractDBMetastore(AbstractMetastore):
 
     @cached_property
     def _job_fields(self) -> list[str]:
-        return [c.name for c in self._jobs_columns() if c.name]  # type: ignore[attr-defined]
+        return [c.name for c in self._jobs_columns() if isinstance(c, Column)]  # type: ignore[attr-defined]
 
     @cached_property
     def _jobs(self) -> "Table":

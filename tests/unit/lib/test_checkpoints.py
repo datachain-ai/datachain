@@ -423,3 +423,41 @@ def test_job_ancestry_depth_exceeded(test_session, monkeypatch, nums_dataset):
 
     assert "too deep" in str(exc_info.value)
     assert "from scratch" in str(exc_info.value)
+
+
+def test_checkpoint_with_deleted_dataset_version(
+    test_session, monkeypatch, nums_dataset
+):
+    """Test checkpoint found but dataset version deleted from ancestry."""
+    catalog = test_session.catalog
+    monkeypatch.setenv("DATACHAIN_CHECKPOINTS_RESET", str(False))
+
+    chain = dc.read_dataset("nums", session=test_session)
+
+    # -------------- FIRST RUN: Create dataset -------------------
+    reset_session_job_state()
+    chain.save("nums_deleted")
+    test_session.get_or_create_job()
+
+    dataset = catalog.get_dataset("nums_deleted")
+    assert len(dataset.versions) == 1
+    assert dataset.latest_version == "1.0.0"
+
+    catalog.remove_dataset("nums_deleted", version="1.0.0", force=True)
+
+    with pytest.raises(DatasetNotFoundError):
+        catalog.get_dataset("nums_deleted")
+
+    # -------------- SECOND RUN: Checkpoint exists but version gone
+    reset_session_job_state()
+    chain.save("nums_deleted")
+    job2_id = test_session.get_or_create_job().id
+
+    # Should create a NEW version since old one was deleted
+    dataset = catalog.get_dataset("nums_deleted")
+    assert len(dataset.versions) == 1
+    assert dataset.latest_version == "1.0.0"
+
+    # Verify the new version was created by job2, not job1
+    new_version = dataset.get_version("1.0.0")
+    assert new_version.job_id == job2_id
