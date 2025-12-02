@@ -1992,7 +1992,7 @@ class DatasetQuery:
             self.catalog.update_dataset_version_with_warehouse_info(dataset, version)
 
             # Link this dataset version to the job that created it
-            if job_id and dataset.has_version(version):
+            if job_id:
                 dataset_version = dataset.get_version(version)
                 self.catalog.metastore.link_dataset_version_to_job(
                     dataset_version.id, job_id, is_creator=True
