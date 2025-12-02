@@ -4555,3 +4555,53 @@ def test_column_compute(test_session):
     assert chain.max("signals.signal.i3") == 15
     assert chain.max("signals.signal.f3") == 7.5
     assert chain.max("signals.signal.s3") == "eee"
+
+
+def test_union_does_not_break_schema_order(test_session):
+    class Meta(BaseModel):
+        name: str
+        count: int
+
+    def add_file(key) -> File:
+        return File(path="")
+
+    def add_meta(file) -> Meta:
+        return Meta(name="meta", count=10)
+
+    keys = ["a", "b", "c", "d"]
+    values = [3, 3, 3, 3]
+
+    (
+        dc.read_values(key=keys, val=values, session=test_session)
+        .map(file=add_file)
+        .map(meta=add_meta)
+        .save("ds1")
+    )
+    (
+        dc.read_values(key=keys, val=values, session=test_session)
+        .map(file=add_file)
+        .map(meta=add_meta)
+        .save("ds2")
+    )
+
+    (
+        dc.read_dataset("ds1", session=test_session)
+        .union(dc.read_dataset("ds2", session=test_session))
+        .save("union")
+    )
+
+    dat = test_session.catalog.get_dataset("union")
+    assert list(dat.versions[0].schema.keys()) == [
+        "key",
+        "val",
+        "file__source",
+        "file__path",
+        "file__size",
+        "file__version",
+        "file__etag",
+        "file__is_latest",
+        "file__last_modified",
+        "file__location",
+        "meta__name",
+        "meta__count",
+    ]
