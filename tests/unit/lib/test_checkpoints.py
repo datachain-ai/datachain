@@ -2,7 +2,11 @@ import pytest
 import sqlalchemy as sa
 
 import datachain as dc
-from datachain.error import DatasetNotFoundError, JobNotFoundError
+from datachain.error import (
+    DatasetNotFoundError,
+    JobAncestryDepthExceededError,
+    JobNotFoundError,
+)
 from tests.utils import reset_session_job_state
 
 
@@ -396,3 +400,26 @@ def test_dataset_version_job_id_updates_to_latest(
     # job_id should now point to job3 (latest)
     dataset = catalog.get_dataset(name)
     assert dataset.get_version(dataset.latest_version).job_id == job3_id
+
+
+def test_job_ancestry_depth_exceeded(test_session, monkeypatch, nums_dataset):
+    from datachain.data_storage import metastore
+
+    monkeypatch.setenv("DATACHAIN_CHECKPOINTS_RESET", str(False))
+    # Mock max depth to a small value (3) for testing
+    monkeypatch.setattr(metastore, "JOB_ANCESTRY_MAX_DEPTH", 3)
+
+    chain = dc.read_dataset("nums", session=test_session)
+
+    # Create a chain of 2 jobs successfully (depths 0, 1)
+    for _ in range(2):
+        reset_session_job_state()
+        chain.save("nums_depth")
+
+    # The 3rd job should fail (depth would be 2, and ancestry check goes to 3)
+    reset_session_job_state()
+    with pytest.raises(JobAncestryDepthExceededError) as exc_info:
+        chain.save("nums_depth")
+
+    assert "too deep" in str(exc_info.value)
+    assert "from scratch" in str(exc_info.value)

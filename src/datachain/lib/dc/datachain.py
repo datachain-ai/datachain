@@ -26,6 +26,7 @@ from datachain import json, semver
 from datachain.dataset import DatasetRecord
 from datachain.delta import delta_disabled
 from datachain.error import (
+    JobAncestryDepthExceededError,
     ProjectCreateNotAllowedError,
     ProjectNotFoundError,
 )
@@ -715,12 +716,19 @@ class DataChain:
             # checkpoint found → find which dataset version to reuse
 
             # Find dataset version that was created by any ancestor job
-            dataset_version = metastore.get_dataset_version_for_job_ancestry(
-                name,
-                project.namespace.name,
-                project.name,
-                job.id,
-            )
+            try:
+                dataset_version = metastore.get_dataset_version_for_job_ancestry(
+                    name,
+                    project.namespace.name,
+                    project.name,
+                    job.id,
+                )
+            except JobAncestryDepthExceededError:
+                raise JobAncestryDepthExceededError(
+                    "Job continuation chain is too deep. "
+                    "Please run the job from scratch without continuing from a "
+                    "parent job."
+                ) from None
 
             if not dataset_version:
                 # Dataset version not found (e.g deleted by user) - skip checkpoint

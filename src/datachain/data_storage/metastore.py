@@ -67,6 +67,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("datachain")
 DEPTH_LIMIT_DEFAULT = 100
+JOB_ANCESTRY_MAX_DEPTH = 100
 
 
 class AbstractMetastore(ABC, Serializable):
@@ -2034,8 +2035,6 @@ class AbstractDBMetastore(AbstractMetastore):
         # Format: WITH RECURSIVE ancestors(id, parent_job_id, depth) AS (...)
         # Include depth tracking to prevent infinite recursion in case of
         # circular dependencies
-        max_depth = 100
-
         ancestors_cte = (
             self._jobs_select(
                 self._jobs.c.id.label("id"),
@@ -2059,17 +2058,29 @@ class AbstractDBMetastore(AbstractMetastore):
                         self._jobs.c.id
                         == cast(ancestors_cte.c.parent_job_id, self._jobs.c.id.type)
                     )
-                    & (ancestors_cte.c.depth < max_depth),
+                    & (ancestors_cte.c.depth < JOB_ANCESTRY_MAX_DEPTH),
                 )
             )
         )
 
-        # Select all ancestor IDs except the starting job itself
-        query = select(ancestors_recursive.c.id).where(
+        # Select all ancestor IDs and depths except the starting job itself
+        query = select(ancestors_recursive.c.id, ancestors_recursive.c.depth).where(
             ancestors_recursive.c.id != job_id
         )
 
         results = list(self.db.execute(query, conn=conn))
+
+        # Check if we hit the depth limit
+        if results:
+            max_found_depth = max(row[1] for row in results)
+            if max_found_depth >= JOB_ANCESTRY_MAX_DEPTH:
+                from datachain.error import JobAncestryDepthExceededError
+
+                raise JobAncestryDepthExceededError(
+                    f"Job ancestry chain exceeds maximum depth of "
+                    f"{JOB_ANCESTRY_MAX_DEPTH}. Job ID: {job_id}"
+                )
+
         return [str(row[0]) for row in results]
 
     def _get_dataset_version_for_job_ancestry_query(
@@ -2106,7 +2117,7 @@ class AbstractDBMetastore(AbstractMetastore):
                 self._namespaces.c.name == namespace_name,
                 self._projects.c.name == project_name,
                 self._dataset_version_jobs.c.job_id.in_(job_ancestry),
-                self._dataset_version_jobs.c.is_creator == True,  # noqa: E712
+                self._dataset_version_jobs.c.is_creator.is_(True),
             )
             .order_by(desc(self._dataset_version_jobs.c.created_at))
             .limit(1)
