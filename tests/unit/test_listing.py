@@ -48,13 +48,14 @@ def listing(test_session):
         .save(dataset_name, listing=True)
     )
 
-    return Listing(
+    with Listing(
         catalog.metastore.clone(),
         catalog.warehouse.clone(),
         Client.get_client("file:///whatever", catalog.cache, **catalog.client_config),
         dataset_name=dataset_name,
         column="file",
-    )
+    ) as listing_obj:
+        yield listing_obj
 
 
 def test_get_listing_returns_exact_math_on_update(test_session):

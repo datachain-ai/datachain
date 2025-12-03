@@ -58,8 +58,9 @@ def test_global_session_naming(catalog, project):
     assert re.match(pattern, ds_tmp.name) is not None
 
 
-def test_session_empty_name():
-    name = Session("").name
+def test_session_empty_name(catalog):
+    with Session("", catalog=catalog) as session:
+        name = session.name
     assert name.startswith(Session.GLOBAL_SESSION_NAME + "_")
 
 
@@ -92,6 +93,7 @@ def test_ephemeral_dataset_lifecycle(catalog, project):
 
         assert isinstance(ds_tmp, DatasetQuery)
         assert ds_tmp.name != ds_name
+        assert ds_tmp.name is not None
         assert ds_tmp.name.startswith(Session.DATASET_PREFIX)
         assert session_name in ds_tmp.name
 

@@ -338,9 +338,9 @@ class File(DataModel):
         catalog: "Catalog | None" = None,
     ) -> "Self":
         if catalog is None:
-            from datachain.catalog.loader import get_catalog
+            from datachain.query.session import Session
 
-            catalog = get_catalog()
+            catalog = Session.get().catalog
         from datachain.client.fsspec import Client
 
         path_str = stringify_path(path)
