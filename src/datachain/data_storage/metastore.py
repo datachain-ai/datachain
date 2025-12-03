@@ -45,6 +45,7 @@ from datachain.dataset import (
 )
 from datachain.error import (
     CheckpointNotFoundError,
+    DataChainError,
     DatasetNotFoundError,
     DatasetVersionNotFoundError,
     NamespaceDeleteNotAllowedError,
@@ -2150,5 +2151,10 @@ class AbstractDBMetastore(AbstractMetastore):
         results = list(self.db.execute(query, conn=conn))
         if not results:
             return None
+
+        if len(results) > 1:
+            raise DataChainError(
+                f"Expected at most 1 dataset version, found {len(results)}"
+            )
 
         return self.dataset_version_class.parse(*results[0])
