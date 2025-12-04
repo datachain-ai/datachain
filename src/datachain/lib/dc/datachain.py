@@ -666,7 +666,6 @@ class DataChain:
                     attrs=attrs,
                     feature_schema=schema,
                     update_version=update_version,
-                    job_id=job.id,
                     **kwargs,
                 )
             )
