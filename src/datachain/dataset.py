@@ -235,7 +235,6 @@ class DatasetVersion:
     _preview_data: str | list[dict] | None
     sources: str = ""
     query_script: str = ""
-    job_id: str | None = None
 
     @classmethod
     def parse(  # noqa: PLR0913
@@ -257,7 +256,6 @@ class DatasetVersion:
         schema: str | dict[str, SQLType | type[SQLType]],
         sources: str = "",
         query_script: str = "",
-        job_id: str | None = None,
     ):
         if isinstance(schema, str):
             schema_parsed = parse_schema(json.loads(schema) if schema else {})
@@ -282,7 +280,6 @@ class DatasetVersion:
             preview,
             sources,
             query_script,
-            job_id,
         )
 
     @property
@@ -351,7 +348,6 @@ class DatasetListVersion:
     num_objects: int | None
     size: int | None
     query_script: str = ""
-    job_id: str | None = None
 
     @classmethod
     def parse(
@@ -368,7 +364,6 @@ class DatasetListVersion:
         num_objects: int | None,
         size: int | None,
         query_script: str = "",
-        job_id: str | None = None,
         **kwargs,
     ):
         return cls(
@@ -384,7 +379,6 @@ class DatasetListVersion:
             num_objects,
             size,
             query_script,
-            job_id,
         )
 
     def __hash__(self):
@@ -472,7 +466,6 @@ class DatasetRecord:
         version_sources: str | None,
         version_query_script: str | None,
         version_schema: str,
-        version_job_id: str | None = None,
     ) -> "DatasetRecord":
         attrs_lst: list[str] = json.loads(attrs) if attrs else []
         schema_dct: dict[str, Any] = json.loads(schema) if schema else {}
@@ -512,7 +505,6 @@ class DatasetRecord:
             version_schema,
             version_sources,  # type: ignore[arg-type]
             version_query_script,  # type: ignore[arg-type]
-            version_job_id,
         )
 
         return cls(
@@ -767,7 +759,6 @@ class DatasetListRecord:
         version_num_objects: int | None,
         version_size: int | None,
         version_query_script: str | None,
-        version_job_id: str | None = None,
     ) -> "DatasetListRecord":
         attrs_lst: list[str] = json.loads(attrs) if attrs else []
 
@@ -801,7 +792,6 @@ class DatasetListRecord:
             version_num_objects,
             version_size,
             version_query_script,  # type: ignore[arg-type]
-            version_job_id,
         )
 
         return cls(

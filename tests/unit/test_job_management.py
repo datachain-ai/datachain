@@ -178,12 +178,13 @@ def test_except_hook_delegates_to_original(test_session, patch_argv, monkeypatch
 
 @pytest.mark.parametrize("use_datachain_job_id_env", [True, False])
 def test_job_is_created_after_save(test_session, monkeypatch, use_datachain_job_id_env):
+    metastore = test_session.catalog.metastore
     if use_datachain_job_id_env:
         job_id = test_session.catalog.metastore.create_job("my-job", "echo 1;")
         monkeypatch.setenv("DATACHAIN_JOB_ID", job_id)
 
     dc.read_values(value=["val1", "val2"], session=test_session).save("my-ds")
 
-    dataset = test_session.catalog.get_dataset("my-ds")
-    result_job_id = dataset.get_version(dataset.latest_version).job_id
-    assert result_job_id == test_session.get_or_create_job().id
+    version = test_session.catalog.get_dataset("my-ds").versions[-1]
+    job = test_session.get_or_create_job()
+    assert metastore.get_latest_job_for_dataset_version(version.id) == job.id

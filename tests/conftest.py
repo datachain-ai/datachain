@@ -162,6 +162,9 @@ def cleanup_sqlite_db(
     for table in reversed(cleanup_tables):
         db.execute_str(f"DROP TABLE IF EXISTS '{table}'")
 
+    # For remaining tables not in cleanup_tables disable foreign keys
+    # since we don't know the order from sqlite_master
+    db.execute_str("PRAGMA foreign_keys = OFF")
     for (table,) in tables:
         name = table.replace("'", "''")
         db.execute_str(f"DROP TABLE IF EXISTS '{name}'")
