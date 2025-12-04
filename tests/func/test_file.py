@@ -151,3 +151,55 @@ def test_open_write_text(cloud_test_catalog):
     assert file.size == expected_size
 
     catalog.get_client(src_uri).fs.rm(file_path)
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
+@pytest.mark.parametrize("version_aware", [True], indirect=True)
+def test_write_version_capture(cloud_test_catalog, cloud_type):
+    """Test version capture when writes interleave.
+
+    By manually closing the fsspec handle inside File.open(), we commit
+    to storage. The fsspec close() is idempotent so the context __exit__
+    won't fail. The sequence becomes:
+    1. f1.write() + f1.close() → commits V1
+    2. f2.write() + f2.close() → commits V2
+    3. f2's File.open() __exit__ → extract_version(f2), get_file_info
+    4. f1's File.open() __exit__ → extract_version(f1), get_file_info
+
+    S3: version_id on handle survives close() → f1 gets V1
+    GCS/Azure: No version captured → get_file_info returns V2 for f1 (race!)
+    """
+    ctc = cloud_test_catalog
+    src_uri = ctc.src_uri
+    file_path = f"{src_uri}/test-write-version.bin"
+    client = ctc.catalog.get_client(src_uri)
+
+    file1 = File.at(file_path, ctc.session)
+    file2 = File.at(file_path, ctc.session)
+
+    with file1.open("wb") as f1:
+        f1.write(b"content version 1")
+        f1.close()  # Commit V1 to storage (close is idempotent)
+
+        with file2.open("wb") as f2:
+            f2.write(b"content version 2")
+            f2.close()  # Commit V2 to storage
+        # f2's File.open() __exit__ runs here
+    # f1's File.open() __exit__ runs here (after V2 exists!)
+
+    assert file1.version, "file1 should have a version"
+    assert file2.version, "file2 should have a version"
+
+    if cloud_type == "s3":
+        # S3 captures version_id from handle - survives close()
+        assert file1.version != file2.version, (
+            "S3: each write captures its own version_id"
+        )
+    else:
+        # GCS/Azure: No version on handle - get_file_info returns latest
+        # Update it when it is fixed in those backends.
+        assert file1.version == file2.version, (
+            f"{cloud_type}: file1 sees V2 due to get_file_info race"
+        )
+
+    client.fs.rm(file_path)

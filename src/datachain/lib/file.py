@@ -429,9 +429,12 @@ class File(DataModel):
         with client.fs.open(full_path, mode, **open_kwargs) as f:
             yield self._wrap_text(f, mode, open_kwargs)
 
-        # refresh metadata
-        info = client.fs.info(full_path)
-        refreshed = client.info_to_file(info, self.get_path_normalized())
+        version_hint = self._extract_write_version(f)
+
+        # refresh metadata pinned to the version that was just written
+        refreshed = client.get_file_info(
+            self.get_path_normalized(), version_id=version_hint
+        )
         for k, v in refreshed.model_dump().items():
             setattr(self, k, v)
 
@@ -443,6 +446,18 @@ class File(DataModel):
             k: open_kwargs[k] for k in self._TEXT_WRAPPER_ALLOWED if k in open_kwargs
         }
         return io.TextIOWrapper(f, **filtered)
+
+    def _extract_write_version(self, handle: Any) -> str | None:
+        """Best-effort extraction of object version after a write.
+
+        S3 (s3fs) and Azure (adlfs) populate version_id on the handle.
+        GCS (gcsfs) populates generation. Azure and GCS require upstream
+        fixes to be released.
+        """
+        for attr in ("version_id", "generation"):
+            if value := getattr(handle, attr, None):
+                return value
+        return None
 
     def read_bytes(self, length: int = -1):
         """Returns file contents as bytes."""
