@@ -1248,8 +1248,8 @@ class Catalog:
         if with_job:
             # Get latest job_id for all versions in one query
             version_ids = [v.id for ds in datasets for v in ds.versions]
-            version_job_mapping = (
-                self.metastore.get_latest_job_for_dataset_version(version_ids)
+            version_job_mapping = self.metastore.get_latest_job_for_dataset_version(
+                version_ids
             )
 
             if version_job_mapping:
@@ -1265,9 +1265,7 @@ class Catalog:
                 (
                     d,
                     v,
-                    jobs.get(version_job_mapping.get(v.id))
-                    if with_job
-                    else None,
+                    jobs.get(version_job_mapping.get(v.id)) if with_job else None,
                 )
                 for v in d.versions
             )

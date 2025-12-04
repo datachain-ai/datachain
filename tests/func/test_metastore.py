@@ -1,14 +1,14 @@
 import json
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
-import sqlalchemy as sa
 
 import pytest
+import sqlalchemy as sa
 
-from datachain.sql.types import Float32
 from datachain.data_storage import JobQueryType, JobStatus
 from datachain.dataset import DatasetStatus
 from datachain.sql import types as dc_types
+from datachain.sql.types import Float32
 
 feature_schema = {
     "file": "File@v1",
@@ -943,7 +943,8 @@ def test_get_latest_job_for_dataset_version_single(catalog):
     metastore = catalog.metastore
 
     dataset = catalog.create_dataset(
-        "test_dataset", columns=[sa.Column("similarity", Float32)],
+        "test_dataset",
+        columns=[sa.Column("similarity", Float32)],
     )
     version = dataset.versions[-1]
 
@@ -962,7 +963,8 @@ def test_get_latest_job_for_dataset_version_no_jobs(catalog):
     metastore = catalog.metastore
 
     dataset = catalog.create_dataset(
-        "test_dataset", columns=[sa.Column("similarity", Float32)],
+        "test_dataset",
+        columns=[sa.Column("similarity", Float32)],
     )
     version = dataset.versions[-1]
 
@@ -975,7 +977,8 @@ def test_get_latest_job_for_dataset_version_multiple(catalog):
     versions = []
     for i in range(3):
         dataset = catalog.create_dataset(
-            f"test_dataset_{i}", columns=[sa.Column("similarity", Float32)],
+            f"test_dataset_{i}",
+            columns=[sa.Column("similarity", Float32)],
         )
         versions.append(dataset.versions[-1])
 

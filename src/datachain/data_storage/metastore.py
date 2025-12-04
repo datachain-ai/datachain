@@ -1,6 +1,5 @@
 import copy
 import logging
-import os
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
 from datetime import datetime, timezone
@@ -2067,9 +2066,7 @@ class AbstractDBMetastore(AbstractMetastore):
         # Handle single ID case
         if isinstance(dataset_version_id, int):
             query = (
-                self._dataset_version_jobs_select(
-                    self._dataset_version_jobs.c.job_id
-                )
+                self._dataset_version_jobs_select(self._dataset_version_jobs.c.job_id)
                 .where(
                     self._dataset_version_jobs.c.dataset_version_id
                     == dataset_version_id
@@ -2101,16 +2098,14 @@ class AbstractDBMetastore(AbstractMetastore):
                 row_number,
             )
             .where(
-                self._dataset_version_jobs.c.dataset_version_id.in_(
-                    dataset_version_id
-                )
+                self._dataset_version_jobs.c.dataset_version_id.in_(dataset_version_id)
             )
             .subquery()
         )
 
-        query = select(
-            subquery.c.dataset_version_id, subquery.c.job_id
-        ).where(subquery.c.rn == 1)
+        query = select(subquery.c.dataset_version_id, subquery.c.job_id).where(
+            subquery.c.rn == 1
+        )
 
         results = self.db.execute(query, conn=conn)
         return {int(row[0]): str(row[1]) for row in results}

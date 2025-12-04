@@ -77,8 +77,7 @@ def test_single_job_for_multiple_saves(tmp_path, catalog_tmpfile):
             version.id
         )
         assert latest_job_id == job.id, (
-            f"Dataset {ds.name} version has job_id={latest_job_id}, "
-            f"expected {job.id}"
+            f"Dataset {ds.name} version has job_id={latest_job_id}, expected {job.id}"
         )
 
 
