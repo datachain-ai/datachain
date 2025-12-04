@@ -297,6 +297,16 @@ class File(DataModel):
         super().__init__(**kwargs)
         self._catalog = None
         self._caching_enabled: bool = False
+        self._download_cb: Callback = DEFAULT_CALLBACK
+
+    def __getstate__(self):
+        state = super().__getstate__()
+        # Exclude _catalog from pickling - it contains SQLAlchemy engine and other
+        # non-picklable objects. The catalog will be re-set by _set_stream() on the
+        # worker side when needed.
+        state["__dict__"] = state["__dict__"].copy()
+        state["__dict__"]["_catalog"] = None
+        return state
 
     def as_text_file(self) -> "TextFile":
         """Convert the file to a `TextFile` object."""

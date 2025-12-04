@@ -8,6 +8,51 @@ from datachain.query import C
 from datachain.utils import TIME_ZERO
 
 
+def test_file_pickle_with_catalog(tmp_dir, test_session_tmpfile):
+    """Test that File objects with catalog can be pickled for parallel processing.
+
+    File objects created with File.at() have a _catalog attached which contains
+    SQLAlchemy connections, weakrefs, etc that cannot be pickled. The __getstate__
+    method must exclude _catalog to allow pickling.
+    """
+    import cloudpickle
+
+    # Create a real file using File.at + open (this attaches _catalog)
+    file = File.at(tmp_dir / "test.txt", session=test_session_tmpfile)
+    with file.open("w") as f:
+        f.write("hello world")
+
+    assert file._catalog is not None, "File should have catalog attached"
+
+    # This would fail with "cannot pickle 'sqlite3.Connection' object"
+    # if __getstate__ doesn't exclude _catalog
+    data = cloudpickle.dumps(file)
+    restored = cloudpickle.loads(data)
+
+    # Catalog should be None after unpickling (will be re-set by worker)
+    assert restored._catalog is None
+    # But other attributes should be preserved
+    assert restored.path == file.path
+    assert restored.source == file.source
+
+
+def test_file_serialized_in_udf(tmp_dir, test_session_tmpfile):
+    # A captured File created via File.at() (has _catalog) to force pickling in closure
+    captured = File.at(tmp_dir / "captured.txt", session=test_session_tmpfile)
+    with captured.open("w") as f:
+        f.write("captured")
+
+    chain = (
+        dc.read_values(id=range(100), session=test_session_tmpfile)
+        .settings(parallel=True)
+        .map(path=lambda id: captured.path)
+        .persist()
+    )
+
+    results = sorted(chain.to_values("path"))
+    assert len(results) == 100
+
+
 @pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
 def test_get_path_cloud(cloud_test_catalog):
     file = File(path="dir/file", source="s3://")
