@@ -7,7 +7,6 @@ import traceback
 from collections.abc import Callable
 from typing import TYPE_CHECKING, ClassVar
 from uuid import uuid4
-from weakref import WeakSet
 
 from datachain.catalog import get_catalog
 from datachain.data_storage import JobQueryType, JobStatus
@@ -57,7 +56,6 @@ class Session:
 
     GLOBAL_SESSION_CTX: "Session | None" = None
     SESSION_CONTEXTS: ClassVar[list["Session"]] = []
-    _ALL_SESSIONS: ClassVar[WeakSet["Session"]] = WeakSet()
     ORIGINAL_EXCEPT_HOOK = None
 
     # Job management - class-level to ensure one job per process
@@ -93,7 +91,6 @@ class Session:
         self.catalog = catalog or get_catalog(
             client_config=client_config, in_memory=in_memory
         )
-        Session._ALL_SESSIONS.add(self)
 
     def __enter__(self):
         # Push the current context onto the stack
@@ -111,7 +108,6 @@ class Session:
 
         if Session.SESSION_CONTEXTS:
             Session.SESSION_CONTEXTS.pop()
-        Session._ALL_SESSIONS.discard(self)
 
     def get_or_create_job(self) -> "Job":
         """
@@ -340,14 +336,6 @@ class Session:
         Session._close_all_contexts()
         if Session.GLOBAL_SESSION_CTX is not None:
             Session.GLOBAL_SESSION_CTX.__exit__(None, None, None)
-
-        for session in list(Session._ALL_SESSIONS):
-            try:
-                session.__exit__(None, None, None)
-            except ReferenceError:
-                continue  # Object has been finalized already
-            except Exception as e:  # noqa: BLE001
-                logger.error(f"Exception while cleaning up session: {e}")  # noqa: G004
 
     @classmethod
     def _close_all_contexts(cls) -> None:
