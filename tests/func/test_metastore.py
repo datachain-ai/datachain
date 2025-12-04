@@ -1,9 +1,11 @@
 import json
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
+import sqlalchemy as sa
 
 import pytest
 
+from datachain.sql.types import Float32
 from datachain.data_storage import JobQueryType, JobStatus
 from datachain.dataset import DatasetStatus
 from datachain.sql import types as dc_types
@@ -122,8 +124,7 @@ def test_create_dataset_version(metastore):
 
     created_at = datetime.now(timezone.utc) - timedelta(minutes=3)
     finished_at = datetime.now(timezone.utc)
-    job_id = str(uuid4())
-    uuid = str(uuid4())
+    uuid_val = str(uuid4())
 
     ds = metastore.create_dataset_version(
         dataset=ds,
@@ -141,8 +142,7 @@ def test_create_dataset_version(metastore):
         num_objects=100,
         size=1000,
         preview=preview,
-        job_id=job_id,
-        uuid=uuid,
+        uuid=uuid_val,
     )
     assert ds.id is not None
     assert len(ds.versions) == 1
@@ -150,7 +150,7 @@ def test_create_dataset_version(metastore):
 
     dv = ds.versions[0]
     assert dv.id is not None
-    assert dv.uuid == uuid
+    assert dv.uuid == uuid_val
     assert dv.dataset_id == ds.id
     assert dv.version == "1.2.3"
     assert dv.status == DatasetStatus.COMPLETE
@@ -166,7 +166,6 @@ def test_create_dataset_version(metastore):
     assert dv._preview_data in (preview, preview_json)
     assert dv.sources == "gs://test_source"
     assert dv.query_script == query_script
-    assert dv.job_id == job_id
 
 
 def test_create_dataset_version_finished_at(metastore):
@@ -387,8 +386,7 @@ def test_update_dataset_version(metastore):
     dv = ds.versions[0]
 
     finished_at = datetime.now(timezone.utc)
-    job_id = str(uuid4())
-    uuid = str(uuid4())
+    uuid_val = str(uuid4())
 
     updated_dv = metastore.update_dataset_version(
         ds,
@@ -405,12 +403,11 @@ def test_update_dataset_version(metastore):
         num_objects=100,
         size=1000,
         preview=preview,
-        job_id=job_id,
-        uuid=uuid,
+        uuid=uuid_val,
     )
 
     assert updated_dv.id is not None
-    assert updated_dv.uuid == uuid
+    assert updated_dv.uuid == uuid_val
     assert updated_dv.dataset_id == ds.id
     assert updated_dv.version == "1.2.3"
     assert updated_dv.status == DatasetStatus.COMPLETE
@@ -425,7 +422,6 @@ def test_update_dataset_version(metastore):
     assert updated_dv._preview_data == preview
     assert updated_dv.sources == "gs://test_source"
     assert updated_dv.query_script == query_script
-    assert updated_dv.job_id == job_id
 
     # test if method input dataset param is also mutated
     assert dv.status == DatasetStatus.COMPLETE
@@ -439,7 +435,6 @@ def test_update_dataset_version(metastore):
         num_objects=None,
         size=None,
         preview=None,
-        job_id=None,
     )
 
     assert updated_dv.id is not None
@@ -449,7 +444,6 @@ def test_update_dataset_version(metastore):
     assert updated_dv.num_objects is None
     assert updated_dv.size is None
     assert updated_dv._preview_data is None
-    assert updated_dv.job_id is None
 
 
 def test_update_dataset_version_read_only_values(metastore):
@@ -943,3 +937,68 @@ def test_get_ancestor_job_ids(metastore, depth):
 
     assert ancestors == expected_ancestors
     assert len(ancestors) == depth
+
+
+def test_get_latest_job_for_dataset_version_single(catalog):
+    metastore = catalog.metastore
+
+    dataset = catalog.create_dataset(
+        "test_dataset", columns=[sa.Column("similarity", Float32)],
+    )
+    version = dataset.versions[-1]
+
+    job1_id = metastore.create_job("job1", "echo 1")
+    job2_id = metastore.create_job("job2", "echo 2")
+    job3_id = metastore.create_job("job3", "echo 3")
+
+    metastore.link_dataset_version_to_job(version.id, job1_id, is_creator=True)
+    metastore.link_dataset_version_to_job(version.id, job2_id, is_creator=False)
+    metastore.link_dataset_version_to_job(version.id, job3_id, is_creator=False)
+
+    assert metastore.get_latest_job_for_dataset_version(version.id) == job3_id
+
+
+def test_get_latest_job_for_dataset_version_no_jobs(catalog):
+    metastore = catalog.metastore
+
+    dataset = catalog.create_dataset(
+        "test_dataset", columns=[sa.Column("similarity", Float32)],
+    )
+    version = dataset.versions[-1]
+
+    assert metastore.get_latest_job_for_dataset_version(version.id) is None
+
+
+def test_get_latest_job_for_dataset_version_multiple(catalog):
+    metastore = catalog.metastore
+
+    versions = []
+    for i in range(3):
+        dataset = catalog.create_dataset(
+            f"test_dataset_{i}", columns=[sa.Column("similarity", Float32)],
+        )
+        versions.append(dataset.versions[-1])
+
+    # Create jobs
+    job1_id = metastore.create_job("job1", "echo 1")
+    job2_id = metastore.create_job("job2", "echo 2")
+    job3_id = metastore.create_job("job3", "echo 3")
+
+    metastore.link_dataset_version_to_job(versions[0].id, job1_id, is_creator=True)
+    metastore.link_dataset_version_to_job(versions[0].id, job2_id, is_creator=False)
+
+    # Link dataset 1 to only job3
+    metastore.link_dataset_version_to_job(versions[1].id, job3_id, is_creator=True)
+
+    # Dataset 2 has no jobs
+
+    # Get latest jobs for all versions
+    result = metastore.get_latest_job_for_dataset_version([v.id for v in versions])
+    assert result == {
+        versions[0].id: job2_id,  # latest is job2
+        versions[1].id: job3_id,
+    }
+
+
+def test_get_latest_job_for_dataset_version_empty_list(metastore):
+    assert metastore.get_latest_job_for_dataset_version([]) == {}

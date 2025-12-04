@@ -718,7 +718,6 @@ class Catalog:
         description: str | None = None,
         attrs: list[str] | None = None,
         update_version: str | None = "patch",
-        job_id: str | None = None,
     ) -> "DatasetRecord":
         """
         Creates new dataset of a specific version.
@@ -792,7 +791,6 @@ class Catalog:
             create_rows_table=create_rows,
             columns=columns,
             uuid=uuid,
-            job_id=job_id,
         )
 
     def create_dataset_version(
@@ -808,7 +806,6 @@ class Catalog:
         error_stack="",
         script_output="",
         create_rows_table=True,
-        job_id: str | None = None,
         uuid: str | None = None,
     ) -> DatasetRecord:
         """
@@ -831,7 +828,6 @@ class Catalog:
             error_stack=error_stack,
             script_output=script_output,
             schema=schema,
-            job_id=job_id,
             ignore_if_exists=True,
             uuid=uuid,
         )
@@ -1247,18 +1243,32 @@ class Catalog:
 
         # preselect dataset versions jobs from db to avoid multiple queries
         jobs: dict[str, Job] = {}
+        version_job_mapping: dict[int, str] = {}
+
         if with_job:
-            jobs_ids: set[str] = {
-                v.job_id for ds in datasets for v in ds.versions if v.job_id
-            }
-            if jobs_ids:
+            # Get latest job_id for all versions in one query
+            version_ids = [v.id for ds in datasets for v in ds.versions]
+            version_job_mapping = (
+                self.metastore.get_latest_job_for_dataset_version(version_ids)
+            )
+
+            if version_job_mapping:
                 jobs = {
-                    j.id: j for j in self.metastore.list_jobs_by_ids(list(jobs_ids))
+                    j.id: j
+                    for j in self.metastore.list_jobs_by_ids(
+                        list(version_job_mapping.values())
+                    )
                 }
 
         for d in datasets:
             yield from (
-                (d, v, jobs.get(str(v.job_id)) if with_job and v.job_id else None)
+                (
+                    d,
+                    v,
+                    jobs.get(version_job_mapping.get(v.id))
+                    if with_job
+                    else None,
+                )
                 for v in d.versions
             )
 

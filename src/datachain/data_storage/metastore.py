@@ -278,7 +278,6 @@ class AbstractMetastore(ABC, Serializable):
         num_objects: int | None = None,
         size: int | None = None,
         preview: list[dict] | None = None,
-        job_id: str | None = None,
         uuid: str | None = None,
     ) -> DatasetRecord:
         """Creates new dataset version."""
@@ -670,7 +669,6 @@ class AbstractDBMetastore(AbstractMetastore):
             Column("sources", Text, nullable=False, default=""),
             Column("query_script", Text, nullable=False, default=""),
             Column("schema", JSON, nullable=True),
-            Column("job_id", Text, nullable=True),
             UniqueConstraint("dataset_id", "version"),
         ]
 
@@ -1085,7 +1083,6 @@ class AbstractDBMetastore(AbstractMetastore):
         num_objects: int | None = None,
         size: int | None = None,
         preview: list[dict] | None = None,
-        job_id: str | None = None,
         uuid: str | None = None,
         conn=None,
     ) -> DatasetRecord:
@@ -1112,7 +1109,6 @@ class AbstractDBMetastore(AbstractMetastore):
             num_objects=num_objects,
             size=size,
             preview=json.dumps(preview or []),
-            job_id=job_id or os.getenv("DATACHAIN_JOB_ID"),
         )
         if ignore_if_exists and hasattr(query, "on_conflict_do_nothing"):
             # SQLite and PostgreSQL both support 'on_conflict_do_nothing',
@@ -1517,6 +1513,33 @@ class AbstractDBMetastore(AbstractMetastore):
         dataset dependency nodes.
         """
 
+    def _get_dependency_joins(self, dataset_versions_table):
+        """
+        Returns join clause for dataset dependencies queries.
+        Can be overridden to add additional joins (e.g., for job information).
+
+        Args:
+            dataset_versions_table: The dataset_versions table or alias to join
+
+        Returns:
+            SQLAlchemy join clause
+        """
+        n = self._namespaces
+        p = self._projects
+        d = self._datasets
+        dd = self._datasets_dependencies
+
+        return (
+            dd.join(d, dd.c.dataset_id == d.c.id, isouter=True)
+            .join(
+                dataset_versions_table,
+                dd.c.dataset_version_id == dataset_versions_table.c.id,
+                isouter=True,
+            )
+            .join(p, d.c.project_id == p.c.id, isouter=True)
+            .join(n, p.c.namespace_id == n.c.id, isouter=True)
+        )
+
     def get_direct_dataset_dependencies(
         self, dataset: DatasetRecord, version: str
     ) -> list[DatasetDependency | None]:
@@ -1532,12 +1555,7 @@ class AbstractDBMetastore(AbstractMetastore):
 
         query = (
             self._datasets_dependencies_select(*select_cols)
-            .select_from(
-                dd.join(d, dd.c.dataset_id == d.c.id, isouter=True)
-                .join(dv, dd.c.dataset_version_id == dv.c.id, isouter=True)
-                .join(p, d.c.project_id == p.c.id, isouter=True)
-                .join(n, p.c.namespace_id == n.c.id, isouter=True)
-            )
+            .select_from(self._get_dependency_joins(dv))
             .where(
                 (dd.c.source_dataset_id == dataset.id)
                 & (dd.c.source_dataset_version_id == dataset_version.id)
@@ -2031,6 +2049,71 @@ class AbstractDBMetastore(AbstractMetastore):
                 index_elements=["dataset_version_id", "job_id"]
             )
         self.db.execute(query, conn=conn)
+
+    def get_latest_job_for_dataset_version(
+        self, dataset_version_id: int | list[int], conn=None
+    ) -> str | dict[int, str] | None:
+        """Get most recent job that created or used dataset version(s).
+
+        Args:
+            dataset_version_id: Single version ID or list of version IDs
+            conn: Optional database connection
+
+        Returns:
+            - If single ID: job_id string or None
+            - If list of IDs: dict mapping version_id -> job_id
+              (only includes versions that have jobs)
+        """
+        # Handle single ID case
+        if isinstance(dataset_version_id, int):
+            query = (
+                self._dataset_version_jobs_select(
+                    self._dataset_version_jobs.c.job_id
+                )
+                .where(
+                    self._dataset_version_jobs.c.dataset_version_id
+                    == dataset_version_id
+                )
+                .order_by(desc(self._dataset_version_jobs.c.created_at))
+                .limit(1)
+            )
+            results = list(self.db.execute(query, conn=conn))
+            print(results)
+            return str(results[0][0]) if results else None
+
+        # Handle multiple IDs case - get latest job for each version
+        if not dataset_version_id:
+            return {}
+
+        # Use window function to get latest job per version
+        from sqlalchemy import func, over
+
+        row_number = over(
+            func.row_number(),
+            partition_by=self._dataset_version_jobs.c.dataset_version_id,
+            order_by=desc(self._dataset_version_jobs.c.created_at),
+        ).label("rn")
+
+        subquery = (
+            self._dataset_version_jobs_select(
+                self._dataset_version_jobs.c.dataset_version_id,
+                self._dataset_version_jobs.c.job_id,
+                row_number,
+            )
+            .where(
+                self._dataset_version_jobs.c.dataset_version_id.in_(
+                    dataset_version_id
+                )
+            )
+            .subquery()
+        )
+
+        query = select(
+            subquery.c.dataset_version_id, subquery.c.job_id
+        ).where(subquery.c.rn == 1)
+
+        results = self.db.execute(query, conn=conn)
+        return {int(row[0]): str(row[1]) for row in results}
 
     def get_ancestor_job_ids(self, job_id: str, conn=None) -> list[str]:
         # Use recursive CTE to walk up the parent chain

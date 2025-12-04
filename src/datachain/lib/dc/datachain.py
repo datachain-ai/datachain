@@ -666,9 +666,19 @@ class DataChain:
                     attrs=attrs,
                     feature_schema=schema,
                     update_version=update_version,
-                    job_id=job.id,
                     **kwargs,
                 )
+            )
+
+            # Link the dataset version to the job that created it
+            dataset = catalog.get_dataset(
+                name,
+                namespace_name=project.namespace.name,
+                project_name=project.name,
+            )
+            dataset_version = dataset.get_version(version or dataset.latest_version)
+            catalog.metastore.link_dataset_version_to_job(
+                dataset_version.id, job.id, is_creator=True
             )
 
         catalog.metastore.create_checkpoint(job.id, _hash)  # type: ignore[arg-type]
@@ -765,12 +775,6 @@ class DataChain:
             # Link current job to this dataset version (not creator)
             metastore.link_dataset_version_to_job(
                 dataset_version.id, job.id, is_creator=False
-            )
-
-            # Update dataset_version.job_id to point to the latest job
-            dataset = metastore.get_dataset(name, project.namespace.name, project.name)
-            metastore.update_dataset_version(
-                dataset, dataset_version.version, job_id=job.id
             )
 
             return _hash, chain

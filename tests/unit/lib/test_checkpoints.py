@@ -368,8 +368,9 @@ def test_dataset_job_linking_with_reset(test_session, monkeypatch, nums_dataset)
 def test_dataset_version_job_id_updates_to_latest(
     test_session, monkeypatch, nums_dataset
 ):
-    """Test that dataset_version.job_id is updated to the latest job that used it."""
+    """Test that latest job for dataset_version is tracked correctly."""
     catalog = test_session.catalog
+    metastore = catalog.metastore
     monkeypatch.setenv("DATACHAIN_CHECKPOINTS_RESET", str(False))
 
     chain = dc.read_dataset("nums", session=test_session)
@@ -381,25 +382,28 @@ def test_dataset_version_job_id_updates_to_latest(
     job1_id = test_session.get_or_create_job().id
 
     dataset = catalog.get_dataset(name)
-    assert dataset.get_version(dataset.latest_version).job_id == job1_id
+    version = dataset.get_version(dataset.latest_version)
+    assert metastore.get_latest_job_for_dataset_version(version.id) == job1_id
 
     # -------------- SECOND RUN: Reuse via checkpoint -------------------
     reset_session_job_state()
     chain.save(name)
     job2_id = test_session.get_or_create_job().id
 
-    # job_id should now point to job2 (latest)
+    # latest job should now be job2
     dataset = catalog.get_dataset(name)
-    assert dataset.get_version(dataset.latest_version).job_id == job2_id
+    version = dataset.get_version(dataset.latest_version)
+    assert metastore.get_latest_job_for_dataset_version(version.id) == job2_id
 
     # -------------- THIRD RUN: Another reuse -------------------
     reset_session_job_state()
     chain.save(name)
     job3_id = test_session.get_or_create_job().id
 
-    # job_id should now point to job3 (latest)
+    # latest job should now be job3
     dataset = catalog.get_dataset(name)
-    assert dataset.get_version(dataset.latest_version).job_id == job3_id
+    version = dataset.get_version(dataset.latest_version)
+    assert metastore.get_latest_job_for_dataset_version(version.id) == job3_id
 
 
 def test_job_ancestry_depth_exceeded(test_session, monkeypatch, nums_dataset):
@@ -460,4 +464,5 @@ def test_checkpoint_with_deleted_dataset_version(
 
     # Verify the new version was created by job2, not job1
     new_version = dataset.get_version("1.0.0")
-    assert new_version.job_id == job2_id
+    metastore = catalog.metastore
+    assert metastore.get_latest_job_for_dataset_version(new_version.id) == job2_id
