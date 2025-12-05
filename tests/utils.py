@@ -253,3 +253,6 @@ def reset_session_job_state():
     Session._JOB_STATUS = None
     Session._OWNS_JOB = None
     Session._JOB_HOOKS_REGISTERED = False
+
+    # Clear DATACHAIN_JOB_ID env var to allow new job creation on next run
+    os.environ.pop("DATACHAIN_JOB_ID", None)

@@ -474,6 +474,8 @@ class SQLiteMetastore(AbstractDBMetastore):
         self.default_table_names.append(self._jobs.name)
         self.db.create_table(self._checkpoints, if_not_exists=True)
         self.default_table_names.append(self._checkpoints.name)
+        self.db.create_table(self._dataset_version_jobs, if_not_exists=True)
+        self.default_table_names.append(self._dataset_version_jobs.name)
 
     def _init_namespaces_projects(self) -> None:
         """
@@ -583,6 +585,9 @@ class SQLiteMetastore(AbstractDBMetastore):
     #
     def _checkpoints_insert(self) -> "Insert":
         return sqlite.insert(self._checkpoints)
+
+    def _dataset_version_jobs_insert(self) -> "Insert":
+        return sqlite.insert(self._dataset_version_jobs)
 
     #
     # Namespaces

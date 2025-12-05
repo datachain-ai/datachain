@@ -397,6 +397,9 @@ class AbstractWarehouse(ABC, Serializable):
         table_name = self.dataset_table_name(dataset, version)
         table = sa.Table(table_name, self.db.metadata)
         self.db.drop_table(table, if_exists=if_exists)
+        # Remove from metadata cache to allow recreation
+        if table_name in self.db.metadata.tables:
+            self.db.metadata.remove(self.db.metadata.tables[table_name])
 
     def dataset_rows_select(
         self,

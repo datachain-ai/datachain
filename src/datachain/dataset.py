@@ -88,6 +88,40 @@ def parse_dataset_name(name: str) -> tuple[str | None, str | None, str]:
     return namespace_name, project_name, name
 
 
+def parse_schema(ct: dict[str, Any]) -> dict[str, SQLType | type[SQLType]]:
+    """Parse dataset schema from dictionary representation.
+
+    Args:
+        ct: Dictionary with column definitions
+
+    Returns:
+        Dictionary mapping column names to SQL types
+
+    Raises:
+        TypeError: If schema format is invalid
+        ValueError: If column type is not defined or not supported
+    """
+    if not isinstance(ct, dict):
+        raise TypeError("Schema definition must be a dictionary")
+    res = {}
+    for c_name, c_type in ct.items():
+        if not isinstance(c_type, dict):
+            raise TypeError(f"Schema column '{c_name}' type must be a dictionary")
+        if "type" not in c_type:
+            raise ValueError(f"Schema column '{c_name}' type is not defined")
+        if c_type["type"] not in NAME_TYPES_MAPPING:
+            raise ValueError(
+                f"Schema column '{c_name}' type '{c_type['type']}' is not supported"
+            )
+        try:
+            res[c_name] = NAME_TYPES_MAPPING[c_type["type"]].from_dict(c_type)  # type: ignore [attr-defined]
+        except Exception as e:
+            raise ValueError(
+                f"Schema column '{c_name}' type '{c_type['type']}' parsing error: {e}"
+            ) from e
+    return res
+
+
 class DatasetDependencyType:
     DATASET = "dataset"
     STORAGE = "storage"
@@ -220,11 +254,16 @@ class DatasetVersion:
         num_objects: int | None,
         size: int | None,
         preview: str | list[dict] | None,
-        schema: dict[str, SQLType | type[SQLType]],
+        schema: str | dict[str, SQLType | type[SQLType]],
         sources: str = "",
         query_script: str = "",
         job_id: str | None = None,
     ):
+        if isinstance(schema, str):
+            schema_parsed = parse_schema(json.loads(schema) if schema else {})
+        else:
+            schema_parsed = schema
+
         return cls(
             id,
             uuid,
@@ -237,7 +276,7 @@ class DatasetVersion:
             error_message,
             error_stack,
             script_output,
-            schema,
+            schema_parsed,
             num_objects,
             size,
             preview,
@@ -379,31 +418,6 @@ class DatasetRecord:
         return hash(f"{self.id}")
 
     @staticmethod
-    def parse_schema(
-        ct: dict[str, Any],
-    ) -> dict[str, SQLType | type[SQLType]]:
-        if not isinstance(ct, dict):
-            raise TypeError("Schema definition must be a dictionary")
-        res = {}
-        for c_name, c_type in ct.items():
-            if not isinstance(c_type, dict):
-                raise TypeError(f"Schema column '{c_name}' type must be a dictionary")
-            if "type" not in c_type:
-                raise ValueError(f"Schema column '{c_name}' type is not defined")
-            if c_type["type"] not in NAME_TYPES_MAPPING:
-                raise ValueError(
-                    f"Schema column '{c_name}' type '{c_type['type']}' is not supported"
-                )
-            try:
-                res[c_name] = NAME_TYPES_MAPPING[c_type["type"]].from_dict(c_type)  # type: ignore [attr-defined]
-            except Exception as e:
-                raise ValueError(
-                    f"Schema column '{c_name}' type '{c_type['type']}' "
-                    f"parsing error: {e}"
-                ) from e
-        return res
-
-    @staticmethod
     def validate_name(name: str) -> None:
         """Throws exception if name has reserved characters"""
         for c in DATASET_NAME_RESERVED_CHARS:
@@ -462,9 +476,6 @@ class DatasetRecord:
     ) -> "DatasetRecord":
         attrs_lst: list[str] = json.loads(attrs) if attrs else []
         schema_dct: dict[str, Any] = json.loads(schema) if schema else {}
-        version_schema_dct: dict[str, str] = (
-            json.loads(version_schema) if version_schema else {}
-        )
 
         namespace = Namespace(
             namespace_id,
@@ -498,7 +509,7 @@ class DatasetRecord:
             version_num_objects,
             version_size,
             version_preview,
-            cls.parse_schema(version_schema_dct),  # type: ignore[arg-type]
+            version_schema,
             version_sources,  # type: ignore[arg-type]
             version_query_script,  # type: ignore[arg-type]
             version_job_id,
@@ -510,7 +521,7 @@ class DatasetRecord:
             project,
             description,
             attrs_lst,
-            cls.parse_schema(schema_dct),  # type: ignore[arg-type]
+            parse_schema(schema_dct),  # type: ignore[arg-type]
             json.loads(feature_schema) if feature_schema else {},
             [dataset_version],
             status,
