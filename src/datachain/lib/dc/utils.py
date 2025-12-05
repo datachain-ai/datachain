@@ -28,6 +28,10 @@ def is_studio() -> bool:
     return getenv_bool("DATACHAIN_IS_STUDIO", default=False)
 
 
+def is_local() -> bool:
+    return not is_studio()
+
+
 def resolve_columns(
     method: "Callable[Concatenate[D, P], D]",
 ) -> "Callable[Concatenate[D, P], D]":
