@@ -1888,23 +1888,18 @@ class AbstractDBMetastore(AbstractMetastore):
     @abstractmethod
     def _checkpoints_insert(self) -> "Insert": ...
 
-    @staticmethod
-    def _dataset_version_jobs_columns() -> "list[SchemaItem]":
+    @classmethod
+    def _dataset_version_jobs_columns(cls) -> "list[SchemaItem]":
         """Junction table for dataset versions and jobs many-to-many relationship."""
         return [
             Column("id", Integer, primary_key=True),
             Column(
                 "dataset_version_id",
                 Integer,
-                ForeignKey("datasets_versions.id", ondelete="CASCADE"),
+                ForeignKey(f"{cls.DATASET_VERSION_TABLE}.id", ondelete="CASCADE"),
                 nullable=False,
             ),
-            Column(
-                "job_id",
-                Text,
-                ForeignKey("jobs.id", ondelete="CASCADE"),
-                nullable=False,
-            ),
+            Column("job_id", Text, nullable=False),
             Column("is_creator", Boolean, nullable=False, default=False),
             Column("created_at", DateTime(timezone=True)),
             UniqueConstraint("dataset_version_id", "job_id"),
