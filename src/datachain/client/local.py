@@ -9,7 +9,7 @@ from fsspec.implementations.local import LocalFileSystem
 
 from datachain.lib.file import File
 
-from .fsspec import Client
+from .fsspec import Client, is_win_local_path
 
 if TYPE_CHECKING:
     from datachain.cache import Cache
@@ -57,9 +57,13 @@ class FileClient(Client):
             /home/user/animals/ -> file:///home/user/animals/
             C:\\windows\animals -> file:///C:/windows/animals
         """
+        parsed = urlparse(path)
+        if parsed.scheme and not is_win_local_path(path):
+            return path
+
         uri = Path(path).expanduser().absolute().resolve().as_uri()
-        if path[-1] == os.sep:
-            # we should keep os separator from the end of the path
+        if path and path[-1] in (os.sep, "/"):
+            # keep trailing separator so directory URIs stay rooted
             uri += "/"  # in uri (file:///...) all separators are / regardless of os
 
         return uri
