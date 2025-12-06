@@ -43,6 +43,10 @@ for examples of how to create a chain.
 
 ::: datachain.lib.dc.DataChain
 
+::: datachain.lib.dc.utils.is_studio
+
+::: datachain.lib.dc.utils.is_local
+
 ::: datachain.lib.utils.DataChainError
 
 ::: datachain.query.session.Session

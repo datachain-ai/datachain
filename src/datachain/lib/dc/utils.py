@@ -25,10 +25,12 @@ D = TypeVar("D", bound="DataChain")
 
 
 def is_studio() -> bool:
+    """Check if the runtime environment is Studio (not local)."""
     return getenv_bool("DATACHAIN_IS_STUDIO", default=False)
 
 
 def is_local() -> bool:
+    """Check if the runtime environment is local (not Studio)."""
     return not is_studio()
 
 
