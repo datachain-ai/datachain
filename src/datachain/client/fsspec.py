@@ -41,7 +41,7 @@ CLOUD_STORAGE_PROTOCOLS = {"s3", "gs", "az", "hf"}
 ResultQueue = asyncio.Queue[Sequence["File"] | None]
 
 
-def _is_win_local_path(uri: str) -> bool:
+def is_win_local_path(uri: str) -> bool:
     if sys.platform == "win32":
         if len(uri) >= 1 and uri[0] == "\\":
             return True
@@ -95,7 +95,7 @@ class Client(ABC):
 
         protocol = urlparse(os.fspath(url)).scheme
 
-        if not protocol or _is_win_local_path(os.fspath(url)):
+        if not protocol or is_win_local_path(os.fspath(url)):
             return FileClient
         if protocol == ClientS3.protocol:
             return ClientS3
@@ -113,6 +113,11 @@ class Client(ABC):
             return HTTPSClient
 
         raise NotImplementedError(f"Unsupported protocol: {protocol}")
+
+    @classmethod
+    def path_to_uri(cls, path: str) -> str:
+        """Convert a path-like object to a URI. Default: identity."""
+        return path
 
     @staticmethod
     def is_data_source_uri(name: str) -> bool:

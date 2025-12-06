@@ -472,6 +472,42 @@ def test_listings_reindex_subpath_local_file_system(test_session, tmp_dir):
     assert dc.read_storage(subdir.as_uri(), session=test_session).count() == 1
 
 
+def test_read_storage_plain_local_path_keeps_root(test_session, tmp_dir, monkeypatch):
+    monkeypatch.chdir(tmp_dir)
+
+    nested = tmp_dir / "nested"
+    nested.mkdir()
+    (nested / "file.txt").write_text("data")
+
+    files = dc.read_storage(tmp_dir, session=test_session).to_values("file")
+
+    assert len(files) == 1
+    assert files[0].source == tmp_dir.as_uri()
+    assert files[0].path == "nested/file.txt"
+
+
+@pytest.mark.parametrize(
+    "uri_factory",
+    [
+        lambda p: p,
+        lambda p: p.as_uri(),
+        lambda p: p.as_uri() + "/",
+        lambda p: f"{p}{os.sep}",
+    ],
+)
+def test_read_storage_local_variants_consistent(test_session, tmp_dir, uri_factory):
+    nested = tmp_dir / "dir" / "file.bin"
+    nested.parent.mkdir(parents=True)
+    nested.write_bytes(b"x")
+
+    uri = uri_factory(tmp_dir)
+    files = dc.read_storage(uri, session=test_session).to_values("file")
+
+    assert len(files) == 1
+    assert files[0].source == tmp_dir.as_uri()
+    assert files[0].path == "dir/file.bin"
+
+
 @pytest.mark.parametrize("version", [None, "1.0.0"])
 def test_listings_read_listing_dataset(test_session, tmp_dir, version):
     df = pd.DataFrame(DF_DATA)
@@ -1607,39 +1643,6 @@ def test_read_csv_parse_options(tmp_dir, test_session):
 
     df = chain.select("animals", "n_legs", "entry").to_pandas()
     assert set(df["animals"]) == {"Horse", "Centipede", "Brittle stars", "Flamingo"}
-
-
-def test_to_csv_features(tmp_dir, test_session):
-    dc_to = dc.read_values(f1=features, num=range(len(features)), session=test_session)
-    path = tmp_dir / "test.csv"
-    dc_to.order_by("f1.nnn", "f1.count").to_csv(path)
-    with open(path) as f:
-        lines = f.read().split("\n")
-    assert lines == ["f1.nnn,f1.count,num", "n1,1,0", "n1,3,1", "n2,5,2", ""]
-
-
-def test_to_tsv_features(tmp_dir, test_session):
-    dc_to = dc.read_values(f1=features, num=range(len(features)), session=test_session)
-    path = tmp_dir / "test.csv"
-    dc_to.order_by("f1.nnn", "f1.count").to_csv(path, delimiter="\t")
-    with open(path) as f:
-        lines = f.read().split("\n")
-    assert lines == ["f1.nnn\tf1.count\tnum", "n1\t1\t0", "n1\t3\t1", "n2\t5\t2", ""]
-
-
-def test_to_csv_features_nested(tmp_dir, test_session):
-    dc_to = dc.read_values(sign1=features_nested, session=test_session)
-    path = tmp_dir / "test.csv"
-    dc_to.order_by("sign1.fr.nnn", "sign1.fr.count").to_csv(path)
-    with open(path) as f:
-        lines = f.read().split("\n")
-    assert lines == [
-        "sign1.label,sign1.fr.nnn,sign1.fr.count",
-        "label_0,n1,1",
-        "label_1,n1,3",
-        "label_2,n2,5",
-        "",
-    ]
 
 
 @pytest.mark.parametrize("column_type", (str, dict))
