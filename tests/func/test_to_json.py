@@ -1,5 +1,8 @@
 import datetime
 import json
+import uuid
+
+import pytest
 
 import datachain as dc
 from datachain.lib.file import File
@@ -21,7 +24,12 @@ def test_to_json_storage_files(tmp_dir, test_session):
         dc.C("file.path").glob("*.txt")
     )
     path = tmp_dir / "files.json"
-    chain.order_by("file.path").to_json(path)
+    stored = chain.order_by("file.path").to_json(path)
+
+    assert isinstance(stored, File)
+    assert stored.path == path.name
+    assert stored.source.startswith("file://")
+    assert stored.size == path.stat().st_size
 
     with open(path) as f:
         values = json.load(f)
@@ -62,3 +70,22 @@ def test_to_json_storage_files(tmp_dir, test_session):
         assert restored.path == path
         assert restored.size == expected_sizes[path]
         assert restored.last_modified == expected_last_modified[path]
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("version_aware", [True], indirect=True)
+def test_to_json_returns_file_with_version(cloud_test_catalog_upload, cloud_type):
+    ctc = cloud_test_catalog_upload
+
+    chain = dc.read_values(value=[1, 2], session=ctc.session)
+    dest = f"{ctc.src_uri}/to-json-{uuid.uuid4().hex}.json"
+
+    stored = chain.to_json(dest)
+
+    assert isinstance(stored, File)
+    assert stored.version
+    assert stored.source == ctc.src_uri
+    assert stored.path.endswith(".json")
+
+    parsed = json.loads(stored.read_text())
+    assert sorted([row["value"] for row in parsed]) == [1, 2]

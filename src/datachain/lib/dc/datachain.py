@@ -41,7 +41,7 @@ from datachain.lib.data_model import (
     StandardType,
     dict_to_data_model,
 )
-from datachain.lib.file import EXPORT_FILES_MAX_THREADS, ArrowRow, FileExporter
+from datachain.lib.file import EXPORT_FILES_MAX_THREADS, ArrowRow, File, FileExporter
 from datachain.lib.file import ExportPlacement as FileExportPlacement
 from datachain.lib.model_store import ModelStore
 from datachain.lib.settings import Settings
@@ -2230,9 +2230,9 @@ class DataChain:
             partition_cols: Column names by which to partition the dataset.
             chunk_size: The chunk size of results to read and convert to columnar
                 data, to avoid running out of memory.
-            fs_kwargs: Optional kwargs to pass to the fsspec filesystem, used only for
-                write, for fsspec-type URLs, such as s3:// or hf:// when
-                provided as the destination path.
+            fs_kwargs: Optional kwargs forwarded to the underlying fsspec filesystem
+                when writing (e.g., s3://, gs://, hf://), fsspec-specific options
+                are supported.
         """
         import pyarrow as pa
         import pyarrow.parquet as pq
@@ -2318,123 +2318,102 @@ class DataChain:
         delimiter: str = ",",
         fs_kwargs: dict[str, Any] | None = None,
         **kwargs,
-    ) -> None:
-        """Save chain to a csv (comma-separated values) file.
+    ) -> File:
+        """Save chain to a csv (comma-separated values) file and return the stored
+        `File`.
 
         Parameters:
             path: Path to save the file. This supports local paths as well as
                 remote paths, such as s3:// or hf:// with fsspec.
             delimiter: Delimiter to use for the resulting file.
-            fs_kwargs: Optional kwargs to pass to the fsspec filesystem, used only for
-                write, for fsspec-type URLs, such as s3:// or hf:// when
-                provided as the destination path.
+            fs_kwargs: Optional kwargs forwarded to the underlying fsspec filesystem
+                when writing (e.g., s3://, gs://, hf://), fsspec-specific options
+                are supported.
+        Returns:
+            File: The stored file with refreshed metadata (version, etag, size).
         """
         import csv
 
-        opener = open
-
-        if isinstance(path, str) and "://" in path:
-            from datachain.client.fsspec import Client
-
-            fs_kwargs = {
-                **self._query.catalog.client_config,
-                **(fs_kwargs or {}),
-            }
-
-            client = Client.get_implementation(path)
-
-            fsspec_fs = client.create_fs(**fs_kwargs)
-
-            opener = fsspec_fs.open
+        target = File.at(path, session=self.session)
 
         headers, _ = self._effective_signals_schema.get_headers_with_length()
         column_names = [".".join(filter(None, header)) for header in headers]
 
-        results_iter = self._leaf_values()
-
-        with opener(path, "w", newline="") as f:
+        with target.open("w", newline="", client_config=fs_kwargs) as f:
             writer = csv.writer(f, delimiter=delimiter, **kwargs)
             writer.writerow(column_names)
-
-            for row in results_iter:
+            for row in self._leaf_values():
                 writer.writerow(row)
+
+        return target
 
     def to_json(
         self,
         path: str | os.PathLike[str],
         fs_kwargs: dict[str, Any] | None = None,
         include_outer_list: bool = True,
-    ) -> None:
-        """Save chain to a JSON file.
+    ) -> File:
+        """Save chain to a JSON file and return the stored `File`.
 
         Parameters:
             path: Path to save the file. This supports local paths as well as
                 remote paths, such as s3:// or hf:// with fsspec.
-            fs_kwargs: Optional kwargs to pass to the fsspec filesystem, used only for
-                write, for fsspec-type URLs, such as s3:// or hf:// when
-                provided as the destination path.
+            fs_kwargs: Optional kwargs forwarded to the underlying fsspec filesystem
+                when writing (e.g., s3://, gs://, hf://), fsspec-specific options
+                are supported.
             include_outer_list: Sets whether to include an outer list for all rows.
                 Setting this to True makes the file valid JSON, while False instead
                 writes in the JSON lines format.
+        Returns:
+            File: The stored file with refreshed metadata (version, etag, size).
         """
-        opener = open
-
-        if isinstance(path, str) and "://" in path:
-            from datachain.client.fsspec import Client
-
-            fs_kwargs = {
-                **self._query.catalog.client_config,
-                **(fs_kwargs or {}),
-            }
-
-            client = Client.get_implementation(path)
-
-            fsspec_fs = client.create_fs(**fs_kwargs)
-
-            opener = fsspec_fs.open
-
+        target = File.at(path, session=self.session)
         headers, _ = self._effective_signals_schema.get_headers_with_length()
-        headers = [list(filter(None, header)) for header in headers]
+        headers = [list(filter(None, h)) for h in headers]
+        with target.open("wb", client_config=fs_kwargs) as f:
+            self._write_json_stream(f, headers, include_outer_list)
+        return target
 
+    def _write_json_stream(
+        self,
+        f: IO[bytes],
+        headers: list[list[str]],
+        include_outer_list: bool,
+    ) -> None:
         is_first = True
-
-        with opener(path, "wb") as f:
-            if include_outer_list:
-                # This makes the file JSON instead of JSON lines.
-                f.write(b"[\n")
-            for row in self._leaf_values():
-                if not is_first:
-                    if include_outer_list:
-                        # This makes the file JSON instead of JSON lines.
-                        f.write(b",\n")
-                    else:
-                        f.write(b"\n")
-                else:
-                    is_first = False
-                f.write(
-                    json.dumps(
-                        row_to_nested_dict(headers, row), ensure_ascii=False
-                    ).encode("utf-8")
-                )
-            if include_outer_list:
-                # This makes the file JSON instead of JSON lines.
-                f.write(b"\n]\n")
+        if include_outer_list:
+            f.write(b"[\n")
+        for row in self._leaf_values():
+            if not is_first:
+                f.write(b",\n" if include_outer_list else b"\n")
+            else:
+                is_first = False
+            f.write(
+                json.dumps(
+                    row_to_nested_dict(headers, row),
+                    ensure_ascii=False,
+                ).encode("utf-8")
+            )
+        if include_outer_list:
+            f.write(b"\n]\n")
 
     def to_jsonl(
         self,
         path: str | os.PathLike[str],
         fs_kwargs: dict[str, Any] | None = None,
-    ) -> None:
+    ) -> File:
         """Save chain to a JSON lines file.
 
         Parameters:
             path: Path to save the file. This supports local paths as well as
                 remote paths, such as s3:// or hf:// with fsspec.
-            fs_kwargs: Optional kwargs to pass to the fsspec filesystem, used only for
-                write, for fsspec-type URLs, such as s3:// or hf:// when
-                provided as the destination path.
+            fs_kwargs: Optional kwargs forwarded to the underlying fsspec filesystem
+                when writing (e.g., s3://, gs://, hf://), fsspec-specific options
+                are supported.
+        Returns:
+            File: The stored file with refreshed metadata (version, etag, size).
         """
-        self.to_json(path, fs_kwargs, include_outer_list=False)
+        return self.to_json(path, fs_kwargs, include_outer_list=False)
 
     def to_database(
         self,
