@@ -2055,6 +2055,7 @@ class AbstractDBMetastore(AbstractMetastore):
                         self._jobs.c.id
                         == cast(ancestors_cte.c.parent_job_id, self._jobs.c.id.type)
                     )
+                    & (ancestors_cte.c.parent_job_id.isnot(None))  # Stop at root jobs
                     & (ancestors_cte.c.depth < JOB_ANCESTRY_MAX_DEPTH),
                 )
             )
