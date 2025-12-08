@@ -9,6 +9,7 @@ import sys
 import time
 from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, TypeVar
 
@@ -110,17 +111,12 @@ class DataChainDir:
         return instance
 
 
+@dataclass
 class DatasetIdentifier:
     namespace: str
     project: str
     name: str
     version: str
-
-    def __init__(self, namespace: str, project: str, name: str, version: str):
-        self.namespace = namespace
-        self.project = project
-        self.name = name
-        self.version = version
 
     def __hash__(self):
         return hash(f"{self.namespace}_{self.project}_{self.name}_{self.version}")
@@ -146,16 +142,9 @@ class DatasetIdentifier:
             version=dataset_dependency.version,
         )
 
-    @classmethod
-    def to_string(cls, dataset_identifier: "DatasetIdentifier") -> str:
-        """Format DatasetIdentifier as a string: namespace.project.name@version"""
-        return (
-            f"{dataset_identifier.namespace}.{dataset_identifier.project}."
-            f"{dataset_identifier.name}@{dataset_identifier.version}"
-        )
-
     def __str__(self) -> str:
-        return self.to_string(self)
+        """Format DatasetIdentifier as a string: namespace.project.name@version"""
+        return f"{self.namespace}.{self.project}.{self.name}@{self.version}"
 
 
 def system_config_dir():

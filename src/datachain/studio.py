@@ -592,10 +592,8 @@ def trigger_execution_graph(
 
     execution_graph = data["executionGraph"]
     print(
-        "Execution graph triggered under name: ",
-        execution_graph["name"],
-        " from: ",
-        execution_graph["triggeredFrom"],
+        f"Execution graph triggered under name: {execution_graph['name']} from:"
+        f" {execution_graph['triggeredFrom']}"
     )
 
     return 0

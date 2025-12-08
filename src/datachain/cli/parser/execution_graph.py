@@ -19,8 +19,8 @@ def add_execution_graph_parser(subparsers, parent_parser) -> None:
     graph_trigger_help = "Trigger an update for dataset dependency in Studio"
     graph_trigger_description = "Trigger an execution graph for a dataset dependency.\n"
     graph_trigger_description += (
-        "Execution graph will figure out based on the dependency for the"
-        " dataset in studio and triggered accordingly."
+        "The execution graph will be determined based on the dependency for the"
+        " dataset in Studio and triggered accordingly."
         " The dataset name, which can be a fully qualified name including the"
         " namespace and project. Alternatively, it can be a regular name, in which"
         " case the explicitly defined namespace and project will be used if they are"
