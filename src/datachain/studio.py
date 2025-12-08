@@ -1,6 +1,7 @@
 import asyncio
 import os
 import sys
+import warnings
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
@@ -275,8 +276,17 @@ def parse_start_time(start_time_str: str | None) -> str | None:
     if not start_time_str:
         return None
 
-    # Parse the datetime string using dateparser
-    parsed_datetime = dateparser.parse(start_time_str)
+    # dateparser#1246: it explores strptime patterns lacking a year, which
+    # triggers a CPython 3.13 DeprecationWarning. Suppress that noise until a
+    # new dateparser release includes the upstream fix.
+    # https://github.com/scrapinghub/dateparser/issues/1246
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            category=DeprecationWarning,
+            module="dateparser\\.utils\\.strptime",
+        )
+        parsed_datetime = dateparser.parse(start_time_str)
 
     if parsed_datetime is None:
         raise DataChainError(

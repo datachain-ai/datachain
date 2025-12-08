@@ -3,6 +3,7 @@ import logging
 import os
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
+from contextlib import contextmanager, suppress
 from datetime import datetime, timezone
 from functools import cached_property, reduce
 from itertools import groupby
@@ -123,6 +124,16 @@ class AbstractMetastore(ABC, Serializable):
         for test cleanup only, as some Metastore implementations may handle this
         differently."""
         self.close()
+
+    @contextmanager
+    def _init_guard(self):
+        """Ensure resources acquired during __init__ are released on failure."""
+        try:
+            yield
+        except Exception:
+            with suppress(Exception):
+                self.close_on_exit()
+            raise
 
     def cleanup_tables(self, temp_table_names: list[str]) -> None:
         """Cleanup temp tables."""

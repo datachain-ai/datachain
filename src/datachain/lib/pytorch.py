@@ -74,6 +74,7 @@ class PytorchDataset(IterableDataset):
         self.tokenizer = tokenizer
         self.tokenizer_kwargs = tokenizer_kwargs or {}
         self.num_samples = num_samples
+        owns_catalog = catalog is None
         if catalog is None:
             catalog = get_catalog()
         self._init_catalog(catalog)
@@ -92,6 +93,10 @@ class PytorchDataset(IterableDataset):
             self._prefetch_cache = get_temp_cache(tmp_dir, prefix="prefetch-")
             self._cache = self._prefetch_cache
             weakref.finalize(self, self._prefetch_cache.destroy)
+
+        # Close the catalog if we created it - we only needed it for clone params
+        if owns_catalog:
+            catalog.close()
 
     def close(self) -> None:
         if self._prefetch_cache:
@@ -121,19 +126,22 @@ class PytorchDataset(IterableDataset):
         total_workers: int,
     ) -> Generator[tuple[Any, ...], None, None]:
         catalog = self._get_catalog()
-        session = Session("PyTorch", catalog=catalog)
-        ds = read_dataset(
-            name=self.name, version=self.version, session=session
-        ).settings(cache=self.cache, prefetch=self.prefetch)
+        try:
+            session = Session("PyTorch", catalog=catalog)
+            ds = read_dataset(
+                name=self.name, version=self.version, session=session
+            ).settings(cache=self.cache, prefetch=self.prefetch)
 
-        # remove file signals from dataset
-        schema = ds.signals_schema.clone_without_file_signals()
-        ds = ds.select(*schema.values.keys())
+            # remove file signals from dataset
+            schema = ds.signals_schema.clone_without_file_signals()
+            ds = ds.select(*schema.values.keys())
 
-        if self.num_samples > 0:
-            ds = ds.sample(self.num_samples)
-        ds = ds.chunk(total_rank, total_workers)
-        yield from ds.to_iter()
+            if self.num_samples > 0:
+                ds = ds.sample(self.num_samples)
+            ds = ds.chunk(total_rank, total_workers)
+            yield from ds.to_iter()
+        finally:
+            catalog.close()
 
     def _iter_with_prefetch(self) -> Generator[tuple[Any], None, None]:
         from datachain.lib.udf import _prefetch_inputs
