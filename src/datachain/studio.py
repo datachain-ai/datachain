@@ -86,6 +86,9 @@ def process_pipeline_args(args: "Namespace", catalog: "Catalog"):
             args.team,
         )
 
+    if args.cmd == "status":
+        return get_pipeline_status(args.name, args.team)
+
     raise DataChainError(f"Unknown command '{args.cmd}'.")
 
 
@@ -563,5 +566,43 @@ def create_pipeline(
         "Check the pipeline either in Studio or using `datachain pipeline status`, "
         "and resume it when ready using `datachain pipeline resume`"
     )
+
+    return 0
+
+
+def get_pipeline_status(name: str, team_name: str | None):
+    client = StudioClient(team=team_name)
+    response = client.get_pipeline(name)
+    if not response.ok:
+        raise DataChainError(response.message)
+
+    data = response.data
+
+    # Display pipeline summary
+    print(f"Name: {data.get('name', 'N/A')}")
+    print(f"Status: {data.get('status', 'N/A')}")
+
+    completed = data.get("completed", 0)
+    total = data.get("total", 0)
+    print(f"Progress: {completed}/{total} jobs completed")
+
+    if data.get("errorMessage"):
+        print(f"Error: {data.get('errorMessage')}")
+
+    # Display job runs
+    job_runs = data.get("jobRuns", [])
+    if job_runs:
+        print("\nJob Runs:")
+        rows = [
+            {
+                "Name": job_run.get("name", "N/A"),
+                "Status": job_run.get("status", "N/A"),
+                "Job ID": job_run.get("createdJobId", "N/A"),
+            }
+            for job_run in job_runs
+        ]
+        print(tabulate.tabulate(rows, headers="keys", tablefmt="grid"))
+    else:
+        print("\nNo job runs found")
 
     return 0
