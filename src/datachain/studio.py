@@ -576,19 +576,6 @@ def trigger_execution_graph(
         raise DataChainError(response.message)
 
     data = response.data["data"]["triggerDatasetDependencyUpdate"]
-    errors = response.data.get("errors", [])
-    if errors:
-        error_message = "Failed to trigger execution graph: "
-        for error in errors:
-            code = error.get("extensions", {}).get("code", 200)
-            if code == 404:
-                error_message += (
-                    "Check if the token has permission to trigger the execution graph"
-                    f" in team {client.team}."
-                )
-            error_message += f"\n{code}: "
-            error_message += f"{error.get('message', 'Unknown error')}"
-        raise DataChainError(error_message)
 
     execution_graph = data["executionGraph"]
     print(

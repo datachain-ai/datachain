@@ -241,11 +241,28 @@ class StudioClient:
         variables = variables or {}
         variables["teamName"] = self.team
 
-        return self._send_request(
+        response = self._send_request(
             "graphql",
             {"query": query, "variables": variables},
             method="POST",
         )
+        if not response.ok:
+            return response
+        errors = response.data.get("errors", [])
+        if errors:
+            error_message = "Failed to perform the operation: "
+            for error in errors:
+                code = error.get("extensions", {}).get("code", 200)
+                if code == 404:
+                    error_message += (
+                        "Check if the token has permission to perform the operation"
+                        f" in team {self.team}."
+                    )
+                error_message += f"\n{code}: "
+                error_message += f"{error.get('message', 'Unknown error')}"
+            raise DataChainError(error_message)
+
+        return response
 
     def _send_multipart_request(
         self, route: str, files: dict[str, Any], params: dict[str, Any] | None = None
