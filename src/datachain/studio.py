@@ -13,10 +13,12 @@ from datachain.data_storage.job import JobStatus
 from datachain.dataset import QUERY_DATASET_PREFIX, parse_dataset_name
 from datachain.error import DataChainError
 from datachain.remote.studio import StudioClient
-from datachain.utils import STUDIO_URL
+from datachain.utils import STUDIO_URL, DatasetIdentifier
 
 if TYPE_CHECKING:
     from argparse import Namespace
+
+    from datachain.catalog import Catalog
 
 POST_LOGIN_MESSAGE = (
     "Once you've logged in, return here "
@@ -64,6 +66,28 @@ def process_jobs_args(args: "Namespace"):
 
     if args.cmd == "clusters":
         return list_clusters(args.team)
+
+    raise DataChainError(f"Unknown command '{args.cmd}'.")
+
+
+def process_execution_graph_args(args: "Namespace", catalog: "Catalog"):
+    if args.cmd is None:
+        print(
+            f"Use 'datachain {args.command} --help' to see available options",
+            file=sys.stderr,
+        )
+        return 1
+
+    if args.cmd == "trigger":
+        return trigger_execution_graph(
+            catalog,
+            args.dataset,
+            args.version,
+            args.review,
+            args.namespace,
+            args.project,
+            args.team,
+        )
 
     raise DataChainError(f"Unknown command '{args.cmd}'.")
 
@@ -520,3 +544,58 @@ def list_clusters(team_name: str | None):
     ]
 
     print(tabulate.tabulate(rows, headers="keys", tablefmt="grid"))
+
+
+def trigger_execution_graph(
+    catalog: "Catalog",
+    dataset_name: str,
+    dataset_version: str | None = None,
+    review: bool = False,
+    namespace: str | None = None,
+    project: str | None = None,
+    team_name: str | None = None,
+):
+    namespace_name, project_name, name = catalog.get_full_dataset_name(
+        dataset_name,
+        project_name=project,
+        namespace_name=namespace,
+    )
+    if dataset_version is None:
+        dataset = catalog.get_remote_dataset(namespace_name, project_name, name)
+        dataset_version = dataset.latest_version
+
+    identifier = DatasetIdentifier(
+        namespace=namespace_name,
+        project=project_name,
+        name=name,
+        version=dataset_version,
+    )
+    client = StudioClient(team=team_name)
+    response = client.trigger_dataset_dependency_update(identifier, review)
+    if not response.ok:
+        raise DataChainError(response.message)
+
+    data = response.data["data"]["triggerDatasetDependencyUpdate"]
+    errors = response.data.get("errors", [])
+    if errors:
+        error_message = "Failed to trigger execution graph: "
+        for error in errors:
+            code = error.get("extensions", {}).get("code", 200)
+            if code == 404:
+                error_message += (
+                    "Check if the token has permission to trigger the execution graph"
+                    f" in team {client.team}."
+                )
+            error_message += f"\n{code}: "
+            error_message += f"{error.get('message', 'Unknown error')}"
+        raise DataChainError(error_message)
+
+    execution_graph = data["executionGraph"]
+    print(
+        "Execution graph triggered under name: ",
+        execution_graph["name"],
+        " from: ",
+        execution_graph["triggeredFrom"],
+    )
+
+    return 0

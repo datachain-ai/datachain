@@ -22,6 +22,8 @@ if TYPE_CHECKING:
     import pandas as pd
     from typing_extensions import Self
 
+    from datachain.dataset import DatasetDependency
+
 
 DEFAULT_BATCH_SIZE = 2000
 
@@ -106,6 +108,54 @@ class DataChainDir:
             else:
                 raise NotADirectoryError(root)
         return instance
+
+
+class DatasetIdentifier:
+    namespace: str
+    project: str
+    name: str
+    version: str
+
+    def __init__(self, namespace: str, project: str, name: str, version: str):
+        self.namespace = namespace
+        self.project = project
+        self.name = name
+        self.version = version
+
+    def __hash__(self):
+        return hash(f"{self.namespace}_{self.project}_{self.name}_{self.version}")
+
+    def __eq__(self, other):
+        if not isinstance(other, DatasetIdentifier):
+            return False
+        return (
+            self.namespace == other.namespace
+            and self.project == other.project
+            and self.name == other.name
+            and self.version == other.version
+        )
+
+    @classmethod
+    def from_dataset_dependency(
+        cls, dataset_dependency: "DatasetDependency"
+    ) -> "DatasetIdentifier":
+        return cls(
+            namespace=dataset_dependency.namespace,
+            project=dataset_dependency.project,
+            name=dataset_dependency.name,
+            version=dataset_dependency.version,
+        )
+
+    @classmethod
+    def to_string(cls, dataset_identifier: "DatasetIdentifier") -> str:
+        """Format DatasetIdentifier as a string: namespace.project.name@version"""
+        return (
+            f"{dataset_identifier.namespace}.{dataset_identifier.project}."
+            f"{dataset_identifier.name}@{dataset_identifier.version}"
+        )
+
+    def __str__(self) -> str:
+        return self.to_string(self)
 
 
 def system_config_dir():

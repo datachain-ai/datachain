@@ -13,7 +13,8 @@ from requests.exceptions import HTTPError, Timeout
 from datachain.config import Config
 from datachain.dataset import DatasetRecord
 from datachain.error import DataChainError
-from datachain.utils import STUDIO_URL, retry_with_backoff
+from datachain.remote.graphql import TRIGGER_DATASET_DEPENDENCY_UPDATE_MUTATION
+from datachain.utils import STUDIO_URL, DatasetIdentifier, retry_with_backoff
 
 T = TypeVar("T")
 LsData = list[dict[str, Any]] | None
@@ -233,6 +234,18 @@ class StudioClient:
             message = ""
 
         return Response(data, ok, message, response.status_code)
+
+    def _send_request_graphql(
+        self, query: str, variables: dict[str, Any] | None = None
+    ) -> Response[Any]:
+        variables = variables or {}
+        variables["teamName"] = self.team
+
+        return self._send_request(
+            "graphql",
+            {"query": query, "variables": variables},
+            method="POST",
+        )
 
     def _send_multipart_request(
         self, route: str, files: dict[str, Any], params: dict[str, Any] | None = None
@@ -508,3 +521,20 @@ class StudioClient:
 
     def get_clusters(self) -> Response[ClusterListData]:
         return self._send_request("datachain/clusters/", {}, method="GET")
+
+    # GraphQL API
+    def trigger_dataset_dependency_update(
+        self,
+        dataset_identifier: DatasetIdentifier,
+        review: bool = False,
+    ) -> Response[Any]:
+        values = {
+            "namespaceName": dataset_identifier.namespace,
+            "projectName": dataset_identifier.project,
+            "datasetName": dataset_identifier.name,
+            "version": dataset_identifier.version,
+            "review": review,
+        }
+        return self._send_request_graphql(
+            TRIGGER_DATASET_DEPENDENCY_UPDATE_MUTATION, values
+        )
