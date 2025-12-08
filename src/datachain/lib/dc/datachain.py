@@ -669,6 +669,9 @@ class DataChain:
                     **kwargs,
                 )
             )
+        else:
+            # Checkpoint was found and reused
+            print(f"Checkpoint found for dataset '{name}', skipping creation")
 
         catalog.metastore.create_checkpoint(job.id, _hash)  # type: ignore[arg-type]
         return result
