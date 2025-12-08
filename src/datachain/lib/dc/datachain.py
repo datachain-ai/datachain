@@ -761,19 +761,13 @@ class DataChain:
                 **kwargs,
             )
 
-            # Link current job to this dataset version (not creator) and update
-            # dataset_version.job_id atomically
-            with metastore.db.transaction() as conn:  # type: ignore[attr-defined]
-                metastore.link_dataset_version_to_job(
-                    dataset_version.id, job.id, is_creator=False, conn=conn
-                )
-                # Update dataset_version.job_id to point to the latest job
-                dataset = metastore.get_dataset(
-                    name, project.namespace.name, project.name, conn=conn
-                )
-                metastore.update_dataset_version(
-                    dataset, dataset_version.version, job_id=job.id, conn=conn
-                )
+            # Link current job to this dataset version (not creator).
+            # This also updates dataset_version.job_id.
+            metastore.link_dataset_version_to_job(
+                dataset_version.id,
+                job.id,
+                is_creator=False,
+            )
 
             return _hash, chain
 

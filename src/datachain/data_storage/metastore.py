@@ -502,7 +502,13 @@ class AbstractMetastore(ABC, Serializable):
         is_creator: bool = False,
         conn=None,
     ) -> None:
-        """Link dataset version to job."""
+        """
+        Link dataset version to job.
+
+        This atomically:
+        1. Creates a link in the dataset_version_jobs junction table
+        2. Updates dataset_version.job_id to point to this job
+        """
 
     @abstractmethod
     def get_ancestor_job_ids(self, job_id: str, conn=None) -> list[str]:
@@ -2015,17 +2021,32 @@ class AbstractDBMetastore(AbstractMetastore):
         is_creator: bool = False,
         conn=None,
     ) -> None:
-        query = self._dataset_version_jobs_insert().values(
-            dataset_version_id=dataset_version_id,
-            job_id=job_id,
-            is_creator=is_creator,
-            created_at=datetime.now(timezone.utc),
-        )
-        if hasattr(query, "on_conflict_do_nothing"):
-            query = query.on_conflict_do_nothing(
-                index_elements=["dataset_version_id", "job_id"]
+        # Use transaction to atomically:
+        # 1. Link dataset version to job in junction table
+        # 2. Update dataset_version.job_id to point to this job
+        with self.db.transaction() as tx_conn:
+            conn = conn or tx_conn
+
+            # Insert into junction table
+            query = self._dataset_version_jobs_insert().values(
+                dataset_version_id=dataset_version_id,
+                job_id=job_id,
+                is_creator=is_creator,
+                created_at=datetime.now(timezone.utc),
             )
-        self.db.execute(query, conn=conn)
+            if hasattr(query, "on_conflict_do_nothing"):
+                query = query.on_conflict_do_nothing(
+                    index_elements=["dataset_version_id", "job_id"]
+                )
+            self.db.execute(query, conn=conn)
+
+            # Also update dataset_version.job_id to point to this job
+            update_query = (
+                self._datasets_versions.update()
+                .where(self._datasets_versions.c.id == dataset_version_id)
+                .values(job_id=job_id)
+            )
+            self.db.execute(update_query, conn=conn)
 
     def get_ancestor_job_ids(self, job_id: str, conn=None) -> list[str]:
         # Use recursive CTE to walk up the parent chain
