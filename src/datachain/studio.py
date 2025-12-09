@@ -89,6 +89,9 @@ def process_pipeline_args(args: "Namespace", catalog: "Catalog"):
     if args.cmd == "status":
         return get_pipeline_status(args.name, args.team)
 
+    if args.cmd == "list":
+        return list_pipelines(args.team, args.status, args.limit, args.search)
+
     raise DataChainError(f"Unknown command '{args.cmd}'.")
 
 
@@ -604,5 +607,37 @@ def get_pipeline_status(name: str, team_name: str | None):
         print(tabulate.tabulate(rows, headers="keys", tablefmt="grid"))
     else:
         print("\nNo job runs found")
+
+    return 0
+
+
+def list_pipelines(
+    team_name: str | None,
+    status: str | None = None,
+    limit: int = 20,
+    search: str | None = None,
+):
+    client = StudioClient(team=team_name)
+    response = client.list_pipelines(status, limit, search)
+    if not response.ok:
+        raise DataChainError(response.message)
+
+    data = response.data
+    if data:
+        rows = [
+            {
+                "Name": pipeline.get("name", "N/A"),
+                "Status": pipeline.get("status", "N/A"),
+                "Triggered From": pipeline.get("triggered_from", "N/A"),
+                "Progress": (
+                    f"{pipeline.get('completed', 0)}/{pipeline.get('total', 0)}"
+                ),
+                "Created At": pipeline.get("created_at", "N/A")[:19],
+            }
+            for pipeline in data
+        ]
+        print(tabulate.tabulate(rows, headers="keys", tablefmt="grid"))
+    else:
+        print("No pipelines found")
 
     return 0
