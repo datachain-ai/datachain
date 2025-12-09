@@ -1,6 +1,17 @@
 import json
 from datetime import datetime
-from typing import Any, Dict, Final, List, Literal, Optional, Union
+from typing import (
+    Any,
+    Dict,
+    Final,
+    List,
+    Literal,
+    Optional,
+    Tuple,
+    Union,
+    get_args,
+    get_origin,
+)
 
 import pytest
 from pydantic import ValidationError
@@ -184,6 +195,34 @@ def test_feature_schema_serialize_list():
 
     deserialized_schema = SignalSchema.deserialize(signals)
     assert deserialized_schema.values == schema
+
+
+def test_serialize_tuple_and_variadic_tuple():
+    schema = {
+        "coords": tuple[float, float],
+        "direction": Optional[tuple[int, ...]],
+    }
+
+    serialized = SignalSchema(schema).serialize()
+
+    assert serialized["coords"] == "tuple[float, float]"
+    assert serialized["direction"] == "Optional[tuple[int, ...]]"
+
+    deserialized = SignalSchema.deserialize(serialized)
+
+    coords_type = deserialized.values["coords"]
+    assert get_origin(coords_type) is tuple
+    assert get_args(coords_type) == (float, float)
+
+    direction_type = deserialized.values["direction"]
+    dir_origin = get_origin(direction_type)
+    dir_args = get_args(direction_type)
+    assert dir_origin in (Union, type(Union[int, None]))  # Optional
+    tuple_arg = (
+        dir_args[0] if dir_args and dir_args[0] is not type(None) else dir_args[1]
+    )
+    assert get_origin(tuple_arg) is tuple
+    assert get_args(tuple_arg) == (int, Ellipsis)
 
 
 def test_schema_or_rejects_type_change():
@@ -1005,6 +1044,7 @@ def test_print_types():
         int: "int",
         float: "float",
         None: "NoneType",
+        Ellipsis: "...",
         MyType2: "MyType2@v1",
         Any: "Any",
         Literal: "Literal",
@@ -1019,6 +1059,8 @@ def test_print_types():
         str | int | bool: "Union[str, int, bool]",
         List: "list",
         list: "list",
+        Tuple: "tuple",
+        tuple: "tuple",
         List[bool]: "list[bool]",
         list[bool]: "list[bool]",
         List[bool | None]: "list[Optional[bool]]",
@@ -1050,6 +1092,14 @@ def test_print_types():
         list[bytes] | None: "Optional[list[bytes]]",
         list[Any]: "list[Any]",
         list[Any]: "list[Any]",
+        tuple[int, float]: "tuple[int, float]",
+        Tuple[int, float]: "tuple[int, float]",
+        tuple[int, ...]: "tuple[int, ...]",
+        Tuple[int, ...]: "tuple[int, ...]",
+        Optional[tuple[int, float]]: "Optional[tuple[int, float]]",
+        Optional[Tuple[int, float]]: "Optional[tuple[int, float]]",
+        Optional[tuple[int, ...]]: "Optional[tuple[int, ...]]",
+        Optional[Tuple[int, ...]]: "Optional[tuple[int, ...]]",
     }
 
     for t, v in mapping.items():
@@ -1098,6 +1148,12 @@ def test_resolve_types():
         "Union[Literal, NoneType]": Any | None,
         "Union[list[bytes], NoneType]": list[bytes] | None,
         "Union[List[bytes], NoneType]": list[bytes] | None,
+        "tuple[int, float]": tuple[int, float],
+        "Tuple[int, float]": tuple[int, float],
+        "Optional[tuple[int, float]]": tuple[int, float] | None,
+        "Optional[Tuple[int, float]]": tuple[int, float] | None,
+        "tuple[int, ...]": tuple[int, ...],
+        "Tuple[int, ...]": tuple[int, ...],
     }
 
     for s, t in mapping.items():

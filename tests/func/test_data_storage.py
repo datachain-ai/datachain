@@ -122,9 +122,15 @@ def test_convert_type(test_session):
     assert run_convert_type("s", String()) == "s"
     assert run_convert_type(now, DateTime()) == now
     assert run_convert_type([1, 2], Array(Int)) == [1, 2]
+    assert run_convert_type((1, 2), Array(Int)) == [1, 2]
     assert run_convert_type([1.5, 2.5], Array(Float)) == [1.5, 2.5]
+    assert run_convert_type((1.5, 2.5), Array(Float)) == [1.5, 2.5]
     assert run_convert_type(["a", "b"], Array(String)) == ["a", "b"]
     assert run_convert_type([[1, 2], [3, 4]], Array(Array(Int))) == [
+        [1, 2],
+        [3, 4],
+    ]
+    assert run_convert_type(((1, 2), (3, 4)), Array(Array(Int))) == [
         [1, 2],
         [3, 4],
     ]
