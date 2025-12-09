@@ -647,6 +647,9 @@ class DataChain:
 
         # Checkpoint handling
         _hash, result = self._resolve_checkpoint(name, project, job, kwargs)
+        if bool(result):
+            # Checkpoint was found and reused
+            print(f"Checkpoint found for dataset '{name}', skipping creation")
 
         # Schema preparation
         schema = self.signals_schema.clone_without_sys_signals().serialize()
@@ -669,9 +672,6 @@ class DataChain:
                     **kwargs,
                 )
             )
-        else:
-            # Checkpoint was found and reused
-            print(f"Checkpoint found for dataset '{name}', skipping creation")
 
         catalog.metastore.create_checkpoint(job.id, _hash)  # type: ignore[arg-type]
         return result
