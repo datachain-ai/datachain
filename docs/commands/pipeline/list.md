@@ -19,7 +19,7 @@ This command fetches the list of the pipelines in studio filtered by status or s
 *  `-s STATUS, --status STATUS` - Status of the pipelines to list. Possible values are: `'PENDING', 'RUNNING', 'COMPLETED', 'FAILED', 'PAUSED', 'CANCELED'`
 *  `-l LIMIT, --limit LIMIT` - Limit the number of pipelines to list
 *  `-S SEARCH, --search SEARCH` - Search for pipelines by name or the dataset created from.
-* `-t TEAM, --team TEAM` - Team to run job for (default: from config)
+* `-t TEAM, --team TEAM` - Team to list pipelines for (default: from config)
 * `-h`, `--help` - Show the help message and exit.
 * `-v`, `--verbose` - Be verbose.
 * `-q`, `--quiet` - Be quiet.
