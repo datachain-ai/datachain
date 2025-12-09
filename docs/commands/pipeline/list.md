@@ -12,7 +12,7 @@ usage: datachain pipeline list [-h] [-v] [-q]
 
 ## Description
 
-This command fetches the list of the pipelines in studio filtered by status or search term if provided.
+This command fetches the list of the pipelines in Studio filtered by status or search term if provided.
 
 ## Options
 
