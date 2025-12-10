@@ -786,7 +786,7 @@ class UDFStep(Step, ABC):
             (hash_input + self.udf.output_schema_hash()).encode()
         ).hexdigest()
 
-        udf_reset = env2bool("DATACHAIN_UDF_CHECKPOINT_RESET", undefined=False)
+        udf_partial_reset = env2bool("DATACHAIN_UDF_CHECKPOINT_RESET", undefined=False)
 
         # If partition_by is set, we need to create input table first to ensure
         # consistent sys__id
@@ -807,14 +807,14 @@ class UDFStep(Step, ABC):
             ).add_columns(*partition_columns())
 
             # always run from scratch as Aggregator checkpoints are not implemented yet
-            udf_reset = True
+            udf_partial_reset = True
 
         if ch := self._checkpoint_exist(hash_output):
             # Skip UDF execution by reusing existing output table
             output_table, input_table = self._skip_udf(ch, partial_hash, query)
         elif (
             (ch_partial := self._checkpoint_exist(partial_hash, partial=True))
-            and not udf_reset
+            and not udf_partial_reset
             and ch_partial.job_id != self.job.id
         ):
             # Only continue from partial if it's from a parent job, not our own
