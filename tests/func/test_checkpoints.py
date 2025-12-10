@@ -934,3 +934,119 @@ def test_mapper_output_schema_change_triggers_rerun(test_session, monkeypatch):
         ]
     )
     assert result == expected
+
+
+def test_generator_incomplete_input_recovery(test_session):
+    """Test full recovery flow from incomplete inputs.
+
+    Tests the complete checkpoint recovery mechanism:
+    1. First run fails, leaving some inputs incomplete (missing final row)
+    2. Second run detects incomplete inputs
+    3. Filters out partial results from incomplete inputs
+    4. Re-processes incomplete inputs
+    5. Final results are correct (no duplicates, no missing values)
+    """
+    warehouse = test_session.catalog.warehouse
+    processed_inputs = []
+    run_count = [0]
+
+    def gen_multiple(num) -> Iterator[int]:
+        """Generator that yields 5 outputs per input."""
+        processed_inputs.append(num)
+        # Fail on input 4 on first run only
+        if num == 4 and run_count[0] == 0:
+            raise Exception("Simulated crash")
+        for i in range(5):
+            yield num * 100 + i
+
+    dc.read_values(num=[1, 2, 3, 4], session=test_session).save("nums")
+
+    # -------------- FIRST RUN (FAILS) -------------------
+    reset_session_job_state()
+    processed_inputs.clear()
+
+    with pytest.raises(Exception, match="Simulated crash"):
+        (
+            dc.read_dataset("nums", session=test_session)
+            .settings(batch_size=2)  # Small batch for partial commits
+            .gen(result=gen_multiple, output=int)
+            .save("results")
+        )
+
+    # Verify partial state exists
+    _, partial_table = get_partial_tables(test_session)
+    first_run_rows = list(
+        warehouse.db.execute(
+            sa.select(
+                partial_table.c.sys__input_id,
+                partial_table.c.result,
+                partial_table.c.sys__partial,
+            )
+        )
+    )
+    assert len(first_run_rows) > 0, "Should have partial data from first run"
+
+    # Identify incomplete inputs (missing sys__partial=False)
+    incomplete_before = [
+        row[0]
+        for row in warehouse.db.execute(
+            sa.select(sa.distinct(partial_table.c.sys__input_id)).where(
+                partial_table.c.sys__input_id.not_in(
+                    sa.select(partial_table.c.sys__input_id).where(
+                        partial_table.c.sys__partial == False  # noqa: E712
+                    )
+                )
+            )
+        )
+    ]
+    assert len(incomplete_before) > 0, "Should have incomplete inputs"
+
+    # -------------- SECOND RUN (RECOVERS) -------------------
+    reset_session_job_state()
+    processed_inputs.clear()
+    run_count[0] += 1  # Increment so generator succeeds this time
+
+    # Should complete successfully
+    (
+        dc.read_dataset("nums", session=test_session)
+        .settings(batch_size=2)
+        .gen(result=gen_multiple, output=int)
+        .save("results")
+    )
+
+    # Verify incomplete inputs were re-processed
+    assert any(inp in processed_inputs for inp in incomplete_before), (
+        "Incomplete inputs should be re-processed"
+    )
+
+    # Verify final results
+    result = (
+        dc.read_dataset("results", session=test_session)
+        .order_by("result")
+        .to_list("result")
+    )
+
+    # Should have exactly 20 outputs (4 inputs x 5 outputs each)
+    expected = sorted([(num * 100 + i,) for num in [1, 2, 3, 4] for i in range(5)])
+    actual = sorted(result)
+
+    assert actual == expected, (
+        f"Should have all 20 outputs with no duplicates or missing.\n"
+        f"Expected: {expected}\n"
+        f"Actual: {actual}"
+    )
+
+    # Verify each input has exactly 5 outputs
+    result_by_input = {}
+    for (val,) in result:
+        input_id = val // 100
+        result_by_input.setdefault(input_id, []).append(val)
+
+    for input_id in [1, 2, 3, 4]:
+        assert len(result_by_input.get(input_id, [])) == 5, (
+            f"Input {input_id} should have exactly 5 outputs"
+        )
+
+    # Verify no duplicates
+    all_results = [val for (val,) in result]
+    assert len(all_results) == len(set(all_results)), "Should have no duplicate results"

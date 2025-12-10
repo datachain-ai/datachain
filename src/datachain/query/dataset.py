@@ -866,9 +866,12 @@ class UDFStep(Step, ABC):
                 self.job.id, checkpoint.hash
             )
             output_table = self.create_output_table(current_output_table_name)
-            # Select only columns that exist in the target table (exclude sys__input_id)
+            # Select only columns that exist in the source table
+            # Exclude sys__input_id and sys__partial (may not exist in old tables)
             select_cols = [
-                c for c in existing_output_table.c if c.name != "sys__input_id"
+                c
+                for c in existing_output_table.c
+                if c.name not in ("sys__input_id", "sys__partial")
             ]
             self.warehouse.copy_table(output_table, sa.select(*select_cols))
 
@@ -958,13 +961,29 @@ class UDFStep(Step, ABC):
             UDFStep.partial_output_table_name(self.job.id, checkpoint.hash),
             is_partial=True,
         )
-        self.warehouse.copy_table(partial_table, sa.select(parent_partial_table))
+
+        # Find incomplete input IDs (ones missing sys__partial = FALSE)
+        # These inputs were only partially processed before the crash
+        incomplete_input_ids = self.find_incomplete_inputs(parent_partial_table)
+
+        # Copy parent's partial table, filtering out incomplete results if needed
+        if incomplete_input_ids:
+            # Filter out partial results for incomplete inputs as they will be
+            # re-processed from beginning
+            filtered_query = sa.select(parent_partial_table).where(
+                parent_partial_table.c.sys__input_id.not_in(incomplete_input_ids)
+            )
+            self.warehouse.copy_table(partial_table, filtered_query)
+        else:
+            # No incomplete inputs, simple copy (99.9% of cases)
+            self.warehouse.copy_table(partial_table, sa.select(parent_partial_table))
 
         # Calculate which rows still need processing
         unprocessed_query = self.calculate_unprocessed_rows(
             self.warehouse.get_table(input_table.name),
             partial_table,
             query,
+            incomplete_input_ids,
         )
 
         # Execute UDF only on unprocessed rows, appending to partial table
@@ -989,11 +1008,23 @@ class UDFStep(Step, ABC):
             processed input IDs
         """
 
+    @abstractmethod
+    def find_incomplete_inputs(self, partial_table: "Table") -> list[int]:
+        """
+        Find input IDs that were only partially processed before a crash.
+        For generators (1:N), an input is incomplete if it has output rows but none
+        with sys__partial=False. For mappers (1:1), this never happens.
+
+        Returns:
+            List of incomplete input IDs that need to be re-processed
+        """
+
     def calculate_unprocessed_rows(
         self,
         input_table: "Table",
         partial_table: "Table",
         original_query,
+        incomplete_input_ids: None | list[int] = None,
     ):
         """
         Calculate which input rows haven't been processed yet.
@@ -1002,21 +1033,32 @@ class UDFStep(Step, ABC):
             input_table: The UDF input table
             partial_table: The UDF partial table
             original_query: The original query for input data
+            incomplete_input_ids: List of input IDs that were partially processed
+                and need to be re-run (for generators only)
 
         Returns:
             A filtered query containing only unprocessed rows
         """
+        incomplete_input_ids = incomplete_input_ids or []
         # Get processed input IDs using subclass-specific logic
         processed_input_ids_subquery = self.processed_input_ids_query(partial_table)
 
         # Filter original query to only include unprocessed rows
         # Use the sys__id column from the query's selected columns, not from input_table
         sys_id_col = original_query.selected_columns.sys__id
-        return original_query.where(
-            sys_id_col.notin_(
-                sa.select(processed_input_ids_subquery.c.sys__processed_id)
-            )
+
+        # Build filter: rows that haven't been processed OR were incompletely processed
+        unprocessed_filter = sys_id_col.notin_(
+            sa.select(processed_input_ids_subquery.c.sys__processed_id)
         )
+
+        # Add incomplete inputs to the filter (they need to be re-processed)
+        if incomplete_input_ids:
+            unprocessed_filter = sa.or_(
+                unprocessed_filter, sys_id_col.in_(incomplete_input_ids)
+            )
+
+        return original_query.where(unprocessed_filter)
 
 
 @frozen
@@ -1041,6 +1083,14 @@ class UDFSignal(UDFStep):
         """
         return sa.select(partial_table.c.sys__id.label("sys__processed_id")).subquery()
 
+    def find_incomplete_inputs(self, partial_table: "Table") -> list[int]:
+        """
+        For mappers (1:1 mapping): always returns empty list.
+        Mappers cannot have incomplete inputs because each input produces exactly
+        one output atomically. Either the output exists or it doesn't.
+        """
+        return []
+
     def create_output_table(self, name: str, is_partial: bool = False) -> "Table":
         udf_output_columns: list[sqlalchemy.Column[Any]] = [
             sqlalchemy.Column(col_name, col_type)
@@ -1058,6 +1108,15 @@ class UDFSignal(UDFStep):
 
             udf_output_columns.append(
                 sa.Column("sys__input_id", sa.Integer, nullable=True)
+            )
+            # Add sys__partial column to track incomplete inputs during checkpoint
+            # recovery.
+            # All rows except the last one for each input are marked as partial=True.
+            # If an input has no row with partial=False, it means the input was not
+            # fully processed and needs to be re-run.
+            # Nullable because mappers (1:1) don't use this field.
+            udf_output_columns.append(
+                sa.Column("sys__partial", sa.Boolean, nullable=True)
             )
 
         return self.warehouse.create_udf_table(udf_output_columns, name=name)
@@ -1152,6 +1211,24 @@ class RowGenerator(UDFStep):
             sa.distinct(partial_table.c.sys__input_id).label("sys__processed_id")
         ).subquery()
 
+    def find_incomplete_inputs(self, partial_table: "Table") -> list[int]:
+        """
+        For generators (1:N mapping): find inputs missing sys__partial=False row.
+
+        An input is incomplete if it has output rows but none with sys__partial=False,
+        indicating the process crashed before finishing all outputs for that input.
+        These inputs need to be re-processed and their partial results filtered out.
+        """
+        # Find inputs that don't have any row with sys__partial=False
+        incomplete_query = sa.select(sa.distinct(partial_table.c.sys__input_id)).where(
+            partial_table.c.sys__input_id.not_in(
+                sa.select(partial_table.c.sys__input_id).where(
+                    partial_table.c.sys__partial == False  # noqa: E712
+                )
+            )
+        )
+        return [row[0] for row in self.warehouse.db.execute(incomplete_query)]
+
     def create_output_table(self, name: str, is_partial: bool = False) -> "Table":
         columns: list[Column] = [
             Column(name, typ) for name, typ in self.udf.output.items()
@@ -1167,6 +1244,13 @@ class RowGenerator(UDFStep):
             import sqlalchemy as sa
 
             columns.append(sa.Column("sys__input_id", sa.Integer, nullable=True))
+            # Add sys__partial column to track incomplete inputs during checkpoint
+            # recovery.
+            # All rows except the last one for each input are marked as partial=True.
+            # If an input has no row with partial=False, it means the input was not
+            # fully processed and needs to be re-run.
+            # Nullable because mappers (1:1) don't use this field.
+            columns.append(sa.Column("sys__partial", sa.Boolean, nullable=True))
 
         return self.warehouse.create_dataset_rows_table(
             name,
@@ -1178,11 +1262,12 @@ class RowGenerator(UDFStep):
         self, udf_table, query: Select
     ) -> tuple[QueryGeneratorFunc, list["sqlalchemy.Column"]]:
         udf_table_query = udf_table.select().subquery()
-        # Exclude sys__input_id - it's only needed for tracking during UDF execution
+        # Exclude sys__input_id and sys__partial - they're only needed for tracking
+        # during UDF execution and checkpoint recovery
         udf_table_cols: list[sqlalchemy.Label[Any]] = [
             label(c.name, c)
             for c in udf_table_query.columns
-            if c.name != "sys__input_id"
+            if c.name not in ("sys__input_id", "sys__partial")
         ]
 
         def q(*columns):
@@ -1191,7 +1276,11 @@ class RowGenerator(UDFStep):
             cols = [c for c in udf_table_cols if c.name in names]
             return sqlalchemy.select(*cols).select_from(udf_table_query)
 
-        return q, [c for c in udf_table_query.columns if c.name != "sys__input_id"]
+        return q, [
+            c
+            for c in udf_table_query.columns
+            if c.name not in ("sys__input_id", "sys__partial")
+        ]
 
 
 @frozen

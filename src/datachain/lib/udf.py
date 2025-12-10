@@ -557,11 +557,17 @@ class Generator(UDFBase):
                     for result_obj in result_objs:
                         udf_output = self._flatten_row(result_obj)
                         # Include sys__input_id to track which input generated this
-                        # output
+                        # output. Mark as partial=True initially (will update last row)
                         output_batch.append(
-                            {"sys__input_id": row_id}
+                            {"sys__input_id": row_id, "sys__partial": True}
                             | dict(zip(self.signal_names, udf_output, strict=False))
                         )
+
+                # Mark the last row as complete (not partial) to enable checkpoint
+                # recovery to detect incomplete inputs
+                if output_batch:
+                    output_batch[-1]["sys__partial"] = False
+
                 yield output_batch
                 processed_cb.relative_update(1)
 
