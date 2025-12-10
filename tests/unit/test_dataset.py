@@ -13,6 +13,7 @@ from datachain.dataset import (
     DatasetRecord,
     DatasetVersion,
     parse_dataset_name,
+    parse_schema,
 )
 from datachain.error import InvalidDatasetNameError
 from datachain.sql.types import (
@@ -189,7 +190,7 @@ def test_parse_dataset_schema():
         "scores": {"type": "Array", "item_type": {"type": "Float32"}},
     }
 
-    parsed_schema = DatasetRecord.parse_schema(schema_dict)
+    parsed_schema = parse_schema(schema_dict)
     assert list(parsed_schema.keys()) == ["id", "name", "scores"]
     assert parsed_schema["id"] == Int
     assert parsed_schema["name"] == String
@@ -198,7 +199,7 @@ def test_parse_dataset_schema():
 
 
 def test_parse_empty_dataset_schema():
-    parsed_schema = DatasetRecord.parse_schema({})
+    parsed_schema = parse_schema({})
     assert parsed_schema == {}
 
 
@@ -261,4 +262,4 @@ def test_parse_empty_dataset_schema():
 )
 def test_parse_invalid_dataset_schema(schema_dict, exc, match_error):
     with pytest.raises(exc, match=match_error):
-        DatasetRecord.parse_schema(schema_dict)
+        parse_schema(schema_dict)

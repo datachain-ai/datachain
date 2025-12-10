@@ -2488,6 +2488,10 @@ class DatasetQuery:
         **kwargs,
     ) -> "Self":
         """Save the query as a dataset."""
+        # Get job from session to link dataset version to job
+        job = self.session.get_or_create_job()
+        job_id = job.id
+
         project = project or self.catalog.metastore.default_project
         try:
             if (
@@ -2530,6 +2534,7 @@ class DatasetQuery:
                 description=description,
                 attrs=attrs,
                 update_version=update_version,
+                job_id=job_id,
                 **kwargs,
             )
             version = version or dataset.latest_version
@@ -2542,6 +2547,11 @@ class DatasetQuery:
                 dataset, DatasetStatus.COMPLETE, version=version
             )
             self.catalog.update_dataset_version_with_warehouse_info(dataset, version)
+
+            # Link this dataset version to the job that created it
+            self.catalog.metastore.link_dataset_version_to_job(
+                dataset.get_version(version).id, job_id, is_creator=True
+            )
 
             if dependencies:
                 # overriding dependencies
