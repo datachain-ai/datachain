@@ -135,7 +135,7 @@ class AbstractWarehouse(ABC, Serializable):
                     if isinstance(val[0], item_python_type):
                         # SQLite ARRAY storage expects a list; tuples/sets must be
                         # converted to lists even when element types already match.
-                        return val if value_type is list else list(val)
+                        return list(val)
                     if item_python_type is float and isinstance(val[0], int):
                         return [float(i) for i in val]
 
