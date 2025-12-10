@@ -404,7 +404,9 @@ def test_datasets_filtering(test_session, attrs, result):
         "letters", attrs=["letter"]
     )
 
-    assert sorted(dc.datasets(attrs=attrs).to_values("name")) == sorted(result)
+    assert sorted(
+        dc.datasets(attrs=attrs, session=test_session).to_values("name")
+    ) == sorted(result)
 
 
 def test_listings(test_session, tmp_dir):
@@ -468,6 +470,42 @@ def test_listings_reindex_subpath_local_file_system(test_session, tmp_dir):
 
     assert dc.read_storage(tmp_dir.as_uri(), session=test_session).count() == 3
     assert dc.read_storage(subdir.as_uri(), session=test_session).count() == 1
+
+
+def test_read_storage_plain_local_path_keeps_root(test_session, tmp_dir, monkeypatch):
+    monkeypatch.chdir(tmp_dir)
+
+    nested = tmp_dir / "nested"
+    nested.mkdir()
+    (nested / "file.txt").write_text("data")
+
+    files = dc.read_storage(tmp_dir, session=test_session).to_values("file")
+
+    assert len(files) == 1
+    assert files[0].source == tmp_dir.as_uri()
+    assert files[0].path == "nested/file.txt"
+
+
+@pytest.mark.parametrize(
+    "uri_factory",
+    [
+        lambda p: p,
+        lambda p: p.as_uri(),
+        lambda p: p.as_uri() + "/",
+        lambda p: f"{p}{os.sep}",
+    ],
+)
+def test_read_storage_local_variants_consistent(test_session, tmp_dir, uri_factory):
+    nested = tmp_dir / "dir" / "file.bin"
+    nested.parent.mkdir(parents=True)
+    nested.write_bytes(b"x")
+
+    uri = uri_factory(tmp_dir)
+    files = dc.read_storage(uri, session=test_session).to_values("file")
+
+    assert len(files) == 1
+    assert files[0].source == tmp_dir.as_uri()
+    assert files[0].path == "dir/file.bin"
 
 
 @pytest.mark.parametrize("version", [None, "1.0.0"])
@@ -877,22 +915,27 @@ def test_agg_tuple_result_generator(test_session):
     assert ds.order_by("x_1.size").to_values("x_1.size") == [5, 10]
 
 
+_batch_mapper_warn = pytest.mark.filterwarnings("ignore:BatchMapper is deprecated.*")
+
+
+@_batch_mapper_warn
 def test_batch_map(test_session):
     class _TestFr(BaseModel):
         sqrt: float
         my_name: str
 
-    chain = dc.read_values(t1=features, session=test_session).batch_map(
-        x=lambda m_frs: [
-            _TestFr(
-                sqrt=math.sqrt(m_fr.count),
-                my_name=m_fr.nnn + "_suf",
-            )
-            for m_fr in m_frs
-        ],
-        params="t1",
-        output={"x": _TestFr},
-    )
+    with pytest.deprecated_call(match=r"batch_map\(\) is deprecated"):
+        chain = dc.read_values(t1=features, session=test_session).batch_map(
+            x=lambda m_frs: [
+                _TestFr(
+                    sqrt=math.sqrt(m_fr.count),
+                    my_name=m_fr.nnn + "_suf",
+                )
+                for m_fr in m_frs
+            ],
+            params="t1",
+            output={"x": _TestFr},
+        )
 
     x_list = chain.order_by("x.my_name", "x.sqrt").to_values("x")
     test_frs = [
@@ -906,26 +949,29 @@ def test_batch_map(test_session):
         assert x.my_name == test_fr.my_name
 
 
+@_batch_mapper_warn
 def test_batch_map_wrong_size(test_session):
     class _TestFr(BaseModel):
         total: int
         names: str
 
-    chain = dc.read_values(t1=features, session=test_session).batch_map(
-        x=lambda m_frs: [
-            _TestFr(
-                total=sum(m_fr.count for m_fr in m_frs),
-                names="-".join([m_fr.nnn for m_fr in m_frs]),
-            )
-        ],
-        params="t1",
-        output={"x": _TestFr},
-    )
+    with pytest.deprecated_call(match=r"batch_map\(\) is deprecated"):
+        chain = dc.read_values(t1=features, session=test_session).batch_map(
+            x=lambda m_frs: [
+                _TestFr(
+                    total=sum(m_fr.count for m_fr in m_frs),
+                    names="-".join([m_fr.nnn for m_fr in m_frs]),
+                )
+            ],
+            params="t1",
+            output={"x": _TestFr},
+        )
 
     with pytest.raises(AssertionError):
         chain.to_list()
 
 
+@_batch_mapper_warn
 def test_batch_map_two_params(test_session):
     class _TestFr(BaseModel):
         f: File
@@ -938,18 +984,19 @@ def test_batch_map_two_params(test_session):
         MyFr(nnn="n1", count=2),
     ]
 
-    ds = dc.read_values(t1=features, t2=features2, session=test_session).batch_map(
-        x=lambda frs1, frs2: [
-            _TestFr(
-                f=File(path=""),
-                cnt=f1.count + f2.count,
-                my_name=f"{f1.nnn}-{f2.nnn}",
-            )
-            for f1, f2 in zip(frs1, frs2, strict=False)
-        ],
-        params=("t1", "t2"),
-        output={"x": _TestFr},
-    )
+    with pytest.deprecated_call(match=r"batch_map\(\) is deprecated"):
+        ds = dc.read_values(t1=features, t2=features2, session=test_session).batch_map(
+            x=lambda frs1, frs2: [
+                _TestFr(
+                    f=File(path=""),
+                    cnt=f1.count + f2.count,
+                    my_name=f"{f1.nnn}-{f2.nnn}",
+                )
+                for f1, f2 in zip(frs1, frs2, strict=False)
+            ],
+            params=("t1", "t2"),
+            output={"x": _TestFr},
+        )
 
     assert ds.order_by("x.my_name").to_values("x.my_name") == [
         "n1-n1",
@@ -959,12 +1006,14 @@ def test_batch_map_two_params(test_session):
     assert ds.order_by("x.cnt").to_values("x.cnt") == [7, 7, 13]
 
 
+@_batch_mapper_warn
 def test_batch_map_tuple_result_iterator(test_session):
     def sqrt(t1: list[int]) -> Iterator[float]:
         for val in t1:
             yield math.sqrt(val)
 
-    chain = dc.read_values(t1=[1, 4, 9], session=test_session).batch_map(x=sqrt)
+    with pytest.deprecated_call(match=r"batch_map\(\) is deprecated"):
+        chain = dc.read_values(t1=[1, 4, 9], session=test_session).batch_map(x=sqrt)
 
     assert chain.order_by("x").to_values("x") == [1, 2, 3]
 
@@ -1594,39 +1643,6 @@ def test_read_csv_parse_options(tmp_dir, test_session):
 
     df = chain.select("animals", "n_legs", "entry").to_pandas()
     assert set(df["animals"]) == {"Horse", "Centipede", "Brittle stars", "Flamingo"}
-
-
-def test_to_csv_features(tmp_dir, test_session):
-    dc_to = dc.read_values(f1=features, num=range(len(features)), session=test_session)
-    path = tmp_dir / "test.csv"
-    dc_to.order_by("f1.nnn", "f1.count").to_csv(path)
-    with open(path) as f:
-        lines = f.read().split("\n")
-    assert lines == ["f1.nnn,f1.count,num", "n1,1,0", "n1,3,1", "n2,5,2", ""]
-
-
-def test_to_tsv_features(tmp_dir, test_session):
-    dc_to = dc.read_values(f1=features, num=range(len(features)), session=test_session)
-    path = tmp_dir / "test.csv"
-    dc_to.order_by("f1.nnn", "f1.count").to_csv(path, delimiter="\t")
-    with open(path) as f:
-        lines = f.read().split("\n")
-    assert lines == ["f1.nnn\tf1.count\tnum", "n1\t1\t0", "n1\t3\t1", "n2\t5\t2", ""]
-
-
-def test_to_csv_features_nested(tmp_dir, test_session):
-    dc_to = dc.read_values(sign1=features_nested, session=test_session)
-    path = tmp_dir / "test.csv"
-    dc_to.order_by("sign1.fr.nnn", "sign1.fr.count").to_csv(path)
-    with open(path) as f:
-        lines = f.read().split("\n")
-    assert lines == [
-        "sign1.label,sign1.fr.nnn,sign1.fr.count",
-        "label_0,n1,1",
-        "label_1,n1,3",
-        "label_2,n2,5",
-        "",
-    ]
 
 
 @pytest.mark.parametrize("column_type", (str, dict))
@@ -4555,3 +4571,53 @@ def test_column_compute(test_session):
     assert chain.max("signals.signal.i3") == 15
     assert chain.max("signals.signal.f3") == 7.5
     assert chain.max("signals.signal.s3") == "eee"
+
+
+def test_union_does_not_break_schema_order(test_session):
+    class Meta(BaseModel):
+        name: str
+        count: int
+
+    def add_file(key) -> File:
+        return File(path="")
+
+    def add_meta(file) -> Meta:
+        return Meta(name="meta", count=10)
+
+    keys = ["a", "b", "c", "d"]
+    values = [3, 3, 3, 3]
+
+    (
+        dc.read_values(key=keys, val=values, session=test_session)
+        .map(file=add_file)
+        .map(meta=add_meta)
+        .save("ds1")
+    )
+    (
+        dc.read_values(key=keys, val=values, session=test_session)
+        .map(file=add_file)
+        .map(meta=add_meta)
+        .save("ds2")
+    )
+
+    (
+        dc.read_dataset("ds1", session=test_session)
+        .union(dc.read_dataset("ds2", session=test_session))
+        .save("union")
+    )
+
+    dat = test_session.catalog.get_dataset("union")
+    assert list(dat.versions[0].schema.keys()) == [
+        "key",
+        "val",
+        "file__source",
+        "file__path",
+        "file__size",
+        "file__version",
+        "file__etag",
+        "file__is_latest",
+        "file__last_modified",
+        "file__location",
+        "meta__name",
+        "meta__count",
+    ]

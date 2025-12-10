@@ -3,24 +3,20 @@ import logging
 import os
 import os.path
 import posixpath
-import signal
-import subprocess
-import sys
 import time
 import traceback
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
+from contextlib import contextmanager, suppress
 from copy import copy
 from dataclasses import dataclass
 from functools import cached_property, reduce
-from threading import Thread
-from typing import IO, TYPE_CHECKING, Any, NoReturn
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 import sqlalchemy as sa
 from sqlalchemy import Column
 from tqdm.auto import tqdm
 
-from datachain import json
 from datachain.cache import Cache
 from datachain.client import Client
 from datachain.dataset import (
@@ -43,8 +39,6 @@ from datachain.error import (
     DatasetVersionNotFoundError,
     NamespaceNotFoundError,
     ProjectNotFoundError,
-    QueryScriptCancelError,
-    QueryScriptRunError,
 )
 from datachain.lib.listing import get_listing
 from datachain.node import DirType, Node, NodeWithPath
@@ -71,8 +65,6 @@ TTL_INT = 4 * 60 * 60
 
 INDEX_INTERNAL_ERROR_MESSAGE = "Internal error on indexing"
 DATASET_INTERNAL_ERROR_MESSAGE = "Internal error on creating dataset"
-# exit code we use if last statement in query script is not instance of DatasetQuery
-QUERY_SCRIPT_INVALID_LAST_STATEMENT_EXIT_CODE = 10
 # exit code we use if query script was canceled
 QUERY_SCRIPT_CANCELED_EXIT_CODE = 11
 QUERY_SCRIPT_SIGTERM_EXIT_CODE = -15  # if query script was terminated by SIGTERM
@@ -84,76 +76,9 @@ PULL_DATASET_SLEEP_INTERVAL = 0.1  # sleep time while waiting for chunk to be av
 PULL_DATASET_CHECK_STATUS_INTERVAL = 20  # interval to check export status in Studio
 
 
-def noop(_: str):
-    pass
-
-
-class TerminationSignal(RuntimeError):  # noqa: N818
-    def __init__(self, signal):
-        self.signal = signal
-        super().__init__("Received termination signal", signal)
-
-    def __repr__(self):
-        return f"{self.__class__.__name__}({self.signal})"
-
-
-if sys.platform == "win32":
-    SIGINT = signal.CTRL_C_EVENT
-else:
-    SIGINT = signal.SIGINT
-
-
 def is_namespace_local(namespace_name) -> bool:
     """Checks if namespace is from local environment, i.e. is `local`"""
     return namespace_name == "local"
-
-
-def shutdown_process(
-    proc: subprocess.Popen,
-    interrupt_timeout: int | None = None,
-    terminate_timeout: int | None = None,
-) -> int:
-    """Shut down the process gracefully with SIGINT -> SIGTERM -> SIGKILL."""
-
-    logger.info("sending interrupt signal to the process %s", proc.pid)
-    proc.send_signal(SIGINT)
-
-    logger.info("waiting for the process %s to finish", proc.pid)
-    try:
-        return proc.wait(interrupt_timeout)
-    except subprocess.TimeoutExpired:
-        logger.info(
-            "timed out waiting, sending terminate signal to the process %s", proc.pid
-        )
-        proc.terminate()
-        try:
-            return proc.wait(terminate_timeout)
-        except subprocess.TimeoutExpired:
-            logger.info("timed out waiting, killing the process %s", proc.pid)
-            proc.kill()
-            return proc.wait()
-
-
-def process_output(stream: IO[bytes], callback: Callable[[str], None]) -> None:
-    buffer = b""
-
-    try:
-        while byt := stream.read(1):  # Read one byte at a time
-            buffer += byt
-
-            if byt in (b"\n", b"\r"):  # Check for newline or carriage return
-                line = buffer.decode("utf-8", errors="replace")
-                callback(line)
-                buffer = b""  # Clear buffer for the next line
-
-        if buffer:  # Handle any remaining data in the buffer
-            line = buffer.decode("utf-8", errors="replace")
-            callback(line)
-    finally:
-        try:
-            stream.close()  # Ensure output is closed
-        except Exception:  # noqa: BLE001, S110
-            pass
 
 
 class DatasetRowsFetcher(NodesThreadPool):
@@ -313,6 +238,16 @@ class NodeGroup:
         """
         if self.sources:
             self.client.fetch_nodes(self.iternodes(recursive), shared_progress_bar=pbar)
+
+    def close(self) -> None:
+        if self.listing:
+            self.listing.close()
+
+    def __enter__(self) -> "NodeGroup":
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self.close()
 
 
 def prepare_output_for_cp(
@@ -540,6 +475,7 @@ class Catalog:
         }
         self._warehouse_ready_callback = warehouse_ready_callback
         self.in_memory = in_memory
+        self._owns_connections = True  # False for copies, prevents double-close
 
     @cached_property
     def warehouse(self) -> "AbstractWarehouse":
@@ -561,12 +497,35 @@ class Catalog:
         }
 
     def copy(self, cache=True, db=True):
+        """
+        Create a shallow copy of this catalog.
+
+        The copy shares metastore and warehouse with the original but will not
+        close them - only the original catalog owns the connections.
+        """
         result = copy(self)
+        result._owns_connections = False
         if not db:
             result.metastore = None
             result._warehouse = None
             result.warehouse = None
         return result
+
+    def close(self) -> None:
+        if not self._owns_connections:
+            return
+        if self.metastore is not None:
+            with suppress(Exception):
+                self.metastore.close_on_exit()
+        if self._warehouse is not None:
+            with suppress(Exception):
+                self._warehouse.close_on_exit()
+
+    def __enter__(self) -> "Catalog":
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self.close()
 
     @classmethod
     def generate_query_dataset_name(cls) -> str:
@@ -621,6 +580,7 @@ class Catalog:
             **kwargs,
         )
 
+    @contextmanager
     def enlist_sources(
         self,
         sources: list[str],
@@ -628,34 +588,41 @@ class Catalog:
         skip_indexing=False,
         client_config=None,
         only_index=False,
-    ) -> list["DataSource"] | None:
-        enlisted_sources = []
-        for src in sources:  # Opt: parallel
-            listing, client, file_path = self.enlist_source(
-                src,
-                update,
-                client_config=client_config or self.client_config,
-                skip_indexing=skip_indexing,
-            )
-            enlisted_sources.append((listing, client, file_path))
+    ) -> Iterator[list["DataSource"] | None]:
+        enlisted_sources: list[tuple[Listing | None, Client, str]] = []
+        try:
+            for src in sources:  # Opt: parallel
+                listing, client, file_path = self.enlist_source(
+                    src,
+                    update,
+                    client_config=client_config or self.client_config,
+                    skip_indexing=skip_indexing,
+                )
+                enlisted_sources.append((listing, client, file_path))
 
-        if only_index:
-            # sometimes we don't really need listing result (e.g on indexing process)
-            # so this is to improve performance
-            return None
+            if only_index:
+                # sometimes we don't really need listing result (e.g. on indexing
+                # process) so this is to improve performance
+                yield None
+                return
 
-        dsrc_all: list[DataSource] = []
-        for listing, client, file_path in enlisted_sources:
-            if not listing:
-                nodes = [Node.from_file(client.get_file_info(file_path))]
-                dir_only = False
-            else:
-                nodes = listing.expand_path(file_path)
-                dir_only = file_path.endswith("/")
-            dsrc_all.extend(
-                DataSource(listing, client, node, dir_only) for node in nodes
-            )
-        return dsrc_all
+            dsrc_all: list[DataSource] = []
+            for listing, client, file_path in enlisted_sources:
+                if not listing:
+                    nodes = [Node.from_file(client.get_file_info(file_path))]
+                    dir_only = False
+                else:
+                    nodes = listing.expand_path(file_path)
+                    dir_only = file_path.endswith("/")
+                dsrc_all.extend(
+                    DataSource(listing, client, node, dir_only) for node in nodes
+                )
+            yield dsrc_all
+        finally:
+            for listing, _, _ in enlisted_sources:
+                if listing:
+                    with suppress(Exception):
+                        listing.close()
 
     def enlist_sources_grouped(
         self,
@@ -859,7 +826,7 @@ class Catalog:
                 f"Version {version} must be higher than the current latest one"
             )
 
-        return self.create_new_dataset_version(
+        return self.create_dataset_version(
             dataset,
             version,
             feature_schema=feature_schema,
@@ -870,7 +837,7 @@ class Catalog:
             job_id=job_id,
         )
 
-    def create_new_dataset_version(
+    def create_dataset_version(
         self,
         dataset: DatasetRecord,
         version: str,
@@ -898,7 +865,7 @@ class Catalog:
         dataset = self.metastore.create_dataset_version(
             dataset,
             version,
-            status=DatasetStatus.PENDING,
+            status=DatasetStatus.CREATED,
             sources=sources,
             feature_schema=feature_schema,
             query_script=query_script,
@@ -1495,15 +1462,17 @@ class Catalog:
         *,
         client_config=None,
     ) -> Iterator[tuple[DataSource, Iterable[tuple]]]:
-        data_sources = self.enlist_sources(
+        with self.enlist_sources(
             sources,
             update,
             skip_indexing=skip_indexing,
             client_config=client_config or self.client_config,
-        )
+        ) as data_sources:
+            if data_sources is None:
+                return
 
-        for source in data_sources:  # type: ignore [union-attr]
-            yield source, source.ls(fields)
+            for source in data_sources:
+                yield source, source.ls(fields)
 
     def pull_dataset(  # noqa: C901, PLR0915
         self,
@@ -1767,11 +1736,12 @@ class Catalog:
         else:
             # since we don't call cp command, which does listing implicitly,
             # it needs to be done here
-            self.enlist_sources(
+            with self.enlist_sources(
                 sources,
                 update,
                 client_config=client_config or self.client_config,
-            )
+            ):
+                pass
 
         self.create_dataset_from_sources(
             output,
@@ -1780,120 +1750,6 @@ class Catalog:
             client_config=client_config,
             recursive=recursive,
         )
-
-    @staticmethod
-    def query(
-        query_script: str,
-        env: Mapping[str, str] | None = None,
-        python_executable: str = sys.executable,
-        stdout_callback: Callable[[str], None] | None = None,
-        stderr_callback: Callable[[str], None] | None = None,
-        params: dict[str, str] | None = None,
-        job_id: str | None = None,
-        reset: bool = False,
-        interrupt_timeout: int | None = None,
-        terminate_timeout: int | None = None,
-    ) -> None:
-        if not isinstance(reset, bool):
-            raise TypeError(f"reset must be a bool, got {type(reset).__name__}")
-
-        cmd = [python_executable, "-c", query_script]
-        env = dict(env or os.environ)
-        env.update(
-            {
-                "DATACHAIN_QUERY_PARAMS": json.dumps(params or {}),
-                "DATACHAIN_JOB_ID": job_id or "",
-                "DATACHAIN_CHECKPOINTS_RESET": str(reset),
-            },
-        )
-        popen_kwargs: dict[str, Any] = {}
-
-        if stdout_callback is not None:
-            popen_kwargs = {"stdout": subprocess.PIPE}
-        if stderr_callback is not None:
-            popen_kwargs["stderr"] = subprocess.PIPE
-
-        def raise_termination_signal(sig: int, _: Any) -> NoReturn:
-            raise TerminationSignal(sig)
-
-        stdout_thread: Thread | None = None
-        stderr_thread: Thread | None = None
-
-        with subprocess.Popen(cmd, env=env, **popen_kwargs) as proc:  # noqa: S603
-            logger.info("Starting process %s", proc.pid)
-
-            orig_sigint_handler = signal.getsignal(signal.SIGINT)
-            # ignore SIGINT in the main process.
-            # In the terminal, SIGINTs are received by all the processes in
-            # the foreground process group, so the script will receive the signal too.
-            # (If we forward the signal to the child, it will receive it twice.)
-            signal.signal(signal.SIGINT, signal.SIG_IGN)
-
-            orig_sigterm_handler = signal.getsignal(signal.SIGTERM)
-            signal.signal(signal.SIGTERM, raise_termination_signal)
-            try:
-                if stdout_callback is not None:
-                    stdout_thread = Thread(
-                        target=process_output,
-                        args=(proc.stdout, stdout_callback),
-                        daemon=True,
-                    )
-                    stdout_thread.start()
-                if stderr_callback is not None:
-                    stderr_thread = Thread(
-                        target=process_output,
-                        args=(proc.stderr, stderr_callback),
-                        daemon=True,
-                    )
-                    stderr_thread.start()
-
-                proc.wait()
-            except TerminationSignal as exc:
-                signal.signal(signal.SIGTERM, orig_sigterm_handler)
-                signal.signal(signal.SIGINT, orig_sigint_handler)
-                logger.info("Shutting down process %s, received %r", proc.pid, exc)
-                # Rather than forwarding the signal to the child, we try to shut it down
-                # gracefully. This is because we consider the script to be interactive
-                # and special, so we give it time to cleanup before exiting.
-                shutdown_process(proc, interrupt_timeout, terminate_timeout)
-                if proc.returncode:
-                    raise QueryScriptCancelError(
-                        "Query script was canceled by user", return_code=proc.returncode
-                    ) from exc
-            finally:
-                signal.signal(signal.SIGTERM, orig_sigterm_handler)
-                signal.signal(signal.SIGINT, orig_sigint_handler)
-                # wait for the reader thread
-                thread_join_timeout_seconds = 30
-                if stdout_thread is not None:
-                    stdout_thread.join(timeout=thread_join_timeout_seconds)
-                    if stdout_thread.is_alive():
-                        logger.warning(
-                            "stdout thread is still alive after %s seconds",
-                            thread_join_timeout_seconds,
-                        )
-                if stderr_thread is not None:
-                    stderr_thread.join(timeout=thread_join_timeout_seconds)
-                    if stderr_thread.is_alive():
-                        logger.warning(
-                            "stderr thread is still alive after %s seconds",
-                            thread_join_timeout_seconds,
-                        )
-
-        logger.info("Process %s exited with return code %s", proc.pid, proc.returncode)
-        if proc.returncode in (
-            QUERY_SCRIPT_CANCELED_EXIT_CODE,
-            QUERY_SCRIPT_SIGTERM_EXIT_CODE,
-        ):
-            raise QueryScriptCancelError(
-                "Query script was canceled by user",
-                return_code=proc.returncode,
-            )
-        if proc.returncode:
-            raise QueryScriptRunError(
-                f"Query script exited with error code {proc.returncode}",
-                return_code=proc.returncode,
-            )
 
     def cp(
         self,
@@ -1918,38 +1774,42 @@ class Catalog:
             no_glob,
             client_config=client_config,
         )
+        try:
+            always_copy_dir_contents, copy_to_filename = prepare_output_for_cp(
+                node_groups, output, force, no_cp
+            )
+            total_size, total_files = collect_nodes_for_cp(node_groups, recursive)
+            if not total_files:
+                return
 
-        always_copy_dir_contents, copy_to_filename = prepare_output_for_cp(
-            node_groups, output, force, no_cp
-        )
-        total_size, total_files = collect_nodes_for_cp(node_groups, recursive)
-        if not total_files:
-            return
+            desc_max_len = max(len(output) + 16, 19)
+            bar_format = (
+                "{desc:<"
+                f"{desc_max_len}"
+                "}{percentage:3.0f}%|{bar}| {n_fmt:>5}/{total_fmt:<5} "
+                "[{elapsed}<{remaining}, {rate_fmt:>8}]"
+            )
 
-        desc_max_len = max(len(output) + 16, 19)
-        bar_format = (
-            "{desc:<"
-            f"{desc_max_len}"
-            "}{percentage:3.0f}%|{bar}| {n_fmt:>5}/{total_fmt:<5} "
-            "[{elapsed}<{remaining}, {rate_fmt:>8}]"
-        )
+            if not no_cp:
+                with get_download_bar(bar_format, total_size) as pbar:
+                    for node_group in node_groups:
+                        node_group.download(recursive=recursive, pbar=pbar)
 
-        if not no_cp:
-            with get_download_bar(bar_format, total_size) as pbar:
-                for node_group in node_groups:
-                    node_group.download(recursive=recursive, pbar=pbar)
-
-        instantiate_node_groups(
-            node_groups,
-            output,
-            bar_format,
-            total_files,
-            force,
-            recursive,
-            no_cp,
-            always_copy_dir_contents,
-            copy_to_filename,
-        )
+            instantiate_node_groups(
+                node_groups,
+                output,
+                bar_format,
+                total_files,
+                force,
+                recursive,
+                no_cp,
+                always_copy_dir_contents,
+                copy_to_filename,
+            )
+        finally:
+            for node_group in node_groups:
+                with suppress(Exception):
+                    node_group.close()
 
     def du(
         self,
@@ -1959,24 +1819,26 @@ class Catalog:
         *,
         client_config=None,
     ) -> Iterable[tuple[str, float]]:
-        sources = self.enlist_sources(
+        with self.enlist_sources(
             sources,
             update,
             client_config=client_config or self.client_config,
-        )
+        ) as matched_sources:
+            if matched_sources is None:
+                return
 
-        def du_dirs(src, node, subdepth):
-            if subdepth > 0:
-                subdirs = src.listing.get_dirs_by_parent_path(node.path)
-                for sd in subdirs:
-                    yield from du_dirs(src, sd, subdepth - 1)
-            yield (
-                src.get_node_full_path(node),
-                src.listing.du(node)[0],
-            )
+            def du_dirs(src, node, subdepth):
+                if subdepth > 0:
+                    subdirs = src.listing.get_dirs_by_parent_path(node.path)
+                    for sd in subdirs:
+                        yield from du_dirs(src, sd, subdepth - 1)
+                yield (
+                    src.get_node_full_path(node),
+                    src.listing.du(node)[0],
+                )
 
-        for src in sources:
-            yield from du_dirs(src, src.node, depth)
+            for src in matched_sources:
+                yield from du_dirs(src, src.node, depth)
 
     def find(
         self,
@@ -1992,39 +1854,42 @@ class Catalog:
         *,
         client_config=None,
     ) -> Iterator[str]:
-        sources = self.enlist_sources(
+        with self.enlist_sources(
             sources,
             update,
             client_config=client_config or self.client_config,
-        )
-        if not columns:
-            columns = ["path"]
-        field_set = set()
-        for column in columns:
-            if column == "du":
-                field_set.add("dir_type")
-                field_set.add("size")
-                field_set.add("path")
-            elif column == "name":
-                field_set.add("path")
-            elif column == "path":
-                field_set.add("dir_type")
-                field_set.add("path")
-            elif column == "size":
-                field_set.add("size")
-            elif column == "type":
-                field_set.add("dir_type")
-        fields = list(field_set)
-        field_lookup = {f: i for i, f in enumerate(fields)}
-        for src in sources:
-            results = src.listing.find(
-                src.node, fields, names, inames, paths, ipaths, size, typ
-            )
-            for row in results:
-                yield "\t".join(
-                    find_column_to_str(row, field_lookup, src, column)
-                    for column in columns
+        ) as matched_sources:
+            if matched_sources is None:
+                return
+
+            if not columns:
+                columns = ["path"]
+            field_set = set()
+            for column in columns:
+                if column == "du":
+                    field_set.add("dir_type")
+                    field_set.add("size")
+                    field_set.add("path")
+                elif column == "name":
+                    field_set.add("path")
+                elif column == "path":
+                    field_set.add("dir_type")
+                    field_set.add("path")
+                elif column == "size":
+                    field_set.add("size")
+                elif column == "type":
+                    field_set.add("dir_type")
+            fields = list(field_set)
+            field_lookup = {f: i for i, f in enumerate(fields)}
+            for src in matched_sources:
+                results = src.listing.find(
+                    src.node, fields, names, inames, paths, ipaths, size, typ
                 )
+                for row in results:
+                    yield "\t".join(
+                        find_column_to_str(row, field_lookup, src, column)
+                        for column in columns
+                    )
 
     def index(
         self,
@@ -2033,9 +1898,10 @@ class Catalog:
         *,
         client_config=None,
     ) -> None:
-        self.enlist_sources(
+        with self.enlist_sources(
             sources,
             update,
             client_config=client_config or self.client_config,
             only_index=True,
-        )
+        ):
+            pass

@@ -118,7 +118,7 @@ tests = [
 ]
 dev = [
   "datachain[docs,tests]",
-  "mypy==1.18.2",
+  "mypy==1.19.0",
   "types-python-dateutil",
   "types-dateparser",
   "types-pytz",
@@ -166,16 +166,17 @@ markers = [
   "incremental_processing: Delta and retry examples"
 ]
 filterwarnings = [
-  "error::pandas.errors.PerformanceWarning",
-  "error::pydantic.warnings.PydanticDeprecatedSince20",
-  "error::pytest_mock.PytestMockWarning",
-  "error::pytest.PytestCollectionWarning",
-  "error::sqlalchemy.exc.SADeprecationWarning",
+  "error",  # Treat all warnings as errors by default
+  # Third-party deprecation warnings we can't fix
   "ignore::DeprecationWarning:timm.*",
   "ignore::DeprecationWarning:botocore.auth",
   "ignore::DeprecationWarning:datasets.utils._dill",
   "ignore::DeprecationWarning:librosa.core.intervals",
-  "ignore:Field name .* shadows an attribute in parent:UserWarning"  # datachain.lib.feature
+  "ignore::FutureWarning:google.api_core._python_version_support",  # Python 3.10 EOL warning
+  # Expected warnings from our code
+  "ignore:Field name .* shadows an attribute in parent:UserWarning",  # datachain.lib.feature
+  # Coverage limitation on Python 3.13
+  "ignore:Can't use core=sysmon:coverage.exceptions.CoverageWarning"
 ]
 
 [tool.coverage.run]

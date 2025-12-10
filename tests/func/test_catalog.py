@@ -1,4 +1,5 @@
 import os
+from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -19,6 +20,17 @@ def listing_stats(uri, catalog):
     dataset = catalog.get_dataset(list_dataset_name)
     dataset_version = dataset.get_version(dataset.latest_version)
     return dataset_version.num_objects, dataset_version.size
+
+
+@contextmanager
+def enlist_source(catalog, *args, **kwargs):
+    """Wrapper around catalog.enlist_source that ensures listing is closed."""
+    lst, client, path = catalog.enlist_source(*args, **kwargs)
+    try:
+        yield lst, client, path
+    finally:
+        if lst:
+            lst.close()
 
 
 @pytest.fixture
@@ -582,12 +594,14 @@ def test_listing_stats(cloud_test_catalog):
     with pytest.raises(DatasetNotFoundError):
         listing_stats(src_uri, catalog)
 
-    catalog.enlist_source(src_uri)
+    with enlist_source(catalog, src_uri):
+        pass
     num_objects, size = listing_stats(src_uri, catalog)
     assert num_objects == 7
     assert size == 36
 
-    catalog.enlist_source(f"{src_uri}/dogs/", update=True)
+    with enlist_source(catalog, f"{src_uri}/dogs/", update=True):
+        pass
     num_objects, size = listing_stats(src_uri, catalog)
     assert num_objects == 7
     assert size == 36
@@ -596,7 +610,8 @@ def test_listing_stats(cloud_test_catalog):
     assert num_objects == 4
     assert size == 15
 
-    catalog.enlist_source(f"{src_uri}/dogs/")
+    with enlist_source(catalog, f"{src_uri}/dogs/"):
+        pass
     num_objects, size = listing_stats(src_uri, catalog)
     assert num_objects == 7
     assert size == 36
@@ -608,13 +623,15 @@ def test_enlist_source_handles_slash(cloud_test_catalog):
     src_uri = cloud_test_catalog.src_uri
     src_path = f"{src_uri}/dogs"
 
-    catalog.enlist_source(src_path)
+    with enlist_source(catalog, src_path):
+        pass
     num_objects, size = listing_stats(src_path, catalog)
     assert num_objects == len(DEFAULT_TREE["dogs"])
     assert size == 15
 
     src_path = f"{src_uri}/dogs"
-    catalog.enlist_source(src_path, update=True)
+    with enlist_source(catalog, src_path, update=True):
+        pass
     num_objects, size = listing_stats(src_path, catalog)
     assert num_objects == len(DEFAULT_TREE["dogs"])
     assert size == 15
@@ -626,7 +643,8 @@ def test_enlist_source_handles_glob(cloud_test_catalog):
     src_uri = cloud_test_catalog.src_uri
     src_path = f"{src_uri}/dogs/*.jpg"
 
-    catalog.enlist_source(src_path)
+    with enlist_source(catalog, src_path):
+        pass
     num_objects, size = listing_stats(src_path, catalog)
 
     assert num_objects == len(DEFAULT_TREE["dogs"])
@@ -639,7 +657,8 @@ def test_enlist_source_handles_file(cloud_test_catalog):
     src_uri = cloud_test_catalog.src_uri
     src_path = f"{src_uri}/dogs/dog1"
 
-    catalog.enlist_source(src_path)
+    with enlist_source(catalog, src_path):
+        pass
     with pytest.raises(DatasetNotFoundError):
         listing_stats(src_path, catalog)
 

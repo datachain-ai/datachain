@@ -45,10 +45,14 @@ def _connect(
             yield stack.enter_context(engine.connect())
         elif isinstance(connection, sqlite3.Connection):
             engine = sqlalchemy.create_engine(
-                "sqlite://", creator=lambda: connection, **engine_kwargs
+                "sqlite://",
+                creator=lambda: connection,
+                poolclass=sqlalchemy.pool.StaticPool,
+                **engine_kwargs,
             )
-            # do not close the connection, as it is managed by the caller
-            yield engine.connect()
+            # Close only the SQLAlchemy connection wrapper; the underlying
+            # sqlite3 connection remains managed by the caller via StaticPool.
+            yield stack.enter_context(engine.connect())
         elif isinstance(connection, sqlalchemy.Engine):
             yield stack.enter_context(connection.connect())
         elif isinstance(connection, sqlalchemy.Connection):

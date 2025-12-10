@@ -5,12 +5,15 @@ import sqlalchemy as sa
 
 import datachain as dc
 from datachain.error import DatasetNotFoundError, JobNotFoundError
-from datachain.lib.utils import DataChainError
 from tests.utils import get_partial_tables, reset_session_job_state
 
 
-def mapper_fail(num) -> int:
-    raise Exception("Error")
+class CustomMapperError(Exception):
+    pass
+
+
+def mapper_fail(num: int) -> int:
+    raise CustomMapperError("Error")
 
 
 @pytest.fixture(autouse=True)
@@ -60,7 +63,7 @@ def test_checkpoints(
 
     chain.save("nums1")
     chain.save("nums2")
-    with pytest.raises(DataChainError):
+    with pytest.raises(CustomMapperError):
         chain.map(new=mapper_fail).save("nums3")
     first_job_id = test_session.get_or_create_job().id
 
@@ -143,7 +146,7 @@ def test_checkpoints_multiple_runs(
     reset_session_job_state()
     chain.save("nums1")
     chain.save("nums2")
-    with pytest.raises(DataChainError):
+    with pytest.raises(CustomMapperError):
         chain.map(new=mapper_fail).save("nums3")
     first_job_id = test_session.get_or_create_job().id
 
@@ -163,7 +166,7 @@ def test_checkpoints_multiple_runs(
     reset_session_job_state()
     chain.save("nums1")
     chain.filter(dc.C("num") > 1).save("nums2")
-    with pytest.raises(DataChainError):
+    with pytest.raises(CustomMapperError):
         chain.map(new=mapper_fail).save("nums3")
     third_job_id = test_session.get_or_create_job().id
 

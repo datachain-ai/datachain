@@ -13,6 +13,7 @@ from datachain.utils import (
     sql_escape_like,
     suffix_to_number,
     uses_glob,
+    with_last_flag,
 )
 
 DATACHAIN_TEST_PATHS = ["/file1", "file2", "/dir/file3", "dir/file4"]
@@ -295,3 +296,32 @@ def test_batched_it(num_rows, batch_size):
 
     assert num_batches == num_rows / batch_size
     assert len(uniq_data) == num_rows
+
+
+def gen3():
+    yield from range(3)
+
+
+@pytest.mark.parametrize(
+    "input_data, expected",
+    [
+        (
+            [10, 20, 30],
+            [(10, False), (20, False), (30, True)],
+        ),
+        (
+            [42],
+            [(42, True)],
+        ),
+        (
+            [],
+            [],
+        ),
+        (
+            gen3(),  # generator input
+            [(0, False), (1, False), (2, True)],
+        ),
+    ],
+)
+def test_with_last_flag(input_data, expected):
+    assert list(with_last_flag(input_data)) == expected
