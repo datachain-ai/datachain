@@ -81,10 +81,53 @@ def hash_column_elements(columns: ColumnLike | Sequence[ColumnLike]) -> str:
 
 def hash_callable(func):
     """
-    Calculate a hash from a callable.
-    Rules:
-    - Named functions (def) → use source code for stable, cross-version hashing
-    - Lambdas → use bytecode (deterministic in same Python runtime)
+    Calculate a deterministic hash from a callable.
+
+    Hashing Strategy:
+    - **Named functions** (def): Uses source code via inspect.getsourcelines()
+      → Produces stable hashes across Python versions and sessions
+    - **Lambdas**: Uses bytecode (func.__code__.co_code)
+      → Stable within same Python runtime, may differ across Python versions
+    - **Callable objects** (with __call__): Extracts and hashes the __call__ method
+
+    Supported Callables:
+    - Regular Python functions defined with 'def'
+    - Lambda functions
+    - Classes/instances with __call__ method (uses __call__ method's code)
+    - Methods (both bound and unbound)
+
+    Limitations and Edge Cases:
+    - **Mock objects**: Cannot reliably hash Mock(side_effect=...) because the
+      side_effect is not discoverable via inspection. Use regular functions instead.
+    - **Built-in functions** (len, str, etc.): Will raise AttributeError because
+      they lack __code__ attribute
+    - **C extensions**: Cannot access source or bytecode, will fail
+    - **Dynamically generated callables**: If __call__ is created via exec/eval
+      or the behavior depends on runtime state, the hash won't reflect changes
+      in behavior. Only the method's code is hashed, not captured state.
+
+    Args:
+        func: A callable object (function, lambda, method, or object with __call__)
+
+    Returns:
+        str: SHA256 hexdigest of the callable's code and metadata
+
+    Raises:
+        TypeError: If func is not callable
+        AttributeError: If func lacks __code__ (e.g., built-ins, C extensions)
+
+    Examples:
+        >>> def my_func(x): return x * 2
+        >>> hash_callable(my_func)  # Uses source code
+        'abc123...'
+
+        >>> hash_callable(lambda x: x * 2)  # Uses bytecode
+        'def456...'
+
+        >>> class MyCallable:
+        ...     def __call__(self, x): return x * 2
+        >>> hash_callable(MyCallable())  # Hashes __call__ method
+        'ghi789...'
     """
     if not callable(func):
         raise TypeError("Expected a callable")

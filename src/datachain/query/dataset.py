@@ -1081,6 +1081,8 @@ class UDFSignal(UDFStep):
         Since mappers have a 1:1 relationship between input and output,
         the sys__id in the partial table directly corresponds to input sys__ids.
         """
+        # labeling it with sys__processed_id to have common name since for udf signal
+        # we use sys__id and in generator we use sys__input_id
         return sa.select(partial_table.c.sys__id.label("sys__processed_id")).subquery()
 
     def find_incomplete_inputs(self, partial_table: "Table") -> list[int]:
@@ -1207,6 +1209,8 @@ class RowGenerator(UDFStep):
         Since generators can produce multiple outputs per input (1:N relationship),
         we use sys__input_id which tracks which input created each output row.
         """
+        # labeling it with sys__processed_id to have common name since for udf signal
+        # we use sys__id and in generator we use sys__input_id
         return sa.select(
             sa.distinct(partial_table.c.sys__input_id).label("sys__processed_id")
         ).subquery()
