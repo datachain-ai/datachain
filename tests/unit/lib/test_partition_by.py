@@ -302,15 +302,36 @@ def test_nested_column_partition_by(test_session):
         total=dc.func.sum("amount"),
         count=dc.func.count(),
         partition_by="nested.level1.name",  # This should work
-    ).to_list("nested.level1.name", "total")
+    )
+    list_result = result.to_list("nested__level1__name", "total")
 
-    assert len(result) == 3  # Should have 3 unique names: test1, test2, test3
+    assert len(list_result) == 3  # Should have 3 unique names: test1, test2, test3
 
     # Check the grouped results
-    name_to_total = dict(result)
+    name_to_total = dict(list_result)
     assert name_to_total["test1"] == 40  # 10 + 30 (grouped by name)
     assert name_to_total["test2"] == 20
     assert name_to_total["test3"] == 40
+
+    from datachain.query.schema import Column as C
+
+    mutate_result = (
+        chain.mutate(name=C("nested.level1.name"))
+        .group_by(
+            total=dc.func.sum("amount"),
+            count=dc.func.count(),
+            partition_by="name",  # This should work
+        )
+        .to_pandas()
+    )
+
+    assert mutate_result["total"].tolist() == [40, 20, 40]
+    assert mutate_result.columns.tolist() == ["name", "total", "count"]
+
+    pd_result = result.to_pandas()
+    assert len(pd_result) == 3
+    assert pd_result.columns.tolist() == ["nested__level1__name", "total", "count"]
+    assert pd_result["total"].tolist() == [40, 20, 40]
 
 
 def test_nested_column_agg_partition_by(test_session):
@@ -375,11 +396,12 @@ def test_nested_column_edge_cases(test_session):
         session=test_session,
     )
 
+    # The nested column is flattened to use underscores in the output
     result = chain.group_by(
         total=dc.func.sum("amount"),
         count=dc.func.count(),
         partition_by="simple.name",
-    ).to_list("simple.name", "total")
+    ).to_list("simple__name", "total")
 
     assert len(result) == 2  # Should have 2 unique names
 
