@@ -558,3 +558,14 @@ class StudioClient:
             "name": name,
         }
         return self._send_request("datachain/pipeline/resume", values, method="POST")
+
+    def remove_job_from_pipeline(self, name: str, job_id: str) -> Response[Any]:
+        values = {
+            "name": name,
+            "job_id": job_id,
+        }
+        return self._send_request(
+            "datachain/pipeline/remove-job",
+            values,
+            method="POST",
+        )

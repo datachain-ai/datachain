@@ -113,6 +113,7 @@ nav:
                   - list: commands/pipeline/list.md
                   - pause: commands/pipeline/pause.md
                   - resume: commands/pipeline/resume.md
+                  - remove-job: commands/pipeline/remove-job.md
       - 📚 User Guide:
           - Overview: guide/index.md
           - 📡 Interacting with remote storage: guide/remotes.md
