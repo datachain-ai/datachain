@@ -13,9 +13,6 @@ usage: datachain pipeline resume [-h] [-v] [-q] [-t TEAM] name
 This command resumes the currently paused pipeline in Studio. When a pipeline is resumed, it checks for the jobs that have all their dependencies met and have not run yet. Such jobs will start running.
 
 
-## Argument
-
-
 ## Arguments
 
 * `name` - Name of the pipeline
