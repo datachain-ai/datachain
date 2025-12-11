@@ -13,7 +13,6 @@ usage: datachain pipeline remove-job [-h] [-v] [-q] [-t TEAM] name job_id
 This commands allows users to drop a specific job from the pipeline before it runs. This operation is restricted to PAUSED pipeline and PENDING jobs, that have not yet started running, only. You can't modify a pipeline that is actively running or already completed.
 When you remove a job from the pipeline, the graph of the pipeline is automatically repaired.
 
-## Argument
 
 ## Arguments
 
