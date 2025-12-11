@@ -533,3 +533,16 @@ class StudioClient:
             "name": name,
         }
         return self._send_request("datachain/pipeline/status", values, method="GET")
+
+    def list_pipelines(
+        self,
+        status: str | None = None,
+        limit: int = 20,
+        search: str | None = None,
+    ) -> Response[Any]:
+        values = {
+            "status": [status.upper()] if status else None,
+            "limit": limit,
+            "search": search,
+        }
+        return self._send_request("datachain/pipeline/list", values, method="GET")

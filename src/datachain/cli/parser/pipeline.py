@@ -85,3 +85,45 @@ def add_pipeline_parser(subparsers, parent_parser) -> None:
         default=None,
         help="Team of the pipeline",
     )
+
+    pipeline_list_help = "List pipelines"
+    pipeline_list_description = "List pipelines in Studio"
+    pipeline_list_parser = pipeline_subparser.add_parser(
+        "list",
+        parents=[parent_parser],
+        description=pipeline_list_description,
+        help=pipeline_list_help,
+        formatter_class=CustomHelpFormatter,
+    )
+    pipeline_list_parser.add_argument(
+        "-t",
+        "--team",
+        action="store",
+        default=None,
+        help="Team to list pipelines for.",
+    )
+    pipeline_list_parser.add_argument(
+        "-s",
+        "--status",
+        action="store",
+        default=None,
+        help=(
+            "Status of the pipelines to list. Possible values are: "
+            "'PENDING', 'RUNNING', 'COMPLETED', 'FAILED', 'PAUSED', 'CANCELED'"
+        ),
+    )
+    pipeline_list_parser.add_argument(
+        "-l",
+        "--limit",
+        action="store",
+        type=int,
+        default=20,
+        help="Limit the number of pipelines to list",
+    )
+    pipeline_list_parser.add_argument(
+        "-S",
+        "--search",
+        action="store",
+        default=None,
+        help="Search for pipelines by name or the dataset created from.",
+    )
