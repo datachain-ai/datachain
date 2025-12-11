@@ -510,7 +510,7 @@ class StudioClient:
         return self._send_request("datachain/clusters/", {}, method="GET")
 
     # Pipeline API
-    def create_dataset_dependency_update(
+    def create_pipeline(
         self,
         dataset_identifier: DatasetIdentifier,
         review: bool = False,

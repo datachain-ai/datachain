@@ -571,7 +571,7 @@ def create_pipeline(
         version=dataset_version,
     )
     client = StudioClient(team=team_name)
-    response = client.create_dataset_dependency_update(identifier, review)
+    response = client.create_pipeline(identifier, review)
     if not response.ok:
         raise DataChainError(response.message)
 
