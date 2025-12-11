@@ -536,7 +536,10 @@ class AbstractWarehouse(ABC, Serializable):
 
     @abstractmethod
     def dataset_table_export_file_names(
-        self, dataset: DatasetRecord, version: str
+        self,
+        dataset: DatasetRecord,
+        version: str,
+        file_format: str | None = None,
     ) -> list[str]:
         """
         Returns list of file names that will be created when user runs dataset export
@@ -548,6 +551,7 @@ class AbstractWarehouse(ABC, Serializable):
         bucket_uri: str,
         dataset: DatasetRecord,
         version: str,
+        file_format: str | None = None,
         client_config=None,
     ) -> list[str]:
         """

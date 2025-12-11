@@ -749,7 +749,10 @@ class SQLiteWarehouse(AbstractWarehouse):
         return col_type.python_type
 
     def dataset_table_export_file_names(
-        self, dataset: DatasetRecord, version: str
+        self,
+        dataset: DatasetRecord,
+        version: str,
+        file_format: str | None = None,
     ) -> list[str]:
         raise NotImplementedError("Exporting dataset table not implemented for SQLite")
 
@@ -758,6 +761,7 @@ class SQLiteWarehouse(AbstractWarehouse):
         bucket_uri: str,
         dataset: DatasetRecord,
         version: str,
+        file_format: str | None = None,
         client_config=None,
     ) -> list[str]:
         raise NotImplementedError("Exporting dataset table not implemented for SQLite")
