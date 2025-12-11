@@ -586,18 +586,18 @@ def get_pipeline_status(name: str, team_name: str | None):
     total = data.get("total", 0)
     print(f"Progress: {completed}/{total} jobs completed")
 
-    if data.get("errorMessage"):
-        print(f"Error: {data.get('errorMessage')}")
+    if data.get("error_message"):
+        print(f"Error: {data.get('error_message')}")
 
     # Display job runs
-    job_runs = data.get("jobRuns", [])
+    job_runs = data.get("job_runs", [])
     if job_runs:
         print("\nJob Runs:")
         rows = [
             {
                 "Name": job_run.get("name", "N/A"),
                 "Status": job_run.get("status", "N/A"),
-                "Job ID": job_run.get("createdJobId", "N/A"),
+                "Job ID": job_run.get("created_job_id", "N/A"),
             }
             for job_run in job_runs
         ]
