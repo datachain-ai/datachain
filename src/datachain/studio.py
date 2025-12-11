@@ -628,7 +628,7 @@ def list_pipelines(
             {
                 "Name": pipeline.get("name", "N/A"),
                 "Status": pipeline.get("status", "N/A"),
-                "Triggered From": pipeline.get("triggered_from", "N/A"),
+                "Target": pipeline.get("triggered_from", "N/A"),
                 "Progress": (
                     f"{pipeline.get('completed', 0)}/{pipeline.get('total', 0)}"
                 ),
