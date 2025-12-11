@@ -16,24 +16,24 @@ def add_pipeline_parser(subparsers, parent_parser) -> None:
         help="Use `datachain pipeline CMD --help` to display command-specific help",
     )
 
-    pipeline_trigger_help = "Trigger an update for dataset dependency in Studio"
-    pipeline_trigger_description = "Trigger an pipeline for a dataset dependency.\n"
-    pipeline_trigger_description += (
+    pipeline_create_help = "Create an update for dataset dependency in Studio"
+    pipeline_create_description = "Create an pipeline for a dataset dependency.\n"
+    pipeline_create_description += (
         "The pipeline will be determined based on the dependency for the"
-        " dataset in Studio and triggered accordingly."
+        " dataset in Studio and created accordingly."
         " The dataset name, which can be a fully qualified name including the"
         " namespace and project. Alternatively, it can be a regular name, in which"
         " case the explicitly defined namespace and project will be used if they are"
         " set; otherwise, default values will be applied."
     )
-    pipeline_trigger_parser = pipeline_subparser.add_parser(
-        "trigger",
+    pipeline_create_parser = pipeline_subparser.add_parser(
+        "create",
         parents=[parent_parser],
-        description=pipeline_trigger_description,
-        help=pipeline_trigger_help,
+        description=pipeline_create_description,
+        help=pipeline_create_help,
         formatter_class=CustomHelpFormatter,
     )
-    pipeline_trigger_parser.add_argument(
+    pipeline_create_parser.add_argument(
         "dataset",
         type=str,
         action="store",
@@ -42,7 +42,7 @@ def add_pipeline_parser(subparsers, parent_parser) -> None:
             "namespace and project or regular name)"
         ),
     )
-    pipeline_trigger_parser.add_argument(
+    pipeline_create_parser.add_argument(
         "-V",
         "--version",
         type=str,
@@ -50,27 +50,27 @@ def add_pipeline_parser(subparsers, parent_parser) -> None:
         default=None,
         help="Version of the dataset (default: latest)",
     )
-    pipeline_trigger_parser.add_argument(
+    pipeline_create_parser.add_argument(
         "-r",
         "--review",
         action="store_true",
-        help="Review the pipeline before triggering",
+        help="Review the pipeline before creating",
     )
-    pipeline_trigger_parser.add_argument(
+    pipeline_create_parser.add_argument(
         "-n",
         "--namespace",
         action="store",
         default=None,
         help="Namespace of the dataset",
     )
-    pipeline_trigger_parser.add_argument(
+    pipeline_create_parser.add_argument(
         "-p",
         "--project",
         action="store",
         default=None,
         help="Project of the dataset",
     )
-    pipeline_trigger_parser.add_argument(
+    pipeline_create_parser.add_argument(
         "-t",
         "--team",
         action="store",

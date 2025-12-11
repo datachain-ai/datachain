@@ -1,11 +1,11 @@
-# pipeline trigger
+# pipeline create
 
-Trigger an update for dataset dependency in Studio
+Create an update for dataset dependency in Studio
 
 ## Synopsis
 
 ```usage
-usage: datachain pipeline trigger [-h] [-v] [-q]
+usage: datachain pipeline create [-h] [-v] [-q]
                                [-V VERSION]
                                [-r] [-n NAMESPACE]
                                [-p PROJECT]
@@ -15,7 +15,7 @@ usage: datachain pipeline trigger [-h] [-v] [-q]
 
 ## Description
 
-This command triggers an pipeline for a dataset dependency. The pipeline is determined based on the dependency for the dataset in Studio and is triggered accordingly. The dataset name can be a fully qualified name including the namespace and project, or a regular name, in which case the explicitly defined namespace and project will be used if they are set; otherwise, default values will be applied.
+This command creates an pipeline for a dataset dependency. The pipeline is determined based on the dependency for the dataset in Studio and is created accordingly. The dataset name can be a fully qualified name including the namespace and project, or a regular name, in which case the explicitly defined namespace and project will be used if they are set; otherwise, default values will be applied.
 
 ## Arguments
 
@@ -24,7 +24,7 @@ This command triggers an pipeline for a dataset dependency. The pipeline is dete
 ## Options
 
 * `-V VERSION, --version VERSION` - Version of the dataset (default: latest)
-* `-r, --review` - Review the pipeline before triggering. (Opens in paused state)
+* `-r, --review` - Review the pipeline before creating. (Opens in paused state)
 * `-n NAMESPACE, --namespace NAMESPACE` - Namespace of the dataset
 * `-p PROJECT, --project PROJECT` - Project of the dataset
 * `-t TEAM, --team TEAM` - Team to run job for (default: from config)
@@ -34,19 +34,19 @@ This command triggers an pipeline for a dataset dependency. The pipeline is dete
 
 ## Examples
 
-1. Run a trigger with fully qualified dataset name
+1. Run a create with fully qualified dataset name
 ```bash
-datachain pipeline trigger "@amritghimire.default.final_result" --version "1.0.9"
+datachain pipeline create "@amritghimire.default.final_result" --version "1.0.9"
 ```
 
 2. Specify namespace, project separately
 ```bash
-datachain pipeline trigger "final_result" --namespace "@amritghimire" --project "default" --version "1.0.9"
+datachain pipeline create "final_result" --namespace "@amritghimire" --project "default" --version "1.0.9"
 ```
 
 3. Select the latest dataset version
 ```bash
-datachain pipeline trigger "@amritghimire.default.final_result"
+datachain pipeline create "@amritghimire.default.final_result"
 ```
 
 ## Notes

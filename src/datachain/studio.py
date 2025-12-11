@@ -78,8 +78,8 @@ def process_pipeline_args(args: "Namespace", catalog: "Catalog"):
         )
         return 1
 
-    if args.cmd == "trigger":
-        return trigger_pipeline(
+    if args.cmd == "create":
+        return create_pipeline(
             catalog,
             args.dataset,
             args.version,
@@ -546,7 +546,7 @@ def list_clusters(team_name: str | None):
     print(tabulate.tabulate(rows, headers="keys", tablefmt="grid"))
 
 
-def trigger_pipeline(
+def create_pipeline(
     catalog: "Catalog",
     dataset_name: str,
     dataset_version: str | None = None,
@@ -571,13 +571,13 @@ def trigger_pipeline(
         version=dataset_version,
     )
     client = StudioClient(team=team_name)
-    response = client.trigger_dataset_dependency_update(identifier, review)
+    response = client.create_dataset_dependency_update(identifier, review)
     if not response.ok:
         raise DataChainError(response.message)
 
     pipeline = response.data["pipeline"]
     print(
-        f"Pipeline triggered under name: {pipeline['name']} from:"
+        f"Pipeline created under name: {pipeline['name']} from:"
         f" {pipeline['triggered_from']}"
     )
 

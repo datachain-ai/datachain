@@ -108,7 +108,7 @@ nav:
                   - ls: commands/job/ls.md
                   - clusters: commands/job/clusters.md
               - pipeline:
-                  - trigger: commands/pipeline/trigger.md
+                  - create: commands/pipeline/create.md
       - 📚 User Guide:
           - Overview: guide/index.md
           - 📡 Interacting with remote storage: guide/remotes.md
