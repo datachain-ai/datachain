@@ -546,3 +546,15 @@ class StudioClient:
             "search": search,
         }
         return self._send_request("datachain/pipeline/list", values, method="GET")
+
+    def pause_pipeline(self, name: str) -> Response[Any]:
+        values = {
+            "name": name,
+        }
+        return self._send_request("datachain/pipeline/pause", values, method="POST")
+
+    def resume_pipeline(self, name: str) -> Response[Any]:
+        values = {
+            "name": name,
+        }
+        return self._send_request("datachain/pipeline/resume", values, method="POST")

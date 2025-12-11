@@ -92,6 +92,11 @@ def process_pipeline_args(args: "Namespace", catalog: "Catalog"):
     if args.cmd == "list":
         return list_pipelines(args.team, args.status, args.limit, args.search)
 
+    if args.cmd == "pause":
+        return pause_pipeline(args.name, args.team)
+    if args.cmd == "resume":
+        return resume_pipeline(args.name, args.team)
+
     raise DataChainError(f"Unknown command '{args.cmd}'.")
 
 
@@ -639,5 +644,27 @@ def list_pipelines(
         print(tabulate.tabulate(rows, headers="keys", tablefmt="grid"))
     else:
         print("No pipelines found")
+
+    return 0
+
+
+def pause_pipeline(name: str, team_name: str | None):
+    client = StudioClient(team=team_name)
+    response = client.pause_pipeline(name)
+    if not response.ok:
+        raise DataChainError(response.message)
+
+    print(f"Pipeline {name} paused")
+
+    return 0
+
+
+def resume_pipeline(name: str, team_name: str | None):
+    client = StudioClient(team=team_name)
+    response = client.resume_pipeline(name)
+    if not response.ok:
+        raise DataChainError(response.message)
+
+    print(f"Pipeline {name} resumed")
 
     return 0

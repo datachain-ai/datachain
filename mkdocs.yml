@@ -111,6 +111,8 @@ nav:
                   - create: commands/pipeline/create.md
                   - status: commands/pipeline/status.md
                   - list: commands/pipeline/list.md
+                  - pause: commands/pipeline/pause.md
+                  - resume: commands/pipeline/resume.md
       - 📚 User Guide:
           - Overview: guide/index.md
           - 📡 Interacting with remote storage: guide/remotes.md
