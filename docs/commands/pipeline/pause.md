@@ -10,10 +10,7 @@ usage: datachain pipeline pause [-h] [-v] [-q] [-t TEAM] name
 
 ## Description
 
-This command pauses the currently running pipeline in Studio. When a pipeline is paused, any job that is part of the pipeline that is already running will continue running, but new jobs are not triggered once the jobs are completed.
-
-## Argument
-
+This command pauses a running pipeline in Studio. When a pipeline is paused, any currently running jobs will continue to completion, but new jobs will not be started even when their dependencies are met.
 
 ## Arguments
 
@@ -22,9 +19,9 @@ This command pauses the currently running pipeline in Studio. When a pipeline is
 ## Options
 
 * `-t TEAM, --team TEAM` - Team of the pipeline (default: from config)
-* `-h`, `--help` - Show the help message and exit.
-* `-v`, `--verbose` - Be verbose.
-* `-q`, `--quiet` - Be quiet.
+* `-h`, `--help` - Show the help message and exit
+* `-v`, `--verbose` - Be verbose
+* `-q`, `--quiet` - Be quiet
 
 
 ## Example
