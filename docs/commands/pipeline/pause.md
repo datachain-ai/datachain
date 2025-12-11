@@ -21,7 +21,7 @@ This command pauses the currently running pipeline in Studio. When a pipeline is
 
 ## Options
 
-* `-t TEAM, --team TEAM` - Team to pause the pipeline (default: from config)
+* `-t TEAM, --team TEAM` - Team of the pipeline (default: from config)
 * `-h`, `--help` - Show the help message and exit.
 * `-v`, `--verbose` - Be verbose.
 * `-q`, `--quiet` - Be quiet.
