@@ -52,3 +52,4 @@ datachain pipeline create "@amritghimire.default.final_result"
 
 * The pipeline is always created in a paused state in Studio. You can open Studio to review the pipeline configuration and resume it when ready.
 * The pipeline automatically includes all jobs needed to update the dataset based on its dependencies.
+* You can use `datachain pipeline status` to check the updated status of the pipeline using the name in the output.

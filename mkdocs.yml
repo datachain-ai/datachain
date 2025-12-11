@@ -109,6 +109,7 @@ nav:
                   - clusters: commands/job/clusters.md
               - pipeline:
                   - create: commands/pipeline/create.md
+                  - status: commands/pipeline/status.md
       - 📚 User Guide:
           - Overview: guide/index.md
           - 📡 Interacting with remote storage: guide/remotes.md

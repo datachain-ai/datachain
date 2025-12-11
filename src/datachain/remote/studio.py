@@ -527,3 +527,9 @@ class StudioClient:
             data=values,
             method="POST",
         )
+
+    def get_pipeline(self, name: str) -> Response[Any]:
+        values = {
+            "name": name,
+        }
+        return self._send_request("datachain/pipeline/status", values, method="GET")

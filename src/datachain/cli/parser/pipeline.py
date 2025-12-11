@@ -59,3 +59,29 @@ def add_pipeline_parser(subparsers, parent_parser) -> None:
         default=None,
         help="Team to create the pipeline for (default: from config)",
     )
+
+    pipeline_status_help = "Get the status of a pipeline from Studio"
+    pipeline_status_description = (
+        "This command fetches the latest status of a pipeline along with "
+        "the status of its jobs from Studio."
+    )
+    pipeline_status_parser = pipeline_subparser.add_parser(
+        "status",
+        parents=[parent_parser],
+        description=pipeline_status_description,
+        help=pipeline_status_help,
+        formatter_class=CustomHelpFormatter,
+    )
+    pipeline_status_parser.add_argument(
+        "name",
+        type=str,
+        action="store",
+        help="Name of the pipeline",
+    )
+    pipeline_status_parser.add_argument(
+        "-t",
+        "--team",
+        action="store",
+        default=None,
+        help="Team of the pipeline",
+    )
