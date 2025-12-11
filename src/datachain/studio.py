@@ -555,20 +555,11 @@ def create_pipeline(
     project: str | None = None,
     team_name: str | None = None,
 ):
-    namespace_name, project_name, name = catalog.get_full_dataset_name(
-        dataset_name,
-        project_name=project,
-        namespace_name=namespace,
-    )
-    if dataset_version is None:
-        dataset = catalog.get_remote_dataset(namespace_name, project_name, name)
-        dataset_version = dataset.latest_version
-
     identifier = DatasetIdentifier(
-        namespace=namespace_name,
-        project=project_name,
-        name=name,
-        version=dataset_version,
+        name=dataset_name,
+        namespace=namespace or "",
+        project=project or "",
+        version=dataset_version or "",
     )
     client = StudioClient(team=team_name)
     response = client.create_pipeline(identifier, review)
