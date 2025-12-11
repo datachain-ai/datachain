@@ -7,8 +7,6 @@ Create a pipeline to update a dataset in Studio.
 ```usage
 usage: datachain pipeline create [-h] [-v] [-q]
                                [-V VERSION]
-                               [-r] [-n NAMESPACE]
-                               [-p PROJECT]
                                [-t TEAM]
                                dataset
 ```
@@ -17,7 +15,9 @@ usage: datachain pipeline create [-h] [-v] [-q]
 
 This command creates a pipeline in Studio that will update the specified dataset. The pipeline automatically includes all necessary jobs to update the dataset based on its dependencies. If no version is specified, the latest version of the dataset is used.
 
-The dataset name can be provided in fully qualified format (e.g., `@namespace.project.name`) or as a short name. When using a short name, you can optionally specify the namespace and project separately using the `--namespace` and `--project` options. If not specified, default values from your configuration will be used.
+The pipeline is created in paused state for review. You can open Studio to review the pipeline configuration and resume it when ready.
+
+The dataset name can be provided in fully qualified format (e.g., `@namespace.project.name`) or as a short name. If using a short name, default project and namespace in Studio will be used.
 
 ## Arguments
 
@@ -26,9 +26,6 @@ The dataset name can be provided in fully qualified format (e.g., `@namespace.pr
 ## Options
 
 * `-V VERSION, --version VERSION` - Dataset version to create the pipeline for (default: latest version)
-* `-r, --review` - Create the pipeline in paused state for review before execution
-* `-n NAMESPACE, --namespace NAMESPACE` - Dataset namespace (only needed when using short dataset names)
-* `-p PROJECT, --project PROJECT` - Dataset project (only needed when using short dataset names)
 * `-t TEAM, --team TEAM` - Team to create the pipeline for (default: from config)
 * `-h`, `--help` - Show the help message and exit
 * `-v`, `--verbose` - Be verbose
@@ -51,12 +48,7 @@ datachain pipeline create "final_result" --version "1.0.9"
 datachain pipeline create "@amritghimire.default.final_result"
 ```
 
-4. Create a pipeline in review mode (paused for review before execution):
-```bash
-datachain pipeline create "final_result" --review
-```
-
 ## Notes
 
-* When using `--review`, the pipeline is created in a paused state in Studio. You can open Studio to review the pipeline configuration and resume it when ready.
+* The pipeline is always created in a paused state in Studio. You can open Studio to review the pipeline configuration and resume it when ready.
 * The pipeline automatically includes all jobs needed to update the dataset based on its dependencies.

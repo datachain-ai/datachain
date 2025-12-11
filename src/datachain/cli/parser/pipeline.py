@@ -22,11 +22,11 @@ def add_pipeline_parser(subparsers, parent_parser) -> None:
         " dataset. The pipeline automatically includes all necessary jobs to update"
         " the dataset based on its dependencies. "
         "If no version is specified, the latest version of the dataset is used.\n\n"
+        "The pipeline is created in paused state for review. You can open Studio to"
+        " review the pipeline configuration and resume it when ready.\n\n"
         "The dataset name can be provided in fully qualified format "
-        "(e.g., @namespace.project.name) or as a short name. When using a short name,"
-        " you can optionally specify the namespace and project separately using "
-        "the --namespace and --project options. If not specified, default "
-        "values from your configuration will be used."
+        "(e.g., @namespace.project.name) or as a short name. "
+        "If using a short name, default project and namespace in Studio will be used."
     )
     pipeline_create_parser = pipeline_subparser.add_parser(
         "create",
@@ -51,26 +51,6 @@ def add_pipeline_parser(subparsers, parent_parser) -> None:
         action="store",
         default=None,
         help="Dataset version to create the pipeline for (default: latest version)",
-    )
-    pipeline_create_parser.add_argument(
-        "-r",
-        "--review",
-        action="store_true",
-        help="Create the pipeline in paused state for review before execution",
-    )
-    pipeline_create_parser.add_argument(
-        "-n",
-        "--namespace",
-        action="store",
-        default=None,
-        help="Dataset namespace (only needed when using short dataset names)",
-    )
-    pipeline_create_parser.add_argument(
-        "-p",
-        "--project",
-        action="store",
-        default=None,
-        help="Dataset project (only needed when using short dataset names)",
     )
     pipeline_create_parser.add_argument(
         "-t",

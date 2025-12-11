@@ -13,7 +13,7 @@ from requests.exceptions import HTTPError, Timeout
 from datachain.config import Config
 from datachain.dataset import DatasetRecord
 from datachain.error import DataChainError
-from datachain.utils import STUDIO_URL, DatasetIdentifier, retry_with_backoff
+from datachain.utils import STUDIO_URL, retry_with_backoff
 
 T = TypeVar("T")
 LsData = list[dict[str, Any]] | None
@@ -512,16 +512,16 @@ class StudioClient:
     # Pipeline API
     def create_pipeline(
         self,
-        dataset_identifier: DatasetIdentifier,
+        dataset_name: str,
+        dataset_version: str | None = None,
         review: bool = False,
     ) -> Response[Any]:
         values = {
-            "namespace_name": dataset_identifier.namespace,
-            "project_name": dataset_identifier.project,
-            "dataset_name": dataset_identifier.name,
-            "version": dataset_identifier.version,
+            "dataset_name": dataset_name,
             "review": review,
         }
+        if dataset_version:
+            values["version"] = dataset_version
         return self._send_request(
             "datachain/pipeline/trigger",
             data=values,

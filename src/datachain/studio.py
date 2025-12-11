@@ -13,7 +13,7 @@ from datachain.data_storage.job import JobStatus
 from datachain.dataset import QUERY_DATASET_PREFIX, parse_dataset_name
 from datachain.error import DataChainError
 from datachain.remote.studio import StudioClient
-from datachain.utils import STUDIO_URL, DatasetIdentifier
+from datachain.utils import STUDIO_URL
 
 if TYPE_CHECKING:
     from argparse import Namespace
@@ -83,9 +83,6 @@ def process_pipeline_args(args: "Namespace", catalog: "Catalog"):
             catalog,
             args.dataset,
             args.version,
-            args.review,
-            args.namespace,
-            args.project,
             args.team,
         )
 
@@ -550,26 +547,21 @@ def create_pipeline(
     catalog: "Catalog",
     dataset_name: str,
     dataset_version: str | None = None,
-    review: bool = False,
-    namespace: str | None = None,
-    project: str | None = None,
     team_name: str | None = None,
 ):
-    identifier = DatasetIdentifier(
-        name=dataset_name,
-        namespace=namespace or "",
-        project=project or "",
-        version=dataset_version or "",
-    )
     client = StudioClient(team=team_name)
-    response = client.create_pipeline(identifier, review)
+    response = client.create_pipeline(dataset_name, dataset_version, review=True)
     if not response.ok:
         raise DataChainError(response.message)
 
     pipeline = response.data["pipeline"]
     print(
         f"Pipeline created under name: {pipeline['name']} from:"
-        f" {pipeline['triggered_from']}"
+        f" {pipeline['triggered_from']} in paused state for review."
+    )
+    print(
+        "Check the pipeline either in Studio or using `datachain pipeline status`, "
+        "and resume it when ready using `datachain pipeline resume`"
     )
 
     return 0
