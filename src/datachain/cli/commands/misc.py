@@ -20,12 +20,13 @@ def garbage_collect(catalog: "Catalog", retention_days: int | None = None):
         print("Nothing to clean up.")
     else:
         if temp_tables:
-            print(f"Garbage collecting {len(temp_tables)} temporary tables.")
+            print(f"Garbage collecting {len(temp_tables)} tables.")
             catalog.cleanup_tables(temp_tables)
 
         if cleaned_version_ids:
             print(
-                f"Cleaned {len(cleaned_version_ids)} failed/incomplete dataset versions."
+                f"Cleaned {len(cleaned_version_ids)} failed/incomplete dataset "
+                "versions."
             )
 
 

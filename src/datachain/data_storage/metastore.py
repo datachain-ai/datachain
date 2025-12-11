@@ -22,11 +22,11 @@ from sqlalchemy import (
     Table,
     Text,
     UniqueConstraint,
+    and_,
     cast,
     desc,
     literal,
     select,
-    and_
 )
 from sqlalchemy.sql import func as f
 
@@ -345,7 +345,7 @@ class AbstractMetastore(ABC, Serializable):
 
     @abstractmethod
     def list_datasets(
-        self, project_id: int | None = None
+        self, project_id: int | None = None, include_incomplete: bool = True
     ) -> Iterator[DatasetListRecord]:
         """Lists all datasets in some project or in all projects."""
 
@@ -355,7 +355,10 @@ class AbstractMetastore(ABC, Serializable):
 
     @abstractmethod
     def list_datasets_by_prefix(
-        self, prefix: str, project_id: int | None = None
+        self,
+        prefix: str,
+        project_id: int | None = None,
+        include_incomplete: bool = True,
     ) -> Iterator["DatasetListRecord"]:
         """
         Lists all datasets which names start with prefix in some project or in all
@@ -1363,10 +1366,7 @@ class AbstractDBMetastore(AbstractMetastore):
         join_condition = d.c.id == dv.c.dataset_id
         if not include_incomplete:
             # Only include COMPLETE dataset versions (hide CREATED/FAILED)
-            join_condition = and_(
-                join_condition,
-                dv.c.status == DatasetStatus.COMPLETE
-            )
+            join_condition = and_(join_condition, dv.c.status == DatasetStatus.COMPLETE)
 
         j = (
             n.join(p, n.c.id == p.c.namespace_id)
@@ -1384,22 +1384,23 @@ class AbstractDBMetastore(AbstractMetastore):
             include_incomplete=include_incomplete,
         )
 
-    def _base_list_datasets_query(self) -> "Select":
+    def _base_list_datasets_query(self, include_incomplete: bool = True) -> "Select":
         return self._get_dataset_query(
             self._namespaces_fields,
             self._projects_fields,
             self._dataset_list_fields,
             self._dataset_list_version_fields,
             isouter=False,
+            include_incomplete=include_incomplete,
         )
 
     def list_datasets(
-        self, project_id: int | None = None
+        self, project_id: int | None = None, include_incomplete: bool = True
     ) -> Iterator["DatasetListRecord"]:
         d = self._datasets
-        query = self._base_list_datasets_query().order_by(
-            self._datasets.c.name, self._datasets_versions.c.version
-        )
+        query = self._base_list_datasets_query(
+            include_incomplete=include_incomplete
+        ).order_by(self._datasets.c.name, self._datasets_versions.c.version)
         if project_id:
             query = query.where(d.c.project_id == project_id)
         yield from self._parse_dataset_list(self.db.execute(query))
@@ -1415,10 +1416,14 @@ class AbstractDBMetastore(AbstractMetastore):
         return next(self.db.execute(query))[0]
 
     def list_datasets_by_prefix(
-        self, prefix: str, project_id: int | None = None, conn=None
+        self,
+        prefix: str,
+        project_id: int | None = None,
+        include_incomplete: bool = True,
+        conn=None,
     ) -> Iterator["DatasetListRecord"]:
         d = self._datasets
-        query = self._base_list_datasets_query()
+        query = self._base_list_datasets_query(include_incomplete=include_incomplete)
         if project_id:
             query = query.where(d.c.project_id == project_id)
         query = query.where(self._datasets.c.name.startswith(prefix))
@@ -1468,20 +1473,22 @@ class AbstractDBMetastore(AbstractMetastore):
                 f"Dataset {dataset.name} version {version} not found."
             )
 
-        self.remove_dataset_dependencies(dataset, version)
-        self.remove_dataset_dependants(dataset, version)
-
         d = self._datasets
         dv = self._datasets_versions
-        self.db.execute(
-            self._datasets_versions_delete().where(
-                (dv.c.dataset_id == dataset.id) & (dv.c.version == version)
-            )
-        )
 
-        if dataset.versions and len(dataset.versions) == 1:
-            # had only one version, fully deleting dataset
-            self.db.execute(self._datasets_delete().where(d.c.id == dataset.id))
+        with self.db.transaction():
+            self.remove_dataset_dependencies(dataset, version)
+            self.remove_dataset_dependants(dataset, version)
+
+            self.db.execute(
+                self._datasets_versions_delete().where(
+                    (dv.c.dataset_id == dataset.id) & (dv.c.version == version)
+                )
+            )
+
+            if dataset.versions and len(dataset.versions) == 1:
+                # had only one version, fully deleting dataset
+                self.db.execute(self._datasets_delete().where(d.c.id == dataset.id))
 
         dataset.remove_version(version)
         return dataset
@@ -1490,16 +1497,17 @@ class AbstractDBMetastore(AbstractMetastore):
         self, retention_days: int | None = None
     ) -> list[tuple[DatasetRecord, str]]:
         """
-        Get failed/incomplete dataset versions that are safe to clean up.
+                Get failed/incomplete dataset versions that are safe to clean up.
 
-        Returns dataset versions that:
-        - Have status CREATED or FAILED (incomplete/failed)
-        - Were created more than retention_days ago (if retention_days specified)
-        - Belong to jobs that are not running (COMPLETE, FAILED, CANCELED)
+                Returns dataset versions that:
+                - Have status CREATED or FAILED (incomplete/failed)
+                - Were created more than retention_days ago (if retention_days
+                  specified)
+                - Belong to jobs that are not running (COMPLETE, FAILED, CANCELED)
 
-        Returns:
-            List of (DatasetRecord, version_string) tuples. Each DatasetRecord
-j           contains only one version (the failed version to clean).
+                Returns:
+                    List of (DatasetRecord, version_string) tuples. Each DatasetRecord
+        j           contains only one version (the failed version to clean).
         """
         n = self._namespaces
         p = self._projects
@@ -1523,11 +1531,9 @@ j           contains only one version (the failed version to clean).
             )
             .where(
                 dv.c.status.in_([DatasetStatus.CREATED, DatasetStatus.FAILED]),
-                j.c.status.in_([
-                    JobStatus.COMPLETE,
-                    JobStatus.FAILED,
-                    JobStatus.CANCELED
-                ])
+                j.c.status.in_(
+                    [JobStatus.COMPLETE, JobStatus.FAILED, JobStatus.CANCELED]
+                ),
             )
         )
 
@@ -1597,10 +1603,7 @@ j           contains only one version (the failed version to clean).
         # Update status to FAILED for all non-COMPLETE versions with this job_id
         update_stmt = (
             dv.update()
-            .where(
-                (dv.c.job_id == job_id)
-                & (dv.c.status != DatasetStatus.COMPLETE)
-            )
+            .where((dv.c.job_id == job_id) & (dv.c.status != DatasetStatus.COMPLETE))
             .values(
                 status=DatasetStatus.FAILED,
                 finished_at=datetime.now(timezone.utc),

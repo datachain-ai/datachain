@@ -988,21 +988,20 @@ class Catalog:
         cleaned_ids = []
         for dataset, version in versions_to_clean:
             try:
-                # Drop warehouse table
-                table_name = self.warehouse.dataset_table_name(dataset, version)
-                self.warehouse.drop_table(table_name)
-
-                # Delete metastore record (TODO: add transaction support)
-                self.metastore.remove_dataset_version(dataset, version)
-
-                # Track cleaned version
+                # Track version ID before deletion
                 version_obj = dataset.get_version(version)
                 if version_obj:
                     cleaned_ids.append(str(version_obj.id))
 
-            except Exception as e:
+                # Remove dataset version (drops warehouse table and metastore record)
+                self.remove_dataset_version(dataset, version)
+
+            except Exception as e:  # noqa: BLE001
                 logger.warning(
-                    f"Failed to clean dataset {dataset.name} version {version}: {e}"
+                    "Failed to clean dataset %s version %s: %s",
+                    dataset.name,
+                    version,
+                    e,
                 )
 
         return cleaned_ids
@@ -1115,6 +1114,7 @@ class Catalog:
         name: str,
         namespace_name: str | None = None,
         project_name: str | None = None,
+        include_incomplete: bool = True,
     ) -> DatasetRecord:
         from datachain.lib.listing import is_listing_dataset
 
@@ -1126,7 +1126,10 @@ class Catalog:
             project_name = self.metastore.listing_project_name
 
         return self.metastore.get_dataset(
-            name, namespace_name=namespace_name, project_name=project_name
+            name,
+            namespace_name=namespace_name,
+            project_name=project_name,
+            include_incomplete=include_incomplete,
         )
 
     def get_dataset_with_remote_fallback(
@@ -1137,6 +1140,7 @@ class Catalog:
         version: str | None = None,
         pull_dataset: bool = False,
         update: bool = False,
+        include_incomplete: bool = True,
     ) -> DatasetRecord:
         from datachain.lib.dc.utils import is_studio
 
@@ -1159,6 +1163,7 @@ class Catalog:
                     name,
                     namespace_name=namespace_name,
                     project_name=project_name,
+                    include_incomplete=include_incomplete,
                 )
                 if not version or ds.has_version(version):
                     return ds
@@ -1288,6 +1293,7 @@ class Catalog:
         include_listing: bool = False,
         studio: bool = False,
         project: Project | None = None,
+        include_incomplete: bool = True,
     ) -> Iterator[DatasetListRecord]:
         from datachain.remote.studio import StudioClient
 
@@ -1308,10 +1314,12 @@ class Catalog:
             )
         elif prefix:
             datasets = self.metastore.list_datasets_by_prefix(
-                prefix, project_id=project_id
+                prefix, project_id=project_id, include_incomplete=include_incomplete
             )
         else:
-            datasets = self.metastore.list_datasets(project_id=project_id)
+            datasets = self.metastore.list_datasets(
+                project_id=project_id, include_incomplete=include_incomplete
+            )
 
         for d in datasets:
             if not d.is_bucket_listing or include_listing:
@@ -1324,6 +1332,7 @@ class Catalog:
         with_job: bool = True,
         studio: bool = False,
         project: Project | None = None,
+        include_incomplete: bool = True,
     ) -> Iterator[tuple[DatasetListRecord, "DatasetListVersion", "Job | None"]]:
         """Iterate over all dataset versions with related jobs."""
         datasets = list(
@@ -1332,6 +1341,7 @@ class Catalog:
                 include_listing=include_listing,
                 studio=studio,
                 project=project,
+                include_incomplete=include_incomplete,
             )
         )
 
