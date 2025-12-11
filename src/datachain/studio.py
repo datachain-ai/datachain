@@ -70,7 +70,7 @@ def process_jobs_args(args: "Namespace"):
     raise DataChainError(f"Unknown command '{args.cmd}'.")
 
 
-def process_execution_graph_args(args: "Namespace", catalog: "Catalog"):
+def process_pipeline_args(args: "Namespace", catalog: "Catalog"):
     if args.cmd is None:
         print(
             f"Use 'datachain {args.command} --help' to see available options",
@@ -79,7 +79,7 @@ def process_execution_graph_args(args: "Namespace", catalog: "Catalog"):
         return 1
 
     if args.cmd == "trigger":
-        return trigger_execution_graph(
+        return trigger_pipeline(
             catalog,
             args.dataset,
             args.version,
@@ -546,7 +546,7 @@ def list_clusters(team_name: str | None):
     print(tabulate.tabulate(rows, headers="keys", tablefmt="grid"))
 
 
-def trigger_execution_graph(
+def trigger_pipeline(
     catalog: "Catalog",
     dataset_name: str,
     dataset_version: str | None = None,
@@ -575,12 +575,10 @@ def trigger_execution_graph(
     if not response.ok:
         raise DataChainError(response.message)
 
-    data = response.data["data"]["triggerDatasetDependencyUpdate"]
-
-    execution_graph = data["executionGraph"]
+    pipeline = response.data["pipeline"]
     print(
-        f"Execution graph triggered under name: {execution_graph['name']} from:"
-        f" {execution_graph['triggeredFrom']}"
+        f"Pipeline triggered under name: {pipeline['name']} from:"
+        f" {pipeline['triggered_from']}"
     )
 
     return 0

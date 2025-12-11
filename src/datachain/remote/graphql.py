@@ -16,8 +16,8 @@ mutation TriggerDatasetDependencyUpdate(
     review: $review
   ) {
     ok
-    executionGraph {
-      executionGraphId
+    pipeline {
+      pipelineId
       status
       name
       triggeredFrom

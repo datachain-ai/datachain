@@ -1,39 +1,39 @@
 from datachain.cli.parser.utils import CustomHelpFormatter
 
 
-def add_execution_graph_parser(subparsers, parent_parser) -> None:
-    graph_helper = "Manage execution graphs in Studio"
-    graph_description = "Commands to manage execution graphs in Studio."
-    graph_parser = subparsers.add_parser(
-        "graph",
+def add_pipeline_parser(subparsers, parent_parser) -> None:
+    pipeline_helper = "Manage pipelines in Studio"
+    pipeline_description = "Commands to manage pipelines in Studio."
+    pipeline_parser = subparsers.add_parser(
+        "pipeline",
         parents=[parent_parser],
-        description=graph_description,
-        help=graph_helper,
+        description=pipeline_description,
+        help=pipeline_helper,
         formatter_class=CustomHelpFormatter,
     )
-    graph_subparser = graph_parser.add_subparsers(
+    pipeline_subparser = pipeline_parser.add_subparsers(
         dest="cmd",
-        help="Use `datachain graph CMD --help` to display command-specific help",
+        help="Use `datachain pipeline CMD --help` to display command-specific help",
     )
 
-    graph_trigger_help = "Trigger an update for dataset dependency in Studio"
-    graph_trigger_description = "Trigger an execution graph for a dataset dependency.\n"
-    graph_trigger_description += (
-        "The execution graph will be determined based on the dependency for the"
+    pipeline_trigger_help = "Trigger an update for dataset dependency in Studio"
+    pipeline_trigger_description = "Trigger an pipeline for a dataset dependency.\n"
+    pipeline_trigger_description += (
+        "The pipeline will be determined based on the dependency for the"
         " dataset in Studio and triggered accordingly."
         " The dataset name, which can be a fully qualified name including the"
         " namespace and project. Alternatively, it can be a regular name, in which"
         " case the explicitly defined namespace and project will be used if they are"
         " set; otherwise, default values will be applied."
     )
-    graph_trigger_parser = graph_subparser.add_parser(
+    pipeline_trigger_parser = pipeline_subparser.add_parser(
         "trigger",
         parents=[parent_parser],
-        description=graph_trigger_description,
-        help=graph_trigger_help,
+        description=pipeline_trigger_description,
+        help=pipeline_trigger_help,
         formatter_class=CustomHelpFormatter,
     )
-    graph_trigger_parser.add_argument(
+    pipeline_trigger_parser.add_argument(
         "dataset",
         type=str,
         action="store",
@@ -42,7 +42,7 @@ def add_execution_graph_parser(subparsers, parent_parser) -> None:
             "namespace and project or regular name)"
         ),
     )
-    graph_trigger_parser.add_argument(
+    pipeline_trigger_parser.add_argument(
         "-V",
         "--version",
         type=str,
@@ -50,27 +50,27 @@ def add_execution_graph_parser(subparsers, parent_parser) -> None:
         default=None,
         help="Version of the dataset (default: latest)",
     )
-    graph_trigger_parser.add_argument(
+    pipeline_trigger_parser.add_argument(
         "-r",
         "--review",
         action="store_true",
-        help="Review the execution graph before triggering",
+        help="Review the pipeline before triggering",
     )
-    graph_trigger_parser.add_argument(
+    pipeline_trigger_parser.add_argument(
         "-n",
         "--namespace",
         action="store",
         default=None,
         help="Namespace of the dataset",
     )
-    graph_trigger_parser.add_argument(
+    pipeline_trigger_parser.add_argument(
         "-p",
         "--project",
         action="store",
         default=None,
         help="Project of the dataset",
     )
-    graph_trigger_parser.add_argument(
+    pipeline_trigger_parser.add_argument(
         "-t",
         "--team",
         action="store",

@@ -13,7 +13,6 @@ from requests.exceptions import HTTPError, Timeout
 from datachain.config import Config
 from datachain.dataset import DatasetRecord
 from datachain.error import DataChainError
-from datachain.remote.graphql import TRIGGER_DATASET_DEPENDENCY_UPDATE_MUTATION
 from datachain.utils import STUDIO_URL, DatasetIdentifier, retry_with_backoff
 
 T = TypeVar("T")
@@ -539,19 +538,21 @@ class StudioClient:
     def get_clusters(self) -> Response[ClusterListData]:
         return self._send_request("datachain/clusters/", {}, method="GET")
 
-    # GraphQL API
+    # Pipeline API
     def trigger_dataset_dependency_update(
         self,
         dataset_identifier: DatasetIdentifier,
         review: bool = False,
     ) -> Response[Any]:
         values = {
-            "namespaceName": dataset_identifier.namespace,
-            "projectName": dataset_identifier.project,
-            "datasetName": dataset_identifier.name,
+            "namespace_name": dataset_identifier.namespace,
+            "project_name": dataset_identifier.project,
+            "dataset_name": dataset_identifier.name,
             "version": dataset_identifier.version,
             "review": review,
         }
-        return self._send_request_graphql(
-            TRIGGER_DATASET_DEPENDENCY_UPDATE_MUTATION, values
+        return self._send_request(
+            "datachain/pipeline/trigger",
+            data=values,
+            method="POST",
         )
