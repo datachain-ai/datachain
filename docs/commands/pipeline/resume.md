@@ -1,6 +1,6 @@
 # pipeline resume
 
-Resume the running pipeline in Studio
+Resume a paused pipeline in Studio
 
 ## Synopsis
 
