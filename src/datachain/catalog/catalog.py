@@ -960,6 +960,53 @@ class Catalog:
         """
         self.warehouse.cleanup_tables(names)
 
+    def cleanup_failed_dataset_versions(
+        self, retention_days: int | None = None
+    ) -> list[str]:
+        """
+        Clean up failed/incomplete dataset versions.
+
+        Removes dataset versions that:
+        - Have status CREATED or FAILED
+        - Are older than retention_days (if specified)
+        - Belong to completed/failed/canceled jobs (not running)
+
+        Args:
+            retention_days: Days to retain failed versions. If None, cleans all.
+
+        Returns:
+            List of cleaned version IDs (for logging/metrics)
+        """
+        import logging
+
+        logger = logging.getLogger(__name__)
+
+        versions_to_clean = self.metastore.get_failed_dataset_versions_to_clean(
+            retention_days
+        )
+
+        cleaned_ids = []
+        for dataset, version in versions_to_clean:
+            try:
+                # Drop warehouse table
+                table_name = self.warehouse.dataset_table_name(dataset, version)
+                self.warehouse.drop_table(table_name)
+
+                # Delete metastore record (TODO: add transaction support)
+                self.metastore.remove_dataset_version(dataset, version)
+
+                # Track cleaned version
+                version_obj = dataset.get_version(version)
+                if version_obj:
+                    cleaned_ids.append(str(version_obj.id))
+
+            except Exception as e:
+                logger.warning(
+                    f"Failed to clean dataset {dataset.name} version {version}: {e}"
+                )
+
+        return cleaned_ids
+
     def create_dataset_from_sources(
         self,
         name: str,
