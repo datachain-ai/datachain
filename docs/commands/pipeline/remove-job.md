@@ -36,5 +36,5 @@ datachain pipeline remove-job burry-user faa8ef11-ad9d-4a83-8b1d-b41fecc6b0e9
 ```
 
 ## Notes
-* You can run `datachain pipeline status` to see the list of jobs and its ids to pass here.
+* You can run `datachain pipeline status` to see the list of jobs and their IDs to pass here.
 * You can run `datachain pipeline pause` to pause the pipeline if it is running to remove the jobs from the pipeline.
