@@ -1986,9 +1986,6 @@ class DatasetQuery:
 
             self.catalog.warehouse.copy_table(dr.get_table(), query.select())
 
-            self.catalog.metastore.update_dataset_status(
-                dataset, DatasetStatus.COMPLETE, version=version
-            )
             self.catalog.update_dataset_version_with_warehouse_info(dataset, version)
 
             # Link this dataset version to the job that created it
@@ -2012,6 +2009,11 @@ class DatasetQuery:
                     )
 
             self._add_dependencies(dataset, version)  # type: ignore [arg-type]
+
+            # Mark as COMPLETE only after all operations succeed
+            self.catalog.metastore.update_dataset_status(
+                dataset, DatasetStatus.COMPLETE, version=version
+            )
         finally:
             self.cleanup()
         return self.__class__(

@@ -147,10 +147,29 @@ def read_dataset(
         namespace_name=namespace,
     )
 
-    if version is not None:
+    # Validate dataset exists and is COMPLETE (filter non-COMPLETE datasets from
+    # public API)
+    # Skip validation for listing datasets as they're created lazily when query
+    # is executed
+    from datachain.lib.listing import is_listing_dataset
+
+    is_listing = is_listing_dataset(name)
+    dataset = None
+    if not is_listing or version is not None:
+        # Always validate non-listing datasets
+        # For listing datasets, only validate if specific version is requested
         dataset = session.catalog.get_dataset_with_remote_fallback(
-            name, namespace_name, project_name, update=update
+            name,
+            namespace_name,
+            project_name,
+            update=update,
+            include_incomplete=is_listing,  # Allow incomplete for listing datasets
         )
+
+    if version is not None:
+        assert (
+            dataset is not None
+        )  # Dataset is always fetched when version is specified
 
         # Convert legacy integer versions to version specifiers
         # For backward compatibility we still allow users to put version as integer
@@ -262,7 +281,7 @@ def datasets(
     datasets_values = [
         DatasetInfo.from_models(d, v, j)
         for d, v, j in catalog.list_datasets_versions(
-            include_listing=include_listing, studio=studio
+            include_listing=include_listing, studio=studio, include_incomplete=False
         )
     ]
     datasets_values = [d for d in datasets_values if not d.is_temp]
@@ -371,6 +390,7 @@ def delete_dataset(
                 name,
                 namespace_name=ds_project.namespace.name,
                 project_name=ds_project.name,
+                include_incomplete=False,
             ).latest_version
         )
     else:
@@ -418,7 +438,9 @@ def move_dataset(
     namespace, project, name = catalog.get_full_dataset_name(src)
     dest_namespace, dest_project, dest_name = catalog.get_full_dataset_name(dest)
 
-    dataset = catalog.get_dataset(name, namespace_name=namespace, project_name=project)
+    dataset = catalog.get_dataset(
+        name, namespace_name=namespace, project_name=project, include_incomplete=False
+    )
 
     catalog.update_dataset(
         dataset,
