@@ -1,10 +1,29 @@
+import copy
 from collections.abc import Iterable
+from typing import (  # noqa: UP035
+    Annotated,
+    Any,
+    Dict,
+    Final,
+    List,
+    Literal,
+    Optional,
+    Tuple,
+    Union,
+)
 
 import pytest
 from pydantic import BaseModel
 
 from datachain.lib.convert.python_to_sql import python_to_sql
-from datachain.lib.utils import callable_name, normalize_col_names, rebase_path
+from datachain.lib.data_model import DataModel
+from datachain.lib.model_store import ModelStore
+from datachain.lib.utils import (
+    callable_name,
+    normalize_col_names,
+    rebase_path,
+    type_to_str,
+)
 from datachain.sql.types import Array, String
 
 
@@ -199,6 +218,115 @@ def test_callable_name_bound_method():
 
     b = Bar()
     assert callable_name(b.method) == "method"
+
+
+@pytest.mark.parametrize(
+    "type_, expected",
+    [
+        (int, "int"),
+        (float, "float"),
+        (None, "NoneType"),
+        (Ellipsis, "..."),
+        (Any, "Any"),
+        (Final[int], "Final"),
+        (Optional[int], "Optional[int]"),  # noqa: UP045
+        (int | str, {"Union[int, str]", "Union[str, int]"}),
+        (
+            str | int | bool,
+            {
+                "Union[int, str, bool]",
+                "Union[str, int, bool]",
+                "Union[str, bool, int]",
+                "Union[int, bool, str]",
+                "Union[bool, str, int]",
+                "Union[bool, int, str]",
+            },
+        ),
+        (Annotated[int, "meta"], "int"),
+        (list[Any], "list[Any]"),
+        (list[bool], "list[bool]"),
+        (List[bool], "list[bool]"),  # noqa: UP006
+        (list[bool | None], "list[Optional[bool]]"),
+        (List[bool | None], "list[Optional[bool]]"),  # noqa: UP006
+        (List[int], "list[int]"),  # noqa: UP006
+        (List[str], "list[str]"),  # noqa: UP006
+        (Optional[list[bytes]], "Optional[list[bytes]]"),  # noqa: UP045
+        (Literal["x"] | None, "Optional[Literal]"),
+        (tuple[int, float], "tuple[int, float]"),
+        (tuple[int, ...], "tuple[int, ...]"),
+        (Optional[tuple[int, float]], "Optional[tuple[int, float]]"),  # noqa: UP045
+        (dict[str], "dict[str, Any]"),  # type: ignore[misc]
+        (dict[str, bool], "dict[str, bool]"),
+        (Dict[str, bool], "dict[str, bool]"),  # noqa: UP006
+        (dict[str, int], "dict[str, int]"),
+        (Dict[str, int], "dict[str, int]"),  # noqa: UP006
+        (Union[list[bytes], None], "Optional[list[bytes]]"),  # noqa: UP007
+        (Union[List[bytes], None], "Optional[list[bytes]]"),  # noqa: UP006, UP007
+    ],
+)
+def test_type_to_str_matrix(type_, expected):
+    result = type_to_str(type_)
+    if isinstance(expected, set):
+        assert result in expected
+    else:
+        assert result == expected
+
+
+def test_type_to_str_typing_module_vs_builtin_generics():
+    """Ensure typing.List/Dict and built-in generics stringify identically.
+
+    Confirms Python 3.10+ behavior where get_origin() normalizes both forms
+    to built-ins, and type_to_str produces the same string.
+    """
+    from typing import get_origin
+
+    assert get_origin(List[int]) is list  # noqa: UP006
+    assert get_origin(list[int]) is list
+    assert get_origin(Dict[str, int]) is dict  # noqa: UP006
+    assert get_origin(dict[str, int]) is dict
+
+    assert type_to_str(List[int]) == type_to_str(list[int])  # noqa: UP006
+    assert type_to_str(Dict[str, int]) == type_to_str(dict[str, int])  # noqa: UP006
+    assert type_to_str(List[str]) == "list[str]"  # noqa: UP006
+    assert type_to_str(list[str]) == "list[str]"
+    assert type_to_str(Dict[str, bool]) == "dict[str, bool]"  # noqa: UP006
+    assert type_to_str(dict[str, bool]) == "dict[str, bool]"
+
+
+def test_type_to_str_warn_with_called_for_unknown():
+    # Unknown types should fall back to Any but emit a warning via the callback.
+    calls: list[str] = []
+
+    def collect(msg: str) -> None:
+        calls.append(msg)
+
+    result = type_to_str(object(), warn_with=collect)
+    assert result == "Any"
+    assert calls and "Unable to determine name" in calls[0]
+
+
+def test_type_to_str_warns_without_callback():
+    with pytest.warns(RuntimeWarning, match="Unable to determine name"):
+        assert type_to_str(object()) == "Any"
+
+
+def test_type_to_str_empty_generics():
+    assert type_to_str(List) == "list"  # noqa: UP006
+    assert type_to_str(Dict) == "dict"  # noqa: UP006
+    assert type_to_str(Tuple) == "tuple"  # noqa: UP006
+
+
+def test_type_to_str_pydantic_model_uses_model_store():
+    snapshot = copy.deepcopy(ModelStore.store)
+    ModelStore.store = {}
+    try:
+
+        class Sample(DataModel):
+            a: int
+
+        assert type_to_str(Sample) == ModelStore.get_name(Sample)
+    finally:
+        ModelStore.store = snapshot
 
 
 def test_callable_name_callable_instance():
