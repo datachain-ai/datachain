@@ -1501,17 +1501,17 @@ class AbstractDBMetastore(AbstractMetastore):
         self, retention_days: int | None = None
     ) -> list[tuple[DatasetRecord, str]]:
         """
-                Get failed/incomplete dataset versions that are safe to clean up.
+        Get failed/incomplete dataset versions that are safe to clean up.
 
-                Returns dataset versions that:
-                - Have status CREATED or FAILED (incomplete/failed)
-                - Were created more than retention_days ago (if retention_days
-                  specified)
-                - Belong to jobs that are not running (COMPLETE, FAILED, CANCELED)
+        Returns dataset versions that:
+        - Have status CREATED or FAILED (incomplete/failed)
+        - Were created more than retention_days ago (if retention_days
+          specified)
+        - Belong to jobs that are not running (COMPLETE, FAILED, CANCELED)
 
-                Returns:
-                    List of (DatasetRecord, version_string) tuples. Each DatasetRecord
-        j           contains only one version (the failed version to clean).
+        Returns:
+            List of (DatasetRecord, version_string) tuples. Each DatasetRecord
+            contains only one version (the failed version to clean).
         """
         n = self._namespaces
         p = self._projects
@@ -1531,7 +1531,7 @@ class AbstractDBMetastore(AbstractMetastore):
                 n.join(p, n.c.id == p.c.namespace_id)
                 .join(d, p.c.id == d.c.project_id)
                 .join(dv, d.c.id == dv.c.dataset_id)
-                .join(j, dv.c.job_id == j.c.id)
+                .join(j, cast(dv.c.job_id, j.c.id.type) == j.c.id)
             )
             .where(
                 dv.c.status.in_([DatasetStatus.CREATED, DatasetStatus.FAILED]),
@@ -1595,9 +1595,6 @@ class AbstractDBMetastore(AbstractMetastore):
 
         This is called when a job fails to ensure that any dataset versions
         it was creating are marked as failed rather than left in CREATED state.
-
-        Uses dataset_version.job_id directly (set at creation time) rather than
-        the dataset_version_jobs junction table (populated later after copy).
 
         Args:
             job_id: ID of the failed job whose dataset versions should be marked

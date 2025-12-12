@@ -91,6 +91,13 @@ def test_finalize_job_as_failed_marks_dataset_versions(
     test_session, job, dataset_created
 ):
     """Test that _finalize_job_as_failed marks dataset versions as FAILED."""
+    from datachain.query.session import Session
+
+    # Set up Session state as if job is running
+    Session._CURRENT_JOB = job
+    Session._OWNS_JOB = True
+    Session._JOB_STATUS = JobStatus.RUNNING
+
     # Simulate job failure
     try:
         raise RuntimeError("test error")
