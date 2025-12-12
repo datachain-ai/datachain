@@ -1376,11 +1376,15 @@ class AbstractDBMetastore(AbstractMetastore):
         return query.select_from(j)
 
     def _base_dataset_query(self, include_incomplete: bool = True) -> "Select":
+        # When filtering by status, use inner join so datasets without COMPLETE
+        # versions are excluded
+        isouter = include_incomplete
         return self._get_dataset_query(
             self._namespaces_fields,
             self._projects_fields,
             self._dataset_fields,
             self._dataset_version_fields,
+            isouter=isouter,
             include_incomplete=include_incomplete,
         )
 
@@ -1446,7 +1450,7 @@ class AbstractDBMetastore(AbstractMetastore):
         d = self._datasets
         n = self._namespaces
         p = self._projects
-        query = self._base_dataset_query()
+        query = self._base_dataset_query(include_incomplete=include_incomplete)
         query = query.where(
             d.c.name == name,
             n.c.name == namespace_name,

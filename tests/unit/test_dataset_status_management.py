@@ -6,7 +6,14 @@ import sqlalchemy as sa
 import datachain as dc
 from datachain.data_storage import JobStatus
 from datachain.dataset import DatasetRecord, DatasetStatus
+from datachain.error import DatasetNotFoundError
 from datachain.job import Job
+from datachain.lib.dc.datasets import (
+    datasets,
+    delete_dataset,
+    move_dataset,
+    read_dataset,
+)
 from datachain.sql.types import String
 
 
@@ -196,8 +203,6 @@ def test_cleanup_failed_dataset_versions(test_session, job, dataset_failed):
     assert len(cleaned_ids) == 1
 
     # Verify dataset version is removed
-    from datachain.error import DatasetNotFoundError
-
     with pytest.raises(DatasetNotFoundError):
         test_session.catalog.get_dataset(dataset_failed.name)
 
@@ -217,8 +222,6 @@ def test_public_api_datasets_filters_non_complete(
     test_session, dataset_created, dataset_failed, dataset_complete
 ):
     """Test that dc.datasets() filters out non-COMPLETE datasets."""
-    from datachain.lib.dc.datasets import datasets
-
     ds_chain = datasets(session=test_session, column="dataset")
     dataset_names = {ds.name for (ds,) in ds_chain.to_iter("dataset")}
 
@@ -231,9 +234,6 @@ def test_public_api_read_dataset_rejects_non_complete(
     test_session, dataset_created, dataset_failed
 ):
     """Test that dc.read_dataset() rejects non-COMPLETE datasets."""
-    from datachain.error import DatasetNotFoundError
-    from datachain.lib.dc.datasets import read_dataset
-
     # Should raise error for CREATED dataset
     with pytest.raises(DatasetNotFoundError):
         read_dataset(dataset_created.name, session=test_session)
@@ -247,9 +247,6 @@ def test_public_api_delete_dataset_rejects_non_complete(
     test_session, dataset_created, dataset_failed
 ):
     """Test that dc.delete_dataset() rejects non-COMPLETE datasets."""
-    from datachain.error import DatasetNotFoundError
-    from datachain.lib.dc.datasets import delete_dataset
-
     # Should raise error for CREATED dataset
     with pytest.raises(DatasetNotFoundError):
         delete_dataset(dataset_created.name, session=test_session)
@@ -263,9 +260,6 @@ def test_public_api_move_dataset_rejects_non_complete(
     test_session, dataset_created, dataset_failed
 ):
     """Test that dc.move_dataset() rejects non-COMPLETE datasets."""
-    from datachain.error import DatasetNotFoundError
-    from datachain.lib.dc.datasets import move_dataset
-
     # Should raise error for CREATED dataset
     with pytest.raises(DatasetNotFoundError):
         move_dataset(dataset_created.name, "new_name_created", session=test_session)

@@ -147,10 +147,29 @@ def read_dataset(
         namespace_name=namespace,
     )
 
-    if version is not None:
+    # Validate dataset exists and is COMPLETE (filter non-COMPLETE datasets from
+    # public API)
+    # Skip validation for listing datasets as they're created lazily when query
+    # is executed
+    from datachain.lib.listing import is_listing_dataset
+
+    is_listing = is_listing_dataset(name)
+    dataset = None
+    if not is_listing or version is not None:
+        # Always validate non-listing datasets
+        # For listing datasets, only validate if specific version is requested
         dataset = session.catalog.get_dataset_with_remote_fallback(
-            name, namespace_name, project_name, update=update, include_incomplete=False
+            name,
+            namespace_name,
+            project_name,
+            update=update,
+            include_incomplete=is_listing,  # Allow incomplete for listing datasets
         )
+
+    if version is not None:
+        assert (
+            dataset is not None
+        )  # Dataset is always fetched when version is specified
 
         # Convert legacy integer versions to version specifiers
         # For backward compatibility we still allow users to put version as integer

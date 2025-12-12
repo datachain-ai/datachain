@@ -1328,7 +1328,6 @@ class DatasetQuery:
                     version=version,
                     pull_dataset=True,
                     update=update,
-                    include_incomplete=False,
                 )
             )
 
