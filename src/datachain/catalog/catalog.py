@@ -1378,6 +1378,7 @@ class Catalog:
         name: str,
         version: str,
         project: Project | None = None,
+        file_format: str | None = None,
         client_config=None,
     ) -> list[str]:
         dataset = self.get_dataset(
@@ -1387,18 +1388,30 @@ class Catalog:
         )
 
         return self.warehouse.export_dataset_table(
-            bucket_uri, dataset, version, client_config
+            bucket_uri,
+            dataset,
+            version,
+            file_format=file_format,
+            client_config=client_config,
         )
 
     def dataset_table_export_file_names(
-        self, name: str, version: str, project: Project | None = None
+        self,
+        name: str,
+        version: str,
+        project: Project | None = None,
+        file_format: str | None = None,
     ) -> list[str]:
         dataset = self.get_dataset(
             name,
             namespace_name=project.namespace.name if project else None,
             project_name=project.name if project else None,
         )
-        return self.warehouse.dataset_table_export_file_names(dataset, version)
+        return self.warehouse.dataset_table_export_file_names(
+            dataset,
+            version,
+            file_format=file_format,
+        )
 
     def remove_dataset(
         self,
