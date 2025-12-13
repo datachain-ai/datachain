@@ -51,6 +51,7 @@ NAMES_TO_TYPES = {
     "bool": bool,
     "list": list,
     "dict": dict,
+    "tuple": tuple,
     "bytes": bytes,
     "datetime": datetime,
     "Final": Final,
@@ -58,6 +59,7 @@ NAMES_TO_TYPES = {
     "Optional": Optional,
     "List": list,
     "Dict": dict,
+    "Tuple": tuple,
     "Literal": Any,
     "Any": Any,
 }
@@ -373,7 +375,7 @@ class SignalSchema:
         return None
 
     @staticmethod
-    def _resolve_type(type_name: str, custom_types: dict[str, Any]) -> type | None:
+    def _resolve_type(type_name: str, custom_types: dict[str, Any]) -> type | None:  # noqa: PLR0911
         """Convert a string-based type back into a python type."""
         type_name = type_name.strip()
         if not type_name:
@@ -382,7 +384,7 @@ class SignalSchema:
             return None
 
         bracket_idx = type_name.find("[")
-        subtypes: tuple[type | None, ...] | None = None
+        subtypes: tuple[type | None | types.EllipsisType, ...] | None = None
         if bracket_idx > -1:
             if bracket_idx == 0:
                 raise ValueError("Type cannot start with '['")
@@ -398,7 +400,10 @@ class SignalSchema:
             )
             # Types like Union require the parameters to be a tuple of types.
             subtypes = tuple(
-                SignalSchema._resolve_type(st, custom_types) for st in subtype_names
+                Ellipsis
+                if st == "..."
+                else SignalSchema._resolve_type(st, custom_types)
+                for st in subtype_names
             )
             type_name = type_name[:bracket_idx].strip()
 
@@ -408,6 +413,11 @@ class SignalSchema:
                 if len(subtypes) == 1:
                     # Types like Optional require there to be only one argument.
                     return fr[subtypes[0]]  # type: ignore[index]
+                if fr is tuple:
+                    # Handle variadic tuples with ellipsis (tuple[T, ...])
+                    if len(subtypes) == 2 and subtypes[1] is Ellipsis:
+                        return fr[subtypes[0], ...]  # type: ignore[index]
+                    return fr[subtypes]  # type: ignore[index]
                 # Other types like Union require the parameters to be a tuple of types.
                 return fr[subtypes]  # type: ignore[index]
             return fr  # type: ignore[return-value]
@@ -1064,14 +1074,15 @@ class SignalSchema:
     def __contains__(self, name: str):
         return name in self.values
 
-    def remove(self, name: str):
-        return self.values.pop(name)
-
     @staticmethod
-    def _type_to_str(type_: type | None, subtypes: list | None = None) -> str:  # noqa: C901, PLR0911
+    def _type_to_str(  # noqa: C901, PLR0911, PLR0912
+        type_: type | None | types.EllipsisType, subtypes: list | None = None
+    ) -> str:
         """Convert a type to a string-based representation."""
         if type_ is None:
             return "NoneType"
+        if type_ is Ellipsis:
+            return "..."
 
         origin = get_origin(type_)
 
@@ -1096,6 +1107,17 @@ class SignalSchema:
                 return "list"
             type_str = SignalSchema._type_to_str(args[0], subtypes)
             return f"list[{type_str}]"
+        if origin is tuple:
+            args = get_args(type_)
+            if len(args) == 0:
+                return "tuple"
+            if len(args) == 2 and args[1] is Ellipsis:
+                inner = SignalSchema._type_to_str(args[0], subtypes)
+                return f"tuple[{inner}, ...]"
+            type_str = ", ".join(
+                SignalSchema._type_to_str(arg, subtypes) for arg in args
+            )
+            return f"tuple[{type_str}]"
         if origin is dict:
             args = get_args(type_)
             if len(args) == 0:

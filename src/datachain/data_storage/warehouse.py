@@ -128,12 +128,17 @@ class AbstractWarehouse(ABC, Serializable):
             if col_python_type is list and value_type in (list, tuple, set):
                 if len(val) == 0:
                     return []
+
                 item_python_type = self.python_type(col_type.item_type)
+
                 if item_python_type is not list:
                     if isinstance(val[0], item_python_type):
-                        return val
+                        # SQLite ARRAY storage expects a list; tuples/sets must be
+                        # converted to lists even when element types already match.
+                        return list(val)
                     if item_python_type is float and isinstance(val[0], int):
                         return [float(i) for i in val]
+
                 # Optimization: Reuse these values for each function call within the
                 # list comprehension.
                 item_type_info = (
