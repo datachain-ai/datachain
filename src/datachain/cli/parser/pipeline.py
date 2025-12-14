@@ -127,3 +127,49 @@ def add_pipeline_parser(subparsers, parent_parser) -> None:
         default=None,
         help="Search for pipelines by name or the dataset created from.",
     )
+
+    pipeline_pause_help = "Pause a pipeline"
+    pipeline_pause_description = "Pause a pipeline in Studio"
+    pipeline_pause_parser = pipeline_subparser.add_parser(
+        "pause",
+        parents=[parent_parser],
+        description=pipeline_pause_description,
+        help=pipeline_pause_help,
+        formatter_class=CustomHelpFormatter,
+    )
+    pipeline_pause_parser.add_argument(
+        "name",
+        type=str,
+        action="store",
+        help="Name of the pipeline",
+    )
+    pipeline_pause_parser.add_argument(
+        "-t",
+        "--team",
+        action="store",
+        default=None,
+        help="Team of the pipeline",
+    )
+
+    pipeline_resume_help = "Resume a pipeline"
+    pipeline_resume_description = "Resume a pipeline in Studio"
+    pipeline_resume_parser = pipeline_subparser.add_parser(
+        "resume",
+        parents=[parent_parser],
+        description=pipeline_resume_description,
+        help=pipeline_resume_help,
+        formatter_class=CustomHelpFormatter,
+    )
+    pipeline_resume_parser.add_argument(
+        "name",
+        type=str,
+        action="store",
+        help="Name of the pipeline",
+    )
+    pipeline_resume_parser.add_argument(
+        "-t",
+        "--team",
+        action="store",
+        default=None,
+        help="Team of the pipeline",
+    )
