@@ -18,6 +18,8 @@ from datachain.utils import STUDIO_URL
 if TYPE_CHECKING:
     from argparse import Namespace
 
+    from datachain.catalog import Catalog
+
 POST_LOGIN_MESSAGE = (
     "Once you've logged in, return here "
     "and you'll be ready to start using DataChain with Studio."
@@ -64,6 +66,25 @@ def process_jobs_args(args: "Namespace"):
 
     if args.cmd == "clusters":
         return list_clusters(args.team)
+
+    raise DataChainError(f"Unknown command '{args.cmd}'.")
+
+
+def process_pipeline_args(args: "Namespace", catalog: "Catalog"):
+    if args.cmd is None:
+        print(
+            f"Use 'datachain {args.command} --help' to see available options",
+            file=sys.stderr,
+        )
+        return 1
+
+    if args.cmd == "create":
+        return create_pipeline(
+            catalog,
+            args.dataset,
+            args.version,
+            args.team,
+        )
 
     raise DataChainError(f"Unknown command '{args.cmd}'.")
 
@@ -520,3 +541,27 @@ def list_clusters(team_name: str | None):
     ]
 
     print(tabulate.tabulate(rows, headers="keys", tablefmt="grid"))
+
+
+def create_pipeline(
+    catalog: "Catalog",
+    dataset_name: str,
+    dataset_version: str | None = None,
+    team_name: str | None = None,
+):
+    client = StudioClient(team=team_name)
+    response = client.create_pipeline(dataset_name, dataset_version, review=True)
+    if not response.ok:
+        raise DataChainError(response.message)
+
+    pipeline = response.data["pipeline"]
+    print(
+        f"Pipeline created under name: {pipeline['name']} from:"
+        f" {pipeline['triggered_from']} in paused state for review."
+    )
+    print(
+        "Check the pipeline either in Studio or using `datachain pipeline status`, "
+        "and resume it when ready using `datachain pipeline resume`"
+    )
+
+    return 0

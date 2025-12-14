@@ -508,3 +508,22 @@ class StudioClient:
 
     def get_clusters(self) -> Response[ClusterListData]:
         return self._send_request("datachain/clusters/", {}, method="GET")
+
+    # Pipeline API
+    def create_pipeline(
+        self,
+        dataset_name: str,
+        dataset_version: str | None = None,
+        review: bool = False,
+    ) -> Response[Any]:
+        values = {
+            "dataset_name": dataset_name,
+            "review": review,
+        }
+        if dataset_version:
+            values["version"] = dataset_version
+        return self._send_request(
+            "datachain/pipeline/trigger",
+            data=values,
+            method="POST",
+        )

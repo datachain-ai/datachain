@@ -107,6 +107,8 @@ nav:
                   - cancel: commands/job/cancel.md
                   - ls: commands/job/ls.md
                   - clusters: commands/job/clusters.md
+              - pipeline:
+                  - create: commands/pipeline/create.md
       - 📚 User Guide:
           - Overview: guide/index.md
           - 📡 Interacting with remote storage: guide/remotes.md
