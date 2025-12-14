@@ -15,9 +15,9 @@ usage: datachain pipeline create [-h] [-v] [-q]
 
 This command creates a pipeline in Studio that will update the specified dataset. The pipeline automatically includes all necessary jobs to update the dataset based on its dependencies. If no version is specified, the latest version of the dataset is used.
 
-The pipeline is created in paused state for review. You can open Studio to review the pipeline configuration and resume it when ready.
+The pipeline is created in paused state. Use `datachain pipeline resume` to start pipeline execution.
 
-The dataset name can be provided in fully qualified format (e.g., `@namespace.project.name`) or as a short name. If using a short name, default project and namespace in Studio will be used.
+The dataset name can be provided in fully qualified format (e.g., `@namespace.project.name`) or as a short name. If using a short name, Studio uses the default project and namespace.
 
 ## Arguments
 
@@ -47,8 +47,3 @@ datachain pipeline create "final_result" --version "1.0.9"
 ```bash
 datachain pipeline create "@amritghimire.default.final_result"
 ```
-
-## Notes
-
-* The pipeline is always created in a paused state in Studio. You can open Studio to review the pipeline configuration and resume it when ready.
-* The pipeline automatically includes all jobs needed to update the dataset based on its dependencies.

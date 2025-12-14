@@ -22,11 +22,11 @@ def add_pipeline_parser(subparsers, parent_parser) -> None:
         " dataset. The pipeline automatically includes all necessary jobs to update"
         " the dataset based on its dependencies. "
         "If no version is specified, the latest version of the dataset is used.\n\n"
-        "The pipeline is created in paused state for review. You can open Studio to"
-        " review the pipeline configuration and resume it when ready.\n\n"
+        "The pipeline is created in paused state. Use `datachain pipeline resume`"
+        " to start pipeline execution.\n\n"
         "The dataset name can be provided in fully qualified format "
         "(e.g., @namespace.project.name) or as a short name. "
-        "If using a short name, default project and namespace in Studio will be used."
+        "If using a short name, Studio uses the default project and namespace."
     )
     pipeline_create_parser = pipeline_subparser.add_parser(
         "create",
