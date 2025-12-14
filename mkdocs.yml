@@ -134,7 +134,7 @@ nav:
                   - Overview: studio/user-guide/jobs/index.md
                   - Create and Run: studio/user-guide/jobs/create-and-run.md
                   - Monitor Jobs: studio/user-guide/jobs/monitor-jobs.md
-              - Experiments (DVC):
+              - Experiments:
                   - Overview: studio/user-guide/experiments/index.md
                   - Create a Project: studio/user-guide/experiments/create-a-project.md
                   - Configure a Project: studio/user-guide/experiments/configure-a-project.md
