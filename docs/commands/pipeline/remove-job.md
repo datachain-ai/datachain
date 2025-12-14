@@ -1,6 +1,6 @@
 # pipeline remove-job
 
-Remove specific job from a paused pipeline in Studio
+Remove specific job from a pipeline in Studio
 
 ## Synopsis
 
