@@ -70,7 +70,7 @@ def process_jobs_args(args: "Namespace"):
     raise DataChainError(f"Unknown command '{args.cmd}'.")
 
 
-def process_pipeline_args(args: "Namespace", catalog: "Catalog"):
+def process_pipeline_args(args: "Namespace", catalog: "Catalog"):  # noqa: PLR0911
     if args.cmd is None:
         print(
             f"Use 'datachain {args.command} --help' to see available options",
@@ -96,6 +96,13 @@ def process_pipeline_args(args: "Namespace", catalog: "Catalog"):
         return pause_pipeline(args.name, args.team)
     if args.cmd == "resume":
         return resume_pipeline(args.name, args.team)
+
+    if args.cmd == "remove-job":
+        return remove_job_from_pipeline(
+            name=args.name,
+            job_id=args.job_id,
+            team_name=args.team,
+        )
 
     raise DataChainError(f"Unknown command '{args.cmd}'.")
 
@@ -666,5 +673,16 @@ def resume_pipeline(name: str, team_name: str | None):
         raise DataChainError(response.message)
 
     print(f"Pipeline {name} resumed")
+
+    return 0
+
+
+def remove_job_from_pipeline(name: str, job_id: str, team_name: str | None):
+    client = StudioClient(team=team_name)
+    response = client.remove_job_from_pipeline(name, job_id)
+    if not response.ok:
+        raise DataChainError(response.message)
+
+    print(f"Job {job_id} removed from pipeline {name}")
 
     return 0

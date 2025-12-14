@@ -173,3 +173,34 @@ def add_pipeline_parser(subparsers, parent_parser) -> None:
         default=None,
         help="Team of the pipeline",
     )
+
+    pipeline_remove_job_help = "Remove a job from a pipeline"
+    pipeline_remove_job_description = (
+        "Remove a specific job from a pipeline before it runs in Studio"
+    )
+    pipeline_remove_job_parser = pipeline_subparser.add_parser(
+        "remove-job",
+        parents=[parent_parser],
+        description=pipeline_remove_job_description,
+        help=pipeline_remove_job_help,
+        formatter_class=CustomHelpFormatter,
+    )
+    pipeline_remove_job_parser.add_argument(
+        "name",
+        type=str,
+        action="store",
+        help="Name of the pipeline",
+    )
+    pipeline_remove_job_parser.add_argument(
+        "job_id",
+        type=str,
+        action="store",
+        help="ID of the job to remove",
+    )
+    pipeline_remove_job_parser.add_argument(
+        "-t",
+        "--team",
+        action="store",
+        default=None,
+        help="Team of the pipeline",
+    )
