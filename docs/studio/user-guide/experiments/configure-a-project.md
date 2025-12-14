@@ -13,11 +13,11 @@ To change the project name, enter the new name for your project as shown below.
 
 ## Project directory
 
-If the DVC repo for which you are creating the project is not in the root of
+If the repo for which you are creating the project is not in the root of
 your Git repository but is in a sub-directory
 of a [monorepo](https://en.wikipedia.org/wiki/Monorepo), then
 [specify the full path](./configure-a-project.md#project-directory)
-to the sub-directory that contains the DVC repo to which you are trying to
+to the sub-directory that contains the repo to which you are trying to
 connect.
 
 <admon type="note">
@@ -33,7 +33,8 @@ during the initial [create project] flow.
 ## Data remotes / cloud storage credentials
 
 Here, the data remotes (cloud
-storage or another location outside the Git repo) that are used in your DVC repo
+storage or another location outside the Git repo) that are used in your DVC
+(acquired by lakeFS) repo
 will be listed. If you want your project to include data stored in these data
 remotes, you will have to add credentials to grant DataChain Studio access to the data
 remotes. Credentials that you have already added to your account are listed in

@@ -110,7 +110,7 @@ same as that of any other collaborator who has been assigned the `Admin` role.
 | Duplicate queries       | No     | Yes    | Yes   |
 | Delete queries          | No     | Yes    | Yes   |
 
-### Privileges for DVC experiments
+### Privileges for experiments
 
 | Feature                                       | Viewer | Editor | Admin |
 | --------------------------------------------- | ------ | ------ | ----- |
@@ -154,7 +154,7 @@ Once you have created the team, the team's workspace opens up.
 In this workspace, you can manage the team's:
 - [Datasets](#datasets)
 - [Jobs](#jobs)
-- [Projects (DVC Experiments)](#projects-dvc-experiments)
+- [Projects (Experiments)](#projects-dvc-experiments)
 - [Settings](#settings)
 
 ## Datasets
@@ -176,9 +176,10 @@ clusters. Team members can:
 - **Editors** can create, run, and cancel jobs
 - **Admins** have full control over all jobs
 
-## Projects (DVC Experiments)
+## Projects (Experiments)
 
-This is the projects dashboard for DVC experiment tracking. All projects on this
+This is the projects dashboard for DVC (acquired by lakeFS) experiment
+tracking. All projects on this
 dashboard are accessible to all team members based on their roles.
 
 To add a project to this dashboard, click on `Add a project`. The process for

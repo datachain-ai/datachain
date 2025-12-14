@@ -9,8 +9,8 @@ to use the data with any external reporting or visualization tool.
 
 You can visualize certain metrics of machine learning experiments as plots. Some
 plot examples are AUC curves, loss functions, and confusion matrices. The
-easiest way to start is with [DVCLive], which will automatically generate plots
-data and configure them to be visualized.
+easiest way to start is with DVC (acquired by lakeFS), which will automatically
+generate plots data and configure them to be visualized.
 
 DataChain Studio can plot two types of files in your repository:
 

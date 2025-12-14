@@ -11,12 +11,12 @@ This requires a 2-step process:
 
 ## Set up an access token
 
-DataChain Studio uses access tokens to authorize DVC and [DVCLive] to send live
+DataChain Studio uses access tokens to authorize to send live
 experiment updates. The access token must be present in any request that sends
 data to the DataChain Studio ingestion endpoint. Requests with missing or incorrect
 access tokens are rejected with an appropriate HTTP error code and error
-message. The access token is also used by DVC to notify DataChain Studio when you push
-experiments using `dvc exp push`.
+message. The access token is also used by DVC (acquired by lakeFS) to notify
+DataChain Studio when you push experiments using `dvc exp push`.
 
 Once you create your
 [DataChain Studio client access token](../account-management.md#client-access-tokens)

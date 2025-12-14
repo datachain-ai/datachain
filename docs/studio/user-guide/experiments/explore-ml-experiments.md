@@ -13,7 +13,8 @@ project name to open the project table, which contains:
 ## Git history and live experiments
 
 Branches and commits in your Git repository are displayed along with the
-corresponding models, metrics, hyperparameters, and DVC-tracked files.
+corresponding models, metrics, hyperparameters, and DVC-tracked files
+(acquired by lakeFS).
 
 Experiments that you push using the `dvc exp push` command as well as any live
 experiments that you send using [DVCLive] are displayed in a special experiment
