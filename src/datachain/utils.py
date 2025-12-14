@@ -529,3 +529,26 @@ def ensure_sequence(x) -> Sequence:
     if isinstance(x, Sequence) and not isinstance(x, (str, bytes)):
         return x
     return [x]
+
+
+def with_last_flag(iterable):
+    """
+    Returns flag saying is this element the last in the iterator or not, together
+    with the element.
+
+    Example:
+    for item, is_last in with_last_flag(my_gen()):
+        ...
+    """
+    it = iter(iterable)
+    try:
+        prev = next(it)
+    except StopIteration:
+        return
+
+    for item in it:
+        yield prev, False
+        prev = item
+
+    # last item
+    yield prev, True

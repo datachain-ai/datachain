@@ -2346,6 +2346,27 @@ def test_subtract_error(test_session):
         chain1.subtract(chain3)
 
 
+def test_subtract_hash_computation(test_session):
+    """Test that subtract query operation can compute hash.
+
+    Regression test: subtract was passing strings instead of tuples to Subtract
+    class, which caused hash_inputs() to fail when unpacking: for a, b in self.on
+    """
+    from datachain.query.dataset import Subtract
+
+    chain1 = dc.read_values(a=[1, 2], b=["x", "y"], session=test_session)
+    chain2 = dc.read_values(a=[1], b=["x"], session=test_session)
+
+    result = chain1.subtract(chain2, on=["a", "b"])
+    # Get the Subtract step from the query
+    subtract_step = next(
+        (step for step in result._query.steps if isinstance(step, Subtract)), None
+    )
+    assert subtract_step is not None
+    # This would fail with TypeError if strings were passed instead of tuples
+    _ = subtract_step.hash_inputs()
+
+
 def test_column_math(test_session):
     fib = [1, 1, 2, 3, 5, 8]
     chain = dc.read_values(num=fib, session=test_session).order_by("num")
