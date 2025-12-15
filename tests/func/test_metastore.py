@@ -912,13 +912,13 @@ def test_get_job_status(metastore):
 @pytest.mark.parametrize("depth", [0, 1, 2, 3, 5])
 def test_get_ancestor_job_ids(metastore, depth):
     """Test get_ancestor_job_ids with different hierarchy depths."""
-    # Create a chain of jobs with parent relationships
-    # depth=0: single job with no parent
-    # depth=1: job -> parent
-    # depth=2: job -> parent -> grandparent
+    # Create a chain of jobs with rerun relationships
+    # depth=0: single job with no rerun ancestor
+    # depth=1: job -> rerun_from
+    # depth=2: job -> rerun_from -> rerun_from
 
     job_ids = []
-    parent_id = None
+    rerun_from_id = None
 
     # Create jobs from root to leaf
     for i in range(depth + 1):
@@ -928,10 +928,10 @@ def test_get_ancestor_job_ids(metastore, depth):
             query_type=JobQueryType.PYTHON,
             status=JobStatus.CREATED,
             workers=1,
-            parent_job_id=parent_id,
+            rerun_from_job_id=rerun_from_id,
         )
         job_ids.append(job_id)
-        parent_id = job_id
+        rerun_from_id = job_id
 
     # The last job is the leaf (youngest)
     leaf_job_id = job_ids[-1]
