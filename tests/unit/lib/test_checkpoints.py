@@ -116,7 +116,7 @@ def test_checkpoints(
     if use_datachain_job_id_env:
         monkeypatch.setenv(
             "DATACHAIN_JOB_ID",
-            metastore.create_job("my-job", "echo 1;", parent_job_id=first_job_id),
+            metastore.create_job("my-job", "echo 1;", rerun_from_job_id=first_job_id),
         )
 
     chain.save("nums1")
