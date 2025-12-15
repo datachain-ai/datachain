@@ -87,10 +87,13 @@ def test_mark_job_dataset_versions_as_failed_skips_complete(
     assert dataset_version.status == DatasetStatus.COMPLETE
 
 
-def test_finalize_job_as_failed_marks_dataset_versions(
-    test_session, job, dataset_created
+def test_finalize_job_as_failed_removes_incomplete_dataset_versions(
+    test_session, job, dataset_created, dataset_failed, dataset_complete
 ):
-    """Test that _finalize_job_as_failed marks dataset versions as FAILED."""
+    """
+    Test that _finalize_job_as_failed marks dataset versions as FAILED and removes
+    them right away.
+    """
     from datachain.query.session import Session
 
     # Set up Session state as if job is running
@@ -108,10 +111,16 @@ def test_finalize_job_as_failed_marks_dataset_versions(
     db_job = test_session.catalog.metastore.get_job(job.id)
     assert db_job.status == JobStatus.FAILED
 
-    # Verify dataset version is marked as FAILED
-    dataset = test_session.catalog.get_dataset(dataset_created.name)
-    dataset_version = dataset.get_version(dataset_created.latest_version)
-    assert dataset_version.status == DatasetStatus.FAILED
+    # Verify dataset version is marked as FAILED and removed
+    with pytest.raises(DatasetNotFoundError):
+        test_session.catalog.get_dataset(dataset_failed.name)
+
+    # Verify dataset version is marked as FAILED and removed
+    with pytest.raises(DatasetNotFoundError):
+        test_session.catalog.get_dataset(dataset_created.name)
+
+    # Verify dataset version is left since it's completed
+    test_session.catalog.get_dataset(dataset_complete.name)
 
 
 def test_status_filtering_hides_non_complete_versions(

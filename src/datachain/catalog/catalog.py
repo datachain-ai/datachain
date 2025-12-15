@@ -961,7 +961,7 @@ class Catalog:
         self.warehouse.cleanup_tables(names)
 
     def cleanup_failed_dataset_versions(
-        self, retention_days: int | None = None
+        self, retention_days: int | None = None, job_id: str | None = None
     ) -> list[str]:
         """
         Clean up failed/incomplete dataset versions.
@@ -982,7 +982,7 @@ class Catalog:
         logger = logging.getLogger(__name__)
 
         versions_to_clean = self.metastore.get_failed_dataset_versions_to_clean(
-            retention_days
+            retention_days=retention_days, job_id=job_id
         )
 
         cleaned_ids = []

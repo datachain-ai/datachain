@@ -320,7 +320,7 @@ class AbstractMetastore(ABC, Serializable):
 
     @abstractmethod
     def get_failed_dataset_versions_to_clean(
-        self, retention_days: int | None = None
+        self, retention_days: int | None = None, job_id: str | None = None
     ) -> list[tuple[DatasetRecord, str]]:
         """
         Get failed/incomplete dataset versions that are safe to clean up.
@@ -1498,7 +1498,7 @@ class AbstractDBMetastore(AbstractMetastore):
         return dataset
 
     def get_failed_dataset_versions_to_clean(
-        self, retention_days: int | None = None
+        self, retention_days: int | None = None, job_id: str | None = None
     ) -> list[tuple[DatasetRecord, str]]:
         """
         Get failed/incomplete dataset versions that are safe to clean up.
@@ -1508,6 +1508,7 @@ class AbstractDBMetastore(AbstractMetastore):
         - Were created more than retention_days ago (if retention_days
           specified)
         - Belong to jobs that are not running (COMPLETE, FAILED, CANCELED)
+        - Optionally returning them only for specific job_id
 
         Returns:
             List of (DatasetRecord, version_string) tuples. Each DatasetRecord
@@ -1540,6 +1541,8 @@ class AbstractDBMetastore(AbstractMetastore):
                 ),
             )
         )
+        if job_id:
+            query = query.where(j.c.id == job_id)
 
         # Add age filter if retention_days specified
         if retention_days is not None:
