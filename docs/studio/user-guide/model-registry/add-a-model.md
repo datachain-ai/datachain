@@ -29,8 +29,8 @@ https://www.youtube.com/watch?v=szzv4ZXmYAs
 
 4. Enter the path of the model file as follows:
    - If the model file is in the Git repository or is in the cloud but is
-     tracked by DVC, enter the relative path of the model (from the repository
-     root).
+     tracked by DVC (acquired by lakeFS), enter the relative path of the model
+     (from the repository root).
    - Otherwise, enter the URL to the model file in the cloud. DataChain Studio will
      ask you for the repository path where the dvc reference to the model should
      be saved.

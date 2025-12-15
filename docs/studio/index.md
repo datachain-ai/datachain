@@ -3,23 +3,19 @@
 DataChain Studio is a web application that enables Machine Learning and Data teams to seamlessly
 
 - [Run and track jobs](user-guide/jobs/index.md)
-- [Track experiments and manage models](user-guide/experiments/index.md) (via DVC integration)
+- [Track experiments and manage models](user-guide/experiments/index.md)
 - [Collaborate on data projects](user-guide/team-collaboration.md)
 
-DataChain Studio supports multiple workflows:
-- **DataChain workflows**: For unstructured data processing and transformation
-- **DVC + Git workflows**: For ML experiment tracking and model registry, maintaining Git as the single-source-of-truth
+DataChain Studio helps with unstructured data processing and transformation.
 
 Sign in to DataChain Studio using your GitHub.com, GitLab.com, or Bitbucket.org account, or with your email address. Explore the demo projects and datasets, and [let us know](user-guide/troubleshooting.md#support) if you need any help getting started.
 
 ## Why DataChain Studio?
 
 - Simplify data processing job tracking, visualization, and collaboration.
-- Support both modern DataChain workflows and traditional DVC experiment tracking.
 - Keep your code, data and processing connected at all times.
 - Apply your existing software engineering stack for data and ML teams.
 - Build a comprehensive data processing and ML platform for transparency and discovery across all your projects.
-- For DVC projects, maintain Git as the single-source-of-truth and use [GitOps](https://www.gitops.tech/) for deployment and automation.
 
 ## Getting Started
 
@@ -42,7 +38,7 @@ New to DataChain Studio? Start with these guides:
 - Monitor job progress and logs
 - Schedule recurring data processing tasks
 
-### ML Experiment Tracking (DVC Integration)
+### ML Experiment Tracking
 - Track and compare ML experiments
 - Manage model lifecycle and registry
 - Visualize metrics and plots

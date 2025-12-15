@@ -508,3 +508,64 @@ class StudioClient:
 
     def get_clusters(self) -> Response[ClusterListData]:
         return self._send_request("datachain/clusters/", {}, method="GET")
+
+    # Pipeline API
+    def create_pipeline(
+        self,
+        dataset_name: str,
+        dataset_version: str | None = None,
+        review: bool = False,
+    ) -> Response[Any]:
+        values = {
+            "dataset_name": dataset_name,
+            "review": review,
+        }
+        if dataset_version:
+            values["version"] = dataset_version
+        return self._send_request(
+            "datachain/pipeline/trigger",
+            data=values,
+            method="POST",
+        )
+
+    def get_pipeline(self, name: str) -> Response[Any]:
+        values = {
+            "name": name,
+        }
+        return self._send_request("datachain/pipeline/status", values, method="GET")
+
+    def list_pipelines(
+        self,
+        status: str | None = None,
+        limit: int = 20,
+        search: str | None = None,
+    ) -> Response[Any]:
+        values = {
+            "status": [status.upper()] if status else None,
+            "limit": limit,
+            "search": search,
+        }
+        return self._send_request("datachain/pipeline/list", values, method="GET")
+
+    def pause_pipeline(self, name: str) -> Response[Any]:
+        values = {
+            "name": name,
+        }
+        return self._send_request("datachain/pipeline/pause", values, method="POST")
+
+    def resume_pipeline(self, name: str) -> Response[Any]:
+        values = {
+            "name": name,
+        }
+        return self._send_request("datachain/pipeline/resume", values, method="POST")
+
+    def remove_job_from_pipeline(self, name: str, job_id: str) -> Response[Any]:
+        values = {
+            "name": name,
+            "job_id": job_id,
+        }
+        return self._send_request(
+            "datachain/pipeline/remove-job",
+            values,
+            method="POST",
+        )

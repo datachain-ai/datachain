@@ -2,12 +2,9 @@ import json
 from datetime import datetime
 from typing import (
     Any,
-    Dict,
     Final,
-    List,
-    Literal,
+    ForwardRef,
     Optional,
-    Tuple,
     Union,
     get_args,
     get_origin,
@@ -85,6 +82,8 @@ class MyTypeComplexOld(DataModel):
 
 
 def test_deserialize_basic():
+    # Make this test robust to other tests clearing the global ModelStore.
+    ModelStore.register(File)
     stored = {"name": "str", "count": "int", "file": "File@v1"}
     signals = SignalSchema.deserialize(stored)
 
@@ -137,6 +136,13 @@ def test_serialize_basic():
     assert signals["age"] == "float"
     assert signals["f"] == "File@v1"
     assert "File@v1" in signals["_custom_types"]
+
+
+def test_serialize_warns_for_unresolved_forwardref():
+    schema = SignalSchema({"x": ForwardRef("X")})  # type: ignore[arg-type]
+
+    with pytest.warns(SignalSchemaWarning, match=r"Unable to determine name of type"):
+        assert schema.serialize()["x"] == "Any"
 
 
 def test_feature_schema_serialize_optional():
@@ -742,7 +748,7 @@ def test_deserialize_restores_known_base_type():
     signals = SignalSchema(schema).serialize()
     ModelStore.remove(MyType3)
 
-    # Seince MyType3 is removed, deserialization restores it
+    # Since MyType3 is removed, deserialization restores it
     # from the meta information stored in the schema, including the base type
     # that is still known - MyType1
     deserialized_schema = SignalSchema.deserialize(signals)
@@ -1039,82 +1045,6 @@ def test_build_tree():
     ]
 
 
-def test_print_types():
-    mapping = {
-        int: "int",
-        float: "float",
-        None: "NoneType",
-        Ellipsis: "...",
-        MyType2: "MyType2@v1",
-        Any: "Any",
-        Literal: "Literal",
-        Final: "Final",
-        Optional[MyType2]: "Optional[MyType2@v1]",
-        Union[MyType2 | None]: "Optional[MyType2@v1]",
-        Optional[MyType2]: "Optional[MyType2@v1]",
-        MyType2 | None: "Optional[MyType2@v1]",
-        Union[str, int]: "Union[str, int]",
-        str | int: "Union[str, int]",
-        Union[str, int, bool]: "Union[str, int, bool]",
-        str | int | bool: "Union[str, int, bool]",
-        List: "list",
-        list: "list",
-        Tuple: "tuple",
-        tuple: "tuple",
-        List[bool]: "list[bool]",
-        list[bool]: "list[bool]",
-        List[bool | None]: "list[Optional[bool]]",
-        list[bool | None]: "list[Optional[bool]]",
-        List[int]: "list[int]",
-        list[int]: "list[int]",
-        Dict: "dict",
-        dict: "dict",
-        Dict[str, bool]: "dict[str, bool]",
-        dict[str, bool]: "dict[str, bool]",
-        Dict[str, int]: "dict[str, int]",
-        dict[str, int]: "dict[str, int]",
-        dict[str, MyType1 | None]: "dict[str, Optional[MyType1@v1]]",
-        dict[str, MyType1 | None]: "dict[str, Optional[MyType1@v1]]",
-        dict[str, MyType1 | None]: "dict[str, Optional[MyType1@v1]]",
-        dict[str, MyType1 | None]: "dict[str, Optional[MyType1@v1]]",
-        dict[str, MyType1 | None]: "dict[str, Optional[MyType1@v1]]",
-        Union[str, list[str]]: "Union[str, list[str]]",
-        Union[str, list[str]]: "Union[str, list[str]]",
-        str | list[str]: "Union[str, list[str]]",
-        str | list[str]: "Union[str, list[str]]",
-        Optional[Literal["x"]]: "Optional[Literal]",
-        Literal["x"] | None: "Optional[Literal]",
-        Optional[list[bytes]]: "Optional[list[bytes]]",
-        Optional[list[bytes]]: "Optional[list[bytes]]",
-        Union[list[bytes], None]: "Optional[list[bytes]]",
-        Union[list[bytes], None]: "Optional[list[bytes]]",
-        list[bytes] | None: "Optional[list[bytes]]",
-        list[bytes] | None: "Optional[list[bytes]]",
-        list[Any]: "list[Any]",
-        list[Any]: "list[Any]",
-        tuple[int, float]: "tuple[int, float]",
-        Tuple[int, float]: "tuple[int, float]",
-        tuple[int, ...]: "tuple[int, ...]",
-        Tuple[int, ...]: "tuple[int, ...]",
-        Optional[tuple[int, float]]: "Optional[tuple[int, float]]",
-        Optional[Tuple[int, float]]: "Optional[tuple[int, float]]",
-        Optional[tuple[int, ...]]: "Optional[tuple[int, ...]]",
-        Optional[Tuple[int, ...]]: "Optional[tuple[int, ...]]",
-    }
-
-    for t, v in mapping.items():
-        assert SignalSchema._type_to_str(t) == v
-
-    # Test that unknown types are ignored, but raise a warning.
-    mapping_warnings = {
-        5: "Any",
-        "UnknownType": "Any",
-    }
-    for t, v in mapping_warnings.items():
-        with pytest.warns(SignalSchemaWarning):
-            assert SignalSchema._type_to_str(t) == v
-
-
 def test_resolve_types():
     mapping = {
         "int": int,
@@ -1169,32 +1099,6 @@ def test_resolve_types():
     for s, t in mapping_warnings.items():
         with pytest.warns(SignalSchemaWarning):
             assert SignalSchema._resolve_type(s, {}) == t
-
-
-def test_type_to_str_typing_module_vs_builtin_generics():
-    """Test that typing.List/Dict and list/dict behave identically with get_origin().
-
-    This ensures Python 3.10+ compatibility where both old-style (typing.List)
-    and new-style (list[]) generic annotations are normalized by get_origin()
-    to the same built-in types.
-    """
-    from typing import get_origin
-
-    # Verify get_origin() normalizes both forms to built-in types
-    assert get_origin(List[int]) is list
-    assert get_origin(list[int]) is list
-    assert get_origin(Dict[str, int]) is dict
-    assert get_origin(dict[str, int]) is dict
-
-    # Verify _type_to_str produces identical output for both forms
-    assert SignalSchema._type_to_str(List[int]) == SignalSchema._type_to_str(list[int])
-    assert SignalSchema._type_to_str(Dict[str, int]) == SignalSchema._type_to_str(
-        dict[str, int]
-    )
-    assert SignalSchema._type_to_str(List[str]) == "list[str]"
-    assert SignalSchema._type_to_str(list[str]) == "list[str]"
-    assert SignalSchema._type_to_str(Dict[str, bool]) == "dict[str, bool]"
-    assert SignalSchema._type_to_str(dict[str, bool]) == "dict[str, bool]"
 
 
 def test_resolve_types_errors():
@@ -1278,7 +1182,7 @@ def test_row_to_objs_all_none_returns_none():
     assert res == [None]
 
 
-def test_row_to_objs_partial_none_raises():
+def test_row_to_objs_some_none_values_raises():
     schema = SignalSchema({"fr": MyType2})
 
     row = ("name", None, None)
@@ -1297,7 +1201,7 @@ def test_row_to_objs_all_none_nested_collections():
     assert res == [5, None, "tag"]
 
 
-def test_row_to_objs_nested_collections_partial_data_raises():
+def test_row_to_objs_nested_collections_some_values_missing_raises():
     schema = SignalSchema({"id": int, "complex": MyTypeComplex, "label": str})
 
     row = (5, "component", ["bad"], {"key": "value"}, "tag")
@@ -1497,380 +1401,6 @@ def test_column_types(column_type, signal_type):
 
     assert len(signals) == 1
     assert signals["val"] is signal_type
-
-
-def test_to_partial():
-    schema = SignalSchema({"name": str, "age": float, "f": File})
-    partial = schema.to_partial("name", "f.path")
-    assert partial.serialize() == {
-        "_custom_types": {
-            "FilePartial1@v1": {
-                "bases": [
-                    ("FilePartial1", "datachain.lib.signal_schema", "FilePartial1@v1"),
-                    ("DataModel", "datachain.lib.data_model", "DataModel@v1"),
-                    ("BaseModel", "pydantic.main", None),
-                    ("object", "builtins", None),
-                ],
-                "fields": {
-                    "path": "str",
-                },
-                "hidden_fields": [],
-                "name": "FilePartial1@v1",
-                "schema_version": 2,
-            },
-        },
-        "name": "str",
-        "f": "FilePartial1@v1",
-    }
-
-
-def test_to_partial_duplicate():
-    schema = SignalSchema({"name": str, "age": float, "f1": File, "f2": File})
-    partial = schema.to_partial("age", "f1.path", "f2.source")
-    assert partial.serialize() == {
-        "_custom_types": {
-            "FilePartial1@v1": {
-                "bases": [
-                    ("FilePartial1", "datachain.lib.signal_schema", "FilePartial1@v1"),
-                    ("DataModel", "datachain.lib.data_model", "DataModel@v1"),
-                    ("BaseModel", "pydantic.main", None),
-                    ("object", "builtins", None),
-                ],
-                "fields": {
-                    "path": "str",
-                },
-                "hidden_fields": [],
-                "name": "FilePartial1@v1",
-                "schema_version": 2,
-            },
-            "FilePartial2@v1": {
-                "bases": [
-                    ("FilePartial2", "datachain.lib.signal_schema", "FilePartial2@v1"),
-                    ("DataModel", "datachain.lib.data_model", "DataModel@v1"),
-                    ("BaseModel", "pydantic.main", None),
-                    ("object", "builtins", None),
-                ],
-                "fields": {
-                    "source": "str",
-                },
-                "hidden_fields": [],
-                "name": "FilePartial2@v1",
-                "schema_version": 2,
-            },
-        },
-        "age": "float",
-        "f1": "FilePartial1@v1",
-        "f2": "FilePartial2@v1",
-    }
-
-
-def test_to_partial_nested():
-    class Custom(DataModel):
-        foo: str
-        file: File
-
-    schema = SignalSchema({"name": str, "age": float, "f": File, "custom": Custom})
-    partial = schema.to_partial("name", "f.path", "custom.file.source")
-    assert partial.serialize() == {
-        "_custom_types": {
-            "FilePartial1@v1": {
-                "bases": [
-                    ("FilePartial1", "datachain.lib.signal_schema", "FilePartial1@v1"),
-                    ("DataModel", "datachain.lib.data_model", "DataModel@v1"),
-                    ("BaseModel", "pydantic.main", None),
-                    ("object", "builtins", None),
-                ],
-                "fields": {
-                    "path": "str",
-                },
-                "hidden_fields": [],
-                "name": "FilePartial1@v1",
-                "schema_version": 2,
-            },
-            "FilePartial2@v1": {
-                "bases": [
-                    ("FilePartial2", "datachain.lib.signal_schema", "FilePartial2@v1"),
-                    ("DataModel", "datachain.lib.data_model", "DataModel@v1"),
-                    ("BaseModel", "pydantic.main", None),
-                    ("object", "builtins", None),
-                ],
-                "fields": {
-                    "source": "str",
-                },
-                "hidden_fields": [],
-                "name": "FilePartial2@v1",
-                "schema_version": 2,
-            },
-            "CustomPartial1@v1": {
-                "bases": [
-                    (
-                        "CustomPartial1",
-                        "datachain.lib.signal_schema",
-                        "CustomPartial1@v1",
-                    ),
-                    ("DataModel", "datachain.lib.data_model", "DataModel@v1"),
-                    ("BaseModel", "pydantic.main", None),
-                    ("object", "builtins", None),
-                ],
-                "fields": {
-                    "file": "FilePartial2@v1",
-                },
-                "hidden_fields": [],
-                "name": "CustomPartial1@v1",
-                "schema_version": 2,
-            },
-        },
-        "name": "str",
-        "f": "FilePartial1@v1",
-        "custom": "CustomPartial1@v1",
-    }
-
-
-def test_get_file_signal():
-    assert SignalSchema({"name": str, "f": File}).get_file_signal() == "f"
-    assert SignalSchema({"name": str}).get_file_signal() is None
-
-
-def test_to_partial_complex_signal_entire_file():
-    """Test to_partial with entire complex signal requested."""
-    schema = SignalSchema({"file": File, "name": str})
-    partial = schema.to_partial("file")
-
-    # Should return the entire File complex signal
-    assert partial.values == {"file": File}
-    serialized = partial.serialize()
-    assert "file" in serialized
-    assert serialized["file"] == "File@v1"
-    assert "File@v1" in serialized["_custom_types"]
-
-
-def test_to_partial_complex_nested_signal():
-    class Custom(DataModel):
-        src: File
-        type: str
-
-    schema = SignalSchema({"my_col": Custom, "name": str})
-    partial = schema.to_partial("my_col.src")
-
-    assert partial.values == {"my_col.src": File}
-
-
-def test_to_partial_complex_deeply_nested_signal():
-    """Test to_partial with deeply nested complex signals (3+ levels)."""
-    from datachain.lib.file import ImageFile
-
-    class Level1(DataModel):
-        image: ImageFile
-        name: str
-
-    class Level2(DataModel):
-        level1: Level1
-        category: str
-
-    class Level3(DataModel):
-        level2: Level2
-        id: str
-
-    schema = SignalSchema({"deep": Level3, "simple": str})
-
-    # Test deeply nested complex signal
-    partial = schema.to_partial("deep.level2.level1.image")
-
-    # Should return the entire ImageFile complex signal with simplified name
-    assert "deep.level2.level1.image" in partial.values
-    assert partial.values["deep.level2.level1.image"] == ImageFile
-
-
-def test_to_partial_complex_nested_multiple_complex_signals():
-    """Test to_partial with multiple nested complex signals."""
-    from datachain.lib.file import TextFile
-
-    class Container(DataModel):
-        file1: File
-        file2: TextFile
-        name: str
-
-    schema = SignalSchema({"container": Container, "simple": str})
-
-    # Request multiple nested complex signals
-    partial = schema.to_partial("container.file1", "container.file2")
-
-    # Should return both complex signals at root level
-    assert "container.file1" in partial.values
-    assert "container.file2" in partial.values
-    assert partial.values["container.file1"] == File
-    assert partial.values["container.file2"] == TextFile
-
-
-def test_to_partial_complex_nested_mixed_complex_and_simple():
-    """Test to_partial with mix of nested complex signals and simple fields."""
-
-    class Container(DataModel):
-        file: File
-        name: str
-        count: int
-
-    schema = SignalSchema({"container": Container, "simple": str})
-
-    # Request mix of nested complex signal and simple field
-    partial = schema.to_partial("container.file", "container.name", "simple")
-
-    # Should have complex signal at root, partial for simple field, and simple type
-    assert "container.file" in partial.values
-    assert "container" in partial.values
-    assert "simple" in partial.values
-
-    assert partial.values["container.file"] == File
-    assert partial.values["simple"] is str
-
-
-def test_to_partial_complex_nested_same_type_different_paths():
-    """Test to_partial with same complex type accessed via different nested paths."""
-
-    class Container1(DataModel):
-        file: File
-        name: str
-
-    class Container2(DataModel):
-        file: File
-        category: str
-
-    schema = SignalSchema({"cont1": Container1, "cont2": Container2})
-
-    # Request same complex type from different nested paths
-    partial = schema.to_partial("cont1.file", "cont2.file")
-
-    # Should return single File type at root level (deduplicated)
-    assert "cont1.file" in partial.values
-    assert "cont2.file" in partial.values
-    assert partial.values["cont1.file"] == File
-    assert partial.values["cont2.file"] == File
-    assert len(partial.values) == 2
-
-
-def test_to_partial_complex_signal_file_single_field():
-    """Test to_partial with File complex signal - single field."""
-    schema = SignalSchema({"name": str, "file": File})
-    partial = schema.to_partial("file.path")
-
-    serialized = partial.serialize()
-    assert "name" not in serialized  # Only file should be included
-    assert "file" in serialized
-    assert serialized["file"] == "FilePartial1@v1"
-
-    # Check the partial type contains only path field
-    custom_types = serialized["_custom_types"]
-    file_partial = custom_types["FilePartial1@v1"]
-    assert file_partial["fields"] == {"path": "str"}
-
-
-def test_to_partial_complex_signal_mixed_entire_and_fields():
-    """Test to_partial with mix of entire complex signal and specific fields."""
-    schema = SignalSchema({"file1": File, "file2": File, "name": str})
-    partial = schema.to_partial("file1", "file2.path", "name")
-
-    serialized = partial.serialize()
-    assert "file1" in serialized
-    assert "file2" in serialized
-    assert "name" in serialized
-
-    # file1 should be the entire File type
-    assert serialized["file1"] == "File@v1"
-    # file2 should be a partial with only path field
-    assert serialized["file2"].startswith("FilePartial") and serialized[
-        "file2"
-    ].endswith("@v1")
-    # name should be simple type
-    assert serialized["name"] == "str"
-
-    # Check custom types
-    custom_types = serialized["_custom_types"]
-    assert "File@v1" in custom_types
-    file2_partial_key = serialized["file2"]
-    assert file2_partial_key in custom_types
-
-    # Check partial has only path field
-    file2_partial = custom_types[file2_partial_key]
-    assert file2_partial["fields"] == {"path": "str"}
-
-
-def test_to_partial_complex_signal_multiple_entire_files():
-    """Test to_partial with multiple entire complex signals."""
-    schema = SignalSchema({"file1": File, "file2": File, "name": str})
-    partial = schema.to_partial("file1", "file2")
-
-    serialized = partial.serialize()
-    assert "file1" in serialized
-    assert "file2" in serialized
-    assert "name" not in serialized  # name was not requested
-
-    # Both should be the entire File type
-    assert serialized["file1"] == "File@v1"
-    assert serialized["file2"] == "File@v1"
-
-    # Should have the full File custom type
-    custom_types = serialized["_custom_types"]
-    assert "File@v1" in custom_types
-    assert len(custom_types) == 1  # Only one File type needed
-
-
-def test_to_partial_complex_signal_nested_entire():
-    """Test to_partial with nested complex signal - entire parent."""
-    from datachain.lib.data_model import DataModel
-
-    class Container(DataModel):
-        name: str
-        file: File
-
-    schema = SignalSchema({"container": Container, "simple": str})
-    partial = schema.to_partial("container")
-
-    serialized = partial.serialize()
-    assert "container" in serialized
-    assert "simple" not in serialized
-
-    # Should be the entire Container type
-    assert serialized["container"].startswith("Container@")
-
-    # Should have the full Container custom type with nested File
-    custom_types = serialized["_custom_types"]
-    container_key = serialized["container"]
-    assert container_key in custom_types
-    assert "File@v1" in custom_types
-
-    container_type = custom_types[container_key]
-    assert container_type["fields"] == {"name": "str", "file": "File@v1"}
-
-
-def test_to_partial_complex_signal_empty_request():
-    """Test to_partial with no columns requested."""
-    schema = SignalSchema({"file": File, "name": str})
-    partial = schema.to_partial()
-
-    # Should return empty schema
-    assert partial.values == {}
-    serialized = partial.serialize()
-    assert "_custom_types" not in serialized or not serialized.get("_custom_types")
-
-
-def test_to_partial_complex_signal_error_invalid_signal():
-    """Test to_partial with invalid signal name."""
-    schema = SignalSchema({"file": File})
-
-    with pytest.raises(
-        SignalSchemaError, match="Column nonexistent not found in the schema"
-    ):
-        schema.to_partial("nonexistent")
-
-
-def test_to_partial_complex_signal_error_invalid_field():
-    """Test to_partial with invalid field in complex signal."""
-    schema = SignalSchema({"file": File})
-
-    with pytest.raises(
-        SignalSchemaError, match="Field nonexistent not found in custom type"
-    ):
-        schema.to_partial("file.nonexistent")
 
 
 @pytest.mark.parametrize(

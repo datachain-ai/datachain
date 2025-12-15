@@ -5,6 +5,7 @@ import traceback
 from multiprocessing import freeze_support
 
 from datachain.cli.utils import get_logging_level
+from datachain.studio import process_pipeline_args
 
 from .commands import (
     clear_cache,
@@ -99,6 +100,7 @@ def handle_command(args, catalog, client_config) -> int:
         "gc": lambda: garbage_collect(catalog, args.retention_days),
         "auth": lambda: process_auth_cli_args(args),
         "job": lambda: process_jobs_args(args),
+        "pipeline": lambda: process_pipeline_args(args, catalog),
     }
 
     handler = command_handlers.get(args.command)

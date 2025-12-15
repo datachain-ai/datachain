@@ -19,6 +19,7 @@ from PIL import Image
 import datachain as dc
 from datachain import DataModel, func
 from datachain.dataset import DatasetDependencyType
+from datachain.lib.data_model import compute_model_fingerprint
 from datachain.lib.file import File, ImageFile
 from datachain.lib.listing import LISTING_TTL, is_listing_dataset, parse_listing_uri
 from datachain.lib.tar import process_tar
@@ -1081,14 +1082,18 @@ def test_group_by_signals(cloud_test_catalog):
         .save("my-ds")
     )
 
+    fp_file_info_path = compute_model_fingerprint(FileInfo, {"path": None})
+    fi_partial_base = f"FileInfoPartial_{fp_file_info_path[:10]}"
+    fi_partial_name = f"{fi_partial_base}@v1"
+
     assert ds.signals_schema.serialize() == {
         "_custom_types": {
-            "FileInfoPartial1@v1": {
+            fi_partial_name: {
                 "bases": [
                     (
-                        "FileInfoPartial1",
+                        fi_partial_base,
                         "datachain.lib.signal_schema",
-                        "FileInfoPartial1@v1",
+                        fi_partial_name,
                     ),
                     ("DataModel", "datachain.lib.data_model", "DataModel@v1"),
                     ("BaseModel", "pydantic.main", None),
@@ -1096,11 +1101,12 @@ def test_group_by_signals(cloud_test_catalog):
                 ],
                 "fields": {"path": "str"},
                 "hidden_fields": [],
-                "name": "FileInfoPartial1@v1",
+                "name": fi_partial_name,
                 "schema_version": 2,
+                "partial_fingerprint": fp_file_info_path,
             }
         },
-        "file_info": "FileInfoPartial1@v1",
+        "file_info": fi_partial_name,
         "cnt": "int",
         "sum": "int",
         "value": "int",
@@ -1146,43 +1152,44 @@ def test_group_by_signals_same_model(cloud_test_catalog):
         .save("my-ds")
     )
 
+    fp_file_info_name = compute_model_fingerprint(FileInfo, {"name": None})
+    fp_file_info_path = compute_model_fingerprint(FileInfo, {"path": None})
+    fi_name_base = f"FileInfoPartial_{fp_file_info_name[:10]}"
+    fi_name_full = f"{fi_name_base}@v1"
+    fi_path_base = f"FileInfoPartial_{fp_file_info_path[:10]}"
+    fi_path_full = f"{fi_path_base}@v1"
+
     assert ds.signals_schema.serialize() == {
         "_custom_types": {
-            "FileInfoPartial1@v1": {
+            fi_name_full: {
                 "bases": [
-                    (
-                        "FileInfoPartial1",
-                        "datachain.lib.signal_schema",
-                        "FileInfoPartial1@v1",
-                    ),
+                    (fi_name_base, "datachain.lib.signal_schema", fi_name_full),
                     ("DataModel", "datachain.lib.data_model", "DataModel@v1"),
                     ("BaseModel", "pydantic.main", None),
                     ("object", "builtins", None),
                 ],
                 "fields": {"name": "str"},
                 "hidden_fields": [],
-                "name": "FileInfoPartial1@v1",
+                "name": fi_name_full,
                 "schema_version": 2,
+                "partial_fingerprint": fp_file_info_name,
             },
-            "FileInfoPartial2@v1": {
+            fi_path_full: {
                 "bases": [
-                    (
-                        "FileInfoPartial2",
-                        "datachain.lib.signal_schema",
-                        "FileInfoPartial2@v1",
-                    ),
+                    (fi_path_base, "datachain.lib.signal_schema", fi_path_full),
                     ("DataModel", "datachain.lib.data_model", "DataModel@v1"),
                     ("BaseModel", "pydantic.main", None),
                     ("object", "builtins", None),
                 ],
                 "fields": {"path": "str"},
                 "hidden_fields": [],
-                "name": "FileInfoPartial2@v1",
+                "name": fi_path_full,
                 "schema_version": 2,
+                "partial_fingerprint": fp_file_info_path,
             },
         },
-        "f1": "FileInfoPartial1@v1",
-        "f2": "FileInfoPartial2@v1",
+        "f1": fi_name_full,
+        "f2": fi_path_full,
         "cnt": "int",
         "sum": "int",
     }
@@ -1209,6 +1216,7 @@ def test_group_by_signals_nested(cloud_test_catalog):
 
     class FileName(DataModel):
         name: str = ""
+        ext: str = ""
 
     class FileInfo(DataModel):
         path: str = ""
@@ -1218,10 +1226,12 @@ def test_group_by_signals_nested(cloud_test_catalog):
         full_path = file.source.rstrip("/") + "/" + file.path
         rel_path = posixpath.relpath(full_path, src_uri)
         path_parts = rel_path.split("/", 1)
+        file_name = path_parts[1] if len(path_parts) > 1 else path_parts[0]
         return FileInfo(
             path=path_parts[0] if len(path_parts) > 1 else "",
             name=FileName(
-                name=path_parts[1] if len(path_parts) > 1 else path_parts[0],
+                name=file_name,
+                ext=posixpath.splitext(file_name)[1].lstrip("."),
             ),
         )
 
@@ -1237,59 +1247,61 @@ def test_group_by_signals_nested(cloud_test_catalog):
         .save("my-ds")
     )
 
+    fp_file_info_name = compute_model_fingerprint(FileInfo, {"name": {"name": None}})
+    fp_file_info_path = compute_model_fingerprint(FileInfo, {"path": None})
+    fp_file_name = compute_model_fingerprint(FileName, {"name": None})
+
+    fi_name_base = f"FileInfoPartial_{fp_file_info_name[:10]}"
+    fi_name_full = f"{fi_name_base}@v1"
+    fi_path_base = f"FileInfoPartial_{fp_file_info_path[:10]}"
+    fi_path_full = f"{fi_path_base}@v1"
+    fname_base = f"FileNamePartial_{fp_file_name[:10]}"
+    fname_full = f"{fname_base}@v1"
+
     assert ds.signals_schema.serialize() == {
         "_custom_types": {
-            "FileInfoPartial1@v1": {
+            fname_full: {
                 "bases": [
-                    (
-                        "FileInfoPartial1",
-                        "datachain.lib.signal_schema",
-                        "FileInfoPartial1@v1",
-                    ),
-                    ("DataModel", "datachain.lib.data_model", "DataModel@v1"),
-                    ("BaseModel", "pydantic.main", None),
-                    ("object", "builtins", None),
-                ],
-                "fields": {"name": "FileNamePartial1@v1"},
-                "hidden_fields": [],
-                "name": "FileInfoPartial1@v1",
-                "schema_version": 2,
-            },
-            "FileInfoPartial2@v1": {
-                "bases": [
-                    (
-                        "FileInfoPartial2",
-                        "datachain.lib.signal_schema",
-                        "FileInfoPartial2@v1",
-                    ),
-                    ("DataModel", "datachain.lib.data_model", "DataModel@v1"),
-                    ("BaseModel", "pydantic.main", None),
-                    ("object", "builtins", None),
-                ],
-                "fields": {"path": "str"},
-                "hidden_fields": [],
-                "name": "FileInfoPartial2@v1",
-                "schema_version": 2,
-            },
-            "FileNamePartial1@v1": {
-                "bases": [
-                    (
-                        "FileNamePartial1",
-                        "datachain.lib.signal_schema",
-                        "FileNamePartial1@v1",
-                    ),
+                    (fname_base, "datachain.lib.signal_schema", fname_full),
                     ("DataModel", "datachain.lib.data_model", "DataModel@v1"),
                     ("BaseModel", "pydantic.main", None),
                     ("object", "builtins", None),
                 ],
                 "fields": {"name": "str"},
                 "hidden_fields": [],
-                "name": "FileNamePartial1@v1",
+                "name": fname_full,
                 "schema_version": 2,
+                "partial_fingerprint": fp_file_name,
+            },
+            fi_name_full: {
+                "bases": [
+                    (fi_name_base, "datachain.lib.signal_schema", fi_name_full),
+                    ("DataModel", "datachain.lib.data_model", "DataModel@v1"),
+                    ("BaseModel", "pydantic.main", None),
+                    ("object", "builtins", None),
+                ],
+                "fields": {"name": fname_full},
+                "hidden_fields": [],
+                "name": fi_name_full,
+                "schema_version": 2,
+                "partial_fingerprint": fp_file_info_name,
+            },
+            fi_path_full: {
+                "bases": [
+                    (fi_path_base, "datachain.lib.signal_schema", fi_path_full),
+                    ("DataModel", "datachain.lib.data_model", "DataModel@v1"),
+                    ("BaseModel", "pydantic.main", None),
+                    ("object", "builtins", None),
+                ],
+                "fields": {"path": "str"},
+                "hidden_fields": [],
+                "name": fi_path_full,
+                "schema_version": 2,
+                "partial_fingerprint": fp_file_info_path,
             },
         },
-        "f1": "FileInfoPartial1@v1",
-        "f2": "FileInfoPartial2@v1",
+        "f1": fi_name_full,
+        "f2": fi_path_full,
         "cnt": "int",
         "sum": "int",
     }
@@ -1329,26 +1341,27 @@ def test_group_by_known_signals(cloud_test_catalog):
         .save("my-ds")
     )
 
+    fp_bbox_title = compute_model_fingerprint(BBox, {"title": None})
+    bbox_base = f"BBoxPartial_{fp_bbox_title[:10]}"
+    bbox_full = f"{bbox_base}@v1"
+
     assert ds.signals_schema.serialize() == {
         "_custom_types": {
-            "BBoxPartial1@v1": {
+            bbox_full: {
                 "bases": [
-                    (
-                        "BBoxPartial1",
-                        "datachain.lib.signal_schema",
-                        "BBoxPartial1@v1",
-                    ),
+                    (bbox_base, "datachain.lib.signal_schema", bbox_full),
                     ("DataModel", "datachain.lib.data_model", "DataModel@v1"),
                     ("BaseModel", "pydantic.main", None),
                     ("object", "builtins", None),
                 ],
                 "fields": {"title": "str"},
                 "hidden_fields": [],
-                "name": "BBoxPartial1@v1",
+                "name": bbox_full,
                 "schema_version": 2,
+                "partial_fingerprint": fp_bbox_title,
             }
         },
-        "box": "BBoxPartial1@v1",
+        "box": bbox_full,
         "cnt": "int",
         "value": "list[int]",
     }
