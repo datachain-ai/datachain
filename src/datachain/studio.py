@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 import dateparser
 import tabulate
 
+from datachain import semver
 from datachain.config import Config, ConfigLevel
 from datachain.data_storage.job import JobStatus
 from datachain.dataset import QUERY_DATASET_PREFIX, parse_dataset_name
@@ -81,8 +82,7 @@ def process_pipeline_args(args: "Namespace", catalog: "Catalog"):  # noqa: PLR09
     if args.cmd == "create":
         return create_pipeline(
             catalog,
-            args.dataset,
-            args.version,
+            args.datasets,
             args.team,
         )
 
@@ -561,14 +561,32 @@ def list_clusters(team_name: str | None):
     print(tabulate.tabulate(rows, headers="keys", tablefmt="grid"))
 
 
+def _parse_dataset_with_version(dataset_input: str) -> dict[str, str]:
+    parts = dataset_input.rsplit("@", 1)
+
+    if len(parts) == 2 and parts[1]:
+        try:
+            semver.validate(parts[1])
+            return {"dataset_name": parts[0], "version": parts[1]}
+        except ValueError:
+            pass
+
+    return {"dataset_name": dataset_input, "version": ""}
+
+
 def create_pipeline(
     catalog: "Catalog",
-    dataset_name: str,
-    dataset_version: str | None = None,
+    dataset_names: list[str],
     team_name: str | None = None,
 ):
+    datasets = [_parse_dataset_with_version(name) for name in dataset_names]
+
     client = StudioClient(team=team_name)
-    response = client.create_pipeline(dataset_name, dataset_version, review=True)
+    response = client.create_pipeline(
+        datasets=datasets,
+        team_name=team_name,
+        review=True,
+    )
     if not response.ok:
         raise DataChainError(response.message)
 
