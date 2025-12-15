@@ -144,7 +144,12 @@ class DatasetIdentifier:
 
     def __str__(self) -> str:
         """Format DatasetIdentifier as a string: namespace.project.name@version"""
-        return f"{self.namespace}.{self.project}.{self.name}@{self.version}"
+        dataset_name = ".".join(
+            v for v in [self.namespace, self.project, self.name] if v
+        )
+        if self.version:
+            dataset_name += f"@v{self.version}"
+        return dataset_name
 
 
 def system_config_dir():
