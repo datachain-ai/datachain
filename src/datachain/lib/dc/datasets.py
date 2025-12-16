@@ -147,11 +147,6 @@ def read_dataset(
         namespace_name=namespace,
     )
 
-    # Validate dataset exists and is COMPLETE (filter non-COMPLETE datasets from
-    # public API)
-    # Skip validation for listing datasets as they're created lazily when query
-    # is executed
-
     if version is not None:
         dataset = session.catalog.get_dataset_with_remote_fallback(
             name,

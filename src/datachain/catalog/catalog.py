@@ -1178,6 +1178,7 @@ class Catalog:
                 name,
                 namespace_name=namespace_name,
                 project_name=project_name,
+                include_incomplete=include_incomplete,
             )
 
         return self.get_remote_dataset(namespace_name, project_name, name)
