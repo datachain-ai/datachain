@@ -10,9 +10,9 @@ def clear_cache(catalog: "Catalog"):
     catalog.cache.clear()
 
 
-def garbage_collect(catalog: "Catalog", retention_days: int | None = None):
+def garbage_collect(catalog: "Catalog"):
     temp_tables = catalog.get_temp_table_names()
-    num_versions_removed = catalog.cleanup_failed_dataset_versions(retention_days)
+    num_versions_removed = catalog.cleanup_failed_dataset_versions()
 
     total_cleaned = len(temp_tables) + num_versions_removed
 

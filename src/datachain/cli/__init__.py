@@ -97,7 +97,7 @@ def handle_command(args, catalog, client_config) -> int:
         "index": lambda: handle_index_command(args, catalog),
         "completion": lambda: handle_completion_command(args),
         "clear-cache": lambda: clear_cache(catalog),
-        "gc": lambda: garbage_collect(catalog, args.retention_days),
+        "gc": lambda: garbage_collect(catalog),
         "auth": lambda: process_auth_cli_args(args),
         "job": lambda: process_jobs_args(args),
         "pipeline": lambda: process_pipeline_args(args, catalog),

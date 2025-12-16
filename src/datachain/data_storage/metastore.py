@@ -4,7 +4,7 @@ import os
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from functools import cached_property, reduce
 from itertools import groupby
 from typing import TYPE_CHECKING, Any
@@ -320,23 +320,18 @@ class AbstractMetastore(ABC, Serializable):
 
     @abstractmethod
     def get_failed_dataset_versions_to_clean(
-        self, retention_days: int | None = None, job_id: str | None = None
+        self, job_id: str | None = None
     ) -> list[tuple[DatasetRecord, str]]:
         """
         Get failed/incomplete dataset versions that are safe to clean up.
 
         Returns dataset versions that:
         - Have status CREATED or FAILED (incomplete/failed)
-        - Were created more than retention_days ago (if retention_days specified)
         - Belong to jobs that are not running (COMPLETE, FAILED, CANCELED)
 
         Cleans both CREATED and FAILED to handle edge cases:
         - FAILED: Explicitly marked failed versions
         - CREATED: Orphaned versions from crashes/bugs (before failure marking)
-
-        Args:
-            retention_days: Number of days to retain failed versions before cleanup.
-                          If None, returns all failed versions (no age filter).
 
         Returns:
             List of (DatasetRecord, version_string) tuples. Each DatasetRecord
@@ -1498,15 +1493,13 @@ class AbstractDBMetastore(AbstractMetastore):
         return dataset
 
     def get_failed_dataset_versions_to_clean(
-        self, retention_days: int | None = None, job_id: str | None = None
+        self, job_id: str | None = None
     ) -> list[tuple[DatasetRecord, str]]:
         """
         Get failed/incomplete dataset versions that are safe to clean up.
 
         Returns dataset versions that:
         - Have status CREATED or FAILED (incomplete/failed)
-        - Were created more than retention_days ago (if retention_days
-          specified)
         - Belong to jobs that are not running (COMPLETE, FAILED, CANCELED)
         - Optionally returning them only for specific job_id
 
@@ -1543,11 +1536,6 @@ class AbstractDBMetastore(AbstractMetastore):
         )
         if job_id:
             query = query.where(j.c.id == job_id)
-
-        # Add age filter if retention_days specified
-        if retention_days is not None:
-            cutoff_date = datetime.now(timezone.utc) - timedelta(days=retention_days)
-            query = query.where(dv.c.created_at < cutoff_date)
 
         # Parse results and return (dataset, version) tuples
         results = []

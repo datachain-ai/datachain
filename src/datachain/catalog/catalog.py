@@ -960,25 +960,19 @@ class Catalog:
         """
         self.warehouse.cleanup_tables(names)
 
-    def cleanup_failed_dataset_versions(
-        self, retention_days: int | None = None, job_id: str | None = None
-    ) -> int:
+    def cleanup_failed_dataset_versions(self, job_id: str | None = None) -> int:
         """
         Clean up failed/incomplete dataset versions.
 
         Removes dataset versions that:
         - Have status CREATED or FAILED
-        - Are older than retention_days (if specified)
         - Belong to completed/failed/canceled jobs (not running)
-
-        Args:
-            retention_days: Days to retain failed versions. If None, cleans all.
 
         Returns:
             Number of removed versions
         """
         versions_to_clean = self.metastore.get_failed_dataset_versions_to_clean(
-            retention_days=retention_days, job_id=job_id
+            job_id=job_id
         )
 
         num_removed = 0

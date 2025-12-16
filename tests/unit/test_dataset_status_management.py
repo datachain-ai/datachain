@@ -166,26 +166,6 @@ def test_get_failed_dataset_versions_to_clean_no_retention(
         assert len(dataset.versions) == 1
 
 
-def test_get_failed_dataset_versions_to_clean_with_retention(
-    test_session, job, dataset_failed
-):
-    """Test get_failed_dataset_versions_to_clean with retention period."""
-    # Mark job as failed
-    test_session.catalog.metastore.set_job_status(job.id, JobStatus.FAILED)
-
-    # With retention of 30 days, recently created dataset should not be cleaned
-    to_clean = test_session.catalog.metastore.get_failed_dataset_versions_to_clean(
-        retention_days=30
-    )
-    assert dataset_failed.name not in {ds.name for ds, _ in to_clean}
-
-    # With retention of 0 days, all should be cleaned
-    to_clean = test_session.catalog.metastore.get_failed_dataset_versions_to_clean(
-        retention_days=0
-    )
-    assert dataset_failed.name in {ds.name for ds, _ in to_clean}
-
-
 def test_get_failed_dataset_versions_to_clean_skips_running_jobs(
     test_session, job, dataset_created
 ):
