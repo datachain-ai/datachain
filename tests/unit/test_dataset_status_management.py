@@ -204,19 +204,14 @@ def test_get_failed_dataset_versions_to_clean_skips_running_jobs(
 
 def test_cleanup_failed_dataset_versions(test_session, job, dataset_failed):
     """Test cleanup_failed_dataset_versions removes datasets and returns IDs."""
-    # Get the version ID before cleanup
-    version_obj = dataset_failed.get_version(dataset_failed.latest_version)
-    version_id = str(version_obj.id)
-
     # Mark job as failed
     test_session.catalog.metastore.set_job_status(job.id, JobStatus.FAILED)
 
     # Cleanup failed versions
-    cleaned_ids = test_session.catalog.cleanup_failed_dataset_versions()
+    num_removed = test_session.catalog.cleanup_failed_dataset_versions()
 
     # Should return the cleaned version ID
-    assert version_id in cleaned_ids
-    assert len(cleaned_ids) == 1
+    assert num_removed == 1
 
     # Verify dataset version is removed
     with pytest.raises(DatasetNotFoundError):

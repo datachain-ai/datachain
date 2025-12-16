@@ -962,7 +962,7 @@ class Catalog:
 
     def cleanup_failed_dataset_versions(
         self, retention_days: int | None = None, job_id: str | None = None
-    ) -> list[str]:
+    ) -> int:
         """
         Clean up failed/incomplete dataset versions.
 
@@ -975,27 +975,18 @@ class Catalog:
             retention_days: Days to retain failed versions. If None, cleans all.
 
         Returns:
-            List of cleaned version IDs (for logging/metrics)
+            Number of removed versions
         """
-        import logging
-
-        logger = logging.getLogger(__name__)
-
         versions_to_clean = self.metastore.get_failed_dataset_versions_to_clean(
             retention_days=retention_days, job_id=job_id
         )
 
-        cleaned_ids = []
+        num_removed = 0
         for dataset, version in versions_to_clean:
             try:
-                # Track version ID before deletion
-                version_obj = dataset.get_version(version)
-                if version_obj:
-                    cleaned_ids.append(str(version_obj.id))
-
                 # Remove dataset version (drops warehouse table and metastore record)
                 self.remove_dataset_version(dataset, version)
-
+                num_removed += 1
             except Exception as e:  # noqa: BLE001
                 logger.warning(
                     "Failed to clean dataset %s version %s: %s",
@@ -1004,7 +995,7 @@ class Catalog:
                     e,
                 )
 
-        return cleaned_ids
+        return num_removed
 
     def create_dataset_from_sources(
         self,
