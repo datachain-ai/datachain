@@ -1285,6 +1285,7 @@ class DatasetQuery:
         session: Session | None = None,
         in_memory: bool = False,
         update: bool = False,
+        include_incomplete: bool = False,
     ) -> None:
         self.session = Session.get(session, catalog=catalog, in_memory=in_memory)
         self.catalog = catalog or self.session.catalog
@@ -1328,6 +1329,7 @@ class DatasetQuery:
                     version=version,
                     pull_dataset=True,
                     update=update,
+                    include_incomplete=include_incomplete,
                 )
             )
 

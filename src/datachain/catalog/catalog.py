@@ -917,6 +917,7 @@ class Catalog:
                     project_name=dataset.project.name,
                     version=version,
                     catalog=self,
+                    include_incomplete=True,  # Allow reading CREATED version
                 )
                 .limit(20)
                 .to_db_records()
