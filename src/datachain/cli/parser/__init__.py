@@ -481,15 +481,6 @@ def get_parser() -> ArgumentParser:  # noqa: PLR0915
         description="Garbage collect temporary tables and failed dataset versions.",
         formatter_class=CustomHelpFormatter,
     )
-    parse_gc.add_argument(
-        "--retention-days",
-        type=int,
-        default=None,
-        help=(
-            "Clean failed/incomplete dataset versions older than this many days. "
-            "If not specified, cleans all failed versions from non-running jobs."
-        ),
-    )
     add_anon_arg(parse_gc)
 
     subp.add_parser("internal-run-udf", parents=[parent_parser])

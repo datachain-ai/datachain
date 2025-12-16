@@ -144,14 +144,14 @@ def test_status_filtering_hides_non_complete_versions(
     assert dataset_failed.name in all_dataset_names
 
 
-def test_get_failed_dataset_versions_to_clean_no_retention(
+def test_get_failed_dataset_versions_to_clean(
     test_session, job, dataset_created, dataset_failed, dataset_complete
 ):
-    """Test get_failed_dataset_versions_to_clean without retention period."""
+    """Test get_failed_dataset_versions_to_clean."""
     # Mark job as failed
     test_session.catalog.metastore.set_job_status(job.id, JobStatus.FAILED)
 
-    # Get failed versions to clean (no retention)
+    # Get failed versions to clean
     to_clean = test_session.catalog.metastore.get_failed_dataset_versions_to_clean()
 
     # Should return CREATED and FAILED datasets, not COMPLETE
