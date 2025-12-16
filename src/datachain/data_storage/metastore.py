@@ -319,11 +319,12 @@ class AbstractMetastore(ABC, Serializable):
         """
 
     @abstractmethod
-    def get_failed_dataset_versions_to_clean(
+    def get_incomplete_dataset_versions(
         self, job_id: str | None = None
     ) -> list[tuple[DatasetRecord, str]]:
         """
-        Get failed/incomplete dataset versions that are safe to clean up.
+        Get failed/incomplete dataset versions that are in complete job. This is
+        used to get versions to cleanup.
 
         Returns dataset versions that:
         - Have status CREATED or FAILED (incomplete/failed)
@@ -1492,21 +1493,9 @@ class AbstractDBMetastore(AbstractMetastore):
         dataset.remove_version(version)
         return dataset
 
-    def get_failed_dataset_versions_to_clean(
+    def get_incomplete_dataset_versions(
         self, job_id: str | None = None
     ) -> list[tuple[DatasetRecord, str]]:
-        """
-        Get failed/incomplete dataset versions that are safe to clean up.
-
-        Returns dataset versions that:
-        - Have status CREATED or FAILED (incomplete/failed)
-        - Belong to jobs that are not running (COMPLETE, FAILED, CANCELED)
-        - Optionally returning them only for specific job_id
-
-        Returns:
-            List of (DatasetRecord, version_string) tuples. Each DatasetRecord
-            contains only one version (the failed version to clean).
-        """
         n = self._namespaces
         p = self._projects
         d = self._datasets

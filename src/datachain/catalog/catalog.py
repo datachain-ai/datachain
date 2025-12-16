@@ -971,7 +971,7 @@ class Catalog:
         Returns:
             Number of removed versions
         """
-        versions_to_clean = self.metastore.get_failed_dataset_versions_to_clean(
+        versions_to_clean = self.metastore.get_incomplete_dataset_versions(
             job_id=job_id
         )
 
