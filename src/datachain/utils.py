@@ -148,7 +148,7 @@ class DatasetIdentifier:
             v for v in [self.namespace, self.project, self.name] if v
         )
         if self.version:
-            dataset_name += f"@v{self.version}"
+            dataset_name += f"@{self.version}"
         return dataset_name
 
 
