@@ -6,6 +6,7 @@ import shtab
 from datachain.cli.utils import BooleanOptionalAction
 
 from .job import add_jobs_parser
+from .pipeline import add_pipeline_parser
 from .studio import add_auth_parser
 from .utils import (
     FIND_COLUMNS,
@@ -136,6 +137,7 @@ def get_parser() -> ArgumentParser:  # noqa: PLR0915
 
     add_auth_parser(subp, parent_parser)
     add_jobs_parser(subp, parent_parser)
+    add_pipeline_parser(subp, parent_parser)
 
     datasets_parser = subp.add_parser(
         "dataset",

@@ -47,7 +47,7 @@ To add a new project, follow these steps.
 
    <admon type = "info">
 
-   If your DVC repo is in a sub-directory of a
+   If your repo is in a sub-directory of a
    [monorepo](https://en.wikipedia.org/wiki/Monorepo), then you should specify
    the full path to the sub-directory in the `Project directory` setting.
 
