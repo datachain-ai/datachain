@@ -1,12 +1,16 @@
 import hashlib
 import inspect
+import logging
 import textwrap
 from collections.abc import Sequence
 from typing import TypeAlias, TypeVar
+from uuid import uuid4
 
 from sqlalchemy.sql.elements import ClauseElement, ColumnElement
 
 from datachain import json
+
+logger = logging.getLogger("datachain")
 
 T = TypeVar("T", bound=ColumnElement)
 ColumnLike: TypeAlias = str | T
@@ -99,9 +103,10 @@ def hash_callable(func):
     Limitations and Edge Cases:
     - **Mock objects**: Cannot reliably hash Mock(side_effect=...) because the
       side_effect is not discoverable via inspection. Use regular functions instead.
-    - **Built-in functions** (len, str, etc.): Will raise AttributeError because
-      they lack __code__ attribute
-    - **C extensions**: Cannot access source or bytecode, will fail
+    - **Built-in functions** (len, str, etc.): Cannot access __code__ attribute.
+      Returns a random hash that changes on each call.
+    - **C extensions**: Cannot access source or bytecode. Returns a random hash
+      that changes on each call.
     - **Dynamically generated callables**: If __call__ is created via exec/eval
       or the behavior depends on runtime state, the hash won't reflect changes
       in behavior. Only the method's code is hashed, not captured state.
@@ -110,11 +115,12 @@ def hash_callable(func):
         func: A callable object (function, lambda, method, or object with __call__)
 
     Returns:
-        str: SHA256 hexdigest of the callable's code and metadata
+        str: SHA256 hexdigest of the callable's code and metadata. For unhashable
+        callables (C extensions, built-ins), returns a hash of a random UUID that
+        changes on each invocation.
 
     Raises:
         TypeError: If func is not callable
-        AttributeError: If func lacks __code__ (e.g., built-ins, C extensions)
 
     Examples:
         >>> def my_func(x): return x * 2
@@ -152,10 +158,26 @@ def hash_callable(func):
             payload = textwrap.dedent("".join(lines)).strip()
         except (OSError, TypeError):
             # Fallback: bytecode if source not available
-            payload = func.__code__.co_code
+            try:
+                payload = func.__code__.co_code
+            except AttributeError:
+                # C extensions, built-ins - use random UUID
+                # Returns different hash on each call to avoid caching unhashable
+                # functions
+                logger.warning(
+                    "Cannot hash callable %r (likely C extension or built-in). "
+                    "Returning random hash.",
+                    func,
+                )
+                payload = f"unhashable-{uuid4()}"
     else:
         # For lambdas, fall back directly to bytecode
-        payload = func.__code__.co_code
+        try:
+            payload = func.__code__.co_code
+        except AttributeError:
+            # Unlikely for lambdas, but handle it just in case
+            logger.warning("Cannot hash lambda %r. Returning random hash.", func)
+            payload = f"unhashable-{uuid4()}"
 
     # Normalize annotations
     annotations = {
