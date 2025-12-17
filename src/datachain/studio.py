@@ -8,10 +8,13 @@ from typing import TYPE_CHECKING
 import dateparser
 import tabulate
 
-from datachain import semver
 from datachain.config import Config, ConfigLevel
 from datachain.data_storage.job import JobStatus
-from datachain.dataset import QUERY_DATASET_PREFIX, parse_dataset_name
+from datachain.dataset import (
+    QUERY_DATASET_PREFIX,
+    parse_dataset_name,
+    parse_dataset_with_version,
+)
 from datachain.error import DataChainError
 from datachain.remote.studio import StudioClient
 from datachain.utils import STUDIO_URL
@@ -561,25 +564,15 @@ def list_clusters(team_name: str | None):
     print(tabulate.tabulate(rows, headers="keys", tablefmt="grid"))
 
 
-def _parse_dataset_with_version(dataset_input: str) -> dict[str, str]:
-    parts = dataset_input.rsplit("@", 1)
-
-    if len(parts) == 2 and parts[1]:
-        try:
-            semver.validate(parts[1])
-            return {"dataset_name": parts[0], "version": parts[1]}
-        except ValueError:
-            pass
-
-    return {"dataset_name": dataset_input, "version": ""}
-
-
 def create_pipeline(
     catalog: "Catalog",
     dataset_names: list[str],
     team_name: str | None = None,
 ):
-    datasets = [_parse_dataset_with_version(name) for name in dataset_names]
+    dataset_versions = [parse_dataset_with_version(name) for name in dataset_names]
+    datasets = [
+        {"dataset_name": name, "version": version} for name, version in dataset_versions
+    ]
 
     client = StudioClient(team=team_name)
     response = client.create_pipeline(
