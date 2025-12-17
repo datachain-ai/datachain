@@ -329,6 +329,7 @@ When running locally:
 
 - **Script-based:** Code must be run as a script (not interactively or as a module).
 - **Same script path:** The script must be run from the same absolute path for linking to previous runs to work.
+- **Threading/Multiprocessing:** Checkpoints are automatically disabled when Python threading or multiprocessing is detected to prevent race conditions. Any checkpoints created before threading starts remain valid for future runs. DataChain's built-in `parallel` setting for UDF execution is not affected by this limitation.
 
 These limitations don't apply when running on Studio, where job linking between runs is handled automatically by the platform.
 

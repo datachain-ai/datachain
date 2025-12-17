@@ -502,11 +502,13 @@ class AbstractMetastore(ABC, Serializable):
         _hash: str,
         partial: bool = False,
         conn: Any | None = None,
-    ) -> Checkpoint:
+    ) -> Checkpoint | None:
         """
         Creates a new checkpoint or returns existing one if already exists.
         This is idempotent - calling it multiple times with the same job_id and hash
         will not create duplicates.
+
+        Returns None if checkpoints are disabled due to threading/multiprocessing.
         """
 
     @abstractmethod
@@ -1973,7 +1975,13 @@ class AbstractDBMetastore(AbstractMetastore):
         _hash: str,
         partial: bool = False,
         conn: Any | None = None,
-    ) -> Checkpoint:
+    ) -> Checkpoint | None:
+        from datachain.query.session import Session
+
+        # Skip checkpoint creation if threading/multiprocessing detected
+        if Session._check_threading_disable_checkpoints():
+            return None
+
         query = self._checkpoints_insert().values(
             id=str(uuid4()),
             job_id=job_id,
@@ -1992,7 +2000,7 @@ class AbstractDBMetastore(AbstractMetastore):
 
         self.db.execute(query, conn=conn)
 
-        return self.find_checkpoint(job_id, _hash, partial=partial, conn=conn)  # type: ignore[return-value]
+        return self.find_checkpoint(job_id, _hash, partial=partial, conn=conn)
 
     def list_checkpoints(self, job_id: str, conn=None) -> Iterator[Checkpoint]:
         """List checkpoints by job id."""
@@ -2016,6 +2024,12 @@ class AbstractDBMetastore(AbstractMetastore):
         """
         Tries to find checkpoint for a job with specific hash and optionally partial
         """
+        from datachain.query.session import Session
+
+        # Skip checkpoint lookup if threading/multiprocessing detected
+        if Session._check_threading_disable_checkpoints():
+            return None
+
         ch = self._checkpoints
         query = self._checkpoints_select(ch).where(
             ch.c.job_id == job_id, ch.c.hash == _hash, ch.c.partial == partial

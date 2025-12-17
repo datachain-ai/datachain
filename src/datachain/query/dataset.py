@@ -890,16 +890,21 @@ class UDFStep(Step, ABC):
         Returns tuple of (output_table, input_table).
         """
         # Create checkpoint with partial_hash (includes output schema)
+        # Note: checkpoint may be None if threading/multiprocessing detected
         checkpoint = self.metastore.get_or_create_checkpoint(
             self.job.id, partial_hash, partial=True
         )
 
+        # Use checkpoint hash if available, otherwise use partial_hash directly
+        # (checkpoint hash is the same as partial_hash anyway)
+        checkpoint_hash = checkpoint.hash if checkpoint else partial_hash
+
         # Get or create input table (reuse from ancestors if available)
-        input_table = self.get_or_create_input_table(query, checkpoint.hash)
+        input_table = self.get_or_create_input_table(query, checkpoint_hash)
 
         # Create job-specific partial output table with sys__input_id column
         partial_output_table = self.create_output_table(
-            UDFStep.partial_output_table_name(self.job.id, checkpoint.hash),
+            UDFStep.partial_output_table_name(self.job.id, checkpoint_hash),
             is_partial=True,
         )
 
