@@ -25,6 +25,7 @@ class Job:
     error_stack: str = ""
     parent_job_id: str | None = None
     rerun_from_job_id: str | None = None
+    run_group_id: str | None = None
 
     @classmethod
     def parse(
@@ -44,6 +45,7 @@ class Job:
         metrics: str,
         parent_job_id: str | None,
         rerun_from_job_id: str | None = None,
+        run_group_id: str | None = None,
     ) -> "Job":
         return cls(
             str(id),
@@ -61,4 +63,5 @@ class Job:
             error_stack,
             str(parent_job_id) if parent_job_id else None,
             str(rerun_from_job_id) if rerun_from_job_id else None,
+            str(run_group_id) if run_group_id else None,
         )

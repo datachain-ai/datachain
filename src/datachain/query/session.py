@@ -164,6 +164,7 @@ class Session:
                 status=JobStatus.RUNNING,
                 python_version=python_version,
                 rerun_from_job_id=parent.id if parent else None,
+                run_group_id=parent.run_group_id if parent else None,
             )
             Session._CURRENT_JOB = self.catalog.metastore.get_job(job_id)
             Session._OWNS_JOB = True
