@@ -9,6 +9,7 @@ import sys
 import time
 from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, TypeVar
 
@@ -21,6 +22,8 @@ from pydantic import BaseModel
 if TYPE_CHECKING:
     import pandas as pd
     from typing_extensions import Self
+
+    from datachain.dataset import DatasetDependency
 
 
 DEFAULT_BATCH_SIZE = 2000
@@ -106,6 +109,42 @@ class DataChainDir:
             else:
                 raise NotADirectoryError(root)
         return instance
+
+
+@dataclass
+class DatasetIdentifier:
+    namespace: str
+    project: str
+    name: str
+    version: str
+
+    def __hash__(self):
+        return hash(f"{self.namespace}_{self.project}_{self.name}_{self.version}")
+
+    def __eq__(self, other):
+        if not isinstance(other, DatasetIdentifier):
+            return False
+        return (
+            self.namespace == other.namespace
+            and self.project == other.project
+            and self.name == other.name
+            and self.version == other.version
+        )
+
+    @classmethod
+    def from_dataset_dependency(
+        cls, dataset_dependency: "DatasetDependency"
+    ) -> "DatasetIdentifier":
+        return cls(
+            namespace=dataset_dependency.namespace,
+            project=dataset_dependency.project,
+            name=dataset_dependency.name,
+            version=dataset_dependency.version,
+        )
+
+    def __str__(self) -> str:
+        """Format DatasetIdentifier as a string: namespace.project.name@version"""
+        return f"{self.namespace}.{self.project}.{self.name}@{self.version}"
 
 
 def system_config_dir():

@@ -18,6 +18,8 @@ from datachain.utils import STUDIO_URL
 if TYPE_CHECKING:
     from argparse import Namespace
 
+    from datachain.catalog import Catalog
+
 POST_LOGIN_MESSAGE = (
     "Once you've logged in, return here "
     "and you'll be ready to start using DataChain with Studio."
@@ -64,6 +66,43 @@ def process_jobs_args(args: "Namespace"):
 
     if args.cmd == "clusters":
         return list_clusters(args.team)
+
+    raise DataChainError(f"Unknown command '{args.cmd}'.")
+
+
+def process_pipeline_args(args: "Namespace", catalog: "Catalog"):  # noqa: PLR0911
+    if args.cmd is None:
+        print(
+            f"Use 'datachain {args.command} --help' to see available options",
+            file=sys.stderr,
+        )
+        return 1
+
+    if args.cmd == "create":
+        return create_pipeline(
+            catalog,
+            args.dataset,
+            args.version,
+            args.team,
+        )
+
+    if args.cmd == "status":
+        return get_pipeline_status(args.name, args.team)
+
+    if args.cmd == "list":
+        return list_pipelines(args.team, args.status, args.limit, args.search)
+
+    if args.cmd == "pause":
+        return pause_pipeline(args.name, args.team)
+    if args.cmd == "resume":
+        return resume_pipeline(args.name, args.team)
+
+    if args.cmd == "remove-job":
+        return remove_job_from_pipeline(
+            name=args.name,
+            job_id=args.job_id,
+            team_name=args.team,
+        )
 
     raise DataChainError(f"Unknown command '{args.cmd}'.")
 
@@ -520,3 +559,130 @@ def list_clusters(team_name: str | None):
     ]
 
     print(tabulate.tabulate(rows, headers="keys", tablefmt="grid"))
+
+
+def create_pipeline(
+    catalog: "Catalog",
+    dataset_name: str,
+    dataset_version: str | None = None,
+    team_name: str | None = None,
+):
+    client = StudioClient(team=team_name)
+    response = client.create_pipeline(dataset_name, dataset_version, review=True)
+    if not response.ok:
+        raise DataChainError(response.message)
+
+    pipeline = response.data["pipeline"]
+    print(
+        f"Pipeline created under name: {pipeline['name']} from:"
+        f" {pipeline['triggered_from']} in paused state for review."
+    )
+    print(
+        "Check the pipeline either in Studio or using `datachain pipeline status`, "
+        "and resume it when ready using `datachain pipeline resume`"
+    )
+
+    return 0
+
+
+def get_pipeline_status(name: str, team_name: str | None):
+    client = StudioClient(team=team_name)
+    response = client.get_pipeline(name)
+    if not response.ok:
+        raise DataChainError(response.message)
+
+    data = response.data
+
+    # Display pipeline summary
+    print(f"Name: {data.get('name', 'N/A')}")
+    print(f"Status: {data.get('status', 'N/A')}")
+
+    completed = data.get("completed", 0)
+    total = data.get("total", 0)
+    print(f"Progress: {completed}/{total} jobs completed")
+
+    if data.get("error_message"):
+        print(f"Error: {data.get('error_message')}")
+
+    # Display job runs
+    job_runs = data.get("job_runs", [])
+    if job_runs:
+        print("\nJob Runs:")
+        rows = [
+            {
+                "Name": job_run.get("name", "N/A"),
+                "Status": job_run.get("status", "N/A"),
+                "Job ID": job_run.get("created_job_id", "N/A"),
+            }
+            for job_run in job_runs
+        ]
+        print(tabulate.tabulate(rows, headers="keys", tablefmt="grid"))
+    else:
+        print("\nNo job runs found")
+
+    return 0
+
+
+def list_pipelines(
+    team_name: str | None,
+    status: str | None = None,
+    limit: int = 20,
+    search: str | None = None,
+):
+    client = StudioClient(team=team_name)
+    response = client.list_pipelines(status, limit, search)
+    if not response.ok:
+        raise DataChainError(response.message)
+
+    data = response.data
+    if data:
+        rows = [
+            {
+                "Name": pipeline.get("name", "N/A"),
+                "Status": pipeline.get("status", "N/A"),
+                "Target": pipeline.get("triggered_from", "N/A"),
+                "Progress": (
+                    f"{pipeline.get('completed', 0)}/{pipeline.get('total', 0)}"
+                ),
+                "Created At": pipeline.get("created_at", "N/A")[:19],
+            }
+            for pipeline in data
+        ]
+        print(tabulate.tabulate(rows, headers="keys", tablefmt="grid"))
+    else:
+        print("No pipelines found")
+
+    return 0
+
+
+def pause_pipeline(name: str, team_name: str | None):
+    client = StudioClient(team=team_name)
+    response = client.pause_pipeline(name)
+    if not response.ok:
+        raise DataChainError(response.message)
+
+    print(f"Pipeline {name} paused")
+
+    return 0
+
+
+def resume_pipeline(name: str, team_name: str | None):
+    client = StudioClient(team=team_name)
+    response = client.resume_pipeline(name)
+    if not response.ok:
+        raise DataChainError(response.message)
+
+    print(f"Pipeline {name} resumed")
+
+    return 0
+
+
+def remove_job_from_pipeline(name: str, job_id: str, team_name: str | None):
+    client = StudioClient(team=team_name)
+    response = client.remove_job_from_pipeline(name, job_id)
+    if not response.ok:
+        raise DataChainError(response.message)
+
+    print(f"Job {job_id} removed from pipeline {name}")
+
+    return 0
