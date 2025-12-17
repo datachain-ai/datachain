@@ -128,20 +128,13 @@ def test_status_filtering_hides_non_complete_versions(
 ):
     """Test that non-COMPLETE dataset versions are hidden from queries."""
     # Test with include_incomplete=False (what public API/CLI uses)
-    datasets = list(test_session.catalog.ls_datasets(include_incomplete=False))
+    datasets = list(test_session.catalog.ls_datasets())
     dataset_names = {d.name for d in datasets}
 
     # Only COMPLETE dataset should be visible
     assert dataset_complete.name in dataset_names
     assert dataset_created.name not in dataset_names
     assert dataset_failed.name not in dataset_names
-
-    # Verify we can still get all datasets with include_incomplete=True (internal use)
-    all_datasets = list(test_session.catalog.ls_datasets(include_incomplete=True))
-    all_dataset_names = {d.name for d in all_datasets}
-    assert dataset_complete.name in all_dataset_names
-    assert dataset_created.name in all_dataset_names
-    assert dataset_failed.name in all_dataset_names
 
 
 def test_get_incomplete_dataset_versions(

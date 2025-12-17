@@ -341,7 +341,7 @@ class AbstractMetastore(ABC, Serializable):
 
     @abstractmethod
     def list_datasets(
-        self, project_id: int | None = None, include_incomplete: bool = True
+        self, project_id: int | None = None
     ) -> Iterator[DatasetListRecord]:
         """Lists all datasets in some project or in all projects."""
 
@@ -354,7 +354,6 @@ class AbstractMetastore(ABC, Serializable):
         self,
         prefix: str,
         project_id: int | None = None,
-        include_incomplete: bool = True,
     ) -> Iterator["DatasetListRecord"]:
         """
         Lists all datasets which names start with prefix in some project or in all
@@ -1119,7 +1118,10 @@ class AbstractDBMetastore(AbstractMetastore):
         self.db.execute(query)
 
         return self.get_dataset(
-            name, namespace_name=project.namespace.name, project_name=project.name
+            name,
+            namespace_name=project.namespace.name,
+            project_name=project.name,
+            include_incomplete=True,
         )
 
     def create_dataset_version(  # noqa: PLR0913
@@ -1395,12 +1397,12 @@ class AbstractDBMetastore(AbstractMetastore):
         )
 
     def list_datasets(
-        self, project_id: int | None = None, include_incomplete: bool = True
+        self, project_id: int | None = None
     ) -> Iterator["DatasetListRecord"]:
         d = self._datasets
-        query = self._base_list_datasets_query(
-            include_incomplete=include_incomplete
-        ).order_by(self._datasets.c.name, self._datasets_versions.c.version)
+        query = self._base_list_datasets_query(include_incomplete=False).order_by(
+            self._datasets.c.name, self._datasets_versions.c.version
+        )
         if project_id:
             query = query.where(d.c.project_id == project_id)
         yield from self._parse_dataset_list(self.db.execute(query))
@@ -1419,11 +1421,10 @@ class AbstractDBMetastore(AbstractMetastore):
         self,
         prefix: str,
         project_id: int | None = None,
-        include_incomplete: bool = True,
         conn=None,
     ) -> Iterator["DatasetListRecord"]:
         d = self._datasets
-        query = self._base_list_datasets_query(include_incomplete=include_incomplete)
+        query = self._base_list_datasets_query(include_incomplete=False)
         if project_id:
             query = query.where(d.c.project_id == project_id)
         query = query.where(self._datasets.c.name.startswith(prefix))

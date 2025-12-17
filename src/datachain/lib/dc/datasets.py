@@ -266,7 +266,7 @@ def datasets(
     datasets_values = [
         DatasetInfo.from_models(d, v, j)
         for d, v, j in catalog.list_datasets_versions(
-            include_listing=include_listing, studio=studio, include_incomplete=False
+            include_listing=include_listing, studio=studio
         )
     ]
     datasets_values = [d for d in datasets_values if not d.is_temp]

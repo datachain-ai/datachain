@@ -649,7 +649,10 @@ class Catalog:
                 assert ds_namespace
                 assert ds_project
                 dataset = self.get_dataset(
-                    ds_name, namespace_name=ds_namespace, project_name=ds_project
+                    ds_name,
+                    namespace_name=ds_namespace,
+                    project_name=ds_project,
+                    include_incomplete=False,
                 )
                 if not ds_version:
                     ds_version = dataset.latest_version
@@ -1191,6 +1194,7 @@ class Catalog:
                     dataset.name,
                     namespace_name=dataset.project.namespace.name,
                     project_name=dataset.project.name,
+                    include_incomplete=False,
                 )
         raise DatasetNotFoundError(f"Dataset with version uuid {uuid} not found.")
 
@@ -1257,6 +1261,7 @@ class Catalog:
             name,
             namespace_name=namespace_name,
             project_name=project_name,
+            include_incomplete=False,
         )
         dataset_version = dataset.get_version(version)
         dataset_id = dataset.id
@@ -1280,7 +1285,6 @@ class Catalog:
         include_listing: bool = False,
         studio: bool = False,
         project: Project | None = None,
-        include_incomplete: bool = True,
     ) -> Iterator[DatasetListRecord]:
         from datachain.remote.studio import StudioClient
 
@@ -1301,12 +1305,10 @@ class Catalog:
             )
         elif prefix:
             datasets = self.metastore.list_datasets_by_prefix(
-                prefix, project_id=project_id, include_incomplete=include_incomplete
+                prefix, project_id=project_id
             )
         else:
-            datasets = self.metastore.list_datasets(
-                project_id=project_id, include_incomplete=include_incomplete
-            )
+            datasets = self.metastore.list_datasets(project_id=project_id)
 
         for d in datasets:
             if not d.is_bucket_listing or include_listing:
@@ -1319,7 +1321,6 @@ class Catalog:
         with_job: bool = True,
         studio: bool = False,
         project: Project | None = None,
-        include_incomplete: bool = True,
     ) -> Iterator[tuple[DatasetListRecord, "DatasetListVersion", "Job | None"]]:
         """Iterate over all dataset versions with related jobs."""
         datasets = list(
@@ -1328,7 +1329,6 @@ class Catalog:
                 include_listing=include_listing,
                 studio=studio,
                 project=project,
-                include_incomplete=include_incomplete,
             )
         )
 
@@ -1652,7 +1652,10 @@ class Catalog:
 
         try:
             local_dataset = self.get_dataset(
-                local_ds_name, namespace_name=namespace.name, project_name=project.name
+                local_ds_name,
+                namespace_name=namespace.name,
+                project_name=project.name,
+                include_incomplete=True,
             )
             if local_dataset and local_dataset.has_version(local_ds_version):
                 raise DataChainError(

@@ -1406,14 +1406,18 @@ class DatasetQuery:
         if self.list_ds_name and not self.starting_step:
             listing_ds = None
             try:
-                listing_ds = self.catalog.get_dataset(self.list_ds_name)
+                listing_ds = self.catalog.get_dataset(
+                    self.list_ds_name, include_incomplete=False
+                )
             except DatasetNotFoundError:
                 pass
 
             if not listing_ds or self.update or listing_dataset_expired(listing_ds):
                 assert self.listing_fn
                 self.listing_fn()
-                listing_ds = self.catalog.get_dataset(self.list_ds_name)
+                listing_ds = self.catalog.get_dataset(
+                    self.list_ds_name, include_incomplete=False
+                )
 
             # at this point we know what is our starting listing dataset name
             self._set_starting_step(listing_ds)  # type: ignore [arg-type]
@@ -1896,6 +1900,7 @@ class DatasetQuery:
                                     dep.name,
                                     namespace_name=dep.namespace,
                                     project_name=dep.project,
+                                    include_incomplete=False,
                                 ),
                                 dep.version,
                             )
@@ -1946,6 +1951,7 @@ class DatasetQuery:
                     name,
                     namespace_name=project.namespace.name,
                     project_name=project.name,
+                    include_incomplete=True,
                 ).has_version(version)
             ):
                 raise RuntimeError(f"Dataset {name} already has version {version}")
@@ -2005,6 +2011,7 @@ class DatasetQuery:
                                 dep.name,
                                 namespace_name=dep.namespace,
                                 project_name=dep.project,
+                                include_incomplete=False,
                             ),
                             dep.version,
                         )
