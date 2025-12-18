@@ -28,6 +28,7 @@ from datachain.sql.types import (
     Int64,
     String,
 )
+from datachain.utils import DatasetIdentifier
 
 
 def test_dataset_table_compilation():
@@ -181,6 +182,44 @@ def test_parse_dataset_name(full_name, namespace, project, name):
 def test_parse_dataset_name_empty_name():
     with pytest.raises(InvalidDatasetNameError):
         assert parse_dataset_name(None)
+
+
+@pytest.mark.parametrize(
+    "dataset_name,expected_namespace,expected_project,expected_name,expected_version",
+    [
+        ("@namespace.project.dataset", "@namespace", "project", "dataset", None),
+        (
+            "@namespace.project.dataset@1.0.0",
+            "@namespace",
+            "project",
+            "dataset",
+            "1.0.0",
+        ),
+        ("dataset@1.0.0", None, None, "dataset", "1.0.0"),
+        ("dataset", None, None, "dataset", None),
+    ],
+)
+def test_catalog_parse_dataset_name(
+    catalog,
+    dataset_name,
+    expected_namespace,
+    expected_project,
+    expected_name,
+    expected_version,
+):
+    result = catalog.parse_dataset_name(dataset_name)
+
+    # Get default namespace and project from catalog if not specified
+    if expected_namespace is None:
+        expected_namespace = catalog.metastore.default_namespace_name
+    if expected_project is None:
+        expected_project = catalog.metastore.default_project_name
+
+    assert isinstance(result, DatasetIdentifier)
+    assert result.namespace == expected_namespace
+    assert result.project == expected_project
+    assert result.name == expected_name
+    assert result.version == expected_version
 
 
 def test_parse_dataset_schema():
