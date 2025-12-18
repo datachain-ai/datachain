@@ -13,7 +13,6 @@ from datachain.data_storage.job import JobStatus
 from datachain.dataset import (
     QUERY_DATASET_PREFIX,
     parse_dataset_name,
-    parse_dataset_with_version,
 )
 from datachain.error import DataChainError
 from datachain.remote.studio import StudioClient
@@ -569,10 +568,7 @@ def create_pipeline(
     dataset_names: list[str],
     team_name: str | None = None,
 ):
-    dataset_versions = [parse_dataset_with_version(name) for name in dataset_names]
-    datasets = [
-        {"dataset_name": name, "version": version} for name, version in dataset_versions
-    ]
+    datasets = [{"dataset_name": name} for name in dataset_names]
 
     client = StudioClient(team=team_name)
     response = client.create_pipeline(
