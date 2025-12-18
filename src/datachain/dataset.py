@@ -88,6 +88,18 @@ def parse_dataset_name(name: str) -> tuple[str | None, str | None, str]:
     return namespace_name, project_name, name
 
 
+def parse_dataset_with_version(dataset_input: str) -> tuple[str, str | None]:
+    parts = dataset_input.rsplit("@", 1)
+
+    if len(parts) == 2 and parts[1]:
+        try:
+            semver.validate(parts[1])
+            return parts[0], parts[1]
+        except ValueError:
+            pass
+    return dataset_input, None
+
+
 def parse_schema(ct: dict[str, Any]) -> dict[str, SQLType | type[SQLType]]:
     """Parse dataset schema from dictionary representation.
 
