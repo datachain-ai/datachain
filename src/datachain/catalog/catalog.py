@@ -31,6 +31,7 @@ from datachain.dataset import (
     create_dataset_uri,
     parse_dataset_name,
     parse_dataset_uri,
+    parse_dataset_with_version,
     parse_schema,
 )
 from datachain.error import (
@@ -46,7 +47,7 @@ from datachain.node import DirType, Node, NodeWithPath
 from datachain.nodes_thread_pool import NodesThreadPool
 from datachain.project import Project
 from datachain.sql.types import DateTime, SQLType
-from datachain.utils import DataChainDir
+from datachain.utils import DataChainDir, DatasetIdentifier
 
 from .datasource import DataSource
 from .dependency import build_dependency_hierarchy, populate_nested_dependencies
@@ -1062,6 +1063,29 @@ class Catalog:
         )
 
         return namespace_name, project_name, name
+
+    def parse_dataset_name(
+        self,
+        dataset_name: str,
+        namespace_name: str | None = None,
+        project_name: str | None = None,
+        version: str | None = None,
+    ) -> DatasetIdentifier:
+        if not version:
+            dataset_name, version = parse_dataset_with_version(dataset_name)
+
+        namespace, project, name = self.get_full_dataset_name(
+            dataset_name,
+            namespace_name=namespace_name,
+            project_name=project_name,
+        )
+
+        return DatasetIdentifier(
+            namespace=namespace,
+            project=project,
+            name=name,
+            version=version,
+        )
 
     def get_dataset(
         self,
