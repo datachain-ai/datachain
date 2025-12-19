@@ -394,7 +394,6 @@ class SQLiteMetastore(AbstractDBMetastore):
             self._init_meta_table()
             self._init_meta_schema_value()
             self._check_schema_version()
-            self._run_custom_migrations()
             self._init_tables()
             self._init_namespaces_projects()
 
@@ -472,60 +471,6 @@ class SQLiteMetastore(AbstractDBMetastore):
             .on_conflict_do_nothing(index_elements=["id"])
         )
         self.db.execute(stmt)
-
-    def _run_custom_migrations(self) -> None:
-        """
-        This is needed sometimes since we don't have automatic DB migrations set up
-        e.g with alembic. Alternative is that user drops whole DB and re-create which
-        is not really ideal.
-        """
-        self._migrate_checkpoints_if_needed()
-
-    def _migrate_checkpoints_if_needed(self) -> None:
-        """
-        Drop checkpoints table if schema has changed.
-
-        Checkpoints table schema changed to update the unique constraint
-        from (job_id, hash) to (job_id, hash, partial). Since checkpoints
-        are ephemeral and can be safely recreated, we drop the old table
-        if it exists with the old schema.
-        """
-        import logging
-        import re
-
-        from sqlalchemy import text
-
-        logger = logging.getLogger("datachain")
-
-        try:
-            if self.db.has_table(self.CHECKPOINTS_TABLE):
-                # Get the CREATE TABLE statement
-                result = self.db.execute(
-                    text(
-                        "SELECT sql FROM sqlite_master "
-                        "WHERE type='table' AND name='checkpoints'"
-                    )
-                )
-                row = next(result, None)
-
-                if row and row[0]:
-                    create_sql = row[0]
-
-                    # Check if it has the NEW constraint: UNIQUE (job_id, hash, partial)
-                    pattern = r"UNIQUE\s*\(\s*job_id\s*,\s*hash\s*,\s*partial\s*\)"
-                    has_new_constraint = bool(
-                        re.search(pattern, create_sql, re.IGNORECASE)
-                    )
-
-                    if not has_new_constraint:
-                        # Drop the old table - it will be recreated with new schema
-                        self.db.execute(text(f"DROP TABLE {self.CHECKPOINTS_TABLE}"))
-                        logger.info(
-                            "Dropped checkpoints table due to schema migration "
-                            "(updated unique constraint to include 'partial' column)"
-                        )
-        except Exception as e:  # noqa: BLE001
-            logger.debug("Skipping checkpoints migration: %s", e)
 
     def _init_tables(self) -> None:
         """Initialize tables."""

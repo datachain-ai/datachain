@@ -565,7 +565,7 @@ class AbstractDBMetastore(AbstractMetastore):
     DATASET_DEPENDENCY_TABLE = "datasets_dependencies"
     DATASET_VERSION_JOBS_TABLE = "dataset_version_jobs"
     JOBS_TABLE = "jobs"
-    CHECKPOINTS_TABLE = "checkpoints"
+    CHECKPOINTS_TABLE = "checkpoints_v2"
 
     db: "DatabaseEngine"
 
