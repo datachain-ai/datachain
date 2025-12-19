@@ -303,10 +303,10 @@ def test_generator_incomplete_input_recovery(test_session):
     def gen_multiple(num) -> Iterator[int]:
         """Generator that yields 5 outputs per input."""
         processed_inputs.append(num)
-        # Fail on input 4 on first run only
-        if num == 4 and run_count[0] == 0:
-            raise Exception("Simulated crash")
         for i in range(5):
+            # Fail on input 4 after yielding 2 partial outputs (on first run only)
+            if num == 4 and i == 2 and run_count[0] == 0:
+                raise Exception("Simulated crash")
             yield num * 100 + i
 
     dc.read_values(num=[1, 2, 3, 4], session=test_session).save("nums")
@@ -318,6 +318,7 @@ def test_generator_incomplete_input_recovery(test_session):
     with pytest.raises(Exception, match="Simulated crash"):
         (
             dc.read_dataset("nums", session=test_session)
+            .order_by("num")  # Ensure deterministic ordering
             .settings(batch_size=2)  # Small batch for partial commits
             .gen(result=gen_multiple, output=int)
             .save("results")
@@ -359,6 +360,7 @@ def test_generator_incomplete_input_recovery(test_session):
     # Should complete successfully
     (
         dc.read_dataset("nums", session=test_session)
+        .order_by("num")  # Ensure deterministic ordering
         .settings(batch_size=2)
         .gen(result=gen_multiple, output=int)
         .save("results")
@@ -458,10 +460,11 @@ def test_generator_sys_partial_flag_correctness(test_session):
 
     def gen_multiple(num) -> Iterator[int]:
         """Generator that yields multiple outputs per input."""
-        # Fail on input 4 (after successfully processing inputs 1, 2, 3)
-        if num == 4:
-            raise Exception("Intentional failure to preserve partial table")
         for i in range(5):  # Each input yields 5 outputs
+            # Fail on input 4 after yielding 2 partial outputs
+            # (after successfully processing inputs 1, 2, 3)
+            if num == 4 and i == 2:
+                raise Exception("Intentional failure to preserve partial table")
             yield num * 100 + i
 
     dc.read_values(num=[1, 2, 3, 4], session=test_session).save("nums")
@@ -473,6 +476,7 @@ def test_generator_sys_partial_flag_correctness(test_session):
     with pytest.raises(Exception):  # noqa: B017
         (
             dc.read_dataset("nums", session=test_session)
+            .order_by("num")  # Ensure deterministic ordering
             .settings(batch_size=2)  # Very small batch size
             .gen(result=gen_multiple, output=int)
             .save("results")
@@ -497,12 +501,13 @@ def test_generator_sys_partial_flag_correctness(test_session):
     for input_id, result, partial in rows:
         by_input.setdefault(input_id, []).append((result, partial))
 
-    # Verify we have data for some inputs (input 4 failed before processing)
+    # Verify we have data for some inputs
     assert len(by_input) >= 1, f"Should have at least 1 input, got {len(by_input)}"
 
     # Check complete inputs (those with 5 outputs)
     complete_inputs = {k: v for k, v in by_input.items() if len(v) == 5}
     incomplete_inputs = {k: v for k, v in by_input.items() if len(v) < 5}
+
     assert complete_inputs
     assert incomplete_inputs
 
