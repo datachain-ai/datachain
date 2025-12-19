@@ -512,7 +512,7 @@ class StudioClient:
     # Pipeline API
     def create_pipeline(
         self,
-        datasets: list[dict[str, Any]],
+        datasets: list[str],
         team_name: str | None = None,
         review: bool = False,
     ) -> Response[Any]:

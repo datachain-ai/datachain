@@ -568,11 +568,9 @@ def create_pipeline(
     dataset_names: list[str],
     team_name: str | None = None,
 ):
-    datasets = [{"dataset_name": name} for name in dataset_names]
-
     client = StudioClient(team=team_name)
     response = client.create_pipeline(
-        datasets=datasets,
+        datasets=dataset_names,
         team_name=team_name,
         review=True,
     )
