@@ -91,7 +91,8 @@ def remote_dataset_info(requests_mock, remote_dataset):
 @pytest.fixture
 def dataset_export(requests_mock, remote_dataset_chunk_url):
     requests_mock.get(
-        f"{STUDIO_URL}/api/datachain/datasets/export", json=[remote_dataset_chunk_url]
+        f"{STUDIO_URL}/api/datachain/datasets/export",
+        json={"export_id": 1, "signed_urls": [remote_dataset_chunk_url]},
     )
 
 

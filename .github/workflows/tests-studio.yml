@@ -31,6 +31,8 @@ jobs:
           POSTGRES_USER: test
           POSTGRES_DB: database
           POSTGRES_HOST_AUTH_METHOD: trust
+        options: >-
+          --add-host=host.docker.internal:host-gateway
       clickhouse:
         image: clickhouse/clickhouse-server:25.8
         ports:
@@ -41,10 +43,14 @@ jobs:
           CLICKHOUSE_USER: studio_local
           CLICKHOUSE_PASSWORD: ch123456789!
           CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+        options: >-
+          --add-host=host.docker.internal:host-gateway
       redis:
         image: redis:7.2.5
         ports:
           - 6379:6379
+        options: >-
+          --add-host=host.docker.internal:host-gateway
     steps:
       - name: Studio branch name
         env:

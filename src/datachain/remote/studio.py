@@ -20,8 +20,8 @@ LsData = list[dict[str, Any]] | None
 DatasetInfoData = dict[str, Any] | None
 DatasetRowsData = Iterable[dict[str, Any]] | None
 DatasetJobVersionsData = dict[str, Any] | None
-DatasetExportStatus = dict[str, Any] | None
-DatasetExportSignedUrls = list[str] | None
+DatasetExportStatus = dict[str, Any]
+DatasetExportData = dict[str, Any]
 FileUploadData = dict[str, Any] | None
 JobData = dict[str, Any] | None
 JobListData = list[dict[str, Any]]
@@ -417,7 +417,7 @@ class StudioClient:
 
     def export_dataset_table(
         self, dataset: DatasetRecord, version: str
-    ) -> Response[DatasetExportSignedUrls]:
+    ) -> Response[DatasetExportData]:
         return self._send_request(
             "datachain/datasets/export",
             {
@@ -425,21 +425,15 @@ class StudioClient:
                 "project": dataset.project.name,
                 "name": dataset.name,
                 "version": version,
+                "source": "cli",
             },
             method="GET",
         )
 
-    def dataset_export_status(
-        self, dataset: DatasetRecord, version: str
-    ) -> Response[DatasetExportStatus]:
+    def dataset_export_status(self, export_id: int) -> Response[DatasetExportStatus]:
         return self._send_request(
             "datachain/datasets/export-status",
-            {
-                "namespace": dataset.project.namespace.name,
-                "project": dataset.project.name,
-                "name": dataset.name,
-                "version": version,
-            },
+            {"export_id": export_id},
             method="GET",
         )
 

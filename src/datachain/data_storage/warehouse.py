@@ -535,24 +535,17 @@ class AbstractWarehouse(ABC, Serializable):
         """
 
     @abstractmethod
-    def dataset_table_export_file_names(
-        self, dataset: DatasetRecord, version: str
-    ) -> list[str]:
-        """
-        Returns list of file names that will be created when user runs dataset export
-        """
-
-    @abstractmethod
     def export_dataset_table(
         self,
-        bucket_uri: str,
+        bucket: str,
         dataset: DatasetRecord,
         version: str,
+        *,
+        file_format: str | None = None,
+        base_file_name: str,
         client_config=None,
-    ) -> list[str]:
-        """
-        Exports dataset table to the cloud, e.g to some s3 bucket
-        """
+    ) -> None:
+        """Exports dataset table to the cloud, e.g to some s3 bucket"""
 
     def python_type(self, col_type: Union["TypeEngine", "SQLType"]) -> Any:
         """Returns python type representation of some Sqlalchemy column type"""

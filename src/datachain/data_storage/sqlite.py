@@ -748,18 +748,16 @@ class SQLiteWarehouse(AbstractWarehouse):
 
         return col_type.python_type
 
-    def dataset_table_export_file_names(
-        self, dataset: DatasetRecord, version: str
-    ) -> list[str]:
-        raise NotImplementedError("Exporting dataset table not implemented for SQLite")
-
     def export_dataset_table(
         self,
-        bucket_uri: str,
+        bucket: str,
         dataset: DatasetRecord,
         version: str,
+        *,
+        file_format: str | None = None,
+        base_file_name: str,
         client_config=None,
-    ) -> list[str]:
+    ) -> None:
         raise NotImplementedError("Exporting dataset table not implemented for SQLite")
 
     def copy_table(
