@@ -987,7 +987,6 @@ class UDFStep(Step, ABC):
         unprocessed_query = self.calculate_unprocessed_rows(
             self.warehouse.get_table(input_table.name),
             partial_table,
-            query,
             incomplete_input_ids,
         )
 
@@ -1028,7 +1027,6 @@ class UDFStep(Step, ABC):
         self,
         input_table: "Table",
         partial_table: "Table",
-        original_query,
         incomplete_input_ids: None | list[int] = None,
     ):
         """
@@ -1037,7 +1035,6 @@ class UDFStep(Step, ABC):
         Args:
             input_table: The UDF input table
             partial_table: The UDF partial table
-            original_query: The original query for input data
             incomplete_input_ids: List of input IDs that were partially processed
                 and need to be re-run (for generators only)
 
@@ -1048,12 +1045,11 @@ class UDFStep(Step, ABC):
         # Get processed input IDs using subclass-specific logic
         processed_input_ids_subquery = self.processed_input_ids_query(partial_table)
 
-        # Filter original query to only include unprocessed rows
-        # Use the sys__id column from the query's selected columns, not from input_table
-        sys_id_col = original_query.selected_columns.sys__id
+        query = sa.select(input_table)
+        sys_id_col = query.selected_columns.sys__id
 
         # Build filter: rows that haven't been processed OR were incompletely processed
-        unprocessed_filter = sys_id_col.notin_(
+        unprocessed_filter: sa.ColumnElement[bool] = sys_id_col.notin_(
             sa.select(processed_input_ids_subquery.c.sys__processed_id)
         )
 
@@ -1063,7 +1059,7 @@ class UDFStep(Step, ABC):
                 unprocessed_filter, sys_id_col.in_(incomplete_input_ids)
             )
 
-        return original_query.where(unprocessed_filter)
+        return query.where(unprocessed_filter)
 
 
 @frozen

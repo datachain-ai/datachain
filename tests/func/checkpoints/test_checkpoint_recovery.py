@@ -299,17 +299,18 @@ def test_generator_incomplete_input_recovery(test_session):
     warehouse = test_session.catalog.warehouse
     processed_inputs = []
     run_count = [0]
+    numbers = [6, 2, 8, 7]
 
     def gen_multiple(num) -> Iterator[int]:
         """Generator that yields 5 outputs per input."""
         processed_inputs.append(num)
         for i in range(5):
-            # Fail on input 4 after yielding 2 partial outputs (on first run only)
-            if num == 4 and i == 2 and run_count[0] == 0:
+            # Fail on input 8 after yielding 2 partial outputs (on first run only)
+            if num == 8 and i == 2 and run_count[0] == 0:
                 raise Exception("Simulated crash")
             yield num * 100 + i
 
-    dc.read_values(num=[1, 2, 3, 4], session=test_session).save("nums")
+    dc.read_values(num=numbers, session=test_session).save("nums")
 
     # -------------- FIRST RUN (FAILS) -------------------
     reset_session_job_state()
@@ -318,14 +319,14 @@ def test_generator_incomplete_input_recovery(test_session):
     with pytest.raises(Exception, match="Simulated crash"):
         (
             dc.read_dataset("nums", session=test_session)
-            .order_by("num")  # Ensure deterministic ordering
+            .order_by("num")
             .settings(batch_size=2)  # Small batch for partial commits
             .gen(result=gen_multiple, output=int)
             .save("results")
         )
 
     # Verify partial state exists
-    _, partial_table = get_partial_tables(test_session)
+    input_table, partial_table = get_partial_tables(test_session)
     first_run_rows = list(
         warehouse.db.execute(
             sa.select(
@@ -338,7 +339,8 @@ def test_generator_incomplete_input_recovery(test_session):
     assert len(first_run_rows) > 0, "Should have partial data from first run"
 
     # Identify incomplete inputs (missing sys__partial=False)
-    incomplete_before = [
+    # First get sys__input_id values that are incomplete
+    incomplete_sys_ids = [
         row[0]
         for row in warehouse.db.execute(
             sa.select(sa.distinct(partial_table.c.sys__input_id)).where(
@@ -347,6 +349,15 @@ def test_generator_incomplete_input_recovery(test_session):
                         partial_table.c.sys__partial == False  # noqa: E712
                     )
                 )
+            )
+        )
+    ]
+
+    incomplete_before = [
+        row[0]
+        for row in warehouse.db.execute(
+            sa.select(input_table.c.num).where(
+                input_table.c.sys__id.in_(incomplete_sys_ids)
             )
         )
     ]
@@ -360,7 +371,7 @@ def test_generator_incomplete_input_recovery(test_session):
     # Should complete successfully
     (
         dc.read_dataset("nums", session=test_session)
-        .order_by("num")  # Ensure deterministic ordering
+        .order_by("num")
         .settings(batch_size=2)
         .gen(result=gen_multiple, output=int)
         .save("results")
@@ -368,7 +379,8 @@ def test_generator_incomplete_input_recovery(test_session):
 
     # Verify incomplete inputs were re-processed
     assert any(inp in processed_inputs for inp in incomplete_before), (
-        "Incomplete inputs should be re-processed"
+        f"Incomplete inputs {incomplete_before} should be re-processed, "
+        f"but only processed: {processed_inputs}"
     )
 
     # Verify final results
@@ -379,7 +391,7 @@ def test_generator_incomplete_input_recovery(test_session):
     )
 
     # Should have exactly 20 outputs (4 inputs x 5 outputs each)
-    expected = sorted([(num * 100 + i,) for num in [1, 2, 3, 4] for i in range(5)])
+    expected = sorted([(num * 100 + i,) for num in numbers for i in range(5)])
     actual = sorted(result)
 
     assert actual == expected, (
@@ -394,7 +406,7 @@ def test_generator_incomplete_input_recovery(test_session):
         input_id = val // 100
         result_by_input.setdefault(input_id, []).append(val)
 
-    for input_id in [1, 2, 3, 4]:
+    for input_id in numbers:
         assert len(result_by_input.get(input_id, [])) == 5, (
             f"Input {input_id} should have exactly 5 outputs"
         )
