@@ -171,8 +171,8 @@ def test_processed_table_data_integrity(test_session_tmpfile, parallel):
     warehouse = test_session.catalog.warehouse
 
     def gen_square(num) -> Iterator[int]:
-        # Fail on input 7
-        if num == 50:
+        # Fail on input 95
+        if num == 95:
             raise Exception(f"Simulated failure on num={num}")
         yield num * num
 
@@ -181,11 +181,12 @@ def test_processed_table_data_integrity(test_session_tmpfile, parallel):
 
     chain = (
         dc.read_dataset("nums", session=test_session)
+        .order_by("num")
         .settings(parallel=parallel, batch_size=2)
         .gen(result=gen_square, output=int)
     )
 
-    # Run UDF - should fail on num=7
+    # Run UDF - should fail on num=95
     with pytest.raises(RuntimeError):
         chain.save("results")
 
