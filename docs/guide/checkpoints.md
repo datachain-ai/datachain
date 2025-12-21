@@ -319,7 +319,7 @@ If you want to ignore any in-progress UDF work and recompute from the beginning,
 DATACHAIN_UDF_CHECKPOINT_RESET=1 python my_script.py
 ```
 
-This forces the current UDF to restart from scratch instead of continuing from partial results. This is useful when a UDF previously failed mid-execution and left partial results, but you want to discard them and reprocess all rows from the beginning.
+This forces the failed UDF to restart from scratch instead of continuing from partial results. This is useful when a UDF previously failed mid-execution and left partial results, but you want to discard them and reprocess all rows from the beginning.
 
 Note that this only affects in-progress UDFs. Completed UDFs are still skipped based on their hash, unless their code or inputs have changed.
 
