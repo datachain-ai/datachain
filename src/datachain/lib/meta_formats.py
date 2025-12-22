@@ -1,4 +1,5 @@
 import csv
+import sys
 import tempfile
 import uuid
 from collections.abc import Callable, Iterator
@@ -37,6 +38,36 @@ def process_json(data_string, jmespath):
     return json_dict
 
 
+def pick_datamodel_target_python_version(python_version_enum, major: int, minor: int):
+    candidate_name = f"PY_{major}{minor}"
+    candidate = getattr(python_version_enum, candidate_name, None)
+    if candidate is not None:
+        return candidate
+
+    supported_same_major: list[tuple[int, object]] = []
+    major_prefix = f"PY_{major}"
+    for enum_member in list(python_version_enum):
+        name = getattr(enum_member, "name", "")
+        if not isinstance(name, str) or not name.startswith(major_prefix):
+            continue
+
+        remainder = name.removeprefix(major_prefix)
+        if not remainder.isdigit():
+            continue
+
+        supported_minor = int(remainder)
+        supported_same_major.append((supported_minor, enum_member))
+
+    if supported_same_major:
+        supported_same_major.sort(key=lambda t: t[0])
+        not_newer_than_runtime = [t for t in supported_same_major if t[0] <= minor]
+        if not_newer_than_runtime:
+            return not_newer_than_runtime[-1][1]
+        return supported_same_major[0][1]
+
+    return list(python_version_enum)[-1]
+
+
 def gen_datamodel_code(
     source_file, format="json", jmespath=None, model_name=None
 ) -> str:
@@ -70,6 +101,12 @@ def gen_datamodel_code(
 
     import datamodel_code_generator
 
+    target_python_version = pick_datamodel_target_python_version(
+        datamodel_code_generator.PythonVersion,
+        sys.version_info.major,
+        sys.version_info.minor,
+    )
+
     input_file_types = {i.value: i for i in datamodel_code_generator.InputFileType}
     input_file_type = input_file_types[format]
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -78,7 +115,7 @@ def gen_datamodel_code(
             data_string,
             input_file_type=input_file_type,
             output=output,
-            target_python_version=datamodel_code_generator.PythonVersion.PY_39,
+            target_python_version=target_python_version,
             base_class="datachain.lib.meta_formats.UserModel",
             class_name=model_name,
             additional_imports=["datachain.lib.data_model.DataModel"],

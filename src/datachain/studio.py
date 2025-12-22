@@ -10,7 +10,10 @@ import tabulate
 
 from datachain.config import Config, ConfigLevel
 from datachain.data_storage.job import JobStatus
-from datachain.dataset import QUERY_DATASET_PREFIX, parse_dataset_name
+from datachain.dataset import (
+    QUERY_DATASET_PREFIX,
+    parse_dataset_name,
+)
 from datachain.error import DataChainError
 from datachain.remote.studio import StudioClient
 from datachain.utils import STUDIO_URL
@@ -81,8 +84,7 @@ def process_pipeline_args(args: "Namespace", catalog: "Catalog"):  # noqa: PLR09
     if args.cmd == "create":
         return create_pipeline(
             catalog,
-            args.dataset,
-            args.version,
+            args.datasets,
             args.team,
         )
 
@@ -563,12 +565,15 @@ def list_clusters(team_name: str | None):
 
 def create_pipeline(
     catalog: "Catalog",
-    dataset_name: str,
-    dataset_version: str | None = None,
+    dataset_names: list[str],
     team_name: str | None = None,
 ):
     client = StudioClient(team=team_name)
-    response = client.create_pipeline(dataset_name, dataset_version, review=True)
+    response = client.create_pipeline(
+        datasets=dataset_names,
+        team_name=team_name,
+        review=True,
+    )
     if not response.ok:
         raise DataChainError(response.message)
 

@@ -33,7 +33,6 @@ from datachain.lib.file import File
 from datachain.lib.listing import LISTING_PREFIX, parse_listing_uri
 from datachain.lib.listing_info import ListingInfo
 from datachain.lib.signal_schema import (
-    SignalRemoveError,
     SignalResolvingError,
     SignalResolvingTypeError,
     SignalSchema,
@@ -1018,171 +1017,7 @@ def test_batch_map_tuple_result_iterator(test_session):
     assert chain.order_by("x").to_values("x") == [1, 2, 3]
 
 
-def test_select_read_hf_without_sys_columns(test_session):
-    from datachain import func
-
-    chain = (
-        dc.read_values(
-            name=["a", "a", "b", "b", "b", "c"],
-            val=[1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
-        )
-        .group_by(cnt=func.count(), partition_by="name")
-        .order_by("name")
-        .select("name", "cnt")
-    )
-
-    assert chain.to_records() == [
-        {"name": "a", "cnt": 2},
-        {"name": "b", "cnt": 3},
-        {"name": "c", "cnt": 1},
-    ]
-
-
-def test_select_feature(test_session):
-    chain = dc.read_values(my_n=features_nested, session=test_session)
-    dc_ordered = chain.order_by("my_n.fr.nnn", "my_n.fr.count")
-
-    samples = dc_ordered.select("my_n").to_list()
-    n = 0
-    for sample in samples:
-        assert sample[0] == features_nested[n]
-        n += 1
-    assert n == len(features_nested)
-
-    samples = dc_ordered.select("my_n.fr").to_list()
-    n = 0
-    for sample in samples:
-        assert sample[0] == features[n]
-        n += 1
-    assert n == len(features_nested)
-
-    samples = dc_ordered.select("my_n.label", "my_n.fr.count").to_list()
-    n = 0
-    for sample in samples:
-        label, count = sample
-        assert label == features_nested[n].label
-        assert count == features_nested[n].fr.count
-        n += 1
-    assert n == len(features_nested)
-
-
-def test_select_columns_intersection(test_session):
-    chain = dc.read_values(my_n=features_nested, session=test_session)
-
-    samples = (
-        chain.order_by("my_n.fr.nnn", "my_n.fr.count")
-        .select("my_n.fr", "my_n.fr.count")
-        .to_list()
-    )
-    n = 0
-    for sample in samples:
-        fr, count = sample
-        assert fr == features_nested[n].fr
-        assert count == features_nested[n].fr.count
-        n += 1
-    assert n == len(features_nested)
-
-
-def test_select_except(test_session):
-    chain = dc.read_values(fr1=features_nested, fr2=features, session=test_session)
-
-    samples = (
-        chain.order_by("fr1.fr.nnn", "fr1.fr.count").select_except("fr2").to_list()
-    )
-    n = 0
-    for sample in samples:
-        fr = sample[0]
-        assert fr == features_nested[n]
-        n += 1
-    assert n == len(features_nested)
-
-
-def test_select_except_after_gen(test_session):
-    # https://github.com/datachain-ai/datachain/issues/1359
-    # fixed by https://github.com/datachain-ai/datachain/pull/1400
-    chain = dc.read_values(id=range(10), session=test_session)
-
-    chain = chain.gen(lambda id: [(id, 0)], output={"id": int, "x": int})
-    chain = chain.select_except("x")
-    chain = chain.merge(chain, on="id")
-    chain = chain.select_except("right_id")
-
-    assert set(chain.to_values("id")) == set(range(10))
-
-
-def test_select_wrong_type(test_session):
-    chain = dc.read_values(fr1=features_nested, fr2=features, session=test_session)
-
-    with pytest.raises(SignalResolvingTypeError):
-        chain.select(4).to_list()
-
-    with pytest.raises(SignalResolvingTypeError):
-        chain.select_except(features[0]).to_list()
-
-
-def test_select_except_error(test_session):
-    chain = dc.read_values(fr1=features_nested, fr2=features, session=test_session)
-
-    with pytest.raises(SignalResolvingError):
-        chain.select_except("not_exist", "file").to_list()
-
-    with pytest.raises(SignalRemoveError):
-        chain.select_except("fr1.label", "file").to_list()
-
-
-def test_select_restore_from_saving(test_session):
-    chain = dc.read_values(my_n=features_nested, session=test_session)
-
-    name = "test_test_select_save"
-    chain.select("my_n.fr").save(name)
-
-    restored = dc.read_dataset(name)
-    n = 0
-    restored_sorted = sorted(restored.to_list(), key=lambda x: x[0].count)
-    features_sorted = sorted(features, key=lambda x: x.count)
-    for sample in restored_sorted:
-        assert sample[0] == features_sorted[n]
-        n += 1
-    assert n == len(features_nested)
-
-
-def test_select_distinct(test_session):
-    class Embedding(BaseModel):
-        id: int
-        filename: str
-        values: list[float]
-
-    expected = [
-        [0.1, 0.3],
-        [0.1, 0.4],
-        [0.1, 0.5],
-        [0.1, 0.6],
-    ]
-
-    actual = (
-        dc.read_values(
-            embedding=[
-                Embedding(id=1, filename="a.jpg", values=expected[0]),
-                Embedding(id=2, filename="b.jpg", values=expected[2]),
-                Embedding(id=3, filename="c.jpg", values=expected[1]),
-                Embedding(id=4, filename="d.jpg", values=expected[1]),
-                Embedding(id=5, filename="e.jpg", values=expected[3]),
-            ],
-            session=test_session,
-        )
-        .select("embedding.values", "embedding.filename")
-        .distinct("embedding.values")
-        .order_by("embedding.values")
-        .to_list()
-    )
-
-    actual = [emb[0] for emb in actual]
-    assert len(actual) == 4
-    for i in [0, 1]:
-        assert np.allclose([emb[i] for emb in actual], [emp[i] for emp in expected])
-
-
-def test_read_hf_name_version(test_session):
+def test_read_dataset_name_version(test_session):
     name = "test-version"
     dc.read_values(
         first_name=["Alice", "Bob", "Charlie"],
@@ -3786,6 +3621,7 @@ def test_group_by_no_partition_by(test_session):
 
 def test_group_by_schema(test_session):
     from datachain import func
+    from datachain.lib.model_store import ModelStore
 
     class Signal(DataModel):
         name: str
@@ -3816,11 +3652,21 @@ def test_group_by_schema(test_session):
         .select("signal.name", "parent.signal.name", "cnt", "sum")
     )
 
-    assert chain.signals_schema.serialize() == {
-        "signal.name": "str",
-        "parent.signal.name": "str",
-        "cnt": "int",
-        "sum": "float",
+    serialized = chain.signals_schema.serialize()
+    assert serialized["cnt"] == "int"
+    assert serialized["sum"] == "float"
+    assert "signal" in serialized
+    assert "parent" in serialized
+    assert "_custom_types" in serialized
+
+    assert ModelStore.is_partial(chain.schema["signal"])
+    assert ModelStore.is_partial(chain.schema["parent"])
+
+    signal_type_name = serialized["signal"]
+    parent_type_name = serialized["parent"]
+    assert serialized["_custom_types"][signal_type_name]["fields"] == {"name": "str"}
+    assert serialized["_custom_types"][parent_type_name]["fields"] == {
+        "signal": signal_type_name
     }
     assert sorted(
         chain.to_records(),

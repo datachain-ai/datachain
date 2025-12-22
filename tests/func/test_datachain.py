@@ -1487,7 +1487,7 @@ def test_window_signals_random(cloud_test_catalog):
         .save("my-ds")
     )
 
-    results = {}
+    results: dict[str, list[str]] = {}
     for r in ds.to_records():
         results.setdefault(r["file_info__path"], []).append(r["file_info__name"])
 
