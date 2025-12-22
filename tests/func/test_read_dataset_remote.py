@@ -174,31 +174,21 @@ def _get_version_from_request(request, default="1.0.0"):
 
 @pytest.fixture
 def mock_export_endpoint_with_urls(requests_mock):
-    """Mock the export endpoint to return download URLs based on version."""
+    """Mock the export endpoint to return export_id + signed_urls."""
 
     def _mock_export_response(request, context):
         version_param = _get_version_from_request(request)
         version_file = version_param.replace(".", "_")
-        return [
-            f"https://studio-blobvault.s3.amazonaws.com/"
-            f"datachain_ds_export_{version_file}.parquet.lz4"
-        ]
+        return {
+            "export_id": 1,
+            "signed_urls": [
+                f"https://studio-blobvault.s3.amazonaws.com/"
+                f"datachain_ds_export_{version_file}.parquet.lz4"
+            ],
+        }
 
     return requests_mock.get(
         f"{STUDIO_URL}/api/datachain/datasets/export", json=_mock_export_response
-    )
-
-
-@pytest.fixture
-def mock_export_endpoint_with_id(requests_mock):
-    """Mock the export endpoint to return an export ID based on version."""
-
-    def _mock_export_id_response(request, context):
-        version_param = _get_version_from_request(request)
-        return {"export_id": f"test-export-id-{version_param}"}
-
-    return requests_mock.get(
-        f"{STUDIO_URL}/api/datachain/datasets/export", json=_mock_export_id_response
     )
 
 
@@ -207,8 +197,11 @@ def mock_export_status_completed(requests_mock):
     """Mock the export status endpoint to return completed status based on version."""
 
     def _mock_status_response(request, context):
-        version_param = _get_version_from_request(request)
-        return {"status": "completed", "version": version_param}
+        return {
+            "status": "completed",
+            "files_done": 1,
+            "num_files": 1,
+        }
 
     return requests_mock.get(
         f"{STUDIO_URL}/api/datachain/datasets/export-status", json=_mock_status_response
@@ -220,11 +213,11 @@ def mock_export_status_failed(requests_mock):
     """Mock the export status endpoint to return failed status based on version."""
 
     def _mock_failed_response(request, context):
-        version_param = _get_version_from_request(request)
         return {
             "status": "failed",
-            "version": version_param,
-            "error": f"Export failed for version {version_param}",
+            "files_done": 0,
+            "num_files": 1,
+            "error_message": "Export failed",
         }
 
     return requests_mock.get(
@@ -592,7 +585,7 @@ def test_read_dataset_remote_export_failed(
     test_session,
     remote_dataset_single_version,
     mock_dataset_info_endpoint,
-    mock_export_endpoint_with_id,
+    mock_export_endpoint_with_urls,
     mock_export_status_failed,
     mock_dataset_rows_fetcher_status_check,
 ):

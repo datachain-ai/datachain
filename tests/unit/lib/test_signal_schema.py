@@ -21,6 +21,7 @@ from datachain.lib.signal_schema import (
     SetupError,
     SignalRemoveError,
     SignalResolvingError,
+    SignalResolvingTypeError,
     SignalSchema,
     SignalSchemaError,
     SignalSchemaWarning,
@@ -733,13 +734,33 @@ def test_select_except_signals():
     assert signals["f"] is MyType1
 
 
+def test_select_except_signals_nested_exclusion_creates_partial_model():
+    schema = SignalSchema({"age": float, "address": str, "f": MyType1})
+
+    new = schema.select_except_signals("address", "f.aa")
+    assert set(new.values.keys()) == {"age", "f"}
+
+    f_type = ModelStore.to_pydantic(new.values["f"])
+    assert f_type is not None
+    assert set(f_type.model_fields.keys()) == {"bb"}
+
+
+def test_select_except_signals_empty_args_returns_self():
+    schema = SignalSchema({"age": float, "address": str, "f": MyType1})
+    assert schema.select_except_signals() is schema
+
+
 def test_select_except_signals_error():
     schema = SignalSchema({"age": float, "address": str, "f": MyType1})
 
+    # Still errors when there is no match for a provided signal.
     with pytest.raises(SignalRemoveError):
-        schema.select_except_signals("address", "f.aa")
+        schema.select_except_signals("address", "not_exist")
 
-    with pytest.raises(SignalResolvingError):
+    with pytest.raises(SignalRemoveError):
+        schema.select_except_signals("address", "f.cc")
+
+    with pytest.raises(SignalResolvingTypeError):
         schema.select_except_signals("address", 37)
 
 

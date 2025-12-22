@@ -31,6 +31,7 @@ from datachain.dataset import (
     create_dataset_uri,
     parse_dataset_name,
     parse_dataset_uri,
+    parse_dataset_with_version,
     parse_schema,
 )
 from datachain.error import (
@@ -46,7 +47,7 @@ from datachain.node import DirType, Node, NodeWithPath
 from datachain.nodes_thread_pool import NodesThreadPool
 from datachain.project import Project
 from datachain.sql.types import DateTime, SQLType
-from datachain.utils import DataChainDir
+from datachain.utils import DataChainDir, DatasetIdentifier
 
 from .datasource import DataSource
 from .dependency import build_dependency_hierarchy, populate_nested_dependencies
@@ -89,6 +90,7 @@ class DatasetRowsFetcher(NodesThreadPool):
         warehouse: "AbstractWarehouse",
         remote_ds: DatasetRecord,
         remote_ds_version: str,
+        export_id: int,
         local_ds: DatasetRecord,
         local_ds_version: str,
         schema: dict[str, SQLType | type[SQLType]],
@@ -103,12 +105,16 @@ class DatasetRowsFetcher(NodesThreadPool):
         self.warehouse = warehouse
         self.remote_ds = remote_ds
         self.remote_ds_version = remote_ds_version
+        self.export_id = export_id
         self.local_ds = local_ds
         self.local_ds_version = local_ds_version
         self.schema = schema
         self.last_status_check: float | None = None
         self.studio_client = StudioClient()
         self.progress_bar = progress_bar
+        self._last_export_status: str | None = None
+        self._last_export_files_done: int | None = None
+        self._last_export_num_files: int | None = None
 
     def done_task(self, done):
         for task in done:
@@ -139,12 +145,36 @@ class DatasetRowsFetcher(NodesThreadPool):
         Checks are done every PULL_DATASET_CHECK_STATUS_INTERVAL seconds
         """
         export_status_response = self.studio_client.dataset_export_status(
-            self.remote_ds, self.remote_ds_version
+            self.export_id
         )
         if not export_status_response.ok:
             raise DataChainError(export_status_response.message)
 
-        export_status = export_status_response.data["status"]  # type: ignore [index]
+        data = export_status_response.data
+        export_status = data["status"]
+
+        # Surface Studio-side export progress (if available) while we're pulling.
+        files_done = data.get("files_done")
+        num_files = data.get("num_files")
+
+        if (
+            files_done is not None
+            and num_files is not None
+            and (
+                export_status != self._last_export_status
+                or files_done != self._last_export_files_done
+                or num_files != self._last_export_num_files
+            )
+        ):
+            self._last_export_status = export_status
+            self._last_export_files_done = files_done
+            self._last_export_num_files = num_files
+
+            if self.progress_bar is not None:
+                # Keep the main bar semantics (rows) and just add a postfix.
+                self.progress_bar.set_postfix_str(
+                    f"studio_export={files_done}/{num_files} ({export_status})"
+                )
 
         if export_status == "failed":
             raise DataChainError("Dataset export failed in Studio")
@@ -1063,6 +1093,29 @@ class Catalog:
 
         return namespace_name, project_name, name
 
+    def parse_dataset_name(
+        self,
+        dataset_name: str,
+        namespace_name: str | None = None,
+        project_name: str | None = None,
+        version: str | None = None,
+    ) -> DatasetIdentifier:
+        if not version:
+            dataset_name, version = parse_dataset_with_version(dataset_name)
+
+        namespace, project, name = self.get_full_dataset_name(
+            dataset_name,
+            namespace_name=namespace_name,
+            project_name=project_name,
+        )
+
+        return DatasetIdentifier(
+            namespace=namespace,
+            project=project,
+            name=name,
+            version=version,
+        )
+
     def get_dataset(
         self,
         name: str,
@@ -1374,31 +1427,29 @@ class Catalog:
 
     def export_dataset_table(
         self,
-        bucket_uri: str,
+        bucket: str,
         name: str,
         version: str,
         project: Project | None = None,
+        *,
+        file_format: str | None = None,
+        base_file_name: str,
         client_config=None,
-    ) -> list[str]:
+    ) -> None:
         dataset = self.get_dataset(
             name,
             namespace_name=project.namespace.name if project else None,
             project_name=project.name if project else None,
         )
 
-        return self.warehouse.export_dataset_table(
-            bucket_uri, dataset, version, client_config
+        self.warehouse.export_dataset_table(
+            bucket,
+            dataset,
+            version,
+            file_format=file_format,
+            base_file_name=base_file_name,
+            client_config=client_config,
         )
-
-    def dataset_table_export_file_names(
-        self, name: str, version: str, project: Project | None = None
-    ) -> list[str]:
-        dataset = self.get_dataset(
-            name,
-            namespace_name=project.namespace.name if project else None,
-            project_name=project.name if project else None,
-        )
-        return self.warehouse.dataset_table_export_file_names(dataset, version)
 
     def remove_dataset(
         self,
@@ -1649,7 +1700,9 @@ class Catalog:
         if not export_response.ok:
             raise DataChainError(export_response.message)
 
-        signed_urls = export_response.data
+        export_data = export_response.data
+        export_id = export_data["export_id"]
+        signed_urls: list[str] = export_data["signed_urls"]
 
         if signed_urls:
             with (
@@ -1666,7 +1719,7 @@ class Catalog:
                     """
                     res = [[] for i in range(PULL_DATASET_MAX_THREADS)]
                     current_worker = 0
-                    for url in signed_urls:
+                    for url in urls:
                         res[current_worker].append(url)
                         current_worker = (current_worker + 1) % PULL_DATASET_MAX_THREADS
 
@@ -1677,11 +1730,13 @@ class Catalog:
                     warehouse,
                     remote_ds,
                     remote_ds_version.version,
+                    export_id,
                     local_ds,
                     local_ds_version,
                     schema,
                     progress_bar=dataset_save_progress_bar,
                 )
+
                 try:
                     rows_fetcher.run(
                         iter(batch(signed_urls)), dataset_save_progress_bar
