@@ -8,6 +8,7 @@ from sqlalchemy.sql import FROM_LINTING
 from sqlalchemy.sql.roles import DDLRole
 
 from datachain.data_storage.serializer import Serializable
+from datachain.error import TableMissingError
 
 if TYPE_CHECKING:
     from sqlalchemy import MetaData, Table
@@ -80,8 +81,6 @@ class DatabaseEngine(ABC, Serializable):
     ) -> Iterator[tuple[Any, ...]]: ...
 
     def get_table(self, name: str) -> "Table":
-        from datachain.error import TableMissingError
-
         table = self.metadata.tables.get(name)
         if table is None:
             try:

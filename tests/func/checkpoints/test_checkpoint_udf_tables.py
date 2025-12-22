@@ -23,49 +23,6 @@ def nums_dataset(test_session):
     return dc.read_values(num=[1, 2, 3, 4, 5, 6], session=test_session).save("nums")
 
 
-def test_udf_checkpoints_multiple_calls_same_job(
-    test_session, monkeypatch, nums_dataset
-):
-    """
-    Test that UDF execution creates checkpoints, but subsequent calls in the same
-    job will re-execute because the hash changes (includes previous checkpoint hash).
-    Checkpoint reuse is designed for cross-job execution, not within-job execution.
-    """
-    # Track how many times the mapper is called
-    call_count = {"count": 0}
-
-    def add_ten(num) -> int:
-        call_count["count"] += 1
-        return num + 10
-
-    chain = dc.read_dataset("nums", session=test_session).map(
-        plus_ten=add_ten, output=int
-    )
-
-    reset_session_job_state()
-
-    # First count() - should execute UDF
-    assert chain.count() == 6
-    first_calls = call_count["count"]
-    assert first_calls == 6, "Mapper should be called 6 times on first count()"
-
-    # Second count() - will re-execute because hash includes previous checkpoint
-    call_count["count"] = 0
-    assert chain.count() == 6
-    assert call_count["count"] == 6, "Mapper re-executes in same job"
-
-    # Third count() - will also re-execute
-    call_count["count"] = 0
-    assert chain.count() == 6
-    assert call_count["count"] == 6, "Mapper re-executes in same job"
-
-    # Other operations like to_list() will also re-execute
-    call_count["count"] = 0
-    result = chain.order_by("num").to_list("plus_ten")
-    assert result == [(11,), (12,), (13,), (14,), (15,), (16,)]
-    assert call_count["count"] == 6, "Mapper re-executes in same job"
-
-
 @pytest.mark.parametrize("parallel", [None, 2, 4, 6, 20])
 def test_track_processed_items(test_session_tmpfile, parallel):
     """Test that we correctly track processed sys__ids with different parallel
@@ -80,7 +37,6 @@ def test_track_processed_items(test_session_tmpfile, parallel):
 
     def gen_numbers(num) -> Iterator[int]:
         """Generator function that fails on a specific input."""
-        # Fail on input 7
         if num == 7:
             raise Exception(f"Simulated failure on num={num}")
         yield num * 10
@@ -97,14 +53,11 @@ def test_track_processed_items(test_session_tmpfile, parallel):
     if parallel is not None:
         chain = chain.settings(parallel=parallel)
 
-    # Run UDF - should fail on num=7
     with pytest.raises(Exception):  # noqa: B017
         chain.gen(result=gen_numbers, output=int).save("results")
 
     _, partial_output_table = get_partial_tables(test_session)
 
-    # Get distinct sys__input_id from partial output table to see which inputs were
-    # processed
     query = sa.select(sa.distinct(partial_output_table.c.sys__input_id))
     processed_sys_ids = [row[0] for row in warehouse.db.execute(query)]
 
@@ -114,67 +67,12 @@ def test_track_processed_items(test_session_tmpfile, parallel):
     assert 0 < len(processed_sys_ids) < 100
 
 
-@pytest.mark.parametrize("reset_checkpoints", [True, False])
-def test_udf_checkpoints_cross_job_reuse(
-    test_session, monkeypatch, nums_dataset, reset_checkpoints
-):
-    catalog = test_session.catalog
-    monkeypatch.setenv("DATACHAIN_CHECKPOINTS_RESET", str(reset_checkpoints))
-
-    # Track how many times the mapper is called
-    call_count = {"count": 0}
-
-    def double_num(num) -> int:
-        call_count["count"] += 1
-        return num * 2
-
-    chain = dc.read_dataset("nums", session=test_session).map(
-        doubled=double_num, output=int
-    )
-
-    # -------------- FIRST RUN - count() triggers UDF execution -------------------
-    reset_session_job_state()
-    assert chain.count() == 6
-    first_job_id = test_session.get_or_create_job().id
-
-    assert call_count["count"] == 6
-
-    checkpoints = list(catalog.metastore.list_checkpoints(first_job_id))
-    assert len(checkpoints) == 1
-    assert checkpoints[0].partial is False
-
-    # -------------- SECOND RUN - should reuse UDF checkpoint -------------------
-    reset_session_job_state()
-    call_count["count"] = 0  # Reset counter
-
-    assert chain.count() == 6
-    second_job_id = test_session.get_or_create_job().id
-
-    if reset_checkpoints:
-        assert call_count["count"] == 6, "Mapper should be called again"
-    else:
-        assert call_count["count"] == 0, "Mapper should NOT be called"
-
-    # Check that second job created checkpoints
-    checkpoints_second = list(catalog.metastore.list_checkpoints(second_job_id))
-    # After successful completion, only final checkpoint remains
-    # (partial checkpoint is deleted after promotion)
-    assert len(checkpoints_second) == 1
-    assert checkpoints_second[0].partial is False
-
-    # Verify the data is correct
-    result = chain.order_by("num").to_list("doubled")
-    assert result == [(2,), (4,), (6,), (8,), (10,), (12,)]
-
-
 def test_udf_tables_naming(test_session, monkeypatch):
     catalog = test_session.catalog
     warehouse = catalog.warehouse
 
     dc.read_values(num=[1, 2, 3, 4, 5, 6], session=test_session).save("num.num.numbers")
 
-    # Record initial UDF tables (from numbers dataset which uses read_values
-    # internally)
     from tests.utils import list_tables
 
     initial_udf_tables = set(list_tables(warehouse.db, prefix="udf_"))
@@ -281,10 +179,8 @@ def test_multiple_udf_chain_continue(test_session, monkeypatch):
     # Total: 6-9 calls (some rows may be reprocessed if not saved to partial)
     assert 6 <= len(map_processed) <= 9, "Expected 6-9 total mapper calls"
 
-    # Verify gen processed all 6 mapper outputs
     assert len(gen_processed) == 6
 
-    # Verify final result has all values doubled twice
     result = sorted(dc.read_dataset("results", session=test_session).to_list("value"))
     assert sorted([v[0] for v in result]) == sorted(
         [2, 2, 4, 4, 6, 6, 8, 8, 10, 10, 12, 12]

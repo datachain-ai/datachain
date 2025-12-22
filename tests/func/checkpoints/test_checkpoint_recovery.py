@@ -1,8 +1,3 @@
-"""Tests for resuming from partial results after failures.
-
-This module tests partial table continuation and sys__partial tracking.
-"""
-
 from collections.abc import Iterator
 
 import pytest
@@ -60,7 +55,6 @@ def _count_processed(warehouse, partial_table, generator=False):
             )
         )
 
-    # Mapper: count all rows (1:1 mapping)
     return warehouse.table_rows_count(partial_table)
 
 
@@ -112,7 +106,6 @@ def test_udf_signals_continue_from_partial(
     with pytest.raises(Exception, match="Simulated failure after"):
         chain.map(result=process_buggy, output=int).save("results")
 
-    # Should have processed exactly fail_after_count rows before failing
     assert len(processed_nums) == fail_after_count
 
     _, partial_table = get_partial_tables(test_session)
@@ -128,7 +121,6 @@ def test_udf_signals_continue_from_partial(
         processed_nums.append(num)
         return num * 10
 
-    # Now use the fixed UDF - should continue from partial checkpoint
     chain.map(result=process_fixed, output=int).save("results")
 
     second_job_id = test_session.get_or_create_job().id
@@ -174,14 +166,8 @@ def test_udf_generator_continue_from_partial(
 ):
     """Test continuing RowGenerator from partial output.
 
-    RowGenerator differs from UDFSignal because:
-    - One input can generate multiple outputs (2 outputs per input)
-    - Output rows have different sys__ids than input rows
-    - Uses a separate processed table to track which inputs are processed
-
     Tests with different batch sizes to ensure processed table correctly
-    tracks inputs only after ALL their outputs have been committed. Uses
-    counter-based failure to avoid dependency on row ordering.
+    tracks inputs only after ALL their outputs have been committed.
 
     Simulates real-world scenario: user writes buggy generator, it fails, then
     fixes bug and reruns.
@@ -214,7 +200,6 @@ def test_udf_generator_continue_from_partial(
 
     first_run_count = len(processed_nums)
 
-    # Should have processed exactly fail_after_count inputs before failing
     assert first_run_count == fail_after_count
 
     _, partial_table = get_partial_tables(test_session)
@@ -253,7 +238,6 @@ def test_udf_generator_continue_from_partial(
     )
     assert len(checkpoints) == 2
     assert all(c.partial is False for c in checkpoints)
-    # Verify gen() UDF output table exists (checkpoints[0])
     assert warehouse.db.has_table(
         UDFStep.output_table_name(second_job_id, checkpoints[0].hash)
     )
@@ -278,11 +262,8 @@ def test_udf_generator_continue_from_partial(
         ]
     )
 
-    # Should have exactly 12 outputs (no duplicates)
     assert result == expected
 
-    # Verify second run processed remaining inputs (checkpoint continuation working)
-    # The exact count depends on warehouse implementation and batch boundaries
     assert 0 < len(processed_nums) <= 6, "Expected 1-6 inputs in second run"
 
 
@@ -305,7 +286,6 @@ def test_generator_incomplete_input_recovery(test_session):
         """Generator that yields 5 outputs per input."""
         processed_inputs.append(num)
         for i in range(5):
-            # Fail on input 8 after yielding 2 partial outputs (on first run only)
             if num == 8 and i == 2 and run_count[0] == 0:
                 raise Exception("Simulated crash")
             yield num * 100 + i
@@ -325,7 +305,6 @@ def test_generator_incomplete_input_recovery(test_session):
             .save("results")
         )
 
-    # Verify partial state exists
     input_table, partial_table = get_partial_tables(test_session)
     first_run_rows = list(
         warehouse.db.execute(
@@ -377,20 +356,17 @@ def test_generator_incomplete_input_recovery(test_session):
         .save("results")
     )
 
-    # Verify incomplete inputs were re-processed
     assert any(inp in processed_inputs for inp in incomplete_before), (
         f"Incomplete inputs {incomplete_before} should be re-processed, "
         f"but only processed: {processed_inputs}"
     )
 
-    # Verify final results
     result = (
         dc.read_dataset("results", session=test_session)
         .order_by("result")
         .to_list("result")
     )
 
-    # Should have exactly 20 outputs (4 inputs x 5 outputs each)
     expected = sorted([(num * 100 + i,) for num in numbers for i in range(5)])
     actual = sorted(result)
 
@@ -444,18 +420,14 @@ def test_generator_yielding_nothing(test_session, monkeypatch, nums_dataset):
 
     _, partial_table = get_partial_tables(test_session)
 
-    # Verify processed table tracks inputs that yielded nothing
-    # Inputs 1,2 were processed (1 yielded nothing, 2 yielded one output)
     assert _count_processed(warehouse, partial_table) == 2
 
-    # Second run - should skip already processed inputs
     reset_session_job_state()
     processed.clear()
     chain.save("results")
 
     # Only inputs 3,4,5,6 should be processed
     assert processed == [3, 4, 5, 6]
-    # Result should only have even numbers x 10
     result = sorted(dc.read_dataset("results", session=test_session).to_list("value"))
     assert result == [(20,), (40,), (60,)]
 
@@ -473,8 +445,6 @@ def test_generator_sys_partial_flag_correctness(test_session):
     def gen_multiple(num) -> Iterator[int]:
         """Generator that yields multiple outputs per input."""
         for i in range(5):  # Each input yields 5 outputs
-            # Fail on input 4 after yielding 2 partial outputs
-            # (after successfully processing inputs 1, 2, 3)
             if num == 4 and i == 2:
                 raise Exception("Intentional failure to preserve partial table")
             yield num * 100 + i
@@ -494,10 +464,8 @@ def test_generator_sys_partial_flag_correctness(test_session):
             .save("results")
         )
 
-    # Get the partial table to inspect sys__partial flags
     _, partial_table = get_partial_tables(test_session)
 
-    # Query all rows with their sys__partial flags
     rows = list(
         warehouse.db.execute(
             sa.select(
@@ -508,22 +476,18 @@ def test_generator_sys_partial_flag_correctness(test_session):
         )
     )
 
-    # Group by input
     by_input = {}
     for input_id, result, partial in rows:
         by_input.setdefault(input_id, []).append((result, partial))
 
-    # Verify we have data for some inputs
     assert len(by_input) >= 1, f"Should have at least 1 input, got {len(by_input)}"
 
-    # Check complete inputs (those with 5 outputs)
     complete_inputs = {k: v for k, v in by_input.items() if len(v) == 5}
     incomplete_inputs = {k: v for k, v in by_input.items() if len(v) < 5}
 
     assert complete_inputs
     assert incomplete_inputs
 
-    # Verify complete inputs have correct sys__partial flags
     for input_id, outputs in complete_inputs.items():
         assert len(outputs) == 5, f"Complete input {input_id} should have 5 outputs"
         # First 4 should be True, last one should be False

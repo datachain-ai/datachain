@@ -1,8 +1,3 @@
-"""Tests for when checkpoints should NOT be reused (cache invalidation).
-
-This module tests hash-based change detection and forced reruns.
-"""
-
 from collections.abc import Iterator
 
 import pytest
@@ -31,7 +26,6 @@ def nums_dataset(test_session):
 
 
 def test_udf_code_change_triggers_rerun(test_session, monkeypatch):
-    """Test that changing UDF code (hash) triggers rerun from scratch."""
     map1_calls = []
     map2_calls = []
 
@@ -45,7 +39,6 @@ def test_udf_code_change_triggers_rerun(test_session, monkeypatch):
         return num * 2
 
     def mapper2_failing(doubled: int) -> int:
-        # Fail before processing 4th row (counter-based for ClickHouse compatibility)
         if len(map2_calls) >= 3:
             raise Exception("Map2 failure")
         map2_calls.append(doubled)
@@ -91,12 +84,6 @@ def test_udf_code_change_triggers_rerun(test_session, monkeypatch):
 
 
 def test_generator_output_schema_change_triggers_rerun(test_session, monkeypatch):
-    """Test that changing generator output type triggers re-run from scratch.
-
-    When a user changes the output schema of a UDF (e.g., int -> str), the
-    system should detect this and re-run from scratch rather than attempting
-    to continue from partial results with incompatible schema.
-    """
     processed_nums_v1 = []
     processed_nums_v2 = []
 
@@ -118,7 +105,6 @@ def test_generator_output_schema_change_triggers_rerun(test_session, monkeypatch
     with pytest.raises(Exception, match="Simulated failure"):
         chain.gen(result=generator_v1_int, output=int).save("gen_results")
 
-    # Some inputs were processed before failure
     assert len(processed_nums_v1) > 0
 
     # -------------- SECOND RUN (STR OUTPUT, DIFFERENT SCHEMA) -------------------
@@ -138,7 +124,6 @@ def test_generator_output_schema_change_triggers_rerun(test_session, monkeypatch
         "All inputs should be processed when schema changes"
     )
 
-    # Verify final results are correct with new schema (str)
     result = sorted(
         dc.read_dataset("gen_results", session=test_session).to_list("result")
     )
@@ -174,7 +159,6 @@ def test_mapper_output_schema_change_triggers_rerun(test_session, monkeypatch):
 
     # -------------- FIRST RUN (INT OUTPUT, FAILS) -------------------
     def mapper_v1_int(num) -> int:
-        """Mapper version 1: returns int, fails on num=4."""
         processed_nums_v1.append(num)
         if num == 4:
             raise Exception(f"Simulated failure on num={num}")
@@ -187,7 +171,6 @@ def test_mapper_output_schema_change_triggers_rerun(test_session, monkeypatch):
     with pytest.raises(Exception, match="Simulated failure"):
         chain.map(result=mapper_v1_int, output=int).save("map_results")
 
-    # Some inputs were processed before failure
     assert len(processed_nums_v1) > 0
 
     # -------------- SECOND RUN (STR OUTPUT, DIFFERENT SCHEMA) -------------------
@@ -206,7 +189,6 @@ def test_mapper_output_schema_change_triggers_rerun(test_session, monkeypatch):
         "All inputs should be processed when schema changes"
     )
 
-    # Verify final results are correct with new schema (str)
     result = sorted(
         dc.read_dataset("map_results", session=test_session).to_list("result")
     )
@@ -238,8 +220,6 @@ def test_aggregator_allways_runs_from_scratch(
     batch_size,
     fail_after_count,
 ):
-    """Test running Aggregator always from scratch"""
-
     processed_partitions = []
 
     def buggy_aggregator(letter, num) -> Iterator[tuple[str, int]]:
@@ -259,14 +239,11 @@ def test_aggregator_allways_runs_from_scratch(
         yield letter[0], sum(n for n in nums_list)
 
     def fixed_aggregator(letter, num) -> Iterator[tuple[str, int]]:
-        """Fixed aggregator that works correctly."""
         nums_list = list(num)
         processed_partitions.append(nums_list)
         # Yield tuple of (letter, sum) to preserve partition key in output
         yield letter[0], sum(n for n in nums_list)
 
-    # Create dataset with groups: nums [1,2,3,4,5,6] with group [A,A,B,B,C,C]
-    # Save to dataset to ensure consistent hash across runs
     nums_data = [1, 2, 3, 4, 5, 6]
     leters_data = ["A", "A", "B", "B", "C", "C"]
     dc.read_values(num=nums_data, letter=leters_data, session=test_session).save(
@@ -288,7 +265,6 @@ def test_aggregator_allways_runs_from_scratch(
 
     first_run_count = len(processed_partitions)
 
-    # Should have processed exactly fail_after_count partitions before failing
     assert first_run_count == fail_after_count
 
     # -------------- SECOND RUN (FIXED AGGREGATOR) -------------------
@@ -296,7 +272,6 @@ def test_aggregator_allways_runs_from_scratch(
 
     processed_partitions.clear()
 
-    # Now use the fixed aggregator - should run from scratch
     chain.agg(
         total=fixed_aggregator,
         partition_by="letter",
@@ -304,7 +279,6 @@ def test_aggregator_allways_runs_from_scratch(
 
     second_run_count = len(processed_partitions)
 
-    # Verify final results: 3 partitions (A, B, C) with correct sums
     assert sorted(
         dc.read_dataset("agg_results", session=test_session).to_list(
             "total_0", "total_1"
@@ -322,15 +296,11 @@ def test_aggregator_allways_runs_from_scratch(
 
 
 def test_udf_generator_reset_udf(test_session, monkeypatch):
-    """Test that when DATACHAIN_UDF_CHECKPOINT_RESET=True, we don't continue
-    from partial checkpoints but re-run from scratch.
-    """
     monkeypatch.setenv("DATACHAIN_UDF_CHECKPOINT_RESET", "true")
     dc.read_values(num=[1, 2, 3, 4, 5, 6], session=test_session).save("nums")
     processed_nums = []
 
     def buggy_generator(num) -> Iterator[int]:
-        """Buggy generator that fails on num=4."""
         processed_nums.append(num)
         if num == 4:
             raise Exception(f"Simulated failure on num={num}")
@@ -351,7 +321,6 @@ def test_udf_generator_reset_udf(test_session, monkeypatch):
     processed_nums.clear()
 
     def fixed_generator(num) -> Iterator[int]:
-        """Fixed generator that works correctly."""
         processed_nums.append(num)
         yield num * 10
         yield num * num
@@ -363,7 +332,6 @@ def test_udf_generator_reset_udf(test_session, monkeypatch):
     # Even though some were processed successfully in first run, we start from scratch
     assert sorted(processed_nums) == sorted([1, 2, 3, 4, 5, 6])
 
-    # Verify final results are correct
     result = (
         dc.read_dataset("gen_results", session=test_session)
         .order_by("value")

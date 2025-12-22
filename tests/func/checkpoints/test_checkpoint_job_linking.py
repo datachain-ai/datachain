@@ -33,8 +33,7 @@ def nums_dataset(test_session):
 
 
 def get_dataset_versions_for_job(metastore, job_id):
-    """Helper to get all dataset versions associated with a job.
-
+    """
     Returns:
         List of tuples (dataset_name, version, is_creator)
     """
@@ -56,14 +55,12 @@ def get_dataset_versions_for_job(metastore, job_id):
 
     results = list(metastore.db.execute(query))
 
-    # Get dataset names
     dataset_versions = []
     for dataset_id, version, is_creator in results:
         dataset_query = sa.select(metastore._datasets.c.name).where(
             metastore._datasets.c.id == dataset_id
         )
         dataset_name = next(metastore.db.execute(dataset_query))[0]
-        # Convert is_creator to boolean for consistent assertions across databases
         dataset_versions.append((dataset_name, version, bool(is_creator)))
 
     return sorted(dataset_versions)
@@ -128,7 +125,6 @@ def test_dataset_job_linking(test_session, monkeypatch, nums_dataset):
 
 
 def test_dataset_job_linking_with_reset(test_session, monkeypatch, nums_dataset):
-    """Test that with CHECKPOINTS_RESET=True, new versions are created each run."""
     catalog = test_session.catalog
     metastore = catalog.metastore
     monkeypatch.setenv("DATACHAIN_CHECKPOINTS_RESET", str(True))
@@ -150,12 +146,10 @@ def test_dataset_job_linking_with_reset(test_session, monkeypatch, nums_dataset)
     chain.save("nums_reset")
     job2_id = test_session.get_or_create_job().id
 
-    # Verify job2 created NEW version 1.0.1 (not reusing 1.0.0)
     job2_datasets = get_dataset_versions_for_job(metastore, job2_id)
     assert len(job2_datasets) == 1
     assert job2_datasets[0] == ("nums_reset", "1.0.1", True)
 
-    # Verify job1 still only has version 1.0.0
     job1_datasets = get_dataset_versions_for_job(metastore, job1_id)
     assert len(job1_datasets) == 1
     assert job1_datasets[0] == ("nums_reset", "1.0.0", True)
@@ -164,7 +158,6 @@ def test_dataset_job_linking_with_reset(test_session, monkeypatch, nums_dataset)
 def test_dataset_version_job_id_updates_to_latest(
     test_session, monkeypatch, nums_dataset
 ):
-    """Test that dataset_version.job_id is updated to the latest job that used it."""
     catalog = test_session.catalog
     monkeypatch.setenv("DATACHAIN_CHECKPOINTS_RESET", str(False))
 
@@ -207,14 +200,12 @@ def test_job_ancestry_depth_exceeded(test_session, monkeypatch, nums_dataset):
 
     chain = dc.read_dataset("nums", session=test_session)
 
-    # Keep saving until we hit the max depth error
     max_attempts = 10  # Safety limit to prevent infinite loop
     for _ in range(max_attempts):
         reset_session_job_state()
         try:
             chain.save("nums_depth")
         except JobAncestryDepthExceededError as exc_info:
-            # Verify the error message
             assert "too deep" in str(exc_info)
             assert "from scratch" in str(exc_info)
             # Test passed - we hit the max depth

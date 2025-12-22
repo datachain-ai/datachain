@@ -1,9 +1,3 @@
-"""Tests for basic checkpoint save/reuse workflows across job runs.
-
-This module tests core checkpoint persistence, retrieval, and dataset lifecycle
-behavior.
-"""
-
 import pytest
 
 import datachain as dc
@@ -33,7 +27,6 @@ def nums_dataset(test_session):
     return dc.read_values(num=[1, 2, 3, 4, 5, 6], session=test_session).save("nums")
 
 
-# Tests will be added below this line
 @pytest.mark.parametrize("reset_checkpoints", [True, False])
 @pytest.mark.parametrize("with_delta", [True, False])
 @pytest.mark.parametrize("use_datachain_job_id_env", [True, False])
@@ -226,7 +219,6 @@ def test_checkpoints_invalid_parent_job_id(test_session, monkeypatch, nums_datas
 def test_checkpoint_with_deleted_dataset_version(
     test_session, monkeypatch, nums_dataset
 ):
-    """Test checkpoint found but dataset version deleted from ancestry."""
     catalog = test_session.catalog
     monkeypatch.setenv("DATACHAIN_CHECKPOINTS_RESET", str(False))
 
@@ -256,6 +248,98 @@ def test_checkpoint_with_deleted_dataset_version(
     assert len(dataset.versions) == 1
     assert dataset.latest_version == "1.0.0"
 
-    # Verify the new version was created by job2, not job1
     new_version = dataset.get_version("1.0.0")
     assert new_version.job_id == job2_id
+
+
+def test_udf_checkpoints_multiple_calls_same_job(
+    test_session, monkeypatch, nums_dataset
+):
+    """
+    Test that UDF execution creates checkpoints, but subsequent calls in the same
+    job will re-execute because the hash changes (includes previous checkpoint hash).
+    Checkpoint reuse is designed for cross-job execution, not within-job execution.
+    """
+    call_count = {"count": 0}
+
+    def add_ten(num) -> int:
+        call_count["count"] += 1
+        return num + 10
+
+    chain = dc.read_dataset("nums", session=test_session).map(
+        plus_ten=add_ten, output=int
+    )
+
+    reset_session_job_state()
+
+    # First count() - should execute UDF
+    assert chain.count() == 6
+    first_calls = call_count["count"]
+    assert first_calls == 6, "Mapper should be called 6 times on first count()"
+
+    # Second count() - will re-execute because hash includes previous checkpoint
+    call_count["count"] = 0
+    assert chain.count() == 6
+    assert call_count["count"] == 6, "Mapper re-executes in same job"
+
+    # Third count() - will also re-execute
+    call_count["count"] = 0
+    assert chain.count() == 6
+    assert call_count["count"] == 6, "Mapper re-executes in same job"
+
+    # Other operations like to_list() will also re-execute
+    call_count["count"] = 0
+    result = chain.order_by("num").to_list("plus_ten")
+    assert result == [(11,), (12,), (13,), (14,), (15,), (16,)]
+    assert call_count["count"] == 6, "Mapper re-executes in same job"
+
+
+@pytest.mark.parametrize("reset_checkpoints", [True, False])
+def test_udf_checkpoints_cross_job_reuse(
+    test_session, monkeypatch, nums_dataset, reset_checkpoints
+):
+    catalog = test_session.catalog
+    monkeypatch.setenv("DATACHAIN_CHECKPOINTS_RESET", str(reset_checkpoints))
+
+    call_count = {"count": 0}
+
+    def double_num(num) -> int:
+        call_count["count"] += 1
+        return num * 2
+
+    chain = dc.read_dataset("nums", session=test_session).map(
+        doubled=double_num, output=int
+    )
+
+    # -------------- FIRST RUN - count() triggers UDF execution -------------------
+    reset_session_job_state()
+    assert chain.count() == 6
+    first_job_id = test_session.get_or_create_job().id
+
+    assert call_count["count"] == 6
+
+    checkpoints = list(catalog.metastore.list_checkpoints(first_job_id))
+    assert len(checkpoints) == 1
+    assert checkpoints[0].partial is False
+
+    # -------------- SECOND RUN - should reuse UDF checkpoint -------------------
+    reset_session_job_state()
+    call_count["count"] = 0  # Reset counter
+
+    assert chain.count() == 6
+    second_job_id = test_session.get_or_create_job().id
+
+    if reset_checkpoints:
+        assert call_count["count"] == 6, "Mapper should be called again"
+    else:
+        assert call_count["count"] == 0, "Mapper should NOT be called"
+
+    checkpoints_second = list(catalog.metastore.list_checkpoints(second_job_id))
+    # After successful completion, only final checkpoint remains
+    # (partial checkpoint is deleted after promotion)
+    assert len(checkpoints_second) == 1
+    assert checkpoints_second[0].partial is False
+
+    # Verify the data is correct
+    result = chain.order_by("num").to_list("doubled")
+    assert result == [(2,), (4,), (6,), (8,), (10,), (12,)]
