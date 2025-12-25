@@ -117,7 +117,7 @@ def test_get_or_create_links_to_parent(test_session, patch_argv, monkeypatch):
     session2 = Session(catalog=test_session.catalog)
     job2 = session2.get_or_create_job()
 
-    assert job2.parent_job_id == job1.id
+    assert job2.rerun_from_job_id == job1.id
 
 
 def test_nested_sessions_share_same_job(test_session, patch_argv, monkeypatch):
