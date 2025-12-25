@@ -8,6 +8,7 @@ from sqlalchemy.sql import FROM_LINTING
 from sqlalchemy.sql.roles import DDLRole
 
 from datachain.data_storage.serializer import Serializable
+from datachain.error import TableMissingError
 
 if TYPE_CHECKING:
     from sqlalchemy import MetaData, Table
@@ -82,10 +83,15 @@ class DatabaseEngine(ABC, Serializable):
     def get_table(self, name: str) -> "Table":
         table = self.metadata.tables.get(name)
         if table is None:
-            sa.Table(name, self.metadata, autoload_with=self.engine)
-            # ^^^ This table may not be correctly initialised on some dialects
-            # Grab it from metadata instead.
-            table = self.metadata.tables[name]
+            try:
+                sa.Table(name, self.metadata, autoload_with=self.engine)
+                # ^^^ This table may not be correctly initialised on some dialects
+                # Grab it from metadata instead.
+                table = self.metadata.tables.get(name)
+                if table is None:
+                    raise TableMissingError(f"Table '{name}' not found")
+            except sa.exc.NoSuchTableError as e:
+                raise TableMissingError(f"Table '{name}' not found") from e
         return table
 
     @abstractmethod
@@ -118,7 +124,11 @@ class DatabaseEngine(ABC, Serializable):
         if_not_exists: bool = True,
         *,
         kind: str | None = None,
-    ) -> None: ...
+    ) -> None:
+        """
+        Create table. Does nothing if table already exists when if_not_exists=True.
+        """
+        ...
 
     @abstractmethod
     def drop_table(self, table: "Table", if_exists: bool = False) -> None: ...

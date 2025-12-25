@@ -1,8 +1,10 @@
 import atexit
 import logging
+import multiprocessing
 import os
 import re
 import sys
+import threading
 import traceback
 from collections.abc import Callable
 from typing import TYPE_CHECKING, ClassVar
@@ -12,6 +14,7 @@ from weakref import WeakSet
 from datachain.catalog import get_catalog
 from datachain.data_storage import JobQueryType, JobStatus
 from datachain.error import JobNotFoundError, TableMissingError
+from datachain.utils import env2bool
 
 if TYPE_CHECKING:
     from datachain.catalog import Catalog
@@ -66,6 +69,10 @@ class Session:
     _OWNS_JOB: ClassVar[bool | None] = None
     _JOB_HOOKS_REGISTERED: ClassVar[bool] = False
     _JOB_FINALIZE_HOOK: ClassVar[Callable[[], None] | None] = None
+
+    # Checkpoint management - disabled when threading/multiprocessing detected
+    _CHECKPOINTS_DISABLED: ClassVar[bool] = False
+    _THREADING_WARNING_SHOWN: ClassVar[bool] = False
 
     DATASET_PREFIX = "session_"
     GLOBAL_SESSION_NAME = "global"
@@ -154,8 +161,15 @@ class Session:
                 script = str(uuid4())
             python_version = f"{sys.version_info.major}.{sys.version_info.minor}"
 
-            # try to find the parent job
-            parent = self.catalog.metastore.get_last_job_by_name(script)
+            # Determine parent job based on DATACHAIN_CHECKPOINTS_RESET flag
+            checkpoints_reset = env2bool("DATACHAIN_CHECKPOINTS_RESET", undefined=False)
+            if checkpoints_reset:
+                # User wants fresh start - don't link to parent
+                parent_job_id = None
+            else:
+                # Normal run - try to find parent job for checkpoint reuse
+                parent = self.catalog.metastore.get_last_job_by_name(script)
+                parent_job_id = parent.id if parent else None
 
             job_id = self.catalog.metastore.create_job(
                 name=script,
@@ -163,7 +177,7 @@ class Session:
                 query_type=JobQueryType.PYTHON,
                 status=JobStatus.RUNNING,
                 python_version=python_version,
-                parent_job_id=parent.id if parent else None,
+                parent_job_id=parent_job_id,
             )
             Session._CURRENT_JOB = self.catalog.metastore.get_job(job_id)
             Session._OWNS_JOB = True
@@ -181,6 +195,44 @@ class Session:
 
         assert Session._CURRENT_JOB is not None
         return Session._CURRENT_JOB
+
+    @classmethod
+    def _check_threading_disable_checkpoints(cls) -> bool:
+        """
+        Check if checkpoints should be disabled due to concurrent execution.
+
+        Checkpoints are disabled when:
+        1. Code is running in a non-main thread, OR
+        2. Running in a subprocess (not the main process)
+
+        This is because checkpoint hashing uses class-level state that is shared
+        across threads, which can lead to race conditions and non-deterministic
+        hash calculations.
+
+        Returns:
+            bool: True if checkpoints are disabled, False otherwise.
+        """
+        # Disable checkpoints if:
+        # 1. Not running in the MainThread (user created a thread), OR
+        # 2. Running in a subprocess (not main process)
+        should_disable = (
+            threading.current_thread().name != "MainThread"
+            or multiprocessing.current_process().name != "MainProcess"
+        )
+
+        if should_disable and not cls._CHECKPOINTS_DISABLED:
+            cls._CHECKPOINTS_DISABLED = True
+            if not cls._THREADING_WARNING_SHOWN:
+                logger.warning(
+                    "Concurrent execution detected (threading or multiprocessing). "
+                    "New checkpoints will not be created from this point forward. "
+                    "Previously created checkpoints remain valid and can be reused. "
+                    "To enable checkpoints, ensure your script runs sequentially "
+                    "without threading or multiprocessing."
+                )
+                cls._THREADING_WARNING_SHOWN = True
+
+        return cls._CHECKPOINTS_DISABLED
 
     def _finalize_job_success(self):
         """Mark the current job as completed."""
@@ -339,6 +391,10 @@ class Session:
         cls._OWNS_JOB = None
         cls._JOB_HOOKS_REGISTERED = False
         cls._JOB_FINALIZE_HOOK = None
+
+        # Reset checkpoint-related class variables
+        cls._CHECKPOINTS_DISABLED = False
+        cls._THREADING_WARNING_SHOWN = False
 
         if cls.ORIGINAL_EXCEPT_HOOK:
             sys.excepthook = cls.ORIGINAL_EXCEPT_HOOK
