@@ -1339,6 +1339,7 @@ class Catalog:
         studio: bool = False,
         project: Project | None = None,
     ) -> Iterator[DatasetListRecord]:
+        from datachain.query.session import Session
         from datachain.remote.studio import StudioClient
 
         project_id = project.id if project else None
@@ -1364,6 +1365,9 @@ class Catalog:
             datasets = self.metastore.list_datasets(project_id=project_id)
 
         for d in datasets:
+            # Filter out internal datasets (session/temp datasets and bucket listings)
+            if Session.is_temp_dataset(d.name):
+                continue
             if not d.is_bucket_listing or include_listing:
                 yield d
 
