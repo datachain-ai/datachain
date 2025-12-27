@@ -3,6 +3,8 @@ import re
 import pytest
 import sqlalchemy as sa
 
+import datachain as dc
+from datachain.dataset import DatasetStatus
 from datachain.error import DatasetNotFoundError
 from datachain.query.dataset import DatasetQuery
 from datachain.query.session import Session
@@ -105,3 +107,94 @@ def test_ephemeral_dataset_lifecycle(catalog, project):
 
     with pytest.raises(DatasetNotFoundError):
         catalog.get_dataset(ds_tmp.name)
+
+
+def test_session_datasets_not_in_ls_datasets(catalog, project):
+    session_name = "testls"
+    with Session(session_name, catalog=catalog) as session:
+        # Create a regular dataset
+        ds_name = "regular_dataset"
+        (
+            dc.read_values(num=[1, 2, 3], session=session)
+            .settings(namespace=project.namespace.name, project=project.name)
+            .save(ds_name)
+        )
+
+        # Create a temp dataset
+        ds_tmp = DatasetQuery(
+            name=ds_name,
+            namespace_name=project.namespace.name,
+            project_name=project.name,
+            session=session,
+            catalog=session.catalog,
+            include_incomplete=True,
+        ).save()
+
+        datasets = list(catalog.ls_datasets())
+        dataset_names = [d.name for d in datasets]
+
+        assert ds_name in dataset_names
+
+        assert ds_tmp.name not in dataset_names
+        assert all(not Session.is_temp_dataset(name) for name in dataset_names)
+
+
+def test_cleanup_temp_datasets_all_states(catalog, project):
+    session_name = "testcleanup"
+    with Session(session_name, catalog=catalog) as session:
+        ds_name = "test_dataset"
+        session.catalog.create_dataset(
+            ds_name, project, columns=(sa.Column("name", String),)
+        )
+
+        # Create temp datasets in different states
+
+        # 1. CREATED state
+        ds_created = DatasetQuery(
+            name=ds_name,
+            namespace_name=project.namespace.name,
+            project_name=project.name,
+            session=session,
+            catalog=session.catalog,
+            include_incomplete=True,
+        ).save()
+
+        # 2. COMPLETE state
+        ds_complete = DatasetQuery(
+            name=ds_name,
+            namespace_name=project.namespace.name,
+            project_name=project.name,
+            session=session,
+            catalog=session.catalog,
+            include_incomplete=True,
+        ).save()
+        ds_complete_record = catalog.get_dataset(
+            ds_complete.name, include_incomplete=True
+        )
+        catalog.metastore.update_dataset_status(
+            ds_complete_record, DatasetStatus.COMPLETE, version="1.0.0"
+        )
+
+        # 3. FAILED state
+        ds_failed = DatasetQuery(
+            name=ds_name,
+            namespace_name=project.namespace.name,
+            project_name=project.name,
+            session=session,
+            catalog=session.catalog,
+            include_incomplete=True,
+        ).save()
+        ds_failed_record = catalog.get_dataset(ds_failed.name, include_incomplete=True)
+        catalog.metastore.update_dataset_status(
+            ds_failed_record, DatasetStatus.FAILED, version="1.0.0"
+        )
+
+        # Verify all three exist before cleanup
+        assert catalog.get_dataset(ds_created.name, include_incomplete=True)
+        assert catalog.get_dataset(ds_complete.name, include_incomplete=True)
+        assert catalog.get_dataset(ds_failed.name, include_incomplete=True)
+
+    # After session exit, all temp datasets should be cleaned up
+    for temp_name in [ds_created.name, ds_complete.name, ds_failed.name]:
+        with pytest.raises(DatasetNotFoundError):
+            catalog.get_dataset(temp_name, include_incomplete=True)

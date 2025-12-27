@@ -354,6 +354,7 @@ class AbstractMetastore(ABC, Serializable):
         self,
         prefix: str,
         project_id: int | None = None,
+        include_incomplete: bool = False,
     ) -> Iterator["DatasetListRecord"]:
         """
         Lists all datasets which names start with prefix in some project or in all
@@ -1421,10 +1422,11 @@ class AbstractDBMetastore(AbstractMetastore):
         self,
         prefix: str,
         project_id: int | None = None,
+        include_incomplete: bool = False,
         conn=None,
     ) -> Iterator["DatasetListRecord"]:
         d = self._datasets
-        query = self._base_list_datasets_query(include_incomplete=False)
+        query = self._base_list_datasets_query(include_incomplete=include_incomplete)
         if project_id:
             query = query.where(d.c.project_id == project_id)
         query = query.where(self._datasets.c.name.startswith(prefix))
