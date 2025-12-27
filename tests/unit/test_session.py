@@ -130,14 +130,11 @@ def test_session_datasets_not_in_ls_datasets(catalog, project):
             include_incomplete=True,
         ).save()
 
-        # List datasets - should NOT include temp dataset
         datasets = list(catalog.ls_datasets())
         dataset_names = [d.name for d in datasets]
 
-        # Regular dataset should be there
         assert ds_name in dataset_names
 
-        # Temp/session dataset should NOT be there
         assert ds_tmp.name not in dataset_names
         assert all(not Session.is_temp_dataset(name) for name in dataset_names)
 
