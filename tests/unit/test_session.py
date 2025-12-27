@@ -3,6 +3,8 @@ import re
 import pytest
 import sqlalchemy as sa
 
+import datachain as dc
+from datachain.dataset import DatasetStatus
 from datachain.error import DatasetNotFoundError
 from datachain.query.dataset import DatasetQuery
 from datachain.query.session import Session
@@ -108,13 +110,14 @@ def test_ephemeral_dataset_lifecycle(catalog, project):
 
 
 def test_session_datasets_not_in_ls_datasets(catalog, project):
-    """Test that session/temp datasets are filtered out from ls_datasets()"""
-    session_name = "test_ls"
+    session_name = "testls"
     with Session(session_name, catalog=catalog) as session:
         # Create a regular dataset
         ds_name = "regular_dataset"
-        session.catalog.create_dataset(
-            ds_name, project, columns=(sa.Column("name", String),)
+        (
+            dc.read_values(num=[1, 2, 3], session=session)
+            .settings(namespace=project.namespace.name, project=project.name)
+            .save(ds_name)
         )
 
         # Create a temp dataset
@@ -140,11 +143,7 @@ def test_session_datasets_not_in_ls_datasets(catalog, project):
 
 
 def test_cleanup_temp_datasets_all_states(catalog, project):
-    """Test that cleanup removes session datasets in CREATED, FAILED, and COMPLETE states"""
-    from datachain.data_storage.schema import DatasetStatus
-
-    session_name = "test_cleanup"
-
+    session_name = "testcleanup"
     with Session(session_name, catalog=catalog) as session:
         ds_name = "test_dataset"
         session.catalog.create_dataset(
@@ -153,7 +152,7 @@ def test_cleanup_temp_datasets_all_states(catalog, project):
 
         # Create temp datasets in different states
 
-        # 1. CREATED state (default when saved)
+        # 1. CREATED state
         ds_created = DatasetQuery(
             name=ds_name,
             namespace_name=project.namespace.name,
@@ -172,7 +171,6 @@ def test_cleanup_temp_datasets_all_states(catalog, project):
             catalog=session.catalog,
             include_incomplete=True,
         ).save()
-        # Mark as COMPLETE
         ds_complete_record = catalog.get_dataset(
             ds_complete.name, include_incomplete=True
         )
@@ -189,7 +187,6 @@ def test_cleanup_temp_datasets_all_states(catalog, project):
             catalog=session.catalog,
             include_incomplete=True,
         ).save()
-        # Mark as FAILED
         ds_failed_record = catalog.get_dataset(ds_failed.name, include_incomplete=True)
         catalog.metastore.update_dataset_status(
             ds_failed_record, DatasetStatus.FAILED, version="1.0.0"
