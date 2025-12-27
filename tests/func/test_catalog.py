@@ -552,11 +552,7 @@ def test_ls_datasets_ordered(test_session):
     datasets = list(test_session.catalog.ls_datasets())
 
     # Session datasets should be automatically filtered out by ls_datasets()
-    assert [
-        (d.name, v.version)
-        for d in datasets
-        for v in d.versions
-    ] == [
+    assert [(d.name, v.version) for d in datasets for v in d.versions] == [
         ("cats", "1.0.0"),
         ("cats", "1.0.1"),
         ("cats", "1.0.2"),
