@@ -1365,7 +1365,6 @@ class Catalog:
             datasets = self.metastore.list_datasets(project_id=project_id)
 
         for d in datasets:
-            # Filter out internal datasets (session/temp datasets and bucket listings)
             if Session.is_temp_dataset(d.name):
                 continue
             if not d.is_bucket_listing or include_listing:

@@ -243,7 +243,6 @@ class Session:
     def _cleanup_temp_datasets(self) -> None:
         prefix = self.get_temp_prefix()
         try:
-            # Include incomplete datasets to clean up failed/orphaned session datasets
             for dataset in list(
                 self.catalog.metastore.list_datasets_by_prefix(
                     prefix, include_incomplete=True
