@@ -793,40 +793,30 @@ class SignalSchema:
         self, name: str | None = None, as_columns=False, include_hidden: bool = True
     ) -> list[str] | list[Column]:
         """
-        Return DB columns as strings or `Column` objects with proper types.
-
-        Args:
-            - name: optional name to filter results by specific object, returning only
-              its signals.
-            - as_columns: If True, returns `Column` objects with proper types. If False,
-              returns column names as strings.
-            - include_hidden: If True, includes hidden fields in the results.
+        Returns DB columns as strings or Column objects with proper types
+        Optionally, it can filter results by specific object, returning only his signals
         """
-        # Collect all signals as (db_name, type) tuples
-        all_signals = [
-            (DEFAULT_DELIMITER.join(path), _type)
+        signals = [
+            DEFAULT_DELIMITER.join(path)
+            if not as_columns
+            else Column(DEFAULT_DELIMITER.join(path), python_to_sql(_type))
             for path, _type, has_subtree, _ in self.get_flat_tree(
                 include_hidden=include_hidden
             )
             if not has_subtree
         ]
 
-        # Filter by name if provided (filters on strings, not Column objects)
         if name:
             if "." in name:
                 name = ColumnMeta.to_db_name(name)
-            all_signals = [
-                (db_name, _type)
-                for db_name, _type in all_signals
-                if db_name == name or db_name.startswith(f"{name}{DEFAULT_DELIMITER}")
+
+            signals = [
+                s
+                for s in signals
+                if str(s) == name or str(s).startswith(f"{name}{DEFAULT_DELIMITER}")
             ]
 
-        # Convert to Column objects if requested
-        if as_columns:
-            return [
-                Column(db_name, python_to_sql(_type)) for db_name, _type in all_signals
-            ]
-        return [db_name for db_name, _ in all_signals]
+        return signals  # type: ignore[return-value]
 
     def user_signals(
         self,
