@@ -900,29 +900,39 @@ class SignalSchema:
         return SignalSchema(schema.values | vals)
 
     def select_except_signals(self, *args: str) -> "SignalSchema":
-        def has_signal(signal: str):
-            signal = signal.replace(".", DEFAULT_DELIMITER)
-            return any(signal == s for s in self.db_signals())
+        """Return a schema excluding the provided signals.
 
-        schema = copy.deepcopy(self.values)
+        Unlike simply deleting top-level schema keys, this method supports nested
+        exclusions (e.g. ``"file.path"``) by rebuilding the remaining schema via
+        ``to_partial`` and generating partial models as needed.
+
+        The exclusion syntax matches ``DataChain.select_except``:
+
+        - Excluding a leaf: ``"file.path"`` removes just that leaf.
+        - Excluding a parent: ``"file"`` removes all leaves under that parent.
+        """
+
+        if not args:
+            return self
+
+        leaf_signals = set(self.user_signals(include_hidden=True, include_sys=True))
+        keep = set(leaf_signals)
+
         for signal in args:
             if not isinstance(signal, str):
                 raise SignalResolvingTypeError("select_except()", signal)
 
-            if signal not in self.values:
-                if has_signal(signal):
-                    raise SignalRemoveError(
-                        signal.split("."),
-                        "select_except() error - removing nested signal would"
-                        " break parent schema, which isn't supported.",
-                    )
-                raise SignalResolvingError(
+            matches = {
+                s for s in leaf_signals if s == signal or s.startswith(f"{signal}.")
+            }
+            if not matches:
+                raise SignalRemoveError(
                     signal.split("."),
                     "select_except() error - the signal does not exist",
                 )
-            del schema[signal]
+            keep -= matches
 
-        return SignalSchema(schema)
+        return self.to_partial(*sorted(keep)) if keep else SignalSchema({})
 
     def clone_without_file_signals(self) -> "SignalSchema":
         schema = copy.deepcopy(self.values)

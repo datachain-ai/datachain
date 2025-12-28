@@ -220,6 +220,14 @@ class Session:
                 error_message=str(exc_value),
                 error_stack=error_stack,
             )
+
+            # Mark any incomplete dataset versions created by this job as FAILED
+            self.catalog.metastore.mark_job_dataset_versions_as_failed(
+                Session._CURRENT_JOB.id
+            )
+            # Finally clean all incomplete dataset versions
+            self.catalog.cleanup_failed_dataset_versions(job_id=Session._CURRENT_JOB.id)
+
             Session._JOB_STATUS = JobStatus.FAILED
 
     def generate_temp_dataset_name(self) -> str:

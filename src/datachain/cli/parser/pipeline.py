@@ -16,17 +16,19 @@ def add_pipeline_parser(subparsers, parent_parser) -> None:
         help="Use `datachain pipeline CMD --help` to display command-specific help",
     )
 
-    pipeline_create_help = "Create a pipeline to update a dataset in Studio"
+    pipeline_create_help = "Create a pipeline to update datasets in Studio"
     pipeline_create_description = (
-        "This command creates a pipeline in Studio that will update the specified"
-        " dataset. The pipeline automatically includes all necessary jobs to update"
-        " the dataset based on its dependencies. "
-        "If no version is specified, the latest version of the dataset is used.\n\n"
-        "The pipeline is created in paused state. Use `datachain pipeline resume`"
-        " to start pipeline execution.\n\n"
-        "The dataset name can be provided in fully qualified format "
+        "Creates a pipeline in Studio to update the specified datasets. "
+        "The pipeline automatically includes all necessary jobs to update "
+        "the datasets based on their dependencies.\n\n"
+        "Each dataset name can optionally include a version suffix "
+        "(e.g., dataset@1.0.9). If no version is specified, the latest "
+        "version is used.\n\n"
+        "The pipeline is created in paused state for review. Use "
+        "`datachain pipeline resume` to start execution.\n\n"
+        "Dataset names can be provided in fully qualified format "
         "(e.g., @namespace.project.name) or as a short name. "
-        "If using a short name, Studio uses the default project and namespace."
+        "Short names use the default project and namespace from Studio."
     )
     pipeline_create_parser = pipeline_subparser.add_parser(
         "create",
@@ -36,21 +38,13 @@ def add_pipeline_parser(subparsers, parent_parser) -> None:
         formatter_class=CustomHelpFormatter,
     )
     pipeline_create_parser.add_argument(
-        "dataset",
+        "datasets",
         type=str,
-        action="store",
+        nargs="+",
         help=(
-            "Name of the dataset. Can be a fully qualified name "
-            "(e.g., @namespace.project.name) or a short name"
+            "Dataset name(s). Can be fully qualified (e.g., @namespace.project.name) "
+            "or short names. Optionally include version suffix: name@version"
         ),
-    )
-    pipeline_create_parser.add_argument(
-        "-V",
-        "--version",
-        type=str,
-        action="store",
-        default=None,
-        help="Dataset version to create the pipeline for (default: latest version)",
     )
     pipeline_create_parser.add_argument(
         "-t",

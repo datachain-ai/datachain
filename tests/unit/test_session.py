@@ -31,6 +31,7 @@ def test_ephemeral_dataset_naming(catalog, project):
             project_name=project.name,
             session=session,
             catalog=session.catalog,
+            include_incomplete=True,  # Test works with CREATED dataset
         ).save()
         session_uuid = f"[0-9a-fA-F]{{{Session.SESSION_UUID_LEN}}}"
         table_uuid = f"[0-9a-fA-F]{{{Session.TEMP_TABLE_UUID_LEN}}}"
@@ -52,6 +53,7 @@ def test_global_session_naming(catalog, project):
         namespace_name=project.namespace.name,
         project_name=project.name,
         catalog=catalog,
+        include_incomplete=True,  # Test works with CREATED dataset
     ).save()
     global_prefix = f"{Session.DATASET_PREFIX}{Session.GLOBAL_SESSION_NAME}"
     pattern = rf"^{global_prefix}_{session_uuid}_{table_uuid}$"
@@ -89,6 +91,7 @@ def test_ephemeral_dataset_lifecycle(catalog, project):
             project_name=project.name,
             session=session,
             catalog=session.catalog,
+            include_incomplete=True,  # Test works with CREATED dataset
         ).save()
 
         assert isinstance(ds_tmp, DatasetQuery)

@@ -47,7 +47,10 @@ from datachain.lib.file import EXPORT_FILES_MAX_THREADS, ArrowRow, File, FileExp
 from datachain.lib.file import ExportPlacement as FileExportPlacement
 from datachain.lib.model_store import ModelStore
 from datachain.lib.settings import Settings
-from datachain.lib.signal_schema import SignalResolvingError, SignalSchema
+from datachain.lib.signal_schema import (
+    SignalResolvingError,
+    SignalSchema,
+)
 from datachain.lib.udf import Aggregator, BatchMapper, Generator, Mapper, UDFBase
 from datachain.lib.udf_signature import UdfSignature
 from datachain.lib.utils import DataChainColumnError, DataChainParamsError
@@ -312,6 +315,7 @@ class DataChain:
             self.name,
             namespace_name=self._query.project.namespace.name,
             project_name=self._query.project.name,
+            include_incomplete=False,
         )
 
     def __or__(self, other: "Self") -> "Self":
@@ -1209,19 +1213,41 @@ class DataChain:
         )
 
     def select(self, *args: str) -> "Self":
-        """Select only a specified set of signals."""
-        new_schema = self.signals_schema.resolve(*args)
+        """Select only a specified set of signals.
+
+        Nested selections (e.g. ``"file.path"``) preserve the parent object by
+        generating partial models rather than flattening into standalone fields.
+        """
+        if not args:
+            return self
+        new_schema = self.signals_schema.to_partial(*args)
+
+        if "sys" in self.signals_schema.values and "sys" not in new_schema.values:
+            new_schema = SignalSchema({"sys": self.signals_schema.values["sys"]}) | (
+                new_schema
+            )
+
         columns = new_schema.db_signals()
         return self._evolve(
-            query=self._query.select(*columns), signal_schema=new_schema
+            query=self._query.select(*columns),
+            signal_schema=new_schema,
         )
 
     def select_except(self, *args: str) -> "Self":
-        """Select all the signals expect the specified signals."""
+        """Select all signals except the specified ones.
+
+        Supports excluding nested fields (e.g. ``"file.path"``), in which case a
+        partial model is generated for the parent signal.
+        """
+        if not args:
+            return self
+
         new_schema = self.signals_schema.select_except_signals(*args)
+
         columns = new_schema.db_signals()
         return self._evolve(
-            query=self._query.select(*columns), signal_schema=new_schema
+            query=self._query.select(*columns),
+            signal_schema=new_schema,
         )
 
     @delta_disabled  # type: ignore[arg-type]
@@ -1573,13 +1599,16 @@ class DataChain:
                 print(file)
             ```
         """
-        chain = self.select(*cols) if cols else self
-        signals_schema = chain._effective_signals_schema
+        signals_schema = (
+            self.signals_schema.resolve(*cols)
+            if cols
+            else self._effective_signals_schema
+        )
         db_signals = signals_schema.db_signals()
         with self._query.ordered_select(*db_signals).as_iterable() as rows:
             for row in rows:
                 ret = signals_schema.row_to_features(
-                    row, catalog=chain.session.catalog, cache=chain._settings.cache
+                    row, catalog=self.session.catalog, cache=self._settings.cache
                 )
                 yield tuple(ret)
 

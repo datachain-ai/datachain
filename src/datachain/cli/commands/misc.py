@@ -12,11 +12,19 @@ def clear_cache(catalog: "Catalog"):
 
 def garbage_collect(catalog: "Catalog"):
     temp_tables = catalog.get_temp_table_names()
-    if not temp_tables:
+    num_versions_removed = catalog.cleanup_failed_dataset_versions()
+
+    total_cleaned = len(temp_tables) + num_versions_removed
+
+    if total_cleaned == 0:
         print("Nothing to clean up.")
     else:
-        print(f"Garbage collecting {len(temp_tables)} tables.")
-        catalog.cleanup_tables(temp_tables)
+        if temp_tables:
+            print(f"Garbage collecting {len(temp_tables)} tables.")
+            catalog.cleanup_tables(temp_tables)
+
+        if num_versions_removed:
+            print(f"Cleaned {num_versions_removed} failed/incomplete dataset versions.")
 
 
 def completion(shell: str) -> str:

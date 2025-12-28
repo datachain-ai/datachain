@@ -1285,6 +1285,7 @@ class DatasetQuery:
         session: Session | None = None,
         in_memory: bool = False,
         update: bool = False,
+        include_incomplete: bool = False,
     ) -> None:
         self.session = Session.get(session, catalog=catalog, in_memory=in_memory)
         self.catalog = catalog or self.session.catalog
@@ -1328,6 +1329,7 @@ class DatasetQuery:
                     version=version,
                     pull_dataset=True,
                     update=update,
+                    include_incomplete=include_incomplete,
                 )
             )
 
@@ -1404,14 +1406,18 @@ class DatasetQuery:
         if self.list_ds_name and not self.starting_step:
             listing_ds = None
             try:
-                listing_ds = self.catalog.get_dataset(self.list_ds_name)
+                listing_ds = self.catalog.get_dataset(
+                    self.list_ds_name, include_incomplete=False
+                )
             except DatasetNotFoundError:
                 pass
 
             if not listing_ds or self.update or listing_dataset_expired(listing_ds):
                 assert self.listing_fn
                 self.listing_fn()
-                listing_ds = self.catalog.get_dataset(self.list_ds_name)
+                listing_ds = self.catalog.get_dataset(
+                    self.list_ds_name, include_incomplete=False
+                )
 
             # at this point we know what is our starting listing dataset name
             self._set_starting_step(listing_ds)  # type: ignore [arg-type]
@@ -1894,6 +1900,7 @@ class DatasetQuery:
                                     dep.name,
                                     namespace_name=dep.namespace,
                                     project_name=dep.project,
+                                    include_incomplete=False,
                                 ),
                                 dep.version,
                             )
@@ -1944,6 +1951,7 @@ class DatasetQuery:
                     name,
                     namespace_name=project.namespace.name,
                     project_name=project.name,
+                    include_incomplete=True,
                 ).has_version(version)
             ):
                 raise RuntimeError(f"Dataset {name} already has version {version}")
@@ -1986,9 +1994,6 @@ class DatasetQuery:
 
             self.catalog.warehouse.copy_table(dr.get_table(), query.select())
 
-            self.catalog.metastore.update_dataset_status(
-                dataset, DatasetStatus.COMPLETE, version=version
-            )
             self.catalog.update_dataset_version_with_warehouse_info(dataset, version)
 
             # Link this dataset version to the job that created it
@@ -2006,12 +2011,18 @@ class DatasetQuery:
                                 dep.name,
                                 namespace_name=dep.namespace,
                                 project_name=dep.project,
+                                include_incomplete=False,
                             ),
                             dep.version,
                         )
                     )
 
             self._add_dependencies(dataset, version)  # type: ignore [arg-type]
+
+            # Mark as COMPLETE only after all operations succeed
+            self.catalog.metastore.update_dataset_status(
+                dataset, DatasetStatus.COMPLETE, version=version
+            )
         finally:
             self.cleanup()
         return self.__class__(
