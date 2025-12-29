@@ -553,7 +553,7 @@ def test_list_datasets(metastore):
     )
 
     datasets = list(metastore.list_datasets())
-    assert {"dataset1", "dataset2", "dataset3"} == {ds.name for ds in datasets}
+    assert {"dataset2"} == {ds.name for ds in datasets}
     # Each dataset should have at least one version
     for ds in datasets:
         assert hasattr(ds, "versions")
@@ -565,7 +565,7 @@ def test_list_datasets_by_project_id(metastore, project):
 
     ds1 = metastore.create_dataset(name="dataset1", project_id=project.id)
     metastore.create_dataset_version(
-        dataset=ds1, version="1.0.0", status=DatasetStatus.CREATED
+        dataset=ds1, version="1.0.0", status=DatasetStatus.COMPLETE
     )
     ds2 = metastore.create_dataset(name="dataset2", project_id=project.id)
     metastore.create_dataset_version(
@@ -573,7 +573,7 @@ def test_list_datasets_by_project_id(metastore, project):
     )
     ds3 = metastore.create_dataset(name="dataset3")  # default project
     metastore.create_dataset_version(
-        dataset=ds3, version="3.0.0", status=DatasetStatus.FAILED
+        dataset=ds3, version="3.0.0", status=DatasetStatus.COMPLETE
     )
 
     datasets = list(metastore.list_datasets(project_id=project.id))
@@ -595,7 +595,7 @@ def test_list_datasets_by_prefix(metastore):
     )
 
     datasets = list(metastore.list_datasets_by_prefix("prefix_"))
-    assert {"prefix_foo", "prefix_bar"} == {ds.name for ds in datasets}
+    assert {"prefix_bar"} == {ds.name for ds in datasets}
     for ds in datasets:
         assert hasattr(ds, "versions")
         assert len(ds.versions) >= 1

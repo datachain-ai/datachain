@@ -272,6 +272,14 @@ class Session:
                 error_message=str(exc_value),
                 error_stack=error_stack,
             )
+
+            # Mark any incomplete dataset versions created by this job as FAILED
+            self.catalog.metastore.mark_job_dataset_versions_as_failed(
+                Session._CURRENT_JOB.id
+            )
+            # Finally clean all incomplete dataset versions
+            self.catalog.cleanup_failed_dataset_versions(job_id=Session._CURRENT_JOB.id)
+
             Session._JOB_STATUS = JobStatus.FAILED
 
     def generate_temp_dataset_name(self) -> str:
@@ -287,7 +295,11 @@ class Session:
     def _cleanup_temp_datasets(self) -> None:
         prefix = self.get_temp_prefix()
         try:
-            for dataset in list(self.catalog.metastore.list_datasets_by_prefix(prefix)):
+            for dataset in list(
+                self.catalog.metastore.list_datasets_by_prefix(
+                    prefix, include_incomplete=True
+                )
+            ):
                 self.catalog.remove_dataset(dataset.name, dataset.project, force=True)
         # suppress error when metastore has been reset during testing
         except TableMissingError:
