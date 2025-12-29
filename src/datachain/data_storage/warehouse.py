@@ -553,7 +553,6 @@ class AbstractWarehouse(ABC, Serializable):
             new_name,
             self.db.metadata,
             *[sa.Column(c.name, c.type) for c in old_table.columns],
-            extend_existing=True,
         )
 
     @abstractmethod
