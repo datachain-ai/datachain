@@ -679,7 +679,10 @@ class Catalog:
                 assert ds_namespace
                 assert ds_project
                 dataset = self.get_dataset(
-                    ds_name, namespace_name=ds_namespace, project_name=ds_project
+                    ds_name,
+                    namespace_name=ds_namespace,
+                    project_name=ds_project,
+                    include_incomplete=False,
                 )
                 if not ds_version:
                     ds_version = dataset.latest_version
@@ -947,6 +950,7 @@ class Catalog:
                     project_name=dataset.project.name,
                     version=version,
                     catalog=self,
+                    include_incomplete=True,  # Allow reading CREATED version
                 )
                 .limit(20)
                 .to_db_records()
@@ -989,6 +993,37 @@ class Catalog:
         are cleaned up as soon as they are no longer needed.
         """
         self.warehouse.cleanup_tables(names)
+
+    def cleanup_failed_dataset_versions(self, job_id: str | None = None) -> int:
+        """
+        Clean up failed/incomplete dataset versions.
+
+        Removes dataset versions that:
+        - Have status CREATED or FAILED
+        - Belong to completed/failed/canceled jobs (not running)
+
+        Returns:
+            Number of removed versions
+        """
+        versions_to_clean = self.metastore.get_incomplete_dataset_versions(
+            job_id=job_id
+        )
+
+        num_removed = 0
+        for dataset, version in versions_to_clean:
+            try:
+                # Remove dataset version (drops warehouse table and metastore record)
+                self.remove_dataset_version(dataset, version)
+                num_removed += 1
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "Failed to clean dataset %s version %s: %s",
+                    dataset.name,
+                    version,
+                    e,
+                )
+
+        return num_removed
 
     def create_dataset_from_sources(
         self,
@@ -1121,6 +1156,7 @@ class Catalog:
         name: str,
         namespace_name: str | None = None,
         project_name: str | None = None,
+        include_incomplete: bool = True,
     ) -> DatasetRecord:
         from datachain.lib.listing import is_listing_dataset
 
@@ -1132,7 +1168,10 @@ class Catalog:
             project_name = self.metastore.listing_project_name
 
         return self.metastore.get_dataset(
-            name, namespace_name=namespace_name, project_name=project_name
+            name,
+            namespace_name=namespace_name,
+            project_name=project_name,
+            include_incomplete=include_incomplete,
         )
 
     def get_dataset_with_remote_fallback(
@@ -1143,6 +1182,7 @@ class Catalog:
         version: str | None = None,
         pull_dataset: bool = False,
         update: bool = False,
+        include_incomplete: bool = True,
     ) -> DatasetRecord:
         from datachain.lib.dc.utils import is_studio
 
@@ -1165,6 +1205,7 @@ class Catalog:
                     name,
                     namespace_name=namespace_name,
                     project_name=project_name,
+                    include_incomplete=include_incomplete,
                 )
                 if not version or ds.has_version(version):
                     return ds
@@ -1193,6 +1234,7 @@ class Catalog:
                 name,
                 namespace_name=namespace_name,
                 project_name=project_name,
+                include_incomplete=include_incomplete,
             )
 
         return self.get_remote_dataset(namespace_name, project_name, name)
@@ -1205,6 +1247,7 @@ class Catalog:
                     dataset.name,
                     namespace_name=dataset.project.namespace.name,
                     project_name=dataset.project.name,
+                    include_incomplete=False,
                 )
         raise DatasetNotFoundError(f"Dataset with version uuid {uuid} not found.")
 
@@ -1271,6 +1314,7 @@ class Catalog:
             name,
             namespace_name=namespace_name,
             project_name=project_name,
+            include_incomplete=False,
         )
         dataset_version = dataset.get_version(version)
         dataset_id = dataset.id
@@ -1295,6 +1339,7 @@ class Catalog:
         studio: bool = False,
         project: Project | None = None,
     ) -> Iterator[DatasetListRecord]:
+        from datachain.query.session import Session
         from datachain.remote.studio import StudioClient
 
         project_id = project.id if project else None
@@ -1320,6 +1365,8 @@ class Catalog:
             datasets = self.metastore.list_datasets(project_id=project_id)
 
         for d in datasets:
+            if Session.is_temp_dataset(d.name):
+                continue
             if not d.is_bucket_listing or include_listing:
                 yield d
 
@@ -1659,7 +1706,10 @@ class Catalog:
 
         try:
             local_dataset = self.get_dataset(
-                local_ds_name, namespace_name=namespace.name, project_name=project.name
+                local_ds_name,
+                namespace_name=namespace.name,
+                project_name=project.name,
+                include_incomplete=True,
             )
             if local_dataset and local_dataset.has_version(local_ds_version):
                 raise DataChainError(

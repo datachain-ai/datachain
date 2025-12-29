@@ -315,6 +315,7 @@ class DataChain:
             self.name,
             namespace_name=self._query.project.namespace.name,
             project_name=self._query.project.name,
+            include_incomplete=False,
         )
 
     def __or__(self, other: "Self") -> "Self":
