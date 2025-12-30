@@ -532,3 +532,26 @@ def test_to_partial_does_not_create_model_when_all_fields_selected():
 
     # When the selection includes all fields, return the original model type.
     assert partial.values == {"data": WithDefault}
+
+
+def test_to_partial_does_not_create_model_when_all_fields_selected_via_nested_paths():
+    class Stats(DataModel):
+        count: int
+        mean: float
+
+    class Metrics(DataModel):
+        raw: Stats
+        clean: Stats
+        ratio: float
+
+    schema = SignalSchema({"metrics": Metrics, "other": str})
+
+    partial = schema.to_partial(
+        "metrics.raw.count",
+        "metrics.raw.mean",
+        "metrics.clean.count",
+        "metrics.clean.mean",
+        "metrics.ratio",
+    )
+
+    assert partial.values == {"metrics": Metrics}

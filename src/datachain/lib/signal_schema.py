@@ -1270,6 +1270,8 @@ class SignalSchema:
             column_parts = _validate_and_split_path(column)
             _merge_selection(column_parts)
 
+        leaf_signals = self.user_signals(include_hidden=True, include_sys=True)
+
         def _build_partial_type(
             base_type: Any, selection: dict[str, Any] | None, path: list[str]
         ) -> Any:
@@ -1285,9 +1287,11 @@ class SignalSchema:
             model = ModelStore.to_pydantic(base_type)
             assert model is not None, "Expected complex type to be a Pydantic model"
 
-            if set(selection.keys()) == set(model.model_fields.keys()) and all(
-                sub_selection is None for sub_selection in selection.values()
-            ):
+            # Check if all signals under this model are covered by requested columns
+            # We don't need to do partial model in that case
+            prefix = ".".join(path)
+            model_leaves = [s for s in leaf_signals if s.startswith(f"{prefix}.")]
+            if all(leaf in columns for leaf in model_leaves):
                 return base_type
 
             field_types: dict[str, Any] = {}
