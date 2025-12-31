@@ -44,8 +44,8 @@ class Job:
         params: str,
         metrics: str,
         parent_job_id: str | None,
-        rerun_from_job_id: str | None = None,
-        run_group_id: str | None = None,
+        rerun_from_job_id: str | None,
+        run_group_id: str | None,
     ) -> "Job":
         return cls(
             str(id),
