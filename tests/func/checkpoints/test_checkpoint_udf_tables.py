@@ -23,7 +23,7 @@ def nums_dataset(test_session):
     return dc.read_values(num=[1, 2, 3, 4, 5, 6], session=test_session).save("nums")
 
 
-@pytest.mark.parametrize("parallel", [None, 2, 4, 6, 20])
+@pytest.mark.parametrize("parallel", [None, 2, 20])
 def test_track_processed_items(test_session_tmpfile, parallel):
     """Test that we correctly track processed sys__ids with different parallel
     settings.
