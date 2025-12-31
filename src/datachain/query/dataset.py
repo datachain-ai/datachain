@@ -460,9 +460,6 @@ class UDFStep(Step, ABC):
         If query cache is enabled, use the cached table; otherwise use the original
         query.
         """
-        if os.getenv("DATACHAIN_DISABLE_QUERY_CACHE", "") not in ("", "0"):
-            return original_query
-
         # Table was created from original_query by create_pre_udf_table,
         # so they should have the same columns. However, get_table() reflects
         # the table with database-specific types (e.g ClickHouse types) instead of
