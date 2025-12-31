@@ -548,7 +548,6 @@ class AbstractWarehouse(ABC, Serializable):
         self.db.rename_table(old_table.name, new_name)
 
         # Create a new table object with the same columns but new name
-        # This preserves the original SQLType types instead of reflecting dialect types
         return sa.Table(
             new_name,
             self.db.metadata,
