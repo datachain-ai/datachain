@@ -59,6 +59,7 @@ from datachain.error import (
 from datachain.job import Job
 from datachain.namespace import Namespace
 from datachain.project import Project
+from datachain.utils import checkpoints_enabled
 
 if TYPE_CHECKING:
     from sqlalchemy import CTE, Delete, Insert, Select, Subquery, Update
@@ -2107,10 +2108,7 @@ class AbstractDBMetastore(AbstractMetastore):
         partial: bool = False,
         conn: Any | None = None,
     ) -> Checkpoint | None:
-        from datachain.query.session import Session
-
-        # Skip checkpoint creation if threading/multiprocessing detected
-        if Session._check_threading_disable_checkpoints():
+        if not checkpoints_enabled():
             return None
 
         query = self._checkpoints_insert().values(
@@ -2155,10 +2153,7 @@ class AbstractDBMetastore(AbstractMetastore):
         """
         Tries to find checkpoint for a job with specific hash and optionally partial
         """
-        from datachain.query.session import Session
-
-        # Skip checkpoint lookup if threading/multiprocessing detected
-        if Session._check_threading_disable_checkpoints():
+        if not checkpoints_enabled():
             return None
 
         ch = self._checkpoints

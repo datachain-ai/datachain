@@ -1,11 +1,13 @@
 import glob
 import io
 import logging
+import multiprocessing
 import os
 import os.path as osp
 import random
 import re
 import sys
+import threading
 import time
 from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
@@ -29,6 +31,14 @@ if TYPE_CHECKING:
 DEFAULT_BATCH_SIZE = 2000
 
 logger = logging.getLogger("datachain")
+
+
+class _CheckpointState:
+    """Internal state for checkpoint management."""
+
+    disabled = False
+    warning_shown = False
+
 
 NUL = b"\0"
 TIME_ZERO = datetime.fromtimestamp(0, tz=timezone.utc)
@@ -517,6 +527,41 @@ def get_datachain_executable() -> list[str]:
 def uses_glob(path: str) -> bool:
     """Checks if some URI path has glob syntax in it"""
     return glob.has_magic(os.path.basename(os.path.normpath(path)))
+
+
+def checkpoints_enabled() -> bool:
+    """
+    Check if checkpoints are enabled for the current execution context.
+
+    Checkpoints are automatically disabled when code runs in:
+    1. A non-main thread (user created threading), OR
+    2. A subprocess (not the main process)
+
+    This is because checkpoint hashing uses shared state that can lead to
+    race conditions and non-deterministic hash calculations in concurrent contexts.
+
+    Returns:
+        bool: True if checkpoints are enabled, False if disabled.
+    """
+    # Check if we're in a concurrent context
+    is_concurrent = (
+        threading.current_thread().name != "MainThread"
+        or multiprocessing.current_process().name != "MainProcess"
+    )
+
+    if is_concurrent and not _CheckpointState.disabled:
+        _CheckpointState.disabled = True
+        if not _CheckpointState.warning_shown:
+            logger.warning(
+                "Concurrent execution detected (threading or multiprocessing). "
+                "New checkpoints will not be created from this point forward. "
+                "Previously created checkpoints remain valid and can be reused. "
+                "To enable checkpoints, ensure your script runs sequentially "
+                "without threading or multiprocessing."
+            )
+            _CheckpointState.warning_shown = True
+
+    return not _CheckpointState.disabled
 
 
 def env2bool(var, undefined=False):

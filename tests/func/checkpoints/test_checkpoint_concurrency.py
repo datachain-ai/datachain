@@ -116,7 +116,7 @@ def test_multiprocessing_disables_checkpoints(test_session, monkeypatch):
         name = "SpawnProcess-1"  # Not "MainProcess"
 
     monkeypatch.setattr(
-        "datachain.query.session.multiprocessing.current_process",
+        "datachain.utils.multiprocessing.current_process",
         lambda: MockProcess(),
     )
 
