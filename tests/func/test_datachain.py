@@ -22,6 +22,7 @@ from datachain.dataset import DatasetDependencyType
 from datachain.lib.data_model import compute_model_fingerprint
 from datachain.lib.file import File, ImageFile
 from datachain.lib.listing import LISTING_TTL, is_listing_dataset, parse_listing_uri
+from datachain.lib.model_store import ModelStore
 from datachain.lib.tar import process_tar
 from datachain.query.dataset import QueryStep
 from tests.utils import (
@@ -1504,6 +1505,83 @@ def test_window_signals_random(cloud_test_catalog):
         assert dog in all_dogs
         all_dogs.remove(dog)
     assert len(all_dogs) == 2
+
+
+def test_select_except_top_level_preserves_nested_models(test_session):
+    class Stats(DataModel):
+        count: int
+        mean: float
+
+    class Metrics(DataModel):
+        raw: Stats
+        clean: Stats
+        ratio: float
+
+    metrics = [
+        Metrics(
+            raw=Stats(count=1, mean=0.1),
+            clean=Stats(count=2, mean=0.2),
+            ratio=1.0,
+        ),
+        Metrics(
+            raw=Stats(count=3, mean=0.3),
+            clean=Stats(count=4, mean=0.4),
+            ratio=2.0,
+        ),
+    ]
+
+    chain = dc.read_values(metrics=metrics, dropme=["a", "b"], session=test_session)
+
+    # Excluding a top-level sibling column should not turn unrelated nested models
+    # into Partial_* variants.
+    selected = chain.select_except("dropme")
+
+    assert set(selected.signals_schema.values) == {"metrics", "sys"}
+    assert selected.signals_schema.values["metrics"] is Metrics
+
+
+def test_select_except_nested_leaf_creates_partials(test_session):
+    class Stats(DataModel):
+        count: int
+        mean: float
+
+    class Metrics(DataModel):
+        raw: Stats
+        clean: Stats
+        ratio: float
+
+    metrics = [
+        Metrics(
+            raw=Stats(count=1, mean=0.1),
+            clean=Stats(count=2, mean=0.2),
+            ratio=1.0,
+        ),
+        Metrics(
+            raw=Stats(count=3, mean=0.3),
+            clean=Stats(count=4, mean=0.4),
+            ratio=2.0,
+        ),
+    ]
+
+    chain = dc.read_values(metrics=metrics, dropme=["a", "b"], session=test_session)
+
+    # Excluding a nested leaf should create partial models for the affected parents.
+    selected = chain.select_except("metrics.raw.mean", "dropme")
+
+    assert set(selected.signals_schema.values) == {"metrics", "sys"}
+
+    metrics_type = ModelStore.to_pydantic(selected.signals_schema.values["metrics"])
+    assert metrics_type is not None
+    assert metrics_type is not Metrics
+    assert metrics_type.__name__.startswith("MetricsPartial")
+
+    raw_type = ModelStore.to_pydantic(metrics_type.model_fields["raw"].annotation)
+    assert raw_type is not None
+    assert raw_type is not Stats
+    assert raw_type.__name__.startswith("StatsPartial")
+
+    # Sanity: the excluded field is really gone.
+    assert "mean" not in raw_type.model_fields
 
 
 def test_to_read_csv_remote(cloud_test_catalog_upload):
