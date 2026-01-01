@@ -61,7 +61,8 @@ def test_checkpoints(
     chain.save("nums2")
     with pytest.raises(CustomMapperError):
         chain.map(new=mapper_fail).save("nums3")
-    first_job_id = test_session.get_or_create_job().id
+    first_job = test_session.get_or_create_job()
+    first_job_id = first_job.id
 
     catalog.get_dataset("nums1")
     catalog.get_dataset("nums2")
@@ -73,7 +74,12 @@ def test_checkpoints(
     if use_datachain_job_id_env:
         monkeypatch.setenv(
             "DATACHAIN_JOB_ID",
-            metastore.create_job("my-job", "echo 1;", parent_job_id=first_job_id),
+            metastore.create_job(
+                "my-job",
+                "echo 1;",
+                rerun_from_job_id=first_job_id,
+                run_group_id=first_job.run_group_id,
+            ),
         )
     chain.save("nums1")
     chain.save("nums2")

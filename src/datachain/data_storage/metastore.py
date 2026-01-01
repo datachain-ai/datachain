@@ -467,6 +467,8 @@ class AbstractMetastore(ABC, Serializable):
         python_version: str | None = None,
         params: dict[str, str] | None = None,
         parent_job_id: str | None = None,
+        rerun_from_job_id: str | None = None,
+        run_group_id: str | None = None,
     ) -> str:
         """
         Creates a new job.
@@ -1846,7 +1848,11 @@ class AbstractDBMetastore(AbstractMetastore):
             Column("params", JSON, nullable=False),
             Column("metrics", JSON, nullable=False),
             Column("parent_job_id", Text, nullable=True),
+            Column("rerun_from_job_id", Text, nullable=True),
+            Column("run_group_id", Text, nullable=True),
             Index("idx_jobs_parent_job_id", "parent_job_id"),
+            Index("idx_jobs_rerun_from_job_id", "rerun_from_job_id"),
+            Index("idx_jobs_run_group_id", "run_group_id"),
         ]
 
     @cached_property
@@ -1907,6 +1913,8 @@ class AbstractDBMetastore(AbstractMetastore):
         python_version: str | None = None,
         params: dict[str, str] | None = None,
         parent_job_id: str | None = None,
+        rerun_from_job_id: str | None = None,
+        run_group_id: str | None = None,
         conn: Any = None,
     ) -> str:
         """
@@ -1914,6 +1922,20 @@ class AbstractDBMetastore(AbstractMetastore):
         Returns the job id.
         """
         job_id = str(uuid4())
+
+        # Validate run_group_id and rerun_from_job_id consistency
+        if rerun_from_job_id:
+            # Rerun job: run_group_id must be provided by caller
+            assert run_group_id is not None, (
+                "run_group_id must be provided when rerun_from_job_id is set"
+            )
+        else:
+            # First job: run_group_id should not be provided (we set it here)
+            assert run_group_id is None, (
+                "run_group_id should not be provided when rerun_from_job_id is not set"
+            )
+            run_group_id = job_id
+
         self.db.execute(
             self._jobs_insert().values(
                 id=job_id,
@@ -1929,6 +1951,8 @@ class AbstractDBMetastore(AbstractMetastore):
                 params=json.dumps(params or {}),
                 metrics=json.dumps({}),
                 parent_job_id=parent_job_id,
+                rerun_from_job_id=rerun_from_job_id,
+                run_group_id=run_group_id,
             ),
             conn=conn,
         )
@@ -2212,14 +2236,16 @@ class AbstractDBMetastore(AbstractMetastore):
             self.db.execute(update_query, conn=conn)
 
     def get_ancestor_job_ids(self, job_id: str, conn=None) -> list[str]:
-        # Use recursive CTE to walk up the parent chain
-        # Format: WITH RECURSIVE ancestors(id, parent_job_id, depth) AS (...)
+        # Use recursive CTE to walk up the rerun chain
+        # Format: WITH RECURSIVE ancestors(id, rerun_from_job_id, run_group_id,
+        # depth) AS (...)
         # Include depth tracking to prevent infinite recursion in case of
         # circular dependencies
         ancestors_cte = (
             self._jobs_select(
                 self._jobs.c.id.label("id"),
-                self._jobs.c.parent_job_id.label("parent_job_id"),
+                self._jobs.c.rerun_from_job_id.label("rerun_from_job_id"),
+                self._jobs.c.run_group_id.label("run_group_id"),
                 literal(0).label("depth"),
             )
             .where(self._jobs.c.id == job_id)
@@ -2227,20 +2253,30 @@ class AbstractDBMetastore(AbstractMetastore):
         )
 
         # Recursive part: join with parent jobs, incrementing depth and checking limit
+        # Also ensure we only traverse jobs within the same run_group_id for safety
         ancestors_recursive = ancestors_cte.union_all(
             self._jobs_select(
                 self._jobs.c.id.label("id"),
-                self._jobs.c.parent_job_id.label("parent_job_id"),
+                self._jobs.c.rerun_from_job_id.label("rerun_from_job_id"),
+                self._jobs.c.run_group_id.label("run_group_id"),
                 (ancestors_cte.c.depth + 1).label("depth"),
             ).select_from(
                 self._jobs.join(
                     ancestors_cte,
                     (
                         self._jobs.c.id
-                        == cast(ancestors_cte.c.parent_job_id, self._jobs.c.id.type)
+                        == cast(ancestors_cte.c.rerun_from_job_id, self._jobs.c.id.type)
                     )
-                    & (ancestors_cte.c.parent_job_id.isnot(None))  # Stop at root jobs
-                    & (ancestors_cte.c.depth < JOB_ANCESTRY_MAX_DEPTH),
+                    & (
+                        ancestors_cte.c.rerun_from_job_id.isnot(None)
+                    )  # Stop at root jobs
+                    & (ancestors_cte.c.depth < JOB_ANCESTRY_MAX_DEPTH)
+                    & (
+                        self._jobs.c.run_group_id
+                        == cast(
+                            ancestors_cte.c.run_group_id, self._jobs.c.run_group_id.type
+                        )
+                    ),  # Safety: only traverse within same run group
                 )
             )
         )

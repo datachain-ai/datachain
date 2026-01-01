@@ -724,9 +724,9 @@ class DataChain:
         checkpoints_reset = env2bool("DATACHAIN_CHECKPOINTS_RESET", undefined=False)
 
         if (
-            self.job.parent_job_id
+            self.job.rerun_from_job_id
             and not checkpoints_reset
-            and metastore.find_checkpoint(self.job.parent_job_id, job_hash)
+            and metastore.find_checkpoint(self.job.rerun_from_job_id, job_hash)
         ):
             # checkpoint found → find which dataset version to reuse
 

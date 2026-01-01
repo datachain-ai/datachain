@@ -12,7 +12,6 @@ from weakref import WeakSet
 from datachain.catalog import get_catalog
 from datachain.data_storage import JobQueryType, JobStatus
 from datachain.error import JobNotFoundError, TableMissingError
-from datachain.utils import env2bool
 
 if TYPE_CHECKING:
     from datachain.catalog import Catalog
@@ -155,15 +154,8 @@ class Session:
                 script = str(uuid4())
             python_version = f"{sys.version_info.major}.{sys.version_info.minor}"
 
-            # Determine parent job based on DATACHAIN_CHECKPOINTS_RESET flag
-            checkpoints_reset = env2bool("DATACHAIN_CHECKPOINTS_RESET", undefined=False)
-            if checkpoints_reset:
-                # User wants fresh start - don't link to parent
-                parent_job_id = None
-            else:
-                # Normal run - try to find parent job for checkpoint reuse
-                parent = self.catalog.metastore.get_last_job_by_name(script)
-                parent_job_id = parent.id if parent else None
+            # try to find the parent job for checkpoint/rerun chain
+            parent = self.catalog.metastore.get_last_job_by_name(script)
 
             job_id = self.catalog.metastore.create_job(
                 name=script,
@@ -171,7 +163,8 @@ class Session:
                 query_type=JobQueryType.PYTHON,
                 status=JobStatus.RUNNING,
                 python_version=python_version,
-                parent_job_id=parent_job_id,
+                rerun_from_job_id=parent.id if parent else None,
+                run_group_id=parent.run_group_id if parent else None,
             )
             Session._CURRENT_JOB = self.catalog.metastore.get_job(job_id)
             Session._OWNS_JOB = True

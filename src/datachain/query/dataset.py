@@ -696,11 +696,11 @@ class UDFStep(Step, ABC):
         checkpoints_reset = env2bool("DATACHAIN_CHECKPOINTS_RESET", undefined=False)
 
         if (
-            self.job.parent_job_id
+            self.job.rerun_from_job_id
             and not checkpoints_reset
             and (
                 checkpoint := self.metastore.find_checkpoint(
-                    self.job.parent_job_id, _hash, partial=partial
+                    self.job.rerun_from_job_id, _hash, partial=partial
                 )
             )
         ):
@@ -752,7 +752,7 @@ class UDFStep(Step, ABC):
             return self.warehouse.get_table(current_input_table_name)
 
         # Search ancestor jobs for the input table
-        if self.job.parent_job_id:
+        if self.job.rerun_from_job_id:
             ancestor_job_ids = self.metastore.get_ancestor_job_ids(self.job.id)
             for ancestor_job_id in ancestor_job_ids:
                 ancestor_input_table_name = UDFStep.input_table_name(
@@ -936,8 +936,8 @@ class UDFStep(Step, ABC):
         Returns tuple of (output_table, input_table).
         """
         # The checkpoint must be from parent job
-        assert self.job.parent_job_id is not None
-        assert checkpoint.job_id == self.job.parent_job_id
+        assert self.job.rerun_from_job_id is not None
+        assert checkpoint.job_id == self.job.rerun_from_job_id
 
         # Create new partial checkpoint in current job
         self.metastore.get_or_create_checkpoint(
@@ -951,7 +951,7 @@ class UDFStep(Step, ABC):
         try:
             parent_partial_table = self.warehouse.get_table(
                 UDFStep.partial_output_table_name(
-                    self.job.parent_job_id, checkpoint.hash
+                    self.job.rerun_from_job_id, checkpoint.hash
                 )
             )
         except TableMissingError:
