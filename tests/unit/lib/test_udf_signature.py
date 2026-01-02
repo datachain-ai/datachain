@@ -17,7 +17,33 @@ def get_sign(
     output: DataType | Sequence[str] | dict[str, DataType] | None = None,
     **signal_map,
 ):
-    return UdfSignature.parse("test", signal_map, func, params, output, False)
+    return UdfSignature.parse(
+        "test",
+        signal_map,
+        func,
+        params,
+        output,
+        is_input_batched=False,
+        is_generator=False,
+    )
+
+
+def get_sign_batched(
+    func: Callable | None = None,
+    params: str | Sequence[str] | None = None,
+    output: DataType | Sequence[str] | dict[str, DataType] | None = None,
+    **signal_map,
+):
+    """Aggregator-style input: the UDF receives a batch (list) per call."""
+    return UdfSignature.parse(
+        "test",
+        signal_map,
+        func,
+        params,
+        output,
+        is_input_batched=True,
+        is_generator=True,
+    )
 
 
 def func_str(p1) -> str:
@@ -209,3 +235,64 @@ def test_unparameterized_iterator_defaults_to_str():
 
     sign = get_sign(s1=iter_func)
     assert sign.output_schema.values == {"s1": str}
+
+
+def test_params_all_sets_all_params_and_input_name_for_map():
+    def f(row: dict[str, Any]) -> int:
+        return 1
+
+    sign = get_sign(r=f, params="*")
+    assert sign.all_params is True
+    assert sign.all_params_input == "row"
+    assert sign.params == {"*": Any}
+
+
+def test_params_all_accepts_annotated_dict_for_map():
+    def f(row: t.Annotated[dict[str, Any], "payload"]) -> int:
+        return 1
+
+    sign = get_sign(r=f, params="*")
+    assert sign.all_params is True
+    assert sign.all_params_input == "row"
+
+
+def test_params_all_in_list_sets_all_params_and_input_name_for_map():
+    def f(row: dict[str, Any]) -> int:
+        return 1
+
+    sign = get_sign(r=f, params=["*", "a"])
+    assert sign.all_params is True
+    assert sign.all_params_input == "row"
+
+
+def test_params_all_requires_dict_annotation_for_map():
+    def f(row) -> int:
+        return 1
+
+    with pytest.raises(UdfSignatureError):
+        get_sign(r=f, params="*")
+
+
+def test_params_all_sets_all_params_and_input_name_for_agg():
+    def agg(rows: list[dict[str, Any]]) -> t.Iterator[int]:
+        yield len(rows)
+
+    sign = get_sign_batched(r=agg, params="*")
+    assert sign.all_params is True
+    assert sign.all_params_input == "rows"
+
+
+def test_params_all_requires_list_of_dict_annotation_for_agg():
+    def agg(rows: list[int]) -> t.Iterator[int]:
+        yield len(rows)
+
+    with pytest.raises(UdfSignatureError):
+        get_sign_batched(r=agg, params="*")
+
+
+def test_dict_annotation_does_not_enable_all_params_by_default():
+    def f(row: dict[str, Any]) -> int:
+        return 1
+
+    sign = get_sign(r=f)
+    assert sign.all_params is False

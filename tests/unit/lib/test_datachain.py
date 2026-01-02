@@ -830,6 +830,19 @@ def test_agg_two_params(test_session):
     assert ds.order_by("x.cnt").to_values("x.cnt") == [7, 20]
 
 
+def test_agg_params_all_batch_input_dicts(test_session):
+    def collect(rows: list[dict[str, int]]):
+        yield (len(rows), sum(r["t1"] for r in rows))
+
+    chain = dc.read_values(t1=[1, 2, 3], t2=["a", "b", "c"], session=test_session).agg(
+        collect,
+        params=dc.ALL,
+        output={"n": int, "s": int},
+    )
+
+    assert list(chain.to_iter("n", "s")) == [(3, 6)]
+
+
 def test_agg_simple_iterator(test_session):
     def func(key, val) -> Iterator[tuple[File, str]]:
         for i in range(val):
@@ -948,6 +961,50 @@ def test_batch_map(test_session):
         assert x.my_name == test_fr.my_name
 
 
+def test_map_params_all_input_dicts(test_session):
+    def add_one_row(row: dict[str, int]):
+        return row["a"] + row["b"]
+
+    chain = dc.read_values(a=[1, 2], b=[10, 20], session=test_session).map(
+        x=add_one_row,
+        params=dc.ALL,
+        output=int,
+    )
+
+    assert list(chain.to_iter("x")) == [(11,), (22,)]
+
+
+def test_map_params_all_input_dicts_with_setup(test_session):
+    def add_prefix(row: dict[str, int], prefix: str):
+        return f"{prefix}{row['a'] + row['b']}"
+
+    chain = (
+        dc.read_values(a=[1], b=[2], session=test_session)
+        .setup(prefix=lambda: "p")
+        .map(
+            x=add_prefix,
+            params=dc.ALL,
+            output=str,
+        )
+    )
+
+    assert list(chain.to_iter("x")) == [("p3",)]
+
+
+def test_gen_params_all_input_dicts(test_session):
+    def dup(row: dict[str, object]):
+        yield row["a"]
+        yield row["a"]
+
+    chain = dc.read_values(a=[1, 2], b=["x", "y"], session=test_session).gen(
+        x=dup,
+        params=dc.ALL,
+        output=int,
+    )
+
+    assert list(chain.order_by("x").to_values("x")) == [1, 1, 2, 2]
+
+
 @_batch_mapper_warn
 def test_batch_map_wrong_size(test_session):
     class _TestFr(BaseModel):
@@ -1015,6 +1072,19 @@ def test_batch_map_tuple_result_iterator(test_session):
         chain = dc.read_values(t1=[1, 4, 9], session=test_session).batch_map(x=sqrt)
 
     assert chain.order_by("x").to_values("x") == [1, 2, 3]
+
+
+@_batch_mapper_warn
+def test_batch_map_params_all_not_supported(test_session):
+    def sqrt(t1: list[int]) -> Iterator[float]:
+        for val in t1:
+            yield math.sqrt(val)
+
+    with pytest.raises(DataChainParamsError):
+        dc.read_values(t1=[1, 4, 9], session=test_session).batch_map(
+            x=sqrt,
+            params=dc.ALL,
+        )
 
 
 def test_read_dataset_name_version(test_session):

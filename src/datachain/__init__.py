@@ -1,5 +1,6 @@
 from datachain.lib.data_model import DataModel, DataType, is_chain_type
 from datachain.lib.dc import (
+    ALL,
     C,
     Column,
     DataChain,
@@ -46,6 +47,7 @@ from datachain.query import metrics, param
 from datachain.query.session import Session
 
 __all__ = [
+    "ALL",
     "AbstractUDF",
     "Aggregator",
     "ArrowRow",

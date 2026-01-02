@@ -83,6 +83,10 @@ logger = logging.getLogger("datachain")
 
 C = Column
 
+# Public sentinel for selecting all user columns in UDF params.
+# Example: `chain.agg(func, params=dc.ALL, ...)`
+ALL = "*"
+
 _T = TypeVar("_T")
 UDFObjT = TypeVar("UDFObjT", bound=UDFBase)
 
@@ -905,7 +909,13 @@ class DataChain:
             chain.save("new_dataset")
             ```
         """
-        udf_obj = self._udf_to_obj(Mapper, func, params, output, signal_map)
+        udf_obj = self._udf_to_obj(
+            Mapper,
+            func,
+            params,
+            output,
+            signal_map,
+        )
         if (prefetch := self._settings.prefetch) is not None:
             udf_obj.prefetch = prefetch
 
@@ -945,7 +955,13 @@ class DataChain:
             chain.save("new_dataset")
             ```
         """
-        udf_obj = self._udf_to_obj(Generator, func, params, output, signal_map)
+        udf_obj = self._udf_to_obj(
+            Generator,
+            func,
+            params,
+            output,
+            signal_map,
+        )
         if (prefetch := self._settings.prefetch) is not None:
             udf_obj.prefetch = prefetch
         return self._evolve(
@@ -1083,7 +1099,13 @@ class DataChain:
         else:
             processed_partition_by = []
 
-        udf_obj = self._udf_to_obj(Aggregator, func, params, output, signal_map)
+        udf_obj = self._udf_to_obj(
+            Aggregator,
+            func,
+            params,
+            output,
+            signal_map,
+        )
         return self._evolve(
             query=self._query.generate(
                 udf_obj.to_udf_wrapper(self._settings.batch_size),
@@ -1107,9 +1129,7 @@ class DataChain:
 
         It accepts the same parameters plus an
         additional parameter:
-
             batch: Size of each batch passed to `func`. Defaults to 1000.
-
         Example:
             ```py
             chain = chain.batch_map(
@@ -1124,6 +1144,12 @@ class DataChain:
             Use `agg()` instead, which provides the similar functionality.
         """
         import warnings
+
+        if params == "*":
+            raise DataChainParamsError(
+                "batch_map() is deprecated and does not support params=ALL. "
+                "Use agg() instead, or pass an explicit list of columns."
+            )
 
         warnings.warn(
             "batch_map() is deprecated and will be removed in a future version. "
@@ -1153,7 +1179,15 @@ class DataChain:
         is_generator = target_class.is_output_batched
         name = self.name or ""
 
-        sign = UdfSignature.parse(name, signal_map, func, params, output, is_generator)
+        sign = UdfSignature.parse(
+            name,
+            signal_map,
+            func,
+            params,
+            output,
+            is_input_batched=is_batch,
+            is_generator=is_generator,
+        )
         DataModel.register(list(sign.output_schema.values.values()))
 
         params_schema = self.signals_schema.slice(

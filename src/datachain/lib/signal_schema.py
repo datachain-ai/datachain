@@ -616,10 +616,25 @@ class SignalSchema:
         is_batch: bool = False,
     ) -> "SignalSchema":
         """
-        Returns new schema that combines current schema and setup signals.
+        Build an input schema for UDF execution.
+
+        It makes a new ``SignalSchema`` with only the inputs named in ``params``.
+        It expands ``"*"`` (``dc.ALL``) to include the full current schema (plus
+        setup keys).
         """
         setup_params = setup.keys() if setup else []
         schema: dict[str, DataType] = {}
+
+        # Wildcard params="*" (dc.ALL): include the full schema and skip validation.
+        if "*" in params:
+            schema = dict(self.values)
+            for key in setup_params:
+                if key in schema:
+                    raise SignalSchemaError(
+                        f"Setup key '{key}' conflicts with an existing signal"
+                    )
+                schema[key] = str
+            return SignalSchema(schema, setup)
 
         for param, param_type in params.items():
             # This is special case for setup params, they are always treated as strings

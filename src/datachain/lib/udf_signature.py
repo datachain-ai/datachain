@@ -1,7 +1,7 @@
 import inspect
-from collections.abc import Callable, Generator, Iterator, Sequence
+from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, get_args, get_origin
+from typing import Annotated, Any, get_args, get_origin
 
 from datachain.lib.data_model import DataType, DataTypeNames, is_chain_type
 from datachain.lib.signal_schema import SignalSchema
@@ -15,22 +15,98 @@ class UdfSignatureError(DataChainParamsError):
         super().__init__(f"processor signature error{suffix}: {msg}")
 
 
+def _unwrap_annotated(annotation: object) -> object:
+    # typing.Annotated[T, ...] -> T
+    if get_origin(annotation) is Annotated:
+        args = get_args(annotation)
+        if args:
+            return args[0]
+    return annotation
+
+
+def _validate_all_params_payload_annotation(
+    chain: str,
+    annotation: object,
+    *,
+    is_input_batched: bool,
+) -> None:
+    annotation = _unwrap_annotated(annotation)
+    origin = get_origin(annotation)
+    args = get_args(annotation)
+
+    def _is_mapping_type(tp: object) -> bool:
+        return tp in (dict, Mapping)
+
+    if is_input_batched and origin in (list, Sequence) and args:
+        inner = get_origin(args[0]) or args[0]
+        if _is_mapping_type(inner):
+            return
+
+    if _is_mapping_type(origin or annotation):
+        return
+
+    raise UdfSignatureError(
+        chain,
+        (
+            "params=ALL requires the first parameter to be annotated as "
+            "dict[...] (map/gen) or list[dict[...]] (agg)."
+        ),
+    )
+
+
+def _all_params_input(
+    chain: str,
+    *,
+    is_input_batched: bool,
+    func_params: dict[str, type],
+):
+    if not func_params:
+        raise UdfSignatureError(
+            chain,
+            (
+                "params=ALL requires the first parameter to be annotated as "
+                "dict[...] (map/gen) or list[dict[...]] (agg)."
+            ),
+        )
+
+    payload_param_name, payload_annotation = next(iter(func_params.items()))
+    _validate_all_params_payload_annotation(
+        chain,
+        payload_annotation,
+        is_input_batched=is_input_batched,
+    )
+    return payload_param_name
+
+
 @dataclass
 class UdfSignature:  # noqa: PLW1641
     func: Callable | UDFBase
     params: dict[str, DataType | Any]
     output_schema: SignalSchema
 
+    # True iff params includes ALL ("*") and we should pass a single packed
+    # payload (dict/list[dict]) to the user function.
+    all_params: bool = False
+
+    # When all_params is True, this is the name of the user parameter that
+    # receives the packed payload.
+    all_params_input: str | None = None
+
+    # When all_params is True, controls whether sys.* signals are included in the
+    # packed payload passed to the user function.
+
     DEFAULT_RETURN_TYPE = str
 
     @classmethod
-    def parse(
+    def parse(  # noqa: PLR0912
         cls,
         chain: str,
         signal_map: dict[str, Callable],
         func: UDFBase | Callable | None = None,
         params: str | Sequence[str] | None = None,
         output: DataType | Sequence[str] | dict[str, DataType] | None = None,
+        *,
+        is_input_batched: bool = False,
         is_generator: bool = True,
     ) -> "UdfSignature":
         keys = ", ".join(signal_map.keys())
@@ -71,7 +147,10 @@ class UdfSignature:  # noqa: PLW1641
         )
 
         udf_params: dict[str, DataType | Any] = {}
+        all_params = False
         if params:
+            if params == "*" or (not isinstance(params, str) and "*" in params):
+                all_params = True
             udf_params = (
                 {params: Any} if isinstance(params, str) else dict.fromkeys(params, Any)
             )
@@ -82,6 +161,15 @@ class UdfSignature:  # noqa: PLW1641
                 )
                 for param, param_type in func_params_map_sign.items()
             }
+
+        all_params_input: str | None = None
+
+        if all_params:
+            all_params_input = _all_params_input(
+                chain,
+                is_input_batched=is_input_batched,
+                func_params=func_params_map_sign,
+            )
 
         if output:
             # Use the actual resolved function (udf_func) for clearer error messages
@@ -126,6 +214,8 @@ class UdfSignature:  # noqa: PLW1641
             func=udf_func,
             params=udf_params,
             output_schema=SignalSchema(udf_output_map),
+            all_params=all_params,
+            all_params_input=all_params_input,
         )
 
     @staticmethod
@@ -175,6 +265,8 @@ class UdfSignature:  # noqa: PLW1641
             self.func == other.func
             and self.params == other.params
             and self.output_schema.values == other.output_schema.values
+            and self.all_params == other.all_params
+            and self.all_params_input == other.all_params_input
         )
 
     @staticmethod

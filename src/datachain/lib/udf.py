@@ -185,10 +185,20 @@ class UDFBase(AbstractUDF):
     is_output_batched = False
     prefetch: int = 0
 
+    # True iff params includes ALL ("*") and we should pass a single packed
+    # payload (dict/list[dict]) to the user function.
+    all_params: bool = False
+
+    # When all_params is True, this is the name of the parameter in the user
+    # function signature that should receive the packed payload.
+    all_params_input: str | None = None
+
     def __init__(self):
         self.params: SignalSchema | None = None
         self.output = None
         self._func = None
+        self.all_params = False
+        self.all_params_input = None
 
     def hash(self) -> str:
         """
@@ -200,6 +210,8 @@ class UDFBase(AbstractUDF):
         """
         # Hash user code: either _func (function-based) or process method (class-based)
         func_to_hash = self._func if self._func else self.process
+
+        assert self.output is not None
 
         parts = [
             hash_callable(func_to_hash),
@@ -236,6 +248,12 @@ class UDFBase(AbstractUDF):
         self.params = params
         self.output = sign.output_schema
         self._func = func
+        self.all_params = sign.all_params
+        self.all_params_input = sign.all_params_input
+
+    @staticmethod
+    def _is_sys_signal_name(name: str) -> bool:
+        return name == "sys" or name.startswith(("sys.", "sys__"))
 
     @classmethod
     def _create(
@@ -276,6 +294,7 @@ class UDFBase(AbstractUDF):
 
     @property
     def signal_names(self) -> Iterable[str]:
+        assert self.output is not None
         return self.output.to_udf_spec().keys()
 
     def to_udf_wrapper(
@@ -283,6 +302,7 @@ class UDFBase(AbstractUDF):
         batch_size: int | None = None,
         batch: int = 1,
     ) -> UDFAdapter:
+        assert self.output is not None
         return UDFAdapter(
             self,
             self.output.to_udf_spec(),
@@ -302,6 +322,7 @@ class UDFBase(AbstractUDF):
         raise NotImplementedError
 
     def _flatten_row(self, row):
+        assert self.output is not None
         if len(self.output.values) > 1 and not isinstance(row, BaseModel):
             flat = []
             for obj in row:
@@ -346,6 +367,35 @@ class UDFBase(AbstractUDF):
         udf_input = self._parse_row(row_dict, catalog, cache, download_cb)
         return row_dict["sys__id"], *udf_input
 
+    def _split_setup_kwargs_and_row_dict(
+        self,
+        values: Sequence[Any],
+        *,
+        all_param_names: Sequence[str],
+        setup_names: set[str],
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        setup_kwargs: dict[str, Any] = {}
+        row_dict: dict[str, Any] = {}
+        for name, value in zip(all_param_names, values, strict=False):
+            if name in setup_names:
+                setup_kwargs.setdefault(name, value)
+            else:
+                row_dict[name] = value
+        return setup_kwargs, row_dict
+
+    def _pack_records_for_process(self, records: list[dict[str, Any]]) -> Any:
+        return records[0] if len(records) == 1 else records
+
+    def _build_packed_call_kwargs(
+        self,
+        *,
+        records: list[dict[str, Any]],
+        setup_kwargs: dict[str, Any],
+    ) -> dict[str, Any]:
+        assert self.all_params_input is not None
+        batch_arg = self._pack_records_for_process(records)
+        return {self.all_params_input: batch_arg, **setup_kwargs}
+
 
 def noop(*args, **kwargs):
     pass
@@ -362,7 +412,7 @@ async def _prefetch_input(
     return row
 
 
-def _remove_prefetched(row: T) -> None:
+def _remove_prefetched(row: Sequence[Any]) -> None:
     for obj in row:
         if isinstance(obj, File):
             catalog = obj._catalog
@@ -427,6 +477,12 @@ class Mapper(UDFBase):
     ) -> Iterator[Iterable[UDFResult]]:
         self.setup()
 
+        if self.params is None:
+            raise UdfError("UDF params schema is not initialized")
+
+        setup_names = set(self.params.setup_func)
+        all_param_names = list(self.params.values)
+
         def _prepare_rows(udf_inputs) -> "abc.Generator[Sequence[Any], None, None]":
             with safe_closing(udf_inputs):
                 for row in udf_inputs:
@@ -444,7 +500,19 @@ class Mapper(UDFBase):
 
         with closing(prepared_inputs):
             for id_, *udf_args in prepared_inputs:
-                result_objs = self.process(*udf_args)
+                if not self.all_params:
+                    result_objs = self.process(*udf_args)
+                else:
+                    setup_kwargs, row_dict = self._split_setup_kwargs_and_row_dict(
+                        udf_args,
+                        all_param_names=all_param_names,
+                        setup_names=setup_names,
+                    )
+                    call_kwargs = self._build_packed_call_kwargs(
+                        records=[row_dict],
+                        setup_kwargs=setup_kwargs,
+                    )
+                    result_objs = self.process(**call_kwargs)
                 udf_output = self._flatten_row(result_objs)
                 output = [
                     {"sys__id": id_}
@@ -491,6 +559,7 @@ class BatchMapper(UDFBase):
 
         for batch in udf_inputs:
             n_rows = len(batch)
+
             row_ids, *udf_args = zip(
                 *[
                     self._prepare_row_and_id(
@@ -501,6 +570,7 @@ class BatchMapper(UDFBase):
                 strict=False,
             )
             result_objs = list(self.process(*udf_args))
+
             n_objs = len(result_objs)
             assert n_objs == n_rows, (
                 f"{self.name} returns {n_objs} rows, but {n_rows} were expected"
@@ -534,6 +604,12 @@ class Generator(UDFBase):
     ) -> Iterator[Iterable[UDFResult]]:
         self.setup()
 
+        if self.params is None:
+            raise UdfError("UDF params schema is not initialized")
+
+        setup_names = set(self.params.setup_func)
+        all_param_names = list(self.params.values)
+
         def _prepare_rows(udf_inputs) -> "abc.Generator[Sequence[Any], None, None]":
             with safe_closing(udf_inputs):
                 for row in udf_inputs:
@@ -542,7 +618,21 @@ class Generator(UDFBase):
                     )
 
         def _process_row(row):
-            with safe_closing(self.process(*row)) as result_objs:
+            if not self.all_params:
+                result_iter = self.process(*row)
+            else:
+                setup_kwargs, row_dict = self._split_setup_kwargs_and_row_dict(
+                    row,
+                    all_param_names=all_param_names,
+                    setup_names=setup_names,
+                )
+                call_kwargs = self._build_packed_call_kwargs(
+                    records=[row_dict],
+                    setup_kwargs=setup_kwargs,
+                )
+                result_iter = self.process(**call_kwargs)
+
+            with safe_closing(result_iter) as result_objs:
                 for result_obj in result_objs:
                     udf_output = self._flatten_row(result_obj)
                     yield dict(zip(self.signal_names, udf_output, strict=False))
@@ -579,18 +669,48 @@ class Aggregator(UDFBase):
     ) -> Iterator[Iterable[UDFResult]]:
         self.setup()
 
+        if self.params is None:
+            raise UdfError("UDF params schema is not initialized")
+
+        setup_names = set(self.params.setup_func)
+        all_param_names = list(self.params.values)
+
         for batch in udf_inputs:
-            prepared_rows = [
-                self._prepare_row(row, udf_fields, catalog, cache, download_cb)
-                for row in batch
-            ]
-            batched_args = zip(*prepared_rows, strict=False)
-            # Convert aggregated column values to lists. This keeps behavior
-            # consistent with the type hints promoted in the public API.
-            udf_args = [
-                list(arg) if isinstance(arg, tuple) else arg for arg in batched_args
-            ]
-            result_objs = self.process(*udf_args)
+            if not self.all_params:
+                prepared_rows = [
+                    self._prepare_row(row, udf_fields, catalog, cache, download_cb)
+                    for row in batch
+                ]
+                batched_args = zip(*prepared_rows, strict=False)
+                # Convert aggregated column values to lists. This keeps behavior
+                # consistent with the type hints promoted in the public API.
+                udf_args = [
+                    list(arg) if isinstance(arg, tuple) else arg for arg in batched_args
+                ]
+                result_objs = self.process(*udf_args)
+            else:
+                prepared_rows = [
+                    self._prepare_row(row, udf_fields, catalog, cache, download_cb)
+                    for row in batch
+                ]
+                setup_kwargs: dict[str, Any] = {}
+                rows_dicts: list[dict[str, Any]] = []
+                for row_values in prepared_rows:
+                    row_setup_kwargs, row_dict = self._split_setup_kwargs_and_row_dict(
+                        row_values,
+                        all_param_names=all_param_names,
+                        setup_names=setup_names,
+                    )
+                    for k, v in row_setup_kwargs.items():
+                        setup_kwargs.setdefault(k, v)
+                    rows_dicts.append(row_dict)
+
+                call_kwargs = self._build_packed_call_kwargs(
+                    records=rows_dicts,
+                    setup_kwargs=setup_kwargs,
+                )
+                result_objs = self.process(**call_kwargs)
+
             udf_outputs = (self._flatten_row(row) for row in result_objs)
             output = (
                 dict(zip(self.signal_names, row, strict=False)) for row in udf_outputs
