@@ -159,24 +159,27 @@ def test_udf_generator_continue_parallel(test_session_tmpfile, monkeypatch):
 
 
 @pytest.mark.parametrize("parallel", [2, 4, 6, 20])
-def test_processed_table_data_integrity(test_session_tmpfile, parallel):
-    """Test that input table, and output table are consistent after failure.
+def test_parallel_checkpoint_recovery_no_duplicates(test_session_tmpfile, parallel):
+    """Test that parallel checkpoint recovery processes all inputs exactly once.
 
-    Verifies that for a generator that yields n^2 for each input n:
-    - Every sys__input_id in  output table has corresponding input in input table
-    - Every processed input has correct output (n^2) in partial output table
-    - No missing or incorrect outputs
+    Verifies:
+    - No duplicate outputs in final result
+    - All inputs produce correct outputs (n^2)
+    - Correct total number of outputs (100)
     """
     test_session = test_session_tmpfile
-    warehouse = test_session.catalog.warehouse
+
+    # Track run count to fail only on first run
+    run_count = {"value": 0}
 
     def gen_square(num) -> Iterator[int]:
-        # Fail on input 95
-        if num == 95:
+        # Fail on input 95 during first run only
+        if num == 95 and run_count["value"] == 0:
             raise Exception(f"Simulated failure on num={num}")
+
         yield num * num
 
-    dc.read_values(num=list(range(1, 100)), session=test_session).save("nums")
+    dc.read_values(num=list(range(1, 101)), session=test_session).save("nums")
     reset_session_job_state()
 
     chain = (
@@ -186,49 +189,26 @@ def test_processed_table_data_integrity(test_session_tmpfile, parallel):
         .gen(result=gen_square, output=int)
     )
 
-    # Run UDF - should fail on num=95
+    # First run - fails on num=95
     with pytest.raises(RuntimeError):
         chain.save("results")
 
-    input_table, partial_output_table = get_partial_tables(test_session)
+    # Second run - should recover and complete
+    reset_session_job_state()
+    run_count["value"] += 1
+    chain.save("results")
 
-    # Get distinct sys__input_id from partial output table to see which inputs were
-    # processed
-    processed_sys_ids = [
-        row[0]
-        for row in warehouse.db.execute(
-            sa.select(sa.distinct(partial_output_table.c.sys__input_id))
-        )
-    ]
-    # output values in partial output table
-    outputs = [
-        row[0] for row in warehouse.db.execute(sa.select(partial_output_table.c.result))
-    ]
-    # Build mapping: sys__id -> input_value from input table
-    input_data = {
-        row[0]: row[1]
-        for row in warehouse.db.execute(
-            sa.select(input_table.c.sys__id, input_table.c.num)
-        )
-    }
+    # Verify: Final result has correct number of outputs and values
+    result = dc.read_dataset("results", session=test_session).to_list("result")
+    assert len(result) == 100, f"Expected 100 outputs, got {len(result)}"
 
-    # Verify no duplicates
-    assert len(set(outputs)) == len(outputs)
+    # Verify: No duplicate outputs
+    output_values = [row[0] for row in result]
+    assert len(output_values) == len(set(output_values)), (
+        "Found duplicate outputs in final result"
+    )
 
-    # Verify each processed sys__id has correct input and output
-    for sys_id in processed_sys_ids:
-        # Check input exists for this sys__id
-        assert sys_id in input_data
-
-        # Verify output value is correct (n^2)
-        input_val = input_data[sys_id]
-        expected_output = input_val * input_val
-
-        assert expected_output in outputs, (
-            f"For sys__id {sys_id}: input={input_val}, "
-            f"expected output={expected_output}, "
-            f"not found in partial output"
-        )
-
-    # Verify we processed some inputs (don't check exact count - varies by warehouse)
-    assert len(processed_sys_ids) > 0, "Expected some processing before failure"
+    # Verify: All expected outputs present (1^2, 2^2, ..., 100^2)
+    expected = {i * i for i in range(1, 101)}
+    actual = set(output_values)
+    assert actual == expected, f"Outputs don't match. Missing: {expected - actual}"
