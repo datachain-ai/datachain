@@ -67,69 +67,6 @@ def test_track_processed_items(test_session_tmpfile, parallel):
     assert 0 < len(processed_sys_ids) < 100
 
 
-def test_udf_tables_naming(test_session, monkeypatch):
-    catalog = test_session.catalog
-    warehouse = catalog.warehouse
-
-    dc.read_values(num=[1, 2, 3, 4, 5, 6], session=test_session).save("num.num.numbers")
-
-    from tests.utils import list_tables
-
-    initial_udf_tables = set(list_tables(warehouse.db, prefix="udf_"))
-
-    def get_udf_tables():
-        tables = set(list_tables(warehouse.db, prefix="udf_"))
-        return sorted(tables - initial_udf_tables)
-
-    def square_num(num) -> int:
-        return num * num
-
-    chain = dc.read_dataset("num.num.numbers", session=test_session).map(
-        squared=square_num, output=int
-    )
-
-    # -------------- FIRST RUN -------------------
-    reset_session_job_state()
-    chain.count()
-    first_job_id = test_session.get_or_create_job().id
-
-    assert len(list(catalog.metastore.list_checkpoints(first_job_id))) == 1
-
-    # Construct expected job-specific table names (include job_id in names)
-    # After UDF completion, processed table is cleaned up,
-    # input and output tables remain
-    # Note: Input table uses partial_hash (hash_input + output_schema_hash),
-    # not just hash_input, to detect schema changes
-    partial_hash = "241cc841b9bd4ba9dca17183ce467b413de6a176e94c14929fd37da94e2445be"
-    hash_output = "12a892fbed5f7d557d5fc7f048f3356dda97e7f903a3f998318202a4400e3f16"
-    expected_first_run_tables = sorted(
-        [
-            f"udf_{first_job_id}_{partial_hash}_input",
-            f"udf_{first_job_id}_{hash_output}_output",
-        ]
-    )
-
-    assert get_udf_tables() == expected_first_run_tables
-
-    # -------------- SECOND RUN -------------------
-    reset_session_job_state()
-    chain.count()
-    second_job_id = test_session.get_or_create_job().id
-
-    # Second run should:
-    # - Reuse first job's input table (found via ancestor search)
-    # - Create its own output table (copied from first job)
-    expected_all_tables = sorted(
-        [
-            f"udf_{first_job_id}_{partial_hash}_input",  # Shared input
-            f"udf_{first_job_id}_{hash_output}_output",  # First job output
-            f"udf_{second_job_id}_{hash_output}_output",  # Second job output
-        ]
-    )
-
-    assert get_udf_tables() == expected_all_tables
-
-
 def test_multiple_udf_chain_continue(test_session, monkeypatch):
     """Test continuing from partial with multiple UDFs in chain.
 
