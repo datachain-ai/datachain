@@ -56,6 +56,7 @@ from datachain.query.udf import UdfInfo
 from datachain.sql.functions.random import rand
 from datachain.sql.types import SQLType
 from datachain.utils import (
+    checkpoints_enabled,
     determine_processes,
     determine_workers,
     ensure_sequence,
@@ -696,7 +697,8 @@ class UDFStep(Step, ABC):
         checkpoints_reset = env2bool("DATACHAIN_CHECKPOINTS_RESET", undefined=False)
 
         if (
-            self.job.rerun_from_job_id
+            checkpoints_enabled()
+            and self.job.rerun_from_job_id
             and not checkpoints_reset
             and (
                 checkpoint := self.metastore.find_checkpoint(
@@ -825,13 +827,14 @@ class UDFStep(Step, ABC):
 
         # After UDF completes successfully, clean up partial checkpoint and
         # processed table
-        if ch_partial := self.metastore.find_checkpoint(
-            self.job.id, partial_hash, partial=True
-        ):
-            self.metastore.remove_checkpoint(ch_partial.id)
+        if checkpoints_enabled():
+            if ch_partial := self.metastore.find_checkpoint(
+                self.job.id, partial_hash, partial=True
+            ):
+                self.metastore.remove_checkpoint(ch_partial.id)
 
-        # Create final checkpoint for current job
-        self.metastore.get_or_create_checkpoint(self.job.id, hash_output)
+            # Create final checkpoint for current job
+            self.metastore.get_or_create_checkpoint(self.job.id, hash_output)
 
         # Create result query from output table
         input_query = self.get_input_query(input_table.name, query)
@@ -886,22 +889,18 @@ class UDFStep(Step, ABC):
         On success, promotes partial table to job-specific final table.
         Returns tuple of (output_table, input_table).
         """
-        # Create checkpoint with partial_hash (includes output schema)
-        # Note: checkpoint may be None if threading/multiprocessing detected
-        checkpoint = self.metastore.get_or_create_checkpoint(
-            self.job.id, partial_hash, partial=True
-        )
-
-        # Use checkpoint hash if available, otherwise use partial_hash directly
-        # (checkpoint hash is the same as partial_hash anyway)
-        checkpoint_hash = checkpoint.hash if checkpoint else partial_hash
+        # Create checkpoint if enabled (skip if concurrent execution detected)
+        if checkpoints_enabled():
+            self.metastore.get_or_create_checkpoint(
+                self.job.id, partial_hash, partial=True
+            )
 
         # Get or create input table (reuse from ancestors if available)
-        input_table = self.get_or_create_input_table(query, checkpoint_hash)
+        input_table = self.get_or_create_input_table(query, partial_hash)
 
         # Create job-specific partial output table with sys__input_id column
         partial_output_table = self.create_output_table(
-            UDFStep.partial_output_table_name(self.job.id, checkpoint_hash),
+            UDFStep.partial_output_table_name(self.job.id, partial_hash),
             is_partial=True,
         )
 

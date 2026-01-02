@@ -11,7 +11,30 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 import datachain as dc
+from datachain.catalog import Catalog
+from datachain.query.session import Session
 from tests.utils import reset_session_job_state
+
+
+def clone_session(session: Session) -> Session:
+    """
+    Create a new session with cloned metastore and warehouse for thread-safe access.
+
+    This is needed for tests that run DataChain operations in threads, as SQLite
+    connections cannot be shared across threads. For other databases (PostgreSQL,
+    Clickhouse), cloning ensures each thread has its own connection.
+
+    Args:
+        session: The session to clone catalog from.
+
+    Returns:
+        Session: A new session with cloned catalog components.
+    """
+    catalog = session.catalog
+    thread_metastore = catalog.metastore.clone()
+    thread_warehouse = catalog.warehouse.clone()
+    thread_catalog = Catalog(metastore=thread_metastore, warehouse=thread_warehouse)
+    return Session("TestSession", catalog=thread_catalog)
 
 
 @pytest.fixture(autouse=True)
@@ -20,96 +43,107 @@ def mock_is_script_run(monkeypatch):
     monkeypatch.setattr("datachain.query.session.is_script_run", lambda: True)
 
 
-def test_threading_disables_checkpoints(test_session, caplog):
-    catalog = test_session.catalog
-    metastore = catalog.metastore
+def test_threading_disables_checkpoints(test_session_tmpfile, caplog):
+    test_session = test_session_tmpfile
+    metastore = test_session.catalog.metastore
 
     dc.read_values(num=[1, 2, 3, 4, 5, 6], session=test_session).save("nums")
 
+    # -------------- FIRST RUN (main thread) -------------------
     reset_session_job_state()
-    job = test_session.get_or_create_job()
 
-    assert len(list(metastore.list_checkpoints(job.id))) == 0
+    # Run DataChain operation in main thread - checkpoint should be created
+    dc.read_dataset("nums", session=test_session).save("result1")
 
-    # Create a checkpoint in the main thread (should work)
-    checkpoint1 = metastore.get_or_create_checkpoint(job.id, "hash1", partial=False)
-    assert checkpoint1 is not None
-    assert checkpoint1.hash == "hash1"
+    job1 = test_session.get_or_create_job()
+    checkpoints_main = list(metastore.list_checkpoints(job1.id))
+    assert len(checkpoints_main) > 0, "Checkpoint should be created in main thread"
 
-    assert len(list(metastore.list_checkpoints(job.id))) == 1
+    # -------------- SECOND RUN (in thread) -------------------
+    reset_session_job_state()
 
     thread_ran = {"value": False}
-    checkpoint_in_thread = {"value": None}
 
-    def create_checkpoint_in_thread():
+    def run_datachain_in_thread():
+        """Run DataChain operation in a thread - checkpoint should NOT be created."""
+        thread_session = clone_session(test_session)
         thread_ran["value"] = True
-        checkpoint_in_thread["value"] = metastore.get_or_create_checkpoint(
-            job.id, "hash2", partial=False
-        )
+        dc.read_dataset("nums", session=thread_session).save("result2")
 
-    thread = threading.Thread(target=create_checkpoint_in_thread)
+    thread = threading.Thread(target=run_datachain_in_thread)
     thread.start()
     thread.join()
 
     # Verify thread ran
     assert thread_ran["value"] is True
 
-    # Verify checkpoint creation returned None in thread
-    assert checkpoint_in_thread["value"] is None
+    # Verify warning was logged
+    assert any(
+        "Concurrent execution detected" in record.message for record in caplog.records
+    ), "Warning about concurrent execution should be logged"
+
+    # Verify no checkpoint was created in thread
+    job2 = test_session.get_or_create_job()
+    checkpoints_thread = list(metastore.list_checkpoints(job2.id))
+    assert len(checkpoints_thread) == 0, "No checkpoints should be created in thread"
+
+
+def test_threading_with_executor(test_session_tmpfile, caplog):
+    """
+    Test checkpoint disabling with ThreadPoolExecutor running DataChain operations.
+    """
+    test_session = test_session_tmpfile
+    metastore = test_session.catalog.metastore
+
+    dc.read_values(num=[1, 2, 3, 4, 5, 6], session=test_session).save("nums")
+
+    # -------------- FIRST RUN (main thread) -------------------
+    reset_session_job_state()
+    dc.read_dataset("nums", session=test_session).save("before_threading")
+
+    job1 = test_session.get_or_create_job()
+    checkpoints_before = len(list(metastore.list_checkpoints(job1.id)))
+    assert checkpoints_before > 0, "Checkpoint should be created before threading"
+
+    # -------------- SECOND RUN (in thread pool) -------------------
+    reset_session_job_state()
+
+    def worker(i):
+        """Worker function that runs DataChain operations in thread pool."""
+        thread_session = clone_session(test_session)
+        dc.read_dataset("nums", session=thread_session).save(f"result_{i}")
+
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        list(executor.map(worker, range(3)))
 
     # Verify warning was logged
     assert any(
         "Concurrent execution detected" in record.message for record in caplog.records
-    )
+    ), "Warning should be logged when using thread pool"
 
-    # Verify no new checkpoint was created (still just 1)
-    assert len(list(metastore.list_checkpoints(job.id))) == 1
-
-    found = metastore.find_checkpoint(job.id, "hash1", partial=False)
-    assert found is None  # Should be disabled now
-
-
-def test_threading_with_executor(test_session, caplog):
-    """Test checkpoint disabling with ThreadPoolExecutor."""
-    catalog = test_session.catalog
-    metastore = catalog.metastore
-
-    dc.read_values(num=[1, 2, 3, 4, 5, 6], session=test_session).save("nums")
-    reset_session_job_state()
-    job = test_session.get_or_create_job()
-
-    checkpoint1 = metastore.get_or_create_checkpoint(
-        job.id, "hash_before", partial=False
-    )
-    assert checkpoint1 is not None
-
-    def worker(i):
-        return metastore.get_or_create_checkpoint(job.id, f"hash_{i}", partial=False)
-
-    with ThreadPoolExecutor(max_workers=3) as executor:
-        results = list(executor.map(worker, range(3)))
-
-    # All checkpoint creations in threads should return None
-    assert all(r is None for r in results)
-
-    assert any(
-        "Concurrent execution detected" in record.message for record in caplog.records
-    )
-
-    assert len(list(metastore.list_checkpoints(job.id))) == 1
+    # Verify no checkpoints were created in thread pool
+    job2 = test_session.get_or_create_job()
+    checkpoints_after = len(list(metastore.list_checkpoints(job2.id)))
+    assert checkpoints_after == 0, "No checkpoints should be created in thread pool"
 
 
 def test_multiprocessing_disables_checkpoints(test_session, monkeypatch):
+    """Test that checkpoints are disabled when simulating subprocess execution."""
     catalog = test_session.catalog
     metastore = catalog.metastore
 
     dc.read_values(num=[1, 2, 3, 4, 5, 6], session=test_session).save("nums")
-    reset_session_job_state()
-    job = test_session.get_or_create_job()
 
-    # Create checkpoint in main process (should work)
-    checkpoint1 = metastore.get_or_create_checkpoint(job.id, "hash_main", partial=False)
-    assert checkpoint1 is not None
+    # -------------- FIRST RUN (main process) -------------------
+    reset_session_job_state()
+    dc.read_dataset("nums", session=test_session).save("main_result")
+
+    job1 = test_session.get_or_create_job()
+    checkpoints_main = list(metastore.list_checkpoints(job1.id))
+    assert len(checkpoints_main) > 0, "Checkpoint should be created in main process"
+
+    # -------------- SECOND RUN (simulated subprocess) -------------------
+    reset_session_job_state()
 
     # Simulate being in a subprocess by mocking current_process().name
     class MockProcess:
@@ -120,75 +154,82 @@ def test_multiprocessing_disables_checkpoints(test_session, monkeypatch):
         lambda: MockProcess(),
     )
 
-    # Try to create checkpoint - should return None because we're "in a subprocess"
-    checkpoint2 = metastore.get_or_create_checkpoint(
-        job.id, "hash_subprocess", partial=False
+    # Run DataChain operation - checkpoint should NOT be created
+    dc.read_dataset("nums", session=test_session).save("subprocess_result")
+
+    # Verify no checkpoint was created in "subprocess"
+    job2 = test_session.get_or_create_job()
+    checkpoints_subprocess = list(metastore.list_checkpoints(job2.id))
+    assert len(checkpoints_subprocess) == 0, (
+        "No checkpoints should be created in subprocess"
     )
-    assert checkpoint2 is None
-
-    # Verify only the main process checkpoint exists
-    assert len(list(metastore.list_checkpoints(job.id))) == 1
 
 
-def test_checkpoint_reuse_after_threading(test_session):
-    catalog = test_session.catalog
-    metastore = catalog.metastore
+def test_checkpoint_reuse_after_threading(test_session_tmpfile):
+    """
+    Test that checkpoints created before threading can still be reused in new jobs.
+    """
+    test_session = test_session_tmpfile
+    metastore = test_session.catalog.metastore
 
     dc.read_values(num=[1, 2, 3, 4, 5, 6], session=test_session).save("nums")
 
-    # -------------- FIRST RUN -------------------
+    # -------------- FIRST RUN (creates checkpoints) -------------------
     reset_session_job_state()
+    dc.read_dataset("nums", session=test_session).save("result1")
+    dc.read_dataset("nums", session=test_session).save("result2")
+
     job1 = test_session.get_or_create_job()
+    checkpoints_initial = len(list(metastore.list_checkpoints(job1.id)))
+    assert checkpoints_initial > 0, "Checkpoints should be created initially"
 
-    checkpoint1 = metastore.get_or_create_checkpoint(job1.id, "hash_A", partial=False)
-    checkpoint2 = metastore.get_or_create_checkpoint(job1.id, "hash_B", partial=False)
-    assert checkpoint1 is not None
-    assert checkpoint2 is not None
-
-    assert len(list(metastore.list_checkpoints(job1.id))) == 2
-
+    # Run something in a thread (disables checkpoints globally)
     def thread_work():
-        return metastore.get_or_create_checkpoint(job1.id, "hash_C", partial=False)
+        thread_session = clone_session(test_session)
+        dc.read_dataset("nums", session=thread_session).save("thread_result")
 
     thread = threading.Thread(target=thread_work)
     thread.start()
     thread.join()
 
-    assert len(list(metastore.list_checkpoints(job1.id))) == 2
+    # No new checkpoints should have been created in thread
+    assert len(list(metastore.list_checkpoints(job1.id))) == checkpoints_initial
 
-    # -------------- SECOND RUN (new job) -------------------
+    # -------------- SECOND RUN (new job, after threading) -------------------
     reset_session_job_state()
+    dc.read_dataset("nums", session=test_session).save("new_result")
+
     job2 = test_session.get_or_create_job()
-
-    checkpoint_new = metastore.get_or_create_checkpoint(
-        job2.id, "hash_D", partial=False
-    )
-    assert checkpoint_new is not None
-
-    assert len(list(metastore.list_checkpoints(job2.id))) == 1
+    checkpoints_new_job = list(metastore.list_checkpoints(job2.id))
+    assert len(checkpoints_new_job) > 0, "New job should create checkpoints normally"
 
 
-def test_warning_shown_once(test_session, caplog):
-    catalog = test_session.catalog
-    metastore = catalog.metastore
+def test_warning_shown_once(test_session_tmpfile, caplog):
+    """Test that the concurrent execution warning is shown only once per process."""
+    test_session = test_session_tmpfile
 
     dc.read_values(num=[1, 2, 3, 4, 5, 6], session=test_session).save("nums")
     reset_session_job_state()
-    job = test_session.get_or_create_job()
 
-    def create_checkpoints():
-        metastore.get_or_create_checkpoint(job.id, "h1", partial=False)
-        metastore.get_or_create_checkpoint(job.id, "h2", partial=False)
-        metastore.find_checkpoint(job.id, "h3", partial=False)
+    def run_multiple_operations():
+        """Run multiple DataChain operations in a thread."""
+        thread_session = clone_session(test_session)
 
-    thread = threading.Thread(target=create_checkpoints)
+        # Each operation would check checkpoints_enabled()
+        dc.read_dataset("nums", session=thread_session).save("result1")
+        dc.read_dataset("nums", session=thread_session).save("result2")
+        dc.read_dataset("nums", session=thread_session).save("result3")
+
+    thread = threading.Thread(target=run_multiple_operations)
     thread.start()
     thread.join()
 
+    # Count how many times the warning was logged
     warning_count = sum(
         1
         for record in caplog.records
         if "Concurrent execution detected" in record.message
     )
 
-    assert warning_count == 1
+    # Warning should be shown only once, not for each checkpoint check
+    assert warning_count == 1, "Warning should be shown only once per process"

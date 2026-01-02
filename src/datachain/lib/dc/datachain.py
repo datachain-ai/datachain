@@ -63,7 +63,13 @@ from datachain.query.dataset import (
 )
 from datachain.query.schema import DEFAULT_DELIMITER, Column
 from datachain.sql.functions import path as pathfunc
-from datachain.utils import batched_it, env2bool, inside_notebook, row_to_nested_dict
+from datachain.utils import (
+    batched_it,
+    checkpoints_enabled,
+    env2bool,
+    inside_notebook,
+    row_to_nested_dict,
+)
 
 from .database import DEFAULT_DATABASE_BATCH_SIZE
 from .utils import (
@@ -685,7 +691,8 @@ class DataChain:
                 )
             )
 
-        catalog.metastore.get_or_create_checkpoint(self.job.id, _hash)
+        if checkpoints_enabled():
+            catalog.metastore.get_or_create_checkpoint(self.job.id, _hash)
         return result
 
     def _validate_version(self, version: str | None) -> None:
@@ -724,7 +731,8 @@ class DataChain:
         checkpoints_reset = env2bool("DATACHAIN_CHECKPOINTS_RESET", undefined=False)
 
         if (
-            self.job.rerun_from_job_id
+            checkpoints_enabled()
+            and self.job.rerun_from_job_id
             and not checkpoints_reset
             and metastore.find_checkpoint(self.job.rerun_from_job_id, job_hash)
         ):

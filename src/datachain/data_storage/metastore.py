@@ -59,7 +59,6 @@ from datachain.error import (
 from datachain.job import Job
 from datachain.namespace import Namespace
 from datachain.project import Project
-from datachain.utils import checkpoints_enabled
 
 if TYPE_CHECKING:
     from sqlalchemy import CTE, Delete, Insert, Select, Subquery, Update
@@ -543,13 +542,13 @@ class AbstractMetastore(ABC, Serializable):
         _hash: str,
         partial: bool = False,
         conn: Any | None = None,
-    ) -> Checkpoint | None:
+    ) -> Checkpoint:
         """
         Creates a new checkpoint or returns existing one if already exists.
         This is idempotent - calling it multiple times with the same job_id and hash
         will not create duplicates.
 
-        Returns None if checkpoints are disabled due to threading/multiprocessing.
+        The insert and find operations are wrapped in a transaction to ensure atomicity.
         """
 
     @abstractmethod
@@ -2131,29 +2130,35 @@ class AbstractDBMetastore(AbstractMetastore):
         _hash: str,
         partial: bool = False,
         conn: Any | None = None,
-    ) -> Checkpoint | None:
-        if not checkpoints_enabled():
-            return None
+    ) -> Checkpoint:
+        # Use transaction to atomically insert and find checkpoint
+        with self.db.transaction() as tx_conn:
+            conn = conn or tx_conn
 
-        query = self._checkpoints_insert().values(
-            id=str(uuid4()),
-            job_id=job_id,
-            hash=_hash,
-            partial=partial,
-            created_at=datetime.now(timezone.utc),
-        )
+            query = self._checkpoints_insert().values(
+                id=str(uuid4()),
+                job_id=job_id,
+                hash=_hash,
+                partial=partial,
+                created_at=datetime.now(timezone.utc),
+            )
 
-        # Use on_conflict_do_nothing to handle race conditions
-        assert hasattr(query, "on_conflict_do_nothing"), (
-            "Database must support on_conflict_do_nothing"
-        )
-        query = query.on_conflict_do_nothing(
-            index_elements=["job_id", "hash", "partial"]
-        )
+            # Use on_conflict_do_nothing to handle race conditions
+            assert hasattr(query, "on_conflict_do_nothing"), (
+                "Database must support on_conflict_do_nothing"
+            )
+            query = query.on_conflict_do_nothing(
+                index_elements=["job_id", "hash", "partial"]
+            )
 
-        self.db.execute(query, conn=conn)
+            self.db.execute(query, conn=conn)
 
-        return self.find_checkpoint(job_id, _hash, partial=partial, conn=conn)
+            checkpoint = self.find_checkpoint(job_id, _hash, partial=partial, conn=conn)
+            assert checkpoint is not None, (
+                f"Checkpoint should exist after get_or_create for job_id={job_id}, "
+                f"hash={_hash}, partial={partial}"
+            )
+            return checkpoint
 
     def list_checkpoints(self, job_id: str, conn=None) -> Iterator[Checkpoint]:
         """List checkpoints by job id."""
@@ -2177,9 +2182,6 @@ class AbstractDBMetastore(AbstractMetastore):
         """
         Tries to find checkpoint for a job with specific hash and optionally partial
         """
-        if not checkpoints_enabled():
-            return None
-
         ch = self._checkpoints
         query = self._checkpoints_select(ch).where(
             ch.c.job_id == job_id, ch.c.hash == _hash, ch.c.partial == partial
