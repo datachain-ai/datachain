@@ -941,6 +941,7 @@ def test_get_ancestor_job_ids(metastore, depth):
     # The last job is the leaf (youngest)
     leaf_job_id = job_ids[-1]
 
+    # Get ancestors of the leaf job
     ancestors = metastore.get_ancestor_job_ids(leaf_job_id)
 
     # Should return all ancestors except the leaf itself, in order from parent to root
