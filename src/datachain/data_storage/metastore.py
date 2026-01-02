@@ -2052,7 +2052,7 @@ class AbstractDBMetastore(AbstractMetastore):
             Column("hash", Text, nullable=False),
             Column("partial", Boolean, default=False),
             Column("created_at", DateTime(timezone=True), nullable=False),
-            UniqueConstraint("job_id", "hash", "partial"),
+            UniqueConstraint("job_id", "hash"),
         ]
 
     @cached_property
@@ -2147,9 +2147,7 @@ class AbstractDBMetastore(AbstractMetastore):
             assert hasattr(query, "on_conflict_do_nothing"), (
                 "Database must support on_conflict_do_nothing"
             )
-            query = query.on_conflict_do_nothing(
-                index_elements=["job_id", "hash", "partial"]
-            )
+            query = query.on_conflict_do_nothing(index_elements=["job_id", "hash"])
 
             self.db.execute(query, conn=conn)
 
