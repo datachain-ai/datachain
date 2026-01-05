@@ -5,6 +5,8 @@ for SQLite databases. ClickHouse databases used in SaaS have proper migrations,
 so these tests are skipped when running against ClickHouse.
 """
 
+# ruff: noqa: S608
+
 import time
 
 from sqlalchemy import Column, Index, Integer, Table, Text
@@ -43,7 +45,7 @@ def test_automatic_schema_migration(catalog):
     )
 
     db.execute_str(
-        f"INSERT INTO {old_table_name} (id, name) VALUES (?, ?)",  # noqa: S608
+        f"INSERT INTO {old_table_name} (id, name) VALUES (?, ?)",
         ("test-id", "test-name"),
     )
 
@@ -83,7 +85,7 @@ def test_automatic_schema_migration(catalog):
 
     # Verify: Old data still exists
     result = db.execute_str(
-        f"SELECT id, name FROM {old_table_name} WHERE id = ?",  # noqa: S608
+        f"SELECT id, name FROM {old_table_name} WHERE id = ?",
         ("test-id",),
     ).fetchone()
     assert result[0] == "test-id"
@@ -91,14 +93,14 @@ def test_automatic_schema_migration(catalog):
 
     # Verify: Can insert data with new columns
     db.execute_str(
-        f"INSERT INTO {old_table_name} (id, name, description, count, status) "  # noqa: S608
+        f"INSERT INTO {old_table_name} (id, name, description, count, status) "
         "VALUES (?, ?, ?, ?, ?)",
         ("test-id-2", "test-name-2", "test description", 42, "pending"),
     )
 
     # Verify: Can query new columns
     result = db.execute_str(
-        f"SELECT description, count, status FROM {old_table_name} WHERE id = ?",  # noqa: S608
+        f"SELECT description, count, status FROM {old_table_name} WHERE id = ?",
         ("test-id-2",),
     ).fetchone()
     assert result[0] == "test description"
@@ -108,7 +110,7 @@ def test_automatic_schema_migration(catalog):
     # Verify: Old rows have NULL for nullable columns without defaults,
     # but get default values for columns with defaults
     result = db.execute_str(
-        f"SELECT description, count, status FROM {old_table_name} WHERE id = ?",  # noqa: S608
+        f"SELECT description, count, status FROM {old_table_name} WHERE id = ?",
         ("test-id",),
     ).fetchone()
     assert result[0] is None, "Nullable column without default should be NULL"
@@ -121,11 +123,11 @@ def test_automatic_schema_migration(catalog):
 
     # Verify: New rows get default values when not specified
     db.execute_str(
-        f"INSERT INTO {old_table_name} (id, name) VALUES (?, ?)",  # noqa: S608
+        f"INSERT INTO {old_table_name} (id, name) VALUES (?, ?)",
         ("test-id-3", "test-name-3"),
     )
     result = db.execute_str(
-        f"SELECT count, status FROM {old_table_name} WHERE id = ?",  # noqa: S608
+        f"SELECT count, status FROM {old_table_name} WHERE id = ?",
         ("test-id-3",),
     ).fetchone()
     # SQLite applies defaults on INSERT
@@ -198,7 +200,7 @@ def test_migration_with_data_preservation(catalog):
 
     for i in range(100):
         db.execute_str(
-            f"INSERT INTO {table_name} (id, value) VALUES (?, ?)",  # noqa: S608
+            f"INSERT INTO {table_name} (id, value) VALUES (?, ?)",
             (i, f"value-{i}"),
         )
 
@@ -213,13 +215,13 @@ def test_migration_with_data_preservation(catalog):
     metastore._migrate_table_schema(new_table)
 
     # Verify all data is preserved
-    result = db.execute_str(f"SELECT COUNT(*) FROM {table_name}").fetchone()  # noqa: S608
+    result = db.execute_str(f"SELECT COUNT(*) FROM {table_name}").fetchone()
     assert result[0] == 100, "All rows should be preserved"
 
     # Verify data integrity
     for i in range(100):
         result = db.execute_str(
-            f"SELECT value, new_field FROM {table_name} WHERE id = ?",  # noqa: S608
+            f"SELECT value, new_field FROM {table_name} WHERE id = ?",
             (i,),
         ).fetchone()
         assert result[0] == f"value-{i}", f"Value for row {i} should be preserved"

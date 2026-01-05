@@ -539,7 +539,6 @@ class SQLiteMetastore(AbstractDBMetastore):
             try:
                 self.db.execute(CreateIndex(index, if_not_exists=True))
             except (sqlite3.OperationalError, sqlalchemy.exc.OperationalError) as e:
-                # Index creation might fail if column doesn't exist or other issues
                 logger.debug("Could not create index %s: %s", index.name, e)
 
     def _init_namespaces_projects(self) -> None:
