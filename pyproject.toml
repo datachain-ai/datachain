@@ -174,6 +174,7 @@ filterwarnings = [
   "ignore::DeprecationWarning:librosa.core.intervals",
   "ignore::FutureWarning:google.api_core._python_version_support",  # Python 3.10 EOL warning
   "ignore:The default formatters.*will be replaced by ruff:FutureWarning:datamodel_code_generator.*",  # Formatter migration warning
+  "ignore:.*getdata.*deprecated.*:DeprecationWarning:PIL.*",  # Pillow 14 deprecation (we use <13)
   # Expected warnings from our code
   "ignore:Field name .* shadows an attribute in parent:UserWarning",  # datachain.lib.feature
   # Coverage limitation on Python 3.13
