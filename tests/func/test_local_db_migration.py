@@ -231,6 +231,79 @@ def test_migration_with_data_preservation(catalog):
 
 
 @skip_if_not_sqlite
+def test_backward_compatibility_with_extra_columns(catalog):
+    """Test that old code works with DB that has extra columns (downgrade scenario).
+
+    Simulates the case where:
+    1. User runs new version (DB has new columns)
+    2. User downgrades to old version (schema doesn't define new columns)
+
+    Verifies that SQLAlchemy-based queries handle extra columns gracefully.
+    """
+    metastore = catalog.metastore
+    db = metastore.db
+
+    table_name = "test_backward_compat"
+
+    db.execute_str(f"DROP TABLE IF EXISTS {table_name}")
+
+    # Simulate NEW version DB: create table with extra columns
+    db.execute_str(
+        f"""
+        CREATE TABLE {table_name} (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            extra_column_1 TEXT,
+            extra_column_2 INTEGER
+        )
+    """
+    )
+
+    db.execute_str(
+        f"INSERT INTO {table_name} VALUES (1, 'Alice', 'extra_data', 42)",
+    )
+
+    # Simulate OLD version code: schema WITHOUT extra columns
+    old_schema_table = Table(
+        table_name,
+        db.metadata,
+        Column("id", Integer, primary_key=True),
+        Column("name", Text, nullable=False),
+        # Note: extra_column_1 and extra_column_2 are NOT defined
+        extend_existing=True,
+    )
+
+    result = db.execute_str(f"SELECT id, name FROM {table_name} WHERE id=1").fetchone()
+    assert result[0] == 1
+    assert result[1] == "Alice"
+
+    from sqlalchemy import insert
+
+    db.execute(insert(old_schema_table).values(id=2, name="Bob"))
+    result = db.execute_str(
+        f"SELECT id, name, extra_column_1, extra_column_2 FROM {table_name} WHERE id=2"
+    ).fetchone()
+    assert result[0] == 2
+    assert result[1] == "Bob"
+    assert result[2] is None  # extra_column_1 is NULL
+    assert result[3] is None  # extra_column_2 is NULL
+
+    from sqlalchemy import update
+
+    db.execute(
+        update(old_schema_table).where(old_schema_table.c.id == 1).values(name="Alice2")
+    )
+    result = db.execute_str(
+        f"SELECT name, extra_column_1, extra_column_2 FROM {table_name} WHERE id=1"
+    ).fetchone()
+    assert result[0] == "Alice2"  # name updated
+    assert result[1] == "extra_data"  # extra_column_1 preserved
+    assert result[2] == 42  # extra_column_2 preserved
+
+    db.execute_str(f"DROP TABLE {table_name}")
+
+
+@skip_if_not_sqlite
 def test_migration_performance_overhead(catalog):
     """Measure the overhead of migration checks when schema is already up-to-date.
 
