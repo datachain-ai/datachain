@@ -2015,15 +2015,7 @@ class Catalog:
             pass
 
     def _remove_checkpoint(self, checkpoint: Checkpoint) -> None:
-        """
-        Remove a checkpoint and its associated job-specific UDF tables.
-
-        Since tables are now job-scoped, this removes only the tables
-        belonging to this specific checkpoint's job.
-
-        Args:
-            checkpoint: The checkpoint object to remove.
-        """
+        """Remove a checkpoint and its associated job-specific UDF tables."""
         # Remove the checkpoint from metastore first
         self.metastore.remove_checkpoint(checkpoint.id)
 
