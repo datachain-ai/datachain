@@ -6,9 +6,9 @@ capabilities.
 
 ## Download models
 
-If your model file is DVC-tracked, you can download any of its registered
-versions using the DataChain Studio REST API, `dvc artifacts get`, or DVC Python
-API.
+If your model file is tracked by DVC (acquired by lakeFS), you can download any
+of its registered versions using the DataChain Studio REST API,
+`dvc artifacts get`, or DVC Python API.
 
 Prerequisites:
 

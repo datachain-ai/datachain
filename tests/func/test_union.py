@@ -2,7 +2,7 @@ import datachain as dc
 
 
 def test_union_persist_no_duplication_large_session(test_session, monkeypatch):
-    # See https://github.com/iterative/datachain/issues/1356
+    # See https://github.com/datachain-ai/datachain/issues/1356
     # Lower insert batch size to keep the test fast and still cross the boundary.
     monkeypatch.setattr(
         "datachain.data_storage.warehouse.INSERT_BATCH_SIZE", 20, raising=False
@@ -34,7 +34,7 @@ def test_union_parallel_udf_ids_only_no_dup(test_session_tmpfile, monkeypatch):
     # path does not duplicate rows due to sys__id collisions across branches.
     # This specifically exercises the parallel dispatch path where input rows
     # are split by sys__id and fetched per worker using IN (...) filters.
-    # See https://github.com/iterative/datachain/issues/1356
+    # See https://github.com/datachain-ai/datachain/issues/1356
 
     # Make worker/ids fetch batches small to exercise splitting on tiny inputs.
     monkeypatch.setattr("datachain.query.dispatch.DEFAULT_BATCH_SIZE", 5, raising=False)

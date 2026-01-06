@@ -1,18 +1,19 @@
 import glob
 import io
-import json
 import logging
+import multiprocessing
 import os
 import os.path as osp
 import random
 import re
 import sys
+import threading
 import time
 from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
-from datetime import date, datetime, timezone
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, TypeVar
-from uuid import UUID
 
 import cloudpickle
 import platformdirs
@@ -24,10 +25,20 @@ if TYPE_CHECKING:
     import pandas as pd
     from typing_extensions import Self
 
+    from datachain.dataset import DatasetDependency
+
 
 DEFAULT_BATCH_SIZE = 2000
 
 logger = logging.getLogger("datachain")
+
+
+class _CheckpointState:
+    """Internal state for checkpoint management."""
+
+    disabled = False
+    warning_shown = False
+
 
 NUL = b"\0"
 TIME_ZERO = datetime.fromtimestamp(0, tz=timezone.utc)
@@ -108,6 +119,47 @@ class DataChainDir:
             else:
                 raise NotADirectoryError(root)
         return instance
+
+
+@dataclass
+class DatasetIdentifier:
+    namespace: str
+    project: str
+    name: str
+    version: str | None
+
+    def __hash__(self):
+        return hash(f"{self.namespace}_{self.project}_{self.name}_{self.version}")
+
+    def __eq__(self, other):
+        if not isinstance(other, DatasetIdentifier):
+            return False
+        return (
+            self.namespace == other.namespace
+            and self.project == other.project
+            and self.name == other.name
+            and self.version == other.version
+        )
+
+    @classmethod
+    def from_dataset_dependency(
+        cls, dataset_dependency: "DatasetDependency"
+    ) -> "DatasetIdentifier":
+        return cls(
+            namespace=dataset_dependency.namespace,
+            project=dataset_dependency.project,
+            name=dataset_dependency.name,
+            version=dataset_dependency.version,
+        )
+
+    def __str__(self) -> str:
+        """Format DatasetIdentifier as a string: namespace.project.name@version"""
+        dataset_name = ".".join(
+            v for v in [self.namespace, self.project, self.name] if v
+        )
+        if self.version:
+            dataset_name += f"@{self.version}"
+        return dataset_name
 
 
 def system_config_dir():
@@ -402,18 +454,6 @@ def show_records(
     return show_df(df, collapse_columns=collapse_columns, system_columns=system_columns)
 
 
-class JSONSerialize(json.JSONEncoder):
-    def default(self, obj):
-        if isinstance(obj, bytes):
-            return list(obj[:1024])
-        if isinstance(obj, (datetime, date)):
-            return obj.isoformat()
-        if isinstance(obj, UUID):
-            return str(obj)
-
-        return super().default(obj)
-
-
 def inside_colab() -> bool:
     try:
         from google import colab  # type: ignore[attr-defined]  # noqa: F401
@@ -433,7 +473,7 @@ def inside_notebook() -> bool:
 
     if shell == "ZMQInteractiveShell":
         try:
-            import IPython
+            import IPython  # type: ignore[import-not-found]
 
             return IPython.__version__ >= "6.0.0"
         except ImportError:
@@ -489,6 +529,41 @@ def uses_glob(path: str) -> bool:
     return glob.has_magic(os.path.basename(os.path.normpath(path)))
 
 
+def checkpoints_enabled() -> bool:
+    """
+    Check if checkpoints are enabled for the current execution context.
+
+    Checkpoints are automatically disabled when code runs in:
+    1. A non-main thread (user created threading), OR
+    2. A subprocess (not the main process)
+
+    This is because checkpoint hashing uses shared state that can lead to
+    race conditions and non-deterministic hash calculations in concurrent contexts.
+
+    Returns:
+        bool: True if checkpoints are enabled, False if disabled.
+    """
+    # Check if we're in a concurrent context
+    is_concurrent = (
+        threading.current_thread().name != "MainThread"
+        or multiprocessing.current_process().name != "MainProcess"
+    )
+
+    if is_concurrent and not _CheckpointState.disabled:
+        _CheckpointState.disabled = True
+        if not _CheckpointState.warning_shown:
+            logger.warning(
+                "Concurrent execution detected (threading or multiprocessing). "
+                "New checkpoints will not be created from this point forward. "
+                "Previously created checkpoints remain valid and can be reused. "
+                "To enable checkpoints, ensure your script runs sequentially "
+                "without threading or multiprocessing."
+            )
+            _CheckpointState.warning_shown = True
+
+    return not _CheckpointState.disabled
+
+
 def env2bool(var, undefined=False):
     """
     undefined: return value if env var is unset
@@ -529,7 +604,7 @@ def safe_closing(thing: T) -> Iterator[T]:
         yield thing
     finally:
         if hasattr(thing, "close"):
-            thing.close()
+            thing.close()  # type: ignore[attr-defined]
 
 
 def getenv_bool(name: str, default: bool = False) -> bool:
@@ -543,3 +618,26 @@ def ensure_sequence(x) -> Sequence:
     if isinstance(x, Sequence) and not isinstance(x, (str, bytes)):
         return x
     return [x]
+
+
+def with_last_flag(iterable):
+    """
+    Returns flag saying is this element the last in the iterator or not, together
+    with the element.
+
+    Example:
+    for item, is_last in with_last_flag(my_gen()):
+        ...
+    """
+    it = iter(iterable)
+    try:
+        prev = next(it)
+    except StopIteration:
+        return
+
+    for item in it:
+        yield prev, False
+        prev = item
+
+    # last item
+    yield prev, True

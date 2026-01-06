@@ -5,6 +5,7 @@ import sys
 import pytest
 import sqlalchemy as sa
 
+from datachain.dataset import DatasetStatus
 from datachain.sql.types import Float32
 
 tests_dir = os.path.dirname(os.path.abspath(__file__))
@@ -30,12 +31,15 @@ def test_atomicity_feature_file(tmp_dir, catalog_tmpfile):
     else:
         popen_args = {"start_new_session": True}
 
-    catalog_tmpfile.create_dataset(
+    dataset = catalog_tmpfile.create_dataset(
         "existing_dataset",
         project,
         query_script="script",
         columns=[sa.Column("similarity", Float32)],
         create_rows=True,
+    )
+    catalog_tmpfile.metastore.update_dataset_status(
+        dataset, DatasetStatus.COMPLETE, version="1.0.0"
     )
 
     process = subprocess.Popen(  # noqa: S603

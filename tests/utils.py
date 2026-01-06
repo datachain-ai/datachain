@@ -256,6 +256,12 @@ def reset_session_job_state():
     Session._OWNS_JOB = None
     Session._JOB_HOOKS_REGISTERED = False
 
+    # Clear checkpoint state (now in utils module)
+    from datachain.utils import _CheckpointState
+
+    _CheckpointState.disabled = False
+    _CheckpointState.warning_shown = False
+
     # Clear DATACHAIN_JOB_ID env var to allow new job creation on next run
     # This is important for studio/SaaS mode where job_id comes from env var
     os.environ.pop("DATACHAIN_JOB_ID", None)
@@ -265,8 +271,6 @@ def get_partial_tables(test_session) -> tuple[Table, Table]:
     """Helper function that returns partial udf tables left when UDF fails.
 
     Returns input_table and partial_output_table.
-    Note: processed_table is no longer created - sys__input_id in partial_output_table
-    tracks which inputs have been processed.
     """
     catalog = test_session.catalog
     warehouse = catalog.warehouse

@@ -68,7 +68,7 @@ quote_schema = sqlite_dialect.identifier_preparer.quote_schema
 quote = sqlite_dialect.identifier_preparer.quote
 
 # NOTE! This should be manually increased when we change our DB schema in codebase
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 1
 
 OUTDATED_SCHEMA_ERROR_MESSAGE = (
     "You have an old version of the database schema. Please refer to the documentation"
@@ -291,6 +291,8 @@ class SQLiteDatabaseEngine(DatabaseEngine):
         return self.db.cursor(factory)
 
     def close(self) -> None:
+        if self.is_closed:
+            return
         self.db.close()
         self.is_closed = True
 
@@ -333,12 +335,11 @@ class SQLiteDatabaseEngine(DatabaseEngine):
         if_not_exists: bool = True,
         *,
         kind: str | None = None,
-    ) -> bool:
-        """Create table and return True if created, False if already existed."""
-        table_existed = self.has_table(table.name)
-        if not table_existed or not if_not_exists:
-            self.execute(CreateTable(table, if_not_exists=if_not_exists))
-        return not table_existed
+    ) -> None:
+        """
+        Create table. Does nothing if table already exists when if_not_exists=True.
+        """
+        self.execute(CreateTable(table, if_not_exists=if_not_exists))
 
     def drop_table(self, table: "Table", if_exists: bool = False) -> None:
         self.execute(DropTable(table, if_exists=if_exists))
@@ -389,11 +390,12 @@ class SQLiteMetastore(AbstractDBMetastore):
 
         self.db = db or SQLiteDatabaseEngine.from_db_file(db_file)
 
-        self._init_meta_table()
-        self._init_meta_schema_value()
-        self._check_schema_version()
-        self._init_tables()
-        self._init_namespaces_projects()
+        with self._init_guard():
+            self._init_meta_table()
+            self._init_meta_schema_value()
+            self._check_schema_version()
+            self._init_tables()
+            self._init_namespaces_projects()
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
         """Close connection upon exit from context manager."""
@@ -486,6 +488,8 @@ class SQLiteMetastore(AbstractDBMetastore):
         self.default_table_names.append(self._jobs.name)
         self.db.create_table(self._checkpoints, if_not_exists=True)
         self.default_table_names.append(self._checkpoints.name)
+        self.db.create_table(self._dataset_version_jobs, if_not_exists=True)
+        self.default_table_names.append(self._dataset_version_jobs.name)
 
     def _init_namespaces_projects(self) -> None:
         """
@@ -595,6 +599,9 @@ class SQLiteMetastore(AbstractDBMetastore):
     #
     def _checkpoints_insert(self) -> "Insert":
         return sqlite.insert(self._checkpoints)
+
+    def _dataset_version_jobs_insert(self) -> "Insert":
+        return sqlite.insert(self._dataset_version_jobs)
 
     #
     # Namespaces
@@ -759,18 +766,16 @@ class SQLiteWarehouse(AbstractWarehouse):
 
         return col_type.python_type
 
-    def dataset_table_export_file_names(
-        self, dataset: DatasetRecord, version: str
-    ) -> list[str]:
-        raise NotImplementedError("Exporting dataset table not implemented for SQLite")
-
     def export_dataset_table(
         self,
-        bucket_uri: str,
+        bucket: str,
         dataset: DatasetRecord,
         version: str,
+        *,
+        file_format: str | None = None,
+        base_file_name: str,
         client_config=None,
-    ) -> list[str]:
+    ) -> None:
         raise NotImplementedError("Exporting dataset table not implemented for SQLite")
 
     def copy_table(
@@ -873,16 +878,20 @@ class SQLiteWarehouse(AbstractWarehouse):
     def create_pre_udf_table(self, query: "Select", name: str) -> "Table":
         """
         Create a temporary table from a query for use in a UDF.
-        If table already exists (shared tables), skip population and just return it.
+        Populates the table from the query, using a staging pattern for atomicity.
+
+        This ensures that if the process crashes during population, the next run
+        won't find a partially-populated table and incorrectly reuse it.
         """
+        staging_name = f"{name}_staging"
+
+        # Create staging table
         columns = [sqlalchemy.Column(c.name, c.type) for c in query.selected_columns]
+        staging_table = self.create_udf_table(columns, name=staging_name)
 
-        table, created = self.create_udf_table(columns, name=name)
+        # Populate staging table
+        with tqdm(desc="Preparing", unit=" rows", leave=False) as pbar:
+            self.copy_table(staging_table, query, progress_cb=pbar.update)
 
-        # Only populate if table was just created (not if it already existed) to
-        # avoid inserting duplicates
-        if created:
-            with tqdm(desc="Preparing", unit=" rows", leave=False) as pbar:
-                self.copy_table(table, query, progress_cb=pbar.update)
-
-        return table
+        # Atomically rename staging → final and return the renamed table
+        return self.rename_table(staging_table, name)

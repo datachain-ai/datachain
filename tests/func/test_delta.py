@@ -594,7 +594,10 @@ def test_delta_update_from_storage(test_session, tmp_dir, tmp_path):
     ).to_values("file.etag")[0] > etags[6]
 
 
-def test_delta_update_check_num_calls(test_session, tmp_dir, tmp_path, capsys):
+def test_delta_update_check_num_calls(
+    test_session, tmp_dir, tmp_path, capsys, monkeypatch
+):
+    monkeypatch.setenv("DATACHAIN_CHECKPOINTS_RESET", "True")
     ds_name = "delta_ds"
     path = tmp_dir.as_uri()
     tmp_dir = tmp_dir / "images"
@@ -642,7 +645,6 @@ def test_delta_update_check_num_calls(test_session, tmp_dir, tmp_path, capsys):
     create_delta_dataset()
 
     captured = capsys.readouterr()
-    # assert captured.out == "Garbage collecting 2 tables.\n"
     assert captured.out == "\n".join([map_print] * 20) + "\n"
 
 

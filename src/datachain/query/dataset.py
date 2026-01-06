@@ -56,6 +56,7 @@ from datachain.query.udf import UdfInfo
 from datachain.sql.functions.random import rand
 from datachain.sql.types import SQLType
 from datachain.utils import (
+    checkpoints_enabled,
     determine_processes,
     determine_workers,
     ensure_sequence,
@@ -460,9 +461,6 @@ class UDFStep(Step, ABC):
         If query cache is enabled, use the cached table; otherwise use the original
         query.
         """
-        if os.getenv("DATACHAIN_DISABLE_QUERY_CACHE", "") not in ("", "0"):
-            return original_query
-
         # Table was created from original_query by create_pre_udf_table,
         # so they should have the same columns. However, get_table() reflects
         # the table with database-specific types (e.g ClickHouse types) instead of
@@ -661,7 +659,7 @@ class UDFStep(Step, ABC):
         ]
 
         # create table with partitions
-        tbl, _ = catalog.warehouse.create_udf_table(partition_columns())
+        tbl = catalog.warehouse.create_udf_table(partition_columns())
 
         # fill table with partitions
         cols = [
@@ -699,11 +697,12 @@ class UDFStep(Step, ABC):
         checkpoints_reset = env2bool("DATACHAIN_CHECKPOINTS_RESET", undefined=False)
 
         if (
-            self.job.parent_job_id
+            checkpoints_enabled()
+            and self.job.rerun_from_job_id
             and not checkpoints_reset
             and (
                 checkpoint := self.metastore.find_checkpoint(
-                    self.job.parent_job_id, _hash, partial=partial
+                    self.job.rerun_from_job_id, _hash, partial=partial
                 )
             )
         ):
@@ -755,7 +754,7 @@ class UDFStep(Step, ABC):
             return self.warehouse.get_table(current_input_table_name)
 
         # Search ancestor jobs for the input table
-        if self.job.parent_job_id:
+        if self.job.rerun_from_job_id:
             ancestor_job_ids = self.metastore.get_ancestor_job_ids(self.job.id)
             for ancestor_job_id in ancestor_job_ids:
                 ancestor_input_table_name = UDFStep.input_table_name(
@@ -773,14 +772,11 @@ class UDFStep(Step, ABC):
         query_generator: QueryGenerator,
         temp_tables: list[str],
         *args,
+        hash_input: str,
+        hash_output: str,
         **kwargs,
     ) -> "StepResult":
         _query = query = query_generator.select()
-
-        hash_input: str | None = kwargs.get("hash_input")
-        hash_output: str | None = kwargs.get("hash_output")
-        assert hash_input
-        assert hash_output
 
         # Calculate partial hash that includes output schema
         # This allows continuing from partial when only code changes (bug fix),
@@ -789,7 +785,7 @@ class UDFStep(Step, ABC):
             (hash_input + self.udf.output_schema_hash()).encode()
         ).hexdigest()
 
-        udf_reset = env2bool("DATACHAIN_UDF_RESET", undefined=False)
+        udf_partial_reset = env2bool("DATACHAIN_UDF_CHECKPOINTS_RESET", undefined=False)
 
         # If partition_by is set, we need to create input table first to ensure
         # consistent sys__id
@@ -810,14 +806,14 @@ class UDFStep(Step, ABC):
             ).add_columns(*partition_columns())
 
             # always run from scratch as Aggregator checkpoints are not implemented yet
-            udf_reset = True
+            udf_partial_reset = True
 
         if ch := self._checkpoint_exist(hash_output):
             # Skip UDF execution by reusing existing output table
             output_table, input_table = self._skip_udf(ch, partial_hash, query)
         elif (
             (ch_partial := self._checkpoint_exist(partial_hash, partial=True))
-            and not udf_reset
+            and not udf_partial_reset
             and ch_partial.job_id != self.job.id
         ):
             # Only continue from partial if it's from a parent job, not our own
@@ -831,13 +827,14 @@ class UDFStep(Step, ABC):
 
         # After UDF completes successfully, clean up partial checkpoint and
         # processed table
-        if ch_partial := self.metastore.find_checkpoint(
-            self.job.id, partial_hash, partial=True
-        ):
-            self.metastore.remove_checkpoint(ch_partial)
+        if checkpoints_enabled():
+            if ch_partial := self.metastore.find_checkpoint(
+                self.job.id, partial_hash, partial=True
+            ):
+                self.metastore.remove_checkpoint(ch_partial.id)
 
-        # Create final checkpoint for current job
-        self.metastore.get_or_create_checkpoint(self.job.id, hash_output)
+            # Create final checkpoint for current job
+            self.metastore.get_or_create_checkpoint(self.job.id, hash_output)
 
         # Create result query from output table
         input_query = self.get_input_query(input_table.name, query)
@@ -869,9 +866,12 @@ class UDFStep(Step, ABC):
                 self.job.id, checkpoint.hash
             )
             output_table = self.create_output_table(current_output_table_name)
-            # Select only columns that exist in the target table (exclude sys__input_id)
+            # Select only columns that exist in the source table
+            # Exclude sys__input_id and sys__partial (may not exist in old tables)
             select_cols = [
-                c for c in existing_output_table.c if c.name != "sys__input_id"
+                c
+                for c in existing_output_table.c
+                if c.name not in ("sys__input_id", "sys__partial")
             ]
             self.warehouse.copy_table(output_table, sa.select(*select_cols))
 
@@ -889,17 +889,18 @@ class UDFStep(Step, ABC):
         On success, promotes partial table to job-specific final table.
         Returns tuple of (output_table, input_table).
         """
-        # Create checkpoint with partial_hash (includes output schema)
-        checkpoint = self.metastore.get_or_create_checkpoint(
-            self.job.id, partial_hash, partial=True
-        )
+        # Create checkpoint if enabled (skip if concurrent execution detected)
+        if checkpoints_enabled():
+            self.metastore.get_or_create_checkpoint(
+                self.job.id, partial_hash, partial=True
+            )
 
         # Get or create input table (reuse from ancestors if available)
-        input_table = self.get_or_create_input_table(query, checkpoint.hash)
+        input_table = self.get_or_create_input_table(query, partial_hash)
 
         # Create job-specific partial output table with sys__input_id column
         partial_output_table = self.create_output_table(
-            UDFStep.partial_output_table_name(self.job.id, checkpoint.hash),
+            UDFStep.partial_output_table_name(self.job.id, partial_hash),
             is_partial=True,
         )
 
@@ -934,8 +935,8 @@ class UDFStep(Step, ABC):
         Returns tuple of (output_table, input_table).
         """
         # The checkpoint must be from parent job
-        assert self.job.parent_job_id is not None
-        assert checkpoint.job_id == self.job.parent_job_id
+        assert self.job.rerun_from_job_id is not None
+        assert checkpoint.job_id == self.job.rerun_from_job_id
 
         # Create new partial checkpoint in current job
         self.metastore.get_or_create_checkpoint(
@@ -949,7 +950,7 @@ class UDFStep(Step, ABC):
         try:
             parent_partial_table = self.warehouse.get_table(
                 UDFStep.partial_output_table_name(
-                    self.job.parent_job_id, checkpoint.hash
+                    self.job.rerun_from_job_id, checkpoint.hash
                 )
             )
         except TableMissingError:
@@ -961,13 +962,28 @@ class UDFStep(Step, ABC):
             UDFStep.partial_output_table_name(self.job.id, checkpoint.hash),
             is_partial=True,
         )
-        self.warehouse.copy_table(partial_table, sa.select(parent_partial_table))
+
+        # Find incomplete input IDs (ones missing sys__partial = FALSE)
+        # These inputs were only partially processed before the crash
+        incomplete_input_ids = self.find_incomplete_inputs(parent_partial_table)
+
+        # Copy parent's partial table, filtering out incomplete results if needed
+        if incomplete_input_ids:
+            # Filter out partial results for incomplete inputs as they will be
+            # re-processed from beginning
+            filtered_query = sa.select(parent_partial_table).where(
+                parent_partial_table.c.sys__input_id.not_in(incomplete_input_ids)
+            )
+            self.warehouse.copy_table(partial_table, filtered_query)
+        else:
+            # No incomplete inputs, simple copy (99.9% of cases)
+            self.warehouse.copy_table(partial_table, sa.select(parent_partial_table))
 
         # Calculate which rows still need processing
         unprocessed_query = self.calculate_unprocessed_rows(
             self.warehouse.get_table(input_table.name),
             partial_table,
-            query,
+            incomplete_input_ids,
         )
 
         # Execute UDF only on unprocessed rows, appending to partial table
@@ -988,15 +1004,26 @@ class UDFStep(Step, ABC):
             partial_table: The UDF partial table
 
         Returns:
-            A subquery with a single column labeled 'sys_id' containing processed
-            input IDs
+            A subquery with a single column labeled 'sys__processed_id' containing
+            processed input IDs
+        """
+
+    @abstractmethod
+    def find_incomplete_inputs(self, partial_table: "Table") -> list[int]:
+        """
+        Find input IDs that were only partially processed before a crash.
+        For generators (1:N), an input is incomplete if it has output rows but none
+        with sys__partial=False. For mappers (1:1), this never happens.
+
+        Returns:
+            List of incomplete input IDs that need to be re-processed
         """
 
     def calculate_unprocessed_rows(
         self,
         input_table: "Table",
         partial_table: "Table",
-        original_query,
+        incomplete_input_ids: None | list[int] = None,
     ):
         """
         Calculate which input rows haven't been processed yet.
@@ -1004,20 +1031,31 @@ class UDFStep(Step, ABC):
         Args:
             input_table: The UDF input table
             partial_table: The UDF partial table
-            original_query: The original query for input data
+            incomplete_input_ids: List of input IDs that were partially processed
+                and need to be re-run (for generators only)
 
         Returns:
             A filtered query containing only unprocessed rows
         """
+        incomplete_input_ids = incomplete_input_ids or []
         # Get processed input IDs using subclass-specific logic
         processed_input_ids_subquery = self.processed_input_ids_query(partial_table)
 
-        # Filter original query to only include unprocessed rows
-        # Use the sys__id column from the query's selected columns, not from input_table
-        sys_id_col = original_query.selected_columns.sys__id
-        return original_query.where(
-            sys_id_col.notin_(sa.select(processed_input_ids_subquery.c.sys_id))
+        query = sa.select(input_table)
+        sys_id_col = query.selected_columns.sys__id
+
+        # Build filter: rows that haven't been processed OR were incompletely processed
+        unprocessed_filter: sa.ColumnElement[bool] = sys_id_col.notin_(
+            sa.select(processed_input_ids_subquery.c.sys__processed_id)
         )
+
+        # Add incomplete inputs to the filter (they need to be re-processed)
+        if incomplete_input_ids:
+            unprocessed_filter = sa.or_(
+                unprocessed_filter, sys_id_col.in_(incomplete_input_ids)
+            )
+
+        return query.where(unprocessed_filter)
 
 
 @frozen
@@ -1040,7 +1078,17 @@ class UDFSignal(UDFStep):
         Since mappers have a 1:1 relationship between input and output,
         the sys__id in the partial table directly corresponds to input sys__ids.
         """
-        return sa.select(partial_table.c.sys__id.label("sys_id")).subquery()
+        # labeling it with sys__processed_id to have common name since for udf signal
+        # we use sys__id and in generator we use sys__input_id
+        return sa.select(partial_table.c.sys__id.label("sys__processed_id")).subquery()
+
+    def find_incomplete_inputs(self, partial_table: "Table") -> list[int]:
+        """
+        For mappers (1:1 mapping): always returns empty list.
+        Mappers cannot have incomplete inputs because each input produces exactly
+        one output atomically. Either the output exists or it doesn't.
+        """
+        return []
 
     def create_output_table(self, name: str, is_partial: bool = False) -> "Table":
         udf_output_columns: list[sqlalchemy.Column[Any]] = [
@@ -1060,9 +1108,17 @@ class UDFSignal(UDFStep):
             udf_output_columns.append(
                 sa.Column("sys__input_id", sa.Integer, nullable=True)
             )
+            # Add sys__partial column to track incomplete inputs during checkpoint
+            # recovery.
+            # All rows except the last one for each input are marked as partial=True.
+            # If an input has no row with partial=False, it means the input was not
+            # fully processed and needs to be re-run.
+            # Nullable because mappers (1:1) don't use this field.
+            udf_output_columns.append(
+                sa.Column("sys__partial", sa.Boolean, nullable=True)
+            )
 
-        table, _ = self.warehouse.create_udf_table(udf_output_columns, name=name)
-        return table
+        return self.warehouse.create_udf_table(udf_output_columns, name=name)
 
     def create_result_query(
         self, udf_table, query
@@ -1150,9 +1206,29 @@ class RowGenerator(UDFStep):
         Since generators can produce multiple outputs per input (1:N relationship),
         we use sys__input_id which tracks which input created each output row.
         """
+        # labeling it with sys__processed_id to have common name since for udf signal
+        # we use sys__id and in generator we use sys__input_id
         return sa.select(
-            sa.distinct(partial_table.c.sys__input_id).label("sys_id")
+            sa.distinct(partial_table.c.sys__input_id).label("sys__processed_id")
         ).subquery()
+
+    def find_incomplete_inputs(self, partial_table: "Table") -> list[int]:
+        """
+        For generators (1:N mapping): find inputs missing sys__partial=False row.
+
+        An input is incomplete if it has output rows but none with sys__partial=False,
+        indicating the process crashed before finishing all outputs for that input.
+        These inputs need to be re-processed and their partial results filtered out.
+        """
+        # Find inputs that don't have any row with sys__partial=False
+        incomplete_query = sa.select(sa.distinct(partial_table.c.sys__input_id)).where(
+            partial_table.c.sys__input_id.not_in(
+                sa.select(partial_table.c.sys__input_id).where(
+                    partial_table.c.sys__partial == False  # noqa: E712
+                )
+            )
+        )
+        return [row[0] for row in self.warehouse.db.execute(incomplete_query)]
 
     def create_output_table(self, name: str, is_partial: bool = False) -> "Table":
         columns: list[Column] = [
@@ -1169,6 +1245,13 @@ class RowGenerator(UDFStep):
             import sqlalchemy as sa
 
             columns.append(sa.Column("sys__input_id", sa.Integer, nullable=True))
+            # Add sys__partial column to track incomplete inputs during checkpoint
+            # recovery.
+            # All rows except the last one for each input are marked as partial=True.
+            # If an input has no row with partial=False, it means the input was not
+            # fully processed and needs to be re-run.
+            # Nullable because mappers (1:1) don't use this field.
+            columns.append(sa.Column("sys__partial", sa.Boolean, nullable=True))
 
         return self.warehouse.create_dataset_rows_table(
             name,
@@ -1180,11 +1263,12 @@ class RowGenerator(UDFStep):
         self, udf_table, query: Select
     ) -> tuple[QueryGeneratorFunc, list["sqlalchemy.Column"]]:
         udf_table_query = udf_table.select().subquery()
-        # Exclude sys__input_id - it's only needed for tracking during UDF execution
+        # Exclude sys__input_id and sys__partial - they're only needed for tracking
+        # during UDF execution and checkpoint recovery
         udf_table_cols: list[sqlalchemy.Label[Any]] = [
             label(c.name, c)
             for c in udf_table_query.columns
-            if c.name != "sys__input_id"
+            if c.name not in ("sys__input_id", "sys__partial")
         ]
 
         def q(*columns):
@@ -1193,7 +1277,11 @@ class RowGenerator(UDFStep):
             cols = [c for c in udf_table_cols if c.name in names]
             return sqlalchemy.select(*cols).select_from(udf_table_query)
 
-        return q, [c for c in udf_table_query.columns if c.name != "sys__input_id"]
+        return q, [
+            c
+            for c in udf_table_query.columns
+            if c.name not in ("sys__input_id", "sys__partial")
+        ]
 
 
 @frozen
@@ -1669,30 +1757,27 @@ class UnionSchemaMismatchError(ValueError):
         return cls(f"Cannot perform union. {'. '.join(parts)}")
 
 
-def _validate_columns(
-    left_columns: Iterable[ColumnElement], right_columns: Iterable[ColumnElement]
-) -> set[str]:
-    left_names = {c.name for c in left_columns}
-    right_names = {c.name for c in right_columns}
-
-    if left_names == right_names:
-        return left_names
-
-    raise UnionSchemaMismatchError.from_column_sets(
-        left_names - right_names,
-        right_names - left_names,
-    )
-
-
 def _order_columns(
     left_columns: Iterable[ColumnElement], right_columns: Iterable[ColumnElement]
 ) -> list[list[ColumnElement]]:
-    column_order = _validate_columns(left_columns, right_columns)
+    left_names = [c.name for c in left_columns]
+    right_names = [c.name for c in right_columns]
+
+    # validate
+    if sorted(left_names) != sorted(right_names):
+        left_names_set = set(left_names)
+        right_names_set = set(right_names)
+        raise UnionSchemaMismatchError.from_column_sets(
+            left_names_set - right_names_set,
+            right_names_set - left_names_set,
+        )
+
+    # Order columns to match left_names order
     column_dicts = [
         {c.name: c for c in columns} for columns in [left_columns, right_columns]
     ]
 
-    return [[d[n] for n in column_order] for d in column_dicts]
+    return [[d[n] for n in left_names] for d in column_dicts]
 
 
 def _drop_system_columns(columns: Iterable[ColumnElement]) -> list[ColumnElement]:
@@ -1719,6 +1804,7 @@ class DatasetQuery:
         session: Session | None = None,
         in_memory: bool = False,
         update: bool = False,
+        include_incomplete: bool = False,
     ) -> None:
         self.session = Session.get(session, catalog=catalog, in_memory=in_memory)
         self.catalog = catalog or self.session.catalog
@@ -1762,6 +1848,7 @@ class DatasetQuery:
                     version=version,
                     pull_dataset=True,
                     update=update,
+                    include_incomplete=include_incomplete,
                 )
             )
 
@@ -1861,14 +1948,18 @@ class DatasetQuery:
         if self.list_ds_name and not self.starting_step:
             listing_ds = None
             try:
-                listing_ds = self.catalog.get_dataset(self.list_ds_name)
+                listing_ds = self.catalog.get_dataset(
+                    self.list_ds_name, include_incomplete=False
+                )
             except DatasetNotFoundError:
                 pass
 
             if not listing_ds or self.update or listing_dataset_expired(listing_ds):
                 assert self.listing_fn
                 self.listing_fn()
-                listing_ds = self.catalog.get_dataset(self.list_ds_name)
+                listing_ds = self.catalog.get_dataset(
+                    self.list_ds_name, include_incomplete=False
+                )
 
             # at this point we know what is our starting listing dataset name
             self._set_starting_step(listing_ds)  # type: ignore [arg-type]
@@ -2367,6 +2458,7 @@ class DatasetQuery:
                                     dep.name,
                                     namespace_name=dep.namespace,
                                     project_name=dep.project,
+                                    include_incomplete=False,
                                 ),
                                 dep.version,
                             )
@@ -2404,6 +2496,10 @@ class DatasetQuery:
         **kwargs,
     ) -> "Self":
         """Save the query as a dataset."""
+        # Get job from session to link dataset version to job
+        job = self.session.get_or_create_job()
+        job_id = job.id
+
         project = project or self.catalog.metastore.default_project
         try:
             if (
@@ -2413,6 +2509,7 @@ class DatasetQuery:
                     name,
                     namespace_name=project.namespace.name,
                     project_name=project.name,
+                    include_incomplete=True,
                 ).has_version(version)
             ):
                 raise RuntimeError(f"Dataset {name} already has version {version}")
@@ -2446,6 +2543,7 @@ class DatasetQuery:
                 description=description,
                 attrs=attrs,
                 update_version=update_version,
+                job_id=job_id,
                 **kwargs,
             )
             version = version or dataset.latest_version
@@ -2454,10 +2552,12 @@ class DatasetQuery:
 
             self.catalog.warehouse.copy_table(dr.get_table(), query.select())
 
-            self.catalog.metastore.update_dataset_status(
-                dataset, DatasetStatus.COMPLETE, version=version
-            )
             self.catalog.update_dataset_version_with_warehouse_info(dataset, version)
+
+            # Link this dataset version to the job that created it
+            self.catalog.metastore.link_dataset_version_to_job(
+                dataset.get_version(version).id, job_id, is_creator=True
+            )
 
             if dependencies:
                 # overriding dependencies
@@ -2469,12 +2569,18 @@ class DatasetQuery:
                                 dep.name,
                                 namespace_name=dep.namespace,
                                 project_name=dep.project,
+                                include_incomplete=False,
                             ),
                             dep.version,
                         )
                     )
 
             self._add_dependencies(dataset, version)  # type: ignore [arg-type]
+
+            # Mark as COMPLETE only after all operations succeed
+            self.catalog.metastore.update_dataset_status(
+                dataset, DatasetStatus.COMPLETE, version=version
+            )
         finally:
             self.cleanup()
         return self.__class__(

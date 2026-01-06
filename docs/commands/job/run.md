@@ -76,13 +76,13 @@ datachain job run --env API_KEY=123 --req pandas numpy query.py
 
 6. Run a job with a repository (will be cloned in the job working directory):
 ```bash
-datachain job run --repository https://github.com/iterative/datachain query.py
+datachain job run --repository https://github.com/datachain-ai/datachain query.py
 
 # To specify a branch / revision:
-datachain job run --repository https://github.com/iterative/datachain@main query.py
+datachain job run --repository https://github.com/datachain-ai/datachain@main query.py
 
 # Git URLs are also supported:
-datachain job run --repository git@github.com:iterative/datachain.git@main query.py
+datachain job run --repository git@github.com:datachain-ai/datachain.git@main query.py
 ```
 
 7. Run a job with higher priority

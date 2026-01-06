@@ -20,8 +20,8 @@ LsData = list[dict[str, Any]] | None
 DatasetInfoData = dict[str, Any] | None
 DatasetRowsData = Iterable[dict[str, Any]] | None
 DatasetJobVersionsData = dict[str, Any] | None
-DatasetExportStatus = dict[str, Any] | None
-DatasetExportSignedUrls = list[str] | None
+DatasetExportStatus = dict[str, Any]
+DatasetExportData = dict[str, Any]
 FileUploadData = dict[str, Any] | None
 JobData = dict[str, Any] | None
 JobListData = list[dict[str, Any]]
@@ -417,7 +417,7 @@ class StudioClient:
 
     def export_dataset_table(
         self, dataset: DatasetRecord, version: str
-    ) -> Response[DatasetExportSignedUrls]:
+    ) -> Response[DatasetExportData]:
         return self._send_request(
             "datachain/datasets/export",
             {
@@ -425,21 +425,15 @@ class StudioClient:
                 "project": dataset.project.name,
                 "name": dataset.name,
                 "version": version,
+                "source": "cli",
             },
             method="GET",
         )
 
-    def dataset_export_status(
-        self, dataset: DatasetRecord, version: str
-    ) -> Response[DatasetExportStatus]:
+    def dataset_export_status(self, export_id: int) -> Response[DatasetExportStatus]:
         return self._send_request(
             "datachain/datasets/export-status",
-            {
-                "namespace": dataset.project.namespace.name,
-                "project": dataset.project.name,
-                "name": dataset.name,
-                "version": version,
-            },
+            {"export_id": export_id},
             method="GET",
         )
 
@@ -508,3 +502,62 @@ class StudioClient:
 
     def get_clusters(self) -> Response[ClusterListData]:
         return self._send_request("datachain/clusters/", {}, method="GET")
+
+    # Pipeline API
+    def create_pipeline(
+        self,
+        datasets: list[str],
+        team_name: str | None = None,
+        review: bool = False,
+    ) -> Response[Any]:
+        values = {
+            "datasets": datasets,
+            "review": review,
+        }
+        return self._send_request(
+            "datachain/pipeline/trigger",
+            data=values,
+            method="POST",
+        )
+
+    def get_pipeline(self, name: str) -> Response[Any]:
+        values = {
+            "name": name,
+        }
+        return self._send_request("datachain/pipeline/status", values, method="GET")
+
+    def list_pipelines(
+        self,
+        status: str | None = None,
+        limit: int = 20,
+        search: str | None = None,
+    ) -> Response[Any]:
+        values = {
+            "status": [status.upper()] if status else None,
+            "limit": limit,
+            "search": search,
+        }
+        return self._send_request("datachain/pipeline/list", values, method="GET")
+
+    def pause_pipeline(self, name: str) -> Response[Any]:
+        values = {
+            "name": name,
+        }
+        return self._send_request("datachain/pipeline/pause", values, method="POST")
+
+    def resume_pipeline(self, name: str) -> Response[Any]:
+        values = {
+            "name": name,
+        }
+        return self._send_request("datachain/pipeline/resume", values, method="POST")
+
+    def remove_job_from_pipeline(self, name: str, job_id: str) -> Response[Any]:
+        values = {
+            "name": name,
+            "job_id": job_id,
+        }
+        return self._send_request(
+            "datachain/pipeline/remove-job",
+            values,
+            method="POST",
+        )

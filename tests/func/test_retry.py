@@ -1,6 +1,6 @@
 from collections.abc import Iterator
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import pytest
 
@@ -447,20 +447,24 @@ def test_repeating_errors(test_session):
             .save("processed_data")
         )
 
+    def sorted_ids(chain: "DataChain") -> list[int]:
+        ids = (cast("int", row[0]) for row in chain.to_list("id"))
+        return sorted(ids)
+
     _create_sample_data(
         test_session, ids=list(range(1)), contents=[str(i) for i in range(1)]
     )
     ch1 = run_delta()
-    assert sorted(ch1.collect("id")) == [0, 0]
+    assert sorted_ids(ch1) == [0, 0]
 
     _create_sample_data(
         test_session, ids=list(range(2)), contents=[str(i) for i in range(2)]
     )
     ch2 = run_delta()
-    assert sorted(ch2.collect("id")) == [0, 0, 1, 1]
+    assert sorted_ids(ch2) == [0, 0, 1, 1]
 
     _create_sample_data(
         test_session, ids=list(range(3)), contents=[str(i) for i in range(3)]
     )
     ch3 = run_delta()
-    assert sorted(ch3.collect("id")) == [0, 0, 1, 1, 2, 2]
+    assert sorted_ids(ch3) == [0, 0, 1, 1, 2, 2]

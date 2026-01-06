@@ -8,6 +8,7 @@ from sqlalchemy.sql import FROM_LINTING
 from sqlalchemy.sql.roles import DDLRole
 
 from datachain.data_storage.serializer import Serializable
+from datachain.error import TableMissingError
 
 if TYPE_CHECKING:
     from sqlalchemy import MetaData, Table
@@ -80,8 +81,6 @@ class DatabaseEngine(ABC, Serializable):
     ) -> Iterator[tuple[Any, ...]]: ...
 
     def get_table(self, name: str) -> "Table":
-        from datachain.error import TableMissingError
-
         table = self.metadata.tables.get(name)
         if table is None:
             try:
@@ -94,6 +93,13 @@ class DatabaseEngine(ABC, Serializable):
             except sa.exc.NoSuchTableError as e:
                 raise TableMissingError(f"Table '{name}' not found") from e
         return table
+
+    def list_tables(self, prefix: str = "") -> list[str]:
+        """List tables that start with the given prefix."""
+        all_tables = sa.inspect(self.engine).get_table_names()
+        if not prefix:
+            return all_tables
+        return [table for table in all_tables if table.startswith(prefix)]
 
     @abstractmethod
     def executemany(
@@ -118,16 +124,6 @@ class DatabaseEngine(ABC, Serializable):
         """
         return sa.inspect(self.engine).has_table(name)
 
-    def list_tables(self, prefix: str = "") -> list[str]:
-        """
-        Return a list of table names that start with the given prefix.
-        If no prefix is provided, returns all table names.
-        """
-        all_tables = sa.inspect(self.engine).get_table_names()
-        if not prefix:
-            return all_tables
-        return [table for table in all_tables if table.startswith(prefix)]
-
     @abstractmethod
     def create_table(
         self,
@@ -135,8 +131,10 @@ class DatabaseEngine(ABC, Serializable):
         if_not_exists: bool = True,
         *,
         kind: str | None = None,
-    ) -> bool:
-        """Create table and return True if created, False if already existed."""
+    ) -> None:
+        """
+        Create table. Does nothing if table already exists when if_not_exists=True.
+        """
         ...
 
     @abstractmethod

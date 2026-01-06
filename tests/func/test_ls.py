@@ -80,7 +80,8 @@ def test_ls_not_found(cloud_test_catalog):
         ls([f"{src}/cats/bogus*"], catalog=cloud_test_catalog.catalog)
 
 
-# TODO return file test when https://github.com/iterative/datachain/issues/318 is done
+# TODO return file test when https://github.com/datachain-ai/datachain/issues/318
+# is done
 @pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
 def test_ls_not_a_directory(cloud_test_catalog, capsys):
     src = cloud_test_catalog.src_uri

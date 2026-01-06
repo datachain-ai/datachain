@@ -3,6 +3,7 @@ from typing import TYPE_CHECKING
 
 import sqlalchemy
 
+from datachain.dataset import DatasetStatus
 from datachain.lib.data_model import DataType
 from datachain.lib.file import File
 from datachain.lib.signal_schema import SignalSchema
@@ -95,4 +96,10 @@ def read_records(
     records = (adjust_outputs(warehouse, record, col_types) for record in to_insert)
     warehouse.insert_rows(table, records, batch_size=READ_RECORDS_BATCH_SIZE)
     warehouse.insert_rows_done(table)
+
+    # Mark dataset as COMPLETE since it's fully created
+    catalog.metastore.update_dataset_status(
+        dsr, DatasetStatus.COMPLETE, version=dsr.latest_version
+    )
+
     return read_dataset(name=dsr.full_name, session=session, settings=settings)

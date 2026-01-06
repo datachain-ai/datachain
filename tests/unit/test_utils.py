@@ -1,8 +1,10 @@
 import pytest
 
 from datachain.utils import (
+    _CheckpointState,
     batched,
     batched_it,
+    checkpoints_enabled,
     datachain_paths_join,
     determine_processes,
     determine_workers,
@@ -13,6 +15,7 @@ from datachain.utils import (
     sql_escape_like,
     suffix_to_number,
     uses_glob,
+    with_last_flag,
 )
 
 DATACHAIN_TEST_PATHS = ["/file1", "file2", "/dir/file3", "dir/file4"]
@@ -295,3 +298,127 @@ def test_batched_it(num_rows, batch_size):
 
     assert num_batches == num_rows / batch_size
     assert len(uniq_data) == num_rows
+
+
+def gen3():
+    yield from range(3)
+
+
+@pytest.mark.parametrize(
+    "input_data, expected",
+    [
+        (
+            [10, 20, 30],
+            [(10, False), (20, False), (30, True)],
+        ),
+        (
+            [42],
+            [(42, True)],
+        ),
+        (
+            [],
+            [],
+        ),
+        (
+            gen3(),  # generator input
+            [(0, False), (1, False), (2, True)],
+        ),
+    ],
+)
+def test_with_last_flag(input_data, expected):
+    assert list(with_last_flag(input_data)) == expected
+
+
+@pytest.fixture(autouse=True)
+def reset_checkpoint_state():
+    """Reset checkpoint state before each test."""
+    _CheckpointState.disabled = False
+    _CheckpointState.warning_shown = False
+    yield
+    # Reset after test as well
+    _CheckpointState.disabled = False
+    _CheckpointState.warning_shown = False
+
+
+def test_checkpoints_enabled_main_thread():
+    """Test that checkpoints are enabled in main thread and main process."""
+    assert checkpoints_enabled() is True
+    assert _CheckpointState.disabled is False
+    assert _CheckpointState.warning_shown is False
+
+
+def test_checkpoints_enabled_non_main_thread(monkeypatch):
+    """Test that checkpoints are disabled when running in a non-main thread."""
+
+    class MockThread:
+        name = "Thread-1"  # Not "MainThread"
+
+    monkeypatch.setattr(
+        "datachain.utils.threading.current_thread", lambda: MockThread()
+    )
+
+    assert checkpoints_enabled() is False
+    assert _CheckpointState.disabled is True
+
+
+def test_checkpoints_enabled_non_main_process(monkeypatch):
+    """Test that checkpoints are disabled when running in a non-main process."""
+
+    class MockProcess:
+        name = "SpawnProcess-1"  # Not "MainProcess"
+
+    monkeypatch.setattr(
+        "datachain.utils.multiprocessing.current_process", lambda: MockProcess()
+    )
+
+    assert checkpoints_enabled() is False
+    assert _CheckpointState.disabled is True
+
+
+def test_checkpoints_enabled_warning_shown_once(monkeypatch, caplog):
+    """Test that the warning is only shown once even when called multiple times."""
+
+    class MockThread:
+        name = "Thread-1"
+
+    monkeypatch.setattr(
+        "datachain.utils.threading.current_thread", lambda: MockThread()
+    )
+
+    # Call multiple times
+    assert checkpoints_enabled() is False
+    assert checkpoints_enabled() is False
+    assert checkpoints_enabled() is False
+
+    # Verify warning was logged only once
+    warning_count = sum(
+        1
+        for record in caplog.records
+        if "Concurrent execution detected" in record.message
+    )
+    assert warning_count == 1
+    assert _CheckpointState.warning_shown is True
+
+
+def test_checkpoints_enabled_stays_disabled(monkeypatch):
+    """Test that once disabled, checkpoints stay disabled even in main thread."""
+
+    class MockThread:
+        name = "Thread-1"
+
+    class MockMainThread:
+        name = "MainThread"
+
+    # First call in non-main thread disables checkpoints
+    monkeypatch.setattr(
+        "datachain.utils.threading.current_thread", lambda: MockThread()
+    )
+    assert checkpoints_enabled() is False
+    assert _CheckpointState.disabled is True
+
+    # Even if we go back to main thread, it should stay disabled
+    monkeypatch.setattr(
+        "datachain.utils.threading.current_thread", lambda: MockMainThread()
+    )
+    assert checkpoints_enabled() is False
+    assert _CheckpointState.disabled is True

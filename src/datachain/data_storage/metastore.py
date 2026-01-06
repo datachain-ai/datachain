@@ -1,9 +1,9 @@
 import copy
-import json
 import logging
 import os
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
+from contextlib import contextmanager, suppress
 from datetime import datetime, timezone
 from functools import cached_property, reduce
 from itertools import groupby
@@ -17,10 +17,12 @@ from sqlalchemy import (
     Column,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     Table,
     Text,
     UniqueConstraint,
+    and_,
     cast,
     desc,
     literal,
@@ -28,6 +30,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.sql import func as f
 
+from datachain import json
 from datachain.catalog.dependency import DatasetDependencyNode
 from datachain.checkpoint import Checkpoint
 from datachain.data_storage import JobQueryType, JobStatus
@@ -40,9 +43,11 @@ from datachain.dataset import (
     DatasetStatus,
     DatasetVersion,
     StorageURI,
+    parse_schema,
 )
 from datachain.error import (
     CheckpointNotFoundError,
+    DataChainError,
     DatasetNotFoundError,
     DatasetVersionNotFoundError,
     NamespaceDeleteNotAllowedError,
@@ -54,7 +59,6 @@ from datachain.error import (
 from datachain.job import Job
 from datachain.namespace import Namespace
 from datachain.project import Project
-from datachain.utils import JSONSerialize
 
 if TYPE_CHECKING:
     from sqlalchemy import CTE, Delete, Insert, Select, Subquery, Update
@@ -66,6 +70,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("datachain")
 DEPTH_LIMIT_DEFAULT = 100
+JOB_ANCESTRY_MAX_DEPTH = 100
 
 
 class AbstractMetastore(ABC, Serializable):
@@ -80,6 +85,7 @@ class AbstractMetastore(ABC, Serializable):
     namespace_class: type[Namespace] = Namespace
     project_class: type[Project] = Project
     dataset_class: type[DatasetRecord] = DatasetRecord
+    dataset_version_class: type[DatasetVersion] = DatasetVersion
     dataset_list_class: type[DatasetListRecord] = DatasetListRecord
     dataset_list_version_class: type[DatasetListVersion] = DatasetListVersion
     dependency_class: type[DatasetDependency] = DatasetDependency
@@ -119,6 +125,16 @@ class AbstractMetastore(ABC, Serializable):
         for test cleanup only, as some Metastore implementations may handle this
         differently."""
         self.close()
+
+    @contextmanager
+    def _init_guard(self):
+        """Ensure resources acquired during __init__ are released on failure."""
+        try:
+            yield
+        except Exception:
+            with suppress(Exception):
+                self.close_on_exit()
+            raise
 
     def cleanup_tables(self, temp_table_names: list[str]) -> None:
         """Cleanup temp tables."""
@@ -303,6 +319,27 @@ class AbstractMetastore(ABC, Serializable):
         """
 
     @abstractmethod
+    def get_incomplete_dataset_versions(
+        self, job_id: str | None = None
+    ) -> list[tuple[DatasetRecord, str]]:
+        """
+        Get failed/incomplete dataset versions that are in complete job. This is
+        used to get versions to cleanup.
+
+        Returns dataset versions that:
+        - Have status CREATED or FAILED (incomplete/failed)
+        - Belong to jobs that are not running (COMPLETE, FAILED, CANCELED)
+
+        Cleans both CREATED and FAILED to handle edge cases:
+        - FAILED: Explicitly marked failed versions
+        - CREATED: Orphaned versions from crashes/bugs (before failure marking)
+
+        Returns:
+            List of (DatasetRecord, version_string) tuples. Each DatasetRecord
+            contains only one version (the failed version to clean).
+        """
+
+    @abstractmethod
     def list_datasets(
         self, project_id: int | None = None
     ) -> Iterator[DatasetListRecord]:
@@ -314,7 +351,10 @@ class AbstractMetastore(ABC, Serializable):
 
     @abstractmethod
     def list_datasets_by_prefix(
-        self, prefix: str, project_id: int | None = None
+        self,
+        prefix: str,
+        project_id: int | None = None,
+        include_incomplete: bool = False,
     ) -> Iterator["DatasetListRecord"]:
         """
         Lists all datasets which names start with prefix in some project or in all
@@ -327,6 +367,7 @@ class AbstractMetastore(ABC, Serializable):
         name: str,  # normal, not full dataset name
         namespace_name: str | None = None,
         project_name: str | None = None,
+        include_incomplete: bool = True,
         conn=None,
     ) -> DatasetRecord:
         """Gets a single dataset by name."""
@@ -342,6 +383,18 @@ class AbstractMetastore(ABC, Serializable):
         script_output="",
     ) -> DatasetRecord:
         """Updates dataset status and appropriate fields related to status."""
+
+    @abstractmethod
+    def mark_job_dataset_versions_as_failed(self, job_id: str) -> None:
+        """
+        Mark all non-COMPLETE dataset versions created by a job as FAILED.
+
+        This is called when a job fails to ensure that any dataset versions
+        it was creating are marked as failed rather than left in CREATED state.
+
+        Args:
+            job_id: ID of the failed job whose dataset versions should be marked
+        """
 
     #
     # Dataset dependencies
@@ -413,6 +466,8 @@ class AbstractMetastore(ABC, Serializable):
         python_version: str | None = None,
         params: dict[str, str] | None = None,
         parent_job_id: str | None = None,
+        rerun_from_job_id: str | None = None,
+        run_group_id: str | None = None,
     ) -> str:
         """
         Creates a new job.
@@ -425,16 +480,17 @@ class AbstractMetastore(ABC, Serializable):
 
     @abstractmethod
     def get_ancestor_job_ids(self, job_id: str, conn=None) -> list[str]:
-        """
-        Returns list of ancestor job IDs in order from parent to root.
-        Uses recursive CTE to get all ancestors in a single query.
-        """
+        """Returns list of ancestor job IDs in order from parent to root."""
 
     @abstractmethod
-    def get_descendant_job_ids(self, job_id: str, conn=None) -> list[str]:
+    def has_active_checkpoints_in_run_group(
+        self,
+        run_group_id: str,
+        ttl_threshold: datetime,
+        conn=None,
+    ) -> bool:
         """
-        Returns list of descendant job IDs (children, grandchildren, etc.).
-        Uses recursive CTE to get all descendants in a single query.
+        Check if any job in the run group has active (non-outdated) checkpoints.
         """
 
     @abstractmethod
@@ -514,13 +570,51 @@ class AbstractMetastore(ABC, Serializable):
         partial: bool = False,
         conn: Any | None = None,
     ) -> Checkpoint:
-        """Creates new checkpoint"""
+        """
+        Creates a new checkpoint or returns existing one if already exists.
+        This is idempotent - calling it multiple times with the same job_id and hash
+        will not create duplicates.
+
+        The insert and find operations are wrapped in a transaction to ensure atomicity.
+        """
 
     @abstractmethod
-    def remove_checkpoint(
-        self, checkpoint: Checkpoint, conn: Any | None = None
+    def remove_checkpoint(self, checkpoint_id: str, conn: Any | None = None) -> None:
+        """Removes a checkpoint by ID"""
+
+    #
+    # Dataset Version Jobs (many-to-many)
+    #
+
+    @abstractmethod
+    def link_dataset_version_to_job(
+        self,
+        dataset_version_id: int,
+        job_id: str,
+        is_creator: bool = False,
+        conn=None,
     ) -> None:
-        """Removes a checkpoint by checkpoint object"""
+        """
+        Link dataset version to job.
+
+        This atomically:
+        1. Creates a link in the dataset_version_jobs junction table
+        2. Updates dataset_version.job_id to point to this job
+        """
+
+    @abstractmethod
+    def get_dataset_version_for_job_ancestry(
+        self,
+        dataset_name: str,
+        namespace_name: str,
+        project_name: str,
+        job_id: str,
+        conn=None,
+    ) -> DatasetVersion | None:
+        """
+        Find the dataset version that was created by any job in the ancestry.
+        Returns the most recently linked version from these jobs.
+        """
 
 
 class AbstractDBMetastore(AbstractMetastore):
@@ -536,8 +630,9 @@ class AbstractDBMetastore(AbstractMetastore):
     DATASET_TABLE = "datasets"
     DATASET_VERSION_TABLE = "datasets_versions"
     DATASET_DEPENDENCY_TABLE = "datasets_dependencies"
+    DATASET_VERSION_JOBS_TABLE = "dataset_version_jobs"
     JOBS_TABLE = "jobs"
-    CHECKPOINTS_TABLE = "checkpoints"
+    CHECKPOINTS_TABLE = "checkpoints_v2"
 
     db: "DatabaseEngine"
 
@@ -1063,7 +1158,10 @@ class AbstractDBMetastore(AbstractMetastore):
         self.db.execute(query)
 
         return self.get_dataset(
-            name, namespace_name=project.namespace.name, project_name=project.name
+            name,
+            namespace_name=project.namespace.name,
+            project_name=project.name,
+            include_incomplete=True,
         )
 
     def create_dataset_version(  # noqa: PLR0913
@@ -1125,6 +1223,7 @@ class AbstractDBMetastore(AbstractMetastore):
             dataset.name,
             namespace_name=dataset.project.namespace.name,
             project_name=dataset.project.name,
+            include_incomplete=True,
             conn=conn,
         )
 
@@ -1163,7 +1262,7 @@ class AbstractDBMetastore(AbstractMetastore):
                     dataset_values[field] = None
                 else:
                     values[field] = json.dumps(value)
-                    dataset_values[field] = DatasetRecord.parse_schema(value)
+                    dataset_values[field] = parse_schema(value)
             elif field == "project_id":
                 if not value:
                     raise ValueError("Cannot set empty project_id for dataset")
@@ -1214,9 +1313,7 @@ class AbstractDBMetastore(AbstractMetastore):
 
             if field == "schema":
                 values[field] = json.dumps(value) if value else None
-                version_values[field] = (
-                    DatasetRecord.parse_schema(value) if value else None
-                )
+                version_values[field] = parse_schema(value) if value else None
             elif field == "feature_schema":
                 if value is None:
                     values[field] = None
@@ -1231,7 +1328,7 @@ class AbstractDBMetastore(AbstractMetastore):
                         f"Field '{field}' must be a list, got {type(value).__name__}"
                     )
                 else:
-                    values[field] = json.dumps(value, cls=JSONSerialize)
+                    values[field] = json.dumps(value, serialize_bytes=True)
                 version_values["_preview_data"] = value
             else:
                 values[field] = value
@@ -1283,6 +1380,7 @@ class AbstractDBMetastore(AbstractMetastore):
         dataset_fields: list[str],
         dataset_version_fields: list[str],
         isouter: bool = True,
+        include_incomplete: bool = True,
     ) -> "Select":
         if not (
             self.db.has_table(self._datasets.name)
@@ -1301,35 +1399,48 @@ class AbstractDBMetastore(AbstractMetastore):
             *(getattr(d.c, f) for f in dataset_fields),
             *(getattr(dv.c, f) for f in dataset_version_fields),
         )
+
+        # Build join condition with status filter
+        join_condition = d.c.id == dv.c.dataset_id
+        if not include_incomplete:
+            # Only include COMPLETE dataset versions (hide CREATED/FAILED)
+            join_condition = and_(join_condition, dv.c.status == DatasetStatus.COMPLETE)
+
         j = (
             n.join(p, n.c.id == p.c.namespace_id)
             .join(d, p.c.id == d.c.project_id)
-            .join(dv, d.c.id == dv.c.dataset_id, isouter=isouter)
+            .join(dv, join_condition, isouter=isouter)
         )
         return query.select_from(j)
 
-    def _base_dataset_query(self) -> "Select":
+    def _base_dataset_query(self, include_incomplete: bool = True) -> "Select":
+        # When filtering by status, use inner join so datasets without COMPLETE
+        # versions are excluded
+        isouter = include_incomplete
         return self._get_dataset_query(
             self._namespaces_fields,
             self._projects_fields,
             self._dataset_fields,
             self._dataset_version_fields,
+            isouter=isouter,
+            include_incomplete=include_incomplete,
         )
 
-    def _base_list_datasets_query(self) -> "Select":
+    def _base_list_datasets_query(self, include_incomplete: bool = True) -> "Select":
         return self._get_dataset_query(
             self._namespaces_fields,
             self._projects_fields,
             self._dataset_list_fields,
             self._dataset_list_version_fields,
             isouter=False,
+            include_incomplete=include_incomplete,
         )
 
     def list_datasets(
         self, project_id: int | None = None
     ) -> Iterator["DatasetListRecord"]:
         d = self._datasets
-        query = self._base_list_datasets_query().order_by(
+        query = self._base_list_datasets_query(include_incomplete=False).order_by(
             self._datasets.c.name, self._datasets_versions.c.version
         )
         if project_id:
@@ -1347,10 +1458,14 @@ class AbstractDBMetastore(AbstractMetastore):
         return next(self.db.execute(query))[0]
 
     def list_datasets_by_prefix(
-        self, prefix: str, project_id: int | None = None, conn=None
+        self,
+        prefix: str,
+        project_id: int | None = None,
+        include_incomplete: bool = False,
+        conn=None,
     ) -> Iterator["DatasetListRecord"]:
         d = self._datasets
-        query = self._base_list_datasets_query()
+        query = self._base_list_datasets_query(include_incomplete=include_incomplete)
         if project_id:
             query = query.where(d.c.project_id == project_id)
         query = query.where(self._datasets.c.name.startswith(prefix))
@@ -1361,6 +1476,7 @@ class AbstractDBMetastore(AbstractMetastore):
         name: str,  # normal, not full dataset name
         namespace_name: str | None = None,
         project_name: str | None = None,
+        include_incomplete: bool = True,
         conn=None,
     ) -> DatasetRecord:
         """
@@ -1372,7 +1488,7 @@ class AbstractDBMetastore(AbstractMetastore):
         d = self._datasets
         n = self._namespaces
         p = self._projects
-        query = self._base_dataset_query()
+        query = self._base_dataset_query(include_incomplete=include_incomplete)
         query = query.where(
             d.c.name == name,
             n.c.name == namespace_name,
@@ -1399,23 +1515,69 @@ class AbstractDBMetastore(AbstractMetastore):
                 f"Dataset {dataset.name} version {version} not found."
             )
 
-        self.remove_dataset_dependencies(dataset, version)
-        self.remove_dataset_dependants(dataset, version)
-
         d = self._datasets
         dv = self._datasets_versions
-        self.db.execute(
-            self._datasets_versions_delete().where(
-                (dv.c.dataset_id == dataset.id) & (dv.c.version == version)
-            )
-        )
 
-        if dataset.versions and len(dataset.versions) == 1:
-            # had only one version, fully deleting dataset
-            self.db.execute(self._datasets_delete().where(d.c.id == dataset.id))
+        with self.db.transaction():
+            self.remove_dataset_dependencies(dataset, version)
+            self.remove_dataset_dependants(dataset, version)
+
+            self.db.execute(
+                self._datasets_versions_delete().where(
+                    (dv.c.dataset_id == dataset.id) & (dv.c.version == version)
+                )
+            )
+
+            if dataset.versions and len(dataset.versions) == 1:
+                # had only one version, fully deleting dataset
+                self.db.execute(self._datasets_delete().where(d.c.id == dataset.id))
 
         dataset.remove_version(version)
         return dataset
+
+    def get_incomplete_dataset_versions(
+        self, job_id: str | None = None
+    ) -> list[tuple[DatasetRecord, str]]:
+        n = self._namespaces
+        p = self._projects
+        d = self._datasets
+        dv = self._datasets_versions
+        j = self._jobs
+
+        # Query dataset + version info for failed versions from non-running jobs
+        query = (
+            self._datasets_select(
+                *(getattr(n.c, f) for f in self._namespaces_fields),
+                *(getattr(p.c, f) for f in self._projects_fields),
+                *(getattr(d.c, f) for f in self._dataset_fields),
+                *(getattr(dv.c, f) for f in self._dataset_version_fields),
+            )
+            .select_from(
+                n.join(p, n.c.id == p.c.namespace_id)
+                .join(d, p.c.id == d.c.project_id)
+                .join(dv, d.c.id == dv.c.dataset_id)
+                .join(j, cast(dv.c.job_id, j.c.id.type) == j.c.id)
+            )
+            .where(
+                dv.c.status.in_([DatasetStatus.CREATED, DatasetStatus.FAILED]),
+                j.c.status.in_(
+                    [JobStatus.COMPLETE, JobStatus.FAILED, JobStatus.CANCELED]
+                ),
+            )
+        )
+        if job_id:
+            query = query.where(j.c.id == job_id)
+
+        # Parse results and return (dataset, version) tuples
+        results = []
+        for row in self.db.execute(query):
+            dataset = self.dataset_class.parse(*row)
+            # Each DatasetRecord has one version (the failed one from this row)
+            if dataset.versions:
+                version = dataset.versions[0].version
+                results.append((dataset, version))
+
+        return results
 
     def update_dataset_status(
         self,
@@ -1448,6 +1610,30 @@ class AbstractDBMetastore(AbstractMetastore):
             self.update_dataset_version(dataset, version, conn=conn, **update_data)
 
         return dataset
+
+    def mark_job_dataset_versions_as_failed(self, job_id: str) -> None:
+        """
+        Mark all non-COMPLETE dataset versions created by a job as FAILED.
+
+        This is called when a job fails to ensure that any dataset versions
+        it was creating are marked as failed rather than left in CREATED state.
+
+        Args:
+            job_id: ID of the failed job whose dataset versions should be marked
+        """
+        dv = self._datasets_versions
+
+        # Update status to FAILED for all non-COMPLETE versions with this job_id
+        update_stmt = (
+            dv.update()
+            .where((dv.c.job_id == job_id) & (dv.c.status != DatasetStatus.COMPLETE))
+            .values(
+                status=DatasetStatus.FAILED,
+                finished_at=datetime.now(timezone.utc),
+            )
+        )
+
+        self.db.execute(update_stmt)
 
     #
     # Dataset dependencies
@@ -1688,11 +1874,16 @@ class AbstractDBMetastore(AbstractMetastore):
             Column("params", JSON, nullable=False),
             Column("metrics", JSON, nullable=False),
             Column("parent_job_id", Text, nullable=True),
+            Column("rerun_from_job_id", Text, nullable=True),
+            Column("run_group_id", Text, nullable=True),
+            Index("idx_jobs_parent_job_id", "parent_job_id"),
+            Index("idx_jobs_rerun_from_job_id", "rerun_from_job_id"),
+            Index("idx_jobs_run_group_id", "run_group_id"),
         ]
 
     @cached_property
     def _job_fields(self) -> list[str]:
-        return [c.name for c in self._jobs_columns() if c.name]  # type: ignore[attr-defined]
+        return [c.name for c in self._jobs_columns() if isinstance(c, Column)]  # type: ignore[attr-defined]
 
     @cached_property
     def _jobs(self) -> "Table":
@@ -1748,6 +1939,8 @@ class AbstractDBMetastore(AbstractMetastore):
         python_version: str | None = None,
         params: dict[str, str] | None = None,
         parent_job_id: str | None = None,
+        rerun_from_job_id: str | None = None,
+        run_group_id: str | None = None,
         conn: Any = None,
     ) -> str:
         """
@@ -1755,6 +1948,20 @@ class AbstractDBMetastore(AbstractMetastore):
         Returns the job id.
         """
         job_id = str(uuid4())
+
+        # Validate run_group_id and rerun_from_job_id consistency
+        if rerun_from_job_id:
+            # Rerun job: run_group_id must be provided by caller
+            assert run_group_id is not None, (
+                "run_group_id must be provided when rerun_from_job_id is set"
+            )
+        else:
+            # First job: run_group_id should not be provided (we set it here)
+            assert run_group_id is None, (
+                "run_group_id should not be provided when rerun_from_job_id is not set"
+            )
+            run_group_id = job_id
+
         self.db.execute(
             self._jobs_insert().values(
                 id=job_id,
@@ -1770,6 +1977,8 @@ class AbstractDBMetastore(AbstractMetastore):
                 params=json.dumps(params or {}),
                 metrics=json.dumps({}),
                 parent_job_id=parent_job_id,
+                rerun_from_job_id=rerun_from_job_id,
+                run_group_id=run_group_id,
             ),
             conn=conn,
         )
@@ -1783,72 +1992,32 @@ class AbstractDBMetastore(AbstractMetastore):
             return None
         return self._parse_job(results[0])
 
-    def get_ancestor_job_ids(self, job_id: str, conn=None) -> list[str]:
-        # Use recursive CTE to walk up the parent chain
-        # Format: WITH RECURSIVE ancestors(id, parent_job_id) AS (...)
-        ancestors_cte = (
-            select(
-                self._jobs.c.id.label("id"),
-                self._jobs.c.parent_job_id.label("parent_job_id"),
-            )
-            .where(self._jobs.c.id == job_id)
-            .cte(name="ancestors", recursive=True)
-        )
+    def has_active_checkpoints_in_run_group(
+        self,
+        run_group_id: str,
+        ttl_threshold: datetime,
+        conn=None,
+    ) -> bool:
+        if not run_group_id:
+            return False
 
-        # Recursive part: join with parent jobs
-        ancestors_recursive = ancestors_cte.union_all(
-            select(
-                self._jobs.c.id.label("id"),
-                self._jobs.c.parent_job_id.label("parent_job_id"),
-            ).select_from(
+        query = (
+            self._jobs_select(f.count(self._checkpoints.c.id))
+            .select_from(
                 self._jobs.join(
-                    ancestors_cte,
-                    self._jobs.c.id
-                    == cast(ancestors_cte.c.parent_job_id, self._jobs.c.id.type),
+                    self._checkpoints,
+                    self._jobs.c.id == self._checkpoints.c.job_id,
+                )
+            )
+            .where(
+                and_(
+                    self._jobs.c.run_group_id == run_group_id,
+                    self._checkpoints.c.created_at >= ttl_threshold,
                 )
             )
         )
 
-        # Select all ancestor IDs except the starting job itself
-        query = select(ancestors_recursive.c.id).where(
-            ancestors_recursive.c.id != job_id
-        )
-
-        results = list(self.db.execute(query, conn=conn))
-        return [str(row[0]) for row in results]
-
-    def get_descendant_job_ids(self, job_id: str, conn=None) -> list[str]:
-        # Use recursive CTE to walk down the child chain
-        descendants_cte = (
-            select(
-                self._jobs.c.id.label("id"),
-                self._jobs.c.parent_job_id.label("parent_job_id"),
-            )
-            .where(self._jobs.c.id == job_id)
-            .cte(name="descendants", recursive=True)
-        )
-
-        # Recursive part: join with child jobs
-        descendants_recursive = descendants_cte.union_all(
-            select(
-                self._jobs.c.id.label("id"),
-                self._jobs.c.parent_job_id.label("parent_job_id"),
-            ).select_from(
-                self._jobs.join(
-                    descendants_cte,
-                    cast(self._jobs.c.parent_job_id, self._jobs.c.id.type)
-                    == descendants_cte.c.id,
-                )
-            )
-        )
-
-        # Select all descendant IDs except the starting job itself
-        query = select(descendants_recursive.c.id).where(
-            descendants_recursive.c.id != job_id
-        )
-
-        results = list(self.db.execute(query, conn=conn))
-        return [str(row[0]) for row in results]
+        return next(self.db.execute(query, conn=conn))[0] > 0
 
     def update_job(
         self,
@@ -1937,7 +2106,7 @@ class AbstractDBMetastore(AbstractMetastore):
             Column("hash", Text, nullable=False),
             Column("partial", Boolean, default=False),
             Column("created_at", DateTime(timezone=True), nullable=False),
-            UniqueConstraint("job_id", "hash", "partial"),
+            UniqueConstraint("job_id", "hash"),
         ]
 
     @cached_property
@@ -1954,6 +2123,47 @@ class AbstractDBMetastore(AbstractMetastore):
 
     @abstractmethod
     def _checkpoints_insert(self) -> "Insert": ...
+
+    @classmethod
+    def _dataset_version_jobs_columns(cls) -> "list[SchemaItem]":
+        """Junction table for dataset versions and jobs many-to-many relationship."""
+        return [
+            Column("id", Integer, primary_key=True),
+            Column(
+                "dataset_version_id",
+                Integer,
+                ForeignKey(f"{cls.DATASET_VERSION_TABLE}.id", ondelete="CASCADE"),
+                nullable=False,
+            ),
+            Column("job_id", Text, nullable=False),
+            Column("is_creator", Boolean, nullable=False, default=False),
+            Column("created_at", DateTime(timezone=True)),
+            UniqueConstraint("dataset_version_id", "job_id"),
+            Index("dc_idx_dvj_query", "job_id", "is_creator", "created_at"),
+        ]
+
+    @cached_property
+    def _dataset_version_jobs_fields(self) -> list[str]:
+        return [c.name for c in self._dataset_version_jobs_columns() if c.name]  # type: ignore[attr-defined]
+
+    @cached_property
+    def _dataset_version_jobs(self) -> "Table":
+        return Table(
+            self.DATASET_VERSION_JOBS_TABLE,
+            self.db.metadata,
+            *self._dataset_version_jobs_columns(),
+        )
+
+    @abstractmethod
+    def _dataset_version_jobs_insert(self) -> "Insert": ...
+
+    def _dataset_version_jobs_select(self, *columns) -> "Select":
+        if not columns:
+            return self._dataset_version_jobs.select()
+        return select(*columns)
+
+    def _dataset_version_jobs_delete(self) -> "Delete":
+        return self._dataset_version_jobs.delete()
 
     def _checkpoints_select(self, *columns) -> "Select":
         if not columns:
@@ -1975,30 +2185,32 @@ class AbstractDBMetastore(AbstractMetastore):
         partial: bool = False,
         conn: Any | None = None,
     ) -> Checkpoint:
-        """
-        Creates a new checkpoint or returns existing one if already exists.
-        This is idempotent - calling it multiple times with the same job_id and hash
-        will not create duplicates.
-        """
-        query = self._checkpoints_insert().values(
-            id=str(uuid4()),
-            job_id=job_id,
-            hash=_hash,
-            partial=partial,
-            created_at=datetime.now(timezone.utc),
-        )
+        # Use transaction to atomically insert and find checkpoint
+        with self.db.transaction() as tx_conn:
+            conn = conn or tx_conn
 
-        # Use on_conflict_do_nothing to handle race conditions
-        assert hasattr(query, "on_conflict_do_nothing"), (
-            "Database must support on_conflict_do_nothing"
-        )
-        query = query.on_conflict_do_nothing(
-            index_elements=["job_id", "hash", "partial"]
-        )
+            query = self._checkpoints_insert().values(
+                id=str(uuid4()),
+                job_id=job_id,
+                hash=_hash,
+                partial=partial,
+                created_at=datetime.now(timezone.utc),
+            )
 
-        self.db.execute(query, conn=conn)
+            # Use on_conflict_do_nothing to handle race conditions
+            assert hasattr(query, "on_conflict_do_nothing"), (
+                "Database must support on_conflict_do_nothing"
+            )
+            query = query.on_conflict_do_nothing(index_elements=["job_id", "hash"])
 
-        return self.find_checkpoint(job_id, _hash, partial=partial, conn=conn)  # type: ignore[return-value]
+            self.db.execute(query, conn=conn)
+
+            checkpoint = self.find_checkpoint(job_id, _hash, partial=partial, conn=conn)
+            assert checkpoint is not None, (
+                f"Checkpoint should exist after get_or_create for job_id={job_id}, "
+                f"hash={_hash}, partial={partial}"
+            )
+            return checkpoint
 
     def list_checkpoints(
         self,
@@ -2054,12 +2266,182 @@ class AbstractDBMetastore(AbstractMetastore):
             return None
         return self.checkpoint_class.parse(*rows[0])
 
-    def remove_checkpoint(
-        self, checkpoint: Checkpoint, conn: Any | None = None
+    def link_dataset_version_to_job(
+        self,
+        dataset_version_id: int,
+        job_id: str,
+        is_creator: bool = False,
+        conn=None,
     ) -> None:
-        """Removes a checkpoint by checkpoint object"""
-        ch = self._checkpoints
+        # Use transaction to atomically:
+        # 1. Link dataset version to job in junction table
+        # 2. Update dataset_version.job_id to point to this job
+        with self.db.transaction() as tx_conn:
+            conn = conn or tx_conn
+
+            # Insert into junction table
+            query = self._dataset_version_jobs_insert().values(
+                dataset_version_id=dataset_version_id,
+                job_id=job_id,
+                is_creator=is_creator,
+                created_at=datetime.now(timezone.utc),
+            )
+            if hasattr(query, "on_conflict_do_nothing"):
+                query = query.on_conflict_do_nothing(
+                    index_elements=["dataset_version_id", "job_id"]
+                )
+            self.db.execute(query, conn=conn)
+
+            # Also update dataset_version.job_id to point to this job
+            update_query = (
+                self._datasets_versions.update()
+                .where(self._datasets_versions.c.id == dataset_version_id)
+                .values(job_id=job_id)
+            )
+            self.db.execute(update_query, conn=conn)
+
+    def get_ancestor_job_ids(self, job_id: str, conn=None) -> list[str]:
+        # Use recursive CTE to walk up the rerun chain
+        # Format: WITH RECURSIVE ancestors(id, rerun_from_job_id, run_group_id,
+        # depth) AS (...)
+        # Include depth tracking to prevent infinite recursion in case of
+        # circular dependencies
+        ancestors_cte = (
+            self._jobs_select(
+                self._jobs.c.id.label("id"),
+                self._jobs.c.rerun_from_job_id.label("rerun_from_job_id"),
+                self._jobs.c.run_group_id.label("run_group_id"),
+                literal(0).label("depth"),
+            )
+            .where(self._jobs.c.id == job_id)
+            .cte(name="ancestors", recursive=True)
+        )
+
+        # Recursive part: join with parent jobs, incrementing depth and checking limit
+        # Also ensure we only traverse jobs within the same run_group_id for safety
+        ancestors_recursive = ancestors_cte.union_all(
+            self._jobs_select(
+                self._jobs.c.id.label("id"),
+                self._jobs.c.rerun_from_job_id.label("rerun_from_job_id"),
+                self._jobs.c.run_group_id.label("run_group_id"),
+                (ancestors_cte.c.depth + 1).label("depth"),
+            ).select_from(
+                self._jobs.join(
+                    ancestors_cte,
+                    (
+                        self._jobs.c.id
+                        == cast(ancestors_cte.c.rerun_from_job_id, self._jobs.c.id.type)
+                    )
+                    & (
+                        ancestors_cte.c.rerun_from_job_id.isnot(None)
+                    )  # Stop at root jobs
+                    & (ancestors_cte.c.depth < JOB_ANCESTRY_MAX_DEPTH)
+                    & (
+                        self._jobs.c.run_group_id
+                        == cast(
+                            ancestors_cte.c.run_group_id, self._jobs.c.run_group_id.type
+                        )
+                    ),  # Safety: only traverse within same run group
+                )
+            )
+        )
+
+        # Select all ancestor IDs and depths except the starting job itself
+        query = select(ancestors_recursive.c.id, ancestors_recursive.c.depth).where(
+            ancestors_recursive.c.id != job_id
+        )
+
+        results = list(self.db.execute(query, conn=conn))
+
+        # Check if we hit the depth limit
+        if results:
+            max_found_depth = max(row[1] for row in results)
+            if max_found_depth >= JOB_ANCESTRY_MAX_DEPTH:
+                from datachain.error import JobAncestryDepthExceededError
+
+                raise JobAncestryDepthExceededError(
+                    f"Job ancestry chain exceeds maximum depth of "
+                    f"{JOB_ANCESTRY_MAX_DEPTH}. Job ID: {job_id}"
+                )
+
+        return [str(row[0]) for row in results]
+
+    def _get_dataset_version_for_job_ancestry_query(
+        self,
+        dataset_name: str,
+        namespace_name: str,
+        project_name: str,
+        job_ancestry: list[str],
+    ) -> "Select":
+        """Find most recent dataset version created by any job in ancestry.
+
+        Searches job ancestry (current + parents) for the newest version of
+        the dataset where is_creator=True. Returns newest by created_at, or
+        None if no version was created by any job in the ancestry chain.
+
+        Used for checkpoint resolution to find which version to reuse when
+        continuing from a parent job.
+        """
+        return (
+            self._datasets_versions_select()
+            .select_from(
+                self._dataset_version_jobs.join(
+                    self._datasets_versions,
+                    self._dataset_version_jobs.c.dataset_version_id
+                    == self._datasets_versions.c.id,
+                )
+                .join(
+                    self._datasets,
+                    self._datasets_versions.c.dataset_id == self._datasets.c.id,
+                )
+                .join(
+                    self._projects,
+                    self._datasets.c.project_id == self._projects.c.id,
+                )
+                .join(
+                    self._namespaces,
+                    self._projects.c.namespace_id == self._namespaces.c.id,
+                )
+            )
+            .where(
+                self._datasets.c.name == dataset_name,
+                self._namespaces.c.name == namespace_name,
+                self._projects.c.name == project_name,
+                self._dataset_version_jobs.c.job_id.in_(job_ancestry),
+                self._dataset_version_jobs.c.is_creator.is_(True),
+            )
+            .order_by(desc(self._dataset_version_jobs.c.created_at))
+            .limit(1)
+        )
+
+    def get_dataset_version_for_job_ancestry(
+        self,
+        dataset_name: str,
+        namespace_name: str,
+        project_name: str,
+        job_id: str,
+        conn=None,
+    ) -> DatasetVersion | None:
+        # Get job ancestry (current job + all ancestors)
+        job_ancestry = [job_id, *self.get_ancestor_job_ids(job_id, conn=conn)]
+
+        query = self._get_dataset_version_for_job_ancestry_query(
+            dataset_name, namespace_name, project_name, job_ancestry
+        )
+
+        results = list(self.db.execute(query, conn=conn))
+        if not results:
+            return None
+
+        if len(results) > 1:
+            raise DataChainError(
+                f"Expected at most 1 dataset version, found {len(results)}"
+            )
+
+        return self.dataset_version_class.parse(*results[0])
+
+    def remove_checkpoint(self, checkpoint_id: str, conn: Any | None = None) -> None:
         self.db.execute(
-            self._checkpoints_delete().where(ch.c.id == checkpoint.id),
+            self._checkpoints_delete().where(self._checkpoints.c.id == checkpoint_id),
             conn=conn,
         )

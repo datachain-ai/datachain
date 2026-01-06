@@ -149,7 +149,11 @@ def read_dataset(
 
     if version is not None:
         dataset = session.catalog.get_dataset_with_remote_fallback(
-            name, namespace_name, project_name, update=update
+            name,
+            namespace_name,
+            project_name,
+            update=update,
+            include_incomplete=False,  # Never include incomplete datasets
         )
 
         # Convert legacy integer versions to version specifiers
@@ -371,6 +375,7 @@ def delete_dataset(
                 name,
                 namespace_name=ds_project.namespace.name,
                 project_name=ds_project.name,
+                include_incomplete=False,
             ).latest_version
         )
     else:
@@ -418,7 +423,9 @@ def move_dataset(
     namespace, project, name = catalog.get_full_dataset_name(src)
     dest_namespace, dest_project, dest_name = catalog.get_full_dataset_name(dest)
 
-    dataset = catalog.get_dataset(name, namespace_name=namespace, project_name=project)
+    dataset = catalog.get_dataset(
+        name, namespace_name=namespace, project_name=project, include_incomplete=False
+    )
 
     catalog.update_dataset(
         dataset,

@@ -109,3 +109,7 @@ class CheckpointNotFoundError(NotFoundError):
 
 class JobNotFoundError(NotFoundError):
     pass
+
+
+class JobAncestryDepthExceededError(DataChainError):
+    pass

@@ -11,10 +11,10 @@ Checkpoints are available for both local script runs and Studio executions.
 When you run a Python script locally (e.g., `python my_script.py`), DataChain automatically:
 
 1. **Creates a job** for the script execution, using the script's absolute path as the job name
-2. **Tracks parent jobs** by finding the last job with the same script name
+2. **Tracks previous runs** by finding the last job with the same script name
 3. **Calculates hashes** for each dataset save operation based on the DataChain operations chain
 4. **Creates checkpoints** after each successful `.save()` call, storing the hash
-5. **Checks for existing checkpoints** on subsequent runs - if a matching checkpoint exists in the parent job, DataChain skips the save and reuses the existing dataset
+5. **Checks for existing checkpoints** on subsequent runs - if a matching checkpoint exists from the previous run, DataChain skips the save and reuses the existing dataset
 
 This means that if your script creates multiple datasets and fails partway through, the next run will skip recreating the datasets that were already successfully saved.
 
@@ -26,7 +26,7 @@ When running jobs on Studio, the checkpoint workflow is managed through the UI:
 2. **Checkpoint control** is explicit - you choose between:
    - **Run from scratch**: Ignores any existing checkpoints and recreates all datasets
    - **Continue from last checkpoint**: Resumes from the last successful checkpoint, skipping already-completed stages
-3. **Parent-child job linking** is handled automatically by the system - no need for script path matching or job name conventions
+3. **Job linking between runs** is handled automatically by the system - no need for script path matching or job name conventions
 4. **Checkpoint behavior** during execution is the same as local runs: datasets are saved at each `.save()` call and can be reused on retry
 
 
@@ -64,7 +64,7 @@ result = (
 
 **First run:** The script executes all three stages and creates three datasets: `filtered_data`, `transformed_data`, and `final_results`. If the script fails during Stage 3, only `filtered_data` and `transformed_data` are saved.
 
-**Second run:** DataChain detects that `filtered_data` and `transformed_data` were already created in the parent job with matching hashes. It skips recreating them and proceeds directly to Stage 3, creating only `final_results`.
+**Second run:** DataChain detects that `filtered_data` and `transformed_data` were already created in the previous run with matching hashes. It skips recreating them and proceeds directly to Stage 3, creating only `final_results`.
 
 ## When Checkpoints Are Used
 
@@ -73,7 +73,7 @@ Checkpoints are automatically used when:
 - Running a Python script locally (e.g., `python my_script.py`)
 - The script has been run before
 - A dataset with the same name is being saved
-- The chain hash matches a checkpoint from the parent job
+- The chain hash matches a checkpoint from the previous run
 
 Checkpoints are **not** used when:
 
@@ -110,7 +110,7 @@ When running `python my_script.py`, DataChain uses the **absolute path** to the 
 /home/user/projects/my_script.py
 ```
 
-This allows DataChain to link runs of the same script together as parent-child jobs, enabling checkpoint lookup.
+This allows DataChain to link runs of the same script together, enabling checkpoint lookup across runs.
 
 ### Interactive or Module Execution (Checkpoints Disabled)
 
@@ -129,7 +129,7 @@ For each `.save()` operation, DataChain calculates a hash based on:
 1. The hash of the previous checkpoint in the current job (if any)
 2. The hash of the current DataChain operations chain
 
-This creates a chain of hashes that uniquely identifies each stage of data processing. On subsequent runs, DataChain matches these hashes against the parent job's checkpoints and skips recreating datasets where the hashes match.
+This creates a chain of hashes that uniquely identifies each stage of data processing. On subsequent runs, DataChain matches these hashes against checkpoints from the previous run and skips recreating datasets where the hashes match.
 
 ### Hash Invalidation
 
@@ -189,7 +189,19 @@ for ds in dc.datasets():
 
 ## UDF-Level Checkpoints
 
-DataChain automatically creates checkpoints for UDFs (`.map()`, `.gen()`, `.agg()`), not just at `.save()` calls. For `.map()` and `.gen()`, **DataChain saves processed rows continuously during UDF execution**, not only when the UDF completes. If your script fails partway through a UDF, the next run will skip already-processed rows and continue where it left off - even if you've modified the UDF code to fix a bug.
+In addition to dataset-level checkpointing via `.save()`, DataChain automatically creates checkpoints for individual UDFs (`.map()`, `.gen()`, `.agg()`) during execution.
+
+**Two levels of checkpointing:**
+- **Dataset checkpoints** (via `.save()`): When you explicitly save a dataset, it's persisted and can be used in other scripts. If you re-run the same chain with unchanged code, DataChain skips recreation and reuses the saved dataset.
+- **UDF checkpoints** (automatic): Each UDF execution is automatically checkpointed. If a UDF completes successfully, it's skipped entirely on re-run (if code unchanged). If a UDF fails mid-execution, only the unprocessed rows are recomputed on re-run.
+
+**Key differences:**
+- `.save()` creates a named dataset that persists even if your script fails later, and can be used in other scripts
+- UDF checkpoints are automatic and internal - they optimize execution within a single script by skipping or resuming UDFs
+
+For `.map()` and `.gen()`, **DataChain saves processed rows continuously during UDF execution**. This means:
+- If a UDF **completes successfully**, a checkpoint is created and the entire UDF is skipped on re-run (unless code changes)
+- If a UDF **fails mid-execution**, the next run continues from where it left off, skipping already-processed rows - even if you've modified the UDF code to fix a bug
 
 **Note:** For `.agg()`, checkpoints are created when the aggregation completes successfully, but partial results are not tracked. If an aggregation fails partway through, it will restart from scratch on the next run.
 
@@ -207,16 +219,15 @@ For `.agg()`, checkpoints are only created upon successful completion, without i
 ### Example: Fixing a Bug Mid-Execution
 
 ```python
-from datachain import File
 
 def process_image(file: File) -> int:
     # Bug: this will fail on some images
     img = Image.open(file.get_local_path())
     return img.size[0]
 
-result = (
+(
     dc.read_dataset("images")
-    .map(width=process_image, output=int)
+    .map(width=process_image)
     .save("image_dimensions")
 )
 ```
@@ -245,18 +256,18 @@ DataChain distinguishes between two types of UDF changes:
 
 #### 1. Code-Only Changes (Bug Fixes) - Continues from Partial Results
 
-When you fix a bug in your UDF code **without changing the output schema**, DataChain allows you to continue from where the UDF failed. This is the key benefit of UDF-level checkpoints - you don't lose progress when fixing bugs.
+When you fix a bug in your UDF code **without changing the output type**, DataChain allows you to continue from where the UDF failed. This is the key benefit of UDF-level checkpoints - you don't lose progress when fixing bugs.
 
-**Example: Bug fix without schema change**
+**Example: Bug fix without output change**
 ```python
 # First run - fails partway through
-def process(num) -> int:
+def process(num: int) -> int:
     if num > 100:
         raise Exception("Bug!")  # Oops, a bug!
     return num * 10
 
 # Second run - continues from where it failed
-def process(num) -> int:
+def process(num: int) -> int:
     return num * 10  # Bug fixed! ✓ Continues from partial results
 ```
 
@@ -264,28 +275,28 @@ In this case, DataChain will skip already-processed rows and continue processing
 
 #### 2. Output Schema Changes - Forces Re-run from Scratch
 
-When you change the **output type or schema** of your UDF, DataChain automatically detects this and reruns the entire UDF from scratch. This prevents schema mismatches that would cause errors or corrupt data.
+When you change the **output type** of your UDF, DataChain automatically detects this and reruns the entire UDF from scratch. This prevents schema mismatches that would cause errors or corrupt data.
 
-**Example: Schema change**
+**Example: Output change**
 ```python
 # First run - fails partway through
-def process(num) -> int:
+def process(num: int) -> int:
     if num > 100:
         raise Exception("Bug!")
     return num * 10
 
 # Second run - output type changed
-def process(num) -> str:
+def process(num: int) -> str:
     return f"value_{num * 10}"  # Output type changed! ✗ Reruns from scratch
 ```
 
-In this case, DataChain detects that the output changed from `int` to `str` and discards partial results to avoid schema incompatibility. All rows will be reprocessed with the new output schema.
+In this case, DataChain detects that the output type changed from `int` to `str` and discards partial results to avoid schema incompatibility. All rows will be reprocessed with the new output.
 
 #### Changes That Invalidate In-Progress UDF Checkpoints
 
 Partial results are automatically discarded when you change:
 
-- **Output type or schema** - Changes to the `output` parameter or return type annotations
+- **Output type** - Changes to the `output` parameter or return type annotations
 - **Operations before the UDF** - Any changes to the data processing chain before the UDF
 
 #### Changes That Invalidate Completed UDF Checkpoints
@@ -298,39 +309,29 @@ Changes that invalidate completed UDF checkpoints:
 - **Changing function parameters or output types** - Changes to input/output specifications
 - **Altering any operations before the UDF in the chain** - Changes to upstream data processing
 
-**Key takeaway:** For in-progress (partial) UDFs, you can fix bugs freely as long as the output schema stays the same. For completed UDFs, any code change triggers a full recomputation.
+**Key takeaway:** For in-progress (partial) UDFs, you can fix bugs freely as long as the output stays the same. For completed UDFs, any code change triggers a full recomputation.
 
 ### Forcing UDF to Start from Scratch
 
-If you want to ignore any in-progress UDF work and recompute from the beginning, set the `DATACHAIN_UDF_RESET` environment variable:
+If you want to ignore any in-progress UDF work and recompute from the beginning, set the `DATACHAIN_UDF_CHECKPOINTS_RESET` environment variable:
 
 ```bash
-DATACHAIN_UDF_RESET=1 python my_script.py
+DATACHAIN_UDF_CHECKPOINTS_RESET=1 python my_script.py
 ```
 
-This forces all UDFs to restart from scratch, discarding any checkpointed progress. This is useful when:
+This forces the failed UDF to restart from scratch instead of continuing from partial results. This is useful when a UDF previously failed mid-execution and left partial results, but you want to discard them and reprocess all rows from the beginning.
 
-- You've changed the UDF logic and want to reprocess already-completed rows
-- You suspect the checkpointed data is corrupted
-- You want to ensure a clean computation for debugging
-
-### UDF Checkpoints vs Dataset Checkpoints
-
-DataChain uses two levels of checkpoints:
-
-- **Dataset checkpoints** (via `.save()`) - Skip recreating entire datasets if the chains code hasn't changed
-- **UDF checkpoints** (automatic) - Resume in-progress UDFs from where they left off
-
-Both work together: if you have multiple `.map()` calls followed by a `.save()`, DataChain will resume from the last incomplete UDF. If all UDFs completed but the script failed before `.save()`, the next run will skip all UDFs and go straight to the save.
+Note that this only affects in-progress UDFs. Completed UDFs are still skipped based on their hash, unless their code or inputs have changed.
 
 ## Limitations
 
 When running locally:
 
 - **Script-based:** Code must be run as a script (not interactively or as a module).
-- **Same script path:** The script must be run from the same absolute path for parent job linking to work.
+- **Same script path:** The script must be run from the same absolute path for linking to previous runs to work.
+- **Threading/Multiprocessing:** Checkpoints are automatically disabled when Python threading or multiprocessing is detected to prevent race conditions. Any checkpoints created before threading starts remain valid for future runs. DataChain's built-in `parallel` setting for UDF execution is not affected by this limitation.
 
-These limitations don't apply when running on Studio, where parent-child job linking is handled automatically by the platform.
+These limitations don't apply when running on Studio, where job linking between runs is handled automatically by the platform.
 
 ## Future Plans
 

@@ -35,6 +35,7 @@ class Listing:
         self.dataset_name = dataset_name  # dataset representing bucket listing
         self.dataset_version = dataset_version  # dataset representing bucket listing
         self.column = column
+        self._closed = False
 
     def clone(self) -> "Listing":
         return self.__class__(
@@ -53,7 +54,13 @@ class Listing:
         self.close()
 
     def close(self) -> None:
-        self.warehouse.close()
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self.warehouse.close_on_exit()
+        finally:
+            self.metastore.close_on_exit()
 
     @property
     def uri(self):

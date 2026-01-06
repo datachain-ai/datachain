@@ -3,10 +3,7 @@ from typing import get_args, get_origin
 import pytest
 
 import datachain as dc
-from datachain.lib.convert.values_to_tuples import (
-    ValuesToTupleError,
-    values_to_tuples,
-)
+from datachain.lib.convert.values_to_tuples import ValuesToTupleError, values_to_tuples
 from datachain.query.schema import Column
 
 

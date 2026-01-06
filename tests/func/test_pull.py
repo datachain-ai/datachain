@@ -1,13 +1,12 @@
-import json
-
 import pytest
 
 import datachain as dc
+from datachain import json
 from datachain.client.fsspec import Client
 from datachain.dataset import DatasetStatus
 from datachain.error import DataChainError, DatasetNotFoundError
 from datachain.query.session import Session
-from datachain.utils import STUDIO_URL, JSONSerialize
+from datachain.utils import STUDIO_URL
 from tests.conftest import (
     REMOTE_DATASET_UUID,
     REMOTE_NAMESPACE_NAME,
@@ -35,7 +34,7 @@ def remote_dataset_version(
         "error_stack": "",
         "num_objects": 5,
         "size": 1073741824,
-        "preview": json.loads(json.dumps(dataset_rows, cls=JSONSerialize)),
+        "preview": json.loads(json.dumps(dataset_rows, serialize_bytes=True)),
         "script_output": "",
         "schema": remote_dataset_schema,
         "sources": "",
@@ -92,7 +91,8 @@ def remote_dataset_info(requests_mock, remote_dataset):
 @pytest.fixture
 def dataset_export(requests_mock, remote_dataset_chunk_url):
     requests_mock.get(
-        f"{STUDIO_URL}/api/datachain/datasets/export", json=[remote_dataset_chunk_url]
+        f"{STUDIO_URL}/api/datachain/datasets/export",
+        json={"export_id": 1, "signed_urls": [remote_dataset_chunk_url]},
     )
 
 

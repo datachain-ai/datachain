@@ -3,11 +3,11 @@ from itertools import islice
 from typing import TYPE_CHECKING, Any
 
 import pyarrow as pa
-import ujson as json
 from pyarrow._csv import ParseOptions
 from pyarrow.dataset import CsvFileFormat, dataset
 from tqdm.auto import tqdm
 
+from datachain import json
 from datachain.fs.reference import ReferenceFileSystem
 from datachain.lib.data_model import dict_to_data_model
 from datachain.lib.file import ArrowRow, File
