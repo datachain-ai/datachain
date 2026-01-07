@@ -120,6 +120,8 @@ def gen_datamodel_code(
             class_name=model_name,
             additional_imports=["datachain.lib.data_model.DataModel"],
             use_standard_collections=True,
+            disable_future_imports=True,
+            formatters=[],
         )
         epilogue = f"""
 DataModel.register({model_name})
