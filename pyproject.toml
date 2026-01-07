@@ -107,6 +107,7 @@ tests = [
   "pytest-servers[all]>=0.5.9",
   "pytest-benchmark[histogram]",
   "pytest-xdist>=3.3.1",
+  "azure-storage-blob<12.28",  # Pin to avoid API version 2026-02-06 not supported by Azurite emulator
   "pytest-dotenv",
   "virtualenv",
   "dulwich",
