@@ -44,7 +44,7 @@ dependencies = [
   "cloudpickle",
   "pydantic",
   "jmespath>=1.0",
-  "datamodel-code-generator>=0.25",
+  "datamodel-code-generator>=0.25,<0.27",
   "Pillow>=10.0.0,<13",
   "msgpack>=1.0.4,<2",
   "psutil",
@@ -107,6 +107,7 @@ tests = [
   "pytest-servers[all]>=0.5.9",
   "pytest-benchmark[histogram]",
   "pytest-xdist>=3.3.1",
+  "azure-storage-blob<12.28",  # Pin to avoid API version 2026-02-06 not supported by Azurite emulator
   "pytest-dotenv",
   "virtualenv",
   "dulwich",
@@ -173,6 +174,7 @@ filterwarnings = [
   "ignore::DeprecationWarning:datasets.utils._dill",
   "ignore::DeprecationWarning:librosa.core.intervals",
   "ignore::FutureWarning:google.api_core._python_version_support",  # Python 3.10 EOL warning
+  "ignore:Image.Image.getdata is deprecated:DeprecationWarning",  # Pillow 14 deprecation (we use <13)
   # Expected warnings from our code
   "ignore:Field name .* shadows an attribute in parent:UserWarning",  # datachain.lib.feature
   # Coverage limitation on Python 3.13
