@@ -44,7 +44,7 @@ dependencies = [
   "cloudpickle",
   "pydantic",
   "jmespath>=1.0",
-  "datamodel-code-generator>=0.25,<0.27",
+  "datamodel-code-generator>=0.25,<0.53",
   "Pillow>=10.0.0,<13",
   "msgpack>=1.0.4,<2",
   "psutil",
