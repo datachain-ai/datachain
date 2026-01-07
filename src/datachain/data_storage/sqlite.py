@@ -230,6 +230,7 @@ class SQLiteDatabaseEngine(DatabaseEngine):
         query,
         cursor: sqlite3.Cursor | None = None,
         conn=None,
+        consistent_read: bool = False,
     ) -> sqlite3.Cursor:
         if self.is_closed:
             # Reconnect in case of being closed previously.
