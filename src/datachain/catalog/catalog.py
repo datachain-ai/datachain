@@ -926,6 +926,16 @@ class Catalog:
 
         dataset_version = dataset.get_version(version)
 
+        logger.info(
+            "update_dataset_version_with_warehouse_info: %s@%s, "
+            "initial_num_objects=%s, initial_size=%s, has_preview=%s",
+            dataset.name,
+            version,
+            dataset_version.num_objects,
+            dataset_version.size,
+            bool(dataset_version.preview),
+        )
+
         values = {**kwargs}
 
         if rows_dropped:
@@ -937,13 +947,20 @@ class Catalog:
 
         if not dataset_version.num_objects:
             num_objects, size = self.warehouse.dataset_stats(dataset, version)
+            logger.info(
+                "warehouse.dataset_stats returned: num_objects=%s, size=%s for %s@%s",
+                num_objects,
+                size,
+                dataset.name,
+                version,
+            )
             if num_objects != dataset_version.num_objects:
                 values["num_objects"] = num_objects
             if size != dataset_version.size:
                 values["size"] = size
 
         if not dataset_version.preview:
-            values["preview"] = (
+            preview = (
                 DatasetQuery(
                     name=dataset.name,
                     namespace_name=dataset.project.namespace.name,
@@ -955,10 +972,26 @@ class Catalog:
                 .limit(20)
                 .to_db_records()
             )
+            logger.info(
+                "Generated preview with %s rows for %s@%s",
+                len(preview),
+                dataset.name,
+                version,
+            )
+            values["preview"] = preview
 
         if not values:
             return
 
+        logger.info(
+            "Calling metastore.update_dataset_version for %s@%s: "
+            "num_objects=%s, size=%s, preview_rows=%s",
+            dataset.name,
+            version,
+            values.get("num_objects"),
+            values.get("size"),
+            len(values["preview"]) if "preview" in values else "unchanged",
+        )
         self.metastore.update_dataset_version(dataset, version, **values)
 
     def update_dataset(
