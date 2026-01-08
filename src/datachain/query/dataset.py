@@ -441,7 +441,11 @@ class UDFStep(Step, ABC):
         """
 
     def populate_udf_table(self, udf_table: "Table", query: Select) -> None:
-        if (rows_total := self.catalog.warehouse.query_count(query)) == 0:
+        if (
+            rows_total := self.catalog.warehouse.query_count(
+                query, consistent_read=True
+            )
+        ) == 0:
             return
 
         from datachain.catalog import QUERY_SCRIPT_CANCELED_EXIT_CODE

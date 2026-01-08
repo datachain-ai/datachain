@@ -232,10 +232,10 @@ class AbstractWarehouse(ABC, Serializable):
     # Query Execution
     #
 
-    def query_count(self, query: sa.Select) -> int:
+    def query_count(self, query: sa.Select, consistent_read: bool = False) -> int:
         """Count the number of rows in a query."""
         count_query = sa.select(sa.func.count(1)).select_from(query.subquery())
-        return next(self.db.execute(count_query))[0]
+        return next(self.db.execute(count_query, consistent_read=consistent_read))[0]
 
     def table_rows_count(self, table, consistent_read: bool = False) -> int:
         count_query = sa.select(sa.func.count(1)).select_from(table)
