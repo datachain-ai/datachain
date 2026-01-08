@@ -77,6 +77,7 @@ class DatabaseEngine(ABC, Serializable):
         query,
         cursor: Any | None = None,
         conn: Any | None = None,
+        consistent_read: bool = False,
     ) -> Iterator[tuple[Any, ...]]: ...
 
     def get_table(self, name: str) -> "Table":
