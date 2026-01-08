@@ -13,18 +13,24 @@ def clear_cache(catalog: "Catalog"):
 def garbage_collect(catalog: "Catalog"):
     temp_tables = catalog.get_temp_table_names()
     num_versions_removed = catalog.cleanup_failed_dataset_versions()
+    num_checkpoints_removed = catalog.cleanup_checkpoints()
 
-    total_cleaned = len(temp_tables) + num_versions_removed
+    total_cleaned = len(temp_tables) + num_versions_removed + num_checkpoints_removed
 
     if total_cleaned == 0:
         print("Nothing to clean up.")
-    else:
-        if temp_tables:
-            print(f"Garbage collecting {len(temp_tables)} tables.")
-            catalog.cleanup_tables(temp_tables)
+        return
 
-        if num_versions_removed:
-            print(f"Cleaned {num_versions_removed} failed/incomplete dataset versions.")
+    # Print and perform cleanup for each category that has items
+    if temp_tables:
+        print(f"Garbage collecting {len(temp_tables)} temporary tables.")
+        catalog.cleanup_tables(temp_tables)
+
+    if num_versions_removed:
+        print(f"Cleaned {num_versions_removed} failed/incomplete dataset versions.")
+
+    if num_checkpoints_removed:
+        print(f"Cleaned {num_checkpoints_removed} outdated checkpoints.")
 
 
 def completion(shell: str) -> str:
