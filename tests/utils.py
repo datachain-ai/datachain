@@ -192,6 +192,11 @@ def assert_row_names(
 
 def images_equal(img1: Image.Image, img2: Image.Image):
     """Checks if two image objects have exactly the same data"""
+    # TODO: Remove conditional when Pillow>=12.1.0 is acceptable as minimum
+    # version get_flattened_data() was added in Pillow 12.1.0 as replacement
+    # for deprecated getdata()
+    if hasattr(img1, "get_flattened_data"):
+        return img1.get_flattened_data() == img2.get_flattened_data()
     return list(img1.getdata()) == list(img2.getdata())
 
 
