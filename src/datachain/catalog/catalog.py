@@ -926,13 +926,6 @@ class Catalog:
 
         dataset_version = dataset.get_version(version)
 
-        print(
-            f"update_dataset_version_with_warehouse_info: {dataset.name}@{version}, "
-            f"initial_num_objects={dataset_version.num_objects}, "
-            f"initial_size={dataset_version.size}, "
-            f"has_preview={bool(dataset_version.preview)}"
-        )
-
         values = {**kwargs}
 
         if rows_dropped:
@@ -942,17 +935,18 @@ class Catalog:
             self.metastore.update_dataset_version(dataset, version, **values)
             return
 
+        stats_num_objects = None
+        stats_size = None
         if not dataset_version.num_objects:
             num_objects, size = self.warehouse.dataset_stats(dataset, version)
-            print(
-                f"warehouse.dataset_stats returned: num_objects={num_objects}, "
-                f"size={size} for {dataset.name}@{version}"
-            )
+            stats_num_objects = num_objects
+            stats_size = size
             if num_objects != dataset_version.num_objects:
                 values["num_objects"] = num_objects
             if size != dataset_version.size:
                 values["size"] = size
 
+        preview_rows = None
         if not dataset_version.preview:
             preview = (
                 DatasetQuery(
@@ -966,23 +960,30 @@ class Catalog:
                 .limit(20)
                 .to_db_records()
             )
-            print(
-                f"Generated preview with {len(preview)} rows for "
-                f"{dataset.name}@{version}"
-            )
+            preview_rows = len(preview)
             values["preview"] = preview
+
+        # Log anomaly: dataset_stats returned 0 but preview has data
+        if stats_num_objects == 0 and preview_rows and preview_rows > 0:
+            logger.warning(
+                "Inconsistency detected for %s@%s: "
+                "Initial state: num_objects=%s, size=%s, has_preview=%s. "
+                "dataset_stats returned: num_objects=%s, size=%s. "
+                "Preview generated: %s rows. "
+                "This may indicate ClickHouse replication delay.",
+                dataset.name,
+                version,
+                dataset_version.num_objects,
+                dataset_version.size,
+                bool(dataset_version.preview),
+                stats_num_objects,
+                stats_size,
+                preview_rows,
+            )
 
         if not values:
             return
 
-        print(
-            f"Calling metastore.update_dataset_version for {dataset.name}@{version}: "
-            f"num_objects={values.get('num_objects')}, "
-            f"size={values.get('size')}, "
-            f"preview_rows={
-                len(values['preview']) if 'preview' in values else 'unchanged'
-            }"
-        )
         self.metastore.update_dataset_version(dataset, version, **values)
 
     def update_dataset(
