@@ -241,9 +241,6 @@ class SQLiteDatabaseEngine(DatabaseEngine):
             result = conn.execute(*self.compile_to_args(query))
         else:
             result = self.db.execute(*self.compile_to_args(query))
-        if isinstance(query, CreateTable) and query.element.indexes:
-            for index in query.element.indexes:
-                self.execute(CreateIndex(index, if_not_exists=True), cursor=cursor)
         return result
 
     @retry_sqlite_locks
