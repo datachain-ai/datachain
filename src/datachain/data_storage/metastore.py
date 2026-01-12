@@ -1261,7 +1261,9 @@ class AbstractDBMetastore(AbstractMetastore):
             version,
             kwargs.get("num_objects"),
             kwargs.get("size"),
-            len(kwargs["preview"]) if "preview" in kwargs else None,
+            len(kwargs["preview"])
+            if "preview" in kwargs and kwargs["preview"] is not None
+            else None,
             list(kwargs.keys()),
         )
         values: dict[str, Any] = {}
