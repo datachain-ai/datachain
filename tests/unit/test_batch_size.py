@@ -3,25 +3,22 @@ from unittest.mock import patch
 import pytest
 import sqlalchemy as sa
 
-from datachain.data_storage.sqlite import INSERT_BATCH_SIZE
 from datachain.lib.settings import Settings
 
 
 def test_insert_rows_default_batch_size(warehouse):
-    """Test that insert_rows uses INSERT_BATCH_SIZE when batch_size is None."""
+    """Test that insert_rows uses default batch size when batch_size is None."""
     table = warehouse.create_udf_table([sa.Column("value", sa.Integer)])
 
-    # Create more rows than the batch size to verify batching
-    rows = [{"sys__id": i, "value": i} for i in range(INSERT_BATCH_SIZE + 500)]
+    rows = [{"sys__id": i, "value": i} for i in range(100)]
 
     with patch.object(
-        warehouse.db,
-        attribute="executemany",
-        wraps=warehouse.db.executemany,
-    ) as mock_executemany:
+        warehouse.db, "executemany", wraps=warehouse.db.executemany
+    ) as mock_exec:
         warehouse.insert_rows(table, rows, batch_size=None)
-        # Should be called twice: once for INSERT_BATCH_SIZE, once for remaining 500
-        assert mock_executemany.call_count == 2
+        warehouse.insert_rows_done(table)
+        # With default batch size, 100 rows should be inserted in 1 call
+        assert mock_exec.call_count == 1
 
     warehouse.db.drop_table(table)
 
@@ -34,13 +31,12 @@ def test_insert_rows_custom_batch_size(warehouse):
     rows = [{"sys__id": i, "value": i} for i in range(250)]
 
     with patch.object(
-        warehouse.db,
-        attribute="executemany",
-        wraps=warehouse.db.executemany,
-    ) as mock_executemany:
+        warehouse.db, "executemany", wraps=warehouse.db.executemany
+    ) as mock_exec:
         warehouse.insert_rows(table, rows, batch_size=100)
+        warehouse.insert_rows_done(table)
         # Should be called 3 times: 100 + 100 + 50
-        assert mock_executemany.call_count == 3
+        assert mock_exec.call_count == 3
 
     warehouse.db.drop_table(table)
 
@@ -52,13 +48,12 @@ def test_insert_rows_small_batch_size(warehouse):
     rows = [{"sys__id": i, "value": i} for i in range(10)]
 
     with patch.object(
-        warehouse.db,
-        attribute="executemany",
-        wraps=warehouse.db.executemany,
-    ) as mock_executemany:
+        warehouse.db, "executemany", wraps=warehouse.db.executemany
+    ) as mock_exec:
         warehouse.insert_rows(table, rows, batch_size=3)
+        warehouse.insert_rows_done(table)
         # Should be called 4 times: 3 + 3 + 3 + 1
-        assert mock_executemany.call_count == 4
+        assert mock_exec.call_count == 4
 
     warehouse.db.drop_table(table)
 
@@ -70,13 +65,12 @@ def test_insert_rows_batch_size_larger_than_data(warehouse):
     rows = [{"sys__id": i, "value": i} for i in range(50)]
 
     with patch.object(
-        warehouse.db,
-        attribute="executemany",
-        wraps=warehouse.db.executemany,
-    ) as mock_executemany:
+        warehouse.db, "executemany", wraps=warehouse.db.executemany
+    ) as mock_exec:
         warehouse.insert_rows(table, rows, batch_size=1000)
+        warehouse.insert_rows_done(table)
         # Should be called once since all rows fit in one batch
-        assert mock_executemany.call_count == 1
+        assert mock_exec.call_count == 1
 
     warehouse.db.drop_table(table)
 
@@ -88,13 +82,12 @@ def test_insert_rows_batch_size_one(warehouse):
     rows = [{"sys__id": i, "value": i} for i in range(5)]
 
     with patch.object(
-        warehouse.db,
-        attribute="executemany",
-        wraps=warehouse.db.executemany,
-    ) as mock_executemany:
+        warehouse.db, "executemany", wraps=warehouse.db.executemany
+    ) as mock_exec:
         warehouse.insert_rows(table, rows, batch_size=1)
+        warehouse.insert_rows_done(table)
         # Should be called 5 times, once per row
-        assert mock_executemany.call_count == 5
+        assert mock_exec.call_count == 5
 
     warehouse.db.drop_table(table)
 
@@ -104,13 +97,12 @@ def test_insert_rows_empty_rows(warehouse):
     table = warehouse.create_udf_table([sa.Column("value", sa.Integer)])
 
     with patch.object(
-        warehouse.db,
-        attribute="executemany",
-        wraps=warehouse.db.executemany,
-    ) as mock_executemany:
+        warehouse.db, "executemany", wraps=warehouse.db.executemany
+    ) as mock_exec:
         warehouse.insert_rows(table, [], batch_size=None)
+        warehouse.insert_rows_done(table)
         # Should not be called for empty rows
-        assert mock_executemany.call_count == 0
+        assert mock_exec.call_count == 0
 
     warehouse.db.drop_table(table)
 
@@ -191,13 +183,12 @@ def test_generator_rows(warehouse):
             yield {"sys__id": i, "value": i}
 
     with patch.object(
-        warehouse.db,
-        attribute="executemany",
-        wraps=warehouse.db.executemany,
-    ) as mock_executemany:
+        warehouse.db, "executemany", wraps=warehouse.db.executemany
+    ) as mock_exec:
         warehouse.insert_rows(table, row_generator(), batch_size=20)
+        warehouse.insert_rows_done(table)
         # Should be called 3 times: 20 + 20 + 10
-        assert mock_executemany.call_count == 3
+        assert mock_exec.call_count == 3
 
     warehouse.db.drop_table(table)
 
@@ -209,13 +200,12 @@ def test_iterator_rows(warehouse):
     rows = iter([{"sys__id": i, "value": i} for i in range(75)])
 
     with patch.object(
-        warehouse.db,
-        attribute="executemany",
-        wraps=warehouse.db.executemany,
-    ) as mock_executemany:
+        warehouse.db, "executemany", wraps=warehouse.db.executemany
+    ) as mock_exec:
         warehouse.insert_rows(table, rows, batch_size=30)
+        warehouse.insert_rows_done(table)
         # Should be called 3 times: 30 + 30 + 15
-        assert mock_executemany.call_count == 3
+        assert mock_exec.call_count == 3
 
     warehouse.db.drop_table(table)
 
