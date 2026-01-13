@@ -196,7 +196,7 @@ def images_equal(img1: Image.Image, img2: Image.Image):
     # version get_flattened_data() was added in Pillow 12.1.0 as replacement
     # for deprecated getdata()
     if hasattr(img1, "get_flattened_data"):
-        return img1.get_flattened_data() == img2.get_flattened_data()
+        return img1.get_flattened_data() == img2.get_flattened_data()  # type: ignore [attr-defined]
     return list(img1.getdata()) == list(img2.getdata())
 
 
@@ -282,24 +282,19 @@ def get_partial_tables(test_session) -> tuple[Table, Table]:
     job_id = test_session.get_or_create_job().id
     checkpoints = list(catalog.metastore.list_checkpoints(job_id))
     assert len(checkpoints) == 1
-    hash_input = checkpoints[0].hash
+    partial_hash = checkpoints[0].hash
 
-    # input table name
-    input_table_name = UDFStep.input_table_name(job_id, hash_input)
-    assert warehouse.db.has_table(input_table_name)
-    input_table = warehouse.get_table(input_table_name)
+    # Find input table by pattern (uses hash_input, not partial_hash)
+    input_table_prefix = f"udf_{job_id}_"
+    input_table_suffix = "_input"
+    all_tables = warehouse.db.list_tables(input_table_prefix)
+    input_tables = [t for t in all_tables if t.endswith(input_table_suffix)]
+    assert len(input_tables) == 1, f"Expected 1 input table, found {len(input_tables)}"
+    input_table = warehouse.get_table(input_tables[0])
 
-    # partial output table name
-    partial_table_name = UDFStep.partial_output_table_name(job_id, hash_input)
+    # Partial output table uses partial_hash
+    partial_table_name = UDFStep.partial_output_table_name(job_id, partial_hash)
     assert warehouse.db.has_table(partial_table_name)
     partial_output_table = warehouse.get_table(partial_table_name)
 
     return input_table, partial_output_table
-
-
-def list_tables(db_engine, prefix: str = "") -> list[str]:
-    """List tables that start with the given prefix."""
-    all_tables = sa.inspect(db_engine.engine).get_table_names()
-    if not prefix:
-        return all_tables
-    return [table for table in all_tables if table.startswith(prefix)]

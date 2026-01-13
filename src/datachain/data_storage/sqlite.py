@@ -259,6 +259,22 @@ class SQLiteDatabaseEngine(DatabaseEngine):
             return self.db.execute(sql)
         return self.db.execute(sql, parameters)
 
+    def list_tables(self, prefix: str = "") -> list[str]:
+        """List all table names, optionally filtered by prefix."""
+        sqlite_master = sqlalchemy.table(
+            "sqlite_master",
+            sqlalchemy.column("type"),
+            sqlalchemy.column("name"),
+        )
+        pattern = f"{prefix}%" if prefix else "%"
+        query = (
+            sqlalchemy.select(sqlite_master.c.name)
+            .where(sqlite_master.c.type == "table")
+            .where(sqlite_master.c.name.like(pattern))
+        )
+        result = self.execute(query)
+        return [row[0] for row in result.fetchall()]
+
     def add_column(self, table_name: str, column: Column) -> None:
         """
         Add a column to an existing table.

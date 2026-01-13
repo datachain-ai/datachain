@@ -119,6 +119,18 @@ class DatabaseEngine(ABC, Serializable):
         return sa.inspect(self.engine).has_table(name)
 
     @abstractmethod
+    def list_tables(self, prefix: str = "") -> list[str]:
+        """
+        List all table names, optionally filtered by prefix.
+
+        Args:
+            prefix: Optional prefix to filter table names
+
+        Returns:
+            List of table names matching the prefix
+        """
+
+    @abstractmethod
     def create_table(
         self,
         table: "Table",

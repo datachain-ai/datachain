@@ -810,7 +810,9 @@ class UDFStep(Step, ABC):
 
         if ch := self._checkpoint_exist(hash_output):
             # Skip UDF execution by reusing existing output table
-            output_table, input_table = self._skip_udf(ch, partial_hash, query)
+            output_table, input_table = self._skip_udf(
+                ch, partial_hash, hash_input, query
+            )
         elif (
             (ch_partial := self._checkpoint_exist(partial_hash, partial=True))
             and not udf_partial_reset
@@ -818,11 +820,11 @@ class UDFStep(Step, ABC):
         ):
             # Only continue from partial if it's from a parent job, not our own
             output_table, input_table = self._continue_udf(
-                ch_partial, hash_output, query
+                ch_partial, hash_output, hash_input, query
             )
         else:
             output_table, input_table = self._run_from_scratch(
-                partial_hash, hash_output, query
+                partial_hash, hash_output, hash_input, query
             )
 
         # After UDF completes successfully, clean up partial checkpoint and
@@ -842,7 +844,7 @@ class UDFStep(Step, ABC):
         return step_result(q, cols)
 
     def _skip_udf(
-        self, checkpoint: Checkpoint, partial_hash: str, query
+        self, checkpoint: Checkpoint, partial_hash: str, hash_input: str, query
     ) -> tuple["Table", "Table"]:
         """
         Skip UDF execution by reusing existing output table.
@@ -875,12 +877,12 @@ class UDFStep(Step, ABC):
             ]
             self.warehouse.copy_table(output_table, sa.select(*select_cols))
 
-        input_table = self.get_or_create_input_table(query, partial_hash)
+        input_table = self.get_or_create_input_table(query, hash_input)
 
         return output_table, input_table
 
     def _run_from_scratch(
-        self, partial_hash: str, hash_output: str, query
+        self, partial_hash: str, hash_output: str, hash_input: str, query
     ) -> tuple["Table", "Table"]:
         """
         Execute UDF from scratch.
@@ -896,7 +898,7 @@ class UDFStep(Step, ABC):
             )
 
         # Get or create input table (reuse from ancestors if available)
-        input_table = self.get_or_create_input_table(query, partial_hash)
+        input_table = self.get_or_create_input_table(query, hash_input)
 
         # Create job-specific partial output table with sys__input_id column
         partial_output_table = self.create_output_table(
@@ -920,7 +922,7 @@ class UDFStep(Step, ABC):
         return output_table, input_table
 
     def _continue_udf(
-        self, checkpoint: Checkpoint, hash_output: str, query
+        self, checkpoint: Checkpoint, hash_output: str, hash_input: str, query
     ) -> tuple["Table", "Table"]:
         """
         Continue UDF execution from parent's partial output table.
@@ -944,7 +946,7 @@ class UDFStep(Step, ABC):
         )
 
         # Find or create input table (may be in current job or ancestor)
-        input_table = self.get_or_create_input_table(query, checkpoint.hash)
+        input_table = self.get_or_create_input_table(query, hash_input)
 
         # Copy parent's partial table to current job's partial table
         try:
