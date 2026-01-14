@@ -1509,8 +1509,6 @@ class DatasetQuery:
         try:
             query = self.apply_steps().select()
             selected_columns = [c.name for c in query.selected_columns]
-            if "consistent_read" not in kwargs:
-                kwargs["consistent_read"] = True
             yield ResultIter(
                 self.catalog.warehouse.dataset_rows_select(query, **kwargs),
                 selected_columns,

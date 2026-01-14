@@ -230,7 +230,6 @@ class SQLiteDatabaseEngine(DatabaseEngine):
         query,
         cursor: sqlite3.Cursor | None = None,
         conn=None,
-        consistent_read: bool = False,
     ) -> sqlite3.Cursor:
         if self.is_closed:
             # Reconnect in case of being closed previously.
@@ -241,9 +240,6 @@ class SQLiteDatabaseEngine(DatabaseEngine):
             result = conn.execute(*self.compile_to_args(query))
         else:
             result = self.db.execute(*self.compile_to_args(query))
-        if isinstance(query, CreateTable) and query.element.indexes:
-            for index in query.element.indexes:
-                self.execute(CreateIndex(index, if_not_exists=True), cursor=cursor)
         return result
 
     @retry_sqlite_locks
