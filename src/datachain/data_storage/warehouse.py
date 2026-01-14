@@ -237,9 +237,9 @@ class AbstractWarehouse(ABC, Serializable):
         count_query = sa.select(sa.func.count(1)).select_from(query.subquery())
         return next(self.db.execute(count_query))[0]
 
-    def table_rows_count(self, table, consistent_read: bool = False) -> int:
+    def table_rows_count(self, table) -> int:
         count_query = sa.select(sa.func.count(1)).select_from(table)
-        return next(self.db.execute(count_query, consistent_read=consistent_read))[0]
+        return next(self.db.execute(count_query))[0]
 
     def dataset_select_paginated(
         self,
@@ -494,7 +494,7 @@ class AbstractWarehouse(ABC, Serializable):
         if size_columns:
             expressions = (*expressions, sa.func.sum(sum(size_columns)))
         query = sa.select(*expressions)
-        ((nrows, *rest),) = self.db.execute(query, consistent_read=True)
+        ((nrows, *rest),) = self.db.execute(query)
         return nrows, rest[0] if rest else 0
 
     @abstractmethod
