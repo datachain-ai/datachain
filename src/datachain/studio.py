@@ -410,6 +410,9 @@ def create_job(
     no_wait: bool | None = False,
     credentials_name: str | None = None,
 ):
+    from datachain.catalog import get_catalog
+    from datachain.data_storage.job import JobQueryType
+
     query_type = "PYTHON" if query_file.endswith(".py") else "SHELL"
     with open(query_file) as f:
         query = f.read()
@@ -423,6 +426,18 @@ def create_job(
     if req_file:
         with open(req_file) as f:
             requirements = f.read() + "\n" + requirements
+
+    # Get absolute script path for parent job finding
+    script_path = os.path.abspath(query_file)
+
+    # Find parent Studio job in local database for checkpoint continuation
+    rerun_from_job_id = None
+    catalog = get_catalog()
+    parent_job = catalog.metastore.get_last_job_by_name(
+        script_path, is_studio_copy=True
+    )
+    if parent_job:
+        rerun_from_job_id = parent_job.id
 
     client = StudioClient(team=team_name)
     file_ids = upload_files(client, files) if files else []
@@ -438,6 +453,7 @@ def create_job(
         environment=environment,
         workers=workers,
         query_name=os.path.basename(query_file),
+        rerun_from_job_id=rerun_from_job_id,
         files=file_ids,
         python_version=python_version,
         repository=repository,
@@ -455,13 +471,32 @@ def create_job(
         raise DataChainError("Failed to create job")
 
     job_id = response.data.get("id")
+    job_data = response.data
+
+    query_type_value = (
+        JobQueryType.PYTHON if query_type == "PYTHON" else JobQueryType.SHELL
+    )
+    catalog.metastore.create_job(
+        name=script_path,  # Use local script path, not Studio's query_name
+        query=query,
+        query_type=query_type_value,
+        status=JobStatus.CREATED,
+        workers=job_data.get("workers", 0),
+        python_version=job_data.get("python_version"),
+        params=job_data.get("params", {}),
+        parent_job_id=job_data.get("parent_job_id"),
+        rerun_from_job_id=job_data.get("rerun_from_job_id"),
+        run_group_id=job_data.get("run_group_id"),
+        is_studio_copy=True,
+        job_id=str(job_id),  # Use Studio's job ID
+    )
 
     if parsed_start_time or cron:
         print(f"Job {job_id} is scheduled as a task in Studio.")
         return 0
 
     print(f"Job {job_id} created")
-    print("Open the job in Studio at", response.data.get("url"))
+    print("Open the job in Studio at", job_data.get("url"))
     print("=" * 40)
 
     return 0 if no_wait else show_logs_from_client(client, job_id)
