@@ -8,8 +8,9 @@ from typing import TYPE_CHECKING
 import dateparser
 import tabulate
 
+from datachain.catalog import get_catalog
 from datachain.config import Config, ConfigLevel
-from datachain.data_storage.job import JobStatus
+from datachain.data_storage.job import JobQueryType, JobStatus
 from datachain.dataset import (
     QUERY_DATASET_PREFIX,
     parse_dataset_name,
@@ -410,8 +411,7 @@ def create_job(
     no_wait: bool | None = False,
     credentials_name: str | None = None,
 ):
-    from datachain.catalog import get_catalog
-    from datachain.data_storage.job import JobQueryType
+    catalog = get_catalog()
 
     query_type = "PYTHON" if query_file.endswith(".py") else "SHELL"
     with open(query_file) as f:
@@ -427,17 +427,14 @@ def create_job(
         with open(req_file) as f:
             requirements = f.read() + "\n" + requirements
 
-    # Get absolute script path for parent job finding
     script_path = os.path.abspath(query_file)
 
-    # Find parent Studio job in local database for checkpoint continuation
     rerun_from_job_id = None
-    catalog = get_catalog()
-    parent_job = catalog.metastore.get_last_job_by_name(
+    rerun_from_job = catalog.metastore.get_last_job_by_name(
         script_path, is_studio_copy=True
     )
-    if parent_job:
-        rerun_from_job_id = parent_job.id
+    if rerun_from_job:
+        rerun_from_job_id = rerun_from_job.id
 
     client = StudioClient(team=team_name)
     file_ids = upload_files(client, files) if files else []

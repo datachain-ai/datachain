@@ -1,3 +1,4 @@
+from datetime import datetime
 from unittest.mock import MagicMock
 
 import pytest
@@ -8,6 +9,7 @@ from tabulate import tabulate
 
 from datachain.cli import main
 from datachain.config import Config, ConfigLevel
+from datachain.job import Job
 from datachain.studio import POST_LOGIN_MESSAGE
 from datachain.utils import STUDIO_URL
 from tests.utils import skip_if_not_sqlite
@@ -503,16 +505,11 @@ def test_studio_run_task(capsys, mocker, tmp_dir, studio_token):
 
 
 @skip_if_not_sqlite
-def test_studio_run_checkpoint_continuation(capsys, mocker, tmp_dir, studio_token):
+def test_studio_run_connect_to_previous_job(capsys, mocker, tmp_dir, studio_token):
     """Test that job run sends rerun_from_job_id from local Studio job copy."""
     mocker.patch(
         "datachain.remote.studio.websockets.connect", side_effect=mocked_connect
     )
-
-    # Create a mock Job object for the "parent" job
-    from datetime import datetime
-
-    from datachain.job import Job
 
     first_job_id = "first-job-uuid-1234"
     second_job_id = "second-job-uuid-5678"

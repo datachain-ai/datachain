@@ -1956,7 +1956,6 @@ class AbstractDBMetastore(AbstractMetastore):
             job_id: If provided, uses this ID instead of generating a new one.
                     Used for saving Studio jobs locally with their original IDs.
         """
-        # Generate new ID only if not provided (Studio copies provide their own)
         if job_id is None:
             job_id = str(uuid4())
             # Validate run_group_id and rerun_from_job_id consistency for local jobs
@@ -1969,13 +1968,11 @@ class AbstractDBMetastore(AbstractMetastore):
                     run_group_id = job_id
                     rerun_from_job_id = None
             else:
-                # First job: run_group_id should not be provided (we set it here)
                 assert run_group_id is None, (
                     "run_group_id should not be provided when rerun_from_job_id"
                     " is not set"
                 )
                 run_group_id = job_id
-        # else: job_id provided (Studio copy), trust caller for run_group_id
 
         self.db.execute(
             self._jobs_insert().values(
