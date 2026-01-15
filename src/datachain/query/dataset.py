@@ -721,9 +721,13 @@ class UDFStep(Step, ABC):
         return self.session.catalog.warehouse
 
     @staticmethod
-    def input_table_name(job_id: str, _hash: str) -> str:
-        """Job-specific input table name."""
-        return f"udf_{job_id}_{_hash}_input"
+    def input_table_name(run_group_id: str, _hash: str) -> str:
+        """Run-group-specific input table name.
+
+        Uses run_group_id instead of job_id so all jobs in the same run group
+        share the same input table, eliminating the need for ancestor traversal.
+        """
+        return f"udf_{run_group_id}_{_hash}_input"
 
     @staticmethod
     def output_table_name(job_id: str, _hash: str) -> str:
@@ -739,31 +743,20 @@ class UDFStep(Step, ABC):
         """
         Get or create input table for the given hash.
 
-        First checks if current job has the input table.
-        If not, searches ancestor jobs and uses their table directly.
-        If not found in any ancestor, creates it for current job from query.
+        Uses run_group_id for table naming so all jobs in the same run group
+        share the same input table.
 
-        Returns the input table (may belong to current job or an ancestor).
+        Returns the input table.
         """
-        current_input_table_name = UDFStep.input_table_name(self.job.id, _hash)
+        assert self.job.run_group_id
+        input_table_name = UDFStep.input_table_name(self.job.run_group_id, _hash)
 
-        # Check if current job already has the input table
-        if self.warehouse.db.has_table(current_input_table_name):
-            return self.warehouse.get_table(current_input_table_name)
+        # Check if input table already exists (created by this or ancestor job)
+        if self.warehouse.db.has_table(input_table_name):
+            return self.warehouse.get_table(input_table_name)
 
-        # Search ancestor jobs for the input table
-        if self.job.rerun_from_job_id:
-            ancestor_job_ids = self.metastore.get_ancestor_job_ids(self.job.id)
-            for ancestor_job_id in ancestor_job_ids:
-                ancestor_input_table_name = UDFStep.input_table_name(
-                    ancestor_job_id, _hash
-                )
-                if self.warehouse.db.has_table(ancestor_input_table_name):
-                    # Found input table in ancestor, use it directly
-                    return self.warehouse.get_table(ancestor_input_table_name)
-
-        # Not found in any ancestor, create for current job from original query
-        return self.warehouse.create_pre_udf_table(query, current_input_table_name)
+        # Create input table from original query
+        return self.warehouse.create_pre_udf_table(query, input_table_name)
 
     def apply(
         self,

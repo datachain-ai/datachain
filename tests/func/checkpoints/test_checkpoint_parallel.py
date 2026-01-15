@@ -12,7 +12,7 @@ import datachain as dc
 from datachain.error import (
     DatasetNotFoundError,
 )
-from tests.utils import get_partial_tables, reset_session_job_state
+from tests.utils import get_last_udf_partial_table, reset_session_job_state
 
 
 class CustomMapperError(Exception):
@@ -111,7 +111,7 @@ def test_udf_generator_continue_parallel(test_session_tmpfile, monkeypatch):
     with pytest.raises(RuntimeError):
         chain.save("results")
 
-    _, partial_table = get_partial_tables(test_session)
+    partial_table = get_last_udf_partial_table(test_session)
 
     # Verify sys__input_id has tracked some inputs
     processed_count_first = len(

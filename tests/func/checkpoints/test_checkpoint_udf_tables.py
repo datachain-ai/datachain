@@ -9,7 +9,7 @@ import pytest
 import sqlalchemy as sa
 
 import datachain as dc
-from tests.utils import get_partial_tables, reset_session_job_state
+from tests.utils import get_last_udf_partial_table, reset_session_job_state
 
 
 @pytest.fixture(autouse=True)
@@ -56,7 +56,7 @@ def test_track_processed_items(test_session_tmpfile, parallel):
     with pytest.raises(Exception):  # noqa: B017
         chain.gen(result=gen_numbers, output=int).save("results")
 
-    _, partial_output_table = get_partial_tables(test_session)
+    partial_output_table = get_last_udf_partial_table(test_session)
 
     query = sa.select(sa.distinct(partial_output_table.c.sys__input_id))
     processed_sys_ids = [row[0] for row in warehouse.db.execute(query)]

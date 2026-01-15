@@ -8,12 +8,14 @@ from collections.abc import Callable
 from string import printable
 from tarfile import DIRTYPE, TarInfo
 from time import sleep, time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 import sqlalchemy as sa
 from PIL import Image
-from sqlalchemy.sql.schema import Table
+
+if TYPE_CHECKING:
+    from sqlalchemy.sql.schema import Table
 
 import datachain as dc
 from datachain.catalog.catalog import Catalog
@@ -272,29 +274,18 @@ def reset_session_job_state():
     os.environ.pop("DATACHAIN_JOB_ID", None)
 
 
-def get_partial_tables(test_session) -> tuple[Table, Table]:
-    """Helper function that returns partial udf tables left when UDF fails.
+def get_last_udf_partial_table(test_session) -> "Table":
+    """Helper function that returns the partial output table left when UDF fails.
 
-    Returns input_table and partial_output_table.
+    Returns partial_output_table.
     """
     catalog = test_session.catalog
     warehouse = catalog.warehouse
-    job_id = test_session.get_or_create_job().id
-    checkpoints = list(catalog.metastore.list_checkpoints(job_id))
+    job = test_session.get_or_create_job()
+    checkpoints = list(catalog.metastore.list_checkpoints(job.id))
     assert len(checkpoints) == 1
     partial_hash = checkpoints[0].hash
 
-    # Find input table by pattern (uses hash_input, not partial_hash)
-    input_table_prefix = f"udf_{job_id}_"
-    input_table_suffix = "_input"
-    all_tables = warehouse.db.list_tables(input_table_prefix)
-    input_tables = [t for t in all_tables if t.endswith(input_table_suffix)]
-    assert len(input_tables) == 1, f"Expected 1 input table, found {len(input_tables)}"
-    input_table = warehouse.get_table(input_tables[0])
-
-    # Partial output table uses partial_hash
-    partial_table_name = UDFStep.partial_output_table_name(job_id, partial_hash)
+    partial_table_name = UDFStep.partial_output_table_name(job.id, partial_hash)
     assert warehouse.db.has_table(partial_table_name)
-    partial_output_table = warehouse.get_table(partial_table_name)
-
-    return input_table, partial_output_table
+    return warehouse.get_table(partial_table_name)
