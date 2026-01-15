@@ -94,6 +94,13 @@ class DatabaseEngine(ABC, Serializable):
                 raise TableMissingError(f"Table '{name}' not found") from e
         return table
 
+    def list_tables(self, prefix: str = "") -> list[str]:
+        """List tables that start with the given prefix."""
+        all_tables = sa.inspect(self.engine).get_table_names()
+        if not prefix:
+            return all_tables
+        return [table for table in all_tables if table.startswith(prefix)]
+
     @abstractmethod
     def executemany(
         self, query, params, cursor: Any | None = None
