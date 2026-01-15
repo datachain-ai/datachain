@@ -448,6 +448,7 @@ def test_studio_run(capsys, mocker, tmp_dir):
         "priority": 5,
         "compute_cluster_name": "default",
         "start_after": None,
+        "rerun_from_job_id": None,
         "cron_expression": None,
         "credentials_name": "my-credentials",
     }
@@ -496,6 +497,140 @@ def test_studio_run_task(capsys, mocker, tmp_dir, studio_token):
 
     assert request_json["start_after"] is not None
     assert request_json["cron_expression"] == "0 0 * * *"
+
+
+@skip_if_not_sqlite
+def test_studio_run_checkpoint_continuation(capsys, mocker, tmp_dir, studio_token):
+    """Test that job run sends rerun_from_job_id from local Studio job copy."""
+    mocker.patch(
+        "datachain.remote.studio.websockets.connect", side_effect=mocked_connect
+    )
+
+    # Create a mock Job object for the "parent" job
+    from datetime import datetime
+
+    from datachain.job import Job
+
+    first_job_id = "first-job-uuid-1234"
+    second_job_id = "second-job-uuid-5678"
+
+    # Create the script file and get its absolute path
+    script_file = tmp_dir / "example_query.py"
+    script_file.write_text("print(1)")
+    script_path = str(script_file.resolve())
+
+    parent_job = Job(
+        id=first_job_id,
+        name=script_path,
+        status=5,  # COMPLETE
+        created_at=datetime.now(),
+        query="print(1)",
+        query_type=1,
+        workers=1,
+        params={},
+        metrics={},
+        is_studio_copy=True,
+    )
+
+    # Track calls to metastore methods
+    get_last_job_calls = []
+    create_job_calls = []
+
+    def mock_get_last_job_by_name(name, is_studio_copy=False, conn=None):
+        get_last_job_calls.append({"name": name, "is_studio_copy": is_studio_copy})
+        # First call returns None (no parent), second call returns the first job
+        if len(get_last_job_calls) == 1:
+            return None
+        return parent_job
+
+    def mock_create_job(**kwargs):
+        create_job_calls.append(kwargs)
+        return kwargs.get("job_id", "generated-id")
+
+    # Mock the catalog and metastore
+    mock_metastore = mocker.MagicMock()
+    mock_metastore.get_last_job_by_name = mock_get_last_job_by_name
+    mock_metastore.create_job = mock_create_job
+
+    mock_catalog = mocker.MagicMock()
+    mock_catalog.metastore = mock_metastore
+
+    mocker.patch("datachain.catalog.get_catalog", return_value=mock_catalog)
+
+    with requests_mock.mock() as m:
+        # First job run - no parent
+        m.post(
+            f"{STUDIO_URL}/api/datachain/jobs/",
+            json={
+                "id": first_job_id,
+                "url": "https://example.com/job/1",
+                "workers": 1,
+                "python_version": "3.11",
+                "params": {},
+                "parent_job_id": None,
+                "rerun_from_job_id": None,
+                "run_group_id": first_job_id,  # First job has run_group_id = its own id
+            },
+        )
+        m.get(
+            f"{STUDIO_URL}/api/datachain/datasets/dataset_job_versions?job_id={first_job_id}&team_name=team_name",
+            json={"dataset_versions": []},
+        )
+
+        assert main(["job", "run", str(script_file)]) == 0
+
+        # Verify first API call had rerun_from_job_id=None
+        first_request = m.request_history[0]
+        assert first_request.json()["rerun_from_job_id"] is None
+
+        # Verify metastore was queried with is_studio_copy=True
+        assert len(get_last_job_calls) == 1
+        assert get_last_job_calls[0]["is_studio_copy"] is True
+        assert get_last_job_calls[0]["name"] == script_path
+
+        # Verify job was saved locally with is_studio_copy=True
+        assert len(create_job_calls) == 1
+        assert create_job_calls[0]["is_studio_copy"] is True
+        assert create_job_calls[0]["job_id"] == first_job_id
+        assert create_job_calls[0]["name"] == script_path
+
+        # Reset request history for second run
+        m.reset_mock()
+
+        # Second job run - should find parent
+        m.post(
+            f"{STUDIO_URL}/api/datachain/jobs/",
+            json={
+                "id": second_job_id,
+                "url": "https://example.com/job/2",
+                "workers": 1,
+                "python_version": "3.11",
+                "params": {},
+                "parent_job_id": first_job_id,
+                "rerun_from_job_id": first_job_id,
+                "run_group_id": first_job_id,  # Same run_group_id as parent
+            },
+        )
+        m.get(
+            f"{STUDIO_URL}/api/datachain/datasets/dataset_job_versions?job_id={second_job_id}&team_name=team_name",
+            json={"dataset_versions": []},
+        )
+
+        assert main(["job", "run", str(script_file)]) == 0
+
+        # Verify second API call had rerun_from_job_id set to first job
+        second_request = m.request_history[0]
+        assert second_request.json()["rerun_from_job_id"] == first_job_id
+
+        # Verify metastore was queried again with is_studio_copy=True
+        assert len(get_last_job_calls) == 2
+        assert get_last_job_calls[1]["is_studio_copy"] is True
+
+        # Verify second job was saved locally with is_studio_copy=True
+        assert len(create_job_calls) == 2
+        assert create_job_calls[1]["is_studio_copy"] is True
+        assert create_job_calls[1]["job_id"] == second_job_id
+        assert create_job_calls[1]["rerun_from_job_id"] == first_job_id
 
 
 @pytest.mark.parametrize(
