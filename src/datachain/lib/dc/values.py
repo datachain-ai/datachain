@@ -32,8 +32,6 @@ def read_values(
         dc.read_values(fib=[1, 2, 3, 5, 8])
         ```
     """
-    from .datachain import DataChain
-
     tuple_type, output, tuples = values_to_tuples(ds_name, output, **fr_map)
 
     def _func_fr() -> Iterator[tuple_type]:  # type: ignore[valid-type]
@@ -41,8 +39,11 @@ def read_values(
 
     _func_fr.__name__ = "read_values"
 
+    # Start with a single dummy record so .gen() has one row to iterate over.
+    # The actual data comes from the generator function.
     chain = read_records(
-        DataChain.DEFAULT_FILE_RECORD,
+        [{"seed": 0}],
+        schema={"seed": int},
         session=session,
         settings=settings,
         in_memory=in_memory,

@@ -85,6 +85,12 @@ class MyNested(BaseModel):
     fr: MyFr
 
 
+class Person(DataModel):
+    name: str
+    age: int
+    city: str
+
+
 features = sorted(
     [MyFr(nnn="n1", count=3), MyFr(nnn="n2", count=5), MyFr(nnn="n1", count=1)],
     key=lambda f: (f.nnn, f.count),
@@ -198,8 +204,8 @@ def test_pandas_incorrect_column_names(test_session):
 
 
 def test_from_features_basic(test_session):
-    ds = dc.read_records(dc.DataChain.DEFAULT_FILE_RECORD, session=test_session)
-    ds = ds.gen(lambda prm: [File(path="")] * 5, params="path", output={"file": File})
+    ds = dc.read_records([{"seed": 0}], schema={"seed": int}, session=test_session)
+    ds = ds.gen(lambda prm: [File(path="")] * 5, params="seed", output={"file": File})
 
     ds_name = "my_ds"
     ds.save(ds_name)
@@ -212,12 +218,12 @@ def test_from_features_basic(test_session):
 
 
 @skip_if_not_sqlite
-def test_from_features_basic_in_memory():
-    ds = dc.read_records(dc.DataChain.DEFAULT_FILE_RECORD, in_memory=True)
+def test_read_records_basic_in_memory():
+    ds = dc.read_records([{"seed": 0}], schema={"seed": int}, in_memory=True)
     assert ds.session.catalog.in_memory is True
     assert ds.session.catalog.metastore.db.db_file == ":memory:"
     assert ds.session.catalog.warehouse.db.db_file == ":memory:"
-    ds = ds.gen(lambda prm: [File(path="")] * 5, params="path", output={"file": File})
+    ds = ds.gen(lambda prm: [File(path="")] * 5, params="seed", output={"file": File})
 
     ds_name = "my_ds"
     ds.save(ds_name)
@@ -229,11 +235,11 @@ def test_from_features_basic_in_memory():
     assert set(ds.schema.values()) == {File}
 
 
-def test_from_features(test_session):
-    ds = dc.read_records(dc.DataChain.DEFAULT_FILE_RECORD, session=test_session)
+def test_read_records_and_gen(test_session):
+    ds = dc.read_records([{"seed": 0}], schema={"seed": int}, session=test_session)
     ds = ds.gen(
         lambda prm: list(zip([File(path="")] * len(features), features, strict=False)),
-        params="path",
+        params="seed",
         output={"file": File, "t1": MyFr},
     )
 
@@ -262,35 +268,174 @@ def test_read_record_empty_chain_with_schema(test_session):
     )
 
 
-def test_read_record_empty_chain_without_schema(test_session):
-    ds = dc.read_records([], schema=None, session=test_session)
-
-    ds_name = "my_ds"
-    ds.save(ds_name)
-    ds = dc.read_dataset(name=ds_name)
-
-    assert ds.schema.keys() == {
-        "source",
-        "path",
-        "size",
-        "version",
-        "etag",
-        "is_latest",
-        "last_modified",
-        "location",
-    }
-    assert ds.count() == 0
-
-    # check that columns have actually been created from schema
-    catalog = test_session.catalog
-    dr = catalog.warehouse.dataset_rows(catalog.get_dataset(ds_name))
-    assert sorted([c.name for c in dr.columns]) == sorted(
-        ds.signals_schema.db_signals()
+def test_empty(test_session):
+    assert (
+        dc.read_records([], schema={"file": File}, session=test_session).empty is True
     )
 
 
-def test_empty(test_session):
-    assert dc.read_records([], schema=None, session=test_session).empty is True
+def test_read_records_with_file_objects(test_session):
+    """Test that read_records automatically flattens DataModel objects."""
+    # Create File objects
+    file1 = File(path="file1.txt", size=100, source="s3://bucket")
+    file2 = File(path="file2.txt", size=200, source="s3://bucket")
+    file3 = File(path="file3.txt", size=300, source="s3://bucket")
+
+    # DataModel objects are automatically flattened - no need to manually create
+    # flattened dictionaries anymore!
+    records = [
+        {"file": file1},
+        {"file": file2},
+        {"file": file3},
+    ]
+
+    # Insert records
+    ds = dc.read_records(records, schema={"file": File}, session=test_session)
+
+    # Verify count
+    assert ds.count() == 3
+
+    # Verify we can retrieve File objects back
+    files = ds.order_by("file.path").to_values("file")
+    assert len(files) == 3
+    assert all(isinstance(f, File) for f in files)
+    assert files[0].path == "file1.txt"
+    assert files[0].size == 100
+    assert files[1].path == "file2.txt"
+    assert files[1].size == 200
+    assert files[2].path == "file3.txt"
+    assert files[2].size == 300
+
+
+def test_read_records_with_nested_datamodel(test_session):
+    """Test that read_records automatically flattens nested DataModel objects."""
+    # Create nested DataModel objects
+    record1 = MyNested(label="first", fr=MyFr(nnn="n1", count=3))
+    record2 = MyNested(label="second", fr=MyFr(nnn="n2", count=5))
+    record3 = MyNested(label="third", fr=MyFr(nnn="n1", count=1))
+
+    # DataModel objects are automatically flattened, including nested ones
+    records = [
+        {"data": record1},
+        {"data": record2},
+        {"data": record3},
+    ]
+
+    # Insert records
+    ds = dc.read_records(records, schema={"data": MyNested}, session=test_session)
+
+    # Verify count
+    assert ds.count() == 3
+
+    # Verify we can retrieve nested DataModel objects back
+    nested_objs = ds.order_by("data.label").to_values("data")
+    assert len(nested_objs) == 3
+    assert all(isinstance(obj, MyNested) for obj in nested_objs)
+
+    # Verify first record
+    assert nested_objs[0].label == "first"
+    assert nested_objs[0].fr.nnn == "n1"
+    assert nested_objs[0].fr.count == 3
+
+    # Verify second record
+    assert nested_objs[1].label == "second"
+    assert nested_objs[1].fr.nnn == "n2"
+    assert nested_objs[1].fr.count == 5
+
+    # Verify third record
+    assert nested_objs[2].label == "third"
+    assert nested_objs[2].fr.nnn == "n1"
+    assert nested_objs[2].fr.count == 1
+
+
+@skip_if_not_sqlite
+def test_read_records_with_iterator_is_lazy(test_session, monkeypatch):
+    import datachain.data_storage.sqlite as sqlite_module
+
+    # Use a small batch size to ensure multiple batches with our test data
+    BATCH_SIZE = 100  # noqa: N806
+    monkeypatch.setattr(sqlite_module, "INSERT_BATCH_SIZE", BATCH_SIZE)
+
+    TOTAL_RECORDS = 1000  # noqa: N806
+    yielded_count = 0
+    batch_executions = []
+
+    def record_generator():
+        nonlocal yielded_count
+        for i in range(TOTAL_RECORDS):
+            yielded_count += 1
+            yield {"id": i, "value": i * 2}
+
+    original_executemany = test_session.catalog.warehouse.db.executemany
+
+    def spy_executemany(stmt, params, conn=None):
+        batch_executions.append(
+            {"yielded_so_far": yielded_count, "batch_size": len(params)}
+        )
+
+        return original_executemany(stmt, params, conn=conn)
+
+    monkeypatch.setattr(
+        test_session.catalog.warehouse.db, "executemany", spy_executemany
+    )
+
+    ds = dc.read_records(
+        record_generator(), schema={"id": int, "value": int}, session=test_session
+    )
+
+    expected_batches = (TOTAL_RECORDS + BATCH_SIZE - 1) // BATCH_SIZE
+    assert len(batch_executions) == expected_batches, (
+        f"Expected {expected_batches} batch executions, got {len(batch_executions)}"
+    )
+
+    assert yielded_count == TOTAL_RECORDS, (
+        f"Not all records were yielded (only {yielded_count}/{TOTAL_RECORDS})"
+    )
+
+    # Verify each batch processed incrementally, not all at once
+    for i, batch_info in enumerate(batch_executions):
+        # At each batch execution, only records up to that batch should be yielded
+        # (with some buffer for the next batch being prepared)
+        max_expected = (i + 2) * BATCH_SIZE  # +2 to allow for next batch preparation
+        assert batch_info["yielded_so_far"] <= max_expected, (
+            f"Batch {i}: too many records yielded ({batch_info['yielded_so_far']})"
+        )
+
+    # Verify data integrity
+    assert ds.count() == TOTAL_RECORDS
+    df = ds.order_by("id").select("id", "value").to_pandas()
+    assert len(df) == TOTAL_RECORDS
+    assert df.iloc[0]["id"] == 0
+    assert df.iloc[999]["id"] == 999
+    assert df.iloc[999]["value"] == 1998
+
+
+def test_read_records_with_pre_flattened_data(test_session):
+    records = [
+        {"person__name": "Alice", "person__age": 30, "person__city": "NYC"},
+        {"person__name": "Bob", "person__age": 25, "person__city": "LA"},
+        {"person__name": "Charlie", "person__age": 35, "person__city": "SF"},
+    ]
+
+    ds = dc.read_records(records, schema={"person": Person}, session=test_session)
+
+    assert ds.count() == 3
+
+    people = ds.order_by("person.name").to_values("person")
+    assert len(people) == 3
+    assert all(isinstance(p, Person) for p in people)
+
+    assert people[0].name == "Alice"
+    assert people[0].age == 30
+    assert people[0].city == "NYC"
+
+    assert people[1].name == "Bob"
+    assert people[1].age == 25
+    assert people[1].city == "LA"
+
+    assert people[2].name == "Charlie"
+    assert people[2].age == 35
+    assert people[2].city == "SF"
 
 
 def test_empty_chain_skip_udf_run(test_session):
@@ -558,12 +703,12 @@ def test_listings_read_listing_dataset_with_subpath(test_session, tmp_dir):
 
 
 def test_preserve_feature_schema(test_session):
-    ds = dc.read_records(dc.DataChain.DEFAULT_FILE_RECORD, session=test_session)
+    ds = dc.read_records([{"seed": 0}], schema={"seed": int}, session=test_session)
     ds = ds.gen(
         lambda prm: list(
             zip([File(path="")] * len(features), features, features, strict=False)
         ),
-        params="path",
+        params="seed",
         output={"file": File, "t1": MyFr, "t2": MyFr},
     )
 
