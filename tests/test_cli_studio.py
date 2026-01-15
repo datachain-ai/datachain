@@ -358,16 +358,17 @@ def test_studio_run(capsys, mocker, tmp_dir):
     with Config(ConfigLevel.GLOBAL).edit() as conf:
         conf["studio"] = {"token": "isat_access_token", "team": "team_name"}
 
+    job_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
     with requests_mock.mock() as m:
         m.post(
             f"{STUDIO_URL}/api/datachain/jobs/files?team_name=team_name", json={"id": 1}
         )
         m.post(
             f"{STUDIO_URL}/api/datachain/jobs/",
-            json={"id": 1, "url": "https://example.com"},
+            json={"id": job_id, "url": "https://example.com"},
         )
         m.get(
-            f"{STUDIO_URL}/api/datachain/datasets/dataset_job_versions?job_id=1&team_name=team_name",
+            f"{STUDIO_URL}/api/datachain/datasets/dataset_job_versions?job_id={job_id}&team_name=team_name",
             json={
                 "dataset_versions": [
                     {"dataset_name": "dataset_name", "version": "1.0.0"}
@@ -413,7 +414,8 @@ def test_studio_run(capsys, mocker, tmp_dir):
 
     out = capsys.readouterr().out
     assert (
-        out.strip() == "Job 1 created\nOpen the job in Studio at https://example.com\n"
+        out.strip()
+        == f"Job {job_id} created\nOpen the job in Studio at https://example.com\n"
         "========================================\n\n\n"
         ">>>> Dataset versions created during the job:\n"
         "    - dataset_name@v1.0.0"
@@ -459,13 +461,14 @@ def test_studio_run_task(capsys, mocker, tmp_dir, studio_token):
         "datachain.remote.studio.websockets.connect", side_effect=mocked_connect
     )
 
+    job_id = "b2c3d4e5-f6a7-8901-bcde-f12345678901"
     with requests_mock.mock() as m:
         m.post(
             f"{STUDIO_URL}/api/datachain/jobs/",
-            json={"id": 1, "url": "https://example.com"},
+            json={"id": job_id, "url": "https://example.com"},
         )
         m.get(
-            f"{STUDIO_URL}/api/datachain/datasets/dataset_job_versions?job_id=1&team_name=team_name",
+            f"{STUDIO_URL}/api/datachain/datasets/dataset_job_versions?job_id={job_id}&team_name=team_name",
             json={
                 "dataset_versions": [
                     {"dataset_name": "dataset_name", "version": "1.0.0"}
@@ -639,8 +642,12 @@ def test_studio_run_checkpoint_continuation(capsys, mocker, tmp_dir, studio_toke
 def test_studio_run_non_zero_exit_code(
     capsys, mocker, tmp_dir, status, expected_exit_code
 ):
+    import uuid
+
+    job_id = str(uuid.uuid4())
+
     # Mock tail_job_logs to return a status
-    async def mock_tail_job_logs(job_id):
+    async def mock_tail_job_logs(jid):
         # Simulate some log messages
         yield {"logs": [{"message": "Starting job...\n"}]}
         yield {"logs": [{"message": "Processing data...\n"}]}
@@ -658,10 +665,10 @@ def test_studio_run_non_zero_exit_code(
     with requests_mock.mock() as m:
         m.post(
             f"{STUDIO_URL}/api/datachain/jobs/",
-            json={"id": 1, "url": "https://example.com"},
+            json={"id": job_id, "url": "https://example.com"},
         )
         m.get(
-            f"{STUDIO_URL}/api/datachain/datasets/dataset_job_versions?job_id=1&team_name=team_name",
+            f"{STUDIO_URL}/api/datachain/datasets/dataset_job_versions?job_id={job_id}&team_name=team_name",
             json={
                 "dataset_versions": [
                     {"dataset_name": "dataset_name", "version": "1.0.0"}
@@ -684,7 +691,8 @@ def test_studio_run_non_zero_exit_code(
 
     out = capsys.readouterr().out
     assert (
-        out.strip() == "Job 1 created\nOpen the job in Studio at https://example.com\n"
+        out.strip()
+        == f"Job {job_id} created\nOpen the job in Studio at https://example.com\n"
         "========================================\n"
         "Starting job...\n"
         "Processing data...\n"
