@@ -40,7 +40,8 @@ from datachain.func.base import Function
 from datachain.hash_utils import hash_column_elements
 from datachain.lib.listing import is_listing_dataset, listing_dataset_expired
 from datachain.lib.signal_schema import SignalSchema, generate_merge_root_mapping
-from datachain.lib.udf import UDFAdapter, _get_cache
+from datachain.lib.udf import UdfError, _get_cache
+from datachain.lib.utils import type_to_str
 from datachain.progress import CombinedDownloadCallback, TqdmCombinedDownloadCallback
 from datachain.project import Project
 from datachain.query.schema import DEFAULT_DELIMITER, C, UDFParamSpec, normalize_param
@@ -294,6 +295,8 @@ def adjust_outputs(
     warehouse: "AbstractWarehouse",
     row: dict[str, Any],
     col_types: list[tuple[str, SQLType, type, str, Any]],
+    signal_schema: SignalSchema,
+    udf_kind: str | None = None,
 ) -> dict[str, Any]:
     """
     This function does a couple of things to prepare a row for inserting into the db:
@@ -310,17 +313,46 @@ def adjust_outputs(
         col_type_name,
         default_value,
     ) in col_types:
-        row_val = row.get(col_name)
+        # Fill missing values with defaults
+        if col_name not in row:
+            row[col_name] = default_value
+            continue
 
-        # Fill None or missing values with defaults (get returns None if not in the row)
+        row_val = row[col_name]
+
+        # Fill explicit None values with defaults
         if row_val is None:
             row[col_name] = default_value
             continue
 
         # Validate and convert type if needed and possible
-        row[col_name] = warehouse.convert_type(
-            row_val, col_type, col_python_type, col_type_name, col_name
-        )
+        try:
+            row[col_name] = warehouse.convert_type(
+                row_val, col_type, col_python_type, col_type_name, col_name
+            )
+        except Exception as e:
+            expected_type = type_to_str(signal_schema.get_column_type(col_name))
+            actual_type_name = type(row_val).__name__
+            msg = (
+                f"UDF returned an invalid value for output column {col_name!r}. "
+                f"Expected {expected_type}. "
+                f"Got {row_val!r} (type: {actual_type_name})."
+            )
+            if udf_kind is not None:
+                udf_values = sum(1 for k in row if not str(k).startswith("sys__"))
+                expected = len(col_types)
+                if udf_values != expected:
+                    msg += (
+                        f" Note: UDF call returned {udf_values} value"
+                        f"{'s' if udf_values != 1 else ''} while {expected} "
+                        f"{'are' if expected != 1 else 'is'} expected "
+                        f"per output definition"
+                    )
+                    if udf_kind in ("agg", "gen"):
+                        msg += f", {udf_kind}() UDFs should return an iterator of rows."
+                    else:
+                        msg += "."
+            raise UdfError(msg) from e
     return row
 
 
@@ -353,6 +385,15 @@ def process_udf_outputs(
 ) -> None:
     # Optimization: Compute row types once, rather than for every row.
     udf_col_types = get_col_types(warehouse, udf.output)
+    udf_signal_schema = udf.inner.output
+
+    # Determine UDF kind based on batching behavior
+    if udf.inner.is_input_batched and udf.inner.is_output_batched:
+        udf_kind = "agg"
+    elif udf.inner.is_output_batched:
+        udf_kind = "gen"
+    else:
+        udf_kind = "map"
 
     def _insert_rows():
         for udf_output in udf_results:
@@ -362,7 +403,13 @@ def process_udf_outputs(
             with safe_closing(udf_output):
                 for row in udf_output:
                     cb.relative_update()
-                    yield adjust_outputs(warehouse, row, udf_col_types)
+                    yield adjust_outputs(
+                        warehouse,
+                        row,
+                        udf_col_types,
+                        udf_signal_schema,
+                        udf_kind=udf_kind,
+                    )
 
     warehouse.insert_rows(udf_table, _insert_rows(), batch_size=batch_size)
     warehouse.insert_rows_done(udf_table)

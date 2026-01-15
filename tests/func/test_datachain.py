@@ -976,10 +976,14 @@ def test_gen_with_new_columns_wrong_type(cloud_test_catalog, dogs_dataset):
     def gen_func():
         yield (0.5)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(dc.DataChainError) as exc_info:
         dc.read_storage(cloud_test_catalog.src_uri, session=session).gen(
             new_val=gen_func, output={"new_val": int}
         ).show()
+    assert "invalid value" in str(exc_info.value)
+    assert "new_val" in str(exc_info.value)
+    assert "Expected int" in str(exc_info.value)
+    assert "Got 0.5" in str(exc_info.value)
 
 
 def test_similarity_search(cloud_test_catalog):

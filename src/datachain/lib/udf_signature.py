@@ -66,9 +66,24 @@ class UdfSignature:  # noqa: PLW1641
                 f"UDF '{callable_name(udf_func)}' is not callable",
             )
 
-        func_params_map_sign, func_outs_sign, is_iterator = cls._func_signature(
-            chain, udf_func
+        func_params_map_sign, func_outs_sign, is_iterator, has_return_annotation = (
+            cls._func_signature(chain, udf_func)
         )
+
+        # For generators/aggregators, users must return an Iterator/Generator.
+        # Previously, this validation only happened when `output` was not explicitly
+        # provided, which allowed easy-to-miss return-shape bugs (e.g. returning a
+        # tuple row instead of yielding it).
+        if is_generator and has_return_annotation and not is_iterator:
+            raise UdfSignatureError(
+                chain,
+                (
+                    f"function '{callable_name(udf_func)}' cannot be used in "
+                    "generator/aggregator because it returns a type that is "
+                    "not Iterator/Generator. "
+                    f"Instead, it returns '{func_outs_sign}'"
+                ),
+            )
 
         udf_params: dict[str, DataType | Any] = {}
         if params:
@@ -180,7 +195,7 @@ class UdfSignature:  # noqa: PLW1641
     @staticmethod
     def _func_signature(
         chain: str, udf_func: Callable | UDFBase
-    ) -> tuple[dict[str, type], Sequence[type], bool]:
+    ) -> tuple[dict[str, type], Sequence[type], bool, bool]:
         if isinstance(udf_func, AbstractUDF):
             func = udf_func.process  # type: ignore[unreachable]
         else:
@@ -192,6 +207,7 @@ class UdfSignature:  # noqa: PLW1641
         is_iterator = False
 
         anno = sign.return_annotation
+        has_return_annotation = anno != inspect.Signature.empty
         if anno == inspect.Signature.empty:
             output_types: list[type] = []
         else:
@@ -228,4 +244,4 @@ class UdfSignature:  # noqa: PLW1641
         if not output_types:
             output_types = [UdfSignature.DEFAULT_RETURN_TYPE]
 
-        return input_map, output_types, is_iterator
+        return input_map, output_types, is_iterator, has_return_annotation

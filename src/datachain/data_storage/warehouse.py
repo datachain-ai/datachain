@@ -122,66 +122,46 @@ class AbstractWarehouse(ABC, Serializable):
         # Optimization: Precompute all the column type variables.
         value_type = type(val)
 
-        exc = None
-        try:
-            if col_python_type is list and value_type in (list, tuple, set):
-                if len(val) == 0:
-                    return []
+        if col_python_type is list and value_type in (list, tuple, set):
+            if len(val) == 0:
+                return []
 
-                item_python_type = self.python_type(col_type.item_type)
+            item_python_type = self.python_type(col_type.item_type)
 
-                if item_python_type is not list:
-                    if isinstance(val[0], item_python_type):
-                        # SQLite ARRAY storage expects a list; tuples/sets must be
-                        # converted to lists even when element types already match.
-                        return list(val)
-                    if item_python_type is float and isinstance(val[0], int):
-                        return [float(i) for i in val]
+            if item_python_type is not list:
+                if isinstance(val[0], item_python_type):
+                    # SQLite ARRAY storage expects a list; tuples/sets must be
+                    # converted to lists even when element types already match.
+                    return list(val)
+                if item_python_type is float and isinstance(val[0], int):
+                    return [float(i) for i in val]
 
-                # Optimization: Reuse these values for each function call within the
-                # list comprehension.
-                item_type_info = (
-                    col_type.item_type,
-                    item_python_type,
-                    type(col_type.item_type).__name__,
-                    col_name,
-                )
-                return [self.convert_type(i, *item_type_info) for i in val]
-            # Special use case with JSON type as we save it as string
-            if col_python_type is dict or col_type_name == "JSON":
-                if value_type is str:
-                    return val
-                try:
-                    json_ready = self._to_jsonable(val)
-                    return json.dumps(json_ready, ensure_ascii=False)
-                except Exception as e:
-                    raise ValueError(
-                        f"Cannot convert value {val!r} with type {value_type} to JSON"
-                    ) from e
+            # Optimization: Reuse these values for each function call within the
+            # list comprehension.
+            item_type_info = (
+                col_type.item_type,
+                item_python_type,
+                type(col_type.item_type).__name__,
+                col_name,
+            )
+            return [self.convert_type(i, *item_type_info) for i in val]
 
-            if isinstance(val, col_python_type):
+        # Special use case with JSON type as we save it as string
+        if col_python_type is dict or col_type_name == "JSON":
+            if value_type is str:
                 return val
-            if col_python_type is float and isinstance(val, int):
-                return float(val)
-        except Exception as e:  # noqa: BLE001
-            exc = e
-        ve = ValueError(
+            json_ready = self._to_jsonable(val)
+            return json.dumps(json_ready, ensure_ascii=False)
+
+        if isinstance(val, col_python_type):
+            return val
+        if col_python_type is float and isinstance(val, int):
+            return float(val)
+
+        raise ValueError(
             f"Value {val!r} with type {value_type} incompatible for "
             f"column type {col_type_name}"
         )
-        # This is the same as "from exc" when not raising the exception.
-        if exc:
-            ve.__cause__ = exc
-        # Optimization: Log here, so only one try/except is needed, since the ValueError
-        # above is raised after logging.
-        logger.exception(
-            "Error while validating/converting type for column "
-            "%s with value %s, original error %s",
-            col_name,
-            val,
-            ve,
-        )
-        raise ve
 
     @abstractmethod
     def clone(self, use_new_connection: bool = False) -> "AbstractWarehouse":

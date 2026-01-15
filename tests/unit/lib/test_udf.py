@@ -1,8 +1,10 @@
 import pytest
 from cloudpickle import dumps, loads
 
+import datachain as dc
 from datachain import Mapper
 from datachain.lib.udf import UDFBase, UdfError, UdfRunError
+from datachain.lib.utils import DataChainError
 
 from .test_udf_signature import get_sign
 
@@ -107,3 +109,131 @@ def test_udf_verbose_name_unknown():
     udf = UDFBase._create(sign, sign.output_schema)
     udf._func = None
     assert udf.verbose_name == "<unknown>"
+
+
+def test_udf_output_type_error_message(monkeypatch, test_session):
+    monkeypatch.delenv("DATACHAIN_DISTRIBUTED", raising=False)
+
+    chain = dc.read_values(a=["ok"], session=test_session)
+
+    with pytest.raises(DataChainError) as excinfo:
+        list(
+            chain.map(
+                measurement_ids=lambda a: "2",
+                params="a",
+                output={"measurement_ids": list[str]},
+            ).to_list()
+        )
+
+    msg = str(excinfo.value)
+
+    # Example message:
+    # UdfError: UDF returned an invalid value for output column 'measurement_ids'.
+    # Expected list[str]. Got '2' (type: str).
+    assert "invalid value" in msg
+    assert "measurement_ids" in msg
+    assert "Expected list[str]" in msg
+    assert "Got '2'" in msg
+    assert "type: str" in msg
+
+
+def test_udf_output_type_error_message_scalar(monkeypatch, test_session):
+    monkeypatch.delenv("DATACHAIN_DISTRIBUTED", raising=False)
+
+    chain = dc.read_values(a=["ok"], session=test_session)
+
+    with pytest.raises(DataChainError) as excinfo:
+        list(chain.map(my_int=lambda a: "2", params="a", output=int).to_list())
+
+    msg = str(excinfo.value)
+
+    # Example message:
+    # UdfError: UDF returned an invalid value for output column 'my_int'.
+    # Expected int. Got '2' (type: str).
+    assert "invalid value" in msg
+    assert "my_int" in msg
+    assert "Expected int" in msg
+    assert "Got '2'" in msg
+    assert "type: str" in msg
+
+
+def test_udf_output_type_error_message_includes_missing_outputs(
+    monkeypatch, test_session
+):
+    monkeypatch.delenv("DATACHAIN_DISTRIBUTED", raising=False)
+
+    chain = dc.read_values(a=["ok"], session=test_session)
+
+    # Output expects two columns, but UDF returns a single scalar.
+    with pytest.raises(DataChainError) as excinfo:
+        list(
+            chain.map(
+                lambda a: "2",
+                params="a",
+                output={"measurement_ids": list[str], "x": int},
+            ).to_list()
+        )
+
+    msg = str(excinfo.value)
+
+    # Example message:
+    # UdfError: UDF returned an invalid value for output column 'measurement_ids'.
+    # Expected list[str]. Got '2' (type: str). Note: UDF call returned 1 value
+    # while 2 are expected per output definition.
+    assert "measurement_ids" in msg
+    assert "Expected list[str]" in msg
+    assert "UDF call returned 1 value" in msg
+    assert "while 2 are expected per output definition" in msg
+
+
+def test_udf_output_type_error_message_agg_returning_tuple(monkeypatch, test_session):
+    monkeypatch.delenv("DATACHAIN_DISTRIBUTED", raising=False)
+
+    chain = dc.read_values(a=["ok"], session=test_session)
+
+    # This mirrors an aggregation mistake:
+    # returning a single tuple value instead of yielding rows.
+    def bad_agg(a):
+        return ("2",)
+
+    with pytest.raises(DataChainError) as excinfo:
+        list(
+            chain.agg(
+                func=bad_agg,
+                params="a",
+                output={"measurement_ids": list[str], "x": int},
+            ).to_list()
+        )
+
+    msg = str(excinfo.value)
+
+    # Example message:
+    # UdfError: UDF returned an invalid value for output column 'measurement_ids'.
+    # Expected list[str]. Got '2' (type: str). Note: UDF call returned 1 value
+    # while 2 are expected per output definition, agg() UDFs should return an
+    # iterator of rows.
+    assert "measurement_ids" in msg
+    assert "Expected list[str]" in msg
+    assert "Got '2'" in msg
+    assert "type: str" in msg
+    assert "UDF call returned 1 value" in msg
+    assert "agg() UDFs should return an iterator" in msg
+
+
+def test_udf_extra_return_values_are_ignored(monkeypatch, test_session):
+    monkeypatch.delenv("DATACHAIN_DISTRIBUTED", raising=False)
+
+    chain = dc.read_values(a=["ok"], session=test_session)
+
+    # Current behavior: extra values are truncated by zip(strict=False).
+    out = list(
+        chain.map(
+            lambda a: (1, 2, 3),
+            params="a",
+            output={"x": int, "y": int},
+        ).to_list()
+    )
+
+    assert len(out) == 1
+    # to_list() returns all columns; new columns are appended after inputs.
+    assert out[0][1:] == (1, 2)
