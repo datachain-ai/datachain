@@ -413,7 +413,7 @@ class UDFWorker:
         table: "Table",
         cache: bool,
         is_batching: bool,
-        batch_size: int,
+        batch_size: int | None,
         udf_fields: Sequence[str],
     ) -> None:
         self.catalog = catalog

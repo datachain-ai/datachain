@@ -1264,6 +1264,18 @@ class AbstractDBMetastore(AbstractMetastore):
         self, dataset: DatasetRecord, version: str, conn=None, **kwargs
     ) -> DatasetVersion:
         """Updates dataset fields."""
+        logger.debug(
+            "Metastore.update_dataset_version called for %s@%s: "
+            "num_objects=%s, size=%s, preview_len=%s, all_fields=%s",
+            dataset.name,
+            version,
+            kwargs.get("num_objects"),
+            kwargs.get("size"),
+            len(kwargs["preview"])
+            if "preview" in kwargs and kwargs["preview"] is not None
+            else None,
+            list(kwargs.keys()),
+        )
         values: dict[str, Any] = {}
         version_values: dict[str, Any] = {}
         for field, value in kwargs.items():
@@ -1310,6 +1322,17 @@ class AbstractDBMetastore(AbstractMetastore):
         if not values:
             return dataset.get_version(version)
 
+        logger.debug(
+            "Writing to database for %s@%s: num_objects=%s, size=%s, "
+            "preview_serialized=%s, fields_to_update=%s",
+            dataset.name,
+            version,
+            values.get("num_objects"),
+            values.get("size"),
+            bool(values.get("preview")),
+            list(values.keys()),
+        )
+
         dv = self._datasets_versions
         self.db.execute(
             self._datasets_versions_update()
@@ -1321,6 +1344,15 @@ class AbstractDBMetastore(AbstractMetastore):
         for v in dataset.versions:
             if v.version == version:
                 v.update(**version_values)
+                logger.debug(
+                    "Dataset version updated successfully: %s@%s, "
+                    "final_num_objects=%s, final_size=%s, has_preview=%s",
+                    dataset.name,
+                    version,
+                    v.num_objects,
+                    v.size,
+                    bool(getattr(v, "_preview_data", None)),
+                )
                 return v
 
         raise DatasetVersionNotFoundError(
