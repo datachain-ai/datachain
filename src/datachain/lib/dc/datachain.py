@@ -11,7 +11,6 @@ from typing import (
     TYPE_CHECKING,
     Any,
     BinaryIO,
-    ClassVar,
     Literal,
     TypeVar,
     cast,
@@ -182,12 +181,6 @@ class DataChain:
             print(f"do you have the right Mistral API key? {e}")
         ```
     """
-
-    DEFAULT_FILE_RECORD: ClassVar[dict] = {
-        "source": "",
-        "path": "",
-        "size": 0,
-    }
 
     def __init__(
         self,
