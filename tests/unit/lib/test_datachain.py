@@ -40,6 +40,7 @@ from datachain.lib.signal_schema import (
 from datachain.lib.udf import UDFAdapter
 from datachain.lib.udf_signature import UdfSignatureError
 from datachain.lib.utils import DataChainColumnError, DataChainParamsError
+from datachain.query.dataset import Subtract
 from datachain.sql.types import Float, Int64, String
 from datachain.utils import STUDIO_URL
 from tests.utils import (
@@ -2324,6 +2325,24 @@ def test_subtract_error(test_session):
     chain3 = dc.read_values(c=["foo", "bar"], session=test_session)
     with pytest.raises(DataChainParamsError):
         chain1.subtract(chain3)
+
+
+def test_subtract_hash_computation(test_session):
+    """Test that subtract query operation can compute hash.
+
+    Regression test: subtract was passing strings instead of tuples to Subtract
+    class, which caused hash_inputs() to fail when unpacking: for a, b in self.on
+    """
+    chain1 = dc.read_values(a=[1, 2], b=["x", "y"], session=test_session)
+    chain2 = dc.read_values(a=[1], b=["x"], session=test_session)
+
+    result = chain1.subtract(chain2, on=["a", "b"])
+    subtract_step = next(
+        (step for step in result._query.steps if isinstance(step, Subtract)), None
+    )
+    assert subtract_step is not None
+    # This would fail with TypeError if strings were passed instead of tuples
+    _ = subtract_step.hash_inputs()
 
 
 def test_column_math(test_session):
