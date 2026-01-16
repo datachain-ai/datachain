@@ -145,10 +145,10 @@ def read_records(
         {c.name: c.type for c in columns if isinstance(c.type, SQLType)},
     )
 
-    # Automatically flatten DataModel objects in records
     flattened_records = (_flatten_record(record, signal_schema) for record in to_insert)
     records = (
-        adjust_outputs(warehouse, record, col_types) for record in flattened_records
+        adjust_outputs(warehouse, record, col_types, signal_schema)
+        for record in flattened_records
     )
     warehouse.insert_rows(table, records)
     warehouse.insert_rows_done(table)

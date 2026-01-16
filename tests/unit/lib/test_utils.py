@@ -24,7 +24,10 @@ from datachain.lib.utils import (
     rebase_path,
     type_to_str,
 )
-from datachain.sql.types import Array, String
+from datachain.sql.types import (
+    Array,
+    String,
+)
 
 
 class MyModel(BaseModel):

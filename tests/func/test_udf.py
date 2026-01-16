@@ -503,9 +503,10 @@ def test_gen_file(cloud_test_catalog, use_cache, prefetch, monkeypatch):
 
         return wrapped
 
-    def new_signal(file: File) -> list[str]:
+    def new_signal(file: File):
         with file.open("rb") as f:
-            return [file.name, f.read().decode("utf-8")]
+            yield file.name
+            yield f.read().decode("utf-8")
 
     chain = (
         dc.read_storage(ctc.src_uri, session=ctc.session)
