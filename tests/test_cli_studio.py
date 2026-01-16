@@ -1,3 +1,4 @@
+from datetime import datetime
 from unittest.mock import MagicMock
 
 import pytest
@@ -8,6 +9,7 @@ from tabulate import tabulate
 
 from datachain.cli import main
 from datachain.config import Config, ConfigLevel
+from datachain.job import Job
 from datachain.studio import POST_LOGIN_MESSAGE
 from datachain.utils import STUDIO_URL
 from tests.utils import skip_if_not_sqlite
@@ -358,16 +360,17 @@ def test_studio_run(capsys, mocker, tmp_dir):
     with Config(ConfigLevel.GLOBAL).edit() as conf:
         conf["studio"] = {"token": "isat_access_token", "team": "team_name"}
 
+    job_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
     with requests_mock.mock() as m:
         m.post(
             f"{STUDIO_URL}/api/datachain/jobs/files?team_name=team_name", json={"id": 1}
         )
         m.post(
             f"{STUDIO_URL}/api/datachain/jobs/",
-            json={"id": 1, "url": "https://example.com"},
+            json={"id": job_id, "url": "https://example.com"},
         )
         m.get(
-            f"{STUDIO_URL}/api/datachain/datasets/dataset_job_versions?job_id=1&team_name=team_name",
+            f"{STUDIO_URL}/api/datachain/datasets/dataset_job_versions?job_id={job_id}&team_name=team_name",
             json={
                 "dataset_versions": [
                     {"dataset_name": "dataset_name", "version": "1.0.0"}
@@ -413,7 +416,8 @@ def test_studio_run(capsys, mocker, tmp_dir):
 
     out = capsys.readouterr().out
     assert (
-        out.strip() == "Job 1 created\nOpen the job in Studio at https://example.com\n"
+        out.strip()
+        == f"Job {job_id} created\nOpen the job in Studio at https://example.com\n"
         "========================================\n\n\n"
         ">>>> Dataset versions created during the job:\n"
         "    - dataset_name@v1.0.0"
@@ -448,6 +452,7 @@ def test_studio_run(capsys, mocker, tmp_dir):
         "priority": 5,
         "compute_cluster_name": "default",
         "start_after": None,
+        "rerun_from_job_id": None,
         "cron_expression": None,
         "credentials_name": "my-credentials",
     }
@@ -458,13 +463,14 @@ def test_studio_run_task(capsys, mocker, tmp_dir, studio_token):
         "datachain.remote.studio.websockets.connect", side_effect=mocked_connect
     )
 
+    job_id = "b2c3d4e5-f6a7-8901-bcde-f12345678901"
     with requests_mock.mock() as m:
         m.post(
             f"{STUDIO_URL}/api/datachain/jobs/",
-            json={"id": 1, "url": "https://example.com"},
+            json={"id": job_id, "url": "https://example.com"},
         )
         m.get(
-            f"{STUDIO_URL}/api/datachain/datasets/dataset_job_versions?job_id=1&team_name=team_name",
+            f"{STUDIO_URL}/api/datachain/datasets/dataset_job_versions?job_id={job_id}&team_name=team_name",
             json={
                 "dataset_versions": [
                     {"dataset_name": "dataset_name", "version": "1.0.0"}
@@ -498,14 +504,147 @@ def test_studio_run_task(capsys, mocker, tmp_dir, studio_token):
     assert request_json["cron_expression"] == "0 0 * * *"
 
 
+@skip_if_not_sqlite
+def test_studio_run_connect_to_previous_job(capsys, mocker, tmp_dir, studio_token):
+    """Test that job run sends rerun_from_job_id from local Studio job copy."""
+    mocker.patch(
+        "datachain.remote.studio.websockets.connect", side_effect=mocked_connect
+    )
+
+    first_job_id = "first-job-uuid-1234"
+    second_job_id = "second-job-uuid-5678"
+
+    # Create the script file and get its absolute path
+    script_file = tmp_dir / "example_query.py"
+    script_file.write_text("print(1)")
+    script_path = str(script_file.resolve())
+
+    parent_job = Job(
+        id=first_job_id,
+        name=script_path,
+        status=5,  # COMPLETE
+        created_at=datetime.now(),
+        query="print(1)",
+        query_type=1,
+        workers=1,
+        params={},
+        metrics={},
+        is_studio_copy=True,
+    )
+
+    # Track calls to metastore methods
+    get_last_job_calls = []
+    create_job_calls = []
+
+    def mock_get_last_job_by_name(name, is_studio_copy=False, conn=None):
+        get_last_job_calls.append({"name": name, "is_studio_copy": is_studio_copy})
+        # First call returns None (no parent), second call returns the first job
+        if len(get_last_job_calls) == 1:
+            return None
+        return parent_job
+
+    def mock_create_job(**kwargs):
+        create_job_calls.append(kwargs)
+        return kwargs.get("job_id", "generated-id")
+
+    # Mock the catalog and metastore
+    mock_metastore = mocker.MagicMock()
+    mock_metastore.get_last_job_by_name = mock_get_last_job_by_name
+    mock_metastore.create_job = mock_create_job
+
+    mock_catalog = mocker.MagicMock()
+    mock_catalog.metastore = mock_metastore
+
+    mocker.patch("datachain.catalog.get_catalog", return_value=mock_catalog)
+
+    with requests_mock.mock() as m:
+        # First job run - no parent
+        m.post(
+            f"{STUDIO_URL}/api/datachain/jobs/",
+            json={
+                "id": first_job_id,
+                "url": "https://example.com/job/1",
+                "workers": 1,
+                "python_version": "3.11",
+                "params": {},
+                "parent_job_id": None,
+                "rerun_from_job_id": None,
+                "run_group_id": first_job_id,  # First job has run_group_id = its own id
+            },
+        )
+        m.get(
+            f"{STUDIO_URL}/api/datachain/datasets/dataset_job_versions?job_id={first_job_id}&team_name=team_name",
+            json={"dataset_versions": []},
+        )
+
+        assert main(["job", "run", str(script_file)]) == 0
+
+        # Verify first API call had rerun_from_job_id=None
+        first_request = m.request_history[0]
+        assert first_request.json()["rerun_from_job_id"] is None
+
+        # Verify metastore was queried with is_studio_copy=True
+        assert len(get_last_job_calls) == 1
+        assert get_last_job_calls[0]["is_studio_copy"] is True
+        assert get_last_job_calls[0]["name"] == script_path
+
+        # Verify job was saved locally with is_studio_copy=True
+        assert len(create_job_calls) == 1
+        assert create_job_calls[0]["is_studio_copy"] is True
+        assert create_job_calls[0]["job_id"] == first_job_id
+        assert create_job_calls[0]["name"] == script_path
+
+        # Reset request history for second run
+        m.reset_mock()
+
+        # Second job run - should find parent
+        m.post(
+            f"{STUDIO_URL}/api/datachain/jobs/",
+            json={
+                "id": second_job_id,
+                "url": "https://example.com/job/2",
+                "workers": 1,
+                "python_version": "3.11",
+                "params": {},
+                "parent_job_id": first_job_id,
+                "rerun_from_job_id": first_job_id,
+                "run_group_id": first_job_id,  # Same run_group_id as parent
+            },
+        )
+        m.get(
+            f"{STUDIO_URL}/api/datachain/datasets/dataset_job_versions?job_id={second_job_id}&team_name=team_name",
+            json={"dataset_versions": []},
+        )
+
+        assert main(["job", "run", str(script_file)]) == 0
+
+        # Verify second API call had rerun_from_job_id set to first job
+        second_request = m.request_history[0]
+        assert second_request.json()["rerun_from_job_id"] == first_job_id
+
+        # Verify metastore was queried again with is_studio_copy=True
+        assert len(get_last_job_calls) == 2
+        assert get_last_job_calls[1]["is_studio_copy"] is True
+
+        # Verify second job was saved locally with is_studio_copy=True
+        assert len(create_job_calls) == 2
+        assert create_job_calls[1]["is_studio_copy"] is True
+        assert create_job_calls[1]["job_id"] == second_job_id
+        assert create_job_calls[1]["rerun_from_job_id"] == first_job_id
+
+
 @pytest.mark.parametrize(
     "status,expected_exit_code", [("FAILED", 1), ("CANCELED", 2), ("COMPLETE", 0)]
 )
 def test_studio_run_non_zero_exit_code(
     capsys, mocker, tmp_dir, status, expected_exit_code
 ):
+    import uuid
+
+    job_id = str(uuid.uuid4())
+
     # Mock tail_job_logs to return a status
-    async def mock_tail_job_logs(job_id):
+    async def mock_tail_job_logs(jid):
         # Simulate some log messages
         yield {"logs": [{"message": "Starting job...\n"}]}
         yield {"logs": [{"message": "Processing data...\n"}]}
@@ -523,10 +662,10 @@ def test_studio_run_non_zero_exit_code(
     with requests_mock.mock() as m:
         m.post(
             f"{STUDIO_URL}/api/datachain/jobs/",
-            json={"id": 1, "url": "https://example.com"},
+            json={"id": job_id, "url": "https://example.com"},
         )
         m.get(
-            f"{STUDIO_URL}/api/datachain/datasets/dataset_job_versions?job_id=1&team_name=team_name",
+            f"{STUDIO_URL}/api/datachain/datasets/dataset_job_versions?job_id={job_id}&team_name=team_name",
             json={
                 "dataset_versions": [
                     {"dataset_name": "dataset_name", "version": "1.0.0"}
@@ -549,7 +688,8 @@ def test_studio_run_non_zero_exit_code(
 
     out = capsys.readouterr().out
     assert (
-        out.strip() == "Job 1 created\nOpen the job in Studio at https://example.com\n"
+        out.strip()
+        == f"Job {job_id} created\nOpen the job in Studio at https://example.com\n"
         "========================================\n"
         "Starting job...\n"
         "Processing data...\n"
