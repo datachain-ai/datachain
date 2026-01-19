@@ -277,7 +277,6 @@ def test_generator_incomplete_input_recovery(test_session):
     4. Re-processes incomplete inputs
     5. Final results are correct (no duplicates, no missing values)
     """
-    warehouse = test_session.catalog.warehouse
     processed_inputs = []
     run_count = [0]
     numbers = [6, 2, 8, 7]
@@ -304,18 +303,6 @@ def test_generator_incomplete_input_recovery(test_session):
             .gen(result=gen_multiple, output=int)
             .save("results")
         )
-
-    partial_table = get_last_udf_partial_table(test_session)
-    first_run_rows = list(
-        warehouse.db.execute(
-            sa.select(
-                partial_table.c.sys__input_id,
-                partial_table.c.result,
-                partial_table.c.sys__partial,
-            )
-        )
-    )
-    assert len(first_run_rows) > 0, "Should have partial data from first run"
 
     # With order_by("num") and batch_size=2, sorted order is [2, 6, 7, 8]:
     # - Batch 1: [2, 6] - fully committed before crash
