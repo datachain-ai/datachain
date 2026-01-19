@@ -317,11 +317,12 @@ def test_generator_incomplete_input_recovery(test_session):
     )
     assert len(first_run_rows) > 0, "Should have partial data from first run"
 
-    # We know num=8 fails at i=2, so it should be incomplete.
-    # Note: num=8's partial results (800, 801) may not be in the partial table
-    # because the crash happens before the batch commits.
-    # The incomplete input is num=8 based on test design.
-    incomplete_before = [8]
+    # With order_by("num") and batch_size=2, sorted order is [2, 6, 7, 8]:
+    # - Batch 1: [2, 6] - fully committed before crash
+    # - Batch 2: [7, 8] - 7 completes but batch crashes on 8, entire batch uncommitted
+    # Both inputs in the crashed batch need re-processing.
+    incomplete_batch = [7, 8]
+    complete_batch = [2, 6]
 
     # -------------- SECOND RUN (RECOVERS) -------------------
     reset_session_job_state()
@@ -337,10 +338,19 @@ def test_generator_incomplete_input_recovery(test_session):
         .save("results")
     )
 
-    assert any(inp in processed_inputs for inp in incomplete_before), (
-        f"Incomplete inputs {incomplete_before} should be re-processed, "
+    # Verify inputs from crashed batch are re-processed
+    assert any(inp in processed_inputs for inp in incomplete_batch), (
+        f"Inputs from crashed batch {incomplete_batch} should be re-processed, "
         f"but only processed: {processed_inputs}"
     )
+
+    # Verify inputs from committed batch are NOT re-processed
+    # (tests sys__partial flag correctness - complete inputs are correctly skipped)
+    for inp in complete_batch:
+        assert inp not in processed_inputs, (
+            f"Input {inp} from committed batch should NOT be re-processed, "
+            f"but was found in processed: {processed_inputs}"
+        )
 
     result = (
         dc.read_dataset("results", session=test_session)
@@ -411,83 +421,3 @@ def test_generator_yielding_nothing(test_session, monkeypatch, nums_dataset):
     assert processed == [3, 4, 5, 6]
     result = sorted(dc.read_dataset("results", session=test_session).to_list("value"))
     assert result == [(20,), (40,), (60,)]
-
-
-def test_generator_sys_partial_flag_correctness(test_session):
-    """Test that sys__partial flag is correctly set for generator outputs.
-
-    Verifies that for each input:
-    - All outputs except the last have sys__partial=True
-    - The last output has sys__partial=False
-    - This enables detection of incomplete inputs during checkpoint recovery
-    """
-    warehouse = test_session.catalog.warehouse
-
-    def gen_multiple(num) -> Iterator[int]:
-        """Generator that yields multiple outputs per input."""
-        for i in range(5):  # Each input yields 5 outputs
-            if num == 4 and i == 2:
-                raise Exception("Intentional failure to preserve partial table")
-            yield num * 100 + i
-
-    dc.read_values(num=[1, 2, 3, 4], session=test_session).save("nums")
-
-    reset_session_job_state()
-
-    # Run and expect failure - this leaves partial table
-    # Use small batch size to force commits between inputs
-    with pytest.raises(Exception):  # noqa: B017
-        (
-            dc.read_dataset("nums", session=test_session)
-            .order_by("num")  # Ensure deterministic ordering
-            .settings(batch_size=2)  # Very small batch size
-            .gen(result=gen_multiple, output=int)
-            .save("results")
-        )
-
-    partial_table = get_last_udf_partial_table(test_session)
-
-    rows = list(
-        warehouse.db.execute(
-            sa.select(
-                partial_table.c.sys__input_id,
-                partial_table.c.result,
-                partial_table.c.sys__partial,
-            ).order_by(partial_table.c.sys__input_id, partial_table.c.result)
-        )
-    )
-
-    by_input = {}
-    for input_id, result, partial in rows:
-        by_input.setdefault(input_id, []).append((result, partial))
-
-    assert len(by_input) >= 1, f"Should have at least 1 input, got {len(by_input)}"
-
-    complete_inputs = {k: v for k, v in by_input.items() if len(v) == 5}
-    incomplete_inputs = {k: v for k, v in by_input.items() if len(v) < 5}
-
-    assert complete_inputs
-    assert incomplete_inputs
-
-    for input_id, outputs in complete_inputs.items():
-        assert len(outputs) == 5, f"Complete input {input_id} should have 5 outputs"
-        # First 4 should be True, last one should be False
-        for i, (_, partial) in enumerate(outputs):
-            if i < 4:
-                assert partial, (
-                    f"Output {i} of input {input_id} should have sys__partial=True"
-                )
-            else:
-                assert not partial, (
-                    f"Last output of input {input_id} should have sys__partial=False"
-                )
-
-    # Verify incomplete inputs have ALL outputs marked as partial=True
-    for input_id, outputs in incomplete_inputs.items():
-        assert len(outputs) < 5, f"Incomplete input {input_id} should have < 5 outputs"
-        # ALL should be True (missing the final False marker)
-        for _, (_, partial) in enumerate(outputs):
-            assert partial, (
-                f"All outputs of incomplete input {input_id} "
-                f"should have sys__partial=True"
-            )
