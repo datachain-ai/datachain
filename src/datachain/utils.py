@@ -1,7 +1,6 @@
 import glob
 import io
 import logging
-import multiprocessing
 import os
 import os.path as osp
 import random
@@ -38,6 +37,7 @@ class _CheckpointState:
 
     disabled = False
     warning_shown = False
+    owner_thread: int | None = None  # Thread ident of the checkpoint owner
 
 
 NUL = b"\0"
@@ -534,34 +534,66 @@ def checkpoints_enabled() -> bool:
     Check if checkpoints are enabled for the current execution context.
 
     Checkpoints are automatically disabled when code runs in:
-    1. A non-main thread (user created threading), OR
-    2. A subprocess (not the main process)
+    1. A user-created subprocess (detected via DATACHAIN_MAIN_PROCESS_PID mismatch)
+    2. A thread that is not the original checkpoint owner thread
 
-    This is because checkpoint hashing uses shared state that can lead to
-    race conditions and non-deterministic hash calculations in concurrent contexts.
+    DataChain-controlled subprocesses can enable checkpoints by setting
+    DATACHAIN_SUBPROCESS=1.
+
+    This is because each checkpoint hash depends on the hash of the previous
+    checkpoint, making the computation order-sensitive. Concurrent execution can
+    cause non-deterministic hash calculations due to unpredictable ordering.
 
     Returns:
         bool: True if checkpoints are enabled, False if disabled.
     """
-    # Check if we're in a concurrent context
-    is_concurrent = (
-        threading.current_thread().name != "MainThread"
-        or multiprocessing.current_process().name != "MainProcess"
-    )
+    # DataChain-controlled subprocess - explicitly allowed
+    if os.environ.get("DATACHAIN_SUBPROCESS"):
+        return True
 
-    if is_concurrent and not _CheckpointState.disabled:
+    # Track the original main process PID via environment variable
+    # This env var is inherited by all child processes (fork and spawn)
+    current_pid = str(os.getpid())
+    main_pid = os.environ.get("DATACHAIN_MAIN_PROCESS_PID")
+
+    if main_pid is None:
+        # First call ever - we're the main process, set the marker
+        os.environ["DATACHAIN_MAIN_PROCESS_PID"] = current_pid
+        main_pid = current_pid
+
+    if current_pid != main_pid:
+        # We're in a subprocess without DATACHAIN_SUBPROCESS flag
+        # This is a user-created subprocess - disable checkpoints
+        if not _CheckpointState.warning_shown:
+            logger.warning(
+                "User subprocess detected. "
+                "Checkpoints will not be created in this subprocess. "
+                "Previously created checkpoints remain valid and can be reused."
+            )
+            _CheckpointState.warning_shown = True
+        return False
+
+    # Thread ownership tracking - first thread to call becomes the owner
+    # Threads share memory, so all threads see the same _CheckpointState
+    current_thread = threading.current_thread().ident
+    if _CheckpointState.owner_thread is None:
+        _CheckpointState.owner_thread = current_thread
+
+    is_owner = current_thread == _CheckpointState.owner_thread
+
+    if not is_owner and not _CheckpointState.disabled:
         _CheckpointState.disabled = True
         if not _CheckpointState.warning_shown:
             logger.warning(
-                "Concurrent execution detected (threading or multiprocessing). "
+                "Concurrent thread detected. "
                 "New checkpoints will not be created from this point forward. "
                 "Previously created checkpoints remain valid and can be reused. "
                 "To enable checkpoints, ensure your script runs sequentially "
-                "without threading or multiprocessing."
+                "without user-created threading."
             )
             _CheckpointState.warning_shown = True
 
-    return not _CheckpointState.disabled
+    return is_owner and not _CheckpointState.disabled
 
 
 def env2bool(var, undefined=False):

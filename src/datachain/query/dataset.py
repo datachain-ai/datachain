@@ -580,7 +580,14 @@ class UDFStep(Step, ABC):
                     exec_cmd = get_datachain_executable()
                     cmd = [*exec_cmd, "internal-run-udf"]
                     envs = dict(os.environ)
-                    envs.update({"PYTHONPATH": os.getcwd()})
+                    envs.update(
+                        {
+                            "PYTHONPATH": os.getcwd(),
+                            # Mark as DataChain-controlled subprocess to enable
+                            # checkpoints
+                            "DATACHAIN_SUBPROCESS": "1",
+                        }
+                    )
                     process_data = filtered_cloudpickle_dumps(udf_info)
 
                     with subprocess.Popen(  # noqa: S603

@@ -5,6 +5,7 @@ or multiprocessing is detected, preventing race conditions and non-deterministic
 hash calculations.
 """
 
+import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
@@ -79,8 +80,8 @@ def test_threading_disables_checkpoints(test_session_tmpfile, caplog):
 
     # Verify warning was logged
     assert any(
-        "Concurrent execution detected" in record.message for record in caplog.records
-    ), "Warning about concurrent execution should be logged"
+        "Concurrent thread detected" in record.message for record in caplog.records
+    ), "Warning about concurrent thread should be logged"
 
     # Verify no checkpoint was created in thread
     job2 = test_session.get_or_create_job()
@@ -118,7 +119,7 @@ def test_threading_with_executor(test_session_tmpfile, caplog):
 
     # Verify warning was logged
     assert any(
-        "Concurrent execution detected" in record.message for record in caplog.records
+        "Concurrent thread detected" in record.message for record in caplog.records
     ), "Warning should be logged when using thread pool"
 
     # Verify no checkpoints were created in thread pool
@@ -145,14 +146,9 @@ def test_multiprocessing_disables_checkpoints(test_session, monkeypatch):
     # -------------- SECOND RUN (simulated subprocess) -------------------
     reset_session_job_state()
 
-    # Simulate being in a subprocess by mocking current_process().name
-    class MockProcess:
-        name = "SpawnProcess-1"  # Not "MainProcess"
-
-    monkeypatch.setattr(
-        "datachain.utils.multiprocessing.current_process",
-        lambda: MockProcess(),
-    )
+    # Simulate being in a subprocess by setting DATACHAIN_MAIN_PROCESS_PID
+    # to a different PID than the current one
+    monkeypatch.setenv("DATACHAIN_MAIN_PROCESS_PID", str(os.getpid() + 1000))
 
     # Run DataChain operation - checkpoint should NOT be created
     dc.read_dataset("nums", session=test_session).save("subprocess_result")
@@ -226,9 +222,7 @@ def test_warning_shown_once(test_session_tmpfile, caplog):
 
     # Count how many times the warning was logged
     warning_count = sum(
-        1
-        for record in caplog.records
-        if "Concurrent execution detected" in record.message
+        1 for record in caplog.records if "Concurrent thread detected" in record.message
     )
 
     # Warning should be shown only once, not for each checkpoint check
