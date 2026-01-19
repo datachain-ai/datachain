@@ -2326,6 +2326,19 @@ def test_subtract_error(test_session):
         chain1.subtract(chain3)
 
 
+def test_subtract_preserves_duplicates(test_session):
+    chain1 = dc.read_values(
+        id=[1, 1, 1, 2],
+        name=["same", "same", "same", "different"],
+        session=test_session,
+    )
+    chain2 = dc.read_values(id=[2], name=["target"], session=test_session)
+
+    result = chain1.subtract(chain2, on="id")
+    assert result.count() == 3
+    assert result.to_list() == [(1, "same"), (1, "same"), (1, "same")]
+
+
 def test_column_math(test_session):
     fib = [1, 1, 2, 3, 5, 8]
     chain = dc.read_values(num=fib, session=test_session).order_by("num")

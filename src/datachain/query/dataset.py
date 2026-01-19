@@ -287,7 +287,9 @@ class Subtract(DatasetDiffOperation):
                 for col_name in self.on
             ]
         )
-        return sq.select().except_(sq.select().where(where_clause))
+        # Use NOT EXISTS (anti-join)
+        exists_subq = sa.select(sa.literal(1)).select_from(tq).where(where_clause)
+        return sq.select().where(~sa.exists(exists_subq))
 
 
 def adjust_outputs(
