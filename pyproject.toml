@@ -40,7 +40,7 @@ dependencies = [
   "dvc-objects>=4,<6",
   "shtab>=1.3.4,<2",
   "sqlalchemy>=2",
-  "multiprocess==0.70.16",
+  "multiprocess==0.70.19",
   "cloudpickle",
   "pydantic",
   "jmespath>=1.0",
