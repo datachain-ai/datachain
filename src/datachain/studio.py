@@ -355,16 +355,13 @@ async def _fetch_log_blob(blob_url: str, token: str, timeout: float) -> str:
 
 
 async def _show_log_blobs(log_blobs: list[str], client):
-    print("\n>>>> Fetching logs from archive files...")
-    for i, blob_url in enumerate(log_blobs, 1):
+    for blob_url in log_blobs:
         try:
             log_content = await _fetch_log_blob(blob_url, client.token, client.timeout)
             if log_content:
-                if len(log_blobs) > 1:
-                    print(f"\n--- Log file {i} ---")
                 print(log_content, end="")
-        except (requests.RequestException, OSError) as e:
-            print(f"\n>>>> Warning: Failed to fetch log blob {i}: {e}")
+        except (requests.RequestException, OSError):
+            print("\n>>>> Warning: Failed to fetch logs from studio")
 
 
 def show_logs_from_client(client, job_id):
