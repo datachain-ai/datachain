@@ -468,7 +468,7 @@ class AbstractMetastore(ABC, Serializable):
         parent_job_id: str | None = None,
         rerun_from_job_id: str | None = None,
         run_group_id: str | None = None,
-        is_studio_copy: bool = False,
+        is_remote_execution: bool = False,
         job_id: str | None = None,
     ) -> str:
         """
@@ -508,7 +508,7 @@ class AbstractMetastore(ABC, Serializable):
 
     @abstractmethod
     def get_last_job_by_name(
-        self, name: str, is_studio_copy: bool = False, conn=None
+        self, name: str, is_remote_execution: bool = False, conn=None
     ) -> "Job | None":
         """Returns the last job with the given name, ordered by created_at."""
 
@@ -1875,7 +1875,7 @@ class AbstractDBMetastore(AbstractMetastore):
             Column("parent_job_id", Text, nullable=True),
             Column("rerun_from_job_id", Text, nullable=True),
             Column("run_group_id", Text, nullable=True),
-            Column("is_studio_copy", Boolean, nullable=False, default=False),
+            Column("is_remote_execution", Boolean, nullable=False, default=False),
             Index("idx_jobs_parent_job_id", "parent_job_id"),
             Index("idx_jobs_rerun_from_job_id", "rerun_from_job_id"),
             Index("idx_jobs_run_group_id", "run_group_id"),
@@ -1918,12 +1918,12 @@ class AbstractDBMetastore(AbstractMetastore):
         yield from self._parse_jobs(self.db.execute(query, conn=conn))
 
     def get_last_job_by_name(
-        self, name: str, is_studio_copy: bool = False, conn=None
+        self, name: str, is_remote_execution: bool = False, conn=None
     ) -> "Job | None":
         query = (
             self._jobs_query()
             .where(self._jobs.c.name == name)
-            .where(self._jobs.c.is_studio_copy == is_studio_copy)
+            .where(self._jobs.c.is_remote_execution == is_remote_execution)
             .order_by(self._jobs.c.created_at.desc())
             .limit(1)
         )
@@ -1944,7 +1944,7 @@ class AbstractDBMetastore(AbstractMetastore):
         parent_job_id: str | None = None,
         rerun_from_job_id: str | None = None,
         run_group_id: str | None = None,
-        is_studio_copy: bool = False,
+        is_remote_execution: bool = False,
         job_id: str | None = None,
         conn: Any = None,
     ) -> str:
@@ -1991,7 +1991,7 @@ class AbstractDBMetastore(AbstractMetastore):
                 parent_job_id=parent_job_id,
                 rerun_from_job_id=rerun_from_job_id,
                 run_group_id=run_group_id,
-                is_studio_copy=is_studio_copy,
+                is_remote_execution=is_remote_execution,
             ),
             conn=conn,
         )

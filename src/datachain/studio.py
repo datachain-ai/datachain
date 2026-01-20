@@ -431,7 +431,7 @@ def create_job(
 
     rerun_from_job_id = None
     rerun_from_job = catalog.metastore.get_last_job_by_name(
-        script_path, is_studio_copy=True
+        script_path, is_remote_execution=True
     )
     if rerun_from_job:
         rerun_from_job_id = rerun_from_job.id
@@ -484,7 +484,7 @@ def create_job(
         parent_job_id=job_data.get("parent_job_id"),
         rerun_from_job_id=job_data.get("rerun_from_job_id"),
         run_group_id=job_data.get("run_group_id"),
-        is_studio_copy=True,
+        is_remote_execution=True,
         job_id=str(job_id),  # Use Studio's job ID
     )
 

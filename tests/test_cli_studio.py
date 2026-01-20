@@ -529,15 +529,17 @@ def test_studio_run_connect_to_previous_job(capsys, mocker, tmp_dir, studio_toke
         workers=1,
         params={},
         metrics={},
-        is_studio_copy=True,
+        is_remote_execution=True,
     )
 
     # Track calls to metastore methods
     get_last_job_calls = []
     create_job_calls = []
 
-    def mock_get_last_job_by_name(name, is_studio_copy=False, conn=None):
-        get_last_job_calls.append({"name": name, "is_studio_copy": is_studio_copy})
+    def mock_get_last_job_by_name(name, is_remote_execution=False, conn=None):
+        get_last_job_calls.append(
+            {"name": name, "is_remote_execution": is_remote_execution}
+        )
         # First call returns None (no parent), second call returns the first job
         if len(get_last_job_calls) == 1:
             return None
@@ -555,7 +557,7 @@ def test_studio_run_connect_to_previous_job(capsys, mocker, tmp_dir, studio_toke
     mock_catalog = mocker.MagicMock()
     mock_catalog.metastore = mock_metastore
 
-    mocker.patch("datachain.catalog.get_catalog", return_value=mock_catalog)
+    mocker.patch("datachain.studio.get_catalog", return_value=mock_catalog)
 
     with requests_mock.mock() as m:
         # First job run - no parent
@@ -583,14 +585,14 @@ def test_studio_run_connect_to_previous_job(capsys, mocker, tmp_dir, studio_toke
         first_request = m.request_history[0]
         assert first_request.json()["rerun_from_job_id"] is None
 
-        # Verify metastore was queried with is_studio_copy=True
+        # Verify metastore was queried with is_remote_execution=True
         assert len(get_last_job_calls) == 1
-        assert get_last_job_calls[0]["is_studio_copy"] is True
+        assert get_last_job_calls[0]["is_remote_execution"] is True
         assert get_last_job_calls[0]["name"] == script_path
 
-        # Verify job was saved locally with is_studio_copy=True
+        # Verify job was saved locally with is_remote_execution=True
         assert len(create_job_calls) == 1
-        assert create_job_calls[0]["is_studio_copy"] is True
+        assert create_job_calls[0]["is_remote_execution"] is True
         assert create_job_calls[0]["job_id"] == first_job_id
         assert create_job_calls[0]["name"] == script_path
 
@@ -622,13 +624,13 @@ def test_studio_run_connect_to_previous_job(capsys, mocker, tmp_dir, studio_toke
         second_request = m.request_history[0]
         assert second_request.json()["rerun_from_job_id"] == first_job_id
 
-        # Verify metastore was queried again with is_studio_copy=True
+        # Verify metastore was queried again with is_remote_execution=True
         assert len(get_last_job_calls) == 2
-        assert get_last_job_calls[1]["is_studio_copy"] is True
+        assert get_last_job_calls[1]["is_remote_execution"] is True
 
-        # Verify second job was saved locally with is_studio_copy=True
+        # Verify second job was saved locally with is_remote_execution=True
         assert len(create_job_calls) == 2
-        assert create_job_calls[1]["is_studio_copy"] is True
+        assert create_job_calls[1]["is_remote_execution"] is True
         assert create_job_calls[1]["job_id"] == second_job_id
         assert create_job_calls[1]["rerun_from_job_id"] == first_job_id
 

@@ -26,7 +26,7 @@ class Job:
     parent_job_id: str | None = None
     rerun_from_job_id: str | None = None
     run_group_id: str | None = None
-    is_studio_copy: bool = False
+    is_remote_execution: bool = False
 
     @classmethod
     def parse(  # noqa: PLR0913
@@ -47,7 +47,7 @@ class Job:
         parent_job_id: str | None,
         rerun_from_job_id: str | None,
         run_group_id: str | None,
-        is_studio_copy: bool = False,
+        is_remote_execution: bool = False,
     ) -> "Job":
         return cls(
             str(id),
@@ -66,5 +66,5 @@ class Job:
             str(parent_job_id) if parent_job_id else None,
             str(rerun_from_job_id) if rerun_from_job_id else None,
             str(run_group_id) if run_group_id else None,
-            is_studio_copy,
+            is_remote_execution,
         )
