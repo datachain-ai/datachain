@@ -843,8 +843,7 @@ class UDFStep(Step, ABC):
         self, checkpoint: Checkpoint, partial_hash: str, hash_input: str, query
     ) -> tuple["Table", "Table"]:
         """
-        Skip UDF execution by reusing existing output table from previous job.
-        (we copy output table of previous job)
+        Skip UDF execution by copying existing output table from previous job.
 
         Returns tuple of (output_table, input_table).
         """
