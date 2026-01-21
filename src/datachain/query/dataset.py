@@ -453,6 +453,26 @@ class UDFStep(Step, ABC):
     def create_output_table(self, name: str) -> "Table":
         """Method that creates a table where temp udf results will be saved"""
 
+    def _checkpoint_tracking_columns(self) -> list["sqlalchemy.Column"]:
+        """
+        Columns needed for checkpoint tracking in UDF output tables.
+
+        Returns list of columns:
+        - sys__input_id: Tracks which input produced each output. Allows atomic
+          writes and reconstruction of processed inputs from output table during
+          checkpoint recovery. Nullable because mappers use sys__id (1:1 mapping)
+          while generators populate this field explicitly (1:N mapping).
+        - sys__partial: Tracks incomplete inputs during checkpoint recovery.
+          For generators, all rows except the last one for each input are marked
+          as partial=True. If an input has no row with partial=False, it means the
+          input was not fully processed and needs to be re-run. Nullable because
+          mappers (1:1) don't use this field.
+        """
+        return [
+            sa.Column("sys__input_id", sa.Integer, nullable=True),
+            sa.Column("sys__partial", sa.Boolean, nullable=True),
+        ]
+
     def get_input_query(self, input_table_name: str, original_query: Select) -> Select:
         """
         Get a select query for UDF input.
@@ -808,9 +828,7 @@ class UDFStep(Step, ABC):
 
         if ch := self._checkpoint_exist(hash_output):
             # Skip UDF execution by reusing existing output table
-            output_table, input_table = self._skip_udf(
-                ch, partial_hash, hash_input, query
-            )
+            output_table, input_table = self._skip_udf(ch, hash_input, query)
         elif (
             ch_partial := self._checkpoint_exist(partial_hash, partial=True)
         ) and not udf_partial_reset:
@@ -840,7 +858,7 @@ class UDFStep(Step, ABC):
         return step_result(q, cols)
 
     def _skip_udf(
-        self, checkpoint: Checkpoint, partial_hash: str, hash_input: str, query
+        self, checkpoint: Checkpoint, hash_input: str, query
     ) -> tuple["Table", "Table"]:
         """
         Skip UDF execution by copying existing output table from previous job.
@@ -1070,30 +1088,12 @@ class UDFSignal(UDFStep):
         return []
 
     def create_output_table(self, name: str) -> "Table":
-        udf_output_columns: list[sqlalchemy.Column[Any]] = [
+        columns: list[sqlalchemy.Column[Any]] = [
             sqlalchemy.Column(col_name, col_type)
             for (col_name, col_type) in self.udf.output.items()
         ]
-
-        # Add sys__input_id column to track which input produced each output.
-        # This allows atomic writes and reconstruction of processed table from
-        # output table during checkpoint recovery.
-        # Note: nullable=True because mappers use sys__id (1:1 mapping) while
-        # generators populate this field explicitly (1:N mapping)
-        udf_output_columns.append(
-            sqlalchemy.Column("sys__input_id", sa.Integer, nullable=True)
-        )
-        # Add sys__partial column to track incomplete inputs during checkpoint
-        # recovery.
-        # All rows except the last one for each input are marked as partial=True.
-        # If an input has no row with partial=False, it means the input was not
-        # fully processed and needs to be re-run.
-        # Nullable because mappers (1:1) don't use this field.
-        udf_output_columns.append(
-            sqlalchemy.Column("sys__partial", sa.Boolean, nullable=True)
-        )
-
-        return self.warehouse.create_udf_table(udf_output_columns, name=name)
+        columns.extend(self._checkpoint_tracking_columns())
+        return self.warehouse.create_udf_table(columns, name=name)
 
     def create_result_query(
         self, udf_table, query
@@ -1209,21 +1209,7 @@ class RowGenerator(UDFStep):
         columns: list[Column] = [
             Column(name, typ) for name, typ in self.udf.output.items()
         ]
-
-        # Add sys__input_id column to track which input produced each output.
-        # This allows atomic writes and reconstruction of processed table from
-        # output table during checkpoint recovery.
-        # Note: nullable=True because mappers use sys__id (1:1 mapping) while
-        # generators populate this field explicitly (1:N mapping)
-        columns.append(sa.Column("sys__input_id", sa.Integer, nullable=True))
-        # Add sys__partial column to track incomplete inputs during checkpoint
-        # recovery.
-        # All rows except the last one for each input are marked as partial=True.
-        # If an input has no row with partial=False, it means the input was not
-        # fully processed and needs to be re-run.
-        # Nullable because mappers (1:1) don't use this field.
-        columns.append(sa.Column("sys__partial", sa.Boolean, nullable=True))
-
+        columns.extend(self._checkpoint_tracking_columns())
         return self.warehouse.create_dataset_rows_table(
             name,
             columns=tuple(columns),
