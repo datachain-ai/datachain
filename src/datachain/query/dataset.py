@@ -812,10 +812,8 @@ class UDFStep(Step, ABC):
                 ch, partial_hash, hash_input, query
             )
         elif (
-            (ch_partial := self._checkpoint_exist(partial_hash, partial=True))
-            and not udf_partial_reset
-            and ch_partial.job_id != self.job.id
-        ):
+            ch_partial := self._checkpoint_exist(partial_hash, partial=True)
+        ) and not udf_partial_reset:
             # Only continue from partial if it's from a parent job, not our own
             output_table, input_table = self._continue_udf(
                 ch_partial, hash_output, hash_input, query
@@ -845,35 +843,26 @@ class UDFStep(Step, ABC):
         self, checkpoint: Checkpoint, partial_hash: str, hash_input: str, query
     ) -> tuple["Table", "Table"]:
         """
-        Skip UDF execution by reusing existing output table.
-
-        If checkpoint is from same job, reuse table directly.
-        If checkpoint is from different job, copy table to current job.
+        Skip UDF execution by reusing existing output table from previous job.
+        (we copy output table of previous job)
 
         Returns tuple of (output_table, input_table).
         """
-        if checkpoint.job_id == self.job.id:
-            # Same job - recreate output table object
-            output_table = self.create_output_table(
-                UDFStep.output_table_name(checkpoint.job_id, checkpoint.hash)
-            )
-        else:
-            # Different job - copy the output table to current job
-            existing_output_table = self.warehouse.get_table(
-                UDFStep.output_table_name(checkpoint.job_id, checkpoint.hash)
-            )
-            current_output_table_name = UDFStep.output_table_name(
-                self.job.id, checkpoint.hash
-            )
-            output_table = self.create_output_table(current_output_table_name)
-            # Select only columns that exist in the source table
-            # Exclude sys__input_id and sys__partial (may not exist in old tables)
-            select_cols = [
-                c
-                for c in existing_output_table.c
-                if c.name not in ("sys__input_id", "sys__partial")
-            ]
-            self.warehouse.copy_table(output_table, sa.select(*select_cols))
+        existing_output_table = self.warehouse.get_table(
+            UDFStep.output_table_name(checkpoint.job_id, checkpoint.hash)
+        )
+        current_output_table_name = UDFStep.output_table_name(
+            self.job.id, checkpoint.hash
+        )
+        output_table = self.create_output_table(current_output_table_name)
+        # Select only columns that exist in the source table
+        # Exclude sys__input_id and sys__partial (may not exist in old tables)
+        select_cols = [
+            c
+            for c in existing_output_table.c
+            if c.name not in ("sys__input_id", "sys__partial")
+        ]
+        self.warehouse.copy_table(output_table, sa.select(*select_cols))
 
         input_table = self.get_or_create_input_table(query, hash_input)
 
