@@ -450,7 +450,7 @@ class UDFStep(Step, ABC):
         return hashlib.sha256(b"".join(parts)).hexdigest()
 
     @abstractmethod
-    def create_output_table(self, name: str, is_partial: bool = False) -> "Table":
+    def create_output_table(self, name: str) -> "Table":
         """Method that creates a table where temp udf results will be saved"""
 
     def get_input_query(self, input_table_name: str, original_query: Select) -> Select:
@@ -855,14 +855,7 @@ class UDFStep(Step, ABC):
             self.job.id, checkpoint.hash
         )
         output_table = self.create_output_table(current_output_table_name)
-        # Select only columns that exist in the source table
-        # Exclude sys__input_id and sys__partial (may not exist in old tables)
-        select_cols = [
-            c
-            for c in existing_output_table.c
-            if c.name not in ("sys__input_id", "sys__partial")
-        ]
-        self.warehouse.copy_table(output_table, sa.select(*select_cols))
+        self.warehouse.copy_table(output_table, sa.select(existing_output_table))
 
         input_table = self.get_or_create_input_table(query, hash_input)
 
@@ -890,7 +883,6 @@ class UDFStep(Step, ABC):
         # Create job-specific partial output table with sys__input_id column
         partial_output_table = self.create_output_table(
             UDFStep.partial_output_table_name(self.job.id, partial_hash),
-            is_partial=True,
         )
 
         if self.partition_by is not None:
@@ -949,7 +941,6 @@ class UDFStep(Step, ABC):
             ) from None
         partial_table = self.create_output_table(
             UDFStep.partial_output_table_name(self.job.id, checkpoint.hash),
-            is_partial=True,
         )
 
         # Find incomplete input IDs (ones missing sys__partial = FALSE)
@@ -1079,33 +1070,29 @@ class UDFSignal(UDFStep):
         """
         return []
 
-    def create_output_table(self, name: str, is_partial: bool = False) -> "Table":
+    def create_output_table(self, name: str) -> "Table":
         udf_output_columns: list[sqlalchemy.Column[Any]] = [
             sqlalchemy.Column(col_name, col_type)
             for (col_name, col_type) in self.udf.output.items()
         ]
 
-        # Add sys__input_id column for partial tables to track which input produced
-        # each output. This allows atomic writes and reconstruction of processed table
-        # from output table
-        # Added for both mappers and generators for code consistency
-        # Note: nullable=True because mappers use sys__id (1:1 mapping) while generators
-        # populate this field explicitly (1:N mapping)
-        if is_partial:
-            import sqlalchemy as sa
-
-            udf_output_columns.append(
-                sa.Column("sys__input_id", sa.Integer, nullable=True)
-            )
-            # Add sys__partial column to track incomplete inputs during checkpoint
-            # recovery.
-            # All rows except the last one for each input are marked as partial=True.
-            # If an input has no row with partial=False, it means the input was not
-            # fully processed and needs to be re-run.
-            # Nullable because mappers (1:1) don't use this field.
-            udf_output_columns.append(
-                sa.Column("sys__partial", sa.Boolean, nullable=True)
-            )
+        # Add sys__input_id column to track which input produced each output.
+        # This allows atomic writes and reconstruction of processed table from
+        # output table during checkpoint recovery.
+        # Note: nullable=True because mappers use sys__id (1:1 mapping) while
+        # generators populate this field explicitly (1:N mapping)
+        udf_output_columns.append(
+            sqlalchemy.Column("sys__input_id", sa.Integer, nullable=True)
+        )
+        # Add sys__partial column to track incomplete inputs during checkpoint
+        # recovery.
+        # All rows except the last one for each input are marked as partial=True.
+        # If an input has no row with partial=False, it means the input was not
+        # fully processed and needs to be re-run.
+        # Nullable because mappers (1:1) don't use this field.
+        udf_output_columns.append(
+            sqlalchemy.Column("sys__partial", sa.Boolean, nullable=True)
+        )
 
         return self.warehouse.create_udf_table(udf_output_columns, name=name)
 
@@ -1219,28 +1206,24 @@ class RowGenerator(UDFStep):
         )
         return [row[0] for row in self.warehouse.db.execute(incomplete_query)]
 
-    def create_output_table(self, name: str, is_partial: bool = False) -> "Table":
+    def create_output_table(self, name: str) -> "Table":
         columns: list[Column] = [
             Column(name, typ) for name, typ in self.udf.output.items()
         ]
 
-        # Add sys__input_id column for partial tables to track which input produced
-        # each output. This allows atomic writes and reconstruction of processed table
-        # from output table
-        # Added for both mappers and generators for code consistency
-        # Note: nullable=True because mappers use sys__id (1:1 mapping) while generators
-        # populate this field explicitly (1:N mapping)
-        if is_partial:
-            import sqlalchemy as sa
-
-            columns.append(sa.Column("sys__input_id", sa.Integer, nullable=True))
-            # Add sys__partial column to track incomplete inputs during checkpoint
-            # recovery.
-            # All rows except the last one for each input are marked as partial=True.
-            # If an input has no row with partial=False, it means the input was not
-            # fully processed and needs to be re-run.
-            # Nullable because mappers (1:1) don't use this field.
-            columns.append(sa.Column("sys__partial", sa.Boolean, nullable=True))
+        # Add sys__input_id column to track which input produced each output.
+        # This allows atomic writes and reconstruction of processed table from
+        # output table during checkpoint recovery.
+        # Note: nullable=True because mappers use sys__id (1:1 mapping) while
+        # generators populate this field explicitly (1:N mapping)
+        columns.append(sa.Column("sys__input_id", sa.Integer, nullable=True))
+        # Add sys__partial column to track incomplete inputs during checkpoint
+        # recovery.
+        # All rows except the last one for each input are marked as partial=True.
+        # If an input has no row with partial=False, it means the input was not
+        # fully processed and needs to be re-run.
+        # Nullable because mappers (1:1) don't use this field.
+        columns.append(sa.Column("sys__partial", sa.Boolean, nullable=True))
 
         return self.warehouse.create_dataset_rows_table(
             name,
