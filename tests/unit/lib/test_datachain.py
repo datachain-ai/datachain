@@ -1594,7 +1594,7 @@ def test_read_csv_column_types(tmp_dir, test_session):
         path.as_uri(), column_types={"age": "str"}, session=test_session
     )
     df1 = chain.select("first_name", "age", "city").to_pandas()
-    assert df1["age"].dtype == pd.StringDtype
+    assert pd.api.types.is_string_dtype(df1["age"])
 
 
 def test_read_csv_parse_options(tmp_dir, test_session):
