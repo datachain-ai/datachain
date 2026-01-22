@@ -1002,7 +1002,7 @@ class UDFStep(Step, ABC):
         # Find or create input table (may be in current job or ancestor)
         input_table = self.get_or_create_input_table(query, hash_input)
 
-        # Copy parent's partial table to current job's partial table
+        # Get parent's partial table
         try:
             parent_partial_table = self.warehouse.get_table(
                 UDFStep.partial_output_table_name(
@@ -1014,25 +1014,30 @@ class UDFStep(Step, ABC):
                 f"Parent partial table not found for checkpoint {checkpoint}. "
                 "Cannot continue from failed UDF."
             ) from None
-        partial_table = self.create_output_table(
-            UDFStep.partial_output_table_name(self.job.id, checkpoint.hash),
-        )
 
         # Find incomplete input IDs (ones missing sys__partial = FALSE)
         # These inputs were only partially processed before the crash
         incomplete_input_ids = self.find_incomplete_inputs(parent_partial_table)
 
-        # Copy parent's partial table, filtering out incomplete results if needed
+        # Atomically copy parent's partial table to current job's partial table
+        # Uses staging pattern to ensure partial table is consistent if copy fails
+        partial_table_name = UDFStep.partial_output_table_name(
+            self.job.id, checkpoint.hash
+        )
         if incomplete_input_ids:
             # Filter out partial results for incomplete inputs as they will be
             # re-processed from beginning
             filtered_query = sa.select(parent_partial_table).where(
                 parent_partial_table.c.sys__input_id.not_in(incomplete_input_ids)
             )
-            self.warehouse.copy_table(partial_table, filtered_query)
+            partial_table = self.warehouse.safe_copy_table(
+                partial_table_name, filtered_query
+            )
         else:
             # No incomplete inputs, simple copy (99.9% of cases)
-            self.warehouse.copy_table(partial_table, sa.select(parent_partial_table))
+            partial_table = self.warehouse.safe_copy_table(
+                partial_table_name, sa.select(parent_partial_table)
+            )
 
         # Calculate which rows still need processing
         unprocessed_query = self.calculate_unprocessed_rows(

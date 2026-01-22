@@ -1010,6 +1010,45 @@ class AbstractWarehouse(ABC, Serializable):
         Copy the results of a query into a table.
         """
 
+    def safe_copy_table(
+        self,
+        name: str,
+        query: sa.Select,
+        progress_cb: Callable[[int], None] | None = None,
+    ) -> sa.Table:
+        """
+        Atomically create and populate a table from a query.
+
+        Uses a staging pattern to ensure the final table only exists when fully
+        populated. This prevents race conditions and ensures data consistency
+        if the copy operation fails mid-way.
+
+        Leftover staging tables (tmp_*) are cleaned by system maintenance.
+
+        Args:
+            name: Final table name
+            query: Query to populate the table from
+            progress_cb: Optional callback for progress updates
+
+        Returns:
+            The created and populated table
+        """
+        staging_name = self.temp_table_name()
+
+        columns = [sa.Column(c.name, c.type) for c in query.selected_columns]
+        staging_table = self.create_udf_table(columns, name=staging_name)
+
+        self.copy_table(staging_table, query, progress_cb=progress_cb)
+
+        try:
+            return self.rename_table(staging_table, name)
+        except RuntimeError:
+            # Another process won the race - clean up our staging table
+            self.db.drop_table(staging_table, if_exists=True)
+            if self.db.has_table(name):
+                return self.get_table(name)
+            raise
+
     @abstractmethod
     def join(
         self,
