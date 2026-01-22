@@ -53,6 +53,7 @@ def add_jobs_parser(subparsers, parent_parser) -> None:
     studio_run_parser.add_argument(
         "--env",
         nargs="+",
+        action="append",
         help="Environment variables in KEY=VALUE format",
     )
 
