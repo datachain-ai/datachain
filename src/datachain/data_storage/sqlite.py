@@ -1,6 +1,7 @@
 import logging
 import os
 import sqlite3
+import uuid
 from collections.abc import Callable, Iterable, Sequence
 from contextlib import contextmanager
 from functools import cached_property, wraps
@@ -958,8 +959,12 @@ class SQLiteWarehouse(AbstractWarehouse):
 
         This ensures that if the process crashes during population, the next run
         won't find a partially-populated table and incorrectly reuse it.
+
+        Uses a unique staging name to avoid race conditions when parallel
+        processes try to create the same input table simultaneously.
         """
-        staging_name = f"{name}_staging"
+        # Use unique staging name to avoid race conditions
+        staging_name = f"{name}_staging_{uuid.uuid4().hex[:8]}"
 
         # Create staging table
         columns = [sqlalchemy.Column(c.name, c.type) for c in query.selected_columns]
@@ -969,5 +974,14 @@ class SQLiteWarehouse(AbstractWarehouse):
         with tqdm(desc="Preparing", unit=" rows", leave=False) as pbar:
             self.copy_table(staging_table, query, progress_cb=pbar.update)
 
-        # Atomically rename staging → final and return the renamed table
-        return self.rename_table(staging_table, name)
+        # Atomically rename staging → final
+        # If another process already created the final table, clean up and
+        # return existing
+        try:
+            return self.rename_table(staging_table, name)
+        except RuntimeError:
+            # Another process won the race - clean up our staging table
+            self.db.drop_table(staging_table)
+            if self.db.has_table(name):
+                return self.get_table(name)
+            raise
