@@ -54,6 +54,13 @@ class UdfError(DataChainParamsError):
         return self.__class__, (self.message,)
 
 
+class JsonSerializationError(UdfError):
+    def __init__(self, message: str, column_name: str, value: Any) -> None:
+        self.column_name = column_name
+        self.value = value
+        super().__init__(message)
+
+
 class UdfRunError(Exception):
     """Exception raised when UDF execution fails."""
 
