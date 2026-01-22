@@ -1329,11 +1329,20 @@ def test_parse_nested_json(tmp_dir, test_session):
     assert sorted(df1["na_me"]["first_select"].to_list()) == sorted(
         d["first-SELECT"] for d in df["nA-mE"].to_list()
     )
+
+    # Normalize nan/None to None for comparison (pandas 3.0 returns nan instead of None)
+    def normalize_null(x):
+        return None if pd.isna(x) else x
+
     assert sorted(
-        df1["na_me"]["l_as_t"].to_list(), key=lambda x: (x is None, x)
+        [normalize_null(x) for x in df1["na_me"]["l_as_t"].to_list()],
+        key=lambda x: (x is None, "" if x is None else x),
     ) == sorted(
-        [d.get("l--as@t", string_default) for d in df["nA-mE"].to_list()],
-        key=lambda x: (x is None, x),
+        [
+            normalize_null(d.get("l--as@t", string_default))
+            for d in df["nA-mE"].to_list()
+        ],
+        key=lambda x: (x is None, "" if x is None else x),
     )
 
 
@@ -1595,7 +1604,7 @@ def test_read_csv_column_types(tmp_dir, test_session):
         path.as_uri(), column_types={"age": "str"}, session=test_session
     )
     df1 = chain.select("first_name", "age", "city").to_pandas()
-    assert df1["age"].dtype == pd.StringDtype
+    assert pd.api.types.is_string_dtype(df1["age"])
 
 
 def test_read_csv_parse_options(tmp_dir, test_session):
