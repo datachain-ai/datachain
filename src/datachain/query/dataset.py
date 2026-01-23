@@ -37,7 +37,6 @@ from datachain.data_storage.schema import (
 )
 from datachain.dataset import DatasetDependency, DatasetStatus, RowDict
 from datachain.error import (
-    DataChainError,
     DatasetNotFoundError,
     QueryScriptCancelError,
     TableMissingError,
@@ -1010,10 +1009,16 @@ class UDFStep(Step, ABC):
                 )
             )
         except TableMissingError:
-            raise DataChainError(
-                f"Parent partial table not found for checkpoint {checkpoint}. "
-                "Cannot continue from failed UDF."
-            ) from None
+            # Checkpoint exists in metastore but table is missing - data inconsistency.
+            # Fall back to running from scratch rather than failing.
+            logger.warning(
+                "Parent partial table not found for checkpoint %s. "
+                "Running UDF from scratch.",
+                checkpoint,
+            )
+            return self._run_from_scratch(
+                checkpoint.hash, hash_output, hash_input, query
+            )
 
         # Find incomplete input IDs (ones missing sys__partial = FALSE)
         # These inputs were only partially processed before the crash
