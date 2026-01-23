@@ -35,6 +35,7 @@ logger = logging.getLogger("datachain")
 class _CheckpointState:
     """Internal state for checkpoint management."""
 
+    _lock = threading.Lock()
     disabled = False
     warning_shown = False
     owner_thread: int | None = None  # Thread ident of the checkpoint owner
@@ -564,36 +565,38 @@ def checkpoints_enabled() -> bool:
     if current_pid != main_pid:
         # We're in a subprocess without DATACHAIN_SUBPROCESS flag
         # This is a user-created subprocess - disable checkpoints
-        if not _CheckpointState.warning_shown:
-            logger.warning(
-                "User subprocess detected. "
-                "Checkpoints will not be created in this subprocess. "
-                "Previously created checkpoints remain valid and can be reused."
-            )
-            _CheckpointState.warning_shown = True
+        with _CheckpointState._lock:
+            if not _CheckpointState.warning_shown:
+                logger.warning(
+                    "User subprocess detected. "
+                    "Checkpoints will not be created in this subprocess. "
+                    "Previously created checkpoints remain valid and can be reused."
+                )
+                _CheckpointState.warning_shown = True
         return False
 
     # Thread ownership tracking - first thread to call becomes the owner
     # Threads share memory, so all threads see the same _CheckpointState
     current_thread = threading.current_thread().ident
-    if _CheckpointState.owner_thread is None:
-        _CheckpointState.owner_thread = current_thread
+    with _CheckpointState._lock:
+        if _CheckpointState.owner_thread is None:
+            _CheckpointState.owner_thread = current_thread
 
-    is_owner = current_thread == _CheckpointState.owner_thread
+        is_owner = current_thread == _CheckpointState.owner_thread
 
-    if not is_owner and not _CheckpointState.disabled:
-        _CheckpointState.disabled = True
-        if not _CheckpointState.warning_shown:
-            logger.warning(
-                "Concurrent thread detected. "
-                "New checkpoints will not be created from this point forward. "
-                "Previously created checkpoints remain valid and can be reused. "
-                "To enable checkpoints, ensure your script runs sequentially "
-                "without user-created threading."
-            )
-            _CheckpointState.warning_shown = True
+        if not is_owner and not _CheckpointState.disabled:
+            _CheckpointState.disabled = True
+            if not _CheckpointState.warning_shown:
+                logger.warning(
+                    "Concurrent thread detected. "
+                    "New checkpoints will not be created from this point forward. "
+                    "Previously created checkpoints remain valid and can be reused. "
+                    "To enable checkpoints, ensure your script runs sequentially "
+                    "without user-created threading."
+                )
+                _CheckpointState.warning_shown = True
 
-    return is_owner and not _CheckpointState.disabled
+        return is_owner and not _CheckpointState.disabled
 
 
 def env2bool(var, undefined=False):
