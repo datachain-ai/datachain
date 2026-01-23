@@ -770,11 +770,13 @@ class UDFStep(Step, ABC):
             )
         return self.__class__(self.udf, self.session)
 
-    def _checkpoint_exist(self, _hash: str, partial: bool = False) -> Checkpoint | None:
+    def _find_udf_checkpoint(
+        self, _hash: str, partial: bool = False
+    ) -> Checkpoint | None:
         """
-        Check if checkpoint exists for given hash.
-        Returns the Checkpoint object if found, None otherwise.
-        Checks current job first, then parent job if it exists.
+        Find a reusable UDF checkpoint for the given hash.
+        Returns the Checkpoint object if found and checkpoints are enabled,
+        None otherwise.
         """
         checkpoints_reset = env2bool("DATACHAIN_CHECKPOINTS_RESET", undefined=False)
 
@@ -883,13 +885,13 @@ class UDFStep(Step, ABC):
             # always run from scratch as Aggregator checkpoints are not implemented yet
             udf_partial_reset = True
 
-        if ch := self._checkpoint_exist(hash_output):
+        if ch := self._find_udf_checkpoint(hash_output):
             # Skip UDF execution by reusing existing output table
             output_table, input_table = self._skip_udf(
                 ch, hash_input, partial_hash, query
             )
         elif (
-            ch_partial := self._checkpoint_exist(partial_hash, partial=True)
+            ch_partial := self._find_udf_checkpoint(partial_hash, partial=True)
         ) and not udf_partial_reset:
             # Only continue from partial if it's from a parent job, not our own
             output_table, input_table = self._continue_udf(
