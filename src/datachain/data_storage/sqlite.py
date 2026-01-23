@@ -263,12 +263,11 @@ class SQLiteDatabaseEngine(DatabaseEngine):
             sqlalchemy.column("type"),
             sqlalchemy.column("name"),
         )
-        pattern = f"{prefix}%" if prefix else "%"
-        query = (
-            sqlalchemy.select(sqlite_master.c.name)
-            .where(sqlite_master.c.type == "table")
-            .where(sqlite_master.c.name.like(pattern))
+        query = sqlalchemy.select(sqlite_master.c.name).where(
+            sqlite_master.c.type == "table"
         )
+        if prefix:
+            query = query.where(sqlite_master.c.name.like(f"{prefix}%"))
         result = self.execute(query)
         return [row[0] for row in result.fetchall()]
 
