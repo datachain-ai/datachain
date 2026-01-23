@@ -885,7 +885,9 @@ class UDFStep(Step, ABC):
 
         if ch := self._checkpoint_exist(hash_output):
             # Skip UDF execution by reusing existing output table
-            output_table, input_table = self._skip_udf(ch, hash_input, query)
+            output_table, input_table = self._skip_udf(
+                ch, hash_input, partial_hash, query
+            )
         elif (
             ch_partial := self._checkpoint_exist(partial_hash, partial=True)
         ) and not udf_partial_reset:
@@ -915,16 +917,27 @@ class UDFStep(Step, ABC):
         return step_result(q, cols)
 
     def _skip_udf(
-        self, checkpoint: Checkpoint, hash_input: str, query
+        self, checkpoint: Checkpoint, hash_input: str, partial_hash: str, query
     ) -> tuple["Table", "Table"]:
         """
         Skip UDF execution by copying existing output table from previous job.
 
         Returns tuple of (output_table, input_table).
         """
-        existing_output_table = self.warehouse.get_table(
-            UDFStep.output_table_name(checkpoint.job_id, checkpoint.hash)
-        )
+        try:
+            existing_output_table = self.warehouse.get_table(
+                UDFStep.output_table_name(checkpoint.job_id, checkpoint.hash)
+            )
+        except TableMissingError:
+            # Checkpoint exists in metastore but table is missing - data inconsistency.
+            # Fall back to running from scratch rather than failing.
+            logger.warning(
+                "Output table not found for checkpoint %s. Running UDF from scratch.",
+                checkpoint,
+            )
+            return self._run_from_scratch(
+                partial_hash, checkpoint.hash, hash_input, query
+            )
         current_output_table_name = UDFStep.output_table_name(
             self.job.id, checkpoint.hash
         )
