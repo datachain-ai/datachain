@@ -27,6 +27,7 @@ from tqdm.auto import tqdm
 
 import datachain.sql.sqlite
 from datachain.data_storage import AbstractDBMetastore, AbstractWarehouse
+from datachain.data_storage.buffer import InsertBuffer
 from datachain.data_storage.db_engine import DatabaseEngine
 from datachain.data_storage.schema import DefaultSchema
 from datachain.dataset import DatasetRecord, StorageURI
@@ -36,7 +37,7 @@ from datachain.project import Project
 from datachain.sql.sqlite import create_user_defined_sql_functions, sqlite_dialect
 from datachain.sql.sqlite.base import load_usearch_extension
 from datachain.sql.types import SQLType
-from datachain.utils import DataChainDir, batched, batched_it
+from datachain.utils import DataChainDir, batched_it
 
 if TYPE_CHECKING:
     from sqlalchemy import CTE, Subquery
@@ -53,6 +54,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger("datachain")
 
 INSERT_BATCH_SIZE = 10_000  # number of rows to insert at a time
+INSERT_FLUSH_INTERVAL = 60.0  # flush interval in seconds for time-based flushing
 
 RETRY_START_SEC = 0.01
 RETRY_MAX_TIMES = 10
@@ -688,6 +690,7 @@ class SQLiteWarehouse(AbstractWarehouse):
         db_file = get_db_file_in_memory(db_file, in_memory)
 
         self.db = db or SQLiteDatabaseEngine.from_db_file(db_file)
+        self.buffers: dict[str, InsertBuffer] = {}
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
         """Close connection upon exit from context manager."""
@@ -767,22 +770,76 @@ class SQLiteWarehouse(AbstractWarehouse):
     def prepare_entries(self, entries: "Iterable[File]") -> Iterable[dict[str, Any]]:
         return (e.model_dump() for e in entries)
 
+    def _insert_from_buffer(
+        self,
+        table: Table,
+        entries: list[dict[str, Any]],
+        final: bool = False,
+        cursor: Any = None,
+    ) -> None:
+        """Callback for InsertBuffer to insert a batch of entries."""
+        if not entries:
+            return
+        with self.db.transaction() as conn:
+            # transactions speeds up inserts significantly as there is no separate
+            # transaction created for each insert row
+            self.db.executemany(
+                table.insert().values({f: bindparam(f) for f in entries[0]}),
+                entries,
+                conn=conn,
+            )
+
+    def get_buffer(
+        self,
+        table: Table,
+        buffer_size: int = INSERT_BATCH_SIZE,
+        flush_interval: float = INSERT_FLUSH_INTERVAL,
+    ) -> InsertBuffer:
+        """Get or create an InsertBuffer for the given table."""
+        if table.name not in self.buffers:
+            self.buffers[table.name] = InsertBuffer(
+                table,
+                self._insert_from_buffer,
+                buffer_size,
+                flush_interval=flush_interval,
+            )
+        return self.buffers[table.name]
+
+    def close_buffer(self, table: Table) -> None:
+        """Flush and close the buffer for the given table."""
+        if table.name not in self.buffers:
+            return
+        self.buffers[table.name].flush()
+        self.buffers[table.name].close()
+        del self.buffers[table.name]
+
     def insert_rows(
         self,
         table: Table,
         rows: Iterable[dict[str, Any]],
         batch_size: int | None = None,
+        flush_interval: float | None = None,
     ) -> None:
-        batch_size = batch_size if batch_size is not None else INSERT_BATCH_SIZE
-        for row_chunk in batched(rows, batch_size):
-            with self.db.transaction() as conn:
-                # transactions speeds up inserts significantly as there is no separate
-                # transaction created for each insert row
-                self.db.executemany(
-                    table.insert().values({f: bindparam(f) for f in row_chunk[0]}),
-                    row_chunk,
-                    conn=conn,
-                )
+        """Inserts rows in batches using an InsertBuffer.
+
+        `insert_rows_done` must be called after this function is used
+        (and all rows have been inserted).
+        """
+        buffer_size = batch_size if batch_size is not None else INSERT_BATCH_SIZE
+        interval = (
+            flush_interval if flush_interval is not None else INSERT_FLUSH_INTERVAL
+        )
+        buffer = self.get_buffer(
+            table, buffer_size=buffer_size, flush_interval=interval
+        )
+        buffer.insert_many(rows)
+
+    def insert_rows_done(self, table: Table) -> None:
+        """Completes inserting rows by flushing the InsertBuffer.
+
+        Must be called after insert_rows is used (and all rows have been inserted).
+        """
+        self.close_buffer(table)
 
     def insert_dataset_rows(self, df, dataset: DatasetRecord, version: str) -> int:
         dr = self.dataset_rows(dataset, version)

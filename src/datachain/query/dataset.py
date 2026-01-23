@@ -395,6 +395,7 @@ def process_udf_outputs(
     udf: "UDFAdapter",
     cb: Callback = DEFAULT_CALLBACK,
     batch_size: int | None = None,
+    flush_interval: float | None = None,
 ) -> None:
     # Optimization: Compute row types once, rather than for every row.
     udf_col_types = get_col_types(warehouse, udf.output)
@@ -424,7 +425,9 @@ def process_udf_outputs(
                         udf_kind=udf_kind,
                     )
 
-    warehouse.insert_rows(udf_table, _insert_rows(), batch_size=batch_size)
+    warehouse.insert_rows(
+        udf_table, _insert_rows(), batch_size=batch_size, flush_interval=flush_interval
+    )
     warehouse.insert_rows_done(udf_table)
 
 
@@ -468,6 +471,7 @@ class UDFStep(Step, ABC):
     workers: bool | int = False
     min_task_size: int | None = None
     batch_size: int | None = None
+    flush_interval: float | None = None
 
     def hash_inputs(self) -> str:
         partition_by = ensure_sequence(self.partition_by or [])
@@ -537,6 +541,7 @@ class UDFStep(Step, ABC):
                         is_generator=self.is_generator,
                         min_task_size=self.min_task_size,
                         batch_size=self.batch_size,
+                        flush_interval=self.flush_interval,
                     )
                     udf_distributor()
                     return
@@ -574,6 +579,7 @@ class UDFStep(Step, ABC):
                         cache=self.cache,
                         rows_total=rows_total,
                         batch_size=self.batch_size,
+                        flush_interval=self.flush_interval,
                     )
 
                     # Run the UDFDispatcher in another process to avoid needing
@@ -623,6 +629,7 @@ class UDFStep(Step, ABC):
                                 self.udf,
                                 cb=generated_cb,
                                 batch_size=self.batch_size,
+                                flush_interval=self.flush_interval,
                             )
                     finally:
                         download_cb.close()
@@ -682,6 +689,7 @@ class UDFStep(Step, ABC):
                 workers=self.workers,
                 min_task_size=self.min_task_size,
                 batch_size=self.batch_size,
+                flush_interval=self.flush_interval,
             )
         return self.__class__(self.udf, self.catalog)
 
@@ -721,6 +729,7 @@ class UDFSignal(UDFStep):
     workers: bool | int = False
     min_task_size: int | None = None
     batch_size: int | None = None
+    flush_interval: float | None = None
 
     def create_udf_table(self, query: Select) -> "Table":
         udf_output_columns: list[sqlalchemy.Column[Any]] = [
@@ -808,6 +817,7 @@ class RowGenerator(UDFStep):
     workers: bool | int = False
     min_task_size: int | None = None
     batch_size: int | None = None
+    flush_interval: float | None = None
 
     def create_udf_table(self, query: Select) -> "Table":
         warehouse = self.catalog.warehouse
@@ -1865,6 +1875,7 @@ class DatasetQuery:
         workers: bool | int = False,
         min_task_size: int | None = None,
         batch_size: int | None = None,
+        flush_interval: float | None = None,
         # Parameters are unused, kept only to match the signature of Settings.to_dict
         prefetch: int | None = None,
         namespace: str | None = None,
@@ -1895,6 +1906,7 @@ class DatasetQuery:
                 min_task_size=min_task_size,
                 cache=cache,
                 batch_size=batch_size,
+                flush_interval=flush_interval,
             )
         )
         return query
@@ -1916,6 +1928,7 @@ class DatasetQuery:
         workers: bool | int = False,
         min_task_size: int | None = None,
         batch_size: int | None = None,
+        flush_interval: float | None = None,
         # Parameters are unused, kept only to match the signature of Settings.to_dict:
         prefetch: int | None = None,
         namespace: str | None = None,
@@ -1933,6 +1946,7 @@ class DatasetQuery:
                 min_task_size=min_task_size,
                 cache=cache,
                 batch_size=batch_size,
+                flush_interval=flush_interval,
             )
         )
         return query

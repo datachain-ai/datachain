@@ -363,6 +363,7 @@ class DataChain:
         project: str | None = None,
         min_task_size: int | None = None,
         batch_size: int | None = None,
+        flush_interval: float | None = None,
         sys: bool | None = None,
     ) -> "Self":
         """
@@ -387,6 +388,9 @@ class DataChain:
             batch_size: Number of rows per insert by UDF to fine tune and balance speed
                 and memory usage. This might be useful when processing large rows
                 or when running into memory issues. Defaults to 2000.
+            flush_interval: Time interval in seconds for flushing insert buffer.
+                When set, results are flushed to the database at this interval,
+                reducing data loss on failure. Defaults to 60 seconds.
 
         Example:
             ```py
@@ -410,6 +414,7 @@ class DataChain:
                 project=project,
                 min_task_size=min_task_size,
                 batch_size=batch_size,
+                flush_interval=flush_interval,
             )
         )
         return self._evolve(settings=settings, _sys=sys)

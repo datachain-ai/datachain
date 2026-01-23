@@ -494,6 +494,7 @@ class AbstractWarehouse(ABC, Serializable):
         table: sa.Table,
         rows: Iterable[dict[str, Any]],
         batch_size: int | None = None,
+        flush_interval: float | None = None,
     ) -> None:
         """Does batch inserts of any kind of rows into table"""
 
