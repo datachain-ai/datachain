@@ -333,6 +333,17 @@ When running locally:
 
 These limitations don't apply when running on Studio, where job linking between runs is handled automatically by the platform.
 
+### UDF Hashing Limitations
+
+DataChain computes checkpoint hashes by inspecting UDF code and metadata. Certain types of callables cannot be reliably hashed:
+
+- **Built-in functions** (`len`, `str`, `int`, etc.): Cannot access bytecode, so a random hash is generated on each run. Checkpoints using these functions will not be reused.
+- **C extensions**: Same limitation as built-ins - no accessible bytecode means a new hash each run.
+- **Mock objects**: `Mock(side_effect=...)` cannot be reliably hashed because the side effect is not discoverable via inspection. Use regular functions instead.
+- **Dynamically generated callables**: If a callable is created via `exec`/`eval` or its behavior depends on runtime state, the hash reflects only the method's code, not captured state.
+
+To ensure checkpoints work correctly, use regular Python functions defined with `def` or lambda expressions for your UDFs.
+
 ## Future Plans
 
 ### Partial Result Tracking for Aggregations
