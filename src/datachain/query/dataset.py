@@ -930,7 +930,7 @@ class UDFStep(Step, ABC):
             self.job.id, checkpoint.hash
         )
         output_table = self.create_output_table(current_output_table_name)
-        self.warehouse.copy_table(output_table, sa.select(existing_output_table))
+        self.warehouse.insert_into(output_table, sa.select(existing_output_table))
 
         input_table = self.get_or_create_input_table(query, hash_input)
 
@@ -1030,13 +1030,17 @@ class UDFStep(Step, ABC):
             filtered_query = sa.select(parent_partial_table).where(
                 parent_partial_table.c.sys__input_id.not_in(incomplete_input_ids)
             )
-            partial_table = self.warehouse.safe_copy_table(
-                partial_table_name, filtered_query
+            partial_table = self.warehouse.create_table_from_query(
+                partial_table_name,
+                filtered_query,
+                create_fn=self.create_output_table,
             )
         else:
             # No incomplete inputs, simple copy (99.9% of cases)
-            partial_table = self.warehouse.safe_copy_table(
-                partial_table_name, sa.select(parent_partial_table)
+            partial_table = self.warehouse.create_table_from_query(
+                partial_table_name,
+                sa.select(parent_partial_table),
+                create_fn=self.create_output_table,
             )
 
         # Calculate which rows still need processing
@@ -1598,7 +1602,7 @@ class SQLJoin(Step):
         )
         temp_tables.append(temp_table.name)
 
-        warehouse.copy_table(temp_table, query)
+        warehouse.insert_into(temp_table, query)
 
         return temp_table.select().subquery(dq.table.name)
 
@@ -2570,7 +2574,7 @@ class DatasetQuery:
 
             dr = self.catalog.warehouse.dataset_rows(dataset)
 
-            self.catalog.warehouse.copy_table(dr.get_table(), query.select())
+            self.catalog.warehouse.insert_into(dr.get_table(), query.select())
 
             self.catalog.update_dataset_version_with_warehouse_info(dataset, version)
 

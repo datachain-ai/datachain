@@ -1000,20 +1000,21 @@ class AbstractWarehouse(ABC, Serializable):
         return tbl
 
     @abstractmethod
-    def copy_table(
+    def insert_into(
         self,
         table: sa.Table,
         query: sa.Select,
         progress_cb: Callable[[int], None] | None = None,
     ) -> None:
         """
-        Copy the results of a query into a table.
+        Insert the results of a query into an existing table.
         """
 
-    def safe_copy_table(
+    def create_table_from_query(
         self,
         name: str,
         query: sa.Select,
+        create_fn: Callable[[str], sa.Table],
         progress_cb: Callable[[int], None] | None = None,
     ) -> sa.Table:
         """
@@ -1021,24 +1022,23 @@ class AbstractWarehouse(ABC, Serializable):
 
         Uses a staging pattern to ensure the final table only exists when fully
         populated. This prevents race conditions and ensures data consistency
-        if the copy operation fails mid-way.
+        if the operation fails mid-way.
 
         Leftover staging tables (tmp_*) are cleaned by system maintenance.
 
         Args:
             name: Final table name
             query: Query to populate the table from
+            create_fn: Function that creates an empty table given a name
             progress_cb: Optional callback for progress updates
 
         Returns:
             The created and populated table
         """
         staging_name = self.temp_table_name()
+        staging_table = create_fn(staging_name)
 
-        columns = [sa.Column(c.name, c.type) for c in query.selected_columns]
-        staging_table = self.create_udf_table(columns, name=staging_name)
-
-        self.copy_table(staging_table, query, progress_cb=progress_cb)
+        self.insert_into(staging_table, query, progress_cb=progress_cb)
 
         try:
             return self.rename_table(staging_table, name)

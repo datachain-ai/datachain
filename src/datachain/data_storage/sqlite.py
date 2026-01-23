@@ -854,7 +854,7 @@ class SQLiteWarehouse(AbstractWarehouse):
     ) -> None:
         raise NotImplementedError("Exporting dataset table not implemented for SQLite")
 
-    def copy_table(
+    def insert_into(
         self,
         table: Table,
         query: Select,
@@ -959,5 +959,12 @@ class SQLiteWarehouse(AbstractWarehouse):
         This ensures that if the process crashes during population, the next run
         won't find a partially-populated table and incorrectly reuse it.
         """
+        columns = [sqlalchemy.Column(c.name, c.type) for c in query.selected_columns]
+
         with tqdm(desc="Preparing", unit=" rows", leave=False) as pbar:
-            return self.safe_copy_table(name, query, progress_cb=pbar.update)
+            return self.create_table_from_query(
+                name,
+                query,
+                create_fn=lambda n: self.create_udf_table(columns, name=n),
+                progress_cb=pbar.update,
+            )
