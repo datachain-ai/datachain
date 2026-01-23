@@ -3,7 +3,7 @@ import logging
 import os
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager, nullcontext, suppress
 from datetime import datetime, timezone
 from functools import cached_property, reduce
 from itertools import groupby
@@ -2167,9 +2167,8 @@ class AbstractDBMetastore(AbstractMetastore):
         conn: Any | None = None,
     ) -> Checkpoint:
         # Use transaction to atomically insert and find checkpoint
-        with self.db.transaction() as tx_conn:
-            conn = conn or tx_conn
-
+        tx = self.db.transaction() if conn is None else nullcontext(conn)
+        with tx as active_conn:
             query = self._checkpoints_insert().values(
                 id=str(uuid4()),
                 job_id=job_id,
@@ -2184,9 +2183,11 @@ class AbstractDBMetastore(AbstractMetastore):
             )
             query = query.on_conflict_do_nothing(index_elements=["job_id", "hash"])
 
-            self.db.execute(query, conn=conn)
+            self.db.execute(query, conn=active_conn)
 
-            checkpoint = self.find_checkpoint(job_id, _hash, partial=partial, conn=conn)
+            checkpoint = self.find_checkpoint(
+                job_id, _hash, partial=partial, conn=active_conn
+            )
             assert checkpoint is not None, (
                 f"Checkpoint should exist after get_or_create for job_id={job_id}, "
                 f"hash={_hash}, partial={partial}"
