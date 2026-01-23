@@ -93,7 +93,7 @@ hf = [
   "torch<2.10.0 ; (sys_platform == 'linux' or sys_platform == 'darwin')",
   # Pin torchcodec due to compatibility issues with version 0.10.0+
   # See test_hf_audio failures in SaaS, re-enable when resolved
-  "torchcodec<0.10.0"
+  "torchcodec<0.10.0 ; (sys_platform == 'linux' or sys_platform == 'darwin')"
 ]
 video = [
   "ffmpeg-python",
