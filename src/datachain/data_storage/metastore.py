@@ -2154,7 +2154,6 @@ class AbstractDBMetastore(AbstractMetastore):
         partial: bool = False,
         conn: Any | None = None,
     ) -> Checkpoint:
-        # Use transaction to atomically insert and find checkpoint
         tx = self.db.transaction() if conn is None else nullcontext(conn)
         with tx as active_conn:
             query = self._checkpoints_insert().values(
@@ -2166,9 +2165,8 @@ class AbstractDBMetastore(AbstractMetastore):
             )
 
             # Use on_conflict_do_nothing to handle race conditions
-            assert hasattr(query, "on_conflict_do_nothing"), (
-                "Database must support on_conflict_do_nothing"
-            )
+            if not hasattr(query, "on_conflict_do_nothing"):
+                raise RuntimeError("Database must support on_conflict_do_nothing")
             query = query.on_conflict_do_nothing(index_elements=["job_id", "hash"])
 
             self.db.execute(query, conn=active_conn)
@@ -2176,10 +2174,11 @@ class AbstractDBMetastore(AbstractMetastore):
             checkpoint = self.find_checkpoint(
                 job_id, _hash, partial=partial, conn=active_conn
             )
-            assert checkpoint is not None, (
-                f"Checkpoint should exist after get_or_create for job_id={job_id}, "
-                f"hash={_hash}, partial={partial}"
-            )
+            if checkpoint is None:
+                raise RuntimeError(
+                    f"Checkpoint should exist after get_or_create for job_id={job_id}, "
+                    f"hash={_hash}, partial={partial}"
+                )
             return checkpoint
 
     def list_checkpoints(self, job_id: str, conn=None) -> Iterator[Checkpoint]:
