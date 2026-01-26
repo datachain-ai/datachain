@@ -1,4 +1,5 @@
 import glob
+import itertools
 import logging
 import posixpath
 import secrets
@@ -1001,6 +1002,49 @@ class AbstractWarehouse(ABC, Serializable):
         Join two tables together.
         """
 
+    def subtract_query(
+        self,
+        source_query: sa.Select,
+        target_query: sa.Select,
+        key_pairs: Sequence[tuple[str, str]],
+    ) -> sa.Selectable:
+        """
+        Build an anti-join query for subtract semantics.
+
+        Default implementation uses LEFT JOIN with NULL-safe key comparison.
+        Warehouses can override this for backend-specific behavior.
+        """
+        assert key_pairs, "key_pairs must not be empty"
+        suffix = _next_subtract_id()
+        sq = source_query.cte(f"__dc_src_cte_{suffix}")
+        tq = target_query.cte(f"__dc_tgt_cte_{suffix}")
+
+        target_key_cols = [
+            tq.c[right] if left == right else tq.c[right].label(left)
+            for left, right in key_pairs
+        ]
+        target_keys = (
+            sa.select(
+                *target_key_cols,
+                sa.literal(1).label("__dc_match"),
+            )
+            .distinct()
+            .subquery(f"__dc_tgt_keys_{suffix}")
+        )
+
+        on_clause = sa.and_(
+            *[
+                sq.c[left].is_not_distinct_from(target_keys.c[left])
+                for left, _ in key_pairs
+            ]
+        )
+
+        return (
+            sa.select(sq)
+            .select_from(sq.outerjoin(target_keys, on_clause))
+            .where(target_keys.c["__dc_match"].is_(None))
+        )
+
     @abstractmethod
     def create_pre_udf_table(self, query: sa.Select) -> sa.Table:
         """
@@ -1034,3 +1078,11 @@ class AbstractWarehouse(ABC, Serializable):
 def _random_string(length: int) -> str:
     alphabet = string.ascii_letters + string.digits
     return "".join(secrets.choice(alphabet) for _ in range(length))
+
+
+_subtract_counter = itertools.count()
+
+
+def _next_subtract_id() -> int:
+    """Return a unique suffix for subtract CTE naming."""
+    return next(_subtract_counter)

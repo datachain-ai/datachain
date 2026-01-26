@@ -393,6 +393,9 @@ def test_studio_run(capsys, mocker, tmp_dir):
                     "env_file.txt",
                     "--env",
                     "ENV_FROM_ARGS=1",
+                    "--env",
+                    "ENV2=2",
+                    "ENV3=3",
                     "--workers",
                     "2",
                     "--files",
@@ -441,7 +444,7 @@ def test_studio_run(capsys, mocker, tmp_dir):
     assert second_request.json() == {
         "query": "print(1)",
         "query_type": "PYTHON",
-        "environment": "ENV_FROM_FILE=1\nENV_FROM_ARGS=1",
+        "environment": "ENV_FROM_FILE=1\nENV_FROM_ARGS=1\nENV2=2\nENV3=3",
         "workers": 2,
         "query_name": "example_query.py",
         "files": ["1"],

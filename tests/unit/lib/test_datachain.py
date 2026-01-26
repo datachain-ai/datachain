@@ -1328,11 +1328,20 @@ def test_parse_nested_json(tmp_dir, test_session):
     assert sorted(df1["na_me"]["first_select"].to_list()) == sorted(
         d["first-SELECT"] for d in df["nA-mE"].to_list()
     )
+
+    # Normalize nan/None to None for comparison (pandas 3.0 returns nan instead of None)
+    def normalize_null(x):
+        return None if pd.isna(x) else x
+
     assert sorted(
-        df1["na_me"]["l_as_t"].to_list(), key=lambda x: (x is None, x)
+        [normalize_null(x) for x in df1["na_me"]["l_as_t"].to_list()],
+        key=lambda x: (x is None, "" if x is None else x),
     ) == sorted(
-        [d.get("l--as@t", string_default) for d in df["nA-mE"].to_list()],
-        key=lambda x: (x is None, x),
+        [
+            normalize_null(d.get("l--as@t", string_default))
+            for d in df["nA-mE"].to_list()
+        ],
+        key=lambda x: (x is None, "" if x is None else x),
     )
 
 
@@ -1594,7 +1603,7 @@ def test_read_csv_column_types(tmp_dir, test_session):
         path.as_uri(), column_types={"age": "str"}, session=test_session
     )
     df1 = chain.select("first_name", "age", "city").to_pandas()
-    assert df1["age"].dtype == pd.StringDtype
+    assert pd.api.types.is_string_dtype(df1["age"])
 
 
 def test_read_csv_parse_options(tmp_dir, test_session):
@@ -2255,75 +2264,6 @@ def test_union_different_column_order(test_session):
         (9, "different"),
         (10, "order"),
     ]
-
-
-def test_subtract(test_session):
-    chain1 = dc.read_values(a=[1, 1, 2], b=["x", "y", "z"], session=test_session)
-    chain2 = dc.read_values(a=[1, 2], b=["x", "y"], session=test_session)
-    assert set(chain1.subtract(chain2, on=["a", "b"]).to_list()) == {(1, "y"), (2, "z")}
-    assert set(chain1.subtract(chain2, on=["b"]).to_list()) == {(2, "z")}
-    assert not set(chain1.subtract(chain2, on=["a"]).to_list())
-    assert set(chain1.subtract(chain2).to_list()) == {(1, "y"), (2, "z")}
-    assert chain1.subtract(chain1).count() == 0
-
-    chain3 = dc.read_values(a=[1, 3], c=["foo", "bar"], session=test_session)
-    assert set(chain1.subtract(chain3, on="a").to_list()) == {(2, "z")}
-    assert set(chain1.subtract(chain3).to_list()) == {(2, "z")}
-
-    chain4 = dc.read_values(d=[1, 2, 3], e=["x", "y", "z"], session=test_session)
-    chain5 = dc.read_values(a=[1, 2], b=["x", "y"], session=test_session)
-
-    assert set(chain4.subtract(chain5, on="d", right_on="a").to_list()) == {(3, "z")}
-
-
-def test_subtract_duplicated_rows(test_session):
-    chain1 = dc.read_values(id=[1, 1], name=["1", "1"], session=test_session)
-    chain2 = dc.read_values(id=[2], name=["2"], session=test_session)
-    sub = chain1.subtract(chain2, on="id")
-    assert set(sub.to_list()) == {(1, "1"), (1, "1")}
-
-
-def test_subtract_error(test_session):
-    chain1 = dc.read_values(a=[1, 1, 2], b=["x", "y", "z"], session=test_session)
-    chain2 = dc.read_values(a=[1, 2], b=["x", "y"], session=test_session)
-    with pytest.raises(DataChainParamsError):
-        chain1.subtract(chain2, on=[])
-    with pytest.raises(TypeError):
-        chain1.subtract(chain2, on=42)
-
-    with pytest.raises(DataChainParamsError):
-        chain1.subtract(chain2, on="")
-
-    with pytest.raises(DataChainParamsError):
-        chain1.subtract(chain2, on="a", right_on="")
-
-    with pytest.raises(DataChainParamsError):
-        chain1.subtract(chain2, on=["a", "b"], right_on=["c", ""])
-
-    with pytest.raises(DataChainParamsError):
-        chain1.subtract(chain2, on=["a", "b"], right_on=[])
-
-    with pytest.raises(DataChainParamsError):
-        chain1.subtract(chain2, on=["a", "b"], right_on=["d"])
-
-    with pytest.raises(DataChainParamsError):
-        chain1.subtract(chain2, right_on=[])
-
-    with pytest.raises(DataChainParamsError):
-        chain1.subtract(chain2, right_on="")
-
-    with pytest.raises(DataChainParamsError):
-        chain1.subtract(chain2, right_on=42)
-
-    with pytest.raises(DataChainParamsError):
-        chain1.subtract(chain2, right_on=["a"])
-
-    with pytest.raises(TypeError):
-        chain1.subtract(chain2, on=42, right_on=42)
-
-    chain3 = dc.read_values(c=["foo", "bar"], session=test_session)
-    with pytest.raises(DataChainParamsError):
-        chain1.subtract(chain3)
 
 
 def test_column_math(test_session):

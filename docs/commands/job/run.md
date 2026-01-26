@@ -74,7 +74,16 @@ datachain job run --workers 4 --files utils.py config.json query.py
 datachain job run --env API_KEY=123 --req pandas numpy query.py
 ```
 
-6. Run a job with a repository (will be cloned in the job working directory):
+6. Run a job with multiple environment variables:
+```bash
+# Multiple vars in a single --env
+datachain job run --env API_KEY=123 REGION=us-east-1 query.py
+
+# Multiple --env flags
+datachain job run --env API_KEY=123 --env REGION=us-east-1 query.py
+```
+
+7. Run a job with a repository (will be cloned in the job working directory):
 ```bash
 datachain job run --repository https://github.com/datachain-ai/datachain query.py
 
@@ -85,7 +94,7 @@ datachain job run --repository https://github.com/datachain-ai/datachain@main qu
 datachain job run --repository git@github.com:datachain-ai/datachain.git@main query.py
 ```
 
-7. Run a job with higher priority
+8. Run a job with higher priority
 ```bash
 datachain job run --priority 2 query.py
 ```

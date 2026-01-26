@@ -110,7 +110,7 @@ jobs:
 
       - name: Install FFmpeg on Windows
         if: runner.os == 'Windows'
-        run: choco install ffmpeg --version 7.0
+        run: choco install ffmpeg --version 7.0.2
 
       - name: Install FFmpeg on macOS
         if: runner.os == 'macOS'
