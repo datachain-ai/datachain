@@ -289,7 +289,7 @@ def test_aggregator_always_runs_from_scratch(
 
 
 def test_udf_generator_reset_udf(test_session, monkeypatch):
-    monkeypatch.setenv("DATACHAIN_UDF_CHECKPOINTS_RESET", "true")
+    monkeypatch.setenv("DATACHAIN_UDF_RESTART", "true")
     dc.read_values(num=[1, 2, 3, 4, 5, 6], session=test_session).save("nums")
     processed_nums = []
 

@@ -778,7 +778,7 @@ class UDFStep(Step, ABC):
         Returns the Checkpoint object if found and checkpoints are enabled,
         None otherwise.
         """
-        checkpoints_reset = env2bool("DATACHAIN_CHECKPOINTS_RESET", undefined=False)
+        checkpoints_reset = env2bool("DATACHAIN_SKIP_CHECKPOINTS", undefined=False)
 
         if (
             checkpoints_enabled()
@@ -862,7 +862,7 @@ class UDFStep(Step, ABC):
             (hash_input + self.udf.output_schema_hash()).encode()
         ).hexdigest()
 
-        udf_partial_reset = env2bool("DATACHAIN_UDF_CHECKPOINTS_RESET", undefined=False)
+        udf_partial_reset = env2bool("DATACHAIN_UDF_RESTART", undefined=False)
 
         # If partition_by is set, we need to create input table first to ensure
         # consistent sys__id
@@ -922,17 +922,14 @@ class UDFStep(Step, ABC):
         self, checkpoint: Checkpoint, hash_input: str, partial_hash: str, query
     ) -> tuple["Table", "Table"]:
         """
-        Skip UDF execution by copying existing output table from previous job.
-
-        Returns tuple of (output_table, input_table).
+        Skip UDF by copying existing output table. Returns (output_table, input_table).
         """
         try:
             existing_output_table = self.warehouse.get_table(
                 UDFStep.output_table_name(checkpoint.job_id, checkpoint.hash)
             )
         except TableMissingError:
-            # Checkpoint exists in metastore but table is missing - data inconsistency.
-            # Fall back to running from scratch rather than failing.
+            # Table missing - fall back to running from scratch
             logger.warning(
                 "Output table not found for checkpoint %s. Running UDF from scratch.",
                 checkpoint,
@@ -953,37 +950,25 @@ class UDFStep(Step, ABC):
     def _run_from_scratch(
         self, partial_hash: str, hash_output: str, hash_input: str, query
     ) -> tuple["Table", "Table"]:
-        """
-        Execute UDF from scratch.
-        Gets or creates input table (reuses from ancestors if available).
-        Creates job-specific partial output table.
-        On success, promotes partial table to job-specific final table.
-        Returns tuple of (output_table, input_table).
-        """
-        # Create checkpoint if enabled (skip if concurrent execution detected)
+        """Execute UDF from scratch. Returns (output_table, input_table)."""
         if checkpoints_enabled():
             self.metastore.get_or_create_checkpoint(
                 self.job.id, partial_hash, partial=True
             )
 
-        # Get or create input table (reuse from ancestors if available)
         input_table = self.get_or_create_input_table(query, hash_input)
 
-        # Create job-specific partial output table with sys__input_id column
         partial_output_table = self.create_output_table(
             UDFStep.partial_output_table_name(self.job.id, partial_hash),
         )
 
         if self.partition_by is not None:
-            # input table is created before and correct input query is already generated
             input_query = query
         else:
             input_query = self.get_input_query(input_table.name, query)
 
-        # Run UDF to populate partial output table
         self.populate_udf_output_table(partial_output_table, input_query)
 
-        # Promote partial table to final output table for current job
         output_table = self.warehouse.rename_table(
             partial_output_table, UDFStep.output_table_name(self.job.id, hash_output)
         )
@@ -993,30 +978,17 @@ class UDFStep(Step, ABC):
         self, checkpoint: Checkpoint, hash_output: str, hash_input: str, query
     ) -> tuple["Table", "Table"]:
         """
-        Continue UDF execution from parent's partial output table.
-
-        Steps:
-        1. Find input table from current job or ancestors
-        2. Find parent's partial output table and copy to current job
-        3. Calculate unprocessed rows (input - partial output)
-        4. Execute UDF only on unprocessed rows
-        5. Promote to job-specific final table on success
-
-        Returns tuple of (output_table, input_table).
+        Continue UDF from parent's partial output. Returns (output_table, input_table).
         """
-        # The checkpoint must be from parent job
         assert self.job.rerun_from_job_id is not None
         assert checkpoint.job_id == self.job.rerun_from_job_id
 
-        # Create new partial checkpoint in current job
         self.metastore.get_or_create_checkpoint(
             self.job.id, checkpoint.hash, partial=True
         )
 
-        # Find or create input table (may be in current job or ancestor)
         input_table = self.get_or_create_input_table(query, hash_input)
 
-        # Get parent's partial table
         try:
             parent_partial_table = self.warehouse.get_table(
                 UDFStep.partial_output_table_name(
@@ -1024,8 +996,7 @@ class UDFStep(Step, ABC):
                 )
             )
         except TableMissingError:
-            # Checkpoint exists in metastore but table is missing - data inconsistency.
-            # Fall back to running from scratch rather than failing.
+            # Table missing - fall back to running from scratch
             logger.warning(
                 "Parent partial table not found for checkpoint %s. "
                 "Running UDF from scratch.",
@@ -1035,18 +1006,13 @@ class UDFStep(Step, ABC):
                 checkpoint.hash, hash_output, hash_input, query
             )
 
-        # Find incomplete input IDs (ones missing sys__partial = FALSE)
-        # These inputs were only partially processed before the crash
         incomplete_input_ids = self.find_incomplete_inputs(parent_partial_table)
 
-        # Atomically copy parent's partial table to current job's partial table
-        # Uses staging pattern to ensure partial table is consistent if copy fails
         partial_table_name = UDFStep.partial_output_table_name(
             self.job.id, checkpoint.hash
         )
         if incomplete_input_ids:
-            # Filter out partial results for incomplete inputs as they will be
-            # re-processed from beginning
+            # Filter out incomplete inputs - they will be re-processed
             filtered_query = sa.select(parent_partial_table).where(
                 parent_partial_table.c.sys__input_id.not_in(incomplete_input_ids)
             )
@@ -1056,24 +1022,20 @@ class UDFStep(Step, ABC):
                 create_fn=self.create_output_table,
             )
         else:
-            # No incomplete inputs, simple copy (99.9% of cases)
             partial_table = self.warehouse.create_table_from_query(
                 partial_table_name,
                 sa.select(parent_partial_table),
                 create_fn=self.create_output_table,
             )
 
-        # Calculate which rows still need processing
         unprocessed_query = self.calculate_unprocessed_rows(
             self.warehouse.get_table(input_table.name),
             partial_table,
             incomplete_input_ids,
         )
 
-        # Execute UDF only on unprocessed rows, appending to partial table
         self.populate_udf_output_table(partial_table, unprocessed_query)
 
-        # Promote partial table to final output table for current job
         output_table = self.warehouse.rename_table(
             partial_table, UDFStep.output_table_name(self.job.id, hash_output)
         )

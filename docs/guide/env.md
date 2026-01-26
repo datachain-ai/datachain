@@ -20,7 +20,7 @@ List of environment variables used to configure DataChain behavior.
 - `DATACHAIN_PROJECT` – Project name or combination of namespace name and project name separated by `.` to use as default, example: `DATACHAIN_PROJECT=dev.analytics`
 
 ### Checkpoints
-- `DATACHAIN_CHECKPOINTS_RESET` – When set to `1` or `true`, ignores all existing checkpoints and runs the script from scratch, forcing DataChain to recreate all datasets.
-- `DATACHAIN_UDF_CHECKPOINTS_RESET` – When set to `1` or `true`, ignores any in-progress UDF checkpoints and forces UDFs to restart from the beginning. This only affects incomplete UDFs; completed UDFs are still skipped based on their hash unless their code or inputs have changed.
+- `DATACHAIN_SKIP_CHECKPOINTS` – When set to `1` or `true`, ignores all existing checkpoints and runs the script from scratch, forcing DataChain to recreate all datasets.
+- `DATACHAIN_UDF_RESTART` – When set to `1` or `true`, ignores any in-progress UDF checkpoints and forces UDFs to restart from the beginning. This only affects incomplete UDFs; completed UDFs are still skipped based on their hash unless their code or inputs have changed.
 
 Note: Some environment variables are used internally and may not be documented here. For the most up-to-date list, refer to the source code.

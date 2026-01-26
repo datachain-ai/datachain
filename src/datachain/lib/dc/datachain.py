@@ -721,7 +721,7 @@ class DataChain:
         from .datasets import read_dataset
 
         metastore = self.session.catalog.metastore
-        checkpoints_reset = env2bool("DATACHAIN_CHECKPOINTS_RESET", undefined=False)
+        checkpoints_reset = env2bool("DATACHAIN_SKIP_CHECKPOINTS", undefined=False)
 
         if (
             checkpoints_enabled()

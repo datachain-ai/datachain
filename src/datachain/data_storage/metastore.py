@@ -543,13 +543,7 @@ class AbstractMetastore(ABC, Serializable):
         partial: bool = False,
         conn: Any | None = None,
     ) -> Checkpoint:
-        """
-        Creates a new checkpoint or returns existing one if already exists.
-        This is idempotent - calling it multiple times with the same job_id and hash
-        will not create duplicates.
-
-        The insert and find operations are wrapped in a transaction to ensure atomicity.
-        """
+        """Get or create checkpoint. Must be atomic and idempotent."""
 
     @abstractmethod
     def remove_checkpoint(self, checkpoint_id: str, conn: Any | None = None) -> None:
@@ -567,13 +561,7 @@ class AbstractMetastore(ABC, Serializable):
         is_creator: bool = False,
         conn=None,
     ) -> None:
-        """
-        Link dataset version to job.
-
-        This atomically:
-        1. Creates a link in the dataset_version_jobs junction table
-        2. Updates dataset_version.job_id to point to this job
-        """
+        """Link dataset version to job. Must be atomic."""
 
     @abstractmethod
     def get_dataset_version_for_job_ancestry(
@@ -2272,11 +2260,7 @@ class AbstractDBMetastore(AbstractMetastore):
             self.db.execute(update_query, conn=conn)
 
     def get_ancestor_job_ids(self, job_id: str, conn=None) -> list[str]:
-        # Use recursive CTE to walk up the rerun chain
-        # Format: WITH RECURSIVE ancestors(id, rerun_from_job_id, run_group_id,
-        # depth) AS (...)
-        # Include depth tracking to prevent infinite recursion in case of
-        # circular dependencies
+        """Get all ancestor job IDs using recursive CTE."""
         ancestors_cte = (
             self._jobs_select(
                 self._jobs.c.id.label("id"),
@@ -2288,8 +2272,6 @@ class AbstractDBMetastore(AbstractMetastore):
             .cte(name="ancestors", recursive=True)
         )
 
-        # Recursive part: join with parent jobs, incrementing depth and checking limit
-        # Also ensure we only traverse jobs within the same run_group_id for safety
         ancestors_recursive = ancestors_cte.union_all(
             self._jobs_select(
                 self._jobs.c.id.label("id"),
