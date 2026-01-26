@@ -17,7 +17,7 @@ from datachain.dataset import (
 )
 from datachain.error import DataChainError
 from datachain.remote.studio import StudioClient
-from datachain.utils import STUDIO_URL
+from datachain.utils import STUDIO_URL, flatten
 
 if TYPE_CHECKING:
     from argparse import Namespace
@@ -444,7 +444,8 @@ def create_job(
     with open(query_file) as f:
         query = f.read()
 
-    environment = "\n".join(env) if env else ""
+    env_values = list(flatten(env)) if env else []
+    environment = "\n".join(env_values) if env_values else ""
     if env_file:
         with open(env_file) as f:
             environment = f.read() + "\n" + environment
