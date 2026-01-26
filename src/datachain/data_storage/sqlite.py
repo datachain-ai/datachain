@@ -392,12 +392,14 @@ class SQLiteDatabaseEngine(DatabaseEngine):
             self.metadata.remove(table)
 
     def rename_table(self, old_name: str, new_name: str):
+        from datachain.error import TableRenameError
+
         comp_old_name = quote_schema(old_name)
         comp_new_name = quote_schema(new_name)
         try:
             self.execute_str(f"ALTER TABLE {comp_old_name} RENAME TO {comp_new_name}")
         except Exception as e:
-            raise RuntimeError(
+            raise TableRenameError(
                 f"Failed to rename table from '{old_name}' to '{new_name}': {e}"
             ) from e
         # Remove old table from metadata to avoid stale references

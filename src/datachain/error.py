@@ -99,6 +99,10 @@ class TableMissingError(DataChainError):
     pass
 
 
+class TableRenameError(DataChainError):
+    pass
+
+
 class OutdatedDatabaseSchemaError(DataChainError):
     pass
 

@@ -17,6 +17,7 @@ from datachain.client import Client
 from datachain.data_storage.schema import convert_rows_custom_column_types
 from datachain.data_storage.serializer import Serializable
 from datachain.dataset import DatasetRecord, StorageURI
+from datachain.error import TableRenameError
 from datachain.lib.file import File
 from datachain.lib.model_store import ModelStore
 from datachain.lib.signal_schema import SignalSchema
@@ -522,19 +523,9 @@ class AbstractWarehouse(ABC, Serializable):
         """
 
     def rename_table(self, old_table: sa.Table, new_name: str) -> sa.Table:
-        """
-        Renames a table and returns a new Table object with preserved column types.
-
-        Args:
-            old_table: The existing Table object to rename
-            new_name: New table name
-
-        Returns:
-            SQLAlchemy Table object with the new name and same schema
-        """
+        """Rename table and return new Table object with same schema."""
         self.db.rename_table(old_table.name, new_name)
 
-        # Create a new table object with the same columns but new name
         return sa.Table(
             new_name,
             self.db.metadata,
@@ -1042,7 +1033,7 @@ class AbstractWarehouse(ABC, Serializable):
 
         try:
             return self.rename_table(staging_table, name)
-        except RuntimeError:
+        except TableRenameError:
             # Another process won the race - clean up our staging table
             self.db.drop_table(staging_table, if_exists=True)
             if self.db.has_table(name):
