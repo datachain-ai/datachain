@@ -531,11 +531,7 @@ class UDFStep(Step, ABC):
         ]
 
     def get_input_query(self, input_table_name: str, original_query: Select) -> Select:
-        """
-        Get a select query for UDF input.
-        If query cache is enabled, use the cached table; otherwise use the original
-        query.
-        """
+        """Get a select query for UDF input."""
         # Table was created from original_query by create_pre_udf_table,
         # so they should have the same columns. However, get_table() reflects
         # the table with database-specific types (e.g ClickHouse types) instead of
@@ -848,10 +844,8 @@ class UDFStep(Step, ABC):
         self,
         query_generator: QueryGenerator,
         temp_tables: list[str],
-        *args,
         hash_input: str,
         hash_output: str,
-        **kwargs,
     ) -> "StepResult":
         _query = query = query_generator.select()
 
