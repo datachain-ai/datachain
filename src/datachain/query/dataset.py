@@ -185,9 +185,14 @@ class QueryStep:
             return sqlalchemy.select(*columns)
 
         dr = self.catalog.warehouse.dataset_rows(self.dataset, self.dataset_version)
+        # Use a short alias with dataset ID suffix for uniqueness and SQL brevity
+        ds_id = dr.table.name.rsplit("_", 1)[-1]
+        aliased_table = dr.table.alias(f"__ds_t_{ds_id}")
 
         return step_result(
-            q, dr.columns, dependencies=[(self.dataset, self.dataset_version)]
+            q,
+            aliased_table.columns,
+            dependencies=[(self.dataset, self.dataset_version)],
         )
 
     def hash(self) -> str:
@@ -229,10 +234,15 @@ class DatasetDiffOperation(Step):
         """
 
     def apply(self, query_generator, temp_tables: list[str]) -> "StepResult":
-        source_query = query_generator.exclude(("sys__id",))
+        source_query = query_generator.select()
+
         right_before = len(self.dq.temp_table_names)
-        target_query = self.dq.apply_steps().select()
+        target_full = self.dq.apply_steps().select()
         temp_tables.extend(self.dq.temp_table_names[right_before:])
+        # Exclude sys columns from target - only key columns are used for matching
+        target_query = target_full.with_only_columns(
+            *(c for c in target_full.selected_columns if not c.name.startswith("sys__"))
+        )
 
         # creating temp table that will hold subtract results
         temp_table_name = self.catalog.warehouse.temp_table_name()
@@ -264,31 +274,26 @@ class DatasetDiffOperation(Step):
 
 @frozen
 class Subtract(DatasetDiffOperation):
-    on: Sequence[tuple[str, str]]
+    on: Sequence[str | tuple[str, str]]
+
+    def _normalize_on(self) -> list[tuple[str, str]]:
+        return [(col, col) if isinstance(col, str) else col for col in self.on]
 
     def hash_inputs(self) -> str:
+        normalized = self._normalize_on()
         on_bytes = b"".join(
-            f"{a}:{b}".encode() for a, b in sorted(self.on, key=lambda t: (t[0], t[1]))
+            f"{a}:{b}".encode()
+            for a, b in sorted(normalized, key=lambda t: (t[0], t[1]))
         )
 
         return hashlib.sha256(bytes.fromhex(self.dq.hash()) + on_bytes).hexdigest()
 
     def query(self, source_query: Select, target_query: Select) -> sa.Selectable:
-        sq = source_query.alias("source_query")
-        tq = target_query.alias("target_query")
-        where_clause = sa.and_(
-            *[
-                getattr(
-                    sq.c, col_name[0] if isinstance(col_name, tuple) else col_name
-                ).is_not_distinct_from(
-                    getattr(
-                        tq.c, col_name[1] if isinstance(col_name, tuple) else col_name
-                    )
-                )
-                for col_name in self.on
-            ]
+        return self.catalog.warehouse.subtract_query(
+            source_query,
+            target_query,
+            self._normalize_on(),
         )
-        return sq.select().except_(sq.select().where(where_clause))
 
 
 def adjust_outputs(

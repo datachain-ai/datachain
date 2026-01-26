@@ -87,10 +87,7 @@ hf = [
   "datasets[vision]>=4.0.0",
   # https://github.com/pytorch/torchcodec/issues/640
   "datasets[audio]>=4.0.0 ; (sys_platform == 'linux' or sys_platform == 'darwin')",
-  "fsspec>=2024.12.0",
-  # torchcodec (required by datasets[audio]) only supports up to PyTorch 2.9
-  # Remove this constraint once torchcodec supports PyTorch 2.10+
-  "torch<2.10.0 ; (sys_platform == 'linux' or sys_platform == 'darwin')"
+  "fsspec>=2024.12.0"
 ]
 video = [
   "ffmpeg-python",
@@ -157,7 +154,7 @@ namespaces = false
 [tool.setuptools_scm]
 
 [tool.pytest.ini_options]
-addopts = "-rfEs -m 'not examples' --benchmark-skip"
+addopts = "-rfEs -m 'not examples' --benchmark-skip --ignore=local"
 env_override_existing_values = true
 env_files = "local/.env.test"
 markers = [
