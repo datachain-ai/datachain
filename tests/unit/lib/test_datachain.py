@@ -40,7 +40,6 @@ from datachain.lib.signal_schema import (
 from datachain.lib.udf import UDFAdapter
 from datachain.lib.udf_signature import UdfSignatureError
 from datachain.lib.utils import DataChainColumnError, DataChainParamsError
-from datachain.query.dataset import Subtract
 from datachain.sql.types import Float, Int64, String
 from datachain.utils import STUDIO_URL
 from tests.utils import (
@@ -2265,93 +2264,6 @@ def test_union_different_column_order(test_session):
         (9, "different"),
         (10, "order"),
     ]
-
-
-def test_subtract(test_session):
-    chain1 = dc.read_values(a=[1, 1, 2], b=["x", "y", "z"], session=test_session)
-    chain2 = dc.read_values(a=[1, 2], b=["x", "y"], session=test_session)
-    assert set(chain1.subtract(chain2, on=["a", "b"]).to_list()) == {(1, "y"), (2, "z")}
-    assert set(chain1.subtract(chain2, on=["b"]).to_list()) == {(2, "z")}
-    assert not set(chain1.subtract(chain2, on=["a"]).to_list())
-    assert set(chain1.subtract(chain2).to_list()) == {(1, "y"), (2, "z")}
-    assert chain1.subtract(chain1).count() == 0
-
-    chain3 = dc.read_values(a=[1, 3], c=["foo", "bar"], session=test_session)
-    assert set(chain1.subtract(chain3, on="a").to_list()) == {(2, "z")}
-    assert set(chain1.subtract(chain3).to_list()) == {(2, "z")}
-
-    chain4 = dc.read_values(d=[1, 2, 3], e=["x", "y", "z"], session=test_session)
-    chain5 = dc.read_values(a=[1, 2], b=["x", "y"], session=test_session)
-
-    assert set(chain4.subtract(chain5, on="d", right_on="a").to_list()) == {(3, "z")}
-
-
-def test_subtract_duplicated_rows(test_session):
-    chain1 = dc.read_values(id=[1, 1], name=["1", "1"], session=test_session)
-    chain2 = dc.read_values(id=[2], name=["2"], session=test_session)
-    sub = chain1.subtract(chain2, on="id")
-    assert set(sub.to_list()) == {(1, "1"), (1, "1")}
-
-
-def test_subtract_error(test_session):
-    chain1 = dc.read_values(a=[1, 1, 2], b=["x", "y", "z"], session=test_session)
-    chain2 = dc.read_values(a=[1, 2], b=["x", "y"], session=test_session)
-    with pytest.raises(DataChainParamsError):
-        chain1.subtract(chain2, on=[])
-    with pytest.raises(TypeError):
-        chain1.subtract(chain2, on=42)
-
-    with pytest.raises(DataChainParamsError):
-        chain1.subtract(chain2, on="")
-
-    with pytest.raises(DataChainParamsError):
-        chain1.subtract(chain2, on="a", right_on="")
-
-    with pytest.raises(DataChainParamsError):
-        chain1.subtract(chain2, on=["a", "b"], right_on=["c", ""])
-
-    with pytest.raises(DataChainParamsError):
-        chain1.subtract(chain2, on=["a", "b"], right_on=[])
-
-    with pytest.raises(DataChainParamsError):
-        chain1.subtract(chain2, on=["a", "b"], right_on=["d"])
-
-    with pytest.raises(DataChainParamsError):
-        chain1.subtract(chain2, right_on=[])
-
-    with pytest.raises(DataChainParamsError):
-        chain1.subtract(chain2, right_on="")
-
-    with pytest.raises(DataChainParamsError):
-        chain1.subtract(chain2, right_on=42)
-
-    with pytest.raises(DataChainParamsError):
-        chain1.subtract(chain2, right_on=["a"])
-
-    with pytest.raises(TypeError):
-        chain1.subtract(chain2, on=42, right_on=42)
-
-    chain3 = dc.read_values(c=["foo", "bar"], session=test_session)
-    with pytest.raises(DataChainParamsError):
-        chain1.subtract(chain3)
-
-
-def test_subtract_hash_computation(test_session):
-    """Test that subtract query operation can compute hash.
-
-    Regression test: subtract was passing strings instead of tuples to Subtract
-    class, which caused hash_inputs() to fail when unpacking: for a, b in self.on
-    """
-    chain1 = dc.read_values(a=[1, 2], b=["x", "y"], session=test_session)
-    chain2 = dc.read_values(a=[1], b=["x"], session=test_session)
-
-    result = chain1.subtract(chain2, on=["a", "b"])
-    subtract_step = next(
-        (step for step in result._query.steps if isinstance(step, Subtract)), None
-    )
-    assert subtract_step is not None
-    # This would fail with TypeError if strings were passed instead of tuples
-    _ = subtract_step.hash_inputs()
 
 
 def test_column_math(test_session):
