@@ -1,29 +1,15 @@
-"""Tests for database schema of job-dataset version relationships.
-
-This module tests dataset_version_jobs junction table and ancestry queries.
-"""
+"""Tests for job-dataset version relationships."""
 
 import pytest
 import sqlalchemy as sa
 
 import datachain as dc
-from datachain.error import (
-    JobAncestryDepthExceededError,
-)
+from datachain.error import JobAncestryDepthExceededError
 from tests.utils import reset_session_job_state
-
-
-class CustomMapperError(Exception):
-    pass
-
-
-def mapper_fail(num) -> int:
-    raise CustomMapperError("Error")
 
 
 @pytest.fixture(autouse=True)
 def mock_is_script_run(monkeypatch):
-    """Mock is_script_run to return True for stable job names in tests."""
     monkeypatch.setattr("datachain.query.session.is_script_run", lambda: True)
 
 

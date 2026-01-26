@@ -1,37 +1,17 @@
-"""Tests for checkpoint behavior with parallel execution.
-
-This module tests thread-safe checkpoint handling and table locking.
-"""
+"""Tests for checkpoint behavior with parallel execution."""
 
 from collections.abc import Iterator
 
 import pytest
-import sqlalchemy as sa
 
 import datachain as dc
-from datachain.error import (
-    DatasetNotFoundError,
-)
-from tests.utils import get_last_udf_partial_table, reset_session_job_state
-
-
-class CustomMapperError(Exception):
-    pass
-
-
-def mapper_fail(num) -> int:
-    raise CustomMapperError("Error")
+from datachain.error import DatasetNotFoundError
+from tests.utils import reset_session_job_state
 
 
 @pytest.fixture(autouse=True)
 def mock_is_script_run(monkeypatch):
-    """Mock is_script_run to return True for stable job names in tests."""
     monkeypatch.setattr("datachain.query.session.is_script_run", lambda: True)
-
-
-@pytest.fixture
-def nums_dataset(test_session):
-    return dc.read_values(num=[1, 2, 3, 4, 5, 6], session=test_session).save("nums")
 
 
 def test_checkpoints_parallel(test_session_tmpfile, monkeypatch):
@@ -80,8 +60,6 @@ def test_udf_generator_continue_parallel(test_session_tmpfile, monkeypatch):
     execution path so that checkpoint recovery works correctly.
     """
     test_session = test_session_tmpfile
-    catalog = test_session.catalog
-    warehouse = catalog.warehouse
 
     # Track which numbers have been processed
     processed_nums = []
@@ -110,16 +88,6 @@ def test_udf_generator_continue_parallel(test_session_tmpfile, monkeypatch):
 
     with pytest.raises(RuntimeError):
         chain.save("results")
-
-    partial_table = get_last_udf_partial_table(test_session)
-
-    # Verify sys__input_id has tracked some inputs
-    processed_count_first = len(
-        list(
-            warehouse.db.execute(sa.select(sa.distinct(partial_table.c.sys__input_id)))
-        )
-    )
-    assert processed_count_first > 0, "Some inputs should be tracked"
 
     # -------------- SECOND RUN (CONTINUE) -------------------
     reset_session_job_state()

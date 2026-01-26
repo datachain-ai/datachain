@@ -1,3 +1,5 @@
+"""Tests for checkpoint invalidation when UDF code or schema changes."""
+
 from collections.abc import Iterator
 
 import pytest
@@ -6,17 +8,8 @@ import datachain as dc
 from tests.utils import reset_session_job_state
 
 
-class CustomMapperError(Exception):
-    pass
-
-
-def mapper_fail(num) -> int:
-    raise CustomMapperError("Error")
-
-
 @pytest.fixture(autouse=True)
 def mock_is_script_run(monkeypatch):
-    """Mock is_script_run to return True for stable job names in tests."""
     monkeypatch.setattr("datachain.query.session.is_script_run", lambda: True)
 
 
@@ -213,7 +206,7 @@ def test_mapper_output_schema_change_triggers_rerun(test_session, monkeypatch):
         (10, 2),  # batch_size=10: Fail after processing 2 partitions
     ],
 )
-def test_aggregator_allways_runs_from_scratch(
+def test_aggregator_always_runs_from_scratch(
     test_session,
     monkeypatch,
     nums_dataset,

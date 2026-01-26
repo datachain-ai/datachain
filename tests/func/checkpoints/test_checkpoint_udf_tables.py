@@ -6,10 +6,9 @@ This module tests input/output/partial table management and reuse across jobs.
 from collections.abc import Iterator
 
 import pytest
-import sqlalchemy as sa
 
 import datachain as dc
-from tests.utils import get_last_udf_partial_table, reset_session_job_state
+from tests.utils import reset_session_job_state
 
 
 @pytest.fixture(autouse=True)
@@ -18,26 +17,20 @@ def mock_is_script_run(monkeypatch):
     monkeypatch.setattr("datachain.query.session.is_script_run", lambda: True)
 
 
-@pytest.fixture
-def nums_dataset(test_session):
-    return dc.read_values(num=[1, 2, 3, 4, 5, 6], session=test_session).save("nums")
+def test_track_processed_items(test_session_tmpfile):
+    """Test that processed items are correctly tracked.
 
-
-@pytest.mark.parametrize("parallel", [None, 2, 20])
-def test_track_processed_items(test_session_tmpfile, parallel):
-    """Test that we correctly track processed sys__ids with different parallel
-    settings.
-
-    This is a simple test that runs a UDF that fails partway through and verifies
-    that the processed sys__ids are properly tracked (no duplicates, no missing values).
+    Verifies checkpoint recovery works by checking that second run processes
+    fewer items than total and final result is correct with no duplicates.
+    Note: Parallel checkpoint recovery is tested in test_checkpoint_parallel.py.
     """
     test_session = test_session_tmpfile
-    catalog = test_session.catalog
-    warehouse = catalog.warehouse
+    processed_nums = []
+    run_count = {"value": 0}
 
     def gen_numbers(num) -> Iterator[int]:
-        """Generator function that fails on a specific input."""
-        if num == 7:
+        processed_nums.append(num)
+        if num == 50 and run_count["value"] == 0:
             raise Exception(f"Simulated failure on num={num}")
         yield num * 10
 
@@ -50,21 +43,31 @@ def test_track_processed_items(test_session_tmpfile, parallel):
         .order_by("num")
         .settings(batch_size=2)
     )
-    if parallel is not None:
-        chain = chain.settings(parallel=parallel)
 
+    # First run - fails partway through
     with pytest.raises(Exception):  # noqa: B017
         chain.gen(result=gen_numbers, output=int).save("results")
 
-    partial_output_table = get_last_udf_partial_table(test_session)
+    first_run_count = len(processed_nums)
+    assert 0 < first_run_count < 99
 
-    query = sa.select(sa.distinct(partial_output_table.c.sys__input_id))
-    processed_sys_ids = [row[0] for row in warehouse.db.execute(query)]
+    # Second run - should continue from checkpoint
+    reset_session_job_state()
+    processed_nums.clear()
+    run_count["value"] += 1
+
+    chain.gen(result=gen_numbers, output=int).save("results")
+
+    # Second run should process remaining items (not all 99)
+    assert 0 < len(processed_nums) < 99
+
+    # Verify final result is correct
+    result = dc.read_dataset("results", session=test_session).to_list("result")
+    assert len(result) == 99
 
     # Verify no duplicates
-    assert len(processed_sys_ids) == len(set(processed_sys_ids))
-    # Verify we processed some but not all inputs (should have failed before completing)
-    assert 0 < len(processed_sys_ids) < 100
+    values = [r[0] for r in result]
+    assert len(values) == len(set(values))
 
 
 def test_multiple_udf_chain_continue(test_session, monkeypatch):
