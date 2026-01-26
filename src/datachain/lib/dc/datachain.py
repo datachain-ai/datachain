@@ -220,28 +220,13 @@ class DataChain:
         self.print_schema(file=file)
         return file.getvalue()
 
-    def hash(
-        self,
-        name: str | None = None,
-        in_job: bool = False,
-    ) -> str:
+    def hash(self) -> str:
         """
         Calculates SHA hash of this chain. Hash calculation is fast and consistent.
         It takes into account all the steps added to the chain and their inputs.
         Order of the steps is important.
-
-        Args:
-            name: Optional dataset name to include in hash (for save operations).
-            in_job: If True, includes the last checkpoint hash from the job context.
         """
-        base_hash = self._query.hash(in_job=in_job)
-
-        if name:
-            import hashlib
-
-            return hashlib.sha256((base_hash + name).encode("utf-8")).hexdigest()
-
-        return base_hash
+        return self._query.hash()
 
     def _as_delta(
         self,
@@ -654,7 +639,12 @@ class DataChain:
         project = self._get_or_create_project(namespace_name, project_name)
 
         # Calculate hash including dataset name and job context to avoid conflicts
-        _hash = self.hash(name=f"{namespace_name}/{project_name}/{name}", in_job=True)
+        import hashlib
+
+        base_hash = self._query.hash(job_aware=True)
+        _hash = hashlib.sha256(
+            (base_hash + f"{namespace_name}/{project_name}/{name}").encode("utf-8")
+        ).hexdigest()
 
         # Checkpoint handling
         result = self._resolve_checkpoint(name, project, _hash, kwargs)

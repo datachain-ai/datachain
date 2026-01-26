@@ -1896,17 +1896,17 @@ class DatasetQuery:
     def __or__(self, other):
         return self.union(other)
 
-    def hash(self, in_job: bool = False) -> str:
+    def hash(self, job_aware: bool = False) -> str:
         """
         Calculates hash of this class taking into account hash of starting step
         and hashes of each following steps. Ordering is important.
 
         Args:
-            in_job: If True, includes the last checkpoint hash from the job context.
+            job_aware: If True, includes the last checkpoint hash from the job context.
         """
         hasher = hashlib.sha256()
 
-        start_hash = self._last_checkpoint_hash if in_job else None
+        start_hash = self._last_checkpoint_hash if job_aware else None
         if start_hash:
             hasher.update(start_hash.encode("utf-8"))
 
