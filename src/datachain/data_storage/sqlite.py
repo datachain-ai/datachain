@@ -53,9 +53,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("datachain")
 
-INSERT_BATCH_SIZE = 10_000  # number of rows to insert at a time
-INSERT_FLUSH_INTERVAL = 60.0  # flush interval in seconds for time-based flushing
-
 RETRY_START_SEC = 0.01
 RETRY_MAX_TIMES = 10
 RETRY_FACTOR = 2
@@ -792,8 +789,8 @@ class SQLiteWarehouse(AbstractWarehouse):
     def get_buffer(
         self,
         table: Table,
-        buffer_size: int = INSERT_BATCH_SIZE,
-        flush_interval: float = INSERT_FLUSH_INTERVAL,
+        buffer_size: int,
+        flush_interval: float,
     ) -> InsertBuffer:
         """Get or create an InsertBuffer for the given table."""
         if table.name not in self.buffers:
@@ -804,42 +801,6 @@ class SQLiteWarehouse(AbstractWarehouse):
                 flush_interval=flush_interval,
             )
         return self.buffers[table.name]
-
-    def close_buffer(self, table: Table) -> None:
-        """Flush and close the buffer for the given table."""
-        if table.name not in self.buffers:
-            return
-        self.buffers[table.name].flush()
-        self.buffers[table.name].close()
-        del self.buffers[table.name]
-
-    def insert_rows(
-        self,
-        table: Table,
-        rows: Iterable[dict[str, Any]],
-        batch_size: int | None = None,
-        flush_interval: float | None = None,
-    ) -> None:
-        """Inserts rows in batches using an InsertBuffer.
-
-        `insert_rows_done` must be called after this function is used
-        (and all rows have been inserted).
-        """
-        buffer_size = batch_size if batch_size is not None else INSERT_BATCH_SIZE
-        interval = (
-            flush_interval if flush_interval is not None else INSERT_FLUSH_INTERVAL
-        )
-        buffer = self.get_buffer(
-            table, buffer_size=buffer_size, flush_interval=interval
-        )
-        buffer.insert_many(rows)
-
-    def insert_rows_done(self, table: Table) -> None:
-        """Completes inserting rows by flushing the InsertBuffer.
-
-        Must be called after insert_rows is used (and all rows have been inserted).
-        """
-        self.close_buffer(table)
 
     def insert_dataset_rows(self, df, dataset: DatasetRecord, version: str) -> int:
         dr = self.dataset_rows(dataset, version)
@@ -910,7 +871,7 @@ class SQLiteWarehouse(AbstractWarehouse):
             .limit(None)
         )
 
-        for batch in batched_it(ids, INSERT_BATCH_SIZE):
+        for batch in batched_it(ids, self.INSERT_BATCH_SIZE):
             batch_ids = [row[0] for row in batch]
             select_q._where_criteria = (col_id.in_(batch_ids),)
             q = table.insert().from_select(list(select_q.selected_columns), select_q)

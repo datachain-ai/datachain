@@ -176,14 +176,6 @@ def test_no_time_flush_when_interval_none(mock_db):
     assert len(buffer) == 2
 
 
-def test_flush_buffer_alias(buffer, mock_db):
-    buffer.insert({"id": 1})
-    buffer.flush_buffer()
-
-    assert len(buffer) == 0
-    assert len(mock_db["flush_calls"]) == 1
-
-
 def test_close_with_cursor(mock_db):
     class MockCursor:
         def __init__(self):

@@ -38,6 +38,7 @@ if TYPE_CHECKING:
     from sqlalchemy.types import TypeEngine
 
     from datachain.data_storage import schema
+    from datachain.data_storage.buffer import InsertBuffer
     from datachain.data_storage.db_engine import DatabaseEngine
     from datachain.data_storage.schema import DataTable
 
@@ -63,9 +64,12 @@ class AbstractWarehouse(ABC, Serializable):
     DATASET_SOURCE_TABLE_PREFIX = "src_"
     UDF_TABLE_NAME_PREFIX = "udf_"
     TMP_TABLE_NAME_PREFIX = "tmp_"
+    INSERT_BATCH_SIZE: int = 10_000
+    INSERT_FLUSH_INTERVAL: float = 60.0
 
     schema: "schema.Schema"
     db: "DatabaseEngine"
+    buffers: dict[str, "InsertBuffer"]
 
     def __enter__(self) -> "AbstractWarehouse":
         return self
@@ -488,7 +492,6 @@ class AbstractWarehouse(ABC, Serializable):
     def prepare_entries(self, entries: "Iterable[File]") -> Iterable[dict[str, Any]]:
         """Convert File entries so they can be passed on to `insert_rows()`"""
 
-    @abstractmethod
     def insert_rows(
         self,
         table: sa.Table,
@@ -496,13 +499,40 @@ class AbstractWarehouse(ABC, Serializable):
         batch_size: int | None = None,
         flush_interval: float | None = None,
     ) -> None:
-        """Does batch inserts of any kind of rows into table"""
+        """Inserts rows in batches using an InsertBuffer.
+
+        `insert_rows_done` must be called after this function is used
+        (and all rows have been inserted).
+        """
+        buffer_size = batch_size if batch_size is not None else self.INSERT_BATCH_SIZE
+        interval = (
+            flush_interval if flush_interval is not None else self.INSERT_FLUSH_INTERVAL
+        )
+        buffer = self.get_buffer(
+            table, buffer_size=buffer_size, flush_interval=interval
+        )
+        buffer.insert_many(rows)
+
+    @abstractmethod
+    def get_buffer(
+        self,
+        table: sa.Table,
+        buffer_size: int,
+        flush_interval: float,
+    ) -> "InsertBuffer":
+        """Get or create an InsertBuffer for the given table."""
+
+    def close_buffer(self, table: sa.Table) -> None:
+        """Flush and close the buffer for the given table."""
+        if table.name not in self.buffers:
+            return
+        self.buffers[table.name].flush()
+        self.buffers[table.name].close()
+        del self.buffers[table.name]
 
     def insert_rows_done(self, table: sa.Table) -> None:
-        """
-        Only needed for certain implementations
-        to signal when rows inserts are complete.
-        """
+        """Signal that row inserts are complete by flushing and closing the buffer."""
+        self.close_buffer(table)
 
     @abstractmethod
     def insert_dataset_rows(self, df, dataset: DatasetRecord, version: str) -> int:

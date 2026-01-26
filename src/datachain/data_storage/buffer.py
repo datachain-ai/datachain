@@ -49,7 +49,6 @@ class InsertBuffer(Generic[T]):
         self._last_flush_time: float = time.monotonic()
 
     def insert(self, entry: dict[str, Any]) -> None:
-        """Add a single entry to the insert buffer."""
         self.buffer.append(entry)
         self._process_blocks()
 
@@ -62,21 +61,18 @@ class InsertBuffer(Generic[T]):
                 self._process_blocks()
 
     def _should_flush_by_time(self) -> bool:
-        """Check if we should flush based on elapsed time."""
         if self.flush_interval is None:
             return False
         elapsed = time.monotonic() - self._last_flush_time
         return elapsed >= self.flush_interval
 
     def _do_flush(self, entries: list[dict[str, Any]], final: bool = False) -> None:
-        """Execute the flush callback and update timing."""
         if not entries:
             return
         self.execute_callback(self.table, entries, final=final, cursor=self.cursor)
         self._last_flush_time = time.monotonic()
 
     def _process_blocks(self) -> None:
-        """Inserts entries if the buffer is full or flush interval elapsed."""
         # Size-based flushing: flush full blocks
         while len(self.buffer) >= self.buffer_size:
             self._do_flush(self.buffer[: self.buffer_size])
@@ -88,21 +84,15 @@ class InsertBuffer(Generic[T]):
             self.buffer = []
 
     def flush(self) -> None:
-        """Inserts all entries, even if the buffer is not full."""
         self._process_blocks()
         if self.buffer:
             # Process any remaining entries
             self._do_flush(self.buffer, final=True)
             self.buffer = []
 
-    # Alias for backwards compatibility
-    flush_buffer = flush
-
     def close(self) -> None:
-        """Close the cursor if one was provided."""
         if self.cursor:
             self.cursor.close()
 
     def __len__(self) -> int:
-        """Return the number of entries currently in the buffer."""
         return len(self.buffer)
