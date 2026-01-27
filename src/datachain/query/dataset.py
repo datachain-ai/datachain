@@ -40,7 +40,8 @@ from datachain.func.base import Function
 from datachain.hash_utils import hash_column_elements
 from datachain.lib.listing import is_listing_dataset, listing_dataset_expired
 from datachain.lib.signal_schema import SignalSchema, generate_merge_root_mapping
-from datachain.lib.udf import UDFAdapter, _get_cache
+from datachain.lib.udf import JsonSerializationError, UdfError, _get_cache
+from datachain.lib.utils import type_to_str
 from datachain.progress import CombinedDownloadCallback, TqdmCombinedDownloadCallback
 from datachain.project import Project
 from datachain.query.schema import DEFAULT_DELIMITER, C, UDFParamSpec, normalize_param
@@ -73,8 +74,6 @@ if TYPE_CHECKING:
 
     P = ParamSpec("P")
 
-
-INSERT_BATCH_SIZE = 10000
 
 PartitionByType = (
     str | Function | ColumnElement | Sequence[str | Function | ColumnElement]
@@ -186,9 +185,14 @@ class QueryStep:
             return sqlalchemy.select(*columns)
 
         dr = self.catalog.warehouse.dataset_rows(self.dataset, self.dataset_version)
+        # Use a short alias with dataset ID suffix for uniqueness and SQL brevity
+        ds_id = dr.table.name.rsplit("_", 1)[-1]
+        aliased_table = dr.table.alias(f"__ds_t_{ds_id}")
 
         return step_result(
-            q, dr.columns, dependencies=[(self.dataset, self.dataset_version)]
+            q,
+            aliased_table.columns,
+            dependencies=[(self.dataset, self.dataset_version)],
         )
 
     def hash(self) -> str:
@@ -230,10 +234,15 @@ class DatasetDiffOperation(Step):
         """
 
     def apply(self, query_generator, temp_tables: list[str]) -> "StepResult":
-        source_query = query_generator.exclude(("sys__id",))
+        source_query = query_generator.select()
+
         right_before = len(self.dq.temp_table_names)
-        target_query = self.dq.apply_steps().select()
+        target_full = self.dq.apply_steps().select()
         temp_tables.extend(self.dq.temp_table_names[right_before:])
+        # Exclude sys columns from target - only key columns are used for matching
+        target_query = target_full.with_only_columns(
+            *(c for c in target_full.selected_columns if not c.name.startswith("sys__"))
+        )
 
         # creating temp table that will hold subtract results
         temp_table_name = self.catalog.warehouse.temp_table_name()
@@ -265,37 +274,34 @@ class DatasetDiffOperation(Step):
 
 @frozen
 class Subtract(DatasetDiffOperation):
-    on: Sequence[tuple[str, str]]
+    on: Sequence[str | tuple[str, str]]
+
+    def _normalize_on(self) -> list[tuple[str, str]]:
+        return [(col, col) if isinstance(col, str) else col for col in self.on]
 
     def hash_inputs(self) -> str:
+        normalized = self._normalize_on()
         on_bytes = b"".join(
-            f"{a}:{b}".encode() for a, b in sorted(self.on, key=lambda t: (t[0], t[1]))
+            f"{a}:{b}".encode()
+            for a, b in sorted(normalized, key=lambda t: (t[0], t[1]))
         )
 
         return hashlib.sha256(bytes.fromhex(self.dq.hash()) + on_bytes).hexdigest()
 
     def query(self, source_query: Select, target_query: Select) -> sa.Selectable:
-        sq = source_query.alias("source_query")
-        tq = target_query.alias("target_query")
-        where_clause = sa.and_(
-            *[
-                getattr(
-                    sq.c, col_name[0] if isinstance(col_name, tuple) else col_name
-                ).is_not_distinct_from(
-                    getattr(
-                        tq.c, col_name[1] if isinstance(col_name, tuple) else col_name
-                    )
-                )
-                for col_name in self.on
-            ]
+        return self.catalog.warehouse.subtract_query(
+            source_query,
+            target_query,
+            self._normalize_on(),
         )
-        return sq.select().except_(sq.select().where(where_clause))
 
 
 def adjust_outputs(
     warehouse: "AbstractWarehouse",
     row: dict[str, Any],
     col_types: list[tuple[str, SQLType, type, str, Any]],
+    signal_schema: SignalSchema,
+    udf_kind: str | None = None,
 ) -> dict[str, Any]:
     """
     This function does a couple of things to prepare a row for inserting into the db:
@@ -312,17 +318,59 @@ def adjust_outputs(
         col_type_name,
         default_value,
     ) in col_types:
-        row_val = row.get(col_name)
+        # Fill missing values with defaults
+        if col_name not in row:
+            row[col_name] = default_value
+            continue
 
-        # Fill None or missing values with defaults (get returns None if not in the row)
+        row_val = row[col_name]
+
+        # Fill explicit None values with defaults
         if row_val is None:
             row[col_name] = default_value
             continue
 
         # Validate and convert type if needed and possible
-        row[col_name] = warehouse.convert_type(
-            row_val, col_type, col_python_type, col_type_name, col_name
-        )
+        try:
+            row[col_name] = warehouse.convert_type(
+                row_val, col_type, col_python_type, col_type_name, col_name
+            )
+        except Exception as e:
+            expected_type = type_to_str(signal_schema.get_column_type(col_name))
+
+            if isinstance(e, JsonSerializationError):
+                msg = (
+                    f"UDF returned an invalid value for output column {col_name!r}. "
+                    f"Expected JSON-serializable {expected_type}. "
+                    f"{e.message}"
+                )
+            else:
+                actual_type_name = type(row_val).__name__
+                msg = (
+                    f"UDF returned an invalid value for output column {col_name!r}. "
+                    f"Expected {expected_type}, got {row_val!r} "
+                    f"(type: {actual_type_name})."
+                )
+
+            if udf_kind is not None:
+                udf_values = sum(1 for k in row if not str(k).startswith("sys__"))
+                expected = len(col_types)
+                if udf_values != expected:
+                    value_word = "value" if udf_values == 1 else "values"
+                    are_word = "is" if expected == 1 else "are"
+                    msg += (
+                        f" Note: UDF call returned {udf_values} {value_word} "
+                        f"while {expected} {are_word} expected "
+                        f"per output definition"
+                    )
+                    if udf_kind in ("agg", "gen"):
+                        msg += (
+                            f", {udf_kind}() UDFs usually use yield "
+                            "and have return type Iterator."
+                        )
+                    else:
+                        msg += "."
+            raise UdfError(msg) from e
     return row
 
 
@@ -351,10 +399,19 @@ def process_udf_outputs(
     udf_results: Iterator[Iterable["UDFResult"]],
     udf: "UDFAdapter",
     cb: Callback = DEFAULT_CALLBACK,
-    batch_size: int = INSERT_BATCH_SIZE,
+    batch_size: int | None = None,
 ) -> None:
     # Optimization: Compute row types once, rather than for every row.
     udf_col_types = get_col_types(warehouse, udf.output)
+    udf_signal_schema = udf.inner.output
+
+    # Determine UDF kind based on batching behavior
+    if udf.inner.is_input_batched and udf.inner.is_output_batched:
+        udf_kind = "agg"
+    elif udf.inner.is_output_batched:
+        udf_kind = "gen"
+    else:
+        udf_kind = "map"
 
     def _insert_rows():
         for udf_output in udf_results:
@@ -364,7 +421,13 @@ def process_udf_outputs(
             with safe_closing(udf_output):
                 for row in udf_output:
                     cb.relative_update()
-                    yield adjust_outputs(warehouse, row, udf_col_types)
+                    yield adjust_outputs(
+                        warehouse,
+                        row,
+                        udf_col_types,
+                        udf_signal_schema,
+                        udf_kind=udf_kind,
+                    )
 
     warehouse.insert_rows(udf_table, _insert_rows(), batch_size=batch_size)
     warehouse.insert_rows_done(udf_table)
@@ -515,7 +578,7 @@ class UDFStep(Step, ABC):
                         is_generator=self.is_generator,
                         cache=self.cache,
                         rows_total=rows_total,
-                        batch_size=self.batch_size or INSERT_BATCH_SIZE,
+                        batch_size=self.batch_size,
                     )
 
                     # Run the UDFDispatcher in another process to avoid needing
@@ -564,7 +627,7 @@ class UDFStep(Step, ABC):
                                 udf_results,
                                 self.udf,
                                 cb=generated_cb,
-                                batch_size=self.batch_size or INSERT_BATCH_SIZE,
+                                batch_size=self.batch_size,
                             )
                     finally:
                         download_cb.close()

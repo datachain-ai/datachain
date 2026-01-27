@@ -20,10 +20,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects import sqlite
 from sqlalchemy.schema import CreateIndex, CreateTable, DropTable
 from sqlalchemy.sql import func
-from sqlalchemy.sql.elements import (
-    BinaryExpression,
-    BooleanClauseList,
-)
+from sqlalchemy.sql.elements import BinaryExpression, BooleanClauseList
 from sqlalchemy.sql.expression import bindparam, cast
 from sqlalchemy.sql.selectable import Select
 from tqdm.auto import tqdm
@@ -32,7 +29,6 @@ import datachain.sql.sqlite
 from datachain.data_storage import AbstractDBMetastore, AbstractWarehouse
 from datachain.data_storage.db_engine import DatabaseEngine
 from datachain.data_storage.schema import DefaultSchema
-from datachain.data_storage.warehouse import INSERT_BATCH_SIZE
 from datachain.dataset import DatasetRecord, StorageURI
 from datachain.error import DataChainError, OutdatedDatabaseSchemaError
 from datachain.namespace import Namespace
@@ -55,6 +51,8 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger("datachain")
+
+INSERT_BATCH_SIZE = 10_000  # number of rows to insert at a time
 
 RETRY_START_SEC = 0.01
 RETRY_MAX_TIMES = 10
@@ -240,9 +238,6 @@ class SQLiteDatabaseEngine(DatabaseEngine):
             result = conn.execute(*self.compile_to_args(query))
         else:
             result = self.db.execute(*self.compile_to_args(query))
-        if isinstance(query, CreateTable) and query.element.indexes:
-            for index in query.element.indexes:
-                self.execute(CreateIndex(index, if_not_exists=True), cursor=cursor)
         return result
 
     @retry_sqlite_locks
@@ -260,6 +255,40 @@ class SQLiteDatabaseEngine(DatabaseEngine):
         if parameters is None:
             return self.db.execute(sql)
         return self.db.execute(sql, parameters)
+
+    def add_column(self, table_name: str, column: Column) -> None:
+        """
+        Add a column to an existing table.
+        Uses SQLAlchemy's type compilation to ensure proper type conversion.
+        """
+        compiled_type = column.type.compile(dialect=self.dialect)
+
+        parts = [column.name, str(compiled_type)]
+
+        if not column.nullable:
+            parts.append("NOT NULL")
+
+        if column.default is not None and hasattr(column.default, "arg"):
+            default_val = column.default.arg
+            if isinstance(default_val, str):
+                parts.append(f"DEFAULT '{default_val}'")
+            elif isinstance(default_val, bool):
+                parts.append(f"DEFAULT {int(default_val)}")
+            else:
+                parts.append(f"DEFAULT {default_val}")
+
+        column_def = " ".join(parts)
+        alter_query = f"ALTER TABLE {table_name} ADD COLUMN {column_def}"
+
+        try:
+            self.execute_str(alter_query)
+            logger.debug("Added column %s to table %s", column.name, table_name)
+        except sqlite3.OperationalError as e:
+            # Column likely already exists
+            if "duplicate column name" not in str(e).lower():
+                logger.debug(
+                    "Could not add column %s to %s: %s", column.name, table_name, e
+                )
 
     def insert_dataframe(self, table_name: str, df) -> int:
         # Dynamically calculates chunksize by dividing max variable limit in a
@@ -458,24 +487,54 @@ class SQLiteMetastore(AbstractDBMetastore):
         )
         self.db.execute(stmt)
 
+    @property
+    def _metastore_tables(self) -> list[Table]:
+        """List of all metastore tables that require initialization and migration."""
+        return [
+            self._namespaces,
+            self._projects,
+            self._datasets,
+            self._datasets_versions,
+            self._datasets_dependencies,
+            self._jobs,
+            self._checkpoints,
+            self._dataset_version_jobs,
+        ]
+
     def _init_tables(self) -> None:
-        """Initialize tables."""
-        self.db.create_table(self._namespaces, if_not_exists=True)
-        self.default_table_names.append(self._namespaces.name)
-        self.db.create_table(self._projects, if_not_exists=True)
-        self.default_table_names.append(self._projects.name)
-        self.db.create_table(self._datasets, if_not_exists=True)
-        self.default_table_names.append(self._datasets.name)
-        self.db.create_table(self._datasets_versions, if_not_exists=True)
-        self.default_table_names.append(self._datasets_versions.name)
-        self.db.create_table(self._datasets_dependencies, if_not_exists=True)
-        self.default_table_names.append(self._datasets_dependencies.name)
-        self.db.create_table(self._jobs, if_not_exists=True)
-        self.default_table_names.append(self._jobs.name)
-        self.db.create_table(self._checkpoints, if_not_exists=True)
-        self.default_table_names.append(self._checkpoints.name)
-        self.db.create_table(self._dataset_version_jobs, if_not_exists=True)
-        self.default_table_names.append(self._dataset_version_jobs.name)
+        """Initialize tables with automatic schema migration."""
+        for table in self._metastore_tables:
+            self.db.create_table(table, if_not_exists=True)
+            self.default_table_names.append(table.name)
+
+        # Auto-migrate: add missing columns based on schema definitions
+        for table in self._metastore_tables:
+            self._migrate_table_schema(table)
+
+    def _migrate_table_schema(self, table: Table) -> None:
+        """
+        Automatically add missing columns to match the SQLAlchemy schema definition.
+        This enables lazy schema evolution without manual migrations.
+        """
+        # Get actual columns in database
+        columns_query = f"PRAGMA table_info({table.name})"
+        existing_columns = self.db.execute_str(columns_query).fetchall()
+        existing_column_names = {col[1] for col in existing_columns}
+
+        # Get expected columns from SQLAlchemy Table definition and add missing ones
+        for column in table.columns:
+            if column.name not in existing_column_names:
+                self.db.add_column(table.name, column)
+
+        self._create_table_indexes(table)
+
+    def _create_table_indexes(self, table: Table) -> None:
+        """Create all indexes for a table, skipping if they fail."""
+        for index in table.indexes:
+            try:
+                self.db.execute(CreateIndex(index, if_not_exists=True))
+            except (sqlite3.OperationalError, sqlalchemy.exc.OperationalError) as e:
+                logger.debug("Could not create index %s: %s", index.name, e)
 
     def _init_namespaces_projects(self) -> None:
         """
@@ -712,8 +771,9 @@ class SQLiteWarehouse(AbstractWarehouse):
         self,
         table: Table,
         rows: Iterable[dict[str, Any]],
-        batch_size: int = INSERT_BATCH_SIZE,
+        batch_size: int | None = None,
     ) -> None:
+        batch_size = batch_size if batch_size is not None else INSERT_BATCH_SIZE
         for row_chunk in batched(rows, batch_size):
             with self.db.transaction() as conn:
                 # transactions speeds up inserts significantly as there is no separate

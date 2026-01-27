@@ -22,7 +22,7 @@ class UdfInfo(TypedDict):
     is_generator: bool
     cache: bool
     rows_total: int
-    batch_size: int
+    batch_size: int | None
 
 
 class AbstractUDFDistributor(ABC):

@@ -44,7 +44,7 @@ dependencies = [
   "cloudpickle",
   "pydantic",
   "jmespath>=1.0",
-  "datamodel-code-generator>=0.25",
+  "datamodel-code-generator>=0.28.4",
   "Pillow>=10.0.0,<13",
   "msgpack>=1.0.4,<2",
   "psutil",
@@ -107,6 +107,7 @@ tests = [
   "pytest-servers[all]>=0.5.9",
   "pytest-benchmark[histogram]",
   "pytest-xdist>=3.3.1",
+  "azure-storage-blob<12.28",  # Pin to avoid API version 2026-02-06 not supported by Azurite emulator
   "pytest-dotenv",
   "virtualenv",
   "dulwich",
@@ -153,7 +154,7 @@ namespaces = false
 [tool.setuptools_scm]
 
 [tool.pytest.ini_options]
-addopts = "-rfEs -m 'not examples' --benchmark-skip"
+addopts = "-rfEs -m 'not examples' --benchmark-skip --ignore=local"
 env_override_existing_values = true
 env_files = "local/.env.test"
 markers = [

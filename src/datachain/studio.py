@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 import dateparser
+import requests
 import tabulate
 
 from datachain.config import Config, ConfigLevel
@@ -16,7 +17,7 @@ from datachain.dataset import (
 )
 from datachain.error import DataChainError
 from datachain.remote.studio import StudioClient
-from datachain.utils import STUDIO_URL
+from datachain.utils import STUDIO_URL, flatten
 
 if TYPE_CHECKING:
     from argparse import Namespace
@@ -340,15 +341,44 @@ def parse_start_time(start_time_str: str | None) -> str | None:
     return parsed_datetime.isoformat()
 
 
+# Sync usage
+async def _fetch_log_blob(blob_url: str, token: str, timeout: float) -> str:
+    """Fetch log content from a blob URL asynchronously."""
+
+    def _fetch():
+        headers = {"Authorization": f"token {token}"}
+        response = requests.get(blob_url, headers=headers, timeout=timeout)
+        response.raise_for_status()
+        return response.text
+
+    return await asyncio.to_thread(_fetch)
+
+
+async def _show_log_blobs(log_blobs: list[str], client):
+    for blob_url in log_blobs:
+        try:
+            log_content = await _fetch_log_blob(blob_url, client.token, client.timeout)
+            if log_content:
+                print(log_content, end="")
+        except (requests.RequestException, OSError):
+            print("\n>>>> Warning: Failed to fetch logs from studio")
+
+
 def show_logs_from_client(client, job_id):
-    # Sync usage
     async def _run():
         retry_count = 0
         latest_status = None
         processed_statuses = set()
+        log_blobs_processed = False
         while True:
             async for message in client.tail_job_logs(job_id):
-                if "logs" in message:
+                if "log_blobs" in message:
+                    log_blobs = message.get("log_blobs", [])
+                    if log_blobs and not log_blobs_processed:
+                        log_blobs_processed = True
+                        await _show_log_blobs(log_blobs, client)
+
+                elif "logs" in message:
                     for log in message["logs"]:
                         print(log["message"], end="")
                 elif "job" in message:
@@ -414,7 +444,8 @@ def create_job(
     with open(query_file) as f:
         query = f.read()
 
-    environment = "\n".join(env) if env else ""
+    env_values = list(flatten(env)) if env else []
+    environment = "\n".join(env_values) if env_values else ""
     if env_file:
         with open(env_file) as f:
             environment = f.read() + "\n" + environment

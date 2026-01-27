@@ -935,15 +935,20 @@ class Catalog:
             self.metastore.update_dataset_version(dataset, version, **values)
             return
 
+        stats_num_objects = None
+        stats_size = None
         if not dataset_version.num_objects:
             num_objects, size = self.warehouse.dataset_stats(dataset, version)
+            stats_num_objects = num_objects
+            stats_size = size
             if num_objects != dataset_version.num_objects:
                 values["num_objects"] = num_objects
             if size != dataset_version.size:
                 values["size"] = size
 
+        preview_rows = None
         if not dataset_version.preview:
-            values["preview"] = (
+            preview = (
                 DatasetQuery(
                     name=dataset.name,
                     namespace_name=dataset.project.namespace.name,
@@ -954,6 +959,26 @@ class Catalog:
                 )
                 .limit(20)
                 .to_db_records()
+            )
+            preview_rows = len(preview)
+            values["preview"] = preview
+
+        # Log anomaly: dataset_stats returned 0 but preview has data
+        if stats_num_objects == 0 and preview_rows and preview_rows > 0:
+            logger.warning(
+                "Inconsistency detected for %s@%s: "
+                "Initial state: num_objects=%s, size=%s, has_preview=%s. "
+                "dataset_stats returned: num_objects=%s, size=%s. "
+                "Preview generated: %s rows. "
+                "This may indicate ClickHouse replication delay.",
+                dataset.name,
+                version,
+                dataset_version.num_objects,
+                dataset_version.size,
+                bool(dataset_version.preview),
+                stats_num_objects,
+                stats_size,
+                preview_rows,
             )
 
         if not values:
@@ -1339,6 +1364,7 @@ class Catalog:
         studio: bool = False,
         project: Project | None = None,
     ) -> Iterator[DatasetListRecord]:
+        from datachain.query.session import Session
         from datachain.remote.studio import StudioClient
 
         project_id = project.id if project else None
@@ -1364,6 +1390,8 @@ class Catalog:
             datasets = self.metastore.list_datasets(project_id=project_id)
 
         for d in datasets:
+            if Session.is_temp_dataset(d.name):
+                continue
             if not d.is_bucket_listing or include_listing:
                 yield d
 

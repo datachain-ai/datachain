@@ -4,7 +4,6 @@ from datachain.lib.utils import DataChainParamsError
 
 DEFAULT_CACHE = False
 DEFAULT_PREFETCH = 2
-DEFAULT_BATCH_SIZE = 2_000
 
 
 class SettingsError(DataChainParamsError):
@@ -172,8 +171,8 @@ class Settings:
         return self._min_task_size if self._min_task_size is not None else None
 
     @property
-    def batch_size(self) -> int:
-        return self._batch_size if self._batch_size is not None else DEFAULT_BATCH_SIZE
+    def batch_size(self) -> int | None:
+        return self._batch_size if self._batch_size is not None else None
 
     def to_dict(self) -> dict[str, Any]:
         res: dict[str, Any] = {}

@@ -154,7 +154,7 @@ class Session:
                 script = str(uuid4())
             python_version = f"{sys.version_info.major}.{sys.version_info.minor}"
 
-            # try to find the parent job
+            # try to find the parent job for checkpoint/rerun chain
             parent = self.catalog.metastore.get_last_job_by_name(script)
 
             job_id = self.catalog.metastore.create_job(
@@ -163,7 +163,8 @@ class Session:
                 query_type=JobQueryType.PYTHON,
                 status=JobStatus.RUNNING,
                 python_version=python_version,
-                parent_job_id=parent.id if parent else None,
+                rerun_from_job_id=parent.id if parent else None,
+                run_group_id=parent.run_group_id if parent else None,
             )
             Session._CURRENT_JOB = self.catalog.metastore.get_job(job_id)
             Session._OWNS_JOB = True
@@ -243,7 +244,11 @@ class Session:
     def _cleanup_temp_datasets(self) -> None:
         prefix = self.get_temp_prefix()
         try:
-            for dataset in list(self.catalog.metastore.list_datasets_by_prefix(prefix)):
+            for dataset in list(
+                self.catalog.metastore.list_datasets_by_prefix(
+                    prefix, include_incomplete=True
+                )
+            ):
                 self.catalog.remove_dataset(dataset.name, dataset.project, force=True)
         # suppress error when metastore has been reset during testing
         except TableMissingError:

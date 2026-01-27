@@ -1,4 +1,5 @@
 import glob
+import itertools
 import logging
 import posixpath
 import secrets
@@ -20,6 +21,7 @@ from datachain.dataset import DatasetRecord, StorageURI
 from datachain.lib.file import File
 from datachain.lib.model_store import ModelStore
 from datachain.lib.signal_schema import SignalSchema
+from datachain.lib.udf import JsonSerializationError
 from datachain.node import DirType, DirTypeGroup, Node, NodeWithPath, get_path
 from datachain.query.batch import RowsOutput
 from datachain.query.schema import ColumnMeta
@@ -44,7 +46,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger("datachain")
 
 SELECT_BATCH_SIZE = 100_000  # number of rows to fetch at a time
-INSERT_BATCH_SIZE = 10_000  # number of rows to insert at a time
 
 
 class AbstractWarehouse(ABC, Serializable):
@@ -123,66 +124,53 @@ class AbstractWarehouse(ABC, Serializable):
         # Optimization: Precompute all the column type variables.
         value_type = type(val)
 
-        exc = None
-        try:
-            if col_python_type is list and value_type in (list, tuple, set):
-                if len(val) == 0:
-                    return []
+        if col_python_type is list and value_type in (list, tuple, set):
+            if len(val) == 0:
+                return []
 
-                item_python_type = self.python_type(col_type.item_type)
+            item_python_type = self.python_type(col_type.item_type)
 
-                if item_python_type is not list:
-                    if isinstance(val[0], item_python_type):
-                        # SQLite ARRAY storage expects a list; tuples/sets must be
-                        # converted to lists even when element types already match.
-                        return list(val)
-                    if item_python_type is float and isinstance(val[0], int):
-                        return [float(i) for i in val]
+            if item_python_type is not list:
+                if isinstance(val[0], item_python_type):
+                    # SQLite ARRAY storage expects a list; tuples/sets must be
+                    # converted to lists even when element types already match.
+                    return list(val)
+                if item_python_type is float and isinstance(val[0], int):
+                    return [float(i) for i in val]
 
-                # Optimization: Reuse these values for each function call within the
-                # list comprehension.
-                item_type_info = (
-                    col_type.item_type,
-                    item_python_type,
-                    type(col_type.item_type).__name__,
-                    col_name,
-                )
-                return [self.convert_type(i, *item_type_info) for i in val]
-            # Special use case with JSON type as we save it as string
-            if col_python_type is dict or col_type_name == "JSON":
-                if value_type is str:
-                    return val
-                try:
-                    json_ready = self._to_jsonable(val)
-                    return json.dumps(json_ready, ensure_ascii=False)
-                except Exception as e:
-                    raise ValueError(
-                        f"Cannot convert value {val!r} with type {value_type} to JSON"
-                    ) from e
+            # Optimization: Reuse these values for each function call within the
+            # list comprehension.
+            item_type_info = (
+                col_type.item_type,
+                item_python_type,
+                type(col_type.item_type).__name__,
+                col_name,
+            )
+            return [self.convert_type(i, *item_type_info) for i in val]
 
-            if isinstance(val, col_python_type):
+        # Special use case with JSON type as we save it as string
+        if col_python_type is dict or col_type_name == "JSON":
+            if value_type is str:
                 return val
-            if col_python_type is float and isinstance(val, int):
-                return float(val)
-        except Exception as e:  # noqa: BLE001
-            exc = e
-        ve = ValueError(
+            json_ready = self._to_jsonable(val)
+            try:
+                return json.dumps(json_ready, ensure_ascii=False)
+            except TypeError as e:
+                raise JsonSerializationError(
+                    f"JSON serialization error: {e}",
+                    column_name=col_name,
+                    value=val,
+                ) from e
+
+        if isinstance(val, col_python_type):
+            return val
+        if col_python_type is float and isinstance(val, int):
+            return float(val)
+
+        raise ValueError(
             f"Value {val!r} with type {value_type} incompatible for "
             f"column type {col_type_name}"
         )
-        # This is the same as "from exc" when not raising the exception.
-        if exc:
-            ve.__cause__ = exc
-        # Optimization: Log here, so only one try/except is needed, since the ValueError
-        # above is raised after logging.
-        logger.exception(
-            "Error while validating/converting type for column "
-            "%s with value %s, original error %s",
-            col_name,
-            val,
-            ve,
-        )
-        raise ve
 
     @abstractmethod
     def clone(self, use_new_connection: bool = False) -> "AbstractWarehouse":
@@ -506,7 +494,7 @@ class AbstractWarehouse(ABC, Serializable):
         self,
         table: sa.Table,
         rows: Iterable[dict[str, Any]],
-        batch_size: int = INSERT_BATCH_SIZE,
+        batch_size: int | None = None,
     ) -> None:
         """Does batch inserts of any kind of rows into table"""
 
@@ -1014,6 +1002,49 @@ class AbstractWarehouse(ABC, Serializable):
         Join two tables together.
         """
 
+    def subtract_query(
+        self,
+        source_query: sa.Select,
+        target_query: sa.Select,
+        key_pairs: Sequence[tuple[str, str]],
+    ) -> sa.Selectable:
+        """
+        Build an anti-join query for subtract semantics.
+
+        Default implementation uses LEFT JOIN with NULL-safe key comparison.
+        Warehouses can override this for backend-specific behavior.
+        """
+        assert key_pairs, "key_pairs must not be empty"
+        suffix = _next_subtract_id()
+        sq = source_query.cte(f"__dc_src_cte_{suffix}")
+        tq = target_query.cte(f"__dc_tgt_cte_{suffix}")
+
+        target_key_cols = [
+            tq.c[right] if left == right else tq.c[right].label(left)
+            for left, right in key_pairs
+        ]
+        target_keys = (
+            sa.select(
+                *target_key_cols,
+                sa.literal(1).label("__dc_match"),
+            )
+            .distinct()
+            .subquery(f"__dc_tgt_keys_{suffix}")
+        )
+
+        on_clause = sa.and_(
+            *[
+                sq.c[left].is_not_distinct_from(target_keys.c[left])
+                for left, _ in key_pairs
+            ]
+        )
+
+        return (
+            sa.select(sq)
+            .select_from(sq.outerjoin(target_keys, on_clause))
+            .where(target_keys.c["__dc_match"].is_(None))
+        )
+
     @abstractmethod
     def create_pre_udf_table(self, query: sa.Select) -> sa.Table:
         """
@@ -1047,3 +1078,11 @@ class AbstractWarehouse(ABC, Serializable):
 def _random_string(length: int) -> str:
     alphabet = string.ascii_letters + string.digits
     return "".join(secrets.choice(alphabet) for _ in range(length))
+
+
+_subtract_counter = itertools.count()
+
+
+def _next_subtract_id() -> int:
+    """Return a unique suffix for subtract CTE naming."""
+    return next(_subtract_counter)
