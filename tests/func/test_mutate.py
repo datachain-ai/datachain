@@ -293,3 +293,37 @@ def test_mutate_reject_new_nested_columns(test_session):
         dc.read_values(file=files, session=test_session).mutate(
             something__new=Column("file.source")
         ).save("test_reject_nested")
+
+
+def test_mutate_column_skips_double_quoting():
+    import tempfile
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        f.write('[{"xy": 0}]')
+        temp_path = f.name
+
+    chain = dc.read_json(temp_path)
+    chain = chain.mutate(out=dc.C("json.xy"))
+    df = chain.to_pandas()
+    assert df.columns.tolist() == [("json", "xy"), ("out", "")]
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        f.write('[{"xY": 0}]')
+        temp_path = f.name
+    chain = dc.read_json(temp_path)
+
+    # `xY` column is not found as it was sanitised
+    with pytest.raises(SignalResolvingError):
+        chain = chain.mutate(out=dc.C("json.xY"))
+
+    chain = chain.mutate(out=dc.C("json.xy"))
+    df = chain.to_pandas()
+    assert df.columns.tolist() == [("json", "xy"), ("out", "")]
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        f.write('[{"x_y": 0}]')
+        temp_path = f.name
+    chain = dc.read_json(temp_path)
+    chain = chain.mutate(out=dc.C("json.x_y"))
+    df = chain.to_pandas()
+    assert df.columns.tolist() == [("json", "x_y"), ("out", "")]
