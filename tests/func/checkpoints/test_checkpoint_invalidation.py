@@ -1,5 +1,3 @@
-"""Tests for checkpoint invalidation when UDF code or schema changes."""
-
 from collections.abc import Iterator
 
 import pytest

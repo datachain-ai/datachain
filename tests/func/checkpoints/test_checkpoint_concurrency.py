@@ -1,10 +1,3 @@
-"""Tests for checkpoint behavior with threading and multiprocessing.
-
-This module tests that checkpoints are properly disabled when Python threading
-or multiprocessing is detected, preventing race conditions and non-deterministic
-hash calculations.
-"""
-
 import os
 import threading
 from concurrent.futures import ThreadPoolExecutor

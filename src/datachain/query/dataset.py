@@ -548,6 +548,11 @@ class UDFStep(Step, ABC):
         # Create a mapping of column names to SQLTypes from original query
         orig_col_types = {col.name: col.type for col in original_query.selected_columns}
 
+        # Sys columns are added by create_udf_table and may not be in original query
+        sys_col_types = {
+            col.name: col.type for col in self.warehouse.dataset_row_cls.sys_columns()
+        }
+
         # Build select using bound columns from table, with type coercion for SQLTypes
         select_columns = []
         for table_col in table.c:
@@ -559,9 +564,17 @@ class UDFStep(Step, ABC):
                         table_col, orig_col_types[table_col.name]
                     ).label(table_col.name)
                 )
+            elif table_col.name in sys_col_types:
+                # Sys column added by create_udf_table - use known type
+                select_columns.append(
+                    sqlalchemy.type_coerce(
+                        table_col, sys_col_types[table_col.name]
+                    ).label(table_col.name)
+                )
             else:
-                # Column not in original query (e.g., sys columns), use as-is
-                select_columns.append(table_col)
+                raise RuntimeError(
+                    f"Unexpected column '{table_col.name}' in input table"
+                )
 
         return sqlalchemy.select(*select_columns).select_from(table)
 
@@ -885,14 +898,12 @@ class UDFStep(Step, ABC):
             udf_partial_reset = True
 
         if ch := self._find_udf_checkpoint(hash_output):
-            # Skip UDF execution by reusing existing output table
             output_table, input_table = self._skip_udf(
                 ch, hash_input, partial_hash, query
             )
         elif (
             ch_partial := self._find_udf_checkpoint(partial_hash, partial=True)
         ) and not udf_partial_reset:
-            # Only continue from partial if it's from a parent job, not our own
             output_table, input_table = self._continue_udf(
                 ch_partial, hash_output, hash_input, query
             )
@@ -900,17 +911,6 @@ class UDFStep(Step, ABC):
             output_table, input_table = self._run_from_scratch(
                 partial_hash, hash_output, hash_input, query
             )
-
-        # After UDF completes successfully, clean up partial checkpoint and
-        # processed table
-        if checkpoints_enabled():
-            if ch_partial := self.metastore.find_checkpoint(
-                self.job.id, partial_hash, partial=True
-            ):
-                self.metastore.remove_checkpoint(ch_partial.id)
-
-            # Create final checkpoint for current job
-            self.metastore.get_or_create_checkpoint(self.job.id, hash_output)
 
         # Create result query from output table
         input_query = self.get_input_query(input_table.name, query)
@@ -921,7 +921,7 @@ class UDFStep(Step, ABC):
         self, checkpoint: Checkpoint, hash_input: str, partial_hash: str, query
     ) -> tuple["Table", "Table"]:
         """
-        Skip UDF by copying existing output table. Returns (output_table, input_table).
+        Skip UDF by copying existing output table. Returns (output_table, input_table)
         """
         try:
             existing_output_table = self.warehouse.get_table(
@@ -944,14 +944,17 @@ class UDFStep(Step, ABC):
 
         input_table = self.get_or_create_input_table(query, hash_input)
 
+        self.metastore.get_or_create_checkpoint(self.job.id, checkpoint.hash)
+
         return output_table, input_table
 
     def _run_from_scratch(
         self, partial_hash: str, hash_output: str, hash_input: str, query
     ) -> tuple["Table", "Table"]:
         """Execute UDF from scratch. Returns (output_table, input_table)."""
+        partial_checkpoint = None
         if checkpoints_enabled():
-            self.metastore.get_or_create_checkpoint(
+            partial_checkpoint = self.metastore.get_or_create_checkpoint(
                 self.job.id, partial_hash, partial=True
             )
 
@@ -971,18 +974,23 @@ class UDFStep(Step, ABC):
         output_table = self.warehouse.rename_table(
             partial_output_table, UDFStep.output_table_name(self.job.id, hash_output)
         )
+
+        if partial_checkpoint:
+            self.metastore.remove_checkpoint(partial_checkpoint.id)
+            self.metastore.get_or_create_checkpoint(self.job.id, hash_output)
+
         return output_table, input_table
 
     def _continue_udf(
         self, checkpoint: Checkpoint, hash_output: str, hash_input: str, query
     ) -> tuple["Table", "Table"]:
         """
-        Continue UDF from parent's partial output. Returns (output_table, input_table).
+        Continue UDF from parent's partial output. Returns (output_table, input_table)
         """
         assert self.job.rerun_from_job_id is not None
         assert checkpoint.job_id == self.job.rerun_from_job_id
 
-        self.metastore.get_or_create_checkpoint(
+        partial_checkpoint = self.metastore.get_or_create_checkpoint(
             self.job.id, checkpoint.hash, partial=True
         )
 
@@ -1038,6 +1046,10 @@ class UDFStep(Step, ABC):
         output_table = self.warehouse.rename_table(
             partial_table, UDFStep.output_table_name(self.job.id, hash_output)
         )
+
+        self.metastore.remove_checkpoint(partial_checkpoint.id)
+        self.metastore.get_or_create_checkpoint(self.job.id, hash_output)
+
         return output_table, input_table
 
     @abstractmethod

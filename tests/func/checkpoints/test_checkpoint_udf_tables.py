@@ -1,8 +1,3 @@
-"""Tests for UDF intermediate table creation, naming, and lifecycle.
-
-This module tests input/output/partial table management and reuse across jobs.
-"""
-
 from collections.abc import Iterator
 
 import pytest

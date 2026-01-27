@@ -1,5 +1,3 @@
-"""Tests for checkpoint behavior with parallel execution."""
-
 from collections.abc import Iterator
 
 import pytest

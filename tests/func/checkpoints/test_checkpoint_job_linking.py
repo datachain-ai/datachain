@@ -1,5 +1,3 @@
-"""Tests for job-dataset version relationships."""
-
 import pytest
 import sqlalchemy as sa
 

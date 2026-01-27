@@ -1,5 +1,3 @@
-"""Tests for checkpoint recovery from partial UDF execution."""
-
 from collections.abc import Iterator
 
 import pytest
