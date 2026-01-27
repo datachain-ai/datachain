@@ -711,12 +711,12 @@ class DataChain:
         from .datasets import read_dataset
 
         metastore = self.session.catalog.metastore
-        checkpoints_reset = env2bool("DATACHAIN_SKIP_CHECKPOINTS", undefined=False)
+        ignore_checkpoints = env2bool("DATACHAIN_IGNORE_CHECKPOINTS", undefined=False)
 
         if (
             checkpoints_enabled()
             and self.job.rerun_from_job_id
-            and not checkpoints_reset
+            and not ignore_checkpoints
             and metastore.find_checkpoint(self.job.rerun_from_job_id, job_hash)
         ):
             # checkpoint found → find which dataset version to reuse

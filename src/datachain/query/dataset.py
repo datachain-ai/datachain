@@ -806,12 +806,12 @@ class UDFStep(Step, ABC):
         Returns the Checkpoint object if found and checkpoints are enabled,
         None otherwise.
         """
-        checkpoints_reset = env2bool("DATACHAIN_SKIP_CHECKPOINTS", undefined=False)
+        ignore_checkpoints = env2bool("DATACHAIN_IGNORE_CHECKPOINTS", undefined=False)
 
         if (
             checkpoints_enabled()
             and self.job.rerun_from_job_id
-            and not checkpoints_reset
+            and not ignore_checkpoints
             and (
                 checkpoint := self.metastore.find_checkpoint(
                     self.job.rerun_from_job_id, _hash, partial=partial
@@ -895,8 +895,6 @@ class UDFStep(Step, ABC):
             (hash_input + self.udf.output_schema_hash()).encode()
         ).hexdigest()
 
-        udf_partial_reset = env2bool("DATACHAIN_UDF_RESTART", undefined=False)
-
         # If partition_by is set, we need to create input table first to ensure
         # consistent sys__id
         if self.partition_by is not None:
@@ -915,8 +913,8 @@ class UDFStep(Step, ABC):
                 partition_tbl.c.sys__id == query.selected_columns.sys__id,
             ).add_columns(*partition_columns())
 
-            # always run from scratch as Aggregator checkpoints are not implemented yet
-            udf_partial_reset = True
+        # Aggregator checkpoints are not implemented yet - skip partial continuation
+        can_continue_from_partial = self.partition_by is None
 
         if ch := self._find_udf_checkpoint(hash_output):
             try:
@@ -930,9 +928,9 @@ class UDFStep(Step, ABC):
                 output_table, input_table = self._run_from_scratch(
                     partial_hash, ch.hash, hash_input, query
                 )
-        elif (
+        elif can_continue_from_partial and (
             ch_partial := self._find_udf_checkpoint(partial_hash, partial=True)
-        ) and not udf_partial_reset:
+        ):
             output_table, input_table = self._continue_udf(
                 ch_partial, hash_output, hash_input, query
             )

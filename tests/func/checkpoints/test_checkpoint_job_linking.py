@@ -58,7 +58,7 @@ def test_dataset_job_linking(test_session, monkeypatch, nums_dataset):
     """
     catalog = test_session.catalog
     metastore = catalog.metastore
-    monkeypatch.setenv("DATACHAIN_SKIP_CHECKPOINTS", str(False))
+    monkeypatch.setenv("DATACHAIN_IGNORE_CHECKPOINTS", str(False))
 
     chain = dc.read_dataset("nums", session=test_session)
 
@@ -111,7 +111,7 @@ def test_dataset_job_linking(test_session, monkeypatch, nums_dataset):
 def test_dataset_job_linking_with_reset(test_session, monkeypatch, nums_dataset):
     catalog = test_session.catalog
     metastore = catalog.metastore
-    monkeypatch.setenv("DATACHAIN_SKIP_CHECKPOINTS", str(True))
+    monkeypatch.setenv("DATACHAIN_IGNORE_CHECKPOINTS", str(True))
 
     chain = dc.read_dataset("nums", session=test_session)
 
@@ -143,7 +143,7 @@ def test_dataset_version_job_id_updates_to_latest(
     test_session, monkeypatch, nums_dataset
 ):
     catalog = test_session.catalog
-    monkeypatch.setenv("DATACHAIN_SKIP_CHECKPOINTS", str(False))
+    monkeypatch.setenv("DATACHAIN_IGNORE_CHECKPOINTS", str(False))
 
     chain = dc.read_dataset("nums", session=test_session)
     name = "nums_jobid"
@@ -178,7 +178,7 @@ def test_dataset_version_job_id_updates_to_latest(
 def test_job_ancestry_depth_exceeded(test_session, monkeypatch, nums_dataset):
     from datachain.data_storage import metastore
 
-    monkeypatch.setenv("DATACHAIN_SKIP_CHECKPOINTS", str(False))
+    monkeypatch.setenv("DATACHAIN_IGNORE_CHECKPOINTS", str(False))
     # Mock max depth to a small value (3) for testing
     monkeypatch.setattr(metastore, "JOB_ANCESTRY_MAX_DEPTH", 3)
 

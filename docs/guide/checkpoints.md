@@ -79,21 +79,21 @@ Checkpoints are **not** used when:
 
 - Running code interactively (Python REPL, Jupyter notebooks)
 - Running code as a module (e.g., `python -m mymodule`)
-- The `DATACHAIN_SKIP_CHECKPOINTS` environment variable is set (see below)
+- The `DATACHAIN_IGNORE_CHECKPOINTS` environment variable is set (see below)
 
 ## Resetting Checkpoints
 
-To ignore existing checkpoints and run your script from scratch, set the `DATACHAIN_SKIP_CHECKPOINTS` environment variable:
+To ignore existing checkpoints and run your script from scratch, set the `DATACHAIN_IGNORE_CHECKPOINTS` environment variable:
 
 ```bash
-export DATACHAIN_SKIP_CHECKPOINTS=1
+export DATACHAIN_IGNORE_CHECKPOINTS=1
 python my_script.py
 ```
 
 Or set it inline:
 
 ```bash
-DATACHAIN_SKIP_CHECKPOINTS=1 python my_script.py
+DATACHAIN_IGNORE_CHECKPOINTS=1 python my_script.py
 ```
 
 This forces DataChain to recreate all datasets, regardless of existing checkpoints.
@@ -310,18 +310,6 @@ Changes that invalidate completed UDF checkpoints:
 - **Altering any operations before the UDF in the chain** - Changes to upstream data processing
 
 **Key takeaway:** For in-progress (partial) UDFs, you can fix bugs freely as long as the output stays the same. For completed UDFs, any code change triggers a full recomputation.
-
-### Forcing UDF to Start from Scratch
-
-If you want to ignore any in-progress UDF work and recompute from the beginning, set the `DATACHAIN_UDF_RESTART` environment variable:
-
-```bash
-DATACHAIN_UDF_RESTART=1 python my_script.py
-```
-
-This forces the failed UDF to restart from scratch instead of continuing from partial results. This is useful when a UDF previously failed mid-execution and left partial results, but you want to discard them and reprocess all rows from the beginning.
-
-Note that this only affects in-progress UDFs. Completed UDFs are still skipped based on their hash, unless their code or inputs have changed.
 
 ## Limitations
 
