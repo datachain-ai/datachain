@@ -898,9 +898,17 @@ class UDFStep(Step, ABC):
             udf_partial_reset = True
 
         if ch := self._find_udf_checkpoint(hash_output):
-            output_table, input_table = self._skip_udf(
-                ch, hash_input, partial_hash, query
-            )
+            try:
+                output_table, input_table = self._skip_udf(ch, hash_input, query)
+            except TableMissingError:
+                logger.warning(
+                    "Output table not found for checkpoint %s. "
+                    "Running UDF from scratch.",
+                    ch,
+                )
+                output_table, input_table = self._run_from_scratch(
+                    partial_hash, ch.hash, hash_input, query
+                )
         elif (
             ch_partial := self._find_udf_checkpoint(partial_hash, partial=True)
         ) and not udf_partial_reset:
@@ -918,28 +926,17 @@ class UDFStep(Step, ABC):
         return step_result(q, cols)
 
     def _skip_udf(
-        self, checkpoint: Checkpoint, hash_input: str, partial_hash: str, query
+        self, checkpoint: Checkpoint, hash_input: str, query
     ) -> tuple["Table", "Table"]:
         """
         Skip UDF by copying existing output table. Returns (output_table, input_table)
         """
-        try:
-            existing_output_table = self.warehouse.get_table(
-                UDFStep.output_table_name(checkpoint.job_id, checkpoint.hash)
-            )
-        except TableMissingError:
-            # Table missing - fall back to running from scratch
-            logger.warning(
-                "Output table not found for checkpoint %s. Running UDF from scratch.",
-                checkpoint,
-            )
-            return self._run_from_scratch(
-                partial_hash, checkpoint.hash, hash_input, query
-            )
-        current_output_table_name = UDFStep.output_table_name(
-            self.job.id, checkpoint.hash
+        existing_output_table = self.warehouse.get_table(
+            UDFStep.output_table_name(checkpoint.job_id, checkpoint.hash)
         )
-        output_table = self.create_output_table(current_output_table_name)
+        output_table = self.create_output_table(
+            UDFStep.output_table_name(self.job.id, checkpoint.hash)
+        )
         self.warehouse.insert_into(output_table, sa.select(existing_output_table))
 
         input_table = self.get_or_create_input_table(query, hash_input)
