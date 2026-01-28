@@ -1,6 +1,7 @@
 import copy
 import logging
 import os
+import sys
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
@@ -9,6 +10,11 @@ from functools import cached_property, reduce
 from itertools import groupby
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
+
+if sys.version_info >= (3, 11):
+    from typing import Self
+else:
+    from typing_extensions import Self
 
 from sqlalchemy import (
     JSON,
@@ -99,7 +105,7 @@ class AbstractMetastore(ABC, Serializable):
     ):
         self.uri = uri or StorageURI("")
 
-    def __enter__(self) -> "AbstractMetastore":
+    def __enter__(self) -> Self:
         """Returns self upon entering context manager."""
         return self
 

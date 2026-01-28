@@ -1,8 +1,14 @@
 import glob
 import os
+import sys
 from collections.abc import Iterable, Iterator
 from functools import cached_property
 from typing import TYPE_CHECKING
+
+if sys.version_info >= (3, 11):
+    from typing import Self
+else:
+    from typing_extensions import Self
 
 from sqlalchemy import Column
 from sqlalchemy.sql import func
@@ -47,7 +53,7 @@ class Listing:
             self.column,
         )
 
-    def __enter__(self) -> "Listing":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
