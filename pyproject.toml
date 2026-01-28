@@ -132,6 +132,7 @@ examples = [
   "defusedxml",
   "accelerate",
   "huggingface_hub[hf_transfer]",
+  "transformers>=5.0.0",
   "ultralytics",
   "open_clip_torch",
   "openai",
