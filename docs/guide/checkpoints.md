@@ -86,13 +86,6 @@ Checkpoints are **not** used when:
 To ignore existing checkpoints and run your script from scratch, set the `DATACHAIN_IGNORE_CHECKPOINTS` environment variable:
 
 ```bash
-export DATACHAIN_IGNORE_CHECKPOINTS=1
-python my_script.py
-```
-
-Or set it inline:
-
-```bash
 DATACHAIN_IGNORE_CHECKPOINTS=1 python my_script.py
 ```
 

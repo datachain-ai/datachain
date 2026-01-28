@@ -52,14 +52,8 @@ def test_checkpoints_parallel(test_session_tmpfile, monkeypatch):
 
 
 def test_udf_generator_continue_parallel(test_session_tmpfile, monkeypatch):
-    """Test continuing RowGenerator from partial with parallel=True.
-
-    This tests that processed table is properly passed through parallel
-    execution path so that checkpoint recovery works correctly.
-    """
     test_session = test_session_tmpfile
 
-    # Track which numbers have been processed
     processed_nums = []
     run_count = {"count": 0}
 
@@ -69,7 +63,6 @@ def test_udf_generator_continue_parallel(test_session_tmpfile, monkeypatch):
         # Fail on input 4 in first run only
         if num == 4 and run_count["count"] == 0:
             raise Exception(f"Simulated failure on num={num}")
-        # Each input yields 2 outputs
         yield num * 10
         yield num
 
@@ -90,14 +83,12 @@ def test_udf_generator_continue_parallel(test_session_tmpfile, monkeypatch):
     # -------------- SECOND RUN (CONTINUE) -------------------
     reset_session_job_state()
 
-    # Clear processed list and increment run count
     processed_nums.clear()
     run_count["count"] += 1
 
     # Should complete successfully
     chain.save("results")
 
-    # Verify result
     result = (
         dc.read_dataset("results", session=test_session)
         .order_by("result")

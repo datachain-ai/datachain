@@ -34,8 +34,7 @@ def test_udf_signals_continue_from_partial(
     """Test continuing UDF execution from partial output table.
 
     Tests with different batch sizes to ensure partial results are correctly handled
-    regardless of batch boundaries. Uses counter-based failure to avoid dependency
-    on row ordering (ClickHouse doesn't guarantee order without ORDER BY).
+    regardless of batch boundaries.
     """
     test_session = test_session_tmpfile
     processed_nums = []
@@ -92,11 +91,6 @@ def test_udf_generator_continue_from_partial(
     batch_size,
     fail_after_count,
 ):
-    """Test continuing RowGenerator from partial output.
-
-    Tests with different batch sizes to ensure processed table correctly
-    tracks inputs only after ALL their outputs have been committed.
-    """
     processed_nums = []
 
     dc.read_values(num=[1, 2, 3, 4, 5, 6], session=test_session).save("nums")
@@ -173,7 +167,6 @@ def test_generator_incomplete_input_recovery(test_session):
     numbers = [6, 2, 8, 7]
 
     def gen_multiple(num) -> Iterator[int]:
-        """Generator that yields 5 outputs per input."""
         processed_inputs.append(num)
         for i in range(5):
             if num == 8 and i == 2 and run_count[0] == 0:
@@ -207,7 +200,6 @@ def test_generator_incomplete_input_recovery(test_session):
     processed_inputs.clear()
     run_count[0] += 1  # Increment so generator succeeds this time
 
-    # Should complete successfully
     (
         dc.read_dataset("nums", session=test_session)
         .order_by("num")
@@ -297,7 +289,6 @@ def test_generator_yielding_nothing(test_session, monkeypatch, nums_dataset):
 
 
 def test_empty_dataset_checkpoint(test_session):
-    """Test checkpoint behavior with empty input dataset."""
     processed = []
 
     def mapper(num) -> int:
@@ -306,7 +297,6 @@ def test_empty_dataset_checkpoint(test_session):
 
     dc.read_values(num=[], session=test_session).save("empty_nums")
 
-    # First run with empty dataset
     reset_session_job_state()
     chain = dc.read_dataset("empty_nums", session=test_session).map(
         result=mapper, output=int
@@ -327,7 +317,6 @@ def test_empty_dataset_checkpoint(test_session):
 
 
 def test_single_row_dataset_checkpoint(test_session):
-    """Test checkpoint recovery with single row (smaller than batch_size)."""
     processed = []
     run_count = {"value": 0}
 
@@ -339,7 +328,6 @@ def test_single_row_dataset_checkpoint(test_session):
 
     dc.read_values(num=[42], session=test_session).save("single_num")
 
-    # First run fails
     reset_session_job_state()
     chain = (
         dc.read_dataset("single_num", session=test_session)
@@ -354,7 +342,6 @@ def test_single_row_dataset_checkpoint(test_session):
 
     assert len(processed) == 1
 
-    # Second run succeeds
     reset_session_job_state()
     processed.clear()
     run_count["value"] += 1
@@ -418,12 +405,8 @@ def test_multiple_consecutive_failures(test_session):
     result = dc.read_dataset("results", session=test_session).to_list("result")
     assert sorted(result) == [(10,), (20,), (30,), (40,), (50,), (60,), (70,), (80,)]
 
-    # Total processed across all runs should be <= 8 + retries for failed batches
-    # The key assertion is that the final result is correct
-
 
 def test_generator_multiple_consecutive_failures(test_session):
-    """Test generator checkpoint recovery across multiple consecutive failures."""
     processed = []
     run_count = {"value": 0}
 
@@ -473,3 +456,60 @@ def test_generator_multiple_consecutive_failures(test_session):
     # Verify no duplicates
     values = [r[0] for r in result]
     assert len(values) == len(set(values))
+
+
+def test_multiple_udf_chain_continue(test_session):
+    """Test continuing from partial with multiple UDFs in chain.
+
+    When mapper fails, only mapper's partial table exists. On retry, mapper
+    completes and gen runs from scratch.
+    """
+    map_processed = []
+    gen_processed = []
+    fail_once = [True]  # Mutable flag to track if we should fail
+
+    dc.read_values(num=[1, 2, 3, 4, 5, 6], session=test_session).save("nums")
+
+    def mapper(num: int) -> int:
+        map_processed.append(num)
+        # Fail before processing the 4th row in first run only
+        if fail_once[0] and len(map_processed) == 3:
+            fail_once[0] = False
+            raise Exception("Map failure")
+        return num * 2
+
+    def doubler(doubled) -> Iterator[int]:
+        gen_processed.append(doubled)
+        yield doubled
+        yield doubled
+
+    # First run - fails in mapper
+    # batch_size=2: processes [1,2] (commits), then [3,4] (fails on 4)
+    reset_session_job_state()
+    chain = (
+        dc.read_dataset("nums", session=test_session)
+        .settings(batch_size=2)
+        .map(doubled=mapper)
+        .gen(value=doubler, output=int)
+    )
+
+    with pytest.raises(Exception, match="Map failure"):
+        chain.save("results")
+
+    # Second run - completes successfully
+    # Mapper continues from partial checkpoint
+    reset_session_job_state()
+    chain.save("results")
+
+    # Verify mapper processed some rows (continuation working)
+    # First run: 3 rows attempted
+    # Second run: varies by warehouse (0-6 rows depending on batching/buffer behavior)
+    # Total: 6-9 calls (some rows may be reprocessed if not saved to partial)
+    assert 6 <= len(map_processed) <= 9, "Expected 6-9 total mapper calls"
+
+    assert len(gen_processed) == 6
+
+    result = sorted(dc.read_dataset("results", session=test_session).to_list("value"))
+    assert sorted([v[0] for v in result]) == sorted(
+        [2, 2, 4, 4, 6, 6, 8, 8, 10, 10, 12, 12]
+    )

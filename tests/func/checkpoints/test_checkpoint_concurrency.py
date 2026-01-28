@@ -46,7 +46,6 @@ def test_threading_disables_checkpoints(test_session_tmpfile, caplog):
     # -------------- FIRST RUN (main thread) -------------------
     reset_session_job_state()
 
-    # Run DataChain operation in main thread - checkpoint should be created
     dc.read_dataset("nums", session=test_session).save("result1")
 
     job1 = test_session.get_or_create_job()
@@ -68,10 +67,8 @@ def test_threading_disables_checkpoints(test_session_tmpfile, caplog):
     thread.start()
     thread.join()
 
-    # Verify thread ran
     assert thread_ran["value"] is True
 
-    # Verify warning was logged
     assert any(
         "Concurrent thread detected" in record.message for record in caplog.records
     ), "Warning about concurrent thread should be logged"
@@ -83,9 +80,6 @@ def test_threading_disables_checkpoints(test_session_tmpfile, caplog):
 
 
 def test_threading_with_executor(test_session_tmpfile, caplog):
-    """
-    Test checkpoint disabling with ThreadPoolExecutor running DataChain operations.
-    """
     test_session = test_session_tmpfile
     metastore = test_session.catalog.metastore
 
@@ -110,19 +104,16 @@ def test_threading_with_executor(test_session_tmpfile, caplog):
     with ThreadPoolExecutor(max_workers=3) as executor:
         list(executor.map(worker, range(3)))
 
-    # Verify warning was logged
     assert any(
         "Concurrent thread detected" in record.message for record in caplog.records
     ), "Warning should be logged when using thread pool"
 
-    # Verify no checkpoints were created in thread pool
     job2 = test_session.get_or_create_job()
     checkpoints_after = len(list(metastore.list_checkpoints(job2.id)))
     assert checkpoints_after == 0, "No checkpoints should be created in thread pool"
 
 
 def test_multiprocessing_disables_checkpoints(test_session, monkeypatch):
-    """Test that checkpoints are disabled when simulating subprocess execution."""
     catalog = test_session.catalog
     metastore = catalog.metastore
 
@@ -146,7 +137,6 @@ def test_multiprocessing_disables_checkpoints(test_session, monkeypatch):
     # Run DataChain operation - checkpoint should NOT be created
     dc.read_dataset("nums", session=test_session).save("subprocess_result")
 
-    # Verify no checkpoint was created in "subprocess"
     job2 = test_session.get_or_create_job()
     checkpoints_subprocess = list(metastore.list_checkpoints(job2.id))
     assert len(checkpoints_subprocess) == 0, (
@@ -155,9 +145,6 @@ def test_multiprocessing_disables_checkpoints(test_session, monkeypatch):
 
 
 def test_checkpoint_reuse_after_threading(test_session_tmpfile):
-    """
-    Test that checkpoints created before threading can still be reused in new jobs.
-    """
     test_session = test_session_tmpfile
     metastore = test_session.catalog.metastore
 
@@ -194,7 +181,6 @@ def test_checkpoint_reuse_after_threading(test_session_tmpfile):
 
 
 def test_warning_shown_once(test_session_tmpfile, caplog):
-    """Test that the concurrent execution warning is shown only once per process."""
     test_session = test_session_tmpfile
 
     dc.read_values(num=[1, 2, 3, 4, 5, 6], session=test_session).save("nums")
@@ -213,10 +199,8 @@ def test_warning_shown_once(test_session_tmpfile, caplog):
     thread.start()
     thread.join()
 
-    # Count how many times the warning was logged
     warning_count = sum(
         1 for record in caplog.records if "Concurrent thread detected" in record.message
     )
 
-    # Warning should be shown only once, not for each checkpoint check
     assert warning_count == 1, "Warning should be shown only once per process"

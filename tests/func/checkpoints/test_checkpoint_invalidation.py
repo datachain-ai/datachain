@@ -138,11 +138,6 @@ def test_generator_output_schema_change_triggers_rerun(test_session, monkeypatch
 
 
 def test_mapper_output_schema_change_triggers_rerun(test_session, monkeypatch):
-    """Test that changing mapper output type triggers re-run from scratch.
-
-    Similar to generator test, but for mappers (1:1 mapping). When output
-    schema changes, the system should detect this and re-run from scratch.
-    """
     processed_nums_v1 = []
     processed_nums_v2 = []
 
