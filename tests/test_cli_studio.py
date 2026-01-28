@@ -456,6 +456,7 @@ def test_studio_run(capsys, mocker, tmp_dir):
         "compute_cluster_name": "default",
         "start_after": None,
         "rerun_from_job_id": None,
+        "reset": False,
         "cron_expression": None,
         "credentials_name": "my-credentials",
     }

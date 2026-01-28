@@ -59,6 +59,7 @@ def process_jobs_args(args: "Namespace"):
             args.cron,
             args.no_wait,
             args.credentials_name,
+            args.ignore_checkpoints,
         )
 
     if args.cmd == "cancel":
@@ -423,7 +424,7 @@ def show_logs_from_client(client, job_id):
     return exit_code_by_status.get(final_status.upper(), 0) if final_status else 0
 
 
-def create_job(
+def create_job(  # noqa: PLR0913
     query_file: str,
     team_name: str | None,
     env_file: str | None = None,
@@ -440,6 +441,7 @@ def create_job(
     cron: str | None = None,
     no_wait: bool | None = False,
     credentials_name: str | None = None,
+    ignore_checkpoints: bool = False,
 ):
     catalog = get_catalog()
 
@@ -482,6 +484,7 @@ def create_job(
         workers=workers,
         query_name=os.path.basename(query_file),
         rerun_from_job_id=rerun_from_job_id,
+        reset=ignore_checkpoints,
         files=file_ids,
         python_version=python_version,
         repository=repository,

@@ -122,6 +122,11 @@ def add_jobs_parser(subparsers, parent_parser) -> None:
         action="store_true",
         help="Do not wait for the job to finish",
     )
+    studio_run_parser.add_argument(
+        "--ignore-checkpoints",
+        action="store_true",
+        help="Ignore existing checkpoints and run from scratch",
+    )
 
     studio_ls_help = "List jobs in Studio"
     studio_ls_description = "List jobs in Studio."

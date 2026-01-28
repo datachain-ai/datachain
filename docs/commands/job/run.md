@@ -14,7 +14,7 @@ usage: datachain job run [-h] [-v] [-q] [--team TEAM] [--env-file ENV_FILE]
                          [--req-file REQ_FILE] [--req REQ [REQ ...]]
                          [--priority PRIORITY]
                          [--start-time START_TIME] [--cron CRON]
-                         [--no-wait]
+                         [--no-wait] [--ignore-checkpoints]
                          file
 ```
 
@@ -43,6 +43,7 @@ This command runs a job in Studio using the specified query file. You can config
 * `--start-time START_TIME` - Time to schedule the task in YYYY-MM-DDTHH:mm format or natural language.
 * `--cron CRON` - Cron expression for the cron task.
 * `--no-wait` - Do not wait for the job to finish.
+* `--ignore-checkpoints` - Ignore existing checkpoints and run from scratch.
 * `-h`, `--help` - Show the help message and exit.
 * `-v`, `--verbose` - Be verbose.
 * `-q`, `--quiet` - Be quiet.
@@ -156,6 +157,7 @@ datachain job run query.py --no-wait
 
 ## Notes
 
+* **Checkpoints**: Running the same script multiple times via `datachain job run` automatically links jobs together, enabling checkpoint reuse. If a previous run of the same script (by absolute path) exists, DataChain will resume from where it left off. See the [Checkpoints guide](/guide/checkpoints.md) for more details.
 * Closing the logs command (e.g., with Ctrl+C) will only stop displaying the logs but will not cancel the job execution
 * To cancel a running job, use the `datachain job cancel` command
 * The job will continue running in Studio even after you stop viewing the logs
