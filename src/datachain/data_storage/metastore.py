@@ -474,6 +474,8 @@ class AbstractMetastore(ABC, Serializable):
         parent_job_id: str | None = None,
         rerun_from_job_id: str | None = None,
         run_group_id: str | None = None,
+        is_remote_execution: bool = False,
+        job_id: str | None = None,
     ) -> str:
         """
         Creates a new job.
@@ -511,7 +513,9 @@ class AbstractMetastore(ABC, Serializable):
         """Returns the status of the given job."""
 
     @abstractmethod
-    def get_last_job_by_name(self, name: str, conn=None) -> "Job | None":
+    def get_last_job_by_name(
+        self, name: str, is_remote_execution: bool = False, conn=None
+    ) -> "Job | None":
         """Returns the last job with the given name, ordered by created_at."""
 
     #
@@ -1877,6 +1881,7 @@ class AbstractDBMetastore(AbstractMetastore):
             Column("parent_job_id", Text, nullable=True),
             Column("rerun_from_job_id", Text, nullable=True),
             Column("run_group_id", Text, nullable=True),
+            Column("is_remote_execution", Boolean, nullable=False, default=False),
             Index("idx_jobs_parent_job_id", "parent_job_id"),
             Index("idx_jobs_rerun_from_job_id", "rerun_from_job_id"),
             Index("idx_jobs_run_group_id", "run_group_id"),
@@ -1918,10 +1923,13 @@ class AbstractDBMetastore(AbstractMetastore):
         query = self._jobs_query().where(self._jobs.c.id.in_(ids))
         yield from self._parse_jobs(self.db.execute(query, conn=conn))
 
-    def get_last_job_by_name(self, name: str, conn=None) -> "Job | None":
+    def get_last_job_by_name(
+        self, name: str, is_remote_execution: bool = False, conn=None
+    ) -> "Job | None":
         query = (
             self._jobs_query()
             .where(self._jobs.c.name == name)
+            .where(self._jobs.c.is_remote_execution == is_remote_execution)
             .order_by(self._jobs.c.created_at.desc())
             .limit(1)
         )
@@ -1942,29 +1950,35 @@ class AbstractDBMetastore(AbstractMetastore):
         parent_job_id: str | None = None,
         rerun_from_job_id: str | None = None,
         run_group_id: str | None = None,
+        is_remote_execution: bool = False,
+        job_id: str | None = None,
         conn: Any = None,
     ) -> str:
         """
         Creates a new job.
         Returns the job id.
-        """
-        job_id = str(uuid4())
 
-        # Validate run_group_id and rerun_from_job_id consistency
-        if rerun_from_job_id:
-            # Rerun job: run_group_id should be provided by caller
-            # If run_group_id is None, parent is a legacy job without run_group_id
-            # In this case, treat current job as first job in a new chain
-            # and break the link to the legacy parent
-            if run_group_id is None:
+        Args:
+            job_id: If provided, uses this ID instead of generating a new one.
+                    Used for saving Studio jobs locally with their original IDs.
+        """
+        if job_id is None:
+            job_id = str(uuid4())
+            # Validate run_group_id and rerun_from_job_id consistency for local jobs
+            if rerun_from_job_id:
+                # Rerun job: run_group_id should be provided by caller
+                # If run_group_id is None, parent is a legacy job without run_group_id
+                # In this case, treat current job as first job in a new chain
+                # and break the link to the legacy parent
+                if run_group_id is None:
+                    run_group_id = job_id
+                    rerun_from_job_id = None
+            else:
+                assert run_group_id is None, (
+                    "run_group_id should not be provided when rerun_from_job_id"
+                    " is not set"
+                )
                 run_group_id = job_id
-                rerun_from_job_id = None
-        else:
-            # First job: run_group_id should not be provided (we set it here)
-            assert run_group_id is None, (
-                "run_group_id should not be provided when rerun_from_job_id is not set"
-            )
-            run_group_id = job_id
 
         self.db.execute(
             self._jobs_insert().values(
@@ -1983,6 +1997,7 @@ class AbstractDBMetastore(AbstractMetastore):
                 parent_job_id=parent_job_id,
                 rerun_from_job_id=rerun_from_job_id,
                 run_group_id=run_group_id,
+                is_remote_execution=is_remote_execution,
             ),
             conn=conn,
         )
