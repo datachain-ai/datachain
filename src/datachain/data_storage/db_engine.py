@@ -1,7 +1,13 @@
 import logging
+import sys
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any, ClassVar
+
+if sys.version_info >= (3, 11):
+    from typing import Self
+else:
+    from typing_extensions import Self
 
 import sqlalchemy as sa
 from sqlalchemy.sql import FROM_LINTING
@@ -29,7 +35,7 @@ class DatabaseEngine(ABC, Serializable):
     engine: "Engine"
     metadata: "MetaData"
 
-    def __enter__(self) -> "DatabaseEngine":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
