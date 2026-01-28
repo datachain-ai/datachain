@@ -157,7 +157,7 @@ datachain job run query.py --no-wait
 
 ## Notes
 
-* **Checkpoints**: Running the same script multiple times via `datachain job run` automatically links jobs together, enabling checkpoint reuse. If a previous run of the same script (by absolute path) exists, DataChain will resume from where it left off. See the [Checkpoints guide](/guide/checkpoints.md) for more details.
+* **Checkpoints**: Running the same script multiple times via `datachain job run` automatically links jobs together, enabling checkpoint reuse. If a previous run of the same script (by absolute path) exists, DataChain will resume from where it left off.
 * Closing the logs command (e.g., with Ctrl+C) will only stop displaying the logs but will not cancel the job execution
 * To cancel a running job, use the `datachain job cancel` command
 * The job will continue running in Studio even after you stop viewing the logs
