@@ -1,13 +1,11 @@
 import datachain as dc
+from datachain.data_storage.warehouse import AbstractWarehouse
 
 
 def test_union_persist_no_duplication_large_session(test_session, monkeypatch):
     # See https://github.com/datachain-ai/datachain/issues/1356
     # Lower insert batch size to keep the test fast and still cross the boundary.
-    monkeypatch.setattr(
-        "datachain.data_storage.warehouse.INSERT_BATCH_SIZE", 20, raising=False
-    )
-    monkeypatch.setattr("datachain.query.dataset.INSERT_BATCH_SIZE", 20, raising=False)
+    monkeypatch.setattr(AbstractWarehouse, "INSERT_BATCH_SIZE", 20)
     n = 20 + 7
 
     x_ids = list(range(n))
