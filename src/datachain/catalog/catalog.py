@@ -3,6 +3,7 @@ import logging
 import os
 import os.path
 import posixpath
+import sys
 import time
 import traceback
 from collections.abc import Callable, Iterable, Iterator, Sequence
@@ -12,6 +13,11 @@ from dataclasses import dataclass
 from functools import cached_property, reduce
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
+
+if sys.version_info >= (3, 11):
+    from typing import Self
+else:
+    from typing_extensions import Self
 
 import sqlalchemy as sa
 from sqlalchemy import Column
@@ -274,7 +280,7 @@ class NodeGroup:
         if self.listing:
             self.listing.close()
 
-    def __enter__(self) -> "NodeGroup":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
@@ -552,7 +558,7 @@ class Catalog:
             with suppress(Exception):
                 self._warehouse.close_on_exit()
 
-    def __enter__(self) -> "Catalog":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
