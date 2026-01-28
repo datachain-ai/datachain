@@ -1,5 +1,3 @@
-"""Buffer utilities for batch database operations."""
-
 import time
 from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING, Any, Generic, TypeVar

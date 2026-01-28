@@ -23,7 +23,6 @@ class UdfInfo(TypedDict):
     cache: bool
     rows_total: int
     batch_size: int | None
-    flush_interval: float | None
 
 
 class AbstractUDFDistributor(ABC):
@@ -43,7 +42,6 @@ class AbstractUDFDistributor(ABC):
         is_generator: bool = False,
         min_task_size: str | int | None = None,
         batch_size: int | None = None,
-        flush_interval: float | None = None,
     ) -> None: ...
 
     @abstractmethod

@@ -504,19 +504,15 @@ class AbstractWarehouse(ABC, Serializable):
         table: sa.Table,
         rows: Iterable[dict[str, Any]],
         batch_size: int | None = None,
-        flush_interval: float | None = None,
     ) -> None:
-        """Inserts rows in batches using an InsertBuffer.
+        """Does batch inserts of any kind of rows into table.
 
         `insert_rows_done` must be called after this function is used
         (and all rows have been inserted).
         """
         buffer_size = batch_size if batch_size is not None else self.INSERT_BATCH_SIZE
-        interval = (
-            flush_interval if flush_interval is not None else self.INSERT_FLUSH_INTERVAL
-        )
         buffer = self.get_buffer(
-            table, buffer_size=buffer_size, flush_interval=interval
+            table, buffer_size=buffer_size, flush_interval=self.INSERT_FLUSH_INTERVAL
         )
         buffer.insert_many(rows)
 

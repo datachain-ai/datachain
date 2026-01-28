@@ -13,7 +13,6 @@ def test_settings_default_values():
     assert settings.project is None
     assert settings.min_task_size is None
     assert settings.batch_size is None
-    assert settings.flush_interval is None
 
     d = settings.to_dict()
     assert d == {}
@@ -29,7 +28,6 @@ def test_settings_add():
         namespace="base",
         project="base_project",
         batch_size=1000,
-        flush_interval=30.0,
     )
 
     # add empty settings does nothing
@@ -42,7 +40,6 @@ def test_settings_add():
     assert base.namespace == "base"
     assert base.project == "base_project"
     assert base.batch_size == 1000
-    assert base.flush_interval == 30.0
 
     # add new settings overrides existing ones
     base.add(
@@ -55,7 +52,6 @@ def test_settings_add():
             namespace="new",
             project="new_project",
             batch_size=500,
-            flush_interval=60.0,
         )
     )
     assert base.cache is False
@@ -66,7 +62,6 @@ def test_settings_add():
     assert base.namespace == "new"
     assert base.project == "new_project"
     assert base.batch_size == 500
-    assert base.flush_interval == 60.0
 
 
 def test_settings_to_dict():
@@ -84,7 +79,6 @@ def test_settings_to_dict():
         namespace=None,
         project=None,
         batch_size=None,
-        flush_interval=None,
     )
     assert settings.to_dict() == {}
 
@@ -98,7 +92,6 @@ def test_settings_to_dict():
         namespace="test_namespace",
         project="test_project",
         batch_size=1000,
-        flush_interval=45.5,
     )
     assert settings.to_dict() == {
         "cache": True,
@@ -109,7 +102,6 @@ def test_settings_to_dict():
         "namespace": "test_namespace",
         "project": "test_project",
         "batch_size": 1000,
-        "flush_interval": 45.5,
     }
 
     # Settings with only some values set
@@ -478,38 +470,3 @@ def test_settings_batch_size_parameter():
     # to_dict method
     d = Settings(batch_size=500).to_dict()
     assert d["batch_size"] == 500
-
-
-def test_settings_flush_interval_parameter():
-    settings = Settings()
-    assert settings.flush_interval is None
-
-    settings = Settings(flush_interval=30.0)
-    assert settings.flush_interval == 30.0
-
-    settings = Settings(flush_interval=60)
-    assert settings.flush_interval == 60.0
-
-    settings = Settings(flush_interval=0.5)
-    assert settings.flush_interval == 0.5
-
-    with pytest.raises(SettingsError):
-        Settings(flush_interval="invalid")
-
-    with pytest.raises(SettingsError):
-        Settings(flush_interval=0)
-
-    with pytest.raises(SettingsError):
-        Settings(flush_interval=-10)
-
-    with pytest.raises(SettingsError):
-        Settings(flush_interval=True)
-
-    with pytest.raises(SettingsError):
-        Settings(flush_interval=False)
-
-    settings = Settings(flush_interval=None)
-    assert settings.flush_interval is None
-
-    d = Settings(flush_interval=45.5).to_dict()
-    assert d["flush_interval"] == 45.5

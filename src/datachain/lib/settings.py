@@ -22,9 +22,8 @@ class Settings:
     _project: str | None
     _min_task_size: int | None
     _batch_size: int | None
-    _flush_interval: float | None
 
-    def __init__(  # noqa: C901, PLR0912, PLR0915
+    def __init__(  # noqa: C901, PLR0912
         self,
         cache: bool | None = None,
         prefetch: bool | int | None = None,
@@ -34,7 +33,6 @@ class Settings:
         project: str | None = None,
         min_task_size: int | None = None,
         batch_size: int | None = None,
-        flush_interval: float | None = None,
     ) -> None:
         if cache is None:
             self._cache = None
@@ -144,23 +142,6 @@ class Settings:
                 )
             self._batch_size = batch_size
 
-        if flush_interval is None:
-            self._flush_interval = None
-        else:
-            if not isinstance(flush_interval, (int, float)) or isinstance(
-                flush_interval, bool
-            ):
-                raise SettingsError(
-                    "'flush_interval' argument must be a number"
-                    f", {flush_interval.__class__.__name__} was given"
-                )
-            if flush_interval <= 0:
-                raise SettingsError(
-                    "'flush_interval' argument must be positive"
-                    f", {flush_interval} was given"
-                )
-            self._flush_interval = float(flush_interval)
-
     @property
     def cache(self) -> bool:
         return self._cache if self._cache is not None else DEFAULT_CACHE
@@ -193,10 +174,6 @@ class Settings:
     def batch_size(self) -> int | None:
         return self._batch_size if self._batch_size is not None else None
 
-    @property
-    def flush_interval(self) -> float | None:
-        return self._flush_interval if self._flush_interval is not None else None
-
     def to_dict(self) -> dict[str, Any]:
         res: dict[str, Any] = {}
         if self._cache is not None:
@@ -215,8 +192,6 @@ class Settings:
             res["project"] = self.project
         if self._batch_size is not None:
             res["batch_size"] = self.batch_size
-        if self._flush_interval is not None:
-            res["flush_interval"] = self.flush_interval
         return res
 
     def add(self, settings: "Settings") -> None:
@@ -236,5 +211,3 @@ class Settings:
             self._min_task_size = settings._min_task_size
         if settings._batch_size is not None:
             self._batch_size = settings._batch_size
-        if settings._flush_interval is not None:
-            self._flush_interval = settings._flush_interval
