@@ -20,13 +20,24 @@ This means that if your script creates multiple datasets and fails partway throu
 
 ### Studio Runs
 
-When running jobs on Studio, the checkpoint workflow is managed through the UI:
+#### Using `datachain job run` CLI
+
+When you run `datachain job run my_script.py`, DataChain automatically:
+
+1. **Links jobs** by finding previous runs of the same script (by absolute path) that were also executed in Studio
+2. **Passes checkpoint context** to Studio, enabling checkpoint reuse across runs
+
+This means running the same script multiple times via `datachain job run` will automatically benefit from checkpoints without any additional configuration.
+
+#### Using Studio UI
+
+When triggering jobs through the Studio interface:
 
 1. **Job execution** is triggered using the Run button in the Studio interface
 2. **Checkpoint control** is explicit - you choose between:
    - **Run from scratch**: Ignores any existing checkpoints and recreates all datasets
    - **Continue from last checkpoint**: Resumes from the last successful checkpoint, skipping already-completed stages
-3. **Parent-child job linking** is handled automatically by the system - no need for script path matching or job name conventions
+3. **Parent-child job linking** is handled automatically by the system
 4. **Checkpoint behavior** during execution is the same as local runs: datasets are saved at each `.save()` call and can be reused on retry
 
 
