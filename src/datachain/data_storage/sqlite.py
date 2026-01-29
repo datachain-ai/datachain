@@ -27,6 +27,7 @@ from tqdm.auto import tqdm
 
 import datachain.sql.sqlite
 from datachain.data_storage import AbstractDBMetastore, AbstractWarehouse
+from datachain.data_storage.buffer import InsertBuffer
 from datachain.data_storage.db_engine import DatabaseEngine
 from datachain.data_storage.schema import DefaultSchema
 from datachain.dataset import DatasetRecord, StorageURI
@@ -36,7 +37,7 @@ from datachain.project import Project
 from datachain.sql.sqlite import create_user_defined_sql_functions, sqlite_dialect
 from datachain.sql.sqlite.base import load_usearch_extension
 from datachain.sql.types import SQLType
-from datachain.utils import DataChainDir, batched, batched_it
+from datachain.utils import DataChainDir, batched_it
 
 if TYPE_CHECKING:
     from sqlalchemy import CTE, Subquery
@@ -51,8 +52,6 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger("datachain")
-
-INSERT_BATCH_SIZE = 10_000  # number of rows to insert at a time
 
 RETRY_START_SEC = 0.01
 RETRY_MAX_TIMES = 10
@@ -688,6 +687,7 @@ class SQLiteWarehouse(AbstractWarehouse):
         db_file = get_db_file_in_memory(db_file, in_memory)
 
         self.db = db or SQLiteDatabaseEngine.from_db_file(db_file)
+        self.buffers: dict[str, InsertBuffer] = {}
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
         """Close connection upon exit from context manager."""
@@ -767,22 +767,40 @@ class SQLiteWarehouse(AbstractWarehouse):
     def prepare_entries(self, entries: "Iterable[File]") -> Iterable[dict[str, Any]]:
         return (e.model_dump() for e in entries)
 
-    def insert_rows(
+    def _insert_from_buffer(
         self,
         table: Table,
-        rows: Iterable[dict[str, Any]],
-        batch_size: int | None = None,
+        entries: list[dict[str, Any]],
+        final: bool = False,
+        cursor: Any = None,
     ) -> None:
-        batch_size = batch_size if batch_size is not None else INSERT_BATCH_SIZE
-        for row_chunk in batched(rows, batch_size):
-            with self.db.transaction() as conn:
-                # transactions speeds up inserts significantly as there is no separate
-                # transaction created for each insert row
-                self.db.executemany(
-                    table.insert().values({f: bindparam(f) for f in row_chunk[0]}),
-                    row_chunk,
-                    conn=conn,
-                )
+        """Callback for InsertBuffer to insert a batch of entries."""
+        if not entries:
+            return
+        with self.db.transaction() as conn:
+            # transactions speeds up inserts significantly as there is no separate
+            # transaction created for each insert row
+            self.db.executemany(
+                table.insert().values({f: bindparam(f) for f in entries[0]}),
+                entries,
+                conn=conn,
+            )
+
+    def get_buffer(
+        self,
+        table: Table,
+        buffer_size: int,
+        flush_interval: float,
+    ) -> InsertBuffer:
+        """Get or create an InsertBuffer for the given table."""
+        if table.name not in self.buffers:
+            self.buffers[table.name] = InsertBuffer(
+                table,
+                self._insert_from_buffer,
+                buffer_size,
+                flush_interval=flush_interval,
+            )
+        return self.buffers[table.name]
 
     def insert_dataset_rows(self, df, dataset: DatasetRecord, version: str) -> int:
         dr = self.dataset_rows(dataset, version)
@@ -853,7 +871,7 @@ class SQLiteWarehouse(AbstractWarehouse):
             .limit(None)
         )
 
-        for batch in batched_it(ids, INSERT_BATCH_SIZE):
+        for batch in batched_it(ids, self.INSERT_BATCH_SIZE):
             batch_ids = [row[0] for row in batch]
             select_q._where_criteria = (col_id.in_(batch_ids),)
             q = table.insert().from_select(list(select_q.selected_columns), select_q)
