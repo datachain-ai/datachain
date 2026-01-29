@@ -522,6 +522,8 @@ def create_job(  # noqa: PLR0913
         job_id=str(job_id),  # Use Studio's job ID
     )
 
+    catalog.close()
+
     if parsed_start_time or cron:
         print(f"Job {job_id} is scheduled as a task in Studio.")
         return 0
