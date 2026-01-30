@@ -75,3 +75,28 @@ def test_db_defaults(col_type, default_value, catalog):
         assert values[0] == default_value
 
     warehouse.db.drop_table(table)
+
+
+def test_get_table_missing(catalog):
+    from datachain.error import TableMissingError
+
+    with pytest.raises(TableMissingError, match="not found"):
+        catalog.warehouse.db.get_table("nonexistent_table_12345")
+
+
+def test_list_tables(catalog):
+    db = catalog.warehouse.db
+    tables = db.list_tables()
+    assert isinstance(tables, list)
+
+    # Create a test table
+    table = catalog.warehouse.create_udf_table([], name="test_list_tables_abc")
+    try:
+        tables_after = db.list_tables()
+        assert "test_list_tables_abc" in tables_after
+
+        # Test with prefix filter
+        filtered = db.list_tables(prefix="test_list_tables")
+        assert "test_list_tables_abc" in filtered
+    finally:
+        db.drop_table(table)

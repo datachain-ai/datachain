@@ -146,7 +146,6 @@ class DatabaseEngine(ABC, Serializable):
         """
         Create table. Does nothing if table already exists when if_not_exists=True.
         """
-        ...
 
     @abstractmethod
     def drop_table(self, table: "Table", if_exists: bool = False) -> None: ...
