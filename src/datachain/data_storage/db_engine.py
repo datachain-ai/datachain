@@ -14,7 +14,6 @@ from sqlalchemy.sql import FROM_LINTING
 from sqlalchemy.sql.roles import DDLRole
 
 from datachain.data_storage.serializer import Serializable
-from datachain.error import TableMissingError
 
 if TYPE_CHECKING:
     from sqlalchemy import MetaData, Table
@@ -86,19 +85,9 @@ class DatabaseEngine(ABC, Serializable):
         conn: Any | None = None,
     ) -> Iterator[tuple[Any, ...]]: ...
 
+    @abstractmethod
     def get_table(self, name: str) -> "Table":
-        table = self.metadata.tables.get(name)
-        if table is None:
-            try:
-                sa.Table(name, self.metadata, autoload_with=self.engine)
-                # ^^^ This table may not be correctly initialised on some dialects
-                # Grab it from metadata instead.
-                table = self.metadata.tables.get(name)
-                if table is None:
-                    raise TableMissingError(f"Table '{name}' not found")
-            except sa.exc.NoSuchTableError as e:
-                raise TableMissingError(f"Table '{name}' not found") from e
-        return table
+        """Get a table by name, raising TableMissingError if not found."""
 
     @abstractmethod
     def executemany(

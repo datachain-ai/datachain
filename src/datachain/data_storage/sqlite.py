@@ -31,7 +31,11 @@ from datachain.data_storage.buffer import InsertBuffer
 from datachain.data_storage.db_engine import DatabaseEngine
 from datachain.data_storage.schema import DefaultSchema
 from datachain.dataset import DatasetRecord, StorageURI
-from datachain.error import DataChainError, OutdatedDatabaseSchemaError
+from datachain.error import (
+    DataChainError,
+    OutdatedDatabaseSchemaError,
+    TableMissingError,
+)
 from datachain.namespace import Namespace
 from datachain.project import Project
 from datachain.sql.sqlite import create_user_defined_sql_functions, sqlite_dialect
@@ -217,9 +221,17 @@ class SQLiteDatabaseEngine(DatabaseEngine):
 
     def get_table(self, name: str) -> Table:
         if self.is_closed:
-            # Reconnect in case of being closed previously.
             self._reconnect()
-        return super().get_table(name)
+        table = self.metadata.tables.get(name)
+        if table is None:
+            try:
+                sqlalchemy.Table(name, self.metadata, autoload_with=self.engine)
+                table = self.metadata.tables.get(name)
+                if table is None:
+                    raise TableMissingError(f"Table '{name}' not found")
+            except sqlalchemy.exc.NoSuchTableError as e:
+                raise TableMissingError(f"Table '{name}' not found") from e
+        return table
 
     @retry_sqlite_locks
     def execute(
