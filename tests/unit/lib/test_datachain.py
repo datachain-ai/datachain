@@ -350,11 +350,11 @@ def test_read_records_with_nested_datamodel(test_session):
 
 @skip_if_not_sqlite
 def test_read_records_with_iterator_is_lazy(test_session, monkeypatch):
-    import datachain.data_storage.sqlite as sqlite_module
+    from datachain.data_storage.sqlite import SQLiteWarehouse
 
     # Use a small batch size to ensure multiple batches with our test data
     BATCH_SIZE = 100  # noqa: N806
-    monkeypatch.setattr(sqlite_module, "INSERT_BATCH_SIZE", BATCH_SIZE)
+    monkeypatch.setattr(SQLiteWarehouse, "INSERT_BATCH_SIZE", BATCH_SIZE)
 
     TOTAL_RECORDS = 1000  # noqa: N806
     yielded_count = 0
