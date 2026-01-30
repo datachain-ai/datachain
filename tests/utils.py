@@ -259,5 +259,12 @@ def reset_session_job_state():
     Session._OWNS_JOB = None
     Session._JOB_HOOKS_REGISTERED = False
 
+    # Clear checkpoint state (now in utils module)
+    from datachain.utils import _CheckpointState
+
+    _CheckpointState.disabled = False
+    _CheckpointState.warning_shown = False
+
     # Clear DATACHAIN_JOB_ID env var to allow new job creation on next run
+    # This is important for studio/SaaS mode where job_id comes from env var
     os.environ.pop("DATACHAIN_JOB_ID", None)

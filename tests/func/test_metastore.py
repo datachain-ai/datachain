@@ -921,7 +921,6 @@ def test_get_ancestor_job_ids(metastore, depth):
     rerun_from_id = None
     group_id = None
 
-    # Create jobs from root to leaf
     for i in range(depth + 1):
         job_id = metastore.create_job(
             name=f"job_{i}",
@@ -934,16 +933,13 @@ def test_get_ancestor_job_ids(metastore, depth):
         )
         job_ids.append(job_id)
         rerun_from_id = job_id
-        # First job sets the group_id
         if group_id is None:
             group_id = metastore.get_job(job_id).run_group_id
 
-    # The last job is the leaf (youngest)
     leaf_job_id = job_ids[-1]
 
     ancestors = metastore.get_ancestor_job_ids(leaf_job_id)
 
-    # Should return all ancestors except the leaf itself, in order from parent to root
     expected_ancestors = list(reversed(job_ids[:-1]))
 
     assert ancestors == expected_ancestors

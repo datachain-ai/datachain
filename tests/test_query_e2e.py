@@ -113,7 +113,7 @@ E2E_STEPS = (
     },
     {
         "command": ("datachain", "gc"),
-        "expected": "Nothing to clean up.\n",
+        "expected": ("Nothing to clean up.\n"),
     },
 )
 
@@ -178,6 +178,14 @@ def run_step(step, catalog):
         popen_args = {"start_new_session": True}
     stdin_path = step.get("stdin_file")
     with open(stdin_path) if stdin_path else nullcontext(None) as stdin_file:
+        # Build env without DATACHAIN_MAIN_PROCESS_PID so script starts fresh
+        # as its own main process (with checkpoints enabled)
+        script_env = {
+            k: v for k, v in os.environ.items() if k != "DATACHAIN_MAIN_PROCESS_PID"
+        }
+        script_env["DATACHAIN__METASTORE"] = catalog.metastore.serialize()
+        script_env["DATACHAIN__WAREHOUSE"] = catalog.warehouse.serialize()
+
         process = subprocess.Popen(  # noqa: S603
             command,
             shell=False,
@@ -185,11 +193,7 @@ def run_step(step, catalog):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             encoding="utf-8",
-            env={
-                **os.environ,
-                "DATACHAIN__METASTORE": catalog.metastore.serialize(),
-                "DATACHAIN__WAREHOUSE": catalog.warehouse.serialize(),
-            },
+            env=script_env,
             **popen_args,
         )
         interrupt_after = step.get("interrupt_after")

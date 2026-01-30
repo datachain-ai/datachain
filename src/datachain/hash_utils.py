@@ -1,12 +1,16 @@
 import hashlib
 import inspect
+import logging
 import textwrap
 from collections.abc import Sequence
 from typing import TypeAlias, TypeVar
+from uuid import uuid4
 
 from sqlalchemy.sql.elements import ClauseElement, ColumnElement
 
 from datachain import json
+
+logger = logging.getLogger("datachain")
 
 T = TypeVar("T", bound=ColumnElement)
 ColumnLike: TypeAlias = str | T
@@ -81,16 +85,71 @@ def hash_column_elements(columns: ColumnLike | Sequence[ColumnLike]) -> str:
 
 def hash_callable(func):
     """
-    Calculate a hash from a callable.
-    Rules:
-    - Named functions (def) → use source code for stable, cross-version hashing
-    - Lambdas → use bytecode (deterministic in same Python runtime)
+    Calculate a deterministic hash from a callable.
+
+    Hashing Strategy:
+    - **Named functions** (def): Uses source code via inspect.getsourcelines()
+      → Produces stable hashes across Python versions and sessions
+    - **Lambdas**: Uses bytecode (func.__code__.co_code)
+      → Stable within same Python runtime, may differ across Python versions
+    - **Callable objects** (with __call__): Extracts and hashes the __call__ method
+
+    Supported Callables:
+    - Regular Python functions defined with 'def'
+    - Lambda functions
+    - Classes/instances with __call__ method (uses __call__ method's code)
+    - Methods (both bound and unbound)
+
+    Limitations and Edge Cases:
+    - **Mock objects**: Cannot reliably hash Mock(side_effect=...) because the
+      side_effect is not discoverable via inspection. Use regular functions instead.
+    - **Built-in functions** (len, str, etc.): Cannot access __code__ attribute.
+      Returns a random hash that changes on each call.
+    - **C extensions**: Cannot access source or bytecode. Returns a random hash
+      that changes on each call.
+    - **Dynamically generated callables**: If __call__ is created via exec/eval
+      or the behavior depends on runtime state, the hash won't reflect changes
+      in behavior. Only the method's code is hashed, not captured state.
+
+    Args:
+        func: A callable object (function, lambda, method, or object with __call__)
+
+    Returns:
+        str: SHA256 hexdigest of the callable's code and metadata. For unhashable
+        callables (C extensions, built-ins), returns a hash of a random UUID that
+        changes on each invocation.
+
+    Raises:
+        TypeError: If func is not callable
+
+    Examples:
+        >>> def my_func(x): return x * 2
+        >>> hash_callable(my_func)  # Uses source code
+        'abc123...'
+
+        >>> hash_callable(lambda x: x * 2)  # Uses bytecode
+        'def456...'
+
+        >>> class MyCallable:
+        ...     def __call__(self, x): return x * 2
+        >>> hash_callable(MyCallable())  # Hashes __call__ method
+        'ghi789...'
     """
     if not callable(func):
         raise TypeError("Expected a callable")
 
+    # Handle callable objects (instances with __call__)
+    # If it's not a function or method, it must be a callable object
+    if not inspect.isfunction(func) and not inspect.ismethod(func):
+        # For callable objects, hash the __call__ method instead
+        func = func.__call__
+
     # Determine if it is a lambda
-    is_lambda = func.__name__ == "<lambda>"
+    try:
+        is_lambda = func.__name__ == "<lambda>"
+    except AttributeError:
+        # Some callables (like Mock objects) may not have __name__
+        is_lambda = False
 
     if not is_lambda:
         # Try to get exact source of named function
@@ -99,20 +158,37 @@ def hash_callable(func):
             payload = textwrap.dedent("".join(lines)).strip()
         except (OSError, TypeError):
             # Fallback: bytecode if source not available
-            payload = func.__code__.co_code
+            try:
+                payload = func.__code__.co_code
+            except AttributeError:
+                # C extensions, built-ins - use random UUID
+                # Returns different hash on each call to avoid caching unhashable
+                # functions
+                logger.warning(
+                    "Cannot hash callable %r (likely C extension or built-in). "
+                    "Returning random hash.",
+                    func,
+                )
+                payload = f"unhashable-{uuid4()}"
     else:
         # For lambdas, fall back directly to bytecode
-        payload = func.__code__.co_code
+        try:
+            payload = func.__code__.co_code
+        except AttributeError:
+            # Unlikely for lambdas, but handle it just in case
+            logger.warning("Cannot hash lambda %r. Returning random hash.", func)
+            payload = f"unhashable-{uuid4()}"
 
-    # Normalize annotations
+    # Normalize annotations (may not exist for built-ins/C extensions)
+    raw_annotations = getattr(func, "__annotations__", {})
     annotations = {
-        k: getattr(v, "__name__", str(v)) for k, v in func.__annotations__.items()
+        k: getattr(v, "__name__", str(v)) for k, v in raw_annotations.items()
     }
 
     # Extras to distinguish functions with same code but different metadata
     extras = {
-        "name": func.__name__,
-        "defaults": func.__defaults__,
+        "name": getattr(func, "__name__", ""),
+        "defaults": getattr(func, "__defaults__", None),
         "annotations": annotations,
     }
 
