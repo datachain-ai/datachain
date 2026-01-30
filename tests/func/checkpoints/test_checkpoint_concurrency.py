@@ -60,8 +60,11 @@ def test_threading_disables_checkpoints(test_session_tmpfile, caplog):
     def run_datachain_in_thread():
         """Run DataChain operation in a thread - checkpoint should NOT be created."""
         thread_session = clone_session(test_session)
-        thread_ran["value"] = True
-        dc.read_dataset("nums", session=thread_session).save("result2")
+        try:
+            thread_ran["value"] = True
+            dc.read_dataset("nums", session=thread_session).save("result2")
+        finally:
+            thread_session.catalog.close()
 
     thread = threading.Thread(target=run_datachain_in_thread)
     thread.start()
@@ -99,7 +102,10 @@ def test_threading_with_executor(test_session_tmpfile, caplog):
     def worker(i):
         """Worker function that runs DataChain operations in thread pool."""
         thread_session = clone_session(test_session)
-        dc.read_dataset("nums", session=thread_session).save(f"result_{i}")
+        try:
+            dc.read_dataset("nums", session=thread_session).save(f"result_{i}")
+        finally:
+            thread_session.catalog.close()
 
     with ThreadPoolExecutor(max_workers=3) as executor:
         list(executor.map(worker, range(3)))
@@ -162,7 +168,10 @@ def test_checkpoint_reuse_after_threading(test_session_tmpfile):
     # Run something in a thread (disables checkpoints globally)
     def thread_work():
         thread_session = clone_session(test_session)
-        dc.read_dataset("nums", session=thread_session).save("thread_result")
+        try:
+            dc.read_dataset("nums", session=thread_session).save("thread_result")
+        finally:
+            thread_session.catalog.close()
 
     thread = threading.Thread(target=thread_work)
     thread.start()
@@ -189,11 +198,13 @@ def test_warning_shown_once(test_session_tmpfile, caplog):
     def run_multiple_operations():
         """Run multiple DataChain operations in a thread."""
         thread_session = clone_session(test_session)
-
-        # Each operation would check checkpoints_enabled()
-        dc.read_dataset("nums", session=thread_session).save("result1")
-        dc.read_dataset("nums", session=thread_session).save("result2")
-        dc.read_dataset("nums", session=thread_session).save("result3")
+        try:
+            # Each operation would check checkpoints_enabled()
+            dc.read_dataset("nums", session=thread_session).save("result1")
+            dc.read_dataset("nums", session=thread_session).save("result2")
+            dc.read_dataset("nums", session=thread_session).save("result3")
+        finally:
+            thread_session.catalog.close()
 
     thread = threading.Thread(target=run_multiple_operations)
     thread.start()
