@@ -1,10 +1,7 @@
-"""
-Functional tests for read_dataset when accessing remote (Studio) datasets.
-"""
-
 from urllib.parse import parse_qs, urlparse
 
 import pytest
+import requests
 
 import datachain as dc
 from datachain import json
@@ -146,8 +143,6 @@ def remote_dataset_multi_version(
 
 @pytest.fixture
 def mock_dataset_info_endpoint(requests_mock):
-    """Mock the dataset info endpoint to return dataset information."""
-
     def _mock_info(dataset_data):
         return requests_mock.get(
             f"{STUDIO_URL}/api/datachain/datasets/info", json=dataset_data
@@ -158,7 +153,6 @@ def mock_dataset_info_endpoint(requests_mock):
 
 @pytest.fixture
 def mock_dataset_info_not_found(requests_mock):
-    """Mock the dataset info endpoint to return 404 not found."""
     return requests_mock.get(
         f"{STUDIO_URL}/api/datachain/datasets/info",
         status_code=404,
@@ -174,8 +168,6 @@ def _get_version_from_request(request, default="1.0.0"):
 
 @pytest.fixture
 def mock_export_endpoint_with_urls(requests_mock):
-    """Mock the export endpoint to return export_id + signed_urls."""
-
     def _mock_export_response(request, context):
         version_param = _get_version_from_request(request)
         version_file = version_param.replace(".", "_")
@@ -194,8 +186,6 @@ def mock_export_endpoint_with_urls(requests_mock):
 
 @pytest.fixture
 def mock_export_status_completed(requests_mock):
-    """Mock the export status endpoint to return completed status based on version."""
-
     def _mock_status_response(request, context):
         return {
             "status": "completed",
@@ -209,26 +199,7 @@ def mock_export_status_completed(requests_mock):
 
 
 @pytest.fixture
-def mock_export_status_failed(requests_mock):
-    """Mock the export status endpoint to return failed status based on version."""
-
-    def _mock_failed_response(request, context):
-        return {
-            "status": "failed",
-            "files_done": 0,
-            "num_files": 1,
-            "error_message": "Export failed",
-        }
-
-    return requests_mock.get(
-        f"{STUDIO_URL}/api/datachain/datasets/export-status", json=_mock_failed_response
-    )
-
-
-@pytest.fixture
 def mock_s3_parquet_download(requests_mock, compressed_parquet_data, dog_entries):
-    """Mock S3 parquet file download for all versions."""
-
     def _mock_download():
         # Generate different data for each version
         for version in ["1.0.0", "2.0.0"]:
@@ -244,7 +215,6 @@ def mock_s3_parquet_download(requests_mock, compressed_parquet_data, dog_entries
 
 @pytest.fixture
 def mock_dataset_rows_fetcher_status_check(mocker):
-    """Mock DatasetRowsFetcher.should_check_for_status to return True."""
     return mocker.patch(
         "datachain.catalog.catalog.DatasetRowsFetcher.should_check_for_status",
         return_value=True,
@@ -263,11 +233,9 @@ def test_read_dataset_remote_basic(
     mock_s3_parquet_download,
     mock_dataset_rows_fetcher_status_check,
 ):
-    """Test basic read_dataset functionality with remote dataset."""
     mock_dataset_info_endpoint(remote_dataset_single_version)
     mock_s3_parquet_download()
 
-    # Ensure dataset is not available locally at first
     with pytest.raises(DatasetNotFoundError):
         dc.read_dataset("dogs", session=test_session)
 
@@ -283,7 +251,7 @@ def test_read_dataset_remote_basic(
 
 @skip_if_not_sqlite
 @pytest.mark.parametrize("is_studio", (False,))
-def test_read_dataset_remote_already_exists(
+def test_read_dataset_remote_uses_local_when_cached(
     studio_token,
     test_session,
     requests_mock,
@@ -294,13 +262,9 @@ def test_read_dataset_remote_already_exists(
     mock_s3_parquet_download,
     mock_dataset_rows_fetcher_status_check,
 ):
-    """Test read_dataset when dataset already exists locally from previous read."""
-
-    # Mock the Studio API responses
     mock_dataset_info_endpoint(remote_dataset_single_version)
     mock_s3_parquet_download()
 
-    # First read - downloads from remote
     ds1 = dc.read_dataset(
         f"{REMOTE_NAMESPACE_NAME}.{REMOTE_PROJECT_NAME}.dogs",
         version="1.0.0",
@@ -312,7 +276,6 @@ def test_read_dataset_remote_already_exists(
     assert dc.datasets().to_values("version") == ["1.0.0"]
 
     # Second read - should use local dataset without calling remote
-    # Clear the mock to ensure no new remote calls are made
     requests_mock.reset_mock()
 
     ds2 = dc.read_dataset(
@@ -326,7 +289,6 @@ def test_read_dataset_remote_already_exists(
     assert dc.datasets().to_values("version") == ["1.0.0"]
     assert ds2.dataset.versions[0].uuid == REMOTE_DATASET_UUID
 
-    # Verify no remote calls were made for the second read
     assert not requests_mock.called
 
 
@@ -343,13 +305,9 @@ def test_read_dataset_remote_update_flag(
     mock_dataset_rows_fetcher_status_check,
     requests_mock,
 ):
-    """Test read_dataset with update=True flag to force remote check."""
-
-    # Mock the Studio API responses
     mock_dataset_info_endpoint(remote_dataset_multi_version)
     mock_s3_parquet_download()
 
-    # First read - downloads version 1.0.0
     ds1 = dc.read_dataset(
         f"{REMOTE_NAMESPACE_NAME}.{REMOTE_PROJECT_NAME}.dogs",
         version="1.0.0",
@@ -366,8 +324,6 @@ def test_read_dataset_remote_update_flag(
     assert dc.datasets().to_values("version") == ["1.0.0"]
     assert ds1.to_values("version")[0] == "1.0.0"
 
-    # Second read with update=True with the exact version
-    # returns the same dataset version
     ds2 = dc.read_dataset(
         f"{REMOTE_NAMESPACE_NAME}.{REMOTE_PROJECT_NAME}.dogs",
         version="1.0.0",
@@ -377,9 +333,6 @@ def test_read_dataset_remote_update_flag(
     assert dc.datasets().to_values("version") == ["1.0.0"]
     assert ds2.to_values("version")[0] == "1.0.0"
 
-    # Third read with update=False even with version specifier
-    # that allows for newer version still bring the same version
-    # as the one already downloaded
     ds3 = dc.read_dataset(
         f"{REMOTE_NAMESPACE_NAME}.{REMOTE_PROJECT_NAME}.dogs",
         version=">=1.0.0",
@@ -389,7 +342,6 @@ def test_read_dataset_remote_update_flag(
     assert dc.datasets().to_values("version") == ["1.0.0"]
     assert ds3.to_values("version")[0] == "1.0.0"
 
-    # Finally, read with update=True brings the latest version
     ds4 = dc.read_dataset(
         f"{REMOTE_NAMESPACE_NAME}.{REMOTE_PROJECT_NAME}.dogs",
         version=">=1.0.0",
@@ -414,13 +366,9 @@ def test_read_dataset_remote_update_flag_no_version(
     mock_dataset_rows_fetcher_status_check,
     requests_mock,
 ):
-    """Test read_dataset with update=True flag to force remote check."""
-
-    # Mock the Studio API responses
     mock_dataset_info_endpoint(remote_dataset_multi_version)
     mock_s3_parquet_download()
 
-    # First read - downloads version 1.0.0
     ds1 = dc.read_dataset(
         f"{REMOTE_NAMESPACE_NAME}.{REMOTE_PROJECT_NAME}.dogs",
         version="1.0.0",
@@ -429,8 +377,6 @@ def test_read_dataset_remote_update_flag_no_version(
     assert dc.datasets().to_values("version") == ["1.0.0"]
     assert ds1.to_values("version")[0] == "1.0.0"
 
-    # Read with update=True w/o version specifier also
-    # checks the most recent remote version and brings it
     ds4 = dc.read_dataset(
         f"{REMOTE_NAMESPACE_NAME}.{REMOTE_PROJECT_NAME}.dogs",
         update=True,
@@ -453,20 +399,15 @@ def test_read_dataset_remote_version_specifiers(
     mock_s3_parquet_download,
     mock_dataset_rows_fetcher_status_check,
 ):
-    """Test read_dataset with version specifiers on remote datasets."""
-
-    # Mock the Studio API responses
     mock_dataset_info_endpoint(remote_dataset_multi_version)
     mock_s3_parquet_download()
 
-    # Test reading with version specifier ">=1.0.0" should get latest (2.0.0)
     ds = dc.read_dataset(
         f"{REMOTE_NAMESPACE_NAME}.{REMOTE_PROJECT_NAME}.dogs",
         version=">=1.0.0",
         session=test_session,
     )
 
-    # Should get the latest version matching the specifier (2.0.0)
     assert ds.dataset.name == "dogs"
     dataset_version = ds.dataset.get_version("2.0.0")
     assert dataset_version is not None
@@ -484,11 +425,8 @@ def test_read_dataset_remote_version_specifier_no_match(
     mock_dataset_info_endpoint,
     mock_dataset_rows_fetcher_status_check,
 ):
-    """Test read_dataset with version specifier that doesn't match."""
-
     mock_dataset_info_endpoint(remote_dataset_multi_version)
 
-    # Test version specifier that doesn't match any existing version
     with pytest.raises(DatasetVersionNotFoundError) as exc_info:
         dc.read_dataset(
             f"{REMOTE_NAMESPACE_NAME}.{REMOTE_PROJECT_NAME}.dogs",
@@ -507,8 +445,6 @@ def test_read_dataset_remote_not_found(
     test_session,
     mock_dataset_info_not_found,
 ):
-    """Test read_dataset when remote dataset is not found."""
-
     with pytest.raises(DatasetNotFoundError) as exc_info:
         dc.read_dataset(
             f"{REMOTE_NAMESPACE_NAME}.{REMOTE_PROJECT_NAME}.nonexistent",
@@ -531,8 +467,6 @@ def test_read_dataset_remote_version_not_found(
     mock_dataset_info_endpoint,
     mock_dataset_rows_fetcher_status_check,
 ):
-    """Test read_dataset when requested version doesn't exist on remote."""
-
     mock_dataset_info_endpoint(remote_dataset_single_version)
 
     with pytest.raises(DataChainError) as exc_info:
@@ -547,7 +481,7 @@ def test_read_dataset_remote_version_not_found(
 
 @skip_if_not_sqlite
 @pytest.mark.parametrize("is_studio", (False,))
-def test_read_dataset_remote_latest_version(
+def test_read_dataset_remote_latest_version_by_default(
     studio_token,
     test_session,
     remote_dataset_multi_version,
@@ -557,19 +491,14 @@ def test_read_dataset_remote_latest_version(
     mock_s3_parquet_download,
     mock_dataset_rows_fetcher_status_check,
 ):
-    """Test read_dataset without version parameter should get latest version."""
-
-    # Mock the Studio API responses
     mock_dataset_info_endpoint(remote_dataset_multi_version)
     mock_s3_parquet_download()
 
-    # Read without specifying version should get latest
     ds = dc.read_dataset(
         f"{REMOTE_NAMESPACE_NAME}.{REMOTE_PROJECT_NAME}.dogs",
         session=test_session,
     )
 
-    # Should get the latest version (2.0.0)
     assert ds.dataset.name == "dogs"
     dataset_version = ds.dataset.get_version("2.0.0")
     assert dataset_version is not None
@@ -586,12 +515,23 @@ def test_read_dataset_remote_export_failed(
     remote_dataset_single_version,
     mock_dataset_info_endpoint,
     mock_export_endpoint_with_urls,
-    mock_export_status_failed,
+    mock_s3_parquet_download,
     mock_dataset_rows_fetcher_status_check,
+    requests_mock,
 ):
-    """Test read_dataset when remote dataset export fails."""
-
     mock_dataset_info_endpoint(remote_dataset_single_version)
+    mock_s3_parquet_download()
+
+    # Mock failed export status
+    requests_mock.get(
+        f"{STUDIO_URL}/api/datachain/datasets/export-status",
+        json={
+            "status": "failed",
+            "files_done": 0,
+            "num_files": 1,
+            "error_message": "Export failed",
+        },
+    )
 
     with pytest.raises(DataChainError) as exc_info:
         dc.read_dataset(
@@ -601,3 +541,139 @@ def test_read_dataset_remote_export_failed(
         )
 
     assert "Dataset export failed in Studio" in str(exc_info.value)
+
+    _verify_cleanup_and_retry_success(
+        test_session, requests_mock, mock_s3_parquet_download
+    )
+
+
+def _verify_cleanup_and_retry_success(
+    test_session, requests_mock, mock_s3_parquet_download
+):
+    with pytest.raises(DatasetNotFoundError):
+        test_session.catalog.get_dataset(
+            "dogs",
+            namespace_name=REMOTE_NAMESPACE_NAME,
+            project_name=REMOTE_PROJECT_NAME,
+            include_incomplete=True,
+        )
+
+    requests_mock.get(
+        f"{STUDIO_URL}/api/datachain/datasets/export-status",
+        json={
+            "status": "completed",
+            "files_done": 1,
+            "num_files": 1,
+        },
+    )
+    mock_s3_parquet_download()
+
+    ds = dc.read_dataset(
+        f"{REMOTE_NAMESPACE_NAME}.{REMOTE_PROJECT_NAME}.dogs",
+        version="1.0.0",
+        session=test_session,
+    )
+
+    assert ds.to_values("version")[0] == "1.0.0"
+    assert dc.datasets().to_values("version") == ["1.0.0"]
+
+
+@skip_if_not_sqlite
+@pytest.mark.parametrize("is_studio", (False,))
+def test_read_dataset_remote_cleanup_on_download_failure(
+    studio_token,
+    test_session,
+    remote_dataset_single_version,
+    mock_dataset_info_endpoint,
+    mock_export_endpoint_with_urls,
+    mock_export_status_completed,
+    mock_s3_parquet_download,
+    mock_dataset_rows_fetcher_status_check,
+    requests_mock,
+):
+    mock_dataset_info_endpoint(remote_dataset_single_version)
+
+    requests_mock.get(
+        "https://studio-blobvault.s3.amazonaws.com/datachain_ds_export_1_0_0.parquet.lz4",
+        status_code=500,
+        text="Server error",
+    )
+
+    with pytest.raises(requests.HTTPError):
+        dc.read_dataset(
+            f"{REMOTE_NAMESPACE_NAME}.{REMOTE_PROJECT_NAME}.dogs",
+            version="1.0.0",
+            session=test_session,
+        )
+
+    _verify_cleanup_and_retry_success(
+        test_session, requests_mock, mock_s3_parquet_download
+    )
+
+
+@skip_if_not_sqlite
+@pytest.mark.parametrize("is_studio", (False,))
+def test_read_dataset_remote_cleanup_on_parse_failure(
+    studio_token,
+    test_session,
+    remote_dataset_single_version,
+    mock_dataset_info_endpoint,
+    mock_export_endpoint_with_urls,
+    mock_export_status_completed,
+    mock_s3_parquet_download,
+    mock_dataset_rows_fetcher_status_check,
+    requests_mock,
+):
+    mock_dataset_info_endpoint(remote_dataset_single_version)
+
+    requests_mock.get(
+        "https://studio-blobvault.s3.amazonaws.com/datachain_ds_export_1_0_0.parquet.lz4",
+        content=b"not valid parquet",
+    )
+
+    with pytest.raises(RuntimeError):
+        dc.read_dataset(
+            f"{REMOTE_NAMESPACE_NAME}.{REMOTE_PROJECT_NAME}.dogs",
+            version="1.0.0",
+            session=test_session,
+        )
+
+    _verify_cleanup_and_retry_success(
+        test_session, requests_mock, mock_s3_parquet_download
+    )
+
+
+@skip_if_not_sqlite
+@pytest.mark.parametrize("is_studio", (False,))
+def test_read_dataset_remote_cleanup_on_insertion_failure(
+    mocker,
+    studio_token,
+    test_session,
+    remote_dataset_single_version,
+    mock_dataset_info_endpoint,
+    mock_export_endpoint_with_urls,
+    mock_export_status_completed,
+    mock_s3_parquet_download,
+    mock_dataset_rows_fetcher_status_check,
+    requests_mock,
+):
+    mock_dataset_info_endpoint(remote_dataset_single_version)
+    mock_s3_parquet_download()
+
+    mock_insert = mocker.patch(
+        "datachain.data_storage.sqlite.SQLiteWarehouse.insert_dataset_rows",
+        side_effect=RuntimeError("Insert failed"),
+    )
+
+    with pytest.raises(RuntimeError, match="Insert failed"):
+        dc.read_dataset(
+            f"{REMOTE_NAMESPACE_NAME}.{REMOTE_PROJECT_NAME}.dogs",
+            version="1.0.0",
+            session=test_session,
+        )
+
+    mocker.stop(mock_insert)
+
+    _verify_cleanup_and_retry_success(
+        test_session, requests_mock, mock_s3_parquet_download
+    )

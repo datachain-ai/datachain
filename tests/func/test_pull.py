@@ -1,4 +1,5 @@
 import pytest
+import requests
 
 import datachain as dc
 from datachain import json
@@ -158,7 +159,7 @@ def test_pull_dataset_success(
             cp=True,
         )
     else:
-        # trying to pull multiple times since that should work as well
+        # Verify idempotency
         for _ in range(2):
             catalog.pull_dataset(
                 dataset_uri,
@@ -221,23 +222,13 @@ def test_pull_dataset_success(
 @pytest.mark.parametrize("is_studio", (False,))
 @skip_if_not_sqlite
 def test_datachain_read_dataset_pull(
-    mocker,
     studio_token,
-    cloud_test_catalog,
+    catalog,
     remote_dataset_info,
     dataset_export,
     dataset_export_status,
     dataset_export_data_chunk,
 ):
-    # Check if the datachain pull from studio if datachain is not available.
-    mocker.patch(
-        "datachain.catalog.catalog.DatasetRowsFetcher.should_check_for_status",
-        return_value=True,
-    )
-
-    catalog = cloud_test_catalog.catalog
-
-    # Makes sure dataset is not available locally at first
     with pytest.raises(DatasetNotFoundError):
         catalog.get_dataset("dogs")
 
@@ -251,7 +242,6 @@ def test_datachain_read_dataset_pull(
     assert ds.dataset.latest_version == "1.0.0"
     assert ds.dataset.status == DatasetStatus.COMPLETE
 
-    # Check that dataset is available locally after pulling
     project = catalog.metastore.get_project(REMOTE_PROJECT_NAME, REMOTE_NAMESPACE_NAME)
     dataset = catalog.get_dataset(
         "dogs", namespace_name=project.namespace.name, project_name=project.name
@@ -259,31 +249,25 @@ def test_datachain_read_dataset_pull(
     assert dataset.name == "dogs"
 
 
-@pytest.mark.parametrize("cloud_type, version_aware", [("s3", False)], indirect=True)
 @skip_if_not_sqlite
 def test_pull_dataset_wrong_dataset_uri_format(
     studio_token,
     requests_mock,
-    cloud_test_catalog,
+    catalog,
     remote_dataset,
 ):
-    catalog = cloud_test_catalog.catalog
-
     with pytest.raises(DataChainError) as exc_info:
         catalog.pull_dataset("wrong")
     assert str(exc_info.value) == "Error when parsing dataset uri"
 
 
-@pytest.mark.parametrize("cloud_type, version_aware", [("s3", False)], indirect=True)
 @skip_if_not_sqlite
 def test_pull_dataset_wrong_version(
     studio_token,
     requests_mock,
-    cloud_test_catalog,
+    catalog,
     remote_dataset_info,
 ):
-    catalog = cloud_test_catalog.catalog
-
     with pytest.raises(DataChainError) as exc_info:
         catalog.pull_dataset(
             f"ds://{REMOTE_NAMESPACE_NAME}.{REMOTE_PROJECT_NAME}.dogs@v5"
@@ -291,19 +275,17 @@ def test_pull_dataset_wrong_version(
     assert str(exc_info.value) == "Dataset dogs doesn't have version 5 on server"
 
 
-@pytest.mark.parametrize("cloud_type, version_aware", [("s3", False)], indirect=True)
 @skip_if_not_sqlite
 def test_pull_dataset_not_found_in_remote(
     studio_token,
     requests_mock,
-    cloud_test_catalog,
+    catalog,
 ):
     requests_mock.get(
         f"{STUDIO_URL}/api/datachain/datasets/info",
         status_code=404,
         json={"message": "Dataset not found"},
     )
-    catalog = cloud_test_catalog.catalog
 
     full_name = f"{REMOTE_NAMESPACE_NAME}.{REMOTE_PROJECT_NAME}.dogs"
 
@@ -314,13 +296,12 @@ def test_pull_dataset_not_found_in_remote(
     assert str(exc_info.value) == f"Dataset {full_name} not found"
 
 
-@pytest.mark.parametrize("cloud_type, version_aware", [("s3", False)], indirect=True)
 @pytest.mark.parametrize("export_status", ["failed", "removed"])
 @skip_if_not_sqlite
 def test_pull_dataset_exporting_dataset_failed_in_remote(
     studio_token,
     requests_mock,
-    cloud_test_catalog,
+    catalog,
     remote_dataset_info,
     dataset_export,
     export_status,
@@ -330,8 +311,6 @@ def test_pull_dataset_exporting_dataset_failed_in_remote(
         json={"status": export_status},
     )
 
-    catalog = cloud_test_catalog.catalog
-
     with pytest.raises(DataChainError) as exc_info:
         catalog.pull_dataset(
             f"ds://{REMOTE_NAMESPACE_NAME}.{REMOTE_PROJECT_NAME}.dogs@v1.0.0"
@@ -339,19 +318,17 @@ def test_pull_dataset_exporting_dataset_failed_in_remote(
     assert str(exc_info.value) == f"Dataset export {export_status} in Studio"
 
 
-@pytest.mark.parametrize("cloud_type, version_aware", [("s3", False)], indirect=True)
 @skip_if_not_sqlite
 def test_pull_dataset_empty_parquet(
     studio_token,
     requests_mock,
-    cloud_test_catalog,
+    catalog,
     remote_dataset_info,
     dataset_export,
     dataset_export_status,
     remote_dataset_chunk_url,
 ):
     requests_mock.get(remote_dataset_chunk_url, content=b"")
-    catalog = cloud_test_catalog.catalog
 
     with pytest.raises(RuntimeError):
         catalog.pull_dataset(
@@ -363,14 +340,12 @@ def test_pull_dataset_empty_parquet(
 @skip_if_not_sqlite
 def test_pull_dataset_already_exists_locally(
     studio_token,
-    cloud_test_catalog,
+    catalog,
     remote_dataset_info,
     dataset_export,
     dataset_export_status,
     dataset_export_data_chunk,
 ):
-    catalog = cloud_test_catalog.catalog
-
     catalog.pull_dataset(
         f"ds://{REMOTE_NAMESPACE_NAME}.{REMOTE_PROJECT_NAME}.dogs@v1.0.0",
         local_ds_name="other",
@@ -388,7 +363,6 @@ def test_pull_dataset_already_exists_locally(
     assert other_version.num_objects == 4
     assert other_version.size == 15
 
-    # dataset with same uuid created only once, on first pull with local name "other"
     with pytest.raises(DatasetNotFoundError):
         catalog.get_dataset(
             "dogs", namespace_name=project.namespace.name, project_name=project.name
@@ -429,9 +403,130 @@ def test_pull_dataset_local_name_already_exists(
         " different uuid, please choose different local dataset name or version"
     )
 
-    # able to save it as version 2 of local dataset name
     catalog.pull_dataset(
         f"ds://{REMOTE_NAMESPACE_NAME}.{REMOTE_PROJECT_NAME}.dogs@v1.0.0",
         local_ds_name=local_ds_name,
         local_ds_version="2.0.0",
     )
+
+
+@pytest.mark.parametrize("cloud_type, version_aware", [("s3", False)], indirect=True)
+@skip_if_not_sqlite
+def test_pull_cleanup_on_download_failure(
+    studio_token,
+    catalog,
+    remote_dataset_info,
+    dataset_export,
+    dataset_export_status,
+    remote_dataset_chunk_url,
+    requests_mock,
+    mock_parquet_data_cloud,
+):
+    requests_mock.get(remote_dataset_chunk_url, status_code=500, text="Server error")
+
+    with pytest.raises(requests.HTTPError):
+        catalog.pull_dataset(
+            f"ds://{REMOTE_NAMESPACE_NAME}.{REMOTE_PROJECT_NAME}.dogs@v1.0.0"
+        )
+
+    with pytest.raises(DatasetNotFoundError):
+        catalog.get_dataset(
+            "dogs",
+            namespace_name=REMOTE_NAMESPACE_NAME,
+            project_name=REMOTE_PROJECT_NAME,
+            include_incomplete=True,
+        )
+
+    requests_mock.get(remote_dataset_chunk_url, content=mock_parquet_data_cloud)
+    catalog.pull_dataset(
+        f"ds://{REMOTE_NAMESPACE_NAME}.{REMOTE_PROJECT_NAME}.dogs@v1.0.0"
+    )
+
+    dataset = catalog.get_dataset(
+        "dogs",
+        namespace_name=REMOTE_NAMESPACE_NAME,
+        project_name=REMOTE_PROJECT_NAME,
+    )
+    assert dataset.status == DatasetStatus.COMPLETE
+
+
+@pytest.mark.parametrize("cloud_type, version_aware", [("s3", False)], indirect=True)
+@skip_if_not_sqlite
+def test_pull_cleanup_on_parse_failure(
+    studio_token,
+    catalog,
+    remote_dataset_info,
+    dataset_export,
+    dataset_export_status,
+    remote_dataset_chunk_url,
+    requests_mock,
+    mock_parquet_data_cloud,
+):
+    requests_mock.get(remote_dataset_chunk_url, content=b"not valid parquet")
+
+    with pytest.raises(RuntimeError):  # lz4 decompression fails on invalid data
+        catalog.pull_dataset(
+            f"ds://{REMOTE_NAMESPACE_NAME}.{REMOTE_PROJECT_NAME}.dogs@v1.0.0"
+        )
+
+    with pytest.raises(DatasetNotFoundError):
+        catalog.get_dataset(
+            "dogs",
+            namespace_name=REMOTE_NAMESPACE_NAME,
+            project_name=REMOTE_PROJECT_NAME,
+            include_incomplete=True,
+        )
+
+    requests_mock.get(remote_dataset_chunk_url, content=mock_parquet_data_cloud)
+    catalog.pull_dataset(
+        f"ds://{REMOTE_NAMESPACE_NAME}.{REMOTE_PROJECT_NAME}.dogs@v1.0.0"
+    )
+
+    dataset = catalog.get_dataset(
+        "dogs",
+        namespace_name=REMOTE_NAMESPACE_NAME,
+        project_name=REMOTE_PROJECT_NAME,
+    )
+    assert dataset.status == DatasetStatus.COMPLETE
+
+
+@pytest.mark.parametrize("cloud_type, version_aware", [("s3", False)], indirect=True)
+@skip_if_not_sqlite
+def test_pull_cleanup_on_insertion_failure(
+    mocker,
+    studio_token,
+    catalog,
+    remote_dataset_info,
+    dataset_export,
+    dataset_export_status,
+    dataset_export_data_chunk,
+):
+    mock_insert = mocker.patch(
+        "datachain.data_storage.sqlite.SQLiteWarehouse.insert_dataset_rows",
+        side_effect=RuntimeError("Insert failed"),
+    )
+
+    with pytest.raises(RuntimeError, match="Insert failed"):
+        catalog.pull_dataset(
+            f"ds://{REMOTE_NAMESPACE_NAME}.{REMOTE_PROJECT_NAME}.dogs@v1.0.0"
+        )
+
+    with pytest.raises(DatasetNotFoundError):
+        catalog.get_dataset(
+            "dogs",
+            namespace_name=REMOTE_NAMESPACE_NAME,
+            project_name=REMOTE_PROJECT_NAME,
+            include_incomplete=True,
+        )
+
+    mocker.stop(mock_insert)
+    catalog.pull_dataset(
+        f"ds://{REMOTE_NAMESPACE_NAME}.{REMOTE_PROJECT_NAME}.dogs@v1.0.0"
+    )
+
+    dataset = catalog.get_dataset(
+        "dogs",
+        namespace_name=REMOTE_NAMESPACE_NAME,
+        project_name=REMOTE_PROJECT_NAME,
+    )
+    assert dataset.status == DatasetStatus.COMPLETE
