@@ -1,6 +1,7 @@
 from urllib.parse import parse_qs, urlparse
 
 import pytest
+import requests
 
 import datachain as dc
 from datachain import json
@@ -194,21 +195,6 @@ def mock_export_status_completed(requests_mock):
 
     return requests_mock.get(
         f"{STUDIO_URL}/api/datachain/datasets/export-status", json=_mock_status_response
-    )
-
-
-@pytest.fixture
-def mock_export_status_failed(requests_mock):
-    def _mock_failed_response(request, context):
-        return {
-            "status": "failed",
-            "files_done": 0,
-            "num_files": 1,
-            "error_message": "Export failed",
-        }
-
-    return requests_mock.get(
-        f"{STUDIO_URL}/api/datachain/datasets/export-status", json=_mock_failed_response
     )
 
 
@@ -529,10 +515,23 @@ def test_read_dataset_remote_export_failed(
     remote_dataset_single_version,
     mock_dataset_info_endpoint,
     mock_export_endpoint_with_urls,
-    mock_export_status_failed,
+    mock_s3_parquet_download,
     mock_dataset_rows_fetcher_status_check,
+    requests_mock,
 ):
     mock_dataset_info_endpoint(remote_dataset_single_version)
+    mock_s3_parquet_download()
+
+    # Mock failed export status
+    requests_mock.get(
+        f"{STUDIO_URL}/api/datachain/datasets/export-status",
+        json={
+            "status": "failed",
+            "files_done": 0,
+            "num_files": 1,
+            "error_message": "Export failed",
+        },
+    )
 
     with pytest.raises(DataChainError) as exc_info:
         dc.read_dataset(
@@ -542,3 +541,139 @@ def test_read_dataset_remote_export_failed(
         )
 
     assert "Dataset export failed in Studio" in str(exc_info.value)
+
+    _verify_cleanup_and_retry_success(
+        test_session, requests_mock, mock_s3_parquet_download
+    )
+
+
+def _verify_cleanup_and_retry_success(
+    test_session, requests_mock, mock_s3_parquet_download
+):
+    with pytest.raises(DatasetNotFoundError):
+        test_session.catalog.get_dataset(
+            "dogs",
+            namespace_name=REMOTE_NAMESPACE_NAME,
+            project_name=REMOTE_PROJECT_NAME,
+            include_incomplete=True,
+        )
+
+    requests_mock.get(
+        f"{STUDIO_URL}/api/datachain/datasets/export-status",
+        json={
+            "status": "completed",
+            "files_done": 1,
+            "num_files": 1,
+        },
+    )
+    mock_s3_parquet_download()
+
+    ds = dc.read_dataset(
+        f"{REMOTE_NAMESPACE_NAME}.{REMOTE_PROJECT_NAME}.dogs",
+        version="1.0.0",
+        session=test_session,
+    )
+
+    assert ds.to_values("version")[0] == "1.0.0"
+    assert dc.datasets().to_values("version") == ["1.0.0"]
+
+
+@skip_if_not_sqlite
+@pytest.mark.parametrize("is_studio", (False,))
+def test_read_dataset_remote_cleanup_on_download_failure(
+    studio_token,
+    test_session,
+    remote_dataset_single_version,
+    mock_dataset_info_endpoint,
+    mock_export_endpoint_with_urls,
+    mock_export_status_completed,
+    mock_s3_parquet_download,
+    mock_dataset_rows_fetcher_status_check,
+    requests_mock,
+):
+    mock_dataset_info_endpoint(remote_dataset_single_version)
+
+    requests_mock.get(
+        "https://studio-blobvault.s3.amazonaws.com/datachain_ds_export_1_0_0.parquet.lz4",
+        status_code=500,
+        text="Server error",
+    )
+
+    with pytest.raises(requests.HTTPError):
+        dc.read_dataset(
+            f"{REMOTE_NAMESPACE_NAME}.{REMOTE_PROJECT_NAME}.dogs",
+            version="1.0.0",
+            session=test_session,
+        )
+
+    _verify_cleanup_and_retry_success(
+        test_session, requests_mock, mock_s3_parquet_download
+    )
+
+
+@skip_if_not_sqlite
+@pytest.mark.parametrize("is_studio", (False,))
+def test_read_dataset_remote_cleanup_on_parse_failure(
+    studio_token,
+    test_session,
+    remote_dataset_single_version,
+    mock_dataset_info_endpoint,
+    mock_export_endpoint_with_urls,
+    mock_export_status_completed,
+    mock_s3_parquet_download,
+    mock_dataset_rows_fetcher_status_check,
+    requests_mock,
+):
+    mock_dataset_info_endpoint(remote_dataset_single_version)
+
+    requests_mock.get(
+        "https://studio-blobvault.s3.amazonaws.com/datachain_ds_export_1_0_0.parquet.lz4",
+        content=b"not valid parquet",
+    )
+
+    with pytest.raises(RuntimeError):
+        dc.read_dataset(
+            f"{REMOTE_NAMESPACE_NAME}.{REMOTE_PROJECT_NAME}.dogs",
+            version="1.0.0",
+            session=test_session,
+        )
+
+    _verify_cleanup_and_retry_success(
+        test_session, requests_mock, mock_s3_parquet_download
+    )
+
+
+@skip_if_not_sqlite
+@pytest.mark.parametrize("is_studio", (False,))
+def test_read_dataset_remote_cleanup_on_insertion_failure(
+    mocker,
+    studio_token,
+    test_session,
+    remote_dataset_single_version,
+    mock_dataset_info_endpoint,
+    mock_export_endpoint_with_urls,
+    mock_export_status_completed,
+    mock_s3_parquet_download,
+    mock_dataset_rows_fetcher_status_check,
+    requests_mock,
+):
+    mock_dataset_info_endpoint(remote_dataset_single_version)
+    mock_s3_parquet_download()
+
+    mock_insert = mocker.patch(
+        "datachain.data_storage.sqlite.SQLiteWarehouse.insert_dataset_rows",
+        side_effect=RuntimeError("Insert failed"),
+    )
+
+    with pytest.raises(RuntimeError, match="Insert failed"):
+        dc.read_dataset(
+            f"{REMOTE_NAMESPACE_NAME}.{REMOTE_PROJECT_NAME}.dogs",
+            version="1.0.0",
+            session=test_session,
+        )
+
+    mocker.stop(mock_insert)
+
+    _verify_cleanup_and_retry_success(
+        test_session, requests_mock, mock_s3_parquet_download
+    )
