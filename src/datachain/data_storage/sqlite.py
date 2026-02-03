@@ -527,6 +527,7 @@ class SQLiteMetastore(AbstractDBMetastore):
             self._datasets_dependencies,
             self._jobs,
             self._checkpoints,
+            self._checkpoint_events,
             self._dataset_version_jobs,
         ]
 
@@ -673,6 +674,12 @@ class SQLiteMetastore(AbstractDBMetastore):
     #
     def _checkpoints_insert(self) -> "Insert":
         return sqlite.insert(self._checkpoints)
+
+    #
+    # Checkpoint Events
+    #
+    def _checkpoint_events_insert(self) -> "Insert":
+        return sqlite.insert(self._checkpoint_events)
 
     def _dataset_version_jobs_insert(self) -> "Insert":
         return sqlite.insert(self._dataset_version_jobs)
