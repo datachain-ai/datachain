@@ -23,7 +23,7 @@ from tqdm import tqdm
 
 from datachain import json, semver
 from datachain.checkpoint_event import CheckpointEventType, CheckpointStepType
-from datachain.dataset import DatasetRecord
+from datachain.dataset import DatasetRecord, create_dataset_full_name
 from datachain.delta import delta_disabled
 from datachain.error import (
     JobAncestryDepthExceededError,
@@ -676,8 +676,9 @@ class DataChain:
             )
 
             # Log checkpoint event for new dataset save
-            full_dataset_name = (
-                f"@{namespace_name}.{project_name}.{name}@{result.version}"
+            assert result.version is not None
+            full_dataset_name = create_dataset_full_name(
+                namespace_name, project_name, name, result.version
             )
             catalog.metastore.log_checkpoint_event(
                 job_id=self.job.id,
@@ -788,9 +789,8 @@ class DataChain:
             )
 
             # Log checkpoint event
-            full_dataset_name = (
-                f"@{project.namespace.name}.{project.name}."
-                f"{name}@{dataset_version.version}"
+            full_dataset_name = create_dataset_full_name(
+                project.namespace.name, project.name, name, dataset_version.version
             )
             metastore.log_checkpoint_event(
                 job_id=self.job.id,
