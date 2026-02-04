@@ -22,7 +22,8 @@ from sqlalchemy.sql.elements import ColumnElement
 from tqdm import tqdm
 
 from datachain import json, semver
-from datachain.dataset import DatasetRecord
+from datachain.checkpoint_event import CheckpointEventType, CheckpointStepType
+from datachain.dataset import DatasetRecord, create_dataset_full_name
 from datachain.delta import delta_disabled
 from datachain.error import (
     JobAncestryDepthExceededError,
@@ -674,6 +675,20 @@ class DataChain:
                 )
             )
 
+            # Log checkpoint event for new dataset save
+            assert result.version is not None
+            full_dataset_name = create_dataset_full_name(
+                namespace_name, project_name, name, result.version
+            )
+            catalog.metastore.log_checkpoint_event(
+                job_id=self.job.id,
+                event_type=CheckpointEventType.DATASET_SAVE_COMPLETED,
+                step_type=CheckpointStepType.DATASET_SAVE,
+                run_group_id=self.job.run_group_id,
+                dataset_name=full_dataset_name,
+                checkpoint_hash=_hash,
+            )
+
         if checkpoints_enabled():
             catalog.metastore.get_or_create_checkpoint(self.job.id, _hash)
         return result
@@ -771,6 +786,20 @@ class DataChain:
                 dataset_version.id,
                 self.job.id,
                 is_creator=False,
+            )
+
+            # Log checkpoint event
+            full_dataset_name = create_dataset_full_name(
+                project.namespace.name, project.name, name, dataset_version.version
+            )
+            metastore.log_checkpoint_event(
+                job_id=self.job.id,
+                event_type=CheckpointEventType.DATASET_SAVE_SKIPPED,
+                step_type=CheckpointStepType.DATASET_SAVE,
+                run_group_id=self.job.run_group_id,
+                dataset_name=full_dataset_name,
+                checkpoint_hash=job_hash,
+                rerun_from_job_id=self.job.rerun_from_job_id,
             )
 
             return chain

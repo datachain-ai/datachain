@@ -39,6 +39,11 @@ from sqlalchemy.sql import func as f
 from datachain import json
 from datachain.catalog.dependency import DatasetDependencyNode
 from datachain.checkpoint import Checkpoint
+from datachain.checkpoint_event import (
+    CheckpointEvent,
+    CheckpointEventType,
+    CheckpointStepType,
+)
 from datachain.data_storage import JobQueryType, JobStatus
 from datachain.data_storage.serializer import Serializable
 from datachain.dataset import (
@@ -98,6 +103,7 @@ class AbstractMetastore(ABC, Serializable):
     dependency_node_class: type[DatasetDependencyNode] = DatasetDependencyNode
     job_class: type[Job] = Job
     checkpoint_class: type[Checkpoint] = Checkpoint
+    checkpoint_event_class: type[CheckpointEvent] = CheckpointEvent
 
     def __init__(
         self,
@@ -560,6 +566,42 @@ class AbstractMetastore(ABC, Serializable):
         """Removes a checkpoint by ID"""
 
     #
+    # Checkpoint Events
+    #
+
+    @abstractmethod
+    def log_checkpoint_event(  # noqa: PLR0913
+        self,
+        job_id: str,
+        event_type: "CheckpointEventType",
+        step_type: "CheckpointStepType",
+        run_group_id: str | None = None,
+        udf_name: str | None = None,
+        dataset_name: str | None = None,
+        checkpoint_hash: str | None = None,
+        hash_partial: str | None = None,
+        hash_input: str | None = None,
+        hash_output: str | None = None,
+        rows_input: int | None = None,
+        rows_processed: int | None = None,
+        rows_generated: int | None = None,
+        rows_reused: int | None = None,
+        rerun_from_job_id: str | None = None,
+        details: dict | None = None,
+        conn: Any | None = None,
+    ) -> "CheckpointEvent":
+        """Log a checkpoint event."""
+
+    @abstractmethod
+    def get_checkpoint_events(
+        self,
+        job_id: str | None = None,
+        run_group_id: str | None = None,
+        conn: Any | None = None,
+    ) -> Iterator["CheckpointEvent"]:
+        """Get checkpoint events, optionally filtered by job_id or run_group_id."""
+
+    #
     # Dataset Version Jobs (many-to-many)
     #
 
@@ -604,6 +646,7 @@ class AbstractDBMetastore(AbstractMetastore):
     DATASET_VERSION_JOBS_TABLE = "dataset_version_jobs"
     JOBS_TABLE = "jobs"
     CHECKPOINTS_TABLE = "checkpoints"
+    CHECKPOINT_EVENTS_TABLE = "checkpoint_events"
 
     db: "DatabaseEngine"
 
@@ -2114,6 +2157,73 @@ class AbstractDBMetastore(AbstractMetastore):
     @abstractmethod
     def _checkpoints_insert(self) -> "Insert": ...
 
+    #
+    # Checkpoint Events
+    #
+
+    @staticmethod
+    def _checkpoint_events_columns() -> "list[SchemaItem]":
+        return [
+            Column(
+                "id",
+                Text,
+                default=uuid4,
+                primary_key=True,
+                nullable=False,
+            ),
+            Column("job_id", Text, nullable=False),
+            Column("run_group_id", Text, nullable=True),
+            Column("timestamp", DateTime(timezone=True), nullable=False),
+            Column("event_type", Text, nullable=False),
+            Column("step_type", Text, nullable=False),
+            Column("udf_name", Text, nullable=True),
+            Column("dataset_name", Text, nullable=True),
+            Column("checkpoint_hash", Text, nullable=True),
+            Column("hash_partial", Text, nullable=True),
+            Column("hash_input", Text, nullable=True),
+            Column("hash_output", Text, nullable=True),
+            Column("rows_input", BigInteger, nullable=True),
+            Column("rows_processed", BigInteger, nullable=True),
+            Column("rows_generated", BigInteger, nullable=True),
+            Column("rows_reused", BigInteger, nullable=True),
+            Column("rerun_from_job_id", Text, nullable=True),
+            Column("details", JSON, nullable=True),
+            Index("dc_idx_ce_job_id", "job_id"),
+            Index("dc_idx_ce_run_group_id", "run_group_id"),
+        ]
+
+    @cached_property
+    def _checkpoint_events_fields(self) -> list[str]:
+        return [
+            c.name  # type: ignore[attr-defined]
+            for c in self._checkpoint_events_columns()
+            if isinstance(c, Column)
+        ]
+
+    @cached_property
+    def _checkpoint_events(self) -> "Table":
+        return Table(
+            self.CHECKPOINT_EVENTS_TABLE,
+            self.db.metadata,
+            *self._checkpoint_events_columns(),
+        )
+
+    @abstractmethod
+    def _checkpoint_events_insert(self) -> "Insert": ...
+
+    def _checkpoint_events_select(self, *columns) -> "Select":
+        if not columns:
+            return self._checkpoint_events.select()
+        return select(*columns)
+
+    def _checkpoint_events_query(self):
+        return self._checkpoint_events_select(
+            *[
+                getattr(self._checkpoint_events.c, f)
+                for f in self._checkpoint_events_fields
+            ]
+        )
+
     @classmethod
     def _dataset_version_jobs_columns(cls) -> "list[SchemaItem]":
         """Junction table for dataset versions and jobs many-to-many relationship."""
@@ -2244,6 +2354,92 @@ class AbstractDBMetastore(AbstractMetastore):
         if not rows:
             return None
         return self.checkpoint_class.parse(*rows[0])
+
+    def log_checkpoint_event(  # noqa: PLR0913
+        self,
+        job_id: str,
+        event_type: CheckpointEventType,
+        step_type: CheckpointStepType,
+        run_group_id: str | None = None,
+        udf_name: str | None = None,
+        dataset_name: str | None = None,
+        checkpoint_hash: str | None = None,
+        hash_partial: str | None = None,
+        hash_input: str | None = None,
+        hash_output: str | None = None,
+        rows_input: int | None = None,
+        rows_processed: int | None = None,
+        rows_generated: int | None = None,
+        rows_reused: int | None = None,
+        rerun_from_job_id: str | None = None,
+        details: dict | None = None,
+        conn: Any | None = None,
+    ) -> CheckpointEvent:
+        """Log a checkpoint event."""
+        event_id = str(uuid4())
+        timestamp = datetime.now(timezone.utc)
+
+        query = self._checkpoint_events_insert().values(
+            id=event_id,
+            job_id=job_id,
+            run_group_id=run_group_id,
+            timestamp=timestamp,
+            event_type=event_type.value,
+            step_type=step_type.value,
+            udf_name=udf_name,
+            dataset_name=dataset_name,
+            checkpoint_hash=checkpoint_hash,
+            hash_partial=hash_partial,
+            hash_input=hash_input,
+            hash_output=hash_output,
+            rows_input=rows_input,
+            rows_processed=rows_processed,
+            rows_generated=rows_generated,
+            rows_reused=rows_reused,
+            rerun_from_job_id=rerun_from_job_id,
+            details=details,
+        )
+        self.db.execute(query, conn=conn)
+
+        return CheckpointEvent(
+            id=event_id,
+            job_id=job_id,
+            run_group_id=run_group_id,
+            timestamp=timestamp,
+            event_type=event_type,
+            step_type=step_type,
+            udf_name=udf_name,
+            dataset_name=dataset_name,
+            checkpoint_hash=checkpoint_hash,
+            hash_partial=hash_partial,
+            hash_input=hash_input,
+            hash_output=hash_output,
+            rows_input=rows_input,
+            rows_processed=rows_processed,
+            rows_generated=rows_generated,
+            rows_reused=rows_reused,
+            rerun_from_job_id=rerun_from_job_id,
+            details=details,
+        )
+
+    def get_checkpoint_events(
+        self,
+        job_id: str | None = None,
+        run_group_id: str | None = None,
+        conn: Any | None = None,
+    ) -> Iterator[CheckpointEvent]:
+        """Get checkpoint events, optionally filtered by job_id or run_group_id."""
+        query = self._checkpoint_events_query()
+
+        if job_id is not None:
+            query = query.where(self._checkpoint_events.c.job_id == job_id)
+        if run_group_id is not None:
+            query = query.where(self._checkpoint_events.c.run_group_id == run_group_id)
+
+        query = query.order_by(self._checkpoint_events.c.timestamp)
+        rows = list(self.db.execute(query, conn=conn))
+
+        yield from [self.checkpoint_event_class.parse(*r) for r in rows]
 
     def link_dataset_version_to_job(
         self,

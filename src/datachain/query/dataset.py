@@ -30,6 +30,10 @@ from tqdm.auto import tqdm
 from datachain.asyn import ASYNC_WORKERS, AsyncMapper, OrderedMapper
 from datachain.catalog.catalog import clone_catalog_with_cache
 from datachain.checkpoint import Checkpoint
+from datachain.checkpoint_event import (
+    CheckpointEventType,
+    CheckpointStepType,
+)
 from datachain.data_storage.schema import (
     PARTITION_COLUMN_ID,
     partition_col_names,
@@ -816,6 +820,56 @@ class UDFStep(Step, ABC):
         """Get short run_group_id for logging."""
         return self.job.run_group_id[:8] if self.job.run_group_id else "none"
 
+    @property
+    @abstractmethod
+    def _step_type(self) -> CheckpointStepType:
+        """Get the step type for checkpoint events."""
+
+    def _log_event(
+        self,
+        event_type: CheckpointEventType,
+        checkpoint_hash: str | None = None,
+        hash_partial: str | None = None,
+        hash_input: str | None = None,
+        hash_output: str | None = None,
+        rows_input: int | None = None,
+        rows_processed: int | None = None,
+        rows_generated: int | None = None,
+        rows_reused: int | None = None,
+        rerun_from_job_id: str | None = None,
+        details: dict | None = None,
+    ) -> None:
+        """Log a checkpoint event and emit a log message."""
+        self.metastore.log_checkpoint_event(
+            job_id=self.job.id,
+            event_type=event_type,
+            step_type=self._step_type,
+            run_group_id=self.job.run_group_id,
+            udf_name=self._udf_name,
+            checkpoint_hash=checkpoint_hash,
+            hash_partial=hash_partial,
+            hash_input=hash_input,
+            hash_output=hash_output,
+            rows_input=rows_input,
+            rows_processed=rows_processed,
+            rows_generated=rows_generated,
+            rows_reused=rows_reused,
+            rerun_from_job_id=rerun_from_job_id,
+            details=details,
+        )
+        logger.info(
+            "UDF(%s) [job=%s run_group=%s]: %s - "
+            "input=%s, processed=%s, generated=%s, reused=%s",
+            self._udf_name,
+            self._job_id_short,
+            self._run_group_id_short,
+            event_type.value,
+            rows_input,
+            rows_processed,
+            rows_generated,
+            rows_reused,
+        )
+
     def _find_udf_checkpoint(
         self, _hash: str, partial: bool = False
     ) -> Checkpoint | None:
@@ -1002,6 +1056,19 @@ class UDFStep(Step, ABC):
             checkpoint.hash[:8],
         )
 
+        # Log checkpoint event with row counts
+        rows_input = self.warehouse.table_rows_count(input_table)
+        rows_reused = self.warehouse.table_rows_count(output_table)
+        self._log_event(
+            CheckpointEventType.UDF_SKIPPED,
+            checkpoint_hash=checkpoint.hash,
+            rerun_from_job_id=checkpoint.job_id,
+            rows_input=rows_input,
+            rows_processed=0,
+            rows_generated=0,
+            rows_reused=rows_reused,
+        )
+
         return output_table, input_table
 
     def _run_from_scratch(
@@ -1055,6 +1122,20 @@ class UDFStep(Step, ABC):
                 self._run_group_id_short,
                 hash_output[:8],
             )
+
+        # Log checkpoint event with row counts
+        rows_input = self.warehouse.table_rows_count(input_table)
+        rows_generated = self.warehouse.table_rows_count(output_table)
+        self._log_event(
+            CheckpointEventType.UDF_FROM_SCRATCH,
+            checkpoint_hash=hash_output,
+            hash_input=hash_input,
+            hash_output=hash_output,
+            rows_input=rows_input,
+            rows_processed=rows_input,
+            rows_generated=rows_generated,
+            rows_reused=0,
+        )
 
         return output_table, input_table
 
@@ -1138,6 +1219,10 @@ class UDFStep(Step, ABC):
             incomplete_input_ids,
         )
 
+        # Count rows before populating with new rows
+        rows_reused = self.warehouse.table_rows_count(partial_table)
+        rows_processed = self.warehouse.query_count(unprocessed_query)
+
         self.populate_udf_output_table(partial_table, unprocessed_query)
 
         output_table = self.warehouse.rename_table(
@@ -1152,6 +1237,23 @@ class UDFStep(Step, ABC):
             self._job_id_short,
             self._run_group_id_short,
             hash_output[:8],
+        )
+
+        # Log checkpoint event with row counts
+        rows_input = self.warehouse.table_rows_count(input_table)
+        total_output = self.warehouse.table_rows_count(output_table)
+        rows_generated = total_output - rows_reused
+        self._log_event(
+            CheckpointEventType.UDF_CONTINUED,
+            checkpoint_hash=hash_output,
+            hash_partial=checkpoint.hash,
+            hash_input=hash_input,
+            hash_output=hash_output,
+            rerun_from_job_id=checkpoint.job_id,
+            rows_input=rows_input,
+            rows_processed=rows_processed,
+            rows_generated=rows_generated,
+            rows_reused=rows_reused,
         )
 
         return output_table, input_table
@@ -1231,6 +1333,10 @@ class UDFSignal(UDFStep):
     workers: bool | int = False
     min_task_size: int | None = None
     batch_size: int | None = None
+
+    @property
+    def _step_type(self) -> CheckpointStepType:
+        return CheckpointStepType.UDF_MAP
 
     def processed_input_ids_query(self, partial_table: "Table"):
         """
@@ -1337,6 +1443,10 @@ class RowGenerator(UDFStep):
     workers: bool | int = False
     min_task_size: int | None = None
     batch_size: int | None = None
+
+    @property
+    def _step_type(self) -> CheckpointStepType:
+        return CheckpointStepType.UDF_GEN
 
     def processed_input_ids_query(self, partial_table: "Table"):
         """
