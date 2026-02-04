@@ -1,3 +1,12 @@
+import http.server
+import os
+import signal
+import socket
+import socketserver
+import subprocess
+import sys
+import threading
+import time
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -219,6 +228,86 @@ def mock_dataset_rows_fetcher_status_check(mocker):
         "datachain.catalog.catalog.DatasetRowsFetcher.should_check_for_status",
         return_value=True,
     )
+
+
+@pytest.fixture
+def mock_studio_server(
+    remote_dataset_single_version, compressed_parquet_data, dog_entries
+):
+    parquet_data = compressed_parquet_data(dog_entries("1.0.0"))
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("", 0))
+        port = s.getsockname()[1]
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(*_):
+            return None
+
+        def do_GET(self):
+            if "/api/datachain/datasets/export-status" in self.path:
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(
+                    b'{"status": "completed", "files_done": 1, "num_files": 1}'
+                )
+            elif "/api/datachain/datasets/export" in self.path:
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(
+                    f'{{"export_id": 1, "signed_urls": ["http://localhost:{port}/data.parquet.lz4"]}}'.encode()
+                )
+            elif "/api/datachain/datasets/info" in self.path:
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps(remote_dataset_single_version).encode())
+            elif "/data.parquet.lz4" in self.path:
+                self.send_response(200)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.end_headers()
+                self.wfile.write(parquet_data)
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+    server = socketserver.TCPServer(("", port), Handler)
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+
+    yield port
+
+    server.shutdown()
+    server.server_close()
+
+
+@pytest.fixture
+def run_script(tmp_path, mock_studio_server):
+    port = mock_studio_server
+    project_root = os.path.dirname(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    )
+
+    def _run_script(script):
+        script_file = tmp_path / "worker.py"
+        script_file.write_text(script)
+        env = {
+            "PYTHONPATH": f"{project_root}/src",
+            "DATACHAIN_ROOT_DIR": str(tmp_path),
+            "DATACHAIN_STUDIO_URL": f"http://localhost:{port}",
+            "DATACHAIN_STUDIO_TOKEN": "test",
+            "DATACHAIN_STUDIO_TEAM": "test-team",
+        }
+        return subprocess.Popen(  # noqa: S603
+            [sys.executable, str(script_file)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=env,
+        )
+
+    return _run_script
 
 
 @skip_if_not_sqlite
@@ -677,3 +766,49 @@ def test_read_dataset_remote_cleanup_on_insertion_failure(
     _verify_cleanup_and_retry_success(
         test_session, requests_mock, mock_s3_parquet_download
     )
+
+
+@skip_if_not_sqlite
+@pytest.mark.parametrize("is_studio", (False,))
+def test_read_dataset_remote_sigkill_then_retry_succeeds(
+    tmp_path,
+    run_script,
+):
+    signal_file = tmp_path / "ready_to_kill"
+
+    # Start pull, signal when downloading, then hang
+    proc = run_script(f"""
+from pathlib import Path
+from unittest.mock import patch
+import time
+
+def hang_on_download(self, url):
+    Path("{signal_file}").touch()
+    while True:
+        time.sleep(1)
+
+import datachain.catalog.catalog as catalog_module
+
+with patch.object(
+    catalog_module.DatasetRowsFetcher,
+    "get_parquet_content",
+    hang_on_download,
+):
+    import datachain as dc
+    dc.read_dataset("dev.animals.dogs", version="1.0.0")
+""")
+
+    deadline = time.time() + 10
+    while not signal_file.exists():
+        assert time.time() < deadline, "Child never reached download point"
+        time.sleep(0.01)
+
+    os.kill(proc.pid, signal.SIGKILL)
+    proc.wait()
+
+    # Retry - should succeed with atomic pull (no partial state blocking)
+    proc = run_script("""
+import datachain as dc
+dc.read_dataset("dev.animals.dogs", version="1.0.0")
+""")
+    assert proc.wait() == 0, "Retry after crash should succeed with atomic pull"
