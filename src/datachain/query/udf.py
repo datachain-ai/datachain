@@ -42,6 +42,8 @@ class AbstractUDFDistributor(ABC):
         is_generator: bool = False,
         min_task_size: str | int | None = None,
         batch_size: int | None = None,
+        continued: bool = False,
+        rows_reused: int = 0,
     ) -> None: ...
 
     @abstractmethod

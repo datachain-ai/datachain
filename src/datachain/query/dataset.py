@@ -13,6 +13,7 @@ from copy import copy
 from functools import wraps
 from types import GeneratorType
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar
+from uuid import uuid4
 
 import attrs
 import sqlalchemy
@@ -591,7 +592,13 @@ class UDFStep(Step, ABC):
         to select
         """
 
-    def populate_udf_output_table(self, udf_table: "Table", query: Select) -> None:
+    def populate_udf_output_table(
+        self,
+        udf_table: "Table",
+        query: Select,
+        continued: bool = False,
+        rows_reused: int = 0,
+    ) -> None:
         catalog = self.session.catalog
         if (rows_total := catalog.warehouse.query_count(query)) == 0:
             logger.debug(
@@ -648,6 +655,8 @@ class UDFStep(Step, ABC):
                         is_generator=self.is_generator,
                         min_task_size=self.min_task_size,
                         batch_size=self.batch_size,
+                        continued=continued,
+                        rows_reused=rows_reused,
                     )
                     udf_distributor()
                     return
@@ -1069,6 +1078,18 @@ class UDFStep(Step, ABC):
             rows_reused=rows_reused,
         )
 
+        # Register skipped UDF in the registry (no-op for local metastores)
+        self.metastore.add_udf(
+            udf_id=str(uuid4()),
+            name=self._udf_name,
+            status="DONE",
+            rows_total=rows_input,
+            job_id=self.job.id,
+            tasks_created=0,
+            skipped=True,
+            rows_reused=rows_reused,
+        )
+
         return output_table, input_table
 
     def _run_from_scratch(
@@ -1223,7 +1244,9 @@ class UDFStep(Step, ABC):
         rows_reused = self.warehouse.table_rows_count(partial_table)
         rows_processed = self.warehouse.query_count(unprocessed_query)
 
-        self.populate_udf_output_table(partial_table, unprocessed_query)
+        self.populate_udf_output_table(
+            partial_table, unprocessed_query, continued=True, rows_reused=rows_reused
+        )
 
         output_table = self.warehouse.rename_table(
             partial_table, UDFStep.output_table_name(self.job.id, hash_output)
