@@ -390,6 +390,41 @@ class AbstractWarehouse(ABC, Serializable):
     ) -> sa.Table:
         """Creates a dataset rows table for the given dataset name and columns"""
 
+    def create_temp_dataset_table(
+        self,
+        columns: Sequence["sa.Column"],
+    ) -> str:
+        """
+        Create a temporary table for dataset staging.
+
+        This creates a table with the tmp_ prefix for staging data before
+        atomically committing it to a final dataset table.
+
+        Returns the generated temporary table name.
+        """
+        name = self.temp_table_name()
+        self.create_dataset_rows_table(name, columns=columns)
+        return name
+
+    def insert_dataframe_to_table(self, table_name: str, df) -> int:
+        """
+        Insert dataframe into any table by name.
+
+        This is used for inserting data into temporary staging tables.
+        """
+        return self.db.insert_dataframe(table_name, df)
+
+    def rename_table(self, old_name: str, new_name: str) -> None:
+        """
+        Rename a table from old_name to new_name.
+
+        This operation should be atomic in the database.
+        """
+        self.db.rename_table(old_name, new_name)
+        # Update metadata cache if the old table was cached
+        if old_name in self.db.metadata.tables:
+            self.db.metadata.remove(self.db.metadata.tables[old_name])
+
     def drop_dataset_rows_table(
         self,
         dataset: DatasetRecord,
@@ -536,10 +571,6 @@ class AbstractWarehouse(ABC, Serializable):
     def insert_rows_done(self, table: sa.Table) -> None:
         """Signal that row inserts are complete by flushing and closing the buffer."""
         self.close_buffer(table)
-
-    @abstractmethod
-    def insert_dataset_rows(self, df, dataset: DatasetRecord, version: str) -> int:
-        """Inserts dataset rows directly into dataset table"""
 
     @abstractmethod
     def instr(self, source, target) -> sa.ColumnElement:

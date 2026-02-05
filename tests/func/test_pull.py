@@ -501,8 +501,9 @@ def test_pull_cleanup_on_insertion_failure(
     dataset_export_status,
     dataset_export_data_chunk,
 ):
+    # Mock the insert_dataframe_to_table method used in atomic pull flow
     mock_insert = mocker.patch(
-        "datachain.data_storage.sqlite.SQLiteWarehouse.insert_dataset_rows",
+        "datachain.data_storage.warehouse.AbstractWarehouse.insert_dataframe_to_table",
         side_effect=RuntimeError("Insert failed"),
     )
 

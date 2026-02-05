@@ -802,10 +802,6 @@ class SQLiteWarehouse(AbstractWarehouse):
             )
         return self.buffers[table.name]
 
-    def insert_dataset_rows(self, df, dataset: DatasetRecord, version: str) -> int:
-        dr = self.dataset_rows(dataset, version)
-        return self.db.insert_dataframe(dr.table.name, df)
-
     def instr(self, source, target) -> "ColumnElement":
         return cast(func.instr(source, target), sqlalchemy.Boolean)
 

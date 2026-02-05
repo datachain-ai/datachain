@@ -1,6 +1,5 @@
 import http.server
 import os
-import signal
 import socket
 import socketserver
 import subprocess
@@ -289,25 +288,81 @@ def run_script(tmp_path, mock_studio_server):
     project_root = os.path.dirname(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     )
+    processes = []
 
-    def _run_script(script):
+    def _run_script(script, capture_output=False, hang_point=None, signal_file=None):
+        """
+        Run a Python script in a subprocess.
+
+        Args:
+            script: The Python code to run
+            capture_output: Whether to capture stdout/stderr
+            hang_point: Optional tuple of (module_path, class_name, method_name)
+                       e.g., ("datachain.catalog.catalog", "DatasetRowsFetcher",
+                              "get_parquet_content")
+                       The method will be patched to create signal_file and hang.
+            signal_file: Path to signal file (required if hang_point is set)
+        """
+        if hang_point:
+            if signal_file is None:
+                raise ValueError("signal_file required when hang_point is set")
+            module_path, class_name, method_name = hang_point
+            # Generate wrapper that patches at module level (works across threads)
+            wrapper = f"""
+import sys
+import time
+from pathlib import Path
+
+# Import the target module and patch BEFORE any other imports
+import {module_path} as target_module
+
+_original_method = getattr(target_module.{class_name}, "{method_name}")
+_signal_file = Path("{signal_file.as_posix()}")
+
+def _hang_wrapper(self, *args, **kwargs):
+    _signal_file.touch()
+    while True:
+        time.sleep(1)
+
+setattr(target_module.{class_name}, "{method_name}", _hang_wrapper)
+
+# Now run the user script
+"""
+            script = wrapper + script
+
         script_file = tmp_path / "worker.py"
         script_file.write_text(script)
-        env = {
-            "PYTHONPATH": f"{project_root}/src",
-            "DATACHAIN_ROOT_DIR": str(tmp_path),
-            "DATACHAIN_STUDIO_URL": f"http://localhost:{port}",
-            "DATACHAIN_STUDIO_TOKEN": "test",
-            "DATACHAIN_STUDIO_TEAM": "test-team",
-        }
-        return subprocess.Popen(  # noqa: S603
+        env = os.environ.copy()
+        env.update(
+            {
+                "PYTHONPATH": f"{project_root}/src",
+                "DATACHAIN_ROOT_DIR": str(tmp_path),
+                "DATACHAIN_STUDIO_URL": f"http://localhost:{port}",
+                "DATACHAIN_STUDIO_TOKEN": "test",
+                "DATACHAIN_STUDIO_TEAM": "test-team",
+            }
+        )
+        proc = subprocess.Popen(  # noqa: S603
             [sys.executable, str(script_file)],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=subprocess.PIPE if capture_output else subprocess.DEVNULL,
+            stderr=subprocess.PIPE if capture_output else subprocess.DEVNULL,
             env=env,
         )
+        processes.append(proc)
+        return proc
 
-    return _run_script
+    yield _run_script
+
+    # Cleanup: kill any processes still running and close pipes
+    for proc in processes:
+        if proc.poll() is None:
+            proc.kill()
+        # communicate() waits and closes pipes properly
+        try:
+            proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
 
 
 @skip_if_not_sqlite
@@ -749,8 +804,9 @@ def test_read_dataset_remote_cleanup_on_insertion_failure(
     mock_dataset_info_endpoint(remote_dataset_single_version)
     mock_s3_parquet_download()
 
+    # Mock the insert_dataframe_to_table method used in atomic pull flow
     mock_insert = mocker.patch(
-        "datachain.data_storage.sqlite.SQLiteWarehouse.insert_dataset_rows",
+        "datachain.data_storage.warehouse.AbstractWarehouse.insert_dataframe_to_table",
         side_effect=RuntimeError("Insert failed"),
     )
 
@@ -776,35 +832,41 @@ def test_read_dataset_remote_sigkill_then_retry_succeeds(
 ):
     signal_file = tmp_path / "ready_to_kill"
 
-    # Start pull, signal when downloading, then hang
-    proc = run_script(f"""
-from pathlib import Path
-from unittest.mock import patch
-import time
+    # Start pull, hang when get_parquet_content is called (during download)
+    proc = run_script(
+        """
+import datachain as dc
+dc.read_dataset("dev.animals.dogs", version="1.0.0")
+""",
+        capture_output=True,
+        hang_point=(
+            "datachain.catalog.catalog",
+            "DatasetRowsFetcher",
+            "get_parquet_content",
+        ),
+        signal_file=signal_file,
+    )
 
-def hang_on_download(self, url):
-    Path("{signal_file}").touch()
-    while True:
-        time.sleep(1)
-
-import datachain.catalog.catalog as catalog_module
-
-with patch.object(
-    catalog_module.DatasetRowsFetcher,
-    "get_parquet_content",
-    hang_on_download,
-):
-    import datachain as dc
-    dc.read_dataset("dev.animals.dogs", version="1.0.0")
-""")
-
-    deadline = time.time() + 10
+    deadline = time.time() + 30
     while not signal_file.exists():
-        assert time.time() < deadline, "Child never reached download point"
+        # Check if process died early
+        if proc.poll() is not None:
+            stdout, stderr = proc.communicate()
+            raise AssertionError(
+                f"Child process exited early with code {proc.returncode}\n"
+                f"stdout: {stdout.decode()}\nstderr: {stderr.decode()}"
+            )
+        if time.time() >= deadline:
+            proc.kill()
+            stdout, stderr = proc.communicate()
+            raise AssertionError(
+                f"Child never reached download point\n"
+                f"stdout: {stdout.decode()}\nstderr: {stderr.decode()}"
+            )
         time.sleep(0.01)
 
-    os.kill(proc.pid, signal.SIGKILL)
-    proc.wait()
+    proc.kill()
+    proc.communicate()  # Wait and close pipes
 
     # Retry - should succeed with atomic pull (no partial state blocking)
     proc = run_script("""
