@@ -60,6 +60,7 @@ def process_jobs_args(args: "Namespace"):
             args.no_wait,
             args.credentials_name,
             args.ignore_checkpoints,
+            args.no_follow,
         )
 
     if args.cmd == "cancel":
@@ -366,7 +367,17 @@ async def _show_log_blobs(log_blobs: list[str], client):
             print("\n>>>> Warning: Failed to fetch logs from studio")
 
 
-def show_logs_from_client(client, job_id):
+def _get_job_status(client, job_id):
+    try:
+        response = client.get_jobs(job_id=job_id)
+        if response.ok and response.data and len(response.data) > 0:
+            return response.data[0].get("status")
+    except (requests.RequestException, OSError, KeyError):
+        pass
+    return None
+
+
+def show_logs_from_client(client, job_id, no_follow: bool = False):  # noqa: C901
     async def _run():
         retry_count = 0
         latest_status = None
@@ -374,13 +385,13 @@ def show_logs_from_client(client, job_id):
         log_blobs_processed = False
         while True:
             async for message in client.tail_job_logs(job_id):
-                if "log_blobs" in message:
+                if "log_blobs" in message and not no_follow:
                     log_blobs = message.get("log_blobs", [])
                     if log_blobs and not log_blobs_processed:
                         log_blobs_processed = True
                         await _show_log_blobs(log_blobs, client)
 
-                elif "logs" in message:
+                elif "logs" in message and not no_follow:
                     for log in message["logs"]:
                         print(log["message"], end="")
                 elif "job" in message:
@@ -390,20 +401,35 @@ def show_logs_from_client(client, job_id):
                     processed_statuses.add(latest_status)
                     print(f"\n>>>> Job is now in {latest_status} status.")
 
+            # After websocket closes, check actual job status via REST
+            rest_status = _get_job_status(client, job_id)
+            if rest_status:
+                latest_status = rest_status
+
             try:
-                if retry_count > RETRY_MAX_TIMES or (
-                    latest_status and JobStatus[latest_status].finished()
-                ):
+                if latest_status and JobStatus[latest_status] in JobStatus.finished():
+                    break
+                if retry_count > RETRY_MAX_TIMES:
                     break
                 await asyncio.sleep(RETRY_SLEEP_SEC)
                 retry_count += 1
             except KeyError:
-                pass
+                break
 
         return latest_status
 
     final_status = asyncio.run(_run())
 
+    try:
+        job_finished = final_status and JobStatus[final_status] in JobStatus.finished()
+    except KeyError:
+        job_finished = False
+
+    if not job_finished:
+        print(f"\n>>>> Lost connection. Job status: {final_status or 'unknown'}.")
+        return 1
+
+    # Show dataset versions only for finished jobs
     response = client.dataset_job_versions(job_id)
     if not response.ok:
         raise DataChainError(response.message)
@@ -417,11 +443,13 @@ def show_logs_from_client(client, job_id):
     else:
         print("\n\nNo dataset versions created during the job.")
 
-    exit_code_by_status = {
-        "FAILED": 1,
-        "CANCELED": 2,
-    }
-    return exit_code_by_status.get(final_status.upper(), 0) if final_status else 0
+    if final_status.upper() == "COMPLETE":
+        return 0
+    if final_status.upper() == "FAILED":
+        return 1
+    if final_status.upper() == "CANCELED":
+        return 2
+    return 0
 
 
 def create_job(  # noqa: PLR0913
@@ -442,6 +470,7 @@ def create_job(  # noqa: PLR0913
     no_wait: bool | None = False,
     credentials_name: str | None = None,
     ignore_checkpoints: bool = False,
+    no_follow: bool = False,
 ):
     catalog = get_catalog()
 
@@ -532,7 +561,7 @@ def create_job(  # noqa: PLR0913
     print("Open the job in Studio at", job_data.get("url"))
     print("=" * 40)
 
-    return 0 if no_wait else show_logs_from_client(client, job_id)
+    return 0 if no_wait else show_logs_from_client(client, job_id, no_follow)
 
 
 def upload_files(client: StudioClient, files: list[str]) -> list[str]:

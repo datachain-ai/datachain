@@ -1,3 +1,4 @@
+import uuid
 from datetime import datetime
 from unittest.mock import MagicMock
 
@@ -370,6 +371,10 @@ def test_studio_run(capsys, mocker, tmp_dir):
             json={"id": job_id, "url": "https://example.com"},
         )
         m.get(
+            f"{STUDIO_URL}/api/datachain/jobs/",
+            json=[{"status": "COMPLETE"}],
+        )
+        m.get(
             f"{STUDIO_URL}/api/datachain/datasets/dataset_job_versions?job_id={job_id}&team_name=team_name",
             json={
                 "dataset_versions": [
@@ -576,6 +581,10 @@ def test_studio_run_reuses_previous_job_for_checkpoints(
             },
         )
         m.get(
+            f"{STUDIO_URL}/api/datachain/jobs/",
+            json=[{"status": "COMPLETE"}],
+        )
+        m.get(
             f"{STUDIO_URL}/api/datachain/datasets/dataset_job_versions?job_id={first_job_id}&team_name=team_name",
             json={"dataset_versions": []},
         )
@@ -633,10 +642,8 @@ def test_studio_run_reuses_previous_job_for_checkpoints(
     "status,expected_exit_code", [("FAILED", 1), ("CANCELED", 2), ("COMPLETE", 0)]
 )
 def test_studio_run_non_zero_exit_code(
-    capsys, mocker, tmp_dir, status, expected_exit_code
+    capsys, mocker, tmp_dir, status, expected_exit_code, studio_token
 ):
-    import uuid
-
     job_id = str(uuid.uuid4())
 
     # Mock tail_job_logs to return a status
@@ -652,13 +659,14 @@ def test_studio_run_non_zero_exit_code(
         side_effect=mock_tail_job_logs,
     )
 
-    with Config(ConfigLevel.GLOBAL).edit() as conf:
-        conf["studio"] = {"token": "isat_access_token", "team": "team_name"}
-
     with requests_mock.mock() as m:
         m.post(
             f"{STUDIO_URL}/api/datachain/jobs/",
             json={"id": job_id, "url": "https://example.com"},
+        )
+        m.get(
+            f"{STUDIO_URL}/api/datachain/jobs/",
+            json=[{"status": status}],
         )
         m.get(
             f"{STUDIO_URL}/api/datachain/datasets/dataset_job_versions?job_id={job_id}&team_name=team_name",
@@ -694,3 +702,104 @@ def test_studio_run_non_zero_exit_code(
         ">>>> Dataset versions created during the job:\n"
         "    - dataset_name@v1.0.0"
     )
+
+
+def test_studio_run_websocket_disconnect_fetches_status_via_rest(
+    capsys, mocker, tmp_dir, studio_token
+):
+    job_id = str(uuid.uuid4())
+
+    async def mock_tail_job_logs(jid):
+        yield {"logs": [{"message": "Starting job...\n"}]}
+        yield {"job": {"status": "RUNNING"}}
+        # Simulate websocket closing (iterator ends without final status)
+
+    mocker.patch(
+        "datachain.remote.studio.StudioClient.tail_job_logs",
+        side_effect=mock_tail_job_logs,
+    )
+
+    with requests_mock.mock() as m:
+        m.post(
+            f"{STUDIO_URL}/api/datachain/jobs/",
+            json={"id": job_id, "url": "https://example.com"},
+        )
+        # REST API returns COMPLETE status after websocket closes
+        m.get(
+            f"{STUDIO_URL}/api/datachain/jobs/",
+            json=[{"status": "COMPLETE"}],
+        )
+        m.get(
+            f"{STUDIO_URL}/api/datachain/datasets/dataset_job_versions?job_id={job_id}&team_name=team_name",
+            json={
+                "dataset_versions": [
+                    {"dataset_name": "test_dataset", "version": "1.0.0"}
+                ]
+            },
+        )
+
+        (tmp_dir / "example_query.py").write_text("print(1)")
+
+        exit_code = main(
+            [
+                "job",
+                "run",
+                "example_query.py",
+            ]
+        )
+
+        assert exit_code == 0
+
+    out = capsys.readouterr().out
+    assert ">>>> Job is now in RUNNING status." in out
+    assert ">>>> Dataset versions created during the job:" in out
+
+
+def test_studio_run_websocket_disconnect_job_still_running(
+    capsys, mocker, tmp_dir, studio_token
+):
+    job_id = str(uuid.uuid4())
+
+    # Mock tail_job_logs to simulate websocket closing while job is running
+    async def mock_tail_job_logs(jid):
+        yield {"logs": [{"message": "Starting job...\n"}]}
+        yield {"job": {"status": "RUNNING"}}
+        # Simulate websocket closing (iterator ends without final status)
+
+    mocker.patch(
+        "datachain.remote.studio.StudioClient.tail_job_logs",
+        side_effect=mock_tail_job_logs,
+    )
+
+    mocker.patch("datachain.studio.RETRY_MAX_TIMES", 0)
+    mocker.patch("datachain.studio.RETRY_SLEEP_SEC", 0.01)
+
+    with requests_mock.mock() as m:
+        m.post(
+            f"{STUDIO_URL}/api/datachain/jobs/",
+            json={"id": job_id, "url": "https://example.com"},
+        )
+        # REST API still returns RUNNING status
+        m.get(
+            f"{STUDIO_URL}/api/datachain/jobs/",
+            json=[{"status": "RUNNING"}],
+        )
+
+        (tmp_dir / "example_query.py").write_text("print(1)")
+
+        exit_code = main(
+            [
+                "job",
+                "run",
+                "example_query.py",
+            ]
+        )
+
+        # Should return 1 because job is still running (lost connection)
+        assert exit_code == 1
+
+    out = capsys.readouterr().out
+    assert ">>>> Job is now in RUNNING status." in out
+    assert ">>>> Lost connection." in out
+    # Should NOT show dataset versions since job didn't complete
+    assert ">>>> Dataset versions created during the job:" not in out
