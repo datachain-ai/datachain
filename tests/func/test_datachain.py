@@ -574,7 +574,6 @@ def test_save_with_orphaned_table(test_session):
     catalog = test_session.catalog
     values = ["a", "b", "c"]
 
-    # Create and save a dataset
     dc.read_values(key=values).save(name="orphan_test", version="1.0.0")
     ds = catalog.get_dataset("orphan_test")
     table_name = catalog.warehouse.dataset_table_name(ds, "1.0.0")
@@ -583,13 +582,11 @@ def test_save_with_orphaned_table(test_session):
     catalog.metastore.remove_dataset_version(ds, "1.0.0")
     assert catalog.warehouse.db.has_table(table_name)
 
-    # Clear SQLAlchemy metadata cache to simulate a fresh process
     if table_name in catalog.warehouse.db.metadata.tables:
         catalog.warehouse.db.metadata.remove(
             catalog.warehouse.db.metadata.tables[table_name]
         )
 
-    # Re-create the same dataset version — should succeed despite orphaned table
     dc.read_values(key=values).save(name="orphan_test", version="1.0.0")
 
     ds = catalog.get_dataset("orphan_test")
