@@ -321,7 +321,8 @@ class StudioClient:
                 try:
                     message = await websocket.recv()
                     data = json.loads(message)
-
+                    if data.get("type") == "ping":
+                        continue
                     # Yield the parsed message data
                     yield data
 
