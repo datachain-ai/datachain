@@ -384,7 +384,7 @@ def show_logs_from_client(client, job_id, no_follow: bool = False):  # noqa: C90
         processed_statuses = set()
         log_blobs_processed = False
         while True:
-            async for message in client.tail_job_logs(job_id):
+            async for message in client.tail_job_logs(job_id, no_follow=no_follow):
                 if "log_blobs" in message and not no_follow:
                     log_blobs = message.get("log_blobs", [])
                     if log_blobs and not log_blobs_processed:
