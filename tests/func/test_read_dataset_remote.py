@@ -289,6 +289,7 @@ def run_script(tmp_path, mock_studio_server):
         os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     )
     processes = []
+    script_counter = 0
 
     def _run_script(script, capture_output=False, hang_point=None, signal_file=None):
         """
@@ -330,7 +331,9 @@ setattr(target_module.{class_name}, "{method_name}", _hang_wrapper)
 """
             script = wrapper + script
 
-        script_file = tmp_path / "worker.py"
+        nonlocal script_counter
+        script_file = tmp_path / f"worker_{script_counter}.py"
+        script_counter += 1
         script_file.write_text(script)
         env = os.environ.copy()
         env.update(
@@ -824,6 +827,53 @@ def test_read_dataset_remote_cleanup_on_insertion_failure(
     )
 
 
+def _wait_for_signal_file(proc, signal_file, timeout=30, poll_interval=0.05):
+    """Wait for a subprocess to create a signal file.
+
+    Raises AssertionError if the process exits early or the timeout expires.
+    """
+    deadline = time.time() + timeout
+    while not signal_file.exists():
+        if proc.poll() is not None:
+            stdout, stderr = proc.communicate()
+            raise AssertionError(
+                f"Subprocess exited early (code {proc.returncode})\n"
+                f"stdout: {stdout.decode(errors='replace')}\n"
+                f"stderr: {stderr.decode(errors='replace')}"
+            )
+        if time.time() >= deadline:
+            proc.kill()
+            stdout, stderr = proc.communicate()
+            raise AssertionError(
+                f"Subprocess did not create signal file within {timeout}s\n"
+                f"stdout: {stdout.decode(errors='replace')}\n"
+                f"stderr: {stderr.decode(errors='replace')}"
+            )
+        time.sleep(poll_interval)
+
+
+def _wait_for_subprocess(proc, timeout=60):
+    """Wait for a subprocess to finish with timeout and diagnostic output.
+
+    Returns (returncode, stdout, stderr). Raises AssertionError on timeout.
+    """
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        stdout, stderr = proc.communicate()
+        raise AssertionError(
+            f"Subprocess timed out after {timeout}s\n"
+            f"stdout: {stdout.decode(errors='replace')}\n"
+            f"stderr: {stderr.decode(errors='replace')}"
+        ) from None
+    return (
+        proc.returncode,
+        stdout.decode(errors="replace"),
+        stderr.decode(errors="replace"),
+    )
+
+
 @skip_if_not_sqlite
 @pytest.mark.parametrize("is_studio", (False,))
 def test_read_dataset_remote_sigkill_then_retry_succeeds(
@@ -847,30 +897,21 @@ dc.read_dataset("dev.animals.dogs", version="1.0.0")
         signal_file=signal_file,
     )
 
-    deadline = time.time() + 30
-    while not signal_file.exists():
-        # Check if process died early
-        if proc.poll() is not None:
-            stdout, stderr = proc.communicate()
-            raise AssertionError(
-                f"Child process exited early with code {proc.returncode}\n"
-                f"stdout: {stdout.decode()}\nstderr: {stderr.decode()}"
-            )
-        if time.time() >= deadline:
-            proc.kill()
-            stdout, stderr = proc.communicate()
-            raise AssertionError(
-                f"Child never reached download point\n"
-                f"stdout: {stdout.decode()}\nstderr: {stderr.decode()}"
-            )
-        time.sleep(0.01)
+    _wait_for_signal_file(proc, signal_file)
 
     proc.kill()
-    proc.communicate()  # Wait and close pipes
+    proc.communicate()
 
     # Retry - should succeed with atomic pull (no partial state blocking)
-    proc = run_script("""
+    retry = run_script(
+        """
 import datachain as dc
 dc.read_dataset("dev.animals.dogs", version="1.0.0")
-""")
-    assert proc.wait() == 0, "Retry after crash should succeed with atomic pull"
+""",
+        capture_output=True,
+    )
+    rc, stdout, stderr = _wait_for_subprocess(retry)
+    assert rc == 0, (
+        f"Retry after crash should succeed with atomic pull\n"
+        f"stdout: {stdout}\nstderr: {stderr}"
+    )

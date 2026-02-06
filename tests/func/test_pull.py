@@ -15,7 +15,11 @@ from tests.conftest import (
     REMOTE_PROJECT_NAME,
     REMOTE_PROJECT_UUID,
 )
-from tests.utils import assert_row_names, skip_if_not_sqlite, tree_from_path
+from tests.utils import (
+    assert_row_names,
+    skip_if_not_sqlite,
+    tree_from_path,
+)
 
 
 @pytest.fixture
@@ -223,12 +227,14 @@ def test_pull_dataset_success(
 @skip_if_not_sqlite
 def test_datachain_read_dataset_pull(
     studio_token,
-    catalog,
+    cloud_test_catalog,
     remote_dataset_info,
     dataset_export,
     dataset_export_status,
     dataset_export_data_chunk,
 ):
+    catalog = cloud_test_catalog.catalog
+
     with pytest.raises(DatasetNotFoundError):
         catalog.get_dataset("dogs")
 
@@ -336,7 +342,6 @@ def test_pull_dataset_empty_parquet(
         )
 
 
-@pytest.mark.parametrize("cloud_type, version_aware", [("s3", False)], indirect=True)
 @skip_if_not_sqlite
 def test_pull_dataset_already_exists_locally(
     studio_token,
@@ -344,8 +349,12 @@ def test_pull_dataset_already_exists_locally(
     remote_dataset_info,
     dataset_export,
     dataset_export_status,
-    dataset_export_data_chunk,
+    remote_dataset_chunk_url,
+    requests_mock,
+    mock_parquet_data,
 ):
+    requests_mock.get(remote_dataset_chunk_url, content=mock_parquet_data)
+
     catalog.pull_dataset(
         f"ds://{REMOTE_NAMESPACE_NAME}.{REMOTE_PROJECT_NAME}.dogs@v1.0.0",
         local_ds_name="other",
@@ -410,7 +419,6 @@ def test_pull_dataset_local_name_already_exists(
     )
 
 
-@pytest.mark.parametrize("cloud_type, version_aware", [("s3", False)], indirect=True)
 @skip_if_not_sqlite
 def test_pull_cleanup_on_download_failure(
     studio_token,
@@ -420,7 +428,7 @@ def test_pull_cleanup_on_download_failure(
     dataset_export_status,
     remote_dataset_chunk_url,
     requests_mock,
-    mock_parquet_data_cloud,
+    mock_parquet_data,
 ):
     requests_mock.get(remote_dataset_chunk_url, status_code=500, text="Server error")
 
@@ -437,7 +445,7 @@ def test_pull_cleanup_on_download_failure(
             include_incomplete=True,
         )
 
-    requests_mock.get(remote_dataset_chunk_url, content=mock_parquet_data_cloud)
+    requests_mock.get(remote_dataset_chunk_url, content=mock_parquet_data)
     catalog.pull_dataset(
         f"ds://{REMOTE_NAMESPACE_NAME}.{REMOTE_PROJECT_NAME}.dogs@v1.0.0"
     )
@@ -450,7 +458,6 @@ def test_pull_cleanup_on_download_failure(
     assert dataset.status == DatasetStatus.COMPLETE
 
 
-@pytest.mark.parametrize("cloud_type, version_aware", [("s3", False)], indirect=True)
 @skip_if_not_sqlite
 def test_pull_cleanup_on_parse_failure(
     studio_token,
@@ -460,7 +467,7 @@ def test_pull_cleanup_on_parse_failure(
     dataset_export_status,
     remote_dataset_chunk_url,
     requests_mock,
-    mock_parquet_data_cloud,
+    mock_parquet_data,
 ):
     requests_mock.get(remote_dataset_chunk_url, content=b"not valid parquet")
 
@@ -477,7 +484,7 @@ def test_pull_cleanup_on_parse_failure(
             include_incomplete=True,
         )
 
-    requests_mock.get(remote_dataset_chunk_url, content=mock_parquet_data_cloud)
+    requests_mock.get(remote_dataset_chunk_url, content=mock_parquet_data)
     catalog.pull_dataset(
         f"ds://{REMOTE_NAMESPACE_NAME}.{REMOTE_PROJECT_NAME}.dogs@v1.0.0"
     )
@@ -490,7 +497,6 @@ def test_pull_cleanup_on_parse_failure(
     assert dataset.status == DatasetStatus.COMPLETE
 
 
-@pytest.mark.parametrize("cloud_type, version_aware", [("s3", False)], indirect=True)
 @skip_if_not_sqlite
 def test_pull_cleanup_on_insertion_failure(
     mocker,
@@ -499,8 +505,12 @@ def test_pull_cleanup_on_insertion_failure(
     remote_dataset_info,
     dataset_export,
     dataset_export_status,
-    dataset_export_data_chunk,
+    remote_dataset_chunk_url,
+    requests_mock,
+    mock_parquet_data,
 ):
+    requests_mock.get(remote_dataset_chunk_url, content=mock_parquet_data)
+
     # Mock the insert_dataframe_to_table method used in atomic pull flow
     mock_insert = mocker.patch(
         "datachain.data_storage.warehouse.AbstractWarehouse.insert_dataframe_to_table",

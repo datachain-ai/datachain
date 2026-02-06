@@ -1827,38 +1827,47 @@ class Catalog:
                             self.warehouse.cleanup_tables([temp_table_name])
                         raise
 
-            # Phase 3: Atomic commit - create metadata and rename table
-            # Only after all data is downloaded do we create the dataset metadata
-            local_ds = self.create_dataset(
-                local_ds_name,
-                project,
-                local_ds_version,
-                query_script=remote_ds_version.query_script,
-                create_rows=False,  # Don't create table, we'll rename temp table
-                columns=columns,
-                feature_schema=remote_ds_version.feature_schema,
-                validate_version=False,
-                uuid=remote_ds_version.uuid,
-            )
+            # Phase 3: Commit — create metadata, rename table, mark complete.
+            # Not truly atomic (multi-step), but retry cleanup at the top of
+            # pull_dataset handles any partial state from a crash here.
+            try:
+                local_ds = self.create_dataset(
+                    local_ds_name,
+                    project,
+                    local_ds_version,
+                    query_script=remote_ds_version.query_script,
+                    create_rows=False,  # Don't create table, we'll rename temp table
+                    columns=columns,
+                    feature_schema=remote_ds_version.feature_schema,
+                    validate_version=False,
+                    uuid=remote_ds_version.uuid,
+                )
 
-            # Rename temp table to final dataset table name
-            final_table_name = self.warehouse.dataset_table_name(
-                local_ds, local_ds_version
-            )
-            self.warehouse.rename_table(temp_table_name, final_table_name)
+                # Rename temp table to final dataset table name
+                final_table_name = self.warehouse.dataset_table_name(
+                    local_ds, local_ds_version
+                )
+                self.warehouse.rename_table(temp_table_name, final_table_name)
 
-            # Update warehouse info (row counts, etc.)
-            self.update_dataset_version_with_warehouse_info(local_ds, local_ds_version)
+                # Update warehouse info (row counts, etc.)
+                self.update_dataset_version_with_warehouse_info(
+                    local_ds, local_ds_version
+                )
 
-            # Mark as COMPLETE only after all operations succeed
-            local_ds = self.metastore.update_dataset_status(
-                local_ds,
-                DatasetStatus.COMPLETE,
-                version=local_ds_version,
-                error_message=remote_ds.error_message,
-                error_stack=remote_ds.error_stack,
-                script_output=remote_ds.error_stack,
-            )
+                # Mark as COMPLETE only after all operations succeed
+                local_ds = self.metastore.update_dataset_status(
+                    local_ds,
+                    DatasetStatus.COMPLETE,
+                    version=local_ds_version,
+                    error_message=remote_ds.error_message,
+                    error_stack=remote_ds.error_stack,
+                    script_output=remote_ds.script_output,
+                )
+            except:
+                # Cleanup temp table on failure (will also be cleaned by gc)
+                with suppress(Exception):
+                    self.warehouse.cleanup_tables([temp_table_name])
+                raise
 
         print(f"Dataset {remote_ds_uri} saved locally")
 
