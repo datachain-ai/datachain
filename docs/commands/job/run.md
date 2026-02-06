@@ -43,7 +43,7 @@ This command runs a job in Studio using the specified query file. You can config
 * `--start-time START_TIME` - Time to schedule the task in YYYY-MM-DDTHH:mm format or natural language.
 * `--cron CRON` - Cron expression for the cron task.
 * `--no-wait` - Do not wait for the job to finish.
-*  `--no-follow` - Do not print the job logs to the console
+* `--no-follow` - Do not print the job logs to the console
 * `--ignore-checkpoints` - Ignore existing checkpoints and run from scratch.
 * `-h`, `--help` - Show the help message and exit.
 * `-v`, `--verbose` - Be verbose.
