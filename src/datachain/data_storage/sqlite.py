@@ -844,6 +844,14 @@ class SQLiteWarehouse(AbstractWarehouse):
         query: Select,
         progress_cb: Callable[[int], None] | None = None,
     ) -> None:
+        # Clear orphaned data from a previous failed run if present
+        if self.table_rows_count(table) > 0:
+            logger.warning(
+                "Table '%s' already has data, clearing orphaned rows before copy",
+                table.name,
+            )
+            self.db.execute(table.delete())
+
         col_id = (
             query.selected_columns.sys__id
             if "sys__id" in query.selected_columns
