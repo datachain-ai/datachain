@@ -1028,6 +1028,7 @@ class UDFStep(Step, ABC):
         """
         Skip UDF by copying existing output table. Returns (output_table, input_table)
         """
+        print(f"UDF '{self._udf_name}': Skipped, reusing output from checkpoint")
         logger.info(
             "UDF(%s) [job=%s run_group=%s]: Skipping execution, "
             "reusing output from job_id=%s",
@@ -1075,6 +1076,7 @@ class UDFStep(Step, ABC):
         self, partial_hash: str, hash_output: str, hash_input: str, query
     ) -> tuple["Table", "Table"]:
         """Execute UDF from scratch. Returns (output_table, input_table)."""
+        print(f"UDF '{self._udf_name}': Running from scratch")
         logger.info(
             "UDF(%s) [job=%s run_group=%s]: Running from scratch",
             self._udf_name,
@@ -1148,6 +1150,7 @@ class UDFStep(Step, ABC):
         assert self.job.rerun_from_job_id is not None
         assert checkpoint.job_id == self.job.rerun_from_job_id
 
+        print(f"UDF '{self._udf_name}': Continuing from checkpoint")
         logger.info(
             "UDF(%s) [job=%s run_group=%s]: Continuing from partial checkpoint, "
             "parent_job_id=%s",
