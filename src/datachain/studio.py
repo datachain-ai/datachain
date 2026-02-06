@@ -43,24 +43,25 @@ def process_jobs_args(args: "Namespace"):
 
     if args.cmd == "run":
         return create_job(
-            args.file,
-            args.team,
-            args.env_file,
-            args.env,
-            args.workers,
-            args.files,
-            args.python_version,
-            args.repository,
-            args.req,
-            args.req_file,
-            args.priority,
-            args.cluster,
-            args.start_time,
-            args.cron,
-            args.no_wait,
-            args.credentials_name,
-            args.ignore_checkpoints,
-            args.no_follow,
+            query_file=args.file,
+            team_name=args.team,
+            env_file=args.env_file,
+            env=args.env,
+            workers=args.workers,
+            files=args.files,
+            python_version=args.python_version,
+            repository=args.repository,
+            req=args.req,
+            req_file=args.req_file,
+            priority=args.priority,
+            cluster=args.cluster,
+            start_time=args.start_time,
+            cron=args.cron,
+            no_wait=args.no_wait,
+            credentials_name=args.credentials_name,
+            ignore_checkpoints=args.ignore_checkpoints,
+            no_follow=args.no_follow,
+            verbose=args.verbose,
         )
 
     if args.cmd == "cancel":
@@ -367,7 +368,7 @@ async def _show_log_blobs(log_blobs: list[str], client):
             print("\n>>>> Warning: Failed to fetch logs from studio")
 
 
-def _get_job_status(client, job_id):
+def _get_job_status(client, job_id: str):
     try:
         response = client.get_jobs(job_id=job_id)
         if response.ok and response.data and len(response.data) > 0:
@@ -377,7 +378,9 @@ def _get_job_status(client, job_id):
     return None
 
 
-def show_logs_from_client(client, job_id, no_follow: bool = False):  # noqa: C901
+def show_logs_from_client(  # noqa: C901
+    client, job_id: str, no_follow: bool = False, verbose: bool = False
+):
     async def _run():
         retry_count = 0
         latest_status = None
@@ -408,8 +411,12 @@ def show_logs_from_client(client, job_id, no_follow: bool = False):  # noqa: C90
 
             try:
                 if latest_status and JobStatus[latest_status] in JobStatus.finished():
+                    if verbose:
+                        print(f"Job is in finished status: {latest_status}")
                     break
                 if retry_count > RETRY_MAX_TIMES:
+                    if verbose:
+                        print(f"Max retry count reached: {retry_count}")
                     break
                 await asyncio.sleep(RETRY_SLEEP_SEC)
                 retry_count += 1
@@ -423,9 +430,13 @@ def show_logs_from_client(client, job_id, no_follow: bool = False):  # noqa: C90
     try:
         job_finished = final_status and JobStatus[final_status] in JobStatus.finished()
     except KeyError:
+        if verbose:
+            print(f"Job status is not a valid status: {final_status}")
         job_finished = False
 
     if not job_finished:
+        if verbose:
+            print(f"Job is not finished: {final_status or 'unknown'}.")
         print(f"\n>>>> Lost connection. Job status: {final_status or 'unknown'}.")
         return 1
 
@@ -471,6 +482,7 @@ def create_job(  # noqa: PLR0913
     credentials_name: str | None = None,
     ignore_checkpoints: bool = False,
     no_follow: bool = False,
+    verbose: bool = False,
 ):
     catalog = get_catalog()
 
@@ -561,7 +573,13 @@ def create_job(  # noqa: PLR0913
     print("Open the job in Studio at", job_data.get("url"))
     print("=" * 40)
 
-    return 0 if no_wait else show_logs_from_client(client, job_id, no_follow)
+    return (
+        0
+        if no_wait
+        else show_logs_from_client(
+            client=client, job_id=str(job_id), no_follow=no_follow, verbose=verbose
+        )
+    )
 
 
 def upload_files(client: StudioClient, files: list[str]) -> list[str]:
