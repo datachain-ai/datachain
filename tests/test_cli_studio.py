@@ -1,3 +1,4 @@
+import re
 import uuid
 from datetime import datetime
 from unittest.mock import MagicMock
@@ -647,15 +648,13 @@ def test_studio_run_non_zero_exit_code(
     job_id = str(uuid.uuid4())
 
     # Mock tail_job_logs to return a status
-    async def mock_tail_job_logs(jid):
-        # Simulate some log messages
+    async def mock_tail_job_logs(jid, no_follow=False):
         yield {"logs": [{"message": "Starting job...\n"}]}
         yield {"logs": [{"message": "Processing data...\n"}]}
-        # Return failed status
         yield {"job": {"status": status}}
 
     mocker.patch(
-        "datachain.remote.studio.StudioClient.tail_job_logs",
+        "datachain.studio.StudioClient.tail_job_logs",
         side_effect=mock_tail_job_logs,
     )
 
@@ -665,7 +664,7 @@ def test_studio_run_non_zero_exit_code(
             json={"id": job_id, "url": "https://example.com"},
         )
         m.get(
-            f"{STUDIO_URL}/api/datachain/jobs/",
+            re.compile(rf"^{re.escape(STUDIO_URL)}/api/datachain/jobs/"),
             json=[{"status": status}],
         )
         m.get(
@@ -709,13 +708,12 @@ def test_studio_run_websocket_disconnect_fetches_status_via_rest(
 ):
     job_id = str(uuid.uuid4())
 
-    async def mock_tail_job_logs(jid):
+    async def mock_tail_job_logs(jid, no_follow=False):
         yield {"logs": [{"message": "Starting job...\n"}]}
         yield {"job": {"status": "RUNNING"}}
-        # Simulate websocket closing (iterator ends without final status)
 
     mocker.patch(
-        "datachain.remote.studio.StudioClient.tail_job_logs",
+        "datachain.studio.StudioClient.tail_job_logs",
         side_effect=mock_tail_job_logs,
     )
 
@@ -724,9 +722,8 @@ def test_studio_run_websocket_disconnect_fetches_status_via_rest(
             f"{STUDIO_URL}/api/datachain/jobs/",
             json={"id": job_id, "url": "https://example.com"},
         )
-        # REST API returns COMPLETE status after websocket closes
         m.get(
-            f"{STUDIO_URL}/api/datachain/jobs/",
+            re.compile(rf"^{re.escape(STUDIO_URL)}/api/datachain/jobs/"),
             json=[{"status": "COMPLETE"}],
         )
         m.get(
@@ -760,14 +757,12 @@ def test_studio_run_websocket_disconnect_job_still_running(
 ):
     job_id = str(uuid.uuid4())
 
-    # Mock tail_job_logs to simulate websocket closing while job is running
-    async def mock_tail_job_logs(jid):
+    async def mock_tail_job_logs(jid, no_follow=False):
         yield {"logs": [{"message": "Starting job...\n"}]}
         yield {"job": {"status": "RUNNING"}}
-        # Simulate websocket closing (iterator ends without final status)
 
     mocker.patch(
-        "datachain.remote.studio.StudioClient.tail_job_logs",
+        "datachain.studio.StudioClient.tail_job_logs",
         side_effect=mock_tail_job_logs,
     )
 
@@ -779,9 +774,8 @@ def test_studio_run_websocket_disconnect_job_still_running(
             f"{STUDIO_URL}/api/datachain/jobs/",
             json={"id": job_id, "url": "https://example.com"},
         )
-        # REST API still returns RUNNING status
         m.get(
-            f"{STUDIO_URL}/api/datachain/jobs/",
+            re.compile(rf"^{re.escape(STUDIO_URL)}/api/datachain/jobs/"),
             json=[{"status": "RUNNING"}],
         )
 
