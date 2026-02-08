@@ -420,7 +420,85 @@ def test_pull_dataset_local_name_already_exists(
 
 
 @skip_if_not_sqlite
-def test_pull_cleanup_on_download_failure(
+def test_pull_dataset_empty_signed_urls(
+    studio_token,
+    catalog,
+    remote_dataset_info,
+    dataset_export_status,
+    requests_mock,
+):
+    requests_mock.get(
+        f"{STUDIO_URL}/api/datachain/datasets/export",
+        json={"export_id": 1, "signed_urls": []},
+    )
+
+    catalog.pull_dataset(
+        f"ds://{REMOTE_NAMESPACE_NAME}.{REMOTE_PROJECT_NAME}.dogs@v1.0.0"
+    )
+
+    dataset = catalog.get_dataset(
+        "dogs",
+        namespace_name=REMOTE_NAMESPACE_NAME,
+        project_name=REMOTE_PROJECT_NAME,
+    )
+    assert dataset.status == DatasetStatus.COMPLETE
+
+    version = dataset.get_version("1.0.0")
+    assert version.num_objects == 0
+
+    assert catalog.warehouse.get_temp_table_names() == []
+
+
+@skip_if_not_sqlite
+def test_pull_export_api_failure_cleans_temp_table_and_retry_succeeds(
+    studio_token,
+    catalog,
+    remote_dataset_info,
+    dataset_export_status,
+    remote_dataset_chunk_url,
+    requests_mock,
+    mock_parquet_data,
+):
+    requests_mock.get(
+        f"{STUDIO_URL}/api/datachain/datasets/export",
+        status_code=400,
+        json={"message": "Export not available"},
+    )
+
+    with pytest.raises(DataChainError, match="Export not available"):
+        catalog.pull_dataset(
+            f"ds://{REMOTE_NAMESPACE_NAME}.{REMOTE_PROJECT_NAME}.dogs@v1.0.0"
+        )
+
+    assert catalog.warehouse.get_temp_table_names() == []
+
+    with pytest.raises(DatasetNotFoundError):
+        catalog.get_dataset(
+            "dogs",
+            namespace_name=REMOTE_NAMESPACE_NAME,
+            project_name=REMOTE_PROJECT_NAME,
+            include_incomplete=True,
+        )
+
+    requests_mock.get(
+        f"{STUDIO_URL}/api/datachain/datasets/export",
+        json={"export_id": 1, "signed_urls": [remote_dataset_chunk_url]},
+    )
+    requests_mock.get(remote_dataset_chunk_url, content=mock_parquet_data)
+    catalog.pull_dataset(
+        f"ds://{REMOTE_NAMESPACE_NAME}.{REMOTE_PROJECT_NAME}.dogs@v1.0.0"
+    )
+
+    dataset = catalog.get_dataset(
+        "dogs",
+        namespace_name=REMOTE_NAMESPACE_NAME,
+        project_name=REMOTE_PROJECT_NAME,
+    )
+    assert dataset.status == DatasetStatus.COMPLETE
+
+
+@skip_if_not_sqlite
+def test_pull_download_failure_leaves_no_state_and_retry_succeeds(
     studio_token,
     catalog,
     remote_dataset_info,
@@ -459,7 +537,7 @@ def test_pull_cleanup_on_download_failure(
 
 
 @skip_if_not_sqlite
-def test_pull_cleanup_on_parse_failure(
+def test_pull_corrupt_parquet_leaves_no_state_and_retry_succeeds(
     studio_token,
     catalog,
     remote_dataset_info,
@@ -471,7 +549,7 @@ def test_pull_cleanup_on_parse_failure(
 ):
     requests_mock.get(remote_dataset_chunk_url, content=b"not valid parquet")
 
-    with pytest.raises(RuntimeError):  # lz4 decompression fails on invalid data
+    with pytest.raises(RuntimeError):
         catalog.pull_dataset(
             f"ds://{REMOTE_NAMESPACE_NAME}.{REMOTE_PROJECT_NAME}.dogs@v1.0.0"
         )
@@ -498,7 +576,7 @@ def test_pull_cleanup_on_parse_failure(
 
 
 @skip_if_not_sqlite
-def test_pull_cleanup_on_insertion_failure(
+def test_pull_insertion_failure_leaves_no_state_and_retry_succeeds(
     mocker,
     studio_token,
     catalog,
@@ -511,7 +589,6 @@ def test_pull_cleanup_on_insertion_failure(
 ):
     requests_mock.get(remote_dataset_chunk_url, content=mock_parquet_data)
 
-    # Mock the insert_dataframe_to_table method used in atomic pull flow
     mock_insert = mocker.patch(
         "datachain.data_storage.warehouse.AbstractWarehouse.insert_dataframe_to_table",
         side_effect=RuntimeError("Insert failed"),
@@ -534,6 +611,58 @@ def test_pull_cleanup_on_insertion_failure(
     catalog.pull_dataset(
         f"ds://{REMOTE_NAMESPACE_NAME}.{REMOTE_PROJECT_NAME}.dogs@v1.0.0"
     )
+
+    dataset = catalog.get_dataset(
+        "dogs",
+        namespace_name=REMOTE_NAMESPACE_NAME,
+        project_name=REMOTE_PROJECT_NAME,
+    )
+    assert dataset.status == DatasetStatus.COMPLETE
+
+
+@skip_if_not_sqlite
+def test_pull_failure_after_saving_leaves_incomplete_version_and_retry_succeeds(
+    mocker,
+    studio_token,
+    catalog,
+    remote_dataset_info,
+    dataset_export,
+    dataset_export_status,
+    remote_dataset_chunk_url,
+    requests_mock,
+    mock_parquet_data,
+    capsys,
+):
+    requests_mock.get(remote_dataset_chunk_url, content=mock_parquet_data)
+
+    mock_status = mocker.patch(
+        "datachain.catalog.catalog.Catalog.update_dataset_version_with_warehouse_info",
+        side_effect=RuntimeError("Post-save update failed"),
+    )
+
+    with pytest.raises(RuntimeError, match="Post-save update failed"):
+        catalog.pull_dataset(
+            f"ds://{REMOTE_NAMESPACE_NAME}.{REMOTE_PROJECT_NAME}.dogs@v1.0.0"
+        )
+
+    assert catalog.warehouse.get_temp_table_names() == []
+
+    dataset = catalog.get_dataset(
+        "dogs",
+        namespace_name=REMOTE_NAMESPACE_NAME,
+        project_name=REMOTE_PROJECT_NAME,
+        include_incomplete=True,
+    )
+    assert dataset.get_version("1.0.0").status != DatasetStatus.COMPLETE
+
+    mocker.stop(mock_status)
+    capsys.readouterr()  # clear captured output
+    catalog.pull_dataset(
+        f"ds://{REMOTE_NAMESPACE_NAME}.{REMOTE_PROJECT_NAME}.dogs@v1.0.0"
+    )
+
+    captured = capsys.readouterr()
+    assert "Cleaning up incomplete dataset version" in captured.out
 
     dataset = catalog.get_dataset(
         "dogs",

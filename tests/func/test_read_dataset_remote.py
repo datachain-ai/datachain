@@ -1,6 +1,5 @@
 import http.server
 import os
-import socket
 import socketserver
 import subprocess
 import sys
@@ -235,15 +234,12 @@ def mock_studio_server(
 ):
     parquet_data = compressed_parquet_data(dog_entries("1.0.0"))
 
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("", 0))
-        port = s.getsockname()[1]
-
     class Handler(http.server.BaseHTTPRequestHandler):
-        def log_message(*_):
-            return None
+        def log_message(self, format, *args):
+            pass
 
         def do_GET(self):
+            port = self.server.server_address[1]
             if "/api/datachain/datasets/export-status" in self.path:
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
@@ -272,7 +268,8 @@ def mock_studio_server(
                 self.send_response(404)
                 self.end_headers()
 
-    server = socketserver.TCPServer(("", port), Handler)
+    server = socketserver.TCPServer(("", 0), Handler)
+    port = server.server_address[1]
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
 
@@ -913,5 +910,48 @@ dc.read_dataset("dev.animals.dogs", version="1.0.0")
     rc, stdout, stderr = _wait_for_subprocess(retry)
     assert rc == 0, (
         f"Retry after crash should succeed with atomic pull\n"
+        f"stdout: {stdout}\nstderr: {stderr}"
+    )
+
+
+@skip_if_not_sqlite
+@pytest.mark.parametrize("is_studio", (False,))
+def test_read_dataset_remote_sigkill_during_insertion_then_retry_succeeds(
+    tmp_path,
+    run_script,
+):
+    signal_file = tmp_path / "ready_to_kill"
+
+    # Start pull, hang when inserting data into temp table
+    proc = run_script(
+        """
+import datachain as dc
+dc.read_dataset("dev.animals.dogs", version="1.0.0")
+""",
+        capture_output=True,
+        hang_point=(
+            "datachain.data_storage.warehouse",
+            "AbstractWarehouse",
+            "insert_dataframe_to_table",
+        ),
+        signal_file=signal_file,
+    )
+
+    _wait_for_signal_file(proc, signal_file)
+
+    proc.kill()
+    proc.communicate()
+
+    # Retry - orphaned tmp_ table should not block the new pull
+    retry = run_script(
+        """
+import datachain as dc
+dc.read_dataset("dev.animals.dogs", version="1.0.0")
+""",
+        capture_output=True,
+    )
+    rc, stdout, stderr = _wait_for_subprocess(retry)
+    assert rc == 0, (
+        f"Retry after crash during insertion should succeed\n"
         f"stdout: {stdout}\nstderr: {stderr}"
     )

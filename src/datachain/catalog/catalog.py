@@ -85,6 +85,14 @@ PULL_DATASET_SLEEP_INTERVAL = 0.1  # sleep time while waiting for chunk to be av
 PULL_DATASET_CHECK_STATUS_INTERVAL = 20  # interval to check export status in Studio
 
 
+def _round_robin_batch(urls: list[str], num_workers: int) -> list[list[str]]:
+    """Round-robin distribute urls across workers so each starts with low-index urls."""
+    batches: list[list[str]] = [[] for _ in range(num_workers)]
+    for i, url in enumerate(urls):
+        batches[i % num_workers].append(url)
+    return batches
+
+
 def is_namespace_local(namespace_name) -> bool:
     """Checks if namespace is from local environment, i.e. is `local`"""
     return namespace_name == "local"
@@ -1790,24 +1798,6 @@ class Catalog:
             # Phase 2: Download data into temporary table
             if signed_urls:
                 with self.warehouse.clone() as warehouse:
-
-                    def batch(urls):
-                        """
-                        Batching urls in a way that fetching is most efficient as
-                        urls with lower id will be created first. Because that, we
-                        are making sure all threads are pulling most recent urls
-                        from beginning
-                        """
-                        res = [[] for i in range(PULL_DATASET_MAX_THREADS)]
-                        current_worker = 0
-                        for url in urls:
-                            res[current_worker].append(url)
-                            current_worker = (
-                                current_worker + 1
-                            ) % PULL_DATASET_MAX_THREADS
-
-                        return res
-
                     rows_fetcher = DatasetRowsFetcher(
                         warehouse=warehouse,
                         temp_table_name=temp_table_name,
@@ -1818,9 +1808,10 @@ class Catalog:
                     )
 
                     try:
-                        rows_fetcher.run(
-                            iter(batch(signed_urls)), dataset_save_progress_bar
+                        batches = _round_robin_batch(
+                            signed_urls, PULL_DATASET_MAX_THREADS
                         )
+                        rows_fetcher.run(iter(batches), dataset_save_progress_bar)
                     except:
                         # Cleanup temp table on failure (will also be cleaned by gc)
                         with suppress(Exception):
@@ -1843,25 +1834,22 @@ class Catalog:
                     uuid=remote_ds_version.uuid,
                 )
 
-                # Rename temp table to final dataset table name
                 final_table_name = self.warehouse.dataset_table_name(
                     local_ds, local_ds_version
                 )
                 self.warehouse.rename_table(temp_table_name, final_table_name)
 
-                # Update warehouse info (row counts, etc.)
                 self.update_dataset_version_with_warehouse_info(
                     local_ds, local_ds_version
                 )
 
-                # Mark as COMPLETE only after all operations succeed
-                local_ds = self.metastore.update_dataset_status(
+                self.metastore.update_dataset_status(
                     local_ds,
                     DatasetStatus.COMPLETE,
                     version=local_ds_version,
-                    error_message=remote_ds.error_message,
-                    error_stack=remote_ds.error_stack,
-                    script_output=remote_ds.script_output,
+                    error_message=remote_ds_version.error_message,
+                    error_stack=remote_ds_version.error_stack,
+                    script_output=remote_ds_version.script_output,
                 )
             except:
                 # Cleanup temp table on failure (will also be cleaned by gc)
