@@ -1,3 +1,4 @@
+import json
 import re
 import uuid
 from datetime import datetime
@@ -797,3 +798,109 @@ def test_studio_run_websocket_disconnect_job_still_running(
     assert ">>>> Lost connection." in out
     # Should NOT show dataset versions since job didn't complete
     assert ">>>> Dataset versions created during the job:" not in out
+
+
+def test_studio_run_invalid_job_status(capsys, mocker, tmp_dir, studio_token):
+    job_id = str(uuid.uuid4())
+
+    async def mock_tail_job_logs(jid, no_follow=False):
+        yield {"job": {"status": "INVALID_STATUS"}}
+
+    mocker.patch(
+        "datachain.studio.StudioClient.tail_job_logs",
+        side_effect=mock_tail_job_logs,
+    )
+
+    with requests_mock.mock() as m:
+        m.post(
+            f"{STUDIO_URL}/api/datachain/jobs/",
+            json={"id": job_id, "url": "https://example.com"},
+        )
+        m.get(
+            re.compile(rf"^{re.escape(STUDIO_URL)}/api/datachain/jobs/"),
+            json=[{"status": "INVALID_STATUS"}],
+        )
+
+        (tmp_dir / "example_query.py").write_text("print(1)")
+
+        exit_code = main(["job", "run", "-v", "example_query.py"])
+
+        assert exit_code == 1
+
+    out = capsys.readouterr().out
+    assert "Job status is not a valid status: INVALID_STATUS" in out
+    assert "Job is not finished: INVALID_STATUS" in out
+    assert ">>>> Lost connection." in out
+
+
+def test_studio_run_tail_job_logs_filters_ping_and_no_follow(
+    capsys, mocker, tmp_dir, studio_token
+):
+    job_id = str(uuid.uuid4())
+    messages = [
+        json.dumps({"type": "ping"}),
+        json.dumps({"logs": [{"message": "Real log\n"}]}),
+        json.dumps({"job": {"status": "COMPLETE"}}),
+    ]
+    call_index = 0
+
+    async def mock_recv():
+        nonlocal call_index
+        if call_index < len(messages):
+            msg = messages[call_index]
+            call_index += 1
+            return msg
+        raise websockets.exceptions.ConnectionClosed(None, None)
+
+    captured_url = {}
+
+    class FakeWebsocket:
+        recv = staticmethod(mock_recv)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+    def mock_connect(url, additional_headers):
+        captured_url["url"] = url
+        return FakeWebsocket()
+
+    mocker.patch("datachain.remote.studio.websockets.connect", side_effect=mock_connect)
+
+    with requests_mock.mock() as m:
+        m.post(
+            f"{STUDIO_URL}/api/datachain/jobs/",
+            json={"id": job_id, "url": "https://example.com"},
+        )
+        m.get(
+            re.compile(rf"^{re.escape(STUDIO_URL)}/api/datachain/jobs/"),
+            json=[{"status": "COMPLETE"}],
+        )
+        m.get(
+            f"{STUDIO_URL}/api/datachain/datasets/dataset_job_versions?job_id={job_id}&team_name=team_name",
+            json={"dataset_versions": []},
+        )
+
+        (tmp_dir / "example_query.py").write_text("print(1)")
+
+        exit_code = main(["job", "run", "--no-follow", "example_query.py"])
+
+        assert exit_code == 0
+
+    assert "no_follow=true" in captured_url["url"]
+    out = capsys.readouterr().out
+    assert "ping" not in out
+    assert "COMPLETE" in out
+
+
+def test_unpacker_hook_unknown_ext_type():
+    import msgpack
+
+    from datachain.remote.studio import StudioClient
+
+    result = StudioClient._unpacker_hook(99, b"\x01\x02\x03")
+    assert isinstance(result, msgpack.ExtType)
+    assert result.code == 99
+    assert result.data == b"\x01\x02\x03"
