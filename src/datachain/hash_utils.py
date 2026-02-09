@@ -179,15 +179,16 @@ def hash_callable(func):
             logger.warning("Cannot hash lambda %r. Returning random hash.", func)
             payload = f"unhashable-{uuid4()}"
 
-    # Normalize annotations
+    # Normalize annotations (may not exist for built-ins/C extensions)
+    raw_annotations = getattr(func, "__annotations__", {})
     annotations = {
-        k: getattr(v, "__name__", str(v)) for k, v in func.__annotations__.items()
+        k: getattr(v, "__name__", str(v)) for k, v in raw_annotations.items()
     }
 
     # Extras to distinguish functions with same code but different metadata
     extras = {
-        "name": func.__name__,
-        "defaults": func.__defaults__,
+        "name": getattr(func, "__name__", ""),
+        "defaults": getattr(func, "__defaults__", None),
         "annotations": annotations,
     }
 

@@ -394,3 +394,32 @@ def test_hash_callable_objects():
         hash_callable(obj2)
         == "7ae5ff45f5acd08e75373bb332b99a8c30d931645c98d18b5bef16ad638a205e"
     )
+
+
+@pytest.mark.parametrize("value", ["not a callable", 42, None, [1, 2, 3]])
+def test_hash_callable_not_callable(value):
+    with pytest.raises(TypeError, match="Expected a callable"):
+        hash_callable(value)
+
+
+def test_hash_callable_builtin_functions():
+    h1 = hash_callable(len)
+    h2 = hash_callable(len)
+    # Built-ins return random hash each time
+    assert h1 != h2
+    assert len(h1) == 64
+
+
+def test_hash_callable_no_name_attribute():
+    from unittest.mock import MagicMock
+
+    mock_callable = MagicMock()
+    del mock_callable.__name__
+    h = hash_callable(mock_callable)
+    assert len(h) == 64
+
+
+def test_hash_column_elements_single_element():
+    single_hash = hash_column_elements(C("name"))
+    list_hash = hash_column_elements([C("name")])
+    assert single_hash == list_hash

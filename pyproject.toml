@@ -44,7 +44,7 @@ dependencies = [
   "cloudpickle",
   "pydantic",
   "jmespath>=1.0",
-  "datamodel-code-generator>=0.25,<0.27",
+  "datamodel-code-generator>=0.28.4",
   "Pillow>=10.0.0,<13",
   "msgpack>=1.0.4,<2",
   "psutil",
@@ -132,6 +132,7 @@ examples = [
   "defusedxml",
   "accelerate",
   "huggingface_hub[hf_transfer]",
+  "transformers>=5.0.0",
   "ultralytics",
   "open_clip_torch",
   "openai",
@@ -154,7 +155,7 @@ namespaces = false
 [tool.setuptools_scm]
 
 [tool.pytest.ini_options]
-addopts = "-rfEs -m 'not examples' --benchmark-skip"
+addopts = "-rfEs -m 'not examples' --benchmark-skip --ignore=local"
 env_override_existing_values = true
 env_files = "local/.env.test"
 markers = [
@@ -174,7 +175,6 @@ filterwarnings = [
   "ignore::DeprecationWarning:datasets.utils._dill",
   "ignore::DeprecationWarning:librosa.core.intervals",
   "ignore::FutureWarning:google.api_core._python_version_support",  # Python 3.10 EOL warning
-  "ignore:Image.Image.getdata is deprecated:DeprecationWarning",  # Pillow 14 deprecation (we use <13)
   # Expected warnings from our code
   "ignore:Field name .* shadows an attribute in parent:UserWarning",  # datachain.lib.feature
   # Coverage limitation on Python 3.13

@@ -20,13 +20,24 @@ This means that if your script creates multiple datasets and fails partway throu
 
 ### Studio Runs
 
-When running jobs on Studio, the checkpoint workflow is managed through the UI:
+#### Using `datachain job run` CLI
+
+When you run `datachain job run my_script.py`, DataChain automatically:
+
+1. **Links jobs** by finding previous runs of the same script (by absolute path) that were also executed in Studio
+2. **Passes checkpoint context** to Studio, enabling checkpoint reuse across runs
+
+This means running the same script multiple times via `datachain job run` will automatically benefit from checkpoints without any additional configuration.
+
+#### Using Studio UI
+
+When triggering jobs through the Studio interface:
 
 1. **Job execution** is triggered using the Run button in the Studio interface
 2. **Checkpoint control** is explicit - you choose between:
    - **Run from scratch**: Ignores any existing checkpoints and recreates all datasets
    - **Continue from last checkpoint**: Resumes from the last successful checkpoint, skipping already-completed stages
-3. **Job linking between runs** is handled automatically by the system - no need for script path matching or job name conventions
+3. **Job linking between runs** is handled automatically by the system
 4. **Checkpoint behavior** during execution is the same as local runs: datasets are saved at each `.save()` call and can be reused on retry
 
 
@@ -79,21 +90,14 @@ Checkpoints are **not** used when:
 
 - Running code interactively (Python REPL, Jupyter notebooks)
 - Running code as a module (e.g., `python -m mymodule`)
-- The `DATACHAIN_CHECKPOINTS_RESET` environment variable is set (see below)
+- The `DATACHAIN_IGNORE_CHECKPOINTS` environment variable is set (see below)
 
 ## Resetting Checkpoints
 
-To ignore existing checkpoints and run your script from scratch, set the `DATACHAIN_CHECKPOINTS_RESET` environment variable:
+To ignore existing checkpoints and run your script from scratch, set the `DATACHAIN_IGNORE_CHECKPOINTS` environment variable:
 
 ```bash
-export DATACHAIN_CHECKPOINTS_RESET=1
-python my_script.py
-```
-
-Or set it inline:
-
-```bash
-DATACHAIN_CHECKPOINTS_RESET=1 python my_script.py
+DATACHAIN_IGNORE_CHECKPOINTS=1 python my_script.py
 ```
 
 This forces DataChain to recreate all datasets, regardless of existing checkpoints.
@@ -311,18 +315,6 @@ Changes that invalidate completed UDF checkpoints:
 
 **Key takeaway:** For in-progress (partial) UDFs, you can fix bugs freely as long as the output stays the same. For completed UDFs, any code change triggers a full recomputation.
 
-### Forcing UDF to Start from Scratch
-
-If you want to ignore any in-progress UDF work and recompute from the beginning, set the `DATACHAIN_UDF_CHECKPOINTS_RESET` environment variable:
-
-```bash
-DATACHAIN_UDF_CHECKPOINTS_RESET=1 python my_script.py
-```
-
-This forces the failed UDF to restart from scratch instead of continuing from partial results. This is useful when a UDF previously failed mid-execution and left partial results, but you want to discard them and reprocess all rows from the beginning.
-
-Note that this only affects in-progress UDFs. Completed UDFs are still skipped based on their hash, unless their code or inputs have changed.
-
 ## Limitations
 
 When running locally:
@@ -332,6 +324,17 @@ When running locally:
 - **Threading/Multiprocessing:** Checkpoints are automatically disabled when Python threading or multiprocessing is detected to prevent race conditions. Any checkpoints created before threading starts remain valid for future runs. DataChain's built-in `parallel` setting for UDF execution is not affected by this limitation.
 
 These limitations don't apply when running on Studio, where job linking between runs is handled automatically by the platform.
+
+### UDF Hashing Limitations
+
+DataChain computes checkpoint hashes by inspecting UDF code and metadata. Certain types of callables cannot be reliably hashed:
+
+- **Built-in functions** (`len`, `str`, `int`, etc.): Cannot access bytecode, so a random hash is generated on each run. Checkpoints using these functions will not be reused.
+- **C extensions**: Same limitation as built-ins - no accessible bytecode means a new hash each run.
+- **Mock objects**: `Mock(side_effect=...)` cannot be reliably hashed because the side effect is not discoverable via inspection. Use regular functions instead.
+- **Dynamically generated callables**: If a callable is created via `exec`/`eval` or its behavior depends on runtime state, the hash reflects only the method's code, not captured state.
+
+To ensure checkpoints work correctly, use regular Python functions defined with `def` or lambda expressions for your UDFs.
 
 ## Future Plans
 

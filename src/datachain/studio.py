@@ -6,17 +6,19 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 import dateparser
+import requests
 import tabulate
 
+from datachain.catalog import get_catalog
 from datachain.config import Config, ConfigLevel
-from datachain.data_storage.job import JobStatus
+from datachain.data_storage.job import JobQueryType, JobStatus
 from datachain.dataset import (
     QUERY_DATASET_PREFIX,
     parse_dataset_name,
 )
 from datachain.error import DataChainError
 from datachain.remote.studio import StudioClient
-from datachain.utils import STUDIO_URL
+from datachain.utils import STUDIO_URL, flatten
 
 if TYPE_CHECKING:
     from argparse import Namespace
@@ -57,6 +59,7 @@ def process_jobs_args(args: "Namespace"):
             args.cron,
             args.no_wait,
             args.credentials_name,
+            args.ignore_checkpoints,
         )
 
     if args.cmd == "cancel":
@@ -340,15 +343,44 @@ def parse_start_time(start_time_str: str | None) -> str | None:
     return parsed_datetime.isoformat()
 
 
+# Sync usage
+async def _fetch_log_blob(blob_url: str, token: str, timeout: float) -> str:
+    """Fetch log content from a blob URL asynchronously."""
+
+    def _fetch():
+        headers = {"Authorization": f"token {token}"}
+        response = requests.get(blob_url, headers=headers, timeout=timeout)
+        response.raise_for_status()
+        return response.text
+
+    return await asyncio.to_thread(_fetch)
+
+
+async def _show_log_blobs(log_blobs: list[str], client):
+    for blob_url in log_blobs:
+        try:
+            log_content = await _fetch_log_blob(blob_url, client.token, client.timeout)
+            if log_content:
+                print(log_content, end="")
+        except (requests.RequestException, OSError):
+            print("\n>>>> Warning: Failed to fetch logs from studio")
+
+
 def show_logs_from_client(client, job_id):
-    # Sync usage
     async def _run():
         retry_count = 0
         latest_status = None
         processed_statuses = set()
+        log_blobs_processed = False
         while True:
             async for message in client.tail_job_logs(job_id):
-                if "logs" in message:
+                if "log_blobs" in message:
+                    log_blobs = message.get("log_blobs", [])
+                    if log_blobs and not log_blobs_processed:
+                        log_blobs_processed = True
+                        await _show_log_blobs(log_blobs, client)
+
+                elif "logs" in message:
                     for log in message["logs"]:
                         print(log["message"], end="")
                 elif "job" in message:
@@ -392,7 +424,7 @@ def show_logs_from_client(client, job_id):
     return exit_code_by_status.get(final_status.upper(), 0) if final_status else 0
 
 
-def create_job(
+def create_job(  # noqa: PLR0913
     query_file: str,
     team_name: str | None,
     env_file: str | None = None,
@@ -409,12 +441,16 @@ def create_job(
     cron: str | None = None,
     no_wait: bool | None = False,
     credentials_name: str | None = None,
+    ignore_checkpoints: bool = False,
 ):
+    catalog = get_catalog()
+
     query_type = "PYTHON" if query_file.endswith(".py") else "SHELL"
     with open(query_file) as f:
         query = f.read()
 
-    environment = "\n".join(env) if env else ""
+    env_values = list(flatten(env)) if env else []
+    environment = "\n".join(env_values) if env_values else ""
     if env_file:
         with open(env_file) as f:
             environment = f.read() + "\n" + environment
@@ -423,6 +459,15 @@ def create_job(
     if req_file:
         with open(req_file) as f:
             requirements = f.read() + "\n" + requirements
+
+    script_path = os.path.abspath(query_file)
+
+    rerun_from_job_id = None
+    rerun_from_job = catalog.metastore.get_last_job_by_name(
+        script_path, is_remote_execution=True
+    )
+    if rerun_from_job:
+        rerun_from_job_id = rerun_from_job.id
 
     client = StudioClient(team=team_name)
     file_ids = upload_files(client, files) if files else []
@@ -438,6 +483,8 @@ def create_job(
         environment=environment,
         workers=workers,
         query_name=os.path.basename(query_file),
+        rerun_from_job_id=rerun_from_job_id,
+        reset=ignore_checkpoints,
         files=file_ids,
         python_version=python_version,
         repository=repository,
@@ -455,13 +502,34 @@ def create_job(
         raise DataChainError("Failed to create job")
 
     job_id = response.data.get("id")
+    job_data = response.data
+
+    query_type_value = (
+        JobQueryType.PYTHON if query_type == "PYTHON" else JobQueryType.SHELL
+    )
+    catalog.metastore.create_job(
+        name=script_path,  # Use local script path, not Studio's query_name
+        query=query,
+        query_type=query_type_value,
+        status=JobStatus.CREATED,
+        workers=job_data.get("workers", 0),
+        python_version=job_data.get("python_version"),
+        params=job_data.get("params", {}),
+        parent_job_id=job_data.get("parent_job_id"),
+        rerun_from_job_id=job_data.get("rerun_from_job_id"),
+        run_group_id=job_data.get("run_group_id"),
+        is_remote_execution=True,
+        job_id=str(job_id),  # Use Studio's job ID
+    )
+
+    catalog.close()
 
     if parsed_start_time or cron:
         print(f"Job {job_id} is scheduled as a task in Studio.")
         return 0
 
     print(f"Job {job_id} created")
-    print("Open the job in Studio at", response.data.get("url"))
+    print("Open the job in Studio at", job_data.get("url"))
     print("=" * 40)
 
     return 0 if no_wait else show_logs_from_client(client, job_id)

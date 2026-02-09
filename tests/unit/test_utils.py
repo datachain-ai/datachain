@@ -1,3 +1,6 @@
+import os
+import threading
+
 import pytest
 
 from datachain.utils import (
@@ -330,14 +333,19 @@ def test_with_last_flag(input_data, expected):
 
 
 @pytest.fixture(autouse=True)
-def reset_checkpoint_state():
+def reset_checkpoint_state(monkeypatch):
     """Reset checkpoint state before each test."""
     _CheckpointState.disabled = False
     _CheckpointState.warning_shown = False
+    _CheckpointState.owner_thread = None
+    # Clear any existing env vars
+    monkeypatch.delenv("DATACHAIN_MAIN_PROCESS_PID", raising=False)
+    monkeypatch.delenv("DATACHAIN_SUBPROCESS", raising=False)
     yield
     # Reset after test as well
     _CheckpointState.disabled = False
     _CheckpointState.warning_shown = False
+    _CheckpointState.owner_thread = None
 
 
 def test_checkpoints_enabled_main_thread():
@@ -348,10 +356,15 @@ def test_checkpoints_enabled_main_thread():
 
 
 def test_checkpoints_enabled_non_main_thread(monkeypatch):
-    """Test that checkpoints are disabled when running in a non-main thread."""
+    # First call establishes ownership with the real current thread
+    assert checkpoints_enabled() is True
+    owner_ident = _CheckpointState.owner_thread
+    assert owner_ident == threading.current_thread().ident
 
+    # Now simulate a different thread by mocking the ident
     class MockThread:
-        name = "Thread-1"  # Not "MainThread"
+        ident = owner_ident + 1
+        name = "Thread-1"
 
     monkeypatch.setattr(
         "datachain.utils.threading.current_thread", lambda: MockThread()
@@ -362,63 +375,81 @@ def test_checkpoints_enabled_non_main_thread(monkeypatch):
 
 
 def test_checkpoints_enabled_non_main_process(monkeypatch):
-    """Test that checkpoints are disabled when running in a non-main process."""
-
-    class MockProcess:
-        name = "SpawnProcess-1"  # Not "MainProcess"
-
-    monkeypatch.setattr(
-        "datachain.utils.multiprocessing.current_process", lambda: MockProcess()
-    )
+    # Simulate a subprocess by setting DATACHAIN_MAIN_PROCESS_PID to a different PID
+    monkeypatch.setenv("DATACHAIN_MAIN_PROCESS_PID", str(os.getpid() + 1000))
 
     assert checkpoints_enabled() is False
-    assert _CheckpointState.disabled is True
+    # Note: disabled flag is not set for subprocess detection, just returns False
+    assert _CheckpointState.warning_shown is True
 
 
 def test_checkpoints_enabled_warning_shown_once(monkeypatch, caplog):
     """Test that the warning is only shown once even when called multiple times."""
+    # First call establishes ownership
+    assert checkpoints_enabled() is True
+    owner_ident = _CheckpointState.owner_thread
 
     class MockThread:
+        ident = owner_ident + 1  # Different thread ident
         name = "Thread-1"
 
     monkeypatch.setattr(
         "datachain.utils.threading.current_thread", lambda: MockThread()
     )
 
-    # Call multiple times
+    # Call multiple times from non-owner thread
     assert checkpoints_enabled() is False
     assert checkpoints_enabled() is False
     assert checkpoints_enabled() is False
 
     # Verify warning was logged only once
     warning_count = sum(
-        1
-        for record in caplog.records
-        if "Concurrent execution detected" in record.message
+        1 for record in caplog.records if "Concurrent thread detected" in record.message
     )
     assert warning_count == 1
     assert _CheckpointState.warning_shown is True
 
 
 def test_checkpoints_enabled_stays_disabled(monkeypatch):
-    """Test that once disabled, checkpoints stay disabled even in main thread."""
+    """Test that once disabled, checkpoints stay disabled even in owner thread."""
+    # First call establishes ownership
+    assert checkpoints_enabled() is True
+    owner_ident = _CheckpointState.owner_thread
 
     class MockThread:
+        ident = owner_ident + 1  # Different thread ident
         name = "Thread-1"
 
-    class MockMainThread:
+    class MockOwnerThread:
+        ident = owner_ident  # Same as owner
         name = "MainThread"
 
-    # First call in non-main thread disables checkpoints
+    # Call from non-owner thread disables checkpoints
     monkeypatch.setattr(
         "datachain.utils.threading.current_thread", lambda: MockThread()
     )
     assert checkpoints_enabled() is False
     assert _CheckpointState.disabled is True
 
-    # Even if we go back to main thread, it should stay disabled
+    # Even if we go back to owner thread, it should stay disabled
     monkeypatch.setattr(
-        "datachain.utils.threading.current_thread", lambda: MockMainThread()
+        "datachain.utils.threading.current_thread", lambda: MockOwnerThread()
     )
     assert checkpoints_enabled() is False
     assert _CheckpointState.disabled is True
+
+
+def test_checkpoints_enabled_datachain_subprocess(monkeypatch):
+    """Test that DATACHAIN_SUBPROCESS env var enables checkpoints regardless of PID."""
+    # Set the main PID to something different (simulating we're in a subprocess)
+    monkeypatch.setenv("DATACHAIN_MAIN_PROCESS_PID", str(os.getpid() + 1000))
+
+    # Without DATACHAIN_SUBPROCESS, checkpoints should be disabled
+    assert checkpoints_enabled() is False
+
+    # Reset state for next test
+    _CheckpointState.warning_shown = False
+
+    # With DATACHAIN_SUBPROCESS, checkpoints should be enabled
+    monkeypatch.setenv("DATACHAIN_SUBPROCESS", "1")
+    assert checkpoints_enabled() is True

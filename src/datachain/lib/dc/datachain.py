@@ -10,7 +10,6 @@ from typing import (
     TYPE_CHECKING,
     Any,
     BinaryIO,
-    ClassVar,
     Literal,
     TypeVar,
     cast,
@@ -23,7 +22,8 @@ from sqlalchemy.sql.elements import ColumnElement
 from tqdm import tqdm
 
 from datachain import json, semver
-from datachain.dataset import DatasetRecord
+from datachain.checkpoint_event import CheckpointEventType, CheckpointStepType
+from datachain.dataset import DatasetRecord, create_dataset_full_name
 from datachain.delta import delta_disabled
 from datachain.error import (
     JobAncestryDepthExceededError,
@@ -188,12 +188,6 @@ class DataChain:
         ```
     """
 
-    DEFAULT_FILE_RECORD: ClassVar[dict] = {
-        "source": "",
-        "path": "",
-        "size": 0,
-    }
-
     def __init__(
         self,
         query: DatasetQuery,
@@ -227,28 +221,13 @@ class DataChain:
         self.print_schema(file=file)
         return file.getvalue()
 
-    def hash(
-        self,
-        name: str | None = None,
-        in_job: bool = False,
-    ) -> str:
+    def hash(self) -> str:
         """
         Calculates SHA hash of this chain. Hash calculation is fast and consistent.
         It takes into account all the steps added to the chain and their inputs.
         Order of the steps is important.
-
-        Args:
-            name: Optional dataset name to include in hash (for save operations).
-            in_job: If True, includes the last checkpoint hash from the job context.
         """
-        base_hash = self._query.hash(in_job=in_job)
-
-        if name:
-            import hashlib
-
-            return hashlib.sha256((base_hash + name).encode("utf-8")).hexdigest()
-
-        return base_hash
+        return self._query.hash()
 
     def _as_delta(
         self,
@@ -661,7 +640,12 @@ class DataChain:
         project = self._get_or_create_project(namespace_name, project_name)
 
         # Calculate hash including dataset name and job context to avoid conflicts
-        _hash = self.hash(name=f"{namespace_name}/{project_name}/{name}", in_job=True)
+        import hashlib
+
+        base_hash = self._query.hash(job_aware=True)
+        _hash = hashlib.sha256(
+            (base_hash + f"{namespace_name}/{project_name}/{name}").encode("utf-8")
+        ).hexdigest()
 
         # Checkpoint handling
         result = self._resolve_checkpoint(name, project, _hash, kwargs)
@@ -689,6 +673,20 @@ class DataChain:
                     update_version=update_version,
                     **kwargs,
                 )
+            )
+
+            # Log checkpoint event for new dataset save
+            assert result.version is not None
+            full_dataset_name = create_dataset_full_name(
+                namespace_name, project_name, name, result.version
+            )
+            catalog.metastore.log_checkpoint_event(
+                job_id=self.job.id,
+                event_type=CheckpointEventType.DATASET_SAVE_COMPLETED,
+                step_type=CheckpointStepType.DATASET_SAVE,
+                run_group_id=self.job.run_group_id,
+                dataset_name=full_dataset_name,
+                checkpoint_hash=_hash,
             )
 
         if checkpoints_enabled():
@@ -728,12 +726,12 @@ class DataChain:
         from .datasets import read_dataset
 
         metastore = self.session.catalog.metastore
-        checkpoints_reset = env2bool("DATACHAIN_CHECKPOINTS_RESET", undefined=False)
+        ignore_checkpoints = env2bool("DATACHAIN_IGNORE_CHECKPOINTS", undefined=False)
 
         if (
             checkpoints_enabled()
             and self.job.rerun_from_job_id
-            and not checkpoints_reset
+            and not ignore_checkpoints
             and metastore.find_checkpoint(self.job.rerun_from_job_id, job_hash)
         ):
             # checkpoint found → find which dataset version to reuse
@@ -788,6 +786,20 @@ class DataChain:
                 dataset_version.id,
                 self.job.id,
                 is_creator=False,
+            )
+
+            # Log checkpoint event
+            full_dataset_name = create_dataset_full_name(
+                project.namespace.name, project.name, name, dataset_version.version
+            )
+            metastore.log_checkpoint_event(
+                job_id=self.job.id,
+                event_type=CheckpointEventType.DATASET_SAVE_SKIPPED,
+                step_type=CheckpointStepType.DATASET_SAVE,
+                run_group_id=self.job.run_group_id,
+                dataset_name=full_dataset_name,
+                checkpoint_hash=job_hash,
+                rerun_from_job_id=self.job.rerun_from_job_id,
             )
 
             return chain

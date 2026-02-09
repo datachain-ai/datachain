@@ -1,37 +1,15 @@
-"""Tests for checkpoint behavior with parallel execution.
-
-This module tests thread-safe checkpoint handling and table locking.
-"""
-
 from collections.abc import Iterator
 
 import pytest
-import sqlalchemy as sa
 
 import datachain as dc
-from datachain.error import (
-    DatasetNotFoundError,
-)
-from tests.utils import get_partial_tables, reset_session_job_state
-
-
-class CustomMapperError(Exception):
-    pass
-
-
-def mapper_fail(num) -> int:
-    raise CustomMapperError("Error")
+from datachain.error import DatasetNotFoundError
+from tests.utils import reset_session_job_state
 
 
 @pytest.fixture(autouse=True)
 def mock_is_script_run(monkeypatch):
-    """Mock is_script_run to return True for stable job names in tests."""
     monkeypatch.setattr("datachain.query.session.is_script_run", lambda: True)
-
-
-@pytest.fixture
-def nums_dataset(test_session):
-    return dc.read_values(num=[1, 2, 3, 4, 5, 6], session=test_session).save("nums")
 
 
 def test_checkpoints_parallel(test_session_tmpfile, monkeypatch):
@@ -74,16 +52,8 @@ def test_checkpoints_parallel(test_session_tmpfile, monkeypatch):
 
 
 def test_udf_generator_continue_parallel(test_session_tmpfile, monkeypatch):
-    """Test continuing RowGenerator from partial with parallel=True.
-
-    This tests that processed table is properly passed through parallel
-    execution path so that checkpoint recovery works correctly.
-    """
     test_session = test_session_tmpfile
-    catalog = test_session.catalog
-    warehouse = catalog.warehouse
 
-    # Track which numbers have been processed
     processed_nums = []
     run_count = {"count": 0}
 
@@ -93,7 +63,6 @@ def test_udf_generator_continue_parallel(test_session_tmpfile, monkeypatch):
         # Fail on input 4 in first run only
         if num == 4 and run_count["count"] == 0:
             raise Exception(f"Simulated failure on num={num}")
-        # Each input yields 2 outputs
         yield num * 10
         yield num
 
@@ -111,27 +80,15 @@ def test_udf_generator_continue_parallel(test_session_tmpfile, monkeypatch):
     with pytest.raises(RuntimeError):
         chain.save("results")
 
-    _, partial_table = get_partial_tables(test_session)
-
-    # Verify sys__input_id has tracked some inputs
-    processed_count_first = len(
-        list(
-            warehouse.db.execute(sa.select(sa.distinct(partial_table.c.sys__input_id)))
-        )
-    )
-    assert processed_count_first > 0, "Some inputs should be tracked"
-
     # -------------- SECOND RUN (CONTINUE) -------------------
     reset_session_job_state()
 
-    # Clear processed list and increment run count
     processed_nums.clear()
     run_count["count"] += 1
 
     # Should complete successfully
     chain.save("results")
 
-    # Verify result
     result = (
         dc.read_dataset("results", session=test_session)
         .order_by("result")

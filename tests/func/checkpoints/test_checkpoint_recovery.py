@@ -1,61 +1,19 @@
 from collections.abc import Iterator
 
 import pytest
-import sqlalchemy as sa
 
 import datachain as dc
-from datachain.query.dataset import UDFStep
-from tests.utils import get_partial_tables, reset_session_job_state
-
-
-class CustomMapperError(Exception):
-    pass
-
-
-def mapper_fail(num) -> int:
-    raise CustomMapperError("Error")
+from tests.utils import reset_session_job_state
 
 
 @pytest.fixture(autouse=True)
 def mock_is_script_run(monkeypatch):
-    """Mock is_script_run to return True for stable job names in tests."""
     monkeypatch.setattr("datachain.query.session.is_script_run", lambda: True)
 
 
 @pytest.fixture
 def nums_dataset(test_session):
     return dc.read_values(num=[1, 2, 3, 4, 5, 6], session=test_session).save("nums")
-
-
-def _count_table(warehouse, table_name) -> int:
-    assert warehouse.db.has_table(table_name)
-    table = warehouse.get_table(table_name)
-    return warehouse.table_rows_count(table)
-
-
-def _count_partial(warehouse, partial_table) -> int:
-    return warehouse.table_rows_count(partial_table)
-
-
-def _count_processed(warehouse, partial_table, generator=False):
-    """Count distinct input sys__ids from partial output table.
-
-    For generators: counts distinct sys__input_id values (non-NULL)
-    For mappers: counts all rows (1:1 mapping, sys__input_id is NULL)
-    """
-    if generator:
-        # Generators have sys__input_id populated with actual input sys__ids
-        return len(
-            list(
-                warehouse.db.execute(
-                    sa.select(sa.distinct(partial_table.c.sys__input_id)).where(
-                        partial_table.c.sys__input_id.isnot(None)
-                    )
-                )
-            )
-        )
-
-    return warehouse.table_rows_count(partial_table)
 
 
 @pytest.mark.parametrize(
@@ -76,21 +34,14 @@ def test_udf_signals_continue_from_partial(
     """Test continuing UDF execution from partial output table.
 
     Tests with different batch sizes to ensure partial results are correctly handled
-    regardless of batch boundaries. Uses counter-based failure to avoid dependency
-    on row ordering (ClickHouse doesn't guarantee order without ORDER BY).
-
-    Simulates real-world scenario: user writes buggy UDF, it fails, then fixes bug
-    and reruns.
+    regardless of batch boundaries.
     """
     test_session = test_session_tmpfile
-    catalog = test_session.catalog
-    warehouse = catalog.warehouse
     processed_nums = []
 
     dc.read_values(num=[1, 2, 3, 4, 5, 6], session=test_session).save("nums")
 
     def process_buggy(num) -> int:
-        """Buggy version that fails before processing the (fail_after_count+1)th row."""
         if len(processed_nums) >= fail_after_count:
             raise Exception(f"Simulated failure after {len(processed_nums)} rows")
         processed_nums.append(num)
@@ -108,46 +59,22 @@ def test_udf_signals_continue_from_partial(
 
     assert len(processed_nums) == fail_after_count
 
-    _, partial_table = get_partial_tables(test_session)
-    assert 0 <= _count_partial(warehouse, partial_table) <= fail_after_count
-
     # -------------- SECOND RUN (FIXED UDF) -------------------
     reset_session_job_state()
 
     processed_nums.clear()
 
     def process_fixed(num) -> int:
-        """Fixed version that works correctly."""
         processed_nums.append(num)
         return num * 10
 
     chain.map(result=process_fixed, output=int).save("results")
 
-    second_job_id = test_session.get_or_create_job().id
-    checkpoints = sorted(
-        catalog.metastore.list_checkpoints(second_job_id),
-        key=lambda c: c.created_at,
-    )
-
-    # After successful completion, only final checkpoints remain (partial ones deleted)
-    # 2 checkpoints: [0] from map() UDF, [1] from nums dataset generation
-    assert len(checkpoints) == 2
-    assert all(c.partial is False for c in checkpoints)
-    # Verify the map() UDF output table exists (checkpoints[0])
-    assert warehouse.db.has_table(
-        UDFStep.output_table_name(second_job_id, checkpoints[0].hash)
-    )
-
-    # Verify all 6 rows were processed correctly in final dataset
     result = dc.read_dataset("results", session=test_session).to_list("result")
     assert sorted(result) == [(10,), (20,), (30,), (40,), (50,), (60,)]
 
-    # Verify second run processed remaining rows (checkpoint continuation working)
-    # The exact count depends on warehouse implementation and batch boundaries:
-    # - ClickHouse: buffer flush in finally saves all processed rows (3-4 saved)
-    # - SQLite: only complete batches are saved (0-3 saved depending on batch_size)
-    # In worst case (SQLite, batch_size=5), 0 rows saved → all 6 reprocessed
-    assert 0 < len(processed_nums) <= 6, "Expected 1-6 rows in second run"
+    # Second run should process remaining rows (checkpoint continuation working)
+    assert 0 < len(processed_nums) <= 6
 
 
 @pytest.mark.parametrize(
@@ -164,24 +91,11 @@ def test_udf_generator_continue_from_partial(
     batch_size,
     fail_after_count,
 ):
-    """Test continuing RowGenerator from partial output.
-
-    Tests with different batch sizes to ensure processed table correctly
-    tracks inputs only after ALL their outputs have been committed.
-
-    Simulates real-world scenario: user writes buggy generator, it fails, then
-    fixes bug and reruns.
-    """
-    catalog = test_session.catalog
-    warehouse = catalog.warehouse
     processed_nums = []
 
     dc.read_values(num=[1, 2, 3, 4, 5, 6], session=test_session).save("nums")
 
     def buggy_generator(num) -> Iterator[int]:
-        """
-        Buggy generator that fails before processing the (fail_after_count+1)th input.
-        """
         if len(processed_nums) >= fail_after_count:
             raise Exception(f"Simulated failure after {len(processed_nums)} inputs")
         processed_nums.append(num)
@@ -198,24 +112,7 @@ def test_udf_generator_continue_from_partial(
     with pytest.raises(Exception, match="Simulated failure after"):
         chain.gen(value=buggy_generator, output=int).save("gen_results")
 
-    first_run_count = len(processed_nums)
-
-    assert first_run_count == fail_after_count
-
-    _, partial_table = get_partial_tables(test_session)
-
-    # Verify partial table has outputs (each input generates 2 outputs)
-    # ClickHouse: saves all outputs including incomplete batch
-    # SQLite: saves complete batches only (may be 0 if only incomplete batch)
-    partial_count = _count_partial(warehouse, partial_table)
-    max_outputs = fail_after_count * 2  # Each input yields 2 outputs
-    assert 0 <= partial_count <= max_outputs
-
-    # Verify processed table tracks completed inputs
-    # ClickHouse: tracks all inputs whose outputs were saved
-    # SQLite: may be 0 if incomplete batch lost (no complete inputs saved)
-    processed_count = _count_processed(warehouse, partial_table, generator=True)
-    assert 0 <= processed_count <= fail_after_count
+    assert len(processed_nums) == fail_after_count
 
     # -------------- SECOND RUN (FIXED GENERATOR) -------------------
     reset_session_job_state()
@@ -223,24 +120,11 @@ def test_udf_generator_continue_from_partial(
     processed_nums.clear()
 
     def fixed_generator(num) -> Iterator[int]:
-        """Fixed generator that works correctly."""
         processed_nums.append(num)
         yield num * 10
         yield num * num
 
-    # Now use the fixed generator - should continue from partial checkpoint
     chain.gen(value=fixed_generator, output=int).save("gen_results")
-
-    second_job_id = test_session.get_or_create_job().id
-    checkpoints = sorted(
-        catalog.metastore.list_checkpoints(second_job_id),
-        key=lambda c: c.created_at,
-    )
-    assert len(checkpoints) == 2
-    assert all(c.partial is False for c in checkpoints)
-    assert warehouse.db.has_table(
-        UDFStep.output_table_name(second_job_id, checkpoints[0].hash)
-    )
 
     result = sorted(
         dc.read_dataset("gen_results", session=test_session).to_list("value")
@@ -248,23 +132,24 @@ def test_udf_generator_continue_from_partial(
     expected = sorted(
         [
             (1,),
-            (10,),  # num=1: 1 (1²), 10 (1x10)
+            (10,),
             (4,),
-            (20,),  # num=2: 4 (2²), 20 (2x10)
+            (20,),
             (9,),
-            (30,),  # num=3: 9 (3²), 30 (3x10)
+            (30,),
             (16,),
-            (40,),  # num=4: 16 (4²), 40 (4x10)
+            (40,),
             (25,),
-            (50,),  # num=5: 25 (5²), 50 (5x10)
+            (50,),
             (36,),
-            (60,),  # num=6: 36 (6²), 60 (6x10)
+            (60,),
         ]
     )
 
     assert result == expected
 
-    assert 0 < len(processed_nums) <= 6, "Expected 1-6 inputs in second run"
+    # Second run should process remaining inputs (checkpoint continuation working)
+    assert 0 < len(processed_nums) <= 6
 
 
 def test_generator_incomplete_input_recovery(test_session):
@@ -277,13 +162,11 @@ def test_generator_incomplete_input_recovery(test_session):
     4. Re-processes incomplete inputs
     5. Final results are correct (no duplicates, no missing values)
     """
-    warehouse = test_session.catalog.warehouse
     processed_inputs = []
     run_count = [0]
     numbers = [6, 2, 8, 7]
 
     def gen_multiple(num) -> Iterator[int]:
-        """Generator that yields 5 outputs per input."""
         processed_inputs.append(num)
         for i in range(5):
             if num == 8 and i == 2 and run_count[0] == 0:
@@ -305,49 +188,18 @@ def test_generator_incomplete_input_recovery(test_session):
             .save("results")
         )
 
-    input_table, partial_table = get_partial_tables(test_session)
-    first_run_rows = list(
-        warehouse.db.execute(
-            sa.select(
-                partial_table.c.sys__input_id,
-                partial_table.c.result,
-                partial_table.c.sys__partial,
-            )
-        )
-    )
-    assert len(first_run_rows) > 0, "Should have partial data from first run"
-
-    # Identify incomplete inputs (missing sys__partial=False)
-    # First get sys__input_id values that are incomplete
-    incomplete_sys_ids = [
-        row[0]
-        for row in warehouse.db.execute(
-            sa.select(sa.distinct(partial_table.c.sys__input_id)).where(
-                partial_table.c.sys__input_id.not_in(
-                    sa.select(partial_table.c.sys__input_id).where(
-                        partial_table.c.sys__partial == False  # noqa: E712
-                    )
-                )
-            )
-        )
-    ]
-
-    incomplete_before = [
-        row[0]
-        for row in warehouse.db.execute(
-            sa.select(input_table.c.num).where(
-                input_table.c.sys__id.in_(incomplete_sys_ids)
-            )
-        )
-    ]
-    assert len(incomplete_before) > 0, "Should have incomplete inputs"
+    # With order_by("num") and batch_size=2, sorted order is [2, 6, 7, 8]:
+    # - Batch 1: [2, 6] - fully committed before crash
+    # - Batch 2: [7, 8] - 7 completes but batch crashes on 8, entire batch uncommitted
+    # Both inputs in the crashed batch need re-processing.
+    incomplete_batch = [7, 8]
+    complete_batch = [2, 6]
 
     # -------------- SECOND RUN (RECOVERS) -------------------
     reset_session_job_state()
     processed_inputs.clear()
     run_count[0] += 1  # Increment so generator succeeds this time
 
-    # Should complete successfully
     (
         dc.read_dataset("nums", session=test_session)
         .order_by("num")
@@ -356,10 +208,19 @@ def test_generator_incomplete_input_recovery(test_session):
         .save("results")
     )
 
-    assert any(inp in processed_inputs for inp in incomplete_before), (
-        f"Incomplete inputs {incomplete_before} should be re-processed, "
+    # Verify inputs from crashed batch are re-processed
+    assert any(inp in processed_inputs for inp in incomplete_batch), (
+        f"Inputs from crashed batch {incomplete_batch} should be re-processed, "
         f"but only processed: {processed_inputs}"
     )
+
+    # Verify inputs from committed batch are NOT re-processed
+    # (tests sys__partial flag correctness - complete inputs are correctly skipped)
+    for inp in complete_batch:
+        assert inp not in processed_inputs, (
+            f"Input {inp} from committed batch should NOT be re-processed, "
+            f"but was found in processed: {processed_inputs}"
+        )
 
     result = (
         dc.read_dataset("results", session=test_session)
@@ -398,11 +259,9 @@ def test_generator_incomplete_input_recovery(test_session):
 )
 def test_generator_yielding_nothing(test_session, monkeypatch, nums_dataset):
     """Test that generator correctly handles inputs that yield zero outputs."""
-    warehouse = test_session.catalog.warehouse
     processed = []
 
     def selective_generator(num) -> Iterator[int]:
-        """Generator that only yields outputs for even numbers."""
         processed.append(num)
         if num == 3:
             raise Exception("Simulated failure")
@@ -418,95 +277,239 @@ def test_generator_yielding_nothing(test_session, monkeypatch, nums_dataset):
     with pytest.raises(Exception, match="Simulated failure"):
         chain.save("results")
 
-    _, partial_table = get_partial_tables(test_session)
-
-    assert _count_processed(warehouse, partial_table) == 2
-
+    # Second run - should continue from checkpoint
     reset_session_job_state()
     processed.clear()
     chain.save("results")
 
-    # Only inputs 3,4,5,6 should be processed
+    # Only inputs 3,4,5,6 should be processed (1,2 were already done)
     assert processed == [3, 4, 5, 6]
     result = sorted(dc.read_dataset("results", session=test_session).to_list("value"))
     assert result == [(20,), (40,), (60,)]
 
 
-def test_generator_sys_partial_flag_correctness(test_session):
-    """Test that sys__partial flag is correctly set for generator outputs.
+def test_empty_dataset_checkpoint(test_session):
+    processed = []
 
-    Verifies that for each input:
-    - All outputs except the last have sys__partial=True
-    - The last output has sys__partial=False
-    - This enables detection of incomplete inputs during checkpoint recovery
-    """
-    warehouse = test_session.catalog.warehouse
+    def mapper(num) -> int:
+        processed.append(num)
+        return num * 10
 
-    def gen_multiple(num) -> Iterator[int]:
-        """Generator that yields multiple outputs per input."""
-        for i in range(5):  # Each input yields 5 outputs
-            if num == 4 and i == 2:
-                raise Exception("Intentional failure to preserve partial table")
-            yield num * 100 + i
-
-    dc.read_values(num=[1, 2, 3, 4], session=test_session).save("nums")
+    dc.read_values(num=[], session=test_session).save("empty_nums")
 
     reset_session_job_state()
+    chain = dc.read_dataset("empty_nums", session=test_session).map(
+        result=mapper, output=int
+    )
+    chain.save("results")
 
-    # Run and expect failure - this leaves partial table
-    # Use small batch size to force commits between inputs
-    with pytest.raises(Exception):  # noqa: B017
-        (
-            dc.read_dataset("nums", session=test_session)
-            .order_by("num")  # Ensure deterministic ordering
-            .settings(batch_size=2)  # Very small batch size
-            .gen(result=gen_multiple, output=int)
-            .save("results")
+    assert len(processed) == 0
+
+    # Second run should also work (checkpoint reuse with empty result)
+    reset_session_job_state()
+    processed.clear()
+    chain.save("results")
+
+    assert len(processed) == 0
+
+    result = dc.read_dataset("results", session=test_session).to_list("result")
+    assert result == []
+
+
+def test_single_row_dataset_checkpoint(test_session):
+    processed = []
+    run_count = {"value": 0}
+
+    def mapper(num) -> int:
+        processed.append(num)
+        if run_count["value"] == 0:
+            raise Exception("First run failure")
+        return num * 10
+
+    dc.read_values(num=[42], session=test_session).save("single_num")
+
+    reset_session_job_state()
+    chain = (
+        dc.read_dataset("single_num", session=test_session)
+        .settings(
+            batch_size=10  # Batch size larger than dataset
         )
-
-    _, partial_table = get_partial_tables(test_session)
-
-    rows = list(
-        warehouse.db.execute(
-            sa.select(
-                partial_table.c.sys__input_id,
-                partial_table.c.result,
-                partial_table.c.sys__partial,
-            ).order_by(partial_table.c.sys__input_id, partial_table.c.result)
-        )
+        .map(result=mapper, output=int)
     )
 
-    by_input = {}
-    for input_id, result, partial in rows:
-        by_input.setdefault(input_id, []).append((result, partial))
+    with pytest.raises(Exception, match="First run failure"):
+        chain.save("results")
 
-    assert len(by_input) >= 1, f"Should have at least 1 input, got {len(by_input)}"
+    assert len(processed) == 1
 
-    complete_inputs = {k: v for k, v in by_input.items() if len(v) == 5}
-    incomplete_inputs = {k: v for k, v in by_input.items() if len(v) < 5}
+    reset_session_job_state()
+    processed.clear()
+    run_count["value"] += 1
 
-    assert complete_inputs
-    assert incomplete_inputs
+    chain.save("results")
 
-    for input_id, outputs in complete_inputs.items():
-        assert len(outputs) == 5, f"Complete input {input_id} should have 5 outputs"
-        # First 4 should be True, last one should be False
-        for i, (_, partial) in enumerate(outputs):
-            if i < 4:
-                assert partial, (
-                    f"Output {i} of input {input_id} should have sys__partial=True"
-                )
-            else:
-                assert not partial, (
-                    f"Last output of input {input_id} should have sys__partial=False"
-                )
+    result = dc.read_dataset("results", session=test_session).to_list("result")
+    assert result == [(420,)]
 
-    # Verify incomplete inputs have ALL outputs marked as partial=True
-    for input_id, outputs in incomplete_inputs.items():
-        assert len(outputs) < 5, f"Incomplete input {input_id} should have < 5 outputs"
-        # ALL should be True (missing the final False marker)
-        for _, (_, partial) in enumerate(outputs):
-            assert partial, (
-                f"All outputs of incomplete input {input_id} "
-                f"should have sys__partial=True"
-            )
+
+def test_multiple_consecutive_failures(test_session):
+    """Test checkpoint recovery across multiple consecutive failures.
+
+    Scenario: fail at row 3, then fail at row 5, then succeed.
+    Each run should continue from where the previous one left off.
+    """
+    processed = []
+    run_count = {"value": 0}
+
+    def flaky_mapper(num) -> int:
+        processed.append(num)
+        if run_count["value"] == 0 and len(processed) >= 3:
+            raise Exception("First failure at row 3")
+        if run_count["value"] == 1 and len(processed) >= 3:
+            raise Exception("Second failure at row 3 (of remaining)")
+        return num * 10
+
+    dc.read_values(num=[1, 2, 3, 4, 5, 6, 7, 8], session=test_session).save("nums")
+
+    chain = dc.read_dataset("nums", session=test_session).settings(batch_size=2)
+
+    # -------------- FIRST RUN: Fails after processing 3 rows -------------------
+    reset_session_job_state()
+
+    with pytest.raises(Exception, match="First failure"):
+        chain.map(result=flaky_mapper, output=int).save("results")
+
+    first_run_processed = len(processed)
+    assert first_run_processed == 3
+
+    # -------------- SECOND RUN: Continues but fails again -------------------
+    reset_session_job_state()
+    processed.clear()
+    run_count["value"] += 1
+
+    with pytest.raises(Exception, match="Second failure"):
+        chain.map(result=flaky_mapper, output=int).save("results")
+
+    second_run_processed = len(processed)
+    # Should process some rows (continuing from first run's checkpoint)
+    assert second_run_processed > 0
+
+    # -------------- THIRD RUN: Finally succeeds -------------------
+    reset_session_job_state()
+    processed.clear()
+    run_count["value"] += 1
+
+    chain.map(result=flaky_mapper, output=int).save("results")
+
+    # Verify final result is correct
+    result = dc.read_dataset("results", session=test_session).to_list("result")
+    assert sorted(result) == [(10,), (20,), (30,), (40,), (50,), (60,), (70,), (80,)]
+
+
+def test_generator_multiple_consecutive_failures(test_session):
+    processed = []
+    run_count = {"value": 0}
+
+    def flaky_generator(num) -> Iterator[int]:
+        processed.append(num)
+        if run_count["value"] == 0 and num == 3:
+            raise Exception("First failure on num=3")
+        if run_count["value"] == 1 and num == 5:
+            raise Exception("Second failure on num=5")
+        yield num * 10
+        yield num * 100
+
+    dc.read_values(num=[1, 2, 3, 4, 5, 6], session=test_session).save("nums")
+
+    chain = (
+        dc.read_dataset("nums", session=test_session)
+        .order_by("num")
+        .settings(batch_size=2)
+    )
+
+    # -------------- FIRST RUN: Fails on num=3 -------------------
+    reset_session_job_state()
+
+    with pytest.raises(Exception, match="First failure"):
+        chain.gen(result=flaky_generator, output=int).save("results")
+
+    # -------------- SECOND RUN: Continues but fails on num=5 -------------------
+    reset_session_job_state()
+    processed.clear()
+    run_count["value"] += 1
+
+    with pytest.raises(Exception, match="Second failure"):
+        chain.gen(result=flaky_generator, output=int).save("results")
+
+    # -------------- THIRD RUN: Finally succeeds -------------------
+    reset_session_job_state()
+    processed.clear()
+    run_count["value"] += 1
+
+    chain.gen(result=flaky_generator, output=int).save("results")
+
+    # Verify final result is correct (each input produces 2 outputs)
+    result = dc.read_dataset("results", session=test_session).to_list("result")
+    expected = [(i * 10,) for i in range(1, 7)] + [(i * 100,) for i in range(1, 7)]
+    assert sorted(result) == sorted(expected)
+
+    # Verify no duplicates
+    values = [r[0] for r in result]
+    assert len(values) == len(set(values))
+
+
+def test_multiple_udf_chain_continue(test_session):
+    """Test continuing from partial with multiple UDFs in chain.
+
+    When mapper fails, only mapper's partial table exists. On retry, mapper
+    completes and gen runs from scratch.
+    """
+    map_processed = []
+    gen_processed = []
+    fail_once = [True]  # Mutable flag to track if we should fail
+
+    dc.read_values(num=[1, 2, 3, 4, 5, 6], session=test_session).save("nums")
+
+    def mapper(num: int) -> int:
+        map_processed.append(num)
+        # Fail before processing the 4th row in first run only
+        if fail_once[0] and len(map_processed) == 3:
+            fail_once[0] = False
+            raise Exception("Map failure")
+        return num * 2
+
+    def doubler(doubled) -> Iterator[int]:
+        gen_processed.append(doubled)
+        yield doubled
+        yield doubled
+
+    # First run - fails in mapper
+    # batch_size=2: processes [1,2] (commits), then [3,4] (fails on 4)
+    reset_session_job_state()
+    chain = (
+        dc.read_dataset("nums", session=test_session)
+        .settings(batch_size=2)
+        .map(doubled=mapper)
+        .gen(value=doubler, output=int)
+    )
+
+    with pytest.raises(Exception, match="Map failure"):
+        chain.save("results")
+
+    # Second run - completes successfully
+    # Mapper continues from partial checkpoint
+    reset_session_job_state()
+    chain.save("results")
+
+    # Verify mapper processed some rows (continuation working)
+    # First run: 3 rows attempted
+    # Second run: varies by warehouse (0-6 rows depending on batching/buffer behavior)
+    # Total: 6-9 calls (some rows may be reprocessed if not saved to partial)
+    assert 6 <= len(map_processed) <= 9, "Expected 6-9 total mapper calls"
+
+    assert len(gen_processed) == 6
+
+    result = sorted(dc.read_dataset("results", session=test_session).to_list("value"))
+    assert sorted([v[0] for v in result]) == sorted(
+        [2, 2, 4, 4, 6, 6, 8, 8, 10, 10, 12, 12]
+    )

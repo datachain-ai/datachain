@@ -41,7 +41,7 @@ def test_checkpoints(
     catalog = test_session.catalog
     metastore = catalog.metastore
 
-    monkeypatch.setenv("DATACHAIN_CHECKPOINTS_RESET", str(reset_checkpoints))
+    monkeypatch.setenv("DATACHAIN_IGNORE_CHECKPOINTS", str(reset_checkpoints))
 
     if with_delta:
         chain = dc.read_dataset(
@@ -100,7 +100,7 @@ def test_checkpoints_modified_chains(
     test_session, monkeypatch, nums_dataset, reset_checkpoints
 ):
     catalog = test_session.catalog
-    monkeypatch.setenv("DATACHAIN_CHECKPOINTS_RESET", str(reset_checkpoints))
+    monkeypatch.setenv("DATACHAIN_IGNORE_CHECKPOINTS", str(reset_checkpoints))
 
     chain = dc.read_dataset("nums", session=test_session)
 
@@ -132,7 +132,7 @@ def test_checkpoints_multiple_runs(
 ):
     catalog = test_session.catalog
 
-    monkeypatch.setenv("DATACHAIN_CHECKPOINTS_RESET", str(reset_checkpoints))
+    monkeypatch.setenv("DATACHAIN_IGNORE_CHECKPOINTS", str(reset_checkpoints))
 
     chain = dc.read_dataset("nums", session=test_session)
 
@@ -226,7 +226,7 @@ def test_checkpoint_with_deleted_dataset_version(
     test_session, monkeypatch, nums_dataset
 ):
     catalog = test_session.catalog
-    monkeypatch.setenv("DATACHAIN_CHECKPOINTS_RESET", str(False))
+    monkeypatch.setenv("DATACHAIN_IGNORE_CHECKPOINTS", str(False))
 
     chain = dc.read_dataset("nums", session=test_session)
 
@@ -305,7 +305,7 @@ def test_udf_checkpoints_cross_job_reuse(
     test_session, monkeypatch, nums_dataset, reset_checkpoints
 ):
     catalog = test_session.catalog
-    monkeypatch.setenv("DATACHAIN_CHECKPOINTS_RESET", str(reset_checkpoints))
+    monkeypatch.setenv("DATACHAIN_IGNORE_CHECKPOINTS", str(reset_checkpoints))
 
     call_count = {"count": 0}
 

@@ -1,14 +1,20 @@
 import copy
 import logging
 import os
+import sys
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager, nullcontext, suppress
 from datetime import datetime, timezone
 from functools import cached_property, reduce
 from itertools import groupby
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
+
+if sys.version_info >= (3, 11):
+    from typing import Self
+else:
+    from typing_extensions import Self
 
 from sqlalchemy import (
     JSON,
@@ -33,6 +39,11 @@ from sqlalchemy.sql import func as f
 from datachain import json
 from datachain.catalog.dependency import DatasetDependencyNode
 from datachain.checkpoint import Checkpoint
+from datachain.checkpoint_event import (
+    CheckpointEvent,
+    CheckpointEventType,
+    CheckpointStepType,
+)
 from datachain.data_storage import JobQueryType, JobStatus
 from datachain.data_storage.serializer import Serializable
 from datachain.dataset import (
@@ -92,6 +103,7 @@ class AbstractMetastore(ABC, Serializable):
     dependency_node_class: type[DatasetDependencyNode] = DatasetDependencyNode
     job_class: type[Job] = Job
     checkpoint_class: type[Checkpoint] = Checkpoint
+    checkpoint_event_class: type[CheckpointEvent] = CheckpointEvent
 
     def __init__(
         self,
@@ -99,7 +111,7 @@ class AbstractMetastore(ABC, Serializable):
     ):
         self.uri = uri or StorageURI("")
 
-    def __enter__(self) -> "AbstractMetastore":
+    def __enter__(self) -> Self:
         """Returns self upon entering context manager."""
         return self
 
@@ -468,6 +480,8 @@ class AbstractMetastore(ABC, Serializable):
         parent_job_id: str | None = None,
         rerun_from_job_id: str | None = None,
         run_group_id: str | None = None,
+        is_remote_execution: bool = False,
+        job_id: str | None = None,
     ) -> str:
         """
         Creates a new job.
@@ -520,7 +534,9 @@ class AbstractMetastore(ABC, Serializable):
         """Returns the status of the given job."""
 
     @abstractmethod
-    def get_last_job_by_name(self, name: str, conn=None) -> "Job | None":
+    def get_last_job_by_name(
+        self, name: str, is_remote_execution: bool = False, conn=None
+    ) -> "Job | None":
         """Returns the last job with the given name, ordered by created_at."""
 
     #
@@ -570,17 +586,47 @@ class AbstractMetastore(ABC, Serializable):
         partial: bool = False,
         conn: Any | None = None,
     ) -> Checkpoint:
-        """
-        Creates a new checkpoint or returns existing one if already exists.
-        This is idempotent - calling it multiple times with the same job_id and hash
-        will not create duplicates.
-
-        The insert and find operations are wrapped in a transaction to ensure atomicity.
-        """
+        """Get or create checkpoint. Must be atomic and idempotent."""
 
     @abstractmethod
     def remove_checkpoint(self, checkpoint_id: str, conn: Any | None = None) -> None:
         """Removes a checkpoint by ID"""
+
+    #
+    # Checkpoint Events
+    #
+
+    @abstractmethod
+    def log_checkpoint_event(  # noqa: PLR0913
+        self,
+        job_id: str,
+        event_type: "CheckpointEventType",
+        step_type: "CheckpointStepType",
+        run_group_id: str | None = None,
+        udf_name: str | None = None,
+        dataset_name: str | None = None,
+        checkpoint_hash: str | None = None,
+        hash_partial: str | None = None,
+        hash_input: str | None = None,
+        hash_output: str | None = None,
+        rows_input: int | None = None,
+        rows_processed: int | None = None,
+        rows_generated: int | None = None,
+        rows_reused: int | None = None,
+        rerun_from_job_id: str | None = None,
+        details: dict | None = None,
+        conn: Any | None = None,
+    ) -> "CheckpointEvent":
+        """Log a checkpoint event."""
+
+    @abstractmethod
+    def get_checkpoint_events(
+        self,
+        job_id: str | None = None,
+        run_group_id: str | None = None,
+        conn: Any | None = None,
+    ) -> Iterator["CheckpointEvent"]:
+        """Get checkpoint events, optionally filtered by job_id or run_group_id."""
 
     #
     # Dataset Version Jobs (many-to-many)
@@ -594,13 +640,7 @@ class AbstractMetastore(ABC, Serializable):
         is_creator: bool = False,
         conn=None,
     ) -> None:
-        """
-        Link dataset version to job.
-
-        This atomically:
-        1. Creates a link in the dataset_version_jobs junction table
-        2. Updates dataset_version.job_id to point to this job
-        """
+        """Link dataset version to job. Must be atomic."""
 
     @abstractmethod
     def get_dataset_version_for_job_ancestry(
@@ -632,7 +672,8 @@ class AbstractDBMetastore(AbstractMetastore):
     DATASET_DEPENDENCY_TABLE = "datasets_dependencies"
     DATASET_VERSION_JOBS_TABLE = "dataset_version_jobs"
     JOBS_TABLE = "jobs"
-    CHECKPOINTS_TABLE = "checkpoints_v2"
+    CHECKPOINTS_TABLE = "checkpoints"
+    CHECKPOINT_EVENTS_TABLE = "checkpoint_events"
 
     db: "DatabaseEngine"
 
@@ -1291,6 +1332,18 @@ class AbstractDBMetastore(AbstractMetastore):
         self, dataset: DatasetRecord, version: str, conn=None, **kwargs
     ) -> DatasetVersion:
         """Updates dataset fields."""
+        logger.debug(
+            "Metastore.update_dataset_version called for %s@%s: "
+            "num_objects=%s, size=%s, preview_len=%s, all_fields=%s",
+            dataset.name,
+            version,
+            kwargs.get("num_objects"),
+            kwargs.get("size"),
+            len(kwargs["preview"])
+            if "preview" in kwargs and kwargs["preview"] is not None
+            else None,
+            list(kwargs.keys()),
+        )
         values: dict[str, Any] = {}
         version_values: dict[str, Any] = {}
         for field, value in kwargs.items():
@@ -1337,6 +1390,17 @@ class AbstractDBMetastore(AbstractMetastore):
         if not values:
             return dataset.get_version(version)
 
+        logger.debug(
+            "Writing to database for %s@%s: num_objects=%s, size=%s, "
+            "preview_serialized=%s, fields_to_update=%s",
+            dataset.name,
+            version,
+            values.get("num_objects"),
+            values.get("size"),
+            bool(values.get("preview")),
+            list(values.keys()),
+        )
+
         dv = self._datasets_versions
         self.db.execute(
             self._datasets_versions_update()
@@ -1348,6 +1412,15 @@ class AbstractDBMetastore(AbstractMetastore):
         for v in dataset.versions:
             if v.version == version:
                 v.update(**version_values)
+                logger.debug(
+                    "Dataset version updated successfully: %s@%s, "
+                    "final_num_objects=%s, final_size=%s, has_preview=%s",
+                    dataset.name,
+                    version,
+                    v.num_objects,
+                    v.size,
+                    bool(getattr(v, "_preview_data", None)),
+                )
                 return v
 
         raise DatasetVersionNotFoundError(
@@ -1876,6 +1949,7 @@ class AbstractDBMetastore(AbstractMetastore):
             Column("parent_job_id", Text, nullable=True),
             Column("rerun_from_job_id", Text, nullable=True),
             Column("run_group_id", Text, nullable=True),
+            Column("is_remote_execution", Boolean, nullable=False, default=False),
             Index("idx_jobs_parent_job_id", "parent_job_id"),
             Index("idx_jobs_rerun_from_job_id", "rerun_from_job_id"),
             Index("idx_jobs_run_group_id", "run_group_id"),
@@ -1917,10 +1991,13 @@ class AbstractDBMetastore(AbstractMetastore):
         query = self._jobs_query().where(self._jobs.c.id.in_(ids))
         yield from self._parse_jobs(self.db.execute(query, conn=conn))
 
-    def get_last_job_by_name(self, name: str, conn=None) -> "Job | None":
+    def get_last_job_by_name(
+        self, name: str, is_remote_execution: bool = False, conn=None
+    ) -> "Job | None":
         query = (
             self._jobs_query()
             .where(self._jobs.c.name == name)
+            .where(self._jobs.c.is_remote_execution == is_remote_execution)
             .order_by(self._jobs.c.created_at.desc())
             .limit(1)
         )
@@ -1941,26 +2018,35 @@ class AbstractDBMetastore(AbstractMetastore):
         parent_job_id: str | None = None,
         rerun_from_job_id: str | None = None,
         run_group_id: str | None = None,
+        is_remote_execution: bool = False,
+        job_id: str | None = None,
         conn: Any = None,
     ) -> str:
         """
         Creates a new job.
         Returns the job id.
-        """
-        job_id = str(uuid4())
 
-        # Validate run_group_id and rerun_from_job_id consistency
-        if rerun_from_job_id:
-            # Rerun job: run_group_id must be provided by caller
-            assert run_group_id is not None, (
-                "run_group_id must be provided when rerun_from_job_id is set"
-            )
-        else:
-            # First job: run_group_id should not be provided (we set it here)
-            assert run_group_id is None, (
-                "run_group_id should not be provided when rerun_from_job_id is not set"
-            )
-            run_group_id = job_id
+        Args:
+            job_id: If provided, uses this ID instead of generating a new one.
+                    Used for saving Studio jobs locally with their original IDs.
+        """
+        if job_id is None:
+            job_id = str(uuid4())
+            # Validate run_group_id and rerun_from_job_id consistency for local jobs
+            if rerun_from_job_id:
+                # Rerun job: run_group_id should be provided by caller
+                # If run_group_id is None, parent is a legacy job without run_group_id
+                # In this case, treat current job as first job in a new chain
+                # and break the link to the legacy parent
+                if run_group_id is None:
+                    run_group_id = job_id
+                    rerun_from_job_id = None
+            else:
+                assert run_group_id is None, (
+                    "run_group_id should not be provided when rerun_from_job_id"
+                    " is not set"
+                )
+                run_group_id = job_id
 
         self.db.execute(
             self._jobs_insert().values(
@@ -1979,6 +2065,7 @@ class AbstractDBMetastore(AbstractMetastore):
                 parent_job_id=parent_job_id,
                 rerun_from_job_id=rerun_from_job_id,
                 run_group_id=run_group_id,
+                is_remote_execution=is_remote_execution,
             ),
             conn=conn,
         )
@@ -2124,6 +2211,73 @@ class AbstractDBMetastore(AbstractMetastore):
     @abstractmethod
     def _checkpoints_insert(self) -> "Insert": ...
 
+    #
+    # Checkpoint Events
+    #
+
+    @staticmethod
+    def _checkpoint_events_columns() -> "list[SchemaItem]":
+        return [
+            Column(
+                "id",
+                Text,
+                default=uuid4,
+                primary_key=True,
+                nullable=False,
+            ),
+            Column("job_id", Text, nullable=False),
+            Column("run_group_id", Text, nullable=True),
+            Column("timestamp", DateTime(timezone=True), nullable=False),
+            Column("event_type", Text, nullable=False),
+            Column("step_type", Text, nullable=False),
+            Column("udf_name", Text, nullable=True),
+            Column("dataset_name", Text, nullable=True),
+            Column("checkpoint_hash", Text, nullable=True),
+            Column("hash_partial", Text, nullable=True),
+            Column("hash_input", Text, nullable=True),
+            Column("hash_output", Text, nullable=True),
+            Column("rows_input", BigInteger, nullable=True),
+            Column("rows_processed", BigInteger, nullable=True),
+            Column("rows_generated", BigInteger, nullable=True),
+            Column("rows_reused", BigInteger, nullable=True),
+            Column("rerun_from_job_id", Text, nullable=True),
+            Column("details", JSON, nullable=True),
+            Index("dc_idx_ce_job_id", "job_id"),
+            Index("dc_idx_ce_run_group_id", "run_group_id"),
+        ]
+
+    @cached_property
+    def _checkpoint_events_fields(self) -> list[str]:
+        return [
+            c.name  # type: ignore[attr-defined]
+            for c in self._checkpoint_events_columns()
+            if isinstance(c, Column)
+        ]
+
+    @cached_property
+    def _checkpoint_events(self) -> "Table":
+        return Table(
+            self.CHECKPOINT_EVENTS_TABLE,
+            self.db.metadata,
+            *self._checkpoint_events_columns(),
+        )
+
+    @abstractmethod
+    def _checkpoint_events_insert(self) -> "Insert": ...
+
+    def _checkpoint_events_select(self, *columns) -> "Select":
+        if not columns:
+            return self._checkpoint_events.select()
+        return select(*columns)
+
+    def _checkpoint_events_query(self):
+        return self._checkpoint_events_select(
+            *[
+                getattr(self._checkpoint_events.c, f)
+                for f in self._checkpoint_events_fields
+            ]
+        )
+
     @classmethod
     def _dataset_version_jobs_columns(cls) -> "list[SchemaItem]":
         """Junction table for dataset versions and jobs many-to-many relationship."""
@@ -2185,10 +2339,8 @@ class AbstractDBMetastore(AbstractMetastore):
         partial: bool = False,
         conn: Any | None = None,
     ) -> Checkpoint:
-        # Use transaction to atomically insert and find checkpoint
-        with self.db.transaction() as tx_conn:
-            conn = conn or tx_conn
-
+        tx = self.db.transaction() if conn is None else nullcontext(conn)
+        with tx as active_conn:
             query = self._checkpoints_insert().values(
                 id=str(uuid4()),
                 job_id=job_id,
@@ -2198,18 +2350,20 @@ class AbstractDBMetastore(AbstractMetastore):
             )
 
             # Use on_conflict_do_nothing to handle race conditions
-            assert hasattr(query, "on_conflict_do_nothing"), (
-                "Database must support on_conflict_do_nothing"
-            )
+            if not hasattr(query, "on_conflict_do_nothing"):
+                raise RuntimeError("Database must support on_conflict_do_nothing")
             query = query.on_conflict_do_nothing(index_elements=["job_id", "hash"])
 
-            self.db.execute(query, conn=conn)
+            self.db.execute(query, conn=active_conn)
 
-            checkpoint = self.find_checkpoint(job_id, _hash, partial=partial, conn=conn)
-            assert checkpoint is not None, (
-                f"Checkpoint should exist after get_or_create for job_id={job_id}, "
-                f"hash={_hash}, partial={partial}"
+            checkpoint = self.find_checkpoint(
+                job_id, _hash, partial=partial, conn=active_conn
             )
+            if checkpoint is None:
+                raise RuntimeError(
+                    f"Checkpoint should exist after get_or_create for job_id={job_id}, "
+                    f"hash={_hash}, partial={partial}"
+                )
             return checkpoint
 
     def list_checkpoints(
@@ -2266,6 +2420,92 @@ class AbstractDBMetastore(AbstractMetastore):
             return None
         return self.checkpoint_class.parse(*rows[0])
 
+    def log_checkpoint_event(  # noqa: PLR0913
+        self,
+        job_id: str,
+        event_type: CheckpointEventType,
+        step_type: CheckpointStepType,
+        run_group_id: str | None = None,
+        udf_name: str | None = None,
+        dataset_name: str | None = None,
+        checkpoint_hash: str | None = None,
+        hash_partial: str | None = None,
+        hash_input: str | None = None,
+        hash_output: str | None = None,
+        rows_input: int | None = None,
+        rows_processed: int | None = None,
+        rows_generated: int | None = None,
+        rows_reused: int | None = None,
+        rerun_from_job_id: str | None = None,
+        details: dict | None = None,
+        conn: Any | None = None,
+    ) -> CheckpointEvent:
+        """Log a checkpoint event."""
+        event_id = str(uuid4())
+        timestamp = datetime.now(timezone.utc)
+
+        query = self._checkpoint_events_insert().values(
+            id=event_id,
+            job_id=job_id,
+            run_group_id=run_group_id,
+            timestamp=timestamp,
+            event_type=event_type.value,
+            step_type=step_type.value,
+            udf_name=udf_name,
+            dataset_name=dataset_name,
+            checkpoint_hash=checkpoint_hash,
+            hash_partial=hash_partial,
+            hash_input=hash_input,
+            hash_output=hash_output,
+            rows_input=rows_input,
+            rows_processed=rows_processed,
+            rows_generated=rows_generated,
+            rows_reused=rows_reused,
+            rerun_from_job_id=rerun_from_job_id,
+            details=details,
+        )
+        self.db.execute(query, conn=conn)
+
+        return CheckpointEvent(
+            id=event_id,
+            job_id=job_id,
+            run_group_id=run_group_id,
+            timestamp=timestamp,
+            event_type=event_type,
+            step_type=step_type,
+            udf_name=udf_name,
+            dataset_name=dataset_name,
+            checkpoint_hash=checkpoint_hash,
+            hash_partial=hash_partial,
+            hash_input=hash_input,
+            hash_output=hash_output,
+            rows_input=rows_input,
+            rows_processed=rows_processed,
+            rows_generated=rows_generated,
+            rows_reused=rows_reused,
+            rerun_from_job_id=rerun_from_job_id,
+            details=details,
+        )
+
+    def get_checkpoint_events(
+        self,
+        job_id: str | None = None,
+        run_group_id: str | None = None,
+        conn: Any | None = None,
+    ) -> Iterator[CheckpointEvent]:
+        """Get checkpoint events, optionally filtered by job_id or run_group_id."""
+        query = self._checkpoint_events_query()
+
+        if job_id is not None:
+            query = query.where(self._checkpoint_events.c.job_id == job_id)
+        if run_group_id is not None:
+            query = query.where(self._checkpoint_events.c.run_group_id == run_group_id)
+
+        query = query.order_by(self._checkpoint_events.c.timestamp)
+        rows = list(self.db.execute(query, conn=conn))
+
+        yield from [self.checkpoint_event_class.parse(*r) for r in rows]
+
     def link_dataset_version_to_job(
         self,
         dataset_version_id: int,
@@ -2301,11 +2541,7 @@ class AbstractDBMetastore(AbstractMetastore):
             self.db.execute(update_query, conn=conn)
 
     def get_ancestor_job_ids(self, job_id: str, conn=None) -> list[str]:
-        # Use recursive CTE to walk up the rerun chain
-        # Format: WITH RECURSIVE ancestors(id, rerun_from_job_id, run_group_id,
-        # depth) AS (...)
-        # Include depth tracking to prevent infinite recursion in case of
-        # circular dependencies
+        """Get all ancestor job IDs using recursive CTE."""
         ancestors_cte = (
             self._jobs_select(
                 self._jobs.c.id.label("id"),
@@ -2317,8 +2553,6 @@ class AbstractDBMetastore(AbstractMetastore):
             .cte(name="ancestors", recursive=True)
         )
 
-        # Recursive part: join with parent jobs, incrementing depth and checking limit
-        # Also ensure we only traverse jobs within the same run_group_id for safety
         ancestors_recursive = ancestors_cte.union_all(
             self._jobs_select(
                 self._jobs.c.id.label("id"),

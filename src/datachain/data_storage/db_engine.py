@@ -1,7 +1,13 @@
 import logging
+import sys
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any, ClassVar
+
+if sys.version_info >= (3, 11):
+    from typing import Self
+else:
+    from typing_extensions import Self
 
 import sqlalchemy as sa
 from sqlalchemy.sql import FROM_LINTING
@@ -29,7 +35,7 @@ class DatabaseEngine(ABC, Serializable):
     engine: "Engine"
     metadata: "MetaData"
 
-    def __enter__(self) -> "DatabaseEngine":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
@@ -81,25 +87,17 @@ class DatabaseEngine(ABC, Serializable):
     ) -> Iterator[tuple[Any, ...]]: ...
 
     def get_table(self, name: str) -> "Table":
+        """Get a table by name, raising TableMissingError if not found."""
         table = self.metadata.tables.get(name)
         if table is None:
             try:
                 sa.Table(name, self.metadata, autoload_with=self.engine)
-                # ^^^ This table may not be correctly initialised on some dialects
-                # Grab it from metadata instead.
                 table = self.metadata.tables.get(name)
                 if table is None:
                     raise TableMissingError(f"Table '{name}' not found")
             except sa.exc.NoSuchTableError as e:
                 raise TableMissingError(f"Table '{name}' not found") from e
         return table
-
-    def list_tables(self, prefix: str = "") -> list[str]:
-        """List tables that start with the given prefix."""
-        all_tables = sa.inspect(self.engine).get_table_names()
-        if not prefix:
-            return all_tables
-        return [table for table in all_tables if table.startswith(prefix)]
 
     @abstractmethod
     def executemany(
@@ -125,6 +123,18 @@ class DatabaseEngine(ABC, Serializable):
         return sa.inspect(self.engine).has_table(name)
 
     @abstractmethod
+    def list_tables(self, prefix: str = "") -> list[str]:
+        """
+        List all table names, optionally filtered by prefix.
+
+        Args:
+            prefix: Optional prefix to filter table names
+
+        Returns:
+            List of table names matching the prefix
+        """
+
+    @abstractmethod
     def create_table(
         self,
         table: "Table",
@@ -135,7 +145,6 @@ class DatabaseEngine(ABC, Serializable):
         """
         Create table. Does nothing if table already exists when if_not_exists=True.
         """
-        ...
 
     @abstractmethod
     def drop_table(self, table: "Table", if_exists: bool = False) -> None: ...

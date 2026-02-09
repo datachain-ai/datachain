@@ -6,17 +6,8 @@ import datachain as dc
 from tests.utils import reset_session_job_state
 
 
-class CustomMapperError(Exception):
-    pass
-
-
-def mapper_fail(num) -> int:
-    raise CustomMapperError("Error")
-
-
 @pytest.fixture(autouse=True)
 def mock_is_script_run(monkeypatch):
-    """Mock is_script_run to return True for stable job names in tests."""
     monkeypatch.setattr("datachain.query.session.is_script_run", lambda: True)
 
 
@@ -147,11 +138,6 @@ def test_generator_output_schema_change_triggers_rerun(test_session, monkeypatch
 
 
 def test_mapper_output_schema_change_triggers_rerun(test_session, monkeypatch):
-    """Test that changing mapper output type triggers re-run from scratch.
-
-    Similar to generator test, but for mappers (1:1 mapping). When output
-    schema changes, the system should detect this and re-run from scratch.
-    """
     processed_nums_v1 = []
     processed_nums_v2 = []
 
@@ -213,7 +199,7 @@ def test_mapper_output_schema_change_triggers_rerun(test_session, monkeypatch):
         (10, 2),  # batch_size=10: Fail after processing 2 partitions
     ],
 )
-def test_aggregator_allways_runs_from_scratch(
+def test_aggregator_always_runs_from_scratch(
     test_session,
     monkeypatch,
     nums_dataset,
@@ -293,62 +279,3 @@ def test_aggregator_allways_runs_from_scratch(
 
     # should re-process everything
     assert second_run_count == 3
-
-
-def test_udf_generator_reset_udf(test_session, monkeypatch):
-    monkeypatch.setenv("DATACHAIN_UDF_CHECKPOINTS_RESET", "true")
-    dc.read_values(num=[1, 2, 3, 4, 5, 6], session=test_session).save("nums")
-    processed_nums = []
-
-    def buggy_generator(num) -> Iterator[int]:
-        processed_nums.append(num)
-        if num == 4:
-            raise Exception(f"Simulated failure on num={num}")
-        yield num * 10
-        yield num * num
-
-    # -------------- FIRST RUN (FAILS WITH BUGGY GENERATOR) -------------------
-    reset_session_job_state()
-
-    chain = dc.read_dataset("nums", session=test_session).settings(batch_size=2)
-
-    with pytest.raises(Exception, match="Simulated failure"):
-        chain.gen(value=buggy_generator, output=int).save("gen_results")
-
-    # -------------- SECOND RUN (FIXED GENERATOR) -------------------
-    reset_session_job_state()
-
-    processed_nums.clear()
-
-    def fixed_generator(num) -> Iterator[int]:
-        processed_nums.append(num)
-        yield num * 10
-        yield num * num
-
-    chain.gen(value=fixed_generator, output=int).save("gen_results")
-
-    # KEY DIFFERENCE: In reset mode, ALL inputs are processed again (not continuing
-    # from partial)
-    # Even though some were processed successfully in first run, we start from scratch
-    assert sorted(processed_nums) == sorted([1, 2, 3, 4, 5, 6])
-
-    result = (
-        dc.read_dataset("gen_results", session=test_session)
-        .order_by("value")
-        .to_list("value")
-    )
-    expected = [
-        (1,),
-        (10,),  # num=1: 1 (1²), 10 (1x10)
-        (4,),
-        (20,),  # num=2: 4 (2²), 20 (2x10)
-        (9,),
-        (30,),  # num=3: 9 (3²), 30 (3x10)
-        (16,),
-        (40,),  # num=4: 16 (4²), 40 (4x10)
-        (25,),
-        (50,),  # num=5: 25 (5²), 50 (5x10)
-        (36,),
-        (60,),  # num=6: 36 (6²), 60 (6x10)
-    ]
-    assert sorted(result) == sorted(expected)
