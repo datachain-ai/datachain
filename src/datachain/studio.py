@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 import sys
 import warnings
@@ -19,6 +20,8 @@ from datachain.dataset import (
 from datachain.error import DataChainError
 from datachain.remote.studio import StudioClient
 from datachain.utils import STUDIO_URL, flatten
+
+logger = logging.getLogger("datachain")
 
 if TYPE_CHECKING:
     from argparse import Namespace
@@ -61,7 +64,6 @@ def process_jobs_args(args: "Namespace"):
             credentials_name=args.credentials_name,
             ignore_checkpoints=args.ignore_checkpoints,
             no_follow=args.no_follow,
-            verbose=args.verbose,
         )
 
     if args.cmd == "cancel":
@@ -368,18 +370,18 @@ async def _show_log_blobs(log_blobs: list[str], client):
             print("\n>>>> Warning: Failed to fetch logs from studio")
 
 
-def _get_job_status(client, job_id: str):
+def _get_job_status(client, job_id: str) -> str | None:
     try:
         response = client.get_jobs(job_id=job_id)
         if response.ok and response.data and len(response.data) > 0:
             return response.data[0].get("status")
     except (requests.RequestException, OSError, KeyError):
-        pass
+        logger.debug("Failed to get job status: %s", job_id)
     return None
 
 
 def show_logs_from_client(  # noqa: C901
-    client, job_id: str, no_follow: bool = False, verbose: bool = False
+    client, job_id: str, no_follow: bool = False
 ):
     async def _run():
         retry_count = 0
@@ -411,12 +413,10 @@ def show_logs_from_client(  # noqa: C901
 
             try:
                 if latest_status and JobStatus[latest_status] in JobStatus.finished():
-                    if verbose:
-                        print(f"Job is in finished status: {latest_status}")
+                    logger.debug("Job is in finished status: %s", latest_status)
                     break
                 if retry_count > RETRY_MAX_TIMES:
-                    if verbose:
-                        print(f"Max retry count reached: {retry_count}")
+                    logger.debug("Max retry count reached: %s", retry_count)
                     break
                 await asyncio.sleep(RETRY_SLEEP_SEC)
                 retry_count += 1
@@ -430,13 +430,11 @@ def show_logs_from_client(  # noqa: C901
     try:
         job_finished = final_status and JobStatus[final_status] in JobStatus.finished()
     except KeyError:
-        if verbose:
-            print(f"Job status is not a valid status: {final_status}")
+        logger.debug("Job status is not a valid status: %s", final_status)
         job_finished = False
 
     if not job_finished:
-        if verbose:
-            print(f"Job is not finished: {final_status or 'unknown'}.")
+        logger.debug("Job is not finished: %s.", final_status or "unknown")
         print(f"\n>>>> Lost connection. Job status: {final_status or 'unknown'}.")
         return 1
 
@@ -482,7 +480,6 @@ def create_job(  # noqa: PLR0913
     credentials_name: str | None = None,
     ignore_checkpoints: bool = False,
     no_follow: bool = False,
-    verbose: bool = False,
 ):
     catalog = get_catalog()
 
@@ -577,7 +574,7 @@ def create_job(  # noqa: PLR0913
         0
         if no_wait
         else show_logs_from_client(
-            client=client, job_id=str(job_id), no_follow=no_follow, verbose=verbose
+            client=client, job_id=str(job_id), no_follow=no_follow
         )
     )
 
