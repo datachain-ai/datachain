@@ -920,6 +920,13 @@ class Catalog:
 
         if create_rows_table:
             table_name = self.warehouse.dataset_table_name(dataset, version)
+            # Drop orphaned table from a previous failed run if present
+            if self.warehouse.db.has_table(table_name):
+                logger.warning(
+                    "Orphaned table '%s' found, dropping before creating new version",
+                    table_name,
+                )
+                self.warehouse.drop_dataset_rows_table(dataset, version)
             self.warehouse.create_dataset_rows_table(table_name, columns=columns)
             self.update_dataset_version_with_warehouse_info(dataset, version)
 
