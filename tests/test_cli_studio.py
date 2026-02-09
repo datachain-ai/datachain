@@ -855,7 +855,7 @@ def test_studio_run_tail_job_logs_filters_ping_and_no_follow(
             msg = messages[call_index]
             call_index += 1
             return msg
-        raise websockets.exceptions.ConnectionClosed(None, None)
+        raise websockets.exceptions.ConnectionClosed("Connection closed")
 
     captured_url = {}
 
