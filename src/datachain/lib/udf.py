@@ -208,7 +208,7 @@ class UDFBase(AbstractUDF):
         For class-based UDFs, hashes the process method.
         """
         # Hash user code: either _func (function-based) or process method (class-based)
-        func_to_hash = self._func if self._func else self.process
+        func_to_hash = self._func or self.process
 
         parts = [
             hash_callable(func_to_hash),

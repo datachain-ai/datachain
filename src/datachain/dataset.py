@@ -339,7 +339,7 @@ class DatasetVersion:
     def preview(self) -> list[dict] | None:
         if isinstance(self._preview_data, str):
             return json.loads(self._preview_data)
-        return self._preview_data if self._preview_data else None
+        return self._preview_data or None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "DatasetVersion":
