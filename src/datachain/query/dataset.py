@@ -1076,7 +1076,8 @@ class UDFStep(Step, ABC):
         self, partial_hash: str, hash_output: str, hash_input: str, query
     ) -> tuple["Table", "Table"]:
         """Execute UDF from scratch. Returns (output_table, input_table)."""
-        print(f"UDF '{self._udf_name}': Running from scratch")
+        if self.job.rerun_from_job_id:
+            print(f"UDF '{self._udf_name}': Running from scratch")
         logger.info(
             "UDF(%s) [job=%s run_group=%s]: Running from scratch",
             self._udf_name,
