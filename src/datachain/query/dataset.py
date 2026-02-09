@@ -961,7 +961,7 @@ class UDFStep(Step, ABC):
         hash_input: str,
         hash_output: str,
     ) -> "StepResult":
-        _query = query = query_generator.select()
+        query = query_generator.select()
 
         # Calculate partial hash that includes output schema
         # This allows continuing from partial when only code changes (bug fix),
