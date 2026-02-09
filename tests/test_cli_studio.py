@@ -752,6 +752,7 @@ def test_studio_run_websocket_disconnect_fetches_status_via_rest(
 
     out = capsys.readouterr().out
     assert ">>>> Job is now in RUNNING status." in out
+    assert ">>>> Job is now in COMPLETE status." in out
     assert ">>>> Dataset versions created during the job:" in out
 
 

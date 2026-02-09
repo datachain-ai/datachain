@@ -408,6 +408,8 @@ def show_logs_from_client(  # noqa: C901
 
             # After websocket closes, check actual job status via REST
             rest_status = _get_job_status(client, job_id)
+            if rest_status and rest_status != latest_status:
+                print(f"\n>>>> Job is now in {rest_status} status.")
             if rest_status:
                 latest_status = rest_status
 
