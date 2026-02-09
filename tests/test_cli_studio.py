@@ -430,7 +430,8 @@ def test_studio_run(capsys, mocker, tmp_dir):
     assert (
         out.strip()
         == f"Job {job_id} created\nOpen the job in Studio at https://example.com\n"
-        "========================================\n\n\n"
+        "========================================\n\n"
+        ">>>> Job is now in COMPLETE status.\n\n\n"
         ">>>> Dataset versions created during the job:\n"
         "    - dataset_name@v1.0.0"
     )
