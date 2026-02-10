@@ -297,7 +297,9 @@ class StudioClient:
 
         return msgpack.ExtType(code, data)
 
-    async def tail_job_logs(self, job_id: str) -> AsyncIterator[dict]:
+    async def tail_job_logs(
+        self, job_id: str, no_follow: bool = False
+    ) -> AsyncIterator[dict]:
         """
         Follow job logs via websocket connection.
 
@@ -312,6 +314,8 @@ class StudioClient:
             parsed_url._replace(scheme="wss" if parsed_url.scheme == "https" else "ws")
         )
         ws_url = f"{ws_url}/logs/follow/?job_id={job_id}&team_name={self.team}"
+        if no_follow:
+            ws_url += "&no_follow=true"
 
         async with websockets.connect(
             ws_url,
@@ -321,7 +325,8 @@ class StudioClient:
                 try:
                     message = await websocket.recv()
                     data = json.loads(message)
-
+                    if data.get("type") == "ping":
+                        continue
                     # Yield the parsed message data
                     yield data
 

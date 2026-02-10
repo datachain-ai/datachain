@@ -970,7 +970,7 @@ class UDFStep(Step, ABC):
         hash_input: str,
         hash_output: str,
     ) -> "StepResult":
-        _query = query = query_generator.select()
+        query = query_generator.select()
 
         # Calculate partial hash that includes output schema
         # This allows continuing from partial when only code changes (bug fix),
@@ -1097,7 +1097,6 @@ class UDFStep(Step, ABC):
         self, partial_hash: str, hash_output: str, hash_input: str, query
     ) -> tuple["Table", "Table"]:
         """Execute UDF from scratch. Returns (output_table, input_table)."""
-        print(f"UDF '{self._udf_name}': Running from scratch")
         logger.info(
             "UDF(%s) [job=%s run_group=%s]: Running from scratch",
             self._udf_name,

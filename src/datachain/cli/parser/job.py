@@ -123,6 +123,11 @@ def add_jobs_parser(subparsers, parent_parser) -> None:
         help="Do not wait for the job to finish",
     )
     studio_run_parser.add_argument(
+        "--no-follow",
+        action="store_true",
+        help="Do not print the job logs to the console",
+    )
+    studio_run_parser.add_argument(
         "--ignore-checkpoints",
         action="store_true",
         help="Ignore existing checkpoints and run from scratch",
