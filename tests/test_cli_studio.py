@@ -1,7 +1,12 @@
+import json
+import logging
+import re
+import uuid
 from datetime import datetime
 from unittest.mock import MagicMock
 
 import pytest
+import requests
 import requests_mock
 import websockets
 from dvc_studio_client.auth import AuthorizationExpiredError
@@ -370,6 +375,10 @@ def test_studio_run(capsys, mocker, tmp_dir):
             json={"id": job_id, "url": "https://example.com"},
         )
         m.get(
+            f"{STUDIO_URL}/api/datachain/jobs/",
+            json=[{"status": "COMPLETE"}],
+        )
+        m.get(
             f"{STUDIO_URL}/api/datachain/datasets/dataset_job_versions?job_id={job_id}&team_name=team_name",
             json={
                 "dataset_versions": [
@@ -421,7 +430,8 @@ def test_studio_run(capsys, mocker, tmp_dir):
     assert (
         out.strip()
         == f"Job {job_id} created\nOpen the job in Studio at https://example.com\n"
-        "========================================\n\n\n"
+        "========================================\n\n"
+        ">>>> Job is now in COMPLETE status.\n\n\n"
         ">>>> Dataset versions created during the job:\n"
         "    - dataset_name@v1.0.0"
     )
@@ -576,6 +586,10 @@ def test_studio_run_reuses_previous_job_for_checkpoints(
             },
         )
         m.get(
+            f"{STUDIO_URL}/api/datachain/jobs/",
+            json=[{"status": "COMPLETE"}],
+        )
+        m.get(
             f"{STUDIO_URL}/api/datachain/datasets/dataset_job_versions?job_id={first_job_id}&team_name=team_name",
             json={"dataset_versions": []},
         )
@@ -633,32 +647,29 @@ def test_studio_run_reuses_previous_job_for_checkpoints(
     "status,expected_exit_code", [("FAILED", 1), ("CANCELED", 2), ("COMPLETE", 0)]
 )
 def test_studio_run_non_zero_exit_code(
-    capsys, mocker, tmp_dir, status, expected_exit_code
+    capsys, mocker, tmp_dir, status, expected_exit_code, studio_token
 ):
-    import uuid
-
     job_id = str(uuid.uuid4())
 
     # Mock tail_job_logs to return a status
-    async def mock_tail_job_logs(jid):
-        # Simulate some log messages
+    async def mock_tail_job_logs(jid, no_follow=False):
         yield {"logs": [{"message": "Starting job...\n"}]}
         yield {"logs": [{"message": "Processing data...\n"}]}
-        # Return failed status
         yield {"job": {"status": status}}
 
     mocker.patch(
-        "datachain.remote.studio.StudioClient.tail_job_logs",
+        "datachain.studio.StudioClient.tail_job_logs",
         side_effect=mock_tail_job_logs,
     )
-
-    with Config(ConfigLevel.GLOBAL).edit() as conf:
-        conf["studio"] = {"token": "isat_access_token", "team": "team_name"}
 
     with requests_mock.mock() as m:
         m.post(
             f"{STUDIO_URL}/api/datachain/jobs/",
             json={"id": job_id, "url": "https://example.com"},
+        )
+        m.get(
+            re.compile(rf"^{re.escape(STUDIO_URL)}/api/datachain/jobs/"),
+            json=[{"status": status}],
         )
         m.get(
             f"{STUDIO_URL}/api/datachain/datasets/dataset_job_versions?job_id={job_id}&team_name=team_name",
@@ -694,3 +705,472 @@ def test_studio_run_non_zero_exit_code(
         ">>>> Dataset versions created during the job:\n"
         "    - dataset_name@v1.0.0"
     )
+
+
+def test_studio_run_websocket_disconnect_fetches_status_via_rest(
+    capsys, mocker, tmp_dir, studio_token
+):
+    job_id = str(uuid.uuid4())
+
+    async def mock_tail_job_logs(jid, no_follow=False):
+        yield {"logs": [{"message": "Starting job...\n"}]}
+        yield {"job": {"status": "RUNNING"}}
+
+    mocker.patch(
+        "datachain.studio.StudioClient.tail_job_logs",
+        side_effect=mock_tail_job_logs,
+    )
+
+    with requests_mock.mock() as m:
+        m.post(
+            f"{STUDIO_URL}/api/datachain/jobs/",
+            json={"id": job_id, "url": "https://example.com"},
+        )
+        m.get(
+            re.compile(rf"^{re.escape(STUDIO_URL)}/api/datachain/jobs/"),
+            json=[{"status": "COMPLETE"}],
+        )
+        m.get(
+            f"{STUDIO_URL}/api/datachain/datasets/dataset_job_versions?job_id={job_id}&team_name=team_name",
+            json={
+                "dataset_versions": [
+                    {"dataset_name": "test_dataset", "version": "1.0.0"}
+                ]
+            },
+        )
+
+        (tmp_dir / "example_query.py").write_text("print(1)")
+
+        exit_code = main(
+            [
+                "job",
+                "run",
+                "example_query.py",
+            ]
+        )
+
+        assert exit_code == 0
+
+    out = capsys.readouterr().out
+    assert ">>>> Job is now in RUNNING status." in out
+    assert ">>>> Job is now in COMPLETE status." in out
+    assert ">>>> Dataset versions created during the job:" in out
+
+
+def test_studio_run_websocket_disconnect_job_still_running(
+    capsys, mocker, tmp_dir, studio_token
+):
+    job_id = str(uuid.uuid4())
+
+    async def mock_tail_job_logs(jid, no_follow=False):
+        yield {"logs": [{"message": "Starting job...\n"}]}
+        yield {"job": {"status": "RUNNING"}}
+
+    mocker.patch(
+        "datachain.studio.StudioClient.tail_job_logs",
+        side_effect=mock_tail_job_logs,
+    )
+
+    mocker.patch("datachain.studio.RETRY_MAX_TIMES", 0)
+    mocker.patch("datachain.studio.RETRY_SLEEP_SEC", 0.01)
+
+    with requests_mock.mock() as m:
+        m.post(
+            f"{STUDIO_URL}/api/datachain/jobs/",
+            json={"id": job_id, "url": "https://example.com"},
+        )
+        m.get(
+            re.compile(rf"^{re.escape(STUDIO_URL)}/api/datachain/jobs/"),
+            json=[{"status": "RUNNING"}],
+        )
+
+        (tmp_dir / "example_query.py").write_text("print(1)")
+
+        exit_code = main(
+            [
+                "job",
+                "run",
+                "example_query.py",
+            ]
+        )
+
+        # Should return 1 because job is still running (lost connection)
+        assert exit_code == 1
+
+    out = capsys.readouterr().out
+    assert ">>>> Job is now in RUNNING status." in out
+    assert ">>>> Lost connection." in out
+    # Should NOT show dataset versions since job didn't complete
+    assert ">>>> Dataset versions created during the job:" not in out
+
+
+def test_studio_run_invalid_job_status(caplog, capsys, mocker, tmp_dir, studio_token):
+    job_id = str(uuid.uuid4())
+
+    async def mock_tail_job_logs(jid, no_follow=False):
+        yield {"job": {"status": "INVALID_STATUS"}}
+
+    mocker.patch(
+        "datachain.studio.StudioClient.tail_job_logs",
+        side_effect=mock_tail_job_logs,
+    )
+
+    with requests_mock.mock() as m:
+        m.post(
+            f"{STUDIO_URL}/api/datachain/jobs/",
+            json={"id": job_id, "url": "https://example.com"},
+        )
+        m.get(
+            re.compile(rf"^{re.escape(STUDIO_URL)}/api/datachain/jobs/"),
+            json=[{"status": "INVALID_STATUS"}],
+        )
+
+        (tmp_dir / "example_query.py").write_text("print(1)")
+
+        with caplog.at_level(logging.DEBUG, logger="datachain"):
+            exit_code = main(["job", "run", "-v", "example_query.py"])
+
+        assert exit_code == 1
+
+    assert "Job status is not a valid status: INVALID_STATUS" in caplog.text
+    assert "Job is not finished: INVALID_STATUS" in caplog.text
+    out = capsys.readouterr().out
+    assert ">>>> Lost connection." in out
+
+
+def test_studio_run_tail_job_logs_filters_ping_and_no_follow(
+    capsys, mocker, tmp_dir, studio_token
+):
+    job_id = str(uuid.uuid4())
+    messages = [
+        json.dumps({"type": "ping"}),
+        json.dumps({"logs": [{"message": "Real log\n"}]}),
+        json.dumps({"job": {"status": "COMPLETE"}}),
+    ]
+    call_index = 0
+
+    async def mock_recv():
+        nonlocal call_index
+        if call_index < len(messages):
+            msg = messages[call_index]
+            call_index += 1
+            return msg
+        raise websockets.exceptions.ConnectionClosed("Connection closed")
+
+    captured_url = {}
+
+    class FakeWebsocket:
+        recv = staticmethod(mock_recv)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+    def mock_connect(url, additional_headers):
+        captured_url["url"] = url
+        return FakeWebsocket()
+
+    mocker.patch("datachain.remote.studio.websockets.connect", side_effect=mock_connect)
+
+    with requests_mock.mock() as m:
+        m.post(
+            f"{STUDIO_URL}/api/datachain/jobs/",
+            json={"id": job_id, "url": "https://example.com"},
+        )
+        m.get(
+            re.compile(rf"^{re.escape(STUDIO_URL)}/api/datachain/jobs/"),
+            json=[{"status": "COMPLETE"}],
+        )
+        m.get(
+            f"{STUDIO_URL}/api/datachain/datasets/dataset_job_versions?job_id={job_id}&team_name=team_name",
+            json={"dataset_versions": []},
+        )
+
+        (tmp_dir / "example_query.py").write_text("print(1)")
+
+        exit_code = main(["job", "run", "--no-follow", "example_query.py"])
+
+        assert exit_code == 0
+
+    assert "no_follow=true" in captured_url["url"]
+    out = capsys.readouterr().out
+    assert "ping" not in out
+    assert "COMPLETE" in out
+
+
+def test_studio_run_verbose_finished_status(caplog, mocker, tmp_dir, studio_token):
+    job_id = str(uuid.uuid4())
+
+    async def mock_tail_job_logs(jid, no_follow=False):
+        yield {"job": {"status": "COMPLETE"}}
+
+    mocker.patch(
+        "datachain.studio.StudioClient.tail_job_logs",
+        side_effect=mock_tail_job_logs,
+    )
+
+    with requests_mock.mock() as m:
+        m.post(
+            f"{STUDIO_URL}/api/datachain/jobs/",
+            json={"id": job_id, "url": "https://example.com"},
+        )
+        m.get(
+            re.compile(rf"^{re.escape(STUDIO_URL)}/api/datachain/jobs/"),
+            json=[{"status": "COMPLETE"}],
+        )
+        m.get(
+            f"{STUDIO_URL}/api/datachain/datasets/dataset_job_versions?job_id={job_id}&team_name=team_name",
+            json={"dataset_versions": []},
+        )
+
+        (tmp_dir / "example_query.py").write_text("print(1)")
+
+        with caplog.at_level(logging.DEBUG, logger="datachain"):
+            exit_code = main(["job", "run", "-v", "example_query.py"])
+
+        assert exit_code == 0
+
+    assert "Job is in finished status: COMPLETE" in caplog.text
+
+
+def test_studio_run_verbose_max_retry(caplog, capsys, mocker, tmp_dir, studio_token):
+    job_id = str(uuid.uuid4())
+
+    async def mock_tail_job_logs(jid, no_follow=False):
+        yield {"job": {"status": "RUNNING"}}
+
+    mocker.patch(
+        "datachain.studio.StudioClient.tail_job_logs",
+        side_effect=mock_tail_job_logs,
+    )
+    mocker.patch("datachain.studio.RETRY_MAX_TIMES", 0)
+    mocker.patch("datachain.studio.RETRY_SLEEP_SEC", 0.01)
+
+    with requests_mock.mock() as m:
+        m.post(
+            f"{STUDIO_URL}/api/datachain/jobs/",
+            json={"id": job_id, "url": "https://example.com"},
+        )
+        m.get(
+            re.compile(rf"^{re.escape(STUDIO_URL)}/api/datachain/jobs/"),
+            json=[{"status": "RUNNING"}],
+        )
+
+        (tmp_dir / "example_query.py").write_text("print(1)")
+
+        with caplog.at_level(logging.DEBUG, logger="datachain"):
+            exit_code = main(["job", "run", "-v", "example_query.py"])
+
+        assert exit_code == 1
+
+    assert "Max retry count reached:" in caplog.text
+    assert "Job is not finished: RUNNING." in caplog.text
+
+
+def test_studio_run_log_blobs(capsys, mocker, tmp_dir, studio_token):
+    job_id = str(uuid.uuid4())
+
+    async def mock_tail_job_logs(jid, no_follow=False):
+        yield {"log_blobs": ["https://example.com/blob1"]}
+        yield {"job": {"status": "COMPLETE"}}
+
+    mocker.patch(
+        "datachain.studio.StudioClient.tail_job_logs",
+        side_effect=mock_tail_job_logs,
+    )
+    mocker.patch(
+        "datachain.studio._fetch_log_blob",
+        return_value="fetched log content\n",
+    )
+
+    with requests_mock.mock() as m:
+        m.post(
+            f"{STUDIO_URL}/api/datachain/jobs/",
+            json={"id": job_id, "url": "https://example.com"},
+        )
+        m.get(
+            re.compile(rf"^{re.escape(STUDIO_URL)}/api/datachain/jobs/"),
+            json=[{"status": "COMPLETE"}],
+        )
+        m.get(
+            f"{STUDIO_URL}/api/datachain/datasets/dataset_job_versions?job_id={job_id}&team_name=team_name",
+            json={"dataset_versions": []},
+        )
+
+        (tmp_dir / "example_query.py").write_text("print(1)")
+
+        exit_code = main(["job", "run", "example_query.py"])
+
+        assert exit_code == 0
+
+    out = capsys.readouterr().out
+    assert "fetched log content" in out
+
+
+def test_studio_run_log_blobs_fetch_failure(capsys, mocker, tmp_dir, studio_token):
+    job_id = str(uuid.uuid4())
+
+    async def mock_tail_job_logs(jid, no_follow=False):
+        yield {"log_blobs": ["https://example.com/blob1"]}
+        yield {"job": {"status": "COMPLETE"}}
+
+    mocker.patch(
+        "datachain.studio.StudioClient.tail_job_logs",
+        side_effect=mock_tail_job_logs,
+    )
+    mocker.patch(
+        "datachain.studio._fetch_log_blob",
+        side_effect=requests.RequestException("connection error"),
+    )
+
+    with requests_mock.mock() as m:
+        m.post(
+            f"{STUDIO_URL}/api/datachain/jobs/",
+            json={"id": job_id, "url": "https://example.com"},
+        )
+        m.get(
+            re.compile(rf"^{re.escape(STUDIO_URL)}/api/datachain/jobs/"),
+            json=[{"status": "COMPLETE"}],
+        )
+        m.get(
+            f"{STUDIO_URL}/api/datachain/datasets/dataset_job_versions?job_id={job_id}&team_name=team_name",
+            json={"dataset_versions": []},
+        )
+
+        (tmp_dir / "example_query.py").write_text("print(1)")
+
+        exit_code = main(["job", "run", "example_query.py"])
+
+        assert exit_code == 0
+
+    out = capsys.readouterr().out
+    assert "Warning: Failed to fetch logs from studio" in out
+
+
+def test_studio_get_job_status_exception_returns_none(mocker):
+    from datachain.studio import _get_job_status
+
+    client = mocker.MagicMock()
+    client.get_jobs.side_effect = requests.RequestException("fail")
+    assert _get_job_status(client, "some-job-id") is None
+
+
+def test_studio_get_job_status_empty_data_returns_none(mocker):
+    from datachain.studio import _get_job_status
+
+    client = mocker.MagicMock()
+    response = mocker.MagicMock()
+    response.ok = True
+    response.data = []
+    client.get_jobs.return_value = response
+    assert _get_job_status(client, "some-job-id") is None
+
+
+def test_studio_run_rest_status_none(capsys, mocker, tmp_dir, studio_token):
+    job_id = str(uuid.uuid4())
+
+    async def mock_tail_job_logs(jid, no_follow=False):
+        yield {"job": {"status": "COMPLETE"}}
+
+    mocker.patch(
+        "datachain.studio.StudioClient.tail_job_logs",
+        side_effect=mock_tail_job_logs,
+    )
+    mocker.patch("datachain.studio._get_job_status", return_value=None)
+
+    with requests_mock.mock() as m:
+        m.post(
+            f"{STUDIO_URL}/api/datachain/jobs/",
+            json={"id": job_id, "url": "https://example.com"},
+        )
+        m.get(
+            f"{STUDIO_URL}/api/datachain/datasets/dataset_job_versions?job_id={job_id}&team_name=team_name",
+            json={"dataset_versions": []},
+        )
+
+        (tmp_dir / "example_query.py").write_text("print(1)")
+
+        exit_code = main(["job", "run", "example_query.py"])
+
+        assert exit_code == 0
+
+
+def test_studio_run_dataset_versions_error(capsys, mocker, tmp_dir, studio_token):
+    job_id = str(uuid.uuid4())
+
+    async def mock_tail_job_logs(jid, no_follow=False):
+        yield {"job": {"status": "COMPLETE"}}
+
+    mocker.patch(
+        "datachain.studio.StudioClient.tail_job_logs",
+        side_effect=mock_tail_job_logs,
+    )
+
+    with requests_mock.mock() as m:
+        m.post(
+            f"{STUDIO_URL}/api/datachain/jobs/",
+            json={"id": job_id, "url": "https://example.com"},
+        )
+        m.get(
+            re.compile(rf"^{re.escape(STUDIO_URL)}/api/datachain/jobs/"),
+            json=[{"status": "COMPLETE"}],
+        )
+        m.get(
+            f"{STUDIO_URL}/api/datachain/datasets/dataset_job_versions?job_id={job_id}&team_name=team_name",
+            json={"message": "Internal error"},
+            status_code=500,
+        )
+
+        (tmp_dir / "example_query.py").write_text("print(1)")
+
+        exit_code = main(["job", "run", "example_query.py"])
+
+        assert exit_code == 1
+
+    out = capsys.readouterr().err
+    assert "Internal error" in out or "Error" in out
+
+
+def test_studio_run_task_status_returns_zero(capsys, mocker, tmp_dir, studio_token):
+    job_id = str(uuid.uuid4())
+
+    async def mock_tail_job_logs(jid, no_follow=False):
+        yield {"job": {"status": "TASK"}}
+
+    mocker.patch(
+        "datachain.studio.StudioClient.tail_job_logs",
+        side_effect=mock_tail_job_logs,
+    )
+
+    with requests_mock.mock() as m:
+        m.post(
+            f"{STUDIO_URL}/api/datachain/jobs/",
+            json={"id": job_id, "url": "https://example.com"},
+        )
+        m.get(
+            re.compile(rf"^{re.escape(STUDIO_URL)}/api/datachain/jobs/"),
+            json=[{"status": "TASK"}],
+        )
+        m.get(
+            f"{STUDIO_URL}/api/datachain/datasets/dataset_job_versions?job_id={job_id}&team_name=team_name",
+            json={"dataset_versions": []},
+        )
+
+        (tmp_dir / "example_query.py").write_text("print(1)")
+
+        exit_code = main(["job", "run", "example_query.py"])
+
+        assert exit_code == 0
+
+
+def test_unpacker_hook_unknown_ext_type():
+    import msgpack
+
+    from datachain.remote.studio import StudioClient
+
+    result = StudioClient._unpacker_hook(99, b"\x01\x02\x03")
+    assert isinstance(result, msgpack.ExtType)
+    assert result.code == 99
+    assert result.data == b"\x01\x02\x03"
