@@ -3,6 +3,7 @@ from collections.abc import Iterator
 import pytest
 
 import datachain as dc
+from datachain.lib.file import File
 from tests.utils import reset_session_job_state
 
 
@@ -513,3 +514,55 @@ def test_multiple_udf_chain_continue(test_session):
     assert sorted([v[0] for v in result]) == sorted(
         [2, 2, 4, 4, 6, 6, 8, 8, 10, 10, 12, 12]
     )
+
+
+def test_file_udf_continue_from_partial(test_session, tmp_dir):
+    """Test checkpoint continuation with File objects (file downloading UDFs).
+
+    Ensures that File objects are correctly reconstructed from the checkpoint's
+    input table on the second run (regression test for bytes vs str path issue).
+    """
+    # Create test files
+    file_names = [f"file_{i}.txt" for i in range(6)]
+    for name in file_names:
+        (tmp_dir / name).write_text(f"content of {name}", encoding="utf-8")
+
+    processed_files = []
+
+    def process_file(file: File) -> int:
+        if len(processed_files) >= 3:
+            raise Exception("Simulated failure after 3 files")
+        data = file.read()
+        processed_files.append(file.path)
+        return len(data)
+
+    chain = (
+        dc.read_storage(tmp_dir.as_uri(), session=test_session)
+        .order_by("file.path")
+        .settings(batch_size=2)
+    )
+
+    # -------------- FIRST RUN (FAILS AFTER 3 FILES) -------------------
+    reset_session_job_state()
+
+    with pytest.raises(Exception, match="Simulated failure after 3 files"):
+        chain.map(file_size=process_file).save("file_results")
+
+    assert len(processed_files) == 3
+
+    # -------------- SECOND RUN (CONTINUES FROM CHECKPOINT) -------------------
+    reset_session_job_state()
+    processed_files.clear()
+
+    def process_file_fixed(file: File) -> int:
+        data = file.read()
+        processed_files.append(file.path)
+        return len(data)
+
+    chain.map(file_size=process_file_fixed).save("file_results")
+
+    result = dc.read_dataset("file_results", session=test_session).to_list("file_size")
+    assert len(result) == 6
+
+    # Second run should only process remaining files
+    assert 0 < len(processed_files) <= 6
