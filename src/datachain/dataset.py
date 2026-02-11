@@ -193,11 +193,7 @@ class DatasetDependency:
             namespace_name,
             project_name,
             dataset_name,
-            (
-                dataset_version  # type: ignore[arg-type]
-                if dataset_version
-                else None
-            ),
+            dataset_version or None,  # type: ignore[arg-type]
             dataset_version_created_at,  # type: ignore[arg-type]
             [],
         )

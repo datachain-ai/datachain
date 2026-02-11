@@ -118,13 +118,13 @@ def test_udf_verbose_name_func():
 
 
 def test_udf_verbose_name_lambda():
-    sign = get_sign(lambda key: len(key), output="res")
+    sign = get_sign(len, output="res")
     udf = UDFBase._create(sign, sign.output_schema)
-    assert udf.verbose_name == "<lambda>"
+    assert udf.verbose_name == "len"
 
 
 def test_udf_verbose_name_unknown():
-    sign = get_sign(lambda key: len(key), output="res")
+    sign = get_sign(len, output="res")
     udf = UDFBase._create(sign, sign.output_schema)
     udf._func = None
     assert udf.verbose_name == "<unknown>"

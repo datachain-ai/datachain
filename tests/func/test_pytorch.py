@@ -33,7 +33,7 @@ def fake_dataset(catalog, fake_image_dir):
         dc.read_storage(uri, type="image")
         .settings(prefetch=0, cache=False)
         .map(text=lambda file: file.parent.split("/")[-1], output=str)
-        .map(label=lambda text: int(text), output=int)
+        .map(label=int, output=int)
         .save("fake")
     )
 

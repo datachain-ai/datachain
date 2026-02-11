@@ -162,34 +162,26 @@ class Func(Function):  # noqa: PLW1641
     def __truediv__(self, other: ColT | float) -> "Func":
         if isinstance(other, (int, float)):
             return Func("div", lambda a: _truediv(a, other), [self], result_type=float)
-        return Func(
-            "div", lambda a1, a2: _truediv(a1, a2), [self, other], result_type=float
-        )
+        return Func("div", _truediv, [self, other], result_type=float)
 
     def __rtruediv__(self, other: ColT | float) -> "Func":
         if isinstance(other, (int, float)):
             return Func("div", lambda a: _truediv(other, a), [self], result_type=float)
-        return Func(
-            "div", lambda a1, a2: _truediv(a1, a2), [other, self], result_type=float
-        )
+        return Func("div", _truediv, [other, self], result_type=float)
 
     def __floordiv__(self, other: ColT | float) -> "Func":
         if isinstance(other, (int, float)):
             return Func(
                 "floordiv", lambda a: _floordiv(a, other), [self], result_type=int
             )
-        return Func(
-            "floordiv", lambda a1, a2: _floordiv(a1, a2), [self, other], result_type=int
-        )
+        return Func("floordiv", _floordiv, [self, other], result_type=int)
 
     def __rfloordiv__(self, other: ColT | float) -> "Func":
         if isinstance(other, (int, float)):
             return Func(
                 "floordiv", lambda a: _floordiv(other, a), [self], result_type=int
             )
-        return Func(
-            "floordiv", lambda a1, a2: _floordiv(a1, a2), [other, self], result_type=int
-        )
+        return Func("floordiv", _floordiv, [other, self], result_type=int)
 
     def __mod__(self, other: ColT | float) -> "Func":
         if isinstance(other, (int, float)):
@@ -208,7 +200,7 @@ class Func(Function):  # noqa: PLW1641
             )
         return Func(
             "and",
-            lambda a1, a2: numeric.bit_and(a1, a2),
+            numeric.bit_and,
             [self, other],
             result_type=int,
         )
@@ -220,7 +212,7 @@ class Func(Function):  # noqa: PLW1641
             )
         return Func(
             "and",
-            lambda a1, a2: numeric.bit_and(a1, a2),
+            numeric.bit_and,
             [other, self],
             result_type=int,
         )
@@ -230,18 +222,14 @@ class Func(Function):  # noqa: PLW1641
             return Func(
                 "or", lambda a: numeric.bit_or(a, other), [self], result_type=int
             )
-        return Func(
-            "or", lambda a1, a2: numeric.bit_or(a1, a2), [self, other], result_type=int
-        )
+        return Func("or", numeric.bit_or, [self, other], result_type=int)
 
     def __ror__(self, other: ColT | float) -> "Func":
         if isinstance(other, (int, float)):
             return Func(
                 "or", lambda a: numeric.bit_or(other, a), [self], result_type=int
             )
-        return Func(
-            "or", lambda a1, a2: numeric.bit_or(a1, a2), [other, self], result_type=int
-        )
+        return Func("or", numeric.bit_or, [other, self], result_type=int)
 
     def __xor__(self, other: ColT | float) -> "Func":
         if isinstance(other, (int, float)):
@@ -250,7 +238,7 @@ class Func(Function):  # noqa: PLW1641
             )
         return Func(
             "xor",
-            lambda a1, a2: numeric.bit_xor(a1, a2),
+            numeric.bit_xor,
             [self, other],
             result_type=int,
         )
@@ -262,7 +250,7 @@ class Func(Function):  # noqa: PLW1641
             )
         return Func(
             "xor",
-            lambda a1, a2: numeric.bit_xor(a1, a2),
+            numeric.bit_xor,
             [other, self],
             result_type=int,
         )
@@ -277,7 +265,7 @@ class Func(Function):  # noqa: PLW1641
             )
         return Func(
             "rshift",
-            lambda a1, a2: numeric.bit_rshift(a1, a2),
+            numeric.bit_rshift,
             [self, other],
             result_type=int,
         )
@@ -292,7 +280,7 @@ class Func(Function):  # noqa: PLW1641
             )
         return Func(
             "rshift",
-            lambda a1, a2: numeric.bit_rshift(a1, a2),
+            numeric.bit_rshift,
             [other, self],
             result_type=int,
         )
@@ -307,7 +295,7 @@ class Func(Function):  # noqa: PLW1641
             )
         return Func(
             "lshift",
-            lambda a1, a2: numeric.bit_lshift(a1, a2),
+            numeric.bit_lshift,
             [self, other],
             result_type=int,
         )
@@ -322,7 +310,7 @@ class Func(Function):  # noqa: PLW1641
             )
         return Func(
             "lshift",
-            lambda a1, a2: numeric.bit_lshift(a1, a2),
+            numeric.bit_lshift,
             [other, self],
             result_type=int,
         )
