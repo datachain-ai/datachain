@@ -662,7 +662,7 @@ def test_pull_failure_after_saving_leaves_incomplete_version_and_retry_succeeds(
     )
 
     captured = capsys.readouterr()
-    assert "Cleaning up incomplete dataset version" in captured.out
+    assert "Cleaning up stale existing dataset version" in captured.out
 
     dataset = catalog.get_dataset(
         "dogs",

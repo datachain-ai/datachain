@@ -81,6 +81,10 @@ def get_retry_sleep_sec(retry_count: int) -> int:
     return RETRY_START_SEC * (RETRY_FACTOR**retry_count)
 
 
+SQLITE_BUSY = 5
+SQLITE_LOCKED = 6
+
+
 def retry_sqlite_locks(func):
     # This retries the database modification in case of concurrent access
     @wraps(func)
@@ -90,6 +94,8 @@ def retry_sqlite_locks(func):
             try:
                 return func(*args, **kwargs)
             except sqlite3.OperationalError as operror:
+                if operror.sqlite_errorcode not in (SQLITE_BUSY, SQLITE_LOCKED):
+                    raise  # permanent error, don't retry
                 exc = operror
                 sleep(get_retry_sleep_sec(retry_count))
         raise exc
@@ -154,14 +160,22 @@ class SQLiteDatabaseEngine(DatabaseEngine):
             # ensure we run SA on_connect init (e.g it registers regexp function),
             # also makes sure that it's consistent. Otherwise in some cases it
             # seems we are getting different results if engine object is used in a
-            # different thread first and enine is not used in the Main thread.
+            # different thread first and engine is not used in the Main thread.
             engine.connect().close()
 
             db.isolation_level = None  # Use autocommit mode
             db.execute("PRAGMA foreign_keys = ON")
             db.execute("PRAGMA cache_size = -102400")  # 100 MiB
-            # Enable Write-Ahead Log Journaling
-            db.execute("PRAGMA journal_mode = WAL")
+            # Switching to WAL requires an exclusive lock, so retry briefly
+            # in case another process is initializing the same DB file.
+            for _ in range(5):
+                try:
+                    db.execute("PRAGMA journal_mode = WAL")
+                    break
+                except sqlite3.OperationalError:
+                    sleep(1)
+            else:
+                db.execute("PRAGMA journal_mode = WAL")  # final attempt, let it raise
             db.execute("PRAGMA synchronous = NORMAL")
             db.execute("PRAGMA case_sensitive_like = ON")
 

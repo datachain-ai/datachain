@@ -59,8 +59,10 @@ from .datasource import DataSource
 from .dependency import build_dependency_hierarchy, populate_nested_dependencies
 
 if TYPE_CHECKING:
+    import pandas as pd
+
     from datachain.data_storage import AbstractMetastore, AbstractWarehouse
-    from datachain.dataset import DatasetListVersion
+    from datachain.dataset import DatasetListVersion, DatasetVersion
     from datachain.job import Job
     from datachain.lib.listing_info import ListingInfo
     from datachain.listing import Listing
@@ -196,13 +198,13 @@ class DatasetRowsFetcher(NodesThreadPool):
 
         self.last_status_check = time.time()
 
-    def fix_columns(self, df) -> None:
-        import pandas as pd
-
+    def fix_columns(self, df) -> "pd.DataFrame":
         """
         Method that does various column decoding or parsing, depending on a type
-        before inserting into DB
+        before inserting into DB.
         """
+        import pandas as pd
+
         # we get dataframe from parquet export files where datetimes are serialized
         # as timestamps so we need to parse it back to datetime objects
         for c in [c for c, t in self.schema.items() if t == DateTime]:
@@ -826,11 +828,12 @@ class Catalog:
                 namespace_name=project.namespace.name if project else None,
                 project_name=project.name if project else None,
             )
-            default_version = dataset.next_version_patch
-            if update_version == "major":
-                default_version = dataset.next_version_major
-            if update_version == "minor":
-                default_version = dataset.next_version_minor
+            if not version:
+                default_version = dataset.next_version_patch
+                if update_version == "major":
+                    default_version = dataset.next_version_major
+                if update_version == "minor":
+                    default_version = dataset.next_version_minor
 
             if (description or attrs) and (
                 dataset.description != description or dataset.attrs != attrs
@@ -1275,18 +1278,6 @@ class Catalog:
 
         return self.get_remote_dataset(namespace_name, project_name, name)
 
-    def get_dataset_with_version_uuid(self, uuid: str) -> DatasetRecord:
-        """Returns dataset that contains version with specific uuid"""
-        for dataset in self.ls_datasets():
-            if dataset.has_version_with_uuid(uuid):
-                return self.get_dataset(
-                    dataset.name,
-                    namespace_name=dataset.project.namespace.name,
-                    project_name=dataset.project.name,
-                    include_incomplete=False,
-                )
-        raise DatasetNotFoundError(f"Dataset with version uuid {uuid} not found.")
-
     def get_remote_dataset(
         self, namespace: str, project: str, name: str
     ) -> DatasetRecord:
@@ -1395,7 +1386,8 @@ class Catalog:
             )
         elif prefix:
             datasets = self.metastore.list_datasets_by_prefix(
-                prefix, project_id=project_id
+                prefix,
+                project_id=project_id,
             )
         else:
             datasets = self.metastore.list_datasets(project_id=project_id)
@@ -1609,6 +1601,74 @@ class Catalog:
             for source in data_sources:
                 yield source, source.ls(fields)
 
+    def _wait_for_uuid_complete(
+        self,
+        uuid: str,
+        timeout: float = 3.0,
+        poll_interval: float = 0.5,
+    ) -> tuple[str | None, "DatasetRecord", "DatasetVersion"]:
+        """Poll until a dataset version with this UUID becomes COMPLETE.
+
+        Returns ``(uri, dataset, version)`` where *uri* is the dataset URI
+        if the version became COMPLETE within *timeout*, or ``None`` if it
+        timed out while still incomplete.
+
+        Raises ``DatasetNotFoundError`` if the UUID doesn't exist at all.
+        """
+        # First lookup - let DatasetNotFoundError propagate immediately.
+        ds = self.metastore.get_dataset_by_version_uuid(
+            uuid,
+            include_incomplete=True,
+        )
+        ver = ds.get_version_by_uuid(uuid)
+        if ver.status == DatasetStatus.COMPLETE:
+            uri = create_dataset_uri(
+                ds.name,
+                ds.project.namespace.name,
+                ds.project.name,
+                ver.version,
+            )
+            return uri, ds, ver
+
+        # Incomplete - poll until COMPLETE or timeout.
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None, ds, ver
+            time.sleep(min(poll_interval, remaining))
+            ds = self.metastore.get_dataset_by_version_uuid(
+                uuid,
+                include_incomplete=True,
+            )
+            ver = ds.get_version_by_uuid(uuid)
+            if ver.status == DatasetStatus.COMPLETE:
+                uri = create_dataset_uri(
+                    ds.name,
+                    ds.project.namespace.name,
+                    ds.project.name,
+                    ver.version,
+                )
+                return uri, ds, ver
+
+    def _instantiate_dataset(
+        self,
+        ds_uri: str,
+        output: str | None,
+        force: bool,
+        client_config: dict | None,
+    ) -> None:
+        """Copy dataset files to *output* directory if provided."""
+        if not output:
+            return
+        self.cp(
+            [ds_uri],
+            output,
+            force=force,
+            client_config=client_config,
+        )
+        print(f"Dataset {ds_uri} instantiated locally to {output}")
+
     def pull_dataset(  # noqa: C901, PLR0915, PLR0912
         self,
         remote_ds_uri: str,
@@ -1620,18 +1680,6 @@ class Catalog:
         *,
         client_config=None,
     ) -> None:
-        def _instantiate(ds_uri: str) -> None:
-            if not cp:
-                return
-            assert output
-            self.cp(
-                [ds_uri],
-                output,
-                force=force,
-                client_config=client_config,
-            )
-            print(f"Dataset {ds_uri} instantiated locally to {output}")
-
         if cp and not output:
             raise ValueError("Please provide output directory for instantiation")
 
@@ -1697,26 +1745,23 @@ class Catalog:
         )
 
         try:
-            # try to find existing dataset with the same uuid to avoid pulling again
-            existing_ds = self.get_dataset_with_version_uuid(remote_ds_version.uuid)
-            existing_ds_version = existing_ds.get_version_by_uuid(
-                remote_ds_version.uuid
-            )
-            existing_ds_uri = create_dataset_uri(
-                existing_ds.name,
-                existing_ds.project.namespace.name,
-                existing_ds.project.name,
-                existing_ds_version.version,
-            )
-            if existing_ds_uri == remote_ds_uri:
-                print(f"Local copy of dataset {remote_ds_uri} already present")
-            else:
-                print(
-                    f"Local copy of dataset {remote_ds_uri} already present as"
-                    f" dataset {existing_ds_uri}"
-                )
-            _instantiate(existing_ds_uri)
-            return
+            # Check for existing dataset with the same UUID and reuse or cleanup
+            ds_uri, ds, ver = self._wait_for_uuid_complete(remote_ds_version.uuid)
+            if ds_uri is not None:
+                if ds_uri == remote_ds_uri:
+                    print(f"Local copy of dataset {remote_ds_uri} already present")
+                else:
+                    print(
+                        f"Local copy of dataset {remote_ds_uri} already present as"
+                        f" dataset {ds_uri}"
+                    )
+                if cp:
+                    self._instantiate_dataset(ds_uri, output, force, client_config)
+                return
+
+            # Still incomplete after waiting - clean up the stale version
+            print("Cleaning up stale existing dataset version")
+            self.remove_dataset_version(ds, ver.version)
         except DatasetNotFoundError:
             pass
 
@@ -1740,28 +1785,19 @@ class Catalog:
             validate=False,
         )
 
-        # Check for existing local version (including incomplete ones)
+        # Check if target name+version is already occupied by a different UUID
         try:
             local_dataset = self.get_dataset(
                 local_ds_name,
                 namespace_name=namespace.name,
                 project_name=project.name,
-                include_incomplete=True,
+                include_incomplete=False,
             )
-            if local_dataset and local_dataset.has_version(local_ds_version):
-                local_version = local_dataset.get_version(local_ds_version)
-                if local_version.status == DatasetStatus.COMPLETE:
-                    # Complete version exists with different uuid - error
-                    raise DataChainError(
-                        f"Local dataset {local_ds_uri} already exists with different"
-                        " uuid, please choose different local dataset name or version"
-                    )
-                # Incomplete version from previous failed attempt - clean it up
-                print(
-                    f"Cleaning up incomplete dataset version {local_ds_uri} from"
-                    " previous failed attempt"
+            if local_dataset.has_version(local_ds_version):
+                raise DataChainError(
+                    f"Local dataset {local_ds_uri} already exists with different"
+                    " uuid, please choose different local dataset name or version"
                 )
-                self.remove_dataset_version(local_dataset, local_ds_version)
         except DatasetNotFoundError:
             pass
 
@@ -1851,15 +1887,27 @@ class Catalog:
                     error_stack=remote_ds_version.error_stack,
                     script_output=remote_ds_version.script_output,
                 )
-            except:
-                # Cleanup temp table on failure (will also be cleaned by gc)
+            except Exception:
                 with suppress(Exception):
                     self.warehouse.cleanup_tables([temp_table_name])
+                with suppress(DatasetNotFoundError):
+                    uri, _, _ = self._wait_for_uuid_complete(remote_ds_version.uuid)
+                    if uri is not None:
+                        print(f"Existing dataset found at {uri}, concurring pull?")
+                        if cp:
+                            self._instantiate_dataset(
+                                uri,
+                                output,
+                                force,
+                                client_config,
+                            )
+                        return
                 raise
 
-        print(f"Dataset {remote_ds_uri} saved locally")
+        print(f"Dataset {remote_ds_uri} saved locally as {local_ds_uri}")
 
-        _instantiate(local_ds_uri)
+        if cp:
+            self._instantiate_dataset(local_ds_uri, output, force, client_config)
 
     def clone(
         self,

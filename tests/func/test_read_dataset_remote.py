@@ -12,6 +12,7 @@ import requests
 
 import datachain as dc
 from datachain import json
+from datachain.dataset import DatasetStatus
 from datachain.error import (
     DataChainError,
     DatasetNotFoundError,
@@ -899,11 +900,17 @@ dc.read_dataset("dev.animals.dogs", version="1.0.0")
     proc.kill()
     proc.communicate()
 
-    # Retry - should succeed with atomic pull (no partial state blocking)
+    # Retry - should succeed and produce correct data
+    results_file = tmp_path / "results.json"
     retry = run_script(
-        """
-import datachain as dc
-dc.read_dataset("dev.animals.dogs", version="1.0.0")
+        f"""
+import json, datachain as dc
+from pathlib import Path
+ds = dc.read_dataset("dev.animals.dogs", version="1.0.0")
+Path("{results_file.as_posix()}").write_text(json.dumps({{
+    "row_count": len(ds.to_values("version")),
+    "datasets": dc.datasets().to_values("version"),
+}}))
 """,
         capture_output=True,
     )
@@ -912,6 +919,10 @@ dc.read_dataset("dev.animals.dogs", version="1.0.0")
         f"Retry after crash should succeed with atomic pull\n"
         f"stdout: {stdout}\nstderr: {stderr}"
     )
+
+    results = json.loads(results_file.read_text())
+    assert results["row_count"] == 4, f"Expected 4 dog rows, got {results}"
+    assert results["datasets"] == ["1.0.0"]
 
 
 @skip_if_not_sqlite
@@ -943,10 +954,16 @@ dc.read_dataset("dev.animals.dogs", version="1.0.0")
     proc.communicate()
 
     # Retry - orphaned tmp_ table should not block the new pull
+    results_file = tmp_path / "results.json"
     retry = run_script(
-        """
-import datachain as dc
-dc.read_dataset("dev.animals.dogs", version="1.0.0")
+        f"""
+import json, datachain as dc
+from pathlib import Path
+ds = dc.read_dataset("dev.animals.dogs", version="1.0.0")
+Path("{results_file.as_posix()}").write_text(json.dumps({{
+    "row_count": len(ds.to_values("version")),
+    "datasets": dc.datasets().to_values("version"),
+}}))
 """,
         capture_output=True,
     )
@@ -955,3 +972,183 @@ dc.read_dataset("dev.animals.dogs", version="1.0.0")
         f"Retry after crash during insertion should succeed\n"
         f"stdout: {stdout}\nstderr: {stderr}"
     )
+
+    results = json.loads(results_file.read_text())
+    assert results["row_count"] == 4, f"Expected 4 dog rows, got {results}"
+    assert results["datasets"] == ["1.0.0"]
+
+
+@skip_if_not_sqlite
+@pytest.mark.parametrize("is_studio", (False,))
+def test_read_dataset_remote_cleanup_on_update_dataset_status_fail(
+    mocker,
+    studio_token,
+    test_session,
+    remote_dataset_single_version,
+    mock_dataset_info_endpoint,
+    mock_export_endpoint_with_urls,
+    mock_export_status_completed,
+    mock_s3_parquet_download,
+    mock_dataset_rows_fetcher_status_check,
+    requests_mock,
+):
+    mock_dataset_info_endpoint(remote_dataset_single_version)
+    mock_s3_parquet_download()
+
+    catalog = test_session.catalog
+
+    mock_status = mocker.patch(
+        "datachain.data_storage.metastore.AbstractDBMetastore.update_dataset_status",
+        side_effect=RuntimeError("Status update failed"),
+    )
+
+    with pytest.raises(RuntimeError, match="Status update failed"):
+        dc.read_dataset(
+            f"{REMOTE_NAMESPACE_NAME}.{REMOTE_PROJECT_NAME}.dogs",
+            version="1.0.0",
+            session=test_session,
+        )
+
+    # Temp tables should be gone (renamed to final name)
+    assert catalog.warehouse.get_temp_table_names() == []
+
+    # But incomplete metadata should exist (CREATED status, not COMPLETE)
+    dataset = catalog.get_dataset(
+        "dogs",
+        namespace_name=REMOTE_NAMESPACE_NAME,
+        project_name=REMOTE_PROJECT_NAME,
+        include_incomplete=True,
+    )
+    assert dataset.get_version("1.0.0").status != DatasetStatus.COMPLETE
+
+    # The final-name data table should exist (it was renamed from temp)
+    final_table_name = catalog.warehouse.dataset_table_name(dataset, "1.0.0")
+    from sqlalchemy import inspect as sa_inspect
+
+    table_names = sa_inspect(catalog.warehouse.db.engine).get_table_names()
+    assert final_table_name in table_names, (
+        f"Expected final table {final_table_name} to exist after post-rename failure"
+    )
+
+    # Now retry — should clean up the incomplete version and succeed
+    mocker.stop(mock_status)
+
+    ds = dc.read_dataset(
+        f"{REMOTE_NAMESPACE_NAME}.{REMOTE_PROJECT_NAME}.dogs",
+        version="1.0.0",
+        session=test_session,
+    )
+
+    assert ds.to_values("version")[0] == "1.0.0"
+    assert len(ds.to_values("version")) == 4
+    assert dc.datasets().to_values("version") == ["1.0.0"]
+
+
+@skip_if_not_sqlite
+@pytest.mark.parametrize("is_studio", (False,))
+def test_read_dataset_remote_gc_cleans_orphaned_tmp_tables(
+    tmp_path,
+    run_script,
+):
+    signal_file = tmp_path / "ready_to_kill"
+
+    proc = run_script(
+        """
+import datachain as dc
+dc.read_dataset("dev.animals.dogs", version="1.0.0")
+""",
+        capture_output=True,
+        hang_point=(
+            "datachain.catalog.catalog",
+            "DatasetRowsFetcher",
+            "get_parquet_content",
+        ),
+        signal_file=signal_file,
+    )
+
+    _wait_for_signal_file(proc, signal_file)
+    proc.kill()
+    proc.communicate()
+
+    # Verify orphaned tmp_ table exists, then run gc to clean it
+    results_file = tmp_path / "gc_results.json"
+    gc_proc = run_script(
+        f"""
+import json
+from pathlib import Path
+from datachain.catalog import get_catalog
+from datachain.cli import main
+
+catalog = get_catalog()
+tmp_before = catalog.get_temp_table_names()
+catalog.close()
+
+main(["gc"])
+
+catalog = get_catalog()
+tmp_after = catalog.get_temp_table_names()
+catalog.close()
+
+Path("{results_file.as_posix()}").write_text(json.dumps({{
+    "tmp_before": tmp_before,
+    "tmp_after": tmp_after,
+}}))
+""",
+        capture_output=True,
+    )
+    rc, stdout, stderr = _wait_for_subprocess(gc_proc)
+    assert rc == 0, f"gc subprocess failed\nstdout: {stdout}\nstderr: {stderr}"
+
+    results = json.loads(results_file.read_text())
+    assert len(results["tmp_before"]) > 0, "Expected orphaned tmp_ table after SIGKILL"
+    assert results["tmp_after"] == [], "gc should have cleaned all tmp_ tables"
+
+
+@skip_if_not_sqlite
+@pytest.mark.parametrize("is_studio", (False,))
+def test_read_dataset_remote_concurrent_pulls(
+    tmp_path,
+    run_script,
+):
+    results_a = tmp_path / "results_a.json"
+    results_b = tmp_path / "results_b.json"
+
+    script_template = """
+import json, datachain as dc
+from pathlib import Path
+ds = dc.read_dataset("dev.animals.dogs", version="1.0.0")
+Path("{results_file}").write_text(json.dumps({{
+    "row_count": len(ds.to_values("version")),
+    "datasets": dc.datasets().to_values("version"),
+}}))
+"""
+
+    proc_a = run_script(
+        script_template.format(results_file=results_a.as_posix()),
+        capture_output=True,
+    )
+    proc_b = run_script(
+        script_template.format(results_file=results_b.as_posix()),
+        capture_output=True,
+    )
+
+    rc_a, stdout_a, stderr_a = _wait_for_subprocess(proc_a)
+    rc_b, stdout_b, stderr_b = _wait_for_subprocess(proc_b)
+
+    # Both processes must succeed
+    assert rc_a == 0, (
+        f"Process A failed (rc={rc_a}):\n  stdout: {stdout_a}\n  stderr: {stderr_a}"
+    )
+    assert rc_b == 0, (
+        f"Process B failed (rc={rc_b}):\n  stdout: {stdout_b}\n  stderr: {stderr_b}"
+    )
+
+    # Verify both produced correct data
+    for name, path in [("A", results_a), ("B", results_b)]:
+        results = json.loads(path.read_text())
+        assert results["row_count"] == 4, (
+            f"Process {name}: expected 4 rows, got {results}"
+        )
+        assert results["datasets"] == ["1.0.0"], (
+            f"Process {name}: unexpected datasets {results['datasets']}"
+        )

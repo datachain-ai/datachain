@@ -367,6 +367,14 @@ class AbstractMetastore(ABC, Serializable):
         projects.
         """
 
+    def get_dataset_by_version_uuid(
+        self,
+        uuid: str,
+        include_incomplete: bool = False,
+    ) -> DatasetRecord:
+        """Gets a dataset that contains a version with the given UUID."""
+        raise NotImplementedError
+
     @abstractmethod
     def get_dataset(
         self,
@@ -1475,6 +1483,20 @@ class AbstractDBMetastore(AbstractMetastore):
             query = query.where(d.c.project_id == project_id)
         query = query.where(self._datasets.c.name.startswith(prefix))
         yield from self._parse_dataset_list(self.db.execute(query))
+
+    def get_dataset_by_version_uuid(
+        self,
+        uuid: str,
+        include_incomplete: bool = False,
+    ) -> DatasetRecord:
+        """Gets a dataset that contains a version with the given UUID."""
+        dv = self._datasets_versions
+        query = self._base_dataset_query(include_incomplete=include_incomplete)
+        query = query.where(dv.c.uuid == uuid)
+        ds = self._parse_dataset(self.db.execute(query))
+        if not ds:
+            raise DatasetNotFoundError(f"Dataset with version uuid {uuid} not found.")
+        return ds
 
     def get_dataset(
         self,
