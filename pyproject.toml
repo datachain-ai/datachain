@@ -323,6 +323,7 @@ max-complexity = 15
 "tests/**" = ["DTZ"]
 "tests/examples/wds_data.py" = ["E501"]
 "tests/unit/lib/test_signal_schema.py" = ["UP006", "UP007", "UP035", "UP045"]
+"tests/unit/lib/test_udf.py" = ["PLW0108"]  # Tests intentionally use lambdas to test lambda verbose names
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
