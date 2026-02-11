@@ -1236,10 +1236,7 @@ class UDFStep(Step, ABC):
                 create_fn=self.create_output_table,
             )
 
-        if self.partition_by is not None:
-            input_query = sa.select(self.warehouse.get_table(input_table.name))
-        else:
-            input_query = self.get_input_query(input_table.name, query)
+        input_query = self.get_input_query(input_table.name, query)
 
         unprocessed_query = self.calculate_unprocessed_rows(
             input_query,
