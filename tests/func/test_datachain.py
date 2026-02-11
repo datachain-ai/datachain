@@ -277,7 +277,7 @@ def test_to_storage(
     file_type,
     num_threads,
 ):
-    mapper = Mock(side_effect=lambda file_path: len(file_path))
+    mapper = Mock(side_effect=len)
 
     ctc = cloud_test_catalog
     df = dc.read_storage(ctc.src_uri, type=file_type, session=test_session)
