@@ -43,9 +43,9 @@ COMPLEX_TREE: dict[str, Any] = {
         [UInt32(), 0],
         [Int64(), 0],
         [UInt64(), 0],
-        [Float(), math.isnan],
-        [Float32(), math.isnan],
-        [Float64(), math.isnan],
+        [Float(), lambda val: math.isnan(val)],  # noqa: PLW0108
+        [Float32(), lambda val: math.isnan(val)],  # noqa: PLW0108
+        [Float64(), lambda val: math.isnan(val)],  # noqa: PLW0108
         [Array(Int), []],
         [JSON(), {}],
         [DateTime(), datetime(1970, 1, 1, 0, 0, tzinfo=timezone.utc)],
