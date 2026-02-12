@@ -1,5 +1,6 @@
 import pytest
 import requests
+import sqlalchemy as sa
 
 import datachain as dc
 from datachain import json
@@ -7,6 +8,7 @@ from datachain.client.fsspec import Client
 from datachain.dataset import DatasetStatus
 from datachain.error import DataChainError, DatasetNotFoundError
 from datachain.query.session import Session
+from datachain.sql.types import String
 from datachain.utils import STUDIO_URL
 from tests.conftest import (
     REMOTE_DATASET_UUID,
@@ -670,3 +672,62 @@ def test_pull_failure_after_saving_leaves_incomplete_version_and_retry_succeeds(
         project_name=REMOTE_PROJECT_NAME,
     )
     assert dataset.status == DatasetStatus.COMPLETE
+
+
+@skip_if_not_sqlite
+def test_pull_cleans_stale_incomplete_version_with_different_uuid(
+    studio_token,
+    catalog,
+    remote_dataset_info,
+    dataset_export,
+    dataset_export_status,
+    remote_dataset_chunk_url,
+    requests_mock,
+    mock_parquet_data,
+    capsys,
+):
+    """If the target name+version is occupied by an incomplete version with a
+    different UUID (e.g. a previous failed pull of a different remote version),
+    pull should clean it up and proceed instead of crashing."""
+    requests_mock.get(remote_dataset_chunk_url, content=mock_parquet_data)
+
+    # Pre-create namespace/project and an incomplete version with a DIFFERENT uuid
+    namespace = catalog.metastore.create_namespace(REMOTE_NAMESPACE_NAME)
+    project = catalog.metastore.create_project(namespace.name, REMOTE_PROJECT_NAME)
+    stale_uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    catalog.create_dataset(
+        "dogs",
+        project,
+        "1.0.0",
+        columns=(sa.Column("name", String),),
+        uuid=stale_uuid,
+        validate_version=False,
+    )
+
+    # Verify it exists as CREATED (incomplete)
+    ds = catalog.get_dataset(
+        "dogs",
+        namespace_name=REMOTE_NAMESPACE_NAME,
+        project_name=REMOTE_PROJECT_NAME,
+        include_incomplete=True,
+    )
+    assert ds.get_version("1.0.0").uuid == stale_uuid
+    assert ds.get_version("1.0.0").status == DatasetStatus.CREATED
+
+    # Pull the real remote dataset — should clean up the stale version and succeed
+    capsys.readouterr()
+    catalog.pull_dataset(
+        f"ds://{REMOTE_NAMESPACE_NAME}.{REMOTE_PROJECT_NAME}.dogs@v1.0.0"
+    )
+
+    captured = capsys.readouterr()
+    assert "Cleaning up stale incomplete version" in captured.out
+    assert stale_uuid in captured.out
+
+    dataset = catalog.get_dataset(
+        "dogs",
+        namespace_name=REMOTE_NAMESPACE_NAME,
+        project_name=REMOTE_PROJECT_NAME,
+    )
+    assert dataset.status == DatasetStatus.COMPLETE
+    assert dataset.get_version("1.0.0").uuid == REMOTE_DATASET_UUID

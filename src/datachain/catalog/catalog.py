@@ -1755,13 +1755,24 @@ class Catalog:
                     local_ds_name,
                     namespace_name=namespace.name,
                     project_name=project.name,
-                    include_incomplete=False,
+                    include_incomplete=True,
                 )
                 if local_dataset.has_version(local_ds_version):
-                    raise DataChainError(
-                        f"Local dataset {local_ds_uri} already exists with different"
-                        " uuid, please choose different local dataset name or version"
-                    )
+                    local_ver = local_dataset.get_version(local_ds_version)
+                    if local_ver.status != DatasetStatus.COMPLETE:
+                        # Stale incomplete version from a different UUID —
+                        # clean it up so this pull can proceed.
+                        print(
+                            "Cleaning up stale incomplete version "
+                            f"(uuid={local_ver.uuid})"
+                        )
+                        self.remove_dataset_version(local_dataset, local_ds_version)
+                    else:
+                        raise DataChainError(
+                            f"Local dataset {local_ds_uri} already exists with"
+                            " different uuid, please choose different local"
+                            " dataset name or version"
+                        )
             except DatasetNotFoundError:
                 pass
 

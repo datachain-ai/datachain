@@ -198,7 +198,14 @@ def test_get_incomplete_dataset_versions_finds_no_job_id(test_session):
     dataset = test_session.catalog.create_dataset(
         "ds_orphaned_pull",
         columns=(sa.Column("name", String),),
-        job_id=None,
+        job_id=None,  # Not enough alone, can be taken from DATACHAIN_JOB_ID also
+    )
+
+    # Force job_id to NULL in the DB — bypasses the `or os.getenv()` fallback
+    # that may fill it in when DATACHAIN_JOB_ID is set in the test env.
+    dv = test_session.catalog.metastore._datasets_versions
+    test_session.catalog.metastore.db.execute(
+        dv.update().where(dv.c.dataset_id == dataset.id).values(job_id=None)
     )
 
     # Freshly created — should NOT be returned (protects in-flight pulls)
@@ -206,7 +213,6 @@ def test_get_incomplete_dataset_versions_finds_no_job_id(test_session):
     assert dataset.name not in {ds.name for ds, _ in to_clean}
 
     # Backdate created_at to exceed the staleness threshold
-    dv = test_session.catalog.metastore._datasets_versions
     test_session.catalog.metastore.db.execute(
         dv.update()
         .where(dv.c.dataset_id == dataset.id)

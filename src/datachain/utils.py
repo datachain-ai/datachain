@@ -166,6 +166,7 @@ def interprocess_file_lock(
             check_hint = f"If this looks stuck, delete: {lock_path} (and {pid_path})"
         print(f"{wait_message}{pid_str}\n{check_hint}")
 
+    acquired = False
     try:
         if wait_message:
             try:
@@ -176,14 +177,15 @@ def interprocess_file_lock(
         else:
             lock.acquire(timeout=timeout)
 
+        acquired = True
         _write_pid()
         yield
     finally:
-        try:
-            os.remove(pid_path)
-        except FileNotFoundError:
-            pass
-        if lock.is_locked:
+        if acquired:
+            try:
+                os.remove(pid_path)
+            except FileNotFoundError:
+                pass
             lock.release()
 
 

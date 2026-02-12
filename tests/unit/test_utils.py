@@ -372,3 +372,24 @@ def test_interprocess_file_lock_wait_hint_without_pid(
     assert wait_message in captured
     assert "ps -p" not in captured
     assert f"delete: {lock_path.as_posix()} (and {pid_path.as_posix()})" in captured
+
+
+def test_interprocess_file_lock_timeout_preserves_other_pid(tmp_path: Path) -> None:
+    lock_path = tmp_path / "pull.lock"
+    pid_path = Path(f"{lock_path.as_posix()}.pid")
+
+    # Simulate another process holding the lock with its own PID file.
+    raw_lock = FileLock(lock_path.as_posix())
+    raw_lock.acquire()
+    holder_pid = "99999"
+    pid_path.write_text(holder_pid)
+    try:
+        with pytest.raises(Timeout):
+            with interprocess_file_lock(lock_path.as_posix(), timeout=0):
+                pass
+
+        # The holder's PID file must still exist and be untouched.
+        assert pid_path.exists()
+        assert pid_path.read_text() == holder_pid
+    finally:
+        raw_lock.release()
