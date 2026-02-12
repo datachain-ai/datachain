@@ -315,6 +315,18 @@ def test_interprocess_file_lock_writes_pid_and_releases(tmp_path):
         pass
 
 
+def test_interprocess_file_lock_cleans_up_lock_and_pid_files(tmp_path):
+    lock_path = tmp_path / "pull.lock"
+    pid_path = Path(f"{lock_path.as_posix()}.pid")
+
+    with interprocess_file_lock(lock_path.as_posix()):
+        assert lock_path.exists()
+        assert pid_path.exists()
+
+    assert not lock_path.exists()
+    assert not pid_path.exists()
+
+
 def test_interprocess_file_lock_timeout_without_wait_message(tmp_path):
     lock_path = tmp_path / "pull.lock"
 

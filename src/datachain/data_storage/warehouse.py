@@ -421,10 +421,10 @@ class AbstractWarehouse(ABC, Serializable):
         This operation should be atomic in the database.
         """
         self.db.rename_table(old_name, new_name)
-        # Update metadata cache: drop old name, reflect new name
+        # Evict stale name from in-process metadata cache.
+        # The new name will be loaded on demand if needed.
         if old_name in self.db.metadata.tables:
             self.db.metadata.remove(self.db.metadata.tables[old_name])
-        sa.Table(new_name, self.db.metadata, autoload_with=self.db.engine)
 
     def drop_dataset_rows_table(
         self,

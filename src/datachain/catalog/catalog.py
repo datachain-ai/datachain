@@ -1874,11 +1874,6 @@ class Catalog:
                         local_ds_version,
                         exc_info=True,
                     )
-                    logger.warning(
-                        "Failed to finalize pulled dataset. The incomplete "
-                        "version will be cleaned up on the next pull or "
-                        "by 'datachain gc'."
-                    )
                     print(
                         "Pull failed while finalizing the local dataset. "
                         "Retry the pull; if it keeps failing, run 'datachain gc' "

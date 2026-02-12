@@ -85,6 +85,17 @@ SQLITE_BUSY = 5
 SQLITE_LOCKED = 6
 
 
+def _is_sqlite_lock_error(exc: sqlite3.OperationalError) -> bool:
+    """Return True if the OperationalError is a transient lock/busy error."""
+    code = getattr(exc, "sqlite_errorcode", None)
+    if code is not None:
+        # Python >=3.11: use the precise error code
+        return code in (SQLITE_BUSY, SQLITE_LOCKED)
+    # Python 3.10: fall back to message matching
+    msg = str(exc).lower()
+    return "locked" in msg or "busy" in msg
+
+
 def retry_sqlite_locks(func):
     # This retries the database modification in case of concurrent access
     @wraps(func)
@@ -94,16 +105,8 @@ def retry_sqlite_locks(func):
             try:
                 return func(*args, **kwargs)
             except sqlite3.OperationalError as operror:
-                code = getattr(operror, "sqlite_errorcode", None)
-                if code is not None:
-                    # Python >=3.11: use the precise error code
-                    if code not in (SQLITE_BUSY, SQLITE_LOCKED):
-                        raise
-                else:
-                    # Python 3.10: fall back to message matching
-                    msg = str(operror).lower()
-                    if "locked" not in msg and "busy" not in msg:
-                        raise
+                if not _is_sqlite_lock_error(operror):
+                    raise
                 exc = operror
                 sleep(get_retry_sleep_sec(retry_count))
         raise exc
@@ -180,7 +183,9 @@ class SQLiteDatabaseEngine(DatabaseEngine):
                 try:
                     db.execute("PRAGMA journal_mode = WAL")
                     break
-                except sqlite3.OperationalError:
+                except sqlite3.OperationalError as e:
+                    if not _is_sqlite_lock_error(e):
+                        raise
                     sleep(1)
             else:
                 db.execute("PRAGMA journal_mode = WAL")  # final attempt, let it raise
