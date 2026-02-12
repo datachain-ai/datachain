@@ -269,6 +269,16 @@ def test_pull_dataset_wrong_dataset_uri_format(
     assert str(exc_info.value) == "Error when parsing dataset uri"
 
 
+def test_pull_dataset_cp_without_output(catalog):
+    with pytest.raises(ValueError, match="Please provide output directory"):
+        catalog.pull_dataset("ds://ns.proj.name@v1", cp=True)
+
+
+def test_pull_dataset_cp_without_output_empty_string(catalog):
+    with pytest.raises(ValueError, match="Please provide output directory"):
+        catalog.pull_dataset("ds://ns.proj.name@v1", cp=True, output="")
+
+
 @skip_if_not_sqlite
 def test_pull_dataset_wrong_version(
     studio_token,
