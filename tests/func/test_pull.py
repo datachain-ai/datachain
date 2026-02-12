@@ -390,6 +390,43 @@ def test_pull_dataset_already_exists_locally(
         )
 
 
+@skip_if_not_sqlite
+def test_pull_dataset_already_exists_locally_with_cp(
+    studio_token,
+    catalog,
+    remote_dataset_info,
+    dataset_export,
+    dataset_export_status,
+    remote_dataset_chunk_url,
+    requests_mock,
+    mock_parquet_data,
+    mocker,
+    tmpdir,
+):
+    requests_mock.get(remote_dataset_chunk_url, content=mock_parquet_data)
+
+    output = str(tmpdir / "test_output")
+
+    # First pull to populate the dataset locally
+    catalog.pull_dataset(
+        f"ds://{REMOTE_NAMESPACE_NAME}.{REMOTE_PROJECT_NAME}.dogs@v1.0.0",
+    )
+
+    mock_cp = mocker.patch.object(catalog, "cp")
+
+    # Second pull with cp=True should hit the early-return path
+    # and call _instantiate_dataset on the already-available dataset
+    catalog.pull_dataset(
+        f"ds://{REMOTE_NAMESPACE_NAME}.{REMOTE_PROJECT_NAME}.dogs@v1.0.0",
+        cp=True,
+        output=output,
+    )
+
+    mock_cp.assert_called_once()
+    args = mock_cp.call_args
+    assert args[0][1] == output
+
+
 @pytest.mark.parametrize("cloud_type, version_aware", [("s3", False)], indirect=True)
 @pytest.mark.parametrize("local_ds_name", [None])
 @skip_if_not_sqlite

@@ -1386,8 +1386,7 @@ class Catalog:
             )
         elif prefix:
             datasets = self.metastore.list_datasets_by_prefix(
-                prefix,
-                project_id=project_id,
+                prefix, project_id=project_id
             )
         else:
             datasets = self.metastore.list_datasets(project_id=project_id)
@@ -1604,13 +1603,12 @@ class Catalog:
     def _instantiate_dataset(
         self,
         ds_uri: str,
-        output: str | None,
+        output: str,
         force: bool,
         client_config: dict | None,
     ) -> None:
-        """Copy dataset files to *output* directory if provided."""
-        if not output:
-            return
+        """Copy dataset files to *output* directory."""
+        assert output, "output must be provided when instantiating a dataset"
         self.cp(
             [ds_uri],
             output,
@@ -1721,6 +1719,7 @@ class Catalog:
                     )
                     print(f"Dataset already available locally as {ds_uri}")
                     if cp:
+                        assert output is not None
                         self._instantiate_dataset(ds_uri, output, force, client_config)
                     return
 
@@ -1885,6 +1884,7 @@ class Catalog:
             print(f"Dataset {remote_ds_uri} saved locally as {local_ds_uri}")
 
             if cp:
+                assert output is not None
                 self._instantiate_dataset(local_ds_uri, output, force, client_config)
 
     def clone(
