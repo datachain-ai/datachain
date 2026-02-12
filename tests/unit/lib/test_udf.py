@@ -1,3 +1,5 @@
+import pickle
+
 import pytest
 from cloudpickle import dumps, loads
 
@@ -14,6 +16,23 @@ def test_udf_error():
     for err in (orig_err, loads(dumps(orig_err))):
         assert err.message == "test error"
         assert str(err) == "UdfError: test error"
+
+
+def test_json_serialization_error_pickle():
+    err = JsonSerializationError("bad value", "col_a", repr([1, 2]))
+    restored = pickle.loads(pickle.dumps(err))  # noqa: S301
+    assert str(restored) == str(err)
+    assert restored.column_name == "col_a"
+    assert restored.value_repr == repr([1, 2])
+
+
+def test_json_serialization_error_pickle_unpicklable_value():
+    val = object()
+    err = JsonSerializationError("bad value", "col_b", repr(val))
+    restored = pickle.loads(pickle.dumps(err))  # noqa: S301
+    assert str(restored) == str(err)
+    assert restored.column_name == "col_b"
+    assert "object" in restored.value_repr
 
 
 @pytest.mark.parametrize(
@@ -99,13 +118,13 @@ def test_udf_verbose_name_func():
 
 
 def test_udf_verbose_name_lambda():
-    sign = get_sign(lambda key: len(key), output="res")
+    sign = get_sign(lambda key: len(key), output="res")  # noqa: PLW0108
     udf = UDFBase._create(sign, sign.output_schema)
     assert udf.verbose_name == "<lambda>"
 
 
 def test_udf_verbose_name_unknown():
-    sign = get_sign(lambda key: len(key), output="res")
+    sign = get_sign(lambda key: len(key), output="res")  # noqa: PLW0108
     udf = UDFBase._create(sign, sign.output_schema)
     udf._func = None
     assert udf.verbose_name == "<unknown>"

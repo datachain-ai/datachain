@@ -235,9 +235,11 @@ def test_select_missing_column(cloud_test_catalog, animal_dataset):
     ds1 = ds.select(C.missing_column_name)
     ds2 = ds.select("missing_column_name")
     # The exception type varies by database backend
-    exc1 = pytest.raises(Exception, ds1.db_results)  # noqa: B017
+    with pytest.raises(Exception) as exc1:
+        ds1.db_results()
     assert "missing_column_name" in str(exc1.value)
-    exc2 = pytest.raises(KeyError, ds2.db_results)
+    with pytest.raises(KeyError) as exc2:
+        ds2.db_results()
     assert "missing_column_name" in str(exc2.value)
 
 

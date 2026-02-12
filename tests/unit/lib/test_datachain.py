@@ -2010,7 +2010,7 @@ def test_exec(test_session, monkeypatch):
 
     chain = (
         dc.read_values(name=names, session=test_session)
-        .map(nop=lambda name: all_names.add(name))
+        .map(nop=lambda name: all_names.add(name))  # noqa: PLW0108
         .exec()
     )
     assert isinstance(chain, dc.DataChain)
@@ -2075,7 +2075,7 @@ def test_sys_feature(test_session, monkeypatch):
     assert not ds_no_sys._sys
 
     args = []
-    ds_no_sys.map(res=lambda t1: args.append(t1)).save("ds_no_sys")
+    ds_no_sys.map(res=lambda t1: args.append(t1)).save("ds_no_sys")  # noqa: PLW0108
     assert args == [
         MyFr(nnn="n1", count=1),
         MyFr(nnn="n1", count=3),
