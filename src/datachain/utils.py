@@ -129,7 +129,9 @@ def interprocess_file_lock(
 
     from filelock import FileLock, Timeout
 
-    os.makedirs(osp.dirname(lock_path), exist_ok=True)
+    lock_dir = osp.dirname(lock_path)
+    if lock_dir:
+        os.makedirs(lock_dir, exist_ok=True)
     lock = FileLock(lock_path)
     pid_path = f"{lock_path}.pid"
 

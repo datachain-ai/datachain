@@ -302,7 +302,7 @@ def test_batched_it(num_rows, batch_size):
     assert len(uniq_data) == num_rows
 
 
-def test_interprocess_file_lock_writes_pid_and_releases(tmp_path: Path) -> None:
+def test_interprocess_file_lock_writes_pid_and_releases(tmp_path):
     lock_path = tmp_path / "pull.lock"
     pid_path = Path(f"{lock_path.as_posix()}.pid")
 
@@ -315,7 +315,7 @@ def test_interprocess_file_lock_writes_pid_and_releases(tmp_path: Path) -> None:
         pass
 
 
-def test_interprocess_file_lock_timeout_without_wait_message(tmp_path: Path) -> None:
+def test_interprocess_file_lock_timeout_without_wait_message(tmp_path):
     lock_path = tmp_path / "pull.lock"
 
     with interprocess_file_lock(lock_path.as_posix()):
@@ -324,9 +324,7 @@ def test_interprocess_file_lock_timeout_without_wait_message(tmp_path: Path) -> 
                 pass
 
 
-def test_interprocess_file_lock_prints_pid_when_blocked(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_interprocess_file_lock_prints_pid_when_blocked(tmp_path, capsys):
     lock_path = tmp_path / "pull.lock"
     pid_path = Path(f"{lock_path.as_posix()}.pid")
     wait_message = "Another pull is already in progress."
@@ -347,9 +345,7 @@ def test_interprocess_file_lock_prints_pid_when_blocked(
     assert f"ps -p {os.getpid()}" in captured
 
 
-def test_interprocess_file_lock_wait_hint_without_pid(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_interprocess_file_lock_wait_hint_without_pid(tmp_path, capsys):
     lock_path = tmp_path / "pull.lock"
     pid_path = Path(f"{lock_path.as_posix()}.pid")
     wait_message = "Another pull is already in progress."
@@ -374,7 +370,7 @@ def test_interprocess_file_lock_wait_hint_without_pid(
     assert f"delete: {lock_path.as_posix()} (and {pid_path.as_posix()})" in captured
 
 
-def test_interprocess_file_lock_timeout_preserves_other_pid(tmp_path: Path) -> None:
+def test_interprocess_file_lock_timeout_preserves_other_pid(tmp_path):
     lock_path = tmp_path / "pull.lock"
     pid_path = Path(f"{lock_path.as_posix()}.pid")
 
@@ -393,3 +389,10 @@ def test_interprocess_file_lock_timeout_preserves_other_pid(tmp_path: Path) -> N
         assert pid_path.read_text() == holder_pid
     finally:
         raw_lock.release()
+
+
+def test_interprocess_file_lock_no_dir_in_path(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    bare = "bare_test.lock"
+    with interprocess_file_lock(bare, timeout=0):
+        assert (tmp_path / bare).exists()
