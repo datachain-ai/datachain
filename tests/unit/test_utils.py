@@ -366,9 +366,7 @@ def test_checkpoints_enabled_non_main_thread(monkeypatch):
         ident = owner_ident + 1
         name = "Thread-1"
 
-    monkeypatch.setattr(
-        "datachain.utils.threading.current_thread", lambda: MockThread()
-    )
+    monkeypatch.setattr("datachain.utils.threading.current_thread", MockThread)
 
     assert checkpoints_enabled() is False
     assert _CheckpointState.disabled is True
@@ -393,9 +391,7 @@ def test_checkpoints_enabled_warning_shown_once(monkeypatch, caplog):
         ident = owner_ident + 1  # Different thread ident
         name = "Thread-1"
 
-    monkeypatch.setattr(
-        "datachain.utils.threading.current_thread", lambda: MockThread()
-    )
+    monkeypatch.setattr("datachain.utils.threading.current_thread", MockThread)
 
     # Call multiple times from non-owner thread
     assert checkpoints_enabled() is False
@@ -425,16 +421,12 @@ def test_checkpoints_enabled_stays_disabled(monkeypatch):
         name = "MainThread"
 
     # Call from non-owner thread disables checkpoints
-    monkeypatch.setattr(
-        "datachain.utils.threading.current_thread", lambda: MockThread()
-    )
+    monkeypatch.setattr("datachain.utils.threading.current_thread", MockThread)
     assert checkpoints_enabled() is False
     assert _CheckpointState.disabled is True
 
     # Even if we go back to owner thread, it should stay disabled
-    monkeypatch.setattr(
-        "datachain.utils.threading.current_thread", lambda: MockOwnerThread()
-    )
+    monkeypatch.setattr("datachain.utils.threading.current_thread", MockOwnerThread)
     assert checkpoints_enabled() is False
     assert _CheckpointState.disabled is True
 
