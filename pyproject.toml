@@ -51,6 +51,7 @@ dependencies = [
   "huggingface_hub",
   "iterative-telemetry>=0.0.10",
   "platformdirs",
+  "filelock",
   "dvc-studio-client>=0.21,<1",
   "tabulate",
   "websockets",
