@@ -68,8 +68,9 @@ def test_map_from_scratch_event(test_session, nums_dataset):
     assert map_event.udf_name == "double"
     assert map_event.rows_input == 6
     assert map_event.rows_processed == 6
-    assert map_event.rows_generated == 6
-    assert map_event.rows_reused == 0
+    assert map_event.rows_output == 6
+    assert map_event.rows_input_reused == 0
+    assert map_event.rows_output_reused == 0
     assert map_event.rerun_from_job_id is None
     assert map_event.hash_partial is None
 
@@ -94,8 +95,9 @@ def test_gen_from_scratch_event(test_session, nums_dataset):
     assert gen_event.step_type == CheckpointStepType.UDF_GEN
     assert gen_event.rows_input == 6
     assert gen_event.rows_processed == 6
-    assert gen_event.rows_generated == 12
-    assert gen_event.rows_reused == 0
+    assert gen_event.rows_output == 12
+    assert gen_event.rows_input_reused == 0
+    assert gen_event.rows_output_reused == 0
 
 
 def test_map_skipped_event(test_session, nums_dataset):
@@ -124,8 +126,9 @@ def test_map_skipped_event(test_session, nums_dataset):
     assert map_event.udf_name == "double"
     assert map_event.rows_input == 6
     assert map_event.rows_processed == 0
-    assert map_event.rows_generated == 0
-    assert map_event.rows_reused == 6
+    assert map_event.rows_output == 0
+    assert map_event.rows_input_reused == 6
+    assert map_event.rows_output_reused == 6
     assert map_event.rerun_from_job_id == first_job_id
     assert map_event.hash_partial is None
 
@@ -153,8 +156,9 @@ def test_gen_skipped_event(test_session, nums_dataset):
     assert gen_event.event_type == CheckpointEventType.UDF_SKIPPED
     assert gen_event.rows_input == 6
     assert gen_event.rows_processed == 0
-    assert gen_event.rows_generated == 0
-    assert gen_event.rows_reused == 6
+    assert gen_event.rows_output == 0
+    assert gen_event.rows_input_reused == 6
+    assert gen_event.rows_output_reused == 12
     assert gen_event.rerun_from_job_id == first_job_id
 
 
@@ -194,9 +198,10 @@ def test_map_continued_event(test_session, nums_dataset):
 
     assert map_event.event_type == CheckpointEventType.UDF_CONTINUED
     assert map_event.rows_input == 6
-    assert map_event.rows_reused == 3
+    assert map_event.rows_input_reused == 3
+    assert map_event.rows_output_reused == 3
     assert map_event.rows_processed == 3
-    assert map_event.rows_generated == 3
+    assert map_event.rows_output == 3
     assert map_event.rerun_from_job_id == first_job_id
     assert map_event.hash_partial is not None
 
@@ -239,9 +244,10 @@ def test_gen_continued_event(test_session, nums_dataset):
 
     assert gen_event.event_type == CheckpointEventType.UDF_CONTINUED
     assert gen_event.rows_input == 6
-    assert gen_event.rows_reused == 2
+    assert gen_event.rows_input_reused == 2
+    assert gen_event.rows_output_reused == 4
     assert gen_event.rows_processed == 4
-    assert gen_event.rows_generated == 8
+    assert gen_event.rows_output == 8
     assert gen_event.rerun_from_job_id == first_job_id
     assert gen_event.hash_partial is not None
 

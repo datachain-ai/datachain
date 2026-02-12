@@ -848,8 +848,9 @@ class UDFStep(Step, ABC):
         hash_output: str | None = None,
         rows_input: int | None = None,
         rows_processed: int | None = None,
-        rows_generated: int | None = None,
-        rows_reused: int | None = None,
+        rows_output: int | None = None,
+        rows_input_reused: int | None = None,
+        rows_output_reused: int | None = None,
         rerun_from_job_id: str | None = None,
         details: dict | None = None,
     ) -> None:
@@ -866,22 +867,24 @@ class UDFStep(Step, ABC):
             hash_output=hash_output,
             rows_input=rows_input,
             rows_processed=rows_processed,
-            rows_generated=rows_generated,
-            rows_reused=rows_reused,
+            rows_output=rows_output,
+            rows_input_reused=rows_input_reused,
+            rows_output_reused=rows_output_reused,
             rerun_from_job_id=rerun_from_job_id,
             details=details,
         )
         logger.info(
             "UDF(%s) [job=%s run_group=%s]: %s - "
-            "input=%s, processed=%s, generated=%s, reused=%s",
+            "input=%s, processed=%s, output=%s, input_reused=%s, output_reused=%s",
             self._udf_name,
             self._job_id_short,
             self._run_group_id_short,
             event_type.value,
             rows_input,
             rows_processed,
-            rows_generated,
-            rows_reused,
+            rows_output,
+            rows_input_reused,
+            rows_output_reused,
         )
 
     def _find_udf_checkpoint(
@@ -1080,8 +1083,9 @@ class UDFStep(Step, ABC):
             rerun_from_job_id=checkpoint.job_id,
             rows_input=rows_input,
             rows_processed=0,
-            rows_generated=0,
-            rows_reused=rows_input,
+            rows_output=0,
+            rows_input_reused=rows_input,
+            rows_output_reused=output_rows_reused,
         )
 
         # Register skipped UDF in the registry (no-op for local metastores)
@@ -1161,8 +1165,9 @@ class UDFStep(Step, ABC):
             hash_output=hash_output,
             rows_input=rows_input,
             rows_processed=rows_input,
-            rows_generated=rows_generated,
-            rows_reused=0,
+            rows_output=rows_generated,
+            rows_input_reused=0,
+            rows_output_reused=0,
         )
 
         return output_table, input_table
@@ -1291,8 +1296,9 @@ class UDFStep(Step, ABC):
             rerun_from_job_id=checkpoint.job_id,
             rows_input=rows_input,
             rows_processed=rows_to_process,
-            rows_generated=rows_generated,
-            rows_reused=rows_reused,
+            rows_output=rows_generated,
+            rows_input_reused=rows_reused,
+            rows_output_reused=output_rows_reused,
         )
 
         return output_table, input_table
