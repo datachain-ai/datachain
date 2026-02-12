@@ -185,7 +185,10 @@ def interprocess_file_lock(
             try:
                 os.remove(pid_path)
             except FileNotFoundError:
-                pass
+                logger.debug(
+                    "PID file %s was already missing during lock cleanup",
+                    pid_path,
+                )
             lock.release()
 
 
