@@ -1,3 +1,6 @@
+import os
+from pathlib import Path
+
 import pytest
 
 from datachain.utils import (
@@ -6,6 +9,7 @@ from datachain.utils import (
     datachain_paths_join,
     determine_processes,
     determine_workers,
+    interprocess_file_lock,
     nested_dict_path_set,
     retry_with_backoff,
     row_to_nested_dict,
@@ -295,3 +299,51 @@ def test_batched_it(num_rows, batch_size):
 
     assert num_batches == num_rows / batch_size
     assert len(uniq_data) == num_rows
+
+
+def test_interprocess_file_lock_writes_pid_and_releases(tmp_path: Path) -> None:
+    lock_path = tmp_path / "pull.lock"
+    pid_path = Path(f"{lock_path.as_posix()}.pid")
+
+    with interprocess_file_lock(lock_path.as_posix()):
+        pid_in_lock = int(pid_path.read_text(encoding="utf-8").strip())
+        assert pid_in_lock == os.getpid()
+
+    # After release, a new acquire should succeed.
+    with interprocess_file_lock(lock_path.as_posix(), timeout=0):
+        pass
+
+
+def test_interprocess_file_lock_timeout_without_wait_message(tmp_path: Path) -> None:
+    from filelock import Timeout
+
+    lock_path = tmp_path / "pull.lock"
+
+    with interprocess_file_lock(lock_path.as_posix()):
+        with pytest.raises(Timeout):
+            with interprocess_file_lock(lock_path.as_posix(), timeout=0):
+                pass
+
+
+def test_interprocess_file_lock_prints_pid_when_blocked(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from filelock import Timeout
+
+    lock_path = tmp_path / "pull.lock"
+    pid_path = Path(f"{lock_path.as_posix()}.pid")
+    wait_message = "Another pull is already in progress."
+
+    with interprocess_file_lock(lock_path.as_posix()):
+        with pytest.raises(Timeout):
+            with interprocess_file_lock(
+                lock_path.as_posix(),
+                wait_message=wait_message,
+                timeout=0,
+            ):
+                pass
+
+    captured = capsys.readouterr().out
+    assert wait_message in captured
+    assert f"pid={os.getpid()}" in captured
+    assert f"delete: {lock_path.as_posix()} (and {pid_path.as_posix()})" in captured

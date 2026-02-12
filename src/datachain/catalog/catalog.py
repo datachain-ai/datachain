@@ -53,7 +53,7 @@ from datachain.node import DirType, Node, NodeWithPath
 from datachain.nodes_thread_pool import NodesThreadPool
 from datachain.project import Project
 from datachain.sql.types import DateTime, SQLType
-from datachain.utils import DataChainDir, DatasetIdentifier
+from datachain.utils import DataChainDir, DatasetIdentifier, interprocess_file_lock
 
 from .datasource import DataSource
 from .dependency import build_dependency_hierarchy, populate_nested_dependencies
@@ -62,7 +62,7 @@ if TYPE_CHECKING:
     import pandas as pd
 
     from datachain.data_storage import AbstractMetastore, AbstractWarehouse
-    from datachain.dataset import DatasetListVersion, DatasetVersion
+    from datachain.dataset import DatasetListVersion
     from datachain.job import Job
     from datachain.lib.listing_info import ListingInfo
     from datachain.listing import Listing
@@ -1601,64 +1601,6 @@ class Catalog:
             for source in data_sources:
                 yield source, source.ls(fields)
 
-    def _wait_for_uuid_complete(
-        self,
-        uuid: str,
-        timeout: float = 3.0,
-        poll_interval: float = 0.5,
-    ) -> tuple[str | None, "DatasetRecord", "DatasetVersion"]:
-        """Poll until a dataset version with this UUID becomes COMPLETE.
-
-        Returns ``(uri, dataset, version)`` where *uri* is the dataset URI
-        if the version became COMPLETE within *timeout*, or ``None`` if it
-        timed out while still incomplete.
-
-        Raises ``DatasetNotFoundError`` if the UUID doesn't exist at all.
-        """
-        # First lookup - let DatasetNotFoundError propagate immediately.
-        ds = self.metastore.get_dataset_by_version_uuid(
-            uuid,
-            include_incomplete=True,
-        )
-        ver = ds.get_version_by_uuid(uuid)
-        if ver.status == DatasetStatus.COMPLETE:
-            uri = create_dataset_uri(
-                ds.name,
-                ds.project.namespace.name,
-                ds.project.name,
-                ver.version,
-            )
-            return uri, ds, ver
-
-        # Incomplete - poll until COMPLETE or timeout.
-        deadline = time.monotonic() + timeout
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                print()  # newline after countdown
-                return None, ds, ver
-            secs = max(1, int(remaining + 0.5))
-            print(
-                f"\rWaiting for an in-progress pull to complete... ({secs}s)\033[K",
-                end="",
-                flush=True,
-            )
-            time.sleep(min(poll_interval, remaining))
-            ds = self.metastore.get_dataset_by_version_uuid(
-                uuid,
-                include_incomplete=True,
-            )
-            ver = ds.get_version_by_uuid(uuid)
-            if ver.status == DatasetStatus.COMPLETE:
-                print()  # newline after countdown
-                uri = create_dataset_uri(
-                    ds.name,
-                    ds.project.namespace.name,
-                    ds.project.name,
-                    ver.version,
-                )
-                return uri, ds, ver
-
     def _instantiate_dataset(
         self,
         ds_uri: str,
@@ -1752,174 +1694,192 @@ class Catalog:
             local_ds_version,
         )
 
-        try:
-            # Check for existing dataset with the same UUID and reuse or cleanup
-            ds_uri, ds, ver = self._wait_for_uuid_complete(remote_ds_version.uuid)
-            if ds_uri is not None:
-                print(f"Dataset already available locally as {ds_uri}")
-                if cp:
-                    self._instantiate_dataset(ds_uri, output, force, client_config)
-                return
-
-            # Still incomplete after waiting - clean up the stale version
-            print("Cleaning up stale existing dataset version")
-            self.remove_dataset_version(ds, ver.version)
-        except DatasetNotFoundError:
-            pass
-
-        # Create namespace and project if doesn't exist
-        print(
-            f"Creating namespace {remote_ds.project.namespace.name} and project"
-            f" {remote_ds.project.name}"
-        )
-
-        namespace = self.metastore.create_namespace(
-            remote_ds.project.namespace.name,
-            description=remote_ds.project.namespace.descr,
-            uuid=remote_ds.project.namespace.uuid,
-            validate=False,
-        )
-        project = self.metastore.create_project(
-            namespace.name,
-            remote_ds.project.name,
-            description=remote_ds.project.descr,
-            uuid=remote_ds.project.uuid,
-            validate=False,
-        )
-
-        # Check if target name+version is already occupied by a different UUID
-        try:
-            local_dataset = self.get_dataset(
-                local_ds_name,
-                namespace_name=namespace.name,
-                project_name=project.name,
-                include_incomplete=False,
-            )
-            if local_dataset.has_version(local_ds_version):
-                raise DataChainError(
-                    f"Local dataset {local_ds_uri} already exists with different"
-                    " uuid, please choose different local dataset name or version"
-                )
-        except DatasetNotFoundError:
-            pass
-
-        schema = parse_schema(remote_ds_version.schema)
-        columns = tuple(sa.Column(n, t) for n, t in schema.items() if n != "sys__id")
-
-        with tqdm(
-            desc=f"Saving dataset {remote_ds_uri} locally: ",
-            unit=" rows",
-            unit_scale=True,
-            unit_divisor=1000,
-            total=remote_ds_version.num_objects,  # type: ignore [union-attr]
-            leave=False,
-        ) as dataset_save_progress_bar:
-            # Phase 1: Create temporary staging table (no metadata yet)
-            # If the process is killed here, only an orphaned tmp_ table remains,
-            # which will be cleaned up by 'datachain gc'
-            temp_table_name = self.warehouse.create_temp_dataset_table(columns)
-
-            # asking remote to export dataset rows table to s3 and to return signed
-            # urls of exported parts, which are in parquet format
-            export_response = studio_client.export_dataset_table(
-                remote_ds, remote_ds_version.version
-            )
-            if not export_response.ok:
-                with suppress(Exception):
-                    self.warehouse.cleanup_tables([temp_table_name])
-                raise DataChainError(export_response.message)
-
-            export_data = export_response.data
-            export_id = export_data["export_id"]
-            signed_urls: list[str] = export_data["signed_urls"]
-
-            # Phase 2: Download data into temporary table
-            if signed_urls:
-                with self.warehouse.clone() as warehouse:
-                    rows_fetcher = DatasetRowsFetcher(
-                        warehouse=warehouse,
-                        temp_table_name=temp_table_name,
-                        export_id=export_id,
-                        schema=schema,
-                        studio_client=studio_client,
-                        progress_bar=dataset_save_progress_bar,
-                    )
-
-                    try:
-                        batches = _round_robin_batch(
-                            signed_urls, PULL_DATASET_MAX_THREADS
-                        )
-                        rows_fetcher.run(iter(batches), dataset_save_progress_bar)
-                    except:
-                        with suppress(Exception):
-                            self.warehouse.cleanup_tables([temp_table_name])
-                        raise
-
-            # Phase 3: Commit — create metadata, rename table, mark complete.
-            # Not truly atomic (multi-step), but retry cleanup at the top of
-            # pull_dataset handles any partial state from a crash here.
+        lock_dir = os.path.join(DataChainDir.find().tmp, "pull-locks")
+        lock_path = os.path.join(lock_dir, f"{remote_ds_version.uuid}.lock")
+        with interprocess_file_lock(
+            lock_path,
+            wait_message=(
+                "Another pull for this dataset version is already in progress. "
+                "Waiting for it to finish..."
+            ),
+        ):
+            # Check for existing dataset with the same UUID and reuse or cleanup.
+            # The lock ensures we don't delete an in-flight version from another
+            # concurrent pull.
             try:
-                local_ds = self.create_dataset(
-                    local_ds_name,
-                    project,
-                    local_ds_version,
-                    query_script=remote_ds_version.query_script,
-                    create_rows=False,  # Don't create table, we'll rename temp table
-                    columns=columns,
-                    feature_schema=remote_ds_version.feature_schema,
-                    validate_version=False,
-                    uuid=remote_ds_version.uuid,
+                ds = self.metastore.get_dataset_by_version_uuid(
+                    remote_ds_version.uuid,
+                    include_incomplete=True,
                 )
-
-                final_table_name = self.warehouse.dataset_table_name(
-                    local_ds, local_ds_version
-                )
-                self.warehouse.rename_table(temp_table_name, final_table_name)
-
-                self.update_dataset_version_with_warehouse_info(
-                    local_ds, local_ds_version
-                )
-
-                self.metastore.update_dataset_status(
-                    local_ds,
-                    DatasetStatus.COMPLETE,
-                    version=local_ds_version,
-                    error_message=remote_ds_version.error_message,
-                    error_stack=remote_ds_version.error_stack,
-                    script_output=remote_ds_version.script_output,
-                )
-            except Exception:
-                with suppress(Exception):
-                    self.warehouse.cleanup_tables([temp_table_name])
-                with suppress(DatasetNotFoundError):
-                    uri, _, _ = self._wait_for_uuid_complete(
-                        remote_ds_version.uuid,
-                        timeout=10.0,
+                ver = ds.get_version_by_uuid(remote_ds_version.uuid)
+                if ver.status == DatasetStatus.COMPLETE:
+                    ds_uri = create_dataset_uri(
+                        ds.name,
+                        ds.project.namespace.name,
+                        ds.project.name,
+                        ver.version,
                     )
-                    if uri is not None:
-                        print(
-                            f"Dataset already available locally as {uri}"
-                            " (concurrent pull?)"
+                    print(f"Dataset already available locally as {ds_uri}")
+                    if cp:
+                        self._instantiate_dataset(ds_uri, output, force, client_config)
+                    return
+
+                print("Cleaning up stale existing dataset version")
+                self.remove_dataset_version(ds, ver.version)
+            except DatasetNotFoundError:
+                pass
+
+            # Create namespace and project if doesn't exist
+            print(
+                f"Creating namespace {remote_ds.project.namespace.name} and project"
+                f" {remote_ds.project.name}"
+            )
+
+            namespace = self.metastore.create_namespace(
+                remote_ds.project.namespace.name,
+                description=remote_ds.project.namespace.descr,
+                uuid=remote_ds.project.namespace.uuid,
+                validate=False,
+            )
+            project = self.metastore.create_project(
+                namespace.name,
+                remote_ds.project.name,
+                description=remote_ds.project.descr,
+                uuid=remote_ds.project.uuid,
+                validate=False,
+            )
+
+            # Check if target name+version is already occupied by a different UUID
+            try:
+                local_dataset = self.get_dataset(
+                    local_ds_name,
+                    namespace_name=namespace.name,
+                    project_name=project.name,
+                    include_incomplete=False,
+                )
+                if local_dataset.has_version(local_ds_version):
+                    raise DataChainError(
+                        f"Local dataset {local_ds_uri} already exists with different"
+                        " uuid, please choose different local dataset name or version"
+                    )
+            except DatasetNotFoundError:
+                pass
+
+            schema = parse_schema(remote_ds_version.schema)
+            columns = tuple(
+                sa.Column(n, t) for n, t in schema.items() if n != "sys__id"
+            )
+
+            with tqdm(
+                desc=f"Saving dataset {remote_ds_uri} locally: ",
+                unit=" rows",
+                unit_scale=True,
+                unit_divisor=1000,
+                total=remote_ds_version.num_objects,  # type: ignore [union-attr]
+                leave=False,
+            ) as dataset_save_progress_bar:
+                # Phase 1: Create temporary staging table (no metadata yet)
+                # If the process is killed here, only an orphaned tmp_ table remains,
+                # which will be cleaned up by 'datachain gc'
+                temp_table_name = self.warehouse.create_temp_dataset_table(columns)
+
+                # asking remote to export dataset rows table to s3 and to return signed
+                # urls of exported parts, which are in parquet format
+                export_response = studio_client.export_dataset_table(
+                    remote_ds, remote_ds_version.version
+                )
+                if not export_response.ok:
+                    with suppress(Exception):
+                        self.warehouse.cleanup_tables([temp_table_name])
+                    raise DataChainError(export_response.message)
+
+                export_data = export_response.data
+                export_id = export_data["export_id"]
+                signed_urls: list[str] = export_data["signed_urls"]
+
+                # Phase 2: Download data into temporary table
+                if signed_urls:
+                    with self.warehouse.clone() as warehouse:
+                        rows_fetcher = DatasetRowsFetcher(
+                            warehouse=warehouse,
+                            temp_table_name=temp_table_name,
+                            export_id=export_id,
+                            schema=schema,
+                            studio_client=studio_client,
+                            progress_bar=dataset_save_progress_bar,
                         )
-                        if cp:
-                            self._instantiate_dataset(
-                                uri,
-                                output,
-                                force,
-                                client_config,
+
+                        try:
+                            batches = _round_robin_batch(
+                                signed_urls, PULL_DATASET_MAX_THREADS
                             )
-                        return
+                            rows_fetcher.run(iter(batches), dataset_save_progress_bar)
+                        except:
+                            with suppress(Exception):
+                                self.warehouse.cleanup_tables([temp_table_name])
+                            raise
+
+                # Phase 3: Commit — create metadata, rename table, mark complete.
+                # Not truly atomic (multi-step), but the next pull (under the same
+                # UUID lock) will clean up any partial state.
+                try:
+                    local_ds = self.create_dataset(
+                        local_ds_name,
+                        project,
+                        local_ds_version,
+                        query_script=remote_ds_version.query_script,
+                        # Don't create table, we'll rename the temp table.
+                        create_rows=False,
+                        columns=columns,
+                        feature_schema=remote_ds_version.feature_schema,
+                        validate_version=False,
+                        uuid=remote_ds_version.uuid,
+                    )
+
+                    final_table_name = self.warehouse.dataset_table_name(
+                        local_ds, local_ds_version
+                    )
+                    self.warehouse.rename_table(temp_table_name, final_table_name)
+
+                    self.update_dataset_version_with_warehouse_info(
+                        local_ds, local_ds_version
+                    )
+
+                    self.metastore.update_dataset_status(
+                        local_ds,
+                        DatasetStatus.COMPLETE,
+                        version=local_ds_version,
+                        error_message=remote_ds_version.error_message,
+                        error_stack=remote_ds_version.error_stack,
+                        script_output=remote_ds_version.script_output,
+                    )
+                except Exception:
+                    with suppress(Exception):
+                        self.warehouse.cleanup_tables([temp_table_name])
+                    logger.debug(
+                        "Failed to finalize pulled dataset %s (%s@%s)",
+                        remote_ds_version.uuid,
+                        local_ds_name,
+                        local_ds_version,
+                        exc_info=True,
+                    )
                     logger.warning(
                         "Failed to finalize pulled dataset. The incomplete "
                         "version will be cleaned up on the next pull or "
                         "by 'datachain gc'."
                     )
-                raise
+                    print(
+                        "Pull failed while finalizing the local dataset. "
+                        "Retry the pull; if it keeps failing, run 'datachain gc' "
+                        "to clean up incomplete state.",
+                        file=sys.stderr,
+                    )
+                    raise
 
-        print(f"Dataset {remote_ds_uri} saved locally as {local_ds_uri}")
+            print(f"Dataset {remote_ds_uri} saved locally as {local_ds_uri}")
 
-        if cp:
-            self._instantiate_dataset(local_ds_uri, output, force, client_config)
+            if cp:
+                self._instantiate_dataset(local_ds_uri, output, force, client_config)
 
     def clone(
         self,
