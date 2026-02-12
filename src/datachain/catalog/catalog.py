@@ -1825,7 +1825,7 @@ class Catalog:
                                 signed_urls, PULL_DATASET_MAX_THREADS
                             )
                             rows_fetcher.run(iter(batches), dataset_save_progress_bar)
-                        except:
+                        except Exception:
                             with suppress(Exception):
                                 self.warehouse.cleanup_tables([temp_table_name])
                             raise
