@@ -944,3 +944,48 @@ def test_get_ancestor_job_ids(metastore, depth):
 
     assert ancestors == expected_ancestors
     assert len(ancestors) == depth
+
+
+def test_has_active_checkpoints_in_run_group_with_active(metastore):
+    job_id = metastore.create_job(
+        name="test_job",
+        query="SELECT 1",
+        query_type=JobQueryType.PYTHON,
+        status=JobStatus.CREATED,
+        workers=1,
+    )
+    job = metastore.get_job(job_id)
+    metastore.get_or_create_checkpoint(job_id, "hash123")
+
+    # TTL threshold is 4 hours ago, checkpoint is recent
+    ttl_threshold = datetime.now(timezone.utc) - timedelta(hours=4)
+
+    assert metastore.has_active_checkpoints_in_run_group(
+        job.run_group_id, ttl_threshold
+    )
+
+
+def test_has_active_checkpoints_in_run_group_only_outdated(metastore):
+    job_id = metastore.create_job(
+        name="test_job",
+        query="SELECT 1",
+        query_type=JobQueryType.PYTHON,
+        status=JobStatus.CREATED,
+        workers=1,
+    )
+    job = metastore.get_job(job_id)
+    checkpoint = metastore.get_or_create_checkpoint(job_id, "hash123")
+
+    # Make checkpoint old (5 hours ago)
+    old_time = datetime.now(timezone.utc) - timedelta(hours=5)
+    metastore.db.execute(
+        metastore._checkpoints.update()
+        .where(metastore._checkpoints.c.id == checkpoint.id)
+        .values(created_at=old_time)
+    )
+
+    ttl_threshold = datetime.now(timezone.utc) - timedelta(hours=4)
+
+    assert not metastore.has_active_checkpoints_in_run_group(
+        job.run_group_id, ttl_threshold
+    )

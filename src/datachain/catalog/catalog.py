@@ -10,6 +10,7 @@ from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import contextmanager, suppress
 from copy import copy
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from functools import cached_property, reduce
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -24,6 +25,7 @@ from sqlalchemy import Column
 from tqdm.auto import tqdm
 
 from datachain.cache import Cache
+from datachain.checkpoint import Checkpoint
 from datachain.client import Client
 from datachain.dataset import (
     DATASET_PREFIX,
@@ -2042,3 +2044,76 @@ class Catalog:
             only_index=True,
         ):
             pass
+
+    def _remove_checkpoint(self, checkpoint: Checkpoint) -> None:
+        """Remove a checkpoint and its associated job-specific UDF tables."""
+        # Remove the checkpoint from metastore first
+        self.metastore.remove_checkpoint(checkpoint.id)
+
+        # Remove job-specific tables for this checkpoint
+        # Table patterns: udf_{job_id}_{hash}_{suffix}
+        # where suffix can be: input, output, output_partial, processed
+        job_id_sanitized = checkpoint.job_id.replace("-", "")
+        table_prefix = f"udf_{job_id_sanitized}_{checkpoint.hash}_"
+        matching_tables = self.warehouse.db.list_tables(prefix=table_prefix)
+
+        if matching_tables:
+            self.warehouse.cleanup_tables(matching_tables)
+
+    def cleanup_checkpoints(self, ttl_seconds: int | None = None) -> int:
+        """
+        Clean up outdated checkpoints and their associated UDF tables.
+
+        Removes outdated checkpoints only if no jobs in the same run group have
+        active (non-outdated) checkpoints.
+
+        This prevents accumulation of checkpoints while ensuring that tables
+        are preserved when any related job still needs them.
+
+        Args:
+            ttl_seconds: Time-to-live in seconds. Checkpoints older than this
+                are considered outdated. If None, uses CHECKPOINT_TTL
+                environment variable or default.
+
+        Returns:
+            Number of checkpoints removed.
+        """
+        if ttl_seconds is None:
+            ttl_seconds = int(os.environ.get("CHECKPOINT_TTL", str(TTL_INT)))
+
+        ttl_threshold = datetime.now(timezone.utc) - timedelta(seconds=ttl_seconds)
+
+        outdated_checkpoints = list(
+            self.metastore.list_checkpoints(created_before=ttl_threshold)
+        )
+
+        if not outdated_checkpoints:
+            return 0
+
+        job_ids = list({ch.job_id for ch in outdated_checkpoints})
+        jobs = {job.id: job for job in self.metastore.list_jobs_by_ids(job_ids)}
+
+        # Cache per run_group_id to avoid redundant checks
+        has_active_in_group_cache: dict[str, bool] = {}
+
+        removed_count = 0
+        for ch in outdated_checkpoints:
+            job = jobs.get(ch.job_id)
+
+            if not job or not job.run_group_id:
+                self._remove_checkpoint(ch)
+                removed_count += 1
+                continue
+
+            if job.run_group_id not in has_active_in_group_cache:
+                has_active_in_group_cache[job.run_group_id] = (
+                    self.metastore.has_active_checkpoints_in_run_group(
+                        job.run_group_id, ttl_threshold
+                    )
+                )
+
+            if not has_active_in_group_cache[job.run_group_id]:
+                self._remove_checkpoint(ch)
+                removed_count += 1
+
+        return removed_count
