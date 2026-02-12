@@ -1774,6 +1774,7 @@ class Catalog:
                             " dataset name or version"
                         )
             except DatasetNotFoundError:
+                # Dataset does not exist locally yet — this is expected; proceed with pull.
                 pass
 
             schema = parse_schema(remote_ds_version.schema)
