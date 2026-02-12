@@ -5,7 +5,7 @@ import sys
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from functools import cached_property, reduce
 from itertools import groupby
 from typing import TYPE_CHECKING, Any
@@ -32,6 +32,7 @@ from sqlalchemy import (
     cast,
     desc,
     literal,
+    or_,
     select,
 )
 from sqlalchemy.sql import func as f
@@ -65,6 +66,11 @@ from datachain.error import (
 from datachain.job import Job
 from datachain.namespace import Namespace
 from datachain.project import Project
+
+# Versions with no job_id (e.g. from pull_dataset) are only eligible
+# for gc cleanup if they are older than this threshold, to avoid
+# cleaning up in-flight operations.
+STALE_CREATED_THRESHOLD_HOURS = 1
 
 if TYPE_CHECKING:
     from sqlalchemy import CTE, Delete, Insert, Select, Subquery, Update
@@ -329,20 +335,18 @@ class AbstractMetastore(ABC, Serializable):
         self, job_id: str | None = None
     ) -> list[tuple[DatasetRecord, str]]:
         """
-        Get failed/incomplete dataset versions that are in complete job. This is
-        used to get versions to cleanup.
+        Get incomplete dataset versions to clean up.
 
-        Returns dataset versions that:
-        - Have status CREATED or FAILED (incomplete/failed)
-        - Belong to jobs that are not running (COMPLETE, FAILED, CANCELED)
+        When job_id is provided, returns versions belonging to that specific
+        job (used during job failure cleanup).
 
-        Cleans both CREATED and FAILED to handle edge cases:
-        - FAILED: Explicitly marked failed versions
-        - CREATED: Orphaned versions from crashes/bugs (before failure marking)
+        When job_id is None, returns all incomplete dataset versions
+        whose associated job is finished, plus versions with no job_id
+        that are older than STALE_CREATED_THRESHOLD_HOURS (used by gc).
 
         Returns:
             List of (DatasetRecord, version_string) tuples. Each DatasetRecord
-            contains only one version (the failed version to clean).
+            contains only one version (the incomplete version to clean).
         """
 
     @abstractmethod
@@ -1571,29 +1575,50 @@ class AbstractDBMetastore(AbstractMetastore):
         dv = self._datasets_versions
         j = self._jobs
 
-        # Query dataset + version info for failed versions from non-running jobs
+        select_cols = (
+            *(getattr(n.c, f) for f in self._namespaces_fields),
+            *(getattr(p.c, f) for f in self._projects_fields),
+            *(getattr(d.c, f) for f in self._dataset_fields),
+            *(getattr(dv.c, f) for f in self._dataset_version_fields),
+        )
+        base_from = (
+            n.join(p, n.c.id == p.c.namespace_id)
+            .join(d, p.c.id == d.c.project_id)
+            .join(dv, d.c.id == dv.c.dataset_id)
+        )
+
+        # LEFT JOIN on jobs so versions with job_id=NULL are included.
+        # Only skip versions whose job is still running.
         query = (
-            self._datasets_select(
-                *(getattr(n.c, f) for f in self._namespaces_fields),
-                *(getattr(p.c, f) for f in self._projects_fields),
-                *(getattr(d.c, f) for f in self._dataset_fields),
-                *(getattr(dv.c, f) for f in self._dataset_version_fields),
-            )
+            self._datasets_select(*select_cols)
             .select_from(
-                n.join(p, n.c.id == p.c.namespace_id)
-                .join(d, p.c.id == d.c.project_id)
-                .join(dv, d.c.id == dv.c.dataset_id)
-                .join(j, cast(dv.c.job_id, j.c.id.type) == j.c.id)
+                base_from.join(
+                    j,
+                    cast(dv.c.job_id, j.c.id.type) == j.c.id,
+                    isouter=True,
+                )
             )
             .where(
                 dv.c.status.in_([DatasetStatus.CREATED, DatasetStatus.FAILED]),
-                j.c.status.in_(
-                    [JobStatus.COMPLETE, JobStatus.FAILED, JobStatus.CANCELED]
+                or_(
+                    # job is finished
+                    j.c.status.in_(
+                        [JobStatus.COMPLETE, JobStatus.FAILED, JobStatus.CANCELED]
+                    ),
+                    # or no job at all (e.g. pull_dataset) — but only
+                    # if old enough to not be an in-flight operation
+                    and_(
+                        dv.c.job_id.is_(None),
+                        dv.c.created_at
+                        < datetime.now(timezone.utc)
+                        - timedelta(hours=STALE_CREATED_THRESHOLD_HOURS),
+                    ),
                 ),
             )
         )
+
         if job_id:
-            query = query.where(j.c.id == job_id)
+            query = query.where(dv.c.job_id == job_id)
 
         # Parse results and return (dataset, version) tuples
         results = []

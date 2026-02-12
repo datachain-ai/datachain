@@ -1635,7 +1635,14 @@ class Catalog:
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
+                print()  # newline after countdown
                 return None, ds, ver
+            secs = max(1, int(remaining + 0.5))
+            print(
+                f"\rWaiting for an in-progress pull to complete... ({secs}s)\033[K",
+                end="",
+                flush=True,
+            )
             time.sleep(min(poll_interval, remaining))
             ds = self.metastore.get_dataset_by_version_uuid(
                 uuid,
@@ -1643,6 +1650,7 @@ class Catalog:
             )
             ver = ds.get_version_by_uuid(uuid)
             if ver.status == DatasetStatus.COMPLETE:
+                print()  # newline after countdown
                 uri = create_dataset_uri(
                     ds.name,
                     ds.project.namespace.name,
@@ -1748,13 +1756,7 @@ class Catalog:
             # Check for existing dataset with the same UUID and reuse or cleanup
             ds_uri, ds, ver = self._wait_for_uuid_complete(remote_ds_version.uuid)
             if ds_uri is not None:
-                if ds_uri == remote_ds_uri:
-                    print(f"Local copy of dataset {remote_ds_uri} already present")
-                else:
-                    print(
-                        f"Local copy of dataset {remote_ds_uri} already present as"
-                        f" dataset {ds_uri}"
-                    )
+                print(f"Dataset already available locally as {ds_uri}")
                 if cp:
                     self._instantiate_dataset(ds_uri, output, force, client_config)
                 return
@@ -1823,8 +1825,8 @@ class Catalog:
                 remote_ds, remote_ds_version.version
             )
             if not export_response.ok:
-                # Cleanup temp table on failure
-                self.warehouse.cleanup_tables([temp_table_name])
+                with suppress(Exception):
+                    self.warehouse.cleanup_tables([temp_table_name])
                 raise DataChainError(export_response.message)
 
             export_data = export_response.data
@@ -1849,7 +1851,6 @@ class Catalog:
                         )
                         rows_fetcher.run(iter(batches), dataset_save_progress_bar)
                     except:
-                        # Cleanup temp table on failure (will also be cleaned by gc)
                         with suppress(Exception):
                             self.warehouse.cleanup_tables([temp_table_name])
                         raise
@@ -1891,9 +1892,15 @@ class Catalog:
                 with suppress(Exception):
                     self.warehouse.cleanup_tables([temp_table_name])
                 with suppress(DatasetNotFoundError):
-                    uri, _, _ = self._wait_for_uuid_complete(remote_ds_version.uuid)
+                    uri, _, _ = self._wait_for_uuid_complete(
+                        remote_ds_version.uuid,
+                        timeout=10.0,
+                    )
                     if uri is not None:
-                        print(f"Existing dataset found at {uri}, concurring pull?")
+                        print(
+                            f"Dataset already available locally as {uri}"
+                            " (concurrent pull?)"
+                        )
                         if cp:
                             self._instantiate_dataset(
                                 uri,
@@ -1902,6 +1909,11 @@ class Catalog:
                                 client_config,
                             )
                         return
+                    logger.warning(
+                        "Failed to finalize pulled dataset. The incomplete "
+                        "version will be cleaned up on the next pull or "
+                        "by 'datachain gc'."
+                    )
                 raise
 
         print(f"Dataset {remote_ds_uri} saved locally as {local_ds_uri}")

@@ -162,17 +162,61 @@ def test_get_incomplete_dataset_versions(
 def test_get_incomplete_dataset_versions_skips_running_jobs(
     test_session, job, dataset_created
 ):
-    """Test that cleanup skips dataset versions from running jobs."""
-    # Get failed versions to clean - should be empty since job is RUNNING
+    """Test that gc skips versions whose job is still running."""
+    # Job is RUNNING — its versions should NOT be returned
     to_clean = test_session.catalog.metastore.get_incomplete_dataset_versions()
     assert dataset_created.name not in {ds.name for ds, _ in to_clean}
 
-    # Mark job as complete
+    # Mark job as complete — now it should be returned
     test_session.catalog.metastore.set_job_status(job.id, JobStatus.COMPLETE)
-
-    # Now should be included
     to_clean = test_session.catalog.metastore.get_incomplete_dataset_versions()
     assert dataset_created.name in {ds.name for ds, _ in to_clean}
+
+
+def test_get_incomplete_dataset_versions_scoped_to_job(
+    test_session, job, dataset_created
+):
+    """Test that get_incomplete_dataset_versions with job_id scopes to that job."""
+    test_session.catalog.metastore.set_job_status(job.id, JobStatus.FAILED)
+    to_clean = test_session.catalog.metastore.get_incomplete_dataset_versions(
+        job_id=job.id
+    )
+    assert dataset_created.name in {ds.name for ds, _ in to_clean}
+
+    # Non-existent job_id returns nothing
+    to_clean = test_session.catalog.metastore.get_incomplete_dataset_versions(
+        job_id="nonexistent"
+    )
+    assert len(to_clean) == 0
+
+
+def test_get_incomplete_dataset_versions_finds_no_job_id(test_session):
+    """Test that gc finds stale versions with no job_id (e.g. from pull_dataset)."""
+    from datetime import datetime, timedelta, timezone
+
+    import sqlalchemy as sa
+
+    dataset = test_session.catalog.create_dataset(
+        "ds_orphaned_pull",
+        columns=(sa.Column("name", String),),
+        job_id=None,
+    )
+
+    # Freshly created — should NOT be returned (protects in-flight pulls)
+    to_clean = test_session.catalog.metastore.get_incomplete_dataset_versions()
+    assert dataset.name not in {ds.name for ds, _ in to_clean}
+
+    # Backdate created_at to exceed the staleness threshold
+    dv = test_session.catalog.metastore._datasets_versions
+    test_session.catalog.metastore.db.execute(
+        dv.update()
+        .where(dv.c.dataset_id == dataset.id)
+        .values(created_at=datetime.now(timezone.utc) - timedelta(hours=2))
+    )
+
+    # Now it should be returned
+    to_clean = test_session.catalog.metastore.get_incomplete_dataset_versions()
+    assert dataset.name in {ds.name for ds, _ in to_clean}
 
 
 def test_cleanup_failed_dataset_versions(test_session, job, dataset_failed):
