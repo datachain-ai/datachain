@@ -1,5 +1,7 @@
 """Tests for dataset status management and failed version cleanup."""
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 import sqlalchemy as sa
 
@@ -192,9 +194,6 @@ def test_get_incomplete_dataset_versions_scoped_to_job(
 
 def test_get_incomplete_dataset_versions_finds_no_job_id(test_session):
     """Test that gc finds stale versions with no job_id (e.g. from pull_dataset)."""
-    from datetime import datetime, timedelta, timezone
-
-    import sqlalchemy as sa
 
     dataset = test_session.catalog.create_dataset(
         "ds_orphaned_pull",

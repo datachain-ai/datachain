@@ -94,8 +94,16 @@ def retry_sqlite_locks(func):
             try:
                 return func(*args, **kwargs)
             except sqlite3.OperationalError as operror:
-                if operror.sqlite_errorcode not in (SQLITE_BUSY, SQLITE_LOCKED):
-                    raise  # permanent error, don't retry
+                code = getattr(operror, "sqlite_errorcode", None)
+                if code is not None:
+                    # Python >=3.11: use the precise error code
+                    if code not in (SQLITE_BUSY, SQLITE_LOCKED):
+                        raise
+                else:
+                    # Python 3.10: fall back to message matching
+                    msg = str(operror).lower()
+                    if "locked" not in msg and "busy" not in msg:
+                        raise
                 exc = operror
                 sleep(get_retry_sleep_sec(retry_count))
         raise exc

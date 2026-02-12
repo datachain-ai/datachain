@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 
 import pytest
+from filelock import FileLock, Timeout
 
 from datachain.utils import (
     batched,
@@ -315,8 +316,6 @@ def test_interprocess_file_lock_writes_pid_and_releases(tmp_path: Path) -> None:
 
 
 def test_interprocess_file_lock_timeout_without_wait_message(tmp_path: Path) -> None:
-    from filelock import Timeout
-
     lock_path = tmp_path / "pull.lock"
 
     with interprocess_file_lock(lock_path.as_posix()):
@@ -328,8 +327,6 @@ def test_interprocess_file_lock_timeout_without_wait_message(tmp_path: Path) -> 
 def test_interprocess_file_lock_prints_pid_when_blocked(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from filelock import Timeout
-
     lock_path = tmp_path / "pull.lock"
     pid_path = Path(f"{lock_path.as_posix()}.pid")
     wait_message = "Another pull is already in progress."
@@ -346,4 +343,32 @@ def test_interprocess_file_lock_prints_pid_when_blocked(
     captured = capsys.readouterr().out
     assert wait_message in captured
     assert f"pid={os.getpid()}" in captured
+    assert f"delete: {lock_path.as_posix()} (and {pid_path.as_posix()})" in captured
+    assert f"ps -p {os.getpid()}" in captured
+
+
+def test_interprocess_file_lock_wait_hint_without_pid(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    lock_path = tmp_path / "pull.lock"
+    pid_path = Path(f"{lock_path.as_posix()}.pid")
+    wait_message = "Another pull is already in progress."
+
+    # Acquire the raw file lock without writing a PID sidecar.
+    raw_lock = FileLock(lock_path.as_posix())
+    raw_lock.acquire()
+    try:
+        with pytest.raises(Timeout):
+            with interprocess_file_lock(
+                lock_path.as_posix(),
+                wait_message=wait_message,
+                timeout=0,
+            ):
+                pass
+    finally:
+        raw_lock.release()
+
+    captured = capsys.readouterr().out
+    assert wait_message in captured
+    assert "ps -p" not in captured
     assert f"delete: {lock_path.as_posix()} (and {pid_path.as_posix()})" in captured

@@ -156,12 +156,15 @@ def interprocess_file_lock(
         if not wait_message:
             return
         pid_str = f" (pid={pid})" if pid is not None else ""
-        print(
-            f"{wait_message}{pid_str}\n"
-            f"If this looks stuck, first check the PID is running "
-            f"(e.g. `ps -p {pid}`), then if you are sure no process is "
-            f"running delete: {lock_path} (and {pid_path})"
-        )
+        if pid is not None:
+            check_hint = (
+                f"If this looks stuck, first check the PID is running "
+                f"(e.g. `ps -p {pid}`), then if you are sure no process is "
+                f"running delete: {lock_path} (and {pid_path})"
+            )
+        else:
+            check_hint = f"If this looks stuck, delete: {lock_path} (and {pid_path})"
+        print(f"{wait_message}{pid_str}\n{check_hint}")
 
     try:
         if wait_message:
