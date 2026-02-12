@@ -616,6 +616,7 @@ class AbstractMetastore(ABC, Serializable):
         skipped: bool = False,
         continued: bool = False,
         rows_reused: int = 0,
+        output_rows_reused: int = 0,
     ) -> None:
         """
         Register a UDF in the registry.

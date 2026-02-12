@@ -154,7 +154,7 @@ def test_gen_skipped_event(test_session, nums_dataset):
     assert gen_event.rows_input == 6
     assert gen_event.rows_processed == 0
     assert gen_event.rows_generated == 0
-    assert gen_event.rows_reused == 12
+    assert gen_event.rows_reused == 6
     assert gen_event.rerun_from_job_id == first_job_id
 
 
@@ -239,7 +239,7 @@ def test_gen_continued_event(test_session, nums_dataset):
 
     assert gen_event.event_type == CheckpointEventType.UDF_CONTINUED
     assert gen_event.rows_input == 6
-    assert gen_event.rows_reused == 4
+    assert gen_event.rows_reused == 2
     assert gen_event.rows_processed == 4
     assert gen_event.rows_generated == 8
     assert gen_event.rerun_from_job_id == first_job_id

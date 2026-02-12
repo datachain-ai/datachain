@@ -598,9 +598,12 @@ class UDFStep(Step, ABC):
         query: Select,
         continued: bool = False,
         rows_reused: int = 0,
+        output_rows_reused: int = 0,
+        rows_total: int | None = None,
     ) -> None:
         catalog = self.session.catalog
-        if (rows_total := catalog.warehouse.query_count(query)) == 0:
+        rows_to_process = catalog.warehouse.query_count(query)
+        if rows_to_process == 0:
             logger.debug(
                 "UDF(%s) [job=%s run_group=%s]: No rows to process, skipping",
                 self._udf_name,
@@ -615,15 +618,15 @@ class UDFStep(Step, ABC):
             get_udf_distributor_class,
         )
 
-        workers = determine_workers(self.workers, rows_total=rows_total)
-        processes = determine_processes(self.parallel, rows_total=rows_total)
+        workers = determine_workers(self.workers, rows_total=rows_to_process)
+        processes = determine_processes(self.parallel, rows_total=rows_to_process)
         logger.debug(
             "UDF(%s) [job=%s run_group=%s]: Processing %d rows "
             "(workers=%s, processes=%s, batch_size=%s)",
             self._udf_name,
             self._job_id_short,
             self._run_group_id_short,
-            rows_total,
+            rows_to_process,
             workers,
             processes,
             self.batch_size,
@@ -650,6 +653,7 @@ class UDFStep(Step, ABC):
                         workers=workers,
                         processes=processes,
                         udf_fields=udf_fields,
+                        rows_to_process=rows_to_process,
                         rows_total=rows_total,
                         use_cache=self.cache,
                         is_generator=self.is_generator,
@@ -657,6 +661,7 @@ class UDFStep(Step, ABC):
                         batch_size=self.batch_size,
                         continued=continued,
                         rows_reused=rows_reused,
+                        output_rows_reused=output_rows_reused,
                     )
                     udf_distributor()
                     return
@@ -692,7 +697,7 @@ class UDFStep(Step, ABC):
                         processes=processes,
                         is_generator=self.is_generator,
                         cache=self.cache,
-                        rows_total=rows_total,
+                        rows_total=rows_to_process,
                         batch_size=self.batch_size,
                     )
 
@@ -1068,7 +1073,7 @@ class UDFStep(Step, ABC):
 
         # Log checkpoint event with row counts
         rows_input = self.warehouse.table_rows_count(input_table)
-        rows_reused = self.warehouse.table_rows_count(output_table)
+        output_rows_reused = self.warehouse.table_rows_count(output_table)
         self._log_event(
             CheckpointEventType.UDF_SKIPPED,
             checkpoint_hash=checkpoint.hash,
@@ -1076,7 +1081,7 @@ class UDFStep(Step, ABC):
             rows_input=rows_input,
             rows_processed=0,
             rows_generated=0,
-            rows_reused=rows_reused,
+            rows_reused=rows_input,
         )
 
         # Register skipped UDF in the registry (no-op for local metastores)
@@ -1088,7 +1093,8 @@ class UDFStep(Step, ABC):
             job_id=self.job.id,
             tasks_created=0,
             skipped=True,
-            rows_reused=rows_reused,
+            rows_reused=rows_input,
+            output_rows_reused=output_rows_reused,
         )
 
         return output_table, input_table
@@ -1245,11 +1251,18 @@ class UDFStep(Step, ABC):
         )
 
         # Count rows before populating with new rows
-        rows_reused = self.warehouse.table_rows_count(partial_table)
-        rows_processed = self.warehouse.query_count(unprocessed_query)
+        output_rows_reused = self.warehouse.table_rows_count(partial_table)
+        rows_input = self.warehouse.table_rows_count(input_table)
+        rows_to_process = self.warehouse.query_count(unprocessed_query)
+        rows_reused = rows_input - rows_to_process  # input rows reused
 
         self.populate_udf_output_table(
-            partial_table, unprocessed_query, continued=True, rows_reused=rows_reused
+            partial_table,
+            unprocessed_query,
+            continued=True,
+            rows_reused=rows_reused,
+            output_rows_reused=output_rows_reused,
+            rows_total=rows_input,
         )
 
         output_table = self.warehouse.rename_table(
@@ -1267,9 +1280,8 @@ class UDFStep(Step, ABC):
         )
 
         # Log checkpoint event with row counts
-        rows_input = self.warehouse.table_rows_count(input_table)
         total_output = self.warehouse.table_rows_count(output_table)
-        rows_generated = total_output - rows_reused
+        rows_generated = total_output - output_rows_reused
         self._log_event(
             CheckpointEventType.UDF_CONTINUED,
             checkpoint_hash=hash_output,
@@ -1278,7 +1290,7 @@ class UDFStep(Step, ABC):
             hash_output=hash_output,
             rerun_from_job_id=checkpoint.job_id,
             rows_input=rows_input,
-            rows_processed=rows_processed,
+            rows_processed=rows_to_process,
             rows_generated=rows_generated,
             rows_reused=rows_reused,
         )
