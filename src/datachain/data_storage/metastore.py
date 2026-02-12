@@ -602,6 +602,28 @@ class AbstractMetastore(ABC, Serializable):
         """Get checkpoint events, optionally filtered by job_id or run_group_id."""
 
     #
+    # UDF Registry (SaaS only, no-op for local metastores)
+    #
+
+    def add_udf(
+        self,
+        udf_id: str,
+        name: str,
+        status: str,
+        rows_total: int,
+        job_id: str,
+        tasks_created: int,
+        skipped: bool = False,
+        continued: bool = False,
+        rows_reused: int = 0,
+        output_rows_reused: int = 0,
+    ) -> None:
+        """
+        Register a UDF in the registry.
+        No-op for local metastores, implemented in SaaS APIMetastore.
+        """
+
+    #
     # Dataset Version Jobs (many-to-many)
     #
 

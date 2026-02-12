@@ -27,7 +27,7 @@ class UdfInfo(TypedDict):
 
 class AbstractUDFDistributor(ABC):
     @abstractmethod
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         catalog: "Catalog",
         table: "Table",
@@ -37,11 +37,15 @@ class AbstractUDFDistributor(ABC):
         workers: bool | int,
         processes: bool | int,
         udf_fields: list[str],
-        rows_total: int,
-        use_cache: bool,
+        rows_to_process: int,
+        rows_total: int | None = None,
+        use_cache: bool = False,
         is_generator: bool = False,
         min_task_size: str | int | None = None,
         batch_size: int | None = None,
+        continued: bool = False,
+        rows_reused: int = 0,
+        output_rows_reused: int = 0,
     ) -> None: ...
 
     @abstractmethod
