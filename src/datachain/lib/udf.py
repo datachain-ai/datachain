@@ -49,16 +49,18 @@ class UdfError(DataChainParamsError):
     def __str__(self) -> str:
         return f"{self.__class__.__name__!s}: {self.message!s}"
 
-    def __reduce__(self):
-        """Custom reduce method for pickling."""
+    def __reduce__(self) -> tuple[type, tuple]:
         return self.__class__, (self.message,)
 
 
 class JsonSerializationError(UdfError):
-    def __init__(self, message: str, column_name: str, value: Any) -> None:
+    def __init__(self, message: str, column_name: str, value_repr: str) -> None:
         self.column_name = column_name
-        self.value = value
+        self.value_repr = value_repr
         super().__init__(message)
+
+    def __reduce__(self) -> tuple[type, tuple]:
+        return self.__class__, (self.message, self.column_name, self.value_repr)
 
 
 class UdfRunError(Exception):
@@ -82,7 +84,7 @@ class UdfRunError(Exception):
             return f"{self.error.__class__.__name__!s}: {self.error!s}"
         return f"{self.__class__.__name__!s}: {self.error!s}"
 
-    def __reduce__(self):
+    def __reduce__(self) -> tuple[type, tuple]:
         """Custom reduce method for pickling."""
         return self.__class__, (self.error, self.stacktrace, self.udf_name)
 
@@ -206,7 +208,7 @@ class UDFBase(AbstractUDF):
         For class-based UDFs, hashes the process method.
         """
         # Hash user code: either _func (function-based) or process method (class-based)
-        func_to_hash = self._func if self._func else self.process
+        func_to_hash = self._func or self.process
 
         parts = [
             hash_callable(func_to_hash),

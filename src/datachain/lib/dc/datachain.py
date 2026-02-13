@@ -416,7 +416,7 @@ class DataChain:
 
     def reset_settings(self, settings: Settings | None = None) -> "Self":
         """Reset all chain settings to default values."""
-        self._settings = settings if settings else Settings()
+        self._settings = settings or Settings()
         return self
 
     @classmethod
