@@ -1016,9 +1016,11 @@ class Catalog:
         """
         if not dataset.has_version(version):
             return
-        dataset = self.metastore.remove_dataset_version(dataset, version)
+        # Drop warehouse table first to prevent orphaned tables if process crashes
+        # between operations. Metastore entry remains for retry if drop fails.
         if drop_rows:
             self.warehouse.drop_dataset_rows_table(dataset, version)
+        self.metastore.remove_dataset_version(dataset, version)
 
     def get_temp_table_names(self) -> list[str]:
         return self.warehouse.get_temp_table_names()
