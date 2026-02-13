@@ -35,7 +35,11 @@ from datachain.data_storage.schema import (
     partition_columns,
 )
 from datachain.dataset import DatasetDependency, DatasetStatus, RowDict
-from datachain.error import DatasetNotFoundError, QueryScriptCancelError
+from datachain.error import (
+    DatasetNotFoundError,
+    QueryScriptAbortError,
+    QueryScriptCancelError,
+)
 from datachain.func.base import Function
 from datachain.hash_utils import hash_column_elements
 from datachain.lib.listing import is_listing_dataset, listing_dataset_expired
@@ -503,11 +507,14 @@ class UDFStep(Step, ABC):
         to select
         """
 
-    def populate_udf_table(self, udf_table: "Table", query: Select) -> None:
+    def populate_udf_table(self, udf_table: "Table", query: Select) -> None:  # noqa: PLR0915
         if (rows_total := self.catalog.warehouse.query_count(query)) == 0:
             return
 
-        from datachain.catalog import QUERY_SCRIPT_CANCELED_EXIT_CODE
+        from datachain.catalog import (
+            QUERY_SCRIPT_ABORTED_EXIT_CODE,
+            QUERY_SCRIPT_CANCELED_EXIT_CODE,
+        )
         from datachain.catalog.loader import (
             DISTRIBUTED_IMPORT_PATH,
             get_udf_distributor_class,
@@ -599,6 +606,14 @@ class UDFStep(Step, ABC):
                                 "UDF execution was canceled by the user."
                             ) from None
                         if retval := process.poll():
+                            if retval == QUERY_SCRIPT_CANCELED_EXIT_CODE:
+                                raise QueryScriptCancelError(
+                                    "UDF execution was canceled by the user."
+                                )
+                            if retval == QUERY_SCRIPT_ABORTED_EXIT_CODE:
+                                raise QueryScriptAbortError(
+                                    "UDF execution aborted: job already terminated."
+                                )
                             raise RuntimeError(
                                 f"UDF Execution Failed! Exit code: {retval}"
                             )
@@ -634,6 +649,9 @@ class UDFStep(Step, ABC):
                         processed_cb.close()
                         generated_cb.close()
 
+            except QueryScriptAbortError:
+                self.catalog.warehouse.close()
+                sys.exit(QUERY_SCRIPT_ABORTED_EXIT_CODE)
             except QueryScriptCancelError:
                 self.catalog.warehouse.close()
                 sys.exit(QUERY_SCRIPT_CANCELED_EXIT_CODE)
