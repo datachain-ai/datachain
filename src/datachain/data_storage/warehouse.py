@@ -203,9 +203,6 @@ class AbstractWarehouse(ABC, Serializable):
     # Query Tables
     #
 
-    @abstractmethod
-    def is_ready(self, timeout: int | None = None) -> bool: ...
-
     def dataset_rows(
         self,
         dataset: DatasetRecord,
