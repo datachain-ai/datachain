@@ -5,7 +5,7 @@ from numpy.testing import assert_array_almost_equal
 
 from datachain import func
 from datachain.sql import select
-from datachain.sql.types import Int, String
+from datachain.sql.types import Float, Int, String
 
 
 def test_cosine_distance(warehouse):
@@ -103,6 +103,55 @@ def test_get_element(warehouse):
             Int.default_value(db_dialect),
         ),
     )
+
+
+def test_get_element_negative_index(warehouse):
+    db_dialect = warehouse.db.dialect
+
+    query = select(
+        # Strings: -1 = last, -2 = second from last
+        func.array.get_element(["a", "b", "c", "d"], -1).label("str_neg1"),
+        func.array.get_element(["a", "b", "c", "d"], -2).label("str_neg2"),
+        func.array.get_element(["a", "b", "c", "d"], -4).label("str_neg4"),
+        # Ints
+        func.array.get_element([10, 20, 30], -1).label("int_neg1"),
+        func.array.get_element([10, 20, 30], -2).label("int_neg2"),
+        func.array.get_element([10, 20, 30], -3).label("int_neg3"),
+        # Floats
+        func.array.get_element([1.0, 2.0, 3.0], -1).label("float_neg1"),
+        func.array.get_element([1.0, 2.0, 3.0], -2).label("float_neg2"),
+        # Single element
+        func.array.get_element(["only"], -1).label("single_neg1"),
+        # Out of bounds (negative)
+        func.array.get_element(["a", "b"], -3).label("oob_str"),
+        func.array.get_element([10, 20], -3).label("oob_int"),
+        func.array.get_element([1.0, 2.0], -3).label("oob_float"),
+    )
+    result = tuple(warehouse.dataset_rows_select(query))
+    assert len(result) == 1
+    row = result[0]
+    expected = (
+        "d",
+        "c",
+        "a",
+        30,
+        20,
+        10,
+        3.0,
+        2.0,
+        "only",
+        String.default_value(db_dialect),
+        Int.default_value(db_dialect),
+    )
+    # Compare all but the last element (float OOB) which may be nan
+    assert row[:-1] == expected
+    float_default = Float.default_value(db_dialect)
+    if float_default is None:
+        assert row[-1] is None
+    elif math.isnan(float_default):
+        assert math.isnan(row[-1])
+    else:
+        assert row[-1] == float_default
 
 
 def test_contains(warehouse):
