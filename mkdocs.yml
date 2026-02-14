@@ -75,6 +75,7 @@ nav:
               - TextFile: references/data-types/textfile.md
               - ImageFile: references/data-types/imagefile.md
               - VideoFile: references/data-types/videofile.md
+              - AudioFile: references/data-types/audiofile.md
               - TarVFile: references/data-types/tarvfile.md
               - ArrowRow: references/data-types/arrowrow.md
               - BBox: references/data-types/bbox.md
