@@ -1080,6 +1080,8 @@ class UDFStep(Step, ABC):
         self._log_event(
             CheckpointEventType.UDF_SKIPPED,
             checkpoint_hash=checkpoint.hash,
+            hash_input=hash_input,
+            hash_output=checkpoint.hash,
             rerun_from_job_id=checkpoint.job_id,
             rows_input=rows_input,
             rows_processed=0,
@@ -1178,8 +1180,17 @@ class UDFStep(Step, ABC):
         """
         Continue UDF from parent's partial output. Returns (output_table, input_table)
         """
-        assert self.job.rerun_from_job_id is not None
-        assert checkpoint.job_id == self.job.rerun_from_job_id
+        if self.job.rerun_from_job_id is None:
+            raise RuntimeError(
+                f"UDF '{self._udf_name}': Cannot continue from checkpoint "
+                f"without a rerun_from_job_id"
+            )
+        if checkpoint.job_id != self.job.rerun_from_job_id:
+            raise RuntimeError(
+                f"UDF '{self._udf_name}': Checkpoint job_id mismatch — "
+                f"expected {self.job.rerun_from_job_id}, "
+                f"got {checkpoint.job_id}"
+            )
 
         print(f"UDF '{self._udf_name}': Continuing from checkpoint")
         logger.info(

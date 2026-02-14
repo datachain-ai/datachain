@@ -566,3 +566,132 @@ def test_file_udf_continue_from_partial(test_session, tmp_dir):
 
     # Second run should only process remaining files
     assert 0 < len(processed_files) <= 6
+
+
+def test_skip_udf_fallback_when_output_table_missing(test_session):
+    call_count = {"value": 0}
+
+    def mapper(num) -> int:
+        call_count["value"] += 1
+        return num * 10
+
+    dc.read_values(num=[1, 2, 3, 4, 5, 6], session=test_session).save("nums")
+    chain = dc.read_dataset("nums", session=test_session).map(result=mapper, output=int)
+
+    # -------------- FIRST RUN -------------------
+    reset_session_job_state()
+    assert chain.count() == 6
+    assert call_count["value"] == 6
+
+    catalog = test_session.catalog
+
+    # Drop all UDF output tables from first run
+    for table_name in catalog.warehouse.db.list_tables(prefix="udf_"):
+        if "_output" in table_name and "_partial" not in table_name:
+            table = catalog.warehouse.db.get_table(table_name)
+            catalog.warehouse.db.drop_table(table, if_exists=True)
+
+    # -------------- SECOND RUN -------------------
+    reset_session_job_state()
+    call_count["value"] = 0
+
+    result = chain.order_by("num").to_list("result")
+
+    # UDF should have been re-executed from scratch (fallback from skip)
+    assert call_count["value"] == 6
+    assert result == [(10,), (20,), (30,), (40,), (50,), (60,)]
+
+
+def test_continue_udf_fallback_when_partial_table_missing(test_session):
+    fail_flag = [True]
+
+    def mapper(num) -> int:
+        if fail_flag[0] and num >= 4:
+            raise RuntimeError("Simulated failure")
+        return num * 10
+
+    dc.read_values(num=[1, 2, 3, 4, 5, 6], session=test_session).save("nums")
+    chain = dc.read_dataset("nums", session=test_session).settings(batch_size=2)
+
+    # -------------- FIRST RUN (FAILS) -------------------
+    reset_session_job_state()
+    with pytest.raises(RuntimeError, match="Simulated failure"):
+        chain.map(result=mapper, output=int).save("results")
+
+    catalog = test_session.catalog
+    test_session.get_or_create_job()
+
+    # Drop all partial output tables from first run
+    for table_name in catalog.warehouse.db.list_tables(prefix="udf_"):
+        if "_partial" in table_name:
+            table = catalog.warehouse.db.get_table(table_name)
+            catalog.warehouse.db.drop_table(table, if_exists=True)
+
+    # -------------- SECOND RUN -------------------
+    reset_session_job_state()
+    fail_flag[0] = False
+
+    chain.map(result=mapper, output=int).save("results")
+
+    # UDF should have been re-executed from scratch (fallback from continue)
+    result = dc.read_dataset("results", session=test_session).to_list("result")
+    assert sorted(result) == [(10,), (20,), (30,), (40,), (50,), (60,)]
+
+
+def test_aggregator_checkpoint_no_partial_continuation(test_session):
+    call_count = {"value": 0}
+
+    def sum_by_group(num: list[int]) -> Iterator[tuple[int, int]]:
+        call_count["value"] += 1
+        total = sum(num)
+        count = len(num)
+        yield total, count
+
+    dc.read_values(
+        num=[1, 2, 3, 4, 5, 6],
+        category=["a", "a", "a", "b", "b", "b"],
+        session=test_session,
+    ).save("grouped_nums")
+
+    chain = dc.read_dataset("grouped_nums", session=test_session)
+
+    # -------------- FIRST RUN (FAILS) -------------------
+    reset_session_job_state()
+
+    fail_flag = [True]
+
+    def sum_by_group_buggy(num: list[int]) -> Iterator[tuple[int, int]]:
+        call_count["value"] += 1
+        if fail_flag[0] and call_count["value"] >= 2:
+            raise RuntimeError("Simulated aggregator failure")
+        total = sum(num)
+        count = len(num)
+        yield total, count
+
+    with pytest.raises(RuntimeError, match="Simulated aggregator failure"):
+        chain.agg(
+            sum_by_group_buggy,
+            partition_by="category",
+            output={"total": int, "count": int},
+        ).save("agg_results")
+
+    # -------------- SECOND RUN (FIXED) -------------------
+    reset_session_job_state()
+    call_count["value"] = 0
+    fail_flag[0] = False
+
+    chain.agg(
+        sum_by_group,
+        partition_by="category",
+        output={"total": int, "count": int},
+    ).save("agg_results")
+
+    # Aggregator should have run from scratch (not continued from partial)
+    # because partition_by prevents partial continuation
+    assert call_count["value"] == 2  # Two groups: "a" and "b"
+
+    result = sorted(
+        dc.read_dataset("agg_results", session=test_session).to_list("total", "count")
+    )
+    # Group "a": sum(1,2,3)=6, count=3; Group "b": sum(4,5,6)=15, count=3
+    assert result == [(6, 3), (15, 3)]

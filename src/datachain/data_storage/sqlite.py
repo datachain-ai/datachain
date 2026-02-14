@@ -31,7 +31,11 @@ from datachain.data_storage.buffer import InsertBuffer
 from datachain.data_storage.db_engine import DatabaseEngine
 from datachain.data_storage.schema import DefaultSchema
 from datachain.dataset import DatasetRecord, StorageURI
-from datachain.error import DataChainError, OutdatedDatabaseSchemaError
+from datachain.error import (
+    DataChainError,
+    OutdatedDatabaseSchemaError,
+    TableMissingError,
+)
 from datachain.namespace import Namespace
 from datachain.project import Project
 from datachain.sql.sqlite import create_user_defined_sql_functions, sqlite_dialect
@@ -853,7 +857,10 @@ class SQLiteWarehouse(AbstractWarehouse):
     def get_table(self, name: str) -> sqlalchemy.Table:
         # load table with latest schema to metadata
         self._reflect_tables(filter_tables=lambda t, _: t == name)
-        return self.db.metadata.tables[name]
+        try:
+            return self.db.metadata.tables[name]
+        except KeyError:
+            raise TableMissingError(f"Table '{name}' not found") from None
 
     def python_type(self, col_type: Union["TypeEngine", "SQLType"]) -> Any:
         if isinstance(col_type, SQLType):
