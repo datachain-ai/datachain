@@ -22,7 +22,7 @@ from datachain.query.batch import (
     Partition,
     RowsOutputBatch,
 )
-from datachain.utils import safe_closing
+from datachain.utils import safe_closing, with_last_flag
 
 if TYPE_CHECKING:
     from collections import abc
@@ -108,6 +108,10 @@ class UDFAdapter:
 
     def hash(self) -> str:
         return self.inner.hash()
+
+    def output_schema_hash(self) -> str:
+        """Hash of just the output schema (not including code or inputs)."""
+        return self.inner.output_schema_hash()
 
     def get_batching(self, use_partitioning: bool = False) -> BatchingStrategy:
         if use_partitioning:
@@ -219,6 +223,14 @@ class UDFBase(AbstractUDF):
         return hashlib.sha256(
             b"".join([bytes.fromhex(part) for part in parts])
         ).hexdigest()
+
+    def output_schema_hash(self) -> str:
+        """Hash of just the output schema (not including code or inputs).
+
+        Used for partial checkpoint hash to detect schema changes while
+        allowing code-only bug fixes to continue from partial results.
+        """
+        return self.output.hash()
 
     def process(self, *args, **kwargs):
         """Processing function that needs to be defined by user"""
@@ -346,14 +358,14 @@ class UDFBase(AbstractUDF):
                 if isinstance(field_value, DataModel):
                     self._set_stream_recursive(field_value, catalog, cache, download_cb)
 
-    def _prepare_row(self, row, udf_fields, catalog, cache, download_cb):
-        row_dict = RowDict(zip(udf_fields, row, strict=False))
-        return self._parse_row(row_dict, catalog, cache, download_cb)
-
-    def _prepare_row_and_id(self, row, udf_fields, catalog, cache, download_cb):
+    def _prepare_row(
+        self, row, udf_fields, catalog, cache, download_cb, include_id=False
+    ):
         row_dict = RowDict(zip(udf_fields, row, strict=False))
         udf_input = self._parse_row(row_dict, catalog, cache, download_cb)
-        return row_dict["sys__id"], *udf_input
+        if include_id:
+            return row_dict["sys__id"], *udf_input
+        return udf_input
 
 
 def noop(*args, **kwargs):
@@ -439,8 +451,8 @@ class Mapper(UDFBase):
         def _prepare_rows(udf_inputs) -> "abc.Generator[Sequence[Any], None, None]":
             with safe_closing(udf_inputs):
                 for row in udf_inputs:
-                    yield self._prepare_row_and_id(
-                        row, udf_fields, catalog, cache, download_cb
+                    yield self._prepare_row(
+                        row, udf_fields, catalog, cache, download_cb, include_id=True
                     )
 
         prepared_inputs = _prepare_rows(udf_inputs)
@@ -502,8 +514,8 @@ class BatchMapper(UDFBase):
             n_rows = len(batch)
             row_ids, *udf_args = zip(
                 *[
-                    self._prepare_row_and_id(
-                        row, udf_fields, catalog, cache, download_cb
+                    self._prepare_row(
+                        row, udf_fields, catalog, cache, download_cb, include_id=True
                     )
                     for row in batch
                 ],
@@ -547,14 +559,21 @@ class Generator(UDFBase):
             with safe_closing(udf_inputs):
                 for row in udf_inputs:
                     yield self._prepare_row(
-                        row, udf_fields, catalog, cache, download_cb
+                        row, udf_fields, catalog, cache, download_cb, include_id=True
                     )
 
         def _process_row(row):
+            row_id, *row = row
             with safe_closing(self.process(*row)) as result_objs:
-                for result_obj in result_objs:
+                for result_obj, is_last in with_last_flag(result_objs):
                     udf_output = self._flatten_row(result_obj)
-                    yield dict(zip(self.signal_names, udf_output, strict=False))
+                    udf_output = dict(zip(self.signal_names, udf_output, strict=False))
+                    # Include sys__input_id to track which input generated this
+                    # output.
+                    udf_output["sys__input_id"] = row_id  # input id
+                    # Mark as partial=True unless it's the last output
+                    udf_output["sys__partial"] = not is_last
+                    yield udf_output
 
         prepared_inputs = _prepare_rows(udf_inputs)
         prepared_inputs = _prefetch_inputs(
@@ -563,7 +582,14 @@ class Generator(UDFBase):
             download_cb=download_cb,
             remove_prefetched=bool(self.prefetch) and not cache,
         )
+
         with closing(prepared_inputs):
+            # TODO: Fix limitation where inputs yielding nothing are not tracked in
+            # processed table. Currently, if process() yields nothing for an input,
+            # that input's sys__id is never added to the processed table, causing it
+            # to be re-processed on checkpoint recovery. Solution: yield a marker
+            # row with sys__input_id when process() yields nothing, then filter
+            # these marker rows before inserting to output table.
             for row in prepared_inputs:
                 yield _process_row(row)
                 processed_cb.relative_update(1)

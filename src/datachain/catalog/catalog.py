@@ -1849,7 +1849,8 @@ class Catalog:
                     final_table_name = self.warehouse.dataset_table_name(
                         local_ds, local_ds_version
                     )
-                    self.warehouse.rename_table(temp_table_name, final_table_name)
+                    temp_table = self.warehouse.get_table(temp_table_name)
+                    self.warehouse.rename_table(temp_table, final_table_name)
 
                     self.update_dataset_version_with_warehouse_info(
                         local_ds, local_ds_version
