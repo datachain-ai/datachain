@@ -49,8 +49,9 @@ class CheckpointEvent:
     hash_output: str | None = None
     rows_input: int | None = None
     rows_processed: int | None = None
-    rows_generated: int | None = None
-    rows_reused: int | None = None
+    rows_output: int | None = None
+    rows_input_reused: int | None = None
+    rows_output_reused: int | None = None
     rerun_from_job_id: str | None = None
     details: dict | None = None
 
@@ -71,8 +72,9 @@ class CheckpointEvent:
         hash_output: str | None,
         rows_input: int | None,
         rows_processed: int | None,
-        rows_generated: int | None,
-        rows_reused: int | None,
+        rows_output: int | None,
+        rows_input_reused: int | None,
+        rows_output_reused: int | None,
         rerun_from_job_id: str | None,
         details: dict | None,
     ) -> "CheckpointEvent":
@@ -91,8 +93,9 @@ class CheckpointEvent:
             hash_output=hash_output,
             rows_input=rows_input,
             rows_processed=rows_processed,
-            rows_generated=rows_generated,
-            rows_reused=rows_reused,
+            rows_output=rows_output,
+            rows_input_reused=rows_input_reused,
+            rows_output_reused=rows_output_reused,
             rerun_from_job_id=rerun_from_job_id,
             details=details,
         )

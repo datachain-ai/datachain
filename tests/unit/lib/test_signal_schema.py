@@ -1,4 +1,5 @@
 import json
+import pickle
 from datetime import datetime
 from typing import (
     Any,
@@ -1259,6 +1260,33 @@ def test_setup_error():
     schema = SignalSchema({"name": str, "value": int}, {"init": lambda: 1 / 0})
     with pytest.raises(SetupError):
         schema.row_to_objs(("myname", 37))
+
+
+@pytest.mark.parametrize(
+    "err",
+    [
+        SetupError("client", "connection refused"),
+        SignalResolvingError(["file", "path"], "is not found"),
+        SignalResolvingError(None, "empty path"),
+        SignalResolvingTypeError("order_by", 123),
+        SignalRemoveError(["file", "size"], "cannot remove"),
+    ],
+)
+def test_signal_schema_errors_are_picklable(err):
+    restored = pickle.loads(pickle.dumps(err))  # noqa: S301
+    assert str(restored) == str(err)
+    assert type(restored) is type(err)
+
+
+def test_signal_resolving_type_error_with_unpicklable_field():
+    field = object()
+    err = SignalResolvingTypeError("select()", field)
+    assert repr(field) in str(err)
+    assert "object" in str(err)
+
+    restored = pickle.loads(pickle.dumps(err))  # noqa: S301
+    assert str(restored) == str(err)
+    assert type(restored) is SignalResolvingTypeError
 
 
 @pytest.mark.parametrize(

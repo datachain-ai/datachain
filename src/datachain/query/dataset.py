@@ -13,6 +13,7 @@ from copy import copy
 from functools import wraps
 from types import GeneratorType
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar
+from uuid import uuid4
 
 import attrs
 import sqlalchemy
@@ -591,9 +592,18 @@ class UDFStep(Step, ABC):
         to select
         """
 
-    def populate_udf_output_table(self, udf_table: "Table", query: Select) -> None:
+    def populate_udf_output_table(
+        self,
+        udf_table: "Table",
+        query: Select,
+        continued: bool = False,
+        rows_reused: int = 0,
+        output_rows_reused: int = 0,
+        rows_total: int | None = None,
+    ) -> None:
         catalog = self.session.catalog
-        if (rows_total := catalog.warehouse.query_count(query)) == 0:
+        rows_to_process = catalog.warehouse.query_count(query)
+        if rows_to_process == 0:
             logger.debug(
                 "UDF(%s) [job=%s run_group=%s]: No rows to process, skipping",
                 self._udf_name,
@@ -608,15 +618,15 @@ class UDFStep(Step, ABC):
             get_udf_distributor_class,
         )
 
-        workers = determine_workers(self.workers, rows_total=rows_total)
-        processes = determine_processes(self.parallel, rows_total=rows_total)
+        workers = determine_workers(self.workers, rows_total=rows_to_process)
+        processes = determine_processes(self.parallel, rows_total=rows_to_process)
         logger.debug(
             "UDF(%s) [job=%s run_group=%s]: Processing %d rows "
             "(workers=%s, processes=%s, batch_size=%s)",
             self._udf_name,
             self._job_id_short,
             self._run_group_id_short,
-            rows_total,
+            rows_to_process,
             workers,
             processes,
             self.batch_size,
@@ -643,11 +653,15 @@ class UDFStep(Step, ABC):
                         workers=workers,
                         processes=processes,
                         udf_fields=udf_fields,
+                        rows_to_process=rows_to_process,
                         rows_total=rows_total,
                         use_cache=self.cache,
                         is_generator=self.is_generator,
                         min_task_size=self.min_task_size,
                         batch_size=self.batch_size,
+                        continued=continued,
+                        rows_reused=rows_reused,
+                        output_rows_reused=output_rows_reused,
                     )
                     udf_distributor()
                     return
@@ -683,7 +697,7 @@ class UDFStep(Step, ABC):
                         processes=processes,
                         is_generator=self.is_generator,
                         cache=self.cache,
-                        rows_total=rows_total,
+                        rows_total=rows_to_process,
                         batch_size=self.batch_size,
                     )
 
@@ -834,8 +848,9 @@ class UDFStep(Step, ABC):
         hash_output: str | None = None,
         rows_input: int | None = None,
         rows_processed: int | None = None,
-        rows_generated: int | None = None,
-        rows_reused: int | None = None,
+        rows_output: int | None = None,
+        rows_input_reused: int | None = None,
+        rows_output_reused: int | None = None,
         rerun_from_job_id: str | None = None,
         details: dict | None = None,
     ) -> None:
@@ -852,22 +867,24 @@ class UDFStep(Step, ABC):
             hash_output=hash_output,
             rows_input=rows_input,
             rows_processed=rows_processed,
-            rows_generated=rows_generated,
-            rows_reused=rows_reused,
+            rows_output=rows_output,
+            rows_input_reused=rows_input_reused,
+            rows_output_reused=rows_output_reused,
             rerun_from_job_id=rerun_from_job_id,
             details=details,
         )
         logger.info(
             "UDF(%s) [job=%s run_group=%s]: %s - "
-            "input=%s, processed=%s, generated=%s, reused=%s",
+            "input=%s, processed=%s, output=%s, input_reused=%s, output_reused=%s",
             self._udf_name,
             self._job_id_short,
             self._run_group_id_short,
             event_type.value,
             rows_input,
             rows_processed,
-            rows_generated,
-            rows_reused,
+            rows_output,
+            rows_input_reused,
+            rows_output_reused,
         )
 
     def _find_udf_checkpoint(
@@ -1059,15 +1076,31 @@ class UDFStep(Step, ABC):
 
         # Log checkpoint event with row counts
         rows_input = self.warehouse.table_rows_count(input_table)
-        rows_reused = self.warehouse.table_rows_count(output_table)
+        output_rows_reused = self.warehouse.table_rows_count(output_table)
         self._log_event(
             CheckpointEventType.UDF_SKIPPED,
             checkpoint_hash=checkpoint.hash,
+            hash_input=hash_input,
+            hash_output=checkpoint.hash,
             rerun_from_job_id=checkpoint.job_id,
             rows_input=rows_input,
             rows_processed=0,
-            rows_generated=0,
-            rows_reused=rows_reused,
+            rows_output=0,
+            rows_input_reused=rows_input,
+            rows_output_reused=output_rows_reused,
+        )
+
+        # Register skipped UDF in the registry (no-op for local metastores)
+        self.metastore.add_udf(
+            udf_id=str(uuid4()),
+            name=self._udf_name,
+            status="DONE",
+            rows_total=rows_input,
+            job_id=self.job.id,
+            tasks_created=0,
+            skipped=True,
+            rows_reused=rows_input,
+            output_rows_reused=output_rows_reused,
         )
 
         return output_table, input_table
@@ -1134,8 +1167,9 @@ class UDFStep(Step, ABC):
             hash_output=hash_output,
             rows_input=rows_input,
             rows_processed=rows_input,
-            rows_generated=rows_generated,
-            rows_reused=0,
+            rows_output=rows_generated,
+            rows_input_reused=0,
+            rows_output_reused=0,
         )
 
         return output_table, input_table
@@ -1146,8 +1180,17 @@ class UDFStep(Step, ABC):
         """
         Continue UDF from parent's partial output. Returns (output_table, input_table)
         """
-        assert self.job.rerun_from_job_id is not None
-        assert checkpoint.job_id == self.job.rerun_from_job_id
+        if self.job.rerun_from_job_id is None:
+            raise RuntimeError(
+                f"UDF '{self._udf_name}': Cannot continue from checkpoint "
+                f"without a rerun_from_job_id"
+            )
+        if checkpoint.job_id != self.job.rerun_from_job_id:
+            raise RuntimeError(
+                f"UDF '{self._udf_name}': Checkpoint job_id mismatch — "
+                f"expected {self.job.rerun_from_job_id}, "
+                f"got {checkpoint.job_id}"
+            )
 
         print(f"UDF '{self._udf_name}': Continuing from checkpoint")
         logger.info(
@@ -1215,17 +1258,28 @@ class UDFStep(Step, ABC):
                 create_fn=self.create_output_table,
             )
 
+        input_query = self.get_input_query(input_table.name, query)
+
         unprocessed_query = self.calculate_unprocessed_rows(
-            self.warehouse.get_table(input_table.name),
+            input_query,
             partial_table,
             incomplete_input_ids,
         )
 
         # Count rows before populating with new rows
-        rows_reused = self.warehouse.table_rows_count(partial_table)
-        rows_processed = self.warehouse.query_count(unprocessed_query)
+        output_rows_reused = self.warehouse.table_rows_count(partial_table)
+        rows_input = self.warehouse.table_rows_count(input_table)
+        rows_to_process = self.warehouse.query_count(unprocessed_query)
+        rows_reused = rows_input - rows_to_process  # input rows reused
 
-        self.populate_udf_output_table(partial_table, unprocessed_query)
+        self.populate_udf_output_table(
+            partial_table,
+            unprocessed_query,
+            continued=True,
+            rows_reused=rows_reused,
+            output_rows_reused=output_rows_reused,
+            rows_total=rows_input,
+        )
 
         output_table = self.warehouse.rename_table(
             partial_table, UDFStep.output_table_name(self.job.id, hash_output)
@@ -1242,9 +1296,8 @@ class UDFStep(Step, ABC):
         )
 
         # Log checkpoint event with row counts
-        rows_input = self.warehouse.table_rows_count(input_table)
         total_output = self.warehouse.table_rows_count(output_table)
-        rows_generated = total_output - rows_reused
+        rows_generated = total_output - output_rows_reused
         self._log_event(
             CheckpointEventType.UDF_CONTINUED,
             checkpoint_hash=hash_output,
@@ -1253,9 +1306,10 @@ class UDFStep(Step, ABC):
             hash_output=hash_output,
             rerun_from_job_id=checkpoint.job_id,
             rows_input=rows_input,
-            rows_processed=rows_processed,
-            rows_generated=rows_generated,
-            rows_reused=rows_reused,
+            rows_processed=rows_to_process,
+            rows_output=rows_generated,
+            rows_input_reused=rows_reused,
+            rows_output_reused=output_rows_reused,
         )
 
         return output_table, input_table
@@ -1286,7 +1340,7 @@ class UDFStep(Step, ABC):
 
     def calculate_unprocessed_rows(
         self,
-        input_table: "Table",
+        input_query: Select,
         partial_table: "Table",
         incomplete_input_ids: None | list[int] = None,
     ):
@@ -1294,7 +1348,7 @@ class UDFStep(Step, ABC):
         Calculate which input rows haven't been processed yet.
 
         Args:
-            input_table: The UDF input table
+            input_query: Select query for the UDF input table (with proper types)
             partial_table: The UDF partial table
             incomplete_input_ids: List of input IDs that were partially processed
                 and need to be re-run (for generators only)
@@ -1306,8 +1360,7 @@ class UDFStep(Step, ABC):
         # Get processed input IDs using subclass-specific logic
         processed_input_ids_subquery = self.processed_input_ids_query(partial_table)
 
-        query = sa.select(input_table)
-        sys_id_col = query.selected_columns.sys__id
+        sys_id_col = input_query.selected_columns.sys__id
 
         # Build filter: rows that haven't been processed OR were incompletely processed
         unprocessed_filter: sa.ColumnElement[bool] = sys_id_col.notin_(
@@ -1320,7 +1373,7 @@ class UDFStep(Step, ABC):
                 unprocessed_filter, sys_id_col.in_(incomplete_input_ids)
             )
 
-        return query.where(unprocessed_filter)
+        return input_query.where(unprocessed_filter)
 
 
 @frozen

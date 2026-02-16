@@ -170,7 +170,7 @@ class AbstractWarehouse(ABC, Serializable):
                 raise JsonSerializationError(
                     f"JSON serialization error: {e}",
                     column_name=col_name,
-                    value=val,
+                    value_repr=repr(val),
                 ) from e
 
         if isinstance(val, col_python_type):

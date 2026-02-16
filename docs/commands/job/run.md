@@ -14,7 +14,7 @@ usage: datachain job run [-h] [-v] [-q] [--team TEAM] [--env-file ENV_FILE]
                          [--req-file REQ_FILE] [--req REQ [REQ ...]]
                          [--priority PRIORITY]
                          [--start-time START_TIME] [--cron CRON]
-                         [--no-wait] [--ignore-checkpoints]
+                         [--no-wait] [--no-follow] [--ignore-checkpoints]
                          file
 ```
 
@@ -43,6 +43,7 @@ This command runs a job in Studio using the specified query file. You can config
 * `--start-time START_TIME` - Time to schedule the task in YYYY-MM-DDTHH:mm format or natural language.
 * `--cron CRON` - Cron expression for the cron task.
 * `--no-wait` - Do not wait for the job to finish.
+* `--no-follow` - Do not print the job logs to the console
 * `--ignore-checkpoints` - Ignore existing checkpoints and run from scratch.
 * `-h`, `--help` - Show the help message and exit.
 * `-v`, `--verbose` - Be verbose.
@@ -153,6 +154,12 @@ datachain job run --start-time "tomorrow 3pm" --cron "0 0 * * *" query.py
 ```bash
 # Do not follow or tail the logs from Studio.
 datachain job run query.py --no-wait
+```
+
+14. Start the job and wait for completion but don't print logs
+```bash
+# Useful for CI where you just want to wait for the completion of the jobs.
+datachain job run query.py --no-follow
 ```
 
 ## Notes

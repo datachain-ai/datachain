@@ -611,8 +611,9 @@ class AbstractMetastore(ABC, Serializable):
         hash_output: str | None = None,
         rows_input: int | None = None,
         rows_processed: int | None = None,
-        rows_generated: int | None = None,
-        rows_reused: int | None = None,
+        rows_output: int | None = None,
+        rows_input_reused: int | None = None,
+        rows_output_reused: int | None = None,
         rerun_from_job_id: str | None = None,
         details: dict | None = None,
         conn: Any | None = None,
@@ -627,6 +628,28 @@ class AbstractMetastore(ABC, Serializable):
         conn: Any | None = None,
     ) -> Iterator["CheckpointEvent"]:
         """Get checkpoint events, optionally filtered by job_id or run_group_id."""
+
+    #
+    # UDF Registry (SaaS only, no-op for local metastores)
+    #
+
+    def add_udf(
+        self,
+        udf_id: str,
+        name: str,
+        status: str,
+        rows_total: int,
+        job_id: str,
+        tasks_created: int,
+        skipped: bool = False,
+        continued: bool = False,
+        rows_reused: int = 0,
+        output_rows_reused: int = 0,
+    ) -> None:
+        """
+        Register a UDF in the registry.
+        No-op for local metastores, implemented in SaaS APIMetastore.
+        """
 
     #
     # Dataset Version Jobs (many-to-many)
@@ -2238,8 +2261,9 @@ class AbstractDBMetastore(AbstractMetastore):
             Column("hash_output", Text, nullable=True),
             Column("rows_input", BigInteger, nullable=True),
             Column("rows_processed", BigInteger, nullable=True),
-            Column("rows_generated", BigInteger, nullable=True),
-            Column("rows_reused", BigInteger, nullable=True),
+            Column("rows_output", BigInteger, nullable=True),
+            Column("rows_input_reused", BigInteger, nullable=True),
+            Column("rows_output_reused", BigInteger, nullable=True),
             Column("rerun_from_job_id", Text, nullable=True),
             Column("details", JSON, nullable=True),
             Index("dc_idx_ce_job_id", "job_id"),
@@ -2434,8 +2458,9 @@ class AbstractDBMetastore(AbstractMetastore):
         hash_output: str | None = None,
         rows_input: int | None = None,
         rows_processed: int | None = None,
-        rows_generated: int | None = None,
-        rows_reused: int | None = None,
+        rows_output: int | None = None,
+        rows_input_reused: int | None = None,
+        rows_output_reused: int | None = None,
         rerun_from_job_id: str | None = None,
         details: dict | None = None,
         conn: Any | None = None,
@@ -2459,8 +2484,9 @@ class AbstractDBMetastore(AbstractMetastore):
             hash_output=hash_output,
             rows_input=rows_input,
             rows_processed=rows_processed,
-            rows_generated=rows_generated,
-            rows_reused=rows_reused,
+            rows_output=rows_output,
+            rows_input_reused=rows_input_reused,
+            rows_output_reused=rows_output_reused,
             rerun_from_job_id=rerun_from_job_id,
             details=details,
         )
@@ -2481,8 +2507,9 @@ class AbstractDBMetastore(AbstractMetastore):
             hash_output=hash_output,
             rows_input=rows_input,
             rows_processed=rows_processed,
-            rows_generated=rows_generated,
-            rows_reused=rows_reused,
+            rows_output=rows_output,
+            rows_input_reused=rows_input_reused,
+            rows_output_reused=rows_output_reused,
             rerun_from_job_id=rerun_from_job_id,
             details=details,
         )
