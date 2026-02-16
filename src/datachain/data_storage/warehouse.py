@@ -391,22 +391,6 @@ class AbstractWarehouse(ABC, Serializable):
     ) -> sa.Table:
         """Creates a dataset rows table for the given dataset name and columns"""
 
-    def create_temp_dataset_table(
-        self,
-        columns: Sequence["sa.Column"],
-    ) -> str:
-        """
-        Create a temporary table for dataset staging.
-
-        This creates a table with the tmp_ prefix for staging data before
-        atomically committing it to a final dataset table.
-
-        Returns the generated temporary table name.
-        """
-        name = self.temp_table_name()
-        self.create_dataset_rows_table(name, columns=columns)
-        return name
-
     def insert_dataframe_to_table(self, table_name: str, df) -> int:
         """
         Insert dataframe into any table by name.

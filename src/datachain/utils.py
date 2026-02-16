@@ -205,10 +205,6 @@ def interprocess_file_lock(
                 )
             finally:
                 lock.release()
-                try:
-                    os.remove(lock_path)
-                except OSError:
-                    pass
 
 
 @dataclass

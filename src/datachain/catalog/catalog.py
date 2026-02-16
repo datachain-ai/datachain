@@ -1791,7 +1791,10 @@ class Catalog:
                 # Phase 1: Create temporary staging table (no metadata yet)
                 # If the process is killed here, only an orphaned tmp_ table remains,
                 # which will be cleaned up by 'datachain gc'
-                temp_table_name = self.warehouse.create_temp_dataset_table(columns)
+                temp_table_name = self.warehouse.temp_table_name()
+                self.warehouse.create_dataset_rows_table(
+                    temp_table_name, columns=columns
+                )
 
                 # asking remote to export dataset rows table to s3 and to return signed
                 # urls of exported parts, which are in parquet format
