@@ -19,4 +19,7 @@ List of environment variables used to configure DataChain behavior.
 - `DATACHAIN_NAMESPACE` – Namespace name to use as default.
 - `DATACHAIN_PROJECT` – Project name or combination of namespace name and project name separated by `.` to use as default, example: `DATACHAIN_PROJECT=dev.analytics`
 
+### Checkpoints
+.- `DATACHAIN_IGNORE_CHECKPOINTS` – When set to `1` or `true`, ignores all existing checkpoints and runs the script from scratch, forcing DataChain to recreate all datasets.
+
 Note: Some environment variables are used internally and may not be documented here. For the most up-to-date list, refer to the source code.
