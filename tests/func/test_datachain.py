@@ -8,7 +8,7 @@ from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from typing import cast
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 from urllib.parse import urlparse
 
 import numpy as np
@@ -277,7 +277,11 @@ def test_to_storage(
     file_type,
     num_threads,
 ):
-    mapper = Mock(side_effect=lambda file_path: len(file_path))  # noqa: PLW0108
+    call_count = {"count": 0}
+
+    def mapper(file_path):
+        call_count["count"] += 1
+        return len(file_path)
 
     ctc = cloud_test_catalog
     df = dc.read_storage(ctc.src_uri, type=file_type, session=test_session)
@@ -330,7 +334,7 @@ def test_to_storage(
         with (output_root / destination_rel).open() as f:
             assert f.read() == expected[file_obj.name]
 
-    assert mapper.call_count == len(expected)
+    assert call_count["count"] == len(expected)
 
 
 @pytest.mark.parametrize("use_cache", [True, False])

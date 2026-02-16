@@ -1,5 +1,4 @@
 import copy
-import hashlib
 import logging
 import os
 import os.path
@@ -23,7 +22,8 @@ from sqlalchemy.sql.elements import ColumnElement
 from tqdm import tqdm
 
 from datachain import json, semver
-from datachain.dataset import DatasetRecord
+from datachain.checkpoint_event import CheckpointEventType, CheckpointStepType
+from datachain.dataset import DatasetRecord, create_dataset_full_name
 from datachain.delta import delta_disabled
 from datachain.error import (
     JobAncestryDepthExceededError,
@@ -63,7 +63,13 @@ from datachain.query.dataset import (
 )
 from datachain.query.schema import DEFAULT_DELIMITER, Column
 from datachain.sql.functions import path as pathfunc
-from datachain.utils import batched_it, env2bool, inside_notebook, row_to_nested_dict
+from datachain.utils import (
+    batched_it,
+    checkpoints_enabled,
+    env2bool,
+    inside_notebook,
+    row_to_nested_dict,
+)
 
 from .database import DEFAULT_DATABASE_BATCH_SIZE
 from .utils import (
@@ -288,6 +294,13 @@ class DataChain:
     def session(self) -> Session:
         """Session of the chain."""
         return self._query.session
+
+    @property
+    def job(self) -> Job:
+        """
+        Get existing job if running in SaaS, or creating new one if running locally
+        """
+        return self.session.get_or_create_job()
 
     @property
     def name(self) -> str | None:
@@ -586,19 +599,6 @@ class DataChain:
             signal_schema=self.signals_schema | SignalSchema({"sys": Sys}),
         )
 
-    def _calculate_job_hash(self, job_id: str) -> str:
-        """
-        Calculates hash of the job at the place of this chain's save method.
-        Hash is calculated using previous job checkpoint hash (if exists) and
-        adding hash of this chain to produce new hash.
-        """
-        last_checkpoint = self.session.catalog.metastore.get_last_checkpoint(job_id)
-
-        return hashlib.sha256(
-            (bytes.fromhex(last_checkpoint.hash) if last_checkpoint else b"")
-            + bytes.fromhex(self.hash())
-        ).hexdigest()
-
     def save(  # type: ignore[override]
         self,
         name: str,
@@ -632,9 +632,6 @@ class DataChain:
         self._validate_version(version)
         self._validate_update_version(update_version)
 
-        # get existing job if running in SaaS, or creating new one if running locally
-        job = self.session.get_or_create_job()
-
         namespace_name, project_name, name = catalog.get_full_dataset_name(
             name,
             namespace_name=self._settings.namespace,
@@ -642,8 +639,16 @@ class DataChain:
         )
         project = self._get_or_create_project(namespace_name, project_name)
 
+        # Calculate hash including dataset name and job context to avoid conflicts
+        import hashlib
+
+        base_hash = self._query.hash(job_aware=True)
+        _hash = hashlib.sha256(
+            (base_hash + f"{namespace_name}/{project_name}/{name}").encode("utf-8")
+        ).hexdigest()
+
         # Checkpoint handling
-        _hash, result = self._resolve_checkpoint(name, project, job, kwargs)
+        result = self._resolve_checkpoint(name, project, _hash, kwargs)
         if bool(result):
             # Checkpoint was found and reused
             print(f"Checkpoint found for dataset '{name}', skipping creation")
@@ -670,7 +675,22 @@ class DataChain:
                 )
             )
 
-        catalog.metastore.create_checkpoint(job.id, _hash)  # type: ignore[arg-type]
+            # Log checkpoint event for new dataset save
+            assert result.version is not None
+            full_dataset_name = create_dataset_full_name(
+                namespace_name, project_name, name, result.version
+            )
+            catalog.metastore.log_checkpoint_event(
+                job_id=self.job.id,
+                event_type=CheckpointEventType.DATASET_SAVE_COMPLETED,
+                step_type=CheckpointStepType.DATASET_SAVE,
+                run_group_id=self.job.run_group_id,
+                dataset_name=full_dataset_name,
+                checkpoint_hash=_hash,
+            )
+
+        if checkpoints_enabled():
+            catalog.metastore.get_or_create_checkpoint(self.job.id, _hash)
         return result
 
     def _validate_version(self, version: str | None) -> None:
@@ -699,21 +719,20 @@ class DataChain:
         self,
         name: str,
         project: Project,
-        job: Job,
+        job_hash: str,
         kwargs: dict,
-    ) -> tuple[str, "DataChain | None"]:
+    ) -> "DataChain | None":
         """Check if checkpoint exists and return cached dataset if possible."""
         from .datasets import read_dataset
 
         metastore = self.session.catalog.metastore
-        checkpoints_reset = env2bool("DATACHAIN_CHECKPOINTS_RESET", undefined=True)
-
-        _hash = self._calculate_job_hash(job.id)
+        ignore_checkpoints = env2bool("DATACHAIN_IGNORE_CHECKPOINTS", undefined=False)
 
         if (
-            job.rerun_from_job_id
-            and not checkpoints_reset
-            and metastore.find_checkpoint(job.rerun_from_job_id, _hash)
+            checkpoints_enabled()
+            and self.job.rerun_from_job_id
+            and not ignore_checkpoints
+            and metastore.find_checkpoint(self.job.rerun_from_job_id, job_hash)
         ):
             # checkpoint found → find which dataset version to reuse
 
@@ -723,7 +742,7 @@ class DataChain:
                     name,
                     project.namespace.name,
                     project.name,
-                    job.id,
+                    self.job.id,
                 )
             except JobAncestryDepthExceededError:
                 raise JobAncestryDepthExceededError(
@@ -737,18 +756,18 @@ class DataChain:
                     "Checkpoint found but no dataset version for '%s' "
                     "in job ancestry (job_id=%s). Creating new version.",
                     name,
-                    job.id,
+                    self.job.id,
                 )
                 # Dataset version not found (e.g deleted by user) - skip
                 # checkpoint and recreate
-                return _hash, None
+                return None
 
             logger.debug(
                 "Reusing dataset version '%s' v%s from job ancestry "
                 "(job_id=%s, dataset_version_id=%s)",
                 name,
                 dataset_version.version,
-                job.id,
+                self.job.id,
                 dataset_version.id,
             )
 
@@ -765,13 +784,27 @@ class DataChain:
             # This also updates dataset_version.job_id.
             metastore.link_dataset_version_to_job(
                 dataset_version.id,
-                job.id,
+                self.job.id,
                 is_creator=False,
             )
 
-            return _hash, chain
+            # Log checkpoint event
+            full_dataset_name = create_dataset_full_name(
+                project.namespace.name, project.name, name, dataset_version.version
+            )
+            metastore.log_checkpoint_event(
+                job_id=self.job.id,
+                event_type=CheckpointEventType.DATASET_SAVE_SKIPPED,
+                step_type=CheckpointStepType.DATASET_SAVE,
+                run_group_id=self.job.run_group_id,
+                dataset_name=full_dataset_name,
+                checkpoint_hash=job_hash,
+                rerun_from_job_id=self.job.rerun_from_job_id,
+            )
 
-        return _hash, None
+            return chain
+
+        return None
 
     def _handle_delta(
         self,
@@ -1838,16 +1871,18 @@ class DataChain:
 
         if on is None and right_on is None:
             other_columns = set(other._effective_signals_schema.db_signals())
-            signals = [
+            common_signals = [
                 c
                 for c in self._effective_signals_schema.db_signals()
                 if c in other_columns
             ]
-            if not signals:
+            if not common_signals:
                 raise DataChainParamsError("subtract(): no common columns")
+            signals = list(zip(common_signals, common_signals, strict=False))
         elif on is not None and right_on is None:
             right_on = on
-            signals = list(self.signals_schema.resolve(*on).db_signals())
+            resolved_signals = list(self.signals_schema.resolve(*on).db_signals())
+            signals = list(zip(resolved_signals, resolved_signals, strict=False))  # type: ignore[arg-type]
         elif on is None and right_on is not None:
             raise DataChainParamsError(
                 "'on' must be specified when 'right_on' is provided"
