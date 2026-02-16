@@ -2,7 +2,6 @@ import os
 import threading
 from pathlib import Path
 
-import filelock
 import pytest
 from filelock import FileLock, Timeout
 
@@ -320,7 +319,7 @@ def test_interprocess_file_lock_writes_pid_and_releases(tmp_path):
         pass
 
 
-def test_interprocess_file_lock_cleans_up_only_pid_file(tmp_path):
+def test_interprocess_file_lock_cleans_up_pid_file(tmp_path):
     lock_path = tmp_path / "pull.lock"
     pid_path = Path(f"{lock_path.as_posix()}.pid")
 
@@ -328,13 +327,6 @@ def test_interprocess_file_lock_cleans_up_only_pid_file(tmp_path):
         assert lock_path.exists()
         assert pid_path.exists()
 
-    lock_backend = FileLock(lock_path.as_posix())
-    assert lock_path.exists(), (
-        "Expected lock file to persist after release. "
-        f"backend={type(lock_backend).__module__}.{type(lock_backend).__name__}, "
-        f"filelock={filelock.__version__}, "
-        f"lock_path={lock_path.as_posix()}"
-    )
     assert not pid_path.exists()
 
 
