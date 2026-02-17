@@ -648,11 +648,6 @@ def test_continue_udf_fallback_when_partial_table_missing(test_session):
 
 
 def test_aggregator_continue_from_partial(test_session, nums_letters):
-    """Test continuing Aggregator from partial output with partition_by.
-
-    Simulates real-world scenario: user writes buggy aggregator, it fails, then
-    fixes bug and reruns.
-    """
     fail_after_count = 2
     processed_partitions = []
 
@@ -722,17 +717,12 @@ def test_aggregator_continue_from_partial(test_session, nums_letters):
     # Should have exactly 3 outputs (no duplicates)
     assert result == expected
 
-    # KEY TEST: Verify checkpoint continuation worked
     # Second run should only process the remaining partition(s), not all 3
     assert second_run_count < 3
-    # Total partitions processed across both runs should equal 3
     assert first_run_count + second_run_count == 3
 
 
 def test_aggregator_skip_completed(test_session, nums_letters):
-    """
-    Test that a completed aggregator with partition_by is properly skipped on rerun.
-    """
     call_count = []
 
     def aggregator_func(letter, num) -> Iterator[tuple[str, int]]:
@@ -753,7 +743,6 @@ def test_aggregator_skip_completed(test_session, nums_letters):
     first_run_count = len(call_count)
     assert first_run_count == 3  # Processed all 3 partitions
 
-    # Verify results
     result = sorted(
         dc.read_dataset("agg_results", session=test_session).to_list(
             "total_0", "total_1"
@@ -772,7 +761,6 @@ def test_aggregator_skip_completed(test_session, nums_letters):
         partition_by="letter",
     ).save("agg_results")
 
-    # KEY TEST: Aggregator should not have been called (skipped)
     assert len(call_count) == 0
 
     # Verify results are still correct

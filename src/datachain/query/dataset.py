@@ -1422,7 +1422,7 @@ class UDFStep(Step, ABC):
         input_query: Select,
         partial_table: "Table",
         incomplete_input_ids: None | list[int] = None,
-    ):
+    ) -> Select:
         """
         Calculate which input rows haven't been processed yet.
 
