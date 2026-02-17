@@ -17,6 +17,15 @@ def nums_dataset(test_session):
     return dc.read_values(num=[1, 2, 3, 4, 5, 6], session=test_session).save("nums")
 
 
+@pytest.fixture
+def nums_letters(test_session):
+    nums_data = [1, 2, 3, 4, 5, 6]
+    leters_data = ["A", "A", "B", "B", "C", "C"]
+    return dc.read_values(num=nums_data, letter=leters_data, session=test_session).save(
+        "nums_letters"
+    )
+
+
 @pytest.mark.parametrize(
     "batch_size,fail_after_count",
     [
@@ -638,60 +647,138 @@ def test_continue_udf_fallback_when_partial_table_missing(test_session):
     assert sorted(result) == [(10,), (20,), (30,), (40,), (50,), (60,)]
 
 
-def test_aggregator_checkpoint_no_partial_continuation(test_session):
-    call_count = {"value": 0}
+def test_aggregator_continue_from_partial(test_session, nums_letters):
+    """Test continuing Aggregator from partial output with partition_by.
 
-    def sum_by_group(num: list[int]) -> Iterator[tuple[int, int]]:
-        call_count["value"] += 1
-        total = sum(num)
-        count = len(num)
-        yield total, count
+    Simulates real-world scenario: user writes buggy aggregator, it fails, then
+    fixes bug and reruns.
+    """
+    fail_after_count = 2
+    processed_partitions = []
 
-    dc.read_values(
-        num=[1, 2, 3, 4, 5, 6],
-        category=["a", "a", "a", "b", "b", "b"],
-        session=test_session,
-    ).save("grouped_nums")
+    def buggy_aggregator(letter, num) -> Iterator[tuple[str, int]]:
+        """
+        Buggy aggregator that fails before processing the (fail_after_count+1)th
+        partition.
+        letter: partition key value (A, B, or C)
+        num: iterator of num values in that partition
+        """
+        if len(processed_partitions) >= fail_after_count:
+            raise Exception(
+                f"Simulated failure after {len(processed_partitions)} partitions"
+            )
+        nums_list = list(num)
+        processed_partitions.append(nums_list)
+        # Yield tuple of (letter, sum) to preserve partition key in output
+        yield letter[0], sum(n for n in nums_list)
 
-    chain = dc.read_dataset("grouped_nums", session=test_session)
+    def fixed_aggregator(letter, num) -> Iterator[tuple[str, int]]:
+        """Fixed aggregator that works correctly."""
+        nums_list = list(num)
+        processed_partitions.append(nums_list)
+        # Yield tuple of (letter, sum) to preserve partition key in output
+        yield letter[0], sum(n for n in nums_list)
 
-    # -------------- FIRST RUN (FAILS) -------------------
+    # -------------- FIRST RUN (FAILS WITH BUGGY AGGREGATOR) -------------------
     reset_session_job_state()
 
-    fail_flag = [True]
-
-    def sum_by_group_buggy(num: list[int]) -> Iterator[tuple[int, int]]:
-        call_count["value"] += 1
-        if fail_flag[0] and call_count["value"] >= 2:
-            raise RuntimeError("Simulated aggregator failure")
-        total = sum(num)
-        count = len(num)
-        yield total, count
-
-    with pytest.raises(RuntimeError, match="Simulated aggregator failure"):
+    chain = dc.read_dataset("nums_letters", session=test_session).settings(batch_size=1)
+    with pytest.raises(Exception, match="Simulated failure after"):
         chain.agg(
-            sum_by_group_buggy,
-            partition_by="category",
-            output={"total": int, "count": int},
+            total=buggy_aggregator,
+            partition_by="letter",
         ).save("agg_results")
 
-    # -------------- SECOND RUN (FIXED) -------------------
-    reset_session_job_state()
-    call_count["value"] = 0
-    fail_flag[0] = False
+    first_run_count = len(processed_partitions)
+    assert first_run_count == fail_after_count
 
+    # -------------- SECOND RUN (FIXED AGGREGATOR) -------------------
+    reset_session_job_state()
+    processed_partitions.clear()
+
+    # Now use the fixed aggregator - should continue from partial checkpoint
     chain.agg(
-        sum_by_group,
-        partition_by="category",
-        output={"total": int, "count": int},
+        total=fixed_aggregator,
+        partition_by="letter",
     ).save("agg_results")
 
-    # Aggregator should have run from scratch (not continued from partial)
-    # because partition_by prevents partial continuation
-    assert call_count["value"] == 2  # Two groups: "a" and "b"
+    second_run_count = len(processed_partitions)
 
+    # Verify final results: 3 partitions (A, B, C) with correct sums
+    # Column names are total_0 (letter) and total_1 (sum) from the tuple
     result = sorted(
-        dc.read_dataset("agg_results", session=test_session).to_list("total", "count")
+        dc.read_dataset("agg_results", session=test_session).to_list(
+            "total_0", "total_1"
+        )
     )
-    # Group "a": sum(1,2,3)=6, count=3; Group "b": sum(4,5,6)=15, count=3
-    assert result == [(6, 3), (15, 3)]
+    expected = sorted(
+        [
+            ("A", 3),  # group A: 1 + 2 = 3
+            ("B", 7),  # group B: 3 + 4 = 7
+            ("C", 11),  # group C: 5 + 6 = 11
+        ]
+    )
+
+    # Should have exactly 3 outputs (no duplicates)
+    assert result == expected
+
+    # KEY TEST: Verify checkpoint continuation worked
+    # Second run should only process the remaining partition(s), not all 3
+    assert second_run_count < 3
+    # Total partitions processed across both runs should equal 3
+    assert first_run_count + second_run_count == 3
+
+
+def test_aggregator_skip_completed(test_session, nums_letters):
+    """
+    Test that a completed aggregator with partition_by is properly skipped on rerun.
+    """
+    call_count = []
+
+    def aggregator_func(letter, num) -> Iterator[tuple[str, int]]:
+        """Aggregator that sums numbers by partition."""
+        call_count.append(letter[0])
+        nums_list = list(num)
+        yield letter[0], sum(nums_list)
+
+    # -------------- FIRST RUN (COMPLETE) -------------------
+    reset_session_job_state()
+
+    chain = dc.read_dataset("nums_letters", session=test_session)
+    chain.agg(
+        total=aggregator_func,
+        partition_by="letter",
+    ).save("agg_results")
+
+    first_run_count = len(call_count)
+    assert first_run_count == 3  # Processed all 3 partitions
+
+    # Verify results
+    result = sorted(
+        dc.read_dataset("agg_results", session=test_session).to_list(
+            "total_0", "total_1"
+        )
+    )
+    expected = [("A", 3), ("B", 7), ("C", 11)]
+    assert result == expected
+
+    # -------------- SECOND RUN (SKIP) -------------------
+    reset_session_job_state()
+    call_count.clear()
+
+    # Run same aggregator again - should skip execution
+    chain.agg(
+        total=aggregator_func,
+        partition_by="letter",
+    ).save("agg_results")
+
+    # KEY TEST: Aggregator should not have been called (skipped)
+    assert len(call_count) == 0
+
+    # Verify results are still correct
+    result = sorted(
+        dc.read_dataset("agg_results", session=test_session).to_list(
+            "total_0", "total_1"
+        )
+    )
+    assert result == expected
