@@ -2116,7 +2116,8 @@ class AbstractDBMetastore(AbstractMetastore):
             .select_from(
                 self._jobs.join(
                     self._checkpoints,
-                    self._jobs.c.id == self._checkpoints.c.job_id,
+                    self._jobs.c.id
+                    == cast(self._checkpoints.c.job_id, self._jobs.c.id.type),
                 )
             )
             .where(
