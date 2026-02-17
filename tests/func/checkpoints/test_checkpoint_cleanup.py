@@ -34,7 +34,6 @@ def test_cleanup_checkpoints_with_ttl(test_session, monkeypatch, nums_dataset):
     assert len(all_udf_tables_before) > 0
 
     # Modify ALL checkpoints to be older than TTL (4 hours by default)
-    # This ensures cleanup logic works correctly with run_group-based approach
     old_time = datetime.now(timezone.utc) - timedelta(hours=5)
     metastore.db.execute(metastore._checkpoints.update().values(created_at=old_time))
 
