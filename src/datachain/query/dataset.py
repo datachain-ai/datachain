@@ -1029,8 +1029,6 @@ class UDFStep(Step, ABC):
         # same sys__id values
         input_table = self.get_or_create_input_table(query, hash_input)
 
-        # Query from the input table for partition creation
-        # Use get_input_query to preserve SQLTypes from original query
         query = self.get_input_query(input_table.name, query)
 
         if _continue:
