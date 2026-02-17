@@ -347,6 +347,30 @@ class File(DataModel):
         path: str | os.PathLike[str],
         catalog: "Catalog | None" = None,
     ) -> "Self":
+        """Upload bytes to a storage path and return a File pointing to it.
+
+        Args:
+            data: The raw bytes to upload.
+            path: Destination path (local or remote, e.g. ``s3://bucket/file.txt``).
+            catalog: Optional catalog instance. If None, the current session
+                catalog is used.
+
+        Returns:
+            File: A new File object with metadata populated from the upload.
+
+        Example:
+            ```py
+            file = File.upload(b"hello world", "s3://bucket/hello.txt")
+            ```
+
+        Note:
+            To write data as a stream, use `File.at` with `open` instead:
+            ```py
+            file = File.at("s3://bucket/output.txt")
+            with file.open("wb") as f:
+                f.write(b"hello world")
+            ```
+        """
         if catalog is None:
             from datachain.query.session import Session
 
@@ -371,9 +395,19 @@ class File(DataModel):
     ) -> "Self":
         """Construct a File from a full URI in one call.
 
+        Args:
+            uri: Full URI or path to the file
+                (e.g. ``s3://bucket/path/to/file.png`` or ``/local/path``).
+            session: Optional session instance. If None, the current session is used.
+
+        Returns:
+            File: A new File object pointing to the given URI.
+
         Example:
+            ```py
             file = File.at("s3://bucket/path/to/output.png")
             with file.open("wb") as f: ...
+            ```
         """
         from datachain.client.fsspec import Client
         from datachain.query.session import Session
@@ -400,10 +434,26 @@ class File(DataModel):
 
     @property
     def name(self) -> str:
+        """The file name extracted from the path.
+
+        Example:
+            ```py
+            file = File(source="s3://bucket", path="data/subdir/image.jpg")
+            file.name  # 'image.jpg'
+            ```
+        """
         return PurePosixPath(self.path).name
 
     @property
     def parent(self) -> str:
+        """The parent directory of the file, extracted from the path.
+
+        Example:
+            ```py
+            file = File(source="s3://bucket", path="data/subdir/image.jpg")
+            file.parent  # 'data/subdir'
+            ```
+        """
         return str(PurePosixPath(self.path).parent)
 
     @contextmanager
@@ -568,6 +618,19 @@ class File(DataModel):
         self._download_cb = download_cb
 
     def ensure_cached(self) -> None:
+        """Download the file to the local cache.
+
+        `get_local_path` can be used to return the path to the cached copy on disk.
+        This is useful when you need to pass the file to code that expects a local
+        filesystem path (e.g. ``ffmpeg``, ``opencv``, ``pandas``, etc).
+
+        Example:
+            ```py
+            file.ensure_cached()
+            local_path = file.get_local_path()
+            df = pandas.read_csv(local_path)
+            ```
+        """
         if self._catalog is None:
             raise RuntimeError(
                 "cannot download file to cache because catalog is not setup"
@@ -607,11 +670,9 @@ class File(DataModel):
         return PurePosixPath(self.path).suffix
 
     def get_file_ext(self):
-        """Returns last part of file name without `.`."""
         return PurePosixPath(self.path).suffix.lstrip(".")
 
     def get_file_stem(self):
-        """Returns file name without extension."""
         return PurePosixPath(self.path).stem
 
     def get_full_name(self):
@@ -647,19 +708,9 @@ class File(DataModel):
         return normpath
 
     def get_uri(self) -> str:
-        """Returns file URI."""
         return f"{self.source}/{self.get_path_normalized()}"
 
     def get_fs_path(self) -> str:
-        """
-        Returns file path with respect to the filescheme.
-
-        If `normalize` is True, the path is normalized to remove any redundant
-        separators and up-level references.
-
-        If the file scheme is "file", the path is converted to a local file path
-        using `url2pathname`. Otherwise, the original path with scheme is returned.
-        """
         path = unquote(self.get_uri())
         path_parsed = urlparse(path)
         if path_parsed.scheme == "file":
@@ -691,7 +742,6 @@ class File(DataModel):
         return posixpath.join(output, path)  # type: ignore[union-attr]
 
     def get_fs(self):
-        """Returns `fsspec` filesystem for the file."""
         return self._catalog.get_client(self.source).fs
 
     def get_hash(self) -> str:
@@ -781,14 +831,16 @@ class File(DataModel):
             ValueError: If old_base is not found in the file's URI
 
         Examples:
-            >>> file = File(source="s3://bucket", path="data/2025-05-27/file.wav")
-            >>> file.rebase("s3://bucket/data", "s3://output-bucket/processed", \
-                    extension="mp3")
-            's3://output-bucket/processed/2025-05-27/file.mp3'
+            ```py
+            file = File(source="s3://bucket", path="data/2025-05-27/file.wav")
+            file.rebase("s3://bucket/data", "s3://output-bucket/processed",
+                        extension="mp3")
+            # 's3://output-bucket/processed/2025-05-27/file.mp3'
 
-            >>> file.rebase("data/audio", "/local/output", suffix="_ch1",
-                    extension="npy")
-            '/local/output/file_ch1.npy'
+            file.rebase("data/audio", "/local/output", suffix="_ch1",
+                        extension="npy")
+            # '/local/output/file_ch1.npy'
+            ```
         """
         return rebase_path(self.get_uri(), old_base, new_base, suffix, extension)
 
