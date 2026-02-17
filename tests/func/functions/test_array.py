@@ -235,10 +235,34 @@ def test_array_get_element(test_session):
             t10=func.array.get_element(["a", "b", "c", "d"], 1),
             t11=func.array.get_element(["a", "b", "c", "d"], 100),
             t12=func.array.get_element([], 0),
+            # Negative indexing
+            t13=func.array.get_element("arr.i", -1),
+            t14=func.array.get_element("arr.i", -2),
+            t15=func.array.get_element("arr.f", -1),
+            t16=func.array.get_element(dc.C("ii"), -1),
+            t17=func.array.get_element(["a", "b", "c", "d"], -1),
+            t18=func.array.get_element(["a", "b", "c", "d"], -2),
         )
         .order_by("id")
         .to_list(
-            "t1", "t2", "t3", "t4", "t5", "t6", "t7", "t8", "t9", "t10", "t11", "t12"
+            "t1",
+            "t2",
+            "t3",
+            "t4",
+            "t5",
+            "t6",
+            "t7",
+            "t8",
+            "t9",
+            "t10",
+            "t11",
+            "t12",
+            "t13",
+            "t14",
+            "t15",
+            "t16",
+            "t17",
+            "t18",
         )
     )
 
@@ -258,6 +282,13 @@ def test_array_get_element(test_session):
                 "b",
                 String.default_value(db_dialect),
                 String.default_value(db_dialect),
+                # Negative indexing: arr.i=[10,20,30], arr.f=[1,2,3], ii=[10]
+                30,
+                20,
+                3.0,
+                10,
+                "d",
+                "c",
             ),
             (
                 40,
@@ -272,6 +303,13 @@ def test_array_get_element(test_session):
                 "b",
                 String.default_value(db_dialect),
                 String.default_value(db_dialect),
+                # Negative indexing: arr.i=[40,50,60], arr.f=[4,5,6], ii=[50,60,70,80]
+                60,
+                50,
+                6.0,
+                80,
+                "d",
+                "c",
             ),
             (
                 50,
@@ -286,6 +324,13 @@ def test_array_get_element(test_session):
                 "b",
                 String.default_value(db_dialect),
                 String.default_value(db_dialect),
+                # Negative indexing: arr.i=[50], arr.f=[5.0], ii=[]
+                50,
+                Int.default_value(db_dialect),
+                5.0,
+                Int.default_value(db_dialect),
+                "d",
+                "c",
             ),
         ),
     )
