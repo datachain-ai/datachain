@@ -44,7 +44,7 @@ dependencies = [
   "cloudpickle",
   "pydantic",
   "jmespath>=1.0",
-  "datamodel-code-generator>=0.25",
+  "datamodel-code-generator>=0.28.4",
   "Pillow>=10.0.0,<13",
   "msgpack>=1.0.4,<2",
   "psutil",
@@ -107,6 +107,7 @@ tests = [
   "pytest-servers[all]>=0.5.9",
   "pytest-benchmark[histogram]",
   "pytest-xdist>=3.3.1",
+  "azure-storage-blob<12.28",  # Pin to avoid API version 2026-02-06 not supported by Azurite emulator
   "pytest-dotenv",
   "virtualenv",
   "dulwich",
@@ -118,7 +119,7 @@ tests = [
 ]
 dev = [
   "datachain[docs,tests]",
-  "mypy==1.18.2",
+  "mypy==1.19.1",
   "types-python-dateutil",
   "types-dateparser",
   "types-pytz",
@@ -131,6 +132,7 @@ examples = [
   "defusedxml",
   "accelerate",
   "huggingface_hub[hf_transfer]",
+  "transformers>=5.0.0",
   "ultralytics",
   "open_clip_torch",
   "openai",
@@ -153,7 +155,7 @@ namespaces = false
 [tool.setuptools_scm]
 
 [tool.pytest.ini_options]
-addopts = "-rfEs -m 'not examples' --benchmark-skip"
+addopts = "-rfEs -m 'not examples' --benchmark-skip --ignore=local"
 env_override_existing_values = true
 env_files = "local/.env.test"
 markers = [
@@ -166,16 +168,17 @@ markers = [
   "incremental_processing: Delta and retry examples"
 ]
 filterwarnings = [
-  "error::pandas.errors.PerformanceWarning",
-  "error::pydantic.warnings.PydanticDeprecatedSince20",
-  "error::pytest_mock.PytestMockWarning",
-  "error::pytest.PytestCollectionWarning",
-  "error::sqlalchemy.exc.SADeprecationWarning",
+  "error",  # Treat all warnings as errors by default
+  # Third-party deprecation warnings we can't fix
   "ignore::DeprecationWarning:timm.*",
   "ignore::DeprecationWarning:botocore.auth",
   "ignore::DeprecationWarning:datasets.utils._dill",
   "ignore::DeprecationWarning:librosa.core.intervals",
-  "ignore:Field name .* shadows an attribute in parent:UserWarning"  # datachain.lib.feature
+  "ignore::FutureWarning:google.api_core._python_version_support",  # Python 3.10 EOL warning
+  # Expected warnings from our code
+  "ignore:Field name .* shadows an attribute in parent:UserWarning",  # datachain.lib.feature
+  # Coverage limitation on Python 3.13
+  "ignore:Can't use core=sysmon:coverage.exceptions.CoverageWarning"
 ]
 
 [tool.coverage.run]

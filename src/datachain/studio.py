@@ -1,21 +1,32 @@
 import asyncio
+import logging
 import os
 import sys
+import warnings
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 import dateparser
+import requests
 import tabulate
 
+from datachain.catalog import get_catalog
 from datachain.config import Config, ConfigLevel
-from datachain.data_storage.job import JobStatus
-from datachain.dataset import QUERY_DATASET_PREFIX, parse_dataset_name
+from datachain.data_storage.job import JobQueryType, JobStatus
+from datachain.dataset import (
+    QUERY_DATASET_PREFIX,
+    parse_dataset_name,
+)
 from datachain.error import DataChainError
 from datachain.remote.studio import StudioClient
-from datachain.utils import STUDIO_URL
+from datachain.utils import STUDIO_URL, flatten
+
+logger = logging.getLogger("datachain")
 
 if TYPE_CHECKING:
     from argparse import Namespace
+
+    from datachain.catalog import Catalog
 
 POST_LOGIN_MESSAGE = (
     "Once you've logged in, return here "
@@ -35,22 +46,24 @@ def process_jobs_args(args: "Namespace"):
 
     if args.cmd == "run":
         return create_job(
-            args.file,
-            args.team,
-            args.env_file,
-            args.env,
-            args.workers,
-            args.files,
-            args.python_version,
-            args.repository,
-            args.req,
-            args.req_file,
-            args.priority,
-            args.cluster,
-            args.start_time,
-            args.cron,
-            args.no_wait,
-            args.credentials_name,
+            query_file=args.file,
+            team_name=args.team,
+            env_file=args.env_file,
+            env=args.env,
+            workers=args.workers,
+            files=args.files,
+            python_version=args.python_version,
+            repository=args.repository,
+            req=args.req,
+            req_file=args.req_file,
+            priority=args.priority,
+            cluster=args.cluster,
+            start_time=args.start_time,
+            cron=args.cron,
+            no_wait=args.no_wait,
+            credentials_name=args.credentials_name,
+            ignore_checkpoints=args.ignore_checkpoints,
+            no_follow=args.no_follow,
         )
 
     if args.cmd == "cancel":
@@ -63,6 +76,42 @@ def process_jobs_args(args: "Namespace"):
 
     if args.cmd == "clusters":
         return list_clusters(args.team)
+
+    raise DataChainError(f"Unknown command '{args.cmd}'.")
+
+
+def process_pipeline_args(args: "Namespace", catalog: "Catalog"):  # noqa: PLR0911
+    if args.cmd is None:
+        print(
+            f"Use 'datachain {args.command} --help' to see available options",
+            file=sys.stderr,
+        )
+        return 1
+
+    if args.cmd == "create":
+        return create_pipeline(
+            catalog,
+            args.datasets,
+            args.team,
+        )
+
+    if args.cmd == "status":
+        return get_pipeline_status(args.name, args.team)
+
+    if args.cmd == "list":
+        return list_pipelines(args.team, args.status, args.limit, args.search)
+
+    if args.cmd == "pause":
+        return pause_pipeline(args.name, args.team)
+    if args.cmd == "resume":
+        return resume_pipeline(args.name, args.team)
+
+    if args.cmd == "remove-job":
+        return remove_job_from_pipeline(
+            name=args.name,
+            job_id=args.job_id,
+            team_name=args.team,
+        )
 
     raise DataChainError(f"Unknown command '{args.cmd}'.")
 
@@ -275,8 +324,17 @@ def parse_start_time(start_time_str: str | None) -> str | None:
     if not start_time_str:
         return None
 
-    # Parse the datetime string using dateparser
-    parsed_datetime = dateparser.parse(start_time_str)
+    # dateparser#1246: it explores strptime patterns lacking a year, which
+    # triggers a CPython 3.13 DeprecationWarning. Suppress that noise until a
+    # new dateparser release includes the upstream fix.
+    # https://github.com/scrapinghub/dateparser/issues/1246
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            category=DeprecationWarning,
+            module="dateparser\\.utils\\.strptime",
+        )
+        parsed_datetime = dateparser.parse(start_time_str)
 
     if parsed_datetime is None:
         raise DataChainError(
@@ -289,15 +347,56 @@ def parse_start_time(start_time_str: str | None) -> str | None:
     return parsed_datetime.isoformat()
 
 
-def show_logs_from_client(client, job_id):
-    # Sync usage
+# Sync usage
+async def _fetch_log_blob(blob_url: str, token: str, timeout: float) -> str:
+    """Fetch log content from a blob URL asynchronously."""
+
+    def _fetch():
+        headers = {"Authorization": f"token {token}"}
+        response = requests.get(blob_url, headers=headers, timeout=timeout)
+        response.raise_for_status()
+        return response.text
+
+    return await asyncio.to_thread(_fetch)
+
+
+async def _show_log_blobs(log_blobs: list[str], client):
+    for blob_url in log_blobs:
+        try:
+            log_content = await _fetch_log_blob(blob_url, client.token, client.timeout)
+            if log_content:
+                print(log_content, end="")
+        except (requests.RequestException, OSError):
+            print("\n>>>> Warning: Failed to fetch logs from studio")
+
+
+def _get_job_status(client, job_id: str) -> str | None:
+    try:
+        response = client.get_jobs(job_id=job_id)
+        if response.ok and response.data and len(response.data) > 0:
+            return response.data[0].get("status")
+    except (requests.RequestException, OSError, KeyError):
+        logger.debug("Failed to get job status: %s", job_id)
+    return None
+
+
+def show_logs_from_client(  # noqa: C901
+    client, job_id: str, no_follow: bool = False
+):
     async def _run():
         retry_count = 0
         latest_status = None
         processed_statuses = set()
+        log_blobs_processed = False
         while True:
-            async for message in client.tail_job_logs(job_id):
-                if "logs" in message:
+            async for message in client.tail_job_logs(job_id, no_follow=no_follow):
+                if "log_blobs" in message and not no_follow:
+                    log_blobs = message.get("log_blobs", [])
+                    if log_blobs and not log_blobs_processed:
+                        log_blobs_processed = True
+                        await _show_log_blobs(log_blobs, client)
+
+                elif "logs" in message and not no_follow:
                     for log in message["logs"]:
                         print(log["message"], end="")
                 elif "job" in message:
@@ -307,20 +406,41 @@ def show_logs_from_client(client, job_id):
                     processed_statuses.add(latest_status)
                     print(f"\n>>>> Job is now in {latest_status} status.")
 
+            # After websocket closes, check actual job status via REST
+            rest_status = _get_job_status(client, job_id)
+            if rest_status and rest_status != latest_status:
+                print(f"\n>>>> Job is now in {rest_status} status.")
+            if rest_status:
+                latest_status = rest_status
+
             try:
-                if retry_count > RETRY_MAX_TIMES or (
-                    latest_status and JobStatus[latest_status].finished()
-                ):
+                if latest_status and JobStatus[latest_status] in JobStatus.finished():
+                    logger.debug("Job is in finished status: %s", latest_status)
+                    break
+                if retry_count > RETRY_MAX_TIMES:
+                    logger.debug("Max retry count reached: %s", retry_count)
                     break
                 await asyncio.sleep(RETRY_SLEEP_SEC)
                 retry_count += 1
             except KeyError:
-                pass
+                break
 
         return latest_status
 
     final_status = asyncio.run(_run())
 
+    try:
+        job_finished = final_status and JobStatus[final_status] in JobStatus.finished()
+    except KeyError:
+        logger.debug("Job status is not a valid status: %s", final_status)
+        job_finished = False
+
+    if not job_finished:
+        logger.debug("Job is not finished: %s.", final_status or "unknown")
+        print(f"\n>>>> Lost connection. Job status: {final_status or 'unknown'}.")
+        return 1
+
+    # Show dataset versions only for finished jobs
     response = client.dataset_job_versions(job_id)
     if not response.ok:
         raise DataChainError(response.message)
@@ -334,14 +454,16 @@ def show_logs_from_client(client, job_id):
     else:
         print("\n\nNo dataset versions created during the job.")
 
-    exit_code_by_status = {
-        "FAILED": 1,
-        "CANCELED": 2,
-    }
-    return exit_code_by_status.get(final_status.upper(), 0) if final_status else 0
+    if final_status.upper() == "COMPLETE":
+        return 0
+    if final_status.upper() == "FAILED":
+        return 1
+    if final_status.upper() == "CANCELED":
+        return 2
+    return 0
 
 
-def create_job(
+def create_job(  # noqa: PLR0913
     query_file: str,
     team_name: str | None,
     env_file: str | None = None,
@@ -358,12 +480,17 @@ def create_job(
     cron: str | None = None,
     no_wait: bool | None = False,
     credentials_name: str | None = None,
+    ignore_checkpoints: bool = False,
+    no_follow: bool = False,
 ):
+    catalog = get_catalog()
+
     query_type = "PYTHON" if query_file.endswith(".py") else "SHELL"
     with open(query_file) as f:
         query = f.read()
 
-    environment = "\n".join(env) if env else ""
+    env_values = list(flatten(env)) if env else []
+    environment = "\n".join(env_values) if env_values else ""
     if env_file:
         with open(env_file) as f:
             environment = f.read() + "\n" + environment
@@ -372,6 +499,15 @@ def create_job(
     if req_file:
         with open(req_file) as f:
             requirements = f.read() + "\n" + requirements
+
+    script_path = os.path.abspath(query_file)
+
+    rerun_from_job_id = None
+    rerun_from_job = catalog.metastore.get_last_job_by_name(
+        script_path, is_remote_execution=True
+    )
+    if rerun_from_job:
+        rerun_from_job_id = rerun_from_job.id
 
     client = StudioClient(team=team_name)
     file_ids = upload_files(client, files) if files else []
@@ -387,6 +523,8 @@ def create_job(
         environment=environment,
         workers=workers,
         query_name=os.path.basename(query_file),
+        rerun_from_job_id=rerun_from_job_id,
+        reset=ignore_checkpoints,
         files=file_ids,
         python_version=python_version,
         repository=repository,
@@ -404,16 +542,43 @@ def create_job(
         raise DataChainError("Failed to create job")
 
     job_id = response.data.get("id")
+    job_data = response.data
+
+    query_type_value = (
+        JobQueryType.PYTHON if query_type == "PYTHON" else JobQueryType.SHELL
+    )
+    catalog.metastore.create_job(
+        name=script_path,  # Use local script path, not Studio's query_name
+        query=query,
+        query_type=query_type_value,
+        status=JobStatus.CREATED,
+        workers=job_data.get("workers", 0),
+        python_version=job_data.get("python_version"),
+        params=job_data.get("params", {}),
+        parent_job_id=job_data.get("parent_job_id"),
+        rerun_from_job_id=job_data.get("rerun_from_job_id"),
+        run_group_id=job_data.get("run_group_id"),
+        is_remote_execution=True,
+        job_id=str(job_id),  # Use Studio's job ID
+    )
+
+    catalog.close()
 
     if parsed_start_time or cron:
         print(f"Job {job_id} is scheduled as a task in Studio.")
         return 0
 
     print(f"Job {job_id} created")
-    print("Open the job in Studio at", response.data.get("url"))
+    print("Open the job in Studio at", job_data.get("url"))
     print("=" * 40)
 
-    return 0 if no_wait else show_logs_from_client(client, job_id)
+    return (
+        0
+        if no_wait
+        else show_logs_from_client(
+            client=client, job_id=str(job_id), no_follow=no_follow
+        )
+    )
 
 
 def upload_files(client: StudioClient, files: list[str]) -> list[str]:
@@ -510,3 +675,133 @@ def list_clusters(team_name: str | None):
     ]
 
     print(tabulate.tabulate(rows, headers="keys", tablefmt="grid"))
+
+
+def create_pipeline(
+    catalog: "Catalog",
+    dataset_names: list[str],
+    team_name: str | None = None,
+):
+    client = StudioClient(team=team_name)
+    response = client.create_pipeline(
+        datasets=dataset_names,
+        team_name=team_name,
+        review=True,
+    )
+    if not response.ok:
+        raise DataChainError(response.message)
+
+    pipeline = response.data["pipeline"]
+    print(
+        f"Pipeline created under name: {pipeline['name']} from:"
+        f" {pipeline['triggered_from']} in paused state for review."
+    )
+    print(
+        "Check the pipeline either in Studio or using `datachain pipeline status`, "
+        "and resume it when ready using `datachain pipeline resume`"
+    )
+
+    return 0
+
+
+def get_pipeline_status(name: str, team_name: str | None):
+    client = StudioClient(team=team_name)
+    response = client.get_pipeline(name)
+    if not response.ok:
+        raise DataChainError(response.message)
+
+    data = response.data
+
+    # Display pipeline summary
+    print(f"Name: {data.get('name', 'N/A')}")
+    print(f"Status: {data.get('status', 'N/A')}")
+
+    completed = data.get("completed", 0)
+    total = data.get("total", 0)
+    print(f"Progress: {completed}/{total} jobs completed")
+
+    if data.get("error_message"):
+        print(f"Error: {data.get('error_message')}")
+
+    # Display job runs
+    job_runs = data.get("job_runs", [])
+    if job_runs:
+        print("\nJob Runs:")
+        rows = [
+            {
+                "Name": job_run.get("name", "N/A"),
+                "Status": job_run.get("status", "N/A"),
+                "Job ID": job_run.get("created_job_id", "N/A"),
+            }
+            for job_run in job_runs
+        ]
+        print(tabulate.tabulate(rows, headers="keys", tablefmt="grid"))
+    else:
+        print("\nNo job runs found")
+
+    return 0
+
+
+def list_pipelines(
+    team_name: str | None,
+    status: str | None = None,
+    limit: int = 20,
+    search: str | None = None,
+):
+    client = StudioClient(team=team_name)
+    response = client.list_pipelines(status, limit, search)
+    if not response.ok:
+        raise DataChainError(response.message)
+
+    data = response.data
+    if data:
+        rows = [
+            {
+                "Name": pipeline.get("name", "N/A"),
+                "Status": pipeline.get("status", "N/A"),
+                "Target": pipeline.get("triggered_from", "N/A"),
+                "Progress": (
+                    f"{pipeline.get('completed', 0)}/{pipeline.get('total', 0)}"
+                ),
+                "Created At": pipeline.get("created_at", "N/A")[:19],
+            }
+            for pipeline in data
+        ]
+        print(tabulate.tabulate(rows, headers="keys", tablefmt="grid"))
+    else:
+        print("No pipelines found")
+
+    return 0
+
+
+def pause_pipeline(name: str, team_name: str | None):
+    client = StudioClient(team=team_name)
+    response = client.pause_pipeline(name)
+    if not response.ok:
+        raise DataChainError(response.message)
+
+    print(f"Pipeline {name} paused")
+
+    return 0
+
+
+def resume_pipeline(name: str, team_name: str | None):
+    client = StudioClient(team=team_name)
+    response = client.resume_pipeline(name)
+    if not response.ok:
+        raise DataChainError(response.message)
+
+    print(f"Pipeline {name} resumed")
+
+    return 0
+
+
+def remove_job_from_pipeline(name: str, job_id: str, team_name: str | None):
+    client = StudioClient(team=team_name)
+    response = client.remove_job_from_pipeline(name, job_id)
+    if not response.ok:
+        raise DataChainError(response.message)
+
+    print(f"Job {job_id} removed from pipeline {name}")
+
+    return 0

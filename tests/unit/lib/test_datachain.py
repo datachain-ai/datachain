@@ -33,7 +33,6 @@ from datachain.lib.file import File
 from datachain.lib.listing import LISTING_PREFIX, parse_listing_uri
 from datachain.lib.listing_info import ListingInfo
 from datachain.lib.signal_schema import (
-    SignalRemoveError,
     SignalResolvingError,
     SignalResolvingTypeError,
     SignalSchema,
@@ -84,6 +83,12 @@ class MyFr(BaseModel):
 class MyNested(BaseModel):
     label: str
     fr: MyFr
+
+
+class Person(DataModel):
+    name: str
+    age: int
+    city: str
 
 
 features = sorted(
@@ -199,8 +204,8 @@ def test_pandas_incorrect_column_names(test_session):
 
 
 def test_from_features_basic(test_session):
-    ds = dc.read_records(dc.DataChain.DEFAULT_FILE_RECORD, session=test_session)
-    ds = ds.gen(lambda prm: [File(path="")] * 5, params="path", output={"file": File})
+    ds = dc.read_records([{"seed": 0}], schema={"seed": int}, session=test_session)
+    ds = ds.gen(lambda prm: [File(path="")] * 5, params="seed", output={"file": File})
 
     ds_name = "my_ds"
     ds.save(ds_name)
@@ -213,12 +218,12 @@ def test_from_features_basic(test_session):
 
 
 @skip_if_not_sqlite
-def test_from_features_basic_in_memory():
-    ds = dc.read_records(dc.DataChain.DEFAULT_FILE_RECORD, in_memory=True)
+def test_read_records_basic_in_memory():
+    ds = dc.read_records([{"seed": 0}], schema={"seed": int}, in_memory=True)
     assert ds.session.catalog.in_memory is True
     assert ds.session.catalog.metastore.db.db_file == ":memory:"
     assert ds.session.catalog.warehouse.db.db_file == ":memory:"
-    ds = ds.gen(lambda prm: [File(path="")] * 5, params="path", output={"file": File})
+    ds = ds.gen(lambda prm: [File(path="")] * 5, params="seed", output={"file": File})
 
     ds_name = "my_ds"
     ds.save(ds_name)
@@ -230,11 +235,11 @@ def test_from_features_basic_in_memory():
     assert set(ds.schema.values()) == {File}
 
 
-def test_from_features(test_session):
-    ds = dc.read_records(dc.DataChain.DEFAULT_FILE_RECORD, session=test_session)
+def test_read_records_and_gen(test_session):
+    ds = dc.read_records([{"seed": 0}], schema={"seed": int}, session=test_session)
     ds = ds.gen(
         lambda prm: list(zip([File(path="")] * len(features), features, strict=False)),
-        params="path",
+        params="seed",
         output={"file": File, "t1": MyFr},
     )
 
@@ -263,35 +268,174 @@ def test_read_record_empty_chain_with_schema(test_session):
     )
 
 
-def test_read_record_empty_chain_without_schema(test_session):
-    ds = dc.read_records([], schema=None, session=test_session)
-
-    ds_name = "my_ds"
-    ds.save(ds_name)
-    ds = dc.read_dataset(name=ds_name)
-
-    assert ds.schema.keys() == {
-        "source",
-        "path",
-        "size",
-        "version",
-        "etag",
-        "is_latest",
-        "last_modified",
-        "location",
-    }
-    assert ds.count() == 0
-
-    # check that columns have actually been created from schema
-    catalog = test_session.catalog
-    dr = catalog.warehouse.dataset_rows(catalog.get_dataset(ds_name))
-    assert sorted([c.name for c in dr.columns]) == sorted(
-        ds.signals_schema.db_signals()
+def test_empty(test_session):
+    assert (
+        dc.read_records([], schema={"file": File}, session=test_session).empty is True
     )
 
 
-def test_empty(test_session):
-    assert dc.read_records([], schema=None, session=test_session).empty is True
+def test_read_records_with_file_objects(test_session):
+    """Test that read_records automatically flattens DataModel objects."""
+    # Create File objects
+    file1 = File(path="file1.txt", size=100, source="s3://bucket")
+    file2 = File(path="file2.txt", size=200, source="s3://bucket")
+    file3 = File(path="file3.txt", size=300, source="s3://bucket")
+
+    # DataModel objects are automatically flattened - no need to manually create
+    # flattened dictionaries anymore!
+    records = [
+        {"file": file1},
+        {"file": file2},
+        {"file": file3},
+    ]
+
+    # Insert records
+    ds = dc.read_records(records, schema={"file": File}, session=test_session)
+
+    # Verify count
+    assert ds.count() == 3
+
+    # Verify we can retrieve File objects back
+    files = ds.order_by("file.path").to_values("file")
+    assert len(files) == 3
+    assert all(isinstance(f, File) for f in files)
+    assert files[0].path == "file1.txt"
+    assert files[0].size == 100
+    assert files[1].path == "file2.txt"
+    assert files[1].size == 200
+    assert files[2].path == "file3.txt"
+    assert files[2].size == 300
+
+
+def test_read_records_with_nested_datamodel(test_session):
+    """Test that read_records automatically flattens nested DataModel objects."""
+    # Create nested DataModel objects
+    record1 = MyNested(label="first", fr=MyFr(nnn="n1", count=3))
+    record2 = MyNested(label="second", fr=MyFr(nnn="n2", count=5))
+    record3 = MyNested(label="third", fr=MyFr(nnn="n1", count=1))
+
+    # DataModel objects are automatically flattened, including nested ones
+    records = [
+        {"data": record1},
+        {"data": record2},
+        {"data": record3},
+    ]
+
+    # Insert records
+    ds = dc.read_records(records, schema={"data": MyNested}, session=test_session)
+
+    # Verify count
+    assert ds.count() == 3
+
+    # Verify we can retrieve nested DataModel objects back
+    nested_objs = ds.order_by("data.label").to_values("data")
+    assert len(nested_objs) == 3
+    assert all(isinstance(obj, MyNested) for obj in nested_objs)
+
+    # Verify first record
+    assert nested_objs[0].label == "first"
+    assert nested_objs[0].fr.nnn == "n1"
+    assert nested_objs[0].fr.count == 3
+
+    # Verify second record
+    assert nested_objs[1].label == "second"
+    assert nested_objs[1].fr.nnn == "n2"
+    assert nested_objs[1].fr.count == 5
+
+    # Verify third record
+    assert nested_objs[2].label == "third"
+    assert nested_objs[2].fr.nnn == "n1"
+    assert nested_objs[2].fr.count == 1
+
+
+@skip_if_not_sqlite
+def test_read_records_with_iterator_is_lazy(test_session, monkeypatch):
+    from datachain.data_storage.sqlite import SQLiteWarehouse
+
+    # Use a small batch size to ensure multiple batches with our test data
+    BATCH_SIZE = 100  # noqa: N806
+    monkeypatch.setattr(SQLiteWarehouse, "INSERT_BATCH_SIZE", BATCH_SIZE)
+
+    TOTAL_RECORDS = 1000  # noqa: N806
+    yielded_count = 0
+    batch_executions = []
+
+    def record_generator():
+        nonlocal yielded_count
+        for i in range(TOTAL_RECORDS):
+            yielded_count += 1
+            yield {"id": i, "value": i * 2}
+
+    original_executemany = test_session.catalog.warehouse.db.executemany
+
+    def spy_executemany(stmt, params, conn=None):
+        batch_executions.append(
+            {"yielded_so_far": yielded_count, "batch_size": len(params)}
+        )
+
+        return original_executemany(stmt, params, conn=conn)
+
+    monkeypatch.setattr(
+        test_session.catalog.warehouse.db, "executemany", spy_executemany
+    )
+
+    ds = dc.read_records(
+        record_generator(), schema={"id": int, "value": int}, session=test_session
+    )
+
+    expected_batches = (TOTAL_RECORDS + BATCH_SIZE - 1) // BATCH_SIZE
+    assert len(batch_executions) == expected_batches, (
+        f"Expected {expected_batches} batch executions, got {len(batch_executions)}"
+    )
+
+    assert yielded_count == TOTAL_RECORDS, (
+        f"Not all records were yielded (only {yielded_count}/{TOTAL_RECORDS})"
+    )
+
+    # Verify each batch processed incrementally, not all at once
+    for i, batch_info in enumerate(batch_executions):
+        # At each batch execution, only records up to that batch should be yielded
+        # (with some buffer for the next batch being prepared)
+        max_expected = (i + 2) * BATCH_SIZE  # +2 to allow for next batch preparation
+        assert batch_info["yielded_so_far"] <= max_expected, (
+            f"Batch {i}: too many records yielded ({batch_info['yielded_so_far']})"
+        )
+
+    # Verify data integrity
+    assert ds.count() == TOTAL_RECORDS
+    df = ds.order_by("id").select("id", "value").to_pandas()
+    assert len(df) == TOTAL_RECORDS
+    assert df.iloc[0]["id"] == 0
+    assert df.iloc[999]["id"] == 999
+    assert df.iloc[999]["value"] == 1998
+
+
+def test_read_records_with_pre_flattened_data(test_session):
+    records = [
+        {"person__name": "Alice", "person__age": 30, "person__city": "NYC"},
+        {"person__name": "Bob", "person__age": 25, "person__city": "LA"},
+        {"person__name": "Charlie", "person__age": 35, "person__city": "SF"},
+    ]
+
+    ds = dc.read_records(records, schema={"person": Person}, session=test_session)
+
+    assert ds.count() == 3
+
+    people = ds.order_by("person.name").to_values("person")
+    assert len(people) == 3
+    assert all(isinstance(p, Person) for p in people)
+
+    assert people[0].name == "Alice"
+    assert people[0].age == 30
+    assert people[0].city == "NYC"
+
+    assert people[1].name == "Bob"
+    assert people[1].age == 25
+    assert people[1].city == "LA"
+
+    assert people[2].name == "Charlie"
+    assert people[2].age == 35
+    assert people[2].city == "SF"
 
 
 def test_empty_chain_skip_udf_run(test_session):
@@ -404,7 +548,9 @@ def test_datasets_filtering(test_session, attrs, result):
         "letters", attrs=["letter"]
     )
 
-    assert sorted(dc.datasets(attrs=attrs).to_values("name")) == sorted(result)
+    assert sorted(
+        dc.datasets(attrs=attrs, session=test_session).to_values("name")
+    ) == sorted(result)
 
 
 def test_listings(test_session, tmp_dir):
@@ -470,6 +616,42 @@ def test_listings_reindex_subpath_local_file_system(test_session, tmp_dir):
     assert dc.read_storage(subdir.as_uri(), session=test_session).count() == 1
 
 
+def test_read_storage_plain_local_path_keeps_root(test_session, tmp_dir, monkeypatch):
+    monkeypatch.chdir(tmp_dir)
+
+    nested = tmp_dir / "nested"
+    nested.mkdir()
+    (nested / "file.txt").write_text("data")
+
+    files = dc.read_storage(tmp_dir, session=test_session).to_values("file")
+
+    assert len(files) == 1
+    assert files[0].source == tmp_dir.as_uri()
+    assert files[0].path == "nested/file.txt"
+
+
+@pytest.mark.parametrize(
+    "uri_factory",
+    [
+        lambda p: p,
+        lambda p: p.as_uri(),
+        lambda p: p.as_uri() + "/",
+        lambda p: f"{p}{os.sep}",
+    ],
+)
+def test_read_storage_local_variants_consistent(test_session, tmp_dir, uri_factory):
+    nested = tmp_dir / "dir" / "file.bin"
+    nested.parent.mkdir(parents=True)
+    nested.write_bytes(b"x")
+
+    uri = uri_factory(tmp_dir)
+    files = dc.read_storage(uri, session=test_session).to_values("file")
+
+    assert len(files) == 1
+    assert files[0].source == tmp_dir.as_uri()
+    assert files[0].path == "dir/file.bin"
+
+
 @pytest.mark.parametrize("version", [None, "1.0.0"])
 def test_listings_read_listing_dataset(test_session, tmp_dir, version):
     df = pd.DataFrame(DF_DATA)
@@ -521,12 +703,12 @@ def test_listings_read_listing_dataset_with_subpath(test_session, tmp_dir):
 
 
 def test_preserve_feature_schema(test_session):
-    ds = dc.read_records(dc.DataChain.DEFAULT_FILE_RECORD, session=test_session)
+    ds = dc.read_records([{"seed": 0}], schema={"seed": int}, session=test_session)
     ds = ds.gen(
         lambda prm: list(
             zip([File(path="")] * len(features), features, features, strict=False)
         ),
-        params="path",
+        params="seed",
         output={"file": File, "t1": MyFr, "t2": MyFr},
     )
 
@@ -877,22 +1059,27 @@ def test_agg_tuple_result_generator(test_session):
     assert ds.order_by("x_1.size").to_values("x_1.size") == [5, 10]
 
 
+_batch_mapper_warn = pytest.mark.filterwarnings("ignore:BatchMapper is deprecated.*")
+
+
+@_batch_mapper_warn
 def test_batch_map(test_session):
     class _TestFr(BaseModel):
         sqrt: float
         my_name: str
 
-    chain = dc.read_values(t1=features, session=test_session).batch_map(
-        x=lambda m_frs: [
-            _TestFr(
-                sqrt=math.sqrt(m_fr.count),
-                my_name=m_fr.nnn + "_suf",
-            )
-            for m_fr in m_frs
-        ],
-        params="t1",
-        output={"x": _TestFr},
-    )
+    with pytest.deprecated_call(match=r"batch_map\(\) is deprecated"):
+        chain = dc.read_values(t1=features, session=test_session).batch_map(
+            x=lambda m_frs: [
+                _TestFr(
+                    sqrt=math.sqrt(m_fr.count),
+                    my_name=m_fr.nnn + "_suf",
+                )
+                for m_fr in m_frs
+            ],
+            params="t1",
+            output={"x": _TestFr},
+        )
 
     x_list = chain.order_by("x.my_name", "x.sqrt").to_values("x")
     test_frs = [
@@ -906,26 +1093,29 @@ def test_batch_map(test_session):
         assert x.my_name == test_fr.my_name
 
 
+@_batch_mapper_warn
 def test_batch_map_wrong_size(test_session):
     class _TestFr(BaseModel):
         total: int
         names: str
 
-    chain = dc.read_values(t1=features, session=test_session).batch_map(
-        x=lambda m_frs: [
-            _TestFr(
-                total=sum(m_fr.count for m_fr in m_frs),
-                names="-".join([m_fr.nnn for m_fr in m_frs]),
-            )
-        ],
-        params="t1",
-        output={"x": _TestFr},
-    )
+    with pytest.deprecated_call(match=r"batch_map\(\) is deprecated"):
+        chain = dc.read_values(t1=features, session=test_session).batch_map(
+            x=lambda m_frs: [
+                _TestFr(
+                    total=sum(m_fr.count for m_fr in m_frs),
+                    names="-".join([m_fr.nnn for m_fr in m_frs]),
+                )
+            ],
+            params="t1",
+            output={"x": _TestFr},
+        )
 
     with pytest.raises(AssertionError):
         chain.to_list()
 
 
+@_batch_mapper_warn
 def test_batch_map_two_params(test_session):
     class _TestFr(BaseModel):
         f: File
@@ -938,18 +1128,19 @@ def test_batch_map_two_params(test_session):
         MyFr(nnn="n1", count=2),
     ]
 
-    ds = dc.read_values(t1=features, t2=features2, session=test_session).batch_map(
-        x=lambda frs1, frs2: [
-            _TestFr(
-                f=File(path=""),
-                cnt=f1.count + f2.count,
-                my_name=f"{f1.nnn}-{f2.nnn}",
-            )
-            for f1, f2 in zip(frs1, frs2, strict=False)
-        ],
-        params=("t1", "t2"),
-        output={"x": _TestFr},
-    )
+    with pytest.deprecated_call(match=r"batch_map\(\) is deprecated"):
+        ds = dc.read_values(t1=features, t2=features2, session=test_session).batch_map(
+            x=lambda frs1, frs2: [
+                _TestFr(
+                    f=File(path=""),
+                    cnt=f1.count + f2.count,
+                    my_name=f"{f1.nnn}-{f2.nnn}",
+                )
+                for f1, f2 in zip(frs1, frs2, strict=False)
+            ],
+            params=("t1", "t2"),
+            output={"x": _TestFr},
+        )
 
     assert ds.order_by("x.my_name").to_values("x.my_name") == [
         "n1-n1",
@@ -959,181 +1150,19 @@ def test_batch_map_two_params(test_session):
     assert ds.order_by("x.cnt").to_values("x.cnt") == [7, 7, 13]
 
 
+@_batch_mapper_warn
 def test_batch_map_tuple_result_iterator(test_session):
     def sqrt(t1: list[int]) -> Iterator[float]:
         for val in t1:
             yield math.sqrt(val)
 
-    chain = dc.read_values(t1=[1, 4, 9], session=test_session).batch_map(x=sqrt)
+    with pytest.deprecated_call(match=r"batch_map\(\) is deprecated"):
+        chain = dc.read_values(t1=[1, 4, 9], session=test_session).batch_map(x=sqrt)
 
     assert chain.order_by("x").to_values("x") == [1, 2, 3]
 
 
-def test_select_read_hf_without_sys_columns(test_session):
-    from datachain import func
-
-    chain = (
-        dc.read_values(
-            name=["a", "a", "b", "b", "b", "c"],
-            val=[1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
-        )
-        .group_by(cnt=func.count(), partition_by="name")
-        .order_by("name")
-        .select("name", "cnt")
-    )
-
-    assert chain.to_records() == [
-        {"name": "a", "cnt": 2},
-        {"name": "b", "cnt": 3},
-        {"name": "c", "cnt": 1},
-    ]
-
-
-def test_select_feature(test_session):
-    chain = dc.read_values(my_n=features_nested, session=test_session)
-    dc_ordered = chain.order_by("my_n.fr.nnn", "my_n.fr.count")
-
-    samples = dc_ordered.select("my_n").to_list()
-    n = 0
-    for sample in samples:
-        assert sample[0] == features_nested[n]
-        n += 1
-    assert n == len(features_nested)
-
-    samples = dc_ordered.select("my_n.fr").to_list()
-    n = 0
-    for sample in samples:
-        assert sample[0] == features[n]
-        n += 1
-    assert n == len(features_nested)
-
-    samples = dc_ordered.select("my_n.label", "my_n.fr.count").to_list()
-    n = 0
-    for sample in samples:
-        label, count = sample
-        assert label == features_nested[n].label
-        assert count == features_nested[n].fr.count
-        n += 1
-    assert n == len(features_nested)
-
-
-def test_select_columns_intersection(test_session):
-    chain = dc.read_values(my_n=features_nested, session=test_session)
-
-    samples = (
-        chain.order_by("my_n.fr.nnn", "my_n.fr.count")
-        .select("my_n.fr", "my_n.fr.count")
-        .to_list()
-    )
-    n = 0
-    for sample in samples:
-        fr, count = sample
-        assert fr == features_nested[n].fr
-        assert count == features_nested[n].fr.count
-        n += 1
-    assert n == len(features_nested)
-
-
-def test_select_except(test_session):
-    chain = dc.read_values(fr1=features_nested, fr2=features, session=test_session)
-
-    samples = (
-        chain.order_by("fr1.fr.nnn", "fr1.fr.count").select_except("fr2").to_list()
-    )
-    n = 0
-    for sample in samples:
-        fr = sample[0]
-        assert fr == features_nested[n]
-        n += 1
-    assert n == len(features_nested)
-
-
-def test_select_except_after_gen(test_session):
-    # https://github.com/datachain-ai/datachain/issues/1359
-    # fixed by https://github.com/datachain-ai/datachain/pull/1400
-    chain = dc.read_values(id=range(10), session=test_session)
-
-    chain = chain.gen(lambda id: [(id, 0)], output={"id": int, "x": int})
-    chain = chain.select_except("x")
-    chain = chain.merge(chain, on="id")
-    chain = chain.select_except("right_id")
-
-    assert set(chain.to_values("id")) == set(range(10))
-
-
-def test_select_wrong_type(test_session):
-    chain = dc.read_values(fr1=features_nested, fr2=features, session=test_session)
-
-    with pytest.raises(SignalResolvingTypeError):
-        chain.select(4).to_list()
-
-    with pytest.raises(SignalResolvingTypeError):
-        chain.select_except(features[0]).to_list()
-
-
-def test_select_except_error(test_session):
-    chain = dc.read_values(fr1=features_nested, fr2=features, session=test_session)
-
-    with pytest.raises(SignalResolvingError):
-        chain.select_except("not_exist", "file").to_list()
-
-    with pytest.raises(SignalRemoveError):
-        chain.select_except("fr1.label", "file").to_list()
-
-
-def test_select_restore_from_saving(test_session):
-    chain = dc.read_values(my_n=features_nested, session=test_session)
-
-    name = "test_test_select_save"
-    chain.select("my_n.fr").save(name)
-
-    restored = dc.read_dataset(name)
-    n = 0
-    restored_sorted = sorted(restored.to_list(), key=lambda x: x[0].count)
-    features_sorted = sorted(features, key=lambda x: x.count)
-    for sample in restored_sorted:
-        assert sample[0] == features_sorted[n]
-        n += 1
-    assert n == len(features_nested)
-
-
-def test_select_distinct(test_session):
-    class Embedding(BaseModel):
-        id: int
-        filename: str
-        values: list[float]
-
-    expected = [
-        [0.1, 0.3],
-        [0.1, 0.4],
-        [0.1, 0.5],
-        [0.1, 0.6],
-    ]
-
-    actual = (
-        dc.read_values(
-            embedding=[
-                Embedding(id=1, filename="a.jpg", values=expected[0]),
-                Embedding(id=2, filename="b.jpg", values=expected[2]),
-                Embedding(id=3, filename="c.jpg", values=expected[1]),
-                Embedding(id=4, filename="d.jpg", values=expected[1]),
-                Embedding(id=5, filename="e.jpg", values=expected[3]),
-            ],
-            session=test_session,
-        )
-        .select("embedding.values", "embedding.filename")
-        .distinct("embedding.values")
-        .order_by("embedding.values")
-        .to_list()
-    )
-
-    actual = [emb[0] for emb in actual]
-    assert len(actual) == 4
-    for i in [0, 1]:
-        assert np.allclose([emb[i] for emb in actual], [emp[i] for emp in expected])
-
-
-def test_read_hf_name_version(test_session):
+def test_read_dataset_name_version(test_session):
     name = "test-version"
     dc.read_values(
         first_name=["Alice", "Bob", "Charlie"],
@@ -1299,11 +1328,20 @@ def test_parse_nested_json(tmp_dir, test_session):
     assert sorted(df1["na_me"]["first_select"].to_list()) == sorted(
         d["first-SELECT"] for d in df["nA-mE"].to_list()
     )
+
+    # Normalize nan/None to None for comparison (pandas 3.0 returns nan instead of None)
+    def normalize_null(x):
+        return None if pd.isna(x) else x
+
     assert sorted(
-        df1["na_me"]["l_as_t"].to_list(), key=lambda x: (x is None, x)
+        [normalize_null(x) for x in df1["na_me"]["l_as_t"].to_list()],
+        key=lambda x: (x is None, "" if x is None else x),
     ) == sorted(
-        [d.get("l--as@t", string_default) for d in df["nA-mE"].to_list()],
-        key=lambda x: (x is None, x),
+        [
+            normalize_null(d.get("l--as@t", string_default))
+            for d in df["nA-mE"].to_list()
+        ],
+        key=lambda x: (x is None, "" if x is None else x),
     )
 
 
@@ -1565,7 +1603,7 @@ def test_read_csv_column_types(tmp_dir, test_session):
         path.as_uri(), column_types={"age": "str"}, session=test_session
     )
     df1 = chain.select("first_name", "age", "city").to_pandas()
-    assert df1["age"].dtype == pd.StringDtype
+    assert pd.api.types.is_string_dtype(df1["age"])
 
 
 def test_read_csv_parse_options(tmp_dir, test_session):
@@ -1594,39 +1632,6 @@ def test_read_csv_parse_options(tmp_dir, test_session):
 
     df = chain.select("animals", "n_legs", "entry").to_pandas()
     assert set(df["animals"]) == {"Horse", "Centipede", "Brittle stars", "Flamingo"}
-
-
-def test_to_csv_features(tmp_dir, test_session):
-    dc_to = dc.read_values(f1=features, num=range(len(features)), session=test_session)
-    path = tmp_dir / "test.csv"
-    dc_to.order_by("f1.nnn", "f1.count").to_csv(path)
-    with open(path) as f:
-        lines = f.read().split("\n")
-    assert lines == ["f1.nnn,f1.count,num", "n1,1,0", "n1,3,1", "n2,5,2", ""]
-
-
-def test_to_tsv_features(tmp_dir, test_session):
-    dc_to = dc.read_values(f1=features, num=range(len(features)), session=test_session)
-    path = tmp_dir / "test.csv"
-    dc_to.order_by("f1.nnn", "f1.count").to_csv(path, delimiter="\t")
-    with open(path) as f:
-        lines = f.read().split("\n")
-    assert lines == ["f1.nnn\tf1.count\tnum", "n1\t1\t0", "n1\t3\t1", "n2\t5\t2", ""]
-
-
-def test_to_csv_features_nested(tmp_dir, test_session):
-    dc_to = dc.read_values(sign1=features_nested, session=test_session)
-    path = tmp_dir / "test.csv"
-    dc_to.order_by("sign1.fr.nnn", "sign1.fr.count").to_csv(path)
-    with open(path) as f:
-        lines = f.read().split("\n")
-    assert lines == [
-        "sign1.label,sign1.fr.nnn,sign1.fr.count",
-        "label_0,n1,1",
-        "label_1,n1,3",
-        "label_2,n2,5",
-        "",
-    ]
 
 
 @pytest.mark.parametrize("column_type", (str, dict))
@@ -1705,6 +1710,24 @@ def test_to_json_features_nested(tmp_dir, test_session):
         {"sign1": {"label": f"label_{n}", "fr": {"nnn": f.nnn, "count": f.count}}}
         for n, f in enumerate(features)
     ]
+
+
+def test_to_json_datetime(tmp_dir, test_session):
+    timestamp = datetime.datetime.now(datetime.timezone.utc)
+    chain = dc.read_values(ts=[timestamp], session=test_session)
+
+    path = tmp_dir / "dt.json"
+    chain.to_json(path)
+
+    with path.open() as fh:
+        values = json.load(fh)
+
+    expected_ts = timestamp.isoformat().replace("+00:00", "Z")
+    assert values == [{"ts": expected_ts}]
+    assert (
+        datetime.datetime.fromisoformat(values[0]["ts"].replace("Z", "+00:00"))
+        == timestamp
+    )
 
 
 # These deprecation warnings occur in the datamodel-code-generator package.
@@ -1987,7 +2010,7 @@ def test_exec(test_session, monkeypatch):
 
     chain = (
         dc.read_values(name=names, session=test_session)
-        .map(nop=lambda name: all_names.add(name))
+        .map(nop=lambda name: all_names.add(name))  # noqa: PLW0108
         .exec()
     )
     assert isinstance(chain, dc.DataChain)
@@ -2052,7 +2075,7 @@ def test_sys_feature(test_session, monkeypatch):
     assert not ds_no_sys._sys
 
     args = []
-    ds_no_sys.map(res=lambda t1: args.append(t1)).save("ds_no_sys")
+    ds_no_sys.map(res=lambda t1: args.append(t1)).save("ds_no_sys")  # noqa: PLW0108
     assert args == [
         MyFr(nnn="n1", count=1),
         MyFr(nnn="n1", count=3),
@@ -2241,75 +2264,6 @@ def test_union_different_column_order(test_session):
         (9, "different"),
         (10, "order"),
     ]
-
-
-def test_subtract(test_session):
-    chain1 = dc.read_values(a=[1, 1, 2], b=["x", "y", "z"], session=test_session)
-    chain2 = dc.read_values(a=[1, 2], b=["x", "y"], session=test_session)
-    assert set(chain1.subtract(chain2, on=["a", "b"]).to_list()) == {(1, "y"), (2, "z")}
-    assert set(chain1.subtract(chain2, on=["b"]).to_list()) == {(2, "z")}
-    assert not set(chain1.subtract(chain2, on=["a"]).to_list())
-    assert set(chain1.subtract(chain2).to_list()) == {(1, "y"), (2, "z")}
-    assert chain1.subtract(chain1).count() == 0
-
-    chain3 = dc.read_values(a=[1, 3], c=["foo", "bar"], session=test_session)
-    assert set(chain1.subtract(chain3, on="a").to_list()) == {(2, "z")}
-    assert set(chain1.subtract(chain3).to_list()) == {(2, "z")}
-
-    chain4 = dc.read_values(d=[1, 2, 3], e=["x", "y", "z"], session=test_session)
-    chain5 = dc.read_values(a=[1, 2], b=["x", "y"], session=test_session)
-
-    assert set(chain4.subtract(chain5, on="d", right_on="a").to_list()) == {(3, "z")}
-
-
-def test_subtract_duplicated_rows(test_session):
-    chain1 = dc.read_values(id=[1, 1], name=["1", "1"], session=test_session)
-    chain2 = dc.read_values(id=[2], name=["2"], session=test_session)
-    sub = chain1.subtract(chain2, on="id")
-    assert set(sub.to_list()) == {(1, "1"), (1, "1")}
-
-
-def test_subtract_error(test_session):
-    chain1 = dc.read_values(a=[1, 1, 2], b=["x", "y", "z"], session=test_session)
-    chain2 = dc.read_values(a=[1, 2], b=["x", "y"], session=test_session)
-    with pytest.raises(DataChainParamsError):
-        chain1.subtract(chain2, on=[])
-    with pytest.raises(TypeError):
-        chain1.subtract(chain2, on=42)
-
-    with pytest.raises(DataChainParamsError):
-        chain1.subtract(chain2, on="")
-
-    with pytest.raises(DataChainParamsError):
-        chain1.subtract(chain2, on="a", right_on="")
-
-    with pytest.raises(DataChainParamsError):
-        chain1.subtract(chain2, on=["a", "b"], right_on=["c", ""])
-
-    with pytest.raises(DataChainParamsError):
-        chain1.subtract(chain2, on=["a", "b"], right_on=[])
-
-    with pytest.raises(DataChainParamsError):
-        chain1.subtract(chain2, on=["a", "b"], right_on=["d"])
-
-    with pytest.raises(DataChainParamsError):
-        chain1.subtract(chain2, right_on=[])
-
-    with pytest.raises(DataChainParamsError):
-        chain1.subtract(chain2, right_on="")
-
-    with pytest.raises(DataChainParamsError):
-        chain1.subtract(chain2, right_on=42)
-
-    with pytest.raises(DataChainParamsError):
-        chain1.subtract(chain2, right_on=["a"])
-
-    with pytest.raises(TypeError):
-        chain1.subtract(chain2, on=42, right_on=42)
-
-    chain3 = dc.read_values(c=["foo", "bar"], session=test_session)
-    with pytest.raises(DataChainParamsError):
-        chain1.subtract(chain3)
 
 
 def test_column_math(test_session):
@@ -3752,6 +3706,7 @@ def test_group_by_no_partition_by(test_session):
 
 def test_group_by_schema(test_session):
     from datachain import func
+    from datachain.lib.model_store import ModelStore
 
     class Signal(DataModel):
         name: str
@@ -3782,11 +3737,21 @@ def test_group_by_schema(test_session):
         .select("signal.name", "parent.signal.name", "cnt", "sum")
     )
 
-    assert chain.signals_schema.serialize() == {
-        "signal.name": "str",
-        "parent.signal.name": "str",
-        "cnt": "int",
-        "sum": "float",
+    serialized = chain.signals_schema.serialize()
+    assert serialized["cnt"] == "int"
+    assert serialized["sum"] == "float"
+    assert "signal" in serialized
+    assert "parent" in serialized
+    assert "_custom_types" in serialized
+
+    assert ModelStore.is_partial(chain.schema["signal"])
+    assert ModelStore.is_partial(chain.schema["parent"])
+
+    signal_type_name = serialized["signal"]
+    parent_type_name = serialized["parent"]
+    assert serialized["_custom_types"][signal_type_name]["fields"] == {"name": "str"}
+    assert serialized["_custom_types"][parent_type_name]["fields"] == {
+        "signal": signal_type_name
     }
     assert sorted(
         chain.to_records(),
@@ -4537,3 +4502,53 @@ def test_column_compute(test_session):
     assert chain.max("signals.signal.i3") == 15
     assert chain.max("signals.signal.f3") == 7.5
     assert chain.max("signals.signal.s3") == "eee"
+
+
+def test_union_does_not_break_schema_order(test_session):
+    class Meta(BaseModel):
+        name: str
+        count: int
+
+    def add_file(key) -> File:
+        return File(path="")
+
+    def add_meta(file) -> Meta:
+        return Meta(name="meta", count=10)
+
+    keys = ["a", "b", "c", "d"]
+    values = [3, 3, 3, 3]
+
+    (
+        dc.read_values(key=keys, val=values, session=test_session)
+        .map(file=add_file)
+        .map(meta=add_meta)
+        .save("ds1")
+    )
+    (
+        dc.read_values(key=keys, val=values, session=test_session)
+        .map(file=add_file)
+        .map(meta=add_meta)
+        .save("ds2")
+    )
+
+    (
+        dc.read_dataset("ds1", session=test_session)
+        .union(dc.read_dataset("ds2", session=test_session))
+        .save("union")
+    )
+
+    dat = test_session.catalog.get_dataset("union")
+    assert list(dat.versions[0].schema.keys()) == [
+        "key",
+        "val",
+        "file__source",
+        "file__path",
+        "file__size",
+        "file__version",
+        "file__etag",
+        "file__is_latest",
+        "file__last_modified",
+        "file__location",
+        "meta__name",
+        "meta__count",
+    ]

@@ -74,6 +74,7 @@ Enter the necessary information to create the webhooks.
         - CANCELED: Job has been canceled successfully
         - CANCELING: Job has been scheduled to cancel
         - TASK: A scheduled task is created.
+        - PENDING: Job is in draft state for pipeline.
 
 - SSL Verification: By default, we verify SSL certificates when delivering payloads. SSL verification helps ensure that hook payloads are delivered to your URL endpoint securely, keeping your data away from prying eyes. Disabling this option is **not recommended**.
 - HTTP Method: By default, we make a post request, but you can specify other http method if necessary.

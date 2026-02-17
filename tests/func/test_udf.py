@@ -12,8 +12,8 @@ import pytest
 import datachain as dc
 from datachain.func import path as pathfunc
 from datachain.lib.file import AudioFile, AudioFragment, File
-from datachain.lib.udf import Mapper
-from datachain.lib.utils import DataChainColumnError, DataChainError
+from datachain.lib.udf import Mapper, UdfRunError
+from datachain.lib.utils import DataChainColumnError
 from tests.utils import LARGE_TREE, NUM_TREE
 
 
@@ -152,9 +152,11 @@ def test_udf(cloud_test_catalog):
         .filter(dc.C("file.path").glob("cats*") | (dc.C("file.size") < 4))
         .map(name_len, params=["file.path"], output={"name_len": int})
     )
-    result1 = chain.select("file.path", "name_len").to_list()
+
+    result1 = chain.to_list("file.path", "name_len")
     # ensure that we're able to run with same query multiple times
-    result2 = chain.select("file.path", "name_len").to_list()
+
+    result2 = chain.to_list("file.path", "name_len")
     count = chain.count()
     assert len(result1) == 3
     assert len(result2) == 3
@@ -182,12 +184,11 @@ def test_udf_parallel(cloud_test_catalog_tmpfile):
         dc.read_storage(cloud_test_catalog_tmpfile.src_uri, session=session)
         .settings(parallel=True)
         .map(name_len, params=["file.path"], output={"name_len": int})
-        .select("file.path", "name_len")
     )
 
     # Check that the UDF ran successfully
     count = 0
-    for r in chain:
+    for r in chain.to_iter("file.path", "name_len"):
         count += 1
         assert len(r[0]) == r[1]
     assert count == 7
@@ -221,7 +222,7 @@ def test_class_udf(cloud_test_catalog):
         .order_by("file.size")
     )
 
-    assert chain.to_list() == [
+    assert chain.to_list("file.size", "total") == [
         (3, 11),
         (4, 13),
         (4, 13),
@@ -261,7 +262,7 @@ def test_class_udf_parallel(cloud_test_catalog_tmpfile):
         .order_by("file.size")
     )
 
-    assert chain.to_list() == [
+    assert chain.to_list("file.size", "total") == [
         (3, 11),
         (4, 13),
         (4, 13),
@@ -502,9 +503,10 @@ def test_gen_file(cloud_test_catalog, use_cache, prefetch, monkeypatch):
 
         return wrapped
 
-    def new_signal(file: File) -> list[str]:
+    def new_signal(file: File):
         with file.open("rb") as f:
-            return [file.name, f.read().decode("utf-8")]
+            yield file.name
+            yield f.read().decode("utf-8")
 
     chain = (
         dc.read_storage(ctc.src_uri, session=ctc.session)
@@ -580,7 +582,6 @@ def test_udf_parallel_exec_error(cloud_test_catalog_tmpfile):
     [
         ("exception", 1, "Worker 1 failure!"),
         ("keyboard_interrupt", -2, "KeyboardInterrupt"),
-        ("sys_exit", 1, None),
         ("os_exit", 1, None),  # os._exit - immediate termination
     ],
 )
@@ -710,10 +711,9 @@ def test_udf_reuse_on_error(cloud_test_catalog_tmpfile):
         .filter(dc.C("file.size") < 13)
         .filter(dc.C("file.path").glob("cats*") | (dc.C("file.size") < 4))
         .map(name_len_maybe_error, params=["file.path"], output={"path_len": int})
-        .select("file.path", "path_len")
     )
 
-    with pytest.raises(DataChainError, match="Test Error!"):
+    with pytest.raises(RuntimeError, match="Test Error!"):
         chain.show()
 
     # Simulate fixing the error
@@ -721,10 +721,11 @@ def test_udf_reuse_on_error(cloud_test_catalog_tmpfile):
 
     # Retry Query
     count = 0
-    for r in chain:
+    for r in chain.to_iter("file.path", "path_len"):
         # Check that the UDF ran successfully
         count += 1
         assert len(r[0]) == r[1]
+
     assert count == 3
 
 
@@ -802,19 +803,18 @@ def test_udf_distributed(
 ):
     session = cloud_test_catalog_tmpfile.session
 
-    def name_len(name):
-        return (len(name),)
+    def name_len(name: str) -> int:
+        return len(name)
 
     chain = (
         dc.read_storage(cloud_test_catalog_tmpfile.src_uri, session=session)
         .settings(parallel=parallel, workers=workers)
         .map(name_len, params=["file.path"], output={"name_len": int})
-        .select("file.path", "name_len")
     )
 
     # Check that the UDF ran successfully
     count = 0
-    for r in chain:
+    for r in chain.to_iter("file.path", "name_len"):
         count += 1
         assert len(r[0]) == r[1]
     assert count == 225
@@ -849,7 +849,7 @@ def test_udf_distributed_exec_error(
         .settings(parallel=parallel, workers=workers)
         .map(name_len_error, params=["file.path"], output={"name_len": int})
     )
-    with pytest.raises(DataChainError, match="Test Error!"):
+    with pytest.raises(UdfRunError, match="Test Error!"):
         chain.show()
 
 

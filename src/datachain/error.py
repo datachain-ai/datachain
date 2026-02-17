@@ -99,6 +99,10 @@ class TableMissingError(DataChainError):
     pass
 
 
+class TableRenameError(DataChainError):
+    pass
+
+
 class OutdatedDatabaseSchemaError(DataChainError):
     pass
 
@@ -108,4 +112,8 @@ class CheckpointNotFoundError(NotFoundError):
 
 
 class JobNotFoundError(NotFoundError):
+    pass
+
+
+class JobAncestryDepthExceededError(DataChainError):
     pass

@@ -2,6 +2,7 @@
 
 The functionality to train your model and run experiments with different
 hyperparameters or datasets is currently disabled in DataChain Studio. However, DVC
+(acquired by lakeFS)
 experiments that are created from the terminal or the VS Code extension can be
 monitored and managed from DataChain Studio.
 

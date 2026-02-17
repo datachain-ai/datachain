@@ -14,15 +14,15 @@ from urllib.parse import urlparse
 import numpy as np
 import pandas as pd
 import pytest
-import pytz
 from PIL import Image
 
 import datachain as dc
 from datachain import DataModel, func
-from datachain.data_storage.sqlite import SQLiteWarehouse
 from datachain.dataset import DatasetDependencyType
+from datachain.lib.data_model import compute_model_fingerprint
 from datachain.lib.file import File, ImageFile
 from datachain.lib.listing import LISTING_TTL, is_listing_dataset, parse_listing_uri
+from datachain.lib.model_store import ModelStore
 from datachain.lib.tar import process_tar
 from datachain.query.dataset import QueryStep
 from tests.utils import (
@@ -60,7 +60,7 @@ def test_catalog_anon(tmp_dir, catalog, anon):
     assert chain.session.catalog.client_config.get("anon", False) is anon
 
 
-def test_read_storage_client_config(tmp_dir, catalog):
+def test_read_storage_client_config(tmp_dir):
     chain = dc.read_storage(tmp_dir.as_uri())
     assert chain.session.catalog.client_config == {}  # Default client config is set.
 
@@ -355,8 +355,8 @@ def test_export_images_files(test_session, tmp_dir, tmp_path, use_cache):
     ).settings(cache=use_cache).to_storage(tmp_dir / "output", placement="filename")
 
     for img in images:
-        exported_img = Image.open(tmp_dir / "output" / img["name"])
-        assert images_equal(img["data"], exported_img)
+        with Image.open(tmp_dir / "output" / img["name"]) as exported_img:
+            assert images_equal(img["data"], exported_img)
 
 
 @pytest.mark.parametrize("use_cache", [True, False])
@@ -380,8 +380,8 @@ def test_read_storage_multiple_uris_files(test_session, tmp_dir, tmp_path, use_c
     ).to_storage(tmp_dir / "output", placement="filename")
 
     for img in images:
-        exported_img = Image.open(tmp_dir / "output" / img["name"])
-        assert images_equal(img["data"], exported_img)
+        with Image.open(tmp_dir / "output" / img["name"]) as exported_img:
+            assert images_equal(img["data"], exported_img)
 
     chain = dc.read_storage(
         [
@@ -451,8 +451,8 @@ def test_read_storage_path_object(test_session, tmp_dir, tmp_path):
     dc.read_storage(tmp_path).to_storage(tmp_dir / "output", placement="filename")
 
     for img in images:
-        exported_img = Image.open(tmp_dir / "output" / img["name"])
-        assert images_equal(img["data"], exported_img)
+        with Image.open(tmp_dir / "output" / img["name"]) as exported_img:
+            assert images_equal(img["data"], exported_img)
 
 
 def test_to_storage_relative_path(test_session, tmp_path):
@@ -472,8 +472,8 @@ def test_to_storage_relative_path(test_session, tmp_path):
     ).to_storage("output", placement="filename")
 
     for img in images:
-        exported_img = Image.open(Path("output") / img["name"])
-        assert images_equal(img["data"], exported_img)
+        with Image.open(Path("output") / img["name"]) as exported_img:
+            assert images_equal(img["data"], exported_img)
 
 
 def test_to_storage_files_filename_placement_not_unique_files(tmp_dir, test_session):
@@ -718,13 +718,9 @@ def test_read_storage_check_rows(tmp_dir, test_session):
 
     chain = dc.read_storage(tmp_dir.as_uri(), session=test_session).save("test-data")
 
-    is_sqlite = isinstance(test_session.catalog.warehouse, SQLiteWarehouse)
-    tz = timezone.utc if is_sqlite else pytz.UTC
-
     for file in chain.to_values("file"):
         assert isinstance(file, File)
         stat = stats[file.name]
-        mtime = stat.st_mtime if is_sqlite else float(math.floor(stat.st_mtime))
         assert file == File(
             source=Path(tmp_dir).as_uri(),
             path=file.path,
@@ -732,7 +728,7 @@ def test_read_storage_check_rows(tmp_dir, test_session):
             version="",
             etag=stat.st_mtime.hex(),
             is_latest=True,
-            last_modified=datetime.fromtimestamp(mtime, tz=tz),
+            last_modified=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
             location=None,
         )
 
@@ -984,10 +980,14 @@ def test_gen_with_new_columns_wrong_type(cloud_test_catalog, dogs_dataset):
     def gen_func():
         yield (0.5)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(dc.DataChainError) as exc_info:
         dc.read_storage(cloud_test_catalog.src_uri, session=session).gen(
             new_val=gen_func, output={"new_val": int}
         ).show()
+    assert "invalid value" in str(exc_info.value)
+    assert "new_val" in str(exc_info.value)
+    assert "Expected int" in str(exc_info.value)
+    assert "got 0.5" in str(exc_info.value)
 
 
 def test_similarity_search(cloud_test_catalog):
@@ -1091,14 +1091,18 @@ def test_group_by_signals(cloud_test_catalog):
         .save("my-ds")
     )
 
+    fp_file_info_path = compute_model_fingerprint(FileInfo, {"path": None})
+    fi_partial_base = f"FileInfoPartial_{fp_file_info_path[:10]}"
+    fi_partial_name = f"{fi_partial_base}@v1"
+
     assert ds.signals_schema.serialize() == {
         "_custom_types": {
-            "FileInfoPartial1@v1": {
+            fi_partial_name: {
                 "bases": [
                     (
-                        "FileInfoPartial1",
+                        fi_partial_base,
                         "datachain.lib.signal_schema",
-                        "FileInfoPartial1@v1",
+                        fi_partial_name,
                     ),
                     ("DataModel", "datachain.lib.data_model", "DataModel@v1"),
                     ("BaseModel", "pydantic.main", None),
@@ -1106,11 +1110,12 @@ def test_group_by_signals(cloud_test_catalog):
                 ],
                 "fields": {"path": "str"},
                 "hidden_fields": [],
-                "name": "FileInfoPartial1@v1",
+                "name": fi_partial_name,
                 "schema_version": 2,
+                "partial_fingerprint": fp_file_info_path,
             }
         },
-        "file_info": "FileInfoPartial1@v1",
+        "file_info": fi_partial_name,
         "cnt": "int",
         "sum": "int",
         "value": "int",
@@ -1156,43 +1161,44 @@ def test_group_by_signals_same_model(cloud_test_catalog):
         .save("my-ds")
     )
 
+    fp_file_info_name = compute_model_fingerprint(FileInfo, {"name": None})
+    fp_file_info_path = compute_model_fingerprint(FileInfo, {"path": None})
+    fi_name_base = f"FileInfoPartial_{fp_file_info_name[:10]}"
+    fi_name_full = f"{fi_name_base}@v1"
+    fi_path_base = f"FileInfoPartial_{fp_file_info_path[:10]}"
+    fi_path_full = f"{fi_path_base}@v1"
+
     assert ds.signals_schema.serialize() == {
         "_custom_types": {
-            "FileInfoPartial1@v1": {
+            fi_name_full: {
                 "bases": [
-                    (
-                        "FileInfoPartial1",
-                        "datachain.lib.signal_schema",
-                        "FileInfoPartial1@v1",
-                    ),
+                    (fi_name_base, "datachain.lib.signal_schema", fi_name_full),
                     ("DataModel", "datachain.lib.data_model", "DataModel@v1"),
                     ("BaseModel", "pydantic.main", None),
                     ("object", "builtins", None),
                 ],
                 "fields": {"name": "str"},
                 "hidden_fields": [],
-                "name": "FileInfoPartial1@v1",
+                "name": fi_name_full,
                 "schema_version": 2,
+                "partial_fingerprint": fp_file_info_name,
             },
-            "FileInfoPartial2@v1": {
+            fi_path_full: {
                 "bases": [
-                    (
-                        "FileInfoPartial2",
-                        "datachain.lib.signal_schema",
-                        "FileInfoPartial2@v1",
-                    ),
+                    (fi_path_base, "datachain.lib.signal_schema", fi_path_full),
                     ("DataModel", "datachain.lib.data_model", "DataModel@v1"),
                     ("BaseModel", "pydantic.main", None),
                     ("object", "builtins", None),
                 ],
                 "fields": {"path": "str"},
                 "hidden_fields": [],
-                "name": "FileInfoPartial2@v1",
+                "name": fi_path_full,
                 "schema_version": 2,
+                "partial_fingerprint": fp_file_info_path,
             },
         },
-        "f1": "FileInfoPartial1@v1",
-        "f2": "FileInfoPartial2@v1",
+        "f1": fi_name_full,
+        "f2": fi_path_full,
         "cnt": "int",
         "sum": "int",
     }
@@ -1219,6 +1225,7 @@ def test_group_by_signals_nested(cloud_test_catalog):
 
     class FileName(DataModel):
         name: str = ""
+        ext: str = ""
 
     class FileInfo(DataModel):
         path: str = ""
@@ -1228,10 +1235,12 @@ def test_group_by_signals_nested(cloud_test_catalog):
         full_path = file.source.rstrip("/") + "/" + file.path
         rel_path = posixpath.relpath(full_path, src_uri)
         path_parts = rel_path.split("/", 1)
+        file_name = path_parts[1] if len(path_parts) > 1 else path_parts[0]
         return FileInfo(
             path=path_parts[0] if len(path_parts) > 1 else "",
             name=FileName(
-                name=path_parts[1] if len(path_parts) > 1 else path_parts[0],
+                name=file_name,
+                ext=posixpath.splitext(file_name)[1].lstrip("."),
             ),
         )
 
@@ -1247,59 +1256,61 @@ def test_group_by_signals_nested(cloud_test_catalog):
         .save("my-ds")
     )
 
+    fp_file_info_name = compute_model_fingerprint(FileInfo, {"name": {"name": None}})
+    fp_file_info_path = compute_model_fingerprint(FileInfo, {"path": None})
+    fp_file_name = compute_model_fingerprint(FileName, {"name": None})
+
+    fi_name_base = f"FileInfoPartial_{fp_file_info_name[:10]}"
+    fi_name_full = f"{fi_name_base}@v1"
+    fi_path_base = f"FileInfoPartial_{fp_file_info_path[:10]}"
+    fi_path_full = f"{fi_path_base}@v1"
+    fname_base = f"FileNamePartial_{fp_file_name[:10]}"
+    fname_full = f"{fname_base}@v1"
+
     assert ds.signals_schema.serialize() == {
         "_custom_types": {
-            "FileInfoPartial1@v1": {
+            fname_full: {
                 "bases": [
-                    (
-                        "FileInfoPartial1",
-                        "datachain.lib.signal_schema",
-                        "FileInfoPartial1@v1",
-                    ),
-                    ("DataModel", "datachain.lib.data_model", "DataModel@v1"),
-                    ("BaseModel", "pydantic.main", None),
-                    ("object", "builtins", None),
-                ],
-                "fields": {"name": "FileNamePartial1@v1"},
-                "hidden_fields": [],
-                "name": "FileInfoPartial1@v1",
-                "schema_version": 2,
-            },
-            "FileInfoPartial2@v1": {
-                "bases": [
-                    (
-                        "FileInfoPartial2",
-                        "datachain.lib.signal_schema",
-                        "FileInfoPartial2@v1",
-                    ),
-                    ("DataModel", "datachain.lib.data_model", "DataModel@v1"),
-                    ("BaseModel", "pydantic.main", None),
-                    ("object", "builtins", None),
-                ],
-                "fields": {"path": "str"},
-                "hidden_fields": [],
-                "name": "FileInfoPartial2@v1",
-                "schema_version": 2,
-            },
-            "FileNamePartial1@v1": {
-                "bases": [
-                    (
-                        "FileNamePartial1",
-                        "datachain.lib.signal_schema",
-                        "FileNamePartial1@v1",
-                    ),
+                    (fname_base, "datachain.lib.signal_schema", fname_full),
                     ("DataModel", "datachain.lib.data_model", "DataModel@v1"),
                     ("BaseModel", "pydantic.main", None),
                     ("object", "builtins", None),
                 ],
                 "fields": {"name": "str"},
                 "hidden_fields": [],
-                "name": "FileNamePartial1@v1",
+                "name": fname_full,
                 "schema_version": 2,
+                "partial_fingerprint": fp_file_name,
+            },
+            fi_name_full: {
+                "bases": [
+                    (fi_name_base, "datachain.lib.signal_schema", fi_name_full),
+                    ("DataModel", "datachain.lib.data_model", "DataModel@v1"),
+                    ("BaseModel", "pydantic.main", None),
+                    ("object", "builtins", None),
+                ],
+                "fields": {"name": fname_full},
+                "hidden_fields": [],
+                "name": fi_name_full,
+                "schema_version": 2,
+                "partial_fingerprint": fp_file_info_name,
+            },
+            fi_path_full: {
+                "bases": [
+                    (fi_path_base, "datachain.lib.signal_schema", fi_path_full),
+                    ("DataModel", "datachain.lib.data_model", "DataModel@v1"),
+                    ("BaseModel", "pydantic.main", None),
+                    ("object", "builtins", None),
+                ],
+                "fields": {"path": "str"},
+                "hidden_fields": [],
+                "name": fi_path_full,
+                "schema_version": 2,
+                "partial_fingerprint": fp_file_info_path,
             },
         },
-        "f1": "FileInfoPartial1@v1",
-        "f2": "FileInfoPartial2@v1",
+        "f1": fi_name_full,
+        "f2": fi_path_full,
         "cnt": "int",
         "sum": "int",
     }
@@ -1339,26 +1350,27 @@ def test_group_by_known_signals(cloud_test_catalog):
         .save("my-ds")
     )
 
+    fp_bbox_title = compute_model_fingerprint(BBox, {"title": None})
+    bbox_base = f"BBoxPartial_{fp_bbox_title[:10]}"
+    bbox_full = f"{bbox_base}@v1"
+
     assert ds.signals_schema.serialize() == {
         "_custom_types": {
-            "BBoxPartial1@v1": {
+            bbox_full: {
                 "bases": [
-                    (
-                        "BBoxPartial1",
-                        "datachain.lib.signal_schema",
-                        "BBoxPartial1@v1",
-                    ),
+                    (bbox_base, "datachain.lib.signal_schema", bbox_full),
                     ("DataModel", "datachain.lib.data_model", "DataModel@v1"),
                     ("BaseModel", "pydantic.main", None),
                     ("object", "builtins", None),
                 ],
                 "fields": {"title": "str"},
                 "hidden_fields": [],
-                "name": "BBoxPartial1@v1",
+                "name": bbox_full,
                 "schema_version": 2,
+                "partial_fingerprint": fp_bbox_title,
             }
         },
-        "box": "BBoxPartial1@v1",
+        "box": bbox_full,
         "cnt": "int",
         "value": "list[int]",
     }
@@ -1484,7 +1496,7 @@ def test_window_signals_random(cloud_test_catalog):
         .save("my-ds")
     )
 
-    results = {}
+    results: dict[str, list[str]] = {}
     for r in ds.to_records():
         results.setdefault(r["file_info__path"], []).append(r["file_info__name"])
 
@@ -1497,6 +1509,83 @@ def test_window_signals_random(cloud_test_catalog):
         assert dog in all_dogs
         all_dogs.remove(dog)
     assert len(all_dogs) == 2
+
+
+def test_select_except_top_level_preserves_nested_models(test_session):
+    class Stats(DataModel):
+        count: int
+        mean: float
+
+    class Metrics(DataModel):
+        raw: Stats
+        clean: Stats
+        ratio: float
+
+    metrics = [
+        Metrics(
+            raw=Stats(count=1, mean=0.1),
+            clean=Stats(count=2, mean=0.2),
+            ratio=1.0,
+        ),
+        Metrics(
+            raw=Stats(count=3, mean=0.3),
+            clean=Stats(count=4, mean=0.4),
+            ratio=2.0,
+        ),
+    ]
+
+    chain = dc.read_values(metrics=metrics, dropme=["a", "b"], session=test_session)
+
+    # Excluding a top-level sibling column should not turn unrelated nested models
+    # into Partial_* variants.
+    selected = chain.select_except("dropme")
+
+    assert set(selected.signals_schema.values) == {"metrics", "sys"}
+    assert selected.signals_schema.values["metrics"] is Metrics
+
+
+def test_select_except_nested_leaf_creates_partials(test_session):
+    class Stats(DataModel):
+        count: int
+        mean: float
+
+    class Metrics(DataModel):
+        raw: Stats
+        clean: Stats
+        ratio: float
+
+    metrics = [
+        Metrics(
+            raw=Stats(count=1, mean=0.1),
+            clean=Stats(count=2, mean=0.2),
+            ratio=1.0,
+        ),
+        Metrics(
+            raw=Stats(count=3, mean=0.3),
+            clean=Stats(count=4, mean=0.4),
+            ratio=2.0,
+        ),
+    ]
+
+    chain = dc.read_values(metrics=metrics, dropme=["a", "b"], session=test_session)
+
+    # Excluding a nested leaf should create partial models for the affected parents.
+    selected = chain.select_except("metrics.raw.mean", "dropme")
+
+    assert set(selected.signals_schema.values) == {"metrics", "sys"}
+
+    metrics_type = ModelStore.to_pydantic(selected.signals_schema.values["metrics"])
+    assert metrics_type is not None
+    assert metrics_type is not Metrics
+    assert metrics_type.__name__.startswith("MetricsPartial")
+
+    raw_type = ModelStore.to_pydantic(metrics_type.model_fields["raw"].annotation)
+    assert raw_type is not None
+    assert raw_type is not Stats
+    assert raw_type.__name__.startswith("StatsPartial")
+
+    # Sanity: the excluded field is really gone.
+    assert "mean" not in raw_type.model_fields
 
 
 def test_to_read_csv_remote(cloud_test_catalog_upload):

@@ -1,21 +1,23 @@
 import io
-import json
 import logging
 import os
 import os.path
 import posixpath
-import signal
-import subprocess
 import sys
 import time
 import traceback
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
+from contextlib import contextmanager, suppress
 from copy import copy
 from dataclasses import dataclass
 from functools import cached_property, reduce
-from threading import Thread
-from typing import IO, TYPE_CHECKING, Any, NoReturn
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
+
+if sys.version_info >= (3, 11):
+    from typing import Self
+else:
+    from typing_extensions import Self
 
 import sqlalchemy as sa
 from sqlalchemy import Column
@@ -35,6 +37,8 @@ from datachain.dataset import (
     create_dataset_uri,
     parse_dataset_name,
     parse_dataset_uri,
+    parse_dataset_with_version,
+    parse_schema,
 )
 from datachain.error import (
     DataChainError,
@@ -43,15 +47,13 @@ from datachain.error import (
     DatasetVersionNotFoundError,
     NamespaceNotFoundError,
     ProjectNotFoundError,
-    QueryScriptCancelError,
-    QueryScriptRunError,
 )
 from datachain.lib.listing import get_listing
 from datachain.node import DirType, Node, NodeWithPath
 from datachain.nodes_thread_pool import NodesThreadPool
 from datachain.project import Project
 from datachain.sql.types import DateTime, SQLType
-from datachain.utils import DataChainDir
+from datachain.utils import DataChainDir, DatasetIdentifier
 
 from .datasource import DataSource
 from .dependency import build_dependency_hierarchy, populate_nested_dependencies
@@ -71,8 +73,6 @@ TTL_INT = 4 * 60 * 60
 
 INDEX_INTERNAL_ERROR_MESSAGE = "Internal error on indexing"
 DATASET_INTERNAL_ERROR_MESSAGE = "Internal error on creating dataset"
-# exit code we use if last statement in query script is not instance of DatasetQuery
-QUERY_SCRIPT_INVALID_LAST_STATEMENT_EXIT_CODE = 10
 # exit code we use if query script was canceled
 QUERY_SCRIPT_CANCELED_EXIT_CODE = 11
 QUERY_SCRIPT_SIGTERM_EXIT_CODE = -15  # if query script was terminated by SIGTERM
@@ -84,76 +84,9 @@ PULL_DATASET_SLEEP_INTERVAL = 0.1  # sleep time while waiting for chunk to be av
 PULL_DATASET_CHECK_STATUS_INTERVAL = 20  # interval to check export status in Studio
 
 
-def noop(_: str):
-    pass
-
-
-class TerminationSignal(RuntimeError):  # noqa: N818
-    def __init__(self, signal):
-        self.signal = signal
-        super().__init__("Received termination signal", signal)
-
-    def __repr__(self):
-        return f"{self.__class__.__name__}({self.signal})"
-
-
-if sys.platform == "win32":
-    SIGINT = signal.CTRL_C_EVENT
-else:
-    SIGINT = signal.SIGINT
-
-
 def is_namespace_local(namespace_name) -> bool:
     """Checks if namespace is from local environment, i.e. is `local`"""
     return namespace_name == "local"
-
-
-def shutdown_process(
-    proc: subprocess.Popen,
-    interrupt_timeout: int | None = None,
-    terminate_timeout: int | None = None,
-) -> int:
-    """Shut down the process gracefully with SIGINT -> SIGTERM -> SIGKILL."""
-
-    logger.info("sending interrupt signal to the process %s", proc.pid)
-    proc.send_signal(SIGINT)
-
-    logger.info("waiting for the process %s to finish", proc.pid)
-    try:
-        return proc.wait(interrupt_timeout)
-    except subprocess.TimeoutExpired:
-        logger.info(
-            "timed out waiting, sending terminate signal to the process %s", proc.pid
-        )
-        proc.terminate()
-        try:
-            return proc.wait(terminate_timeout)
-        except subprocess.TimeoutExpired:
-            logger.info("timed out waiting, killing the process %s", proc.pid)
-            proc.kill()
-            return proc.wait()
-
-
-def process_output(stream: IO[bytes], callback: Callable[[str], None]) -> None:
-    buffer = b""
-
-    try:
-        while byt := stream.read(1):  # Read one byte at a time
-            buffer += byt
-
-            if byt in (b"\n", b"\r"):  # Check for newline or carriage return
-                line = buffer.decode("utf-8", errors="replace")
-                callback(line)
-                buffer = b""  # Clear buffer for the next line
-
-        if buffer:  # Handle any remaining data in the buffer
-            line = buffer.decode("utf-8", errors="replace")
-            callback(line)
-    finally:
-        try:
-            stream.close()  # Ensure output is closed
-        except Exception:  # noqa: BLE001, S110
-            pass
 
 
 class DatasetRowsFetcher(NodesThreadPool):
@@ -163,6 +96,7 @@ class DatasetRowsFetcher(NodesThreadPool):
         warehouse: "AbstractWarehouse",
         remote_ds: DatasetRecord,
         remote_ds_version: str,
+        export_id: int,
         local_ds: DatasetRecord,
         local_ds_version: str,
         schema: dict[str, SQLType | type[SQLType]],
@@ -177,12 +111,16 @@ class DatasetRowsFetcher(NodesThreadPool):
         self.warehouse = warehouse
         self.remote_ds = remote_ds
         self.remote_ds_version = remote_ds_version
+        self.export_id = export_id
         self.local_ds = local_ds
         self.local_ds_version = local_ds_version
         self.schema = schema
         self.last_status_check: float | None = None
         self.studio_client = StudioClient()
         self.progress_bar = progress_bar
+        self._last_export_status: str | None = None
+        self._last_export_files_done: int | None = None
+        self._last_export_num_files: int | None = None
 
     def done_task(self, done):
         for task in done:
@@ -213,12 +151,36 @@ class DatasetRowsFetcher(NodesThreadPool):
         Checks are done every PULL_DATASET_CHECK_STATUS_INTERVAL seconds
         """
         export_status_response = self.studio_client.dataset_export_status(
-            self.remote_ds, self.remote_ds_version
+            self.export_id
         )
         if not export_status_response.ok:
             raise DataChainError(export_status_response.message)
 
-        export_status = export_status_response.data["status"]  # type: ignore [index]
+        data = export_status_response.data
+        export_status = data["status"]
+
+        # Surface Studio-side export progress (if available) while we're pulling.
+        files_done = data.get("files_done")
+        num_files = data.get("num_files")
+
+        if (
+            files_done is not None
+            and num_files is not None
+            and (
+                export_status != self._last_export_status
+                or files_done != self._last_export_files_done
+                or num_files != self._last_export_num_files
+            )
+        ):
+            self._last_export_status = export_status
+            self._last_export_files_done = files_done
+            self._last_export_num_files = num_files
+
+            if self.progress_bar is not None:
+                # Keep the main bar semantics (rows) and just add a postfix.
+                self.progress_bar.set_postfix_str(
+                    f"studio_export={files_done}/{num_files} ({export_status})"
+                )
 
         if export_status == "failed":
             raise DataChainError("Dataset export failed in Studio")
@@ -313,6 +275,16 @@ class NodeGroup:
         """
         if self.sources:
             self.client.fetch_nodes(self.iternodes(recursive), shared_progress_bar=pbar)
+
+    def close(self) -> None:
+        if self.listing:
+            self.listing.close()
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self.close()
 
 
 def prepare_output_for_cp(
@@ -540,6 +512,7 @@ class Catalog:
         }
         self._warehouse_ready_callback = warehouse_ready_callback
         self.in_memory = in_memory
+        self._owns_connections = True  # False for copies, prevents double-close
 
     @cached_property
     def warehouse(self) -> "AbstractWarehouse":
@@ -561,12 +534,35 @@ class Catalog:
         }
 
     def copy(self, cache=True, db=True):
+        """
+        Create a shallow copy of this catalog.
+
+        The copy shares metastore and warehouse with the original but will not
+        close them - only the original catalog owns the connections.
+        """
         result = copy(self)
+        result._owns_connections = False
         if not db:
             result.metastore = None
             result._warehouse = None
             result.warehouse = None
         return result
+
+    def close(self) -> None:
+        if not self._owns_connections:
+            return
+        if self.metastore is not None:
+            with suppress(Exception):
+                self.metastore.close_on_exit()
+        if self._warehouse is not None:
+            with suppress(Exception):
+                self._warehouse.close_on_exit()
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self.close()
 
     @classmethod
     def generate_query_dataset_name(cls) -> str:
@@ -621,6 +617,7 @@ class Catalog:
             **kwargs,
         )
 
+    @contextmanager
     def enlist_sources(
         self,
         sources: list[str],
@@ -628,34 +625,41 @@ class Catalog:
         skip_indexing=False,
         client_config=None,
         only_index=False,
-    ) -> list["DataSource"] | None:
-        enlisted_sources = []
-        for src in sources:  # Opt: parallel
-            listing, client, file_path = self.enlist_source(
-                src,
-                update,
-                client_config=client_config or self.client_config,
-                skip_indexing=skip_indexing,
-            )
-            enlisted_sources.append((listing, client, file_path))
+    ) -> Iterator[list["DataSource"] | None]:
+        enlisted_sources: list[tuple[Listing | None, Client, str]] = []
+        try:
+            for src in sources:  # Opt: parallel
+                listing, client, file_path = self.enlist_source(
+                    src,
+                    update,
+                    client_config=client_config or self.client_config,
+                    skip_indexing=skip_indexing,
+                )
+                enlisted_sources.append((listing, client, file_path))
 
-        if only_index:
-            # sometimes we don't really need listing result (e.g on indexing process)
-            # so this is to improve performance
-            return None
+            if only_index:
+                # sometimes we don't really need listing result (e.g. on indexing
+                # process) so this is to improve performance
+                yield None
+                return
 
-        dsrc_all: list[DataSource] = []
-        for listing, client, file_path in enlisted_sources:
-            if not listing:
-                nodes = [Node.from_file(client.get_file_info(file_path))]
-                dir_only = False
-            else:
-                nodes = listing.expand_path(file_path)
-                dir_only = file_path.endswith("/")
-            dsrc_all.extend(
-                DataSource(listing, client, node, dir_only) for node in nodes
-            )
-        return dsrc_all
+            dsrc_all: list[DataSource] = []
+            for listing, client, file_path in enlisted_sources:
+                if not listing:
+                    nodes = [Node.from_file(client.get_file_info(file_path))]
+                    dir_only = False
+                else:
+                    nodes = listing.expand_path(file_path)
+                    dir_only = file_path.endswith("/")
+                dsrc_all.extend(
+                    DataSource(listing, client, node, dir_only) for node in nodes
+                )
+            yield dsrc_all
+        finally:
+            for listing, _, _ in enlisted_sources:
+                if listing:
+                    with suppress(Exception):
+                        listing.close()
 
     def enlist_sources_grouped(
         self,
@@ -681,7 +685,10 @@ class Catalog:
                 assert ds_namespace
                 assert ds_project
                 dataset = self.get_dataset(
-                    ds_name, namespace_name=ds_namespace, project_name=ds_project
+                    ds_name,
+                    namespace_name=ds_namespace,
+                    project_name=ds_project,
+                    include_incomplete=False,
                 )
                 if not ds_version:
                     ds_version = dataset.latest_version
@@ -859,7 +866,7 @@ class Catalog:
                 f"Version {version} must be higher than the current latest one"
             )
 
-        return self.create_new_dataset_version(
+        return self.create_dataset_version(
             dataset,
             version,
             feature_schema=feature_schema,
@@ -870,7 +877,7 @@ class Catalog:
             job_id=job_id,
         )
 
-    def create_new_dataset_version(
+    def create_dataset_version(
         self,
         dataset: DatasetRecord,
         version: str,
@@ -898,7 +905,7 @@ class Catalog:
         dataset = self.metastore.create_dataset_version(
             dataset,
             version,
-            status=DatasetStatus.PENDING,
+            status=DatasetStatus.CREATED,
             sources=sources,
             feature_schema=feature_schema,
             query_script=query_script,
@@ -934,24 +941,50 @@ class Catalog:
             self.metastore.update_dataset_version(dataset, version, **values)
             return
 
+        stats_num_objects = None
+        stats_size = None
         if not dataset_version.num_objects:
             num_objects, size = self.warehouse.dataset_stats(dataset, version)
+            stats_num_objects = num_objects
+            stats_size = size
             if num_objects != dataset_version.num_objects:
                 values["num_objects"] = num_objects
             if size != dataset_version.size:
                 values["size"] = size
 
+        preview_rows = None
         if not dataset_version.preview:
-            values["preview"] = (
+            preview = (
                 DatasetQuery(
                     name=dataset.name,
                     namespace_name=dataset.project.namespace.name,
                     project_name=dataset.project.name,
                     version=version,
                     catalog=self,
+                    include_incomplete=True,  # Allow reading CREATED version
                 )
                 .limit(20)
                 .to_db_records()
+            )
+            preview_rows = len(preview)
+            values["preview"] = preview
+
+        # Log anomaly: dataset_stats returned 0 but preview has data
+        if stats_num_objects == 0 and preview_rows and preview_rows > 0:
+            logger.warning(
+                "Inconsistency detected for %s@%s: "
+                "Initial state: num_objects=%s, size=%s, has_preview=%s. "
+                "dataset_stats returned: num_objects=%s, size=%s. "
+                "Preview generated: %s rows. "
+                "This may indicate ClickHouse replication delay.",
+                dataset.name,
+                version,
+                dataset_version.num_objects,
+                dataset_version.size,
+                bool(dataset_version.preview),
+                stats_num_objects,
+                stats_size,
+                preview_rows,
             )
 
         if not values:
@@ -991,6 +1024,37 @@ class Catalog:
         are cleaned up as soon as they are no longer needed.
         """
         self.warehouse.cleanup_tables(names)
+
+    def cleanup_failed_dataset_versions(self, job_id: str | None = None) -> int:
+        """
+        Clean up failed/incomplete dataset versions.
+
+        Removes dataset versions that:
+        - Have status CREATED or FAILED
+        - Belong to completed/failed/canceled jobs (not running)
+
+        Returns:
+            Number of removed versions
+        """
+        versions_to_clean = self.metastore.get_incomplete_dataset_versions(
+            job_id=job_id
+        )
+
+        num_removed = 0
+        for dataset, version in versions_to_clean:
+            try:
+                # Remove dataset version (drops warehouse table and metastore record)
+                self.remove_dataset_version(dataset, version)
+                num_removed += 1
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "Failed to clean dataset %s version %s: %s",
+                    dataset.name,
+                    version,
+                    e,
+                )
+
+        return num_removed
 
     def create_dataset_from_sources(
         self,
@@ -1095,11 +1159,35 @@ class Catalog:
 
         return namespace_name, project_name, name
 
+    def parse_dataset_name(
+        self,
+        dataset_name: str,
+        namespace_name: str | None = None,
+        project_name: str | None = None,
+        version: str | None = None,
+    ) -> DatasetIdentifier:
+        if not version:
+            dataset_name, version = parse_dataset_with_version(dataset_name)
+
+        namespace, project, name = self.get_full_dataset_name(
+            dataset_name,
+            namespace_name=namespace_name,
+            project_name=project_name,
+        )
+
+        return DatasetIdentifier(
+            namespace=namespace,
+            project=project,
+            name=name,
+            version=version,
+        )
+
     def get_dataset(
         self,
         name: str,
         namespace_name: str | None = None,
         project_name: str | None = None,
+        include_incomplete: bool = True,
     ) -> DatasetRecord:
         from datachain.lib.listing import is_listing_dataset
 
@@ -1111,7 +1199,10 @@ class Catalog:
             project_name = self.metastore.listing_project_name
 
         return self.metastore.get_dataset(
-            name, namespace_name=namespace_name, project_name=project_name
+            name,
+            namespace_name=namespace_name,
+            project_name=project_name,
+            include_incomplete=include_incomplete,
         )
 
     def get_dataset_with_remote_fallback(
@@ -1122,6 +1213,7 @@ class Catalog:
         version: str | None = None,
         pull_dataset: bool = False,
         update: bool = False,
+        include_incomplete: bool = True,
     ) -> DatasetRecord:
         from datachain.lib.dc.utils import is_studio
 
@@ -1144,6 +1236,7 @@ class Catalog:
                     name,
                     namespace_name=namespace_name,
                     project_name=project_name,
+                    include_incomplete=include_incomplete,
                 )
                 if not version or ds.has_version(version):
                     return ds
@@ -1172,6 +1265,7 @@ class Catalog:
                 name,
                 namespace_name=namespace_name,
                 project_name=project_name,
+                include_incomplete=include_incomplete,
             )
 
         return self.get_remote_dataset(namespace_name, project_name, name)
@@ -1184,6 +1278,7 @@ class Catalog:
                     dataset.name,
                     namespace_name=dataset.project.namespace.name,
                     project_name=dataset.project.name,
+                    include_incomplete=False,
                 )
         raise DatasetNotFoundError(f"Dataset with version uuid {uuid} not found.")
 
@@ -1250,6 +1345,7 @@ class Catalog:
             name,
             namespace_name=namespace_name,
             project_name=project_name,
+            include_incomplete=False,
         )
         dataset_version = dataset.get_version(version)
         dataset_id = dataset.id
@@ -1274,6 +1370,7 @@ class Catalog:
         studio: bool = False,
         project: Project | None = None,
     ) -> Iterator[DatasetListRecord]:
+        from datachain.query.session import Session
         from datachain.remote.studio import StudioClient
 
         project_id = project.id if project else None
@@ -1299,6 +1396,8 @@ class Catalog:
             datasets = self.metastore.list_datasets(project_id=project_id)
 
         for d in datasets:
+            if Session.is_temp_dataset(d.name):
+                continue
             if not d.is_bucket_listing or include_listing:
                 yield d
 
@@ -1406,31 +1505,29 @@ class Catalog:
 
     def export_dataset_table(
         self,
-        bucket_uri: str,
+        bucket: str,
         name: str,
         version: str,
         project: Project | None = None,
+        *,
+        file_format: str | None = None,
+        base_file_name: str,
         client_config=None,
-    ) -> list[str]:
+    ) -> None:
         dataset = self.get_dataset(
             name,
             namespace_name=project.namespace.name if project else None,
             project_name=project.name if project else None,
         )
 
-        return self.warehouse.export_dataset_table(
-            bucket_uri, dataset, version, client_config
+        self.warehouse.export_dataset_table(
+            bucket,
+            dataset,
+            version,
+            file_format=file_format,
+            base_file_name=base_file_name,
+            client_config=client_config,
         )
-
-    def dataset_table_export_file_names(
-        self, name: str, version: str, project: Project | None = None
-    ) -> list[str]:
-        dataset = self.get_dataset(
-            name,
-            namespace_name=project.namespace.name if project else None,
-            project_name=project.name if project else None,
-        )
-        return self.warehouse.dataset_table_export_file_names(dataset, version)
 
     def remove_dataset(
         self,
@@ -1495,15 +1592,17 @@ class Catalog:
         *,
         client_config=None,
     ) -> Iterator[tuple[DataSource, Iterable[tuple]]]:
-        data_sources = self.enlist_sources(
+        with self.enlist_sources(
             sources,
             update,
             skip_indexing=skip_indexing,
             client_config=client_config or self.client_config,
-        )
+        ) as data_sources:
+            if data_sources is None:
+                return
 
-        for source in data_sources:  # type: ignore [union-attr]
-            yield source, source.ls(fields)
+            for source in data_sources:
+                yield source, source.ls(fields)
 
     def pull_dataset(  # noqa: C901, PLR0915
         self,
@@ -1638,7 +1737,10 @@ class Catalog:
 
         try:
             local_dataset = self.get_dataset(
-                local_ds_name, namespace_name=namespace.name, project_name=project.name
+                local_ds_name,
+                namespace_name=namespace.name,
+                project_name=project.name,
+                include_incomplete=True,
             )
             if local_dataset and local_dataset.has_version(local_ds_version):
                 raise DataChainError(
@@ -1657,7 +1759,7 @@ class Catalog:
             leave=False,
         )
 
-        schema = DatasetRecord.parse_schema(remote_ds_version.schema)
+        schema = parse_schema(remote_ds_version.schema)
 
         local_ds = self.create_dataset(
             local_ds_name,
@@ -1679,7 +1781,9 @@ class Catalog:
         if not export_response.ok:
             raise DataChainError(export_response.message)
 
-        signed_urls = export_response.data
+        export_data = export_response.data
+        export_id = export_data["export_id"]
+        signed_urls: list[str] = export_data["signed_urls"]
 
         if signed_urls:
             with (
@@ -1696,7 +1800,7 @@ class Catalog:
                     """
                     res = [[] for i in range(PULL_DATASET_MAX_THREADS)]
                     current_worker = 0
-                    for url in signed_urls:
+                    for url in urls:
                         res[current_worker].append(url)
                         current_worker = (current_worker + 1) % PULL_DATASET_MAX_THREADS
 
@@ -1707,11 +1811,13 @@ class Catalog:
                     warehouse,
                     remote_ds,
                     remote_ds_version.version,
+                    export_id,
                     local_ds,
                     local_ds_version,
                     schema,
                     progress_bar=dataset_save_progress_bar,
                 )
+
                 try:
                     rows_fetcher.run(
                         iter(batch(signed_urls)), dataset_save_progress_bar
@@ -1767,11 +1873,12 @@ class Catalog:
         else:
             # since we don't call cp command, which does listing implicitly,
             # it needs to be done here
-            self.enlist_sources(
+            with self.enlist_sources(
                 sources,
                 update,
                 client_config=client_config or self.client_config,
-            )
+            ):
+                pass
 
         self.create_dataset_from_sources(
             output,
@@ -1780,120 +1887,6 @@ class Catalog:
             client_config=client_config,
             recursive=recursive,
         )
-
-    @staticmethod
-    def query(
-        query_script: str,
-        env: Mapping[str, str] | None = None,
-        python_executable: str = sys.executable,
-        stdout_callback: Callable[[str], None] | None = None,
-        stderr_callback: Callable[[str], None] | None = None,
-        params: dict[str, str] | None = None,
-        job_id: str | None = None,
-        reset: bool = False,
-        interrupt_timeout: int | None = None,
-        terminate_timeout: int | None = None,
-    ) -> None:
-        if not isinstance(reset, bool):
-            raise TypeError(f"reset must be a bool, got {type(reset).__name__}")
-
-        cmd = [python_executable, "-c", query_script]
-        env = dict(env or os.environ)
-        env.update(
-            {
-                "DATACHAIN_QUERY_PARAMS": json.dumps(params or {}),
-                "DATACHAIN_JOB_ID": job_id or "",
-                "DATACHAIN_CHECKPOINTS_RESET": str(reset),
-            },
-        )
-        popen_kwargs: dict[str, Any] = {}
-
-        if stdout_callback is not None:
-            popen_kwargs = {"stdout": subprocess.PIPE}
-        if stderr_callback is not None:
-            popen_kwargs["stderr"] = subprocess.PIPE
-
-        def raise_termination_signal(sig: int, _: Any) -> NoReturn:
-            raise TerminationSignal(sig)
-
-        stdout_thread: Thread | None = None
-        stderr_thread: Thread | None = None
-
-        with subprocess.Popen(cmd, env=env, **popen_kwargs) as proc:  # noqa: S603
-            logger.info("Starting process %s", proc.pid)
-
-            orig_sigint_handler = signal.getsignal(signal.SIGINT)
-            # ignore SIGINT in the main process.
-            # In the terminal, SIGINTs are received by all the processes in
-            # the foreground process group, so the script will receive the signal too.
-            # (If we forward the signal to the child, it will receive it twice.)
-            signal.signal(signal.SIGINT, signal.SIG_IGN)
-
-            orig_sigterm_handler = signal.getsignal(signal.SIGTERM)
-            signal.signal(signal.SIGTERM, raise_termination_signal)
-            try:
-                if stdout_callback is not None:
-                    stdout_thread = Thread(
-                        target=process_output,
-                        args=(proc.stdout, stdout_callback),
-                        daemon=True,
-                    )
-                    stdout_thread.start()
-                if stderr_callback is not None:
-                    stderr_thread = Thread(
-                        target=process_output,
-                        args=(proc.stderr, stderr_callback),
-                        daemon=True,
-                    )
-                    stderr_thread.start()
-
-                proc.wait()
-            except TerminationSignal as exc:
-                signal.signal(signal.SIGTERM, orig_sigterm_handler)
-                signal.signal(signal.SIGINT, orig_sigint_handler)
-                logger.info("Shutting down process %s, received %r", proc.pid, exc)
-                # Rather than forwarding the signal to the child, we try to shut it down
-                # gracefully. This is because we consider the script to be interactive
-                # and special, so we give it time to cleanup before exiting.
-                shutdown_process(proc, interrupt_timeout, terminate_timeout)
-                if proc.returncode:
-                    raise QueryScriptCancelError(
-                        "Query script was canceled by user", return_code=proc.returncode
-                    ) from exc
-            finally:
-                signal.signal(signal.SIGTERM, orig_sigterm_handler)
-                signal.signal(signal.SIGINT, orig_sigint_handler)
-                # wait for the reader thread
-                thread_join_timeout_seconds = 30
-                if stdout_thread is not None:
-                    stdout_thread.join(timeout=thread_join_timeout_seconds)
-                    if stdout_thread.is_alive():
-                        logger.warning(
-                            "stdout thread is still alive after %s seconds",
-                            thread_join_timeout_seconds,
-                        )
-                if stderr_thread is not None:
-                    stderr_thread.join(timeout=thread_join_timeout_seconds)
-                    if stderr_thread.is_alive():
-                        logger.warning(
-                            "stderr thread is still alive after %s seconds",
-                            thread_join_timeout_seconds,
-                        )
-
-        logger.info("Process %s exited with return code %s", proc.pid, proc.returncode)
-        if proc.returncode in (
-            QUERY_SCRIPT_CANCELED_EXIT_CODE,
-            QUERY_SCRIPT_SIGTERM_EXIT_CODE,
-        ):
-            raise QueryScriptCancelError(
-                "Query script was canceled by user",
-                return_code=proc.returncode,
-            )
-        if proc.returncode:
-            raise QueryScriptRunError(
-                f"Query script exited with error code {proc.returncode}",
-                return_code=proc.returncode,
-            )
 
     def cp(
         self,
@@ -1918,38 +1911,42 @@ class Catalog:
             no_glob,
             client_config=client_config,
         )
+        try:
+            always_copy_dir_contents, copy_to_filename = prepare_output_for_cp(
+                node_groups, output, force, no_cp
+            )
+            total_size, total_files = collect_nodes_for_cp(node_groups, recursive)
+            if not total_files:
+                return
 
-        always_copy_dir_contents, copy_to_filename = prepare_output_for_cp(
-            node_groups, output, force, no_cp
-        )
-        total_size, total_files = collect_nodes_for_cp(node_groups, recursive)
-        if not total_files:
-            return
+            desc_max_len = max(len(output) + 16, 19)
+            bar_format = (
+                "{desc:<"
+                f"{desc_max_len}"
+                "}{percentage:3.0f}%|{bar}| {n_fmt:>5}/{total_fmt:<5} "
+                "[{elapsed}<{remaining}, {rate_fmt:>8}]"
+            )
 
-        desc_max_len = max(len(output) + 16, 19)
-        bar_format = (
-            "{desc:<"
-            f"{desc_max_len}"
-            "}{percentage:3.0f}%|{bar}| {n_fmt:>5}/{total_fmt:<5} "
-            "[{elapsed}<{remaining}, {rate_fmt:>8}]"
-        )
+            if not no_cp:
+                with get_download_bar(bar_format, total_size) as pbar:
+                    for node_group in node_groups:
+                        node_group.download(recursive=recursive, pbar=pbar)
 
-        if not no_cp:
-            with get_download_bar(bar_format, total_size) as pbar:
-                for node_group in node_groups:
-                    node_group.download(recursive=recursive, pbar=pbar)
-
-        instantiate_node_groups(
-            node_groups,
-            output,
-            bar_format,
-            total_files,
-            force,
-            recursive,
-            no_cp,
-            always_copy_dir_contents,
-            copy_to_filename,
-        )
+            instantiate_node_groups(
+                node_groups,
+                output,
+                bar_format,
+                total_files,
+                force,
+                recursive,
+                no_cp,
+                always_copy_dir_contents,
+                copy_to_filename,
+            )
+        finally:
+            for node_group in node_groups:
+                with suppress(Exception):
+                    node_group.close()
 
     def du(
         self,
@@ -1959,24 +1956,26 @@ class Catalog:
         *,
         client_config=None,
     ) -> Iterable[tuple[str, float]]:
-        sources = self.enlist_sources(
+        with self.enlist_sources(
             sources,
             update,
             client_config=client_config or self.client_config,
-        )
+        ) as matched_sources:
+            if matched_sources is None:
+                return
 
-        def du_dirs(src, node, subdepth):
-            if subdepth > 0:
-                subdirs = src.listing.get_dirs_by_parent_path(node.path)
-                for sd in subdirs:
-                    yield from du_dirs(src, sd, subdepth - 1)
-            yield (
-                src.get_node_full_path(node),
-                src.listing.du(node)[0],
-            )
+            def du_dirs(src, node, subdepth):
+                if subdepth > 0:
+                    subdirs = src.listing.get_dirs_by_parent_path(node.path)
+                    for sd in subdirs:
+                        yield from du_dirs(src, sd, subdepth - 1)
+                yield (
+                    src.get_node_full_path(node),
+                    src.listing.du(node)[0],
+                )
 
-        for src in sources:
-            yield from du_dirs(src, src.node, depth)
+            for src in matched_sources:
+                yield from du_dirs(src, src.node, depth)
 
     def find(
         self,
@@ -1992,39 +1991,42 @@ class Catalog:
         *,
         client_config=None,
     ) -> Iterator[str]:
-        sources = self.enlist_sources(
+        with self.enlist_sources(
             sources,
             update,
             client_config=client_config or self.client_config,
-        )
-        if not columns:
-            columns = ["path"]
-        field_set = set()
-        for column in columns:
-            if column == "du":
-                field_set.add("dir_type")
-                field_set.add("size")
-                field_set.add("path")
-            elif column == "name":
-                field_set.add("path")
-            elif column == "path":
-                field_set.add("dir_type")
-                field_set.add("path")
-            elif column == "size":
-                field_set.add("size")
-            elif column == "type":
-                field_set.add("dir_type")
-        fields = list(field_set)
-        field_lookup = {f: i for i, f in enumerate(fields)}
-        for src in sources:
-            results = src.listing.find(
-                src.node, fields, names, inames, paths, ipaths, size, typ
-            )
-            for row in results:
-                yield "\t".join(
-                    find_column_to_str(row, field_lookup, src, column)
-                    for column in columns
+        ) as matched_sources:
+            if matched_sources is None:
+                return
+
+            if not columns:
+                columns = ["path"]
+            field_set = set()
+            for column in columns:
+                if column == "du":
+                    field_set.add("dir_type")
+                    field_set.add("size")
+                    field_set.add("path")
+                elif column == "name":
+                    field_set.add("path")
+                elif column == "path":
+                    field_set.add("dir_type")
+                    field_set.add("path")
+                elif column == "size":
+                    field_set.add("size")
+                elif column == "type":
+                    field_set.add("dir_type")
+            fields = list(field_set)
+            field_lookup = {f: i for i, f in enumerate(fields)}
+            for src in matched_sources:
+                results = src.listing.find(
+                    src.node, fields, names, inames, paths, ipaths, size, typ
                 )
+                for row in results:
+                    yield "\t".join(
+                        find_column_to_str(row, field_lookup, src, column)
+                        for column in columns
+                    )
 
     def index(
         self,
@@ -2033,9 +2035,10 @@ class Catalog:
         *,
         client_config=None,
     ) -> None:
-        self.enlist_sources(
+        with self.enlist_sources(
             sources,
             update,
             client_config=client_config or self.client_config,
             only_index=True,
-        )
+        ):
+            pass

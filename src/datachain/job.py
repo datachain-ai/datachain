@@ -1,8 +1,9 @@
-import json
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, TypeVar
+
+from datachain import json
 
 J = TypeVar("J", bound="Job")
 
@@ -23,9 +24,12 @@ class Job:
     error_message: str = ""
     error_stack: str = ""
     parent_job_id: str | None = None
+    rerun_from_job_id: str | None = None
+    run_group_id: str | None = None
+    is_remote_execution: bool = False
 
     @classmethod
-    def parse(
+    def parse(  # noqa: PLR0913
         cls,
         id: str | uuid.UUID,
         name: str,
@@ -41,6 +45,9 @@ class Job:
         params: str,
         metrics: str,
         parent_job_id: str | None,
+        rerun_from_job_id: str | None,
+        run_group_id: str | None,
+        is_remote_execution: bool = False,
     ) -> "Job":
         return cls(
             str(id),
@@ -57,4 +64,7 @@ class Job:
             error_message,
             error_stack,
             str(parent_job_id) if parent_job_id else None,
+            str(rerun_from_job_id) if rerun_from_job_id else None,
+            str(run_group_id) if run_group_id else None,
+            is_remote_execution,
         )

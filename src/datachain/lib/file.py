@@ -1,7 +1,6 @@
 import errno
 import hashlib
 import io
-import json
 import logging
 import os
 import posixpath
@@ -21,6 +20,7 @@ from fsspec.callbacks import DEFAULT_CALLBACK, Callback
 from fsspec.utils import stringify_path
 from pydantic import Field, field_validator
 
+from datachain import json
 from datachain.client.fileslice import FileSlice
 from datachain.lib.data_model import DataModel
 from datachain.lib.utils import DataChainError, rebase_path
@@ -297,6 +297,16 @@ class File(DataModel):
         super().__init__(**kwargs)
         self._catalog = None
         self._caching_enabled: bool = False
+        self._download_cb: Callback = DEFAULT_CALLBACK
+
+    def __getstate__(self):
+        state = super().__getstate__()
+        # Exclude _catalog from pickling - it contains SQLAlchemy engine and other
+        # non-picklable objects. The catalog will be re-set by _set_stream() on the
+        # worker side when needed.
+        state["__dict__"] = state["__dict__"].copy()
+        state["__dict__"]["_catalog"] = None
+        return state
 
     def as_text_file(self) -> "TextFile":
         """Convert the file to a `TextFile` object."""
@@ -338,9 +348,9 @@ class File(DataModel):
         catalog: "Catalog | None" = None,
     ) -> "Self":
         if catalog is None:
-            from datachain.catalog.loader import get_catalog
+            from datachain.query.session import Session
 
-            catalog = get_catalog()
+            catalog = Session.get().catalog
         from datachain.client.fsspec import Client
 
         path_str = stringify_path(path)
@@ -372,10 +382,15 @@ class File(DataModel):
             session = Session.get()
         catalog = session.catalog
         uri_str = stringify_path(uri)
-
+        if uri_str.endswith(("/", os.sep)):
+            raise ValueError(
+                f"File.at directory URL/path given (trailing slash), got: {uri_str}"
+            )
         client_cls = Client.get_implementation(uri_str)
+        uri_str = client_cls.path_to_uri(uri_str)
         source, rel_path = client_cls.split_url(uri_str)
-        file = cls(source=client_cls.get_uri(source), path=rel_path)
+        source_uri = client_cls.get_uri(source)
+        file = cls(source=source_uri, path=rel_path)
         file._set_stream(catalog)
         return file
 
@@ -392,7 +407,13 @@ class File(DataModel):
         return str(PurePosixPath(self.path).parent)
 
     @contextmanager
-    def open(self, mode: str = "rb", **open_kwargs) -> Iterator[Any]:
+    def open(
+        self,
+        mode: str = "rb",
+        *,
+        client_config: dict[str, Any] | None = None,
+        **open_kwargs,
+    ) -> Iterator[Any]:
         """Open the file and return a file-like object.
 
         Supports both read ("rb", "r") and write modes (e.g. "wb", "w", "ab").
@@ -409,7 +430,9 @@ class File(DataModel):
         if self._catalog is None:
             raise RuntimeError("Cannot open file: catalog is not set")
 
-        client: Client = self._catalog.get_client(self.source)
+        base_cfg = getattr(self._catalog, "client_config", {}) or {}
+        merged_cfg = {**base_cfg, **(client_config or {})}
+        client: Client = self._catalog.get_client(self.source, **merged_cfg)
 
         if not writing:
             if self.location:
@@ -429,9 +452,12 @@ class File(DataModel):
         with client.fs.open(full_path, mode, **open_kwargs) as f:
             yield self._wrap_text(f, mode, open_kwargs)
 
-        # refresh metadata
-        info = client.fs.info(full_path)
-        refreshed = client.info_to_file(info, self.get_path_normalized())
+        version_hint = self._extract_write_version(f)
+
+        # refresh metadata pinned to the version that was just written
+        refreshed = client.get_file_info(
+            self.get_path_normalized(), version_id=version_hint
+        )
         for k, v in refreshed.model_dump().items():
             setattr(self, k, v)
 
@@ -443,6 +469,18 @@ class File(DataModel):
             k: open_kwargs[k] for k in self._TEXT_WRAPPER_ALLOWED if k in open_kwargs
         }
         return io.TextIOWrapper(f, **filtered)
+
+    def _extract_write_version(self, handle: Any) -> str | None:
+        """Best-effort extraction of object version after a write.
+
+        S3 (s3fs) and Azure (adlfs) populate version_id on the handle.
+        GCS (gcsfs) populates generation. Azure and GCS require upstream
+        fixes to be released.
+        """
+        for attr in ("version_id", "generation"):
+            if value := getattr(handle, attr, None):
+                return value
+        return None
 
     def read_bytes(self, length: int = -1):
         """Returns file contents as bytes."""
@@ -787,10 +825,18 @@ class TextFile(File):
     """`DataModel` for reading text files."""
 
     @contextmanager
-    def open(self, mode: str = "r", **open_kwargs) -> Iterator[Any]:
+    def open(
+        self,
+        mode: str = "r",
+        *,
+        client_config: dict[str, Any] | None = None,
+        **open_kwargs,
+    ) -> Iterator[Any]:
         """Open the file and return a file-like object.
         Default to text mode"""
-        with super().open(mode=mode, **open_kwargs) as stream:
+        with super().open(
+            mode=mode, client_config=client_config, **open_kwargs
+        ) as stream:
             yield stream
 
     def read_text(self, **open_kwargs):

@@ -3,13 +3,10 @@ from argparse import ArgumentTypeError
 
 import pytest
 
-from datachain.cli import (
-    get_logging_level,
-    get_parser,
-)
+from datachain.cli import get_logging_level, get_parser
 from datachain.cli.parser.utils import CustomArgumentParser as ArgumentParser
 from datachain.cli.parser.utils import find_columns_type
-from datachain.cli.utils import CommaSeparatedArgs, KeyValueArgs
+from datachain.cli.utils import CommaSeparatedArgs
 
 
 def test_find_columns_type():
@@ -68,40 +65,6 @@ def test_comma_separated_args(param, parsed):
 def test_comma_separated_args_error(param):
     parser = ArgumentParser()
     parser.add_argument("--param", default=[], action=CommaSeparatedArgs)
-
-    cmd = ["--param"]
-    if param:
-        cmd.append(param)
-    with pytest.raises(SystemExit):
-        parser.parse_args(cmd)
-
-
-@pytest.mark.parametrize(
-    "params,parsed",
-    (
-        ([], None),
-        (["p1=foo"], {"p1": "foo"}),
-        (["p1=bar", "p2=baz"], {"p1": "bar", "p2": "baz"}),
-        (["p1=foo", "p1=bar"], {"p1": "bar"}),
-        (["p1=foo", "p1=bar"], {"p1": "bar"}),
-    ),
-)
-def test_key_value_args(params, parsed):
-    parser = ArgumentParser()
-    parser.add_argument("--param", nargs=1, action=KeyValueArgs)
-
-    cmd = []
-    for p in params:
-        cmd.extend(["--param", p])
-
-    args = parser.parse_args(cmd)
-    assert args.param == parsed
-
-
-@pytest.mark.parametrize("param", (None, "p1", "=", "p1=", "=foo"))
-def test_key_value_args_error(param):
-    parser = ArgumentParser()
-    parser.add_argument("--param", nargs=1, action=KeyValueArgs)
 
     cmd = ["--param"]
     if param:

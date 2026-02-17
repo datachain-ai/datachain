@@ -1,6 +1,9 @@
-from datachain.cli import ls
+from datachain.cli.commands.ls import ls_local
 
 
-def test_ls(benchmark, tmp_dir):
-    bucket = "s3://noaa-dcdb-bathymetry-pds/"
-    benchmark.pedantic(ls, args=([bucket],), kwargs={"client_config": {"anon": True}})
+def test_ls(benchmark, tmp_dir, datasets, test_session):
+    # Use local dataset for faster iteration
+    path = datasets.as_uri() + "/"
+    benchmark.pedantic(
+        ls_local, args=([path],), kwargs={"catalog": test_session.catalog}
+    )

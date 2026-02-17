@@ -120,7 +120,7 @@ def read_listing_dataset(
         name = LISTING_PREFIX + name
 
     session = Session.get(session)
-    dataset = session.catalog.get_dataset(name)
+    dataset = session.catalog.get_dataset(name, include_incomplete=False)
     if version is None:
         version = dataset.latest_version
 

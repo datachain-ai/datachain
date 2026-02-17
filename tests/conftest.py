@@ -109,10 +109,11 @@ def monkeypatch_session() -> Generator[MonkeyPatch, None, None]:
 
 
 @pytest.fixture(autouse=True)
-def clean_session() -> None:
+def clean_session() -> Generator[None, None, None]:
     """
-    Make sure we clean leftover session before each test case
+    Clean leftover sessions after each test while storage handles are still open.
     """
+    yield
     Session.cleanup_for_tests()
 
 
@@ -162,6 +163,8 @@ def cleanup_sqlite_db(
     for table in reversed(cleanup_tables):
         db.execute_str(f"DROP TABLE IF EXISTS '{table}'")
 
+    # Disable foreign key checks for cleanup to avoid constraint errors
+    db.execute_str("PRAGMA foreign_keys = OFF")
     for (table,) in tables:
         name = table.replace("'", "''")
         db.execute_str(f"DROP TABLE IF EXISTS '{name}'")
@@ -181,11 +184,13 @@ def metastore(monkeypatch):
 
         yield _metastore
 
+        Session.cleanup_for_tests()
         _metastore.cleanup_for_tests()
     else:
         _metastore = SQLiteMetastore(db_file=":memory:")
         yield _metastore
 
+        Session.cleanup_for_tests()
         cleanup_sqlite_db(_metastore.db.clone(), _metastore.default_table_names)
 
     # Close the connection so that the SQLite file is no longer open, to avoid
@@ -215,14 +220,9 @@ def cleanup_udf_tables(warehouse):
     UDF tables are shared across jobs and persist after chain finishes,
     so we need to clean them up after each test to prevent interference.
     """
-    from datachain.data_storage.sqlite import quote_schema
-
     for table_name in warehouse.db.list_tables(prefix=warehouse.UDF_TABLE_NAME_PREFIX):
-        quoted_name = quote_schema(table_name)
-        warehouse.db.execute_str(f"DROP TABLE IF EXISTS {quoted_name}")
-        # Remove from metadata to avoid stale references
-        if table_name in warehouse.db.metadata.tables:
-            warehouse.db.metadata.remove(warehouse.db.metadata.tables[table_name])
+        table = warehouse.db.get_table(table_name)
+        warehouse.db.drop_table(table, if_exists=True)
 
 
 @pytest.fixture
@@ -250,8 +250,8 @@ def warehouse(metastore):
 
 @pytest.fixture
 def catalog(metastore, warehouse):
-    catalog = Catalog(metastore=metastore, warehouse=warehouse)
-    yield catalog
+    with Catalog(metastore=metastore, warehouse=warehouse) as catalog:
+        yield catalog
 
     # Clean up job-related atexit hooks to prevent errors during pytest shutdown
     reset_session_job_state()
@@ -276,11 +276,13 @@ def metastore_tmpfile(monkeypatch, tmp_path):
 
         yield _metastore
 
+        Session.cleanup_for_tests()
         _metastore.cleanup_for_tests()
     else:
         _metastore = SQLiteMetastore(db_file=str(tmp_path / "test.db"))
         yield _metastore
 
+        Session.cleanup_for_tests()
         cleanup_sqlite_db(_metastore.db.clone(), _metastore.default_table_names)
 
     # Close the connection so that the SQLite file is no longer open, to avoid
@@ -318,7 +320,8 @@ def warehouse_tmpfile(tmp_path, metastore_tmpfile):
 def catalog_tmpfile(metastore_tmpfile, warehouse_tmpfile):
     # For testing parallel and distributed processing, as these cannot use
     # in-memory databases.
-    return Catalog(metastore=metastore_tmpfile, warehouse=warehouse_tmpfile)
+    with Catalog(metastore=metastore_tmpfile, warehouse=warehouse_tmpfile) as catalog:
+        yield catalog
 
 
 @pytest.fixture
@@ -550,7 +553,13 @@ def cloud_test_catalog(
     metastore,
     warehouse,
 ):
-    return get_cloud_test_catalog(cloud_server, tmp_path, metastore, warehouse)
+    catalog = get_cloud_test_catalog(cloud_server, tmp_path, metastore, warehouse)
+    try:
+        yield catalog
+    finally:
+        # Ensure catalog shuts down its metastore/warehouse connections between tests
+        catalog.catalog.close()
+        reset_session_job_state()
 
 
 @pytest.fixture
@@ -587,12 +596,14 @@ def cloud_test_catalog_tmpfile(
         metastore_tmpfile,
         warehouse_tmpfile,
     )
-    yield catalog
+    try:
+        yield catalog
+    finally:
+        # Clean up job-related atexit hooks to prevent errors during pytest shutdown
+        from tests.utils import reset_session_job_state
 
-    # Clean up job-related atexit hooks to prevent errors during pytest shutdown
-    from tests.utils import reset_session_job_state
-
-    reset_session_job_state()
+        catalog.catalog.close()
+        reset_session_job_state()
 
 
 @pytest.fixture

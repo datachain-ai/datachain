@@ -1,4 +1,5 @@
 import contextlib
+import traceback
 from collections.abc import Iterable, Sequence
 from itertools import chain
 from multiprocessing import cpu_count
@@ -17,7 +18,7 @@ from datachain.catalog import Catalog
 from datachain.catalog.catalog import clone_catalog_with_cache
 from datachain.catalog.loader import DISTRIBUTED_IMPORT_PATH, get_udf_distributor_class
 from datachain.lib.model_store import ModelStore
-from datachain.lib.udf import _get_cache
+from datachain.lib.udf import UdfRunError, _get_cache
 from datachain.query.dataset import (
     get_download_callback,
     get_generated_callback,
@@ -92,14 +93,14 @@ def udf_entrypoint() -> int:
     return 0
 
 
-def udf_worker_entrypoint(fd: int | None = None) -> int:
+def udf_worker_entrypoint() -> int:
     if not (udf_distributor_class := get_udf_distributor_class()):
         raise RuntimeError(
             f"{DISTRIBUTED_IMPORT_PATH} import path is required "
             "for distributed UDF processing."
         )
 
-    return udf_distributor_class.run_udf(fd)
+    return udf_distributor_class.run_udf()
 
 
 class UDFDispatcher:
@@ -159,9 +160,16 @@ class UDFDispatcher:
             worker.run()
         except (Exception, KeyboardInterrupt) as e:
             if self.done_queue:
+                # We put the exception into the done queue so the main process
+                # can handle it appropriately. We include the stacktrace to propagate
+                # it to the main process and show it to the user.
                 put_into_queue(
                     self.done_queue,
-                    {"status": FAILED_STATUS, "exception": e},
+                    {
+                        "status": FAILED_STATUS,
+                        "exception": e,
+                        "stacktrace": traceback.format_exc(),
+                    },
                 )
             if isinstance(e, KeyboardInterrupt):
                 return
@@ -316,7 +324,9 @@ class UDFDispatcher:
                 else:  # Failed / error
                     n_workers -= 1
                     if exc := result.get("exception"):
-                        raise exc
+                        if isinstance(exc, KeyboardInterrupt):
+                            raise exc
+                        raise UdfRunError(exc, stacktrace=result.get("stacktrace"))
                     raise RuntimeError("Internal error: Parallel UDF execution failed")
 
                 if status == OK_STATUS and not input_finished:
@@ -403,7 +413,7 @@ class UDFWorker:
         table: "Table",
         cache: bool,
         is_batching: bool,
-        batch_size: int,
+        batch_size: int | None,
         udf_fields: Sequence[str],
     ) -> None:
         self.catalog = catalog

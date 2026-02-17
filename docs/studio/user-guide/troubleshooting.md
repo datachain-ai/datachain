@@ -82,7 +82,7 @@ import the repo again.
 DataChain Studio can include data from
 [data remotes](experiments/configure-a-project.md#data-remotes-cloud-storage-credentials)
 in your project. However, it can access data from network-accessible remotes
-such as Amazon S3, Microsoft Azure, etc but not from local DVC
+such as Amazon S3, Microsoft Azure, etc but not from local DVC (acquired by lakeFS)
 remotes. If your project uses an unsupported remote, you
 will see one of the following errors:
 

@@ -31,6 +31,8 @@ jobs:
           POSTGRES_USER: test
           POSTGRES_DB: database
           POSTGRES_HOST_AUTH_METHOD: trust
+        options: >-
+          --add-host=host.docker.internal:host-gateway
       clickhouse:
         image: clickhouse/clickhouse-server:25.8
         ports:
@@ -41,10 +43,14 @@ jobs:
           CLICKHOUSE_USER: studio_local
           CLICKHOUSE_PASSWORD: ch123456789!
           CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+        options: >-
+          --add-host=host.docker.internal:host-gateway
       redis:
         image: redis:7.2.5
         ports:
           - 6379:6379
+        options: >-
+          --add-host=host.docker.internal:host-gateway
     steps:
       - name: Studio branch name
         env:
@@ -62,23 +68,12 @@ jobs:
           echo "Studio branch: $STUDIO_BRANCH"
 
       - name: Check out Studio
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
           repository: datachain-ai/studio
           ref: ${{ env.STUDIO_BRANCH }}
           token: ${{ secrets.ITERATIVE_STUDIO_READ_ACCESS_TOKEN }}
-
-      - name: Check out repository
-        uses: actions/checkout@v5
-        with:
-          path: './backend/datachain'
-          fetch-depth: 0
-
-      - name: Install FFmpeg
-        run: |
-          sudo apt update
-          sudo apt install -y ffmpeg
 
       - name: Set up Python ${{ matrix.pyv }}
         uses: actions/setup-python@v6
@@ -93,6 +88,22 @@ jobs:
           cache-dependency-glob: |
             backend/datachain_server/pyproject.toml
             backend/datachain/pyproject.toml
+
+      - name: Update DataChain requirement in Studio
+        if: ${{ env.BRANCH != 'main' }}
+        working-directory: backend
+        run: make update_datachain_deps "${{ env.BRANCH }}"
+
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          path: './backend/datachain'
+          fetch-depth: 0
+
+      - name: Install FFmpeg
+        run: |
+          sudo apt update
+          sudo apt install -y ffmpeg
 
       - name: Install dependencies
         run: uv pip install --system ./backend/datachain_server[tests] ./backend/datachain[tests]

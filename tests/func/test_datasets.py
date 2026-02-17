@@ -56,7 +56,7 @@ def test_create_dataset_no_version_specified(cloud_test_catalog, project, create
     assert dataset_version.query_script == "script"
     assert dataset.schema["similarity"] == Float32
     assert dataset_version.schema["similarity"] == Float32
-    assert dataset_version.status == DatasetStatus.PENDING
+    assert dataset_version.status == DatasetStatus.CREATED
     assert dataset_version.uuid
     assert dataset.status == DatasetStatus.CREATED  # dataset status is deprecated
     if create_rows:
@@ -86,7 +86,7 @@ def test_create_dataset_with_explicit_version(cloud_test_catalog, project, creat
     assert dataset_version.query_script == "script"
     assert dataset.schema["similarity"] == Float32
     assert dataset_version.schema["similarity"] == Float32
-    assert dataset_version.status == DatasetStatus.PENDING
+    assert dataset_version.status == DatasetStatus.CREATED
     assert dataset_version.uuid
     assert dataset.status == DatasetStatus.CREATED
     if create_rows:
@@ -132,7 +132,7 @@ def test_create_dataset_already_exist(cloud_test_catalog, dogs_dataset, create_r
     assert dataset.project == dogs_dataset.project
     assert dataset_version.query_script == "script"
     assert dataset_version.schema["similarity"] == Float32
-    assert dataset_version.status == DatasetStatus.PENDING
+    assert dataset_version.status == DatasetStatus.CREATED
     assert dataset.status == DatasetStatus.COMPLETE
     if create_rows:
         assert dataset_version.num_objects == 0
@@ -330,7 +330,7 @@ def test_remove_dataset_with_multiple_versions(cloud_test_catalog, dogs_dataset)
     catalog = cloud_test_catalog.catalog
 
     columns = tuple(sa.Column(name, typ) for name, typ in dogs_dataset.schema.items())
-    updated_dogs_dataset = catalog.create_new_dataset_version(
+    updated_dogs_dataset = catalog.create_dataset_version(
         dogs_dataset, "2.0.0", columns=columns
     )
     assert updated_dogs_dataset.has_version("2.0.0")
