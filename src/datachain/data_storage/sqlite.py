@@ -775,9 +775,6 @@ class SQLiteWarehouse(AbstractWarehouse):
             only=filter_tables,
         )
 
-    def is_ready(self, timeout: int | None = None) -> bool:
-        return True
-
     def create_dataset_rows_table(
         self,
         name: str,
