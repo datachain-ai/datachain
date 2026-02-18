@@ -961,8 +961,8 @@ class UDFStep(Step, ABC):
 
         Returns the input table.
         """
-        assert self.job.run_group_id
-        input_table_name = UDFStep.input_table_name(self.job.run_group_id, _hash)
+        group_id = self.job.run_group_id or self.job.id
+        input_table_name = UDFStep.input_table_name(group_id, _hash)
 
         # Check if input table already exists (created by ancestor job)
         if self.warehouse.db.has_table(input_table_name):
