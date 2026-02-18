@@ -380,7 +380,7 @@ def test_checkpoints_job_without_run_group_id(test_session, monkeypatch, nums_da
 
     chain.save("doubled_nums")
     first_job = metastore.get_job(first_job_id)
-    assert first_job.run_group_id is None
+    assert first_job.run_group_id == first_job_id
     assert call_count["count"] == 6
 
     # -------------- SECOND RUN (skip, no run_group_id) -------------------
@@ -399,7 +399,7 @@ def test_checkpoints_job_without_run_group_id(test_session, monkeypatch, nums_da
 
     chain.save("doubled_nums")
     second_job = metastore.get_job(second_job_id)
-    assert second_job.run_group_id is None
+    assert second_job.run_group_id == second_job_id
     assert second_job.rerun_from_job_id == first_job_id
 
     # UDF should be skipped via checkpoint

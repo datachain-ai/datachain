@@ -2091,6 +2091,10 @@ class AbstractDBMetastore(AbstractMetastore):
                 )
                 run_group_id = job_id
 
+        # Ensure run_group_id is always set
+        if run_group_id is None:
+            run_group_id = job_id
+
         self.db.execute(
             self._jobs_insert().values(
                 id=job_id,
