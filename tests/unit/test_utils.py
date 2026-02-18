@@ -451,6 +451,7 @@ def reset_checkpoint_state(monkeypatch):
     # Clear any existing env vars
     monkeypatch.delenv("DATACHAIN_MAIN_PROCESS_PID", raising=False)
     monkeypatch.delenv("DATACHAIN_SUBPROCESS", raising=False)
+    monkeypatch.delenv("DATACHAIN_IS_STUDIO", raising=False)
     yield
     # Reset after test as well
     _CheckpointState.disabled = False

@@ -505,6 +505,32 @@ class UDFStep(Step, ABC):
     workers: bool | int = False
     min_task_size: int | None = None
     batch_size: int | None = None
+    _job_cached: Job | None = attrs.field(
+        init=False, default=None, repr=False, eq=False, hash=False
+    )
+
+    @property
+    def job(self) -> Job:
+        if self._job_cached is not None:
+            return self._job_cached
+        if not checkpoints_enabled():
+            job = Job.create_ephemeral()
+        else:
+            job = self.session.get_or_create_job()
+        object.__setattr__(self, "_job_cached", job)
+        return job
+
+    def _reset_job_cache(self) -> None:
+        """Clear cached job so it is re-resolved on next access.
+
+        Called at the start of each apply() to ensure:
+        - When checkpoints are disabled: a fresh ephemeral job (with a
+          unique run_group_id) avoids output table name collisions.
+        - When checkpoints are enabled: the latest session job is used
+          after job state resets between runs.
+        """
+        if self._job_cached is not None:
+            object.__setattr__(self, "_job_cached", None)
 
     def hash_inputs(self) -> str:
         partition_by = ensure_sequence(self.partition_by or [])
@@ -922,10 +948,6 @@ class UDFStep(Step, ABC):
         return None
 
     @property
-    def job(self) -> Job:
-        return self.session.get_or_create_job()
-
-    @property
     def metastore(self):
         return self.session.catalog.metastore
 
@@ -978,6 +1000,7 @@ class UDFStep(Step, ABC):
         hash_input: str,
         hash_output: str,
     ) -> "StepResult":
+        self._reset_job_cache()
         query = query_generator.select()
 
         # Calculate partial hash that includes output schema
@@ -2159,15 +2182,11 @@ class DatasetQuery:
         return self.list_ds_name
 
     @property
-    def job(self) -> Job:
-        """
-        Get existing job if running in SaaS, or creating new one if running locally
-        """
-        return self.session.get_or_create_job()
-
-    @property
     def _last_checkpoint_hash(self) -> str | None:
-        last_checkpoint = self.catalog.metastore.get_last_checkpoint(self.job.id)
+        if not checkpoints_enabled():
+            return None
+        job = self.session.get_or_create_job()
+        last_checkpoint = self.catalog.metastore.get_last_checkpoint(job.id)
         return last_checkpoint.hash if last_checkpoint else None
 
     def __iter__(self):

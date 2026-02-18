@@ -633,6 +633,13 @@ def checkpoints_enabled() -> bool:
     Returns:
         bool: True if checkpoints are enabled, False if disabled.
     """
+    # Studio internal operations (file browser, ad-hoc queries) don't use
+    # checkpoints. Actual user job execution sets DATACHAIN_JOB_ID.
+    from datachain.lib.dc.utils import is_studio
+
+    if is_studio() and not os.environ.get("DATACHAIN_JOB_ID"):
+        return False
+
     # DataChain-controlled subprocess - explicitly allowed
     if os.environ.get("DATACHAIN_SUBPROCESS"):
         return True
