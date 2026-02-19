@@ -1,19 +1,20 @@
 import re
 
 import pytest
-import sqlalchemy as sa
 
 import datachain as dc
 from datachain.dataset import DatasetStatus
 from datachain.error import DatasetNotFoundError
-from datachain.query.dataset import DatasetQuery
 from datachain.query.session import Session
-from datachain.sql.types import String
 
 
 @pytest.fixture
 def project(catalog):
     return catalog.metastore.create_project("dev", "animals")
+
+
+def _fqn(project, name):
+    return f"{project.namespace.name}.{project.name}.{name}"
 
 
 def test_ephemeral_dataset_naming(catalog, project):
@@ -23,18 +24,10 @@ def test_ephemeral_dataset_naming(catalog, project):
         Session("wrong-ds_name", catalog=catalog)
 
     with Session(session_name, catalog=catalog) as session:
-        ds_name = "my_test_ds12"
-        session.catalog.create_dataset(
-            ds_name, project, columns=(sa.Column("name", String),)
-        )
-        ds_tmp = DatasetQuery(
-            name=ds_name,
-            namespace_name=project.namespace.name,
-            project_name=project.name,
-            session=session,
-            catalog=session.catalog,
-            include_incomplete=True,  # Test works with CREATED dataset
-        ).save()
+        fqn = _fqn(project, "my_test_ds12")
+        dc.read_values(name=["a"], session=session).save(fqn)
+        tmp_name = session.generate_temp_dataset_name()
+        ds_tmp = dc.read_dataset(fqn, session=session).save(tmp_name)
         session_uuid = f"[0-9a-fA-F]{{{Session.SESSION_UUID_LEN}}}"
         table_uuid = f"[0-9a-fA-F]{{{Session.TEMP_TABLE_UUID_LEN}}}"
 
@@ -48,15 +41,11 @@ def test_global_session_naming(catalog, project):
     session_uuid = f"[0-9a-fA-F]{{{Session.SESSION_UUID_LEN}}}"
     table_uuid = f"[0-9a-fA-F]{{{Session.TEMP_TABLE_UUID_LEN}}}"
 
-    ds_name = "qwsd"
-    catalog.create_dataset(ds_name, project, columns=(sa.Column("name", String),))
-    ds_tmp = DatasetQuery(
-        name=ds_name,
-        namespace_name=project.namespace.name,
-        project_name=project.name,
-        catalog=catalog,
-        include_incomplete=True,  # Test works with CREATED dataset
-    ).save()
+    fqn = _fqn(project, "qwsd")
+    global_session = Session.get(catalog=catalog)
+    dc.read_values(name=["a"], session=global_session).save(fqn)
+    tmp_name = global_session.generate_temp_dataset_name()
+    ds_tmp = dc.read_dataset(fqn, session=global_session).save(tmp_name)
     global_prefix = f"{Session.DATASET_PREFIX}{Session.GLOBAL_SESSION_NAME}"
     pattern = rf"^{global_prefix}_{session_uuid}_{table_uuid}$"
     assert re.match(pattern, ds_tmp.name) is not None
@@ -83,21 +72,12 @@ def test_is_temp_dataset(name, is_temp):
 def test_ephemeral_dataset_lifecycle(catalog, project):
     session_name = "asd3d4"
     with Session(session_name, catalog=catalog) as session:
-        ds_name = "my_test_ds12"
-        session.catalog.create_dataset(
-            ds_name, project, columns=(sa.Column("name", String),)
-        )
-        ds_tmp = DatasetQuery(
-            name=ds_name,
-            namespace_name=project.namespace.name,
-            project_name=project.name,
-            session=session,
-            catalog=session.catalog,
-            include_incomplete=True,  # Test works with CREATED dataset
-        ).save()
+        fqn = _fqn(project, "my_test_ds12")
+        dc.read_values(name=["a"], session=session).save(fqn)
+        tmp_name = session.generate_temp_dataset_name()
+        ds_tmp = dc.read_dataset(fqn, session=session).save(tmp_name)
 
-        assert isinstance(ds_tmp, DatasetQuery)
-        assert ds_tmp.name != ds_name
+        assert ds_tmp.name != "my_test_ds12"
         assert ds_tmp.name is not None
         assert ds_tmp.name.startswith(Session.DATASET_PREFIX)
         assert session_name in ds_tmp.name
@@ -113,27 +93,17 @@ def test_session_datasets_not_in_ls_datasets(catalog, project):
     session_name = "testls"
     with Session(session_name, catalog=catalog) as session:
         # Create a regular dataset
-        ds_name = "regular_dataset"
-        (
-            dc.read_values(num=[1, 2, 3], session=session)
-            .settings(namespace=project.namespace.name, project=project.name)
-            .save(ds_name)
-        )
+        fqn = _fqn(project, "regular_dataset")
+        dc.read_values(num=[1, 2, 3], session=session).save(fqn)
 
-        # Create a temp dataset
-        ds_tmp = DatasetQuery(
-            name=ds_name,
-            namespace_name=project.namespace.name,
-            project_name=project.name,
-            session=session,
-            catalog=session.catalog,
-            include_incomplete=True,
-        ).save()
+        # Create a temp dataset by re-saving the regular one
+        tmp_name = session.generate_temp_dataset_name()
+        ds_tmp = dc.read_dataset(fqn, session=session).save(tmp_name)
 
         datasets = list(catalog.ls_datasets())
         dataset_names = [d.name for d in datasets]
 
-        assert ds_name in dataset_names
+        assert "regular_dataset" in dataset_names
 
         assert ds_tmp.name not in dataset_names
         assert all(not Session.is_temp_dataset(name) for name in dataset_names)
@@ -142,49 +112,30 @@ def test_session_datasets_not_in_ls_datasets(catalog, project):
 def test_cleanup_temp_datasets_all_states(catalog, project):
     session_name = "testcleanup"
     with Session(session_name, catalog=catalog) as session:
-        ds_name = "test_dataset"
-        session.catalog.create_dataset(
-            ds_name, project, columns=(sa.Column("name", String),)
-        )
+        fqn = _fqn(project, "test_dataset")
+        dc.read_values(name=["a"], session=session).save(fqn)
 
         # Create temp datasets in different states
 
-        # 1. CREATED state
-        ds_created = DatasetQuery(
-            name=ds_name,
-            namespace_name=project.namespace.name,
-            project_name=project.name,
-            session=session,
-            catalog=session.catalog,
-            include_incomplete=True,
-        ).save()
-
-        # 2. COMPLETE state
-        ds_complete = DatasetQuery(
-            name=ds_name,
-            namespace_name=project.namespace.name,
-            project_name=project.name,
-            session=session,
-            catalog=session.catalog,
-            include_incomplete=True,
-        ).save()
-        ds_complete_record = catalog.get_dataset(
-            ds_complete.name, include_incomplete=True
+        # 1. CREATED state (default after save — mark it back to CREATED)
+        ds_created = dc.read_dataset(fqn, session=session).save(
+            session.generate_temp_dataset_name()
         )
+        ds_created_record = catalog.get_dataset(ds_created.name)
         catalog.metastore.update_dataset_status(
-            ds_complete_record, DatasetStatus.COMPLETE, version="1.0.0"
+            ds_created_record, DatasetStatus.CREATED, version="1.0.0"
+        )
+
+        # 2. COMPLETE state (save already marks COMPLETE)
+        ds_complete = dc.read_dataset(fqn, session=session).save(
+            session.generate_temp_dataset_name()
         )
 
         # 3. FAILED state
-        ds_failed = DatasetQuery(
-            name=ds_name,
-            namespace_name=project.namespace.name,
-            project_name=project.name,
-            session=session,
-            catalog=session.catalog,
-            include_incomplete=True,
-        ).save()
-        ds_failed_record = catalog.get_dataset(ds_failed.name, include_incomplete=True)
+        ds_failed = dc.read_dataset(fqn, session=session).save(
+            session.generate_temp_dataset_name()
+        )
+        ds_failed_record = catalog.get_dataset(ds_failed.name)
         catalog.metastore.update_dataset_status(
             ds_failed_record, DatasetStatus.FAILED, version="1.0.0"
         )
