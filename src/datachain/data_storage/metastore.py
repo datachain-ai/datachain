@@ -2075,23 +2075,7 @@ class AbstractDBMetastore(AbstractMetastore):
         """
         if job_id is None:
             job_id = str(uuid4())
-            # Validate run_group_id and rerun_from_job_id consistency for local jobs
-            if rerun_from_job_id:
-                # Rerun job: run_group_id should be provided by caller
-                # If run_group_id is None, parent is a legacy job without run_group_id
-                # In this case, treat current job as first job in a new chain
-                # and break the link to the legacy parent
-                if run_group_id is None:
-                    run_group_id = job_id
-                    rerun_from_job_id = None
-            else:
-                assert run_group_id is None, (
-                    "run_group_id should not be provided when rerun_from_job_id"
-                    " is not set"
-                )
-                run_group_id = job_id
 
-        # Ensure run_group_id is always set
         if run_group_id is None:
             run_group_id = job_id
 
