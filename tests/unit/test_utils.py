@@ -1,7 +1,9 @@
 import os
 import threading
+from pathlib import Path
 
 import pytest
+from filelock import FileLock, Timeout
 
 from datachain.utils import (
     _CheckpointState,
@@ -11,6 +13,7 @@ from datachain.utils import (
     datachain_paths_join,
     determine_processes,
     determine_workers,
+    interprocess_file_lock,
     nested_dict_path_set,
     retry_with_backoff,
     row_to_nested_dict,
@@ -301,6 +304,113 @@ def test_batched_it(num_rows, batch_size):
 
     assert num_batches == num_rows / batch_size
     assert len(uniq_data) == num_rows
+
+
+def test_interprocess_file_lock_writes_pid_and_releases(tmp_path):
+    lock_path = tmp_path / "pull.lock"
+    pid_path = Path(f"{lock_path.as_posix()}.pid")
+
+    with interprocess_file_lock(lock_path.as_posix()):
+        pid_in_lock = int(pid_path.read_text(encoding="utf-8").strip())
+        assert pid_in_lock == os.getpid()
+
+    # After release, a new acquire should succeed.
+    with interprocess_file_lock(lock_path.as_posix(), timeout=0):
+        pass
+
+
+def test_interprocess_file_lock_cleans_up_pid_file(tmp_path):
+    lock_path = tmp_path / "pull.lock"
+    pid_path = Path(f"{lock_path.as_posix()}.pid")
+
+    with interprocess_file_lock(lock_path.as_posix()):
+        assert lock_path.exists()
+        assert pid_path.exists()
+
+    assert not pid_path.exists()
+
+
+def test_interprocess_file_lock_timeout_without_wait_message(tmp_path):
+    lock_path = tmp_path / "pull.lock"
+
+    with interprocess_file_lock(lock_path.as_posix()):
+        with pytest.raises(Timeout):
+            with interprocess_file_lock(lock_path.as_posix(), timeout=0):
+                pass
+
+
+def test_interprocess_file_lock_prints_pid_when_blocked(tmp_path, capsys):
+    lock_path = tmp_path / "pull.lock"
+    pid_path = Path(f"{lock_path.as_posix()}.pid")
+    wait_message = "Another pull is already in progress."
+
+    with interprocess_file_lock(lock_path.as_posix()):
+        with pytest.raises(Timeout):
+            with interprocess_file_lock(
+                lock_path.as_posix(),
+                wait_message=wait_message,
+                timeout=0,
+            ):
+                pass
+
+    captured = capsys.readouterr().out
+    assert wait_message in captured
+    assert f"pid={os.getpid()}" in captured
+    assert f"delete: {lock_path.as_posix()} (and {pid_path.as_posix()})" in captured
+    assert f"ps -p {os.getpid()}" in captured
+
+
+def test_interprocess_file_lock_wait_hint_without_pid(tmp_path, capsys):
+    lock_path = tmp_path / "pull.lock"
+    pid_path = Path(f"{lock_path.as_posix()}.pid")
+    wait_message = "Another pull is already in progress."
+
+    # Acquire the raw file lock without writing a PID sidecar.
+    raw_lock = FileLock(lock_path.as_posix())
+    raw_lock.acquire()
+    try:
+        with pytest.raises(Timeout):
+            with interprocess_file_lock(
+                lock_path.as_posix(),
+                wait_message=wait_message,
+                timeout=0,
+            ):
+                pass
+    finally:
+        raw_lock.release()
+
+    captured = capsys.readouterr().out
+    assert wait_message in captured
+    assert "ps -p" not in captured
+    assert f"delete: {lock_path.as_posix()} (and {pid_path.as_posix()})" in captured
+
+
+def test_interprocess_file_lock_timeout_preserves_other_pid(tmp_path):
+    lock_path = tmp_path / "pull.lock"
+    pid_path = Path(f"{lock_path.as_posix()}.pid")
+
+    # Simulate another process holding the lock with its own PID file.
+    raw_lock = FileLock(lock_path.as_posix())
+    raw_lock.acquire()
+    holder_pid = "99999"
+    pid_path.write_text(holder_pid)
+    try:
+        with pytest.raises(Timeout):
+            with interprocess_file_lock(lock_path.as_posix(), timeout=0):
+                pass
+
+        # The holder's PID file must still exist and be untouched.
+        assert pid_path.exists()
+        assert pid_path.read_text() == holder_pid
+    finally:
+        raw_lock.release()
+
+
+def test_interprocess_file_lock_no_dir_in_path(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    bare = "bare_test.lock"
+    with interprocess_file_lock(bare, timeout=0):
+        assert (tmp_path / bare).exists()
 
 
 def gen3():

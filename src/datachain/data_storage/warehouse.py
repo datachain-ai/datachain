@@ -391,6 +391,14 @@ class AbstractWarehouse(ABC, Serializable):
     ) -> sa.Table:
         """Creates a dataset rows table for the given dataset name and columns"""
 
+    def insert_dataframe_to_table(self, table_name: str, df) -> int:
+        """
+        Insert dataframe into any table by name.
+
+        This is used for inserting data into temporary staging tables.
+        """
+        return self.db.insert_dataframe(table_name, df)
+
     def drop_dataset_rows_table(
         self,
         dataset: DatasetRecord,
@@ -537,10 +545,6 @@ class AbstractWarehouse(ABC, Serializable):
     def insert_rows_done(self, table: sa.Table) -> None:
         """Signal that row inserts are complete by flushing and closing the buffer."""
         self.close_buffer(table)
-
-    @abstractmethod
-    def insert_dataset_rows(self, df, dataset: DatasetRecord, version: str) -> int:
-        """Inserts dataset rows directly into dataset table"""
 
     @abstractmethod
     def instr(self, source, target) -> sa.ColumnElement:
