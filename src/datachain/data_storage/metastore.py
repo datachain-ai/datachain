@@ -310,8 +310,14 @@ class AbstractMetastore(ABC, Serializable):
         preview: list[dict] | None = None,
         job_id: str | None = None,
         uuid: str | None = None,
-    ) -> DatasetRecord:
-        """Creates new dataset version."""
+    ) -> tuple[DatasetRecord, bool]:
+        """Creates new dataset version.
+
+        Returns:
+            A tuple of (dataset_record, version_created) where version_created
+            is True if this call actually created the version, False if the
+            version already existed (only possible when ignore_if_exists=True).
+        """
 
     @abstractmethod
     def remove_dataset(self, dataset: DatasetRecord) -> None:
@@ -1234,16 +1240,24 @@ class AbstractDBMetastore(AbstractMetastore):
         job_id: str | None = None,
         uuid: str | None = None,
         conn=None,
-    ) -> DatasetRecord:
-        """Creates new dataset version."""
+    ) -> tuple[DatasetRecord, bool]:
+        """Creates new dataset version.
+
+        Returns:
+            A tuple of (dataset_record, version_created) where version_created
+            is True if this call actually created the version, False if the
+            version already existed (only possible when ignore_if_exists=True).
+        """
         if status in [DatasetStatus.COMPLETE, DatasetStatus.FAILED]:
             finished_at = finished_at or datetime.now(timezone.utc)
         else:
             finished_at = None
 
+        my_uuid = uuid or str(uuid4())
+
         query = self._datasets_versions_insert().values(
             dataset_id=dataset.id,
-            uuid=uuid or str(uuid4()),
+            uuid=my_uuid,
             version=version,
             status=status,
             feature_schema=json.dumps(feature_schema or {}),
@@ -1268,13 +1282,21 @@ class AbstractDBMetastore(AbstractMetastore):
             )
         self.db.execute(query, conn=conn)
 
-        return self.get_dataset(
+        dataset = self.get_dataset(
             dataset.name,
             namespace_name=dataset.project.namespace.name,
             project_name=dataset.project.name,
             include_incomplete=True,
             conn=conn,
         )
+
+        # Detect whether this call actually created the version by comparing
+        # the UUID we attempted to insert with the one stored in the DB.
+        # If another writer won the ON CONFLICT race, the stored UUID will
+        # differ from ours.
+        version_created = dataset.get_version(version).uuid == my_uuid
+
+        return dataset, version_created
 
     def remove_dataset(self, dataset: DatasetRecord) -> None:
         """Removes dataset."""

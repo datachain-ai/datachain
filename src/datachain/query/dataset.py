@@ -2820,24 +2820,54 @@ class DatasetQuery:
                     "Ensure at least one column (other than 'id') is selected."
                 )
 
-            dataset = self.catalog.create_dataset(
-                name,
-                project,
-                version=version,
-                feature_schema=feature_schema,
-                columns=columns,
-                description=description,
-                attrs=attrs,
-                update_version=update_version,
-                job_id=job_id,
-                **kwargs,
+            # Phase 1: Create a temp staging table and populate it.
+            # If the process dies here, only an orphaned tmp_ table remains,
+            # cleaned up by 'datachain gc'.
+            temp_table_name = self.catalog.warehouse.temp_table_name()
+            self.catalog.warehouse.create_dataset_rows_table(
+                temp_table_name, columns=columns
             )
+            temp_table = self.catalog.warehouse.get_table(temp_table_name)
+            try:
+                self.catalog.warehouse.insert_into(temp_table, query.select())
+            except Exception:
+                with contextlib.suppress(Exception):
+                    self.catalog.warehouse.cleanup_tables([temp_table_name])
+                raise
+
+            # Phase 2: Claim the version (metadata only).
+            try:
+                dataset = self.catalog.create_dataset(
+                    name,
+                    project,
+                    version=version,
+                    feature_schema=feature_schema,
+                    columns=columns,
+                    description=description,
+                    attrs=attrs,
+                    update_version=update_version,
+                    job_id=job_id,
+                    **kwargs,
+                )
+            except Exception:
+                with contextlib.suppress(Exception):
+                    self.catalog.warehouse.cleanup_tables([temp_table_name])
+                raise
+
             version = version or dataset.latest_version
 
-            dr = self.catalog.warehouse.dataset_rows(dataset)
+            # Phase 3: Rename staging table to the final dataset table name.
+            final_table_name = self.catalog.warehouse.dataset_table_name(
+                dataset, version
+            )
+            try:
+                self.catalog.warehouse.rename_table(temp_table, final_table_name)
+            except Exception:
+                with contextlib.suppress(Exception):
+                    self.catalog.warehouse.cleanup_tables([temp_table_name])
+                raise
 
-            self.catalog.warehouse.insert_into(dr.get_table(), query.select())
-
+            # Phase 4: Finalize metadata and mark COMPLETE.
             self.catalog.update_dataset_version_with_warehouse_info(dataset, version)
 
             # Link this dataset version to the job that created it
