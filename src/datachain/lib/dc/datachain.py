@@ -1342,10 +1342,11 @@ class DataChain:
                         schema_partition_by.append(col)
                     else:
                         # BaseModel or other - add flattened columns directly
+                        # Use underscores to flatten the column name
+                        # to avoid MultiIndex in pandas output
                         for column in cast("list[Column]", columns):
-                            col_type = self.signals_schema.get_column_type(column.name)
-                            schema_fields[column.name] = col_type
-                        schema_partition_by.append(col)
+                            # Use the column's db name which already uses underscores
+                            signal_columns.append(column)
                 else:
                     # simple signal - but we need to check if it's a complex signal
                     # complex signal - only include the columns used for partitioning
