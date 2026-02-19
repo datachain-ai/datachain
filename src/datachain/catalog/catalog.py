@@ -25,7 +25,6 @@ from sqlalchemy import Column
 from tqdm.auto import tqdm
 
 from datachain.cache import Cache
-from datachain.checkpoint import Checkpoint
 from datachain.client import Client
 from datachain.dataset import (
     DATASET_PREFIX,
@@ -2095,37 +2094,20 @@ class Catalog:
         ):
             pass
 
-    def _remove_checkpoint(self, checkpoint: Checkpoint) -> None:
-        """Remove a checkpoint and its associated job-specific UDF tables."""
-        self.metastore.remove_checkpoint(checkpoint.id)
-
-        # Remove job-specific tables for this checkpoint
-        # Table patterns: udf_{job_id}_{hash}_{suffix}
-        # where suffix can be: input, output, output_partial, processed
-        job_id_sanitized = checkpoint.job_id.replace("-", "")
-        table_prefix = f"udf_{job_id_sanitized}_{checkpoint.hash}_"
-        matching_tables = self.warehouse.db.list_tables(prefix=table_prefix)
-
-        if matching_tables:
-            self.warehouse.cleanup_tables(matching_tables)
+    def _cleanup_udf_tables(self, prefix: str) -> None:
+        """Remove all UDF tables matching a prefix."""
+        tables = self.warehouse.db.list_tables(prefix=prefix)
+        if tables:
+            logger.info("Removing %d UDF tables: %s", len(tables), tables)
+            self.warehouse.cleanup_tables(tables)
 
     def cleanup_checkpoints(self, ttl_seconds: int | None = None) -> int:
-        """
-        Clean up outdated checkpoints and their associated UDF tables.
+        """Clean up outdated checkpoints and their associated UDF tables.
 
-        Removes outdated checkpoints only if no jobs in the same run group have
-        active (non-outdated) checkpoints.
-
-        This prevents accumulation of checkpoints while ensuring that tables
-        are preserved when any related job still needs them.
-
-        Args:
-            ttl_seconds: Time-to-live in seconds. Checkpoints older than this
-                are considered outdated. If None, uses CHECKPOINT_TTL
-                environment variable or default.
-
-        Returns:
-            Number of checkpoints removed.
+        Removes checkpoints only if no jobs in the same run group have
+        active (non-outdated) checkpoints. After removing all checkpoints
+        for a job/group, cleans up all associated UDF tables (output,
+        partial, and input) by prefix scan.
         """
         if ttl_seconds is None:
             ttl_seconds = int(os.environ.get("CHECKPOINT_TTL", str(TTL_INT)))
@@ -2139,30 +2121,75 @@ class Catalog:
         if not outdated_checkpoints:
             return 0
 
+        logger.info(
+            "Found %d outdated checkpoints to clean up", len(outdated_checkpoints)
+        )
+
         job_ids = list({ch.job_id for ch in outdated_checkpoints})
         jobs = {job.id: job for job in self.metastore.list_jobs_by_ids(job_ids)}
 
         # Cache per run_group_id to avoid redundant checks
         has_active_in_group_cache: dict[str, bool] = {}
+        # Track cleaned job_ids and run_group_ids for table cleanup
+        cleaned_job_ids: set[str] = set()
+        cleaned_run_group_ids: set[str] = set()
 
         removed_count = 0
         for ch in outdated_checkpoints:
             job = jobs.get(ch.job_id)
+            run_group_id = job.run_group_id if job else None
 
-            if not job or not job.run_group_id:
-                self._remove_checkpoint(ch)
+            if not run_group_id:
+                logger.info(
+                    "Removing checkpoint %s (hash=%s, job=%s, no run group)",
+                    ch.id,
+                    ch.hash[:8],
+                    ch.job_id,
+                )
+                self.metastore.remove_checkpoint(ch.id)
+                cleaned_job_ids.add(ch.job_id)
                 removed_count += 1
                 continue
 
-            if job.run_group_id not in has_active_in_group_cache:
-                has_active_in_group_cache[job.run_group_id] = (
+            if run_group_id not in has_active_in_group_cache:
+                has_active_in_group_cache[run_group_id] = (
                     self.metastore.has_active_checkpoints_in_run_group(
-                        job.run_group_id, ttl_threshold
+                        run_group_id, ttl_threshold
                     )
                 )
 
-            if not has_active_in_group_cache[job.run_group_id]:
-                self._remove_checkpoint(ch)
-                removed_count += 1
+            if has_active_in_group_cache[run_group_id]:
+                logger.debug(
+                    "Skipping checkpoint %s (hash=%s, job=%s) - "
+                    "run group %s has active checkpoints",
+                    ch.id,
+                    ch.hash[:8],
+                    ch.job_id,
+                    run_group_id,
+                )
+                continue
 
+            logger.info(
+                "Removing checkpoint %s (hash=%s, job=%s, run_group=%s)",
+                ch.id,
+                ch.hash[:8],
+                ch.job_id,
+                run_group_id,
+            )
+            self.metastore.remove_checkpoint(ch.id)
+            cleaned_job_ids.add(ch.job_id)
+            cleaned_run_group_ids.add(run_group_id)
+            removed_count += 1
+
+        # Clean up all UDF tables for cleaned jobs and run groups.
+        # Prefix scan catches output, partial, and input tables regardless
+        # of which hash variant was used to name them.
+        for job_id in cleaned_job_ids:
+            self._cleanup_udf_tables(f"udf_{job_id}_")
+        for run_group_id in cleaned_run_group_ids - cleaned_job_ids:
+            self._cleanup_udf_tables(f"udf_{run_group_id}_")
+
+        logger.info(
+            "Checkpoint cleanup complete: removed %d checkpoints", removed_count
+        )
         return removed_count

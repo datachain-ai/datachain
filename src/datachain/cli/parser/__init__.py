@@ -478,7 +478,10 @@ def get_parser() -> ArgumentParser:  # noqa: PLR0915
     parse_gc = subp.add_parser(
         "gc",
         parents=[parent_parser],
-        description="Garbage collect temporary tables and failed dataset versions.",
+        description=(
+            "Garbage collect temporary tables,"
+            " failed dataset versions, and outdated checkpoints."
+        ),
         formatter_class=CustomHelpFormatter,
     )
     add_anon_arg(parse_gc)

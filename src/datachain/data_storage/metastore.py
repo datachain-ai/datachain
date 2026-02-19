@@ -563,17 +563,7 @@ class AbstractMetastore(ABC, Serializable):
         created_before: datetime | None = None,
         conn=None,
     ) -> Iterator[Checkpoint]:
-        """
-        List checkpoints by job id, or all checkpoints if job_id is None.
-
-        Args:
-            job_id: Filter by job ID. If None, lists all checkpoints.
-            created_after: Filter by creation date. If provided, only returns
-                          checkpoints created after this timestamp.
-            created_before: Filter by creation date. If provided, only returns
-                           checkpoints created before this timestamp.
-            conn: Database connection to use.
-        """
+        """List checkpoints, optionally filtered by job_id and/or time range."""
 
     @abstractmethod
     def get_last_checkpoint(self, job_id: str, conn=None) -> Checkpoint | None:
