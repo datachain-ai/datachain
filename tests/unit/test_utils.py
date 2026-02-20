@@ -1,11 +1,19 @@
+import os
+import threading
+from pathlib import Path
+
 import pytest
+from filelock import FileLock, Timeout
 
 from datachain.utils import (
+    _CheckpointState,
     batched,
     batched_it,
+    checkpoints_enabled,
     datachain_paths_join,
     determine_processes,
     determine_workers,
+    interprocess_file_lock,
     nested_dict_path_set,
     retry_with_backoff,
     row_to_nested_dict,
@@ -13,6 +21,7 @@ from datachain.utils import (
     sql_escape_like,
     suffix_to_number,
     uses_glob,
+    with_last_flag,
 )
 
 DATACHAIN_TEST_PATHS = ["/file1", "file2", "/dir/file3", "dir/file4"]
@@ -295,3 +304,254 @@ def test_batched_it(num_rows, batch_size):
 
     assert num_batches == num_rows / batch_size
     assert len(uniq_data) == num_rows
+
+
+def test_interprocess_file_lock_writes_pid_and_releases(tmp_path):
+    lock_path = tmp_path / "pull.lock"
+    pid_path = Path(f"{lock_path.as_posix()}.pid")
+
+    with interprocess_file_lock(lock_path.as_posix()):
+        pid_in_lock = int(pid_path.read_text(encoding="utf-8").strip())
+        assert pid_in_lock == os.getpid()
+
+    # After release, a new acquire should succeed.
+    with interprocess_file_lock(lock_path.as_posix(), timeout=0):
+        pass
+
+
+def test_interprocess_file_lock_cleans_up_pid_file(tmp_path):
+    lock_path = tmp_path / "pull.lock"
+    pid_path = Path(f"{lock_path.as_posix()}.pid")
+
+    with interprocess_file_lock(lock_path.as_posix()):
+        assert lock_path.exists()
+        assert pid_path.exists()
+
+    assert not pid_path.exists()
+
+
+def test_interprocess_file_lock_timeout_without_wait_message(tmp_path):
+    lock_path = tmp_path / "pull.lock"
+
+    with interprocess_file_lock(lock_path.as_posix()):
+        with pytest.raises(Timeout):
+            with interprocess_file_lock(lock_path.as_posix(), timeout=0):
+                pass
+
+
+def test_interprocess_file_lock_prints_pid_when_blocked(tmp_path, capsys):
+    lock_path = tmp_path / "pull.lock"
+    pid_path = Path(f"{lock_path.as_posix()}.pid")
+    wait_message = "Another pull is already in progress."
+
+    with interprocess_file_lock(lock_path.as_posix()):
+        with pytest.raises(Timeout):
+            with interprocess_file_lock(
+                lock_path.as_posix(),
+                wait_message=wait_message,
+                timeout=0,
+            ):
+                pass
+
+    captured = capsys.readouterr().out
+    assert wait_message in captured
+    assert f"pid={os.getpid()}" in captured
+    assert f"delete: {lock_path.as_posix()} (and {pid_path.as_posix()})" in captured
+    assert f"ps -p {os.getpid()}" in captured
+
+
+def test_interprocess_file_lock_wait_hint_without_pid(tmp_path, capsys):
+    lock_path = tmp_path / "pull.lock"
+    pid_path = Path(f"{lock_path.as_posix()}.pid")
+    wait_message = "Another pull is already in progress."
+
+    # Acquire the raw file lock without writing a PID sidecar.
+    raw_lock = FileLock(lock_path.as_posix())
+    raw_lock.acquire()
+    try:
+        with pytest.raises(Timeout):
+            with interprocess_file_lock(
+                lock_path.as_posix(),
+                wait_message=wait_message,
+                timeout=0,
+            ):
+                pass
+    finally:
+        raw_lock.release()
+
+    captured = capsys.readouterr().out
+    assert wait_message in captured
+    assert "ps -p" not in captured
+    assert f"delete: {lock_path.as_posix()} (and {pid_path.as_posix()})" in captured
+
+
+def test_interprocess_file_lock_timeout_preserves_other_pid(tmp_path):
+    lock_path = tmp_path / "pull.lock"
+    pid_path = Path(f"{lock_path.as_posix()}.pid")
+
+    # Simulate another process holding the lock with its own PID file.
+    raw_lock = FileLock(lock_path.as_posix())
+    raw_lock.acquire()
+    holder_pid = "99999"
+    pid_path.write_text(holder_pid)
+    try:
+        with pytest.raises(Timeout):
+            with interprocess_file_lock(lock_path.as_posix(), timeout=0):
+                pass
+
+        # The holder's PID file must still exist and be untouched.
+        assert pid_path.exists()
+        assert pid_path.read_text() == holder_pid
+    finally:
+        raw_lock.release()
+
+
+def test_interprocess_file_lock_no_dir_in_path(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    bare = "bare_test.lock"
+    with interprocess_file_lock(bare, timeout=0):
+        assert (tmp_path / bare).exists()
+
+
+def gen3():
+    yield from range(3)
+
+
+@pytest.mark.parametrize(
+    "input_data, expected",
+    [
+        (
+            [10, 20, 30],
+            [(10, False), (20, False), (30, True)],
+        ),
+        (
+            [42],
+            [(42, True)],
+        ),
+        (
+            [],
+            [],
+        ),
+        (
+            gen3(),  # generator input
+            [(0, False), (1, False), (2, True)],
+        ),
+    ],
+)
+def test_with_last_flag(input_data, expected):
+    assert list(with_last_flag(input_data)) == expected
+
+
+@pytest.fixture(autouse=True)
+def reset_checkpoint_state(monkeypatch):
+    """Reset checkpoint state before each test."""
+    _CheckpointState.disabled = False
+    _CheckpointState.warning_shown = False
+    _CheckpointState.owner_thread = None
+    # Clear any existing env vars
+    monkeypatch.delenv("DATACHAIN_MAIN_PROCESS_PID", raising=False)
+    monkeypatch.delenv("DATACHAIN_SUBPROCESS", raising=False)
+    yield
+    # Reset after test as well
+    _CheckpointState.disabled = False
+    _CheckpointState.warning_shown = False
+    _CheckpointState.owner_thread = None
+
+
+def test_checkpoints_enabled_main_thread():
+    """Test that checkpoints are enabled in main thread and main process."""
+    assert checkpoints_enabled() is True
+    assert _CheckpointState.disabled is False
+    assert _CheckpointState.warning_shown is False
+
+
+def test_checkpoints_enabled_non_main_thread(monkeypatch):
+    # First call establishes ownership with the real current thread
+    assert checkpoints_enabled() is True
+    owner_ident = _CheckpointState.owner_thread
+    assert owner_ident == threading.current_thread().ident
+
+    # Now simulate a different thread by mocking the ident
+    class MockThread:
+        ident = owner_ident + 1
+        name = "Thread-1"
+
+    monkeypatch.setattr("datachain.utils.threading.current_thread", MockThread)
+
+    assert checkpoints_enabled() is False
+    assert _CheckpointState.disabled is True
+
+
+def test_checkpoints_enabled_non_main_process(monkeypatch):
+    # Simulate a subprocess by setting DATACHAIN_MAIN_PROCESS_PID to a different PID
+    monkeypatch.setenv("DATACHAIN_MAIN_PROCESS_PID", str(os.getpid() + 1000))
+
+    assert checkpoints_enabled() is False
+    # Note: disabled flag is not set for subprocess detection, just returns False
+    assert _CheckpointState.warning_shown is True
+
+
+def test_checkpoints_enabled_warning_shown_once(monkeypatch, caplog):
+    """Test that the warning is only shown once even when called multiple times."""
+    # First call establishes ownership
+    assert checkpoints_enabled() is True
+    owner_ident = _CheckpointState.owner_thread
+
+    class MockThread:
+        ident = owner_ident + 1  # Different thread ident
+        name = "Thread-1"
+
+    monkeypatch.setattr("datachain.utils.threading.current_thread", MockThread)
+
+    # Call multiple times from non-owner thread
+    assert checkpoints_enabled() is False
+    assert checkpoints_enabled() is False
+    assert checkpoints_enabled() is False
+
+    # Verify warning was logged only once
+    warning_count = sum(
+        1 for record in caplog.records if "Concurrent thread detected" in record.message
+    )
+    assert warning_count == 1
+    assert _CheckpointState.warning_shown is True
+
+
+def test_checkpoints_enabled_stays_disabled(monkeypatch):
+    """Test that once disabled, checkpoints stay disabled even in owner thread."""
+    # First call establishes ownership
+    assert checkpoints_enabled() is True
+    owner_ident = _CheckpointState.owner_thread
+
+    class MockThread:
+        ident = owner_ident + 1  # Different thread ident
+        name = "Thread-1"
+
+    class MockOwnerThread:
+        ident = owner_ident  # Same as owner
+        name = "MainThread"
+
+    # Call from non-owner thread disables checkpoints
+    monkeypatch.setattr("datachain.utils.threading.current_thread", MockThread)
+    assert checkpoints_enabled() is False
+    assert _CheckpointState.disabled is True
+
+    # Even if we go back to owner thread, it should stay disabled
+    monkeypatch.setattr("datachain.utils.threading.current_thread", MockOwnerThread)
+    assert checkpoints_enabled() is False
+    assert _CheckpointState.disabled is True
+
+
+def test_checkpoints_enabled_datachain_subprocess(monkeypatch):
+    """Test that DATACHAIN_SUBPROCESS env var enables checkpoints regardless of PID."""
+    # Set the main PID to something different (simulating we're in a subprocess)
+    monkeypatch.setenv("DATACHAIN_MAIN_PROCESS_PID", str(os.getpid() + 1000))
+
+    # Without DATACHAIN_SUBPROCESS, checkpoints should be disabled
+    assert checkpoints_enabled() is False
+
+    # Reset state for next test
+    _CheckpointState.warning_shown = False
+
+    # With DATACHAIN_SUBPROCESS, checkpoints should be enabled
+    monkeypatch.setenv("DATACHAIN_SUBPROCESS", "1")
+    assert checkpoints_enabled() is True

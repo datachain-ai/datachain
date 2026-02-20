@@ -74,6 +74,18 @@ def create_dataset_uri(
     return uri
 
 
+def create_dataset_full_name(
+    namespace: str, project: str, name: str, version: str
+) -> str:
+    """
+    Creates a full dataset name including namespace, project and version.
+    Example:
+        Input: dev, clothes, zalando, 3.0.1
+        Output: dev.clothes.zalando@3.0.1
+    """
+    return f"{namespace}.{project}.{name}@{version}"
+
+
 def parse_dataset_name(name: str) -> tuple[str | None, str | None, str]:
     """Parses dataset name and returns namespace, project and name"""
     if not name:
@@ -193,11 +205,7 @@ class DatasetDependency:
             namespace_name,
             project_name,
             dataset_name,
-            (
-                dataset_version  # type: ignore[arg-type]
-                if dataset_version
-                else None
-            ),
+            dataset_version or None,  # type: ignore[arg-type]
             dataset_version_created_at,  # type: ignore[arg-type]
             [],
         )
@@ -339,7 +347,7 @@ class DatasetVersion:
     def preview(self) -> list[dict] | None:
         if isinstance(self._preview_data, str):
             return json.loads(self._preview_data)
-        return self._preview_data if self._preview_data else None
+        return self._preview_data or None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "DatasetVersion":

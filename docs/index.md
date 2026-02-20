@@ -45,8 +45,8 @@ database for easy and efficient querying.
     dataframe-like API and vectorized engine to do analytics on these
     tables at scale.
 3.  **Versioning.** DataChain doesn't store, require moving or copying
-    data (unlike DVC). Perfect use case is a bucket with thousands or
-    millions of images, videos, audio, PDFs.
+    data. Perfect use case is a bucket with thousands or millions of
+    images, videos, audio, PDFs.
 
 ## Key Features
 

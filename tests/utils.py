@@ -190,6 +190,11 @@ def assert_row_names(
 
 def images_equal(img1: Image.Image, img2: Image.Image):
     """Checks if two image objects have exactly the same data"""
+    # TODO: Remove conditional when Pillow>=12.1.0 is acceptable as minimum
+    # version get_flattened_data() was added in Pillow 12.1.0 as replacement
+    # for deprecated getdata()
+    if hasattr(img1, "get_flattened_data"):
+        return img1.get_flattened_data() == img2.get_flattened_data()  # type: ignore[attr-defined]
     return list(img1.getdata()) == list(img2.getdata())
 
 
@@ -254,5 +259,12 @@ def reset_session_job_state():
     Session._OWNS_JOB = None
     Session._JOB_HOOKS_REGISTERED = False
 
+    # Clear checkpoint state (now in utils module)
+    from datachain.utils import _CheckpointState
+
+    _CheckpointState.disabled = False
+    _CheckpointState.warning_shown = False
+
     # Clear DATACHAIN_JOB_ID env var to allow new job creation on next run
+    # This is important for studio/SaaS mode where job_id comes from env var
     os.environ.pop("DATACHAIN_JOB_ID", None)

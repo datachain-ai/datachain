@@ -12,7 +12,7 @@ def test_settings_default_values():
     assert settings.namespace is None
     assert settings.project is None
     assert settings.min_task_size is None
-    assert settings.batch_size == 2000  # Default batch size
+    assert settings.batch_size is None
 
     d = settings.to_dict()
     assert d == {}
@@ -441,7 +441,7 @@ def test_settings_project_parameter():
 def test_settings_batch_size_parameter():
     # Default values
     settings = Settings()
-    assert settings.batch_size == 2000
+    assert settings.batch_size is None
 
     # Custom values
     settings = Settings(batch_size=500)
@@ -465,7 +465,7 @@ def test_settings_batch_size_parameter():
 
     # None is allowed
     settings = Settings(batch_size=None)
-    assert settings.batch_size == 2000
+    assert settings.batch_size is None
 
     # to_dict method
     d = Settings(batch_size=500).to_dict()

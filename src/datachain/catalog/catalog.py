@@ -3,6 +3,7 @@ import logging
 import os
 import os.path
 import posixpath
+import sys
 import time
 import traceback
 from collections.abc import Callable, Iterable, Iterator, Sequence
@@ -12,6 +13,11 @@ from dataclasses import dataclass
 from functools import cached_property, reduce
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
+
+if sys.version_info >= (3, 11):
+    from typing import Self
+else:
+    from typing_extensions import Self
 
 import sqlalchemy as sa
 from sqlalchemy import Column
@@ -47,17 +53,20 @@ from datachain.node import DirType, Node, NodeWithPath
 from datachain.nodes_thread_pool import NodesThreadPool
 from datachain.project import Project
 from datachain.sql.types import DateTime, SQLType
-from datachain.utils import DataChainDir, DatasetIdentifier
+from datachain.utils import DataChainDir, DatasetIdentifier, interprocess_file_lock
 
 from .datasource import DataSource
 from .dependency import build_dependency_hierarchy, populate_nested_dependencies
 
 if TYPE_CHECKING:
+    import pandas as pd
+
     from datachain.data_storage import AbstractMetastore, AbstractWarehouse
     from datachain.dataset import DatasetListVersion
     from datachain.job import Job
     from datachain.lib.listing_info import ListingInfo
     from datachain.listing import Listing
+    from datachain.remote.studio import StudioClient
 
 logger = logging.getLogger("datachain")
 
@@ -78,39 +87,45 @@ PULL_DATASET_SLEEP_INTERVAL = 0.1  # sleep time while waiting for chunk to be av
 PULL_DATASET_CHECK_STATUS_INTERVAL = 20  # interval to check export status in Studio
 
 
+def _round_robin_batch(urls: list[str], num_workers: int) -> list[list[str]]:
+    """Round-robin distribute urls across workers so each starts with low-index urls."""
+    batches: list[list[str]] = [[] for _ in range(num_workers)]
+    for i, url in enumerate(urls):
+        batches[i % num_workers].append(url)
+    return batches
+
+
 def is_namespace_local(namespace_name) -> bool:
     """Checks if namespace is from local environment, i.e. is `local`"""
     return namespace_name == "local"
 
 
 class DatasetRowsFetcher(NodesThreadPool):
+    """
+    Fetches dataset rows from Studio export and inserts them into a staging table.
+
+    This class downloads parquet files from signed URLs and inserts the data
+    into a temporary staging table.
+    """
+
     def __init__(
         self,
-        metastore: "AbstractMetastore",
         warehouse: "AbstractWarehouse",
-        remote_ds: DatasetRecord,
-        remote_ds_version: str,
+        temp_table_name: str,
         export_id: int,
-        local_ds: DatasetRecord,
-        local_ds_version: str,
         schema: dict[str, SQLType | type[SQLType]],
+        studio_client: "StudioClient",
         max_threads: int = PULL_DATASET_MAX_THREADS,
         progress_bar=None,
     ):
-        from datachain.remote.studio import StudioClient
-
         super().__init__(max_threads)
         self._check_dependencies()
-        self.metastore = metastore
         self.warehouse = warehouse
-        self.remote_ds = remote_ds
-        self.remote_ds_version = remote_ds_version
+        self.temp_table_name = temp_table_name
         self.export_id = export_id
-        self.local_ds = local_ds
-        self.local_ds_version = local_ds_version
         self.schema = schema
+        self.studio_client = studio_client
         self.last_status_check: float | None = None
-        self.studio_client = StudioClient()
         self.progress_bar = progress_bar
         self._last_export_status: str | None = None
         self._last_export_files_done: int | None = None
@@ -183,13 +198,13 @@ class DatasetRowsFetcher(NodesThreadPool):
 
         self.last_status_check = time.time()
 
-    def fix_columns(self, df) -> None:
-        import pandas as pd
-
+    def fix_columns(self, df) -> "pd.DataFrame":
         """
         Method that does various column decoding or parsing, depending on a type
-        before inserting into DB
+        before inserting into DB.
         """
+        import pandas as pd
+
         # we get dataframe from parquet export files where datetimes are serialized
         # as timestamps so we need to parse it back to datetime objects
         for c in [c for c, t in self.schema.items() if t == DateTime]:
@@ -215,7 +230,7 @@ class DatasetRowsFetcher(NodesThreadPool):
         import lz4.frame
         import pandas as pd
 
-        # metastore and warehouse are not thread safe
+        # warehouse is not thread safe, use a clone
         with self.warehouse.clone() as warehouse:
             urls = list(urls)
 
@@ -228,9 +243,7 @@ class DatasetRowsFetcher(NodesThreadPool):
                 )
                 df = self.fix_columns(df)
 
-                inserted = warehouse.insert_dataset_rows(
-                    df, self.local_ds, self.local_ds_version
-                )
+                inserted = warehouse.insert_dataframe_to_table(self.temp_table_name, df)
                 self.increase_counter(inserted)  # type: ignore [arg-type]
                 # sometimes progress bar doesn't get updated so manually updating it
                 self.update_progress_bar(self.progress_bar)
@@ -274,7 +287,7 @@ class NodeGroup:
         if self.listing:
             self.listing.close()
 
-    def __enter__(self) -> "NodeGroup":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
@@ -552,7 +565,7 @@ class Catalog:
             with suppress(Exception):
                 self._warehouse.close_on_exit()
 
-    def __enter__(self) -> "Catalog":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
@@ -815,11 +828,12 @@ class Catalog:
                 namespace_name=project.namespace.name if project else None,
                 project_name=project.name if project else None,
             )
-            default_version = dataset.next_version_patch
-            if update_version == "major":
-                default_version = dataset.next_version_major
-            if update_version == "minor":
-                default_version = dataset.next_version_minor
+            if not version:
+                default_version = dataset.next_version_patch
+                if update_version == "major":
+                    default_version = dataset.next_version_major
+                if update_version == "minor":
+                    default_version = dataset.next_version_minor
 
             if (description or attrs) and (
                 dataset.description != description or dataset.attrs != attrs
@@ -935,15 +949,20 @@ class Catalog:
             self.metastore.update_dataset_version(dataset, version, **values)
             return
 
+        stats_num_objects = None
+        stats_size = None
         if not dataset_version.num_objects:
             num_objects, size = self.warehouse.dataset_stats(dataset, version)
+            stats_num_objects = num_objects
+            stats_size = size
             if num_objects != dataset_version.num_objects:
                 values["num_objects"] = num_objects
             if size != dataset_version.size:
                 values["size"] = size
 
+        preview_rows = None
         if not dataset_version.preview:
-            values["preview"] = (
+            preview = (
                 DatasetQuery(
                     name=dataset.name,
                     namespace_name=dataset.project.namespace.name,
@@ -954,6 +973,26 @@ class Catalog:
                 )
                 .limit(20)
                 .to_db_records()
+            )
+            preview_rows = len(preview)
+            values["preview"] = preview
+
+        # Log anomaly: dataset_stats returned 0 but preview has data
+        if stats_num_objects == 0 and preview_rows and preview_rows > 0:
+            logger.warning(
+                "Inconsistency detected for %s@%s: "
+                "Initial state: num_objects=%s, size=%s, has_preview=%s. "
+                "dataset_stats returned: num_objects=%s, size=%s. "
+                "Preview generated: %s rows. "
+                "This may indicate ClickHouse replication delay.",
+                dataset.name,
+                version,
+                dataset_version.num_objects,
+                dataset_version.size,
+                bool(dataset_version.preview),
+                stats_num_objects,
+                stats_size,
+                preview_rows,
             )
 
         if not values:
@@ -1238,18 +1277,6 @@ class Catalog:
             )
 
         return self.get_remote_dataset(namespace_name, project_name, name)
-
-    def get_dataset_with_version_uuid(self, uuid: str) -> DatasetRecord:
-        """Returns dataset that contains version with specific uuid"""
-        for dataset in self.ls_datasets():
-            if dataset.has_version_with_uuid(uuid):
-                return self.get_dataset(
-                    dataset.name,
-                    namespace_name=dataset.project.namespace.name,
-                    project_name=dataset.project.name,
-                    include_incomplete=False,
-                )
-        raise DatasetNotFoundError(f"Dataset with version uuid {uuid} not found.")
 
     def get_remote_dataset(
         self, namespace: str, project: str, name: str
@@ -1573,7 +1600,24 @@ class Catalog:
             for source in data_sources:
                 yield source, source.ls(fields)
 
-    def pull_dataset(  # noqa: C901, PLR0915
+    def _instantiate_dataset(
+        self,
+        ds_uri: str,
+        output: str,
+        force: bool,
+        client_config: dict | None,
+    ) -> None:
+        """Copy dataset files to *output* directory."""
+        assert output, "output must be provided when instantiating a dataset"
+        self.cp(
+            [ds_uri],
+            output,
+            force=force,
+            client_config=client_config,
+        )
+        print(f"Dataset {ds_uri} instantiated locally to {output}")
+
+    def pull_dataset(  # noqa: C901, PLR0915, PLR0912
         self,
         remote_ds_uri: str,
         output: str | None = None,
@@ -1584,18 +1628,6 @@ class Catalog:
         *,
         client_config=None,
     ) -> None:
-        def _instantiate(ds_uri: str) -> None:
-            if not cp:
-                return
-            assert output
-            self.cp(
-                [ds_uri],
-                output,
-                force=force,
-                client_config=client_config,
-            )
-            print(f"Dataset {ds_uri} instantiated locally to {output}")
-
         if cp and not output:
             raise ValueError("Please provide output directory for instantiation")
 
@@ -1660,155 +1692,204 @@ class Catalog:
             local_ds_version,
         )
 
-        try:
-            # try to find existing dataset with the same uuid to avoid pulling again
-            existing_ds = self.get_dataset_with_version_uuid(remote_ds_version.uuid)
-            existing_ds_version = existing_ds.get_version_by_uuid(
-                remote_ds_version.uuid
-            )
-            existing_ds_uri = create_dataset_uri(
-                existing_ds.name,
-                existing_ds.project.namespace.name,
-                existing_ds.project.name,
-                existing_ds_version.version,
-            )
-            if existing_ds_uri == remote_ds_uri:
-                print(f"Local copy of dataset {remote_ds_uri} already present")
-            else:
-                print(
-                    f"Local copy of dataset {remote_ds_uri} already present as"
-                    f" dataset {existing_ds_uri}"
+        lock_dir = os.path.join(DataChainDir.find().tmp, "pull-locks")
+        lock_path = os.path.join(lock_dir, f"{remote_ds_version.uuid}.lock")
+        with interprocess_file_lock(
+            lock_path,
+            wait_message=(
+                "Another pull for this dataset version is already in progress. "
+                "Waiting for it to finish..."
+            ),
+        ):
+            # Check for existing dataset with the same UUID and reuse or cleanup.
+            # The lock ensures we don't delete an in-flight version from another
+            # concurrent pull.
+            try:
+                ds = self.metastore.get_dataset_by_version_uuid(
+                    remote_ds_version.uuid,
+                    include_incomplete=True,
                 )
-            _instantiate(existing_ds_uri)
-            return
-        except DatasetNotFoundError:
-            pass
-
-        # Create namespace and project if doesn't exist
-        print(
-            f"Creating namespace {remote_ds.project.namespace.name} and project"
-            f" {remote_ds.project.name}"
-        )
-
-        namespace = self.metastore.create_namespace(
-            remote_ds.project.namespace.name,
-            description=remote_ds.project.namespace.descr,
-            uuid=remote_ds.project.namespace.uuid,
-            validate=False,
-        )
-        project = self.metastore.create_project(
-            namespace.name,
-            remote_ds.project.name,
-            description=remote_ds.project.descr,
-            uuid=remote_ds.project.uuid,
-            validate=False,
-        )
-
-        try:
-            local_dataset = self.get_dataset(
-                local_ds_name,
-                namespace_name=namespace.name,
-                project_name=project.name,
-                include_incomplete=True,
-            )
-            if local_dataset and local_dataset.has_version(local_ds_version):
-                raise DataChainError(
-                    f"Local dataset {local_ds_uri} already exists with different uuid,"
-                    " please choose different local dataset name or version"
-                )
-        except DatasetNotFoundError:
-            pass
-
-        dataset_save_progress_bar = tqdm(
-            desc=f"Saving dataset {remote_ds_uri} locally: ",
-            unit=" rows",
-            unit_scale=True,
-            unit_divisor=1000,
-            total=remote_ds_version.num_objects,  # type: ignore [union-attr]
-            leave=False,
-        )
-
-        schema = parse_schema(remote_ds_version.schema)
-
-        local_ds = self.create_dataset(
-            local_ds_name,
-            project,
-            local_ds_version,
-            query_script=remote_ds_version.query_script,
-            create_rows=True,
-            columns=tuple(sa.Column(n, t) for n, t in schema.items() if n != "sys__id"),
-            feature_schema=remote_ds_version.feature_schema,
-            validate_version=False,
-            uuid=remote_ds_version.uuid,
-        )
-
-        # asking remote to export dataset rows table to s3 and to return signed
-        # urls of exported parts, which are in parquet format
-        export_response = studio_client.export_dataset_table(
-            remote_ds, remote_ds_version.version
-        )
-        if not export_response.ok:
-            raise DataChainError(export_response.message)
-
-        export_data = export_response.data
-        export_id = export_data["export_id"]
-        signed_urls: list[str] = export_data["signed_urls"]
-
-        if signed_urls:
-            with (
-                self.metastore.clone() as metastore,
-                self.warehouse.clone() as warehouse,
-            ):
-
-                def batch(urls):
-                    """
-                    Batching urls in a way that fetching is most efficient as
-                    urls with lower id will be created first. Because that, we
-                    are making sure all threads are pulling most recent urls
-                    from beginning
-                    """
-                    res = [[] for i in range(PULL_DATASET_MAX_THREADS)]
-                    current_worker = 0
-                    for url in urls:
-                        res[current_worker].append(url)
-                        current_worker = (current_worker + 1) % PULL_DATASET_MAX_THREADS
-
-                    return res
-
-                rows_fetcher = DatasetRowsFetcher(
-                    metastore,
-                    warehouse,
-                    remote_ds,
-                    remote_ds_version.version,
-                    export_id,
-                    local_ds,
-                    local_ds_version,
-                    schema,
-                    progress_bar=dataset_save_progress_bar,
-                )
-
-                try:
-                    rows_fetcher.run(
-                        iter(batch(signed_urls)), dataset_save_progress_bar
+                ver = ds.get_version_by_uuid(remote_ds_version.uuid)
+                if ver.status == DatasetStatus.COMPLETE:
+                    ds_uri = create_dataset_uri(
+                        ds.name,
+                        ds.project.namespace.name,
+                        ds.project.name,
+                        ver.version,
                     )
-                except:
-                    self.remove_dataset(local_ds_name, project, local_ds_version)
+                    print(f"Dataset already available locally as {ds_uri}")
+                    if cp:
+                        assert output is not None
+                        self._instantiate_dataset(ds_uri, output, force, client_config)
+                    return
+
+                print("Cleaning up stale existing dataset version")
+                self.remove_dataset_version(ds, ver.version)
+            except DatasetNotFoundError:
+                pass
+
+            # Create namespace and project if doesn't exist
+            print(
+                f"Creating namespace {remote_ds.project.namespace.name} and project"
+                f" {remote_ds.project.name}"
+            )
+
+            namespace = self.metastore.create_namespace(
+                remote_ds.project.namespace.name,
+                description=remote_ds.project.namespace.descr,
+                uuid=remote_ds.project.namespace.uuid,
+                validate=False,
+            )
+            project = self.metastore.create_project(
+                namespace.name,
+                remote_ds.project.name,
+                description=remote_ds.project.descr,
+                uuid=remote_ds.project.uuid,
+                validate=False,
+            )
+
+            # Check if target name+version is already occupied by a different UUID
+            try:
+                local_dataset = self.get_dataset(
+                    local_ds_name,
+                    namespace_name=namespace.name,
+                    project_name=project.name,
+                    include_incomplete=True,
+                )
+                if local_dataset.has_version(local_ds_version):
+                    local_ver = local_dataset.get_version(local_ds_version)
+                    if local_ver.status != DatasetStatus.COMPLETE:
+                        # Stale incomplete version from a different UUID —
+                        # clean it up so this pull can proceed.
+                        print(
+                            "Cleaning up stale incomplete version "
+                            f"(uuid={local_ver.uuid})"
+                        )
+                        self.remove_dataset_version(local_dataset, local_ds_version)
+                    else:
+                        raise DataChainError(
+                            f"Local dataset {local_ds_uri} already exists with"
+                            " different uuid, please choose different local"
+                            " dataset name or version"
+                        )
+            except DatasetNotFoundError:
+                pass
+
+            schema = parse_schema(remote_ds_version.schema)
+            columns = tuple(
+                sa.Column(n, t) for n, t in schema.items() if n != "sys__id"
+            )
+
+            with tqdm(
+                desc=f"Saving dataset {remote_ds_uri} locally: ",
+                unit=" rows",
+                unit_scale=True,
+                unit_divisor=1000,
+                total=remote_ds_version.num_objects,  # type: ignore [union-attr]
+                leave=False,
+            ) as dataset_save_progress_bar:
+                # Phase 1: Create temporary staging table (no metadata yet)
+                # If the process is killed here, only an orphaned tmp_ table remains,
+                # which will be cleaned up by 'datachain gc'
+                temp_table_name = self.warehouse.temp_table_name()
+                self.warehouse.create_dataset_rows_table(
+                    temp_table_name, columns=columns
+                )
+
+                # asking remote to export dataset rows table to s3 and to return signed
+                # urls of exported parts, which are in parquet format
+                export_response = studio_client.export_dataset_table(
+                    remote_ds, remote_ds_version.version
+                )
+                if not export_response.ok:
+                    with suppress(Exception):
+                        self.warehouse.cleanup_tables([temp_table_name])
+                    raise DataChainError(export_response.message)
+
+                export_data = export_response.data
+                export_id = export_data["export_id"]
+                signed_urls: list[str] = export_data["signed_urls"]
+
+                # Phase 2: Download data into temporary table
+                if signed_urls:
+                    with self.warehouse.clone() as warehouse:
+                        rows_fetcher = DatasetRowsFetcher(
+                            warehouse=warehouse,
+                            temp_table_name=temp_table_name,
+                            export_id=export_id,
+                            schema=schema,
+                            studio_client=studio_client,
+                            progress_bar=dataset_save_progress_bar,
+                        )
+
+                        try:
+                            batches = _round_robin_batch(
+                                signed_urls, PULL_DATASET_MAX_THREADS
+                            )
+                            rows_fetcher.run(iter(batches), dataset_save_progress_bar)
+                        except Exception:
+                            with suppress(Exception):
+                                self.warehouse.cleanup_tables([temp_table_name])
+                            raise
+
+                # Phase 3: Commit — create metadata, rename table, mark complete.
+                # Not truly atomic (multi-step), but the next pull (under the same
+                # UUID lock) will clean up any partial state.
+                try:
+                    local_ds = self.create_dataset(
+                        local_ds_name,
+                        project,
+                        local_ds_version,
+                        query_script=remote_ds_version.query_script,
+                        # Don't create table, we'll rename the temp table.
+                        create_rows=False,
+                        columns=columns,
+                        feature_schema=remote_ds_version.feature_schema,
+                        validate_version=False,
+                        uuid=remote_ds_version.uuid,
+                    )
+
+                    final_table_name = self.warehouse.dataset_table_name(
+                        local_ds, local_ds_version
+                    )
+                    temp_table = self.warehouse.get_table(temp_table_name)
+                    self.warehouse.rename_table(temp_table, final_table_name)
+
+                    self.update_dataset_version_with_warehouse_info(
+                        local_ds, local_ds_version
+                    )
+
+                    self.metastore.update_dataset_status(
+                        local_ds,
+                        DatasetStatus.COMPLETE,
+                        version=local_ds_version,
+                        error_message=remote_ds_version.error_message,
+                        error_stack=remote_ds_version.error_stack,
+                        script_output=remote_ds_version.script_output,
+                    )
+                except Exception:
+                    with suppress(Exception):
+                        self.warehouse.cleanup_tables([temp_table_name])
+                    logger.debug(
+                        "Failed to finalize pulled dataset %s (%s@%s)",
+                        remote_ds_version.uuid,
+                        local_ds_name,
+                        local_ds_version,
+                        exc_info=True,
+                    )
+                    print(
+                        "Pull failed while finalizing the local dataset. "
+                        "Retry the pull; if it keeps failing, run 'datachain gc' "
+                        "to clean up incomplete state.",
+                        file=sys.stderr,
+                    )
                     raise
 
-        local_ds = self.metastore.update_dataset_status(
-            local_ds,
-            DatasetStatus.COMPLETE,
-            version=local_ds_version,
-            error_message=remote_ds.error_message,
-            error_stack=remote_ds.error_stack,
-            script_output=remote_ds.error_stack,
-        )
-        self.update_dataset_version_with_warehouse_info(local_ds, local_ds_version)
+            print(f"Dataset {remote_ds_uri} saved locally as {local_ds_uri}")
 
-        dataset_save_progress_bar.close()
-        print(f"Dataset {remote_ds_uri} saved locally")
-
-        _instantiate(local_ds_uri)
+            if cp:
+                assert output is not None
+                self._instantiate_dataset(local_ds_uri, output, force, client_config)
 
     def clone(
         self,

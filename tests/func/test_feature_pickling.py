@@ -136,13 +136,15 @@ def test_feature_udf_parallel_local(cloud_test_catalog_tmpfile):
         .filter(dc.C("file.path").glob("*cat*"))
         .settings(parallel=2)
         .map(
-            message=lambda file: AIMessageLocal(
-                id=(name := file.name),
-                content=[TextBlockLocal(text=json.dumps({"file_name": name}))],
-                input_file_info=FileInfoLocal(file_name=name, byte_size=file.size),
-            )
-            if isinstance(file, File)
-            else AIMessageLocal(),
+            message=lambda file: (
+                AIMessageLocal(
+                    id=(name := file.name),
+                    content=[TextBlockLocal(text=json.dumps({"file_name": name}))],
+                    input_file_info=FileInfoLocal(file_name=name, byte_size=file.size),
+                )
+                if isinstance(file, File)
+                else AIMessageLocal()
+            ),
             output=AIMessageLocal,
         )
     )
@@ -193,15 +195,19 @@ def test_feature_udf_parallel_local_pydantic(cloud_test_catalog_tmpfile):
         .filter(dc.C("file.path").glob("*cat*"))
         .settings(parallel=2)
         .map(
-            message=lambda file: AIMessageLocalPydantic(
-                id=(name := file.name),
-                content=[TextBlockLocalPydantic(text=json.dumps({"file_name": name}))],
-                input_file_info=FileInfoLocalPydantic(
-                    file_name=name, byte_size=file.size
-                ),
-            )
-            if isinstance(file, File)
-            else AIMessageLocalPydantic(),
+            message=lambda file: (
+                AIMessageLocalPydantic(
+                    id=(name := file.name),
+                    content=[
+                        TextBlockLocalPydantic(text=json.dumps({"file_name": name}))
+                    ],
+                    input_file_info=FileInfoLocalPydantic(
+                        file_name=name, byte_size=file.size
+                    ),
+                )
+                if isinstance(file, File)
+                else AIMessageLocalPydantic()
+            ),
             output=AIMessageLocalPydantic,
         )
     )
@@ -254,15 +260,19 @@ def test_feature_udf_parallel_local_pydantic_old(cloud_test_catalog_tmpfile):
         .filter(dc.C("file.path").glob("*cat*"))
         .settings(parallel=2)
         .map(
-            message=lambda file: AIMessageLocalPydantic(
-                id=(name := file.name),
-                content=[TextBlockLocalPydantic(text=json.dumps({"file_name": name}))],
-                input_file_info=FileInfoLocalPydantic(
-                    file_name=name, byte_size=file.size
-                ),
-            )
-            if isinstance(file, File)
-            else AIMessageLocalPydantic(),
+            message=lambda file: (
+                AIMessageLocalPydantic(
+                    id=(name := file.name),
+                    content=[
+                        TextBlockLocalPydantic(text=json.dumps({"file_name": name}))
+                    ],
+                    input_file_info=FileInfoLocalPydantic(
+                        file_name=name, byte_size=file.size
+                    ),
+                )
+                if isinstance(file, File)
+                else AIMessageLocalPydantic()
+            ),
             output=AIMessageLocalPydantic,
         )
     )
@@ -326,13 +336,17 @@ def test_feature_udf_parallel_dynamic(cloud_test_catalog_tmpfile):
         .filter(dc.C("file__path").glob("*cat*"))
         .settings(parallel=2)
         .map(
-            message=lambda file: ai_message_dynamic(
-                id=(name := file.name),
-                content=[text_block_dynamic(text=json.dumps({"file_name": name}))],
-                input_file_info=file_info_dynamic(file_name=name, byte_size=file.size),
-            )
-            if isinstance(file, File)
-            else ai_message_dynamic(),
+            message=lambda file: (
+                ai_message_dynamic(
+                    id=(name := file.name),
+                    content=[text_block_dynamic(text=json.dumps({"file_name": name}))],
+                    input_file_info=file_info_dynamic(
+                        file_name=name, byte_size=file.size
+                    ),
+                )
+                if isinstance(file, File)
+                else ai_message_dynamic()
+            ),
             output=ai_message_dynamic,
         )
     )
