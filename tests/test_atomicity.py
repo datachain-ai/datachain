@@ -36,7 +36,6 @@ def test_atomicity_feature_file(tmp_dir, catalog_tmpfile):
         project,
         query_script="script",
         columns=[sa.Column("similarity", Float32)],
-        create_rows=True,
     )
     catalog_tmpfile.metastore.update_dataset_status(
         dataset, DatasetStatus.COMPLETE, version="1.0.0"
