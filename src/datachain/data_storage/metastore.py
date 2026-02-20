@@ -509,6 +509,17 @@ class AbstractMetastore(ABC, Serializable):
         """Returns list of ancestor job IDs in order from parent to root."""
 
     @abstractmethod
+    def has_active_checkpoints_in_run_group(
+        self,
+        run_group_id: str,
+        ttl_threshold: datetime,
+        conn=None,
+    ) -> bool:
+        """
+        Check if any job in the run group has active (non-outdated) checkpoints.
+        """
+
+    @abstractmethod
     def update_job(
         self,
         job_id: str,
@@ -545,8 +556,14 @@ class AbstractMetastore(ABC, Serializable):
     #
 
     @abstractmethod
-    def list_checkpoints(self, job_id: str, conn=None) -> Iterator[Checkpoint]:
-        """Returns all checkpoints related to some job"""
+    def list_checkpoints(
+        self,
+        job_id: str | None = None,
+        created_after: datetime | None = None,
+        created_before: datetime | None = None,
+        conn=None,
+    ) -> Iterator[Checkpoint]:
+        """List checkpoints, optionally filtered by job_id and/or time range."""
 
     @abstractmethod
     def get_last_checkpoint(self, job_id: str, conn=None) -> Checkpoint | None:
@@ -2110,6 +2127,34 @@ class AbstractDBMetastore(AbstractMetastore):
             return None
         return self._parse_job(results[0])
 
+    def has_active_checkpoints_in_run_group(
+        self,
+        run_group_id: str,
+        ttl_threshold: datetime,
+        conn=None,
+    ) -> bool:
+        if not run_group_id:
+            return False
+
+        query = (
+            self._jobs_select(f.count(self._checkpoints.c.id))
+            .select_from(
+                self._jobs.join(
+                    self._checkpoints,
+                    self._jobs.c.id
+                    == cast(self._checkpoints.c.job_id, self._jobs.c.id.type),
+                )
+            )
+            .where(
+                and_(
+                    self._jobs.c.run_group_id == run_group_id,
+                    self._checkpoints.c.created_at >= ttl_threshold,
+                )
+            )
+        )
+
+        return next(self.db.execute(query, conn=conn))[0] > 0
+
     def update_job(
         self,
         job_id: str,
@@ -2371,9 +2416,20 @@ class AbstractDBMetastore(AbstractMetastore):
                 )
             return checkpoint
 
-    def list_checkpoints(self, job_id: str, conn=None) -> Iterator[Checkpoint]:
-        """List checkpoints by job id."""
-        query = self._checkpoints_query().where(self._checkpoints.c.job_id == job_id)
+    def list_checkpoints(
+        self,
+        job_id: str | None = None,
+        created_after: datetime | None = None,
+        created_before: datetime | None = None,
+        conn=None,
+    ) -> Iterator[Checkpoint]:
+        query = self._checkpoints_query()
+        if job_id is not None:
+            query = query.where(self._checkpoints.c.job_id == job_id)
+        if created_after is not None:
+            query = query.where(self._checkpoints.c.created_at >= created_after)
+        if created_before is not None:
+            query = query.where(self._checkpoints.c.created_at < created_before)
         rows = list(self.db.execute(query, conn=conn))
 
         yield from [self.checkpoint_class.parse(*r) for r in rows]

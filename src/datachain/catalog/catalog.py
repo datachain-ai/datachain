@@ -10,6 +10,7 @@ from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import contextmanager, suppress
 from copy import copy
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from functools import cached_property, reduce
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -61,6 +62,7 @@ from .dependency import build_dependency_hierarchy, populate_nested_dependencies
 if TYPE_CHECKING:
     import pandas as pd
 
+    from datachain.checkpoint import Checkpoint
     from datachain.data_storage import AbstractMetastore, AbstractWarehouse
     from datachain.dataset import DatasetListVersion
     from datachain.job import Job
@@ -2092,3 +2094,95 @@ class Catalog:
             only_index=True,
         ):
             pass
+
+    def _cleanup_udf_tables(self, prefix: str, suffix: str = "") -> None:
+        """Remove all UDF tables matching a prefix and optional suffix."""
+        tables = self.warehouse.db.list_tables(prefix=prefix)
+        if suffix:
+            tables = [t for t in tables if t.endswith(suffix)]
+        if tables:
+            logger.info("Removing %d UDF tables: %s", len(tables), tables)
+            self.warehouse.cleanup_tables(tables)
+
+    def cleanup_checkpoints(self, ttl_seconds: int | None = None) -> int:
+        """Clean up outdated checkpoints and their associated UDF tables.
+
+        For each job whose checkpoints are ALL outdated (older than TTL),
+        removes per-job output/partial tables and checkpoint metadata.
+        Input tables (shared across a run group) are only removed when
+        the entire run group has no active checkpoints.
+        """
+        if ttl_seconds is None:
+            ttl_seconds = TTL_INT
+
+        ttl_threshold = datetime.now(timezone.utc) - timedelta(seconds=ttl_seconds)
+
+        outdated_checkpoints = list(
+            self.metastore.list_checkpoints(created_before=ttl_threshold)
+        )
+
+        if not outdated_checkpoints:
+            return 0
+
+        logger.info(
+            "Found %d outdated checkpoints to evaluate", len(outdated_checkpoints)
+        )
+
+        # Group outdated checkpoints by job_id
+        by_job: dict[str, list[Checkpoint]] = {}
+        for ch in outdated_checkpoints:
+            by_job.setdefault(ch.job_id, []).append(ch)
+
+        # For each job, check if ALL its checkpoints are outdated
+        checkpoints_to_remove: list[Checkpoint] = []
+        jobs_to_clean: set[str] = set()
+
+        for job_id, checkpoints in by_job.items():
+            has_active = any(
+                True
+                for _ in self.metastore.list_checkpoints(
+                    job_id=job_id, created_after=ttl_threshold
+                )
+            )
+            if has_active:
+                logger.debug("Skipping job %s - has active checkpoints", job_id[:8])
+                continue
+
+            logger.info(
+                "Cleaning job %s (%d checkpoints)", job_id[:8], len(checkpoints)
+            )
+            checkpoints_to_remove.extend(checkpoints)
+            jobs_to_clean.add(job_id)
+
+        if not checkpoints_to_remove:
+            return 0
+
+        # Look up run_group_ids for cleaned jobs
+        jobs = self.metastore.list_jobs_by_ids(list(jobs_to_clean))
+        run_groups_to_clean = {job.run_group_id for job in jobs if job.run_group_id}
+
+        # Remove warehouse tables first (before metadata) so that if we
+        # crash midway, metadata still exists to retry on next GC run.
+
+        # Per-job output/partial tables (exclude input tables which are
+        # shared across the run group via run_group_id prefix)
+        for job_id in jobs_to_clean:
+            self._cleanup_udf_tables(f"udf_{job_id}_", suffix="_output")
+            self._cleanup_udf_tables(f"udf_{job_id}_", suffix="_output_partial")
+
+        # Shared input tables: only remove when entire run group is inactive
+        for run_group_id in run_groups_to_clean:
+            if not self.metastore.has_active_checkpoints_in_run_group(
+                run_group_id, ttl_threshold
+            ):
+                self._cleanup_udf_tables(f"udf_{run_group_id}_", suffix="_input")
+
+        # Then remove checkpoint metadata
+        for ch in checkpoints_to_remove:
+            self.metastore.remove_checkpoint(ch.id)
+
+        logger.info(
+            "Checkpoint cleanup complete: removed %d checkpoints",
+            len(checkpoints_to_remove),
+        )
+        return len(checkpoints_to_remove)
