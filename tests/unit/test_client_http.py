@@ -120,9 +120,7 @@ def test_open_object():
     cache = Mock(spec=Cache)
     client = HTTPSClient("example.com", {}, cache)
 
-    file = Mock(spec=File)
-    file.get_path_normalized.return_value = "path/to/file.txt"
-    file.location = None
+    file = File(source="https://example.com", path="path/to/file.txt")
 
     # Test with cache hit
     cache.get_path.return_value = "/cache/path/file.txt"

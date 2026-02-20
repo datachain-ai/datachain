@@ -1,11 +1,14 @@
 import os
 from pathlib import Path
 
+import pytest
+
 from datachain.client.local import FileClient
+from datachain.lib.file import File, FileError
 
 
 def test_split_url_directory_preserves_leaf(tmp_path):
-    uri = tmp_path.as_uri()
+    uri = FileClient.path_to_uri(str(tmp_path))
     bucket, rel = FileClient.split_url(uri)
 
     # For directories, the parent directory becomes the bucket and the leaf
@@ -17,7 +20,7 @@ def test_split_url_directory_preserves_leaf(tmp_path):
 def test_split_url_file_in_directory(tmp_path):
     file_path = tmp_path / "sub" / "file.bin"
     file_path.parent.mkdir(parents=True)
-    uri = file_path.as_uri()
+    uri = FileClient.path_to_uri(str(file_path))
 
     bucket, rel = FileClient.split_url(uri)
 
@@ -50,12 +53,104 @@ def test_path_to_uri_preserves_trailing_slash(tmp_path):
 
     uri = FileClient.path_to_uri(f"{dir_path}{os.sep}")
 
+    base_uri = FileClient.path_to_uri(str(dir_path))
+
     # Trailing separator in the input should keep a trailing slash in the URI.
     assert uri.endswith("/")
-    assert uri[:-1] == dir_path.resolve().as_uri()
+    assert uri[:-1] == base_uri
 
 
 def test_path_to_uri_idempotent_for_file_uri(tmp_path):
-    uri = tmp_path.as_uri()
+    uri = FileClient.path_to_uri(str(tmp_path))
 
     assert FileClient.path_to_uri(uri) == uri
+
+
+def test_path_to_uri_does_not_percent_encode_spaces_and_hash(tmp_path):
+    base = tmp_path / "dir #% percent"
+    base.mkdir(parents=True)
+
+    uri = FileClient.path_to_uri(str(base))
+    assert uri.startswith("file://")
+    assert " " in uri
+    assert "#" in uri
+    assert "%" in uri
+
+
+def test_split_url_does_not_decode_percent_escapes(tmp_path):
+    # If the filename literally contains percent-escapes, split_url must not
+    # decode them (e.g. %2f -> '/').
+    file_path = tmp_path / "file%2fescape%23hash.txt"
+    file_path.write_text("x", encoding="utf-8")
+
+    uri = FileClient.path_to_uri(str(file_path))
+    bucket, rel = FileClient.split_url(uri)
+
+    assert Path(bucket) == tmp_path
+    assert rel == file_path.name
+
+
+@pytest.mark.parametrize(
+    "path,expected,raises",
+    [
+        ("", None, "must not be empty"),
+        ("/", None, "must not be a directory"),
+        (".", None, "must not contain"),
+        ("dir/..", None, "must not contain"),
+        ("dir/file.txt", "dir/file.txt", None),
+        ("dir//file.txt", None, "must not contain empty segments"),
+        ("./dir/file.txt", None, "must not contain"),
+        ("dir/./file.txt", None, "must not contain"),
+        ("dir/../file.txt", None, "must not contain"),
+        ("dir/foo/../file.txt", None, "must not contain"),
+        ("./dir/./foo/.././../file.txt", None, "must not contain"),
+        ("./dir", None, "must not contain"),
+        ("dir/.", None, "must not contain"),
+        ("./dir/.", None, "must not contain"),
+        ("/dir", None, "must not be absolute"),
+        ("/dir/file.txt", None, "must not be absolute"),
+        ("/dir/../file.txt", None, "must not be absolute"),
+        ("..", None, "must not contain"),
+        ("../file.txt", None, "must not contain"),
+        ("dir/../../file.txt", None, "must not contain"),
+    ],
+)
+def test_rel_path_for_file_normalizes_and_validates(path, expected, raises):
+    file = File(path=path, source="file:///tmp")
+    if raises:
+        with pytest.raises(FileError, match=raises):
+            FileClient.rel_path_for_file(file)
+    else:
+        assert FileClient.rel_path_for_file(file) == expected
+
+
+def test_is_path_in_rejects_dotdot(tmp_path):
+    output = tmp_path / "out"
+    output.mkdir()
+
+    dst = (output / ".." / "escape.txt").as_posix()
+    assert not FileClient.is_path_in(output, dst)
+
+
+def test_is_path_in_rejects_directory_destination(tmp_path):
+    output = tmp_path / "out"
+    output.mkdir()
+
+    assert not FileClient.is_path_in(output, output.as_posix())
+
+
+def test_is_path_in_rejects_escaping_destination(tmp_path):
+    output = tmp_path / "out"
+    output.mkdir()
+
+    # Absolute path outside output, without '..' segments.
+    dst = (tmp_path / "escape.txt").as_posix()
+    assert not FileClient.is_path_in(output, dst)
+
+
+def test_is_path_in_accepts_contained_destination(tmp_path):
+    output = tmp_path / "out"
+    output.mkdir()
+
+    dst = (output / "sub" / "file.txt").as_posix()
+    assert FileClient.is_path_in(output, dst)

@@ -1,10 +1,12 @@
 import io
+import tarfile
 from pathlib import Path
 
 import pytest
 
 import datachain as dc
 from datachain.lib.file import File, FileError
+from datachain.lib.tar import process_tar
 from datachain.query import C
 from datachain.utils import TIME_ZERO
 
@@ -56,9 +58,9 @@ def test_file_serialized_in_udf(tmp_dir, test_session_tmpfile):
 
 @pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
 def test_get_path_cloud(cloud_test_catalog):
-    file = File(path="dir/file", source="s3://")
+    file = File(path="dir/file", source="s3://bucket")
     file._set_stream(catalog=cloud_test_catalog.catalog)
-    assert file.get_fs_path().strip("/") == "s3:///dir/file"
+    assert file.get_fs_path().strip("/") == "s3://bucket/dir/file"
 
 
 @pytest.mark.parametrize("caching_enabled", [True, False])
@@ -103,8 +105,8 @@ def test_resolve_file_wrong_path(cloud_test_catalog, path):
 
 @pytest.mark.parametrize("caching_enabled", [True, False])
 @pytest.mark.parametrize("path", ["", ".", "..", "/", "dir/../../file.txt"])
-def test_cache_file_wrong_path(cloud_test_catalog, path, caching_enabled):
-    ctc = cloud_test_catalog
+def test_cache_file_wrong_path(cloud_test_catalog_upload, path, caching_enabled):
+    ctc = cloud_test_catalog_upload
 
     wrong_file = File(source=ctc.src_uri, path=path)
     wrong_file._set_stream(catalog=ctc.catalog, caching_enabled=caching_enabled)
@@ -132,6 +134,97 @@ def test_upload(cloud_test_catalog):
     assert f.read() == img_bytes
 
     client.fs.rm(dest, recursive=True)
+
+
+def test_tar_members_inherit_uri_encoded_local_source(tmp_dir, test_session_tmpfile):
+    base = tmp_dir / "dir #% percent"
+    base.mkdir(parents=True)
+
+    tar_path = base / "archive.tar"
+    data = b"payload"
+    with tarfile.open(tar_path, mode="w") as tf:
+        info = tarfile.TarInfo("member.txt")
+        info.size = len(data)
+        tf.addfile(info, io.BytesIO(data))
+
+    chain = dc.read_storage(base, session=test_session_tmpfile)
+    tar_file = chain.filter(C("file.path") == "archive.tar").to_values("file")[0]
+    members = chain.filter(C("file.path") == "archive.tar").gen(file=process_tar)
+    member = members.to_values("file")[0]
+
+    assert tar_file.source.startswith("file://")
+    assert " " in tar_file.source
+    assert "#" in tar_file.source
+    assert "%" in tar_file.source
+    assert member.source == tar_file.source
+    assert member.path == "archive.tar/member.txt"
+    assert member.name == "member.txt"
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+def test_cloud_source_is_plain_storage_uri(cloud_test_catalog_upload):
+    ctc = cloud_test_catalog_upload
+    uploaded = File.upload(b"x", f"{ctc.src_uri}/x.txt", ctc.catalog)
+    assert uploaded.source == ctc.src_uri
+    assert uploaded.source.startswith("s3://")
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+def test_to_storage_filename_percent_encoded_traversal_escapes_output(
+    cloud_test_catalog_upload, tmp_path
+):
+    ctc = cloud_test_catalog_upload
+    src_uri = ctc.src_uri
+    catalog = ctc.catalog
+
+    payload = "..%2fescaped.txt"  # unquote -> ../escaped.txt
+    uploaded_bytes = b"poc"
+
+    # Upload an object whose key contains literal "%2f".
+    uploaded = File.upload(uploaded_bytes, f"{src_uri}/{payload}", catalog)
+    assert uploaded.path.endswith(payload)
+    assert uploaded.read() == uploaded_bytes
+
+    # Export only that one file.
+    chain = dc.read_storage(src_uri, session=ctc.session).filter(
+        C("file.path") == uploaded.path
+    )
+
+    output = tmp_path / "output"
+    chain.to_storage(output, placement="filename")
+
+    # Expected-safe behavior: exported files must stay within output.
+    assert not (tmp_path / "escaped.txt").exists()
+
+
+def test_to_storage_tar_member_percent_encoded_traversal_escapes_output(
+    tmp_dir, test_session_tmpfile
+):
+    payload = "..%2f..%2fescaped.txt"  # unquote -> ../../escaped.txt
+    tar_path = tmp_dir / "malicious.tar"
+
+    data = b"poc"
+    with tarfile.open(tar_path, mode="w") as tf:
+        info = tarfile.TarInfo(payload)
+        info.size = len(data)
+        tf.addfile(info, io.BytesIO(data))
+
+    chain = dc.read_storage(tmp_dir, session=test_session_tmpfile)
+    tar_entries = chain.filter(C("file.path").glob("*.tar")).gen(file=process_tar)
+    all_entries = chain.union(tar_entries)
+
+    member_path = f"malicious.tar/{payload}"
+    member = all_entries.filter(C("file.path") == member_path)
+
+    # Ensure the test actually selects the malicious member.
+    assert member.to_values("file.path") == [member_path]
+
+    output = tmp_dir / "output"
+    assert not (tmp_dir / "escaped.txt").exists()
+    member.to_storage(output, placement="filename")
+
+    # Expected-safe behavior: exported files must stay within output.
+    assert not (tmp_dir / "escaped.txt").exists()
 
 
 def test_open_write_binary(cloud_test_catalog):
@@ -253,7 +346,6 @@ def test_read_storage_returns_same_source_and_path(
     assert file_obj.read() == b"hi"
 
 
-@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
 @pytest.mark.parametrize("version_aware", [True], indirect=True)
 def test_write_version_capture(cloud_test_catalog, cloud_type):
     """Test version capture when writes interleave.
@@ -266,7 +358,7 @@ def test_write_version_capture(cloud_test_catalog, cloud_type):
     3. f2's File.open() __exit__ → extract_version(f2), get_file_info
     4. f1's File.open() __exit__ → extract_version(f1), get_file_info
 
-    S3: version_id on handle survives close() → f1 gets V1
+    S3: version captured on handle survives close() → f1 gets V1
     GCS/Azure: No version captured → get_file_info returns V2 for f1 (race!)
     """
     ctc = cloud_test_catalog
@@ -291,11 +383,12 @@ def test_write_version_capture(cloud_test_catalog, cloud_type):
     assert file2.version, "file2 should have a version"
 
     if cloud_type == "s3":
-        # S3 captures version_id from handle - survives close()
-        assert file1.version != file2.version, (
-            "S3: each write captures its own version_id"
-        )
+        # S3 captures version_id from handle.
+        assert file1.version != file2.version, "s3: each write captures its own version"
     else:
+        # IMPORTANT: Don't edit/change this test and don't change runtime logic to
+        # "fix" this behavior until a new version of the upstream storage libs is
+        # released (e.g. gcsfs/adlfs exposing version/generation reliably on write).
         # GCS/Azure: No version on handle - get_file_info returns latest
         # Update it when it is fixed in those backends.
         assert file1.version == file2.version, (

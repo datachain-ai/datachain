@@ -4,6 +4,7 @@ import io
 import logging
 import os
 import posixpath
+import re
 import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
@@ -11,10 +12,9 @@ from contextlib import contextmanager
 from datetime import datetime
 from functools import partial
 from io import BytesIO
-from pathlib import Path, PurePath, PurePosixPath
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
-from urllib.parse import unquote, urlparse
-from urllib.request import url2pathname
+from urllib.parse import urlparse
 
 from fsspec.callbacks import DEFAULT_CALLBACK, Callback
 from fsspec.utils import stringify_path
@@ -40,6 +40,8 @@ if TYPE_CHECKING:
 sha256 = partial(hashlib.sha256, usedforsecurity=False)
 
 logger = logging.getLogger("datachain")
+
+_SOURCE_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
 
 # how to create file path when exporting
 ExportPlacement = Literal["filename", "etag", "fullpath", "checksum", "filepath"]
@@ -286,7 +288,24 @@ class File(DataModel):
     @field_validator("path", mode="before")
     @classmethod
     def validate_path(cls, path: str) -> str:
-        return PurePath(path).as_posix() if path else ""
+        if not path:
+            return ""
+        # Treat object keys / paths as opaque strings.
+        # Do not normalize away dot segments here; local filesystem clients
+        # perform their own stricter validation.
+        return os.fspath(path).replace("\\", "/")
+
+    @field_validator("source")
+    @classmethod
+    def validate_source(cls, source: str) -> str:
+        # Allow empty source for intermediate/placeholder objects, but when set
+        # require an explicit scheme to avoid ambiguous handling.
+        if source and not _SOURCE_SCHEME_RE.match(source):
+            raise ValueError(
+                "File.source must start with a URI scheme (e.g. file://, s3://), "
+                f"got: {source!r}"
+            )
+        return source
 
     def model_dump_custom(self):
         res = self.model_dump()
@@ -437,50 +456,70 @@ class File(DataModel):
         if not writing:
             if self.location:
                 with VFileRegistry.open(self, self.location) as f:  # type: ignore[arg-type]
-                    yield self._wrap_text(f, mode, open_kwargs)
+                    with self._wrap_text(f, mode, open_kwargs=open_kwargs) as wrapped:
+                        yield wrapped
                 return
             if self._caching_enabled:
                 self.ensure_cached()
             with client.open_object(
                 self, use_cache=self._caching_enabled, cb=self._download_cb
             ) as f:
-                yield self._wrap_text(f, mode, open_kwargs)
+                with self._wrap_text(f, mode, open_kwargs=open_kwargs) as wrapped:
+                    yield wrapped
             return
 
         # write path
-        full_path = client.get_full_path(self.get_path_normalized())
-        with client.fs.open(full_path, mode, **open_kwargs) as f:
-            yield self._wrap_text(f, mode, open_kwargs)
+        full_path = client.full_path_for_file(self)
+        fs_mode = mode if "b" in mode else f"{mode}b"
+        with client.fs.open(full_path, fs_mode, **open_kwargs) as raw_handle:
+            with self._wrap_text(
+                raw_handle,
+                mode,
+                open_kwargs=open_kwargs,
+            ) as wrapped:
+                yield wrapped
 
-        version_hint = self._extract_write_version(f)
+        version_hint = self._extract_write_version(raw_handle)
 
         # refresh metadata pinned to the version that was just written
         refreshed = client.get_file_info(
-            self.get_path_normalized(), version_id=version_hint
+            client.rel_path_for_file(self), version_id=version_hint
         )
         for k, v in refreshed.model_dump().items():
             setattr(self, k, v)
 
-    def _wrap_text(self, f: Any, mode: str, open_kwargs: dict[str, Any]) -> Any:
-        """Return stream possibly wrapped for text."""
+    @contextmanager
+    def _wrap_text(
+        self,
+        f: Any,
+        mode: str,
+        *,
+        open_kwargs: dict[str, Any] | None = None,
+    ) -> Iterator[Any]:
+        """Yield a stream, optionally wrapped for text, with correct close ordering."""
         if "b" in mode or isinstance(f, io.TextIOBase):
-            return f
-        filtered = {
-            k: open_kwargs[k] for k in self._TEXT_WRAPPER_ALLOWED if k in open_kwargs
+            yield f
+            return
+
+        text_kwargs = {
+            k: v
+            for k, v in (open_kwargs or {}).items()
+            if k in self._TEXT_WRAPPER_ALLOWED
         }
-        return io.TextIOWrapper(f, **filtered)
+        wrapper = io.TextIOWrapper(f, **text_kwargs)
+        try:
+            yield wrapper
+        finally:
+            wrapper.close()
 
     def _extract_write_version(self, handle: Any) -> str | None:
         """Best-effort extraction of object version after a write.
 
-        S3 (s3fs) and Azure (adlfs) populate version_id on the handle.
-        GCS (gcsfs) populates generation. Azure and GCS require upstream
-        fixes to be released.
+        Only S3 (s3fs) reliably populates a stable version id on the handle.
+        Other backends may expose generation/version, but we intentionally do
+        not depend on that until upstream libraries stabilize it.
         """
-        for attr in ("version_id", "generation"):
-            if value := getattr(handle, attr, None):
-                return value
-        return None
+        return getattr(handle, "version_id", None)
 
     def read_bytes(self, length: int = -1):
         """Returns file contents as bytes."""
@@ -510,11 +549,14 @@ class File(DataModel):
 
     def save(self, destination: str, client_config: dict | None = None):
         """Writes it's content to destination"""
+        if self._catalog is None:
+            raise RuntimeError("Cannot save file: catalog is not set")
+
         destination = stringify_path(destination)
         client: Client = self._catalog.get_client(destination, **(client_config or {}))
 
         if client.PREFIX == "file://" and not destination.startswith(client.PREFIX):
-            destination = Path(destination).absolute().as_uri()
+            destination = client.path_to_uri(destination)
 
         client.upload(self.read(), destination)
 
@@ -542,10 +584,31 @@ class File(DataModel):
         client_config: dict | None = None,
     ) -> None:
         """Export file to new location."""
+        if self._catalog is None:
+            raise RuntimeError("Cannot export file: catalog is not set")
+
         self._caching_enabled = use_cache
-        dst = self.get_destination_path(output, placement)
-        dst_dir = os.path.dirname(dst)
+
+        suffix = self._get_destination_suffix(placement)
+        dst = posixpath.join(os.fspath(output), suffix)
+        dst_dir = posixpath.dirname(dst)
         client: Client = self._catalog.get_client(dst_dir, **(client_config or {}))
+
+        # If we're exporting to a local directory, ensure the resolved destination
+        # stays within the chosen output directory. This protects against traversal
+        # and absolute-path suffixes even when the source key is cloud/opaque.
+        if client.PREFIX == "file://":
+            from datachain.client.local import FileClient
+
+            FileClient.validate_local_relpath(os.fspath(output), suffix)
+
+            if not FileClient.is_path_in(output, dst):
+                raise FileError(
+                    "destination is not within output directory",
+                    stringify_path(output),
+                    dst,
+                )
+
         client.fs.makedirs(dst_dir, exist_ok=True)
 
         if link_type == "symlink":
@@ -614,81 +677,74 @@ class File(DataModel):
         """Returns file name without extension."""
         return PurePosixPath(self.path).stem
 
-    def get_full_name(self):
-        """
-        [DEPRECATED] Use `file.path` directly instead.
+    def get_uri(self) -> str:
+        """Return a URI-like string for this file.
 
-        Returns name with parent directories.
+        Deprecated: this method does not guarantee URI parse-safety (e.g. '#', '?'
+        may be interpreted as fragment/query by URI parsers). Prefer using the
+        structured fields (`source` + `path`) or `get_fs_path()` for I/O.
         """
         warnings.warn(
-            "file.get_full_name() is deprecated and will be removed "
-            "in a future version. Use `file.path` directly.",
+            (
+                "File.get_uri() is deprecated and will be removed in a future version. "
+                "Use file.source + file.path (structured) or "
+                "file.get_fs_path() for I/O locators."
+            ),
             DeprecationWarning,
             stacklevel=2,
         )
-        return self.path
 
-    def get_path_normalized(self) -> str:
-        if not self.path:
-            raise FileError("path must not be empty", self.source, self.path)
+        # Placeholder Files with an empty source are treated as local paths.
+        # Return a basic relative path (no scheme/authority).
+        base = self.source.rstrip("/")
+        if not base:
+            from datachain.client.local import FileClient
 
-        if self.path.endswith("/"):
-            raise FileError("path must not be a directory", self.source, self.path)
+            return FileClient.rel_path_for_file(self)
 
-        normpath = os.path.normpath(self.path)
-        normpath = PurePath(normpath).as_posix()
+        # Delegate backend-relative path handling to the client class.
+        from datachain.client.fsspec import Client
 
-        if normpath == ".":
-            raise FileError("path must not be a directory", self.source, self.path)
-
-        if any(part == ".." for part in PurePath(normpath).parts):
-            raise FileError("path must not contain '..'", self.source, self.path)
-
-        return normpath
-
-    def get_uri(self) -> str:
-        """Returns file URI."""
-        return f"{self.source}/{self.get_path_normalized()}"
+        client_cls = Client.get_implementation(self.source)
+        path = client_cls.rel_path_for_file(self)
+        return client_cls.path_to_uri(f"{base}/{path}")
 
     def get_fs_path(self) -> str:
         """
-        Returns file path with respect to the filescheme.
-
-        If `normalize` is True, the path is normalized to remove any redundant
-        separators and up-level references.
-
-        If the file scheme is "file", the path is converted to a local file path
-        using `url2pathname`. Otherwise, the original path with scheme is returned.
+        Return a path suitable for the backing filesystem.
         """
-        path = unquote(self.get_uri())
-        path_parsed = urlparse(path)
-        if path_parsed.scheme == "file":
-            path = url2pathname(path_parsed.path)
-        return path
+        if not self.source:
+            from datachain.client.local import FileClient
 
-    def get_destination_path(
-        self, output: str | os.PathLike[str], placement: ExportPlacement
-    ) -> str:
-        """
-        Returns full destination path of a file for exporting to some output
-        based on export placement
-        """
+            return FileClient.rel_path_for_file(self)
+
+        from datachain.client.fsspec import Client
+
+        client_cls = Client.get_implementation(self.source)
+        return client_cls.full_path_for_file(self)
+
+    def _get_destination_suffix(self, placement: ExportPlacement) -> str:
+        """Return the relative suffix used when exporting to an output prefix."""
         if placement == "filename":
-            path = unquote(self.name)
+            path = self.name
         elif placement == "etag":
             path = f"{self.etag}{self.get_file_suffix()}"
         elif placement == "fullpath":
-            path = unquote(self.get_path_normalized())
+            path = self.path
             source = urlparse(self.source)
             if source.scheme and source.scheme != "file":
-                path = posixpath.join(source.netloc, path)
+                path = posixpath.join(source.netloc, path.lstrip("/"))
         elif placement == "filepath":
-            path = unquote(self.get_path_normalized())
+            path = self.path
         elif placement == "checksum":
             raise NotImplementedError("Checksum placement not implemented yet")
         else:
             raise ValueError(f"Unsupported file export placement: {placement}")
-        return posixpath.join(output, path)  # type: ignore[union-attr]
+
+        # Always treat the computed suffix as relative for joining.
+        # This prevents `posixpath.join()` from dropping the output prefix when
+        # `path` starts with '/'.
+        return path.lstrip("/")
 
     def get_fs(self):
         """Returns `fsspec` filesystem for the file."""
@@ -718,9 +774,16 @@ class File(DataModel):
             ) from e
 
         try:
-            normalized_path = self.get_path_normalized()
-            info = client.fs.info(client.get_full_path(normalized_path))
-            converted_info = client.info_to_file(info, normalized_path)
+            resolved_path = client.rel_path_for_file(self)
+            full_path = client.get_full_path(resolved_path)
+            info = client.fs.info(full_path)
+
+            # Backends can return "directory" info for prefixes/buckets; a File
+            # represents an object, so treat directories as unresolved.
+            if isinstance(info, dict) and info.get("type") == "directory":
+                raise FileNotFoundError(full_path)
+
+            converted_info = client.info_to_file(info, resolved_path)
             res = type(self)(
                 path=self.path,
                 source=self.source,
@@ -733,13 +796,9 @@ class File(DataModel):
             )
             res._set_stream(self._catalog)
             return res
-        except FileError as e:
+        except Exception as e:  # noqa: BLE001
             logger.warning(
-                "File error when resolving %s/%s: %s", self.source, self.path, str(e)
-            )
-        except (FileNotFoundError, PermissionError, OSError) as e:
-            logger.warning(
-                "File system error when resolving %s/%s: %s",
+                "Error when resolving %s/%s: %s",
                 self.source,
                 self.path,
                 str(e),
@@ -790,7 +849,7 @@ class File(DataModel):
                     extension="npy")
             '/local/output/file_ch1.npy'
         """
-        return rebase_path(self.get_uri(), old_base, new_base, suffix, extension)
+        return rebase_path(self.get_fs_path(), old_base, new_base, suffix, extension)
 
 
 def resolve(file: File) -> File:
