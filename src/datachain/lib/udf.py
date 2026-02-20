@@ -612,9 +612,22 @@ class Aggregator(UDFBase):
         download_cb: Callback = DEFAULT_CALLBACK,
         processed_cb: Callback = DEFAULT_CALLBACK,
     ) -> Iterator[Iterable[UDFResult]]:
+        from datachain.data_storage.schema import PARTITION_COLUMN_ID
+
         self.setup()
 
+        # Check if partition_id is available (when partition_by is used)
+        partition_id_idx = None
+        if PARTITION_COLUMN_ID in udf_fields:
+            partition_id_idx = list(udf_fields).index(PARTITION_COLUMN_ID)
+
         for batch in udf_inputs:
+            # Get partition_id from first row if available (all rows in batch share it)
+            # This is used to track which partition produced each output for checkpoints
+            input_id = None
+            if partition_id_idx is not None and batch:
+                input_id = batch[0][partition_id_idx]
+
             prepared_rows = [
                 self._prepare_row(row, udf_fields, catalog, cache, download_cb)
                 for row in batch
@@ -627,9 +640,12 @@ class Aggregator(UDFBase):
             ]
             result_objs = self.process(*udf_args)
             udf_outputs = (self._flatten_row(row) for row in result_objs)
-            output = (
-                dict(zip(self.signal_names, row, strict=False)) for row in udf_outputs
-            )
+            # Include sys__input_id to track which partition produced each output
+            output = [
+                {"sys__input_id": input_id}
+                | dict(zip(self.signal_names, row, strict=False))
+                for row in udf_outputs
+            ]
             processed_cb.relative_update(len(batch))
             yield output
 
