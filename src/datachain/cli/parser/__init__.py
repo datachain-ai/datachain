@@ -484,6 +484,16 @@ def get_parser() -> ArgumentParser:  # noqa: PLR0915
         ),
         formatter_class=CustomHelpFormatter,
     )
+    parse_gc.add_argument(
+        "--checkpoint-ttl",
+        type=int,
+        default=None,
+        help=(
+            "Time-to-live for checkpoints in seconds."
+            " Checkpoints older than this are removed."
+            " Defaults to 4 hours (14400 seconds)."
+        ),
+    )
     add_anon_arg(parse_gc)
 
     subp.add_parser("internal-run-udf", parents=[parent_parser])

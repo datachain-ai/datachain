@@ -10,7 +10,7 @@ def clear_cache(catalog: "Catalog"):
     catalog.cache.clear()
 
 
-def garbage_collect(catalog: "Catalog"):
+def garbage_collect(catalog: "Catalog", checkpoint_ttl: int | None = None):
     print("Collecting temporary tables...")
     temp_tables = catalog.get_temp_table_names()
     if temp_tables:
@@ -27,7 +27,7 @@ def garbage_collect(catalog: "Catalog"):
         print("  No failed dataset versions to clean up.")
 
     print("Collecting outdated checkpoints...")
-    num_checkpoints = catalog.cleanup_checkpoints()
+    num_checkpoints = catalog.cleanup_checkpoints(ttl_seconds=checkpoint_ttl)
     if num_checkpoints:
         print(f"  Removed {num_checkpoints} outdated checkpoints.")
     else:

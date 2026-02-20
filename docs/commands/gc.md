@@ -5,7 +5,7 @@ Garbage collect temporary tables, failed dataset versions, and outdated checkpoi
 ## Synopsis
 
 ```usage
-usage: datachain gc [-h] [-v] [-q]
+usage: datachain gc [-h] [-v] [-q] [--checkpoint-ttl CHECKPOINT_TTL]
 ```
 
 ## Description
@@ -23,16 +23,18 @@ Each category is collected and cleaned independently. Progress is reported for e
 * `-h`, `--help` - Show the help message and exit.
 * `-v`, `--verbose` - Be verbose.
 * `-q`, `--quiet` - Be quiet.
-
-## Environment Variables
-
-* `CHECKPOINT_TTL` - Time-to-live for checkpoints in seconds. Checkpoints older than this value are considered outdated and eligible for cleanup. Defaults to 4 hours (14400 seconds).
+* `--checkpoint-ttl` - Time-to-live for checkpoints in seconds. Checkpoints older than this value are considered outdated and eligible for cleanup. Defaults to 4 hours (14400 seconds).
 
 ## Examples
 
 1. Run garbage collection:
 ```bash
 datachain gc
+```
+
+2. Run garbage collection with a custom checkpoint TTL of 1 hour:
+```bash
+datachain gc --checkpoint-ttl 3600
 ```
 
 Example output:
