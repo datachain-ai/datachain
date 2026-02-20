@@ -1,6 +1,7 @@
 from uuid import uuid4
 
 import pytest
+import sqlalchemy as sa
 
 import datachain as dc
 from datachain.error import (
@@ -8,6 +9,11 @@ from datachain.error import (
     JobNotFoundError,
 )
 from tests.utils import reset_session_job_state
+
+
+def _count_rows(metastore, table) -> int:
+    query = sa.select(sa.func.count()).select_from(table)
+    return next(iter(metastore.db.execute(query)))[0]
 
 
 class CustomMapperError(Exception):
@@ -470,3 +476,39 @@ def test_checkpoints_job_without_run_group_id_continue(
         dc.read_dataset("doubled_nums", session=test_session).to_list("doubled")
     )
     assert result == [(2,), (4,), (6,), (8,), (10,), (12,)]
+
+
+def test_udf_runs_with_checkpoints_disabled(test_session, monkeypatch, nums_dataset):
+    """UDF chain works correctly when checkpoints are disabled via env var."""
+    metastore = test_session.catalog.metastore
+    jobs_before = _count_rows(metastore, metastore._jobs)
+    checkpoints_before = _count_rows(metastore, metastore._checkpoints)
+
+    monkeypatch.setenv("DATACHAIN_CHECKPOINTS_DISABLED", "1")
+
+    result = sorted(
+        dc.read_dataset("nums", session=test_session)
+        .map(doubled=lambda num: num * 2, output=int)
+        .to_list("doubled")
+    )
+    assert result == [(2,), (4,), (6,), (8,), (10,), (12,)]
+
+    # No checkpoints or jobs should have been created
+    assert _count_rows(metastore, metastore._checkpoints) == checkpoints_before
+    assert _count_rows(metastore, metastore._jobs) == jobs_before
+
+
+def test_udf_runs_multiple_times_with_checkpoints_disabled(
+    test_session, monkeypatch, nums_dataset
+):
+    """Repeated chain evaluation works without table name collisions."""
+    monkeypatch.setenv("DATACHAIN_CHECKPOINTS_DISABLED", "1")
+
+    chain = dc.read_dataset("nums", session=test_session).map(
+        doubled=lambda num: num * 2, output=int
+    )
+
+    # Run the same chain multiple times — each should get a fresh ephemeral job
+    for _ in range(3):
+        result = sorted(chain.to_list("doubled"))
+        assert result == [(2,), (4,), (6,), (8,), (10,), (12,)]
