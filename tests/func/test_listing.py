@@ -1,3 +1,5 @@
+import sys
+
 import pytest
 
 import datachain as dc
@@ -45,11 +47,13 @@ def test_read_storage_percent_encoding_is_opaque_across_backends(
 
     prefix = "dir with space"
     payloads = {
-        "he?llo.txt": b"hi",
         "hello#.txt": b"hi#",
         "file with space.txt": b"h i",
         "file%20literal.txt": b"hi %20",
     }
+    # Windows does not allow '?' in file names; include only for non-file backends.
+    if not str(src_uri).startswith("file://") or sys.platform != "win32":
+        payloads["he?llo.txt"] = b"hi"
 
     for name, content in payloads.items():
         File.upload(content, f"{src_uri}/{prefix}/{name}", catalog)

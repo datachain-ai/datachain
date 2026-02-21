@@ -319,8 +319,39 @@ def test_get_uri_contract(
         ("file:///bucket", ".", True, r"path must not contain"),
         ("file:///bucket", "..", True, r"path must not contain"),
         ("file:///bucket", "/abs/file.txt", True, r"path must not be absolute"),
-        ("file:///bucket", "file#hash.txt", False, "/bucket/file#hash.txt"),
+        pytest.param(
+            "file:///bucket",
+            "file#hash.txt",
+            os.name == "nt",
+            r"drive letter" if os.name == "nt" else "/bucket/file#hash.txt",
+            id="file:///bucket-file#hash.txt",
+        ),
         ("file:///bucket", "./dir/../file.txt", True, r"must not contain"),
+        # Windows-style file:// URIs with drive letters (valid on all platforms).
+        # On Unix, _strip_protocol keeps the leading '/' before the drive letter.
+        pytest.param(
+            "file:///C:/data",
+            "file.txt",
+            False,
+            "C:/data/file.txt" if os.name == "nt" else "/C:/data/file.txt",
+            id="drive-C-data-file",
+        ),
+        pytest.param(
+            "file:///D:/path/to/dir",
+            "sub/out.csv",
+            False,
+            "D:/path/to/dir/sub/out.csv"
+            if os.name == "nt"
+            else "/D:/path/to/dir/sub/out.csv",
+            id="drive-D-nested",
+        ),
+        pytest.param(
+            "file:///C:/",
+            "readme.md",
+            False,
+            "C:/readme.md" if os.name == "nt" else "/C:/readme.md",
+            id="drive-C-root",
+        ),
         ("s3://mybkt", "", True, r"path must not be empty"),
         ("s3://mybkt", ".", True, r"must not contain"),
         ("s3://mybkt", "..", True, r"must not contain"),
@@ -702,12 +733,39 @@ def test_file_rebase_method():
     assert result == "s3://output-bucket/processed/file_ch1.npy"
 
 
-def test_file_rebase_local_path():
+@pytest.mark.parametrize(
+    "source,old_base,new_base,expected",
+    [
+        pytest.param(
+            "file:///data/audio",
+            "file:///data/audio",
+            "/output/processed",
+            "/output/processed/folder/file.mp3",
+            id="unix",
+            marks=pytest.mark.skipif(
+                os.name == "nt", reason="No drive letter — rejected on Windows"
+            ),
+        ),
+        pytest.param(
+            "file:///C:/data/audio",
+            "C:/data/audio",
+            "C:/output/processed",
+            "C:/output/processed/folder/file.mp3",
+            id="windows",
+            # old_base uses plain path form because _split_scheme("file:///C:/…")
+            # yields "/C:/…" with a leading slash that won't match the native
+            # path returned by get_fs_path() on Windows (C:\…).
+            marks=pytest.mark.skipif(
+                os.name != "nt", reason="Windows drive-letter path"
+            ),
+        ),
+    ],
+)
+def test_file_rebase_local_path(source, old_base, new_base, expected):
     """Test File.rebase() with local file paths"""
-    file = File(source="file:///data/audio", path="folder/file.mp3")
-
-    result = file.rebase("file:///data/audio", "/output/processed")
-    assert result == "/output/processed/folder/file.mp3"
+    file = File(source=source, path="folder/file.mp3")
+    result = file.rebase(old_base, new_base)
+    assert result == expected
 
 
 def test_audio_get_channel_name():

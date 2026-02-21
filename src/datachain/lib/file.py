@@ -640,7 +640,10 @@ class File(DataModel):
         self._caching_enabled = use_cache
 
         suffix = self._get_destination_suffix(placement)
-        dst = posixpath.join(os.fspath(output), suffix)
+        # Normalize backslashes to forward slashes so posixpath.join produces
+        # consistent separator paths on Windows.
+        output_fspath = os.fspath(output).replace("\\", "/")
+        dst = posixpath.join(output_fspath, suffix)
         dst_dir = posixpath.dirname(dst)
         client: Client = self._catalog.get_client(dst_dir, **(client_config or {}))
 
@@ -729,7 +732,6 @@ class File(DataModel):
         return self._catalog.cache.get_path(self)
 
     def get_file_suffix(self):
-        """Returns last part of file name with `.`."""
         return PurePosixPath(self.path).suffix
 
     def get_file_ext(self):
@@ -771,8 +773,26 @@ class File(DataModel):
         return client_cls.path_to_uri(f"{base}/{path}")
 
     def get_fs_path(self) -> str:
-        """
-        Return a path suitable for the backing filesystem.
+        """Combine ``source`` and ``path`` into the full location string.
+
+        Examples:
+            ```py
+            # Cloud (S3, GCS, Azure, …)
+            f = File(source="s3://my-bucket", path="data/image.jpg")
+            f.get_fs_path()  # 's3://my-bucket/data/image.jpg'
+
+            # Local files
+            f = File(source="file:///home/user/project", path="out/result.csv")
+            f.get_fs_path()  # '/home/user/project/out/result.csv'
+
+            # No source — returns the relative path as-is
+            f = File(source="", path="dir/file.txt")
+            f.get_fs_path()  # 'dir/file.txt'
+            ```
+
+        Raises:
+            FileError: If ``path`` is empty, ends with ``/``, or contains
+                ``.`` / ``..`` segments.
         """
         if not self.source:
             from datachain.client.local import FileClient

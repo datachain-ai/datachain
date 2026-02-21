@@ -5,6 +5,7 @@ import pytest
 import datachain as dc
 from datachain.catalog.catalog import DataSource
 from datachain.client import Client
+from datachain.client.local import FileClient
 from datachain.lib.file import File
 from datachain.lib.listing import (
     LISTING_PREFIX,
@@ -65,13 +66,15 @@ def test_get_listing_returns_exact_math_on_update(test_session):
     listing_namespace_name = catalog.metastore.system_namespace_name
     listing_project_name = catalog.metastore.listing_project_name
 
+    whatever_uri = FileClient.path_to_uri("/whatever")
+
     dataset_name_dir1, _, _, exists = get_listing("file:///whatever/dir1", test_session)
     (
         dc.read_values(file=list(_tree_to_entries(TREE["dir1"])))
         .settings(namespace=listing_namespace_name, project=listing_project_name)
         .save(dataset_name_dir1, listing=True)
     )
-    assert dataset_name_dir1 == f"{LISTING_PREFIX}file:///whatever/dir1/"
+    assert dataset_name_dir1 == f"{LISTING_PREFIX}{whatever_uri}/dir1/"
     assert not exists
 
     dataset_name, _, _, exists = get_listing("file:///whatever", test_session)
@@ -80,13 +83,13 @@ def test_get_listing_returns_exact_math_on_update(test_session):
         .settings(namespace=listing_namespace_name, project=listing_project_name)
         .save(dataset_name, listing=True)
     )
-    assert dataset_name == f"{LISTING_PREFIX}file:///whatever/"
+    assert dataset_name == f"{LISTING_PREFIX}{whatever_uri}/"
     assert not exists
 
     dataset_name_dir1, _, _, exists = get_listing(
         "file:///whatever/dir1", test_session, update=True
     )
-    assert dataset_name_dir1 == f"{LISTING_PREFIX}file:///whatever/dir1/"
+    assert dataset_name_dir1 == f"{LISTING_PREFIX}{whatever_uri}/dir1/"
     # On update it is always false (there was no reason to complicate it for now)
     assert not exists
 

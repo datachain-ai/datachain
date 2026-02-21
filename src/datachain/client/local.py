@@ -130,7 +130,7 @@ class FileClient(Client):
             bucket = os_path.rstrip("/")
             path = ""
         else:
-            bucket, path = os.path.split(os_path)
+            bucket, path = os_path.rsplit("/", 1)
 
         if os.name == "nt":
             bucket = bucket.removeprefix("/")
@@ -210,9 +210,31 @@ class FileClient(Client):
         if any(part in (".", "..") for part in raw_parts):
             raise FileError("path must not contain '.' or '..'", source, path)
 
+    @staticmethod
+    def _has_drive_letter(source: str) -> bool:
+        """Check whether a ``file://`` URI contains an explicit drive letter.
+
+        On Windows, fsspec silently prepends the current drive to paths like
+        ``file:///bucket`` (→ ``C:/bucket``).  We use this helper to detect
+        and reject such ambiguous URIs early.
+        """
+        rest = source[len("file://") :].lstrip("/")
+        return len(rest) >= 2 and rest[0].isalpha() and rest[1] == ":"
+
     @classmethod
     def full_path_for_file(cls, file: "File") -> str:
         rel_path = cls.rel_path_for_file(file)
+
+        # On Windows, file:// URIs without a drive letter are ambiguous —
+        # fsspec silently prepends the current drive (e.g. file:///bucket
+        # becomes C:/bucket).  Reject these instead of silently guessing.
+        if os.name == "nt" and not cls._has_drive_letter(file.source):
+            raise FileError(
+                "file:// source must include a drive letter on Windows "
+                "(e.g. file:///C:/path)",
+                file.source,
+                file.path,
+            )
 
         base_path = LocalFileSystem._strip_protocol(file.source)
         if not rel_path:
