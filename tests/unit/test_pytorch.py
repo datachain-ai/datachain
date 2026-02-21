@@ -47,7 +47,7 @@ def test_prefetched_files_are_removed_after_yield(tmp_dir, mocker, catalog, cach
     files = []
     for name in "abc":
         (tmp_dir / name).write_text(name, encoding="utf-8")
-        file = File(path=tmp_dir / name)
+        file = File(path=name, source=f"file://{tmp_dir}")
         file._set_stream(catalog)
         files.append((file,))
 

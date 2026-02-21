@@ -3,12 +3,16 @@ import json
 import os
 from collections.abc import Iterable
 from datetime import datetime
-from typing import Any, cast
+from typing import Any, BinaryIO, cast
+from urllib.parse import quote
 
 from dateutil.parser import isoparse
+from fsspec.asyn import get_loop, sync
+from fsspec.callbacks import DEFAULT_CALLBACK, Callback
 from gcsfs import GCSFileSystem
 from tqdm.auto import tqdm
 
+from datachain.client.fileslice import FileWrapper
 from datachain.lib.file import File
 
 from .fsspec import DELIMITER, Client, ResultQueue
@@ -32,23 +36,87 @@ class GCSClient(Client):
 
         return cast("GCSFileSystem", super().create_fs(**kwargs))
 
-    def url(self, path: str, expires: int = 3600, **kwargs) -> str:
+    def url(
+        self,
+        path: str,
+        expires: int = 3600,
+        version_id: str | None = None,
+        **kwargs,
+    ) -> str:
         """
         Generate a signed URL for the given path.
         If the client is anonymous, a public URL is returned instead
         (see https://cloud.google.com/storage/docs/access-public-data#api-link).
         """
-        version_id = kwargs.pop("version_id", None)
         content_disposition = kwargs.pop("content_disposition", None)
         if self.fs.storage_options.get("token") == "anon":
             query = f"?generation={version_id}" if version_id else ""
-            return f"https://storage.googleapis.com/{self.name}/{path}{query}"
+            # Public URL must be URI-encoded. Preserve '/' so object keys that
+            # use it as a delimiter stay readable.
+            encoded_path = quote(path, safe="/")
+            return f"https://storage.googleapis.com/{self.name}/{encoded_path}{query}"
+        full_path = self.get_full_path(path)
+        full_path = self._path_with_generation(full_path, version_id)
         return self.fs.sign(
-            self.get_full_path(path, version_id),
+            full_path,
             expiration=expires,
             response_disposition=content_disposition,
             **kwargs,
         )
+
+    def _version_kwargs(self, version_id: str | None) -> dict[str, Any]:
+        if version_id:
+            return {"generation": version_id}
+        return {}
+
+    @staticmethod
+    def _path_with_generation(path: str, generation: str | None) -> str:
+        if generation:
+            return f"{path}#{generation}"
+        return path
+
+    def get_file_info(self, path: str, version_id: str | None = None) -> File:
+        full_path = self._path_with_generation(self.get_full_path(path), version_id)
+        info = sync(get_loop(), self.fs._info, full_path)
+        return self.info_to_file(info, path)
+
+    async def get_current_etag(self, file: File) -> str:
+        file_path = self.rel_path_for_file(file)
+        full_path = self._path_with_generation(
+            self.full_path_for_file(file),
+            file.version,
+        )
+        info = await self.fs._info(full_path)
+        return self.info_to_file(info, file_path).etag
+
+    async def get_size(self, file: File) -> int:
+        full_path = self._path_with_generation(
+            self.full_path_for_file(file),
+            file.version,
+        )
+        info = await self.fs._info(full_path)
+        size = info.get("size")
+        if size is None:
+            raise FileNotFoundError(full_path)
+        return int(size)
+
+    def open_object(
+        self,
+        file: File,
+        use_cache: bool = True,
+        cb: Callback = DEFAULT_CALLBACK,
+    ) -> BinaryIO:
+        if use_cache and (cache_path := self.cache.get_path(file)):
+            return open(cache_path, mode="rb")
+        assert not file.location
+        full_path = self._path_with_generation(
+            self.full_path_for_file(file),
+            file.version,
+        )
+        return FileWrapper(
+            self.fs.open(full_path),
+            cb,
+        )  # type: ignore[return-value]
 
     @staticmethod
     def parse_timestamp(timestamp: str) -> datetime:
@@ -139,7 +207,3 @@ class GCSClient(Client):
             last_modified=self.parse_timestamp(v["updated"]),
             size=v.get("size", ""),
         )
-
-    @classmethod
-    def version_path(cls, path: str, version_id: str | None) -> str:
-        return f"{path}#{version_id}" if version_id else path

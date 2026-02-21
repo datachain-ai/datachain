@@ -1,10 +1,12 @@
 import io
+import tarfile
 from pathlib import Path
 
 import pytest
 
 import datachain as dc
 from datachain.lib.file import File, FileError
+from datachain.lib.tar import process_tar
 from datachain.query import C
 from datachain.utils import TIME_ZERO
 
@@ -56,9 +58,9 @@ def test_file_serialized_in_udf(tmp_dir, test_session_tmpfile):
 
 @pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
 def test_get_path_cloud(cloud_test_catalog):
-    file = File(path="dir/file", source="s3://")
+    file = File(path="dir/file", source="s3://bucket")
     file._set_stream(catalog=cloud_test_catalog.catalog)
-    assert file.get_fs_path().strip("/") == "s3:///dir/file"
+    assert file.get_fs_path().strip("/") == "s3://bucket/dir/file"
 
 
 @pytest.mark.parametrize("caching_enabled", [True, False])
@@ -132,6 +134,88 @@ def test_upload(cloud_test_catalog):
     assert f.read() == img_bytes
 
     client.fs.rm(dest, recursive=True)
+
+
+def test_tar_members_inherit_uri_encoded_local_source(tmp_dir, test_session_tmpfile):
+    base = tmp_dir / "dir #% percent"
+    base.mkdir(parents=True)
+
+    tar_path = base / "archive.tar"
+    data = b"payload"
+    with tarfile.open(tar_path, mode="w") as tf:
+        info = tarfile.TarInfo("member.txt")
+        info.size = len(data)
+        tf.addfile(info, io.BytesIO(data))
+
+    chain = dc.read_storage(base, session=test_session_tmpfile)
+    tar_file = chain.filter(C("file.path") == "archive.tar").to_values("file")[0]
+    members = chain.filter(C("file.path") == "archive.tar").gen(file=process_tar)
+    member = members.to_values("file")[0]
+
+    assert tar_file.source.startswith("file://")
+    assert " " in tar_file.source
+    assert "#" in tar_file.source
+    assert "%" in tar_file.source
+    assert member.source == tar_file.source
+    assert member.path == "archive.tar/member.txt"
+    assert member.name == "member.txt"
+
+
+@pytest.mark.parametrize(
+    "dirname",
+    [
+        "dir%percent",
+        "dir #% combo",
+        "v1.0-release",
+        "user@host",
+        "100%done",
+    ],
+    ids=lambda d: d.replace(" ", "_"),
+)
+def test_read_storage_special_chars_in_local_path(
+    dirname, tmp_dir, test_session_tmpfile
+):
+    """Regression: special chars (%, #, ., @, space) in a local directory name
+    must not break listing dataset creation.  The original bug was that raw '%'
+    flowed into the SQL table name and was misinterpreted by pysqlite."""
+    base = tmp_dir / dirname
+    base.mkdir(parents=True)
+    (base / "data.txt").write_text("hello")
+
+    files = dc.read_storage(base, session=test_session_tmpfile).to_values("file")
+    assert len(files) == 1
+    assert files[0].name == "data.txt"
+    assert files[0].source.startswith("file://")
+
+
+def test_to_storage_tar_member_percent_encoded_traversal_escapes_output(
+    tmp_dir, test_session_tmpfile
+):
+    payload = "..%2f..%2fescaped.txt"  # unquote -> ../../escaped.txt
+    tar_path = tmp_dir / "malicious.tar"
+
+    data = b"poc"
+    with tarfile.open(tar_path, mode="w") as tf:
+        info = tarfile.TarInfo(payload)
+        info.size = len(data)
+        tf.addfile(info, io.BytesIO(data))
+
+    chain = dc.read_storage(tmp_dir, session=test_session_tmpfile)
+    tar_entries = chain.filter(C("file.path").glob("*.tar")).gen(file=process_tar)
+    all_entries = chain.union(tar_entries)
+
+    member_path = f"malicious.tar/{payload}"
+    member = all_entries.filter(C("file.path") == member_path)
+
+    # Ensure the test actually selects the malicious member.
+    assert member.to_values("file.path") == [member_path]
+
+    output = tmp_dir / "output"
+    assert not (tmp_dir / "escaped.txt").exists()
+    member.to_storage(output, placement="filename")
+
+    # Expected-safe behavior: exported files must stay within output.
+    assert not (tmp_dir / "escaped.txt").exists()
 
 
 def test_open_write_binary(cloud_test_catalog):
@@ -266,7 +350,7 @@ def test_write_version_capture(cloud_test_catalog, cloud_type):
     3. f2's File.open() __exit__ → extract_version(f2), get_file_info
     4. f1's File.open() __exit__ → extract_version(f1), get_file_info
 
-    S3: version_id on handle survives close() → f1 gets V1
+    S3: version captured on handle survives close() → f1 gets V1
     GCS/Azure: No version captured → get_file_info returns V2 for f1 (race!)
     """
     ctc = cloud_test_catalog
@@ -291,11 +375,12 @@ def test_write_version_capture(cloud_test_catalog, cloud_type):
     assert file2.version, "file2 should have a version"
 
     if cloud_type == "s3":
-        # S3 captures version_id from handle - survives close()
-        assert file1.version != file2.version, (
-            "S3: each write captures its own version_id"
-        )
+        # S3 captures version_id from handle.
+        assert file1.version != file2.version, "s3: each write captures its own version"
     else:
+        # IMPORTANT: Don't edit/change this test and don't change runtime logic to
+        # "fix" this behavior until a new version of the upstream storage libs is
+        # released (e.g. gcsfs/adlfs exposing version/generation reliably on write).
         # GCS/Azure: No version on handle - get_file_info returns latest
         # Update it when it is fixed in those backends.
         assert file1.version == file2.version, (

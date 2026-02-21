@@ -1,7 +1,6 @@
 import asyncio
 import os
 from typing import Any, cast
-from urllib.parse import parse_qs, urlsplit, urlunsplit
 
 from botocore.exceptions import NoCredentialsError
 from s3fs import S3FileSystem
@@ -57,20 +56,25 @@ class ClientS3(Client):
 
         return cast("S3FileSystem", super().create_fs(**kwargs))
 
-    def url(self, path: str, expires: int = 3600, **kwargs) -> str:
+    def url(
+        self,
+        path: str,
+        expires: int = 3600,
+        version_id: str | None = None,
+        **kwargs,
+    ) -> str:
         """
         Generate a signed URL for the given path.
         """
-        version_id = kwargs.pop("version_id", None)
         content_disposition = kwargs.pop("content_disposition", None)
         if content_disposition:
             kwargs["ResponseContentDisposition"] = content_disposition
 
-        return self.fs.sign(
-            self.get_full_path(path, version_id),
-            expiration=expires,
-            **kwargs,
-        )
+        if version_id:
+            # botocore expects VersionId for GetObject presign
+            kwargs["VersionId"] = version_id
+
+        return self.fs.sign(self.get_full_path(path), expiration=expires, **kwargs)
 
     async def _fetch_flat(self, start_prefix: str, result_queue: ResultQueue) -> None:
         async def get_pages(it, page_queue):
@@ -146,15 +150,6 @@ class ClientS3(Client):
             last_modified=v.get("LastModified", ""),
             size=v["Size"],
         )
-
-    @classmethod
-    def version_path(cls, path: str, version_id: str | None) -> str:
-        parts = list(urlsplit(path))
-        query = parse_qs(parts[3])
-        if "versionId" in query:
-            raise ValueError("path already includes a version query")
-        parts[3] = f"versionId={version_id}" if version_id else ""
-        return urlunsplit(parts)
 
     async def _fetch_dir(
         self,

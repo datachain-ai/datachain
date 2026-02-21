@@ -2,15 +2,18 @@ import asyncio
 import os
 import sys
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from fsspec.asyn import sync
+from fsspec.callbacks import DEFAULT_CALLBACK
 from hypothesis import HealthCheck, assume, given, settings
 from hypothesis import strategies as st
 from tqdm import tqdm
 
 from datachain.asyn import get_loop
 from datachain.client import Client
+from datachain.lib.file import File, FileError
 from tests.data import ENTRIES
 
 _non_null_text = st.text(
@@ -68,7 +71,6 @@ def test_scandir_success(client):
     match_entries(results, ENTRIES)
 
 
-@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
 def test_scandir_alternate(client):
     results = scandir(client, "", method="nested")
     match_entries(results, ENTRIES)
@@ -174,3 +176,251 @@ def test_parse_cloud_path_ends_with_slash(cloud_test_catalog):
     uri, rel_part = Client.parse_url(uri)
     assert uri == cloud_test_catalog.src_uri
     assert rel_part == "animals/"
+
+
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+def test_get_size_roundtrip_file_and_cloud(
+    cloud_test_catalog_upload,
+    cloud_type,
+    version_aware,
+):
+    ctc = cloud_test_catalog_upload
+    client = ctc.catalog.get_client(ctc.src_uri)
+
+    rel_path = f"client-get-size/{uuid4().hex}.bin"
+
+    data_v1 = b"v1"
+    client.upload(data_v1, rel_path)
+    assert sync(
+        get_loop(), client.get_size, File(source=ctc.src_uri, path=rel_path)
+    ) == len(data_v1)
+
+
+@pytest.mark.parametrize("version_aware", [True], indirect=True)
+def test_get_size_roundtrip_versioned_selects_version(
+    cloud_test_catalog_upload,
+    cloud_type,
+    version_aware,
+):
+    ctc = cloud_test_catalog_upload
+    client = ctc.catalog.get_client(ctc.src_uri)
+
+    rel_path = f"client-get-size/{uuid4().hex}.bin"
+
+    data_v1 = b"v1"
+    uploaded_v1 = client.upload(data_v1, rel_path)
+
+    data_v2 = b"version-2"
+    uploaded_v2 = client.upload(data_v2, rel_path)
+
+    assert uploaded_v1.version
+    assert uploaded_v2.version
+
+    size_v1 = sync(
+        get_loop(),
+        client.get_size,
+        File(source=ctc.src_uri, path=rel_path, version=uploaded_v1.version),
+    )
+    size_v2 = sync(
+        get_loop(),
+        client.get_size,
+        File(source=ctc.src_uri, path=rel_path, version=uploaded_v2.version),
+    )
+
+    assert size_v1 == len(data_v1)
+    assert size_v2 == len(data_v2)
+
+
+def test_get_size_missing_raises_filenotfound(
+    cloud_test_catalog,
+):
+    ctc = cloud_test_catalog
+    client = ctc.catalog.get_client(ctc.src_uri)
+    missing_rel_path = f"client-get-size-missing/{uuid4().hex}.bin"
+
+    with pytest.raises(FileNotFoundError):
+        sync(
+            get_loop(),
+            client.get_size,
+            File(source=ctc.src_uri, path=missing_rel_path),
+        )
+
+
+def test_get_size_directory_path_raises_fileerror(
+    cloud_test_catalog_upload,
+):
+    ctc = cloud_test_catalog_upload
+    client = ctc.catalog.get_client(ctc.src_uri)
+
+    rel_dir = f"client-get-size-dir/{uuid4().hex}/"
+    with pytest.raises(FileError, match=r"must not be a directory"):
+        sync(get_loop(), client.get_size, File(source=ctc.src_uri, path=rel_dir))
+
+
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+def test_get_file_roundtrip_file_and_cloud(
+    cloud_test_catalog_upload,
+    cloud_type,
+    version_aware,
+    tmp_path,
+):
+    ctc = cloud_test_catalog_upload
+    client = ctc.catalog.get_client(ctc.src_uri)
+
+    rel_path = f"client-get-file/{uuid4().hex}.bin"
+    data_v1 = b"v1"
+    client.upload(data_v1, rel_path)
+
+    dst_v1 = tmp_path / "out_v1.bin"
+    sync(
+        get_loop(),
+        client.get_file,
+        client.full_path_for_file(File(source=ctc.src_uri, path=rel_path)),
+        dst_v1.as_posix(),
+        callback=DEFAULT_CALLBACK,
+        version_id=None,
+    )
+    assert dst_v1.read_bytes() == data_v1
+
+
+@pytest.mark.parametrize("version_aware", [True], indirect=True)
+def test_get_file_roundtrip_versioned_selects_version(
+    cloud_test_catalog_upload,
+    cloud_type,
+    version_aware,
+    tmp_path,
+):
+    ctc = cloud_test_catalog_upload
+    client = ctc.catalog.get_client(ctc.src_uri)
+
+    rel_path = f"client-get-file/{uuid4().hex}.bin"
+    from_path = client.full_path_for_file(File(source=ctc.src_uri, path=rel_path))
+
+    data_v1 = b"v1"
+    uploaded_v1 = client.upload(data_v1, rel_path)
+
+    data_v2 = b"version-2"
+    uploaded_v2 = client.upload(data_v2, rel_path)
+
+    assert uploaded_v1.version
+    assert uploaded_v2.version
+
+    dst_old = tmp_path / "out_old.bin"
+    dst_new = tmp_path / "out_new.bin"
+
+    sync(
+        get_loop(),
+        client.get_file,
+        from_path,
+        dst_old.as_posix(),
+        callback=DEFAULT_CALLBACK,
+        version_id=uploaded_v1.version,
+    )
+    sync(
+        get_loop(),
+        client.get_file,
+        from_path,
+        dst_new.as_posix(),
+        callback=DEFAULT_CALLBACK,
+        version_id=uploaded_v2.version,
+    )
+
+    assert dst_old.read_bytes() == data_v1
+    assert dst_new.read_bytes() == data_v2
+
+
+def test_get_file_missing_raises_filenotfound(
+    cloud_test_catalog,
+    tmp_path,
+):
+    ctc = cloud_test_catalog
+    client = ctc.catalog.get_client(ctc.src_uri)
+
+    missing_rel_path = f"client-get-file-missing/{uuid4().hex}.bin"
+    dst = tmp_path / "out_missing.bin"
+    from_path = client.full_path_for_file(
+        File(source=ctc.src_uri, path=missing_rel_path)
+    )
+
+    with pytest.raises(FileNotFoundError):
+        sync(
+            get_loop(),
+            client.get_file,
+            from_path,
+            dst.as_posix(),
+            callback=DEFAULT_CALLBACK,
+            version_id=None,
+        )
+
+
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+def test_get_etag_roundtrip_file_and_cloud(
+    cloud_test_catalog_upload,
+    cloud_type,
+    version_aware,
+):
+    ctc = cloud_test_catalog_upload
+    client = ctc.catalog.get_client(ctc.src_uri)
+
+    rel_path = f"client-get-etag/{uuid4().hex}.bin"
+    data_v1 = b"v1"
+    uploaded_v1 = client.upload(data_v1, rel_path)
+
+    etag_v1 = sync(
+        get_loop(),
+        client.get_current_etag,
+        File(source=ctc.src_uri, path=rel_path),
+    )
+    assert etag_v1
+    assert etag_v1 == uploaded_v1.etag
+
+
+@pytest.mark.parametrize("version_aware", [True], indirect=True)
+def test_get_etag_roundtrip_versioned_selects_version(
+    cloud_test_catalog_upload,
+    cloud_type,
+    version_aware,
+):
+    ctc = cloud_test_catalog_upload
+    client = ctc.catalog.get_client(ctc.src_uri)
+
+    rel_path = f"client-get-etag/{uuid4().hex}.bin"
+    data_v1 = b"v1"
+    uploaded_v1 = client.upload(data_v1, rel_path)
+
+    data_v2 = b"version-2"
+    uploaded_v2 = client.upload(data_v2, rel_path)
+
+    assert uploaded_v1.version
+    assert uploaded_v2.version
+
+    etag_old = sync(
+        get_loop(),
+        client.get_current_etag,
+        File(source=ctc.src_uri, path=rel_path, version=uploaded_v1.version),
+    )
+    etag_new = sync(
+        get_loop(),
+        client.get_current_etag,
+        File(source=ctc.src_uri, path=rel_path, version=uploaded_v2.version),
+    )
+
+    assert etag_old == uploaded_v1.etag
+    assert etag_new == uploaded_v2.etag
+    assert etag_old != etag_new
+
+
+@pytest.mark.parametrize("version_aware", [False], indirect=True)
+def test_get_etag_missing_raises_filenotfound(
+    cloud_test_catalog,
+):
+    ctc = cloud_test_catalog
+    client = ctc.catalog.get_client(ctc.src_uri)
+    missing_rel_path = f"client-get-etag-missing/{uuid4().hex}.bin"
+
+    with pytest.raises(FileNotFoundError):
+        sync(
+            get_loop(),
+            client.get_current_etag,
+            File(source=ctc.src_uri, path=missing_rel_path),
+        )

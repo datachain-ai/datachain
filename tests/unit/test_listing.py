@@ -5,12 +5,14 @@ import pytest
 import datachain as dc
 from datachain.catalog.catalog import DataSource
 from datachain.client import Client
+from datachain.client.local import FileClient
 from datachain.lib.file import File
 from datachain.lib.listing import (
     LISTING_PREFIX,
     get_listing,
     is_listing_dataset,
     listing_uri_from_name,
+    parse_listing_uri,
 )
 from datachain.listing import Listing
 from datachain.node import DirType
@@ -65,13 +67,15 @@ def test_get_listing_returns_exact_math_on_update(test_session):
     listing_namespace_name = catalog.metastore.system_namespace_name
     listing_project_name = catalog.metastore.listing_project_name
 
+    whatever_uri = FileClient.path_to_uri("/whatever")
+
     dataset_name_dir1, _, _, exists = get_listing("file:///whatever/dir1", test_session)
     (
         dc.read_values(file=list(_tree_to_entries(TREE["dir1"])))
         .settings(namespace=listing_namespace_name, project=listing_project_name)
         .save(dataset_name_dir1, listing=True)
     )
-    assert dataset_name_dir1 == f"{LISTING_PREFIX}file:///whatever/dir1/"
+    assert dataset_name_dir1 == f"{LISTING_PREFIX}{whatever_uri}/dir1/"
     assert not exists
 
     dataset_name, _, _, exists = get_listing("file:///whatever", test_session)
@@ -80,13 +84,13 @@ def test_get_listing_returns_exact_math_on_update(test_session):
         .settings(namespace=listing_namespace_name, project=listing_project_name)
         .save(dataset_name, listing=True)
     )
-    assert dataset_name == f"{LISTING_PREFIX}file:///whatever/"
+    assert dataset_name == f"{LISTING_PREFIX}{whatever_uri}/"
     assert not exists
 
     dataset_name_dir1, _, _, exists = get_listing(
         "file:///whatever/dir1", test_session, update=True
     )
-    assert dataset_name_dir1 == f"{LISTING_PREFIX}file:///whatever/dir1/"
+    assert dataset_name_dir1 == f"{LISTING_PREFIX}{whatever_uri}/dir1/"
     # On update it is always false (there was no reason to complicate it for now)
     assert not exists
 
@@ -210,3 +214,39 @@ def test_listing_uri_from_name():
     assert listing_uri_from_name("lst__s3://my-bucket") == "s3://my-bucket"
     with pytest.raises(ValueError):
         listing_uri_from_name("s3://my-bucket")
+
+
+def _ds_name(uri: str) -> str:
+    name, _, _ = parse_listing_uri(uri)
+    return name
+
+
+@pytest.mark.parametrize(
+    "uri,expected_suffix",
+    [
+        # Common cloud / local names pass through unchanged
+        ("s3://my-bucket/dogs/", "s3://my-bucket/dogs/"),
+        # Dots are encoded (_x2e)
+        ("s3://bucket/v1.0/", "s3://bucket/v1_x2e0/"),
+        # Percent is encoded (_x25)
+        ("s3://bucket/dir%25/", "s3://bucket/dir_x2525/"),
+        # Hash is encoded (_x23)
+        ("s3://bucket/dir%23/", "s3://bucket/dir_x2523/"),
+        # Space is encoded (_x20)
+        ("s3://bucket/dir%20path/", "s3://bucket/dir_x2520path/"),
+        # @ is encoded (_x40)
+        ("s3://bucket/user@host/", "s3://bucket/user_x40host/"),
+        # Literal _x in path is doubled
+        ("s3://bucket/export_xml/", "s3://bucket/export_x_xml/"),
+    ],
+)
+def test_parse_listing_uri_sanitizes_dataset_name(uri, expected_suffix):
+    assert _ds_name(uri) == f"{LISTING_PREFIX}{expected_suffix}"
+
+
+def test_parse_listing_uri_no_collision_percent_vs_literal():
+    assert _ds_name("s3://b/dir%25/") != _ds_name("s3://b/dir_x25/")
+
+
+def test_parse_listing_uri_no_collision_dot_vs_underscore():
+    assert _ds_name("s3://b/v1.0/") != _ds_name("s3://b/v1_0/")

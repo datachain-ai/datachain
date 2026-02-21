@@ -34,7 +34,7 @@ def audio_file(tmp_path, catalog):
     audio_path = tmp_path / "test_audio.wav"
     audio_path.write_bytes(audio_data)
 
-    file = AudioFile(path=str(audio_path), source="file://")
+    file = AudioFile(path=audio_path.name, source=f"file://{tmp_path}")
     # _set_stream is required to enable file.open() operations
     file._set_stream(catalog, caching_enabled=False)
     return file
@@ -57,7 +57,7 @@ def stereo_audio_file(tmp_path, catalog):
     sf.write(audio_path, stereo_data, sample_rate, format="wav")
 
     # Create a real AudioFile object
-    file = AudioFile(path=str(audio_path), source="file://")
+    file = AudioFile(path=audio_path.name, source=f"file://{tmp_path}")
     # _set_stream is required to enable file.open() operations
     file._set_stream(catalog, caching_enabled=False)
     return file
@@ -257,7 +257,7 @@ def test_save_audio_auto_format(tmp_path, catalog):
     temp_data, sr = sf.read(buffer)
     sf.write(audio_path, temp_data, sr, format="flac")
 
-    audio_file = AudioFile(path=str(audio_path), source="file://")
+    audio_file = AudioFile(path=audio_path.name, source=f"file://{tmp_path}")
     # _set_stream is required to enable file.open() operations
     audio_file._set_stream(catalog, caching_enabled=False)
 
@@ -348,7 +348,7 @@ def test_audio_info_format_detection(
     audio_path = tmp_path / filename
     audio_path.write_bytes(audio_data)
 
-    audio_file = AudioFile(path=str(audio_path), source="file://")
+    audio_file = AudioFile(path=audio_path.name, source=f"file://{tmp_path}")
     audio_file._set_stream(catalog, caching_enabled=False)
 
     # Mock soundfile.info to return controlled format

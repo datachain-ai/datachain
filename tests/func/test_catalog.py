@@ -582,7 +582,6 @@ def test_ls_datasets_no_json(test_session):
             assert not hasattr(v, "feature_schema")
 
 
-@pytest.mark.parametrize("cloud_type", ["s3", "azure", "gs"], indirect=True)
 def test_listing_stats(cloud_test_catalog):
     catalog = cloud_test_catalog.catalog
     src_uri = cloud_test_catalog.src_uri
@@ -613,7 +612,6 @@ def test_listing_stats(cloud_test_catalog):
     assert size == 36
 
 
-@pytest.mark.parametrize("cloud_type", ["s3", "azure", "gs"], indirect=True)
 def test_enlist_source_handles_slash(cloud_test_catalog):
     catalog = cloud_test_catalog.catalog
     src_uri = cloud_test_catalog.src_uri
@@ -633,7 +631,6 @@ def test_enlist_source_handles_slash(cloud_test_catalog):
     assert size == 15
 
 
-@pytest.mark.parametrize("cloud_type", ["s3", "azure", "gs"], indirect=True)
 def test_enlist_source_handles_glob(cloud_test_catalog):
     catalog = cloud_test_catalog.catalog
     src_uri = cloud_test_catalog.src_uri
@@ -647,7 +644,6 @@ def test_enlist_source_handles_glob(cloud_test_catalog):
     assert size == 15
 
 
-@pytest.mark.parametrize("cloud_type", ["s3", "azure", "gs"], indirect=True)
 def test_enlist_source_handles_file(cloud_test_catalog):
     catalog = cloud_test_catalog.catalog
     src_uri = cloud_test_catalog.src_uri

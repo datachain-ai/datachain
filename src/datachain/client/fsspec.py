@@ -20,6 +20,7 @@ from tqdm.auto import tqdm
 
 from datachain.cache import Cache
 from datachain.client.fileslice import FileWrapper
+from datachain.lib.file import FileError
 from datachain.nodes_fetcher import NodesFetcher
 from datachain.nodes_thread_pool import NodeChunk
 
@@ -147,10 +148,6 @@ class Client(ABC):
         return fs
 
     @classmethod
-    def version_path(cls, path: str, version_id: str | None) -> str:
-        return path
-
-    @classmethod
     def from_name(
         cls,
         name: str,
@@ -210,38 +207,46 @@ class Client(ABC):
             self._fs = self.create_fs(**self.fs_kwargs)
         return self._fs
 
-    def url(self, path: str, expires: int = 3600, **kwargs) -> str:
-        return self.fs.sign(
-            self.get_full_path(path, kwargs.pop("version_id", None)),
-            expiration=expires,
-            **kwargs,
-        )
+    def url(
+        self,
+        path: str,
+        expires: int = 3600,
+        version_id: str | None = None,
+        **kwargs,
+    ) -> str:
+        kwargs.update(self._version_kwargs(version_id))
+        return self.fs.sign(self.get_full_path(path), expiration=expires, **kwargs)
 
     async def get_current_etag(self, file: "File") -> str:
-        file_path = file.get_path_normalized()
-        kwargs = {}
-        if self._is_version_aware():
-            kwargs["version_id"] = file.version
-        info = await self.fs._info(
-            self.get_full_path(file_path, file.version), **kwargs
-        )
+        file_path = self.rel_path_for_file(file)
+        full_path = self.full_path_for_file(file)
+        info = await self.fs._info(full_path, **self._version_kwargs(file.version))
         return self.info_to_file(info, file_path).etag
 
     def get_file_info(self, path: str, version_id: str | None = None) -> "File":
-        info = self.fs.info(self.get_full_path(path, version_id), version_id=version_id)
+        full_path = self.get_full_path(path)
+        info = sync(
+            get_loop(),
+            self.fs._info,
+            full_path,
+            **self._version_kwargs(version_id),
+        )
         return self.info_to_file(info, path)
 
-    async def get_size(self, path: str, version_id: str | None = None) -> int:
-        return await self.fs._size(
-            self.version_path(path, version_id), version_id=version_id
-        )
+    async def get_size(self, file: "File") -> int:
+        full_path = self.full_path_for_file(file)
+        info = await self.fs._info(full_path, **self._version_kwargs(file.version))
+        size = info.get("size")
+        if size is None:
+            raise FileNotFoundError(full_path)
+        return int(size)
 
     async def get_file(self, lpath, rpath, callback, version_id: str | None = None):
         return await self.fs._get_file(
-            self.version_path(lpath, version_id),
+            lpath,
             rpath,
             callback=callback,
-            version_id=version_id,
+            **self._version_kwargs(version_id),
         )
 
     async def scandir(
@@ -341,6 +346,11 @@ class Client(ABC):
     def _is_version_aware(self) -> bool:
         return getattr(self.fs, "version_aware", False)
 
+    def _version_kwargs(self, version_id: str | None) -> dict[str, Any]:
+        if version_id:
+            return {"version_id": version_id}
+        return {}
+
     async def ls_dir(self, path):
         kwargs = {}
         if self._is_version_aware():
@@ -350,8 +360,49 @@ class Client(ABC):
     def rel_path(self, path: str) -> str:
         return self.fs.split_path(path)[1]
 
-    def get_full_path(self, rel_path: str, version_id: str | None = None) -> str:
-        return self.version_path(f"{self.PREFIX}{self.name}/{rel_path}", version_id)
+    @classmethod
+    def rel_path_for_file(cls, file: "File") -> str:
+        """Return the backend-relative path used for I/O.
+
+        Default behavior for cloud/object-store clients is to treat `file.path`
+        as an opaque key.
+
+        Local filesystem clients override this to normalize/validate paths
+        before using them in OS filesystem operations.
+        """
+
+        path = file.path
+
+        # Disallow placeholder/dir-like values when computing I/O locators.
+        # Cloud/object-store keys are otherwise treated as opaque strings.
+        if not path:
+            raise FileError("path must not be empty", file.source, path)
+        if path.endswith("/"):
+            raise FileError("path must not be a directory", file.source, path)
+
+        # Disallow dot segments for all backends when computing I/O locators.
+        # Even though some object stores may allow them as raw key bytes, they
+        # are ambiguous in path-like interfaces and can create safety issues.
+        parts = path.split(DELIMITER)
+        if any(part in (".", "..") for part in parts):
+            raise FileError("path must not contain '.' or '..'", file.source, path)
+
+        return path
+
+    @classmethod
+    def full_path_for_file(cls, file: "File") -> str:
+        """Build a backend-specific full urlpath for I/O."""
+
+        rel_path = cls.rel_path_for_file(file)
+        name = cls.FS_CLASS._strip_protocol(file.source)
+        base = str(cls.get_uri(name))
+
+        if base.endswith("/"):
+            return f"{base}{rel_path}"
+        return f"{base}/{rel_path}"
+
+    def get_full_path(self, rel_path: str) -> str:
+        return f"{self.PREFIX}{self.name}/{rel_path}"
 
     @abstractmethod
     def info_to_file(self, v: dict[str, Any], path: str) -> "File": ...
@@ -397,8 +448,10 @@ class Client(ABC):
         if use_cache and (cache_path := self.cache.get_path(file)):
             return open(cache_path, mode="rb")
         assert not file.location
+        kwargs = self._version_kwargs(file.version)
+        full_path = self.full_path_for_file(file)
         return FileWrapper(
-            self.fs.open(self.get_full_path(file.get_path_normalized(), file.version)),
+            self.fs.open(full_path, **kwargs),
             cb,
         )  # type: ignore[return-value]
 
