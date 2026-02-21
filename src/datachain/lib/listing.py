@@ -2,6 +2,7 @@ import glob
 import logging
 import os
 import posixpath
+import re
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -107,6 +108,27 @@ def ls(
     return dc.filter(pathfunc.parent(_file_c("path")) == path.lstrip("/").rstrip("/*"))
 
 
+_DS_ENCODE_RE = re.compile(r"[^a-zA-Z0-9_/:\-]")
+
+
+def _sanitize_ds_name(raw: str) -> str:
+    """Make *raw* safe for use as a SQL table-name component.
+
+    The encoding is injective (collision-free):
+
+    1. Escape every ``_x`` already present → ``_x_x`` (doubled).
+    2. Encode every char outside ``[a-zA-Z0-9_/:-]``
+       as ``_xHH`` (two-digit lowercase hex ordinal).
+       This includes ``.``, ``%``, ``@``, ``#``, spaces, etc.
+
+    Because step 1 doubles any literal ``_x``, the ``_xHH`` sequences
+    produced by step 2 can never collide with text that was already in
+    the input.
+    """
+    raw = raw.replace("_x", "_x_x")  # escape the escape prefix
+    return _DS_ENCODE_RE.sub(lambda m: f"_x{ord(m.group()):02x}", raw)
+
+
 def parse_listing_uri(uri: str) -> tuple[str, str, str]:
     """
     Parsing uri and returns listing dataset name, listing uri and listing path
@@ -123,8 +145,7 @@ def parse_listing_uri(uri: str) -> tuple[str, str, str]:
         f"{LISTING_PREFIX}{storage_uri}/{posixpath.join(lst_uri_path, '').lstrip('/')}"
     )
 
-    # we should remove dots from the name
-    ds_name = ds_name.replace(".", "_")
+    ds_name = _sanitize_ds_name(ds_name)
 
     return ds_name, lst_uri, path
 

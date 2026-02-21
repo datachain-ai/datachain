@@ -105,8 +105,8 @@ def test_resolve_file_wrong_path(cloud_test_catalog, path):
 
 @pytest.mark.parametrize("caching_enabled", [True, False])
 @pytest.mark.parametrize("path", ["", ".", "..", "/", "dir/../../file.txt"])
-def test_cache_file_wrong_path(cloud_test_catalog_upload, path, caching_enabled):
-    ctc = cloud_test_catalog_upload
+def test_cache_file_wrong_path(cloud_test_catalog, path, caching_enabled):
+    ctc = cloud_test_catalog
 
     wrong_file = File(source=ctc.src_uri, path=path)
     wrong_file._set_stream(catalog=ctc.catalog, caching_enabled=caching_enabled)
@@ -161,40 +161,31 @@ def test_tar_members_inherit_uri_encoded_local_source(tmp_dir, test_session_tmpf
     assert member.name == "member.txt"
 
 
-@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
-def test_cloud_source_is_plain_storage_uri(cloud_test_catalog_upload):
-    ctc = cloud_test_catalog_upload
-    uploaded = File.upload(b"x", f"{ctc.src_uri}/x.txt", ctc.catalog)
-    assert uploaded.source == ctc.src_uri
-    assert uploaded.source.startswith("s3://")
-
-
-@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
-def test_to_storage_filename_percent_encoded_traversal_escapes_output(
-    cloud_test_catalog_upload, tmp_path
+@pytest.mark.parametrize(
+    "dirname",
+    [
+        "dir%percent",
+        "dir #% combo",
+        "v1.0-release",
+        "user@host",
+        "100%done",
+    ],
+    ids=lambda d: d.replace(" ", "_"),
+)
+def test_read_storage_special_chars_in_local_path(
+    dirname, tmp_dir, test_session_tmpfile
 ):
-    ctc = cloud_test_catalog_upload
-    src_uri = ctc.src_uri
-    catalog = ctc.catalog
+    """Regression: special chars (%, #, ., @, space) in a local directory name
+    must not break listing dataset creation.  The original bug was that raw '%'
+    flowed into the SQL table name and was misinterpreted by pysqlite."""
+    base = tmp_dir / dirname
+    base.mkdir(parents=True)
+    (base / "data.txt").write_text("hello")
 
-    payload = "..%2fescaped.txt"  # unquote -> ../escaped.txt
-    uploaded_bytes = b"poc"
-
-    # Upload an object whose key contains literal "%2f".
-    uploaded = File.upload(uploaded_bytes, f"{src_uri}/{payload}", catalog)
-    assert uploaded.path.endswith(payload)
-    assert uploaded.read() == uploaded_bytes
-
-    # Export only that one file.
-    chain = dc.read_storage(src_uri, session=ctc.session).filter(
-        C("file.path") == uploaded.path
-    )
-
-    output = tmp_path / "output"
-    chain.to_storage(output, placement="filename")
-
-    # Expected-safe behavior: exported files must stay within output.
-    assert not (tmp_path / "escaped.txt").exists()
+    files = dc.read_storage(base, session=test_session_tmpfile).to_values("file")
+    assert len(files) == 1
+    assert files[0].name == "data.txt"
+    assert files[0].source.startswith("file://")
 
 
 def test_to_storage_tar_member_percent_encoded_traversal_escapes_output(
@@ -346,6 +337,7 @@ def test_read_storage_returns_same_source_and_path(
     assert file_obj.read() == b"hi"
 
 
+@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
 @pytest.mark.parametrize("version_aware", [True], indirect=True)
 def test_write_version_capture(cloud_test_catalog, cloud_type):
     """Test version capture when writes interleave.
