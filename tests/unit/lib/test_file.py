@@ -102,10 +102,6 @@ def _output_absolute(tmp_path: Path) -> Path:
     return tmp_path / "absolute"
 
 
-def _prefix_from_output(output: str | os.PathLike[str]) -> str:
-    return os.fspath(output)
-
-
 @pytest.mark.parametrize(
     "source,expected_fullpath_prefix",
     [
@@ -156,7 +152,9 @@ def test_export_placements_build_expected_destination_for_each_source(
     file.export(output, placement="filepath", use_cache=False)
     file.export(output, placement="fullpath", use_cache=False)
 
-    expected_prefix = _prefix_from_output(output)
+    # export() normalises backslashes to forward slashes via
+    # os.fspath(output).replace("\\", "/"), so the expected prefix must match.
+    expected_prefix = os.fspath(output).replace("\\", "/")
 
     expected_fullpath_suffix = (
         f"{expected_fullpath_prefix}/dir1/dir2/test.txt"

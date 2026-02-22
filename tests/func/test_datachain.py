@@ -348,9 +348,7 @@ def test_export_images_files(test_session, tmp_dir, tmp_path, use_cache):
         img["data"].save(tmp_path / img["name"])
 
     dc.read_values(
-        file=[
-            ImageFile(path=img["name"], source=f"file://{tmp_path}") for img in images
-        ],
+        file=[ImageFile(path=img["name"], source=tmp_path.as_uri()) for img in images],
         session=test_session,
     ).settings(cache=use_cache).to_storage(tmp_dir / "output", placement="filename")
 

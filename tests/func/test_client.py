@@ -7,7 +7,7 @@ from uuid import uuid4
 import pytest
 from fsspec.asyn import sync
 from fsspec.callbacks import DEFAULT_CALLBACK
-from hypothesis import HealthCheck, assume, given, settings
+from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 from tqdm import tqdm
 
@@ -110,20 +110,57 @@ def test_fetch_dir_does_not_return_self(client, cloud_type):
     assert "directory" not in subdirs
 
 
-@settings(suppress_health_check=[HealthCheck.function_scoped_fixture], deadline=None)
-@given(rel_path=_non_null_text)
-def test_parse_url(cloud_test_catalog, rel_path, cloud_type):
-    if cloud_type == "file":
-        assume(not rel_path.startswith("/"))
-    bucket_uri = cloud_test_catalog.src_uri
-    url = f"{bucket_uri}/{rel_path}"
+@pytest.mark.parametrize(
+    "rel_suffix, expected_uri_suffix, expected_rel",
+    [
+        # ---- single segment: URI stays at base ----
+        ("animals", "", "animals"),
+        ("file.txt", "", "file.txt"),
+        # ---- multiple segments: URI absorbs all but last ----
+        ("a/b", "/a", "b"),
+        ("deep/nested/path/file.txt", "/deep/nested/path", "file.txt"),
+        # ---- trailing slash → directory semantics: rel is empty ----
+        ("animals/", "/animals", ""),
+        ("a/b/c/", "/a/b/c", ""),
+        # ---- special characters preserved as-is ----
+        ("v1.0-release", "", "v1.0-release"),
+        ("path with spaces", "", "path with spaces"),
+        ("100%done", "", "100%done"),
+        ("café", "", "café"),
+        # ---- backslash: literal filename char on Unix, separator on Windows ----
+        pytest.param(
+            "dir\\file",
+            "/dir" if sys.platform == "win32" else "",
+            "file" if sys.platform == "win32" else "dir\\file",
+            id="backslash",
+        ),
+    ],
+)
+def test_parse_url_file(tmp_path, rel_suffix, expected_uri_suffix, expected_rel):
+    base_uri = tmp_path.as_uri()
+    url = f"{base_uri}/{rel_suffix}"
+
     uri, rel_part = Client.parse_url(url)
-    if cloud_type == "file":
-        assert uri == url.rsplit("/", 1)[0]
-        assert rel_part == url.rsplit("/", 1)[1]
-    else:
-        assert uri == bucket_uri
-        assert rel_part == rel_path
+
+    assert uri == f"{base_uri}{expected_uri_suffix}"
+    assert rel_part == expected_rel
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
+def test_parse_url_cloud(cloud_test_catalog):
+    base_uri = cloud_test_catalog.src_uri
+    cases = [
+        # (rel_suffix, expected_rel)
+        ("animals", "animals"),
+        ("path/to/file.txt", "path/to/file.txt"),
+        ("animals/", "animals/"),
+        ("", ""),
+    ]
+    for rel_suffix, expected_rel in cases:
+        url = f"{base_uri}/{rel_suffix}"
+        uri, rel_part = Client.parse_url(url)
+        assert uri == base_uri, f"uri mismatch for {rel_suffix!r}"
+        assert rel_part == expected_rel, f"rel mismatch for {rel_suffix!r}"
 
 
 @settings(suppress_health_check=[HealthCheck.function_scoped_fixture], deadline=None)
