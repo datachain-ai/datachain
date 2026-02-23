@@ -1,3 +1,5 @@
+from uuid import uuid4
+
 import pytest
 
 import datachain as dc
@@ -348,4 +350,123 @@ def test_udf_checkpoints_cross_job_reuse(
 
     # Verify the data is correct
     result = chain.order_by("num").to_list("doubled")
+    assert result == [(2,), (4,), (6,), (8,), (10,), (12,)]
+
+
+def test_checkpoints_job_without_run_group_id(test_session, monkeypatch, nums_dataset):
+    catalog = test_session.catalog
+    metastore = catalog.metastore
+
+    call_count = {"count": 0}
+
+    def double_num(num) -> int:
+        call_count["count"] += 1
+        return num * 2
+
+    chain = dc.read_dataset("nums", session=test_session).map(
+        doubled=double_num, output=int
+    )
+
+    # -------------- FIRST RUN (from scratch, no run_group_id) -------------------
+    reset_session_job_state()
+
+    first_job_id = str(uuid4())
+    metastore.create_job(
+        "scheduled-task",
+        "echo 1;",
+        job_id=first_job_id,
+    )
+    monkeypatch.setenv("DATACHAIN_JOB_ID", first_job_id)
+
+    chain.save("doubled_nums")
+    first_job = metastore.get_job(first_job_id)
+    assert first_job.run_group_id == first_job_id
+    assert call_count["count"] == 6
+
+    # -------------- SECOND RUN (skip, no run_group_id) -------------------
+    reset_session_job_state()
+    call_count["count"] = 0
+
+    # Create rerun job — also without run_group_id (inherits None from parent)
+    second_job_id = str(uuid4())
+    metastore.create_job(
+        "scheduled-task",
+        "echo 1;",
+        job_id=second_job_id,
+        rerun_from_job_id=first_job_id,
+    )
+    monkeypatch.setenv("DATACHAIN_JOB_ID", second_job_id)
+
+    chain.save("doubled_nums")
+    second_job = metastore.get_job(second_job_id)
+    assert second_job.run_group_id == second_job_id
+    assert second_job.rerun_from_job_id == first_job_id
+
+    # UDF should be skipped via checkpoint
+    assert call_count["count"] == 0
+
+    result = chain.order_by("num").to_list("doubled")
+    assert result == [(2,), (4,), (6,), (8,), (10,), (12,)]
+
+
+def test_checkpoints_job_without_run_group_id_continue(
+    test_session, monkeypatch, nums_dataset
+):
+    catalog = test_session.catalog
+    metastore = catalog.metastore
+
+    processed_count = {"count": 0}
+    should_fail = [True]
+
+    def double_num(num) -> int:
+        processed_count["count"] += 1
+        if should_fail[0] and processed_count["count"] > 3:
+            raise RuntimeError("Simulated failure")
+        return num * 2
+
+    chain = (
+        dc.read_dataset("nums", session=test_session)
+        .settings(batch_size=1)
+        .map(doubled=double_num, output=int)
+    )
+
+    # -------------- FIRST RUN (fails, no run_group_id) -------------------
+    reset_session_job_state()
+
+    first_job_id = str(uuid4())
+    metastore.create_job(
+        "scheduled-task",
+        "echo 1;",
+        job_id=first_job_id,
+    )
+    monkeypatch.setenv("DATACHAIN_JOB_ID", first_job_id)
+
+    with pytest.raises(RuntimeError, match="Simulated failure"):
+        chain.save("doubled_nums")
+
+    first_count = processed_count["count"]
+    assert first_count > 0
+
+    # -------------- SECOND RUN (continue, no run_group_id) -------------------
+    reset_session_job_state()
+    processed_count["count"] = 0
+    should_fail[0] = False
+
+    second_job_id = str(uuid4())
+    metastore.create_job(
+        "scheduled-task",
+        "echo 1;",
+        job_id=second_job_id,
+        rerun_from_job_id=first_job_id,
+    )
+    monkeypatch.setenv("DATACHAIN_JOB_ID", second_job_id)
+
+    chain.save("doubled_nums")
+
+    # Should only process remaining rows, not all 6
+    assert processed_count["count"] < 6
+
+    result = sorted(
+        dc.read_dataset("doubled_nums", session=test_session).to_list("doubled")
+    )
     assert result == [(2,), (4,), (6,), (8,), (10,), (12,)]
