@@ -18,7 +18,7 @@ from urllib.parse import urlparse
 
 from fsspec.callbacks import DEFAULT_CALLBACK, Callback
 from fsspec.utils import stringify_path
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
 from datachain import json
 from datachain.client.fileslice import FileSlice
@@ -285,15 +285,20 @@ class File(DataModel):
     def validate_location(cls, v):
         return File._validate_dict(v)
 
-    @field_validator("path", mode="before")
-    @classmethod
-    def validate_path(cls, path: str) -> str:
-        if not path:
-            return ""
-        # Treat object keys / paths as opaque strings.
-        # Do not normalize away dot segments here; local filesystem clients
-        # perform their own stricter validation.
-        return os.fspath(path).replace("\\", "/")
+    @model_validator(mode="after")
+    def _normalize_path(self) -> "File":
+        # On Windows, local paths may contain backslash separators from
+        # os.path.join / Path objects.  Normalize them to forward slashes so
+        # PurePosixPath-based helpers (.name, .parent, …) work correctly.
+        # Cloud object keys are left untouched — a literal backslash is a
+        # valid character in S3/GCS keys and must not be silently replaced.
+        if (
+            os.name == "nt"
+            and "\\" in self.path
+            and (not self.source or self.source.startswith("file://"))
+        ):
+            self.path = self.path.replace("\\", "/")
+        return self
 
     @field_validator("source")
     @classmethod
