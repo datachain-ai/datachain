@@ -288,9 +288,9 @@ class File(DataModel):
     @model_validator(mode="after")
     def _normalize_path(self) -> "File":
         # On Windows, local paths may contain backslash separators from
-        # os.path.join / Path objects.  Normalize them to forward slashes so
+        # os.path.join / Path objects. Normalize them to forward slashes so
         # PurePosixPath-based helpers (.name, .parent, …) work correctly.
-        # Cloud object keys are left untouched — a literal backslash is a
+        # Cloud object keys are left untouched - a literal backslash is a
         # valid character in S3/GCS keys and must not be silently replaced.
         if (
             os.name == "nt"
