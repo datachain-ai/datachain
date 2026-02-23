@@ -593,7 +593,7 @@ class UDFStep(Step, ABC):
         to select
         """
 
-    def populate_udf_output_table(
+    def populate_udf_output_table(  # noqa: PLR0915
         self,
         udf_table: "Table",
         query: Select,
@@ -774,7 +774,7 @@ class UDFStep(Step, ABC):
                         generated_cb.close()
 
             except QueryScriptAbortError:
-                self.catalog.warehouse.close()
+                catalog.warehouse.close()
                 sys.exit(QUERY_SCRIPT_ABORTED_EXIT_CODE)
             except QueryScriptCancelError:
                 catalog.warehouse.close()
