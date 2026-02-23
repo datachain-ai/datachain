@@ -508,7 +508,7 @@ def test_udf_runs_multiple_times_with_checkpoints_disabled(
         doubled=lambda num: num * 2, output=int
     )
 
-    # Run the same chain multiple times — each should get a fresh ephemeral job
+    # Run the same chain multiple times — each should get a fresh run_id
     for _ in range(3):
         result = sorted(chain.to_list("doubled"))
         assert result == [(2,), (4,), (6,), (8,), (10,), (12,)]

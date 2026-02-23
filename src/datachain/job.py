@@ -1,6 +1,6 @@
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, TypeVar
 
 from datachain import json
@@ -27,23 +27,6 @@ class Job:
     rerun_from_job_id: str | None = None
     run_group_id: str | None = None
     is_remote_execution: bool = False
-
-    @classmethod
-    def create_ephemeral(cls) -> "Job":
-        """Create an in-memory Job."""
-        job_id = str(uuid.uuid4())
-        return cls(
-            id=job_id,
-            name="",
-            status=0,
-            created_at=datetime.now(timezone.utc),
-            query="",
-            query_type=0,
-            workers=1,
-            params={},
-            metrics={},
-            run_group_id=job_id,
-        )
 
     @classmethod
     def parse(  # noqa: PLR0913

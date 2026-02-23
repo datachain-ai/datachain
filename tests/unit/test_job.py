@@ -1,20 +1,28 @@
 from datachain.job import Job
 
 
-def test_create_ephemeral():
-    """Test that create_ephemeral returns a valid in-memory Job."""
-    job = Job.create_ephemeral()
+def test_parse():
+    """Test that Job.parse returns a valid Job."""
+    job = Job.parse(
+        id="test-id",
+        name="test-job",
+        status=1,
+        created_at="2024-01-01T00:00:00",
+        finished_at=None,
+        query="SELECT 1",
+        query_type=1,
+        workers=1,
+        python_version="3.11",
+        error_message="",
+        error_stack="",
+        params="{}",
+        metrics="{}",
+        parent_job_id=None,
+        rerun_from_job_id=None,
+        run_group_id="group-1",
+    )
 
-    assert job.id
-    assert job.run_group_id == job.id
+    assert job.id == "test-id"
+    assert job.name == "test-job"
+    assert job.run_group_id == "group-1"
     assert job.rerun_from_job_id is None
-    assert job.name == ""
-
-
-def test_create_ephemeral_unique_ids():
-    """Test that each ephemeral job gets a unique id."""
-    job1 = Job.create_ephemeral()
-    job2 = Job.create_ephemeral()
-
-    assert job1.id != job2.id
-    assert job1.run_group_id != job2.run_group_id

@@ -605,10 +605,8 @@ class UDFStep(Step, ABC):
         rows_to_process = catalog.warehouse.query_count(query)
         if rows_to_process == 0:
             logger.debug(
-                "UDF(%s) [job=%s run_group=%s]: No rows to process, skipping",
+                "UDF(%s): No rows to process, skipping",
                 self._udf_name,
-                self._job_id_short,
-                self._run_group_id_short,
             )
             return
 
@@ -621,11 +619,8 @@ class UDFStep(Step, ABC):
         workers = determine_workers(self.workers, rows_total=rows_to_process)
         processes = determine_processes(self.parallel, rows_total=rows_to_process)
         logger.debug(
-            "UDF(%s) [job=%s run_group=%s]: Processing %d rows "
-            "(workers=%s, processes=%s, batch_size=%s)",
+            "UDF(%s): Processing %d rows (workers=%s, processes=%s, batch_size=%s)",
             self._udf_name,
-            self._job_id_short,
-            self._run_group_id_short,
             rows_to_process,
             workers,
             processes,
@@ -825,14 +820,14 @@ class UDFStep(Step, ABC):
         return self.udf.inner.verbose_name
 
     @staticmethod
-    def _job_id_short(job: Job) -> str:
+    def _job_id_short(job: "Job | None") -> str:
         """Get short job_id for logging."""
-        return job.id[:8] if job.id else "none"
+        return job.id[:8] if job and job.id else "none"
 
     @staticmethod
-    def _run_group_id_short(job: Job) -> str:
+    def _run_group_id_short(job: "Job | None") -> str:
         """Get short run_group_id for logging."""
-        return job.run_group_id[:8] if job.run_group_id else "none"
+        return job.run_group_id[:8] if job and job.run_group_id else "none"
 
     @property
     @abstractmethod
@@ -889,13 +884,16 @@ class UDFStep(Step, ABC):
         )
 
     def _find_udf_checkpoint(
-        self, job: Job, _hash: str, partial: bool = False
+        self, job: "Job | None", _hash: str, partial: bool = False
     ) -> Checkpoint | None:
         """
         Find a reusable UDF checkpoint for the given hash.
         Returns the Checkpoint object if found and checkpoints are enabled,
         None otherwise.
         """
+        if job is None:
+            return None
+
         ignore_checkpoints = env2bool("DATACHAIN_IGNORE_CHECKPOINTS", undefined=False)
 
         if (
@@ -949,7 +947,9 @@ class UDFStep(Step, ABC):
         """Job-specific partial output table name."""
         return f"udf_{job_id}_{_hash}_output_partial"
 
-    def get_or_create_input_table(self, query: Select, _hash: str, job: Job) -> "Table":
+    def get_or_create_input_table(
+        self, query: Select, _hash: str, job: "Job | None"
+    ) -> "Table":
         """
         Get or create input table for the given hash.
 
@@ -958,7 +958,7 @@ class UDFStep(Step, ABC):
 
         Returns the input table.
         """
-        group_id = job.run_group_id or job.id
+        group_id = (job.run_group_id or job.id) if job else str(uuid4())
         input_table_name = UDFStep.input_table_name(group_id, _hash)
 
         # Check if input table already exists (created by ancestor job)
@@ -978,7 +978,7 @@ class UDFStep(Step, ABC):
         if checkpoints_enabled():
             job = self.session.get_or_create_job()
         else:
-            job = Job.create_ephemeral()
+            job = None
 
         query = query_generator.select()
 
@@ -1007,10 +1007,13 @@ class UDFStep(Step, ABC):
                 partition_tbl.c.sys__id == query.selected_columns.sys__id,
             ).add_columns(*partition_columns())
 
-        # Aggregator checkpoints are not implemented yet - skip partial continuation
-        can_continue_from_partial = self.partition_by is None
-
-        if ch := self._find_udf_checkpoint(job, hash_output):
+        if not checkpoints_enabled():
+            # Checkpoints disabled — just run the UDF, no checkpoint lookup
+            output_table, input_table = self._run_from_scratch(
+                partial_hash, hash_output, hash_input, query, job
+            )
+        elif ch := self._find_udf_checkpoint(job, hash_output):
+            assert job is not None  # guaranteed by checkpoints_enabled() branch
             try:
                 output_table, input_table = self._skip_udf(ch, hash_input, query, job)
             except TableMissingError:
@@ -1025,9 +1028,10 @@ class UDFStep(Step, ABC):
                 output_table, input_table = self._run_from_scratch(
                     partial_hash, ch.hash, hash_input, query, job
                 )
-        elif can_continue_from_partial and (
+        elif self.partition_by is None and (
             ch_partial := self._find_udf_checkpoint(job, partial_hash, partial=True)
         ):
+            assert job is not None  # guaranteed by checkpoints_enabled() branch
             output_table, input_table = self._continue_udf(
                 ch_partial, hash_output, hash_input, query, job
             )
@@ -1109,9 +1113,16 @@ class UDFStep(Step, ABC):
         return output_table, input_table
 
     def _run_from_scratch(
-        self, partial_hash: str, hash_output: str, hash_input: str, query, job: Job
+        self,
+        partial_hash: str,
+        hash_output: str,
+        hash_input: str,
+        query,
+        job: "Job | None",
     ) -> tuple["Table", "Table"]:
         """Execute UDF from scratch. Returns (output_table, input_table)."""
+        run_id = job.id if job else str(uuid4())
+
         logger.info(
             "UDF(%s) [job=%s run_group=%s]: Running from scratch",
             self._udf_name,
@@ -1120,7 +1131,7 @@ class UDFStep(Step, ABC):
         )
 
         partial_checkpoint = None
-        if checkpoints_enabled():
+        if job is not None:
             partial_checkpoint = self.metastore.get_or_create_checkpoint(
                 job.id, partial_hash, partial=True
             )
@@ -1135,7 +1146,7 @@ class UDFStep(Step, ABC):
         input_table = self.get_or_create_input_table(query, hash_input, job)
 
         partial_output_table = self.create_output_table(
-            UDFStep.partial_output_table_name(job.id, partial_hash),
+            UDFStep.partial_output_table_name(run_id, partial_hash),
         )
 
         if self.partition_by is not None:
@@ -1146,10 +1157,11 @@ class UDFStep(Step, ABC):
         self.populate_udf_output_table(partial_output_table, input_query)
 
         output_table = self.warehouse.rename_table(
-            partial_output_table, UDFStep.output_table_name(job.id, hash_output)
+            partial_output_table, UDFStep.output_table_name(run_id, hash_output)
         )
 
         if partial_checkpoint:
+            assert job is not None  # partial_checkpoint is only set when job exists
             self.metastore.remove_checkpoint(partial_checkpoint.id)
             self.metastore.get_or_create_checkpoint(job.id, hash_output)
             logger.debug(
@@ -1160,21 +1172,22 @@ class UDFStep(Step, ABC):
                 hash_output[:8],
             )
 
-        # Log checkpoint event with row counts
-        rows_input = self.warehouse.table_rows_count(input_table)
-        rows_generated = self.warehouse.table_rows_count(output_table)
-        self._log_event(
-            job,
-            CheckpointEventType.UDF_FROM_SCRATCH,
-            checkpoint_hash=hash_output,
-            hash_input=hash_input,
-            hash_output=hash_output,
-            rows_input=rows_input,
-            rows_processed=rows_input,
-            rows_output=rows_generated,
-            rows_input_reused=0,
-            rows_output_reused=0,
-        )
+        if job is not None:
+            # Log checkpoint event with row counts
+            rows_input = self.warehouse.table_rows_count(input_table)
+            rows_generated = self.warehouse.table_rows_count(output_table)
+            self._log_event(
+                job,
+                CheckpointEventType.UDF_FROM_SCRATCH,
+                checkpoint_hash=hash_output,
+                hash_input=hash_input,
+                hash_output=hash_output,
+                rows_input=rows_input,
+                rows_processed=rows_input,
+                rows_output=rows_generated,
+                rows_input_reused=0,
+                rows_output_reused=0,
+            )
 
         return output_table, input_table
 
