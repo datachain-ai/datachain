@@ -1008,12 +1008,11 @@ class UDFStep(Step, ABC):
             ).add_columns(*partition_columns())
 
         if not checkpoints_enabled():
-            # Checkpoints disabled — just run the UDF, no checkpoint lookup
             output_table, input_table = self._run_from_scratch(
                 partial_hash, hash_output, hash_input, query, job
             )
         elif ch := self._find_udf_checkpoint(job, hash_output):
-            assert job is not None  # guaranteed by checkpoints_enabled() branch
+            assert job is not None
             try:
                 output_table, input_table = self._skip_udf(ch, hash_input, query, job)
             except TableMissingError:
@@ -1031,7 +1030,7 @@ class UDFStep(Step, ABC):
         elif self.partition_by is None and (
             ch_partial := self._find_udf_checkpoint(job, partial_hash, partial=True)
         ):
-            assert job is not None  # guaranteed by checkpoints_enabled() branch
+            assert job is not None
             output_table, input_table = self._continue_udf(
                 ch_partial, hash_output, hash_input, query, job
             )
@@ -1121,7 +1120,7 @@ class UDFStep(Step, ABC):
         job: "Job | None",
     ) -> tuple["Table", "Table"]:
         """Execute UDF from scratch. Returns (output_table, input_table)."""
-        run_id = job.id if job else str(uuid4())
+        run_id = job.id if job else str(uuid4())  # unique ID for table naming
 
         logger.info(
             "UDF(%s) [job=%s run_group=%s]: Running from scratch",
@@ -1160,9 +1159,10 @@ class UDFStep(Step, ABC):
             partial_output_table, UDFStep.output_table_name(run_id, hash_output)
         )
 
-        if partial_checkpoint:
-            assert job is not None  # partial_checkpoint is only set when job exists
-            self.metastore.remove_checkpoint(partial_checkpoint.id)
+        if job is not None:
+            # Promote partial checkpoint to final and log event
+            if partial_checkpoint:
+                self.metastore.remove_checkpoint(partial_checkpoint.id)
             self.metastore.get_or_create_checkpoint(job.id, hash_output)
             logger.debug(
                 "UDF(%s) [job=%s run_group=%s]: Promoted partial to final, hash=%s",
@@ -1172,8 +1172,6 @@ class UDFStep(Step, ABC):
                 hash_output[:8],
             )
 
-        if job is not None:
-            # Log checkpoint event with row counts
             rows_input = self.warehouse.table_rows_count(input_table)
             rows_generated = self.warehouse.table_rows_count(output_table)
             self._log_event(
