@@ -10,14 +10,15 @@ if TYPE_CHECKING:
 def is_subpath(parent: str, child: str) -> bool:
     """True iff *child* is strictly inside *parent* (path-traversal guard).
 
-    Both paths must be absolute OS paths. Comparison is case-insensitive on
-    Windows.
+    Both paths must be absolute OS paths. ``..`` segments are resolved before
+    comparison so that traversal tricks like ``/out/../etc/passwd`` are caught.
+    Comparison is case-insensitive on Windows.
     """
     assert os.path.isabs(parent), f"parent must be absolute: {parent!r}"
     assert os.path.isabs(child), f"child must be absolute: {child!r}"
 
-    parent_normed = os.path.normcase(parent)
-    child_normed = os.path.normcase(child)
+    parent_normed = os.path.normcase(os.path.normpath(parent))
+    child_normed = os.path.normcase(os.path.normpath(child))
 
     if child_normed == parent_normed:
         return False

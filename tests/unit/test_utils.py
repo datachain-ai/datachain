@@ -626,3 +626,48 @@ def test_is_subpath_win_mixed_separators():
 def test_is_subpath_win_mixed_rejects_outside():
     assert not is_subpath("C:\\Users\\out", "C:/Users/out2/file.txt")
     assert not is_subpath("C:/Users/out", "C:\\Users\\escape.txt")
+
+
+def test_is_subpath_rejects_dotdot_traversal(tmp_path):
+    """Defence in depth: ``..`` in an absolute child must not bypass the check."""
+    output = str(tmp_path / "output")
+    # Craft a child that starts with the parent prefix but escapes via '..'
+    child = str(tmp_path / "output" / ".." / "escaped.txt")
+    assert not is_subpath(output, child)
+
+
+def test_is_subpath_rejects_deep_dotdot_traversal(tmp_path):
+    """Multiple ``..`` segments escaping several levels up."""
+    output = str(tmp_path / "a" / "b" / "output")
+    child = str(tmp_path / "a" / "b" / "output" / ".." / ".." / ".." / "etc" / "passwd")
+    assert not is_subpath(output, child)
+
+
+def test_is_subpath_accepts_dotdot_that_stays_inside(tmp_path):
+    """``..`` that resolves back inside the parent should be accepted."""
+    output = str(tmp_path / "output")
+    # output/sub/../file.txt  →  output/file.txt  (still inside output)
+    child = str(tmp_path / "output" / "sub" / ".." / "file.txt")
+    assert is_subpath(output, child)
+
+
+def test_is_subpath_rejects_dotdot_to_parent_itself(tmp_path):
+    """``..`` resolving to exactly the parent (not strictly inside) → False."""
+    output = str(tmp_path / "output")
+    # output/sub/..  →  output  (equal, not strictly inside)
+    child = str(tmp_path / "output" / "sub" / "..")
+    assert not is_subpath(output, child)
+
+
+def test_is_subpath_normalises_dot_segments(tmp_path):
+    """Single ``.`` segments don't fool the check."""
+    output = str(tmp_path / "output")
+    child = str(tmp_path / "output" / "." / "file.txt")
+    assert is_subpath(output, child)
+
+
+def test_is_subpath_parent_with_dotdot(tmp_path):
+    """``..`` in the parent path is also normalised."""
+    parent = str(tmp_path / "a" / ".." / "output")
+    child = str(tmp_path / "output" / "file.txt")
+    assert is_subpath(parent, child)
