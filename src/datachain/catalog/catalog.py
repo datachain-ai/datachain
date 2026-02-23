@@ -74,7 +74,7 @@ logger = logging.getLogger("datachain")
 
 DEFAULT_DATASET_DIR = "dataset"
 
-TTL_INT = 4 * 60 * 60
+CHECKPOINTS_TTL = 4 * 60 * 60
 
 INDEX_INTERNAL_ERROR_MESSAGE = "Internal error on indexing"
 DATASET_INTERNAL_ERROR_MESSAGE = "Internal error on creating dataset"
@@ -2113,7 +2113,7 @@ class Catalog:
         the entire run group has no active checkpoints.
         """
         if ttl_seconds is None:
-            ttl_seconds = TTL_INT
+            ttl_seconds = CHECKPOINTS_TTL
 
         ttl_threshold = datetime.now(timezone.utc) - timedelta(seconds=ttl_seconds)
 

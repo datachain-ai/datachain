@@ -16,8 +16,6 @@ This command cleans up internal DataChain storage by removing:
 - **Failed dataset versions** that were left in an incomplete or failed state.
 - **Outdated checkpoints** and their associated UDF tables that have exceeded the time-to-live (TTL) threshold. See [Checkpoints](../guide/checkpoints.md) for more details.
 
-Each category is collected and cleaned independently. Progress is reported for each step.
-
 ## Options
 
 * `-h`, `--help` - Show the help message and exit.
