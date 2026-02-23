@@ -176,7 +176,7 @@ def test_cleanup_skips_job_with_active_checkpoints(test_session, nums_dataset):
 
 
 def test_cleanup_preserves_input_tables_when_run_group_active(
-    test_session, nums_dataset
+    test_session, monkeypatch, nums_dataset
 ):
     catalog = test_session.catalog
     metastore = catalog.metastore
@@ -199,8 +199,14 @@ def test_cleanup_preserves_input_tables_when_run_group_active(
 
     # Create a second job in the same run group with active checkpoints
     reset_session_job_state()
+    job2_id = metastore.create_job(
+        "test-job",
+        "echo 1",
+        rerun_from_job_id=job1_id,
+        run_group_id=run_group_id,
+    )
+    monkeypatch.setenv("DATACHAIN_JOB_ID", job2_id)
     chain.map(tripled=lambda num: num * 3, output=int).save("nums_tripled")
-    job2_id = test_session.get_or_create_job().id
 
     # Make only job 1's checkpoints outdated
     old_time = datetime.now(timezone.utc) - timedelta(hours=5)

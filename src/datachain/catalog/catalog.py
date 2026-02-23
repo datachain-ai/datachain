@@ -2117,7 +2117,6 @@ class Catalog:
 
         ttl_threshold = datetime.now(timezone.utc) - timedelta(seconds=ttl_seconds)
 
-        # Step 1: Find inactive jobs in a single query
         inactive_jobs = list(
             self.metastore.get_jobs_with_expired_checkpoints(ttl_threshold)
         )
@@ -2133,8 +2132,6 @@ class Catalog:
             len(run_group_ids),
         )
 
-        # Step 2: Remove warehouse tables first (before metadata) so that if
-        # we crash midway, metadata still exists to retry on next GC run.
         for job in inactive_jobs:
             self._cleanup_udf_tables(f"udf_{job.id}_", suffix="_output")
             self._cleanup_udf_tables(f"udf_{job.id}_", suffix="_output_partial")
@@ -2146,7 +2143,6 @@ class Catalog:
             ):
                 self._cleanup_udf_tables(f"udf_{group_id}_", suffix="_input")
 
-        # Step 3: Remove checkpoint metadata for inactive jobs
         checkpoints = list(self.metastore.list_checkpoints(job_id=inactive_job_ids))
         for ch in checkpoints:
             self.metastore.remove_checkpoint(ch.id)
