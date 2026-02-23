@@ -62,7 +62,6 @@ from .dependency import build_dependency_hierarchy, populate_nested_dependencies
 if TYPE_CHECKING:
     import pandas as pd
 
-    from datachain.checkpoint import Checkpoint
     from datachain.data_storage import AbstractMetastore, AbstractWarehouse
     from datachain.dataset import DatasetListVersion
     from datachain.job import Job
@@ -2107,82 +2106,54 @@ class Catalog:
     def cleanup_checkpoints(self, ttl_seconds: int | None = None) -> int:
         """Clean up outdated checkpoints and their associated UDF tables.
 
-        For each job whose checkpoints are ALL outdated (older than TTL),
-        removes per-job output/partial tables and checkpoint metadata.
-        Input tables (shared across a run group) are only removed when
-        the entire run group has no active checkpoints.
+        Algorithm:
+        1. Find inactive jobs (all checkpoints older than TTL) — single query
+        2. For each inactive job: remove output/partial tables and checkpoints
+        3. For run groups where all member jobs are inactive: also remove
+           shared input tables
         """
         if ttl_seconds is None:
             ttl_seconds = CHECKPOINTS_TTL
 
         ttl_threshold = datetime.now(timezone.utc) - timedelta(seconds=ttl_seconds)
 
-        outdated_checkpoints = list(
-            self.metastore.list_checkpoints(created_before=ttl_threshold)
+        # Step 1: Find inactive jobs in a single query
+        inactive_jobs = list(
+            self.metastore.get_jobs_with_expired_checkpoints(ttl_threshold)
         )
-
-        if not outdated_checkpoints:
+        if not inactive_jobs:
             return 0
+
+        inactive_job_ids = [job.id for job in inactive_jobs]
+        run_group_ids = {job.run_group_id or job.id for job in inactive_jobs}
 
         logger.info(
-            "Found %d outdated checkpoints to evaluate", len(outdated_checkpoints)
+            "Cleaning %d inactive jobs across %d run groups",
+            len(inactive_jobs),
+            len(run_group_ids),
         )
 
-        # Group outdated checkpoints by job_id
-        by_job: dict[str, list[Checkpoint]] = {}
-        for ch in outdated_checkpoints:
-            by_job.setdefault(ch.job_id, []).append(ch)
+        # Step 2: Remove warehouse tables first (before metadata) so that if
+        # we crash midway, metadata still exists to retry on next GC run.
+        for job in inactive_jobs:
+            self._cleanup_udf_tables(f"udf_{job.id}_", suffix="_output")
+            self._cleanup_udf_tables(f"udf_{job.id}_", suffix="_output_partial")
 
-        # For each job, check if ALL its checkpoints are outdated
-        checkpoints_to_remove: list[Checkpoint] = []
-        jobs_to_clean: set[str] = set()
-
-        for job_id, checkpoints in by_job.items():
-            has_active = any(
-                True
-                for _ in self.metastore.list_checkpoints(
-                    job_id=job_id, created_after=ttl_threshold
-                )
-            )
-            if has_active:
-                logger.debug("Skipping job %s - has active checkpoints", job_id[:8])
-                continue
-
-            logger.info(
-                "Cleaning job %s (%d checkpoints)", job_id[:8], len(checkpoints)
-            )
-            checkpoints_to_remove.extend(checkpoints)
-            jobs_to_clean.add(job_id)
-
-        if not checkpoints_to_remove:
-            return 0
-
-        # Look up run_group_ids for cleaned jobs
-        jobs = self.metastore.list_jobs_by_ids(list(jobs_to_clean))
-        run_groups_to_clean = {job.run_group_id for job in jobs if job.run_group_id}
-
-        # Remove warehouse tables first (before metadata) so that if we
-        # crash midway, metadata still exists to retry on next GC run.
-
-        # Per-job output/partial tables (exclude input tables which are
-        # shared across the run group via run_group_id prefix)
-        for job_id in jobs_to_clean:
-            self._cleanup_udf_tables(f"udf_{job_id}_", suffix="_output")
-            self._cleanup_udf_tables(f"udf_{job_id}_", suffix="_output_partial")
-
-        # Shared input tables: only remove when entire run group is inactive
-        for run_group_id in run_groups_to_clean:
+        # Shared input tables — only when entire run group is inactive
+        for group_id in run_group_ids:
             if not self.metastore.has_active_checkpoints_in_run_group(
-                run_group_id, ttl_threshold
+                group_id, ttl_threshold
             ):
-                self._cleanup_udf_tables(f"udf_{run_group_id}_", suffix="_input")
+                self._cleanup_udf_tables(f"udf_{group_id}_", suffix="_input")
 
-        # Then remove checkpoint metadata
-        for ch in checkpoints_to_remove:
+        # Step 3: Remove checkpoint metadata for inactive jobs
+        checkpoints = list(self.metastore.list_checkpoints(job_id=inactive_job_ids))
+        for ch in checkpoints:
             self.metastore.remove_checkpoint(ch.id)
 
         logger.info(
-            "Checkpoint cleanup complete: removed %d checkpoints",
-            len(checkpoints_to_remove),
+            "Checkpoint cleanup complete: removed %d checkpoints from %d jobs",
+            len(checkpoints),
+            len(inactive_jobs),
         )
-        return len(checkpoints_to_remove)
+        return len(checkpoints)
