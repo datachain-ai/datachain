@@ -1011,6 +1011,9 @@ class UDFStep(Step, ABC):
             output_table, input_table = self._run_from_scratch(
                 partial_hash, hash_output, hash_input, query, job
             )
+            # No checkpoints — tables won't be reused, register for cleanup
+            temp_tables.append(output_table.name)
+            temp_tables.append(input_table.name)
         elif ch := self._find_udf_checkpoint(job, hash_output):
             assert job is not None
             try:
