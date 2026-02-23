@@ -633,36 +633,79 @@ class File(DataModel):
         link_type: Literal["copy", "symlink"] = "copy",
         client_config: dict | None = None,
     ) -> None:
-        """Export file to new location."""
+        """Copy or link this file into an output directory.
+
+        Args:
+            output: Destination directory (local path or cloud prefix).
+            placement: How to build the path under *output*:
+
+                - ``"fullpath"`` (default) — ``output/bucket/dir/file.txt``
+                - ``"filepath"`` — ``output/dir/file.txt``
+                - ``"filename"`` — ``output/file.txt``
+                - ``"etag"`` — ``output/<etag>.txt``
+            use_cache: If True, download to local cache first.  Also
+                required for symlinking remote files.
+            link_type: ``"copy"`` (default) or ``"symlink"``.
+                Symlink falls back to copy for virtual files and for
+                remote files when *use_cache* is False.
+            client_config: Extra kwargs forwarded to the storage client.
+
+        Example:
+            ```py
+            # flat export by filename
+            f.export("./export", placement="filename")
+
+            # export to a cloud prefix
+            f.export("s3://output-bucket/results", placement="filepath")
+
+            # pass storage credentials via client_config
+            f.export("s3://bucket/out", client_config={"aws_access_key_id": "…"})
+
+            # symlink from local cache (avoids re-downloading)
+            f.export("./local_out", use_cache=True, link_type="symlink")
+            ```
+        """
         if self._catalog is None:
             raise RuntimeError("Cannot export file: catalog is not set")
 
         self._caching_enabled = use_cache
 
         suffix = self._get_destination_suffix(placement)
-        # Normalize backslashes to forward slashes so posixpath.join produces
-        # consistent separator paths on Windows.
-        output_fspath = os.fspath(output).replace("\\", "/")
-        dst = posixpath.join(output_fspath, suffix)
-        dst_dir = posixpath.dirname(dst)
-        client: Client = self._catalog.get_client(dst_dir, **(client_config or {}))
+        output_str = stringify_path(output)
+        client = self._catalog.get_client(output_str, **(client_config or {}))
 
-        # If we're exporting to a local directory, ensure the resolved destination
-        # stays within the chosen output directory. This protects against traversal
-        # and absolute-path suffixes even when the source key is cloud/opaque.
+        # Normalization and traversal safety: for local exports, resolve to absolute
+        # and validate the suffix. Cloud exports skip this — the cloud client already
+        # rejects path-traversal characters in object keys.
         if client.PREFIX == "file://":
             from datachain.client.local import FileClient
+            from datachain.fs.utils import is_subpath
 
-            FileClient.validate_local_relpath(os.fspath(output), suffix)
+            # On Windows, normalize backslash separators to forward slashes
+            # so posixpath.join produces consistent paths.  On Linux/macOS
+            # backslash is a legal filename character and must not be replaced.
+            output_abs = os.path.abspath(output_str)
+            if os.name == "nt":
+                output_abs = output_abs.replace("\\", "/")
+            dst = posixpath.join(output_abs, suffix)
 
-            if not FileClient.is_path_in(output, dst):
+            try:
+                FileClient.validate_file_relpath(suffix)
+            except ValueError as exc:
+                raise FileError(str(exc), stringify_path(output), suffix) from None
+
+            if not is_subpath(output_abs, dst):
                 raise FileError(
                     "destination is not within output directory",
                     stringify_path(output),
                     dst,
                 )
+        else:
+            # For cloud exports, simply join the output prefix and suffix.
+            # Relying on cloud clients to do their own validation.
+            dst = posixpath.join(output_str, suffix)
 
-        client.fs.makedirs(dst_dir, exist_ok=True)
+        client.fs.makedirs(posixpath.dirname(dst), exist_ok=True)
 
         if link_type == "symlink":
             try:

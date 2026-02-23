@@ -22,53 +22,6 @@ class FileClient(Client):
     PREFIX = "file://"
     protocol = "file"
 
-    @classmethod
-    def is_path_in(
-        cls,
-        output: str | os.PathLike[str],
-        dst: str,
-    ) -> bool:
-        """Return whether `dst` is safe to write under local `output`.
-
-        Accepts both plain OS paths and `file://` urlpaths. For other schemes,
-        returns False.
-        """
-
-        from fsspec.utils import stringify_path
-
-        output_str = stringify_path(output)
-
-        # Only handle local paths + file:// urlpaths.
-        if "://" in dst and not dst.startswith(cls.PREFIX):
-            return False
-        if "://" in output_str and not output_str.startswith(cls.PREFIX):
-            return False
-
-        output_os = (
-            LocalFileSystem._strip_protocol(output_str)
-            if output_str.startswith(cls.PREFIX)
-            else output_str
-        )
-        dst_os = (
-            LocalFileSystem._strip_protocol(dst) if dst.startswith(cls.PREFIX) else dst
-        )
-
-        # Use abspath (makes relative paths absolute based on CWD, collapses
-        # .. and .) followed by normcase (lowercases on Windows) for deterministic,
-        # filesystem-independent comparison.  resolve(strict=False) is avoided
-        # because its symlink / junction behaviour varies across Python versions
-        # and can differ depending on which path components already exist.
-        output_normed = os.path.normcase(os.path.abspath(output_os))
-        dst_normed = os.path.normcase(os.path.abspath(dst_os))
-
-        # Destination must be a file path under output, not the output dir itself.
-        if dst_normed == output_normed:
-            return False
-
-        # Ensure dst starts with the output prefix followed by a separator,
-        # so that output="/foo/bar" does not match dst="/foo/bar2".
-        return dst_normed.startswith(output_normed + os.sep)
-
     def __init__(
         self,
         name: str,
@@ -171,7 +124,10 @@ class FileClient(Client):
     @classmethod
     def rel_path_for_file(cls, file: "File") -> str:
         path = file.path
-        cls.validate_local_relpath(file.source, path)
+        try:
+            cls.validate_file_relpath(path)
+        except ValueError as exc:
+            raise FileError(str(exc), file.source, path) from None
 
         normpath = os.path.normpath(path)
         normpath = Path(normpath).as_posix()
@@ -184,43 +140,57 @@ class FileClient(Client):
 
         return normpath
 
-    @classmethod
-    def validate_local_relpath(cls, source: str, path: str) -> None:
-        """Validate a local relative path string.
+    @staticmethod
+    def validate_file_relpath(path: str) -> None:
+        """Ensure a file's relative path is safe to use on the local filesystem.
 
-        Used both for local `File.path` values and for local export destination
-        suffixes. Reject inputs that would require normalization (e.g. empty
-        segments) or that could be unsafe on the local filesystem.
+        Rejects absolute, traversal, and malformed paths that could escape the
+        intended directory or require implicit normalization. On Windows,
+        backslashes and drive-letter prefixes are handled as separators/absolute.
         """
 
         if not path:
-            raise FileError("path must not be empty", source, path)
+            raise ValueError(f"unsafe file path {path!r}: must not be empty")
 
-        if path.endswith("/"):
-            raise FileError("path must not be a directory", source, path)
+        # On Windows, backslash is a path separator — normalize so the
+        # checks below work uniformly.  On Linux/macOS, backslash is a legal
+        # filename character and must not be reinterpreted as a separator.
+        if os.name == "nt":
+            canonical = path.replace("\\", "/")
+        else:
+            canonical = path
 
-        raw_posix = path.replace("\\", "/")
+        if canonical.endswith("/"):
+            raise ValueError(f"unsafe file path {path!r}: must not be a directory")
 
         # Disallow absolute paths; local file paths are interpreted relative to
         # the source/output prefix.
-        if raw_posix.startswith("/"):
-            raise FileError("path must not be absolute", source, path)
+        if canonical.startswith("/"):
+            raise ValueError(f"unsafe file path {path!r}: must not be absolute")
 
         # On Windows, a drive-letter prefix like "C:/" is absolute even
-        # without a leading "/".
-        if len(raw_posix) >= 2 and raw_posix[0].isalpha() and raw_posix[1] == ":":
-            raise FileError("path must not be absolute", source, path)
+        # without a leading "/".  On Unix, colons are legal in filenames,
+        # so only enforce this on Windows.
+        if (
+            os.name == "nt"
+            and len(canonical) >= 2
+            and canonical[0].isalpha()
+            and canonical[1] == ":"
+        ):
+            raise ValueError(f"unsafe file path {path!r}: must not be absolute")
 
         # Disallow empty segments (e.g. 'dir//file.txt') to avoid implicit
         # normalization.
-        if "//" in raw_posix:
-            raise FileError("path must not contain empty segments", source, path)
+        if "//" in canonical:
+            raise ValueError(
+                f"unsafe file path {path!r}: must not contain empty segments"
+            )
 
         # Disallow dot segments like '.' or '..' (even if they could be
         # normalized away) because they can make I/O and exports unsafe.
-        raw_parts = raw_posix.split("/")
+        raw_parts = canonical.split("/")
         if any(part in (".", "..") for part in raw_parts):
-            raise FileError("path must not contain '.' or '..'", source, path)
+            raise ValueError(f"unsafe file path {path!r}: must not contain '.' or '..'")
 
     @staticmethod
     def _has_drive_letter(source: str) -> bool:

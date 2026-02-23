@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 from filelock import FileLock, Timeout
 
+from datachain.fs.utils import is_subpath
 from datachain.utils import (
     _CheckpointState,
     batched,
@@ -555,3 +556,73 @@ def test_checkpoints_enabled_datachain_subprocess(monkeypatch):
     # With DATACHAIN_SUBPROCESS, checkpoints should be enabled
     monkeypatch.setenv("DATACHAIN_SUBPROCESS", "1")
     assert checkpoints_enabled() is True
+
+
+def test_is_subpath_rejects_equal(tmp_path):
+    output = (tmp_path / "out").as_posix()
+    assert not is_subpath(output, output)
+
+
+def test_is_subpath_rejects_outside(tmp_path):
+    output = (tmp_path / "out").as_posix()
+    dst = (tmp_path / "escape.txt").as_posix()
+    assert not is_subpath(output, dst)
+
+
+def test_is_subpath_rejects_prefix_overlap(tmp_path):
+    output = (tmp_path / "out").as_posix()
+    dst = (tmp_path / "out2" / "file.txt").as_posix()
+    assert not is_subpath(output, dst)
+
+
+def test_is_subpath_accepts_contained(tmp_path):
+    output = (tmp_path / "out").as_posix()
+    dst = (tmp_path / "out" / "sub" / "file.txt").as_posix()
+    assert is_subpath(output, dst)
+
+
+def test_is_subpath_asserts_parent_absolute():
+    with pytest.raises(AssertionError, match="parent must be absolute"):
+        is_subpath("relative/dir", os.path.abspath("child"))
+
+
+def test_is_subpath_asserts_child_absolute():
+    with pytest.raises(AssertionError, match="child must be absolute"):
+        is_subpath(os.path.abspath("parent"), "relative/child")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="case-sensitive filesystem")
+def test_is_subpath_case_sensitive_on_unix(tmp_path):
+    parent = (tmp_path / "Out").as_posix()
+    child = (tmp_path / "out" / "file.txt").as_posix()
+    assert not is_subpath(parent, child)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only case folding")
+def test_is_subpath_case_insensitive_on_windows(tmp_path):
+    parent = (tmp_path / "Out").as_posix()
+    child = (tmp_path / "out" / "file.txt").as_posix()
+    assert is_subpath(parent, child)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only separator normalization")
+def test_is_subpath_win_backslash_parent():
+    assert is_subpath("C:\\Users\\out", "C:\\Users\\out\\file.txt")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only separator normalization")
+def test_is_subpath_win_forward_slash_parent():
+    assert is_subpath("C:/Users/out", "C:/Users/out/file.txt")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only separator normalization")
+def test_is_subpath_win_mixed_separators():
+    # normcase normalizes both to backslash, so mixed forms must match
+    assert is_subpath("C:\\Users\\out", "C:/Users/out/file.txt")
+    assert is_subpath("C:/Users/out", "C:\\Users\\out\\file.txt")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only separator normalization")
+def test_is_subpath_win_mixed_rejects_outside():
+    assert not is_subpath("C:\\Users\\out", "C:/Users/out2/file.txt")
+    assert not is_subpath("C:/Users/out", "C:\\Users\\escape.txt")

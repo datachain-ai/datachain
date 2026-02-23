@@ -168,36 +168,58 @@ def test_rel_path_for_file_normalizes_and_validates(path, expected, raises):
         assert FileClient.rel_path_for_file(file) == expected
 
 
-def test_is_path_in_rejects_dotdot(tmp_path):
-    output = tmp_path / "out"
-    output.mkdir()
-
-    dst = (output / ".." / "escape.txt").as_posix()
-    assert not FileClient.is_path_in(output, dst)
+@pytest.mark.skipif(os.name == "nt", reason="Backslash is a separator on Windows")
+def test_validate_relpath_unix_backslash_in_filename_accepted():
+    FileClient.validate_file_relpath("dir\\file.txt")
 
 
-def test_is_path_in_rejects_directory_destination(tmp_path):
-    output = tmp_path / "out"
-    output.mkdir()
-
-    assert not FileClient.is_path_in(output, output.as_posix())
-
-
-def test_is_path_in_rejects_escaping_destination(tmp_path):
-    output = tmp_path / "out"
-    output.mkdir()
-
-    # Absolute path outside output, without '..' segments.
-    dst = (tmp_path / "escape.txt").as_posix()
-    assert not FileClient.is_path_in(output, dst)
+@pytest.mark.skipif(os.name == "nt", reason="Backslash is a separator on Windows")
+def test_validate_relpath_unix_trailing_backslash_accepted():
+    # Trailing backslash is NOT a directory indicator on Unix — it's part
+    # of the filename.
+    FileClient.validate_file_relpath("dir\\")
 
 
-def test_is_path_in_accepts_contained_destination(tmp_path):
-    output = tmp_path / "out"
-    output.mkdir()
+@pytest.mark.skipif(os.name == "nt", reason="Backslash is a separator on Windows")
+def test_validate_relpath_unix_colon_in_filename_accepted():
+    # Colons are legal on Unix; "C:foo" is a valid relative filename.
+    FileClient.validate_file_relpath("C:foo.txt")
 
-    dst = (output / "sub" / "file.txt").as_posix()
-    assert FileClient.is_path_in(output, dst)
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only separator semantics")
+def test_validate_relpath_win_trailing_backslash_rejected():
+    with pytest.raises(ValueError, match="must not be a directory"):
+        FileClient.validate_file_relpath("dir\\")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only separator semantics")
+def test_validate_relpath_win_absolute_backslash_rejected():
+    with pytest.raises(ValueError, match="must not be absolute"):
+        FileClient.validate_file_relpath("\\dir\\file.txt")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only separator semantics")
+def test_validate_relpath_win_drive_letter_rejected():
+    with pytest.raises(ValueError, match="must not be absolute"):
+        FileClient.validate_file_relpath("C:\\secret\\file.txt")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only separator semantics")
+def test_validate_relpath_win_drive_relative_rejected():
+    with pytest.raises(ValueError, match="must not be absolute"):
+        FileClient.validate_file_relpath("D:file.txt")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only separator semantics")
+def test_validate_relpath_win_dot_segment_via_backslash_rejected():
+    with pytest.raises(ValueError, match="must not contain"):
+        FileClient.validate_file_relpath("dir\\..\\file.txt")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only separator semantics")
+def test_validate_relpath_win_empty_segment_via_backslash_rejected():
+    with pytest.raises(ValueError, match="must not contain empty segments"):
+        FileClient.validate_file_relpath("dir\\\\file.txt")
 
 
 @pytest.mark.parametrize(

@@ -1,9 +1,27 @@
+import os
 from typing import TYPE_CHECKING
 
 from fsspec.implementations.local import LocalFileSystem
 
 if TYPE_CHECKING:
     from fsspec import AbstractFileSystem
+
+
+def is_subpath(parent: str, child: str) -> bool:
+    """True iff *child* is strictly inside *parent* (path-traversal guard).
+
+    Both paths must be absolute OS paths. Comparison is case-insensitive on
+    Windows.
+    """
+    assert os.path.isabs(parent), f"parent must be absolute: {parent!r}"
+    assert os.path.isabs(child), f"child must be absolute: {child!r}"
+
+    parent_normed = os.path.normcase(parent)
+    child_normed = os.path.normcase(child)
+
+    if child_normed == parent_normed:
+        return False
+    return child_normed.startswith(parent_normed + os.sep)
 
 
 def _isdir(fs: "AbstractFileSystem", path: str) -> bool:

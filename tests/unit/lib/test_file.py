@@ -152,9 +152,10 @@ def test_export_placements_build_expected_destination_for_each_source(
     file.export(output, placement="filepath", use_cache=False)
     file.export(output, placement="fullpath", use_cache=False)
 
-    # export() normalises backslashes to forward slashes via
-    # os.fspath(output).replace("\\", "/"), so the expected prefix must match.
-    expected_prefix = os.fspath(output).replace("\\", "/")
+    # export() resolves output to absolute (os.path.abspath) and normalizes
+    # backslashes to forward slashes on Windows, so build the expected prefix
+    # the same way.
+    expected_prefix = os.path.abspath(os.fspath(output)).replace("\\", "/")
 
     expected_fullpath_suffix = (
         f"{expected_fullpath_prefix}/dir1/dir2/test.txt"
@@ -220,19 +221,19 @@ def test_export_local_output_allows_literal_percent_encoded_traversal(
 @pytest.mark.parametrize(
     "source,path,is_error,expected",
     [
-        ("", "", True, r"path must not be empty"),
-        ("", ".", True, r"path must not contain"),
-        ("", "..", True, r"path must not contain"),
-        ("", "/abs/file.txt", True, r"path must not be absolute"),
+        ("", "", True, r"must not be empty"),
+        ("", ".", True, r"must not contain"),
+        ("", "..", True, r"must not contain"),
+        ("", "/abs/file.txt", True, r"must not be absolute"),
         ("", "file#hash.txt", False, "file#hash.txt"),
         ("", "./dir/../file#hash.txt", True, r"must not contain"),
         ("", "../escape.txt", True, r"must not contain"),
         ("", "dir//file.txt", True, r"must not contain empty segments"),
         ("", "dir/", True, r"must not be a directory"),
-        ("file:///bucket", "", True, r"path must not be empty"),
-        ("file:///bucket", ".", True, r"path must not contain"),
-        ("file:///bucket", "..", True, r"path must not contain"),
-        ("file:///bucket", "/abs/file.txt", True, r"path must not be absolute"),
+        ("file:///bucket", "", True, r"must not be empty"),
+        ("file:///bucket", ".", True, r"must not contain"),
+        ("file:///bucket", "..", True, r"must not contain"),
+        ("file:///bucket", "/abs/file.txt", True, r"must not be absolute"),
         ("file:///bucket", "file#hash.txt", False, "file:///bucket/file#hash.txt"),
         (
             "file:///bucket",
@@ -306,17 +307,17 @@ def test_get_uri_contract(
 @pytest.mark.parametrize(
     "source,path,is_error,expected",
     [
-        ("", "", True, r"path must not be empty"),
-        ("", ".", True, r"path must not contain"),
-        ("", "..", True, r"path must not contain"),
-        ("", "/abs/file.txt", True, r"path must not be absolute"),
+        ("", "", True, r"must not be empty"),
+        ("", ".", True, r"must not contain"),
+        ("", "..", True, r"must not contain"),
+        ("", "/abs/file.txt", True, r"must not be absolute"),
         ("", "file.txt", False, "file.txt"),
         ("", "../escape.txt", True, r"must not contain"),
         ("", "dir/", True, r"must not be a directory"),
-        ("file:///bucket", "", True, r"path must not be empty"),
-        ("file:///bucket", ".", True, r"path must not contain"),
-        ("file:///bucket", "..", True, r"path must not contain"),
-        ("file:///bucket", "/abs/file.txt", True, r"path must not be absolute"),
+        ("file:///bucket", "", True, r"must not be empty"),
+        ("file:///bucket", ".", True, r"must not contain"),
+        ("file:///bucket", "..", True, r"must not contain"),
+        ("file:///bucket", "/abs/file.txt", True, r"must not be absolute"),
         pytest.param(
             "file:///bucket",
             "file#hash.txt",
@@ -741,7 +742,7 @@ def test_file_rebase_method():
             "/output/processed/folder/file.mp3",
             id="unix",
             marks=pytest.mark.skipif(
-                os.name == "nt", reason="No drive letter — rejected on Windows"
+                os.name == "nt", reason="No drive letter - rejected on Windows"
             ),
         ),
         pytest.param(
