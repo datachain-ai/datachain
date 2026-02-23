@@ -87,6 +87,7 @@ PULL_DATASET_MAX_THREADS = 5
 PULL_DATASET_CHUNK_TIMEOUT = 3600
 PULL_DATASET_SLEEP_INTERVAL = 0.1  # sleep time while waiting for chunk to be available
 PULL_DATASET_CHECK_STATUS_INTERVAL = 20  # interval to check export status in Studio
+_MAX_VERSION_CLAIM_RETRIES = 5
 
 
 def _round_robin_batch(urls: list[str], num_workers: int) -> list[list[str]]:
@@ -802,7 +803,6 @@ class Catalog:
         columns: Sequence[Column],
         feature_schema: dict | None = None,
         query_script: str = "",
-        create_rows: bool | None = True,
         validate_version: bool | None = True,
         listing: bool | None = False,
         uuid: str | None = None,
@@ -823,19 +823,12 @@ class Catalog:
             raise RuntimeError(
                 "Cannot create dataset that starts with source prefix, e.g s3://"
             )
-        default_version = DEFAULT_DATASET_VERSION
         try:
             dataset = self.get_dataset(
                 name,
                 namespace_name=project.namespace.name if project else None,
                 project_name=project.name if project else None,
             )
-            if not version:
-                default_version = dataset.next_version_patch
-                if update_version == "major":
-                    default_version = dataset.next_version_major
-                if update_version == "minor":
-                    default_version = dataset.next_version_minor
 
             if (description or attrs) and (
                 dataset.description != description or dataset.attrs != attrs
@@ -864,27 +857,114 @@ class Catalog:
                 attrs=attrs,
             )
 
-        version = version or default_version
-
-        if dataset.has_version(version):
-            raise DatasetInvalidVersionError(
-                f"Version {version} already exists in dataset {name}"
-            )
-
-        if validate_version and not dataset.is_valid_next_version(version):
-            raise DatasetInvalidVersionError(
-                f"Version {version} must be higher than the current latest one"
-            )
-
-        return self.create_dataset_version(
-            dataset,
-            version,
+        # Claim the version (with retry for auto-versioned saves).
+        return self._try_claim_version(
+            dataset=dataset,
+            name=name,
+            version=version,
+            project=project,
             feature_schema=feature_schema,
             query_script=query_script,
-            create_rows_table=create_rows,
             columns=columns,
             uuid=uuid,
             job_id=job_id,
+            validate_version=validate_version,
+            update_version=update_version,
+        )
+
+    @staticmethod
+    def _next_auto_version(dataset: "DatasetRecord", update_version: str | None) -> str:
+        """Compute the next version for a dataset based on the update strategy.
+
+        Handles brand-new datasets whose versions list may contain a single
+        phantom entry with ``version=None`` (artifact of the LEFT JOIN used
+        by ``get_dataset``).
+        """
+        if not any(v.version for v in dataset.versions):
+            return DEFAULT_DATASET_VERSION
+        if update_version == "major":
+            return dataset.next_version_major
+        if update_version == "minor":
+            return dataset.next_version_minor
+        return dataset.next_version_patch
+
+    def _try_claim_version(
+        self,
+        dataset: "DatasetRecord",
+        name: str,
+        version: str | None,
+        project: Project | None,
+        feature_schema: dict | None,
+        query_script: str,
+        columns: Sequence[Column],
+        uuid: str | None,
+        job_id: str | None,
+        validate_version: bool | None,
+        update_version: str | None,
+    ) -> "DatasetRecord":
+        """
+        Try to claim a dataset version, retrying on conflict.
+
+        When *version* is explicit (not None), a single attempt is made and
+        a conflict raises immediately.  When *version* is None the target is
+        auto-computed from the dataset and retried up to
+        ``_MAX_VERSION_CLAIM_RETRIES`` times on conflict.
+        """
+        max_retries = 0 if version else _MAX_VERSION_CLAIM_RETRIES
+        target_version = version or self._next_auto_version(dataset, update_version)
+
+        for attempt in range(1 + max_retries):
+            if dataset.has_version(target_version):
+                raise DatasetInvalidVersionError(
+                    f"Version {target_version} already exists in dataset {name}"
+                )
+
+            if validate_version and not dataset.is_valid_next_version(target_version):
+                raise DatasetInvalidVersionError(
+                    f"Version {target_version} must be higher than"
+                    f" the current latest one"
+                )
+
+            dataset, version_created = self.create_dataset_version(
+                dataset,
+                target_version,
+                feature_schema=feature_schema,
+                query_script=query_script,
+                columns=columns,
+                uuid=uuid,
+                job_id=job_id,
+            )
+
+            if version_created:
+                return dataset
+
+            # Another writer claimed this version between our check and insert.
+            if attempt >= max_retries:
+                break
+
+            logger.debug(
+                "Version %s of dataset %s was claimed by another writer "
+                "(attempt %d/%d), retrying with next version",
+                target_version,
+                name,
+                attempt + 1,
+                1 + max_retries,
+            )
+            dataset = self.get_dataset(
+                name,
+                namespace_name=project.namespace.name if project else None,
+                project_name=project.name if project else None,
+            )
+            target_version = self._next_auto_version(dataset, update_version)
+
+        if version:
+            raise DatasetInvalidVersionError(
+                f"Version {target_version} of dataset {name} was claimed by"
+                " another writer"
+            )
+        raise DatasetInvalidVersionError(
+            f"Failed to claim a version for dataset {name} after"
+            f" {1 + max_retries} attempts due to concurrent writers"
         )
 
     def create_dataset_version(
@@ -899,20 +979,23 @@ class Catalog:
         error_message="",
         error_stack="",
         script_output="",
-        create_rows_table=True,
         job_id: str | None = None,
         uuid: str | None = None,
-    ) -> DatasetRecord:
+    ) -> tuple[DatasetRecord, bool]:
         """
-        Creates dataset version if it doesn't exist.
-        If create_rows is False, dataset rows table will not be created
+        Creates dataset version metadata (no rows table).
+
+        Returns:
+            A tuple of (dataset_record, version_created) where version_created
+            is True if this call actually created the version, False if the
+            version already existed (when ignore_if_exists applies).
         """
         assert [c.name for c in columns if c.name != "sys__id"], f"got {columns=}"
         schema = {
             c.name: c.type.to_dict() for c in columns if isinstance(c.type, SQLType)
         }
 
-        dataset = self.metastore.create_dataset_version(
+        dataset, version_created = self.metastore.create_dataset_version(
             dataset,
             version,
             status=DatasetStatus.CREATED,
@@ -928,12 +1011,7 @@ class Catalog:
             uuid=uuid,
         )
 
-        if create_rows_table:
-            table_name = self.warehouse.dataset_table_name(dataset, version)
-            self.warehouse.create_dataset_rows_table(table_name, columns=columns)
-            self.update_dataset_version_with_warehouse_info(dataset, version)
-
-        return dataset
+        return dataset, version_created
 
     def update_dataset_version_with_warehouse_info(
         self, dataset: DatasetRecord, version: str, rows_dropped=False, **kwargs
@@ -1843,8 +1921,6 @@ class Catalog:
                         project,
                         local_ds_version,
                         query_script=remote_ds_version.query_script,
-                        # Don't create table, we'll rename the temp table.
-                        create_rows=False,
                         columns=columns,
                         feature_schema=remote_ds_version.feature_schema,
                         validate_version=False,
