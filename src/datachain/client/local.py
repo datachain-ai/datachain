@@ -53,14 +53,21 @@ class FileClient(Client):
             LocalFileSystem._strip_protocol(dst) if dst.startswith(cls.PREFIX) else dst
         )
 
-        output_resolved = Path(output_os).resolve(strict=False)
-        dst_resolved = Path(dst_os).resolve(strict=False)
+        # Use abspath (makes relative paths absolute based on CWD, collapses
+        # .. and .) followed by normcase (lowercases on Windows) for deterministic,
+        # filesystem-independent comparison.  resolve(strict=False) is avoided
+        # because its symlink / junction behaviour varies across Python versions
+        # and can differ depending on which path components already exist.
+        output_normed = os.path.normcase(os.path.abspath(output_os))
+        dst_normed = os.path.normcase(os.path.abspath(dst_os))
 
         # Destination must be a file path under output, not the output dir itself.
-        if dst_resolved == output_resolved:
+        if dst_normed == output_normed:
             return False
 
-        return dst_resolved.is_relative_to(output_resolved)
+        # Ensure dst starts with the output prefix followed by a separator,
+        # so that output="/foo/bar" does not match dst="/foo/bar2".
+        return dst_normed.startswith(output_normed + os.sep)
 
     def __init__(
         self,
@@ -197,6 +204,11 @@ class FileClient(Client):
         # Disallow absolute paths; local file paths are interpreted relative to
         # the source/output prefix.
         if raw_posix.startswith("/"):
+            raise FileError("path must not be absolute", source, path)
+
+        # On Windows, a drive-letter prefix like "C:/" is absolute even
+        # without a leading "/".
+        if len(raw_posix) >= 2 and raw_posix[0].isalpha() and raw_posix[1] == ":":
             raise FileError("path must not be absolute", source, path)
 
         # Disallow empty segments (e.g. 'dir//file.txt') to avoid implicit
