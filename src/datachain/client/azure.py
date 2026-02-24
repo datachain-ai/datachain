@@ -50,7 +50,6 @@ class AzureClient(Client):
             **kwargs,
         )
 
-        # Match previous DataChain behavior: always append versionid.
         if version_id:
             result += f"&versionid={version_id}"
         return result

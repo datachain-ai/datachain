@@ -9,6 +9,8 @@ from datachain.client.local import FileClient
 from datachain.lib.file import File
 from datachain.lib.listing import (
     LISTING_PREFIX,
+    _desanitize_ds_name,
+    _sanitize_ds_name,
     get_listing,
     is_listing_dataset,
     listing_uri_from_name,
@@ -212,6 +214,13 @@ def test_is_listing_dataset(name, is_listing):
 
 def test_listing_uri_from_name():
     assert listing_uri_from_name("lst__s3://my-bucket") == "s3://my-bucket"
+    # Encoded name round-trips back to the original URI
+    assert listing_uri_from_name("lst__s3://bucket/v1_x2e0/") == "s3://bucket/v1.0/"
+    # Escaped _x round-trips
+    assert (
+        listing_uri_from_name("lst__s3://bucket/export_x_xml/")
+        == "s3://bucket/export_xml/"
+    )
     with pytest.raises(ValueError):
         listing_uri_from_name("s3://my-bucket")
 
@@ -250,3 +259,27 @@ def test_parse_listing_uri_no_collision_percent_vs_literal():
 
 def test_parse_listing_uri_no_collision_dot_vs_underscore():
     assert _ds_name("s3://b/v1.0/") != _ds_name("s3://b/v1_0/")
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "s3://my-bucket/dogs/",
+        "s3://bucket/v1.0/",
+        "s3://bucket/dir%25/",
+        "s3://bucket/user@host/",
+        "s3://bucket/export_xml/",
+        "s3://my.company.data/path/to/files/",
+        "gs://bucket-with_underscores_x_and.dots/",
+        "file:///home/user/path with spaces/",
+        "s3://b/_x_x_x/edge/",
+    ],
+)
+def test_sanitize_desanitize_roundtrip(raw):
+    """_desanitize_ds_name is the exact inverse of _sanitize_ds_name."""
+    assert _desanitize_ds_name(_sanitize_ds_name(raw)) == raw
+
+
+def test_desanitize_plain_passthrough():
+    """Strings with no _xHH sequences pass through unchanged."""
+    assert _desanitize_ds_name("s3://my-bucket/dogs/") == "s3://my-bucket/dogs/"

@@ -129,6 +129,24 @@ def _sanitize_ds_name(raw: str) -> str:
     return _DS_ENCODE_RE.sub(lambda m: f"_x{ord(m.group()):02x}", raw)
 
 
+_DS_DECODE_RE = re.compile(r"_x([0-9a-f]{2}|_x)")
+
+
+def _desanitize_ds_name(encoded: str) -> str:
+    """Reverse :func:`_sanitize_ds_name`.
+
+    ``_xHH`` → the original character, ``_x_x`` → literal ``_x``.
+    """
+
+    def _repl(m: re.Match) -> str:
+        tok = m.group(1)
+        if tok == "_x":  # escaped literal "_x"
+            return "_x"
+        return chr(int(tok, 16))  # _xHH → original char
+
+    return _DS_DECODE_RE.sub(_repl, encoded)
+
+
 def parse_listing_uri(uri: str) -> tuple[str, str, str]:
     """
     Parsing uri and returns listing dataset name, listing uri and listing path
@@ -156,10 +174,14 @@ def is_listing_dataset(name: str) -> bool:
 
 
 def listing_uri_from_name(dataset_name: str) -> str:
-    """Returns clean storage URI from listing dataset name"""
+    """Returns clean storage URI from listing dataset name.
+
+    Strips the ``lst__`` prefix and reverses the ``_xHH`` encoding
+    applied by :func:`_sanitize_ds_name`.
+    """
     if not is_listing_dataset(dataset_name):
         raise ValueError(f"Dataset {dataset_name} is not a listing")
-    return dataset_name.removeprefix(LISTING_PREFIX)
+    return _desanitize_ds_name(dataset_name.removeprefix(LISTING_PREFIX))
 
 
 @contextmanager
