@@ -2094,11 +2094,10 @@ class Catalog:
         ):
             pass
 
-    def _cleanup_udf_tables(self, prefix: str, suffix: str = "") -> None:
+    def _cleanup_udf_tables(self, prefix: str, suffix: str) -> None:
         """Remove all UDF tables matching a prefix and optional suffix."""
         tables = self.warehouse.db.list_tables(prefix=prefix)
-        if suffix:
-            tables = [t for t in tables if t.endswith(suffix)]
+        tables = [t for t in tables if t.endswith(suffix)]
         if tables:
             logger.info("Removing %d UDF tables: %s", len(tables), tables)
             self.warehouse.cleanup_tables(tables)
@@ -2124,7 +2123,7 @@ class Catalog:
             return 0
 
         inactive_job_ids = [job.id for job in inactive_jobs]
-        run_group_ids = {job.run_group_id or job.id for job in inactive_jobs}
+        run_group_ids = {job.run_group_id for job in inactive_jobs if job.run_group_id}
 
         logger.info(
             "Cleaning %d inactive jobs across %d run groups",
@@ -2133,15 +2132,15 @@ class Catalog:
         )
 
         for job in inactive_jobs:
-            self._cleanup_udf_tables(f"udf_{job.id}_", suffix="_output")
-            self._cleanup_udf_tables(f"udf_{job.id}_", suffix="_output_partial")
+            self._cleanup_udf_tables(f"udf_{job.id}_", "_output")
+            self._cleanup_udf_tables(f"udf_{job.id}_", "_output_partial")
 
         # Shared input tables — only when entire run group is inactive
         for group_id in run_group_ids:
             if not self.metastore.has_active_checkpoints_in_run_group(
                 group_id, ttl_threshold
             ):
-                self._cleanup_udf_tables(f"udf_{group_id}_", suffix="_input")
+                self._cleanup_udf_tables(f"udf_{group_id}_", "_input")
 
         checkpoints = list(self.metastore.list_checkpoints(job_id=inactive_job_ids))
         for ch in checkpoints:
