@@ -78,6 +78,8 @@ INDEX_INTERNAL_ERROR_MESSAGE = "Internal error on indexing"
 DATASET_INTERNAL_ERROR_MESSAGE = "Internal error on creating dataset"
 # exit code we use if query script was canceled
 QUERY_SCRIPT_CANCELED_EXIT_CODE = 11
+# exit code we use if the job is already in a terminal state (failed/canceled elsewhere)
+QUERY_SCRIPT_ABORTED_EXIT_CODE = 12
 QUERY_SCRIPT_SIGTERM_EXIT_CODE = -15  # if query script was terminated by SIGTERM
 
 # dataset pull
