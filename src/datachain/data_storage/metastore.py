@@ -2154,6 +2154,7 @@ class AbstractDBMetastore(AbstractMetastore):
             .where(
                 and_(
                     self._jobs.c.run_group_id == run_group_id,
+                    self._checkpoints.c.deleted == False,  # noqa: E712
                     self._checkpoints.c.created_at >= ttl_threshold,
                 )
             )
@@ -2248,6 +2249,7 @@ class AbstractDBMetastore(AbstractMetastore):
             Column("hash", Text, nullable=False),
             Column("partial", Boolean, default=False),
             Column("created_at", DateTime(timezone=True), nullable=False),
+            Column("deleted", Boolean, default=False, nullable=False),
             UniqueConstraint("job_id", "hash"),
         ]
 
@@ -2377,8 +2379,12 @@ class AbstractDBMetastore(AbstractMetastore):
 
     def _checkpoints_select(self, *columns) -> "Select":
         if not columns:
-            return self._checkpoints.select()
-        return select(*columns)
+            return self._checkpoints.select().where(
+                self._checkpoints.c.deleted == False  # noqa: E712
+            )
+        return select(*columns).where(
+            self._checkpoints.c.deleted == False  # noqa: E712
+        )
 
     def _checkpoints_delete(self) -> "Delete":
         return self._checkpoints.delete()
@@ -2403,6 +2409,7 @@ class AbstractDBMetastore(AbstractMetastore):
                 hash=_hash,
                 partial=partial,
                 created_at=datetime.now(timezone.utc),
+                deleted=False,
             )
 
             # Use on_conflict_do_nothing to handle race conditions
@@ -2738,7 +2745,9 @@ class AbstractDBMetastore(AbstractMetastore):
 
     def remove_checkpoint(self, checkpoint_id: str, conn: Any | None = None) -> None:
         self.db.execute(
-            self._checkpoints_delete().where(self._checkpoints.c.id == checkpoint_id),
+            self._checkpoints.update()
+            .where(self._checkpoints.c.id == checkpoint_id)
+            .values(deleted=True),
             conn=conn,
         )
 
@@ -2749,15 +2758,20 @@ class AbstractDBMetastore(AbstractMetastore):
         ch = self._checkpoints
         jobs = self._jobs
 
+        not_deleted = ch.c.deleted == False  # noqa: E712
+        job_id_cast = cast(ch.c.job_id, jobs.c.id.type)
+
         # Subquery: job_ids that have at least one active checkpoint
         active_jobs = (
-            select(ch.c.job_id).where(ch.c.created_at >= ttl_threshold).distinct()
+            select(job_id_cast)
+            .where(and_(not_deleted, ch.c.created_at >= ttl_threshold))
+            .distinct()
         )
 
         # Jobs that have checkpoints but none of them are active
         query = (
             self._jobs_query()
-            .where(jobs.c.id.in_(select(ch.c.job_id).distinct()))
+            .where(jobs.c.id.in_(select(job_id_cast).where(not_deleted).distinct()))
             .where(jobs.c.id.not_in(active_jobs))
         )
 

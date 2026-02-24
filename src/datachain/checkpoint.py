@@ -24,6 +24,7 @@ class Checkpoint:
     hash: str
     partial: bool
     created_at: datetime
+    deleted: bool = False
 
     @classmethod
     def parse(
@@ -33,6 +34,7 @@ class Checkpoint:
         _hash: str,
         partial: bool,
         created_at: datetime,
+        deleted: bool = False,
     ) -> "Checkpoint":
         return cls(
             str(id),
@@ -40,4 +42,5 @@ class Checkpoint:
             _hash,
             bool(partial),
             created_at,
+            bool(deleted),
         )
