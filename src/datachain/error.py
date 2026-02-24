@@ -85,7 +85,17 @@ class QueryScriptRunError(Exception):
 
 
 class QueryScriptCancelError(QueryScriptRunError):
-    pass
+    """Raised when a running script is canceled by the user."""
+
+
+class QueryScriptAbortError(QueryScriptRunError):
+    """Raised when execution should stop because the job is already in a terminal state.
+
+    Unlike QueryScriptCancelError (user-initiated cancellation), this signals that
+    the job has already finished (e.g., failed elsewhere) and continuing execution
+    would be wasteful. The distinction allows handlers to differentiate between
+    "user clicked Cancel" and "job already dead, stop working".
+    """
 
 
 class ClientError(RuntimeError):
