@@ -574,6 +574,30 @@ def test_save(test_session):
     assert ds.attrs == ["new_label", "old_label", "new_label2"]
 
 
+def test_save_with_orphaned_table(test_session):
+    catalog = test_session.catalog
+    values = ["a", "b", "c"]
+
+    dc.read_values(key=values).save(name="orphan_test", version="1.0.0")
+    ds = catalog.get_dataset("orphan_test")
+    table_name = catalog.warehouse.dataset_table_name(ds, "1.0.0")
+
+    # Simulate orphaned table: remove metastore entry but leave warehouse table
+    catalog.metastore.remove_dataset_version(ds, "1.0.0")
+    assert catalog.warehouse.db.has_table(table_name)
+
+    if table_name in catalog.warehouse.db.metadata.tables:
+        catalog.warehouse.db.metadata.remove(
+            catalog.warehouse.db.metadata.tables[table_name]
+        )
+
+    dc.read_values(key=values).save(name="orphan_test", version="1.0.0")
+
+    ds = catalog.get_dataset("orphan_test")
+    result = [r[0] for r in dc.read_dataset("orphan_test").to_iter("key")]
+    assert sorted(result) == sorted(values)
+
+
 def test_show_nested_empty(capsys, test_session):
     files = [
         File(size=s, path=p) for p, s in zip(list("abcde"), range(5), strict=False)

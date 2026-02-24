@@ -930,6 +930,13 @@ class Catalog:
 
         if create_rows_table:
             table_name = self.warehouse.dataset_table_name(dataset, version)
+            # Drop orphaned table from a previous failed run if present
+            if self.warehouse.db.has_table(table_name):
+                logger.warning(
+                    "Orphaned table '%s' found, dropping before creating new version",
+                    table_name,
+                )
+                self.warehouse.drop_dataset_rows_table(dataset, version)
             self.warehouse.create_dataset_rows_table(table_name, columns=columns)
             self.update_dataset_version_with_warehouse_info(dataset, version)
 
@@ -1019,9 +1026,11 @@ class Catalog:
         """
         if not dataset.has_version(version):
             return
-        dataset = self.metastore.remove_dataset_version(dataset, version)
+        # Drop warehouse table first to prevent orphaned tables if process crashes
+        # between operations. Metastore entry remains for retry if drop fails.
         if drop_rows:
             self.warehouse.drop_dataset_rows_table(dataset, version)
+        self.metastore.remove_dataset_version(dataset, version)
 
     def get_temp_table_names(self) -> list[str]:
         return self.warehouse.get_temp_table_names()
