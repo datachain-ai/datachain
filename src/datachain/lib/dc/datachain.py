@@ -298,8 +298,13 @@ class DataChain:
     @property
     def job(self) -> Job:
         """
-        Get existing job if running in SaaS, or creating new one if running locally
+        Get existing job if running in SaaS, or creating new one if running locally.
         """
+        if self._settings.ephemeral:
+            raise RuntimeError(
+                "Cannot access job in ephemeral mode. "
+                "Jobs are not created when running with .settings(ephemeral=True)."
+            )
         return self.session.get_or_create_job()
 
     @property
@@ -377,6 +382,7 @@ class DataChain:
         min_task_size: int | None = None,
         batch_size: int | None = None,
         sys: bool | None = None,
+        ephemeral: bool | None = None,
     ) -> "Self":
         """
         Set chain execution parameters. Returns the chain itself, allowing method
@@ -400,6 +406,10 @@ class DataChain:
             batch_size: Number of rows per insert by UDF to fine tune and balance speed
                 and memory usage. This might be useful when processing large rows
                 or when running into memory issues. Defaults to 2000.
+            ephemeral: If True, no persistent objects are created in the metastore
+                (no jobs, checkpoints, or datasets). UDF execution still uses
+                temporary tables. Calling .save() in ephemeral mode will raise
+                an error.
 
         Example:
             ```py
@@ -423,6 +433,7 @@ class DataChain:
                 project=project,
                 min_task_size=min_task_size,
                 batch_size=batch_size,
+                ephemeral=ephemeral,
             )
         )
         return self._evolve(settings=settings, _sys=sys)
@@ -623,6 +634,12 @@ class DataChain:
             update_version: which part of the dataset version to automatically increase.
                 Available values: `major`, `minor` or `patch`. Default is `patch`.
         """
+
+        if self._settings.ephemeral:
+            raise RuntimeError(
+                "Cannot save datasets in ephemeral mode. "
+                "Remove .settings(ephemeral=True) to save datasets."
+            )
 
         catalog = self.session.catalog
 

@@ -451,7 +451,6 @@ def reset_checkpoint_state(monkeypatch):
     # Clear any existing env vars
     monkeypatch.delenv("DATACHAIN_MAIN_PROCESS_PID", raising=False)
     monkeypatch.delenv("DATACHAIN_SUBPROCESS", raising=False)
-    monkeypatch.delenv("DATACHAIN_CHECKPOINTS_DISABLED", raising=False)
     yield
     # Reset after test as well
     _CheckpointState.disabled = False
@@ -556,11 +555,3 @@ def test_checkpoints_enabled_datachain_subprocess(monkeypatch):
     # With DATACHAIN_SUBPROCESS, checkpoints should be enabled
     monkeypatch.setenv("DATACHAIN_SUBPROCESS", "1")
     assert checkpoints_enabled() is True
-
-
-def test_checkpoints_disabled_env_var(monkeypatch):
-    """Test that DATACHAIN_CHECKPOINTS_DISABLED env var disables checkpoints."""
-    assert checkpoints_enabled() is True
-
-    monkeypatch.setenv("DATACHAIN_CHECKPOINTS_DISABLED", "1")
-    assert checkpoints_enabled() is False

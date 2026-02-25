@@ -506,6 +506,7 @@ class UDFStep(Step, ABC):
     workers: bool | int = False
     min_task_size: int | None = None
     batch_size: int | None = None
+    ephemeral: bool = False
 
     def hash_inputs(self) -> str:
         partition_by = ensure_sequence(self.partition_by or [])
@@ -990,10 +991,9 @@ class UDFStep(Step, ABC):
         hash_input: str,
         hash_output: str,
     ) -> "StepResult":
-        if checkpoints_enabled():
-            job = self.session.get_or_create_job()
-        else:
-            job = None
+        skip_checkpoints = self.ephemeral or not checkpoints_enabled()
+
+        job = self.session.get_or_create_job() if not skip_checkpoints else None
 
         query = query_generator.select()
 
@@ -1022,7 +1022,7 @@ class UDFStep(Step, ABC):
                 partition_tbl.c.sys__id == query.selected_columns.sys__id,
             ).add_columns(*partition_columns())
 
-        if not checkpoints_enabled():
+        if skip_checkpoints:
             output_table, input_table = self._run_from_scratch(
                 partial_hash, hash_output, hash_input, query, job
             )
@@ -1420,6 +1420,7 @@ class UDFSignal(UDFStep):
     workers: bool | int = False
     min_task_size: int | None = None
     batch_size: int | None = None
+    ephemeral: bool = False
 
     @property
     def _step_type(self) -> CheckpointStepType:
@@ -1530,6 +1531,7 @@ class RowGenerator(UDFStep):
     workers: bool | int = False
     min_task_size: int | None = None
     batch_size: int | None = None
+    ephemeral: bool = False
 
     @property
     def _step_type(self) -> CheckpointStepType:
@@ -2679,6 +2681,7 @@ class DatasetQuery:
         workers: bool | int = False,
         min_task_size: int | None = None,
         batch_size: int | None = None,
+        ephemeral: bool = False,
         # Parameters are unused, kept only to match the signature of Settings.to_dict
         prefetch: int | None = None,
         namespace: str | None = None,
@@ -2709,6 +2712,7 @@ class DatasetQuery:
                 min_task_size=min_task_size,
                 cache=cache,
                 batch_size=batch_size,
+                ephemeral=ephemeral,
             )
         )
         return query
@@ -2730,6 +2734,7 @@ class DatasetQuery:
         workers: bool | int = False,
         min_task_size: int | None = None,
         batch_size: int | None = None,
+        ephemeral: bool = False,
         # Parameters are unused, kept only to match the signature of Settings.to_dict:
         prefetch: int | None = None,
         namespace: str | None = None,
@@ -2747,6 +2752,7 @@ class DatasetQuery:
                 min_task_size=min_task_size,
                 cache=cache,
                 batch_size=batch_size,
+                ephemeral=ephemeral,
             )
         )
         return query

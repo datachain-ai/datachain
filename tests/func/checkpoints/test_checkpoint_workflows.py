@@ -478,16 +478,15 @@ def test_checkpoints_job_without_run_group_id_continue(
     assert result == [(2,), (4,), (6,), (8,), (10,), (12,)]
 
 
-def test_udf_runs_with_checkpoints_disabled(test_session, monkeypatch, nums_dataset):
-    """UDF chain works correctly when checkpoints are disabled via env var."""
+def test_udf_runs_in_ephemeral_mode(test_session, nums_dataset):
+    """UDF chain works correctly in ephemeral mode."""
     metastore = test_session.catalog.metastore
     jobs_before = _count_rows(metastore, metastore._jobs)
     checkpoints_before = _count_rows(metastore, metastore._checkpoints)
 
-    monkeypatch.setenv("DATACHAIN_CHECKPOINTS_DISABLED", "1")
-
     result = sorted(
         dc.read_dataset("nums", session=test_session)
+        .settings(ephemeral=True)
         .map(doubled=lambda num: num * 2, output=int)
         .to_list("doubled")
     )
@@ -498,17 +497,30 @@ def test_udf_runs_with_checkpoints_disabled(test_session, monkeypatch, nums_data
     assert _count_rows(metastore, metastore._jobs) == jobs_before
 
 
-def test_udf_runs_multiple_times_with_checkpoints_disabled(
-    test_session, monkeypatch, nums_dataset
-):
-    """Repeated chain evaluation works without table name collisions."""
-    monkeypatch.setenv("DATACHAIN_CHECKPOINTS_DISABLED", "1")
-
-    chain = dc.read_dataset("nums", session=test_session).map(
-        doubled=lambda num: num * 2, output=int
+def test_ephemeral_mode_repeated_runs_no_table_collision(test_session, nums_dataset):
+    chain = (
+        dc.read_dataset("nums", session=test_session)
+        .settings(ephemeral=True)
+        .map(doubled=lambda num: num * 2, output=int)
     )
 
-    # Run the same chain multiple times — each should get a fresh run_id
     for _ in range(3):
         result = sorted(chain.to_list("doubled"))
         assert result == [(2,), (4,), (6,), (8,), (10,), (12,)]
+
+
+def test_ephemeral_mode_no_jobs_on_collect(test_session, nums_dataset):
+    metastore = test_session.catalog.metastore
+    jobs_before = _count_rows(metastore, metastore._jobs)
+    checkpoints_before = _count_rows(metastore, metastore._checkpoints)
+
+    result = sorted(
+        dc.read_dataset("nums", session=test_session)
+        .settings(ephemeral=True)
+        .map(doubled=lambda num: num * 2, output=int)
+        .to_values("doubled")
+    )
+    assert result == [2, 4, 6, 8, 10, 12]
+
+    assert _count_rows(metastore, metastore._jobs) == jobs_before
+    assert _count_rows(metastore, metastore._checkpoints) == checkpoints_before

@@ -633,10 +633,6 @@ def checkpoints_enabled() -> bool:
     Returns:
         bool: True if checkpoints are enabled, False if disabled.
     """
-    # Explicit opt-out via environment variable
-    if getenv_bool("DATACHAIN_CHECKPOINTS_DISABLED"):
-        return False
-
     # DataChain-controlled subprocess - explicitly allowed
     if os.environ.get("DATACHAIN_SUBPROCESS"):
         return True
