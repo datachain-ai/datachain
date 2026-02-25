@@ -1,6 +1,12 @@
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
+from enum import IntEnum
+
+
+class CheckpointStatus(IntEnum):
+    ACTIVE = 0
+    DELETED = 1
 
 
 @dataclass
@@ -24,7 +30,7 @@ class Checkpoint:
     hash: str
     partial: bool
     created_at: datetime
-    deleted: bool = False
+    status: int = CheckpointStatus.ACTIVE
 
     @classmethod
     def parse(
@@ -34,7 +40,7 @@ class Checkpoint:
         _hash: str,
         partial: bool,
         created_at: datetime,
-        deleted: bool = False,
+        status: int = CheckpointStatus.ACTIVE,
     ) -> "Checkpoint":
         return cls(
             str(id),
@@ -42,5 +48,5 @@ class Checkpoint:
             _hash,
             bool(partial),
             created_at,
-            bool(deleted),
+            int(status),
         )
