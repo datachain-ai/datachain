@@ -786,18 +786,63 @@ class File(DataModel):
         """Validate ``self.path`` for I/O and return it.
 
         Raises :class:`FileError` if the path is empty, ends with ``/``,
-        or contains ``.`` / ``..`` segments.  These guards apply to every
-        backend; local-specific checks (absolute paths, drive letters, …)
-        live in :meth:`FileClient.validate_file_relpath`.
+        or contains ``.`` / ``..`` segments.  When the file is local
+        (no source, or ``file://`` source), additional checks reject
+        absolute paths, drive-letter prefixes, and empty segments (``//``).
         """
         path = self.path
         if not path:
             raise FileError("path must not be empty", self.source, path)
-        if path.endswith("/"):
+
+        # Determine whether this file targets the local filesystem.
+        is_local = not self.source or self.source.startswith("file://")
+
+        # On Windows, backslash is a path separator — normalize so the
+        # checks below work uniformly.  On Linux/macOS, backslash is a
+        # legal filename character and must not be reinterpreted.
+        if is_local and os.name == "nt":
+            canonical = path.replace("\\", "/")
+        else:
+            canonical = path
+
+        if canonical.endswith("/"):
             raise FileError("path must not be a directory", self.source, path)
-        parts = path.split("/")
+
+        parts = canonical.split("/")
         if any(part in (".", "..") for part in parts):
             raise FileError("path must not contain '.' or '..'", self.source, path)
+
+        if is_local:
+            if canonical.startswith("/"):
+                raise FileError("path must not be absolute", self.source, path)
+
+            if (
+                os.name == "nt"
+                and len(canonical) >= 2
+                and canonical[0].isalpha()
+                and canonical[1] == ":"
+            ):
+                raise FileError("path must not be absolute", self.source, path)
+
+            if "//" in canonical:
+                raise FileError(
+                    "path must not contain empty segments", self.source, path
+                )
+
+        # On Windows, reject file:// sources without an explicit drive letter.
+        # fsspec silently prepends the current drive to paths like
+        # file:///bucket (-> C:/bucket), which is ambiguous.
+        if self.source.startswith("file://") and os.name == "nt":
+            from datachain.client.local import FileClient
+
+            if not FileClient._has_drive_letter(self.source):
+                raise FileError(
+                    "file:// source must include a drive letter on Windows "
+                    "(e.g. file:///C:/path)",
+                    self.source,
+                    path,
+                )
+
         return path
 
     def get_uri(self) -> str:
@@ -849,19 +894,12 @@ class File(DataModel):
 
         Raises:
             FileError: If ``path`` is empty, ends with ``/``, or contains
-                ``.`` / ``..`` segments.
+                ``.`` / ``..`` segments.  For local files, also rejects
+                absolute paths, drive letters, and empty segments.
         """
         path = self._validate_io_path()
 
         if not self.source:
-            # Source-less files are implicitly local — apply local safety
-            # checks (reject absolute paths, drive letters, empty segments).
-            from datachain.client.local import FileClient
-
-            try:
-                FileClient.validate_file_relpath(path)
-            except ValueError as exc:
-                raise FileError(str(exc), self.source, path) from None
             return path
 
         from datachain.client.fsspec import Client
@@ -869,21 +907,6 @@ class File(DataModel):
         client_cls = Client.get_implementation(self.source)
 
         if self.source.startswith("file://"):
-            # Local: extra safety — reject absolute / drive-letter paths, etc.
-            from datachain.client.local import FileClient
-
-            try:
-                FileClient.validate_file_relpath(path)
-            except ValueError as exc:
-                raise FileError(str(exc), self.source, path) from None
-
-            if os.name == "nt" and not FileClient._has_drive_letter(self.source):
-                raise FileError(
-                    "file:// source must include a drive letter on Windows "
-                    "(e.g. file:///C:/path)",
-                    self.source,
-                    self.path,
-                )
             base_path = client_cls.FS_CLASS._strip_protocol(self.source)
             if not path:
                 return base_path

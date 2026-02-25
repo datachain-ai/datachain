@@ -234,14 +234,29 @@ def test_export_local_output_allows_literal_percent_encoded_traversal(
         ("file:///bucket", ".", True, r"must not contain"),
         ("file:///bucket", "..", True, r"must not contain"),
         ("file:///bucket", "/abs/file.txt", True, r"must not be absolute"),
-        ("file:///bucket", "file#hash.txt", False, "file:///bucket/file#hash.txt"),
-        (
+        pytest.param(
+            "file:///bucket",
+            "file#hash.txt",
+            os.name == "nt",
+            r"drive letter" if os.name == "nt" else "file:///bucket/file#hash.txt",
+            id="get_uri-file:///bucket-file#hash.txt",
+        ),
+        pytest.param(
             "file:///bucket",
             "dir/file#hash.txt",
-            False,
-            "file:///bucket/dir/file#hash.txt",
+            os.name == "nt",
+            r"drive letter" if os.name == "nt" else "file:///bucket/dir/file#hash.txt",
+            id="get_uri-file:///bucket-dir/file#hash.txt",
         ),
         ("file:///bucket", "./dir/../file.txt", True, r"must not contain"),
+        # Windows-style file:// URIs with drive letters (valid on all platforms).
+        ("file:///C:/data", "file.txt", False, "file:///C:/data/file.txt"),
+        (
+            "file:///D:/path/to/dir",
+            "sub/out.csv",
+            False,
+            "file:///D:/path/to/dir/sub/out.csv",
+        ),
         ("s3://mybkt", "", True, r"path must not be empty"),
         ("s3://mybkt", ".", True, r"must not contain"),
         ("s3://mybkt", "..", True, r"must not contain"),

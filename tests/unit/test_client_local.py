@@ -162,9 +162,8 @@ def test_split_url_preserves_backslash_and_colon(url, expected_unix, expected_nt
     ],
 )
 def test_get_fs_path_validates_local_paths(path, expected, raises):
-    """get_fs_path() rejects unsafe paths for local files via _validate_io_path
-    and FileClient.validate_file_relpath."""
-    file = File(path=path, source="file:///tmp")
+    source = "file:///C:/tmp" if os.name == "nt" else "file:///tmp"
+    file = File(path=path, source=source)
     if raises:
         with pytest.raises(FileError, match=raises):
             file.get_fs_path()
