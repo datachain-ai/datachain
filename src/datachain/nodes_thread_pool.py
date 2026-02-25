@@ -96,7 +96,7 @@ class NodesThreadPool(ABC):
 
                 self.tasks = self.tasks - done
                 self.update_progress_bar(progress_bar)
-        except:
+        except Exception:
             self.cancel_all()
             raise
         else:
