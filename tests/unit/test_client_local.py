@@ -1,14 +1,16 @@
 import os
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
 from datachain.client.local import FileClient
+from datachain.fs.utils import path_to_uri
 from datachain.lib.file import File, FileError
 
 
 def test_split_url_directory_preserves_leaf(tmp_path):
-    uri = FileClient.path_to_uri(str(tmp_path))
+    uri = path_to_uri(str(tmp_path))
     bucket, rel = FileClient.split_url(uri)
 
     # For directories, the parent directory becomes the bucket and the leaf
@@ -20,7 +22,7 @@ def test_split_url_directory_preserves_leaf(tmp_path):
 def test_split_url_file_in_directory(tmp_path):
     file_path = tmp_path / "sub" / "file.bin"
     file_path.parent.mkdir(parents=True)
-    uri = FileClient.path_to_uri(str(file_path))
+    uri = path_to_uri(str(file_path))
 
     bucket, rel = FileClient.split_url(uri)
 
@@ -51,9 +53,9 @@ def test_path_to_uri_preserves_trailing_slash(tmp_path):
     dir_path = tmp_path / "trail"
     dir_path.mkdir()
 
-    uri = FileClient.path_to_uri(f"{dir_path}{os.sep}")
+    uri = path_to_uri(f"{dir_path}{os.sep}")
 
-    base_uri = FileClient.path_to_uri(str(dir_path))
+    base_uri = path_to_uri(str(dir_path))
 
     # Trailing separator in the input should keep a trailing slash in the URI.
     assert uri.endswith("/")
@@ -61,16 +63,16 @@ def test_path_to_uri_preserves_trailing_slash(tmp_path):
 
 
 def test_path_to_uri_idempotent_for_file_uri(tmp_path):
-    uri = FileClient.path_to_uri(str(tmp_path))
+    uri = path_to_uri(str(tmp_path))
 
-    assert FileClient.path_to_uri(uri) == uri
+    assert path_to_uri(uri) == uri
 
 
 def test_path_to_uri_does_not_percent_encode_spaces_and_hash(tmp_path):
     base = tmp_path / "dir #% percent"
     base.mkdir(parents=True)
 
-    uri = FileClient.path_to_uri(str(base))
+    uri = path_to_uri(str(base))
     assert uri.startswith("file://")
     assert " " in uri
     assert "#" in uri
@@ -83,7 +85,7 @@ def test_split_url_does_not_decode_percent_escapes(tmp_path):
     file_path = tmp_path / "file%2fescape%23hash.txt"
     file_path.write_text("x", encoding="utf-8")
 
-    uri = FileClient.path_to_uri(str(file_path))
+    uri = path_to_uri(str(file_path))
     bucket, rel = FileClient.split_url(uri)
 
     assert Path(bucket) == tmp_path
@@ -238,30 +240,84 @@ def test_has_drive_letter(source, expected):
     assert FileClient._has_drive_letter(source) is expected
 
 
-def test_full_path_for_file_with_drive_letter_uri():
+def test_get_fs_path_with_drive_letter_uri():
     file = File(source="file:///C:/data", path="sub/file.txt")
-    result = FileClient.full_path_for_file(file)
+    result = file.get_fs_path()
 
-    # On Unix _strip_protocol keeps the leading '/', on Windows it's removed.
+    # get_fs_path returns a bare OS path for local files
     if os.name == "nt":
-        assert result.replace("\\", "/") == "C:/data/sub/file.txt"
+        assert result == "C:/data/sub/file.txt"
     else:
         assert result == "/C:/data/sub/file.txt"
 
 
-def test_full_path_for_file_drive_letter_root():
+def test_get_fs_path_drive_letter_root():
     file = File(source="file:///D:/", path="readme.md")
-    result = FileClient.full_path_for_file(file)
+    result = file.get_fs_path()
     if os.name == "nt":
-        assert result.replace("\\", "/") == "D:/readme.md"
+        assert result == "D:/readme.md"
     else:
         assert result == "/D:/readme.md"
 
 
-def test_full_path_for_file_nested_drive_letter():
+def test_get_fs_path_nested_drive_letter():
     file = File(source="file:///C:/Users/me/projects", path="repo/data.csv")
-    result = FileClient.full_path_for_file(file)
+    result = file.get_fs_path()
     if os.name == "nt":
-        assert result.replace("\\", "/") == "C:/Users/me/projects/repo/data.csv"
+        assert result == "C:/Users/me/projects/repo/data.csv"
     else:
         assert result == "/C:/Users/me/projects/repo/data.csv"
+
+
+def test_file_at_with_relative_path(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    session = MagicMock()
+
+    file = File.at("sub/file.txt", session=session)
+
+    expected_source = path_to_uri(str(tmp_path / "sub"))
+    assert file.path == "file.txt"
+    assert file.source == expected_source
+
+
+def test_file_at_with_absolute_path(tmp_path):
+    session = MagicMock()
+    abs_path = tmp_path / "deep" / "nested" / "file.txt"
+
+    file = File.at(str(abs_path), session=session)
+
+    expected_source = path_to_uri(str(abs_path.parent))
+    assert file.path == "file.txt"
+    assert file.source == expected_source
+
+
+def test_file_at_with_file_uri(tmp_path):
+    session = MagicMock()
+    abs_path = tmp_path / "data" / "file.txt"
+    file_uri = path_to_uri(str(abs_path))
+
+    file = File.at(file_uri, session=session)
+
+    expected_source = path_to_uri(str(abs_path.parent))
+    assert file.path == "file.txt"
+    assert file.source == expected_source
+
+
+def test_file_at_relative_and_absolute_agree(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    session = MagicMock()
+
+    from_rel = File.at("dir/file.bin", session=session)
+    from_abs = File.at(str(tmp_path / "dir" / "file.bin"), session=session)
+    from_uri = File.at(path_to_uri(str(tmp_path / "dir" / "file.bin")), session=session)
+
+    assert from_rel.source == from_abs.source == from_uri.source
+    assert from_rel.path == from_abs.path == from_uri.path == "file.bin"
+
+
+def test_file_at_source_is_file_uri(tmp_path):
+    session = MagicMock()
+
+    file = File.at(str(tmp_path / "file.txt"), session=session)
+
+    assert file.source.startswith("file:///")

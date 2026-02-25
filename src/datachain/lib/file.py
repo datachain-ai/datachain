@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from functools import partial
 from io import BytesIO
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 from urllib.parse import urlparse
 
@@ -22,6 +22,7 @@ from pydantic import Field, field_validator, model_validator
 
 from datachain import json
 from datachain.client.fileslice import FileSlice
+from datachain.fs.utils import path_to_uri
 from datachain.lib.data_model import DataModel
 from datachain.lib.utils import DataChainError, rebase_path
 from datachain.nodes_thread_pool import NodesThreadPool
@@ -406,7 +407,7 @@ class File(DataModel):
         client_cls = Client.get_implementation(path_str)
         source, rel_path = client_cls.split_url(path_str)
 
-        client = catalog.get_client(client_cls.get_uri(source))
+        client = catalog.get_client(client_cls.storage_uri(source))
         file = client.upload(data, rel_path)
         if not isinstance(file, cls):
             file = cls(**file.model_dump())
@@ -445,9 +446,8 @@ class File(DataModel):
                 f"File.at directory URL/path given (trailing slash), got: {uri_str}"
             )
         client_cls = Client.get_implementation(uri_str)
-        uri_str = client_cls.path_to_uri(uri_str)
         source, rel_path = client_cls.split_url(uri_str)
-        source_uri = client_cls.get_uri(source)
+        source_uri = client_cls.storage_uri(source)
         file = cls(source=source_uri, path=rel_path)
         file._set_stream(catalog)
         return file
@@ -524,7 +524,7 @@ class File(DataModel):
             return
 
         # write path
-        full_path = client.full_path_for_file(self)
+        full_path = self.get_fs_path()
         fs_mode = mode if "b" in mode else f"{mode}b"
         with client.fs.open(full_path, fs_mode, **open_kwargs) as raw_handle:
             with self._wrap_text(
@@ -609,11 +609,7 @@ class File(DataModel):
 
         destination = stringify_path(destination)
         client: Client = self._catalog.get_client(destination, **(client_config or {}))
-
-        if client.PREFIX == "file://" and not destination.startswith(client.PREFIX):
-            destination = client.path_to_uri(destination)
-
-        client.upload(self.read(), destination)
+        client.upload(self.read(), path_to_uri(destination))
 
     def _symlink_to(self, destination: str) -> None:
         if self.location:
@@ -798,30 +794,29 @@ class File(DataModel):
         warnings.warn(
             (
                 "File.get_uri() is deprecated and will be removed in a future version. "
-                "Use file.source + file.path (structured) or "
+                "Use file.source + file.path or "
                 "file.get_fs_path() for I/O locators."
             ),
             DeprecationWarning,
             stacklevel=2,
         )
 
-        # Placeholder Files with an empty source are treated as local paths.
-        # Return a basic relative path (no scheme/authority).
-        base = self.source.rstrip("/")
-        if not base:
+        if not self.source:
             from datachain.client.local import FileClient
 
             return FileClient.rel_path_for_file(self)
 
-        # Delegate backend-relative path handling to the client class.
-        from datachain.client.fsspec import Client
-
-        client_cls = Client.get_implementation(self.source)
-        path = client_cls.rel_path_for_file(self)
-        return client_cls.path_to_uri(f"{base}/{path}")
+        # For cloud, get_fs_path returns a full URI; for local, a bare path.
+        # Wrap in path_to_uri so we always return a URI.
+        return path_to_uri(self.get_fs_path())
 
     def get_fs_path(self) -> str:
         """Combine ``source`` and ``path`` into the full location string.
+
+        For cloud backends the result is a full URI (``s3://…``, ``gs://…``).
+        For local files the result is a **bare OS path** (no ``file://``
+        prefix), which is what PyArrow, ``os.symlink``, and path arithmetic
+        expect.
 
         Examples:
             ```py
@@ -850,7 +845,30 @@ class File(DataModel):
         from datachain.client.fsspec import Client
 
         client_cls = Client.get_implementation(self.source)
-        return client_cls.full_path_for_file(self)
+        rel_path = client_cls.rel_path_for_file(self)
+
+        if self.source.startswith("file://"):
+            # Local: build a bare OS path directly (no URI round-trip).
+            from datachain.client.local import FileClient
+
+            if os.name == "nt" and not FileClient._has_drive_letter(self.source):
+                raise FileError(
+                    "file:// source must include a drive letter on Windows "
+                    "(e.g. file:///C:/path)",
+                    self.source,
+                    self.path,
+                )
+            base_path = client_cls.FS_CLASS._strip_protocol(self.source)
+            if not rel_path:
+                return base_path
+            return Path(base_path, *PurePosixPath(rel_path).parts).as_posix()
+
+        # Cloud: build a full URI.
+        name = client_cls.FS_CLASS._strip_protocol(self.source)
+        base = str(client_cls.storage_uri(name))
+        if base.endswith("/"):
+            return f"{base}{rel_path}"
+        return f"{base}/{rel_path}"
 
     def _get_destination_suffix(self, placement: ExportPlacement) -> str:
         """Return the relative suffix used when exporting to an output prefix."""
@@ -903,7 +921,7 @@ class File(DataModel):
 
         try:
             resolved_path = client.rel_path_for_file(self)
-            full_path = client.get_full_path(resolved_path)
+            full_path = client.get_uri(resolved_path)
             info = client.fs.info(full_path)
 
             # Backends can return "directory" info for prefixes/buckets; a File

@@ -74,7 +74,7 @@ class ClientS3(Client):
             # botocore expects VersionId for GetObject presign
             kwargs["VersionId"] = version_id
 
-        return self.fs.sign(self.get_full_path(path), expiration=expires, **kwargs)
+        return self.fs.sign(self.get_uri(path), expiration=expires, **kwargs)
 
     async def _fetch_flat(self, start_prefix: str, result_queue: ResultQueue) -> None:
         async def get_pages(it, page_queue):

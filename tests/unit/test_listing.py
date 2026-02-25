@@ -5,7 +5,7 @@ import pytest
 import datachain as dc
 from datachain.catalog.catalog import DataSource
 from datachain.client import Client
-from datachain.client.local import FileClient
+from datachain.fs.utils import path_to_uri
 from datachain.lib.file import File
 from datachain.lib.listing import (
     LISTING_PREFIX,
@@ -69,7 +69,7 @@ def test_get_listing_returns_exact_math_on_update(test_session):
     listing_namespace_name = catalog.metastore.system_namespace_name
     listing_project_name = catalog.metastore.listing_project_name
 
-    whatever_uri = FileClient.path_to_uri("/whatever")
+    whatever_uri = path_to_uri("/whatever")
 
     dataset_name_dir1, _, _, exists = get_listing("file:///whatever/dir1", test_session)
     (

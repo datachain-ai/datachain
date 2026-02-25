@@ -130,7 +130,7 @@ def test_upload(cloud_test_catalog):
     source, rel_path = client.split_url(f"{dest}/{filename}")
 
     assert f.path == rel_path
-    assert f.source == client.get_uri(source)
+    assert f.source == client.storage_uri(source)
     assert f.read() == img_bytes
 
     client.fs.rm(dest, recursive=True)

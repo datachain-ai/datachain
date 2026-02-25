@@ -55,7 +55,7 @@ class GCSClient(Client):
             # use it as a delimiter stay readable.
             encoded_path = quote(path, safe="/")
             return f"https://storage.googleapis.com/{self.name}/{encoded_path}{query}"
-        full_path = self.get_full_path(path)
+        full_path = self.get_uri(path)
         full_path = self._path_with_generation(full_path, version_id)
         return self.fs.sign(
             full_path,
@@ -76,14 +76,14 @@ class GCSClient(Client):
         return path
 
     def get_file_info(self, path: str, version_id: str | None = None) -> File:
-        full_path = self._path_with_generation(self.get_full_path(path), version_id)
+        full_path = self._path_with_generation(self.get_uri(path), version_id)
         info = sync(get_loop(), self.fs._info, full_path)
         return self.info_to_file(info, path)
 
     async def get_current_etag(self, file: File) -> str:
         file_path = self.rel_path_for_file(file)
         full_path = self._path_with_generation(
-            self.full_path_for_file(file),
+            file.get_fs_path(),
             file.version,
         )
         info = await self.fs._info(full_path)
@@ -91,7 +91,7 @@ class GCSClient(Client):
 
     async def get_size(self, file: File) -> int:
         full_path = self._path_with_generation(
-            self.full_path_for_file(file),
+            file.get_fs_path(),
             file.version,
         )
         info = await self.fs._info(full_path)
@@ -110,7 +110,7 @@ class GCSClient(Client):
             return open(cache_path, mode="rb")
         assert not file.location
         full_path = self._path_with_generation(
-            self.full_path_for_file(file),
+            file.get_fs_path(),
             file.version,
         )
         return FileWrapper(

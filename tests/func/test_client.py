@@ -312,7 +312,7 @@ def test_get_file_roundtrip_file_and_cloud(
     sync(
         get_loop(),
         client.get_file,
-        client.full_path_for_file(File(source=ctc.src_uri, path=rel_path)),
+        File(source=ctc.src_uri, path=rel_path).get_fs_path(),
         dst_v1.as_posix(),
         callback=DEFAULT_CALLBACK,
         version_id=None,
@@ -331,7 +331,7 @@ def test_get_file_roundtrip_versioned_selects_version(
     client = ctc.catalog.get_client(ctc.src_uri)
 
     rel_path = f"client-get-file/{uuid4().hex}.bin"
-    from_path = client.full_path_for_file(File(source=ctc.src_uri, path=rel_path))
+    from_path = File(source=ctc.src_uri, path=rel_path).get_fs_path()
 
     data_v1 = b"v1"
     uploaded_v1 = client.upload(data_v1, rel_path)
@@ -375,9 +375,7 @@ def test_get_file_missing_raises_filenotfound(
 
     missing_rel_path = f"client-get-file-missing/{uuid4().hex}.bin"
     dst = tmp_path / "out_missing.bin"
-    from_path = client.full_path_for_file(
-        File(source=ctc.src_uri, path=missing_rel_path)
-    )
+    from_path = File(source=ctc.src_uri, path=missing_rel_path).get_fs_path()
 
     with pytest.raises(FileNotFoundError):
         sync(

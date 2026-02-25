@@ -36,7 +36,7 @@ class AzureClient(Client):
         Generate a signed URL for the given path.
         """
         content_disposition = kwargs.pop("content_disposition", None)
-        full_path = self.get_full_path(path)
+        full_path = self.get_uri(path)
         if version_id:
             # adlfs passes the blob version_id to Azure signing only when it is
             # encoded in the urlpath (parsed via split_path), not via kwargs.

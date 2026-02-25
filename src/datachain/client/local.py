@@ -2,15 +2,15 @@ import os
 import posixpath
 from collections.abc import Iterator
 from datetime import datetime, timezone
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urlparse
 
 from fsspec.implementations.local import LocalFileSystem
 
+from datachain.fs.utils import path_to_uri
 from datachain.lib.file import File, FileError
 
-from .fsspec import Client, is_win_local_path
+from .fsspec import Client
 
 if TYPE_CHECKING:
     from datachain.cache import Cache
@@ -42,46 +42,19 @@ class FileClient(Client):
         raise TypeError("Signed urls are not implemented for local file system")
 
     @classmethod
-    def get_uri(cls, name: str) -> "StorageURI":
+    def storage_uri(cls, storage_name: str) -> "StorageURI":
         from datachain.dataset import StorageURI
 
-        return StorageURI(cls.path_to_uri(name))
+        return StorageURI(path_to_uri(storage_name))
 
     @classmethod
     def ls_buckets(cls, **kwargs) -> Iterator[Any]:
         return iter(())
 
     @classmethod
-    def path_to_uri(cls, path: str) -> str:
-        """
-        Resolving path, that can be absolute or relative, to file URI which
-        starts with file:/// prefix
-        In unix like systems we support home shortcut as well.
-        Examples:
-            ./animals -> file:///home/user/working_dir/animals
-            ~/animals -> file:///home/user/animals
-            /home/user/animals -> file:///home/user/animals
-            /home/user/animals/ -> file:///home/user/animals/
-            C:\\windows\animals -> file:///C:/windows/animals
-        """
-        # Preserve explicit URIs / URLs.
-        parsed = urlparse(path)
-        if parsed.scheme and not is_win_local_path(path):
-            return path
-
-        # Construct a file:// urlpath without percent-encoding.
-        # Note: This is *not* a strict RFC-compliant URI when it contains
-        # reserved characters or spaces, but aligns with the fsspec urlpath model.
-        abs_path = Path(path).expanduser().absolute().resolve().as_posix()
-        uri = f"file:///{abs_path.lstrip('/')}"
-        if path and path[-1] in (os.sep, "/"):
-            uri += "/"
-        return uri
-
-    @classmethod
     def split_url(cls, url: str) -> tuple[str, str]:
         if not url.startswith("file://"):
-            url = cls.path_to_uri(url)
+            url = path_to_uri(url)
 
         os_path = LocalFileSystem._strip_protocol(url)
 
@@ -118,7 +91,7 @@ class FileClient(Client):
         )
 
     async def get_current_etag(self, file: "File") -> str:
-        info = self.fs.info(self.full_path_for_file(file))
+        info = self.fs.info(file.get_fs_path())
         return self.info_to_file(info, "").etag
 
     @classmethod
@@ -203,32 +176,12 @@ class FileClient(Client):
         rest = source[len("file://") :].lstrip("/")
         return len(rest) >= 2 and rest[0].isalpha() and rest[1] == ":"
 
-    @classmethod
-    def full_path_for_file(cls, file: "File") -> str:
-        rel_path = cls.rel_path_for_file(file)
-
-        # On Windows, file:// URIs without a drive letter are ambiguous —
-        # fsspec silently prepends the current drive (e.g. file:///bucket
-        # becomes C:/bucket).  Reject these instead of silently guessing.
-        if os.name == "nt" and not cls._has_drive_letter(file.source):
-            raise FileError(
-                "file:// source must include a drive letter on Windows "
-                "(e.g. file:///C:/path)",
-                file.source,
-                file.path,
-            )
-
-        base_path = LocalFileSystem._strip_protocol(file.source)
-        if not rel_path:
-            return base_path
-        return os.fspath(Path(base_path, *PurePosixPath(rel_path).parts))
-
     def get_file_info(self, path: str, version_id: str | None = None) -> File:
-        info = self.fs.info(self.get_full_path(path))
+        info = self.fs.info(self.get_uri(path))
         return self.info_to_file(info, path)
 
     async def get_size(self, file: File) -> int:
-        full_path = self.full_path_for_file(file)
+        full_path = file.get_fs_path()
 
         size = self.fs.size(full_path)
         if size is None:
@@ -248,11 +201,12 @@ class FileClient(Client):
     def rel_path(self, path):
         return posixpath.relpath(path, self.name)
 
-    def get_full_path(self, rel_path):
-        full_path = Path(self.name, rel_path).as_posix()
+    def get_uri(self, rel_path):
+        """Build a full file:// URI for *rel_path* within this client's storage."""
+        joined = Path(self.name, rel_path).as_posix()
         if rel_path.endswith("/") or not rel_path:
-            full_path += "/"
-        return full_path
+            joined += "/"
+        return path_to_uri(joined)
 
     def info_to_file(self, v: dict[str, Any], path: str) -> File:
         return File(

@@ -60,17 +60,17 @@ class HTTPClient(Client):
         return domain, path
 
     @classmethod
-    def get_uri(cls, name: str) -> "StorageURI":
-        if not name.startswith(("http://", "https://")):
-            return StorageURI(f"{cls.PREFIX}{name}")
-        return StorageURI(name)
+    def storage_uri(cls, storage_name: str) -> "StorageURI":
+        if not storage_name.startswith(("http://", "https://")):
+            return StorageURI(f"{cls.PREFIX}{storage_name}")
+        return StorageURI(storage_name)
 
     @classmethod
     def is_root_url(cls, url: str) -> bool:
         parsed = urlparse(url)
         return parsed.path in ("", "/") and not parsed.query and not parsed.fragment
 
-    def get_full_path(self, rel_path: str) -> str:
+    def get_uri(self, rel_path: str) -> str:
         if self.name.startswith(("http://", "https://")):
             base_url = self.name
         else:
@@ -117,7 +117,7 @@ class HTTPClient(Client):
         Generate URL for the given path.
         Note: HTTP URLs don't support signed/expiring URLs.
         """
-        return self.get_full_path(path)
+        return self.get_uri(path)
 
     def info_to_file(self, v: dict[str, Any], path: str) -> File:
         etag = v.get("ETag", "").strip('"')
@@ -151,7 +151,7 @@ class HTTPClient(Client):
         )
 
     def get_file_info(self, path: str, version_id: str | None = None) -> "File":
-        info = self.fs.info(self.get_full_path(path))
+        info = self.fs.info(self.get_uri(path))
         return self.info_to_file(info, path)
 
     def open_object(self, file: "File", use_cache: bool = True, cb=None):
@@ -162,7 +162,7 @@ class HTTPClient(Client):
 
         assert not file.location
         return FileWrapper(
-            self.fs.open(self.full_path_for_file(file)),
+            self.fs.open(file.get_fs_path()),
             cb or (lambda x: None),
         )
 
@@ -170,7 +170,7 @@ class HTTPClient(Client):
         return await self.fs._get_file(lpath, rpath, callback=callback)
 
     async def _fetch_dir(self, prefix: str, pbar, result_queue) -> set[str]:
-        full_url = self.get_full_path(prefix)
+        full_url = self.get_uri(prefix)
         raise NotImplementedError(f"Cannot download file from {full_url}")
 
 

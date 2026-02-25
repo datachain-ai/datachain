@@ -52,11 +52,11 @@ def test_from_name_with_http():
     assert client.PREFIX == "http://"
 
 
-def test_get_full_path_http():
+def test_get_uri_http():
     cache = Mock(spec=Cache)
     client = HTTPClient("example.com:8080", {}, cache)
 
-    assert client.get_full_path("file.txt") == "http://example.com:8080/file.txt"
+    assert client.get_uri("file.txt") == "http://example.com:8080/file.txt"
 
 
 def test_upload_raises_not_implemented():
@@ -179,6 +179,6 @@ async def test_get_file():
     assert result == "data"
 
 
-def test_get_uri():
-    assert str(HTTPSClient.get_uri("https://example.com")) == "https://example.com"
-    assert str(HTTPSClient.get_uri("example.com")) == "https://example.com"
+def test_storage_uri():
+    assert str(HTTPSClient.storage_uri("https://example.com")) == "https://example.com"
+    assert str(HTTPSClient.storage_uri("example.com")) == "https://example.com"
