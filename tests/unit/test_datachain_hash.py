@@ -136,6 +136,7 @@ def test_order_of_steps(mock_get_listing):
 
 
 def test_all_possible_steps(test_session):
+    # Fix this test
     persons_ds_name = "dev.my_pr.persons"
     players_ds_name = "dev.my_pr.players"
 
@@ -188,14 +189,16 @@ def test_all_possible_steps(test_session):
         .offset(2)
         .limit(5)
         .group_by(age_avg=func.avg("persons.ages"), partition_by="persons.name")
-        .select("persons.name", "age_avg")
+        .select(
+            "persons__name", "age_avg"
+        )  # After group_by, nested columns are flattened
         .subtract(
             players_chain,
-            on=["persons.name"],
+            on=["persons__name"],
             right_on=["player.name"],
         )
         .hash()
-    ) == "bd685bd97746a8e0e012c7029c7f2c8b17fc7eb5b7a5cd8fa5dacada57d75a07"
+    ) == "73ef5dc642ff85377b47554aeb7458e05ac54a9efe835ad3a3a9525d00675a7b"
 
 
 def test_diff(test_session):
