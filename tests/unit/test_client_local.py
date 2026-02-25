@@ -155,19 +155,21 @@ def test_split_url_preserves_backslash_and_colon(url, expected_unix, expected_nt
         ("./dir/.", None, "must not contain"),
         ("/dir", None, "must not be absolute"),
         ("/dir/file.txt", None, "must not be absolute"),
-        ("/dir/../file.txt", None, "must not be absolute"),
+        ("/dir/../file.txt", None, "must not contain"),
         ("..", None, "must not contain"),
         ("../file.txt", None, "must not contain"),
         ("dir/../../file.txt", None, "must not contain"),
     ],
 )
-def test_rel_path_for_file_normalizes_and_validates(path, expected, raises):
+def test_get_fs_path_validates_local_paths(path, expected, raises):
+    """get_fs_path() rejects unsafe paths for local files via _validate_io_path
+    and FileClient.validate_file_relpath."""
     file = File(path=path, source="file:///tmp")
     if raises:
         with pytest.raises(FileError, match=raises):
-            FileClient.rel_path_for_file(file)
+            file.get_fs_path()
     else:
-        assert FileClient.rel_path_for_file(file) == expected
+        assert file.get_fs_path().endswith(expected)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Backslash is a separator on Windows")

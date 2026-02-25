@@ -81,13 +81,12 @@ class GCSClient(Client):
         return self.info_to_file(info, path)
 
     async def get_current_etag(self, file: File) -> str:
-        file_path = self.rel_path_for_file(file)
         full_path = self._path_with_generation(
             file.get_fs_path(),
             file.version,
         )
         info = await self.fs._info(full_path)
-        return self.info_to_file(info, file_path).etag
+        return self.info_to_file(info, file.path).etag
 
     async def get_size(self, file: File) -> int:
         full_path = self._path_with_generation(

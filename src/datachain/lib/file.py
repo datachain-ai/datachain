@@ -537,9 +537,7 @@ class File(DataModel):
         version_hint = self._extract_write_version(raw_handle)
 
         # refresh metadata pinned to the version that was just written
-        refreshed = client.get_file_info(
-            client.rel_path_for_file(self), version_id=version_hint
-        )
+        refreshed = client.get_file_info(self.path, version_id=version_hint)
         for k, v in refreshed.model_dump().items():
             setattr(self, k, v)
 
@@ -784,6 +782,24 @@ class File(DataModel):
     def get_file_stem(self):
         return PurePosixPath(self.path).stem
 
+    def _validate_io_path(self) -> str:
+        """Validate ``self.path`` for I/O and return it.
+
+        Raises :class:`FileError` if the path is empty, ends with ``/``,
+        or contains ``.`` / ``..`` segments.  These guards apply to every
+        backend; local-specific checks (absolute paths, drive letters, …)
+        live in :meth:`FileClient.validate_file_relpath`.
+        """
+        path = self.path
+        if not path:
+            raise FileError("path must not be empty", self.source, path)
+        if path.endswith("/"):
+            raise FileError("path must not be a directory", self.source, path)
+        parts = path.split("/")
+        if any(part in (".", "..") for part in parts):
+            raise FileError("path must not contain '.' or '..'", self.source, path)
+        return path
+
     def get_uri(self) -> str:
         """Return a URI-like string for this file.
 
@@ -802,9 +818,7 @@ class File(DataModel):
         )
 
         if not self.source:
-            from datachain.client.local import FileClient
-
-            return FileClient.rel_path_for_file(self)
+            return self.get_fs_path()
 
         # For cloud, get_fs_path returns a full URI; for local, a bare path.
         # Wrap in path_to_uri so we always return a URI.
@@ -837,19 +851,31 @@ class File(DataModel):
             FileError: If ``path`` is empty, ends with ``/``, or contains
                 ``.`` / ``..`` segments.
         """
+        path = self._validate_io_path()
+
         if not self.source:
+            # Source-less files are implicitly local — apply local safety
+            # checks (reject absolute paths, drive letters, empty segments).
             from datachain.client.local import FileClient
 
-            return FileClient.rel_path_for_file(self)
+            try:
+                FileClient.validate_file_relpath(path)
+            except ValueError as exc:
+                raise FileError(str(exc), self.source, path) from None
+            return path
 
         from datachain.client.fsspec import Client
 
         client_cls = Client.get_implementation(self.source)
-        rel_path = client_cls.rel_path_for_file(self)
 
         if self.source.startswith("file://"):
-            # Local: build a bare OS path directly (no URI round-trip).
+            # Local: extra safety — reject absolute / drive-letter paths, etc.
             from datachain.client.local import FileClient
+
+            try:
+                FileClient.validate_file_relpath(path)
+            except ValueError as exc:
+                raise FileError(str(exc), self.source, path) from None
 
             if os.name == "nt" and not FileClient._has_drive_letter(self.source):
                 raise FileError(
@@ -859,16 +885,16 @@ class File(DataModel):
                     self.path,
                 )
             base_path = client_cls.FS_CLASS._strip_protocol(self.source)
-            if not rel_path:
+            if not path:
                 return base_path
-            return Path(base_path, *PurePosixPath(rel_path).parts).as_posix()
+            return Path(base_path, *PurePosixPath(path).parts).as_posix()
 
         # Cloud: build a full URI.
         name = client_cls.FS_CLASS._strip_protocol(self.source)
         base = str(client_cls.storage_uri(name))
         if base.endswith("/"):
-            return f"{base}{rel_path}"
-        return f"{base}/{rel_path}"
+            return f"{base}{path}"
+        return f"{base}/{path}"
 
     def _get_destination_suffix(self, placement: ExportPlacement) -> str:
         """Return the relative suffix used when exporting to an output prefix."""
@@ -920,8 +946,7 @@ class File(DataModel):
             ) from e
 
         try:
-            resolved_path = client.rel_path_for_file(self)
-            full_path = client.get_uri(resolved_path)
+            full_path = client.get_uri(self.path)
             info = client.fs.info(full_path)
 
             # Backends can return "directory" info for prefixes/buckets; a File
@@ -929,7 +954,7 @@ class File(DataModel):
             if isinstance(info, dict) and info.get("type") == "directory":
                 raise FileNotFoundError(full_path)
 
-            converted_info = client.info_to_file(info, resolved_path)
+            converted_info = client.info_to_file(info, self.path)
             res = type(self)(
                 path=self.path,
                 source=self.source,

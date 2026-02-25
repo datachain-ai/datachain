@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 from fsspec.implementations.local import LocalFileSystem
 
 from datachain.fs.utils import path_to_uri
-from datachain.lib.file import File, FileError
+from datachain.lib.file import File
 
 from .fsspec import Client
 
@@ -92,26 +92,7 @@ class FileClient(Client):
 
     async def get_current_etag(self, file: "File") -> str:
         info = self.fs.info(file.get_fs_path())
-        return self.info_to_file(info, "").etag
-
-    @classmethod
-    def rel_path_for_file(cls, file: "File") -> str:
-        path = file.path
-        try:
-            cls.validate_file_relpath(path)
-        except ValueError as exc:
-            raise FileError(str(exc), file.source, path) from None
-
-        normpath = os.path.normpath(path)
-        normpath = Path(normpath).as_posix()
-
-        if normpath == ".":
-            raise FileError("path must not be a directory", file.source, path)
-
-        if any(part == ".." for part in Path(normpath).parts):
-            raise FileError("path must not contain '..'", file.source, path)
-
-        return normpath
+        return self.info_to_file(info, file.path).etag
 
     @staticmethod
     def validate_file_relpath(path: str) -> None:

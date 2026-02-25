@@ -20,7 +20,6 @@ from tqdm.auto import tqdm
 from datachain.cache import Cache
 from datachain.client.fileslice import FileWrapper
 from datachain.fs.utils import is_win_local_path
-from datachain.lib.file import FileError
 from datachain.nodes_fetcher import NodesFetcher
 from datachain.nodes_thread_pool import NodeChunk
 
@@ -200,10 +199,9 @@ class Client(ABC):
         return self.fs.sign(self.get_uri(path), expiration=expires, **kwargs)
 
     async def get_current_etag(self, file: "File") -> str:
-        file_path = self.rel_path_for_file(file)
         full_path = file.get_fs_path()
         info = await self.fs._info(full_path, **self._version_kwargs(file.version))
-        return self.info_to_file(info, file_path).etag
+        return self.info_to_file(info, file.path).etag
 
     def get_file_info(self, path: str, version_id: str | None = None) -> "File":
         full_path = self.get_uri(path)
@@ -341,34 +339,6 @@ class Client(ABC):
 
     def rel_path(self, path: str) -> str:
         return self.fs.split_path(path)[1]
-
-    @classmethod
-    def rel_path_for_file(cls, file: "File") -> str:
-        """Return the backend-relative path used for I/O.
-
-        Default behavior for cloud/object-store clients is to treat `file.path`
-        as an opaque key.
-
-        Local filesystem clients override this to normalize/validate paths
-        before using them in OS filesystem operations.
-        """
-        path = file.path
-
-        # Disallow placeholder/dir-like values when computing I/O locators.
-        # Cloud/object-store keys are otherwise treated as opaque strings.
-        if not path:
-            raise FileError("path must not be empty", file.source, path)
-        if path.endswith("/"):
-            raise FileError("path must not be a directory", file.source, path)
-
-        # Disallow dot segments for all backends when computing I/O locators.
-        # Even though some object stores may allow them as raw key bytes, they
-        # are ambiguous in path-like interfaces and can create safety issues.
-        parts = path.split(DELIMITER)
-        if any(part in (".", "..") for part in parts):
-            raise FileError("path must not contain '.' or '..'", file.source, path)
-
-        return path
 
     def get_uri(self, rel_path: str) -> str:
         """Build a full URI for the given relative path within this client's storage."""
