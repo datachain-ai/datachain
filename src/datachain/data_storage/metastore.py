@@ -600,7 +600,7 @@ class AbstractMetastore(ABC, Serializable):
     def get_jobs_with_expired_checkpoints(
         self, ttl_threshold: datetime, conn=None
     ) -> Iterator["Job"]:
-        """Return jobs where ALL checkpoints are older than ttl_threshold."""
+        """Return finished jobs where ALL checkpoints are older than ttl_threshold."""
 
     #
     # Checkpoint Events
@@ -2760,7 +2760,7 @@ class AbstractDBMetastore(AbstractMetastore):
     def get_jobs_with_expired_checkpoints(
         self, ttl_threshold: datetime, conn=None
     ) -> Iterator["Job"]:
-        """Return jobs where ALL checkpoints are older than ttl_threshold."""
+        """Return finished jobs where ALL active checkpoints are older than TTL."""
         ch = self._checkpoints
         jobs = self._jobs
 
@@ -2774,9 +2774,10 @@ class AbstractDBMetastore(AbstractMetastore):
             .distinct()
         )
 
-        # Jobs that have checkpoints but none of them are active
+        # Finished jobs that have checkpoints but none of them are active
         query = (
             self._jobs_query()
+            .where(jobs.c.status.in_(JobStatus.finished()))
             .where(jobs.c.id.in_(select(job_id_cast).where(active).distinct()))
             .where(jobs.c.id.not_in(active_jobs))
         )
