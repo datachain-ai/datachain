@@ -1155,7 +1155,7 @@ class UDFStep(Step, ABC):
         )
 
         if partial_checkpoint:
-            self.metastore.remove_checkpoint(partial_checkpoint.id)
+            self.metastore.remove_checkpoints([partial_checkpoint.id])
             self.metastore.get_or_create_checkpoint(self.job.id, hash_output)
             logger.debug(
                 "UDF(%s) [job=%s run_group=%s]: Promoted partial to final, hash=%s",
@@ -1291,7 +1291,7 @@ class UDFStep(Step, ABC):
             partial_table, udf_output_table_name(self.job.id, hash_output)
         )
 
-        self.metastore.remove_checkpoint(partial_checkpoint.id)
+        self.metastore.remove_checkpoints([partial_checkpoint.id])
         self.metastore.get_or_create_checkpoint(self.job.id, hash_output)
         logger.debug(
             "UDF(%s) [job=%s run_group=%s]: Promoted partial to final, hash=%s",

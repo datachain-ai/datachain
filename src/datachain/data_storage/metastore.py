@@ -591,8 +591,10 @@ class AbstractMetastore(ABC, Serializable):
         """Get or create checkpoint. Must be atomic and idempotent."""
 
     @abstractmethod
-    def remove_checkpoint(self, checkpoint_id: str, conn: Any | None = None) -> None:
-        """Removes a checkpoint by ID"""
+    def remove_checkpoints(
+        self, checkpoint_ids: list[str], conn: Any | None = None
+    ) -> None:
+        """Soft-delete checkpoints by IDs."""
 
     @abstractmethod
     def get_jobs_with_expired_checkpoints(
@@ -2743,10 +2745,14 @@ class AbstractDBMetastore(AbstractMetastore):
 
         return self.dataset_version_class.parse(*results[0])
 
-    def remove_checkpoint(self, checkpoint_id: str, conn: Any | None = None) -> None:
+    def remove_checkpoints(
+        self, checkpoint_ids: list[str], conn: Any | None = None
+    ) -> None:
+        if not checkpoint_ids:
+            return
         self.db.execute(
             self._checkpoints.update()
-            .where(self._checkpoints.c.id == checkpoint_id)
+            .where(self._checkpoints.c.id.in_(checkpoint_ids))
             .values(status=CheckpointStatus.DELETED),
             conn=conn,
         )

@@ -2145,8 +2145,7 @@ class Catalog:
                 self._cleanup_udf_tables(f"udf_{group_id}_", "_input")
 
         checkpoints = list(self.metastore.list_checkpoints(job_id=inactive_job_ids))
-        for ch in checkpoints:
-            self.metastore.remove_checkpoint(ch.id)
+        self.metastore.remove_checkpoints([ch.id for ch in checkpoints])
 
         logger.info(
             "Checkpoint cleanup complete: removed %d checkpoints from %d jobs",
