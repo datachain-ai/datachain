@@ -42,6 +42,7 @@ from datachain.data_storage.schema import (
 )
 from datachain.dataset import DatasetDependency, DatasetStatus, RowDict
 from datachain.error import (
+    DataChainError,
     DatasetNotFoundError,
     QueryScriptAbortError,
     QueryScriptCancelError,
@@ -784,9 +785,13 @@ class UDFStep(Step, ABC):
                 catalog.warehouse.close()
                 raise
 
-    def create_partitions_table(self, query: Select) -> "Table":
+    def create_partitions_table(self, query: Select, table_name: str) -> "Table":
         """
-        Create temporary table with group by partitions.
+        Create table with partition mappings (sys__id -> partition_id).
+
+        Args:
+            query: Input query with sys__id column
+            table_name: Name for the partition table.
         """
         catalog = self.session.catalog
 
@@ -805,7 +810,7 @@ class UDFStep(Step, ABC):
         ]
 
         # create table with partitions
-        tbl = catalog.warehouse.create_udf_table(partition_columns())
+        tbl = catalog.warehouse.create_udf_table(partition_columns(), name=table_name)
 
         # fill table with partitions
         cols = [
@@ -967,6 +972,11 @@ class UDFStep(Step, ABC):
         """Job-specific partial output table name."""
         return f"udf_{job_id}_{_hash}_output_partial"
 
+    @staticmethod
+    def partition_table_name(job_id: str, _hash: str) -> str:
+        """Job-specific partition table name (includes job_id)."""
+        return f"udf_{job_id}_{_hash}_partition"
+
     def get_or_create_input_table(self, query: Select, _hash: str) -> "Table":
         """
         Get or create input table for the given hash.
@@ -986,6 +996,71 @@ class UDFStep(Step, ABC):
         # Create input table from original query
         return self.warehouse.create_pre_udf_table(query, input_table_name)
 
+    def _get_partition_table_for_continue(
+        self, checkpoint: Checkpoint, input_query: Select, _hash: str
+    ) -> "Table":
+        """
+        Get partition table from parent for continue flow.
+        Raises DataChainError if parent partition table not found.
+        """
+        assert self.job.rerun_from_job_id is not None
+        assert checkpoint.job_id == self.job.rerun_from_job_id
+
+        parent_partition_table_name = UDFStep.partition_table_name(
+            checkpoint.job_id, _hash
+        )
+
+        try:
+            parent_table = self.warehouse.get_table(parent_partition_table_name)
+        except TableMissingError:
+            raise DataChainError(
+                f"Parent partition table not found for checkpoint {checkpoint}. "
+                "Cannot continue from partial aggregation."
+            ) from None
+
+        current_partition_table_name = UDFStep.partition_table_name(self.job.id, _hash)
+
+        return self.warehouse.create_table_from_query(
+            current_partition_table_name,
+            sa.select(parent_table),
+            create_fn=lambda name: self.warehouse.create_udf_table(
+                partition_columns(), name=name
+            ),
+        )
+
+    def _setup_partition_table(
+        self,
+        query: Select,
+        hash_input: str,
+        ch_partial: Checkpoint | None,
+        _continue: bool,
+    ) -> Select:
+        """
+        Create partition table and augment query with partition_id column.
+        Returns:
+            Query augmented with partition_id column
+        """
+        # Create input table first so partition table can reference the
+        # same sys__id values
+        input_table = self.get_or_create_input_table(query, hash_input)
+
+        query = self.get_input_query(input_table.name, query)
+
+        if _continue:
+            assert ch_partial
+            partition_tbl = self._get_partition_table_for_continue(
+                ch_partial, query, hash_input
+            )
+        else:
+            partition_tbl = self.create_partitions_table(
+                query, UDFStep.partition_table_name(self.job.id, hash_input)
+            )
+
+        return query.outerjoin(
+            partition_tbl,
+            partition_tbl.c.sys__id == query.selected_columns.sys__id,
+        ).add_columns(*partition_columns())
+
     def apply(
         self,
         query_generator: QueryGenerator,
@@ -1002,28 +1077,23 @@ class UDFStep(Step, ABC):
             (hash_input + self.udf.output_schema_hash()).encode()
         ).hexdigest()
 
-        # If partition_by is set, we need to create input table first to ensure
-        # consistent sys__id
-        if self.partition_by is not None:
-            # Create input table first so partition table can reference the
-            # same sys__id values
-            input_table = self.get_or_create_input_table(query, hash_input)
+        ch = self._find_udf_checkpoint(hash_output)
+        ch_partial = (
+            self._find_udf_checkpoint(partial_hash, partial=True) if not ch else None
+        )
 
-            # Now query from the input table for partition creation
-            # Use get_input_query to preserve SQLTypes from original query
-            query = self.get_input_query(input_table.name, query)
+        # Determine which flow to use (skip/continue/from-scratch)
+        _skip = bool(ch)
+        _continue = bool(not _skip and ch_partial)
 
-            partition_tbl = self.create_partitions_table(query)
-            temp_tables.append(partition_tbl.name)
-            query = query.outerjoin(
-                partition_tbl,
-                partition_tbl.c.sys__id == query.selected_columns.sys__id,
-            ).add_columns(*partition_columns())
+        if self.partition_by is not None and not _skip:
+            query = self._setup_partition_table(
+                query, hash_input, ch_partial, _continue
+            )
 
-        # Aggregator checkpoints are not implemented yet - skip partial continuation
-        can_continue_from_partial = self.partition_by is None
-
-        if ch := self._find_udf_checkpoint(hash_output):
+        # Execute the determined flow
+        if _skip:
+            assert ch
             try:
                 output_table, input_table = self._skip_udf(ch, hash_input, query)
             except TableMissingError:
@@ -1038,9 +1108,8 @@ class UDFStep(Step, ABC):
                 output_table, input_table = self._run_from_scratch(
                     partial_hash, ch.hash, hash_input, query
                 )
-        elif can_continue_from_partial and (
-            ch_partial := self._find_udf_checkpoint(partial_hash, partial=True)
-        ):
+        elif _continue:
+            assert ch_partial
             output_table, input_table = self._continue_udf(
                 ch_partial, hash_output, hash_input, query
             )
@@ -1242,16 +1311,21 @@ class UDFStep(Step, ABC):
                 checkpoint.hash, hash_output, hash_input, query
             )
 
-        incomplete_input_ids = self.find_incomplete_inputs(parent_partial_table)
-        if incomplete_input_ids:
-            logger.debug(
-                "UDF(%s) [job=%s run_group=%s]: Found %d incomplete inputs "
-                "to re-process",
-                self._udf_name,
-                self._job_id_short,
-                self._run_group_id_short,
-                len(incomplete_input_ids),
-            )
+        # Incomplete input detection only applies to generators (1:N), not
+        # aggregators. Aggregators process entire partitions atomically — if a
+        # partition's outputs exist in the partial table, it was fully processed.
+        incomplete_input_ids: list[int] = []
+        if self.partition_by is None:
+            incomplete_input_ids = self.find_incomplete_inputs(parent_partial_table)
+            if incomplete_input_ids:
+                logger.debug(
+                    "UDF(%s) [job=%s run_group=%s]: Found %d incomplete inputs "
+                    "to re-process",
+                    self._udf_name,
+                    self._job_id_short,
+                    self._run_group_id_short,
+                    len(incomplete_input_ids),
+                )
 
         partial_table_name = UDFStep.partial_output_table_name(
             self.job.id, checkpoint.hash
@@ -1275,8 +1349,13 @@ class UDFStep(Step, ABC):
 
         input_query = self.get_input_query(input_table.name, query)
 
+        # For aggregators with partition_by, use `query` which already has
+        # partition columns joined (from _setup_partition_table).
+        # `input_query` is rebuilt from the input table and lacks partition_id.
+        unprocessed_input = query if self.partition_by is not None else input_query
+
         unprocessed_query = self.calculate_unprocessed_rows(
-            input_query,
+            unprocessed_input,
             partial_table,
             incomplete_input_ids,
         )
@@ -1358,7 +1437,7 @@ class UDFStep(Step, ABC):
         input_query: Select,
         partial_table: "Table",
         incomplete_input_ids: None | list[int] = None,
-    ):
+    ) -> Select:
         """
         Calculate which input rows haven't been processed yet.
 
@@ -1372,18 +1451,24 @@ class UDFStep(Step, ABC):
             A filtered query containing only unprocessed rows
         """
         incomplete_input_ids = incomplete_input_ids or []
-        # Get processed input IDs using subclass-specific logic
         processed_input_ids_subquery = self.processed_input_ids_query(partial_table)
 
-        sys_id_col = input_query.selected_columns.sys__id
+        # For Aggregator with partition_by: filter by partition_id
+        unprocessed_filter: sa.ColumnElement[bool]
+        if self.partition_by is not None:
+            from datachain.data_storage.schema import PARTITION_COLUMN_ID
 
-        # Build filter: rows that haven't been processed OR were incompletely processed
-        unprocessed_filter: sa.ColumnElement[bool] = sys_id_col.notin_(
-            sa.select(processed_input_ids_subquery.c.sys__processed_id)
-        )
+            partition_id_col = input_query.selected_columns[PARTITION_COLUMN_ID]
+            unprocessed_filter = partition_id_col.notin_(
+                sa.select(processed_input_ids_subquery.c.sys__processed_id)
+            )
+        else:
+            sys_id_col = input_query.selected_columns.sys__id
+            unprocessed_filter = sys_id_col.notin_(
+                sa.select(processed_input_ids_subquery.c.sys__processed_id)
+            )
 
-        # Add incomplete inputs to the filter (they need to be re-processed)
-        if incomplete_input_ids:
+        if incomplete_input_ids and self.partition_by is None:
             unprocessed_filter = sa.or_(
                 unprocessed_filter, sys_id_col.in_(incomplete_input_ids)
             )
