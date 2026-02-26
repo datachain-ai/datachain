@@ -197,8 +197,9 @@ class DataChain:
         _sys: bool = False,
     ) -> None:
         """Don't instantiate this directly, use one of the from_XXX constructors."""
-        self._query = query
         self._settings = settings
+        self._query = query
+        self._query.checkpoints_enabled = self._checkpoints_enabled
         self.signals_schema = signal_schema
         self._setup: dict = setup or {}
         self._sys = _sys
@@ -296,10 +297,19 @@ class DataChain:
         return self._query.session
 
     @property
+    def _checkpoints_enabled(self) -> bool:
+        return checkpoints_enabled(ephemeral=self._settings.ephemeral)
+
+    @property
     def job(self) -> Job:
         """
-        Get existing job if running in SaaS, or creating new one if running locally
+        Get existing job if running in SaaS, or creating new one if running locally.
         """
+        if self._settings.ephemeral:
+            raise RuntimeError(
+                "Cannot access job in ephemeral mode. "
+                "Jobs are not created when running with .settings(ephemeral=True)."
+            )
         return self.session.get_or_create_job()
 
     @property
@@ -377,6 +387,7 @@ class DataChain:
         min_task_size: int | None = None,
         batch_size: int | None = None,
         sys: bool | None = None,
+        ephemeral: bool | None = None,
     ) -> "Self":
         """
         Set chain execution parameters. Returns the chain itself, allowing method
@@ -400,6 +411,10 @@ class DataChain:
             batch_size: Number of rows per insert by UDF to fine tune and balance speed
                 and memory usage. This might be useful when processing large rows
                 or when running into memory issues. Defaults to 2000.
+            ephemeral: If True, no persistent objects are created in the metastore
+                (no jobs, checkpoints, or datasets). UDF execution still uses
+                temporary tables. Calling .save() in ephemeral mode will raise
+                an error.
 
         Example:
             ```py
@@ -423,6 +438,7 @@ class DataChain:
                 project=project,
                 min_task_size=min_task_size,
                 batch_size=batch_size,
+                ephemeral=ephemeral,
             )
         )
         return self._evolve(settings=settings, _sys=sys)
@@ -624,6 +640,12 @@ class DataChain:
                 Available values: `major`, `minor` or `patch`. Default is `patch`.
         """
 
+        if self._settings.ephemeral:
+            raise RuntimeError(
+                "Cannot save datasets in ephemeral mode. "
+                "Remove .settings(ephemeral=True) to save datasets."
+            )
+
         catalog = self.session.catalog
 
         result = None  # result chain that will be returned at the end
@@ -689,7 +711,7 @@ class DataChain:
                 checkpoint_hash=_hash,
             )
 
-        if checkpoints_enabled():
+        if self._checkpoints_enabled:
             catalog.metastore.get_or_create_checkpoint(self.job.id, _hash)
         return result
 
@@ -729,7 +751,7 @@ class DataChain:
         ignore_checkpoints = env2bool("DATACHAIN_IGNORE_CHECKPOINTS", undefined=False)
 
         if (
-            checkpoints_enabled()
+            self._checkpoints_enabled
             and self.job.rerun_from_job_id
             and not ignore_checkpoints
             and metastore.find_checkpoint(self.job.rerun_from_job_id, job_hash)
