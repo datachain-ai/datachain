@@ -2119,6 +2119,7 @@ class Catalog:
             return 0
 
         inactive_job_ids = [job.id for job in inactive_jobs]
+        # Run group = chain of rerun jobs (parent → child) sharing input tables
         run_group_ids = {job.run_group_id for job in inactive_jobs if job.run_group_id}
 
         checkpoints = list(self.metastore.list_checkpoints(job_id=inactive_job_ids))
