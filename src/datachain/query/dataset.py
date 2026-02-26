@@ -977,6 +977,24 @@ class UDFStep(Step, ABC):
         # Create input table from original query
         return self.warehouse.create_pre_udf_table(query, input_table_name)
 
+    def _prepare_partition_query(
+        self,
+        query: Select,
+        hash_input: str,
+        temp_tables: list[str],
+        job: "Job | None" = None,
+    ) -> Select:
+        """Create input and partition tables for partition_by, return updated query."""
+        input_table = self.get_or_create_input_table(query, hash_input, job)
+        query = self.get_input_query(input_table.name, query)
+
+        partition_tbl = self.create_partitions_table(query)
+        temp_tables.append(partition_tbl.name)
+        return query.outerjoin(
+            partition_tbl,
+            partition_tbl.c.sys__id == query.selected_columns.sys__id,
+        ).add_columns(*partition_columns())
+
     def apply(
         self,
         query_generator: QueryGenerator,
@@ -985,8 +1003,6 @@ class UDFStep(Step, ABC):
         hash_output: str,
         checkpoints_enabled: bool = True,
     ) -> "StepResult":
-        job = self.session.get_or_create_job() if checkpoints_enabled else None
-
         query = query_generator.select()
 
         # Calculate partial hash that includes output schema
@@ -996,38 +1012,33 @@ class UDFStep(Step, ABC):
             (hash_input + self.udf.output_schema_hash()).encode()
         ).hexdigest()
 
-        # If partition_by is set, we need to create input table first to ensure
-        # consistent sys__id
-        if self.partition_by is not None:
-            # Create input table first so partition table can reference the
-            # same sys__id values
-            input_table = self.get_or_create_input_table(query, hash_input, job)
-
-            # Now query from the input table for partition creation
-            # Use get_input_query to preserve SQLTypes from original query
-            query = self.get_input_query(input_table.name, query)
-
-            partition_tbl = self.create_partitions_table(query)
-            temp_tables.append(partition_tbl.name)
-            query = query.outerjoin(
-                partition_tbl,
-                partition_tbl.c.sys__id == query.selected_columns.sys__id,
-            ).add_columns(*partition_columns())
-
         if not checkpoints_enabled:
+            if self.partition_by is not None:
+                query = self._prepare_partition_query(
+                    query,
+                    hash_input,
+                    temp_tables,
+                )
             output_table, input_table = self._run_from_scratch(
                 partial_hash,
                 hash_output,
                 hash_input,
                 query,
-                job,
+                None,
                 checkpoints_enabled=False,
             )
             # No checkpoints — tables won't be reused, register for cleanup
             temp_tables.append(output_table.name)
             temp_tables.append(input_table.name)
         else:
-            assert job is not None
+            job = self.session.get_or_create_job()
+            if self.partition_by is not None:
+                query = self._prepare_partition_query(
+                    query,
+                    hash_input,
+                    temp_tables,
+                    job=job,
+                )
             if ch := self._find_udf_checkpoint(job, hash_output):
                 try:
                     output_table, input_table = self._skip_udf(
@@ -1148,8 +1159,7 @@ class UDFStep(Step, ABC):
         )
 
         partial_checkpoint = None
-        if checkpoints_enabled:
-            assert job is not None
+        if checkpoints_enabled and job:
             partial_checkpoint = self.metastore.get_or_create_checkpoint(
                 job.id, partial_hash, partial=True
             )
@@ -1178,8 +1188,7 @@ class UDFStep(Step, ABC):
             partial_output_table, UDFStep.output_table_name(run_id, hash_output)
         )
 
-        if checkpoints_enabled:
-            assert job is not None
+        if checkpoints_enabled and job:
             # Promote partial checkpoint to final and log event
             if partial_checkpoint:
                 self.metastore.remove_checkpoint(partial_checkpoint.id)
