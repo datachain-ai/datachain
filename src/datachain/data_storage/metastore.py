@@ -2142,14 +2142,12 @@ class AbstractDBMetastore(AbstractMetastore):
         if not run_group_id:
             return False
 
+        job_id_cast = cast(self._checkpoints.c.job_id, self._jobs.c.id.type)
+
         query = (
             self._jobs_select(f.count(self._checkpoints.c.id))
             .select_from(
-                self._jobs.join(
-                    self._checkpoints,
-                    self._jobs.c.id
-                    == cast(self._checkpoints.c.job_id, self._jobs.c.id.type),
-                )
+                self._jobs.join(self._checkpoints, self._jobs.c.id == job_id_cast)
             )
             .where(
                 and_(
