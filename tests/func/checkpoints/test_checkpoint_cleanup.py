@@ -24,7 +24,7 @@ def test_cleanup_checkpoints_with_ttl(test_session, nums_dataset):
     job_id = test_session.get_or_create_job().id
 
     assert len(list(metastore.list_checkpoints(job_id))) == 4
-    assert len(warehouse.db.list_tables(prefix="udf_")) > 0
+    assert len(warehouse.db.list_tables(pattern="udf_%")) > 0
 
     # Make all checkpoints older than the default TTL (4h)
     old_time = datetime.now(timezone.utc) - timedelta(hours=5)
@@ -33,7 +33,7 @@ def test_cleanup_checkpoints_with_ttl(test_session, nums_dataset):
     catalog.cleanup_checkpoints()
 
     assert len(list(metastore.list_checkpoints(job_id))) == 0
-    assert len(warehouse.db.list_tables(prefix=f"udf_{job_id}_")) == 0
+    assert len(warehouse.db.list_tables(pattern=f"udf_{job_id}_%")) == 0
 
 
 def test_cleanup_checkpoints_with_custom_ttl(test_session, nums_dataset):
@@ -101,7 +101,7 @@ def test_cleanup_does_not_remove_unrelated_tables(test_session, nums_dataset):
     catalog.cleanup_checkpoints()
 
     assert len(list(metastore.list_checkpoints(job_id))) == 0
-    assert len(warehouse.db.list_tables(prefix=f"udf_{job_id}_")) == 0
+    assert len(warehouse.db.list_tables(pattern=f"udf_{job_id}_%")) == 0
     assert warehouse.db.has_table(fake_table_name)
 
     warehouse.cleanup_tables([fake_table_name])
@@ -194,9 +194,6 @@ def test_cleanup_preserves_input_tables_when_run_group_active(
     warehouse.create_udf_table(name=input_table)
     assert warehouse.db.has_table(input_table)
 
-    output_table = f"udf_{job1_id}_somehash_output"
-    warehouse.create_udf_table(name=output_table)
-
     # Create a second job in the same run group with active checkpoints
     reset_session_job_state()
     job2_id = metastore.create_job(
@@ -207,6 +204,14 @@ def test_cleanup_preserves_input_tables_when_run_group_active(
     )
     monkeypatch.setenv("DATACHAIN_JOB_ID", job2_id)
     chain.map(tripled=lambda num: num * 3, output=int).save("nums_tripled")
+
+    # Record job1's UDF output tables before cleanup
+    job1_output_tables = [
+        t
+        for t in warehouse.db.list_tables(pattern=f"udf_{job1_id}_%")
+        if t.endswith("_output")
+    ]
+    assert len(job1_output_tables) > 0
 
     # Make only job 1's checkpoints outdated
     old_time = datetime.now(timezone.utc) - timedelta(hours=5)
@@ -219,7 +224,8 @@ def test_cleanup_preserves_input_tables_when_run_group_active(
 
     catalog.cleanup_checkpoints()
 
-    assert not warehouse.db.has_table(output_table)
+    # Job 1's output tables removed
+    assert all(not warehouse.db.has_table(t) for t in job1_output_tables)
     assert len(list(metastore.list_checkpoints(job1_id))) == 0
     assert len(list(metastore.list_checkpoints(job2_id))) > 0
     # Shared input table preserved (run group still active)

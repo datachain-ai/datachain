@@ -25,6 +25,7 @@ from sqlalchemy import Column
 from tqdm.auto import tqdm
 
 from datachain.cache import Cache
+from datachain.checkpoint import Checkpoint
 from datachain.client import Client
 from datachain.dataset import (
     DATASET_PREFIX,
@@ -2096,22 +2097,15 @@ class Catalog:
         ):
             pass
 
-    def _cleanup_udf_tables(self, prefix: str, suffix: str) -> None:
-        """Remove all UDF tables matching a prefix and optional suffix."""
-        tables = self.warehouse.db.list_tables(prefix=prefix)
-        tables = [t for t in tables if t.endswith(suffix)]
-        if tables:
-            logger.info("Removing %d UDF tables: %s", len(tables), tables)
-            self.warehouse.cleanup_tables(tables)
-
     def cleanup_checkpoints(self, ttl_seconds: int | None = None) -> int:
         """Clean up outdated checkpoints and their associated UDF tables.
 
         Algorithm:
         1. Find inactive jobs (all checkpoints older than TTL) — single query
-        2. For each inactive job: remove output/partial tables and checkpoints
+        2. Collect output/partial table names from checkpoints and remove them
         3. For run groups where all member jobs are inactive: also remove
-           shared input tables
+           shared input tables (prefix-based, since input hash is not on checkpoint)
+        4. Soft-delete checkpoint metadata
         """
         if ttl_seconds is None:
             ttl_seconds = CHECKPOINTS_TTL
@@ -2127,24 +2121,37 @@ class Catalog:
         inactive_job_ids = [job.id for job in inactive_jobs]
         run_group_ids = {job.run_group_id for job in inactive_jobs if job.run_group_id}
 
+        checkpoints = list(self.metastore.list_checkpoints(job_id=inactive_job_ids))
+
         logger.info(
-            "Cleaning %d inactive jobs across %d run groups",
+            "Cleaning %d inactive jobs across %d run groups (%d checkpoints)",
             len(inactive_jobs),
             len(run_group_ids),
+            len(checkpoints),
         )
 
-        for job in inactive_jobs:
-            self._cleanup_udf_tables(f"udf_{job.id}_", "_output")
-            self._cleanup_udf_tables(f"udf_{job.id}_", "_output_partial")
+        # Remove output/partial tables using exact names from checkpoints
+        tables = [ch.table_name for ch in checkpoints]
+        if tables:
+            logger.info("Removing %d UDF output tables: %s", len(tables), tables)
+            self.warehouse.cleanup_tables(tables)
 
         # Shared input tables — only when entire run group is inactive
         for group_id in run_group_ids:
             if not self.metastore.has_active_checkpoints_in_run_group(
                 group_id, ttl_threshold
             ):
-                self._cleanup_udf_tables(f"udf_{group_id}_", "_input")
+                input_tables = self.warehouse.db.list_tables(
+                    pattern=Checkpoint.input_table_pattern(group_id)
+                )
+                if input_tables:
+                    logger.info(
+                        "Removing %d shared input tables: %s",
+                        len(input_tables),
+                        input_tables,
+                    )
+                    self.warehouse.cleanup_tables(input_tables)
 
-        checkpoints = list(self.metastore.list_checkpoints(job_id=inactive_job_ids))
         self.metastore.remove_checkpoints([ch.id for ch in checkpoints])
 
         logger.info(

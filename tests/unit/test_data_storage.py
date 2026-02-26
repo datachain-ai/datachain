@@ -95,8 +95,8 @@ def test_list_tables(catalog):
         tables_after = db.list_tables()
         assert "test_list_tables_abc" in tables_after
 
-        # Test with prefix filter
-        filtered = db.list_tables(prefix="test_list_tables")
+        # Test with pattern filter
+        filtered = db.list_tables(pattern="test_list_tables%")
         assert "test_list_tables_abc" in filtered
     finally:
         db.drop_table(table)
