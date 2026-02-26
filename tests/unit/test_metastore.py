@@ -84,7 +84,7 @@ def test_outdated_schema():
         metastore.close_on_exit()
 
 
-def test_get_jobs_with_expired_checkpoints():
+def test_expire_checkpoints_and_get_expired_jobs():
     metastore = SQLiteMetastore(db_file=":memory:")
     try:
         now = datetime.now(timezone.utc)
@@ -119,8 +119,13 @@ def test_get_jobs_with_expired_checkpoints():
             .values(created_at=old)
         )
 
-        # Only job1 should be returned (all checkpoints expired)
-        expired_jobs = list(metastore.get_jobs_with_expired_checkpoints(ttl_threshold))
+        # Before expire_checkpoints, no expired jobs
+        assert list(metastore.get_expired_jobs()) == []
+
+        # Expire checkpoints — only job1's should be marked EXPIRED
+        metastore.expire_checkpoints(ttl_threshold)
+
+        expired_jobs = list(metastore.get_expired_jobs())
         assert len(expired_jobs) == 1
         assert expired_jobs[0].id == job1_id
 
@@ -128,7 +133,7 @@ def test_get_jobs_with_expired_checkpoints():
         metastore.create_job(
             "job3", "q", query_type=JobQueryType.PYTHON, status=JobStatus.COMPLETE
         )
-        expired_jobs = list(metastore.get_jobs_with_expired_checkpoints(ttl_threshold))
+        expired_jobs = list(metastore.get_expired_jobs())
         assert len(expired_jobs) == 1
         assert expired_jobs[0].id == job1_id
     finally:

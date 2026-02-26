@@ -2101,32 +2101,36 @@ class Catalog:
         """Clean up outdated checkpoints and their associated UDF tables.
 
         Algorithm:
-        1. Find inactive jobs (all checkpoints older than TTL) — single query
-        2. Collect output/partial table names from checkpoints and remove them
-        3. For run groups where all member jobs are inactive: also remove
-           shared input tables (prefix-based, since input hash is not on checkpoint)
-        4. Soft-delete checkpoint metadata
+        1. Atomically mark expired checkpoints as EXPIRED (single query) —
+           prevents running jobs from using them via find_checkpoint
+        2. Find jobs with EXPIRED checkpoints
+        3. Remove output/partial tables using exact names from checkpoints
+        4. For run groups where all member jobs are inactive: also remove
+           shared input tables
+        5. Mark checkpoints as DELETED
         """
         if ttl_seconds is None:
             ttl_seconds = CHECKPOINTS_TTL
 
         ttl_threshold = datetime.now(timezone.utc) - timedelta(seconds=ttl_seconds)
 
-        inactive_jobs = list(
-            self.metastore.get_jobs_with_expired_checkpoints(ttl_threshold)
-        )
-        if not inactive_jobs:
+        # Atomically mark expired checkpoints — after this, find_checkpoint
+        # won't return them, so running jobs are safe
+        self.metastore.expire_checkpoints(ttl_threshold)
+
+        expired_jobs = list(self.metastore.get_expired_jobs())
+        if not expired_jobs:
             return 0
 
-        inactive_job_ids = [job.id for job in inactive_jobs]
+        expired_job_ids = [job.id for job in expired_jobs]
         # Run group = chain of rerun jobs (parent → child) sharing input tables
-        run_group_ids = {job.run_group_id for job in inactive_jobs if job.run_group_id}
+        run_group_ids = {job.run_group_id for job in expired_jobs if job.run_group_id}
 
-        checkpoints = list(self.metastore.list_checkpoints(job_ids=inactive_job_ids))
+        checkpoints = list(self.metastore.list_checkpoints(job_ids=expired_job_ids))
 
         logger.info(
-            "Cleaning %d inactive jobs across %d run groups (%d checkpoints)",
-            len(inactive_jobs),
+            "Cleaning %d expired jobs across %d run groups (%d checkpoints)",
+            len(expired_jobs),
             len(run_group_ids),
             len(checkpoints),
         )
@@ -2158,6 +2162,6 @@ class Catalog:
         logger.info(
             "Checkpoint cleanup complete: removed %d checkpoints from %d jobs",
             len(checkpoints),
-            len(inactive_jobs),
+            len(expired_jobs),
         )
         return len(checkpoints)

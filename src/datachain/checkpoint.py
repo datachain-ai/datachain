@@ -6,7 +6,8 @@ from enum import IntEnum
 
 class CheckpointStatus(IntEnum):
     ACTIVE = 0
-    DELETED = 1
+    EXPIRED = 1
+    DELETED = 2
 
 
 @dataclass
