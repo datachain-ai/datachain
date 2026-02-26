@@ -2388,9 +2388,6 @@ class AbstractDBMetastore(AbstractMetastore):
             self._checkpoints.c.status != CheckpointStatus.DELETED,
         )
 
-    def _checkpoints_delete(self) -> "Delete":
-        return self._checkpoints.delete()
-
     def _checkpoints_query(self):
         return self._checkpoints_select(
             *[getattr(self._checkpoints.c, f) for f in self._checkpoints_fields]
