@@ -558,12 +558,10 @@ class AbstractMetastore(ABC, Serializable):
     @abstractmethod
     def list_checkpoints(
         self,
-        job_ids: "list[str] | None" = None,
-        created_after: datetime | None = None,
-        created_before: datetime | None = None,
+        job_ids: list[str] | None = None,
         conn=None,
     ) -> Iterator[Checkpoint]:
-        """List checkpoints, optionally filtered by job_id(s) and/or time range."""
+        """List checkpoints, optionally filtered by job IDs."""
 
     @abstractmethod
     def get_last_checkpoint(self, job_id: str, conn=None) -> Checkpoint | None:
@@ -2431,17 +2429,11 @@ class AbstractDBMetastore(AbstractMetastore):
     def list_checkpoints(
         self,
         job_ids: list[str] | None = None,
-        created_after: datetime | None = None,
-        created_before: datetime | None = None,
         conn=None,
     ) -> Iterator[Checkpoint]:
         query = self._checkpoints_query()
         if job_ids is not None:
             query = query.where(self._checkpoints.c.job_id.in_(job_ids))
-        if created_after is not None:
-            query = query.where(self._checkpoints.c.created_at >= created_after)
-        if created_before is not None:
-            query = query.where(self._checkpoints.c.created_at < created_before)
         rows = list(self.db.execute(query, conn=conn))
 
         yield from [self.checkpoint_class.parse(*r) for r in rows]
