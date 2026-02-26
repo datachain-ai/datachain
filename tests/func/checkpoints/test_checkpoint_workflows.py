@@ -479,7 +479,6 @@ def test_checkpoints_job_without_run_group_id_continue(
 
 
 def test_udf_runs_in_ephemeral_mode(test_session, nums_dataset):
-    """UDF chain works correctly in ephemeral mode."""
     metastore = test_session.catalog.metastore
     jobs_before = _count_rows(metastore, metastore._jobs)
     checkpoints_before = _count_rows(metastore, metastore._checkpoints)

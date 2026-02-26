@@ -4374,7 +4374,6 @@ def test_save_create_project_not_allowed(test_session, is_studio):
 
 
 def test_save_raises_in_ephemeral_mode(test_session):
-    """save() raises RuntimeError in ephemeral mode."""
     chain = dc.read_values(num=[1, 2, 3], session=test_session).settings(ephemeral=True)
 
     with pytest.raises(RuntimeError, match="Cannot save datasets in ephemeral mode"):
@@ -4382,7 +4381,6 @@ def test_save_raises_in_ephemeral_mode(test_session):
 
 
 def test_job_property_raises_in_ephemeral_mode(test_session):
-    """Accessing DataChain.job raises RuntimeError in ephemeral mode."""
     chain = dc.read_values(num=[1, 2, 3], session=test_session).settings(ephemeral=True)
 
     with pytest.raises(RuntimeError, match="Cannot access job in ephemeral mode"):

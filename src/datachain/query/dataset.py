@@ -62,7 +62,6 @@ from datachain.query.udf import UdfInfo
 from datachain.sql.functions.random import rand
 from datachain.sql.types import SQLType
 from datachain.utils import (
-    checkpoints_enabled,
     determine_processes,
     determine_workers,
     ensure_sequence,
@@ -506,7 +505,6 @@ class UDFStep(Step, ABC):
     workers: bool | int = False
     min_task_size: int | None = None
     batch_size: int | None = None
-    ephemeral: bool = False
 
     def hash_inputs(self) -> str:
         partition_by = ensure_sequence(self.partition_by or [])
@@ -900,21 +898,16 @@ class UDFStep(Step, ABC):
         )
 
     def _find_udf_checkpoint(
-        self, job: "Job | None", _hash: str, partial: bool = False
+        self, job: "Job", _hash: str, partial: bool = False
     ) -> Checkpoint | None:
         """
         Find a reusable UDF checkpoint for the given hash.
-        Returns the Checkpoint object if found and checkpoints are enabled,
-        None otherwise.
+        Returns the Checkpoint object if found, None otherwise.
         """
-        if job is None:
-            return None
-
         ignore_checkpoints = env2bool("DATACHAIN_IGNORE_CHECKPOINTS", undefined=False)
 
         if (
-            checkpoints_enabled()
-            and job.rerun_from_job_id
+            job.rerun_from_job_id
             and not ignore_checkpoints
             and (
                 checkpoint := self.metastore.find_checkpoint(
@@ -990,10 +983,9 @@ class UDFStep(Step, ABC):
         temp_tables: list[str],
         hash_input: str,
         hash_output: str,
+        checkpoints_enabled: bool = True,
     ) -> "StepResult":
-        skip_checkpoints = self.ephemeral or not checkpoints_enabled()
-
-        job = self.session.get_or_create_job() if not skip_checkpoints else None
+        job = self.session.get_or_create_job() if checkpoints_enabled else None
 
         query = query_generator.select()
 
@@ -1022,40 +1014,47 @@ class UDFStep(Step, ABC):
                 partition_tbl.c.sys__id == query.selected_columns.sys__id,
             ).add_columns(*partition_columns())
 
-        if skip_checkpoints:
+        if not checkpoints_enabled:
             output_table, input_table = self._run_from_scratch(
-                partial_hash, hash_output, hash_input, query, job
+                partial_hash,
+                hash_output,
+                hash_input,
+                query,
+                job,
+                checkpoints_enabled=False,
             )
             # No checkpoints — tables won't be reused, register for cleanup
             temp_tables.append(output_table.name)
             temp_tables.append(input_table.name)
-        elif ch := self._find_udf_checkpoint(job, hash_output):
-            assert job is not None
-            try:
-                output_table, input_table = self._skip_udf(ch, hash_input, query, job)
-            except TableMissingError:
-                logger.warning(
-                    "UDF(%s) [job=%s run_group=%s]: Output table not found for "
-                    "checkpoint %s. Running UDF from scratch.",
-                    self._udf_name,
-                    self._job_id_short(job),
-                    self._run_group_id_short(job),
-                    ch,
-                )
-                output_table, input_table = self._run_from_scratch(
-                    partial_hash, ch.hash, hash_input, query, job
-                )
-        elif self.partition_by is None and (
-            ch_partial := self._find_udf_checkpoint(job, partial_hash, partial=True)
-        ):
-            assert job is not None
-            output_table, input_table = self._continue_udf(
-                ch_partial, hash_output, hash_input, query, job
-            )
         else:
-            output_table, input_table = self._run_from_scratch(
-                partial_hash, hash_output, hash_input, query, job
-            )
+            assert job is not None
+            if ch := self._find_udf_checkpoint(job, hash_output):
+                try:
+                    output_table, input_table = self._skip_udf(
+                        ch, hash_input, query, job
+                    )
+                except TableMissingError:
+                    logger.warning(
+                        "UDF(%s) [job=%s run_group=%s]: Output table not found for "
+                        "checkpoint %s. Running UDF from scratch.",
+                        self._udf_name,
+                        self._job_id_short(job),
+                        self._run_group_id_short(job),
+                        ch,
+                    )
+                    output_table, input_table = self._run_from_scratch(
+                        partial_hash, ch.hash, hash_input, query, job
+                    )
+            elif self.partition_by is None and (
+                ch_partial := self._find_udf_checkpoint(job, partial_hash, partial=True)
+            ):
+                output_table, input_table = self._continue_udf(
+                    ch_partial, hash_output, hash_input, query, job
+                )
+            else:
+                output_table, input_table = self._run_from_scratch(
+                    partial_hash, hash_output, hash_input, query, job
+                )
 
         # Create result query from output table
         input_query = self.get_input_query(input_table.name, query)
@@ -1136,6 +1135,7 @@ class UDFStep(Step, ABC):
         hash_input: str,
         query,
         job: "Job | None",
+        checkpoints_enabled: bool = True,
     ) -> tuple["Table", "Table"]:
         """Execute UDF from scratch. Returns (output_table, input_table)."""
         run_id = job.id if job else str(uuid4())  # unique ID for table naming
@@ -1148,7 +1148,8 @@ class UDFStep(Step, ABC):
         )
 
         partial_checkpoint = None
-        if job is not None:
+        if checkpoints_enabled:
+            assert job is not None
             partial_checkpoint = self.metastore.get_or_create_checkpoint(
                 job.id, partial_hash, partial=True
             )
@@ -1177,7 +1178,8 @@ class UDFStep(Step, ABC):
             partial_output_table, UDFStep.output_table_name(run_id, hash_output)
         )
 
-        if job is not None:
+        if checkpoints_enabled:
+            assert job is not None
             # Promote partial checkpoint to final and log event
             if partial_checkpoint:
                 self.metastore.remove_checkpoint(partial_checkpoint.id)
@@ -1420,7 +1422,6 @@ class UDFSignal(UDFStep):
     workers: bool | int = False
     min_task_size: int | None = None
     batch_size: int | None = None
-    ephemeral: bool = False
 
     @property
     def _step_type(self) -> CheckpointStepType:
@@ -1531,7 +1532,6 @@ class RowGenerator(UDFStep):
     workers: bool | int = False
     min_task_size: int | None = None
     batch_size: int | None = None
-    ephemeral: bool = False
 
     @property
     def _step_type(self) -> CheckpointStepType:
@@ -2142,6 +2142,7 @@ class DatasetQuery:
         self.before_steps: list[Callable] = []
         self.listing_fn: Callable | None = None
         self.update = update
+        self.checkpoints_enabled: bool = True
 
         self.list_ds_name: str | None = None
 
@@ -2194,7 +2195,7 @@ class DatasetQuery:
 
     @property
     def _last_checkpoint_hash(self) -> str | None:
-        if not checkpoints_enabled():
+        if not self.checkpoints_enabled:
             return None
         job = self.session.get_or_create_job()
         last_checkpoint = self.catalog.metastore.get_last_checkpoint(job.id)
@@ -2328,6 +2329,7 @@ class DatasetQuery:
                 self.temp_table_names,
                 hash_input=hash_input,
                 hash_output=hash_output,
+                checkpoints_enabled=self.checkpoints_enabled,
             )  # a chain of steps linked by results
             self.dependencies.update(result.dependencies)
 
@@ -2681,8 +2683,8 @@ class DatasetQuery:
         workers: bool | int = False,
         min_task_size: int | None = None,
         batch_size: int | None = None,
-        ephemeral: bool = False,
         # Parameters are unused, kept only to match the signature of Settings.to_dict
+        ephemeral: bool = False,
         prefetch: int | None = None,
         namespace: str | None = None,
         project: str | None = None,
@@ -2712,7 +2714,6 @@ class DatasetQuery:
                 min_task_size=min_task_size,
                 cache=cache,
                 batch_size=batch_size,
-                ephemeral=ephemeral,
             )
         )
         return query
@@ -2734,8 +2735,8 @@ class DatasetQuery:
         workers: bool | int = False,
         min_task_size: int | None = None,
         batch_size: int | None = None,
-        ephemeral: bool = False,
         # Parameters are unused, kept only to match the signature of Settings.to_dict:
+        ephemeral: bool = False,
         prefetch: int | None = None,
         namespace: str | None = None,
         project: str | None = None,
@@ -2752,7 +2753,6 @@ class DatasetQuery:
                 min_task_size=min_task_size,
                 cache=cache,
                 batch_size=batch_size,
-                ephemeral=ephemeral,
             )
         )
         return query

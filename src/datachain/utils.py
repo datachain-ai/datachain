@@ -615,13 +615,14 @@ def uses_glob(path: str) -> bool:
     return glob.has_magic(os.path.basename(os.path.normpath(path)))
 
 
-def checkpoints_enabled() -> bool:
+def checkpoints_enabled(ephemeral: bool = False) -> bool:
     """
     Check if checkpoints are enabled for the current execution context.
 
-    Checkpoints are automatically disabled when code runs in:
-    1. A user-created subprocess (detected via DATACHAIN_MAIN_PROCESS_PID mismatch)
-    2. A thread that is not the original checkpoint owner thread
+    Checkpoints are automatically disabled when:
+    1. Running in ephemeral mode (no persistent metastore objects)
+    2. A user-created subprocess (detected via DATACHAIN_MAIN_PROCESS_PID mismatch)
+    3. A thread that is not the original checkpoint owner thread
 
     DataChain-controlled subprocesses can enable checkpoints by setting
     DATACHAIN_SUBPROCESS=1.
@@ -633,6 +634,8 @@ def checkpoints_enabled() -> bool:
     Returns:
         bool: True if checkpoints are enabled, False if disabled.
     """
+    if ephemeral:
+        return False
     # DataChain-controlled subprocess - explicitly allowed
     if os.environ.get("DATACHAIN_SUBPROCESS"):
         return True

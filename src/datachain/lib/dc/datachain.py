@@ -197,8 +197,9 @@ class DataChain:
         _sys: bool = False,
     ) -> None:
         """Don't instantiate this directly, use one of the from_XXX constructors."""
-        self._query = query
         self._settings = settings
+        self._query = query
+        self._query.checkpoints_enabled = self._checkpoints_enabled
         self.signals_schema = signal_schema
         self._setup: dict = setup or {}
         self._sys = _sys
@@ -294,6 +295,10 @@ class DataChain:
     def session(self) -> Session:
         """Session of the chain."""
         return self._query.session
+
+    @property
+    def _checkpoints_enabled(self) -> bool:
+        return checkpoints_enabled(ephemeral=self._settings.ephemeral)
 
     @property
     def job(self) -> Job:
@@ -706,7 +711,7 @@ class DataChain:
                 checkpoint_hash=_hash,
             )
 
-        if checkpoints_enabled():
+        if self._checkpoints_enabled:
             catalog.metastore.get_or_create_checkpoint(self.job.id, _hash)
         return result
 
@@ -746,7 +751,7 @@ class DataChain:
         ignore_checkpoints = env2bool("DATACHAIN_IGNORE_CHECKPOINTS", undefined=False)
 
         if (
-            checkpoints_enabled()
+            self._checkpoints_enabled
             and self.job.rerun_from_job_id
             and not ignore_checkpoints
             and metastore.find_checkpoint(self.job.rerun_from_job_id, job_hash)
