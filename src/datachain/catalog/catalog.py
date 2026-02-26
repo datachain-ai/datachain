@@ -2122,7 +2122,7 @@ class Catalog:
         # Run group = chain of rerun jobs (parent → child) sharing input tables
         run_group_ids = {job.run_group_id for job in inactive_jobs if job.run_group_id}
 
-        checkpoints = list(self.metastore.list_checkpoints(job_id=inactive_job_ids))
+        checkpoints = list(self.metastore.list_checkpoints(job_ids=inactive_job_ids))
 
         logger.info(
             "Cleaning %d inactive jobs across %d run groups (%d checkpoints)",

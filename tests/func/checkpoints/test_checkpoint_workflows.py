@@ -93,8 +93,8 @@ def test_checkpoints(
     assert len(catalog.get_dataset("nums2").versions) == expected_versions
     assert len(catalog.get_dataset("nums3").versions) == 1
 
-    assert len(list(catalog.metastore.list_checkpoints(first_job_id))) == 3
-    assert len(list(catalog.metastore.list_checkpoints(second_job_id))) == 3
+    assert len(list(catalog.metastore.list_checkpoints([first_job_id]))) == 3
+    assert len(list(catalog.metastore.list_checkpoints([second_job_id]))) == 3
 
 
 @pytest.mark.parametrize("reset_checkpoints", [True, False])
@@ -124,8 +124,8 @@ def test_checkpoints_modified_chains(
     assert len(catalog.get_dataset("nums2").versions) == 2
     assert len(catalog.get_dataset("nums3").versions) == 2
 
-    assert len(list(catalog.metastore.list_checkpoints(first_job_id))) == 3
-    assert len(list(catalog.metastore.list_checkpoints(second_job_id))) == 3
+    assert len(list(catalog.metastore.list_checkpoints([first_job_id]))) == 3
+    assert len(list(catalog.metastore.list_checkpoints([second_job_id]))) == 3
 
 
 @pytest.mark.parametrize("reset_checkpoints", [True, False])
@@ -187,10 +187,10 @@ def test_checkpoints_multiple_runs(
         assert num2_versions == 2
         assert num3_versions == 2
 
-    assert len(list(catalog.metastore.list_checkpoints(first_job_id))) == 3
-    assert len(list(catalog.metastore.list_checkpoints(second_job_id))) == 3
-    assert len(list(catalog.metastore.list_checkpoints(third_job_id))) == 3
-    assert len(list(catalog.metastore.list_checkpoints(fourth_job_id))) == 3
+    assert len(list(catalog.metastore.list_checkpoints([first_job_id]))) == 3
+    assert len(list(catalog.metastore.list_checkpoints([second_job_id]))) == 3
+    assert len(list(catalog.metastore.list_checkpoints([third_job_id]))) == 3
+    assert len(list(catalog.metastore.list_checkpoints([fourth_job_id]))) == 3
 
 
 def test_checkpoints_check_valid_chain_is_returned(
@@ -326,7 +326,7 @@ def test_udf_checkpoints_cross_job_reuse(
 
     assert call_count["count"] == 6
 
-    checkpoints = list(catalog.metastore.list_checkpoints(first_job_id))
+    checkpoints = list(catalog.metastore.list_checkpoints([first_job_id]))
     assert len(checkpoints) == 1
     assert checkpoints[0].partial is False
 
@@ -342,7 +342,7 @@ def test_udf_checkpoints_cross_job_reuse(
     else:
         assert call_count["count"] == 0, "Mapper should NOT be called"
 
-    checkpoints_second = list(catalog.metastore.list_checkpoints(second_job_id))
+    checkpoints_second = list(catalog.metastore.list_checkpoints([second_job_id]))
     # After successful completion, only final checkpoint remains
     # (partial checkpoint is deleted after promotion)
     assert len(checkpoints_second) == 1

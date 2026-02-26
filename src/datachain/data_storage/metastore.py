@@ -558,7 +558,7 @@ class AbstractMetastore(ABC, Serializable):
     @abstractmethod
     def list_checkpoints(
         self,
-        job_id: "str | list[str] | None" = None,
+        job_ids: "list[str] | None" = None,
         created_after: datetime | None = None,
         created_before: datetime | None = None,
         conn=None,
@@ -2433,17 +2433,14 @@ class AbstractDBMetastore(AbstractMetastore):
 
     def list_checkpoints(
         self,
-        job_id: str | list[str] | None = None,
+        job_ids: list[str] | None = None,
         created_after: datetime | None = None,
         created_before: datetime | None = None,
         conn=None,
     ) -> Iterator[Checkpoint]:
         query = self._checkpoints_query()
-        if job_id is not None:
-            if isinstance(job_id, list):
-                query = query.where(self._checkpoints.c.job_id.in_(job_id))
-            else:
-                query = query.where(self._checkpoints.c.job_id == job_id)
+        if job_ids is not None:
+            query = query.where(self._checkpoints.c.job_id.in_(job_ids))
         if created_after is not None:
             query = query.where(self._checkpoints.c.created_at >= created_after)
         if created_before is not None:
