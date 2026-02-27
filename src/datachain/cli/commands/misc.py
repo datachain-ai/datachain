@@ -33,6 +33,13 @@ def garbage_collect(catalog: "Catalog", checkpoint_ttl: int | None = None):
     else:
         print("  No outdated checkpoints to clean up.")
 
+    print("Collecting orphan UDF input tables...")
+    num_orphans = catalog.cleanup_orphan_input_tables()
+    if num_orphans:
+        print(f"  Removed {num_orphans} orphan UDF input tables.")
+    else:
+        print("  No orphan UDF input tables to clean up.")
+
 
 def completion(shell: str) -> str:
     from datachain.cli import get_parser

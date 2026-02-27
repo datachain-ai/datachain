@@ -2165,3 +2165,29 @@ class Catalog:
             len(expired_jobs),
         )
         return len(checkpoints)
+
+    def cleanup_orphan_input_tables(self) -> int:
+        """Remove UDF input tables whose run group has no ACTIVE checkpoints.
+
+        These can be left behind when jobs were manually deleted.
+        """
+        all_input_tables = self.warehouse.db.list_tables(
+            pattern=Checkpoint.all_input_tables_pattern()
+        )
+        if not all_input_tables:
+            return 0
+
+        active_group_ids = self.metastore.get_active_run_group_ids()
+
+        orphans = [
+            t
+            for t in all_input_tables
+            if not any(
+                Checkpoint.input_table_belongs_to_group(t, gid)
+                for gid in active_group_ids
+            )
+        ]
+        if orphans:
+            logger.info("Removing %d orphan input tables: %s", len(orphans), orphans)
+            self.warehouse.cleanup_tables(orphans)
+        return len(orphans)

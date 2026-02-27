@@ -53,6 +53,18 @@ class Checkpoint:
         """LIKE pattern for finding all input tables in a run group."""
         return f"udf_{group_id}_%_input"
 
+    @staticmethod
+    def all_input_tables_pattern() -> str:
+        """LIKE pattern for finding all UDF input tables."""
+        return "udf_%_input"
+
+    @staticmethod
+    def input_table_belongs_to_group(table_name: str, group_id: str) -> bool:
+        """Check if an input table belongs to a specific run group."""
+        return table_name.startswith(f"udf_{group_id}_") and table_name.endswith(
+            "_input"
+        )
+
     @property
     def table_name(self) -> str:
         """UDF output table name associated with this checkpoint."""

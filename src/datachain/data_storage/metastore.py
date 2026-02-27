@@ -589,6 +589,10 @@ class AbstractMetastore(ABC, Serializable):
         """Get or create checkpoint. Must be atomic and idempotent."""
 
     @abstractmethod
+    def get_active_run_group_ids(self, conn: Any | None = None) -> list[str]:
+        """Return run group IDs that have at least one ACTIVE checkpoint."""
+
+    @abstractmethod
     def expire_checkpoints(
         self, ttl_threshold: datetime, conn: Any | None = None
     ) -> None:
@@ -2739,6 +2743,21 @@ class AbstractDBMetastore(AbstractMetastore):
             )
 
         return self.dataset_version_class.parse(*results[0])
+
+    def get_active_run_group_ids(self, conn: Any | None = None) -> list[str]:
+        ch = self._checkpoints
+        jobs = self._jobs
+        job_id_cast = cast(ch.c.job_id, jobs.c.id.type)
+
+        query = (
+            select(jobs.c.run_group_id)
+            .select_from(jobs.join(ch, jobs.c.id == job_id_cast))
+            .where(ch.c.status == CheckpointStatus.ACTIVE)
+            .where(jobs.c.run_group_id.isnot(None))
+            .distinct()
+        )
+
+        return [row[0] for row in self.db.execute(query, conn=conn)]
 
     def expire_checkpoints(
         self, ttl_threshold: datetime, conn: Any | None = None

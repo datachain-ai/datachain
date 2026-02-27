@@ -275,3 +275,37 @@ def test_cleanup_preserves_input_tables_when_run_group_active(
     assert warehouse.db.has_table(input_table)
 
     warehouse.cleanup_tables([input_table])
+
+
+def test_cleanup_orphan_input_tables(test_session, nums_dataset):
+    catalog = test_session.catalog
+    metastore = catalog.metastore
+    warehouse = catalog.warehouse
+
+    reset_session_job_state()
+    chain = dc.read_dataset("nums", session=test_session)
+    chain.map(doubled=lambda num: num * 2, output=int).save("nums_doubled")
+    job_id = test_session.get_or_create_job().id
+    finish_job(metastore, job_id)
+    job = metastore.get_job(job_id)
+    run_group_id = job.run_group_id
+
+    # Create an input table belonging to this run group
+    active_input = f"udf_{run_group_id}_hash1_input"
+    warehouse.create_udf_table(name=active_input)
+
+    # Create an orphan input table (run group that doesn't exist)
+    orphan_input = "udf_nonexistent-group_hash2_input"
+    warehouse.create_udf_table(name=orphan_input)
+
+    assert warehouse.db.has_table(active_input)
+    assert warehouse.db.has_table(orphan_input)
+
+    catalog.cleanup_orphan_input_tables()
+
+    # Active run group's input table preserved
+    assert warehouse.db.has_table(active_input)
+    # Orphan input table removed
+    assert not warehouse.db.has_table(orphan_input)
+
+    warehouse.cleanup_tables([active_input])
