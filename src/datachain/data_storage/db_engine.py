@@ -123,15 +123,15 @@ class DatabaseEngine(ABC, Serializable):
         return sa.inspect(self.engine).has_table(name)
 
     @abstractmethod
-    def list_tables(self, prefix: str = "") -> list[str]:
+    def list_tables(self, pattern: str = "") -> list[str]:
         """
-        List all table names, optionally filtered by prefix.
+        List all table names, optionally filtered by a SQL LIKE pattern.
 
         Args:
-            prefix: Optional prefix to filter table names
+            pattern: SQL LIKE pattern to filter table names (e.g. 'udf_%')
 
         Returns:
-            List of table names matching the prefix
+            List of table names matching the pattern
         """
 
     @abstractmethod

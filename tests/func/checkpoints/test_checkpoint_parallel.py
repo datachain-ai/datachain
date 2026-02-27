@@ -47,8 +47,8 @@ def test_checkpoints_parallel(test_session_tmpfile, monkeypatch):
     assert len(catalog.get_dataset("nums2").versions) == 1
     assert len(catalog.get_dataset("nums3").versions) == 1
 
-    assert len(list(catalog.metastore.list_checkpoints(first_job_id))) == 3
-    assert len(list(catalog.metastore.list_checkpoints(second_job_id))) == 3
+    assert len(list(catalog.metastore.list_checkpoints([first_job_id]))) == 3
+    assert len(list(catalog.metastore.list_checkpoints([second_job_id]))) == 3
 
 
 def test_udf_generator_continue_parallel(test_session_tmpfile, monkeypatch):

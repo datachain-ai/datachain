@@ -1,6 +1,13 @@
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
+from enum import IntEnum
+
+
+class CheckpointStatus(IntEnum):
+    ACTIVE = 0
+    EXPIRED = 1
+    DELETED = 2
 
 
 @dataclass
@@ -24,6 +31,46 @@ class Checkpoint:
     hash: str
     partial: bool
     created_at: datetime
+    status: int = CheckpointStatus.ACTIVE
+
+    @staticmethod
+    def output_table_name(job_id: str, _hash: str) -> str:
+        """Final UDF output table. Job-specific, created when UDF completes."""
+        return f"udf_{job_id}_{_hash}_output"
+
+    @staticmethod
+    def partial_output_table_name(job_id: str, _hash: str) -> str:
+        """Partial UDF output table. Temporary, renamed to final on completion."""
+        return f"udf_{job_id}_{_hash}_output_partial"
+
+    @staticmethod
+    def input_table_name(group_id: str, _hash: str) -> str:
+        """Shared UDF input table. Scoped to run group, reused across jobs."""
+        return f"udf_{group_id}_{_hash}_input"
+
+    @staticmethod
+    def input_table_pattern(group_id: str) -> str:
+        """LIKE pattern for finding all input tables in a run group."""
+        return f"udf_{group_id}_%_input"
+
+    @staticmethod
+    def all_input_tables_pattern() -> str:
+        """LIKE pattern for finding all UDF input tables."""
+        return "udf_%_input"
+
+    @staticmethod
+    def input_table_belongs_to_group(table_name: str, group_id: str) -> bool:
+        """Check if an input table belongs to a specific run group."""
+        return table_name.startswith(f"udf_{group_id}_") and table_name.endswith(
+            "_input"
+        )
+
+    @property
+    def table_name(self) -> str:
+        """UDF output table name associated with this checkpoint."""
+        if self.partial:
+            return self.partial_output_table_name(self.job_id, self.hash)
+        return self.output_table_name(self.job_id, self.hash)
 
     @classmethod
     def parse(
@@ -33,6 +80,7 @@ class Checkpoint:
         _hash: str,
         partial: bool,
         created_at: datetime,
+        status: int = CheckpointStatus.ACTIVE,
     ) -> "Checkpoint":
         return cls(
             str(id),
@@ -40,4 +88,5 @@ class Checkpoint:
             _hash,
             bool(partial),
             created_at,
+            int(status),
         )

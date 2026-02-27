@@ -113,7 +113,16 @@ E2E_STEPS = (
     },
     {
         "command": ("datachain", "gc"),
-        "expected": ("Nothing to clean up.\n"),
+        "expected": (
+            "Collecting temporary tables...\n"
+            "  No temporary tables to clean up.\n"
+            "Collecting failed dataset versions...\n"
+            "  No failed dataset versions to clean up.\n"
+            "Collecting outdated checkpoints...\n"
+            "  No outdated checkpoints to clean up.\n"
+            "Collecting orphan UDF input tables...\n"
+            "  No orphan UDF input tables to clean up.\n"
+        ),
     },
 )
 

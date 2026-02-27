@@ -10,6 +10,7 @@ from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import contextmanager, suppress
 from copy import copy
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from functools import cached_property, reduce
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -24,6 +25,7 @@ from sqlalchemy import Column
 from tqdm.auto import tqdm
 
 from datachain.cache import Cache
+from datachain.checkpoint import Checkpoint
 from datachain.client import Client
 from datachain.dataset import (
     DATASET_PREFIX,
@@ -72,7 +74,7 @@ logger = logging.getLogger("datachain")
 
 DEFAULT_DATASET_DIR = "dataset"
 
-TTL_INT = 4 * 60 * 60
+CHECKPOINTS_TTL = 4 * 60 * 60
 
 INDEX_INTERNAL_ERROR_MESSAGE = "Internal error on indexing"
 DATASET_INTERNAL_ERROR_MESSAGE = "Internal error on creating dataset"
@@ -2094,3 +2096,98 @@ class Catalog:
             only_index=True,
         ):
             pass
+
+    def cleanup_checkpoints(self, ttl_seconds: int | None = None) -> int:
+        """Clean up outdated checkpoints and their associated UDF tables.
+
+        Algorithm:
+        1. Atomically mark expired checkpoints as EXPIRED (single query) —
+           prevents running jobs from using them via find_checkpoint
+        2. Find jobs with EXPIRED checkpoints
+        3. Remove output/partial tables using exact names from checkpoints
+        4. For run groups where all member jobs are inactive: also remove
+           shared input tables
+        5. Mark checkpoints as DELETED
+        """
+        if ttl_seconds is None:
+            ttl_seconds = CHECKPOINTS_TTL
+
+        ttl_threshold = datetime.now(timezone.utc) - timedelta(seconds=ttl_seconds)
+
+        # Atomically mark expired checkpoints — after this, find_checkpoint
+        # won't return them, so running jobs are safe
+        self.metastore.expire_checkpoints(ttl_threshold)
+
+        expired_jobs = list(self.metastore.get_expired_jobs())
+        if not expired_jobs:
+            return 0
+
+        expired_job_ids = [job.id for job in expired_jobs]
+        # Run group = chain of rerun jobs (parent → child) sharing input tables
+        run_group_ids = {job.run_group_id for job in expired_jobs if job.run_group_id}
+
+        checkpoints = list(self.metastore.list_checkpoints(job_ids=expired_job_ids))
+
+        logger.info(
+            "Cleaning %d expired jobs across %d run groups (%d checkpoints)",
+            len(expired_jobs),
+            len(run_group_ids),
+            len(checkpoints),
+        )
+
+        # Remove output/partial tables using exact names from checkpoints
+        tables = [ch.table_name for ch in checkpoints]
+        if tables:
+            logger.info("Removing %d UDF output tables: %s", len(tables), tables)
+            self.warehouse.cleanup_tables(tables)
+
+        # Shared input tables — only when entire run group is inactive
+        for group_id in run_group_ids:
+            if not self.metastore.has_active_checkpoints_in_run_group(
+                group_id, ttl_threshold
+            ):
+                input_tables = self.warehouse.db.list_tables(
+                    pattern=Checkpoint.input_table_pattern(group_id)
+                )
+                if input_tables:
+                    logger.info(
+                        "Removing %d shared input tables: %s",
+                        len(input_tables),
+                        input_tables,
+                    )
+                    self.warehouse.cleanup_tables(input_tables)
+
+        self.metastore.remove_checkpoints([ch.id for ch in checkpoints])
+
+        logger.info(
+            "Checkpoint cleanup complete: removed %d checkpoints from %d jobs",
+            len(checkpoints),
+            len(expired_jobs),
+        )
+        return len(checkpoints)
+
+    def cleanup_orphan_input_tables(self) -> int:
+        """Remove UDF input tables whose run group has no ACTIVE checkpoints.
+
+        These can be left behind when jobs were manually deleted.
+        """
+        all_input_tables = self.warehouse.db.list_tables(
+            pattern=Checkpoint.all_input_tables_pattern()
+        )
+        if not all_input_tables:
+            return 0
+
+        active_group_ids = self.metastore.get_active_run_group_ids()
+
+        orphans = [
+            t
+            for t in all_input_tables
+            if not any(
+                Checkpoint.input_table_belongs_to_group(t, gid)
+                for gid in active_group_ids
+            )
+        ]
+        if orphans:
+            logger.info("Removing %d orphan input tables: %s", len(orphans), orphans)
+            self.warehouse.cleanup_tables(orphans)
+        return len(orphans)

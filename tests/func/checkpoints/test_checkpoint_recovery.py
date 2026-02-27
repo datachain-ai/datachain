@@ -586,7 +586,7 @@ def test_skip_udf_fallback_when_output_table_missing(test_session):
     catalog = test_session.catalog
 
     # Drop all UDF output tables from first run
-    for table_name in catalog.warehouse.db.list_tables(prefix="udf_"):
+    for table_name in catalog.warehouse.db.list_tables(pattern="udf_%"):
         if "_output" in table_name and "_partial" not in table_name:
             table = catalog.warehouse.db.get_table(table_name)
             catalog.warehouse.db.drop_table(table, if_exists=True)
@@ -622,7 +622,7 @@ def test_continue_udf_fallback_when_partial_table_missing(test_session):
     test_session.get_or_create_job()
 
     # Drop all partial output tables from first run
-    for table_name in catalog.warehouse.db.list_tables(prefix="udf_"):
+    for table_name in catalog.warehouse.db.list_tables(pattern="udf_%"):
         if "_partial" in table_name:
             table = catalog.warehouse.db.get_table(table_name)
             catalog.warehouse.db.drop_table(table, if_exists=True)

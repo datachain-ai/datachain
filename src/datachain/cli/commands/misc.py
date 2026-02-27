@@ -10,21 +10,35 @@ def clear_cache(catalog: "Catalog"):
     catalog.cache.clear()
 
 
-def garbage_collect(catalog: "Catalog"):
+def garbage_collect(catalog: "Catalog", checkpoint_ttl: int | None = None):
+    print("Collecting temporary tables...")
     temp_tables = catalog.get_temp_table_names()
-    num_versions_removed = catalog.cleanup_failed_dataset_versions()
-
-    total_cleaned = len(temp_tables) + num_versions_removed
-
-    if total_cleaned == 0:
-        print("Nothing to clean up.")
+    if temp_tables:
+        catalog.cleanup_tables(temp_tables)
+        print(f"  Removed {len(temp_tables)} temporary tables.")
     else:
-        if temp_tables:
-            print(f"Garbage collecting {len(temp_tables)} tables.")
-            catalog.cleanup_tables(temp_tables)
+        print("  No temporary tables to clean up.")
 
-        if num_versions_removed:
-            print(f"Cleaned {num_versions_removed} failed/incomplete dataset versions.")
+    print("Collecting failed dataset versions...")
+    num_versions = catalog.cleanup_failed_dataset_versions()
+    if num_versions:
+        print(f"  Removed {num_versions} failed/incomplete dataset versions.")
+    else:
+        print("  No failed dataset versions to clean up.")
+
+    print("Collecting outdated checkpoints...")
+    num_checkpoints = catalog.cleanup_checkpoints(ttl_seconds=checkpoint_ttl)
+    if num_checkpoints:
+        print(f"  Removed {num_checkpoints} outdated checkpoints.")
+    else:
+        print("  No outdated checkpoints to clean up.")
+
+    print("Collecting orphan UDF input tables...")
+    num_orphans = catalog.cleanup_orphan_input_tables()
+    if num_orphans:
+        print(f"  Removed {num_orphans} orphan UDF input tables.")
+    else:
+        print("  No orphan UDF input tables to clean up.")
 
 
 def completion(shell: str) -> str:

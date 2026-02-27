@@ -49,7 +49,7 @@ def test_threading_disables_checkpoints(test_session_tmpfile, caplog):
     dc.read_dataset("nums", session=test_session).save("result1")
 
     job1 = test_session.get_or_create_job()
-    checkpoints_main = list(metastore.list_checkpoints(job1.id))
+    checkpoints_main = list(metastore.list_checkpoints([job1.id]))
     assert len(checkpoints_main) > 0, "Checkpoint should be created in main thread"
 
     # -------------- SECOND RUN (in thread) -------------------
@@ -78,7 +78,7 @@ def test_threading_disables_checkpoints(test_session_tmpfile, caplog):
 
     # Verify no checkpoint was created in thread
     job2 = test_session.get_or_create_job()
-    checkpoints_thread = list(metastore.list_checkpoints(job2.id))
+    checkpoints_thread = list(metastore.list_checkpoints([job2.id]))
     assert len(checkpoints_thread) == 0, "No checkpoints should be created in thread"
 
 
@@ -93,7 +93,7 @@ def test_threading_with_executor(test_session_tmpfile, caplog):
     dc.read_dataset("nums", session=test_session).save("before_threading")
 
     job1 = test_session.get_or_create_job()
-    checkpoints_before = len(list(metastore.list_checkpoints(job1.id)))
+    checkpoints_before = len(list(metastore.list_checkpoints([job1.id])))
     assert checkpoints_before > 0, "Checkpoint should be created before threading"
 
     # -------------- SECOND RUN (in thread pool) -------------------
@@ -115,7 +115,7 @@ def test_threading_with_executor(test_session_tmpfile, caplog):
     ), "Warning should be logged when using thread pool"
 
     job2 = test_session.get_or_create_job()
-    checkpoints_after = len(list(metastore.list_checkpoints(job2.id)))
+    checkpoints_after = len(list(metastore.list_checkpoints([job2.id])))
     assert checkpoints_after == 0, "No checkpoints should be created in thread pool"
 
 
@@ -130,7 +130,7 @@ def test_multiprocessing_disables_checkpoints(test_session, monkeypatch):
     dc.read_dataset("nums", session=test_session).save("main_result")
 
     job1 = test_session.get_or_create_job()
-    checkpoints_main = list(metastore.list_checkpoints(job1.id))
+    checkpoints_main = list(metastore.list_checkpoints([job1.id]))
     assert len(checkpoints_main) > 0, "Checkpoint should be created in main process"
 
     # -------------- SECOND RUN (simulated subprocess) -------------------
@@ -144,7 +144,7 @@ def test_multiprocessing_disables_checkpoints(test_session, monkeypatch):
     dc.read_dataset("nums", session=test_session).save("subprocess_result")
 
     job2 = test_session.get_or_create_job()
-    checkpoints_subprocess = list(metastore.list_checkpoints(job2.id))
+    checkpoints_subprocess = list(metastore.list_checkpoints([job2.id]))
     assert len(checkpoints_subprocess) == 0, (
         "No checkpoints should be created in subprocess"
     )
@@ -162,7 +162,7 @@ def test_checkpoint_reuse_after_threading(test_session_tmpfile):
     dc.read_dataset("nums", session=test_session).save("result2")
 
     job1 = test_session.get_or_create_job()
-    checkpoints_initial = len(list(metastore.list_checkpoints(job1.id)))
+    checkpoints_initial = len(list(metastore.list_checkpoints([job1.id])))
     assert checkpoints_initial > 0, "Checkpoints should be created initially"
 
     # Run something in a thread (disables checkpoints globally)
@@ -178,14 +178,14 @@ def test_checkpoint_reuse_after_threading(test_session_tmpfile):
     thread.join()
 
     # No new checkpoints should have been created in thread
-    assert len(list(metastore.list_checkpoints(job1.id))) == checkpoints_initial
+    assert len(list(metastore.list_checkpoints([job1.id]))) == checkpoints_initial
 
     # -------------- SECOND RUN (new job, after threading) -------------------
     reset_session_job_state()
     dc.read_dataset("nums", session=test_session).save("new_result")
 
     job2 = test_session.get_or_create_job()
-    checkpoints_new_job = list(metastore.list_checkpoints(job2.id))
+    checkpoints_new_job = list(metastore.list_checkpoints([job2.id]))
     assert len(checkpoints_new_job) > 0, "New job should create checkpoints normally"
 
 
