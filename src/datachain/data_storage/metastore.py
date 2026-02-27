@@ -2387,13 +2387,8 @@ class AbstractDBMetastore(AbstractMetastore):
         return self._dataset_version_jobs.delete()
 
     def _checkpoints_select(self, *columns) -> "Select":
-        if not columns:
-            return self._checkpoints.select().where(
-                self._checkpoints.c.status != CheckpointStatus.DELETED,
-            )
-        return select(*columns).where(
-            self._checkpoints.c.status != CheckpointStatus.DELETED,
-        )
+        query = self._checkpoints.select() if not columns else select(*columns)
+        return query.where(self._checkpoints.c.status != CheckpointStatus.DELETED)
 
     def _checkpoints_query(self):
         return self._checkpoints_select(
