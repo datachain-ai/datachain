@@ -568,11 +568,14 @@ class File(DataModel):
     def _extract_write_version(self, handle: Any) -> str | None:
         """Best-effort extraction of object version after a write.
 
-        Only S3 (s3fs) reliably populates a stable version id on the handle.
-        Other backends may expose generation/version, but we intentionally do
-        not depend on that until upstream libraries stabilize it.
+        S3 (s3fs) and Azure (adlfs) populate version_id on the handle.
+        GCS (gcsfs>=2026.2.0) populates generation. Azure and GCS require
+        upstream fixes to be released.
         """
-        return getattr(handle, "version_id", None)
+        for attr in ("version_id", "generation"):
+            if value := getattr(handle, attr, None):
+                return value
+        return None
 
     def read_bytes(self, length: int = -1):
         """Returns file contents as bytes."""
