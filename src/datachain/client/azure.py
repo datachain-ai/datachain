@@ -38,9 +38,7 @@ class AzureClient(Client):
         content_disposition = kwargs.pop("content_disposition", None)
         full_path = self.get_uri(path)
         if version_id:
-            # adlfs passes the blob version_id to Azure signing only when it is
-            # encoded in the urlpath (parsed via split_path), not via kwargs.
-            # Keep this localized to signing to avoid query-munging for I/O.
+            # adlfs.split_path() reads version_id from the urlpath.
             full_path = f"{full_path}?versionid={version_id}"
 
         result = self.fs.sign(
@@ -51,8 +49,24 @@ class AzureClient(Client):
         )
 
         if version_id:
+            # The Azure SDK does not embed versionid in the SAS token, so we
+            # append it explicitly to route the request to the correct version.
             result += f"&versionid={version_id}"
         return result
+
+    async def get_file(
+        self,
+        lpath: str,
+        rpath: str,
+        callback,
+        version_id: str | None = None,
+    ) -> None:
+        if version_id:
+            # adlfs._get_file() only reads version_id from split_path(rpath);
+            # it does not accept version_id as a kwarg.  Embed it in the path
+            # so split_path can recover it on the adlfs side.
+            lpath = f"{lpath}?versionid={version_id}"
+        await self.fs._get_file(lpath, rpath, callback=callback)
 
     async def _fetch_flat(self, start_prefix: str, result_queue: ResultQueue) -> None:
         prefix = start_prefix

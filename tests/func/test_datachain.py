@@ -19,6 +19,7 @@ from PIL import Image
 import datachain as dc
 from datachain import DataModel, func
 from datachain.dataset import DatasetDependencyType
+from datachain.fs.utils import path_to_fsspec_uri
 from datachain.lib.data_model import compute_model_fingerprint
 from datachain.lib.file import File, ImageFile
 from datachain.lib.listing import LISTING_TTL, is_listing_dataset, parse_listing_uri
@@ -127,6 +128,42 @@ def test_read_storage_reindex_expired(tmp_dir, test_session):
 
     # listing was updated because listing dataset was expired
     assert dc.read_storage(uri, session=test_session).count() == 2
+
+
+def test_read_storage_with_fsspec_uri(tmp_dir, test_session):
+    (tmp_dir / "alpha.txt").write_text("a")
+    (tmp_dir / "beta.txt").write_text("b")
+    uri = path_to_fsspec_uri(str(tmp_dir))
+    assert sorted(
+        dc.read_storage(uri, session=test_session).to_values("file.path")
+    ) == ["alpha.txt", "beta.txt"]
+
+
+def test_read_storage_special_chars_in_fsspec_uri(tmp_dir, test_session):
+    base = tmp_dir / "dir #% special"
+    base.mkdir()
+    (base / "data.txt").write_text("x")
+    uri = path_to_fsspec_uri(str(base))
+    assert dc.read_storage(uri, session=test_session).to_values("file.path") == [
+        "data.txt"
+    ]
+
+
+def test_read_storage_rfc_encoded_uri_targets_literal_path(tmp_dir, test_session):
+    # Path.as_uri() encodes the space as %20; fsspec doesn't decode it,
+    # so the listing resolves to the literal "dir%20name" dir on disk.
+    space_dir = tmp_dir / "dir name"
+    space_dir.mkdir()
+    (space_dir / "real.txt").write_text("x")
+
+    percent_dir = tmp_dir / "dir%20name"
+    percent_dir.mkdir()
+    (percent_dir / "wrong.txt").write_text("x")
+
+    listed = dc.read_storage(space_dir.as_uri(), session=test_session).to_values(
+        "file.path"
+    )
+    assert listed == ["wrong.txt"]
 
 
 @pytest.mark.parametrize(

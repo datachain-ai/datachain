@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from filelock import FileLock, Timeout
 
-from datachain.fs.utils import is_subpath
+from datachain.fs.utils import is_subpath, path_to_fsspec_uri
 from datachain.utils import (
     _CheckpointState,
     batched,
@@ -671,3 +671,14 @@ def test_is_subpath_parent_with_dotdot(tmp_path):
     parent = str(tmp_path / "a" / ".." / "output")
     child = str(tmp_path / "output" / "file.txt")
     assert is_subpath(parent, child)
+
+
+def test_path_to_fsspec_uri_does_not_resolve_symlinks(tmp_path):
+    real_dir = tmp_path / "real"
+    real_dir.mkdir()
+    link_dir = tmp_path / "link"
+    link_dir.symlink_to(real_dir)
+
+    uri = path_to_fsspec_uri(str(link_dir))
+    assert "link" in uri
+    assert "real" not in uri

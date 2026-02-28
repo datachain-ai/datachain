@@ -9,7 +9,16 @@ from fsspec.implementations.local import LocalFileSystem
 from PIL import Image
 
 from datachain.catalog import Catalog
-from datachain.lib.file import Audio, File, FileError, ImageFile, TextFile, resolve
+from datachain.fs.utils import path_to_fsspec_uri
+from datachain.lib.file import (
+    Audio,
+    File,
+    FileError,
+    ImageFile,
+    TextFile,
+    VFileError,
+    resolve,
+)
 
 
 @pytest.fixture
@@ -230,10 +239,13 @@ def test_export_local_output_allows_literal_percent_encoded_traversal(
         ("", "../escape.txt", True, r"must not contain"),
         ("", "dir//file.txt", True, r"must not contain empty segments"),
         ("", "dir/", True, r"must not be a directory"),
-        ("file:///bucket", "", True, r"must not be empty"),
-        ("file:///bucket", ".", True, r"must not contain"),
-        ("file:///bucket", "..", True, r"must not contain"),
-        ("file:///bucket", "/abs/file.txt", True, r"must not be absolute"),
+        # file:// source with drive letter — valid on both platforms.
+        # Path validation fires first regardless of OS.
+        ("file:///C:/bucket", "", True, r"must not be empty"),
+        ("file:///C:/bucket", ".", True, r"must not contain"),
+        ("file:///C:/bucket", "..", True, r"must not contain"),
+        ("file:///C:/bucket", "/abs/file.txt", True, r"must not be absolute"),
+        ("file:///C:/bucket", "./dir/../file.txt", True, r"must not contain"),
         pytest.param(
             "file:///bucket",
             "file#hash.txt",
@@ -248,7 +260,6 @@ def test_export_local_output_allows_literal_percent_encoded_traversal(
             r"drive letter" if os.name == "nt" else "file:///bucket/dir/file#hash.txt",
             id="get_uri-file:///bucket-dir/file#hash.txt",
         ),
-        ("file:///bucket", "./dir/../file.txt", True, r"must not contain"),
         # Windows-style file:// URIs with drive letters (valid on all platforms).
         ("file:///C:/data", "file.txt", False, "file:///C:/data/file.txt"),
         (
@@ -329,10 +340,13 @@ def test_get_uri_contract(
         ("", "file.txt", False, "file.txt"),
         ("", "../escape.txt", True, r"must not contain"),
         ("", "dir/", True, r"must not be a directory"),
-        ("file:///bucket", "", True, r"must not be empty"),
-        ("file:///bucket", ".", True, r"must not contain"),
-        ("file:///bucket", "..", True, r"must not contain"),
-        ("file:///bucket", "/abs/file.txt", True, r"must not be absolute"),
+        # file:// source with drive letter — valid on both platforms.
+        # Path validation fires first regardless of OS.
+        ("file:///C:/bucket", "", True, r"must not be empty"),
+        ("file:///C:/bucket", ".", True, r"must not contain"),
+        ("file:///C:/bucket", "..", True, r"must not contain"),
+        ("file:///C:/bucket", "/abs/file.txt", True, r"must not be absolute"),
+        ("file:///C:/bucket", "./dir/../file.txt", True, r"must not contain"),
         pytest.param(
             "file:///bucket",
             "file#hash.txt",
@@ -340,7 +354,6 @@ def test_get_uri_contract(
             r"drive letter" if os.name == "nt" else "/bucket/file#hash.txt",
             id="file:///bucket-file#hash.txt",
         ),
-        ("file:///bucket", "./dir/../file.txt", True, r"must not contain"),
         # Windows-style file:// URIs with drive letters (valid on all platforms).
         # On Unix, _strip_protocol keeps the leading '/' before the drive letter.
         pytest.param(
@@ -480,6 +493,29 @@ def test_save_binary_data(tmp_path, catalog: Catalog):
     file2 = File(path=file2_name, source=f"file://{tmp_path}")
     file2._set_stream(catalog, False)
     assert file2.read() == data
+
+
+def test_save_accepts_file_fsspec_uri_destination(tmp_path, catalog: Catalog):
+    data = b"uri destination test"
+    (tmp_path / "src.bin").write_bytes(data)
+    dest = tmp_path / "dest.bin"
+    file = File(path="src.bin", source=f"file://{tmp_path}")
+    file._set_stream(catalog, False)
+    file.save(path_to_fsspec_uri(str(dest)))
+    assert dest.read_bytes() == data
+
+
+def test_save_rfc_encoded_uri_writes_to_literal_path(tmp_path, catalog: Catalog):
+    # Path.as_uri() encodes the space as %20; fsspec doesn't decode it,
+    # so save() writes to the literal "dir%20name" dir, not "dir name".
+    space_dir = tmp_path / "dir name"
+    space_dir.mkdir()
+    (tmp_path / "src.bin").write_bytes(b"data")
+    file = File(path="src.bin", source=f"file://{tmp_path}")
+    file._set_stream(catalog, False)
+    file.save((space_dir / "out.bin").as_uri())
+    assert not (space_dir / "out.bin").exists()
+    assert (tmp_path / "dir%20name" / "out.bin").exists()
 
 
 def test_save_text_data(tmp_path, catalog: Catalog):
@@ -631,6 +667,30 @@ def test_resolve_unsupported_protocol():
 def test_file_resolve_no_catalog():
     file = File(path="test.txt", source="s3://mybucket")
     with pytest.raises(RuntimeError, match="Cannot resolve file: catalog is not set"):
+        file.resolve()
+
+
+def test_file_resolve_virtual_file_raises():
+    location = [
+        {
+            "vtype": "tar",
+            "parent": {"source": "s3://bucket", "path": "archive.tar"},
+            "offset": 0,
+            "size": 10,
+        }
+    ]
+    file = File(source="s3://bucket", path="entry.txt", location=location)
+    file._catalog = Mock()
+    with pytest.raises(VFileError, match="Resolving a virtual file is not supported"):
+        file.resolve()
+
+
+@pytest.mark.parametrize("bad_path", ["dir/", "a/../b"])
+def test_file_resolve_invalid_path_raises(bad_path, catalog):
+    # validate_file_path raises ValueError for bad paths; resolve() must not swallow it.
+    file = File(source="file:///tmp", path=bad_path)
+    file._set_stream(catalog)
+    with pytest.raises(ValueError):
         file.resolve()
 
 

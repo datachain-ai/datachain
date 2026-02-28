@@ -114,35 +114,55 @@ _DS_ENCODE_RE = re.compile(r"[^a-zA-Z0-9_/:\-]")
 def _sanitize_ds_name(raw: str) -> str:
     """Make *raw* safe for use as a SQL table-name component.
 
-    The encoding is injective (collision-free):
+    The encoding is injective (collision-free) and handles the full Unicode
+    range via a variable-length hex scheme:
 
-    1. Escape every ``_x`` already present → ``_x_x`` (doubled).
-    2. Encode every char outside ``[a-zA-Z0-9_/:-]``
-       as ``_xHH`` (two-digit lowercase hex ordinal).
-       This includes ``.``, ``%``, ``@``, ``#``, spaces, etc.
+    1. Pre-escape literals ``_x``, ``_y``, ``_z`` that appear in the raw string:
+       ``_x`` → ``_x_x``, ``_y`` → ``_y_y``, ``_z`` → ``_z_z``.
+    2. Encode every char outside ``[a-zA-Z0-9_/:-]``:
+       - U+0000-U+00FF  →  ``_xHH``     (2 hex digits, e.g. ``.`` → ``_x2e``)
+       - U+0100-U+FFFF  →  ``_yHHHH``   (4 hex digits, e.g. ``é`` → ``_y00e9``)
+       - U+10000-U+10FFFF → ``_zHHHHHH`` (6 hex digits, e.g. 🎵 → ``_z01f3b5``)
 
-    Because step 1 doubles any literal ``_x``, the ``_xHH`` sequences
-    produced by step 2 can never collide with text that was already in
-    the input.
+    ``_`` is not a hex digit, so ``_y_y`` / ``_z_z`` escape tokens are
+    unambiguous with ``_yHHHH`` / ``_zHHHHHH`` encoding tokens.
     """
-    raw = raw.replace("_x", "_x_x")  # escape the escape prefix
-    return _DS_ENCODE_RE.sub(lambda m: f"_x{ord(m.group()):02x}", raw)
+    raw = raw.replace("_x", "_x_x")  # must come first
+    raw = raw.replace("_y", "_y_y")
+    raw = raw.replace("_z", "_z_z")
+
+    def _encode_char(m: re.Match) -> str:
+        o = ord(m.group())
+        if o <= 0xFF:
+            return f"_x{o:02x}"
+        if o <= 0xFFFF:
+            return f"_y{o:04x}"
+        return f"_z{o:06x}"
+
+    return _DS_ENCODE_RE.sub(_encode_char, raw)
 
 
-_DS_DECODE_RE = re.compile(r"_x([0-9a-f]{2}|_x)")
+# _y(4 hex | _y) →  BMP char or literal _y
+# _z(6 hex | _z) →  supplementary char or literal _z
+# _x(_x | 2 hex) →  literal _x or low-ISO char
+_DS_DECODE_RE = re.compile(r"_y([0-9a-f]{4}|_y)|_z([0-9a-f]{6}|_z)|_x(_x|[0-9a-f]{2})")
 
 
 def _desanitize_ds_name(encoded: str) -> str:
     """Reverse :func:`_sanitize_ds_name`.
 
-    ``_xHH`` → the original character, ``_x_x`` → literal ``_x``.
+    ``_xHH`` → char, ``_yHHHH`` → BMP char,
+    ``_zHHHHHH`` → supplementary char,
+    ``_x_x`` → ``_x``, ``_y_y`` → ``_y``, ``_z_z`` → ``_z``.
     """
 
     def _repl(m: re.Match) -> str:
-        tok = m.group(1)
-        if tok == "_x":  # escaped literal "_x"
-            return "_x"
-        return chr(int(tok, 16))  # _xHH → original char
+        g1, g2, g3 = m.group(1), m.group(2), m.group(3)
+        if g1 is not None:
+            return "_y" if g1 == "_y" else chr(int(g1, 16))
+        if g2 is not None:
+            return "_z" if g2 == "_z" else chr(int(g2, 16))
+        return "_x" if g3 == "_x" else chr(int(g3, 16))
 
     return _DS_DECODE_RE.sub(_repl, encoded)
 

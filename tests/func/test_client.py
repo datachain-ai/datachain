@@ -459,3 +459,136 @@ def test_get_etag_missing_raises_filenotfound(
             client.get_current_etag,
             File(source=ctc.src_uri, path=missing_rel_path),
         )
+
+
+_xfail_special_char_versioned = pytest.mark.xfail(
+    reason="versioned keys containing '#' or '?' are not supported on this backend",
+    strict=False,
+)
+
+# Flat (cloud_type, char) params so per-combo xfail works cleanly.
+_VERSIONED_SPECIAL_CHAR_PARAMS = [
+    pytest.param("s3", "#", id="s3-hash"),
+    pytest.param("s3", "?", id="s3-qmark"),
+    pytest.param("gs", "#", id="gs-hash", marks=_xfail_special_char_versioned),
+    pytest.param("gs", "?", id="gs-qmark", marks=_xfail_special_char_versioned),
+    pytest.param("azure", "#", id="azure-hash"),
+    pytest.param("azure", "?", id="azure-qmark", marks=_xfail_special_char_versioned),
+]
+
+_special_char_versioned = pytest.mark.parametrize(
+    "cloud_type,char",
+    _VERSIONED_SPECIAL_CHAR_PARAMS,
+    indirect=["cloud_type"],
+)
+_version_aware_true = pytest.mark.parametrize("version_aware", [True], indirect=True)
+
+
+@_version_aware_true
+@_special_char_versioned
+def test_get_file_info_versioned_special_char_in_key(
+    cloud_test_catalog_upload, cloud_type, version_aware, char
+):
+    ctc = cloud_test_catalog_upload
+    client = ctc.catalog.get_client(ctc.src_uri)
+    rel_path = f"special-key/{uuid4().hex}{char}v.bin"
+
+    up1 = client.upload(b"v1", rel_path)
+    up2 = client.upload(b"version-2", rel_path)
+    assert up1.version and up2.version
+
+    f1 = client.get_file_info(rel_path, version_id=up1.version)
+    f2 = client.get_file_info(rel_path, version_id=up2.version)
+    assert f1.size == len(b"v1")
+    assert f2.size == len(b"version-2")
+
+
+@_version_aware_true
+@_special_char_versioned
+def test_get_size_versioned_special_char_in_key(
+    cloud_test_catalog_upload, cloud_type, version_aware, char
+):
+    ctc = cloud_test_catalog_upload
+    client = ctc.catalog.get_client(ctc.src_uri)
+    rel_path = f"special-key/{uuid4().hex}{char}v.bin"
+
+    up1 = client.upload(b"v1", rel_path)
+    up2 = client.upload(b"version-2", rel_path)
+    assert up1.version and up2.version
+
+    s1 = sync(
+        get_loop(),
+        client.get_size,
+        File(source=ctc.src_uri, path=rel_path, version=up1.version),
+    )
+    s2 = sync(
+        get_loop(),
+        client.get_size,
+        File(source=ctc.src_uri, path=rel_path, version=up2.version),
+    )
+    assert s1 == len(b"v1")
+    assert s2 == len(b"version-2")
+
+
+@_version_aware_true
+@_special_char_versioned
+def test_get_etag_versioned_special_char_in_key(
+    cloud_test_catalog_upload, cloud_type, version_aware, char
+):
+    ctc = cloud_test_catalog_upload
+    client = ctc.catalog.get_client(ctc.src_uri)
+    rel_path = f"special-key/{uuid4().hex}{char}v.bin"
+
+    up1 = client.upload(b"v1", rel_path)
+    up2 = client.upload(b"version-2", rel_path)
+    assert up1.version and up2.version
+
+    etag1 = sync(
+        get_loop(),
+        client.get_current_etag,
+        File(source=ctc.src_uri, path=rel_path, version=up1.version),
+    )
+    etag2 = sync(
+        get_loop(),
+        client.get_current_etag,
+        File(source=ctc.src_uri, path=rel_path, version=up2.version),
+    )
+    assert etag1 == up1.etag
+    assert etag2 == up2.etag
+    assert etag1 != etag2
+
+
+@_version_aware_true
+@_special_char_versioned
+def test_get_file_versioned_special_char_in_key(
+    cloud_test_catalog_upload, cloud_type, version_aware, char, tmp_path
+):
+    ctc = cloud_test_catalog_upload
+    client = ctc.catalog.get_client(ctc.src_uri)
+    rel_path = f"special-key/{uuid4().hex}{char}v.bin"
+    from_path = File(source=ctc.src_uri, path=rel_path).get_fs_path()
+
+    up1 = client.upload(b"v1", rel_path)
+    up2 = client.upload(b"version-2", rel_path)
+    assert up1.version and up2.version
+
+    dst1 = tmp_path / "out1.bin"
+    dst2 = tmp_path / "out2.bin"
+    sync(
+        get_loop(),
+        client.get_file,
+        from_path,
+        dst1.as_posix(),
+        callback=DEFAULT_CALLBACK,
+        version_id=up1.version,
+    )
+    sync(
+        get_loop(),
+        client.get_file,
+        from_path,
+        dst2.as_posix(),
+        callback=DEFAULT_CALLBACK,
+        version_id=up2.version,
+    )
+    assert dst1.read_bytes() == b"v1"
+    assert dst2.read_bytes() == b"version-2"

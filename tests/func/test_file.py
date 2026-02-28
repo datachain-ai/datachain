@@ -91,18 +91,6 @@ def test_resolve_file_no_exist(cloud_test_catalog):
     assert resolved_non_existent.last_modified == TIME_ZERO
 
 
-@pytest.mark.parametrize("path", ["", ".", "..", "/", "dir/../../file.txt"])
-def test_resolve_file_wrong_path(cloud_test_catalog, path):
-    ctc = cloud_test_catalog
-
-    wrong_file = File(source=ctc.src_uri, path=path)
-    wrong_file._set_stream(catalog=ctc.catalog)
-    resolved_wrong = wrong_file.resolve()
-    assert resolved_wrong.size == 0
-    assert resolved_wrong.etag == ""
-    assert resolved_wrong.last_modified == TIME_ZERO
-
-
 @pytest.mark.parametrize("caching_enabled", [True, False])
 @pytest.mark.parametrize("path", ["", ".", "..", "/", "dir/../../file.txt"])
 def test_cache_file_wrong_path(cloud_test_catalog, path, caching_enabled):

@@ -22,7 +22,7 @@ from pydantic import Field, field_validator, model_validator
 
 from datachain import json
 from datachain.client.fileslice import FileSlice
-from datachain.fs.utils import path_to_uri
+from datachain.fs.utils import path_to_fsspec_uri
 from datachain.lib.data_model import DataModel
 from datachain.lib.utils import DataChainError, rebase_path
 from datachain.nodes_thread_pool import NodesThreadPool
@@ -563,7 +563,8 @@ class File(DataModel):
         try:
             yield wrapper
         finally:
-            wrapper.close()
+            wrapper.flush()
+            wrapper.detach()
 
     def _extract_write_version(self, handle: Any) -> str | None:
         """Best-effort extraction of object version after a write.
@@ -604,13 +605,33 @@ class File(DataModel):
         return self.read_bytes(length)
 
     def save(self, destination: str, client_config: dict | None = None):
-        """Writes it's content to destination"""
+        """Write file contents to *destination*.
+
+        Args:
+            destination: Target path or URI.  Accepts a local OS path, a
+                cloud URI (``s3://…``, ``gs://…``, ``az://…``), or an
+                unencoded ``file://`` URI as produced by
+                :func:`~datachain.fs.utils.path_to_fsspec_uri`.
+                Do **not** pass ``Path.as_uri()`` output — that produces
+                RFC percent-encoded URIs (e.g. ``file:///my%20dir``) which
+                fsspec does not decode, causing ``FileNotFoundError`` for
+                paths containing spaces, ``#``, or ``%``.
+            client_config: Optional extra kwargs forwarded to the storage
+                client (e.g. credentials, endpoint URL).
+
+        Example:
+            ```py
+            file.save("/local/output/result.bin")
+            file.save("s3://my-bucket/output/result.bin")
+            file.save("~/output/result.bin")
+            ```
+        """
         if self._catalog is None:
             raise RuntimeError("Cannot save file: catalog is not set")
 
         destination = stringify_path(destination)
         client: Client = self._catalog.get_client(destination, **(client_config or {}))
-        client.upload(self.read(), path_to_uri(destination))
+        client.upload(self.read(), path_to_fsspec_uri(destination))
 
     def _symlink_to(self, destination: str) -> None:
         if self.location:
@@ -680,7 +701,6 @@ class File(DataModel):
         # and validate the suffix. Cloud exports skip this — the cloud client already
         # rejects path-traversal characters in object keys.
         if client.PREFIX == "file://":
-            from datachain.client.local import FileClient
             from datachain.fs.utils import is_subpath
 
             # On Windows, normalize backslash separators to forward slashes
@@ -692,7 +712,7 @@ class File(DataModel):
             dst = posixpath.join(output_abs, suffix)
 
             try:
-                FileClient.validate_file_relpath(suffix)
+                client.validate_file_path(suffix)
             except ValueError as exc:
                 raise FileError(str(exc), stringify_path(output), suffix) from None
 
@@ -785,76 +805,8 @@ class File(DataModel):
     def get_file_stem(self):
         return PurePosixPath(self.path).stem
 
-    def _validate_io_path(self) -> str:
-        """Validate ``self.path`` for I/O and return it.
-
-        Raises :class:`FileError` if the path is empty, ends with ``/``,
-        or contains ``.`` / ``..`` segments.  When the file is local
-        (no source, or ``file://`` source), additional checks reject
-        absolute paths, drive-letter prefixes, and empty segments (``//``).
-        """
-        path = self.path
-        if not path:
-            raise FileError("path must not be empty", self.source, path)
-
-        # Determine whether this file targets the local filesystem.
-        is_local = not self.source or self.source.startswith("file://")
-
-        # On Windows, backslash is a path separator — normalize so the
-        # checks below work uniformly.  On Linux/macOS, backslash is a
-        # legal filename character and must not be reinterpreted.
-        if is_local and os.name == "nt":
-            canonical = path.replace("\\", "/")
-        else:
-            canonical = path
-
-        if canonical.endswith("/"):
-            raise FileError("path must not be a directory", self.source, path)
-
-        parts = canonical.split("/")
-        if any(part in (".", "..") for part in parts):
-            raise FileError("path must not contain '.' or '..'", self.source, path)
-
-        if is_local:
-            if canonical.startswith("/"):
-                raise FileError("path must not be absolute", self.source, path)
-
-            if (
-                os.name == "nt"
-                and len(canonical) >= 2
-                and canonical[0].isalpha()
-                and canonical[1] == ":"
-            ):
-                raise FileError("path must not be absolute", self.source, path)
-
-            if "//" in canonical:
-                raise FileError(
-                    "path must not contain empty segments", self.source, path
-                )
-
-        # On Windows, reject file:// sources without an explicit drive letter.
-        # fsspec silently prepends the current drive to paths like
-        # file:///bucket (-> C:/bucket), which is ambiguous.
-        if self.source.startswith("file://") and os.name == "nt":
-            from datachain.client.local import FileClient
-
-            if not FileClient._has_drive_letter(self.source):
-                raise FileError(
-                    "file:// source must include a drive letter on Windows "
-                    "(e.g. file:///C:/path)",
-                    self.source,
-                    path,
-                )
-
-        return path
-
     def get_uri(self) -> str:
-        """Return a URI-like string for this file.
-
-        Deprecated: this method does not guarantee URI parse-safety (e.g. '#', '?'
-        may be interpreted as fragment/query by URI parsers). Prefer using the
-        structured fields (`source` + `path`) or `get_fs_path()` for I/O.
-        """
+        """Deprecated: Return a URI-like string for this file."""
         warnings.warn(
             (
                 "File.get_uri() is deprecated and will be removed in a future version. "
@@ -869,8 +821,8 @@ class File(DataModel):
             return self.get_fs_path()
 
         # For cloud, get_fs_path returns a full URI; for local, a bare path.
-        # Wrap in path_to_uri so we always return a URI.
-        return path_to_uri(self.get_fs_path())
+        # Wrap in path_to_fsspec_uri so we always return a URI.
+        return path_to_fsspec_uri(self.get_fs_path())
 
     def get_fs_path(self) -> str:
         """Combine ``source`` and ``path`` into the full location string.
@@ -900,14 +852,18 @@ class File(DataModel):
                 ``.`` / ``..`` segments.  For local files, also rejects
                 absolute paths, drive letters, and empty segments.
         """
-        path = self._validate_io_path()
+        from datachain.client.fsspec import Client
+
+        client_cls = Client.get_implementation(self.source or "")
+        try:
+            client_cls.validate_file_path(self.path)
+            client_cls.validate_source(self.source)
+        except ValueError as exc:
+            raise FileError(str(exc), self.source, self.path) from exc
+        path = self.path
 
         if not self.source:
             return path
-
-        from datachain.client.fsspec import Client
-
-        client_cls = Client.get_implementation(self.source)
 
         if self.source.startswith("file://"):
             base_path = client_cls.FS_CLASS._strip_protocol(self.source)
@@ -964,6 +920,13 @@ class File(DataModel):
         if self._catalog is None:
             raise RuntimeError("Cannot resolve file: catalog is not set")
 
+        if self.location:
+            raise VFileError(
+                "Resolving a virtual file is not supported",
+                self.source,
+                self.path,
+            )
+
         try:
             client = self._catalog.get_client(self.source)
         except NotImplementedError as e:
@@ -972,28 +935,13 @@ class File(DataModel):
             ) from e
 
         try:
-            full_path = client.get_uri(self.path)
-            info = client.fs.info(full_path)
-
-            # Backends can return "directory" info for prefixes/buckets; a File
-            # represents an object, so treat directories as unresolved.
-            if isinstance(info, dict) and info.get("type") == "directory":
-                raise FileNotFoundError(full_path)
-
-            converted_info = client.info_to_file(info, self.path)
-            res = type(self)(
-                path=self.path,
-                source=self.source,
-                size=converted_info.size,
-                etag=converted_info.etag,
-                version=converted_info.version,
-                is_latest=converted_info.is_latest,
-                last_modified=converted_info.last_modified,
-                location=self.location,
-            )
+            converted_info = client.get_file_info(self.path)
+            # get_file_info always returns a base File; re-wrap as type(self)
+            # so resolve() preserves the subclass (TextFile, ImageFile, …).
+            res = type(self)(**converted_info.model_dump())
             res._set_stream(self._catalog)
             return res
-        except Exception as e:  # noqa: BLE001
+        except (FileNotFoundError, PermissionError, OSError) as e:
             logger.warning(
                 "Error when resolving %s/%s: %s",
                 self.source,
@@ -1009,7 +957,6 @@ class File(DataModel):
             version="",
             is_latest=True,
             last_modified=TIME_ZERO,
-            location=self.location,
         )
         res._set_stream(self._catalog)
         return res

@@ -1,16 +1,15 @@
 import os
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 
 from datachain.client.local import FileClient
-from datachain.fs.utils import path_to_uri
+from datachain.fs.utils import path_to_fsspec_uri
 from datachain.lib.file import File, FileError
 
 
 def test_split_url_directory_preserves_leaf(tmp_path):
-    uri = path_to_uri(str(tmp_path))
+    uri = path_to_fsspec_uri(str(tmp_path))
     bucket, rel = FileClient.split_url(uri)
 
     # For directories, the parent directory becomes the bucket and the leaf
@@ -22,7 +21,7 @@ def test_split_url_directory_preserves_leaf(tmp_path):
 def test_split_url_file_in_directory(tmp_path):
     file_path = tmp_path / "sub" / "file.bin"
     file_path.parent.mkdir(parents=True)
-    uri = path_to_uri(str(file_path))
+    uri = path_to_fsspec_uri(str(file_path))
 
     bucket, rel = FileClient.split_url(uri)
 
@@ -49,30 +48,30 @@ def test_split_url_accepts_plain_file_path(tmp_path):
     assert rel == "leaf.txt"
 
 
-def test_path_to_uri_preserves_trailing_slash(tmp_path):
+def test_path_to_fsspec_uri_preserves_trailing_slash(tmp_path):
     dir_path = tmp_path / "trail"
     dir_path.mkdir()
 
-    uri = path_to_uri(f"{dir_path}{os.sep}")
+    uri = path_to_fsspec_uri(f"{dir_path}{os.sep}")
 
-    base_uri = path_to_uri(str(dir_path))
+    base_uri = path_to_fsspec_uri(str(dir_path))
 
     # Trailing separator in the input should keep a trailing slash in the URI.
     assert uri.endswith("/")
     assert uri[:-1] == base_uri
 
 
-def test_path_to_uri_idempotent_for_file_uri(tmp_path):
-    uri = path_to_uri(str(tmp_path))
+def test_path_to_fsspec_uri_passes_through_existing_uri(tmp_path):
+    uri = path_to_fsspec_uri(str(tmp_path))
 
-    assert path_to_uri(uri) == uri
+    assert path_to_fsspec_uri(uri) == uri
 
 
-def test_path_to_uri_does_not_percent_encode_spaces_and_hash(tmp_path):
+def test_path_to_fsspec_uri_keeps_chars_literal(tmp_path):
     base = tmp_path / "dir #% percent"
     base.mkdir(parents=True)
 
-    uri = path_to_uri(str(base))
+    uri = path_to_fsspec_uri(str(base))
     assert uri.startswith("file://")
     assert " " in uri
     assert "#" in uri
@@ -85,7 +84,7 @@ def test_split_url_does_not_decode_percent_escapes(tmp_path):
     file_path = tmp_path / "file%2fescape%23hash.txt"
     file_path.write_text("x", encoding="utf-8")
 
-    uri = path_to_uri(str(file_path))
+    uri = path_to_fsspec_uri(str(file_path))
     bucket, rel = FileClient.split_url(uri)
 
     assert Path(bucket) == tmp_path
@@ -173,56 +172,56 @@ def test_get_fs_path_validates_local_paths(path, expected, raises):
 
 @pytest.mark.skipif(os.name == "nt", reason="Backslash is a separator on Windows")
 def test_validate_relpath_unix_backslash_in_filename_accepted():
-    FileClient.validate_file_relpath("dir\\file.txt")
+    FileClient.validate_file_path("dir\\file.txt")
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Backslash is a separator on Windows")
 def test_validate_relpath_unix_trailing_backslash_accepted():
     # Trailing backslash is NOT a directory indicator on Unix — it's part
     # of the filename.
-    FileClient.validate_file_relpath("dir\\")
+    FileClient.validate_file_path("dir\\")
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Backslash is a separator on Windows")
 def test_validate_relpath_unix_colon_in_filename_accepted():
     # Colons are legal on Unix; "C:foo" is a valid relative filename.
-    FileClient.validate_file_relpath("C:foo.txt")
+    FileClient.validate_file_path("C:foo.txt")
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows-only separator semantics")
 def test_validate_relpath_win_trailing_backslash_rejected():
     with pytest.raises(ValueError, match="must not be a directory"):
-        FileClient.validate_file_relpath("dir\\")
+        FileClient.validate_file_path("dir\\")
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows-only separator semantics")
 def test_validate_relpath_win_absolute_backslash_rejected():
     with pytest.raises(ValueError, match="must not be absolute"):
-        FileClient.validate_file_relpath("\\dir\\file.txt")
+        FileClient.validate_file_path("\\dir\\file.txt")
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows-only separator semantics")
 def test_validate_relpath_win_drive_letter_rejected():
     with pytest.raises(ValueError, match="must not be absolute"):
-        FileClient.validate_file_relpath("C:\\secret\\file.txt")
+        FileClient.validate_file_path("C:\\secret\\file.txt")
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows-only separator semantics")
 def test_validate_relpath_win_drive_relative_rejected():
     with pytest.raises(ValueError, match="must not be absolute"):
-        FileClient.validate_file_relpath("D:file.txt")
+        FileClient.validate_file_path("D:file.txt")
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows-only separator semantics")
 def test_validate_relpath_win_dot_segment_via_backslash_rejected():
     with pytest.raises(ValueError, match="must not contain"):
-        FileClient.validate_file_relpath("dir\\..\\file.txt")
+        FileClient.validate_file_path("dir\\..\\file.txt")
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows-only separator semantics")
 def test_validate_relpath_win_empty_segment_via_backslash_rejected():
     with pytest.raises(ValueError, match="must not contain empty segments"):
-        FileClient.validate_file_relpath("dir\\\\file.txt")
+        FileClient.validate_file_path("dir\\\\file.txt")
 
 
 @pytest.mark.parametrize(
@@ -270,55 +269,124 @@ def test_get_fs_path_nested_drive_letter():
         assert result == "/C:/Users/me/projects/repo/data.csv"
 
 
-def test_file_at_with_relative_path(tmp_path, monkeypatch):
+def test_file_at_with_relative_path(tmp_path, monkeypatch, test_session):
     monkeypatch.chdir(tmp_path)
-    session = MagicMock()
 
-    file = File.at("sub/file.txt", session=session)
+    file = File.at("sub/file.txt", session=test_session)
 
-    expected_source = path_to_uri(str(tmp_path / "sub"))
+    expected_source = path_to_fsspec_uri(str(tmp_path / "sub"))
     assert file.path == "file.txt"
     assert file.source == expected_source
 
 
-def test_file_at_with_absolute_path(tmp_path):
-    session = MagicMock()
+def test_file_at_with_absolute_path(tmp_path, test_session):
     abs_path = tmp_path / "deep" / "nested" / "file.txt"
 
-    file = File.at(str(abs_path), session=session)
+    file = File.at(str(abs_path), session=test_session)
 
-    expected_source = path_to_uri(str(abs_path.parent))
+    expected_source = path_to_fsspec_uri(str(abs_path.parent))
     assert file.path == "file.txt"
     assert file.source == expected_source
 
 
-def test_file_at_with_file_uri(tmp_path):
-    session = MagicMock()
+def test_file_at_with_file_uri(tmp_path, test_session):
     abs_path = tmp_path / "data" / "file.txt"
-    file_uri = path_to_uri(str(abs_path))
+    file_uri = path_to_fsspec_uri(str(abs_path))
 
-    file = File.at(file_uri, session=session)
+    file = File.at(file_uri, session=test_session)
 
-    expected_source = path_to_uri(str(abs_path.parent))
+    expected_source = path_to_fsspec_uri(str(abs_path.parent))
     assert file.path == "file.txt"
     assert file.source == expected_source
 
 
-def test_file_at_relative_and_absolute_agree(tmp_path, monkeypatch):
+def test_file_at_relative_and_absolute_agree(tmp_path, monkeypatch, test_session):
     monkeypatch.chdir(tmp_path)
-    session = MagicMock()
 
-    from_rel = File.at("dir/file.bin", session=session)
-    from_abs = File.at(str(tmp_path / "dir" / "file.bin"), session=session)
-    from_uri = File.at(path_to_uri(str(tmp_path / "dir" / "file.bin")), session=session)
+    from_rel = File.at("dir/file.bin", session=test_session)
+    from_abs = File.at(str(tmp_path / "dir" / "file.bin"), session=test_session)
+    from_uri = File.at(
+        path_to_fsspec_uri(str(tmp_path / "dir" / "file.bin")), session=test_session
+    )
 
     assert from_rel.source == from_abs.source == from_uri.source
     assert from_rel.path == from_abs.path == from_uri.path == "file.bin"
 
 
-def test_file_at_source_is_file_uri(tmp_path):
-    session = MagicMock()
-
-    file = File.at(str(tmp_path / "file.txt"), session=session)
+def test_file_at_source_is_file_uri(tmp_path, test_session):
+    file = File.at(str(tmp_path / "file.txt"), session=test_session)
 
     assert file.source.startswith("file:///")
+
+
+def test_file_at_path_inside_symlinked_directory(tmp_path, test_session):
+    real_dir = tmp_path / "real"
+    real_dir.mkdir()
+    link_dir = tmp_path / "link"
+    link_dir.symlink_to(real_dir)
+
+    file = File.at(str(link_dir / "file.txt"), session=test_session)
+
+    assert "link" in file.source
+    assert "real" not in file.source
+    assert file.path == "file.txt"
+
+
+def test_file_at_path_is_symlink_to_file(tmp_path, test_session):
+    real_file = tmp_path / "src.txt"
+    real_file.write_text("data")
+    link_file = tmp_path / "link.txt"
+    link_file.symlink_to(real_file)
+
+    file = File.at(str(link_file), session=test_session)
+
+    assert file.path == "link.txt"
+    assert "src" not in file.path
+
+
+def test_storage_uri_preserves_symlink_name(tmp_path):
+    real_dir = tmp_path / "real"
+    real_dir.mkdir()
+    link_dir = tmp_path / "link"
+    link_dir.symlink_to(real_dir)
+
+    uri = str(FileClient.storage_uri(str(link_dir)))
+    assert "link" in uri
+    assert "real" not in uri
+
+
+def test_split_url_preserves_symlink_name(tmp_path):
+    real_dir = tmp_path / "real"
+    real_dir.mkdir()
+    link_dir = tmp_path / "link"
+    link_dir.symlink_to(real_dir)
+
+    _, rel = FileClient.split_url(str(link_dir))
+    assert rel == "link"
+
+
+def test_get_uri_preserves_symlink_root(tmp_path, catalog):
+    real_dir = tmp_path / "real"
+    real_dir.mkdir()
+    link_dir = tmp_path / "link"
+    link_dir.symlink_to(real_dir)
+
+    client = FileClient.from_source(str(link_dir), catalog.cache)
+    uri = client.get_uri("file.txt")
+    assert "link" in uri
+    assert "real" not in uri
+
+
+def test_file_save_destination_preserves_symlink(tmp_path, catalog):
+    real_dir = tmp_path / "real"
+    real_dir.mkdir()
+    link_dir = tmp_path / "link"
+    link_dir.symlink_to(real_dir)
+
+    (tmp_path / "src.txt").write_bytes(b"hello")
+    file = File(path="src.txt", source=f"file://{tmp_path}")
+    file._set_stream(catalog, False)
+
+    file.save(str(link_dir / "out.txt"))
+
+    assert (link_dir / "out.txt").read_bytes() == b"hello"

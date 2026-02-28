@@ -5,7 +5,7 @@ import pytest
 import datachain as dc
 from datachain.catalog.catalog import DataSource
 from datachain.client import Client
-from datachain.fs.utils import path_to_uri
+from datachain.fs.utils import path_to_fsspec_uri
 from datachain.lib.file import File
 from datachain.lib.listing import (
     LISTING_PREFIX,
@@ -42,10 +42,11 @@ def _tree_to_entries(tree: dict, path=""):
 
 @pytest.fixture
 def listing(test_session):
+    fake_uri = path_to_fsspec_uri("/whatever")
     catalog = test_session.catalog
     listing_namespace_name = catalog.metastore.system_namespace_name
     listing_project_name = catalog.metastore.listing_project_name
-    dataset_name, _, _, _ = get_listing("file:///whatever", test_session)
+    dataset_name, _, _, _ = get_listing(fake_uri, test_session)
     (
         dc.read_values(file=list(_tree_to_entries(TREE)))
         .settings(namespace=listing_namespace_name, project=listing_project_name)
@@ -55,7 +56,7 @@ def listing(test_session):
     with Listing(
         catalog.metastore.clone(),
         catalog.warehouse.clone(),
-        Client.get_client("file:///whatever", catalog.cache, **catalog.client_config),
+        Client.get_client(fake_uri, catalog.cache, **catalog.client_config),
         dataset_name=dataset_name,
         column="file",
     ) as listing_obj:
@@ -65,34 +66,33 @@ def listing(test_session):
 def test_get_listing_returns_exact_math_on_update(test_session):
     # Context: https://github.com/datachain-ai/datachain/pull/726
     # On update it should be returning the exact match (not a "bigger" one)
+    fake_uri = path_to_fsspec_uri("/whatever")
     catalog = test_session.catalog
     listing_namespace_name = catalog.metastore.system_namespace_name
     listing_project_name = catalog.metastore.listing_project_name
 
-    whatever_uri = path_to_uri("/whatever")
-
-    dataset_name_dir1, _, _, exists = get_listing("file:///whatever/dir1", test_session)
+    dataset_name_dir1, _, _, exists = get_listing(f"{fake_uri}/dir1", test_session)
     (
         dc.read_values(file=list(_tree_to_entries(TREE["dir1"])))
         .settings(namespace=listing_namespace_name, project=listing_project_name)
         .save(dataset_name_dir1, listing=True)
     )
-    assert dataset_name_dir1 == f"{LISTING_PREFIX}{whatever_uri}/dir1/"
+    assert dataset_name_dir1 == f"{LISTING_PREFIX}{fake_uri}/dir1/"
     assert not exists
 
-    dataset_name, _, _, exists = get_listing("file:///whatever", test_session)
+    dataset_name, _, _, exists = get_listing(fake_uri, test_session)
     (
         dc.read_values(file=list(_tree_to_entries(TREE)))
         .settings(namespace=listing_namespace_name, project=listing_project_name)
         .save(dataset_name, listing=True)
     )
-    assert dataset_name == f"{LISTING_PREFIX}{whatever_uri}/"
+    assert dataset_name == f"{LISTING_PREFIX}{fake_uri}/"
     assert not exists
 
     dataset_name_dir1, _, _, exists = get_listing(
-        "file:///whatever/dir1", test_session, update=True
+        f"{fake_uri}/dir1", test_session, update=True
     )
-    assert dataset_name_dir1 == f"{LISTING_PREFIX}{whatever_uri}/dir1/"
+    assert dataset_name_dir1 == f"{LISTING_PREFIX}{fake_uri}/dir1/"
     # On update it is always false (there was no reason to complicate it for now)
     assert not exists
 
@@ -273,6 +273,19 @@ def test_parse_listing_uri_no_collision_dot_vs_underscore():
         "gs://bucket-with_underscores_x_and.dots/",
         "file:///home/user/path with spaces/",
         "s3://b/_x_x_x/edge/",
+        # Literal _y and _z in path components (must be escaped, not misread as markers)
+        "s3://bucket/_y1a2b_dir/",
+        "s3://bucket/_z001f3b_data/",
+        "file:///home/user/_yellow_and_zebra/",
+        # BMP non-ASCII (U+0100-U+FFFF): Cyrillic, CJK, Latin extended
+        "file:///home/user/données/",
+        "file:///home/user/\u4e2d\u6587/",
+        "s3://bucket/\u00e9l\u00e8ve/",
+        # Supplementary (U+10000+): emoji in local paths
+        "file:///home/user/\U0001f3b5music/",
+        "file:///home/user/\U0001f600dir/",
+        # Mixed: ASCII-disallowed + BMP + supplementary in one URI
+        "file:///home/user/caf\u00e9 \U0001f600/",  # codespell:ignore caf
     ],
 )
 def test_sanitize_desanitize_roundtrip(raw):
@@ -283,3 +296,26 @@ def test_sanitize_desanitize_roundtrip(raw):
 def test_desanitize_plain_passthrough():
     """Strings with no _xHH sequences pass through unchanged."""
     assert _desanitize_ds_name("s3://my-bucket/dogs/") == "s3://my-bucket/dogs/"
+
+
+def test_sanitize_non_ascii_bmp_encoding():
+    """BMP chars above U+00FF are encoded as _yHHHH (not the old _xHH)."""
+    enc = _sanitize_ds_name("lst__s3://bucket.name/\u4e2d\u6587")
+    # Must NOT produce the broken 2-digit encoding _x4e2d / _x6587
+    assert "_x4e" not in enc and "_x65" not in enc
+    # Must produce the short 4-digit _y form
+    assert "_y4e2d" in enc
+    assert "_y6587" in enc
+
+
+def test_sanitize_non_ascii_supplementary_encoding():
+    """Supplementary chars are encoded as _zHHHHHH."""
+    enc = _sanitize_ds_name("file:///\U0001f3b5/")
+    assert "_z01f3b5" in enc
+
+
+def test_desanitize_old_xhh_still_works():
+    """Old _xNN-encoded names (stored before the fix) still decode correctly."""
+    # Simulate an old stored name: s3://my.bucket/ -> lst__s3://my_x2ebucket/
+    old_encoded = "lst__s3://my_x2ebucket/"
+    assert _desanitize_ds_name(old_encoded) == "lst__s3://my.bucket/"

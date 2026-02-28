@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 from fsspec.implementations.local import LocalFileSystem
 
-from datachain.fs.utils import path_to_uri
+from datachain.fs.utils import path_to_fsspec_uri
 from datachain.lib.file import File
 
 from .fsspec import Client
@@ -45,7 +45,7 @@ class FileClient(Client):
     def storage_uri(cls, storage_name: str) -> "StorageURI":
         from datachain.dataset import StorageURI
 
-        return StorageURI(path_to_uri(storage_name))
+        return StorageURI(path_to_fsspec_uri(storage_name))
 
     @classmethod
     def ls_buckets(cls, **kwargs) -> Iterator[Any]:
@@ -54,7 +54,7 @@ class FileClient(Client):
     @classmethod
     def split_url(cls, url: str) -> tuple[str, str]:
         if not url.startswith("file://"):
-            url = path_to_uri(url)
+            url = path_to_fsspec_uri(url)
 
         os_path = LocalFileSystem._strip_protocol(url)
 
@@ -95,14 +95,13 @@ class FileClient(Client):
         return self.info_to_file(info, file.path).etag
 
     @staticmethod
-    def validate_file_relpath(path: str) -> None:
-        """Ensure a file's relative path is safe to use on the local filesystem.
+    def validate_file_path(path: str) -> None:
+        """Validate a file path for the local filesystem for safe IO.
 
-        Rejects absolute, traversal, and malformed paths that could escape the
-        intended directory or require implicit normalization. On Windows,
-        backslashes and drive-letter prefixes are handled as separators/absolute.
+        Extends the base cloud rules with local-specific checks: rejects
+        absolute paths, Windows drive-letter prefixes, and empty segments
+        (``//``).  On Windows, backslashes are treated as path separators.
         """
-
         if not path:
             raise ValueError(f"unsafe file path {path!r}: must not be empty")
 
@@ -116,6 +115,12 @@ class FileClient(Client):
 
         if canonical.endswith("/"):
             raise ValueError(f"unsafe file path {path!r}: must not be a directory")
+
+        # Check dot segments before absolute-path check: traversal via '..' is
+        # always rejected, even when the path also happens to be absolute.
+        raw_parts = canonical.split("/")
+        if any(part in (".", "..") for part in raw_parts):
+            raise ValueError(f"unsafe file path {path!r}: must not contain '.' or '..'")
 
         # Disallow absolute paths; local file paths are interpreted relative to
         # the source/output prefix.
@@ -140,11 +145,19 @@ class FileClient(Client):
                 f"unsafe file path {path!r}: must not contain empty segments"
             )
 
-        # Disallow dot segments like '.' or '..' (even if they could be
-        # normalized away) because they can make I/O and exports unsafe.
-        raw_parts = canonical.split("/")
-        if any(part in (".", "..") for part in raw_parts):
-            raise ValueError(f"unsafe file path {path!r}: must not contain '.' or '..'")
+    @classmethod
+    def validate_source(cls, source: str) -> None:
+        """On Windows, reject ``file://`` URIs without an explicit drive letter.
+
+        fsspec silently prepends the current drive to paths like
+        ``file:///bucket`` (→ ``C:/bucket``), which is ambiguous.
+        """
+        if os.name == "nt" and source.startswith("file://"):  # noqa: SIM102
+            if not cls._has_drive_letter(source):
+                raise ValueError(
+                    "file:// source must include a drive letter on Windows "
+                    "(e.g. file:///C:/path)"
+                )
 
     @staticmethod
     def _has_drive_letter(source: str) -> bool:
@@ -158,6 +171,7 @@ class FileClient(Client):
         return len(rest) >= 2 and rest[0].isalpha() and rest[1] == ":"
 
     def get_file_info(self, path: str, version_id: str | None = None) -> File:
+        self.validate_file_path(path)
         info = self.fs.info(self.get_uri(path))
         return self.info_to_file(info, path)
 
@@ -187,7 +201,7 @@ class FileClient(Client):
         joined = Path(self.name, rel_path).as_posix()
         if rel_path.endswith("/") or not rel_path:
             joined += "/"
-        return path_to_uri(joined)
+        return path_to_fsspec_uri(joined)
 
     def info_to_file(self, v: dict[str, Any], path: str) -> File:
         return File(

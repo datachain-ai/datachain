@@ -106,6 +106,26 @@ class Client(ABC):
         return DATA_SOURCE_URI_PATTERN.match(name) is not None
 
     @staticmethod
+    def validate_file_path(path: str) -> None:
+        """Validate a relative object path for this backend.
+
+        Raises ``ValueError`` for paths that are empty, end with ``/``, or
+        contain ``.`` / ``..`` segments.  Subclasses extend this with
+        backend-specific rules (e.g. local-filesystem restrictions).
+        """
+        if not path:
+            raise ValueError("path must not be empty")
+        if path.endswith("/"):
+            raise ValueError("path must not be a directory")
+        parts = path.split("/")
+        if any(part in (".", "..") for part in parts):
+            raise ValueError("path must not contain '.' or '..'")
+
+    @classmethod  # noqa: B027
+    def validate_source(cls, source: str) -> None:
+        """Validate the source URI for this backend."""
+
+    @staticmethod
     def parse_url(source: str) -> tuple["StorageURI", str]:
         cls = Client.get_implementation(source)
         storage_name, rel_path = cls.split_url(source)
@@ -117,7 +137,7 @@ class Client(ABC):
         storage_url, _ = cls.split_url(os.fspath(source))
         if os.name == "nt":
             storage_url = storage_url.removeprefix("/")
-
+        cls.validate_source(os.fspath(source))
         return cls.from_name(storage_url, cache, kwargs)
 
     @classmethod
@@ -195,6 +215,7 @@ class Client(ABC):
         version_id: str | None = None,
         **kwargs,
     ) -> str:
+        self.validate_file_path(path)
         kwargs.update(self._version_kwargs(version_id))
         return self.fs.sign(self.get_uri(path), expiration=expires, **kwargs)
 
@@ -204,6 +225,7 @@ class Client(ABC):
         return self.info_to_file(info, file.path).etag
 
     def get_file_info(self, path: str, version_id: str | None = None) -> "File":
+        self.validate_file_path(path)
         full_path = self.get_uri(path)
         info = sync(
             get_loop(),
@@ -396,7 +418,13 @@ class Client(ABC):
         )  # type: ignore[return-value]
 
     def upload(self, data: bytes, path: str) -> "File":
-        full_path = path if path.startswith(self.PREFIX) else self.get_uri(path)
+        if path.startswith(self.PREFIX):
+            full_path = path
+            _, rel_path = self.split_url(path)
+        else:
+            rel_path = path
+            full_path = self.get_uri(path)
+        self.validate_file_path(rel_path)
 
         parent = posixpath.dirname(full_path)
         self.fs.makedirs(parent, exist_ok=True)

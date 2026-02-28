@@ -25,29 +25,38 @@ def is_win_local_path(uri: str) -> bool:
     return False
 
 
-def path_to_uri(path: str) -> str:
-    """Resolve a local path (absolute, relative, ``~/``, Windows) to a ``file://`` URI.
+def path_to_fsspec_uri(path: str) -> str:
+    """Convert a local path or existing URI to a ``file://`` fsspec urlpath.
 
-    If *path* already carries a recognized URI scheme (and is not a Windows
-    drive-letter path that ``urlparse`` misidentifies) it is returned as-is.
+    OS paths (absolute, relative, ``~/``, Windows drive-letter) are resolved to
+    ``file://`` URIs using ``os.path.abspath`` - no symlink dereferencing, no
+    percent-encoding.  Existing URIs (anything with a recognized scheme, e.g.
+    ``file://``, ``s3://``) are returned **unchanged** (opaque passthrough).
+
+    **No percent-encoding:** characters such as spaces, ``#``, and ``%`` are
+    kept literal. fsspec's ``LocalFileSystem`` strips the ``file://`` prefix
+    as a plain string and passes the rest straight to the OS, so ``%20`` would
+    reach the OS as the three literal characters ``%20`` - not a space. Do
+    **not** pass ``Path.as_uri()`` output; that produces RFC-encoded URIs which
+    the OS cannot resolve.
 
     Examples::
 
-        ./animals          -> file:///home/user/cwd/animals
-        ~/animals          -> file:///home/user/animals
-        /home/user/animals -> file:///home/user/animals
-        /data/dir/         -> file:///data/dir/
+        ./animals            -> file:///home/user/cwd/animals
+        ~/animals            -> file:///home/user/animals
+        /home/user/animals   -> file:///home/user/animals
+        /data/dir/           -> file:///data/dir/
+        /my dir/f.txt        -> file:///my dir/f.txt   (space kept literal)
         C:\\windows\\animals -> file:///C:/windows/animals
+        file:///already/uri  -> file:///already/uri    (unchanged)
     """
-    # Preserve explicit URIs / URLs.
+    # Pass through existing URIs unchanged (opaque passthrough).
     parsed = urlparse(path)
     if parsed.scheme and not is_win_local_path(path):
         return path
 
-    # Construct a file:// urlpath without percent-encoding.
-    # Note: This is *not* a strict RFC-compliant URI when it contains
-    # reserved characters or spaces, but aligns with the fsspec urlpath model.
-    abs_path = Path(path).expanduser().absolute().resolve().as_posix()
+    # Use abspath rather than Path.resolve() to avoid dereferencing symlinks.
+    abs_path = Path(os.path.abspath(os.path.expanduser(path))).as_posix()
     uri = f"file:///{abs_path.lstrip('/')}"
     if path and path[-1] in (os.sep, "/"):
         uri += "/"

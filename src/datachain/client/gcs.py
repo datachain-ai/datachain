@@ -72,31 +72,32 @@ class GCSClient(Client):
     @staticmethod
     def _path_with_generation(path: str, generation: str | None) -> str:
         if generation:
+            for char in ("#", "?"):
+                if char in path:
+                    raise ValueError(
+                        f"Versioned access is not supported for GCS keys "
+                        f"containing {char!r}: {path!r}"
+                    )
             return f"{path}#{generation}"
         return path
 
-    def get_file_info(self, path: str, version_id: str | None = None) -> File:
-        full_path = self._path_with_generation(self.get_uri(path), version_id)
-        info = sync(get_loop(), self.fs._info, full_path)
-        return self.info_to_file(info, path)
-
     async def get_current_etag(self, file: File) -> str:
-        full_path = self._path_with_generation(
-            file.get_fs_path(),
-            file.version,
-        )
-        info = await self.fs._info(full_path)
+        path = self._path_with_generation(file.get_fs_path(), file.version)
+        info = await self.fs._info(path)
         return self.info_to_file(info, file.path).etag
 
+    def get_file_info(self, path: str, version_id: str | None = None) -> File:
+        self.validate_file_path(path)
+        fs_path = self._path_with_generation(self.get_uri(path), version_id)
+        info = sync(get_loop(), self.fs._info, fs_path)
+        return self.info_to_file(info, path)
+
     async def get_size(self, file: File) -> int:
-        full_path = self._path_with_generation(
-            file.get_fs_path(),
-            file.version,
-        )
-        info = await self.fs._info(full_path)
+        path = self._path_with_generation(file.get_fs_path(), file.version)
+        info = await self.fs._info(path)
         size = info.get("size")
         if size is None:
-            raise FileNotFoundError(full_path)
+            raise FileNotFoundError(file.get_fs_path())
         return int(size)
 
     def open_object(
