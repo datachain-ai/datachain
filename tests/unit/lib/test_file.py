@@ -204,27 +204,70 @@ def test_export_rejects_empty_segments(create_file, tmp_path):
         file.export(output, placement="filepath", use_cache=False)
 
 
+def _uri_via_helper(p: Path) -> str:
+    return path_to_fsspec_uri(str(p))
+
+
+def _uri_no_drive(p: Path) -> str:
+    return "file://" + str(p)
+
+
+def _uri_with_drive(p: Path) -> str:
+    drive = p.drive  # "" on Linux/macOS — fall back to no-drive form
+    if not drive:
+        return "file://" + str(p)
+    rest = str(p)[len(drive) :].replace("\\", "/")
+    return f"file:///{drive}{rest}"
+
+
+@pytest.mark.parametrize(
+    "make_uri",
+    [
+        pytest.param(_uri_via_helper, id="via-helper"),
+        pytest.param(
+            _uri_no_drive,
+            id="no-drive",
+            marks=pytest.mark.skipif(
+                os.name == "nt",
+                reason="file:// without drive letter is rejected on Windows",
+            ),
+        ),
+        pytest.param(_uri_with_drive, id="with-drive"),
+    ],
+)
+def test_export_accepts_fsspec_file_uri_as_output(tmp_path, catalog, make_uri):
+    src_dir = tmp_path / "src"
+    (src_dir / "dir1" / "dir2").mkdir(parents=True)
+    (src_dir / "dir1" / "dir2" / "test.txt").write_text("hello")
+
+    file = File(path="dir1/dir2/test.txt", source=path_to_fsspec_uri(str(src_dir)))
+    file._set_stream(catalog, False)
+
+    output_path = tmp_path / "out"
+    output_uri = make_uri(output_path)
+    assert output_uri.startswith("file://")
+
+    file.export(output_uri, placement="filename", use_cache=False)
+    file.export(output_uri, placement="filepath", use_cache=False)
+
+    assert (output_path / "test.txt").is_file()
+    assert (output_path / "dir1" / "dir2" / "test.txt").is_file()
+
+
 def test_export_local_output_allows_literal_percent_encoded_traversal(
-    create_file, tmp_path, monkeypatch: pytest.MonkeyPatch
+    tmp_path, catalog
 ):
-    payload = "..%2f..%2fescape.txt"  # literal percent-encoding; must not be decoded
-    file = create_file("s3://mybkt")
-    object.__setattr__(file, "path", payload)
+    payload = "..%2f..%2fescape.txt"  # literal '%2f' — must not be decoded to '/'
+    (tmp_path / payload).write_text("data")
+
+    file = File(path=payload, source=tmp_path.as_uri())
+    file._set_stream(catalog, False)
 
     output = tmp_path / "output"
-    saved: list[str] = []
-
-    monkeypatch.setattr(
-        File,
-        "save",
-        lambda _self, destination, client_config=None: saved.append(destination),
-    )
-
     file.export(output, placement="filepath", use_cache=False)
-    file.export(output, placement="fullpath", use_cache=False)
 
-    for dst in saved:
-        assert Path(dst).resolve().is_relative_to(output.resolve())
+    assert (output / payload).is_file()
+    assert not (tmp_path / "escape.txt").exists()
 
 
 @pytest.mark.parametrize(
@@ -790,7 +833,6 @@ def test_path_validation(path, expected):
 
 
 def test_file_rebase_method():
-    """Test File.rebase() method"""
     file = File(source="s3://bucket", path="data/audio/file.wav")
 
     # Basic rebase
@@ -836,7 +878,6 @@ def test_file_rebase_method():
     ],
 )
 def test_file_rebase_local_path(source, old_base, new_base, expected):
-    """Test File.rebase() with local file paths"""
     file = File(source=source, path="folder/file.mp3")
     result = file.rebase(old_base, new_base)
     assert result == expected

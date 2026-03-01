@@ -659,7 +659,8 @@ class File(DataModel):
         """Copy or link this file into an output directory.
 
         Args:
-            output: Destination directory (local path or cloud prefix).
+            output: Destination directory.  Accepts a local OS path, a cloud
+                prefix fsspec URI (``s3://…``, ``gs://…``, ``az://…``).
             placement: How to build the path under *output*:
 
                 - ``"fullpath"`` (default) — ``output/bucket/dir/file.txt``
@@ -703,10 +704,11 @@ class File(DataModel):
         if client.PREFIX == "file://":
             from datachain.fs.utils import is_subpath
 
+            output_os = client.fs._strip_protocol(output_str)
             # On Windows, normalize backslash separators to forward slashes
             # so posixpath.join produces consistent paths.  On Linux/macOS
             # backslash is a legal filename character and must not be replaced.
-            output_abs = os.path.abspath(output_str)
+            output_abs = os.path.abspath(output_os)
             if os.name == "nt":
                 output_abs = output_abs.replace("\\", "/")
             dst = posixpath.join(output_abs, suffix)
@@ -827,10 +829,9 @@ class File(DataModel):
     def get_fs_path(self) -> str:
         """Combine ``source`` and ``path`` into the full location string.
 
-        For cloud backends the result is a full URI (``s3://…``, ``gs://…``).
+        For cloud backends the result is a full URI-like (``s3://…``, ``gs://…``).
         For local files the result is a **bare OS path** (no ``file://``
-        prefix), which is what PyArrow, ``os.symlink``, and path arithmetic
-        expect.
+        prefix).
 
         Examples:
             ```py
