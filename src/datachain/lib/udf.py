@@ -1,4 +1,5 @@
 import hashlib
+import logging
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import closing, nullcontext
 from functools import partial
@@ -13,7 +14,7 @@ from datachain.cache import temporary_cache
 from datachain.dataset import RowDict
 from datachain.hash_utils import hash_callable
 from datachain.lib.convert.flatten import flatten
-from datachain.lib.file import DataModel, File
+from datachain.lib.file import DataModel, File, FileError
 from datachain.lib.utils import AbstractUDF, DataChainParamsError
 from datachain.query.batch import (
     Batch,
@@ -23,6 +24,8 @@ from datachain.query.batch import (
     RowsOutputBatch,
 )
 from datachain.utils import safe_closing, with_last_flag
+
+logger = logging.getLogger("datachain")
 
 if TYPE_CHECKING:
     from collections import abc
@@ -378,8 +381,14 @@ async def _prefetch_input(
     after_prefetch: "Callable[[], None]" = noop,
 ) -> T:
     for obj in row:
-        if isinstance(obj, File) and obj.path and await obj._prefetch(download_cb):
-            after_prefetch()
+        if isinstance(obj, File) and obj.path:
+            try:
+                if await obj._prefetch(download_cb):
+                    after_prefetch()
+            except FileError as e:
+                logger.warning(
+                    "Skipping prefetch for '%s/%s': %s", obj.source, obj.path, e
+                )
     return row
 
 

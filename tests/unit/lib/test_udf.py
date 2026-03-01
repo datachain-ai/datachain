@@ -5,6 +5,7 @@ from cloudpickle import dumps, loads
 
 import datachain as dc
 from datachain import Mapper
+from datachain.lib.file import File
 from datachain.lib.udf import JsonSerializationError, UDFBase, UdfError, UdfRunError
 from datachain.lib.utils import DataChainError
 
@@ -299,3 +300,27 @@ def test_udf_output_type_error_message_json_serialization_failure(
     assert isinstance(exc_info.value.__cause__, JsonSerializationError)
     assert exc_info.value.__cause__.__cause__ is not None
     assert isinstance(exc_info.value.__cause__.__cause__, TypeError)
+
+
+@pytest.mark.parametrize("bad_path", [".", "..", "dir/../etc"])
+def test_map_prefetch_skips_invalid_path_files(
+    monkeypatch, test_session, caplog, bad_path
+):
+
+    monkeypatch.delenv("DATACHAIN_DISTRIBUTED", raising=False)
+
+    files = [File(source="s3://bucket", path=bad_path)] * 3
+
+    def get_path(file: File) -> str:
+        return file.path
+
+    with caplog.at_level("WARNING", logger="datachain"):
+        result = (
+            dc.read_values(file=files, session=test_session)
+            .settings(prefetch=2)
+            .map(get_path, params="file", output={"p": str})
+            .to_list("p")
+        )
+
+    assert result == [(bad_path,)] * 3
+    assert any("Skipping prefetch" in m for m in caplog.messages)
