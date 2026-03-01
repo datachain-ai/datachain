@@ -954,3 +954,76 @@ def test_array_contains():
     assert list(
         chain.mutate(res=contains(dc.C("arr"), None)).order_by("val").to_values("res")
     ) == [0, 0, 0, 0, 0]
+
+
+@pytest.mark.parametrize(
+    "path,expected",
+    [
+        ("file.txt", ""),  # no directory component
+        ("dir/file.txt", "dir"),
+        ("a/b/c/file.txt", "a/b/c"),
+        ("a/b/c/", "a/b/c"),  # trailing slash — returns parent of leaf dir
+    ],
+)
+def test_path_parent(path, expected):
+    chain = dc.read_values(p=[path])
+    result = chain.mutate(out=func.path.parent("p")).to_values("out")
+    assert result == [expected]
+
+
+@pytest.mark.parametrize(
+    "path,expected",
+    [
+        ("file.txt", "file.txt"),
+        ("dir/file.txt", "file.txt"),
+        ("a/b/c/file.txt", "file.txt"),
+    ],
+)
+def test_path_name(path, expected):
+    chain = dc.read_values(p=[path])
+    result = chain.mutate(out=func.path.name("p")).to_values("out")
+    assert result == [expected]
+
+
+@pytest.mark.parametrize(
+    "path,expected",
+    [
+        ("file.txt", "file"),
+        ("dir/file.txt", "file"),
+        ("dir/file", "file"),  # no extension
+        ("dir/file.tar.gz", "file.tar"),  # only last extension stripped
+    ],
+)
+def test_path_file_stem(path, expected):
+    chain = dc.read_values(p=[path])
+    result = chain.mutate(out=func.path.file_stem("p")).to_values("out")
+    assert result == [expected]
+
+
+@pytest.mark.parametrize(
+    "path,expected",
+    [
+        ("file.txt", "txt"),
+        ("dir/file.txt", "txt"),
+        ("dir/file", ""),  # no extension
+        ("dir/file.tar.gz", "gz"),  # only last extension
+    ],
+)
+def test_path_file_ext(path, expected):
+    chain = dc.read_values(p=[path])
+    result = chain.mutate(out=func.path.file_ext("p")).to_values("out")
+    assert result == [expected]
+
+
+def test_path_funcs_work_on_locally_listed_paths(tmp_dir, test_session):
+    (tmp_dir / "subdir").mkdir()
+    (tmp_dir / "subdir" / "file.txt").write_text("x")
+
+    chain = dc.read_storage(tmp_dir.as_uri(), session=test_session)
+    parents = chain.mutate(out=func.path.parent("file.path")).to_values("out")
+    names = chain.mutate(out=func.path.name("file.path")).to_values("out")
+    exts = chain.mutate(out=func.path.file_ext("file.path")).to_values("out")
+
+    assert parents == ["subdir"]
+    assert names == ["file.txt"]
+    assert exts == ["txt"]

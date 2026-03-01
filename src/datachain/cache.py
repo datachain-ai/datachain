@@ -78,16 +78,22 @@ class Cache:  # noqa: PLW1641
     ) -> None:
         from dvc_objects.fs.utils import tmp_fname
 
-        from_path = file.get_uri()
+        from_path = file.get_fs_path()
         odb_fs = self.odb.fs
         tmp_info = odb_fs.join(self.odb.tmp_dir, tmp_fname())  # type: ignore[arg-type]
         size = file.size
         if size < 0:
-            size = await client.get_size(from_path, version_id=file.version)
+            size = await client.get_size(file)
         from tqdm.auto import tqdm
 
         cb = callback or TqdmCallback(
-            tqdm_kwargs={"desc": odb_fs.name(from_path), "bytes": True, "leave": False},
+            tqdm_kwargs={
+                "desc": odb_fs.name(from_path),
+                "unit": "B",
+                "unit_scale": True,
+                "unit_divisor": 1024,
+                "leave": False,
+            },
             tqdm_cls=tqdm,
             size=size,
         )

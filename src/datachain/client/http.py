@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, ClassVar, cast
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 from fsspec.implementations.http import HTTPFileSystem
 
@@ -60,17 +60,17 @@ class HTTPClient(Client):
         return domain, path
 
     @classmethod
-    def get_uri(cls, name: str) -> "StorageURI":
-        if not name.startswith(("http://", "https://")):
-            return StorageURI(f"{cls.PREFIX}{name}")
-        return StorageURI(name)
+    def storage_uri(cls, storage_name: str) -> "StorageURI":
+        if not storage_name.startswith(("http://", "https://")):
+            return StorageURI(f"{cls.PREFIX}{storage_name}")
+        return StorageURI(storage_name)
 
     @classmethod
     def is_root_url(cls, url: str) -> bool:
         parsed = urlparse(url)
         return parsed.path in ("", "/") and not parsed.query and not parsed.fragment
 
-    def get_full_path(self, rel_path: str, version_id: str | None = None) -> str:
+    def get_uri(self, rel_path: str) -> str:
         if self.name.startswith(("http://", "https://")):
             base_url = self.name
         else:
@@ -82,6 +82,22 @@ class HTTPClient(Client):
             base_url = f"{self.protocol}://{self.name}"
 
         if rel_path:
+            # `rel_path` may include query/fragment (see split_url). Only
+            # percent-encode the path portion; keep query/fragment intact.
+            path_part = rel_path
+            query_part = ""
+            fragment_part = ""
+            if "#" in path_part:
+                path_part, fragment_part = path_part.split("#", 1)
+                fragment_part = f"#{fragment_part}"
+            if "?" in path_part:
+                path_part, query_part = path_part.split("?", 1)
+                query_part = f"?{query_part}"
+
+            # Preserve '/' delimiters and existing percent-escapes.
+            path_part = quote(path_part, safe="/%")
+            rel_path = f"{path_part}{query_part}{fragment_part}"
+
             if not base_url.endswith("/") and not rel_path.startswith("/"):
                 base_url += "/"
             full_url = base_url + rel_path
@@ -90,12 +106,18 @@ class HTTPClient(Client):
 
         return full_url
 
-    def url(self, path: str, expires: int = 3600, **kwargs) -> str:
+    def url(
+        self,
+        path: str,
+        expires: int = 3600,
+        version_id: str | None = None,
+        **kwargs,
+    ) -> str:
         """
         Generate URL for the given path.
         Note: HTTP URLs don't support signed/expiring URLs.
         """
-        return self.get_full_path(path, kwargs.pop("version_id", None))
+        return self.get_uri(path)
 
     def info_to_file(self, v: dict[str, Any], path: str) -> File:
         etag = v.get("ETag", "").strip('"')
@@ -129,7 +151,7 @@ class HTTPClient(Client):
         )
 
     def get_file_info(self, path: str, version_id: str | None = None) -> "File":
-        info = self.fs.info(self.get_full_path(path))
+        info = self.fs.info(self.get_uri(path))
         return self.info_to_file(info, path)
 
     def open_object(self, file: "File", use_cache: bool = True, cb=None):
@@ -140,7 +162,7 @@ class HTTPClient(Client):
 
         assert not file.location
         return FileWrapper(
-            self.fs.open(self.get_full_path(file.get_path_normalized())),
+            self.fs.open(file.get_fs_path()),
             cb or (lambda x: None),
         )
 
@@ -148,7 +170,7 @@ class HTTPClient(Client):
         return await self.fs._get_file(lpath, rpath, callback=callback)
 
     async def _fetch_dir(self, prefix: str, pbar, result_queue) -> set[str]:
-        full_url = self.get_full_path(prefix)
+        full_url = self.get_uri(prefix)
         raise NotImplementedError(f"Cannot download file from {full_url}")
 
 

@@ -476,7 +476,7 @@ def find_column_to_str(  # noqa: PLR0911
             full_path = path + "/"
         else:
             full_path = path
-        return src.get_node_full_path_from_path(full_path)
+        return src.get_node_uri_from_path(full_path)
     if column == "size":
         return str(row[field_lookup["size"]])
     if column == "type":
@@ -2022,7 +2022,7 @@ class Catalog:
                     for sd in subdirs:
                         yield from du_dirs(src, sd, subdepth - 1)
                 yield (
-                    src.get_node_full_path(node),
+                    src.get_node_uri(node),
                     src.listing.du(node)[0],
                 )
 

@@ -5,7 +5,6 @@ import multiprocessing
 import os
 import posixpath
 import re
-import sys
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Iterator, Sequence
 from datetime import datetime
@@ -20,6 +19,7 @@ from tqdm.auto import tqdm
 
 from datachain.cache import Cache
 from datachain.client.fileslice import FileWrapper
+from datachain.fs.utils import is_win_local_path
 from datachain.nodes_fetcher import NodesFetcher
 from datachain.nodes_thread_pool import NodeChunk
 
@@ -39,20 +39,6 @@ DATA_SOURCE_URI_PATTERN = re.compile(r"^[\w]+:\/\/.*$")
 CLOUD_STORAGE_PROTOCOLS = {"s3", "gs", "az", "hf"}
 
 ResultQueue = asyncio.Queue[Sequence["File"] | None]
-
-
-def is_win_local_path(uri: str) -> bool:
-    if sys.platform == "win32":
-        if len(uri) >= 1 and uri[0] == "\\":
-            return True
-        if (
-            len(uri) >= 3
-            and uri[1] == ":"
-            and (uri[2] == "/" or uri[2] == "\\")
-            and uri[0].isalpha()
-        ):
-            return True
-    return False
 
 
 def is_cloud_uri(uri: str) -> bool:
@@ -82,7 +68,7 @@ class Client(ABC):
         self.fs_kwargs = fs_kwargs
         self._fs: AbstractFileSystem | None = None
         self.cache = cache
-        self.uri = self.get_uri(self.name)
+        self.uri = self.storage_uri(self.name)
 
     @staticmethod
     def get_implementation(url: str | os.PathLike[str]) -> type["Client"]:  # noqa: PLR0911
@@ -114,21 +100,36 @@ class Client(ABC):
 
         raise NotImplementedError(f"Unsupported protocol: {protocol}")
 
-    @classmethod
-    def path_to_uri(cls, path: str) -> str:
-        """Convert a path-like object to a URI. Default: identity."""
-        return path
-
     @staticmethod
     def is_data_source_uri(name: str) -> bool:
         # Returns True if name is one of supported data sources URIs, e.g s3 bucket
         return DATA_SOURCE_URI_PATTERN.match(name) is not None
 
     @staticmethod
+    def validate_file_path(path: str) -> None:
+        """Validate a relative object path for this backend.
+
+        Raises ``ValueError`` for paths that are empty, end with ``/``, or
+        contain ``.`` / ``..`` segments.  Subclasses extend this with
+        backend-specific rules (e.g. local-filesystem restrictions).
+        """
+        if not path:
+            raise ValueError("path must not be empty")
+        if path.endswith("/"):
+            raise ValueError("path must not be a directory")
+        parts = path.split("/")
+        if any(part in (".", "..") for part in parts):
+            raise ValueError("path must not contain '.' or '..'")
+
+    @classmethod  # noqa: B027
+    def validate_source(cls, source: str) -> None:
+        """Validate the source URI for this backend."""
+
+    @staticmethod
     def parse_url(source: str) -> tuple["StorageURI", str]:
         cls = Client.get_implementation(source)
         storage_name, rel_path = cls.split_url(source)
-        return cls.get_uri(storage_name), rel_path
+        return cls.storage_uri(storage_name), rel_path
 
     @staticmethod
     def get_client(source: str | os.PathLike[str], cache: Cache, **kwargs) -> "Client":
@@ -136,7 +137,7 @@ class Client(ABC):
         storage_url, _ = cls.split_url(os.fspath(source))
         if os.name == "nt":
             storage_url = storage_url.removeprefix("/")
-
+        cls.validate_source(os.fspath(source))
         return cls.from_name(storage_url, cache, kwargs)
 
     @classmethod
@@ -145,10 +146,6 @@ class Client(ABC):
         fs = cls.FS_CLASS(**kwargs)
         fs.invalidate_cache()
         return fs
-
-    @classmethod
-    def version_path(cls, path: str, version_id: str | None) -> str:
-        return path
 
     @classmethod
     def from_name(
@@ -185,10 +182,11 @@ class Client(ABC):
         return url == cls.PREFIX
 
     @classmethod
-    def get_uri(cls, name: str) -> "StorageURI":
+    def storage_uri(cls, storage_name: str) -> "StorageURI":
+        """Build a :class:`StorageURI` by prepending the protocol to *storage_name*."""
         from datachain.dataset import StorageURI
 
-        return StorageURI(f"{cls.PREFIX}{name}")
+        return StorageURI(f"{cls.PREFIX}{storage_name}")
 
     @classmethod
     def split_url(cls, url: str) -> tuple[str, str]:
@@ -210,38 +208,47 @@ class Client(ABC):
             self._fs = self.create_fs(**self.fs_kwargs)
         return self._fs
 
-    def url(self, path: str, expires: int = 3600, **kwargs) -> str:
-        return self.fs.sign(
-            self.get_full_path(path, kwargs.pop("version_id", None)),
-            expiration=expires,
-            **kwargs,
-        )
+    def url(
+        self,
+        path: str,
+        expires: int = 3600,
+        version_id: str | None = None,
+        **kwargs,
+    ) -> str:
+        self.validate_file_path(path)
+        kwargs.update(self._version_kwargs(version_id))
+        return self.fs.sign(self.get_uri(path), expiration=expires, **kwargs)
 
     async def get_current_etag(self, file: "File") -> str:
-        file_path = file.get_path_normalized()
-        kwargs = {}
-        if self._is_version_aware():
-            kwargs["version_id"] = file.version
-        info = await self.fs._info(
-            self.get_full_path(file_path, file.version), **kwargs
-        )
-        return self.info_to_file(info, file_path).etag
+        full_path = file.get_fs_path()
+        info = await self.fs._info(full_path, **self._version_kwargs(file.version))
+        return self.info_to_file(info, file.path).etag
 
     def get_file_info(self, path: str, version_id: str | None = None) -> "File":
-        info = self.fs.info(self.get_full_path(path, version_id), version_id=version_id)
+        self.validate_file_path(path)
+        full_path = self.get_uri(path)
+        info = sync(
+            get_loop(),
+            self.fs._info,
+            full_path,
+            **self._version_kwargs(version_id),
+        )
         return self.info_to_file(info, path)
 
-    async def get_size(self, path: str, version_id: str | None = None) -> int:
-        return await self.fs._size(
-            self.version_path(path, version_id), version_id=version_id
-        )
+    async def get_size(self, file: "File") -> int:
+        full_path = file.get_fs_path()
+        info = await self.fs._info(full_path, **self._version_kwargs(file.version))
+        size = info.get("size")
+        if size is None:
+            raise FileNotFoundError(full_path)
+        return int(size)
 
     async def get_file(self, lpath, rpath, callback, version_id: str | None = None):
         return await self.fs._get_file(
-            self.version_path(lpath, version_id),
+            lpath,
             rpath,
             callback=callback,
-            version_id=version_id,
+            **self._version_kwargs(version_id),
         )
 
     async def scandir(
@@ -341,6 +348,11 @@ class Client(ABC):
     def _is_version_aware(self) -> bool:
         return getattr(self.fs, "version_aware", False)
 
+    def _version_kwargs(self, version_id: str | None) -> dict[str, Any]:
+        if version_id:
+            return {"version_id": version_id}
+        return {}
+
     async def ls_dir(self, path):
         kwargs = {}
         if self._is_version_aware():
@@ -350,8 +362,9 @@ class Client(ABC):
     def rel_path(self, path: str) -> str:
         return self.fs.split_path(path)[1]
 
-    def get_full_path(self, rel_path: str, version_id: str | None = None) -> str:
-        return self.version_path(f"{self.PREFIX}{self.name}/{rel_path}", version_id)
+    def get_uri(self, rel_path: str) -> str:
+        """Build a full URI for the given relative path within this client's storage."""
+        return f"{self.PREFIX}{self.name}/{rel_path}"
 
     @abstractmethod
     def info_to_file(self, v: dict[str, Any], path: str) -> "File": ...
@@ -397,13 +410,21 @@ class Client(ABC):
         if use_cache and (cache_path := self.cache.get_path(file)):
             return open(cache_path, mode="rb")
         assert not file.location
+        kwargs = self._version_kwargs(file.version)
+        full_path = file.get_fs_path()
         return FileWrapper(
-            self.fs.open(self.get_full_path(file.get_path_normalized(), file.version)),
+            self.fs.open(full_path, **kwargs),
             cb,
         )  # type: ignore[return-value]
 
     def upload(self, data: bytes, path: str) -> "File":
-        full_path = path if path.startswith(self.PREFIX) else self.get_full_path(path)
+        if path.startswith(self.PREFIX):
+            full_path = path
+            _, rel_path = self.split_url(path)
+        else:
+            rel_path = path
+            full_path = self.get_uri(path)
+        self.validate_file_path(rel_path)
 
         parent = posixpath.dirname(full_path)
         self.fs.makedirs(parent, exist_ok=True)

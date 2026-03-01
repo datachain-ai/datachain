@@ -27,7 +27,7 @@ def test_arrow_generator(tmp_path, catalog, cache):
     name = "111.parquet"
     pq_path = tmp_path / name
     df.to_parquet(pq_path)
-    stream = File(path=pq_path.as_posix(), source="file://")
+    stream = File(path=name, source=f"file://{tmp_path}")
     stream._set_stream(catalog, caching_enabled=cache)
 
     func = ArrowGenerator()
@@ -51,7 +51,7 @@ def test_arrow_generator_no_source(tmp_path, catalog):
     name = "111.parquet"
     pq_path = tmp_path / name
     df.to_parquet(pq_path)
-    stream = File(path=pq_path.as_posix(), source="file://")
+    stream = File(path=name, source=f"file://{tmp_path}")
     stream._set_stream(catalog, caching_enabled=False)
 
     func = ArrowGenerator(source=False)
@@ -72,7 +72,7 @@ def test_arrow_generator_output_schema(tmp_path, catalog):
     name = "111.parquet"
     pq_path = tmp_path / name
     pq.write_table(table, pq_path)
-    stream = File(path=pq_path.as_posix(), source="file://")
+    stream = File(path=name, source=f"file://{tmp_path}")
     stream._set_stream(catalog, caching_enabled=False)
 
     output, original_names = schema_to_output(table.schema)
@@ -96,7 +96,7 @@ def test_arrow_generator_hf(tmp_path, catalog):
     name = "111.parquet"
     pq_path = tmp_path / name
     ds.to_parquet(pq_path)
-    stream = File(path=pq_path.as_posix(), source="file:///")
+    stream = File(path=name, source=f"file://{tmp_path}")
     stream._set_stream(catalog, caching_enabled=False)
 
     output, original_names = schema_to_output(ds._data.schema, ["col"])
@@ -125,7 +125,10 @@ def test_arrow_generator_partitioned(tmp_path, catalog, cache):
     )
 
     for path in pq_path.rglob("*.parquet"):
-        stream = File(path=path.as_posix(), source="file://")
+        stream = File(
+            path=path.relative_to(pq_path).as_posix(),
+            source=f"file://{pq_path}",
+        )
         stream._set_stream(catalog, caching_enabled=cache)
 
         (o,) = list(func.process(stream))

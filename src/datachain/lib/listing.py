@@ -2,6 +2,7 @@ import glob
 import logging
 import os
 import posixpath
+import re
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -107,6 +108,65 @@ def ls(
     return dc.filter(pathfunc.parent(_file_c("path")) == path.lstrip("/").rstrip("/*"))
 
 
+_DS_ENCODE_RE = re.compile(r"[^a-zA-Z0-9_/:\-]")
+
+
+def _sanitize_ds_name(raw: str) -> str:
+    """Make *raw* safe for use as a SQL table-name component.
+
+    The encoding is injective (collision-free) and handles the full Unicode
+    range via a variable-length hex scheme:
+
+    1. Pre-escape literals ``_x``, ``_y``, ``_z`` that appear in the raw string:
+       ``_x`` → ``_x_x``, ``_y`` → ``_y_y``, ``_z`` → ``_z_z``.
+    2. Encode every char outside ``[a-zA-Z0-9_/:-]``:
+       - U+0000-U+00FF  →  ``_xHH``     (2 hex digits, e.g. ``.`` → ``_x2e``)
+       - U+0100-U+FFFF  →  ``_yHHHH``   (4 hex digits, e.g. ``é`` → ``_y00e9``)
+       - U+10000-U+10FFFF → ``_zHHHHHH`` (6 hex digits, e.g. 🎵 → ``_z01f3b5``)
+
+    ``_`` is not a hex digit, so ``_y_y`` / ``_z_z`` escape tokens are
+    unambiguous with ``_yHHHH`` / ``_zHHHHHH`` encoding tokens.
+    """
+    raw = raw.replace("_x", "_x_x")  # must come first
+    raw = raw.replace("_y", "_y_y")
+    raw = raw.replace("_z", "_z_z")
+
+    def _encode_char(m: re.Match) -> str:
+        o = ord(m.group())
+        if o <= 0xFF:
+            return f"_x{o:02x}"
+        if o <= 0xFFFF:
+            return f"_y{o:04x}"
+        return f"_z{o:06x}"
+
+    return _DS_ENCODE_RE.sub(_encode_char, raw)
+
+
+# _y(4 hex | _y) →  BMP char or literal _y
+# _z(6 hex | _z) →  supplementary char or literal _z
+# _x(_x | 2 hex) →  literal _x or low-ISO char
+_DS_DECODE_RE = re.compile(r"_y([0-9a-f]{4}|_y)|_z([0-9a-f]{6}|_z)|_x(_x|[0-9a-f]{2})")
+
+
+def _desanitize_ds_name(encoded: str) -> str:
+    """Reverse :func:`_sanitize_ds_name`.
+
+    ``_xHH`` → char, ``_yHHHH`` → BMP char,
+    ``_zHHHHHH`` → supplementary char,
+    ``_x_x`` → ``_x``, ``_y_y`` → ``_y``, ``_z_z`` → ``_z``.
+    """
+
+    def _repl(m: re.Match) -> str:
+        g1, g2, g3 = m.group(1), m.group(2), m.group(3)
+        if g1 is not None:
+            return "_y" if g1 == "_y" else chr(int(g1, 16))
+        if g2 is not None:
+            return "_z" if g2 == "_z" else chr(int(g2, 16))
+        return "_x" if g3 == "_x" else chr(int(g3, 16))
+
+    return _DS_DECODE_RE.sub(_repl, encoded)
+
+
 def parse_listing_uri(uri: str) -> tuple[str, str, str]:
     """
     Parsing uri and returns listing dataset name, listing uri and listing path
@@ -123,8 +183,7 @@ def parse_listing_uri(uri: str) -> tuple[str, str, str]:
         f"{LISTING_PREFIX}{storage_uri}/{posixpath.join(lst_uri_path, '').lstrip('/')}"
     )
 
-    # we should remove dots from the name
-    ds_name = ds_name.replace(".", "_")
+    ds_name = _sanitize_ds_name(ds_name)
 
     return ds_name, lst_uri, path
 
@@ -135,10 +194,14 @@ def is_listing_dataset(name: str) -> bool:
 
 
 def listing_uri_from_name(dataset_name: str) -> str:
-    """Returns clean storage URI from listing dataset name"""
+    """Returns clean storage URI from listing dataset name.
+
+    Strips the ``lst__`` prefix and reverses the ``_xHH`` encoding
+    applied by :func:`_sanitize_ds_name`.
+    """
     if not is_listing_dataset(dataset_name):
         raise ValueError(f"Dataset {dataset_name} is not a listing")
-    return dataset_name.removeprefix(LISTING_PREFIX)
+    return _desanitize_ds_name(dataset_name.removeprefix(LISTING_PREFIX))
 
 
 @contextmanager

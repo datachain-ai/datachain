@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 from filelock import FileLock, Timeout
 
+from datachain.fs.utils import is_subpath, path_to_fsspec_uri
 from datachain.utils import (
     _CheckpointState,
     batched,
@@ -555,3 +556,129 @@ def test_checkpoints_enabled_datachain_subprocess(monkeypatch):
     # With DATACHAIN_SUBPROCESS, checkpoints should be enabled
     monkeypatch.setenv("DATACHAIN_SUBPROCESS", "1")
     assert checkpoints_enabled() is True
+
+
+def test_is_subpath_rejects_equal(tmp_path):
+    output = (tmp_path / "out").as_posix()
+    assert not is_subpath(output, output)
+
+
+def test_is_subpath_rejects_outside(tmp_path):
+    output = (tmp_path / "out").as_posix()
+    dst = (tmp_path / "escape.txt").as_posix()
+    assert not is_subpath(output, dst)
+
+
+def test_is_subpath_rejects_prefix_overlap(tmp_path):
+    output = (tmp_path / "out").as_posix()
+    dst = (tmp_path / "out2" / "file.txt").as_posix()
+    assert not is_subpath(output, dst)
+
+
+def test_is_subpath_accepts_contained(tmp_path):
+    output = (tmp_path / "out").as_posix()
+    dst = (tmp_path / "out" / "sub" / "file.txt").as_posix()
+    assert is_subpath(output, dst)
+
+
+def test_is_subpath_asserts_parent_absolute():
+    with pytest.raises(AssertionError, match="parent must be absolute"):
+        is_subpath("relative/dir", os.path.abspath("child"))
+
+
+def test_is_subpath_asserts_child_absolute():
+    with pytest.raises(AssertionError, match="child must be absolute"):
+        is_subpath(os.path.abspath("parent"), "relative/child")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="case-sensitive filesystem")
+def test_is_subpath_case_sensitive_on_unix(tmp_path):
+    parent = (tmp_path / "Out").as_posix()
+    child = (tmp_path / "out" / "file.txt").as_posix()
+    assert not is_subpath(parent, child)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only case folding")
+def test_is_subpath_case_insensitive_on_windows(tmp_path):
+    parent = (tmp_path / "Out").as_posix()
+    child = (tmp_path / "out" / "file.txt").as_posix()
+    assert is_subpath(parent, child)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only separator normalization")
+def test_is_subpath_win_backslash_parent():
+    assert is_subpath("C:\\Users\\out", "C:\\Users\\out\\file.txt")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only separator normalization")
+def test_is_subpath_win_forward_slash_parent():
+    assert is_subpath("C:/Users/out", "C:/Users/out/file.txt")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only separator normalization")
+def test_is_subpath_win_mixed_separators():
+    # normcase normalizes both to backslash, so mixed forms must match
+    assert is_subpath("C:\\Users\\out", "C:/Users/out/file.txt")
+    assert is_subpath("C:/Users/out", "C:\\Users\\out\\file.txt")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only separator normalization")
+def test_is_subpath_win_mixed_rejects_outside():
+    assert not is_subpath("C:\\Users\\out", "C:/Users/out2/file.txt")
+    assert not is_subpath("C:/Users/out", "C:\\Users\\escape.txt")
+
+
+def test_is_subpath_rejects_dotdot_traversal(tmp_path):
+    """Defence in depth: ``..`` in an absolute child must not bypass the check."""
+    output = str(tmp_path / "output")
+    # Craft a child that starts with the parent prefix but escapes via '..'
+    child = str(tmp_path / "output" / ".." / "escaped.txt")
+    assert not is_subpath(output, child)
+
+
+def test_is_subpath_rejects_deep_dotdot_traversal(tmp_path):
+    """Multiple ``..`` segments escaping several levels up."""
+    output = str(tmp_path / "a" / "b" / "output")
+    child = str(tmp_path / "a" / "b" / "output" / ".." / ".." / ".." / "etc" / "passwd")
+    assert not is_subpath(output, child)
+
+
+def test_is_subpath_accepts_dotdot_that_stays_inside(tmp_path):
+    """``..`` that resolves back inside the parent should be accepted."""
+    output = str(tmp_path / "output")
+    # output/sub/../file.txt  →  output/file.txt  (still inside output)
+    child = str(tmp_path / "output" / "sub" / ".." / "file.txt")
+    assert is_subpath(output, child)
+
+
+def test_is_subpath_rejects_dotdot_to_parent_itself(tmp_path):
+    """``..`` resolving to exactly the parent (not strictly inside) → False."""
+    output = str(tmp_path / "output")
+    # output/sub/..  →  output  (equal, not strictly inside)
+    child = str(tmp_path / "output" / "sub" / "..")
+    assert not is_subpath(output, child)
+
+
+def test_is_subpath_normalises_dot_segments(tmp_path):
+    """Single ``.`` segments don't fool the check."""
+    output = str(tmp_path / "output")
+    child = str(tmp_path / "output" / "." / "file.txt")
+    assert is_subpath(output, child)
+
+
+def test_is_subpath_parent_with_dotdot(tmp_path):
+    """``..`` in the parent path is also normalised."""
+    parent = str(tmp_path / "a" / ".." / "output")
+    child = str(tmp_path / "output" / "file.txt")
+    assert is_subpath(parent, child)
+
+
+def test_path_to_fsspec_uri_does_not_resolve_symlinks(tmp_path):
+    real_dir = tmp_path / "real"
+    real_dir.mkdir()
+    link_dir = tmp_path / "link"
+    link_dir.symlink_to(real_dir)
+
+    uri = path_to_fsspec_uri(str(link_dir))
+    assert "link" in uri
+    assert "real" not in uri

@@ -7,7 +7,6 @@ from collections.abc import Callable, Sequence
 from pathlib import PurePosixPath
 from typing import Annotated, Any, Final, Literal, Union, get_args, get_origin
 from typing import Literal as LiteralEx
-from urllib.parse import urlparse
 
 from datachain.lib.model_store import ModelStore
 
@@ -110,41 +109,34 @@ def rebase_path(
     Raises:
         ValueError: If old_base is not found in src_path
     """
-    # Parse URIs to handle schemes properly
-    src_parsed = urlparse(src_path)
-    old_base_parsed = urlparse(old_base)
-    new_base_parsed = urlparse(new_base)
 
-    # Get the path component (without scheme)
-    if src_parsed.scheme:
-        src_path_only = src_parsed.netloc + src_parsed.path
-    else:
-        src_path_only = src_path
+    def _split_scheme(url: str) -> tuple[str, str]:
+        scheme, sep, rest = url.partition("://")
+        return (scheme, rest) if sep else ("", url)
 
-    if old_base_parsed.scheme:
-        old_base_only = old_base_parsed.netloc + old_base_parsed.path
-    else:
-        old_base_only = old_base
+    def _to_posix(path: str) -> str:
+        return PurePosixPath(path.replace("\\", "/")).as_posix()
 
-    # Normalize paths
-    src_path_norm = PurePosixPath(src_path_only).as_posix()
-    old_base_norm = PurePosixPath(old_base_only).as_posix()
+    src_scheme, src_rest = _split_scheme(src_path)
+    old_scheme, old_rest = _split_scheme(old_base)
+    new_scheme, new_rest = _split_scheme(new_base)
 
-    # Find where old_base appears in src_path
-    if old_base_norm in src_path_norm:
-        # Find the index where old_base appears
-        idx = src_path_norm.find(old_base_norm)
-        if idx == -1:
-            raise ValueError(f"old_base '{old_base}' not found in src_path")
+    # For scheme URLs, treat everything after :// as the opaque "path" for rebasing.
+    # For plain paths, use the full string.
+    src_path_only = src_rest if src_scheme else src_path
+    old_base_only = old_rest if old_scheme else old_base
 
-        # Extract the relative path after old_base
-        relative_start = idx + len(old_base_norm)
-        # Skip leading slash if present
-        if relative_start < len(src_path_norm) and src_path_norm[relative_start] == "/":
-            relative_start += 1
-        relative_path = src_path_norm[relative_start:]
-    else:
+    src_path_norm = _to_posix(src_path_only)
+    old_base_norm = _to_posix(old_base_only)
+
+    if old_base_norm not in src_path_norm:
         raise ValueError(f"old_base '{old_base}' not found in src_path")
+
+    idx = src_path_norm.find(old_base_norm)
+    relative_start = idx + len(old_base_norm)
+    if relative_start < len(src_path_norm) and src_path_norm[relative_start] == "/":
+        relative_start += 1
+    relative_path = src_path_norm[relative_start:]
 
     # Parse the filename
     path_obj = PurePosixPath(relative_path)
@@ -170,15 +162,12 @@ def rebase_path(
     else:
         new_relative_path = str(PurePosixPath(parent) / new_name)
 
-    # Handle new_base URI scheme
-    if new_base_parsed.scheme:
-        # Has schema like s3://
-        base_path = new_base_parsed.netloc + new_base_parsed.path
-        base_path = PurePosixPath(base_path).as_posix()
+    if new_scheme:
+        base_path = _to_posix(new_rest)
         full_path = str(PurePosixPath(base_path) / new_relative_path)
-        return f"{new_base_parsed.scheme}://{full_path}"
-    # Regular path
-    return str(PurePosixPath(new_base) / new_relative_path)
+        return f"{new_scheme}://{full_path}"
+
+    return str(PurePosixPath(_to_posix(new_base)) / new_relative_path)
 
 
 def type_to_str(  # noqa: C901, PLR0911, PLR0912

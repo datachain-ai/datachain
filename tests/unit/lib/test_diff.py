@@ -442,11 +442,11 @@ def test_diff_right_compare_defined_but_not_compare(test_session):
 @pytest.mark.parametrize("status_col", ("diff", None))
 @pytest.mark.parametrize("right_on", ("file2", None))
 def test_file_diff(test_session, str_default, int_default, status_col, right_on):
-    fs1 = File(source="s1", path="p1", version="2", etag="e2")
-    fs1_updated = File(source="s1", path="p1", version="1", etag="e1")
-    fs2 = File(source="s2", path="p2", version="1", etag="e1")
-    fs3 = File(source="s3", path="p3", version="1", etag="e1")
-    fs4 = File(source="s4", path="p4", version="1", etag="e1")
+    fs1 = File(source="s1://", path="p1", version="2", etag="e2")
+    fs1_updated = File(source="s1://", path="p1", version="1", etag="e1")
+    fs2 = File(source="s2://", path="p2", version="1", etag="e1")
+    fs3 = File(source="s3://", path="p3", version="1", etag="e1")
+    fs4 = File(source="s4://", path="p4", version="1", etag="e1")
 
     ds1 = dc.read_values(
         file1=[fs1_updated, fs2, fs4], score=[1, 2, 4], session=test_session
@@ -473,10 +473,10 @@ def test_file_diff(test_session, str_default, int_default, status_col, right_on)
     )
 
     expected = [
-        (CompareStatus.MODIFIED, "s1", "p1", "1", "e1", 1),
-        (CompareStatus.ADDED, "s2", "p2", "1", "e1", 2),
-        (CompareStatus.DELETED, "s3", "p3", str_default, str_default, int_default),
-        (CompareStatus.SAME, "s4", "p4", "1", "e1", 4),
+        (CompareStatus.MODIFIED, "s1://", "p1", "1", "e1", 1),
+        (CompareStatus.ADDED, "s2://", "p2", "1", "e1", 2),
+        (CompareStatus.DELETED, "s3://", "p3", str_default, str_default, int_default),
+        (CompareStatus.SAME, "s4://", "p4", "1", "e1", 4),
     ]
 
     collect_fields = [
@@ -499,11 +499,11 @@ def test_file_diff_nested(test_session, str_default, int_default, status_col):
     class Nested(BaseModel):
         file: File
 
-    fs1 = Nested(file=File(source="s1", path="p1", version="2", etag="e2"))
-    fs1_updated = Nested(file=File(source="s1", path="p1", version="1", etag="e1"))
-    fs2 = Nested(file=File(source="s2", path="p2", version="1", etag="e1"))
-    fs3 = Nested(file=File(source="s3", path="p3", version="1", etag="e1"))
-    fs4 = Nested(file=File(source="s4", path="p4", version="1", etag="e1"))
+    fs1 = Nested(file=File(source="s1://", path="p1", version="2", etag="e2"))
+    fs1_updated = Nested(file=File(source="s1://", path="p1", version="1", etag="e1"))
+    fs2 = Nested(file=File(source="s2://", path="p2", version="1", etag="e1"))
+    fs3 = Nested(file=File(source="s3://", path="p3", version="1", etag="e1"))
+    fs4 = Nested(file=File(source="s4://", path="p4", version="1", etag="e1"))
 
     ds1 = dc.read_values(
         nested=[fs1_updated, fs2, fs4], score=[1, 2, 4], session=test_session
@@ -528,10 +528,10 @@ def test_file_diff_nested(test_session, str_default, int_default, status_col):
     ]
 
     expected = [
-        (CompareStatus.MODIFIED, "s1", "p1", "1", "e1", 1),
-        (CompareStatus.ADDED, "s2", "p2", "1", "e1", 2),
-        (CompareStatus.DELETED, "s3", "p3", str_default, str_default, int_default),
-        (CompareStatus.SAME, "s4", "p4", "1", "e1", 4),
+        (CompareStatus.MODIFIED, "s1://", "p1", "1", "e1", 1),
+        (CompareStatus.ADDED, "s2://", "p2", "1", "e1", 2),
+        (CompareStatus.DELETED, "s3://", "p3", str_default, str_default, int_default),
+        (CompareStatus.SAME, "s4://", "p4", "1", "e1", 4),
     ]
 
     collect_fields = [
