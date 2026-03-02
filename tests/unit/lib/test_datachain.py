@@ -4373,6 +4373,20 @@ def test_save_create_project_not_allowed(test_session, is_studio):
         )
 
 
+def test_save_raises_in_ephemeral_mode(test_session):
+    chain = dc.read_values(num=[1, 2, 3], session=test_session).settings(ephemeral=True)
+
+    with pytest.raises(RuntimeError, match="Cannot save datasets in ephemeral mode"):
+        chain.save("should_fail")
+
+
+def test_job_property_raises_in_ephemeral_mode(test_session):
+    chain = dc.read_values(num=[1, 2, 3], session=test_session).settings(ephemeral=True)
+
+    with pytest.raises(RuntimeError, match="Cannot access job in ephemeral mode"):
+        chain.job  # noqa: B018
+
+
 def test_agg_partition_by_string_notation(test_session):
     """Test that agg method supports string notation for partition_by."""
 
