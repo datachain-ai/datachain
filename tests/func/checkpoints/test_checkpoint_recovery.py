@@ -255,12 +255,7 @@ def test_generator_incomplete_input_recovery(test_session):
 
 
 def test_generator_yielding_nothing(test_session, monkeypatch, nums_dataset):
-    """Test that generator correctly handles inputs that yield zero outputs.
-
-    Odd numbers yield nothing, even numbers yield num*10.
-    First run crashes on num=3. On checkpoint recovery, inputs 1 and 2
-    (including 1 which yielded nothing) should be skipped.
-    """
+    """Test that generator correctly handles inputs that yield zero outputs."""
     processed = []
     run_count = [0]
 

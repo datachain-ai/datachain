@@ -576,8 +576,6 @@ class Generator(UDFBase):
                     yield udf_output
             if not has_output:
                 # Marker: records that this input was processed but yielded nothing.
-                # sys__partial=False so find_incomplete_inputs sees it as complete.
-                # Filtered out in create_result_query via sys__empty.
                 yield {
                     "sys__input_id": row_id,
                     "sys__partial": False,
