@@ -136,6 +136,11 @@ def read_records(
         to_insert = []
 
     warehouse = catalog.warehouse
+
+    # Create the rows table (create_dataset only creates metadata).
+    table_name = warehouse.dataset_table_name(dsr, dsr.latest_version)
+    warehouse.create_dataset_rows_table(table_name, columns=columns)
+
     dr = warehouse.dataset_rows(dsr)
     table = dr.get_table()
 
