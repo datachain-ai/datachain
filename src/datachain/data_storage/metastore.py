@@ -606,10 +606,13 @@ class AbstractMetastore(ABC, Serializable):
         """Return jobs that have checkpoints in EXPIRED status."""
 
     @abstractmethod
-    def remove_checkpoints(
-        self, checkpoint_ids: list[str], conn: Any | None = None
+    def update_checkpoint(
+        self,
+        checkpoint_ids: list[str],
+        status: "CheckpointStatus | None" = None,
+        conn: Any | None = None,
     ) -> None:
-        """Soft-delete checkpoints by IDs (set status to DELETED)."""
+        """Update checkpoint fields by IDs."""
 
     #
     # Checkpoint Events
@@ -2768,10 +2771,23 @@ class AbstractDBMetastore(AbstractMetastore):
             .group_by(ch.c.job_id)
             .having(f.max(ch.c.created_at) < ttl_threshold)
         )
+        # Exclude run groups that have any active (non-finished) job — a rerun
+        # may be using checkpoints from a finished parent via find_checkpoint
+        active_run_groups = (
+            select(jobs.c.run_group_id)
+            .where(~jobs.c.status.in_(JobStatus.finished()))
+            .where(jobs.c.run_group_id.isnot(None))
+        )
         finished_job_ids = (
             select(jobs.c.id)
             .where(jobs.c.status.in_(JobStatus.finished()))
             .where(jobs.c.id.in_(expired_job_ids))
+            .where(
+                or_(
+                    jobs.c.run_group_id.is_(None),
+                    ~jobs.c.run_group_id.in_(active_run_groups),
+                )
+            )
         )
 
         self.db.execute(
@@ -2797,14 +2813,22 @@ class AbstractDBMetastore(AbstractMetastore):
 
         yield from self._parse_jobs(self.db.execute(query, conn=conn))
 
-    def remove_checkpoints(
-        self, checkpoint_ids: list[str], conn: Any | None = None
+    def update_checkpoint(
+        self,
+        checkpoint_ids: list[str],
+        status: CheckpointStatus | None = None,
+        conn: Any | None = None,
     ) -> None:
         if not checkpoint_ids:
+            return
+        values: dict = {}
+        if status is not None:
+            values["status"] = status
+        if not values:
             return
         self.db.execute(
             self._checkpoints.update()
             .where(self._checkpoints.c.id.in_(checkpoint_ids))
-            .values(status=CheckpointStatus.DELETED),
+            .values(**values),
             conn=conn,
         )

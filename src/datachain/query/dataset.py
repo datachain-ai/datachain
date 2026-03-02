@@ -30,7 +30,7 @@ from tqdm.auto import tqdm
 
 from datachain.asyn import ASYNC_WORKERS, AsyncMapper, OrderedMapper
 from datachain.catalog.catalog import clone_catalog_with_cache
-from datachain.checkpoint import Checkpoint
+from datachain.checkpoint import Checkpoint, CheckpointStatus
 from datachain.checkpoint_event import (
     CheckpointEventType,
     CheckpointStepType,
@@ -1172,7 +1172,9 @@ class UDFStep(Step, ABC):
         if checkpoints_enabled and job:
             # Promote partial checkpoint to final and log event
             if partial_checkpoint:
-                self.metastore.remove_checkpoints([partial_checkpoint.id])
+                self.metastore.update_checkpoint(
+                    [partial_checkpoint.id], status=CheckpointStatus.DELETED
+                )
             self.metastore.get_or_create_checkpoint(job.id, hash_output)
             logger.debug(
                 "UDF(%s) [job=%s run_group=%s]: Promoted partial to final, hash=%s",
@@ -1310,7 +1312,9 @@ class UDFStep(Step, ABC):
             partial_table, Checkpoint.output_table_name(job.id, hash_output)
         )
 
-        self.metastore.remove_checkpoints([partial_checkpoint.id])
+        self.metastore.update_checkpoint(
+            [partial_checkpoint.id], status=CheckpointStatus.DELETED
+        )
         self.metastore.get_or_create_checkpoint(job.id, hash_output)
         logger.debug(
             "UDF(%s) [job=%s run_group=%s]: Promoted partial to final, hash=%s",

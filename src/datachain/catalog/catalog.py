@@ -25,7 +25,7 @@ from sqlalchemy import Column
 from tqdm.auto import tqdm
 
 from datachain.cache import Cache
-from datachain.checkpoint import Checkpoint
+from datachain.checkpoint import Checkpoint, CheckpointStatus
 from datachain.client import Client
 from datachain.dataset import (
     DATASET_PREFIX,
@@ -2157,7 +2157,9 @@ class Catalog:
                     )
                     self.warehouse.cleanup_tables(input_tables)
 
-        self.metastore.remove_checkpoints([ch.id for ch in checkpoints])
+        self.metastore.update_checkpoint(
+            [ch.id for ch in checkpoints], status=CheckpointStatus.DELETED
+        )
 
         logger.info(
             "Checkpoint cleanup complete: removed %d checkpoints from %d jobs",
