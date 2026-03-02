@@ -254,19 +254,21 @@ def test_generator_incomplete_input_recovery(test_session):
     assert len(all_results) == len(set(all_results)), "Should have no duplicate results"
 
 
-@pytest.mark.xfail(
-    reason="Known limitation: inputs that yield nothing are not tracked "
-    "in processed table"
-)
 def test_generator_yielding_nothing(test_session, monkeypatch, nums_dataset):
-    """Test that generator correctly handles inputs that yield zero outputs."""
+    """Test that generator correctly handles inputs that yield zero outputs.
+
+    Odd numbers yield nothing, even numbers yield num*10.
+    First run crashes on num=3. On checkpoint recovery, inputs 1 and 2
+    (including 1 which yielded nothing) should be skipped.
+    """
     processed = []
+    run_count = [0]
 
     def selective_generator(num) -> Iterator[int]:
         processed.append(num)
-        if num == 3:
+        if num == 3 and run_count[0] == 0:
             raise Exception("Simulated failure")
-        if num % 2 == 0:  # Only even numbers yield outputs
+        if num % 2 == 0:
             yield num * 10
 
     # First run - fails on num=3
@@ -281,10 +283,11 @@ def test_generator_yielding_nothing(test_session, monkeypatch, nums_dataset):
     # Second run - should continue from checkpoint
     reset_session_job_state()
     processed.clear()
+    run_count[0] += 1
     chain.save("results")
 
-    # Only inputs 3,4,5,6 should be processed (1,2 were already done)
-    assert processed == [3, 4, 5, 6]
+    # Inputs 1,2 were checkpointed (including 1 which yielded nothing)
+    assert sorted(processed) == [3, 4, 5, 6]
     result = sorted(dc.read_dataset("results", session=test_session).to_list("value"))
     assert result == [(20,), (40,), (60,)]
 
