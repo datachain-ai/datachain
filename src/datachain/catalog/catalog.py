@@ -2102,69 +2102,59 @@ class Catalog:
 
         Algorithm:
         1. Atomically mark expired checkpoints as EXPIRED (single query) —
-           prevents running jobs from using them via find_checkpoint
-        2. Find jobs with EXPIRED checkpoints
-        3. Remove output/partial tables using exact names from checkpoints
-        4. For run groups where all member jobs are inactive: also remove
-           shared input tables
-        5. Mark checkpoints as DELETED
+           prevents running jobs from using them via find_checkpoint.
+           Then collect all EXPIRED checkpoints and determine which run
+           groups have no remaining ACTIVE checkpoints.
+        2. Remove output/partial tables using exact names from checkpoints
+        3. For fully-inactive run groups: remove shared input tables
+        4. Mark checkpoints as DELETED
         """
         if ttl_seconds is None:
             ttl_seconds = CHECKPOINTS_TTL
 
         ttl_threshold = datetime.now(timezone.utc) - timedelta(seconds=ttl_seconds)
 
-        # Atomically mark expired checkpoints — after this, find_checkpoint
-        # won't return them, so running jobs are safe
-        self.metastore.expire_checkpoints(ttl_threshold)
-
-        expired_jobs = list(self.metastore.get_expired_jobs())
-        if not expired_jobs:
+        # Expire + collect everything in one metastore call
+        checkpoints, inactive_group_ids = self.metastore.expire_checkpoints(
+            ttl_threshold
+        )
+        if not checkpoints:
             return 0
 
-        expired_job_ids = [job.id for job in expired_jobs]
-        # Run group = chain of rerun jobs (parent → child) sharing input tables
-        run_group_ids = {job.run_group_id for job in expired_jobs if job.run_group_id}
-
-        checkpoints = list(self.metastore.list_checkpoints(job_ids=expired_job_ids))
-
         logger.info(
-            "Cleaning %d expired jobs across %d run groups (%d checkpoints)",
-            len(expired_jobs),
-            len(run_group_ids),
+            "Cleaning %d expired checkpoints across %d inactive run groups",
             len(checkpoints),
+            len(inactive_group_ids),
         )
 
         # Remove output/partial tables using exact names from checkpoints
-        tables = [ch.table_name for ch in checkpoints]
-        if tables:
-            logger.info("Removing %d UDF output tables: %s", len(tables), tables)
-            self.warehouse.cleanup_tables(tables)
+        output_tables = [ch.table_name for ch in checkpoints]
+        if output_tables:
+            logger.info(
+                "Removing %d UDF output tables: %s", len(output_tables), output_tables
+            )
+            self.warehouse.cleanup_tables(output_tables)
 
         # Shared input tables — only when entire run group is inactive
-        for group_id in run_group_ids:
-            if not self.metastore.has_active_checkpoints_in_run_group(
-                group_id, ttl_threshold
-            ):
-                input_tables = self.warehouse.db.list_tables(
-                    pattern=Checkpoint.input_table_pattern(group_id)
+        for group_id in inactive_group_ids:
+            input_tables = self.warehouse.db.list_tables(
+                pattern=Checkpoint.input_table_pattern(group_id)
+            )
+            if input_tables:
+                logger.info(
+                    "Removing %d shared input tables: %s",
+                    len(input_tables),
+                    input_tables,
                 )
-                if input_tables:
-                    logger.info(
-                        "Removing %d shared input tables: %s",
-                        len(input_tables),
-                        input_tables,
-                    )
-                    self.warehouse.cleanup_tables(input_tables)
+                self.warehouse.cleanup_tables(input_tables)
 
         self.metastore.update_checkpoint(
             [ch.id for ch in checkpoints], status=CheckpointStatus.DELETED
         )
 
         logger.info(
-            "Checkpoint cleanup complete: removed %d checkpoints from %d jobs",
+            "Checkpoint cleanup complete: removed %d checkpoints",
             len(checkpoints),
-            len(expired_jobs),
         )
         return len(checkpoints)
 

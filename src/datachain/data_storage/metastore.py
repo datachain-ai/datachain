@@ -509,17 +509,6 @@ class AbstractMetastore(ABC, Serializable):
         """Returns list of ancestor job IDs in order from parent to root."""
 
     @abstractmethod
-    def has_active_checkpoints_in_run_group(
-        self,
-        run_group_id: str,
-        ttl_threshold: datetime,
-        conn=None,
-    ) -> bool:
-        """
-        Check if any job in the run group has active (non-outdated) checkpoints.
-        """
-
-    @abstractmethod
     def update_job(
         self,
         job_id: str,
@@ -559,9 +548,10 @@ class AbstractMetastore(ABC, Serializable):
     def list_checkpoints(
         self,
         job_ids: list[str] | None = None,
+        status: "CheckpointStatus | None" = None,
         conn=None,
     ) -> Iterator[Checkpoint]:
-        """List checkpoints, optionally filtered by job IDs."""
+        """List checkpoints, optionally filtered by job IDs and/or status."""
 
     @abstractmethod
     def get_last_checkpoint(self, job_id: str, conn=None) -> Checkpoint | None:
@@ -595,15 +585,13 @@ class AbstractMetastore(ABC, Serializable):
     @abstractmethod
     def expire_checkpoints(
         self, ttl_threshold: datetime, conn: Any | None = None
-    ) -> None:
+    ) -> tuple[list[Checkpoint], list[str]]:
         """Atomically mark checkpoints as EXPIRED for finished jobs where ALL
-        active checkpoints are older than ttl_threshold. Expired checkpoints
-        are ignored by find_checkpoint, preventing running jobs from using
-        them while GC proceeds to clean up their tables."""
+        active checkpoints are older than ttl_threshold.
 
-    @abstractmethod
-    def get_expired_jobs(self, conn: Any | None = None) -> Iterator["Job"]:
-        """Return jobs that have checkpoints in EXPIRED status."""
+        Returns all EXPIRED checkpoints (including leftovers from prior
+        crashed cleanup runs) and run group IDs where no ACTIVE checkpoints
+        remain."""
 
     @abstractmethod
     def update_checkpoint(
@@ -2147,7 +2135,7 @@ class AbstractDBMetastore(AbstractMetastore):
             return None
         return self._parse_job(results[0])
 
-    def has_active_checkpoints_in_run_group(
+    def _has_active_checkpoints_in_run_group(
         self,
         run_group_id: str,
         ttl_threshold: datetime,
@@ -2436,11 +2424,14 @@ class AbstractDBMetastore(AbstractMetastore):
     def list_checkpoints(
         self,
         job_ids: list[str] | None = None,
+        status: CheckpointStatus | None = None,
         conn=None,
     ) -> Iterator[Checkpoint]:
         query = self._checkpoints_query()
         if job_ids is not None:
             query = query.where(self._checkpoints.c.job_id.in_(job_ids))
+        if status is not None:
+            query = query.where(self._checkpoints.c.status == status)
         rows = list(self.db.execute(query, conn=conn))
 
         yield from [self.checkpoint_class.parse(*r) for r in rows]
@@ -2759,10 +2750,13 @@ class AbstractDBMetastore(AbstractMetastore):
 
     def expire_checkpoints(
         self, ttl_threshold: datetime, conn: Any | None = None
-    ) -> None:
+    ) -> tuple[list[Checkpoint], list[str]]:
         ch = self._checkpoints
         jobs = self._jobs
         job_id_cast = cast(ch.c.job_id, jobs.c.id.type)
+
+        # Step 1: Atomic UPDATE — after this, find_checkpoint won't return
+        # these checkpoints, so running jobs are safe.
 
         # Subquery: finished jobs where ALL active checkpoints are older than TTL
         expired_job_ids = (
@@ -2798,20 +2792,31 @@ class AbstractDBMetastore(AbstractMetastore):
             conn=conn,
         )
 
-    def get_expired_jobs(self, conn: Any | None = None) -> Iterator["Job"]:
-        ch = self._checkpoints
-        jobs = self._jobs
-        job_id_cast = cast(ch.c.job_id, jobs.c.id.type)
-
-        query = self._jobs_query().where(
-            jobs.c.id.in_(
-                select(job_id_cast)
-                .where(ch.c.status == CheckpointStatus.EXPIRED)
-                .distinct()
-            )
+        # Step 2: Collect ALL expired checkpoints (including leftovers from
+        # prior crashed cleanup runs).
+        checkpoints = list(
+            self.list_checkpoints(status=CheckpointStatus.EXPIRED, conn=conn)
         )
+        if not checkpoints:
+            return [], []
 
-        yield from self._parse_jobs(self.db.execute(query, conn=conn))
+        # Step 3: Find run groups where no ACTIVE checkpoints remain
+        # (safe to remove shared input tables).
+        expired_job_ids_set = {cp.job_id for cp in checkpoints}
+        run_group_ids: set[str] = set()
+        for job in self.list_jobs_by_ids(list(expired_job_ids_set), conn=conn):
+            if job.run_group_id:
+                run_group_ids.add(job.run_group_id)
+
+        inactive_group_ids = [
+            gid
+            for gid in run_group_ids
+            if not self._has_active_checkpoints_in_run_group(
+                gid, ttl_threshold, conn=conn
+            )
+        ]
+
+        return checkpoints, inactive_group_ids
 
     def update_checkpoint(
         self,

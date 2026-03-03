@@ -960,7 +960,7 @@ def test_has_active_checkpoints_in_run_group_with_active(metastore):
     # TTL threshold is 4 hours ago, checkpoint is recent
     ttl_threshold = datetime.now(timezone.utc) - timedelta(hours=4)
 
-    assert metastore.has_active_checkpoints_in_run_group(
+    assert metastore._has_active_checkpoints_in_run_group(
         job.run_group_id, ttl_threshold
     )
 
@@ -986,6 +986,6 @@ def test_has_active_checkpoints_in_run_group_only_outdated(metastore):
 
     ttl_threshold = datetime.now(timezone.utc) - timedelta(hours=4)
 
-    assert not metastore.has_active_checkpoints_in_run_group(
+    assert not metastore._has_active_checkpoints_in_run_group(
         job.run_group_id, ttl_threshold
     )

@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from datachain.checkpoint import CheckpointStatus
 from datachain.data_storage.job import JobQueryType, JobStatus
 from datachain.data_storage.serializer import deserialize
 from datachain.data_storage.sqlite import SCHEMA_VERSION, SQLiteMetastore
@@ -84,7 +85,7 @@ def test_outdated_schema():
         metastore.close_on_exit()
 
 
-def test_expire_checkpoints_and_get_expired_jobs():
+def test_expire_checkpoints():
     metastore = SQLiteMetastore(db_file=":memory:")
     try:
         now = datetime.now(timezone.utc)
@@ -99,11 +100,11 @@ def test_expire_checkpoints_and_get_expired_jobs():
             "job2", "q", query_type=JobQueryType.PYTHON, status=JobStatus.COMPLETE
         )
 
-        # Job1: all checkpoints expired
+        # Job1: all checkpoints older than TTL
         metastore.get_or_create_checkpoint(job1_id, "hash_a")
         metastore.get_or_create_checkpoint(job1_id, "hash_b")
 
-        # Job2: has one active checkpoint
+        # Job2: has one active (recent) checkpoint
         metastore.get_or_create_checkpoint(job2_id, "hash_c")
         metastore.get_or_create_checkpoint(job2_id, "hash_d")
 
@@ -119,22 +120,18 @@ def test_expire_checkpoints_and_get_expired_jobs():
             .values(created_at=old)
         )
 
-        # Before expire_checkpoints, no expired jobs
-        assert list(metastore.get_expired_jobs()) == []
+        assert list(metastore.list_checkpoints(status=CheckpointStatus.EXPIRED)) == []
 
         # Expire checkpoints — only job1's should be marked EXPIRED
-        metastore.expire_checkpoints(ttl_threshold)
+        checkpoints, inactive_group_ids = metastore.expire_checkpoints(ttl_threshold)
 
-        expired_jobs = list(metastore.get_expired_jobs())
-        assert len(expired_jobs) == 1
-        assert expired_jobs[0].id == job1_id
+        assert len(checkpoints) == 2
+        assert all(cp.job_id == job1_id for cp in checkpoints)
+        assert inactive_group_ids == []
 
-        # Job with no checkpoints should not appear
-        metastore.create_job(
-            "job3", "q", query_type=JobQueryType.PYTHON, status=JobStatus.COMPLETE
-        )
-        expired_jobs = list(metastore.get_expired_jobs())
-        assert len(expired_jobs) == 1
-        assert expired_jobs[0].id == job1_id
+        # Job2's checkpoints are untouched (has one recent checkpoint)
+        job2_checkpoints = list(metastore.list_checkpoints(job_ids=[job2_id]))
+        assert len(job2_checkpoints) == 2
+        assert all(cp.status == CheckpointStatus.ACTIVE for cp in job2_checkpoints)
     finally:
         metastore.close_on_exit()

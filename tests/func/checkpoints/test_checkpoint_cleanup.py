@@ -15,7 +15,11 @@ def finish_job(metastore, job_id):
 
 @pytest.fixture
 def nums_dataset(test_session):
-    return dc.read_values(num=[1, 2, 3], session=test_session).save("nums")
+    result = dc.read_values(num=[1, 2, 3], session=test_session).save("nums")
+    job = test_session.get_or_create_job()
+    finish_job(test_session.catalog.metastore, job.id)
+    reset_session_job_state()
+    return result
 
 
 def test_cleanup_checkpoints_with_ttl(test_session, nums_dataset):
