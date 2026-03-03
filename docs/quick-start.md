@@ -163,6 +163,8 @@ structure (class `ChatCompletionResponse`), DataChain can
 serialize the entire LLM response to the internal DB:
 
 ``` py
+import os
+
 from mistralai import Mistral
 from mistralai.models import ChatCompletionResponse
 import datachain as dc
@@ -170,8 +172,8 @@ import datachain as dc
 PROMPT = "Was this dialog successful? Answer in a single word: Success or Failure."
 
 def eval_dialog(file: dc.File) -> ChatCompletionResponse:
-     client = MistralClient()
-     return client.chat(
+     client = Mistral(api_key=os.environ["MISTRAL_API_KEY"])
+     return client.chat.complete(
          model="open-mixtral-8x22b",
          messages=[{"role": "system", "content": PROMPT},
                    {"role": "user", "content": file.read()}])
