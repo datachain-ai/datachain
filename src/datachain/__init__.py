@@ -1,3 +1,5 @@
+from importlib.metadata import PackageNotFoundError, version
+
 from datachain.lib.data_model import DataModel, DataType, is_chain_type
 from datachain.lib.dc import (
     C,
@@ -45,6 +47,11 @@ from datachain.lib.utils import AbstractUDF, DataChainError
 from datachain.query import metrics, param
 from datachain.query.session import Session
 
+try:
+    __version__ = version("datachain")
+except PackageNotFoundError:
+    __version__ = "0.0.0"
+
 __all__ = [
     "AbstractUDF",
     "Aggregator",
@@ -73,6 +80,7 @@ __all__ = [
     "VideoFile",
     "VideoFragment",
     "VideoFrame",
+    "__version__",
     "create_project",
     "datasets",
     "delete_dataset",
