@@ -55,6 +55,15 @@ to get started with `DataChain` and learn more.
 
         pip install datachain
 
+Check Installed Version
+-----------------------
+
+.. code:: py
+
+    import datachain
+
+    print(datachain.__version__)
+
 
 Example: Download Subset of Files Based on Metadata
 ---------------------------------------------------
