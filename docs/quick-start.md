@@ -18,6 +18,13 @@ title: Quick Start
     uv add datachain
     ```
 
+## Version check
+
+```py
+import datachain
+
+print(datachain.__version__)
+```
 
 ## Selecting files using JSON metadata
 
