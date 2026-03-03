@@ -2148,7 +2148,7 @@ class Catalog:
                 )
                 self.warehouse.cleanup_tables(input_tables)
 
-        self.metastore.update_checkpoint(
+        self.metastore.update_checkpoints(
             [ch.id for ch in checkpoints], status=CheckpointStatus.DELETED
         )
 

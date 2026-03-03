@@ -1172,7 +1172,7 @@ class UDFStep(Step, ABC):
         if checkpoints_enabled and job:
             # Promote partial checkpoint to final and log event
             if partial_checkpoint:
-                self.metastore.update_checkpoint(
+                self.metastore.update_checkpoints(
                     [partial_checkpoint.id], status=CheckpointStatus.DELETED
                 )
             self.metastore.get_or_create_checkpoint(job.id, hash_output)
@@ -1312,7 +1312,7 @@ class UDFStep(Step, ABC):
             partial_table, Checkpoint.output_table_name(job.id, hash_output)
         )
 
-        self.metastore.update_checkpoint(
+        self.metastore.update_checkpoints(
             [partial_checkpoint.id], status=CheckpointStatus.DELETED
         )
         self.metastore.get_or_create_checkpoint(job.id, hash_output)

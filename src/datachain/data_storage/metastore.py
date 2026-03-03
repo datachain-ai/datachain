@@ -594,7 +594,7 @@ class AbstractMetastore(ABC, Serializable):
         remain."""
 
     @abstractmethod
-    def update_checkpoint(
+    def update_checkpoints(
         self,
         checkpoint_ids: list[str],
         status: "CheckpointStatus | None" = None,
@@ -2818,7 +2818,7 @@ class AbstractDBMetastore(AbstractMetastore):
 
         return checkpoints, inactive_group_ids
 
-    def update_checkpoint(
+    def update_checkpoints(
         self,
         checkpoint_ids: list[str],
         status: CheckpointStatus | None = None,

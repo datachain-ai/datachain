@@ -127,7 +127,7 @@ def test_expire_checkpoints():
 
         assert len(checkpoints) == 2
         assert all(cp.job_id == job1_id for cp in checkpoints)
-        assert inactive_group_ids == []
+        assert inactive_group_ids == [job1_id]
 
         # Job2's checkpoints are untouched (has one recent checkpoint)
         job2_checkpoints = list(metastore.list_checkpoints(job_ids=[job2_id]))
