@@ -83,7 +83,7 @@ database for easy and efficient querying.
 
 The following pages provide detailed documentation on DataChain's features, architecture, and usage patterns. You'll learn how to effectively use DataChain for managing and processing unstructured data at scale.
 
-- [🏃🏼‍♂️ Quick Start](quick-start.md): Get up and running with DataChain in no time.
+- [🏃‍♂️ Quick Start](quick-start.md): Get up and running with DataChain in no time.
 - [🎯 Examples](examples.md): Explore practical examples and use cases.
 - [📚 Tutorials](tutorials.md): Learn how to use DataChain for specific tasks.
 - [📚 User Guide](guide/index.md): Deeper dive into DataChain technical aspects and supported workflows.
