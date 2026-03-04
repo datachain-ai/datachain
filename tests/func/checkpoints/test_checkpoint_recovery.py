@@ -255,18 +255,28 @@ def test_generator_incomplete_input_recovery(test_session):
 
 
 def test_generator_yielding_nothing(test_session, monkeypatch, nums_dataset):
-    """Test that generator correctly handles inputs that yield zero outputs."""
+    """Test that generator correctly handles inputs that yield zero outputs.
+
+    Uses fail_after_count=4 so that regardless of DB row ordering, at least
+    one odd input (which yields nothing) is processed before the failure.
+    With 6 inputs (3 odd, 3 even), any 4 must include at least 1 odd.
+    """
+    fail_after_count = 4
     processed = []
-    run_count = [0]
+    skipped = []
+    call_count = [0]
 
     def selective_generator(num) -> Iterator[int]:
         processed.append(num)
-        if num == 3 and run_count[0] == 0:
+        call_count[0] += 1
+        if call_count[0] > fail_after_count:
             raise Exception("Simulated failure")
-        if num % 2 == 0:
+        if num % 2 == 0:  # Only even numbers yield outputs
             yield num * 10
+        else:
+            skipped.append(num)
 
-    # First run - fails on num=3
+    # First run - fails after processing 4 inputs
     reset_session_job_state()
     chain = dc.read_dataset("nums", session=test_session).gen(
         value=selective_generator, output=int
@@ -275,14 +285,24 @@ def test_generator_yielding_nothing(test_session, monkeypatch, nums_dataset):
     with pytest.raises(Exception, match="Simulated failure"):
         chain.save("results")
 
+    assert len(processed) == fail_after_count + 1  # 4 succeeded + 1 failed
+    skipped_first_run = list(skipped)
+    assert skipped_first_run, "Expected at least one empty-yield input"
+
     # Second run - should continue from checkpoint
     reset_session_job_state()
     processed.clear()
-    run_count[0] += 1
+    skipped.clear()
+    call_count[0] = 0
     chain.save("results")
 
-    # Inputs 1,2 were checkpointed (including 1 which yielded nothing)
-    assert sorted(processed) == [3, 4, 5, 6]
+    # Empty-yield inputs from first run must not be re-processed
+    assert not set(skipped_first_run) & set(processed), (
+        f"Empty-yield inputs {set(skipped_first_run) & set(processed)} "
+        f"were re-processed despite being checkpointed"
+    )
+    assert len(processed) == 2
+    # Final result: all even numbers yield output
     result = sorted(dc.read_dataset("results", session=test_session).to_list("value"))
     assert result == [(20,), (40,), (60,)]
 
