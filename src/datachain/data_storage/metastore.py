@@ -347,10 +347,10 @@ class AbstractMetastore(ABC, Serializable):
         job (used during job failure cleanup).
 
         When job_id is None, returns all versions that are safe to delete:
-        - Status CREATED or FAILED: whose associated job is finished
-        - Status STALE: marked for deletion, whose job is
-          finished or absent
-        - Status CREATED with no job_id: older than STALE_CREATED_THRESHOLD_HOURS
+        - Status CREATED, FAILED, or STALE, where either:
+          - the associated job has finished, or
+          - there is no associated job (job_id is NULL) and the version is
+            older than STALE_CREATED_THRESHOLD_HOURS
 
         Returns:
             List of (DatasetRecord, version_string) tuples. Each DatasetRecord
