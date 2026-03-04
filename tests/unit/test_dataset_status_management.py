@@ -300,3 +300,40 @@ def test_public_api_move_dataset_rejects_non_complete(
     # Should raise error for FAILED dataset
     with pytest.raises(DatasetNotFoundError):
         move_dataset(dataset_failed.name, "new_name_failed", session=test_session)
+
+
+@pytest.fixture
+def dataset_stale(test_session, job) -> DatasetRecord:
+    ds = dc.read_values(value=["v1"], session=test_session).save("ds_stale")
+    dataset = ds.dataset
+    assert dataset is not None
+    dv = test_session.catalog.metastore._datasets_versions
+    test_session.catalog.metastore.db.execute(
+        dv.update()
+        .where(dv.c.dataset_id == dataset.id)
+        .values(status=DatasetStatus.STALE)
+    )
+    return test_session.catalog.get_dataset(dataset.name, include_incomplete=True)
+
+
+def test_get_incomplete_dataset_versions_includes_stale(
+    test_session, job, dataset_stale
+):
+    to_clean = test_session.catalog.metastore.get_incomplete_dataset_versions()
+    assert dataset_stale.name not in {ds.name for ds, _ in to_clean}
+
+    test_session.catalog.metastore.set_job_status(job.id, JobStatus.COMPLETE)
+    to_clean = test_session.catalog.metastore.get_incomplete_dataset_versions()
+    assert dataset_stale.name in {ds.name for ds, _ in to_clean}
+
+
+def test_cleanup_failed_dataset_versions_removes_stale(
+    test_session, job, dataset_stale
+):
+    test_session.catalog.metastore.set_job_status(job.id, JobStatus.COMPLETE)
+
+    num_removed = test_session.catalog.cleanup_failed_dataset_versions()
+    assert num_removed == 1
+
+    with pytest.raises(DatasetNotFoundError):
+        test_session.catalog.get_dataset(dataset_stale.name)
