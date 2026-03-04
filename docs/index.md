@@ -75,7 +75,7 @@ database for easy and efficient querying.
         embeddings.
     -   High-performance vectorized operations on Python objects: sum,
         count, avg, etc.
-    -   Pass datasets to Pytorch and Tensorflow, or export them back
+    -   Pass datasets to PyTorch and TensorFlow, or export them back
         into storage.
 
 
