@@ -604,7 +604,7 @@ class File(DataModel):
         """Returns file contents."""
         return self.read_bytes(length)
 
-    def save(self, destination: str, client_config: dict | None = None):
+    def save(self, destination: str, client_config: dict | None = None) -> "File":
         """Write file contents to *destination*.
 
         Args:
@@ -619,6 +619,10 @@ class File(DataModel):
             client_config: Optional extra kwargs forwarded to the storage
                 client (e.g. credentials, endpoint URL).
 
+        Returns:
+            A ``File`` representing the newly written destination, with
+            ``version`` populated on versioned backends.
+
         Example:
             ```py
             file.save("/local/output/result.bin")
@@ -630,8 +634,24 @@ class File(DataModel):
             raise RuntimeError("Cannot save file: catalog is not set")
 
         destination = stringify_path(destination)
-        client: Client = self._catalog.get_client(destination, **(client_config or {}))
-        client.upload(self.read(), path_to_fsspec_uri(destination))
+        client, rel_path = self._resolve_upload(destination, client_config)
+        result = client.upload(self.read(), rel_path)
+        result._set_stream(self._catalog)
+        return result
+
+    def _resolve_upload(
+        self, destination: str, client_config: dict | None = None
+    ) -> "tuple[Client, str]":
+        """Return (client rooted at the storage, rel_path) for *destination*."""
+        from datachain.client.fsspec import Client as FSClient
+
+        uri = path_to_fsspec_uri(destination)
+        client_cls = FSClient.get_implementation(uri)
+        storage, rel_path = client_cls.split_url(uri)
+        client = self._catalog.get_client(  # type: ignore[union-attr]
+            client_cls.storage_uri(storage), **(client_config or {})
+        )
+        return client, rel_path
 
     def _symlink_to(self, destination: str) -> None:
         if self.location:
@@ -1054,13 +1074,19 @@ class TextFile(File):
         with self.open(**open_kwargs) as stream:
             return stream.read()
 
-    def save(self, destination: str, client_config: dict | None = None):
-        """Writes it's content to destination"""
-        destination = stringify_path(destination)
+    def save(self, destination: str, client_config: dict | None = None) -> "TextFile":
+        """Writes its content to destination"""
+        if self._catalog is None:
+            raise RuntimeError("Cannot save file: catalog is not set")
 
-        client: Client = self._catalog.get_client(destination, **(client_config or {}))
-        with client.fs.open(destination, mode="w") as f:
-            f.write(self.read_text())
+        destination = stringify_path(destination)
+        with self.open(mode="rb") as f:
+            data = f.read()
+        client, rel_path = self._resolve_upload(destination, client_config)
+        result = client.upload(data, rel_path)
+        tf = TextFile(**result.model_dump())
+        tf._set_stream(self._catalog)
+        return tf
 
 
 class ImageFile(File):
@@ -1089,11 +1115,9 @@ class ImageFile(File):
         destination: str,
         format: str | None = None,
         client_config: dict | None = None,
-    ):
-        """Writes it's content to destination"""
+    ) -> "ImageFile":
+        """Writes its content to destination"""
         destination = stringify_path(destination)
-
-        client: Client = self._catalog.get_client(destination, **(client_config or {}))
 
         # If format is not provided, determine it from the file extension
         if format is None:
@@ -1111,8 +1135,13 @@ class ImageFile(File):
                 self.path,
             )
 
-        with client.fs.open(destination, mode="wb") as f:
-            self.read().save(f, format=format)
+        buf = BytesIO()
+        self.read().save(buf, format=format)
+        client, rel_path = self._resolve_upload(destination, client_config)
+        result = client.upload(buf.getvalue(), rel_path)
+        img = ImageFile(**result.model_dump())
+        img._set_stream(self._catalog)
+        return img
 
 
 class Image(DataModel):
@@ -1254,6 +1283,19 @@ class VideoFile(File):
         while start < end:
             yield self.get_fragment(start, min(start + duration, end))
             start += duration
+
+    def save(  # type: ignore[override]
+        self,
+        destination: str,
+        client_config: dict | None = None,
+    ) -> "VideoFile":
+        """Writes its content to destination"""
+        result = super().save(destination, client_config=client_config)
+        if isinstance(result, VideoFile):
+            return result
+        vf = VideoFile(**result.model_dump())
+        vf._set_stream(self._catalog)
+        return vf
 
 
 class AudioFile(File):

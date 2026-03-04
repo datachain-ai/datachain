@@ -12,8 +12,6 @@ def test_split_url_directory_preserves_leaf(tmp_path):
     uri = path_to_fsspec_uri(str(tmp_path))
     bucket, rel = FileClient.split_url(uri)
 
-    # For directories, the parent directory becomes the bucket and the leaf
-    # directory becomes the relative path to keep downstream listings stable.
     assert Path(bucket) == tmp_path.parent
     assert rel == tmp_path.name
 
@@ -390,3 +388,40 @@ def test_file_save_destination_preserves_symlink(tmp_path, catalog):
     file.save(str(link_dir / "out.txt"))
 
     assert (link_dir / "out.txt").read_bytes() == b"hello"
+
+
+def test_upload_returned_file_path_is_relative_not_full_uri(tmp_path, catalog):
+    client = FileClient.from_source(str(tmp_path), catalog.cache)
+    uri = path_to_fsspec_uri(str(tmp_path / "out.txt"))
+
+    result = client.upload(b"hello", uri)
+
+    assert result.path == "out.txt"
+    assert result.name == "out.txt"
+    assert result.source == path_to_fsspec_uri(str(tmp_path))
+    assert not result.path.startswith("file://")
+
+
+def test_upload_returned_file_path_matches_relative_input(tmp_path, catalog):
+    client = FileClient.from_source(str(tmp_path), catalog.cache)
+
+    result = client.upload(b"bytes", "relative.bin")
+
+    assert result.path == "relative.bin"
+    assert result.name == "relative.bin"
+    assert result.source == path_to_fsspec_uri(str(tmp_path))
+
+
+@pytest.mark.parametrize(
+    "path,match",
+    [
+        ("../escape.txt", "must not contain"),
+        ("", "must not be empty"),
+        ("dir/./file.txt", "must not contain"),
+    ],
+)
+def test_upload_rejects_invalid_path(tmp_path, catalog, path, match):
+    client = FileClient.from_source(str(tmp_path), catalog.cache)
+
+    with pytest.raises(ValueError, match=match):
+        client.upload(b"data", path)

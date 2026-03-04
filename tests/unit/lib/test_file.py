@@ -17,6 +17,7 @@ from datachain.lib.file import (
     ImageFile,
     TextFile,
     VFileError,
+    VideoFile,
     resolve,
 )
 
@@ -531,11 +532,13 @@ def test_save_binary_data(tmp_path, catalog: Catalog):
     file1 = File(path=file1_name, source=f"file://{tmp_path}")
     file1._set_stream(catalog, False)
 
-    file1.save(tmp_path / file2_name)
+    result = file1.save(tmp_path / file2_name)
 
-    file2 = File(path=file2_name, source=f"file://{tmp_path}")
-    file2._set_stream(catalog, False)
-    assert file2.read() == data
+    assert isinstance(result, File)
+    assert result.path == file2_name
+    assert result.name == file2_name
+    assert result.source == path_to_fsspec_uri(str(tmp_path))
+    assert result.read() == data
 
 
 def test_save_accepts_file_fsspec_uri_destination(tmp_path, catalog: Catalog):
@@ -544,8 +547,14 @@ def test_save_accepts_file_fsspec_uri_destination(tmp_path, catalog: Catalog):
     dest = tmp_path / "dest.bin"
     file = File(path="src.bin", source=f"file://{tmp_path}")
     file._set_stream(catalog, False)
-    file.save(path_to_fsspec_uri(str(dest)))
-    assert dest.read_bytes() == data
+
+    result = file.save(path_to_fsspec_uri(str(dest)))
+
+    assert isinstance(result, File)
+    assert result.path == "dest.bin"
+    assert result.name == "dest.bin"
+    assert result.source == path_to_fsspec_uri(str(tmp_path))
+    assert result.read() == data
 
 
 def test_save_rfc_encoded_uri_writes_to_literal_path(tmp_path, catalog: Catalog):
@@ -572,11 +581,13 @@ def test_save_text_data(tmp_path, catalog: Catalog):
     file1 = TextFile(path=file1_name, source=f"file://{tmp_path}")
     file1._set_stream(catalog, False)
 
-    file1.save(tmp_path / file2_name)
+    result = file1.save(tmp_path / file2_name)
 
-    file2 = TextFile(path=file2_name, source=f"file://{tmp_path}")
-    file2._set_stream(catalog, False)
-    assert file2.read() == data
+    assert isinstance(result, TextFile)
+    assert result.path == file2_name
+    assert result.name == file2_name
+    assert result.source == path_to_fsspec_uri(str(tmp_path))
+    assert result.read_text() == data
 
 
 def test_save_image_data(tmp_path, catalog: Catalog):
@@ -591,11 +602,99 @@ def test_save_image_data(tmp_path, catalog: Catalog):
     file1 = ImageFile(path=file1_name, source=f"file://{tmp_path}")
     file1._set_stream(catalog, False)
 
-    file1.save(tmp_path / file2_name)
+    result = file1.save(str(tmp_path / file2_name))
 
-    file2 = ImageFile(path=file2_name, source=f"file://{tmp_path}")
-    file2._set_stream(catalog, False)
-    assert images_equal(image, file2.read())
+    assert isinstance(result, ImageFile)
+    assert result.path == file2_name
+    assert result.name == file2_name
+    assert result.source == path_to_fsspec_uri(str(tmp_path))
+    assert images_equal(image, result.read())
+
+
+def test_save_text_file_returns_textfile(tmp_path, catalog: Catalog):
+    src = tmp_path / "src.txt"
+    src.write_text("hello text")
+    file = TextFile(path="src.txt", source=path_to_fsspec_uri(str(tmp_path)))
+    file._set_stream(catalog, False)
+
+    result = file.save(str(tmp_path / "dst.txt"))
+
+    assert isinstance(result, TextFile)
+    assert result.path == "dst.txt"
+    assert result.name == "dst.txt"
+    assert result.source == path_to_fsspec_uri(str(tmp_path))
+    assert result.read_text() == "hello text"
+
+
+def test_save_video_file_returns_videofile(tmp_path, catalog: Catalog):
+    data = b"fake video bytes"
+    (tmp_path / "src.mp4").write_bytes(data)
+    file = VideoFile(path="src.mp4", source=path_to_fsspec_uri(str(tmp_path)))
+    file._set_stream(catalog, False)
+
+    result = file.save(str(tmp_path / "dst.mp4"))
+
+    assert isinstance(result, VideoFile)
+    assert result.path == "dst.mp4"
+    assert result.name == "dst.mp4"
+    assert result.source == path_to_fsspec_uri(str(tmp_path))
+    assert result.read_bytes() == data
+
+
+def _save_dest_nested(tmp_path, _mp):
+    p = tmp_path / "a" / "b" / "c" / "out.bin"
+    return str(p), p
+
+
+def _save_dest_fsspec_uri(tmp_path, _mp):
+    p = tmp_path / "uri_out.bin"
+    return path_to_fsspec_uri(str(p)), p
+
+
+def _save_dest_relative_dotdot(tmp_path, mp):
+    subdir = tmp_path / "sub"
+    subdir.mkdir()
+    mp.chdir(subdir)
+    return "../out.bin", tmp_path / "out.bin"
+
+
+def _save_dest_tilde(tmp_path, mp):
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    mp.setenv("HOME", str(fake_home))
+    return "~/out.bin", fake_home / "out.bin"
+
+
+@pytest.mark.parametrize(
+    "make_dest",
+    [
+        pytest.param(_save_dest_nested, id="nested-abs"),
+        pytest.param(_save_dest_fsspec_uri, id="fsspec-uri"),
+        pytest.param(_save_dest_relative_dotdot, id="relative-dotdot"),
+        pytest.param(
+            _save_dest_tilde,
+            id="tilde",
+            marks=pytest.mark.skipif(
+                os.name == "nt", reason="HOME env not used on Windows"
+            ),
+        ),
+    ],
+)
+def test_save_destination_forms(tmp_path, catalog, monkeypatch, make_dest):
+    dest, expected = make_dest(tmp_path, monkeypatch)
+
+    (tmp_path / "src.bin").write_bytes(b"hello")
+    file = File(path="src.bin", source=path_to_fsspec_uri(str(tmp_path)))
+    file._set_stream(catalog, False)
+
+    result = file.save(dest)
+
+    assert expected.read_bytes() == b"hello"
+    assert isinstance(result, File)
+    assert result.path == expected.name
+    assert result.name == expected.name
+    assert result.source == path_to_fsspec_uri(str(expected.parent))
+    assert result.read_bytes() == b"hello"
 
 
 def test_cache_get_path_without_cache():

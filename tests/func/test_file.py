@@ -408,3 +408,15 @@ def test_empty_open_write_captures_version(cloud_test_catalog_upload, cloud_type
     assert opened.size == 0
     assert opened.version
     assert opened.read() == b""
+
+
+def test_file_save_roundtrip(cloud_test_catalog_upload, version_aware):
+    ctc = cloud_test_catalog_upload
+    data = b"round-trip via File.save()"
+
+    src = File.upload(data, f"{ctc.src_uri}/save-src.bin", ctc.catalog)
+    dest = src.save(f"{ctc.src_uri}/save-dest.bin", client_config=ctc.client_config)
+
+    assert dest.read() == data
+    if version_aware:
+        assert dest.version, "versioned backend must capture a version on save"

@@ -424,6 +424,7 @@ class Client(ABC):
         else:
             rel_path = path
             full_path = self.get_uri(path)
+
         self.validate_file_path(rel_path)
 
         parent = posixpath.dirname(full_path)
@@ -431,7 +432,7 @@ class Client(ABC):
 
         self.fs.pipe_file(full_path, data)
         file_info = self.fs.info(full_path)
-        return self.info_to_file(file_info, path)
+        return self.info_to_file(file_info, rel_path)
 
     def download(self, file: "File", *, callback: Callback = DEFAULT_CALLBACK) -> None:
         sync(get_loop(), functools.partial(self._download, file, callback=callback))
