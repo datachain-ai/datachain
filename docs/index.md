@@ -42,7 +42,7 @@ database for easy and efficient querying.
     including LLMs.
 2.  **Analytics.** DataChain dataset is a table that combines all the
     information about data objects in one place + it provides
-    dataframe-like API and vectorized engine to do analytics on these
+    DataFrame-like API and vectorized engine to do analytics on these
     tables at scale.
 3.  **Versioning.** DataChain doesn't store, require moving or copying
     data. Perfect use case is a bucket with thousands or millions of
