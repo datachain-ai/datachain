@@ -120,8 +120,6 @@ E2E_STEPS = (
             "  No failed dataset versions to clean up.\n"
             "Collecting outdated checkpoints...\n"
             "  No outdated checkpoints to clean up.\n"
-            "Collecting orphan UDF input tables...\n"
-            "  No orphan UDF input tables to clean up.\n"
         ),
     },
 )
