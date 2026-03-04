@@ -564,16 +564,23 @@ class Generator(UDFBase):
 
         def _process_row(row):
             row_id, *row = row
+            has_output = False
             with safe_closing(self.process(*row)) as result_objs:
                 for result_obj, is_last in with_last_flag(result_objs):
+                    has_output = True
                     udf_output = self._flatten_row(result_obj)
                     udf_output = dict(zip(self.signal_names, udf_output, strict=False))
-                    # Include sys__input_id to track which input generated this
-                    # output.
-                    udf_output["sys__input_id"] = row_id  # input id
-                    # Mark as partial=True unless it's the last output
+                    udf_output["sys__input_id"] = row_id
                     udf_output["sys__partial"] = not is_last
+                    udf_output["sys__empty"] = None
                     yield udf_output
+            if not has_output:
+                # Marker: records that this input was processed but yielded nothing.
+                yield {
+                    "sys__input_id": row_id,
+                    "sys__partial": False,
+                    "sys__empty": True,
+                }
 
         prepared_inputs = _prepare_rows(udf_inputs)
         prepared_inputs = _prefetch_inputs(
@@ -584,12 +591,6 @@ class Generator(UDFBase):
         )
 
         with closing(prepared_inputs):
-            # TODO: Fix limitation where inputs yielding nothing are not tracked in
-            # processed table. Currently, if process() yields nothing for an input,
-            # that input's sys__id is never added to the processed table, causing it
-            # to be re-processed on checkpoint recovery. Solution: yield a marker
-            # row with sys__input_id when process() yields nothing, then filter
-            # these marker rows before inserting to output table.
             for row in prepared_inputs:
                 yield _process_row(row)
                 processed_cb.relative_update(1)

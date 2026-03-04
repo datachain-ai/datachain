@@ -538,6 +538,7 @@ class UDFStep(Step, ABC):
         return [
             sa.Column("sys__input_id", sa.Integer, nullable=True),
             sa.Column("sys__partial", sa.Boolean, nullable=True),
+            sa.Column("sys__empty", sa.Boolean, nullable=True),
         ]
 
     def get_input_query(self, input_table_name: str, original_query: Select) -> Select:
@@ -1578,13 +1579,21 @@ class RowGenerator(UDFStep):
     def create_result_query(
         self, udf_table, query: Select
     ) -> tuple[QueryGeneratorFunc, list["sqlalchemy.Column"]]:
-        udf_table_query = udf_table.select().subquery()
-        # Exclude sys__input_id and sys__partial - they're only needed for tracking
-        # during UDF execution and checkpoint recovery
+        # Filter out empty-input marker rows (inputs that yielded nothing)
+        udf_table_query = (
+            udf_table.select()
+            .where(
+                sa.or_(
+                    udf_table.c.sys__empty.is_(None),
+                    udf_table.c.sys__empty == sa.false(),
+                )
+            )
+            .subquery()
+        )
+        # Exclude checkpoint tracking columns from the result
+        excluded = {c.name for c in self._checkpoint_tracking_columns()}
         udf_table_cols: list[sqlalchemy.Label[Any]] = [
-            label(c.name, c)
-            for c in udf_table_query.columns
-            if c.name not in ("sys__input_id", "sys__partial")
+            label(c.name, c) for c in udf_table_query.columns if c.name not in excluded
         ]
 
         def q(*columns):
@@ -1593,11 +1602,7 @@ class RowGenerator(UDFStep):
             cols = [c for c in udf_table_cols if c.name in names]
             return sqlalchemy.select(*cols).select_from(udf_table_query)
 
-        return q, [
-            c
-            for c in udf_table_query.columns
-            if c.name not in ("sys__input_id", "sys__partial")
-        ]
+        return q, [c for c in udf_table_query.columns if c.name not in excluded]
 
 
 @frozen
