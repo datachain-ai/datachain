@@ -1594,7 +1594,14 @@ class RowGenerator(UDFStep):
     ) -> tuple[QueryGeneratorFunc, list["sqlalchemy.Column"]]:
         # Filter out empty-input marker rows (inputs that yielded nothing)
         udf_table_query = (
-            udf_table.select().where(udf_table.c.sys__empty.isnot(True)).subquery()
+            udf_table.select()
+            .where(
+                sa.or_(
+                    udf_table.c.sys__empty.is_(None),
+                    udf_table.c.sys__empty == sa.false(),
+                )
+            )
+            .subquery()
         )
         # Exclude checkpoint tracking columns from the result
         excluded = {c.name for c in self._checkpoint_tracking_columns()}
