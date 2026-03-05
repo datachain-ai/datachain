@@ -448,14 +448,11 @@ class SQLiteMetastore(AbstractDBMetastore):
 
     def __init__(
         self,
-        uri: StorageURI | None = None,
         db: SQLiteDatabaseEngine | None = None,
         db_file: str | None = None,
         in_memory: bool = False,
     ):
-        uri = uri or StorageURI("")
         self.schema: DefaultSchema = DefaultSchema()
-        super().__init__(uri)
 
         # needed for dropping tables in correct order for tests because of
         # foreign keys
@@ -478,14 +475,9 @@ class SQLiteMetastore(AbstractDBMetastore):
 
     def clone(
         self,
-        uri: StorageURI | None = None,
         use_new_connection: bool = False,
     ) -> "SQLiteMetastore":
-        uri = uri or StorageURI("")
-        if not uri and self.uri:
-            uri = self.uri
-
-        return SQLiteMetastore(uri=uri, db=self.db.clone())
+        return SQLiteMetastore(db=self.db.clone())
 
     def clone_params(self) -> tuple[Callable[..., Any], list[Any], dict[str, Any]]:
         """
@@ -496,7 +488,6 @@ class SQLiteMetastore(AbstractDBMetastore):
             SQLiteMetastore.init_after_clone,
             [],
             {
-                "uri": self.uri,
                 "db_clone_params": self.db.clone_params(),
             },
         )
@@ -509,11 +500,10 @@ class SQLiteMetastore(AbstractDBMetastore):
     def init_after_clone(
         cls,
         *,
-        uri: StorageURI,
         db_clone_params: tuple[Callable, list, dict[str, Any]],
     ) -> "SQLiteMetastore":
         (db_class, db_args, db_kwargs) = db_clone_params
-        return cls(uri=uri, db=db_class(*db_args, **db_kwargs))
+        return cls(db=db_class(*db_args, **db_kwargs))
 
     @cached_property
     def _meta(self) -> Table:
