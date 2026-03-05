@@ -54,7 +54,6 @@ from datachain.dataset import (
     DatasetRecord,
     DatasetStatus,
     DatasetVersion,
-    StorageURI,
     parse_schema,
 )
 from datachain.error import (
@@ -96,8 +95,6 @@ class AbstractMetastore(ABC, Serializable):
     This manages the storing, searching, and retrieval of indexed metadata.
     """
 
-    uri: StorageURI
-
     schema: "schema.Schema"
     namespace_class: type[Namespace] = Namespace
     project_class: type[Project] = Project
@@ -111,12 +108,6 @@ class AbstractMetastore(ABC, Serializable):
     checkpoint_class: type[Checkpoint] = Checkpoint
     checkpoint_event_class: type[CheckpointEvent] = CheckpointEvent
 
-    def __init__(
-        self,
-        uri: StorageURI | None = None,
-    ):
-        self.uri = uri or StorageURI("")
-
     def __enter__(self) -> Self:
         """Returns self upon entering context manager."""
         return self
@@ -127,10 +118,9 @@ class AbstractMetastore(ABC, Serializable):
     @abstractmethod
     def clone(
         self,
-        uri: StorageURI | None = None,
         use_new_connection: bool = False,
     ) -> "AbstractMetastore":
-        """Clones AbstractMetastore implementation for some Storage input.
+        """Clones AbstractMetastore implementation.
         Setting use_new_connection will always use a new database connection.
         New connections should only be used if needed due to errors with
         closed connections."""
@@ -684,10 +674,6 @@ class AbstractDBMetastore(AbstractMetastore):
     CHECKPOINT_EVENTS_TABLE = "checkpoint_events"
 
     db: "DatabaseEngine"
-
-    def __init__(self, uri: StorageURI | None = None):
-        uri = uri or StorageURI("")
-        super().__init__(uri)
 
     def close(self) -> None:
         """Closes any active database connections."""
