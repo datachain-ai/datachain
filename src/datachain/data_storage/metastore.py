@@ -2722,9 +2722,7 @@ class AbstractDBMetastore(AbstractMetastore):
 
         # Step 2: Collect ALL expired checkpoints (including leftovers from
         # prior crashed cleanup runs).
-        checkpoints = list(
-            self.list_checkpoints(status=CheckpointStatus.EXPIRED)
-        )
+        checkpoints = list(self.list_checkpoints(status=CheckpointStatus.EXPIRED))
         if not checkpoints:
             return [], []
 
