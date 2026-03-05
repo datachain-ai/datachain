@@ -5,23 +5,18 @@ import pytest
 
 from datachain.data_storage.serializer import deserialize
 from datachain.data_storage.sqlite import SCHEMA_VERSION, SQLiteMetastore
-from datachain.dataset import StorageURI
 from datachain.error import OutdatedDatabaseSchemaError
 from tests.conftest import cleanup_sqlite_db
 
 
 def test_sqlite_metastore(sqlite_db):
-    uri = StorageURI("s3://bucket")
-
-    obj = SQLiteMetastore(uri, sqlite_db)
-    assert obj.uri == uri
+    obj = SQLiteMetastore(db=sqlite_db)
     assert obj.db == sqlite_db
 
     # Test clone
     obj2 = obj.clone()
     try:
         assert isinstance(obj2, SQLiteMetastore)
-        assert obj2.uri == uri
         assert obj2.db.db_file == sqlite_db.db_file
         assert obj2.clone_params() == obj.clone_params()
 
@@ -32,7 +27,6 @@ def test_sqlite_metastore(sqlite_db):
         data = json.loads(raw.decode())
         assert data["callable"] == "sqlite.metastore.init_after_clone"
         assert data["args"] == []
-        assert data["kwargs"]["uri"] == uri
         nested = data["kwargs"]["db_clone_params"]
         assert nested["callable"] == "sqlite.from_db_file"
         assert nested["args"] == [":memory:"]
@@ -41,7 +35,6 @@ def test_sqlite_metastore(sqlite_db):
         obj3 = deserialize(serialized)
         try:
             assert isinstance(obj3, SQLiteMetastore)
-            assert obj3.uri == uri
             assert obj3.db.db_file == sqlite_db.db_file
             assert obj3.clone_params() == obj.clone_params()
         finally:

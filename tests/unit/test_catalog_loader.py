@@ -14,7 +14,6 @@ from datachain.data_storage.sqlite import (
     SQLiteMetastore,
     SQLiteWarehouse,
 )
-from datachain.dataset import StorageURI
 
 
 class DistributedClass:
@@ -23,11 +22,8 @@ class DistributedClass:
 
 
 def test_get_metastore(sqlite_db):
-    uri = StorageURI("s3://bucket")
-
-    metastore = SQLiteMetastore(uri, sqlite_db.clone())
+    metastore = SQLiteMetastore(db=sqlite_db.clone())
     try:
-        assert metastore.uri == uri
         assert metastore.db.db_file == sqlite_db.db_file
 
         with patch.dict(os.environ, {"DATACHAIN__METASTORE": metastore.serialize()}):
@@ -35,7 +31,6 @@ def test_get_metastore(sqlite_db):
             try:
                 assert metastore2
                 assert isinstance(metastore2, SQLiteMetastore)
-                assert metastore2.uri == uri
                 assert metastore2.db.db_file == sqlite_db.db_file
                 assert metastore2.clone_params() == metastore.clone_params()
             finally:
@@ -146,8 +141,7 @@ def test_get_distributed_class(monkeypatch):
 
 
 def test_get_catalog(sqlite_db):
-    uri = StorageURI("s3://bucket")
-    metastore = SQLiteMetastore(uri, sqlite_db.clone())
+    metastore = SQLiteMetastore(db=sqlite_db.clone())
     warehouse = SQLiteWarehouse(sqlite_db.clone())
     env = {
         "DATACHAIN__METASTORE": metastore.serialize(),
@@ -161,7 +155,6 @@ def test_get_catalog(sqlite_db):
 
             assert catalog.metastore
             assert isinstance(catalog.metastore, SQLiteMetastore)
-            assert catalog.metastore.uri == uri
             assert catalog.metastore.db.db_file == sqlite_db.db_file
             assert catalog.metastore.clone_params() == metastore.clone_params()
 
