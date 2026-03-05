@@ -122,6 +122,91 @@ class DataChainDir:
         return instance
 
 
+@contextmanager
+def interprocess_file_lock(
+    lock_path: str,
+    *,
+    wait_message: str | None = None,
+    timeout: float = -1,
+) -> Iterator[None]:
+    """Acquire an inter-process lock backed by a file.
+
+    Intended for local-only concurrency control (multiple CLI processes sharing
+    the same DataChainDir). Locks are released automatically by the OS when the
+    process exits, including on SIGKILL.
+
+    Uses `filelock.FileLock` (OS-level file locking).
+    """
+
+    from filelock import FileLock, Timeout
+
+    lock_dir = osp.dirname(lock_path)
+    if lock_dir:
+        os.makedirs(lock_dir, exist_ok=True)
+    lock = FileLock(lock_path)
+    pid_path = f"{lock_path}.pid"
+
+    def _read_pid() -> int | None:
+        try:
+            with open(pid_path, encoding="utf-8") as f:
+                raw = f.read().strip()
+            return int(raw) if raw else None
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _write_pid() -> None:
+        try:
+            with open(pid_path, "w", encoding="utf-8") as f:
+                f.write(str(os.getpid()))
+        except Exception:
+            logger.debug(
+                "Failed to write PID into lock file %s",
+                pid_path,
+                exc_info=True,
+            )
+
+    def _print_wait_hint(pid: int | None) -> None:
+        if not wait_message:
+            return
+        pid_str = f" (pid={pid})" if pid is not None else ""
+        if pid is not None:
+            check_hint = (
+                f"If this looks stuck, first check the PID is running "
+                f"(e.g. `ps -p {pid}`), then if you are sure no process is "
+                f"running delete: {lock_path} (and {pid_path})"
+            )
+        else:
+            check_hint = f"If this looks stuck, delete: {lock_path} (and {pid_path})"
+        print(f"{wait_message}{pid_str}\n{check_hint}")
+
+    acquired = False
+    try:
+        if wait_message:
+            try:
+                lock.acquire(timeout=0)
+            except Timeout:
+                _print_wait_hint(_read_pid())
+                lock.acquire(timeout=timeout)
+        else:
+            lock.acquire(timeout=timeout)
+
+        acquired = True
+        _write_pid()
+        yield
+    finally:
+        if acquired:
+            try:
+                os.remove(pid_path)
+            except OSError:
+                logger.debug(
+                    "Failed to remove PID file %s during lock cleanup",
+                    pid_path,
+                    exc_info=True,
+                )
+            finally:
+                lock.release()
+
+
 @dataclass
 class DatasetIdentifier:
     namespace: str
@@ -530,13 +615,14 @@ def uses_glob(path: str) -> bool:
     return glob.has_magic(os.path.basename(os.path.normpath(path)))
 
 
-def checkpoints_enabled() -> bool:
+def checkpoints_enabled(ephemeral: bool = False) -> bool:
     """
     Check if checkpoints are enabled for the current execution context.
 
-    Checkpoints are automatically disabled when code runs in:
-    1. A user-created subprocess (detected via DATACHAIN_MAIN_PROCESS_PID mismatch)
-    2. A thread that is not the original checkpoint owner thread
+    Checkpoints are automatically disabled when:
+    1. Running in ephemeral mode (no persistent metastore objects)
+    2. A user-created subprocess (detected via DATACHAIN_MAIN_PROCESS_PID mismatch)
+    3. A thread that is not the original checkpoint owner thread
 
     DataChain-controlled subprocesses can enable checkpoints by setting
     DATACHAIN_SUBPROCESS=1.
@@ -548,6 +634,8 @@ def checkpoints_enabled() -> bool:
     Returns:
         bool: True if checkpoints are enabled, False if disabled.
     """
+    if ephemeral:
+        return False
     # DataChain-controlled subprocess - explicitly allowed
     if os.environ.get("DATACHAIN_SUBPROCESS"):
         return True

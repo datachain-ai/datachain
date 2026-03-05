@@ -267,7 +267,8 @@ def test_write_version_capture(cloud_test_catalog, cloud_type):
     4. f1's File.open() __exit__ → extract_version(f1), get_file_info
 
     S3: version_id on handle survives close() → f1 gets V1
-    GCS/Azure: No version captured → get_file_info returns V2 for f1 (race!)
+    GCS (gcsfs>=2026.2.0): generation on handle survives close() → f1 gets V1
+    Azure: No version captured → get_file_info returns V2 for f1 (race!)
     """
     ctc = cloud_test_catalog
     src_uri = ctc.src_uri
@@ -290,14 +291,15 @@ def test_write_version_capture(cloud_test_catalog, cloud_type):
     assert file1.version, "file1 should have a version"
     assert file2.version, "file2 should have a version"
 
-    if cloud_type == "s3":
+    if cloud_type in ("s3", "gs"):
         # S3 captures version_id from handle - survives close()
+        # GCS (gcsfs>=2026.2.0) now captures generation correctly
         assert file1.version != file2.version, (
-            "S3: each write captures its own version_id"
+            f"{cloud_type}: each write captures its own version"
         )
     else:
-        # GCS/Azure: No version on handle - get_file_info returns latest
-        # Update it when it is fixed in those backends.
+        # Azure: No version on handle - get_file_info returns latest
+        # Update it when it is fixed in that backend.
         assert file1.version == file2.version, (
             f"{cloud_type}: file1 sees V2 due to get_file_info race"
         )

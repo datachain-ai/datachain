@@ -153,10 +153,10 @@ $ ls output_mistral/datachain-demo/chatbot-KiT/ | wc -l
 31
 ```
 
-## Serializing Python-objects
+## Serializing Python objects
 
-LLM responses may contain valuable information for analytics -- such as
-the number of tokens used, or the model performance parameters.
+LLM responses may contain valuable information for analytics, such as
+the number of tokens used or the model performance parameters.
 
 Instead of extracting this information from the Mistral response data
 structure (class `ChatCompletionResponse`), DataChain can
