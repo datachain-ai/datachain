@@ -97,6 +97,7 @@ nav:
       - 📖 CLI Reference:
           - Overview: commands/index.md
           - Commands:
+              - gc: commands/gc.md
               - auth:
                   - login: commands/auth/login.md
                   - logout: commands/auth/logout.md

@@ -30,7 +30,7 @@ from tqdm.auto import tqdm
 
 from datachain.asyn import ASYNC_WORKERS, AsyncMapper, OrderedMapper
 from datachain.catalog.catalog import clone_catalog_with_cache
-from datachain.checkpoint import Checkpoint
+from datachain.checkpoint import Checkpoint, CheckpointStatus
 from datachain.checkpoint_event import (
     CheckpointEventType,
     CheckpointStepType,
@@ -938,25 +938,6 @@ class UDFStep(Step, ABC):
     def warehouse(self):
         return self.session.catalog.warehouse
 
-    @staticmethod
-    def input_table_name(run_group_id: str, _hash: str) -> str:
-        """Run-group-specific input table name.
-
-        Uses run_group_id instead of job_id so all jobs in the same run group
-        share the same input table, eliminating the need for ancestor traversal.
-        """
-        return f"udf_{run_group_id}_{_hash}_input"
-
-    @staticmethod
-    def output_table_name(job_id: str, _hash: str) -> str:
-        """Job-specific final output table name."""
-        return f"udf_{job_id}_{_hash}_output"
-
-    @staticmethod
-    def partial_output_table_name(job_id: str, _hash: str) -> str:
-        """Job-specific partial output table name."""
-        return f"udf_{job_id}_{_hash}_output_partial"
-
     def get_or_create_input_table(
         self, query: Select, _hash: str, job: "Job | None"
     ) -> "Table":
@@ -969,7 +950,7 @@ class UDFStep(Step, ABC):
         Returns the input table.
         """
         group_id = (job.run_group_id or job.id) if job else str(uuid4())
-        input_table_name = UDFStep.input_table_name(group_id, _hash)
+        input_table_name = Checkpoint.input_table_name(group_id, _hash)
 
         # Check if input table already exists (created by ancestor job)
         if self.warehouse.db.has_table(input_table_name):
@@ -1089,10 +1070,10 @@ class UDFStep(Step, ABC):
             checkpoint.job_id,
         )
         existing_output_table = self.warehouse.get_table(
-            UDFStep.output_table_name(checkpoint.job_id, checkpoint.hash)
+            Checkpoint.output_table_name(checkpoint.job_id, checkpoint.hash)
         )
         output_table = self.warehouse.create_table_from_query(
-            UDFStep.output_table_name(job.id, checkpoint.hash),
+            Checkpoint.output_table_name(job.id, checkpoint.hash),
             sa.select(existing_output_table),
             create_fn=self.create_output_table,
         )
@@ -1175,7 +1156,7 @@ class UDFStep(Step, ABC):
         input_table = self.get_or_create_input_table(query, hash_input, job)
 
         partial_output_table = self.create_output_table(
-            UDFStep.partial_output_table_name(run_id, partial_hash),
+            Checkpoint.partial_output_table_name(run_id, partial_hash),
         )
 
         if self.partition_by is not None:
@@ -1186,13 +1167,15 @@ class UDFStep(Step, ABC):
         self.populate_udf_output_table(partial_output_table, input_query)
 
         output_table = self.warehouse.rename_table(
-            partial_output_table, UDFStep.output_table_name(run_id, hash_output)
+            partial_output_table, Checkpoint.output_table_name(run_id, hash_output)
         )
 
         if checkpoints_enabled and job:
             # Promote partial checkpoint to final and log event
             if partial_checkpoint:
-                self.metastore.remove_checkpoint(partial_checkpoint.id)
+                self.metastore.update_checkpoints(
+                    [partial_checkpoint.id], status=CheckpointStatus.DELETED
+                )
             self.metastore.get_or_create_checkpoint(job.id, hash_output)
             logger.debug(
                 "UDF(%s) [job=%s run_group=%s]: Promoted partial to final, hash=%s",
@@ -1255,7 +1238,7 @@ class UDFStep(Step, ABC):
 
         try:
             parent_partial_table = self.warehouse.get_table(
-                UDFStep.partial_output_table_name(
+                Checkpoint.partial_output_table_name(
                     job.rerun_from_job_id, checkpoint.hash
                 )
             )
@@ -1283,7 +1266,9 @@ class UDFStep(Step, ABC):
                 len(incomplete_input_ids),
             )
 
-        partial_table_name = UDFStep.partial_output_table_name(job.id, checkpoint.hash)
+        partial_table_name = Checkpoint.partial_output_table_name(
+            job.id, checkpoint.hash
+        )
         if incomplete_input_ids:
             # Filter out incomplete inputs - they will be re-processed
             filtered_query = sa.select(parent_partial_table).where(
@@ -1325,10 +1310,12 @@ class UDFStep(Step, ABC):
         )
 
         output_table = self.warehouse.rename_table(
-            partial_table, UDFStep.output_table_name(job.id, hash_output)
+            partial_table, Checkpoint.output_table_name(job.id, hash_output)
         )
 
-        self.metastore.remove_checkpoint(partial_checkpoint.id)
+        self.metastore.update_checkpoints(
+            [partial_checkpoint.id], status=CheckpointStatus.DELETED
+        )
         self.metastore.get_or_create_checkpoint(job.id, hash_output)
         logger.debug(
             "UDF(%s) [job=%s run_group=%s]: Promoted partial to final, hash=%s",

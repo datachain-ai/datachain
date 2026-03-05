@@ -285,8 +285,8 @@ class SQLiteDatabaseEngine(DatabaseEngine):
             return self.db.execute(sql)
         return self.db.execute(sql, parameters)
 
-    def list_tables(self, prefix: str = "") -> list[str]:
-        """List all table names, optionally filtered by prefix."""
+    def list_tables(self, pattern: str = "") -> list[str]:
+        """List all table names, optionally filtered by a SQL LIKE pattern."""
         sqlite_master = sqlalchemy.table(
             "sqlite_master",
             sqlalchemy.column("type"),
@@ -295,8 +295,8 @@ class SQLiteDatabaseEngine(DatabaseEngine):
         query = sqlalchemy.select(sqlite_master.c.name).where(
             sqlite_master.c.type == "table"
         )
-        if prefix:
-            query = query.where(sqlite_master.c.name.like(f"{prefix}%"))
+        if pattern:
+            query = query.where(sqlite_master.c.name.like(pattern))
         result = self.execute(query)
         return [row[0] for row in result.fetchall()]
 
