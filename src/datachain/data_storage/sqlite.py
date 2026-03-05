@@ -252,26 +252,14 @@ class SQLiteDatabaseEngine(DatabaseEngine):
         return super().get_table(name)
 
     @retry_sqlite_locks
-    def execute(
-        self,
-        query,
-        cursor: sqlite3.Cursor | None = None,
-    ) -> sqlite3.Cursor:
+    def execute(self, query) -> sqlite3.Cursor:
         if self.is_closed:
             # Reconnect in case of being closed previously.
             self._reconnect()
-        if cursor is not None:
-            result = cursor.execute(*self.compile_to_args(query))
-        else:
-            result = self.db.execute(*self.compile_to_args(query))
-        return result
+        return self.db.execute(*self.compile_to_args(query))
 
     @retry_sqlite_locks
-    def executemany(
-        self, query, params, cursor: sqlite3.Cursor | None = None
-    ) -> sqlite3.Cursor:
-        if cursor:
-            return cursor.executemany(self.compile(query).string, params)
+    def executemany(self, query, params) -> sqlite3.Cursor:
         return self.db.executemany(self.compile(query).string, params)
 
     @retry_sqlite_locks
@@ -785,13 +773,7 @@ class SQLiteWarehouse(AbstractWarehouse):
     ) -> list[StorageURI]:
         dr = self.dataset_rows(dataset, version)
         query = dr.select(dr.c("source", column="file")).distinct()
-        cur = self.db.cursor()
-        cur.row_factory = sqlite3.Row  # type: ignore[assignment]
-
-        return [
-            StorageURI(row["file__source"])
-            for row in self.db.execute(query, cursor=cur)
-        ]
+        return [StorageURI(row[0]) for row in self.db.execute(query)]
 
     def prepare_entries(self, entries: "Iterable[File]") -> Iterable[dict[str, Any]]:
         return (e.model_dump() for e in entries)
