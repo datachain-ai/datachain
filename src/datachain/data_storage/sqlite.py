@@ -259,8 +259,8 @@ class SQLiteDatabaseEngine(DatabaseEngine):
         return self.db.execute(*self.compile_to_args(query))
 
     @retry_sqlite_locks
-    def executemany(self, query, params) -> sqlite3.Cursor:
-        return self.db.executemany(self.compile(query).string, params)
+    def executemany(self, query, params) -> None:
+        self.db.executemany(self.compile(query).string, params)
 
     @retry_sqlite_locks
     def execute_str(self, sql: str, parameters=None) -> sqlite3.Cursor:
