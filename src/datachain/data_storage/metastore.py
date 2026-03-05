@@ -4,7 +4,7 @@ import os
 import sys
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
-from contextlib import contextmanager, nullcontext, suppress
+from contextlib import contextmanager, suppress
 from datetime import datetime, timedelta, timezone
 from functools import cached_property, reduce
 from itertools import groupby
@@ -116,10 +116,7 @@ class AbstractMetastore(ABC, Serializable):
         """Default behavior is to do nothing, as connections may be shared."""
 
     @abstractmethod
-    def clone(
-        self,
-        use_new_connection: bool = False,
-    ) -> "AbstractMetastore":
+    def clone(self, use_new_connection: bool = False) -> Self:
         """Clones AbstractMetastore implementation.
         Setting use_new_connection will always use a new database connection.
         New connections should only be used if needed due to errors with
@@ -176,15 +173,15 @@ class AbstractMetastore(ABC, Serializable):
         """Creates new namespace"""
 
     @abstractmethod
-    def get_namespace(self, name: str, conn=None) -> Namespace:
+    def get_namespace(self, name: str) -> Namespace:
         """Gets a single namespace by name"""
 
     @abstractmethod
-    def remove_namespace(self, namespace_id: int, conn=None) -> None:
+    def remove_namespace(self, namespace_id: int) -> None:
         """Removes a single namespace by id"""
 
     @abstractmethod
-    def list_namespaces(self, conn=None) -> list[Namespace]:
+    def list_namespaces(self) -> list[Namespace]:
         """Gets a list of all namespaces"""
 
     #
@@ -225,7 +222,7 @@ class AbstractMetastore(ABC, Serializable):
 
     @abstractmethod
     def get_project(
-        self, name: str, namespace_name: str, create: bool = False, conn=None
+        self, name: str, namespace_name: str, create: bool = False
     ) -> Project:
         """
         Gets a single project inside some namespace by name.
@@ -245,7 +242,7 @@ class AbstractMetastore(ABC, Serializable):
         )
 
     @abstractmethod
-    def get_project_by_id(self, project_id: int, conn=None) -> Project:
+    def get_project_by_id(self, project_id: int) -> Project:
         """Gets a single project by id"""
 
     @abstractmethod
@@ -253,16 +250,17 @@ class AbstractMetastore(ABC, Serializable):
         """Counts projects in some namespace or in general."""
 
     @abstractmethod
-    def remove_project(self, project_id: int, conn=None) -> None:
+    def remove_project(self, project_id: int) -> None:
         """Removes a single project by id"""
 
     @abstractmethod
-    def list_projects(self, namespace_id: int | None, conn=None) -> list[Project]:
+    def list_projects(self, namespace_id: int | None) -> list[Project]:
         """Gets list of projects in some namespace or in general (in all namespaces)"""
 
     #
     # Datasets
     #
+
     @abstractmethod
     def create_dataset(
         self,
@@ -361,7 +359,7 @@ class AbstractMetastore(ABC, Serializable):
         prefix: str,
         project_id: int | None = None,
         include_incomplete: bool = False,
-    ) -> Iterator["DatasetListRecord"]:
+    ) -> Iterator[DatasetListRecord]:
         """
         Lists all datasets which names start with prefix in some project or in all
         projects.
@@ -382,7 +380,6 @@ class AbstractMetastore(ABC, Serializable):
         namespace_name: str | None = None,
         project_name: str | None = None,
         include_incomplete: bool = True,
-        conn=None,
     ) -> DatasetRecord:
         """Gets a single dataset by name."""
 
@@ -413,12 +410,13 @@ class AbstractMetastore(ABC, Serializable):
     #
     # Dataset dependencies
     #
+
     @abstractmethod
     def add_dataset_dependency(
         self,
-        source_dataset: "DatasetRecord",
+        source_dataset: DatasetRecord,
         source_dataset_version: str,
-        dep_dataset: "DatasetRecord",
+        dep_dataset: DatasetRecord,
         dep_dataset_version: str,
     ) -> None:
         """Adds dataset dependency to dataset."""
@@ -466,8 +464,9 @@ class AbstractMetastore(ABC, Serializable):
     # Jobs
     #
 
-    def list_jobs_by_ids(self, ids: list[str], conn=None) -> Iterator["Job"]:
-        raise NotImplementedError
+    @abstractmethod
+    def list_jobs_by_ids(self, ids: list[str]) -> Iterator[Job]:
+        """Lists jobs by ids."""
 
     @abstractmethod
     def create_job(
@@ -495,7 +494,7 @@ class AbstractMetastore(ABC, Serializable):
         """Returns the job with the given ID."""
 
     @abstractmethod
-    def get_ancestor_job_ids(self, job_id: str, conn=None) -> list[str]:
+    def get_ancestor_job_ids(self, job_id: str) -> list[str]:
         """Returns list of ancestor job IDs in order from parent to root."""
 
     @abstractmethod
@@ -526,8 +525,8 @@ class AbstractMetastore(ABC, Serializable):
 
     @abstractmethod
     def get_last_job_by_name(
-        self, name: str, is_remote_execution: bool = False, conn=None
-    ) -> "Job | None":
+        self, name: str, is_remote_execution: bool = False
+    ) -> Job | None:
         """Returns the last job with the given name, ordered by created_at."""
 
     #
@@ -539,20 +538,19 @@ class AbstractMetastore(ABC, Serializable):
         self,
         job_ids: list[str] | None = None,
         status: "CheckpointStatus | None" = None,
-        conn=None,
     ) -> Iterator[Checkpoint]:
         """List checkpoints, optionally filtered by job IDs and/or status."""
 
     @abstractmethod
-    def get_last_checkpoint(self, job_id: str, conn=None) -> Checkpoint | None:
+    def get_last_checkpoint(self, job_id: str) -> Checkpoint | None:
         """Get last created checkpoint for some job."""
 
     @abstractmethod
-    def get_checkpoint_by_id(self, checkpoint_id: str, conn=None) -> Checkpoint:
+    def get_checkpoint_by_id(self, checkpoint_id: str) -> Checkpoint:
         """Gets single checkpoint by id"""
 
     def find_checkpoint(
-        self, job_id: str, _hash: str, partial: bool = False, conn=None
+        self, job_id: str, _hash: str, partial: bool = False
     ) -> Checkpoint | None:
         """
         Tries to find checkpoint for a job with specific hash and optionally partial
@@ -564,13 +562,12 @@ class AbstractMetastore(ABC, Serializable):
         job_id: str,
         _hash: str,
         partial: bool = False,
-        conn: Any | None = None,
     ) -> Checkpoint:
         """Get or create checkpoint. Must be atomic and idempotent."""
 
     @abstractmethod
     def expire_checkpoints(
-        self, ttl_threshold: datetime, conn: Any | None = None
+        self, ttl_threshold: datetime
     ) -> tuple[list[Checkpoint], list[str]]:
         """Atomically mark checkpoints as EXPIRED for finished jobs where ALL
         active checkpoints are older than ttl_threshold.
@@ -584,7 +581,6 @@ class AbstractMetastore(ABC, Serializable):
         self,
         checkpoint_ids: list[str],
         status: "CheckpointStatus | None" = None,
-        conn: Any | None = None,
     ) -> None:
         """Update checkpoint fields by IDs."""
 
@@ -596,8 +592,8 @@ class AbstractMetastore(ABC, Serializable):
     def log_checkpoint_event(  # noqa: PLR0913
         self,
         job_id: str,
-        event_type: "CheckpointEventType",
-        step_type: "CheckpointStepType",
+        event_type: CheckpointEventType,
+        step_type: CheckpointStepType,
         run_group_id: str | None = None,
         udf_name: str | None = None,
         dataset_name: str | None = None,
@@ -612,8 +608,7 @@ class AbstractMetastore(ABC, Serializable):
         rows_output_reused: int | None = None,
         rerun_from_job_id: str | None = None,
         details: dict | None = None,
-        conn: Any | None = None,
-    ) -> "CheckpointEvent":
+    ) -> CheckpointEvent:
         """Log a checkpoint event."""
 
     @abstractmethod
@@ -621,8 +616,7 @@ class AbstractMetastore(ABC, Serializable):
         self,
         job_id: str | None = None,
         run_group_id: str | None = None,
-        conn: Any | None = None,
-    ) -> Iterator["CheckpointEvent"]:
+    ) -> Iterator[CheckpointEvent]:
         """Get checkpoint events, optionally filtered by job_id or run_group_id."""
 
     #
@@ -657,7 +651,6 @@ class AbstractMetastore(ABC, Serializable):
         dataset_version_id: int,
         job_id: str,
         is_creator: bool = False,
-        conn=None,
     ) -> None:
         """Link dataset version to job. Must be atomic."""
 
@@ -668,7 +661,6 @@ class AbstractMetastore(ABC, Serializable):
         namespace_name: str,
         project_name: str,
         job_id: str,
-        conn=None,
     ) -> DatasetVersion | None:
         """
         Find the dataset version that was created by any job in the ancestry.
@@ -877,6 +869,7 @@ class AbstractDBMetastore(AbstractMetastore):
     #
     # Query Tables
     #
+
     @cached_property
     def _namespaces(self) -> Table:
         return Table(
@@ -910,6 +903,7 @@ class AbstractDBMetastore(AbstractMetastore):
     #
     # Query Starters (These can be overridden by subclasses)
     #
+
     @abstractmethod
     def _namespaces_insert(self) -> "Insert": ...
 
@@ -1006,7 +1000,7 @@ class AbstractDBMetastore(AbstractMetastore):
 
         return self.get_namespace(name)
 
-    def remove_namespace(self, namespace_id: int, conn=None) -> None:
+    def remove_namespace(self, namespace_id: int) -> None:
         num_projects = self.count_projects(namespace_id)
         if num_projects > 0:
             raise NamespaceDeleteNotAllowedError(
@@ -1018,26 +1012,26 @@ class AbstractDBMetastore(AbstractMetastore):
         with self.db.transaction():
             self.db.execute(self._namespaces_delete().where(n.c.id == namespace_id))
 
-    def get_namespace(self, name: str, conn=None) -> Namespace:
+    def get_namespace(self, name: str) -> Namespace:
         """Gets a single namespace by name"""
         n = self._namespaces
 
         query = self._namespaces_select(
             *(getattr(n.c, f) for f in self._namespaces_fields),
         ).where(n.c.name == name)
-        rows = list(self.db.execute(query, conn=conn))
+        rows = list(self.db.execute(query))
         if not rows:
             raise NamespaceNotFoundError(f"Namespace {name} not found.")
         return self.namespace_class.parse(*rows[0])
 
-    def list_namespaces(self, conn=None) -> list[Namespace]:
+    def list_namespaces(self) -> list[Namespace]:
         """Gets a list of all namespaces"""
         n = self._namespaces
 
         query = self._namespaces_select(
             *(getattr(n.c, f) for f in self._namespaces_fields),
         )
-        rows = list(self.db.execute(query, conn=conn))
+        rows = list(self.db.execute(query))
 
         return [self.namespace_class.parse(*r) for r in rows]
 
@@ -1090,7 +1084,7 @@ class AbstractDBMetastore(AbstractMetastore):
         return query.select_from(n.join(p, n.c.id == p.c.namespace_id))
 
     def get_project(
-        self, name: str, namespace_name: str, create: bool = False, conn=None
+        self, name: str, namespace_name: str, create: bool = False
     ) -> Project:
         """Gets a single project inside some namespace by name"""
         n = self._namespaces
@@ -1108,7 +1102,7 @@ class AbstractDBMetastore(AbstractMetastore):
             p.c.name == name, n.c.name == namespace_name
         )
 
-        rows = list(self.db.execute(query, conn=conn))
+        rows = list(self.db.execute(query))
         if not rows:
             if create:
                 return self.create_project(namespace_name, name, validate=validate)
@@ -1117,13 +1111,13 @@ class AbstractDBMetastore(AbstractMetastore):
             )
         return self.project_class.parse(*rows[0])
 
-    def get_project_by_id(self, project_id: int, conn=None) -> Project:
+    def get_project_by_id(self, project_id: int) -> Project:
         """Gets a single project by id"""
         p = self._projects
 
         query = self._projects_base_query().where(p.c.id == project_id)
 
-        rows = list(self.db.execute(query, conn=conn))
+        rows = list(self.db.execute(query))
         if not rows:
             raise ProjectNotFoundError(f"Project with id {project_id} not found.")
         return self.project_class.parse(*rows[0])
@@ -1139,7 +1133,7 @@ class AbstractDBMetastore(AbstractMetastore):
 
         return next(self.db.execute(query))[0]
 
-    def remove_project(self, project_id: int, conn=None) -> None:
+    def remove_project(self, project_id: int) -> None:
         num_datasets = self.count_datasets(project_id)
         if num_datasets > 0:
             raise ProjectDeleteNotAllowedError(
@@ -1151,9 +1145,7 @@ class AbstractDBMetastore(AbstractMetastore):
         with self.db.transaction():
             self.db.execute(self._projects_delete().where(p.c.id == project_id))
 
-    def list_projects(
-        self, namespace_id: int | None = None, conn=None
-    ) -> list[Project]:
+    def list_projects(self, namespace_id: int | None = None) -> list[Project]:
         """
         Gets a list of projects inside some namespace, or in all namespaces
         """
@@ -1164,7 +1156,7 @@ class AbstractDBMetastore(AbstractMetastore):
         if namespace_id:
             query = query.where(p.c.namespace_id == namespace_id)
 
-        rows = list(self.db.execute(query, conn=conn))
+        rows = list(self.db.execute(query))
 
         return [self.project_class.parse(*r) for r in rows]
 
@@ -1240,7 +1232,6 @@ class AbstractDBMetastore(AbstractMetastore):
         preview: list[dict] | None = None,
         job_id: str | None = None,
         uuid: str | None = None,
-        conn=None,
     ) -> DatasetRecord:
         """Creates new dataset version."""
         if status in [DatasetStatus.COMPLETE, DatasetStatus.FAILED]:
@@ -1273,14 +1264,13 @@ class AbstractDBMetastore(AbstractMetastore):
             query = query.on_conflict_do_nothing(
                 index_elements=["dataset_id", "version"]
             )
-        self.db.execute(query, conn=conn)
+        self.db.execute(query)
 
         return self.get_dataset(
             dataset.name,
             namespace_name=dataset.project.namespace.name,
             project_name=dataset.project.name,
             include_incomplete=True,
-            conn=conn,
         )
 
     def remove_dataset(self, dataset: DatasetRecord) -> None:
@@ -1291,9 +1281,7 @@ class AbstractDBMetastore(AbstractMetastore):
             self.remove_dataset_dependants(dataset)
             self.db.execute(self._datasets_delete().where(d.c.id == dataset.id))
 
-    def update_dataset(
-        self, dataset: DatasetRecord, conn=None, **kwargs
-    ) -> DatasetRecord:
+    def update_dataset(self, dataset: DatasetRecord, **kwargs) -> DatasetRecord:
         """Updates dataset fields."""
         values: dict[str, Any] = {}
         dataset_values: dict[str, Any] = {}
@@ -1336,7 +1324,6 @@ class AbstractDBMetastore(AbstractMetastore):
             self._datasets_update()
             .where(d.c.name == dataset.name, d.c.project_id == dataset.project.id)
             .values(values),
-            conn=conn,
         )  # type: ignore [attr-defined]
 
         result_ds = copy.deepcopy(dataset)
@@ -1344,7 +1331,7 @@ class AbstractDBMetastore(AbstractMetastore):
         return result_ds
 
     def update_dataset_version(
-        self, dataset: DatasetRecord, version: str, conn=None, **kwargs
+        self, dataset: DatasetRecord, version: str, **kwargs
     ) -> DatasetVersion:
         """Updates dataset fields."""
         logger.debug(
@@ -1421,7 +1408,6 @@ class AbstractDBMetastore(AbstractMetastore):
             self._datasets_versions_update()
             .where(dv.c.dataset_id == dataset.id, dv.c.version == version)
             .values(values),
-            conn=conn,
         )  # type: ignore [attr-defined]
 
         for v in dataset.versions:
@@ -1550,7 +1536,6 @@ class AbstractDBMetastore(AbstractMetastore):
         prefix: str,
         project_id: int | None = None,
         include_incomplete: bool = False,
-        conn=None,
     ) -> Iterator["DatasetListRecord"]:
         d = self._datasets
         query = self._base_list_datasets_query(include_incomplete=include_incomplete)
@@ -1579,7 +1564,6 @@ class AbstractDBMetastore(AbstractMetastore):
         namespace_name: str | None = None,
         project_name: str | None = None,
         include_incomplete: bool = True,
-        conn=None,
     ) -> DatasetRecord:
         """
         Gets a single dataset in project by dataset name.
@@ -1596,7 +1580,7 @@ class AbstractDBMetastore(AbstractMetastore):
             n.c.name == namespace_name,
             p.c.name == project_name,
         )  # type: ignore [attr-defined]
-        ds = self._parse_dataset(self.db.execute(query, conn=conn))
+        ds = self._parse_dataset(self.db.execute(query))
         if not ds:
             raise DatasetNotFoundError(
                 f"Dataset {name} not found in namespace {namespace_name}"
@@ -1710,7 +1694,6 @@ class AbstractDBMetastore(AbstractMetastore):
         error_message="",
         error_stack="",
         script_output="",
-        conn=None,
     ) -> DatasetRecord:
         """
         Updates dataset status and appropriate fields related to status
@@ -1727,10 +1710,10 @@ class AbstractDBMetastore(AbstractMetastore):
             update_data["error_message"] = error_message
             update_data["error_stack"] = error_stack
 
-        dataset = self.update_dataset(dataset, conn=conn, **update_data)
+        dataset = self.update_dataset(dataset, **update_data)
 
         if version:
-            self.update_dataset_version(dataset, version, conn=conn, **update_data)
+            self.update_dataset_version(dataset, version, **update_data)
 
         return dataset
 
@@ -1761,6 +1744,7 @@ class AbstractDBMetastore(AbstractMetastore):
     #
     # Dataset dependencies
     #
+
     def add_dataset_dependency(
         self,
         source_dataset: "DatasetRecord",
@@ -2036,13 +2020,13 @@ class AbstractDBMetastore(AbstractMetastore):
     def _jobs_query(self):
         return self._jobs_select(*[getattr(self._jobs.c, f) for f in self._job_fields])
 
-    def list_jobs_by_ids(self, ids: list[str], conn=None) -> Iterator["Job"]:
+    def list_jobs_by_ids(self, ids: list[str]) -> Iterator["Job"]:
         """List jobs by ids."""
         query = self._jobs_query().where(self._jobs.c.id.in_(ids))
-        yield from self._parse_jobs(self.db.execute(query, conn=conn))
+        yield from self._parse_jobs(self.db.execute(query))
 
     def get_last_job_by_name(
-        self, name: str, is_remote_execution: bool = False, conn=None
+        self, name: str, is_remote_execution: bool = False
     ) -> "Job | None":
         query = (
             self._jobs_query()
@@ -2051,7 +2035,7 @@ class AbstractDBMetastore(AbstractMetastore):
             .order_by(self._jobs.c.created_at.desc())
             .limit(1)
         )
-        results = list(self.db.execute(query, conn=conn))
+        results = list(self.db.execute(query))
         if not results:
             return None
         return self._parse_job(results[0])
@@ -2070,7 +2054,6 @@ class AbstractDBMetastore(AbstractMetastore):
         run_group_id: str | None = None,
         is_remote_execution: bool = False,
         job_id: str | None = None,
-        conn: Any = None,
     ) -> str:
         """
         Creates a new job.
@@ -2105,14 +2088,13 @@ class AbstractDBMetastore(AbstractMetastore):
                 run_group_id=run_group_id,
                 is_remote_execution=is_remote_execution,
             ),
-            conn=conn,
         )
         return job_id
 
-    def get_job(self, job_id: str, conn=None) -> Job | None:
+    def get_job(self, job_id: str) -> Job | None:
         """Returns the job with the given ID."""
         query = self._jobs_select(self._jobs).where(self._jobs.c.id == job_id)
-        results = list(self.db.execute(query, conn=conn))
+        results = list(self.db.execute(query))
         if not results:
             return None
         return self._parse_job(results[0])
@@ -2121,7 +2103,6 @@ class AbstractDBMetastore(AbstractMetastore):
         self,
         run_group_id: str,
         ttl_threshold: datetime,
-        conn=None,
     ) -> bool:
         if not run_group_id:
             return False
@@ -2142,7 +2123,7 @@ class AbstractDBMetastore(AbstractMetastore):
             )
         )
 
-        return next(self.db.execute(query, conn=conn))[0] > 0
+        return next(self.db.execute(query))[0] > 0
 
     def update_job(
         self,
@@ -2152,7 +2133,6 @@ class AbstractDBMetastore(AbstractMetastore):
         error_stack: str | None = None,
         finished_at: datetime | None = None,
         metrics: dict[str, Any] | None = None,
-        conn: Any | None = None,
     ) -> Job | None:
         """Updates job fields."""
         values: dict = {}
@@ -2171,10 +2151,9 @@ class AbstractDBMetastore(AbstractMetastore):
             j = self._jobs
             self.db.execute(
                 self._jobs_update().where(j.c.id == job_id).values(**values),
-                conn=conn,
             )  # type: ignore [attr-defined]
 
-        return self.get_job(job_id, conn=conn)
+        return self.get_job(job_id)
 
     def set_job_status(
         self,
@@ -2182,7 +2161,6 @@ class AbstractDBMetastore(AbstractMetastore):
         status: JobStatus,
         error_message: str | None = None,
         error_stack: str | None = None,
-        conn: Any | None = None,
     ) -> None:
         """Set the status of the given job."""
         values: dict = {"status": status}
@@ -2194,19 +2172,16 @@ class AbstractDBMetastore(AbstractMetastore):
             values["error_stack"] = error_stack
         self.db.execute(
             self._jobs_update(self._jobs.c.id == job_id).values(**values),
-            conn=conn,
         )
 
     def get_job_status(
         self,
         job_id: str,
-        conn: Any | None = None,
     ) -> JobStatus | None:
         """Returns the status of the given job."""
         results = list(
             self.db.execute(
                 self._jobs_select(self._jobs.c.status).where(self._jobs.c.id == job_id),
-                conn=conn,
             ),
         )
         if not results:
@@ -2373,10 +2348,8 @@ class AbstractDBMetastore(AbstractMetastore):
         job_id: str,
         _hash: str,
         partial: bool = False,
-        conn: Any | None = None,
     ) -> Checkpoint:
-        tx = self.db.transaction() if conn is None else nullcontext(conn)
-        with tx as active_conn:
+        with self.db.transaction():
             query = self._checkpoints_insert().values(
                 id=str(uuid4()),
                 job_id=job_id,
@@ -2391,44 +2364,42 @@ class AbstractDBMetastore(AbstractMetastore):
                 raise RuntimeError("Database must support on_conflict_do_nothing")
             query = query.on_conflict_do_nothing(index_elements=["job_id", "hash"])
 
-            self.db.execute(query, conn=active_conn)
+            self.db.execute(query)
 
-            checkpoint = self.find_checkpoint(
-                job_id, _hash, partial=partial, conn=active_conn
-            )
+            checkpoint = self.find_checkpoint(job_id, _hash, partial=partial)
             if checkpoint is None:
                 raise RuntimeError(
                     f"Checkpoint should exist after get_or_create for job_id={job_id}, "
                     f"hash={_hash}, partial={partial}"
                 )
+
             return checkpoint
 
     def list_checkpoints(
         self,
         job_ids: list[str] | None = None,
         status: CheckpointStatus | None = None,
-        conn=None,
     ) -> Iterator[Checkpoint]:
         query = self._checkpoints_query()
         if job_ids is not None:
             query = query.where(self._checkpoints.c.job_id.in_(job_ids))
         if status is not None:
             query = query.where(self._checkpoints.c.status == status)
-        rows = list(self.db.execute(query, conn=conn))
+        rows = list(self.db.execute(query))
 
         yield from [self.checkpoint_class.parse(*r) for r in rows]
 
-    def get_checkpoint_by_id(self, checkpoint_id: str, conn=None) -> Checkpoint:
+    def get_checkpoint_by_id(self, checkpoint_id: str) -> Checkpoint:
         """Returns the checkpoint with the given ID."""
         ch = self._checkpoints
         query = self._checkpoints_select(ch).where(ch.c.id == checkpoint_id)
-        rows = list(self.db.execute(query, conn=conn))
+        rows = list(self.db.execute(query))
         if not rows:
             raise CheckpointNotFoundError(f"Checkpoint {checkpoint_id} not found")
         return self.checkpoint_class.parse(*rows[0])
 
     def find_checkpoint(
-        self, job_id: str, _hash: str, partial: bool = False, conn=None
+        self, job_id: str, _hash: str, partial: bool = False
     ) -> Checkpoint | None:
         """
         Tries to find an active checkpoint for a job with specific hash.
@@ -2441,19 +2412,19 @@ class AbstractDBMetastore(AbstractMetastore):
             ch.c.partial == partial,
             ch.c.status == CheckpointStatus.ACTIVE,
         )
-        rows = list(self.db.execute(query, conn=conn))
+        rows = list(self.db.execute(query))
         if not rows:
             return None
         return self.checkpoint_class.parse(*rows[0])
 
-    def get_last_checkpoint(self, job_id: str, conn=None) -> Checkpoint | None:
+    def get_last_checkpoint(self, job_id: str) -> Checkpoint | None:
         query = (
             self._checkpoints_query()
             .where(self._checkpoints.c.job_id == job_id)
             .order_by(desc(self._checkpoints.c.created_at))
             .limit(1)
         )
-        rows = list(self.db.execute(query, conn=conn))
+        rows = list(self.db.execute(query))
         if not rows:
             return None
         return self.checkpoint_class.parse(*rows[0])
@@ -2477,7 +2448,6 @@ class AbstractDBMetastore(AbstractMetastore):
         rows_output_reused: int | None = None,
         rerun_from_job_id: str | None = None,
         details: dict | None = None,
-        conn: Any | None = None,
     ) -> CheckpointEvent:
         """Log a checkpoint event."""
         event_id = str(uuid4())
@@ -2504,7 +2474,7 @@ class AbstractDBMetastore(AbstractMetastore):
             rerun_from_job_id=rerun_from_job_id,
             details=details,
         )
-        self.db.execute(query, conn=conn)
+        self.db.execute(query)
 
         return CheckpointEvent(
             id=event_id,
@@ -2532,7 +2502,6 @@ class AbstractDBMetastore(AbstractMetastore):
         self,
         job_id: str | None = None,
         run_group_id: str | None = None,
-        conn: Any | None = None,
     ) -> Iterator[CheckpointEvent]:
         """Get checkpoint events, optionally filtered by job_id or run_group_id."""
         query = self._checkpoint_events_query()
@@ -2543,7 +2512,7 @@ class AbstractDBMetastore(AbstractMetastore):
             query = query.where(self._checkpoint_events.c.run_group_id == run_group_id)
 
         query = query.order_by(self._checkpoint_events.c.timestamp)
-        rows = list(self.db.execute(query, conn=conn))
+        rows = list(self.db.execute(query))
 
         yield from [self.checkpoint_event_class.parse(*r) for r in rows]
 
@@ -2552,14 +2521,8 @@ class AbstractDBMetastore(AbstractMetastore):
         dataset_version_id: int,
         job_id: str,
         is_creator: bool = False,
-        conn=None,
     ) -> None:
-        # Use transaction to atomically:
-        # 1. Link dataset version to job in junction table
-        # 2. Update dataset_version.job_id to point to this job
-        with self.db.transaction() as tx_conn:
-            conn = conn or tx_conn
-
+        with self.db.transaction():
             # Insert into junction table
             query = self._dataset_version_jobs_insert().values(
                 dataset_version_id=dataset_version_id,
@@ -2571,7 +2534,7 @@ class AbstractDBMetastore(AbstractMetastore):
                 query = query.on_conflict_do_nothing(
                     index_elements=["dataset_version_id", "job_id"]
                 )
-            self.db.execute(query, conn=conn)
+            self.db.execute(query)
 
             # Also update dataset_version.job_id to point to this job
             update_query = (
@@ -2579,9 +2542,9 @@ class AbstractDBMetastore(AbstractMetastore):
                 .where(self._datasets_versions.c.id == dataset_version_id)
                 .values(job_id=job_id)
             )
-            self.db.execute(update_query, conn=conn)
+            self.db.execute(update_query)
 
-    def get_ancestor_job_ids(self, job_id: str, conn=None) -> list[str]:
+    def get_ancestor_job_ids(self, job_id: str) -> list[str]:
         """Get all ancestor job IDs using recursive CTE."""
         ancestors_cte = (
             self._jobs_select(
@@ -2626,7 +2589,7 @@ class AbstractDBMetastore(AbstractMetastore):
             ancestors_recursive.c.id != job_id
         )
 
-        results = list(self.db.execute(query, conn=conn))
+        results = list(self.db.execute(query))
 
         # Check if we hit the depth limit
         if results:
@@ -2695,16 +2658,15 @@ class AbstractDBMetastore(AbstractMetastore):
         namespace_name: str,
         project_name: str,
         job_id: str,
-        conn=None,
     ) -> DatasetVersion | None:
         # Get job ancestry (current job + all ancestors)
-        job_ancestry = [job_id, *self.get_ancestor_job_ids(job_id, conn=conn)]
+        job_ancestry = [job_id, *self.get_ancestor_job_ids(job_id)]
 
         query = self._get_dataset_version_for_job_ancestry_query(
             dataset_name, namespace_name, project_name, job_ancestry
         )
 
-        results = list(self.db.execute(query, conn=conn))
+        results = list(self.db.execute(query))
         if not results:
             return None
 
@@ -2716,7 +2678,7 @@ class AbstractDBMetastore(AbstractMetastore):
         return self.dataset_version_class.parse(*results[0])
 
     def expire_checkpoints(
-        self, ttl_threshold: datetime, conn: Any | None = None
+        self, ttl_threshold: datetime
     ) -> tuple[list[Checkpoint], list[str]]:
         ch = self._checkpoints
         jobs = self._jobs
@@ -2755,14 +2717,13 @@ class AbstractDBMetastore(AbstractMetastore):
             ch.update()
             .where(ch.c.status == CheckpointStatus.ACTIVE)
             .where(job_id_cast.in_(finished_job_ids))
-            .values(status=CheckpointStatus.EXPIRED),
-            conn=conn,
+            .values(status=CheckpointStatus.EXPIRED)
         )
 
         # Step 2: Collect ALL expired checkpoints (including leftovers from
         # prior crashed cleanup runs).
         checkpoints = list(
-            self.list_checkpoints(status=CheckpointStatus.EXPIRED, conn=conn)
+            self.list_checkpoints(status=CheckpointStatus.EXPIRED)
         )
         if not checkpoints:
             return [], []
@@ -2771,16 +2732,14 @@ class AbstractDBMetastore(AbstractMetastore):
         # (safe to remove shared input tables).
         expired_job_ids_set = {cp.job_id for cp in checkpoints}
         run_group_ids: set[str] = set()
-        for job in self.list_jobs_by_ids(list(expired_job_ids_set), conn=conn):
+        for job in self.list_jobs_by_ids(list(expired_job_ids_set)):
             if job.run_group_id:
                 run_group_ids.add(job.run_group_id)
 
         inactive_group_ids = [
             gid
             for gid in run_group_ids
-            if not self._has_active_checkpoints_in_run_group(
-                gid, ttl_threshold, conn=conn
-            )
+            if not self._has_active_checkpoints_in_run_group(gid, ttl_threshold)
         ]
 
         return checkpoints, inactive_group_ids
@@ -2789,7 +2748,6 @@ class AbstractDBMetastore(AbstractMetastore):
         self,
         checkpoint_ids: list[str],
         status: CheckpointStatus | None = None,
-        conn: Any | None = None,
     ) -> None:
         if not checkpoint_ids:
             return
@@ -2802,5 +2760,4 @@ class AbstractDBMetastore(AbstractMetastore):
             self._checkpoints.update()
             .where(self._checkpoints.c.id.in_(checkpoint_ids))
             .values(**values),
-            conn=conn,
         )

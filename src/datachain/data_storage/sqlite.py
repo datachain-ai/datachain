@@ -256,27 +256,22 @@ class SQLiteDatabaseEngine(DatabaseEngine):
         self,
         query,
         cursor: sqlite3.Cursor | None = None,
-        conn=None,
     ) -> sqlite3.Cursor:
         if self.is_closed:
             # Reconnect in case of being closed previously.
             self._reconnect()
         if cursor is not None:
             result = cursor.execute(*self.compile_to_args(query))
-        elif conn is not None:
-            result = conn.execute(*self.compile_to_args(query))
         else:
             result = self.db.execute(*self.compile_to_args(query))
         return result
 
     @retry_sqlite_locks
     def executemany(
-        self, query, params, cursor: sqlite3.Cursor | None = None, conn=None
+        self, query, params, cursor: sqlite3.Cursor | None = None
     ) -> sqlite3.Cursor:
         if cursor:
             return cursor.executemany(self.compile(query).string, params)
-        if conn:
-            return conn.executemany(self.compile(query).string, params)
         return self.db.executemany(self.compile(query).string, params)
 
     @retry_sqlite_locks
@@ -473,10 +468,7 @@ class SQLiteMetastore(AbstractDBMetastore):
         """Close connection upon exit from context manager."""
         self.close()
 
-    def clone(
-        self,
-        use_new_connection: bool = False,
-    ) -> "SQLiteMetastore":
+    def clone(self, use_new_connection: bool = False) -> "SQLiteMetastore":
         return SQLiteMetastore(db=self.db.clone())
 
     def clone_params(self) -> tuple[Callable[..., Any], list[Any], dict[str, Any]]:
@@ -612,9 +604,6 @@ class SQLiteMetastore(AbstractDBMetastore):
         if schema_version < SCHEMA_VERSION:
             raise OutdatedDatabaseSchemaError(OUTDATED_SCHEMA_ERROR_MESSAGE)
 
-    #
-    # Dataset dependencies
-    #
     @classmethod
     def _meta_columns(cls) -> list["SchemaItem"]:
         return [
@@ -646,10 +635,6 @@ class SQLiteMetastore(AbstractDBMetastore):
 
     def _datasets_dependencies_insert(self) -> "Insert":
         return sqlite.insert(self._datasets_dependencies)
-
-    #
-    # Dataset dependencies
-    #
 
     def _dataset_dependencies_select_columns(self) -> list["SchemaItem"]:
         return [
@@ -683,39 +668,21 @@ class SQLiteMetastore(AbstractDBMetastore):
             dependency_tree_cte.c.depth,
         ]
 
-    #
-    # Jobs
-    #
-
     def _jobs_insert(self) -> "Insert":
         return sqlite.insert(self._jobs)
 
-    #
-    # Checkpoints
-    #
     def _checkpoints_insert(self) -> "Insert":
         return sqlite.insert(self._checkpoints)
 
-    #
-    # Checkpoint Events
-    #
     def _checkpoint_events_insert(self) -> "Insert":
         return sqlite.insert(self._checkpoint_events)
 
     def _dataset_version_jobs_insert(self) -> "Insert":
         return sqlite.insert(self._dataset_version_jobs)
 
-    #
-    # Namespaces
-    #
-
     @property
     def default_namespace_name(self):
         return Namespace.default()
-
-    #
-    # Projects
-    #
 
     @property
     def default_project_name(self):
@@ -839,13 +806,12 @@ class SQLiteWarehouse(AbstractWarehouse):
         """Callback for InsertBuffer to insert a batch of entries."""
         if not entries:
             return
-        with self.db.transaction() as conn:
+        with self.db.transaction():
             # transactions speeds up inserts significantly as there is no separate
             # transaction created for each insert row
             self.db.executemany(
                 table.insert().values({f: bindparam(f) for f in entries[0]}),
                 entries,
-                conn=conn,
             )
 
     def get_buffer(

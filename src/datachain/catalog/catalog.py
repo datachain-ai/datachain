@@ -1004,11 +1004,9 @@ class Catalog:
 
         self.metastore.update_dataset_version(dataset, version, **values)
 
-    def update_dataset(
-        self, dataset: DatasetRecord, conn=None, **kwargs
-    ) -> DatasetRecord:
+    def update_dataset(self, dataset: DatasetRecord, **kwargs) -> DatasetRecord:
         """Updates dataset fields."""
-        dataset_updated = self.metastore.update_dataset(dataset, conn=conn, **kwargs)
+        dataset_updated = self.metastore.update_dataset(dataset, **kwargs)
         self.warehouse.rename_dataset_tables(dataset, dataset_updated)
         return dataset_updated
 

@@ -80,10 +80,7 @@ class DatabaseEngine(ABC, Serializable):
 
     @abstractmethod
     def execute(
-        self,
-        query,
-        cursor: Any | None = None,
-        conn: Any | None = None,
+        self, query, cursor: Any | None = None
     ) -> Iterator[tuple[Any, ...]]: ...
 
     def get_table(self, name: str) -> "Table":
