@@ -323,6 +323,7 @@ class File(DataModel):
         self._catalog = None
         self._caching_enabled: bool = False
         self._download_cb: Callback = DEFAULT_CALLBACK
+        self._fs_path_cache: tuple[str, str, str] | None = None
 
     def __getstate__(self):
         state = super().__getstate__()
@@ -526,7 +527,10 @@ class File(DataModel):
         # write path
         full_path = self.get_fs_path()
         fs_mode = mode if "b" in mode else f"{mode}b"
-        with client.fs.open(full_path, fs_mode, **open_kwargs) as raw_handle:
+        binary_kwargs = {
+            k: v for k, v in open_kwargs.items() if k not in self._TEXT_WRAPPER_ALLOWED
+        }
+        with client.fs.open(full_path, fs_mode, **binary_kwargs) as raw_handle:
             with self._wrap_text(
                 raw_handle,
                 mode,
@@ -580,7 +584,7 @@ class File(DataModel):
 
     def read_bytes(self, length: int = -1):
         """Returns file contents as bytes."""
-        with self.open() as stream:
+        with self.open(mode="rb") as stream:
             return stream.read(length)
 
     def read_text(self, **open_kwargs):
@@ -590,13 +594,6 @@ class File(DataModel):
             Extra keyword arguments forwarded to ``open(mode="r", ...)``
             (e.g. ``encoding="utf-8"``, ``errors="ignore"``)
         """
-        if self.location:
-            raise VFileError(
-                "Reading text from virtual file is not supported",
-                self.source,
-                self.path,
-            )
-
         with self.open(mode="r", **open_kwargs) as stream:
             return stream.read()
 
@@ -634,12 +631,12 @@ class File(DataModel):
             raise RuntimeError("Cannot save file: catalog is not set")
 
         destination = stringify_path(destination)
-        client, rel_path = self._resolve_upload(destination, client_config)
-        result = client.upload(self.read(), rel_path)
+        client, rel_path = self._resolve_destination(destination, client_config)
+        result = client.upload(self.read_bytes(), rel_path)
         result._set_stream(self._catalog)
         return result
 
-    def _resolve_upload(
+    def _resolve_destination(
         self, destination: str, client_config: dict | None = None
     ) -> "tuple[Client, str]":
         """Return (client rooted at the storage, rel_path) for *destination*."""
@@ -873,6 +870,11 @@ class File(DataModel):
                 ``.`` / ``..`` segments.  For local files, also rejects
                 absolute paths, drive letters, and empty segments.
         """
+        # Fast path: return cached result when source and path are unchanged.
+        cache = self._fs_path_cache
+        if cache is not None and cache[0] == self.source and cache[1] == self.path:
+            return cache[2]
+
         from datachain.client.fsspec import Client
 
         client_cls = Client.get_implementation(self.source or "")
@@ -884,20 +886,21 @@ class File(DataModel):
         path = self.path
 
         if not self.source:
-            return path
-
-        if self.source.startswith("file://"):
+            result = path
+        elif self.source.startswith("file://"):
             base_path = client_cls.FS_CLASS._strip_protocol(self.source)
-            if not path:
-                return base_path
-            return Path(base_path, *PurePosixPath(path).parts).as_posix()
+            result = Path(base_path, *PurePosixPath(path).parts).as_posix()
+        else:
+            # Cloud: build a full URI.
+            name = client_cls.FS_CLASS._strip_protocol(self.source)
+            base = str(client_cls.storage_uri(name))
+            if base.endswith("/"):
+                result = f"{base}{path}"
+            else:
+                result = f"{base}/{path}"
 
-        # Cloud: build a full URI.
-        name = client_cls.FS_CLASS._strip_protocol(self.source)
-        base = str(client_cls.storage_uri(name))
-        if base.endswith("/"):
-            return f"{base}{path}"
-        return f"{base}/{path}"
+        self._fs_path_cache = (self.source, self.path, result)
+        return result
 
     def _get_destination_suffix(self, placement: ExportPlacement) -> str:
         """Return the relative suffix used when exporting to an output prefix."""
@@ -1065,6 +1068,10 @@ class TextFile(File):
         ) as stream:
             yield stream
 
+    def read(self, **open_kwargs):
+        """Return file contents as text (default mode for TextFile)."""
+        return self.read_text(**open_kwargs)
+
     def read_text(self, **open_kwargs):
         """Return file contents as text.
 
@@ -1076,14 +1083,7 @@ class TextFile(File):
 
     def save(self, destination: str, client_config: dict | None = None) -> "TextFile":
         """Writes its content to destination"""
-        if self._catalog is None:
-            raise RuntimeError("Cannot save file: catalog is not set")
-
-        destination = stringify_path(destination)
-        with self.open(mode="rb") as f:
-            data = f.read()
-        client, rel_path = self._resolve_upload(destination, client_config)
-        result = client.upload(data, rel_path)
+        result = super().save(destination, client_config=client_config)
         tf = TextFile(**result.model_dump())
         tf._set_stream(self._catalog)
         return tf
@@ -1116,7 +1116,13 @@ class ImageFile(File):
         format: str | None = None,
         client_config: dict | None = None,
     ) -> "ImageFile":
-        """Writes its content to destination"""
+        """Save the image to *destination*, optionally re-encoding to *format*.
+
+        If ``destination`` is a remote path, the image will be uploaded to
+        remote storage.  See :meth:`File.save` for full destination semantics.
+        """
+        if self._catalog is None:
+            raise RuntimeError("Cannot save file: catalog is not set")
         destination = stringify_path(destination)
 
         # If format is not provided, determine it from the file extension
@@ -1137,7 +1143,7 @@ class ImageFile(File):
 
         buf = BytesIO()
         self.read().save(buf, format=format)
-        client, rel_path = self._resolve_upload(destination, client_config)
+        client, rel_path = self._resolve_destination(destination, client_config)
         result = client.upload(buf.getvalue(), rel_path)
         img = ImageFile(**result.model_dump())
         img._set_stream(self._catalog)
@@ -1291,8 +1297,6 @@ class VideoFile(File):
     ) -> "VideoFile":
         """Writes its content to destination"""
         result = super().save(destination, client_config=client_config)
-        if isinstance(result, VideoFile):
-            return result
         vf = VideoFile(**result.model_dump())
         vf._set_stream(self._catalog)
         return vf
@@ -1385,7 +1389,7 @@ class AudioFile(File):
 
     def save(  # type: ignore[override]
         self,
-        output: str,
+        destination: str,
         format: str | None = None,
         start: float = 0,
         end: float | None = None,
@@ -1393,24 +1397,30 @@ class AudioFile(File):
     ) -> "AudioFile":
         """Save audio file or extract fragment to specified format.
 
+        If ``destination`` is a remote path, the audio file will be uploaded
+        to remote storage.
+
         Args:
-            output: Output directory path
-            format: Output format ('wav', 'mp3', etc). Defaults to source format
-            start: Start time in seconds (>= 0). Defaults to 0
-            end: End time in seconds. If None, extracts to end of file
-            client_config: Optional client configuration
+            destination: Output directory path or URI (e.g. ``s3://…``, ``gs://…``).
+            format: Output format ('wav', 'mp3', etc). Defaults to source format.
+            start: Start time in seconds (>= 0). Defaults to 0.
+            end: End time in seconds. If None, extracts to end of file.
+            client_config: Optional client configuration.
 
         Returns:
-            AudioFile: New audio file with format conversion/extraction applied
+            AudioFile: New audio file with format conversion/extraction applied.
 
         Examples:
             audio.save("/path", "mp3")                        # Entire file to MP3
             audio.save("s3://bucket/path", "wav", start=2.5)  # From 2.5s to end as WAV
             audio.save("/path", "flac", start=1, end=3)       # 1-3s fragment as FLAC
         """
+        if self._catalog is None:
+            raise RuntimeError("Cannot save file: catalog is not set")
+
         from .audio import save_audio
 
-        return save_audio(self, output, format, start, end)
+        return save_audio(self, destination, format, start, end, client_config)
 
 
 class AudioFragment(DataModel):
@@ -1460,25 +1470,37 @@ class AudioFragment(DataModel):
         duration = self.end - self.start
         return audio_to_bytes(self.audio, format, self.start, duration)
 
-    def save(self, output: str, format: str | None = None) -> "AudioFile":
+    def save(
+        self,
+        destination: str,
+        format: str | None = None,
+        client_config: dict | None = None,
+    ) -> "AudioFile":
         """
         Saves the audio fragment as a new audio file.
 
-        If `output` is a remote path, the audio file will be uploaded to remote storage.
+        If ``destination`` is a remote path, the audio file will be uploaded
+        to remote storage.
 
         Args:
-            output (str): The destination path, which can be a local file path
-                          or a remote URL.
-            format (str, optional): The output audio format (e.g., 'wav', 'mp3').
-                                    If None, the format is inferred from the
-                                    file extension.
+            destination: Output directory path or URI (e.g. ``s3://…``, ``gs://…``).
+            format: Output audio format (e.g., 'wav', 'mp3').
+                    If None, inferred from the file extension.
+            client_config: Optional client configuration (e.g. credentials).
 
         Returns:
             AudioFile: A Model representing the saved audio file.
         """
         from .audio import save_audio
 
-        return save_audio(self.audio, output, format, self.start, self.end)
+        return save_audio(
+            self.audio,
+            destination,
+            format,
+            self.start,
+            self.end,
+            client_config=client_config,
+        )
 
 
 class VideoFrame(DataModel):
@@ -1525,23 +1547,31 @@ class VideoFrame(DataModel):
 
         return video_frame_bytes(self.video, self.frame, format)
 
-    def save(self, output: str, format: str = "jpg") -> "ImageFile":
+    def save(
+        self,
+        destination: str,
+        format: str = "jpg",
+        client_config: dict | None = None,
+    ) -> "ImageFile":
         """
         Saves the current video frame as an image file.
 
-        If `output` is a remote path, the image file will be uploaded to remote storage.
+        If ``destination`` is a remote path, the image file will be uploaded
+        to remote storage.
 
         Args:
-            output (str): The destination path, which can be a local file path
-                          or a remote URL.
-            format (str): The image format (e.g., 'jpg', 'png'). Defaults to 'jpg'.
+            destination: Output directory path or URI (e.g. ``s3://…``, ``gs://…``).
+            format: Image format (e.g., 'jpg', 'png'). Defaults to 'jpg'.
+            client_config: Optional client configuration (e.g. credentials).
 
         Returns:
             ImageFile: A Model representing the saved image file.
         """
         from .video import save_video_frame
 
-        return save_video_frame(self.video, self.frame, output, format)
+        return save_video_frame(
+            self.video, self.frame, destination, format, client_config=client_config
+        )
 
 
 class VideoFragment(DataModel):
@@ -1563,25 +1593,37 @@ class VideoFragment(DataModel):
     start: float
     end: float
 
-    def save(self, output: str, format: str | None = None) -> "VideoFile":
+    def save(
+        self,
+        destination: str,
+        format: str | None = None,
+        client_config: dict | None = None,
+    ) -> "VideoFile":
         """
         Saves the video fragment as a new video file.
 
-        If `output` is a remote path, the video file will be uploaded to remote storage.
+        If ``destination`` is a remote path, the video file will be uploaded
+        to remote storage.
 
         Args:
-            output (str): The destination path, which can be a local file path
-                          or a remote URL.
-            format (str, optional): The output video format (e.g., 'mp4', 'avi').
-                                    If None, the format is inferred from the
-                                    file extension.
+            destination: Output directory path or URI (e.g. ``s3://…``, ``gs://…``).
+            format: Output video format (e.g., 'mp4', 'avi').
+                    If None, inferred from the file extension.
+            client_config: Optional client configuration (e.g. credentials).
 
         Returns:
             VideoFile: A Model representing the saved video file.
         """
         from .video import save_video_fragment
 
-        return save_video_fragment(self.video, self.start, self.end, output, format)
+        return save_video_fragment(
+            self.video,
+            self.start,
+            self.end,
+            destination,
+            format,
+            client_config=client_config,
+        )
 
 
 class Video(DataModel):

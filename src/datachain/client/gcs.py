@@ -81,6 +81,19 @@ class GCSClient(Client):
             return f"{path}#{generation}"
         return path
 
+    async def get_file(
+        self,
+        lpath: str,
+        rpath: str,
+        callback,
+        version_id: str | None = None,
+    ) -> None:
+        # Workaround: gcsfs._get_file() silently ignores the generation= kwarg.
+        # Embed it in the path as `path#generation` instead.
+        # Remove the whole override once gcsfs supports generation in _get_file()
+        path = self._path_with_generation(lpath, version_id)
+        await self.fs._get_file(path, rpath, callback=callback)
+
     async def get_current_etag(self, file: File) -> str:
         path = self._path_with_generation(file.get_fs_path(), file.version)
         info = await self.fs._info(path)

@@ -962,7 +962,7 @@ def test_array_contains():
         ("file.txt", ""),  # no directory component
         ("dir/file.txt", "dir"),
         ("a/b/c/file.txt", "a/b/c"),
-        ("a/b/c/", "a/b/c"),  # trailing slash — returns parent of leaf dir
+        ("a/b/c/", "a/b/c"),  # trailing slash stripped, not a true parent
     ],
 )
 def test_path_parent(path, expected):

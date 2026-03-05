@@ -309,7 +309,7 @@ def test_map_prefetch_skips_invalid_path_files(
 
     monkeypatch.delenv("DATACHAIN_DISTRIBUTED", raising=False)
 
-    files = [File(source="s3://bucket", path=bad_path)] * 3
+    files = [File(source="s3://bucket", path=bad_path) for _ in range(3)]
 
     def get_path(file: File) -> str:
         return file.path

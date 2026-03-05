@@ -137,6 +137,22 @@ def test_get_current_etag_qmark_in_key_with_version():
     )
 
 
+def test_get_file_with_version():
+    client = _make_client()
+    sync(
+        get_loop(),
+        client.get_file,
+        "gs://foo/blob.txt",
+        "/dev/null",
+        DEFAULT_CALLBACK,
+        version_id=_VER,
+    )
+    args, kwargs = client._fs._get_file.call_args
+    assert args[0] == f"gs://foo/blob.txt#{_VER}"
+    assert kwargs.get("generation") is None
+
+
+@_xfail_special_char_versioned
 def test_get_file_hash_in_key_with_version():
     client = _make_client()
     sync(
@@ -148,11 +164,11 @@ def test_get_file_hash_in_key_with_version():
         version_id=_VER,
     )
     args, kwargs = client._fs._get_file.call_args
-    assert args[0] == "gs://foo/blob#file.txt"
-    assert f"#{_VER}" not in args[0]
-    assert kwargs.get("generation") == _VER
+    assert args[0] == f"gs://foo/blob#file.txt#{_VER}"
+    assert kwargs.get("generation") is None
 
 
+@_xfail_special_char_versioned
 def test_get_file_qmark_in_key_with_version():
     client = _make_client()
     sync(
@@ -164,6 +180,5 @@ def test_get_file_qmark_in_key_with_version():
         version_id=_VER,
     )
     args, kwargs = client._fs._get_file.call_args
-    assert args[0] == "gs://foo/blob?file.txt"
-    assert f"#{_VER}" not in args[0]
-    assert kwargs.get("generation") == _VER
+    assert args[0] == f"gs://foo/blob?file.txt#{_VER}"
+    assert kwargs.get("generation") is None

@@ -129,13 +129,13 @@ def rebase_path(
     src_path_norm = _to_posix(src_path_only)
     old_base_norm = _to_posix(old_base_only)
 
-    if old_base_norm not in src_path_norm:
-        raise ValueError(f"old_base '{old_base}' not found in src_path")
-
-    idx = src_path_norm.find(old_base_norm)
+    old_base_norm = old_base_norm.rstrip("/") + "/"
+    idx = (src_path_norm + "/").find(old_base_norm)
+    if idx == -1 or (idx > 0 and src_path_norm[idx - 1] != "/"):
+        raise ValueError(
+            f"old_base '{old_base}' not found at a path boundary in '{src_path}'"
+        )
     relative_start = idx + len(old_base_norm)
-    if relative_start < len(src_path_norm) and src_path_norm[relative_start] == "/":
-        relative_start += 1
     relative_path = src_path_norm[relative_start:]
 
     # Parse the filename

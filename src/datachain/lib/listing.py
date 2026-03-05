@@ -117,8 +117,13 @@ def _sanitize_ds_name(raw: str) -> str:
     The encoding is injective (collision-free) and handles the full Unicode
     range via a variable-length hex scheme:
 
-    1. Pre-escape literals ``_x``, ``_y``, ``_z`` that appear in the raw string:
-       ``_x`` → ``_x_x``, ``_y`` → ``_y_y``, ``_z`` → ``_z_z``.
+    1. Pre-escape literals ``_x``, ``_y``, ``_z`` that appear in the raw string
+       (``_x`` → ``_x_x``, ``_y`` → ``_y_y``, ``_z`` → ``_z_z``).  All three
+       replacements must run in this order *before* the regex step, because the
+       regex introduces new ``_x``/``_y``/``_z`` tokens that must never be
+       re-escaped.  Order also matters within the three: e.g. ``"_x_y"`` must
+       become ``"_x_x_y_y"``, not ``"_x_x_y"`` (which the decoder can't
+       round-trip).
     2. Encode every char outside ``[a-zA-Z0-9_/:-]``:
        - U+0000-U+00FF  →  ``_xHH``     (2 hex digits, e.g. ``.`` → ``_x2e``)
        - U+0100-U+FFFF  →  ``_yHHHH``   (4 hex digits, e.g. ``é`` → ``_y00e9``)
@@ -127,7 +132,7 @@ def _sanitize_ds_name(raw: str) -> str:
     ``_`` is not a hex digit, so ``_y_y`` / ``_z_z`` escape tokens are
     unambiguous with ``_yHHHH`` / ``_zHHHHHH`` encoding tokens.
     """
-    raw = raw.replace("_x", "_x_x")  # must come first
+    raw = raw.replace("_x", "_x_x")
     raw = raw.replace("_y", "_y_y")
     raw = raw.replace("_z", "_z_z")
 

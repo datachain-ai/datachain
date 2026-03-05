@@ -582,12 +582,12 @@ def test_is_subpath_accepts_contained(tmp_path):
 
 
 def test_is_subpath_asserts_parent_absolute():
-    with pytest.raises(AssertionError, match="parent must be absolute"):
+    with pytest.raises(ValueError, match="parent must be absolute"):
         is_subpath("relative/dir", os.path.abspath("child"))
 
 
 def test_is_subpath_asserts_child_absolute():
-    with pytest.raises(AssertionError, match="child must be absolute"):
+    with pytest.raises(ValueError, match="child must be absolute"):
         is_subpath(os.path.abspath("parent"), "relative/child")
 
 

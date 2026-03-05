@@ -1,6 +1,8 @@
+import io
 import json
 import os
 import posixpath
+import tarfile
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -12,6 +14,7 @@ from datachain.catalog import Catalog
 from datachain.fs.utils import path_to_fsspec_uri
 from datachain.lib.file import (
     Audio,
+    AudioFile,
     File,
     FileError,
     ImageFile,
@@ -20,6 +23,7 @@ from datachain.lib.file import (
     VideoFile,
     resolve,
 )
+from datachain.lib.tar import process_tar
 
 
 @pytest.fixture
@@ -463,6 +467,36 @@ def test_get_fs_path_contract(
     assert fs_path.replace("\\", "/") == expected
 
 
+def test_get_fs_path_cache_hit():
+    file = File(source="s3://mybkt", path="dir/file.txt")
+    first = file.get_fs_path()
+    second = file.get_fs_path()
+    assert first == second
+    assert file._fs_path_cache == ("s3://mybkt", "dir/file.txt", first)
+
+
+def test_get_fs_path_cache_invalidated_on_source_change():
+    file = File(source="s3://mybkt", path="dir/file.txt")
+    first = file.get_fs_path()
+    assert first == "s3://mybkt/dir/file.txt"
+
+    object.__setattr__(file, "source", "gs://other")
+    second = file.get_fs_path()
+    assert second == "gs://other/dir/file.txt"
+    assert file._fs_path_cache == ("gs://other", "dir/file.txt", second)
+
+
+def test_get_fs_path_cache_invalidated_on_path_change():
+    file = File(source="s3://mybkt", path="a.txt")
+    first = file.get_fs_path()
+    assert first == "s3://mybkt/a.txt"
+
+    object.__setattr__(file, "path", "b.txt")
+    second = file.get_fs_path()
+    assert second == "s3://mybkt/b.txt"
+    assert file._fs_path_cache == ("s3://mybkt", "b.txt", second)
+
+
 def test_read_binary_data(tmp_path, catalog: Catalog):
     file_name = "myfile"
     data = b"some\x00data\x00is\x48\x65\x6c\x57\x6f\x72\x6c\x64\xff\xffheRe"
@@ -641,6 +675,17 @@ def test_save_video_file_returns_videofile(tmp_path, catalog: Catalog):
     assert result.read_bytes() == data
 
 
+@pytest.mark.parametrize(
+    "file_cls",
+    [AudioFile, ImageFile, VideoFile],
+)
+def test_save_catalog_guard(file_cls):
+    f = file_cls(source="s3://bucket", path="file.bin")
+    assert f._catalog is None
+    with pytest.raises(RuntimeError, match="Cannot save file: catalog is not set"):
+        f.save("/unused/path")
+
+
 def _save_dest_nested(tmp_path, _mp):
     p = tmp_path / "a" / "b" / "c" / "out.bin"
     return str(p), p
@@ -788,6 +833,28 @@ def test_read_text(tmp_path, catalog):
     file = File(path=file_name, source=f"file://{tmp_path}")
     file._set_stream(catalog, True)
     assert file.read_text() == data
+
+
+def test_read_text_virtual_tar_file(tmp_path, catalog):
+    tar_path = tmp_path / "archive.tar"
+    data = "hello from tar"
+
+    with tarfile.open(tar_path, mode="w") as tf:
+        info = tarfile.TarInfo("member.txt")
+        payload = data.encode("utf-8")
+        info.size = len(payload)
+        tf.addfile(info, io.BytesIO(payload))
+
+    archive = File(path="archive.tar", source=path_to_fsspec_uri(str(tmp_path)))
+    archive._set_stream(catalog, False)
+
+    member = next(process_tar(archive))
+    member._set_stream(catalog, False)
+
+    with member.open(mode="r", encoding="utf-8") as stream:
+        assert stream.read() == data
+
+    assert member.read_text(encoding="utf-8") == data
 
 
 def test_resolve_unsupported_protocol():

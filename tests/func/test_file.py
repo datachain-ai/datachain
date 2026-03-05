@@ -176,7 +176,7 @@ def test_read_storage_special_chars_in_local_path(
     assert files[0].source.startswith("file://")
 
 
-def test_to_storage_tar_member_percent_encoded_traversal_escapes_output(
+def test_to_storage_tar_member_filepath_keeps_percent_encoded_traversal_literal(
     tmp_dir, test_session_tmpfile
 ):
     payload = "..%2f..%2fescaped.txt"  # unquote -> ../../escaped.txt
@@ -189,20 +189,25 @@ def test_to_storage_tar_member_percent_encoded_traversal_escapes_output(
         tf.addfile(info, io.BytesIO(data))
 
     chain = dc.read_storage(tmp_dir, session=test_session_tmpfile)
-    tar_entries = chain.filter(C("file.path").glob("*.tar")).gen(file=process_tar)
-    all_entries = chain.union(tar_entries)
+    tar_members = chain.filter(C("file.path").glob("*.tar")).gen(file=process_tar)
 
     member_path = f"malicious.tar/{payload}"
-    member = all_entries.filter(C("file.path") == member_path)
+    member = tar_members.filter(C("file.path") == member_path)
 
-    # Ensure the test actually selects the malicious member.
+    # Ensure the test actually selects only the malicious extracted member.
     assert member.to_values("file.path") == [member_path]
 
     output = tmp_dir / "output"
     assert not (tmp_dir / "escaped.txt").exists()
-    member.to_storage(output, placement="filename")
+    member.to_storage(output, placement="filepath")
 
-    # Expected-safe behavior: exported files must stay within output.
+    exported_member = output / "malicious.tar" / payload
+
+    # Expected-safe behavior: exporting the selected tar member creates a
+    # directory for the parent archive path and writes the member payload under
+    # its literal encoded name, without decoding %2f into path traversal.
+    assert (output / "malicious.tar").is_dir()
+    assert exported_member.read_bytes() == data
     assert not (tmp_dir / "escaped.txt").exists()
 
 
@@ -292,31 +297,18 @@ def test_file_at_rejects_directory_uri(tmp_dir, test_session_tmpfile, monkeypatc
         File.at(dir_uri, session=test_session_tmpfile)
 
 
-def test_read_storage_returns_same_source_and_path(
+def test_read_storage_preserves_relative_file_at_source_and_path(
     tmp_dir, test_session_tmpfile, monkeypatch
 ):
     monkeypatch.chdir(tmp_dir)
-    import os
-
-    print(os.getcwd())
 
     file_obj = File.at("rel.bin", session=test_session_tmpfile)
     with file_obj.open("wb") as f:
         f.write(b"hi")
 
-    import os
-
-    print(os.getcwd())
-
     listed = dc.read_storage(tmp_dir, session=test_session_tmpfile).to_values("file")
     assert len(listed) == 1
     listed_file = listed[0]
-    print(listed_file.path)
-    print(listed_file.source)
-    # print pwd
-    import os
-
-    print(os.getcwd())
     assert listed_file.path == "rel.bin"
     assert listed_file.source == file_obj.source
 

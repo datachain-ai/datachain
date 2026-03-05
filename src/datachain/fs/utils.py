@@ -70,8 +70,10 @@ def is_subpath(parent: str, child: str) -> bool:
     comparison so that traversal tricks like ``/out/../etc/passwd`` are caught.
     Comparison is case-insensitive on Windows.
     """
-    assert os.path.isabs(parent), f"parent must be absolute: {parent!r}"
-    assert os.path.isabs(child), f"child must be absolute: {child!r}"
+    if not os.path.isabs(parent):
+        raise ValueError(f"parent must be absolute: {parent!r}")
+    if not os.path.isabs(child):
+        raise ValueError(f"child must be absolute: {child!r}")
 
     parent_normed = os.path.normcase(os.path.normpath(parent))
     child_normed = os.path.normcase(os.path.normpath(child))

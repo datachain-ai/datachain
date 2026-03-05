@@ -182,6 +182,36 @@ def test_parse_file_absolute_path_without_protocol(cloud_test_catalog):
     assert rel_part == "animals"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX root-path behavior")
+@pytest.mark.parametrize("cloud_type", ["file"], indirect=True)
+@pytest.mark.parametrize(
+    "url,expected_uri,expected_rel",
+    [
+        ("/tmp", "file:////", "tmp"),  # noqa: S108
+        ("/tmp.txt", "file:////", "tmp.txt"),  # noqa: S108
+        ("file:///tmp", "file:////", "tmp"),
+        ("file:///tmp.txt", "file:////", "tmp.txt"),
+        ("/tmp/", "file:///tmp", ""),  # noqa: S108
+        ("file:///tmp/", "file:///tmp", ""),
+    ],
+    ids=[
+        "plain-dir",
+        "plain-file",
+        "uri-dir",
+        "uri-file",
+        "plain-trailing-slash",
+        "uri-trailing-slash",
+    ],
+)
+def test_parse_file_absolute_posix_root_paths(
+    cloud_test_catalog, url, expected_uri, expected_rel
+):
+    uri, rel_part = Client.parse_url(url)
+
+    assert uri == expected_uri
+    assert rel_part == expected_rel
+
+
 @pytest.mark.parametrize("cloud_type", ["file"], indirect=True)
 def test_parse_file_relative_path_multiple_dirs_back(cloud_test_catalog):
     uri, rel_part = Client.parse_url("../../animals".replace("/", os.sep))
@@ -481,10 +511,9 @@ _special_char_versioned = pytest.mark.parametrize(
     _VERSIONED_SPECIAL_CHAR_PARAMS,
     indirect=["cloud_type"],
 )
-_version_aware_true = pytest.mark.parametrize("version_aware", [True], indirect=True)
 
 
-@_version_aware_true
+@pytest.mark.parametrize("version_aware", [True], indirect=True)
 @_special_char_versioned
 def test_get_file_info_versioned_special_char_in_key(
     cloud_test_catalog_upload, cloud_type, version_aware, char
@@ -503,7 +532,7 @@ def test_get_file_info_versioned_special_char_in_key(
     assert f2.size == len(b"version-2")
 
 
-@_version_aware_true
+@pytest.mark.parametrize("version_aware", [True], indirect=True)
 @_special_char_versioned
 def test_get_size_versioned_special_char_in_key(
     cloud_test_catalog_upload, cloud_type, version_aware, char
@@ -530,7 +559,7 @@ def test_get_size_versioned_special_char_in_key(
     assert s2 == len(b"version-2")
 
 
-@_version_aware_true
+@pytest.mark.parametrize("version_aware", [True], indirect=True)
 @_special_char_versioned
 def test_get_etag_versioned_special_char_in_key(
     cloud_test_catalog_upload, cloud_type, version_aware, char
@@ -558,7 +587,7 @@ def test_get_etag_versioned_special_char_in_key(
     assert etag1 != etag2
 
 
-@_version_aware_true
+@pytest.mark.parametrize("version_aware", [True], indirect=True)
 @_special_char_versioned
 def test_get_file_versioned_special_char_in_key(
     cloud_test_catalog_upload, cloud_type, version_aware, char, tmp_path

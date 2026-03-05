@@ -46,6 +46,37 @@ def test_split_url_accepts_plain_file_path(tmp_path):
     assert rel == "leaf.txt"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX root-path behavior")
+@pytest.mark.parametrize(
+    "url,expected_bucket,expected_rel",
+    [
+        ("/tmp", "/", "tmp"),  # noqa: S108
+        ("file:///tmp", "/", "tmp"),
+        ("/tmp.txt", "/", "tmp.txt"),  # noqa: S108
+        ("file:///tmp.txt", "/", "tmp.txt"),
+        ("/tmp/", "/tmp", ""),  # noqa: S108
+        ("file:///tmp/", "/tmp", ""),  # noqa: S108
+        ("/", "/", ""),
+        ("file:///", "/", ""),
+    ],
+    ids=[
+        "plain-dir",
+        "uri-dir",
+        "plain-file",
+        "uri-file",
+        "plain-trailing-slash",
+        "uri-trailing-slash",
+        "root",
+        "root-uri",
+    ],
+)
+def test_split_url_preserves_posix_root(url, expected_bucket, expected_rel):
+    bucket, rel = FileClient.split_url(url)
+
+    assert bucket == expected_bucket
+    assert rel == expected_rel
+
+
 def test_path_to_fsspec_uri_preserves_trailing_slash(tmp_path):
     dir_path = tmp_path / "trail"
     dir_path.mkdir()
@@ -315,6 +346,22 @@ def test_file_at_source_is_file_uri(tmp_path, test_session):
     file = File.at(str(tmp_path / "file.txt"), session=test_session)
 
     assert file.source.startswith("file:///")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX root-path behavior")
+def test_file_at_posix_root_file_uses_root_as_source(test_session):
+    file = File.at("/tmp.txt", session=test_session)  # noqa: S108
+
+    assert file.source == "file:////"
+    assert file.path == "tmp.txt"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX root-path behavior")
+def test_file_at_posix_root_file_uri_uses_root_as_source(test_session):
+    file = File.at("file:///tmp.txt", session=test_session)
+
+    assert file.source == "file:////"
+    assert file.path == "tmp.txt"
 
 
 def test_file_at_path_inside_symlinked_directory(tmp_path, test_session):

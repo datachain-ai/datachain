@@ -57,13 +57,18 @@ class FileClient(Client):
             url = path_to_fsspec_uri(url)
 
         os_path = LocalFileSystem._strip_protocol(url)
+        is_abs = os_path.startswith("/")
 
         # Preserve "directory" semantics when a trailing slash is present.
         if url.endswith("/"):
             bucket = os_path.rstrip("/")
+            if is_abs and not bucket:
+                bucket = "/"
             path = ""
         else:
             bucket, path = os_path.rsplit("/", 1)
+            if is_abs and not bucket:
+                bucket = "/"
 
         if os.name == "nt":
             bucket = bucket.removeprefix("/")

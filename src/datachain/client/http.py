@@ -151,6 +151,7 @@ class HTTPClient(Client):
         )
 
     def get_file_info(self, path: str, version_id: str | None = None) -> "File":
+        self.validate_file_path(path)
         info = self.fs.info(self.get_uri(path))
         return self.info_to_file(info, path)
 
