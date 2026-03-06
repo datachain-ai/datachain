@@ -626,7 +626,7 @@ class Aggregator(UDFBase):
             # Get partition_id from first row if available (all rows in batch share it)
             # This is used to track which partition produced each output for checkpoints
             input_id = None
-            if partition_id_idx is not None and batch:
+            if partition_id_idx is not None:
                 input_id = batch[0][partition_id_idx]
 
             prepared_rows = [
@@ -642,11 +642,11 @@ class Aggregator(UDFBase):
             result_objs = self.process(*udf_args)
             udf_outputs = (self._flatten_row(row) for row in result_objs)
             # Include sys__input_id to track which partition produced each output
-            output = [
+            output = (
                 {"sys__input_id": input_id}
                 | dict(zip(self.signal_names, row, strict=False))
                 for row in udf_outputs
-            ]
+            )
             processed_cb.relative_update(len(batch))
             yield output
 

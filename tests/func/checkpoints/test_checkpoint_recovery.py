@@ -20,10 +20,10 @@ def nums_dataset(test_session):
 @pytest.fixture
 def nums_letters(test_session):
     nums_data = [1, 2, 3, 4, 5, 6]
-    leters_data = ["A", "A", "B", "B", "C", "C"]
-    return dc.read_values(num=nums_data, letter=leters_data, session=test_session).save(
-        "nums_letters"
-    )
+    letters_data = ["A", "A", "B", "B", "C", "C"]
+    return dc.read_values(
+        num=nums_data, letter=letters_data, session=test_session
+    ).save("nums_letters")
 
 
 @pytest.mark.parametrize(

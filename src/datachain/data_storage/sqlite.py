@@ -400,7 +400,8 @@ class SQLiteDatabaseEngine(DatabaseEngine):
     def drop_table(self, table: "Table", if_exists: bool = False) -> None:
         self.execute(DropTable(table, if_exists=if_exists))
         # Remove the table from metadata to avoid stale references
-        self.metadata.remove(table)
+        if table.name in self.metadata.tables:
+            self.metadata.remove(table)
 
     def rename_table(self, old_name: str, new_name: str):
         from datachain.error import TableRenameError
@@ -414,9 +415,8 @@ class SQLiteDatabaseEngine(DatabaseEngine):
                 f"Failed to rename table from '{old_name}' to '{new_name}': {e}"
             ) from e
         # Remove old table from metadata to avoid stale references
-        old_table = self.metadata.tables.get(old_name)
-        if old_table is not None:
-            self.metadata.remove(old_table)
+        if old_name in self.metadata.tables:
+            self.metadata.remove(self.metadata.tables[old_name])
 
 
 class SQLiteMetastore(AbstractDBMetastore):

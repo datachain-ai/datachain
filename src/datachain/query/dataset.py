@@ -1361,7 +1361,7 @@ class UDFStep(Step, ABC):
         input_query = self.get_input_query(input_table.name, query)
 
         # For aggregators with partition_by, use `query` which already has
-        # partition columns joined (from _setup_partition_table).
+        # partition columns joined (from _prepare_partition_query).
         # `input_query` is rebuilt from the input table and lacks partition_id.
         unprocessed_input = query if self.partition_by is not None else input_query
 
