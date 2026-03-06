@@ -329,14 +329,16 @@ class AbstractMetastore(ABC, Serializable):
         self, job_id: str | None = None
     ) -> list[tuple[DatasetRecord, str]]:
         """
-        Get incomplete dataset versions to clean up.
+        Get incomplete or stale dataset versions to clean up.
 
         When job_id is provided, returns versions belonging to that specific
         job (used during job failure cleanup).
 
-        When job_id is None, returns all incomplete dataset versions
-        whose associated job is finished, plus versions with no job_id
-        that are older than STALE_CREATED_THRESHOLD_HOURS (used by gc).
+        When job_id is None, returns all versions that are safe to delete:
+        - Status CREATED, FAILED, or STALE, where either:
+          - the associated job has finished, or
+          - there is no associated job (job_id is NULL) and the version is
+            older than STALE_CREATED_THRESHOLD_HOURS
 
         Returns:
             List of (DatasetRecord, version_string) tuples. Each DatasetRecord
@@ -1654,7 +1656,9 @@ class AbstractDBMetastore(AbstractMetastore):
                 )
             )
             .where(
-                dv.c.status.in_([DatasetStatus.CREATED, DatasetStatus.FAILED]),
+                dv.c.status.in_(
+                    [DatasetStatus.CREATED, DatasetStatus.FAILED, DatasetStatus.STALE]
+                ),
                 or_(
                     # job is finished
                     j.c.status.in_(
