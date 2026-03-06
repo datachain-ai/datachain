@@ -33,3 +33,8 @@ DataChain is a command-line tool for wrangling unstructured AI data at scale. Us
 	- Cancel running jobs with [`datachain job cancel`](job/cancel.md)
 
 	- Check for the clusters available for jobs [`datachain job clusters`](job/clusters.md)
+
+
+3.  **Maintenance**
+
+	- Clean up temporary tables, failed versions, and outdated checkpoints with [`datachain gc`](gc.md)

@@ -368,12 +368,12 @@ def test_read_records_with_iterator_is_lazy(test_session, monkeypatch):
 
     original_executemany = test_session.catalog.warehouse.db.executemany
 
-    def spy_executemany(stmt, params, conn=None):
+    def spy_executemany(stmt, params):
         batch_executions.append(
             {"yielded_so_far": yielded_count, "batch_size": len(params)}
         )
 
-        return original_executemany(stmt, params, conn=conn)
+        return original_executemany(stmt, params)
 
     monkeypatch.setattr(
         test_session.catalog.warehouse.db, "executemany", spy_executemany
@@ -4371,6 +4371,20 @@ def test_save_create_project_not_allowed(test_session, is_studio):
         dc.read_values(fib=[1, 1, 2, 3, 5, 8], session=test_session).save(
             "dev.numbers.fibonacci"
         )
+
+
+def test_save_raises_in_ephemeral_mode(test_session):
+    chain = dc.read_values(num=[1, 2, 3], session=test_session).settings(ephemeral=True)
+
+    with pytest.raises(RuntimeError, match="Cannot save datasets in ephemeral mode"):
+        chain.save("should_fail")
+
+
+def test_job_property_raises_in_ephemeral_mode(test_session):
+    chain = dc.read_values(num=[1, 2, 3], session=test_session).settings(ephemeral=True)
+
+    with pytest.raises(RuntimeError, match="Cannot access job in ephemeral mode"):
+        chain.job  # noqa: B018
 
 
 def test_agg_partition_by_string_notation(test_session):

@@ -325,7 +325,11 @@ def join(
 def get_element(arg: str | Column | Func | Sequence, index: int) -> Func:
     """
     Returns the element at the given index from the array.
-    If the index is out of bounds, it returns None or columns default value.
+
+    Uses 0-based indexing. Negative indices count from the end of the array
+    (e.g., -1 is the last element, -2 is second-to-last). If the index is
+    out of bounds in either direction, returns the column's default value
+    (typically None).
 
     Args:
         arg (str | Column | Func | Sequence): Array to get the element from.
@@ -333,7 +337,8 @@ def get_element(arg: str | Column | Func | Sequence, index: int) -> Func:
             If a Column is provided, it is assumed to be an array column.
             If a Func is provided, it is assumed to be a function returning an array.
             If a sequence is provided, it is assumed to be an array of values.
-        index (int): Index of the element to get from the array.
+        index (int): 0-based index of the element to get from the array.
+            Negative values index from the end (-1 = last, -2 = second-to-last).
 
     Returns:
         Func: A `Func` object that represents the array get_element function.
@@ -344,11 +349,16 @@ def get_element(arg: str | Column | Func | Sequence, index: int) -> Func:
             first_el=func.array.get_element("signal.values", 0),
             second_el=func.array.get_element(dc.C("signal.values"), 1),
             third_el=func.array.get_element([1, 2, 3, 4, 5], 2),
+            last_el=func.array.get_element("signal.values", -1),
+            second_last=func.array.get_element("signal.values", -2),
         )
         ```
 
     Notes:
         - The result column will always be the same type as the elements of the array.
+        - Out-of-bounds access (e.g., index 10 on a 3-element array, or -4 on a
+          3-element array) returns the column's default value rather than raising
+          an error.
     """
 
     def type_from_args(arr, _):

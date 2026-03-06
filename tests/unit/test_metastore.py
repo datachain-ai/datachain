@@ -1,27 +1,25 @@
 import base64
 import json
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from datachain.checkpoint import CheckpointStatus
+from datachain.data_storage.job import JobQueryType, JobStatus
 from datachain.data_storage.serializer import deserialize
 from datachain.data_storage.sqlite import SCHEMA_VERSION, SQLiteMetastore
-from datachain.dataset import StorageURI
 from datachain.error import OutdatedDatabaseSchemaError
 from tests.conftest import cleanup_sqlite_db
 
 
 def test_sqlite_metastore(sqlite_db):
-    uri = StorageURI("s3://bucket")
-
-    obj = SQLiteMetastore(uri, sqlite_db)
-    assert obj.uri == uri
+    obj = SQLiteMetastore(db=sqlite_db)
     assert obj.db == sqlite_db
 
     # Test clone
     obj2 = obj.clone()
     try:
         assert isinstance(obj2, SQLiteMetastore)
-        assert obj2.uri == uri
         assert obj2.db.db_file == sqlite_db.db_file
         assert obj2.clone_params() == obj.clone_params()
 
@@ -32,7 +30,6 @@ def test_sqlite_metastore(sqlite_db):
         data = json.loads(raw.decode())
         assert data["callable"] == "sqlite.metastore.init_after_clone"
         assert data["args"] == []
-        assert data["kwargs"]["uri"] == uri
         nested = data["kwargs"]["db_clone_params"]
         assert nested["callable"] == "sqlite.from_db_file"
         assert nested["args"] == [":memory:"]
@@ -41,7 +38,6 @@ def test_sqlite_metastore(sqlite_db):
         obj3 = deserialize(serialized)
         try:
             assert isinstance(obj3, SQLiteMetastore)
-            assert obj3.uri == uri
             assert obj3.db.db_file == sqlite_db.db_file
             assert obj3.clone_params() == obj.clone_params()
         finally:
@@ -78,5 +74,57 @@ def test_outdated_schema():
             SQLiteMetastore(db_file=":memory:")
 
         cleanup_sqlite_db(metastore.db.clone(), metastore.default_table_names)
+    finally:
+        metastore.close_on_exit()
+
+
+def test_expire_checkpoints():
+    metastore = SQLiteMetastore(db_file=":memory:")
+    try:
+        now = datetime.now(timezone.utc)
+        old = now - timedelta(hours=2)
+        ttl_threshold = now - timedelta(hours=1)
+
+        # Create two jobs
+        job1_id = metastore.create_job(
+            "job1", "q", query_type=JobQueryType.PYTHON, status=JobStatus.COMPLETE
+        )
+        job2_id = metastore.create_job(
+            "job2", "q", query_type=JobQueryType.PYTHON, status=JobStatus.COMPLETE
+        )
+
+        # Job1: all checkpoints older than TTL
+        metastore.get_or_create_checkpoint(job1_id, "hash_a")
+        metastore.get_or_create_checkpoint(job1_id, "hash_b")
+
+        # Job2: has one active (recent) checkpoint
+        metastore.get_or_create_checkpoint(job2_id, "hash_c")
+        metastore.get_or_create_checkpoint(job2_id, "hash_d")
+
+        # Backdate job1 checkpoints and one of job2's checkpoints
+        ch = metastore._checkpoints
+        metastore.db.execute(
+            ch.update().where(ch.c.job_id == job1_id).values(created_at=old)
+        )
+        metastore.db.execute(
+            ch.update()
+            .where(ch.c.job_id == job2_id)
+            .where(ch.c.hash == "hash_c")
+            .values(created_at=old)
+        )
+
+        assert list(metastore.list_checkpoints(status=CheckpointStatus.EXPIRED)) == []
+
+        # Expire checkpoints — only job1's should be marked EXPIRED
+        checkpoints, inactive_group_ids = metastore.expire_checkpoints(ttl_threshold)
+
+        assert len(checkpoints) == 2
+        assert all(cp.job_id == job1_id for cp in checkpoints)
+        assert inactive_group_ids == [job1_id]
+
+        # Job2's checkpoints are untouched (has one recent checkpoint)
+        job2_checkpoints = list(metastore.list_checkpoints(job_ids=[job2_id]))
+        assert len(job2_checkpoints) == 2
+        assert all(cp.status == CheckpointStatus.ACTIVE for cp in job2_checkpoints)
     finally:
         metastore.close_on_exit()

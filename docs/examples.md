@@ -260,7 +260,7 @@ For in-depth review of working with JSON metadata, please follow this tutorial:
 
 ### Passing data to training
 
-Chain results can be exported or passed directly to Pytorch dataloader. For example, if we are interested in passing three columns to training, the following Pytorch code will do it:
+Chain results can be exported or passed directly to a PyTorch dataloader. For example, if we are interested in passing three columns to training, the following PyTorch code will do it:
 
 ```python
 

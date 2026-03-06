@@ -79,12 +79,7 @@ class DatabaseEngine(ABC, Serializable):
         return result.string, params
 
     @abstractmethod
-    def execute(
-        self,
-        query,
-        cursor: Any | None = None,
-        conn: Any | None = None,
-    ) -> Iterator[tuple[Any, ...]]: ...
+    def execute(self, query) -> Iterator[tuple[Any, ...]]: ...
 
     def get_table(self, name: str) -> "Table":
         """Get a table by name, raising TableMissingError if not found."""
@@ -100,9 +95,7 @@ class DatabaseEngine(ABC, Serializable):
         return table
 
     @abstractmethod
-    def executemany(
-        self, query, params, cursor: Any | None = None
-    ) -> Iterator[tuple[Any, ...]]: ...
+    def executemany(self, query, params) -> None: ...
 
     @abstractmethod
     def execute_str(self, sql: str, parameters=None) -> Iterator[tuple[Any, ...]]: ...
@@ -123,15 +116,15 @@ class DatabaseEngine(ABC, Serializable):
         return sa.inspect(self.engine).has_table(name)
 
     @abstractmethod
-    def list_tables(self, prefix: str = "") -> list[str]:
+    def list_tables(self, pattern: str = "") -> list[str]:
         """
-        List all table names, optionally filtered by prefix.
+        List all table names, optionally filtered by a SQL LIKE pattern.
 
         Args:
-            prefix: Optional prefix to filter table names
+            pattern: SQL LIKE pattern to filter table names (e.g. 'udf_%')
 
         Returns:
-            List of table names matching the prefix
+            List of table names matching the pattern
         """
 
     @abstractmethod

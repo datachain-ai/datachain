@@ -220,7 +220,9 @@ def cleanup_udf_tables(warehouse):
     UDF tables are shared across jobs and persist after chain finishes,
     so we need to clean them up after each test to prevent interference.
     """
-    for table_name in warehouse.db.list_tables(prefix=warehouse.UDF_TABLE_NAME_PREFIX):
+    for table_name in warehouse.db.list_tables(
+        pattern=f"{warehouse.UDF_TABLE_NAME_PREFIX}%"
+    ):
         table = warehouse.db.get_table(table_name)
         warehouse.db.drop_table(table, if_exists=True)
 
@@ -638,7 +640,7 @@ def animal_dataset(listed_bucket, cloud_test_catalog):
         name, [src_uri], catalog.metastore.default_project, recursive=True
     )
     return catalog.update_dataset(
-        dataset, {"description": "animal dataset", "attrs": ["cats", "dogs"]}
+        dataset, description="animal dataset", attrs=["cats", "dogs"]
     )
 
 
@@ -654,7 +656,7 @@ def dogs_dataset(listed_bucket, cloud_test_catalog):
         recursive=True,
     )
     return catalog.update_dataset(
-        dataset, {"description": "dogs dataset", "attrs": ["dogs", "dataset"]}
+        dataset, description="dogs dataset", attrs=["dogs", "dataset"]
     )
 
 
@@ -667,7 +669,7 @@ def cats_dataset(listed_bucket, cloud_test_catalog):
         name, [f"{src_uri}/cats/*"], catalog.metastore.default_project, recursive=True
     )
     return catalog.update_dataset(
-        dataset, {"description": "cats dataset", "attrs": ["cats", "dataset"]}
+        dataset, description="cats dataset", attrs=["cats", "dataset"]
     )
 
 

@@ -85,6 +85,21 @@ def get_retry_sleep_sec(retry_count: int) -> int:
     return RETRY_START_SEC * (RETRY_FACTOR**retry_count)
 
 
+SQLITE_BUSY = 5
+SQLITE_LOCKED = 6
+
+
+def _is_sqlite_lock_error(exc: sqlite3.OperationalError) -> bool:
+    """Return True if the OperationalError is a transient lock/busy error."""
+    code = getattr(exc, "sqlite_errorcode", None)
+    if code is not None:
+        # Python >=3.11: use the precise error code
+        return code in (SQLITE_BUSY, SQLITE_LOCKED)
+    # Python 3.10: fall back to message matching
+    msg = str(exc).lower()
+    return "locked" in msg or "busy" in msg
+
+
 def retry_sqlite_locks(func):
     # This retries the database modification in case of concurrent access
     @wraps(func)
@@ -94,6 +109,8 @@ def retry_sqlite_locks(func):
             try:
                 return func(*args, **kwargs)
             except sqlite3.OperationalError as operror:
+                if not _is_sqlite_lock_error(operror):
+                    raise
                 exc = operror
                 sleep(get_retry_sleep_sec(retry_count))
         raise exc
@@ -158,14 +175,24 @@ class SQLiteDatabaseEngine(DatabaseEngine):
             # ensure we run SA on_connect init (e.g it registers regexp function),
             # also makes sure that it's consistent. Otherwise in some cases it
             # seems we are getting different results if engine object is used in a
-            # different thread first and enine is not used in the Main thread.
+            # different thread first and engine is not used in the Main thread.
             engine.connect().close()
 
             db.isolation_level = None  # Use autocommit mode
             db.execute("PRAGMA foreign_keys = ON")
             db.execute("PRAGMA cache_size = -102400")  # 100 MiB
-            # Enable Write-Ahead Log Journaling
-            db.execute("PRAGMA journal_mode = WAL")
+            # Switching to WAL requires an exclusive lock, so retry briefly
+            # in case another process is initializing the same DB file.
+            for _ in range(5):
+                try:
+                    db.execute("PRAGMA journal_mode = WAL")
+                    break
+                except sqlite3.OperationalError as e:
+                    if not _is_sqlite_lock_error(e):
+                        raise
+                    sleep(1)
+            else:
+                db.execute("PRAGMA journal_mode = WAL")  # final attempt, let it raise
             db.execute("PRAGMA synchronous = NORMAL")
             db.execute("PRAGMA case_sensitive_like = ON")
 
@@ -225,32 +252,15 @@ class SQLiteDatabaseEngine(DatabaseEngine):
         return super().get_table(name)
 
     @retry_sqlite_locks
-    def execute(
-        self,
-        query,
-        cursor: sqlite3.Cursor | None = None,
-        conn=None,
-    ) -> sqlite3.Cursor:
+    def execute(self, query) -> sqlite3.Cursor:
         if self.is_closed:
             # Reconnect in case of being closed previously.
             self._reconnect()
-        if cursor is not None:
-            result = cursor.execute(*self.compile_to_args(query))
-        elif conn is not None:
-            result = conn.execute(*self.compile_to_args(query))
-        else:
-            result = self.db.execute(*self.compile_to_args(query))
-        return result
+        return self.db.execute(*self.compile_to_args(query))
 
     @retry_sqlite_locks
-    def executemany(
-        self, query, params, cursor: sqlite3.Cursor | None = None, conn=None
-    ) -> sqlite3.Cursor:
-        if cursor:
-            return cursor.executemany(self.compile(query).string, params)
-        if conn:
-            return conn.executemany(self.compile(query).string, params)
-        return self.db.executemany(self.compile(query).string, params)
+    def executemany(self, query, params) -> None:
+        self.db.executemany(self.compile(query).string, params)
 
     @retry_sqlite_locks
     def execute_str(self, sql: str, parameters=None) -> sqlite3.Cursor:
@@ -258,8 +268,8 @@ class SQLiteDatabaseEngine(DatabaseEngine):
             return self.db.execute(sql)
         return self.db.execute(sql, parameters)
 
-    def list_tables(self, prefix: str = "") -> list[str]:
-        """List all table names, optionally filtered by prefix."""
+    def list_tables(self, pattern: str = "") -> list[str]:
+        """List all table names, optionally filtered by a SQL LIKE pattern."""
         sqlite_master = sqlalchemy.table(
             "sqlite_master",
             sqlalchemy.column("type"),
@@ -268,8 +278,8 @@ class SQLiteDatabaseEngine(DatabaseEngine):
         query = sqlalchemy.select(sqlite_master.c.name).where(
             sqlite_master.c.type == "table"
         )
-        if prefix:
-            query = query.where(sqlite_master.c.name.like(f"{prefix}%"))
+        if pattern:
+            query = query.where(sqlite_master.c.name.like(pattern))
         result = self.execute(query)
         return [row[0] for row in result.fetchall()]
 
@@ -421,14 +431,11 @@ class SQLiteMetastore(AbstractDBMetastore):
 
     def __init__(
         self,
-        uri: StorageURI | None = None,
         db: SQLiteDatabaseEngine | None = None,
         db_file: str | None = None,
         in_memory: bool = False,
     ):
-        uri = uri or StorageURI("")
         self.schema: DefaultSchema = DefaultSchema()
-        super().__init__(uri)
 
         # needed for dropping tables in correct order for tests because of
         # foreign keys
@@ -449,16 +456,8 @@ class SQLiteMetastore(AbstractDBMetastore):
         """Close connection upon exit from context manager."""
         self.close()
 
-    def clone(
-        self,
-        uri: StorageURI | None = None,
-        use_new_connection: bool = False,
-    ) -> "SQLiteMetastore":
-        uri = uri or StorageURI("")
-        if not uri and self.uri:
-            uri = self.uri
-
-        return SQLiteMetastore(uri=uri, db=self.db.clone())
+    def clone(self, use_new_connection: bool = False) -> "SQLiteMetastore":
+        return SQLiteMetastore(db=self.db.clone())
 
     def clone_params(self) -> tuple[Callable[..., Any], list[Any], dict[str, Any]]:
         """
@@ -469,7 +468,6 @@ class SQLiteMetastore(AbstractDBMetastore):
             SQLiteMetastore.init_after_clone,
             [],
             {
-                "uri": self.uri,
                 "db_clone_params": self.db.clone_params(),
             },
         )
@@ -482,11 +480,10 @@ class SQLiteMetastore(AbstractDBMetastore):
     def init_after_clone(
         cls,
         *,
-        uri: StorageURI,
         db_clone_params: tuple[Callable, list, dict[str, Any]],
     ) -> "SQLiteMetastore":
         (db_class, db_args, db_kwargs) = db_clone_params
-        return cls(uri=uri, db=db_class(*db_args, **db_kwargs))
+        return cls(db=db_class(*db_args, **db_kwargs))
 
     @cached_property
     def _meta(self) -> Table:
@@ -595,9 +592,6 @@ class SQLiteMetastore(AbstractDBMetastore):
         if schema_version < SCHEMA_VERSION:
             raise OutdatedDatabaseSchemaError(OUTDATED_SCHEMA_ERROR_MESSAGE)
 
-    #
-    # Dataset dependencies
-    #
     @classmethod
     def _meta_columns(cls) -> list["SchemaItem"]:
         return [
@@ -629,10 +623,6 @@ class SQLiteMetastore(AbstractDBMetastore):
 
     def _datasets_dependencies_insert(self) -> "Insert":
         return sqlite.insert(self._datasets_dependencies)
-
-    #
-    # Dataset dependencies
-    #
 
     def _dataset_dependencies_select_columns(self) -> list["SchemaItem"]:
         return [
@@ -666,39 +656,21 @@ class SQLiteMetastore(AbstractDBMetastore):
             dependency_tree_cte.c.depth,
         ]
 
-    #
-    # Jobs
-    #
-
     def _jobs_insert(self) -> "Insert":
         return sqlite.insert(self._jobs)
 
-    #
-    # Checkpoints
-    #
     def _checkpoints_insert(self) -> "Insert":
         return sqlite.insert(self._checkpoints)
 
-    #
-    # Checkpoint Events
-    #
     def _checkpoint_events_insert(self) -> "Insert":
         return sqlite.insert(self._checkpoint_events)
 
     def _dataset_version_jobs_insert(self) -> "Insert":
         return sqlite.insert(self._dataset_version_jobs)
 
-    #
-    # Namespaces
-    #
-
     @property
     def default_namespace_name(self):
         return Namespace.default()
-
-    #
-    # Projects
-    #
 
     @property
     def default_project_name(self):
@@ -801,13 +773,7 @@ class SQLiteWarehouse(AbstractWarehouse):
     ) -> list[StorageURI]:
         dr = self.dataset_rows(dataset, version)
         query = dr.select(dr.c("source", column="file")).distinct()
-        cur = self.db.cursor()
-        cur.row_factory = sqlite3.Row  # type: ignore[assignment]
-
-        return [
-            StorageURI(row["file__source"])
-            for row in self.db.execute(query, cursor=cur)
-        ]
+        return [StorageURI(row[0]) for row in self.db.execute(query)]
 
     def prepare_entries(self, entries: "Iterable[File]") -> Iterable[dict[str, Any]]:
         return (e.model_dump() for e in entries)
@@ -822,13 +788,12 @@ class SQLiteWarehouse(AbstractWarehouse):
         """Callback for InsertBuffer to insert a batch of entries."""
         if not entries:
             return
-        with self.db.transaction() as conn:
+        with self.db.transaction():
             # transactions speeds up inserts significantly as there is no separate
             # transaction created for each insert row
             self.db.executemany(
                 table.insert().values({f: bindparam(f) for f in entries[0]}),
                 entries,
-                conn=conn,
             )
 
     def get_buffer(
@@ -846,10 +811,6 @@ class SQLiteWarehouse(AbstractWarehouse):
                 flush_interval=flush_interval,
             )
         return self.buffers[table.name]
-
-    def insert_dataset_rows(self, df, dataset: DatasetRecord, version: str) -> int:
-        dr = self.dataset_rows(dataset, version)
-        return self.db.insert_dataframe(dr.table.name, df)
 
     def instr(self, source, target) -> "ColumnElement":
         return cast(func.instr(source, target), sqlalchemy.Boolean)
