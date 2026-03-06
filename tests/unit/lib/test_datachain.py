@@ -368,12 +368,12 @@ def test_read_records_with_iterator_is_lazy(test_session, monkeypatch):
 
     original_executemany = test_session.catalog.warehouse.db.executemany
 
-    def spy_executemany(stmt, params, conn=None):
+    def spy_executemany(stmt, params):
         batch_executions.append(
             {"yielded_so_far": yielded_count, "batch_size": len(params)}
         )
 
-        return original_executemany(stmt, params, conn=conn)
+        return original_executemany(stmt, params)
 
     monkeypatch.setattr(
         test_session.catalog.warehouse.db, "executemany", spy_executemany

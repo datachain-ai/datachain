@@ -549,7 +549,7 @@ def test_studio_run_reuses_previous_job_for_checkpoints(
     get_last_job_calls = []
     create_job_calls = []
 
-    def mock_get_last_job_by_name(name, is_remote_execution=False, conn=None):
+    def mock_get_last_job_by_name(name, is_remote_execution=False):
         get_last_job_calls.append(
             {"name": name, "is_remote_execution": is_remote_execution}
         )

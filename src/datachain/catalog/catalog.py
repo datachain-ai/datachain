@@ -10,6 +10,7 @@ from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import contextmanager, suppress
 from copy import copy
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from functools import cached_property, reduce
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -24,6 +25,7 @@ from sqlalchemy import Column
 from tqdm.auto import tqdm
 
 from datachain.cache import Cache
+from datachain.checkpoint import Checkpoint, CheckpointStatus
 from datachain.client import Client
 from datachain.dataset import (
     DATASET_PREFIX,
@@ -72,7 +74,7 @@ logger = logging.getLogger("datachain")
 
 DEFAULT_DATASET_DIR = "dataset"
 
-TTL_INT = 4 * 60 * 60
+CHECKPOINTS_TTL = 4 * 60 * 60
 
 INDEX_INTERNAL_ERROR_MESSAGE = "Internal error on indexing"
 DATASET_INTERNAL_ERROR_MESSAGE = "Internal error on creating dataset"
@@ -1002,11 +1004,9 @@ class Catalog:
 
         self.metastore.update_dataset_version(dataset, version, **values)
 
-    def update_dataset(
-        self, dataset: DatasetRecord, conn=None, **kwargs
-    ) -> DatasetRecord:
+    def update_dataset(self, dataset: DatasetRecord, **kwargs) -> DatasetRecord:
         """Updates dataset fields."""
-        dataset_updated = self.metastore.update_dataset(dataset, conn=conn, **kwargs)
+        dataset_updated = self.metastore.update_dataset(dataset, **kwargs)
         self.warehouse.rename_dataset_tables(dataset, dataset_updated)
         return dataset_updated
 
@@ -2094,3 +2094,64 @@ class Catalog:
             only_index=True,
         ):
             pass
+
+    def cleanup_checkpoints(self, ttl_seconds: int | None = None) -> int:
+        """Clean up outdated checkpoints and their associated UDF tables.
+
+        Algorithm:
+        1. Atomically mark expired checkpoints as EXPIRED (single query) —
+           prevents running jobs from using them via find_checkpoint.
+           Then collect all EXPIRED checkpoints and determine which run
+           groups have no remaining ACTIVE checkpoints.
+        2. Remove output/partial tables using exact names from checkpoints
+        3. For fully-inactive run groups: remove shared input tables
+        4. Mark checkpoints as DELETED
+        """
+        if ttl_seconds is None:
+            ttl_seconds = CHECKPOINTS_TTL
+
+        ttl_threshold = datetime.now(timezone.utc) - timedelta(seconds=ttl_seconds)
+
+        # Expire + collect everything in one metastore call
+        checkpoints, inactive_group_ids = self.metastore.expire_checkpoints(
+            ttl_threshold
+        )
+        if not checkpoints:
+            return 0
+
+        logger.info(
+            "Cleaning %d expired checkpoints across %d inactive run groups",
+            len(checkpoints),
+            len(inactive_group_ids),
+        )
+
+        # Remove output/partial tables using exact names from checkpoints
+        output_tables = [ch.table_name for ch in checkpoints]
+        if output_tables:
+            logger.info(
+                "Removing %d UDF output tables: %s", len(output_tables), output_tables
+            )
+            self.warehouse.cleanup_tables(output_tables)
+
+        # Shared input tables — only when entire run group is inactive
+        for group_id in inactive_group_ids:
+            input_tables = self.warehouse.db.list_tables(
+                pattern=Checkpoint.input_table_pattern(group_id)
+            )
+            if input_tables:
+                logger.info(
+                    "Removing %d shared input tables: %s",
+                    len(input_tables),
+                    input_tables,
+                )
+                self.warehouse.cleanup_tables(input_tables)
+
+        self.metastore.update_checkpoints(
+            [ch.id for ch in checkpoints], status=CheckpointStatus.DELETED
+        )
+
+        logger.info(
+            "Checkpoint cleanup complete: removed %d checkpoints",
+            len(checkpoints),
+        )
+        return len(checkpoints)
