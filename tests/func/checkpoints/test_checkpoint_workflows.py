@@ -1,6 +1,7 @@
 from uuid import uuid4
 
 import pytest
+import sqlalchemy as sa
 
 import datachain as dc
 from datachain.error import (
@@ -8,6 +9,11 @@ from datachain.error import (
     JobNotFoundError,
 )
 from tests.utils import reset_session_job_state
+
+
+def _count_rows(metastore, table) -> int:
+    query = sa.select(sa.func.count()).select_from(table)
+    return next(iter(metastore.db.execute(query)))[0]
 
 
 class CustomMapperError(Exception):
@@ -93,8 +99,8 @@ def test_checkpoints(
     assert len(catalog.get_dataset("nums2").versions) == expected_versions
     assert len(catalog.get_dataset("nums3").versions) == 1
 
-    assert len(list(catalog.metastore.list_checkpoints(first_job_id))) == 3
-    assert len(list(catalog.metastore.list_checkpoints(second_job_id))) == 3
+    assert len(list(catalog.metastore.list_checkpoints([first_job_id]))) == 3
+    assert len(list(catalog.metastore.list_checkpoints([second_job_id]))) == 3
 
 
 @pytest.mark.parametrize("reset_checkpoints", [True, False])
@@ -124,8 +130,8 @@ def test_checkpoints_modified_chains(
     assert len(catalog.get_dataset("nums2").versions) == 2
     assert len(catalog.get_dataset("nums3").versions) == 2
 
-    assert len(list(catalog.metastore.list_checkpoints(first_job_id))) == 3
-    assert len(list(catalog.metastore.list_checkpoints(second_job_id))) == 3
+    assert len(list(catalog.metastore.list_checkpoints([first_job_id]))) == 3
+    assert len(list(catalog.metastore.list_checkpoints([second_job_id]))) == 3
 
 
 @pytest.mark.parametrize("reset_checkpoints", [True, False])
@@ -187,10 +193,10 @@ def test_checkpoints_multiple_runs(
         assert num2_versions == 2
         assert num3_versions == 2
 
-    assert len(list(catalog.metastore.list_checkpoints(first_job_id))) == 3
-    assert len(list(catalog.metastore.list_checkpoints(second_job_id))) == 3
-    assert len(list(catalog.metastore.list_checkpoints(third_job_id))) == 3
-    assert len(list(catalog.metastore.list_checkpoints(fourth_job_id))) == 3
+    assert len(list(catalog.metastore.list_checkpoints([first_job_id]))) == 3
+    assert len(list(catalog.metastore.list_checkpoints([second_job_id]))) == 3
+    assert len(list(catalog.metastore.list_checkpoints([third_job_id]))) == 3
+    assert len(list(catalog.metastore.list_checkpoints([fourth_job_id]))) == 3
 
 
 def test_checkpoints_check_valid_chain_is_returned(
@@ -326,7 +332,7 @@ def test_udf_checkpoints_cross_job_reuse(
 
     assert call_count["count"] == 6
 
-    checkpoints = list(catalog.metastore.list_checkpoints(first_job_id))
+    checkpoints = list(catalog.metastore.list_checkpoints([first_job_id]))
     assert len(checkpoints) == 1
     assert checkpoints[0].partial is False
 
@@ -342,7 +348,7 @@ def test_udf_checkpoints_cross_job_reuse(
     else:
         assert call_count["count"] == 0, "Mapper should NOT be called"
 
-    checkpoints_second = list(catalog.metastore.list_checkpoints(second_job_id))
+    checkpoints_second = list(catalog.metastore.list_checkpoints([second_job_id]))
     # After successful completion, only final checkpoint remains
     # (partial checkpoint is deleted after promotion)
     assert len(checkpoints_second) == 1
@@ -470,3 +476,50 @@ def test_checkpoints_job_without_run_group_id_continue(
         dc.read_dataset("doubled_nums", session=test_session).to_list("doubled")
     )
     assert result == [(2,), (4,), (6,), (8,), (10,), (12,)]
+
+
+def test_udf_runs_in_ephemeral_mode(test_session, nums_dataset):
+    metastore = test_session.catalog.metastore
+    jobs_before = _count_rows(metastore, metastore._jobs)
+    checkpoints_before = _count_rows(metastore, metastore._checkpoints)
+
+    result = sorted(
+        dc.read_dataset("nums", session=test_session)
+        .settings(ephemeral=True)
+        .map(doubled=lambda num: num * 2, output=int)
+        .to_list("doubled")
+    )
+    assert result == [(2,), (4,), (6,), (8,), (10,), (12,)]
+
+    # No checkpoints or jobs should have been created
+    assert _count_rows(metastore, metastore._checkpoints) == checkpoints_before
+    assert _count_rows(metastore, metastore._jobs) == jobs_before
+
+
+def test_ephemeral_mode_repeated_runs_no_table_collision(test_session, nums_dataset):
+    chain = (
+        dc.read_dataset("nums", session=test_session)
+        .settings(ephemeral=True)
+        .map(doubled=lambda num: num * 2, output=int)
+    )
+
+    for _ in range(3):
+        result = sorted(chain.to_list("doubled"))
+        assert result == [(2,), (4,), (6,), (8,), (10,), (12,)]
+
+
+def test_ephemeral_mode_no_jobs_on_collect(test_session, nums_dataset):
+    metastore = test_session.catalog.metastore
+    jobs_before = _count_rows(metastore, metastore._jobs)
+    checkpoints_before = _count_rows(metastore, metastore._checkpoints)
+
+    result = sorted(
+        dc.read_dataset("nums", session=test_session)
+        .settings(ephemeral=True)
+        .map(doubled=lambda num: num * 2, output=int)
+        .to_values("doubled")
+    )
+    assert result == [2, 4, 6, 8, 10, 12]
+
+    assert _count_rows(metastore, metastore._jobs) == jobs_before
+    assert _count_rows(metastore, metastore._checkpoints) == checkpoints_before
