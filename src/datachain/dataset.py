@@ -29,8 +29,8 @@ DATASET_NAME_RESERVED_CHARS = [".", "@"]
 DATASET_NAME_REPLACEMENT_CHAR = "_"
 
 
-# StorageURI represents a normalised URI to a valid storage location (full bucket or
-# absolute local path).
+# StorageURI represents a normalized URI to a valid storage location
+# (full bucket or absolute local path).
 # Valid examples: s3://foo, file:///var/data
 # Invalid examples: s3://foo/, s3://foo/bar, file://~
 StorageURI = NewType("StorageURI", str)
@@ -38,7 +38,7 @@ StorageURI = NewType("StorageURI", str)
 
 def parse_dataset_uri(uri: str) -> tuple[str, str | None]:
     """
-    Parse dataser uri to extract name and version out of it (if version is defined)
+    Parse dataset uri to extract name and version out of it (if version is defined)
     Example:
         Input: ds://zalando@v3.0.1
         Output: (zalando, 3.0.1)

@@ -1,6 +1,9 @@
+import os
 import posixpath
 import re
 from typing import TYPE_CHECKING
+
+from fsspec.utils import stringify_path
 
 from datachain.lib.file import FileError
 
@@ -166,28 +169,37 @@ def audio_to_bytes(
 
 def save_audio(
     audio: "AudioFile",
-    output: str,
+    destination: str | os.PathLike[str],
     format: str | None = None,
     start: float = 0,
     end: float | None = None,
+    client_config: dict | None = None,
 ) -> "AudioFile":
     """Save audio file or extract fragment to specified format.
 
+    If ``destination`` is a remote path, the audio file will be uploaded
+    to remote storage.
+
     Args:
-        audio: Source AudioFile object
-        output: Output directory path
-        format: Output format ('wav', 'mp3', etc). Defaults to source format
-        start: Start time in seconds (>= 0). Defaults to 0
-        end: End time in seconds. If None, extracts to end of file
+        audio: Source AudioFile object.
+        destination: Output directory path or URI (e.g. ``s3://…``, ``gs://…``).
+        format: Output format ('wav', 'mp3', etc). Defaults to source format.
+        start: Start time in seconds (>= 0). Defaults to 0.
+        end: End time in seconds. If None, extracts to end of file.
+        client_config: Optional client configuration (e.g. credentials).
 
     Returns:
-        AudioFile: New audio file with format conversion/extraction applied
+        AudioFile: New audio file with format conversion/extraction applied.
 
     Examples:
         save_audio(audio, "/path", "mp3")                       # Entire file to MP3
         save_audio(audio, "s3://bucket/path", "wav", start=2.5) # From 2.5s to end
         save_audio(audio, "/path", "flac", start=1, end=3)      # Extract 1-3s fragment
     """
+    destination = stringify_path(destination)
+
+    from datachain.lib.file import AudioFile
+
     if format is None:
         format = audio.get_file_ext()
 
@@ -200,7 +212,7 @@ def save_audio(
 
     # Handle full file conversion when end is None and start is 0
     if end is None and start == 0:
-        output_file = posixpath.join(output, f"{audio.get_file_stem()}.{format}")
+        output_file = posixpath.join(destination, f"{audio.get_file_stem()}.{format}")
         try:
             audio_bytes = audio_to_bytes(audio, format, start=0, duration=None)
         except Exception as exc:
@@ -210,7 +222,7 @@ def save_audio(
     elif end is None:
         # Extract from start to end of file
         output_file = posixpath.join(
-            output, f"{audio.get_file_stem()}_{int(start * 1000):06d}_end.{format}"
+            destination, f"{audio.get_file_stem()}_{int(start * 1000):06d}_end.{format}"
         )
         try:
             audio_bytes = audio_to_bytes(audio, format, start=start, duration=None)
@@ -230,7 +242,7 @@ def save_audio(
         start_ms = int(start * 1000)
         end_ms = int(end * 1000)
         output_file = posixpath.join(
-            output, f"{audio.get_file_stem()}_{start_ms:06d}_{end_ms:06d}.{format}"
+            destination, f"{audio.get_file_stem()}_{start_ms:06d}_{end_ms:06d}.{format}"
         )
 
         try:
@@ -240,6 +252,8 @@ def save_audio(
                 "unable to save audio fragment", audio.source, audio.path
             ) from exc
 
-    from datachain.lib.file import AudioFile
-
-    return AudioFile.upload(audio_bytes, output_file, catalog=audio._catalog)
+    client, rel_path = audio._resolve_destination(output_file, client_config)
+    result = client.upload(audio_bytes, rel_path)
+    af = AudioFile(**result.model_dump())
+    af._set_stream(audio._catalog)
+    return af

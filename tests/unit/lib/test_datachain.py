@@ -570,7 +570,7 @@ def test_listings(test_session, tmp_dir):
     assert len(listings) == 1
     listing = listings[0]
     assert isinstance(listing, ListingInfo)
-    assert listing.storage_uri == uri
+    assert listing.uri.rstrip("/") == uri
     assert listing.is_expired is False
     assert listing.expires
     assert listing.version == "1.0.0"
@@ -597,9 +597,9 @@ def test_listings_reindex(test_session, tmp_dir):
     listings = list(dc.listings(session=test_session).to_values("listing"))
     assert len(listings) == 2
     listings.sort(key=lambda lst: lst.version)
-    assert listings[0].storage_uri == uri
+    assert listings[0].uri.rstrip("/") == uri
     assert listings[0].version == "1.0.0"
-    assert listings[1].storage_uri == uri
+    assert listings[1].uri.rstrip("/") == uri
     assert listings[1].version == "2.0.0"
 
 
