@@ -234,6 +234,7 @@ class DatasetStatus:
     FAILED = 3
     COMPLETE = 4
     STALE = 6
+    REMOVING = 7
 
 
 @dataclass
@@ -327,6 +328,7 @@ class DatasetVersion:
             DatasetStatus.FAILED,
             DatasetStatus.COMPLETE,
             DatasetStatus.STALE,
+            DatasetStatus.REMOVING,
         ]
 
     def update(self, **kwargs):

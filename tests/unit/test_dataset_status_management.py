@@ -303,32 +303,34 @@ def test_public_api_move_dataset_rejects_non_complete(
 
 
 @pytest.fixture
-def dataset_stale(test_session, job) -> DatasetRecord:
-    ds = dc.read_values(value=["v1"], session=test_session).save("ds_stale")
+def dataset_marked_for_removal(test_session, job) -> DatasetRecord:
+    ds = dc.read_values(value=["v1"], session=test_session).save(
+        "ds_marked_for_removal"
+    )
     dataset = ds.dataset
     assert dataset is not None
     dv = test_session.catalog.metastore._datasets_versions
     test_session.catalog.metastore.db.execute(
         dv.update()
         .where(dv.c.dataset_id == dataset.id)
-        .values(status=DatasetStatus.STALE)
+        .values(status=DatasetStatus.REMOVING)
     )
     return test_session.catalog.get_dataset(dataset.name, include_incomplete=True)
 
 
-def test_get_incomplete_dataset_versions_includes_stale(
-    test_session, job, dataset_stale
+def test_get_incomplete_dataset_versions_includes_marked_for_removal(
+    test_session, job, dataset_marked_for_removal
 ):
     to_clean = test_session.catalog.metastore.get_incomplete_dataset_versions()
-    assert dataset_stale.name not in {ds.name for ds, _ in to_clean}
+    assert dataset_marked_for_removal.name not in {ds.name for ds, _ in to_clean}
 
     test_session.catalog.metastore.set_job_status(job.id, JobStatus.COMPLETE)
     to_clean = test_session.catalog.metastore.get_incomplete_dataset_versions()
-    assert dataset_stale.name in {ds.name for ds, _ in to_clean}
+    assert dataset_marked_for_removal.name in {ds.name for ds, _ in to_clean}
 
 
-def test_cleanup_failed_dataset_versions_removes_stale(
-    test_session, job, dataset_stale
+def test_cleanup_failed_dataset_versions_removes_marked_for_removal(
+    test_session, job, dataset_marked_for_removal
 ):
     test_session.catalog.metastore.set_job_status(job.id, JobStatus.COMPLETE)
 
@@ -336,4 +338,4 @@ def test_cleanup_failed_dataset_versions_removes_stale(
     assert num_removed == 1
 
     with pytest.raises(DatasetNotFoundError):
-        test_session.catalog.get_dataset(dataset_stale.name)
+        test_session.catalog.get_dataset(dataset_marked_for_removal.name)
