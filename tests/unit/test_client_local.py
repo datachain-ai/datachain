@@ -77,47 +77,15 @@ def test_split_url_preserves_posix_root(url, expected_bucket, expected_rel):
     assert rel == expected_rel
 
 
-def test_path_to_fsspec_uri_preserves_trailing_slash(tmp_path):
-    dir_path = tmp_path / "trail"
-    dir_path.mkdir()
-
-    uri = path_to_fsspec_uri(f"{dir_path}{os.sep}")
-
-    base_uri = path_to_fsspec_uri(str(dir_path))
-
-    # Trailing separator in the input should keep a trailing slash in the URI.
-    assert uri.endswith("/")
-    assert uri[:-1] == base_uri
-
-
-def test_path_to_fsspec_uri_passes_through_existing_uri(tmp_path):
-    uri = path_to_fsspec_uri(str(tmp_path))
-
-    assert path_to_fsspec_uri(uri) == uri
-
-
-def test_path_to_fsspec_uri_keeps_chars_literal(tmp_path):
-    base = tmp_path / "dir #% percent"
-    base.mkdir(parents=True)
-
-    uri = path_to_fsspec_uri(str(base))
-    assert uri.startswith("file://")
-    assert " " in uri
-    assert "#" in uri
-    assert "%" in uri
-
-
 def test_split_url_does_not_decode_percent_escapes(tmp_path):
     # If the filename literally contains percent-escapes, split_url must not
     # decode them (e.g. %2f -> '/').
-    file_path = tmp_path / "file%2fescape%23hash.txt"
-    file_path.write_text("x", encoding="utf-8")
-
-    uri = path_to_fsspec_uri(str(file_path))
+    filename = "file%2fescape%23hash.txt"
+    uri = f"file://{tmp_path}/{filename}"
     bucket, rel = FileClient.split_url(uri)
 
     assert Path(bucket) == tmp_path
-    assert rel == file_path.name
+    assert rel == filename
 
 
 @pytest.mark.parametrize(

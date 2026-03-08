@@ -829,8 +829,7 @@ class File(DataModel):
         warnings.warn(
             (
                 "File.get_uri() is deprecated and will be removed in a future version. "
-                "Use file.source + file.path or "
-                "file.get_fs_path() for I/O locators."
+                "Use file.get_fs_path() for I/O locators."
             ),
             DeprecationWarning,
             stacklevel=2,

@@ -1,13 +1,16 @@
 import os
+import re
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
-from urllib.parse import urlparse
 
 from fsspec.implementations.local import LocalFileSystem
 
 if TYPE_CHECKING:
     from fsspec import AbstractFileSystem
+
+
+_URI_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
 
 
 def is_win_local_path(uri: str) -> bool:
@@ -51,8 +54,7 @@ def path_to_fsspec_uri(path: str) -> str:
         file:///already/uri  -> file:///already/uri    (unchanged)
     """
     # Pass through existing URIs unchanged (opaque passthrough).
-    parsed = urlparse(path)
-    if parsed.scheme and not is_win_local_path(path):
+    if _URI_SCHEME_RE.match(path) and not is_win_local_path(path):
         return path
 
     # Use abspath rather than Path.resolve() to avoid dereferencing symlinks.

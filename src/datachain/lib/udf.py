@@ -400,7 +400,7 @@ def _remove_prefetched(row: T) -> None:
             try:
                 catalog.cache.remove(obj)
             except Exception as e:  # noqa: BLE001
-                print(f"Failed to remove prefetched item {obj.name!r}: {e!s}")
+                logger.warning("Failed to remove prefetched item %r: %s", obj.name, e)
 
 
 def _prefetch_inputs(

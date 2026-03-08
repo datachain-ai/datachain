@@ -682,3 +682,67 @@ def test_path_to_fsspec_uri_does_not_resolve_symlinks(tmp_path):
     uri = path_to_fsspec_uri(str(link_dir))
     assert "link" in uri
     assert "real" not in uri
+
+
+def test_path_to_fsspec_uri_preserves_trailing_slash(tmp_path):
+    dir_path = tmp_path / "trail"
+    dir_path.mkdir()
+
+    uri = path_to_fsspec_uri(f"{dir_path}{os.sep}")
+    base_uri = path_to_fsspec_uri(str(dir_path))
+
+    # Trailing separator in the input should keep a trailing slash in the URI.
+    assert uri.endswith("/")
+    assert uri[:-1] == base_uri
+
+
+def test_path_to_fsspec_uri_roundtrips_file_uri(tmp_path):
+    """Applying path_to_fsspec_uri to an already-produced file:// URI is idempotent."""
+    uri = path_to_fsspec_uri(str(tmp_path))
+    assert path_to_fsspec_uri(uri) == uri
+
+
+def test_path_to_fsspec_uri_keeps_chars_literal(tmp_path):
+    base = tmp_path / "dir #% percent"
+    base.mkdir(parents=True)
+
+    uri = path_to_fsspec_uri(str(base))
+    assert uri.startswith("file://")
+    assert " " in uri
+    assert "#" in uri
+    assert "%" in uri
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "note:1.txt",
+        "rev:abc.txt",
+        "sub/12:30.txt",
+        "12:30:00.wav",
+        "recording_14:05:30.mp3",
+        "file-with:colon.bin",
+        "a:b/c:d/e.txt",
+    ],
+    ids=lambda p: p.replace("/", "_"),
+)
+def test_path_to_fsspec_uri_colon_in_filename_is_local(path):
+    """A colon in a filename must NOT be mistaken for a URI scheme."""
+    uri = path_to_fsspec_uri(path)
+    assert uri.startswith("file:///"), f"expected file:// URI, got {uri!r}"
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "s3://bucket/key.txt",
+        "gs://bucket/key.txt",
+        "az://container/blob.txt",
+        "file:///tmp/data",
+        "http://example.com/file.csv",
+        "https://example.com/file.csv",
+    ],
+)
+def test_path_to_fsspec_uri_passes_through_real_uris(uri):
+    """URIs with a ``scheme://`` prefix must pass through unchanged."""
+    assert path_to_fsspec_uri(uri) == uri
