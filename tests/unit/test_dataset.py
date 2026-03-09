@@ -207,6 +207,21 @@ def test_parse_dataset_uri(uri, namespace, project, name, version):
 
 
 @pytest.mark.parametrize(
+    "uri",
+    [
+        "http://result",
+        "s3://result",
+        "",
+        "result",
+        "ds://",
+    ],
+)
+def test_parse_dataset_uri_invalid(uri):
+    with pytest.raises(ValueError):
+        parse_dataset_uri(uri)
+
+
+@pytest.mark.parametrize(
     "dataset_name,expected_namespace,expected_project,expected_name,expected_version",
     [
         ("@namespace.project.dataset", "@namespace", "project", "dataset", None),

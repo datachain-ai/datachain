@@ -1638,7 +1638,7 @@ class Catalog:
             (remote_namespace, remote_project, remote_ds_name, version) = (
                 parse_dataset_uri(remote_ds_uri)
             )
-        except Exception as e:
+        except ValueError as e:
             raise DataChainError("Error when parsing dataset uri") from e
 
         if not remote_namespace or not remote_project:
