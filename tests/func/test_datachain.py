@@ -495,6 +495,15 @@ def test_to_storage_files_filename_placement_not_unique_files(tmp_dir, test_sess
         df.to_storage(tmp_dir / "output", placement="filename")
 
 
+def test_progress_bar_cleanup(capsys, test_session):
+    """tqdm bars should erase residual chars after closing (#1581)."""
+    dc.read_values(val=[1, 2, 3], session=test_session).map(
+        doubled=lambda val: val * 2, output=int
+    ).to_pandas()
+    captured = capsys.readouterr()
+    assert "\033[K" in captured.err
+
+
 def test_show(capsys, test_session):
     first_name = ["Alice", "Bob", "Charlie"]
     dc.read_values(

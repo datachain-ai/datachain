@@ -26,7 +26,6 @@ from sqlalchemy.sql.elements import ColumnClause, ColumnElement, Label
 from sqlalchemy.sql.expression import label
 from sqlalchemy.sql.schema import TableClause
 from sqlalchemy.sql.selectable import Select
-from tqdm.auto import tqdm
 
 from datachain.asyn import ASYNC_WORKERS, AsyncMapper, OrderedMapper
 from datachain.catalog.catalog import clone_catalog_with_cache
@@ -54,7 +53,11 @@ from datachain.lib.listing import is_listing_dataset, listing_dataset_expired
 from datachain.lib.signal_schema import SignalSchema, generate_merge_root_mapping
 from datachain.lib.udf import JsonSerializationError, UdfError, _get_cache
 from datachain.lib.utils import type_to_str
-from datachain.progress import CombinedDownloadCallback, TqdmCombinedDownloadCallback
+from datachain.progress import (
+    CombinedDownloadCallback,
+    TqdmCombinedDownloadCallback,
+    tqdm,
+)
 from datachain.project import Project
 from datachain.query.schema import DEFAULT_DELIMITER, C, UDFParamSpec, normalize_param
 from datachain.query.session import Session

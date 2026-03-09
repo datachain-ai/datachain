@@ -19,7 +19,6 @@ from typing import (
 import sqlalchemy
 from pydantic import BaseModel
 from sqlalchemy.sql.elements import ColumnElement
-from tqdm import tqdm
 
 from datachain import json, semver
 from datachain.checkpoint_event import CheckpointEventType, CheckpointStepType
@@ -53,6 +52,7 @@ from datachain.lib.signal_schema import (
 from datachain.lib.udf import Aggregator, BatchMapper, Generator, Mapper, UDFBase
 from datachain.lib.udf_signature import UdfSignature
 from datachain.lib.utils import DataChainColumnError, DataChainParamsError
+from datachain.progress import tqdm
 from datachain.project import Project
 from datachain.query import Session
 from datachain.query.dataset import (
