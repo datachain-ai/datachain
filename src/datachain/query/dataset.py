@@ -1322,21 +1322,16 @@ class UDFStep(Step, ABC):
                 checkpoint.hash, hash_output, hash_input, query, job
             )
 
-        # Incomplete input detection only applies to generators (1:N), not
-        # aggregators. Aggregators process entire partitions atomically — if a
-        # partition's outputs exist in the partial table, it was fully processed.
-        incomplete_input_ids: list[int] = []
-        if self.partition_by is None:
-            incomplete_input_ids = self.find_incomplete_inputs(parent_partial_table)
-            if incomplete_input_ids:
-                logger.debug(
-                    "UDF(%s) [job=%s run_group=%s]: Found %d incomplete inputs "
-                    "to re-process",
-                    self._udf_name,
-                    self._job_id_short(job),
-                    self._run_group_id_short(job),
-                    len(incomplete_input_ids),
-                )
+        incomplete_input_ids = self.find_incomplete_inputs(parent_partial_table)
+        if incomplete_input_ids:
+            logger.debug(
+                "UDF(%s) [job=%s run_group=%s]: Found %d incomplete inputs "
+                "to re-process",
+                self._udf_name,
+                self._job_id_short(job),
+                self._run_group_id_short(job),
+                len(incomplete_input_ids),
+            )
 
         partial_table_name = Checkpoint.partial_output_table_name(
             job.id, checkpoint.hash

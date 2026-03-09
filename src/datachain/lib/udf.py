@@ -641,12 +641,24 @@ class Aggregator(UDFBase):
             ]
             result_objs = self.process(*udf_args)
             udf_outputs = (self._flatten_row(row) for row in result_objs)
-            # Include sys__input_id to track which partition produced each output
-            output = (
-                {"sys__input_id": input_id}
-                | dict(zip(self.signal_names, row, strict=False))
-                for row in udf_outputs
-            )
+
+            def _process_partition(udf_outputs, input_id):
+                has_output = False
+                for row, is_last in with_last_flag(udf_outputs):
+                    has_output = True
+                    udf_output = dict(zip(self.signal_names, row, strict=False))
+                    udf_output["sys__input_id"] = input_id
+                    udf_output["sys__partial"] = not is_last
+                    udf_output["sys__empty"] = None
+                    yield udf_output
+                if not has_output:
+                    yield {
+                        "sys__input_id": input_id,
+                        "sys__partial": False,
+                        "sys__empty": True,
+                    }
+
+            output = _process_partition(udf_outputs, input_id)
             processed_cb.relative_update(len(batch))
             yield output
 
