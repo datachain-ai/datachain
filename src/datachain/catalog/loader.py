@@ -1,8 +1,9 @@
 import os
 import sys
 from importlib import import_module
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 
+from datachain.plugins import ensure_plugins_loaded
 from datachain.utils import get_envs_by_prefix
 
 if TYPE_CHECKING:
@@ -24,6 +25,8 @@ IN_MEMORY_ERROR_MESSAGE = "In-memory is only supported on SQLite"
 
 
 def get_metastore(in_memory: bool = False) -> "AbstractMetastore":
+    ensure_plugins_loaded()
+
     from datachain.data_storage import AbstractMetastore
     from datachain.data_storage.serializer import deserialize
 
@@ -64,6 +67,8 @@ def get_metastore(in_memory: bool = False) -> "AbstractMetastore":
 
 
 def get_warehouse(in_memory: bool = False) -> "AbstractWarehouse":
+    ensure_plugins_loaded()
+
     from datachain.data_storage import AbstractWarehouse
     from datachain.data_storage.serializer import deserialize
 
@@ -103,7 +108,7 @@ def get_warehouse(in_memory: bool = False) -> "AbstractWarehouse":
     return warehouse_class(**warehouse_args)
 
 
-def get_udf_distributor_class() -> Optional[type["AbstractUDFDistributor"]]:
+def get_udf_distributor_class() -> type["AbstractUDFDistributor"] | None:
     if os.environ.get(DISTRIBUTED_DISABLED) == "True":
         return None
 
@@ -127,7 +132,7 @@ def get_udf_distributor_class() -> Optional[type["AbstractUDFDistributor"]]:
 
 
 def get_catalog(
-    client_config: Optional[dict[str, Any]] = None,
+    client_config: dict[str, Any] | None = None,
     in_memory: bool = False,
 ) -> "Catalog":
     """

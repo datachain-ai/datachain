@@ -1,5 +1,4 @@
 from datetime import datetime, timedelta, timezone
-from typing import Optional
 
 from datachain.client import Client
 from datachain.lib.dataset_info import DatasetInfo
@@ -17,7 +16,7 @@ class ListingInfo(DatasetInfo):
         return uri
 
     @property
-    def expires(self) -> Optional[datetime]:
+    def expires(self) -> datetime | None:
         if not self.finished_at:
             return None
         return self.finished_at + timedelta(seconds=LISTING_TTL)

@@ -54,7 +54,7 @@ def test_flatten_with_empty_json():
 
 def test_flatten_with_accepted_empty_json():
     class _Test(DataModel):
-        d: Optional[dict]
+        d: dict | None
 
     assert flatten(_Test(d=None)) == (None,)
 
@@ -142,6 +142,19 @@ def test_registry_versioned():
     assert ModelStore.get(MyTestXYZ.__name__, version=1) is None
     assert ModelStore.get(MyTestXYZ.__name__, version=42) == MyTestXYZ
     ModelStore.remove(MyTestXYZ)
+
+
+def test_model_store_rebuild_all_recursive():
+    class Node(DataModel):
+        value: int = 0
+        child: Optional["Node"] = None
+
+    try:
+        ModelStore.rebuild_all()
+        root = Node(value=1, child=Node(value=2))
+        assert root.child and root.child.value == 2
+    finally:
+        ModelStore.remove(Node)
 
 
 def test_inheritance():

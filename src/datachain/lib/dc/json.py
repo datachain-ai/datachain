@@ -1,7 +1,6 @@
 import os
-import os.path
 import re
-from typing import TYPE_CHECKING, Optional, Union
+from typing import TYPE_CHECKING
 
 import cloudpickle
 
@@ -18,15 +17,15 @@ if TYPE_CHECKING:
 
 
 def read_json(
-    path: Union[str, os.PathLike[str]],
+    path: str | os.PathLike[str],
     type: FileType = "text",
-    spec: Optional[DataType] = None,
-    schema_from: Optional[str] = "auto",
-    jmespath: Optional[str] = None,
-    column: Optional[str] = "",
-    model_name: Optional[str] = None,
-    format: Optional[str] = "json",
-    nrows: Optional[int] = None,
+    spec: DataType | None = None,
+    schema_from: str | None = "auto",
+    jmespath: str | None = None,
+    column: str | None = "",
+    model_name: str | None = None,
+    format: str | None = "json",
+    nrows: int | None = None,
     **kwargs,
 ) -> "DataChain":
     """Get data from JSON. It returns the chain itself.

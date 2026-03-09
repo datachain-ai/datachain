@@ -3,6 +3,7 @@ import threading
 from collections.abc import (
     AsyncIterable,
     Awaitable,
+    Callable,
     Coroutine,
     Generator,
     Iterable,
@@ -10,7 +11,7 @@ from collections.abc import (
 )
 from concurrent.futures import ThreadPoolExecutor, wait
 from heapq import heappop, heappush
-from typing import Any, Callable, Generic, Optional, TypeVar
+from typing import Any, Generic, TypeVar
 
 from fsspec.asyn import get_loop
 
@@ -49,7 +50,7 @@ class AsyncMapper(Generic[InputT, ResultT]):
         iterable: Iterable[InputT],
         *,
         workers: int = ASYNC_WORKERS,
-        loop: Optional[asyncio.AbstractEventLoop] = None,
+        loop: asyncio.AbstractEventLoop | None = None,
     ):
         self.func = func
         self.iterable = iterable
@@ -107,9 +108,7 @@ class AsyncMapper(Generic[InputT, ResultT]):
 
     async def init(self) -> None:
         self.work_queue = asyncio.Queue(2 * self.workers)
-        self.result_queue: asyncio.Queue[Optional[ResultT]] = asyncio.Queue(
-            self.workers
-        )
+        self.result_queue: asyncio.Queue[ResultT | None] = asyncio.Queue(self.workers)
 
     async def run(self) -> None:
         producer = self.start_task(self.produce())
@@ -149,10 +148,10 @@ class AsyncMapper(Generic[InputT, ResultT]):
             if exc:
                 raise exc
 
-    async def _pop_result(self) -> Optional[ResultT]:
+    async def _pop_result(self) -> ResultT | None:
         return await self.result_queue.get()
 
-    def next_result(self, timeout=None) -> Optional[ResultT]:
+    def next_result(self, timeout=None) -> ResultT | None:
         """
         Return the next available result.
 
@@ -212,17 +211,17 @@ class OrderedMapper(AsyncMapper[InputT, ResultT]):
         iterable: Iterable[InputT],
         *,
         workers: int = ASYNC_WORKERS,
-        loop: Optional[asyncio.AbstractEventLoop] = None,
+        loop: asyncio.AbstractEventLoop | None = None,
     ):
         super().__init__(func, iterable, workers=workers, loop=loop)
         self._waiters: dict[int, Any] = {}
-        self._getters: dict[int, asyncio.Future[Optional[ResultT]]] = {}
-        self.heap: list[tuple[int, Optional[ResultT]]] = []
+        self._getters: dict[int, asyncio.Future[ResultT | None]] = {}
+        self.heap: list[tuple[int, ResultT | None]] = []
         self._next_yield = 0
         self._items_seen = 0
         self._window = 2 * workers
 
-    def _push_result(self, i: int, result: Optional[ResultT]) -> None:
+    def _push_result(self, i: int, result: ResultT | None) -> None:
         if i in self._getters:
             future = self._getters.pop(i)
             future.set_result(result)
@@ -243,7 +242,7 @@ class OrderedMapper(AsyncMapper[InputT, ResultT]):
     async def init(self) -> None:
         self.work_queue = asyncio.Queue(2 * self.workers)
 
-    async def _pop_result(self) -> Optional[ResultT]:
+    async def _pop_result(self) -> ResultT | None:
         if self.heap and self.heap[0][0] == self._next_yield:
             _i, out = heappop(self.heap)
         else:

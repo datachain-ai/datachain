@@ -10,15 +10,7 @@ from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Iterator, Sequence
 from datetime import datetime
 from shutil import copy2
-from typing import (
-    TYPE_CHECKING,
-    Any,
-    BinaryIO,
-    ClassVar,
-    NamedTuple,
-    Optional,
-    Union,
-)
+from typing import TYPE_CHECKING, Any, BinaryIO, ClassVar, NamedTuple
 from urllib.parse import urlparse
 
 from dvc_objects.fs.system import reflink
@@ -46,10 +38,10 @@ DELIMITER = "/"  # Path delimiter.
 DATA_SOURCE_URI_PATTERN = re.compile(r"^[\w]+:\/\/.*$")
 CLOUD_STORAGE_PROTOCOLS = {"s3", "gs", "az", "hf"}
 
-ResultQueue = asyncio.Queue[Optional[Sequence["File"]]]
+ResultQueue = asyncio.Queue[Sequence["File"] | None]
 
 
-def _is_win_local_path(uri: str) -> bool:
+def is_win_local_path(uri: str) -> bool:
     if sys.platform == "win32":
         if len(uri) >= 1 and uri[0] == "\\":
             return True
@@ -76,7 +68,7 @@ def get_cloud_schemes() -> list[str]:
 class Bucket(NamedTuple):
     name: str
     uri: "StorageURI"
-    created: Optional[datetime]
+    created: datetime | None
 
 
 class Client(ABC):
@@ -88,12 +80,12 @@ class Client(ABC):
     def __init__(self, name: str, fs_kwargs: dict[str, Any], cache: Cache) -> None:
         self.name = name
         self.fs_kwargs = fs_kwargs
-        self._fs: Optional[AbstractFileSystem] = None
+        self._fs: AbstractFileSystem | None = None
         self.cache = cache
         self.uri = self.get_uri(self.name)
 
     @staticmethod
-    def get_implementation(url: Union[str, os.PathLike[str]]) -> type["Client"]:  # noqa: PLR0911
+    def get_implementation(url: str | os.PathLike[str]) -> type["Client"]:  # noqa: PLR0911
         from .azure import AzureClient
         from .gcs import GCSClient
         from .hf import HfClient
@@ -103,7 +95,7 @@ class Client(ABC):
 
         protocol = urlparse(os.fspath(url)).scheme
 
-        if not protocol or _is_win_local_path(os.fspath(url)):
+        if not protocol or is_win_local_path(os.fspath(url)):
             return FileClient
         if protocol == ClientS3.protocol:
             return ClientS3
@@ -122,6 +114,11 @@ class Client(ABC):
 
         raise NotImplementedError(f"Unsupported protocol: {protocol}")
 
+    @classmethod
+    def path_to_uri(cls, path: str) -> str:
+        """Convert a path-like object to a URI. Default: identity."""
+        return path
+
     @staticmethod
     def is_data_source_uri(name: str) -> bool:
         # Returns True if name is one of supported data sources URIs, e.g s3 bucket
@@ -134,9 +131,7 @@ class Client(ABC):
         return cls.get_uri(storage_name), rel_path
 
     @staticmethod
-    def get_client(
-        source: Union[str, os.PathLike[str]], cache: Cache, **kwargs
-    ) -> "Client":
+    def get_client(source: str | os.PathLike[str], cache: Cache, **kwargs) -> "Client":
         cls = Client.get_implementation(source)
         storage_url, _ = cls.split_url(os.fspath(source))
         if os.name == "nt":
@@ -152,7 +147,7 @@ class Client(ABC):
         return fs
 
     @classmethod
-    def version_path(cls, path: str, version_id: Optional[str]) -> str:
+    def version_path(cls, path: str, version_id: str | None) -> str:
         return path
 
     @classmethod
@@ -232,16 +227,16 @@ class Client(ABC):
         )
         return self.info_to_file(info, file_path).etag
 
-    def get_file_info(self, path: str, version_id: Optional[str] = None) -> "File":
+    def get_file_info(self, path: str, version_id: str | None = None) -> "File":
         info = self.fs.info(self.get_full_path(path, version_id), version_id=version_id)
         return self.info_to_file(info, path)
 
-    async def get_size(self, path: str, version_id: Optional[str] = None) -> int:
+    async def get_size(self, path: str, version_id: str | None = None) -> int:
         return await self.fs._size(
             self.version_path(path, version_id), version_id=version_id
         )
 
-    async def get_file(self, lpath, rpath, callback, version_id: Optional[str] = None):
+    async def get_file(self, lpath, rpath, callback, version_id: str | None = None):
         return await self.fs._get_file(
             self.version_path(lpath, version_id),
             rpath,
@@ -355,7 +350,7 @@ class Client(ABC):
     def rel_path(self, path: str) -> str:
         return self.fs.split_path(path)[1]
 
-    def get_full_path(self, rel_path: str, version_id: Optional[str] = None) -> str:
+    def get_full_path(self, rel_path: str, version_id: str | None = None) -> str:
         return self.version_path(f"{self.PREFIX}{self.name}/{rel_path}", version_id)
 
     @abstractmethod

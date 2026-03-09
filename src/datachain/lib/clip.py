@@ -1,5 +1,6 @@
 import inspect
-from typing import TYPE_CHECKING, Any, Callable, Literal, Optional, Union
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any, Literal, Union
 
 import torch
 from transformers.modeling_utils import PreTrainedModel
@@ -32,14 +33,14 @@ def _get_encoder(model: Any, type: Literal["image", "text"]) -> Callable:
 
 
 def clip_similarity_scores(
-    images: Union[None, "Image.Image", list["Image.Image"]],
-    text: Union[None, str, list[str]],
+    images: Union["Image.Image", list["Image.Image"]] | None,
+    text: str | list[str] | None,
     model: Any,
     preprocess: Callable,
     tokenizer: Callable,
     prob: bool = False,
     image_to_text: bool = True,
-    device: Optional[Union[str, torch.device]] = None,
+    device: str | torch.device | None = None,
 ) -> list[list[float]]:
     """
     Calculate CLIP similarity scores between one or more images and/or text.

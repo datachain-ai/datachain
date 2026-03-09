@@ -2,7 +2,8 @@ import contextlib
 import itertools
 import os
 import sqlite3
-from typing import TYPE_CHECKING, Any, Optional, Union
+from collections.abc import Iterator, Mapping, Sequence
+from typing import TYPE_CHECKING, Any
 
 import sqlalchemy
 
@@ -12,8 +13,6 @@ from datachain.utils import batched
 DEFAULT_DATABASE_BATCH_SIZE = 10_000
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Mapping, Sequence
-
     import sqlalchemy.orm  # noqa: TC004
 
     from datachain.lib.data_model import DataType
@@ -21,21 +20,21 @@ if TYPE_CHECKING:
 
     from .datachain import DataChain
 
-    ConnectionType = Union[
-        str,
-        sqlalchemy.engine.URL,
-        sqlalchemy.engine.interfaces.Connectable,
-        sqlalchemy.engine.Engine,
-        sqlalchemy.engine.Connection,
-        sqlalchemy.orm.Session,
-        sqlite3.Connection,
-    ]
+    ConnectionType = (
+        str
+        | sqlalchemy.engine.URL
+        | sqlalchemy.engine.interfaces.Connectable
+        | sqlalchemy.engine.Engine
+        | sqlalchemy.engine.Connection
+        | sqlalchemy.orm.Session
+        | sqlite3.Connection
+    )
 
 
 @contextlib.contextmanager
 def _connect(
     connection: "ConnectionType",
-) -> "Iterator[sqlalchemy.engine.Connection]":
+) -> Iterator[sqlalchemy.engine.Connection]:
     import sqlalchemy.orm
 
     with contextlib.ExitStack() as stack:
@@ -46,10 +45,14 @@ def _connect(
             yield stack.enter_context(engine.connect())
         elif isinstance(connection, sqlite3.Connection):
             engine = sqlalchemy.create_engine(
-                "sqlite://", creator=lambda: connection, **engine_kwargs
+                "sqlite://",
+                creator=lambda: connection,
+                poolclass=sqlalchemy.pool.StaticPool,
+                **engine_kwargs,
             )
-            # do not close the connection, as it is managed by the caller
-            yield engine.connect()
+            # Close only the SQLAlchemy connection wrapper; the underlying
+            # sqlite3 connection remains managed by the caller via StaticPool.
+            yield stack.enter_context(engine.connect())
         elif isinstance(connection, sqlalchemy.Engine):
             yield stack.enter_context(connection.connect())
         elif isinstance(connection, sqlalchemy.Connection):
@@ -74,9 +77,9 @@ def to_database(
     connection: "ConnectionType",
     *,
     batch_size: int = DEFAULT_DATABASE_BATCH_SIZE,
-    on_conflict: Optional[str] = None,
-    conflict_columns: Optional[list[str]] = None,
-    column_mapping: Optional[dict[str, Optional[str]]] = None,
+    on_conflict: str | None = None,
+    conflict_columns: list[str] | None = None,
+    column_mapping: dict[str, str | None] | None = None,
 ) -> int:
     """
     Implementation function for exporting DataChain to database tables.
@@ -150,8 +153,8 @@ def to_database(
 
 
 def _normalize_column_mapping(
-    column_mapping: dict[str, Optional[str]],
-) -> dict[str, Optional[str]]:
+    column_mapping: dict[str, str | None],
+) -> dict[str, str | None]:
     """
     Convert column mapping keys from DataChain format (dots) to database format
     (double underscores).
@@ -163,7 +166,7 @@ def _normalize_column_mapping(
     if not column_mapping:
         return {}
 
-    normalized_mapping: dict[str, Optional[str]] = {}
+    normalized_mapping: dict[str, str | None] = {}
     original_keys: dict[str, str] = {}
     for key, value in column_mapping.items():
         db_key = ColumnMeta.to_db_name(key)
@@ -181,7 +184,7 @@ def _normalize_column_mapping(
         from collections import defaultdict
 
         default_factory = column_mapping.default_factory
-        result: dict[str, Optional[str]] = defaultdict(default_factory)
+        result: dict[str, str | None] = defaultdict(default_factory)
         result.update(normalized_mapping)
         return result
 
@@ -189,8 +192,8 @@ def _normalize_column_mapping(
 
 
 def _normalize_conflict_columns(
-    conflict_columns: Optional[list[str]], column_mapping: dict[str, Optional[str]]
-) -> Optional[list[str]]:
+    conflict_columns: list[str] | None, column_mapping: dict[str, str | None]
+) -> list[str] | None:
     """
     Normalize conflict_columns by converting DataChain format to database format
     and applying column mapping.
@@ -297,15 +300,15 @@ def _process_batch(
 
 
 def read_database(
-    query: Union[str, "sqlalchemy.sql.expression.Executable"],
+    query: "str | sqlalchemy.sql.expression.Executable",
     connection: "ConnectionType",
-    params: Union["Sequence[Mapping[str, Any]]", "Mapping[str, Any]", None] = None,
+    params: Sequence[Mapping[str, Any]] | Mapping[str, Any] | None = None,
     *,
-    output: Optional["dict[str, DataType]"] = None,
-    session: Optional["Session"] = None,
-    settings: Optional[dict] = None,
+    output: dict[str, "DataType"] | None = None,
+    session: "Session | None" = None,
+    settings: dict | None = None,
     in_memory: bool = False,
-    infer_schema_length: Optional[int] = 100,
+    infer_schema_length: int | None = 100,
 ) -> "DataChain":
     """
     Read the results of a SQL query into a DataChain, using a given database connection.
@@ -382,7 +385,7 @@ def read_database(
 def _infer_schema(
     result: "sqlalchemy.engine.Result",
     to_infer: list[str],
-    infer_schema_length: Optional[int] = 100,
+    infer_schema_length: int | None = 100,
 ) -> tuple[list["sqlalchemy.Row"], dict[str, "DataType"]]:
     from datachain.lib.convert.values_to_tuples import values_to_tuples
 

@@ -1,17 +1,22 @@
 from collections.abc import Sequence
 from copy import copy
 from functools import wraps
-from typing import TYPE_CHECKING, Callable, Optional, TypeVar, Union
+from typing import TYPE_CHECKING, TypeVar
 
 import datachain
 from datachain.dataset import DatasetDependency, DatasetRecord
-from datachain.error import DatasetNotFoundError
+from datachain.error import DatasetNotFoundError, SchemaDriftError
 from datachain.project import Project
+from datachain.query.dataset import UnionSchemaMismatchError
 
 if TYPE_CHECKING:
-    from typing_extensions import Concatenate, ParamSpec
+    from collections.abc import Callable
+    from typing import Concatenate
+
+    from typing_extensions import ParamSpec
 
     from datachain.lib.dc import DataChain
+    from datachain.lib.signal_schema import SignalSchema
 
     P = ParamSpec("P")
 
@@ -50,13 +55,55 @@ def _append_steps(dc: "DataChain", other: "DataChain"):
     return dc
 
 
+def _format_schema_drift_message(
+    context: str,
+    existing_schema: "SignalSchema",
+    updated_schema: "SignalSchema",
+) -> tuple[str, bool]:
+    missing_cols, new_cols = existing_schema.compare_signals(updated_schema)
+
+    if not new_cols and not missing_cols:
+        return "", False
+
+    parts: list[str] = []
+    if new_cols:
+        parts.append("new columns detected: " + ", ".join(sorted(new_cols)))
+    if missing_cols:
+        parts.append(
+            "columns missing in updated data: " + ", ".join(sorted(missing_cols))
+        )
+
+    details = "; ".join(parts)
+    message = f"Delta update failed: schema drift detected while {context}: {details}."
+
+    return message, True
+
+
+def _safe_union(
+    left: "DataChain",
+    right: "DataChain",
+    context: str,
+) -> "DataChain":
+    try:
+        return left.union(right)
+    except UnionSchemaMismatchError as exc:
+        message, has_drift = _format_schema_drift_message(
+            context,
+            left.signals_schema,
+            right.signals_schema,
+        )
+        if has_drift:
+            raise SchemaDriftError(message) from exc
+        raise
+
+
 def _get_delta_chain(
     source_ds_name: str,
     source_ds_project: Project,
     source_ds_version: str,
     source_ds_latest_version: str,
-    on: Union[str, Sequence[str]],
-    compare: Optional[Union[str, Sequence[str]]] = None,
+    on: str | Sequence[str],
+    compare: str | Sequence[str] | None = None,
 ) -> "DataChain":
     """Get delta chain for processing changes between versions."""
     source_dc = datachain.read_dataset(
@@ -84,11 +131,11 @@ def _get_retry_chain(
     source_ds_name: str,
     source_ds_project: Project,
     source_ds_version: str,
-    on: Union[str, Sequence[str]],
-    right_on: Optional[Union[str, Sequence[str]]],
-    delta_retry: Optional[Union[bool, str]],
+    on: str | Sequence[str],
+    right_on: str | Sequence[str] | None,
+    delta_retry: bool | str | None,
     diff_chain: "DataChain",
-) -> Optional["DataChain"]:
+) -> "DataChain | None":
     """Get retry chain for processing error records and missing records."""
     # Import here to avoid circular import
     from datachain.lib.dc import C
@@ -114,7 +161,9 @@ def _get_retry_chain(
         error_records = result_dataset.filter(C(delta_retry) != "")
         error_source_records = source_dc.merge(
             error_records, on=on, right_on=right_on, inner=True
-        ).select(*list(source_dc.signals_schema.values))
+        ).select(
+            *list(source_dc.signals_schema.clone_without_sys_signals().values.keys())
+        )
         retry_chain = error_source_records
 
     # Handle missing records if delta_retry is True
@@ -144,11 +193,11 @@ def _get_source_info(
     latest_version: str,
     catalog,
 ) -> tuple[
-    Optional[str],
-    Optional[Project],
-    Optional[str],
-    Optional[str],
-    Optional[list[DatasetDependency]],
+    str | None,
+    Project | None,
+    str | None,
+    str | None,
+    list[DatasetDependency] | None,
 ]:
     """Get source dataset information and dependencies.
 
@@ -164,7 +213,9 @@ def _get_source_info(
         indirect=False,
     )
 
-    source_ds_dep = next((d for d in dependencies if d.name == source_ds.name), None)
+    source_ds_dep = next(
+        (d for d in dependencies if d and d.name == source_ds.name), None
+    )
     if not source_ds_dep:
         # Starting dataset was removed, back off to normal dataset creation
         return None, None, None, None, None
@@ -174,6 +225,7 @@ def _get_source_info(
         source_ds.name,
         namespace_name=source_ds.project.namespace.name,
         project_name=source_ds.project.name,
+        include_incomplete=False,
     )
 
     return (
@@ -190,11 +242,11 @@ def delta_retry_update(
     namespace_name: str,
     project_name: str,
     name: str,
-    on: Union[str, Sequence[str]],
-    right_on: Optional[Union[str, Sequence[str]]] = None,
-    compare: Optional[Union[str, Sequence[str]]] = None,
-    delta_retry: Optional[Union[bool, str]] = None,
-) -> tuple[Optional["DataChain"], Optional[list[DatasetDependency]], bool]:
+    on: str | Sequence[str],
+    right_on: str | Sequence[str] | None = None,
+    compare: str | Sequence[str] | None = None,
+    delta_retry: bool | str | None = None,
+) -> tuple["DataChain | None", list[DatasetDependency] | None, bool]:
     """
     Creates new chain that consists of the last version of current delta dataset
     plus diff from the source with all needed modifications.
@@ -233,7 +285,10 @@ def delta_retry_update(
     # Check if dataset exists
     try:
         dataset = catalog.get_dataset(
-            name, namespace_name=namespace_name, project_name=project_name
+            name,
+            namespace_name=namespace_name,
+            project_name=project_name,
+            include_incomplete=False,
         )
         latest_version = dataset.latest_version
     except DatasetNotFoundError:
@@ -304,7 +359,11 @@ def delta_retry_update(
 
     # Combine delta and retry chains
     if retry_chain is not None:
-        processing_chain = diff_chain.union(retry_chain)
+        processing_chain = _safe_union(
+            diff_chain,
+            retry_chain,
+            context="combining retry records with delta changes",
+        )
     else:
         processing_chain = diff_chain
 
@@ -328,5 +387,9 @@ def delta_retry_update(
         modified=False,
         deleted=False,
     )
-    result_chain = compared_chain.union(processing_chain)
+    result_chain = _safe_union(
+        compared_chain,
+        processing_chain,
+        context="merging the delta output with the existing dataset version",
+    )
     return result_chain, dependencies, True

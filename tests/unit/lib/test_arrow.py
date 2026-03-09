@@ -1,5 +1,4 @@
 from datetime import datetime
-from typing import Optional
 
 import pandas as pd
 import pyarrow as pa
@@ -35,7 +34,7 @@ def test_arrow_generator(tmp_path, catalog, cache):
     objs = list(func.process(stream))
 
     assert len(objs) == len(ids)
-    for o, id, text in zip(objs, ids, texts):
+    for o, id, text in zip(objs, ids, texts, strict=False):
         assert isinstance(o[0], ArrowRow)
         file_vals = o[0].read()
         assert file_vals["id"] == id
@@ -58,7 +57,7 @@ def test_arrow_generator_no_source(tmp_path, catalog):
     func = ArrowGenerator(source=False)
     objs = list(func.process(stream))
 
-    for o, id, text in zip(objs, ids, texts):
+    for o, id, text in zip(objs, ids, texts, strict=False):
         assert o[0] == id
         assert o[1] == text
 
@@ -82,7 +81,7 @@ def test_arrow_generator_output_schema(tmp_path, catalog):
     objs = list(func.process(stream))
 
     assert len(objs) == len(ids)
-    for o, id, text, dict in zip(objs, ids, texts, dicts):
+    for o, id, text, dict in zip(objs, ids, texts, dicts, strict=False):
         assert isinstance(o[0], ArrowRow)
         assert o[1].id == id
         assert o[1].text == text
@@ -166,7 +165,7 @@ def test_arrow_type_mapper_struct():
     fields = arrow_type_mapper(col_type).model_fields
     assert list(fields.keys()) == ["x", "y", "z"]
     dtypes = [field.annotation for field in fields.values()]
-    assert dtypes == [Optional[int], Optional[str], Optional[str]]
+    assert dtypes == [int | None, str | None, str | None]
 
 
 def test_arrow_type_error():
@@ -191,8 +190,8 @@ def test_schema_to_output():
 
     assert original_names == ["some_int", "some_string", "strict_int"]
     assert output == {
-        "some_int": Optional[int],
-        "some_string": Optional[str],
+        "some_int": int | None,
+        "some_string": str | None,
         "strict_int": int,
     }
 
@@ -257,8 +256,8 @@ def test_parquet_override_column_names():
 
     assert original_names == ["n1", "n2"]
     assert output == {
-        "n1": Optional[int],
-        "n2": Optional[str],
+        "n1": int | None,
+        "n2": str | None,
     }
 
 

@@ -1,5 +1,6 @@
 import pytest
 
+import datachain as dc
 from datachain.toolkit import train_test_split
 
 
@@ -18,8 +19,8 @@ def test_train_test_split_not_random(not_random_ds, seed, weights, expected):
     res = train_test_split(not_random_ds, weights, seed=seed)
     assert len(res) == len(expected)
 
-    for i, dc in enumerate(res):
-        assert dc.to_values("sys.id") == expected[i]
+    for i, chain in enumerate(res):
+        assert chain.to_values("sys.id") == expected[i]
 
 
 @pytest.mark.parametrize(
@@ -40,8 +41,8 @@ def test_train_test_split_random(pseudo_random_ds, seed, weights, expected):
     res = train_test_split(pseudo_random_ds, weights, seed=seed)
     assert len(res) == len(expected)
 
-    for i, dc in enumerate(res):
-        assert dc.to_values("sys.id") == expected[i]
+    for i, chain in enumerate(res):
+        assert chain.to_values("sys.id") == expected[i]
 
 
 def test_train_test_split_errors(not_random_ds):
@@ -49,3 +50,32 @@ def test_train_test_split_errors(not_random_ds):
         train_test_split(not_random_ds, [0.5])
     with pytest.raises(ValueError, match="Weights should be non-negative"):
         train_test_split(not_random_ds, [-1, 1])
+
+
+def test_split_after_merge(test_session):
+    left = dc.read_values(ids=[1, 2, 3, 4], session=test_session)
+    right = dc.read_values(
+        ids=[1, 2, 3, 4],
+        extra=["a", "b", "c", "d"],
+        session=test_session,
+    )
+
+    merged = left.merge(right, on="ids")
+
+    train, test = train_test_split(merged, [0.5, 0.5])
+
+    for split in (train, test):
+        sys_schema = split.signals_schema.resolve("sys.id", "sys.rand").values
+        assert sys_schema["sys.id"] is int
+        assert sys_schema["sys.rand"] is int
+
+    combined_rows = set(train.to_list("ids", "extra")) | set(
+        test.to_list("ids", "extra")
+    )
+
+    assert combined_rows == {
+        (1, "a"),
+        (2, "b"),
+        (3, "c"),
+        (4, "d"),
+    }

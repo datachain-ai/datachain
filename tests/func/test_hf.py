@@ -1,5 +1,4 @@
 import importlib
-from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -11,11 +10,7 @@ from scipy.io.wavfile import write
 
 import datachain as dc
 from datachain.lib.data_model import dict_to_data_model
-from datachain.lib.hf import (
-    HFGenerator,
-    HFImage,
-    get_output_schema,
-)
+from datachain.lib.hf import HFGenerator, HFImage, get_output_schema
 from tests.utils import df_equal
 
 DF_DATA = {
@@ -32,7 +27,7 @@ def require_torchcodec(test_case):
     """
     if not importlib.util.find_spec("torchcodec"):
         test_case = pytest.mark.skip(
-            "test requires torchcoded, not available on Windows yet"
+            "test requires torchcodec, not available on Windows yet"
         )(test_case)
     return test_case
 
@@ -83,17 +78,17 @@ def test_read_hf_nested_data(test_session):
     anno = schema["user"]
     fields = anno.model_fields
     assert len(fields) == 4
-    assert fields["name"].annotation == Optional[str]
-    assert fields["middle_name"].annotation == Optional[str]
-    assert fields["age"].annotation == Optional[int]
+    assert fields["name"].annotation == str | None
+    assert fields["middle_name"].annotation == str | None
+    assert fields["age"].annotation == int | None
 
     # Middle name fields is normalized and has an alias
     assert len(anno._model_fields_by_aliases()) == 5
 
     location_fields = fields["location"].annotation.model_fields
     assert len(location_fields) == 2
-    assert location_fields["city"].annotation == Optional[str]
-    assert location_fields["state"].annotation == Optional[str]
+    assert location_fields["city"].annotation == str | None
+    assert location_fields["state"].annotation == str | None
 
 
 def test_read_hf_streaming(test_session):

@@ -26,7 +26,7 @@ except ImportError as exc:
     ) from exc
 
 from io import BytesIO
-from typing import TYPE_CHECKING, Any, Optional, Union
+from typing import TYPE_CHECKING, Any, TypeAlias
 
 import PIL
 from tqdm.auto import tqdm
@@ -41,7 +41,9 @@ if TYPE_CHECKING:
     from pydantic import BaseModel
 
 
-HFDatasetType = Union[DatasetDict, Dataset, IterableDatasetDict, IterableDataset]
+HFDatasetType: TypeAlias = (
+    str | DatasetDict | Dataset | IterableDatasetDict | IterableDataset
+)
 
 
 class HFClassLabel(DataModel):
@@ -67,7 +69,7 @@ class HFAudio(DataModel):
 class HFGenerator(Generator):
     def __init__(
         self,
-        ds: Union[str, HFDatasetType],
+        ds: HFDatasetType,
         output_schema: type["BaseModel"],
         limit: int = 0,
         *args,
@@ -117,7 +119,7 @@ class HFGenerator(Generator):
                 pbar.update(1)
 
 
-def stream_splits(ds: Union[str, HFDatasetType], *args, **kwargs):
+def stream_splits(ds: HFDatasetType, *args, **kwargs):
     if isinstance(ds, str):
         ds = load_dataset(ds, *args, **kwargs)
     if isinstance(ds, (DatasetDict, IterableDatasetDict)):
@@ -153,7 +155,7 @@ def convert_feature(val: Any, feat: Any, anno: Any) -> Any:
 
 
 def get_output_schema(
-    features: Features, existing_column_names: Optional[list[str]] = None
+    features: Features, existing_column_names: list[str] | None = None
 ) -> tuple[dict[str, DataType], dict[str, str]]:
     """
     Generate UDF output schema from Hugging Face datasets features. It normalizes the

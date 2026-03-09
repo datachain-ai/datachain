@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, ClassVar, Optional, cast
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 from urllib.parse import urlparse
 
 from fsspec.implementations.http import HTTPFileSystem
@@ -70,12 +70,12 @@ class HTTPClient(Client):
         parsed = urlparse(url)
         return parsed.path in ("", "/") and not parsed.query and not parsed.fragment
 
-    def get_full_path(self, rel_path: str, version_id: Optional[str] = None) -> str:
+    def get_full_path(self, rel_path: str, version_id: str | None = None) -> str:
         if self.name.startswith(("http://", "https://")):
             base_url = self.name
         else:
             if rel_path and "/" in rel_path:
-                first_part = rel_path.split("/")[0]
+                first_part = rel_path.split("/", maxsplit=1)[0]
                 if "." in first_part and not first_part.startswith("."):
                     return f"{self.protocol}://{rel_path}"
 
@@ -128,7 +128,7 @@ class HTTPClient(Client):
             "HTTP/HTTPS client is read-only. Upload operations are not supported."
         )
 
-    def get_file_info(self, path: str, version_id: Optional[str] = None) -> "File":
+    def get_file_info(self, path: str, version_id: str | None = None) -> "File":
         info = self.fs.info(self.get_full_path(path))
         return self.info_to_file(info, path)
 
@@ -144,7 +144,7 @@ class HTTPClient(Client):
             cb or (lambda x: None),
         )
 
-    async def get_file(self, lpath, rpath, callback, version_id: Optional[str] = None):
+    async def get_file(self, lpath, rpath, callback, version_id: str | None = None):
         return await self.fs._get_file(lpath, rpath, callback=callback)
 
     async def _fetch_dir(self, prefix: str, pbar, result_queue) -> set[str]:

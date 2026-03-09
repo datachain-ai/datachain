@@ -1,4 +1,4 @@
-from typing import Literal, Optional
+from typing import Literal
 
 import datachain as dc
 from datachain import C
@@ -12,7 +12,7 @@ class NestedFeature(DataModel):
 class Embedding(DataModel):
     value: float
     nested: NestedFeature = NestedFeature(value="nested_value")
-    literal_field: Optional[Literal["end_turn", "max_tokens", "stop_sequence"]] = None
+    literal_field: Literal["end_turn", "max_tokens", "stop_sequence"] | None = None
 
 
 ds_name = "feature_class"

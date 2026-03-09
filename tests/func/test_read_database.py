@@ -45,8 +45,11 @@ def db_session(db_engine):
 
 @pytest.fixture
 def sqlite3_connection(db_path):
-    with sqlite3.connect(db_path) as conn:
+    conn = sqlite3.connect(db_path)
+    try:
         yield conn
+    finally:
+        conn.close()
 
 
 @pytest.fixture(

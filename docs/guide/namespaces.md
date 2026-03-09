@@ -168,7 +168,7 @@ Use `delete_namespace` to remove an empty namespace or an empty project within a
 ### Signature
 
 ```python
-def delete_namespace(name: str, session: Optional[Session]) -> None:
+def delete_namespace(name: str, session: Session | None) -> None:
 ```
 
 - **`<namespace>`** — deletes the namespace (must contain no projects or datasets).

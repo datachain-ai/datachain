@@ -1,5 +1,4 @@
 import os
-from typing import Optional
 
 import datachain as dc
 from datachain import DataModel
@@ -15,10 +14,10 @@ class LicenseModel(DataModel):
 
 # Sample model for static CSV model
 class ChatDialog(DataModel):
-    id: Optional[int] = None
-    count: Optional[int] = None
-    sender: Optional[str] = None
-    text: Optional[str] = None
+    id: int | None = None
+    count: int | None = None
+    sender: str | None = None
+    text: str | None = None
 
 
 def main():

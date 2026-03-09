@@ -3,10 +3,9 @@ import os
 import sys
 import traceback
 from multiprocessing import freeze_support
-from typing import Optional
 
 from datachain.cli.utils import get_logging_level
-from datachain.error import DataChainError as DataChainError
+from datachain.studio import process_pipeline_args
 
 from .commands import (
     clear_cache,
@@ -17,7 +16,6 @@ from .commands import (
     index,
     list_datasets,
     ls,
-    query,
     rm_dataset,
     show,
 )
@@ -26,7 +24,7 @@ from .parser import get_parser
 logger = logging.getLogger("datachain")
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     from datachain.catalog import get_catalog
 
     # Required for Windows multiprocessing support
@@ -38,7 +36,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.command == "internal-run-udf":
         return handle_udf()
     if args.command == "internal-run-udf-worker":
-        return handle_udf_runner(args.fd)
+        return handle_udf_runner()
 
     if args.command is None:
         datachain_parser.print_help(sys.stderr)
@@ -62,6 +60,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     error = None
 
+    catalog = None
     try:
         catalog = get_catalog(client_config=client_config)
         return handle_command(args, catalog, client_config)
@@ -72,6 +71,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         error, return_code = handle_general_exception(exc, args, logging_level)
         return return_code
     finally:
+        if catalog is not None:
+            try:
+                catalog.close()
+            except Exception:
+                logger.exception("Failed to close catalog")
         from datachain.telemetry import telemetry
 
         telemetry.send_cli_call(args.command, error=error)
@@ -92,11 +96,11 @@ def handle_command(args, catalog, client_config) -> int:
         "find": lambda: handle_find_command(args, catalog),
         "index": lambda: handle_index_command(args, catalog),
         "completion": lambda: handle_completion_command(args),
-        "query": lambda: handle_query_command(args, catalog),
         "clear-cache": lambda: clear_cache(catalog),
-        "gc": lambda: garbage_collect(catalog),
+        "gc": lambda: garbage_collect(catalog, checkpoint_ttl=args.checkpoint_ttl),
         "auth": lambda: process_auth_cli_args(args),
         "job": lambda: process_jobs_args(args),
+        "pipeline": lambda: process_pipeline_args(args, catalog),
     }
 
     handler = command_handlers.get(args.command)
@@ -261,15 +265,6 @@ def handle_completion_command(args):
     print(completion(args.shell))
 
 
-def handle_query_command(args, catalog):
-    query(
-        catalog,
-        args.script,
-        parallel=args.parallel,
-        params=args.param,
-    )
-
-
 def handle_broken_pipe_error(exc):
     # Python flushes standard streams on exit; redirect remaining output
     # to devnull to avoid another BrokenPipeError at shutdown
@@ -307,7 +302,7 @@ def handle_udf() -> int:
     return udf_entrypoint()
 
 
-def handle_udf_runner(fd: Optional[int] = None) -> int:
+def handle_udf_runner() -> int:
     from datachain.query.dispatch import udf_worker_entrypoint
 
-    return udf_worker_entrypoint(fd)
+    return udf_worker_entrypoint()

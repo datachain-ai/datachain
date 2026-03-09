@@ -1,30 +1,39 @@
 import glob
+import itertools
 import logging
 import posixpath
-import random
+import secrets
 import string
+import sys
 from abc import ABC, abstractmethod
-from collections.abc import Generator, Iterable, Iterator, Sequence
-from typing import TYPE_CHECKING, Any, Callable, Optional, Union
+from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
+from typing import TYPE_CHECKING, Any, Union, cast
 from urllib.parse import urlparse
+
+if sys.version_info >= (3, 11):
+    from typing import Self
+else:
+    from typing_extensions import Self
 
 import attrs
 import sqlalchemy as sa
-import ujson as json
 from sqlalchemy.sql.expression import true
 
+from datachain import json
 from datachain.client import Client
 from datachain.data_storage.schema import convert_rows_custom_column_types
 from datachain.data_storage.serializer import Serializable
 from datachain.dataset import DatasetRecord, StorageURI
+from datachain.error import TableRenameError
 from datachain.lib.file import File
+from datachain.lib.model_store import ModelStore
 from datachain.lib.signal_schema import SignalSchema
+from datachain.lib.udf import JsonSerializationError
 from datachain.node import DirType, DirTypeGroup, Node, NodeWithPath, get_path
 from datachain.query.batch import RowsOutput
 from datachain.query.schema import ColumnMeta
-from datachain.query.utils import get_query_id_column
 from datachain.sql.functions import path as pathfunc
-from datachain.sql.types import Int, SQLType
+from datachain.sql.types import SQLType
 from datachain.utils import sql_escape_like
 
 if TYPE_CHECKING:
@@ -33,9 +42,11 @@ if TYPE_CHECKING:
         _FromClauseArgument,
         _OnClauseArgument,
     )
+    from sqlalchemy.sql.selectable import FromClause
     from sqlalchemy.types import TypeEngine
 
     from datachain.data_storage import schema
+    from datachain.data_storage.buffer import InsertBuffer
     from datachain.data_storage.db_engine import DatabaseEngine
     from datachain.data_storage.schema import DataTable
 
@@ -43,7 +54,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger("datachain")
 
 SELECT_BATCH_SIZE = 100_000  # number of rows to fetch at a time
-INSERT_BATCH_SIZE = 10_000  # number of rows to insert at a time
 
 
 class AbstractWarehouse(ABC, Serializable):
@@ -62,19 +72,46 @@ class AbstractWarehouse(ABC, Serializable):
     DATASET_SOURCE_TABLE_PREFIX = "src_"
     UDF_TABLE_NAME_PREFIX = "udf_"
     TMP_TABLE_NAME_PREFIX = "tmp_"
+    INSERT_BATCH_SIZE: int = 10_000
+    INSERT_FLUSH_INTERVAL: float = 60.0
 
     schema: "schema.Schema"
     db: "DatabaseEngine"
+    buffers: dict[str, "InsertBuffer"]
 
-    def __enter__(self) -> "AbstractWarehouse":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
-        # Default behavior is to do nothing, as connections may be shared.
-        pass
+        """Default behavior is to do nothing, as connections may be shared."""
 
     def cleanup_for_tests(self):
         """Cleanup for tests."""
+
+    def _to_jsonable(self, obj: Any) -> Any:
+        """Recursively convert Python/Pydantic structures into JSON-serializable
+        objects.
+        """
+
+        if ModelStore.is_pydantic(type(obj)):
+            # Use Pydantic's JSON mode to ensure datetime and other non-JSON
+            # native types are serialized in a compatible way.
+            return obj.model_dump(mode="json")
+
+        if isinstance(obj, dict):
+            out: dict[str, Any] = {}
+            for k, v in obj.items():
+                if not isinstance(k, str):
+                    key_str = json.dumps(self._to_jsonable(k), ensure_ascii=False)
+                else:
+                    key_str = k
+                out[key_str] = self._to_jsonable(v)
+            return out
+
+        if isinstance(obj, (list, tuple, set)):
+            return [self._to_jsonable(i) for i in obj]
+
+        return obj
 
     def convert_type(  # noqa: PLR0911
         self,
@@ -98,59 +135,53 @@ class AbstractWarehouse(ABC, Serializable):
         # Optimization: Precompute all the column type variables.
         value_type = type(val)
 
-        exc = None
-        try:
-            if col_python_type is list and value_type in (list, tuple, set):
-                if len(val) == 0:
-                    return []
-                item_python_type = self.python_type(col_type.item_type)
-                if item_python_type is not list:
-                    if isinstance(val[0], item_python_type):
-                        return val
-                    if item_python_type is float and isinstance(val[0], int):
-                        return [float(i) for i in val]
-                # Optimization: Reuse these values for each function call within the
-                # list comprehension.
-                item_type_info = (
-                    col_type.item_type,
-                    item_python_type,
-                    type(col_type.item_type).__name__,
-                    col_name,
-                )
-                return [self.convert_type(i, *item_type_info) for i in val]
-            # Special use case with JSON type as we save it as string
-            if col_python_type is dict or col_type_name == "JSON":
-                if value_type is str:
-                    return val
-                if value_type in (dict, list):
-                    return json.dumps(val, ensure_ascii=False)
-                raise ValueError(
-                    f"Cannot convert value {val!r} with type {value_type} to JSON"
-                )
+        if col_python_type is list and value_type in (list, tuple, set):
+            if len(val) == 0:
+                return []
 
-            if isinstance(val, col_python_type):
+            item_python_type = self.python_type(col_type.item_type)
+
+            if item_python_type is not list:
+                if isinstance(val[0], item_python_type):
+                    # SQLite ARRAY storage expects a list; tuples/sets must be
+                    # converted to lists even when element types already match.
+                    return list(val)
+                if item_python_type is float and isinstance(val[0], int):
+                    return [float(i) for i in val]
+
+            # Optimization: Reuse these values for each function call within the
+            # list comprehension.
+            item_type_info = (
+                col_type.item_type,
+                item_python_type,
+                type(col_type.item_type).__name__,
+                col_name,
+            )
+            return [self.convert_type(i, *item_type_info) for i in val]
+
+        # Special use case with JSON type as we save it as string
+        if col_python_type is dict or col_type_name == "JSON":
+            if value_type is str:
                 return val
-            if col_python_type is float and isinstance(val, int):
-                return float(val)
-        except Exception as e:  # noqa: BLE001
-            exc = e
-        ve = ValueError(
+            json_ready = self._to_jsonable(val)
+            try:
+                return json.dumps(json_ready, ensure_ascii=False)
+            except TypeError as e:
+                raise JsonSerializationError(
+                    f"JSON serialization error: {e}",
+                    column_name=col_name,
+                    value_repr=repr(val),
+                ) from e
+
+        if isinstance(val, col_python_type):
+            return val
+        if col_python_type is float and isinstance(val, int):
+            return float(val)
+
+        raise ValueError(
             f"Value {val!r} with type {value_type} incompatible for "
             f"column type {col_type_name}"
         )
-        # This is the same as "from exc" when not raising the exception.
-        if exc:
-            ve.__cause__ = exc
-        # Optimization: Log here, so only one try/except is needed, since the ValueError
-        # above is raised after logging.
-        logger.exception(
-            "Error while validating/converting type for column "
-            "%s with value %s, original error %s",
-            col_name,
-            val,
-            ve,
-        )
-        raise ve
 
     @abstractmethod
     def clone(self, use_new_connection: bool = False) -> "AbstractWarehouse":
@@ -174,12 +205,12 @@ class AbstractWarehouse(ABC, Serializable):
     #
 
     @abstractmethod
-    def is_ready(self, timeout: Optional[int] = None) -> bool: ...
+    def is_ready(self, timeout: int | None = None) -> bool: ...
 
     def dataset_rows(
         self,
         dataset: DatasetRecord,
-        version: Optional[str] = None,
+        version: str | None = None,
         column: str = "file",
     ):
         version = version or dataset.latest_version
@@ -228,7 +259,8 @@ class AbstractWarehouse(ABC, Serializable):
             while True:
                 if limit is not None:
                     limit -= num_yielded
-                    if limit == 0:
+                    num_yielded = 0
+                    if limit <= 0:
                         break
                     if limit < page_size:
                         paginated_query = paginated_query.limit(None).limit(limit)
@@ -245,6 +277,71 @@ class AbstractWarehouse(ABC, Serializable):
                 if processed < page_size:
                     break  # no more results
                 offset += page_size
+
+    def _regenerate_system_columns(
+        self,
+        selectable: sa.Select,
+        keep_existing_columns: bool = False,
+        regenerate_columns: Iterable[str] | None = None,
+    ) -> sa.Select:
+        """
+        Return a SELECT that regenerates system columns deterministically.
+
+        If keep_existing_columns is True, existing system columns will be kept as-is
+        even when they are listed in ``regenerate_columns``.
+
+        Args:
+            selectable: Base SELECT
+            keep_existing_columns: When True, reuse existing system columns even if
+                they are part of the regeneration set.
+            regenerate_columns: Names of system columns to regenerate. Defaults to
+                {"sys__id", "sys__rand"}. Columns not listed are left untouched.
+        """
+        system_columns = {
+            sys_col.name: sys_col.type
+            for sys_col in self.schema.dataset_row_cls.sys_columns()
+        }
+        regenerate = set(regenerate_columns or system_columns)
+        generators = {
+            "sys__id": self._system_row_number_expr,
+            "sys__rand": self._system_random_expr,
+        }
+
+        base = cast("FromClause", selectable.subquery())
+
+        def build(name: str) -> sa.ColumnElement:
+            expr = generators[name]()
+            return sa.cast(expr, system_columns[name]).label(name)
+
+        columns: list[sa.ColumnElement] = []
+        present: set[str] = set()
+        changed = False
+
+        for col in base.c:
+            present.add(col.name)
+            regen = col.name in regenerate and not keep_existing_columns
+            columns.append(build(col.name) if regen else col)
+            changed |= regen
+
+        for name in regenerate - present:
+            columns.append(build(name))
+            changed = True
+
+        if not changed:
+            return selectable
+
+        inner = sa.select(*columns).select_from(base).subquery()
+        return sa.select(*inner.c).select_from(inner)
+
+    def _system_row_number_expr(self):
+        """Return an expression that produces deterministic row numbers."""
+
+        raise NotImplementedError
+
+    def _system_random_expr(self):
+        """Return an expression that produces deterministic random values."""
+
+        raise NotImplementedError
 
     #
     # Table Name Internal Functions
@@ -294,6 +391,14 @@ class AbstractWarehouse(ABC, Serializable):
     ) -> sa.Table:
         """Creates a dataset rows table for the given dataset name and columns"""
 
+    def insert_dataframe_to_table(self, table_name: str, df) -> int:
+        """
+        Insert dataframe into any table by name.
+
+        This is used for inserting data into temporary staging tables.
+        """
+        return self.db.insert_dataframe(table_name, df)
+
     def drop_dataset_rows_table(
         self,
         dataset: DatasetRecord,
@@ -304,21 +409,9 @@ class AbstractWarehouse(ABC, Serializable):
         table_name = self.dataset_table_name(dataset, version)
         table = sa.Table(table_name, self.db.metadata)
         self.db.drop_table(table, if_exists=if_exists)
-
-    @abstractmethod
-    def merge_dataset_rows(
-        self,
-        src: "DatasetRecord",
-        dst: "DatasetRecord",
-        src_version: str,
-        dst_version: str,
-    ) -> None:
-        """
-        Merges source dataset rows and current latest destination dataset rows
-        into a new rows table created for new destination dataset version.
-        Note that table for new destination version must be created upfront.
-        Merge results should not contain duplicates.
-        """
+        # Remove from metadata cache to allow recreation
+        if table_name in self.db.metadata.tables:
+            self.db.metadata.remove(self.db.metadata.tables[table_name])
 
     def dataset_rows_select(
         self,
@@ -342,7 +435,7 @@ class AbstractWarehouse(ABC, Serializable):
         """
         Fetch dataset rows from database using a list of IDs.
         """
-        if (id_col := get_query_id_column(query)) is None:
+        if (id_col := query.selected_columns.get("sys__id")) is None:
             raise RuntimeError("sys__id column not found in query")
 
         query = query._clone().offset(None).limit(None).order_by(None)
@@ -386,7 +479,7 @@ class AbstractWarehouse(ABC, Serializable):
 
     def dataset_stats(
         self, dataset: DatasetRecord, version: str
-    ) -> tuple[Optional[int], Optional[int]]:
+    ) -> tuple[int | None, int | None]:
         """
         Returns tuple with dataset stats: total number of rows and total dataset size.
         """
@@ -415,24 +508,43 @@ class AbstractWarehouse(ABC, Serializable):
     def prepare_entries(self, entries: "Iterable[File]") -> Iterable[dict[str, Any]]:
         """Convert File entries so they can be passed on to `insert_rows()`"""
 
-    @abstractmethod
     def insert_rows(
         self,
         table: sa.Table,
         rows: Iterable[dict[str, Any]],
-        batch_size: int = INSERT_BATCH_SIZE,
+        batch_size: int | None = None,
     ) -> None:
-        """Does batch inserts of any kind of rows into table"""
+        """Does batch inserts of any kind of rows into table.
 
-    def insert_rows_done(self, table: sa.Table) -> None:
+        `insert_rows_done` must be called after this function is used
+        (and all rows have been inserted).
         """
-        Only needed for certain implementations
-        to signal when rows inserts are complete.
-        """
+        buffer_size = batch_size if batch_size is not None else self.INSERT_BATCH_SIZE
+        buffer = self.get_buffer(
+            table, buffer_size=buffer_size, flush_interval=self.INSERT_FLUSH_INTERVAL
+        )
+        buffer.insert_many(rows)
 
     @abstractmethod
-    def insert_dataset_rows(self, df, dataset: DatasetRecord, version: str) -> int:
-        """Inserts dataset rows directly into dataset table"""
+    def get_buffer(
+        self,
+        table: sa.Table,
+        buffer_size: int,
+        flush_interval: float,
+    ) -> "InsertBuffer":
+        """Get or create an InsertBuffer for the given table."""
+
+    def close_buffer(self, table: sa.Table) -> None:
+        """Flush and close the buffer for the given table."""
+        if table.name not in self.buffers:
+            return
+        self.buffers[table.name].flush()
+        self.buffers[table.name].close()
+        del self.buffers[table.name]
+
+    def insert_rows_done(self, table: sa.Table) -> None:
+        """Signal that row inserts are complete by flushing and closing the buffer."""
+        self.close_buffer(table)
 
     @abstractmethod
     def instr(self, source, target) -> sa.ColumnElement:
@@ -448,25 +560,28 @@ class AbstractWarehouse(ABC, Serializable):
         create it
         """
 
-    @abstractmethod
-    def dataset_table_export_file_names(
-        self, dataset: DatasetRecord, version: str
-    ) -> list[str]:
-        """
-        Returns list of file names that will be created when user runs dataset export
-        """
+    def rename_table(self, old_table: sa.Table, new_name: str) -> sa.Table:
+        """Rename table and return new Table object with same schema."""
+        self.db.rename_table(old_table.name, new_name)
+
+        return sa.Table(
+            new_name,
+            self.db.metadata,
+            *[sa.Column(c.name, c.type) for c in old_table.columns],
+        )
 
     @abstractmethod
     def export_dataset_table(
         self,
-        bucket_uri: str,
+        bucket: str,
         dataset: DatasetRecord,
         version: str,
+        *,
+        file_format: str | None = None,
+        base_file_name: str,
         client_config=None,
-    ) -> list[str]:
-        """
-        Exports dataset table to the cloud, e.g to some s3 bucket
-        """
+    ) -> None:
+        """Exports dataset table to the cloud, e.g to some s3 bucket"""
 
     def python_type(self, col_type: Union["TypeEngine", "SQLType"]) -> Any:
         """Returns python type representation of some Sqlalchemy column type"""
@@ -511,7 +626,7 @@ class AbstractWarehouse(ABC, Serializable):
         dr = dataset_rows
         columns = [c.name for c in query.selected_columns]
         for row in self.db.execute(query):
-            d = dict(zip(columns, row))
+            d = dict(zip(columns, row, strict=False))
             yield Node(**{dr.without_object(k): v for k, v in d.items()})
 
     def get_dirs_by_parent_path(
@@ -748,7 +863,7 @@ class AbstractWarehouse(ABC, Serializable):
     def size(
         self,
         dataset_rows: "DataTable",
-        node: Union[Node, dict[str, Any]],
+        node: Node | dict[str, Any],
         count_files: bool = False,
     ) -> tuple[int, int]:
         """
@@ -790,10 +905,10 @@ class AbstractWarehouse(ABC, Serializable):
         self,
         dataset_rows: "DataTable",
         parent_path: str,
-        fields: Optional[Sequence[str]] = None,
-        type: Optional[str] = None,
+        fields: Sequence[str] | None = None,
+        type: str | None = None,
         conds=None,
-        order_by: Optional[Union[str, list[str]]] = None,
+        order_by: str | list[str] | None = None,
         include_subobjects: bool = True,
     ) -> sa.Select:
         if not conds:
@@ -831,7 +946,7 @@ class AbstractWarehouse(ABC, Serializable):
         self,
         dataset_rows: "DataTable",
         node: Node,
-        sort: Union[list[str], str, None] = None,
+        sort: list[str] | str | None = None,
         include_subobjects: bool = True,
     ) -> Iterator[NodeWithPath]:
         """
@@ -889,32 +1004,79 @@ class AbstractWarehouse(ABC, Serializable):
     def create_udf_table(
         self,
         columns: Sequence["sa.Column"] = (),
-        name: Optional[str] = None,
+        name: str | None = None,
     ) -> sa.Table:
         """
         Create a temporary table for storing custom signals generated by a UDF.
         SQLite TEMPORARY tables cannot be directly used as they are process-specific,
         and UDFs are run in other processes when run in parallel.
+
+        Returns:
+            table: The created SQLAlchemy Table object
         """
+        columns = [
+            c
+            for c in columns
+            if c.name not in [col.name for col in self.dataset_row_cls.sys_columns()]
+        ]
         tbl = sa.Table(
             name or self.udf_table_name(),
             sa.MetaData(),
-            sa.Column("sys__id", Int, primary_key=True),
+            *self.dataset_row_cls.sys_columns(),
             *columns,
         )
-        self.db.create_table(tbl, if_not_exists=True)
+        self.db.create_table(tbl, if_not_exists=True, kind="udf")
         return tbl
 
     @abstractmethod
-    def copy_table(
+    def insert_into(
         self,
         table: sa.Table,
         query: sa.Select,
-        progress_cb: Optional[Callable[[int], None]] = None,
+        progress_cb: Callable[[int], None] | None = None,
     ) -> None:
         """
-        Copy the results of a query into a table.
+        Insert the results of a query into an existing table.
         """
+
+    def create_table_from_query(
+        self,
+        name: str,
+        query: sa.Select,
+        create_fn: Callable[[str], sa.Table],
+        progress_cb: Callable[[int], None] | None = None,
+    ) -> sa.Table:
+        """
+        Atomically create and populate a table from a query.
+
+        Uses a staging pattern to ensure the final table only exists when fully
+        populated. This prevents race conditions and ensures data consistency
+        if the operation fails mid-way.
+
+        Leftover staging tables (tmp_*) are cleaned by system maintenance.
+
+        Args:
+            name: Final table name
+            query: Query to populate the table from
+            create_fn: Function that creates an empty table given a name
+            progress_cb: Optional callback for progress updates
+
+        Returns:
+            The created and populated table
+        """
+        staging_name = self.temp_table_name()
+        staging_table = create_fn(staging_name)
+
+        self.insert_into(staging_table, query, progress_cb=progress_cb)
+
+        try:
+            return self.rename_table(staging_table, name)
+        except TableRenameError:
+            # Another process won the race - clean up our staging table
+            self.db.drop_table(staging_table, if_exists=True)
+            if self.db.has_table(name):
+                return self.get_table(name)
+            raise
 
     @abstractmethod
     def join(
@@ -923,13 +1085,58 @@ class AbstractWarehouse(ABC, Serializable):
         right: "_FromClauseArgument",
         onclause: "_OnClauseArgument",
         inner: bool = True,
+        full: bool = False,
+        columns=None,
     ) -> sa.Select:
         """
         Join two tables together.
         """
 
+    def subtract_query(
+        self,
+        source_query: sa.Select,
+        target_query: sa.Select,
+        key_pairs: Sequence[tuple[str, str]],
+    ) -> sa.Selectable:
+        """
+        Build an anti-join query for subtract semantics.
+
+        Default implementation uses LEFT JOIN with NULL-safe key comparison.
+        Warehouses can override this for backend-specific behavior.
+        """
+        assert key_pairs, "key_pairs must not be empty"
+        suffix = _next_subtract_id()
+        sq = source_query.cte(f"__dc_src_cte_{suffix}")
+        tq = target_query.cte(f"__dc_tgt_cte_{suffix}")
+
+        target_key_cols = [
+            tq.c[right] if left == right else tq.c[right].label(left)
+            for left, right in key_pairs
+        ]
+        target_keys = (
+            sa.select(
+                *target_key_cols,
+                sa.literal(1).label("__dc_match"),
+            )
+            .distinct()
+            .subquery(f"__dc_tgt_keys_{suffix}")
+        )
+
+        on_clause = sa.and_(
+            *[
+                sq.c[left].is_not_distinct_from(target_keys.c[left])
+                for left, _ in key_pairs
+            ]
+        )
+
+        return (
+            sa.select(sq)
+            .select_from(sq.outerjoin(target_keys, on_clause))
+            .where(target_keys.c["__dc_match"].is_(None))
+        )
+
     @abstractmethod
-    def create_pre_udf_table(self, query: sa.Select) -> sa.Table:
+    def create_pre_udf_table(self, query: sa.Select, name: str) -> sa.Table:
         """
         Create a temporary table from a query for use in a UDF.
         """
@@ -937,7 +1144,7 @@ class AbstractWarehouse(ABC, Serializable):
     def is_temp_table_name(self, name: str) -> bool:
         """Returns if the given table name refers to a temporary
         or no longer needed table."""
-        return name.startswith((self.TMP_TABLE_NAME_PREFIX, self.UDF_TABLE_NAME_PREFIX))
+        return name.startswith(self.TMP_TABLE_NAME_PREFIX)
 
     def get_temp_table_names(self) -> list[str]:
         return [
@@ -959,7 +1166,13 @@ class AbstractWarehouse(ABC, Serializable):
 
 
 def _random_string(length: int) -> str:
-    return "".join(
-        random.choice(string.ascii_letters + string.digits)  # noqa: S311
-        for i in range(length)
-    )
+    alphabet = string.ascii_letters + string.digits
+    return "".join(secrets.choice(alphabet) for _ in range(length))
+
+
+_subtract_counter = itertools.count()
+
+
+def _next_subtract_id() -> int:
+    """Return a unique suffix for subtract CTE naming."""
+    return next(_subtract_counter)

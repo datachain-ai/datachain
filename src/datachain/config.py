@@ -1,7 +1,6 @@
 from collections.abc import Mapping
 from contextlib import contextmanager
 from enum import Enum
-from typing import Optional, Union
 
 from tomlkit import TOMLDocument, dump, load
 
@@ -22,16 +21,13 @@ class Config:
     # In the order of precedence
     LEVELS = SYSTEM_LEVELS + LOCAL_LEVELS
 
-    def __init__(
-        self,
-        level: Optional[ConfigLevel] = None,
-    ):
+    def __init__(self, level: ConfigLevel | None = None):
         self.level = level
 
         self.init()
 
     @classmethod
-    def get_dir(cls, level: Optional[ConfigLevel]) -> str:
+    def get_dir(cls, level: ConfigLevel | None) -> str:
         if level == ConfigLevel.SYSTEM:
             return system_config_dir()
         if level == ConfigLevel.GLOBAL:
@@ -43,7 +39,7 @@ class Config:
         d = DataChainDir(self.get_dir(self.level))
         d.init()
 
-    def load_one(self, level: Optional[ConfigLevel] = None) -> TOMLDocument:
+    def load_one(self, level: ConfigLevel | None = None) -> TOMLDocument:
         config_path = DataChainDir(self.get_dir(level)).config
 
         try:
@@ -128,7 +124,7 @@ class Config:
         return remote_conf
 
 
-def merge(into: Union[TOMLDocument, dict], update: Union[TOMLDocument, dict]):
+def merge(into: TOMLDocument | dict, update: TOMLDocument | dict):
     """Merges second dict into first recursively"""
     for key, val in update.items():
         if isinstance(into.get(key), dict) and isinstance(val, dict):

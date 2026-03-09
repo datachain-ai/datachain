@@ -1,45 +1,54 @@
 import copy
+import hashlib
+import logging
+import math
+import types
 import warnings
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from inspect import isclass
-from typing import (  # noqa: UP035
+from typing import (
     IO,
     TYPE_CHECKING,
-    Annotated,
     Any,
-    Callable,
-    Dict,
     Final,
-    List,
-    Literal,
-    Mapping,
     Optional,
     Union,
     get_args,
     get_origin,
 )
 
-from pydantic import BaseModel, Field, create_model
+from pydantic import BaseModel, Field, ValidationError, create_model
 from sqlalchemy import ColumnElement
-from typing_extensions import Literal as LiteralEx
 
+from datachain import json
 from datachain.func import literal
 from datachain.func.func import Func
 from datachain.lib.convert.python_to_sql import python_to_sql
 from datachain.lib.convert.sql_to_python import sql_to_python
 from datachain.lib.convert.unflatten import unflatten_to_json_pos
-from datachain.lib.data_model import DataModel, DataType, DataValue
+from datachain.lib.data_model import (
+    DataModel,
+    DataType,
+    DataValue,
+    compute_model_fingerprint,
+)
 from datachain.lib.file import File
 from datachain.lib.model_store import ModelStore
-from datachain.lib.utils import DataChainParamsError
+from datachain.lib.utils import (
+    DataChainColumnError,
+    DataChainParamsError,
+    type_to_str,
+)
 from datachain.query.schema import DEFAULT_DELIMITER, C, Column, ColumnMeta
 from datachain.sql.types import SQLType
 
 if TYPE_CHECKING:
     from datachain.catalog import Catalog
 
+
+logger = logging.getLogger(__name__)
 
 NAMES_TO_TYPES = {
     "int": int,
@@ -48,6 +57,7 @@ NAMES_TO_TYPES = {
     "bool": bool,
     "list": list,
     "dict": dict,
+    "tuple": tuple,
     "bytes": bytes,
     "datetime": datetime,
     "Final": Final,
@@ -55,6 +65,7 @@ NAMES_TO_TYPES = {
     "Optional": Optional,
     "List": list,
     "Dict": dict,
+    "Tuple": tuple,
     "Literal": Any,
     "Any": Any,
 }
@@ -69,37 +80,110 @@ class SignalSchemaWarning(RuntimeWarning):
 
 
 class SignalResolvingError(SignalSchemaError):
-    def __init__(self, path: Optional[list[str]], msg: str):
+    def __init__(self, path: list[str] | None, msg: str):
+        self._path = path
+        self._msg = msg
         name = " '" + ".".join(path) + "'" if path else ""
         super().__init__(f"cannot resolve signal name{name}: {msg}")
+
+    def __reduce__(self):
+        return self.__class__, (self._path, self._msg)
 
 
 class SetupError(SignalSchemaError):
     def __init__(self, name: str, msg: str):
+        self._name = name
+        self._msg = msg
         super().__init__(f"cannot setup value '{name}': {msg}")
+
+    def __reduce__(self):
+        return self.__class__, (self._name, self._msg)
+
+
+def generate_merge_root_mapping(
+    left_names: Iterable[str],
+    right_names: Sequence[str],
+    *,
+    extract_root: Callable[[str], str],
+    prefix: str,
+) -> dict[str, str]:
+    """Compute root renames for schema merges.
+
+    Returns a mapping from each right-side root to the target root name while
+    preserving the order in which right-side roots first appear. The mapping
+    avoids collisions with roots already present on the left side and among
+    the right-side roots themselves. When a conflict is detected, the
+    ``prefix`` string is used to derive candidate root names until a unique
+    one is found.
+    """
+
+    existing_roots = {extract_root(name) for name in left_names}
+
+    right_root_order: list[str] = []
+    right_roots: set[str] = set()
+    for name in right_names:
+        root = extract_root(name)
+        if root not in right_roots:
+            right_roots.add(root)
+            right_root_order.append(root)
+
+    used_roots = set(existing_roots)
+    root_mapping: dict[str, str] = {}
+
+    for root in right_root_order:
+        if root not in used_roots:
+            root_mapping[root] = root
+            used_roots.add(root)
+            continue
+
+        suffix = 0
+        while True:
+            base = prefix if root in prefix else f"{prefix}{root}"
+            candidate_root = base if suffix == 0 else f"{base}_{suffix}"
+            if candidate_root not in used_roots and candidate_root not in right_roots:
+                root_mapping[root] = candidate_root
+                used_roots.add(candidate_root)
+                break
+            suffix += 1
+
+    return root_mapping
 
 
 class SignalResolvingTypeError(SignalResolvingError):
-    def __init__(self, method: str, field):
-        super().__init__(
-            None,
-            f"{method} supports only `str` type"
-            f" while '{field}' has type '{type(field)}'",
-        )
+    def __init__(self, method: str, field: Any):
+        self._method = method
+        if isinstance(field, str):
+            # Restoring from pickle — field is the pre-computed message
+            msg = field
+        else:
+            msg = (
+                f"{method} supports only `str` type"
+                f" while '{field!r}' has type '{type(field).__name__}'"
+            )
+        super().__init__(None, msg)
+
+    def __reduce__(self) -> tuple[type, tuple]:
+        return self.__class__, (self._method, self._msg)
 
 
 class SignalRemoveError(SignalSchemaError):
-    def __init__(self, path: Optional[list[str]], msg: str):
+    def __init__(self, path: list[str] | None, msg: str):
+        self._path = path
+        self._msg = msg
         name = " '" + ".".join(path) + "'" if path else ""
         super().__init__(f"cannot remove signal name{name}: {msg}")
+
+    def __reduce__(self):
+        return self.__class__, (self._path, self._msg)
 
 
 class CustomType(BaseModel):
     schema_version: int = Field(ge=1, le=2, strict=True)
     name: str
     fields: dict[str, str]
-    bases: list[tuple[str, str, Optional[str]]]
-    hidden_fields: Optional[list[str]] = None
+    bases: list[tuple[str, str, str | None]]
+    hidden_fields: list[str] | None = None
+    partial_fingerprint: str | None = None
 
     @classmethod
     def deserialize(cls, data: dict[str, Any], type_name: str) -> "CustomType":
@@ -112,6 +196,7 @@ class CustomType(BaseModel):
                 "fields": data,
                 "bases": [],
                 "hidden_fields": [],
+                "partial_fingerprint": None,
             }
 
         return cls(**data)
@@ -119,26 +204,57 @@ class CustomType(BaseModel):
 
 def create_feature_model(
     name: str,
-    fields: Mapping[str, Union[type, None, tuple[type, Any]]],
-    base: Optional[type] = None,
+    fields: Mapping[str, Any],
+    base: type | None = None,
+    *,
+    partial_fingerprint: str | None = None,
+    hidden_fields: list[str] | None = None,
 ) -> type[BaseModel]:
     """
-    This gets or returns a dynamic feature model for use in restoring a model
-    from the custom_types stored within a serialized SignalSchema. This is useful
-    when using a custom feature model where the original definition is not available.
-    This happens in Studio and if a custom model is used in a dataset, then that dataset
-    is used in a DataChain in a separate script where that model is not declared.
+    Build and register a dynamic feature model so it can be resolved later by name.
+
+    Used when the original definition is not available (e.g., Studio restores or
+    cross-process dataset loads) and when deriving partial models in
+    ``SignalSchema.to_partial``.
+
+    Args:
+        name: Logical model name. If it includes a version suffix like ``@v1``, the
+            version is parsed into ``_version``.
+        fields: Mapping of field definitions for the model body.
+        base: Base class for the generated model (defaults to ``DataModel``).
+        partial_fingerprint: If set, store ``_partial_fingerprint`` metadata.
+        hidden_fields: If set, store ``_hidden_fields`` metadata.
+
+    Notes:
+        - The generated Python class name is versioned (e.g. ``MyType_v1``) to avoid
+          collisions when multiple versions are loaded in one process.
+        - ``_modelstore_base_name`` preserves the original/logical name (e.g.
+          ``MyType``), and ``ModelStore.register()`` stores the model under both the
+          logical name and the runtime class name for robust lookups.
     """
-    name = name.replace("@", "_")
-    return create_model(
-        name,
+    base_name, parsed_version = ModelStore.parse_name_version(name)
+    class_name = f"{base_name}_v{parsed_version}" if parsed_version > 0 else base_name
+    model_name = class_name.replace("@", "_")
+    model = create_model(
+        model_name,
         __base__=base or DataModel,  # type: ignore[call-overload]
         # These are tuples for each field of: annotation, default (if any)
         **{
             field_name: anno if isinstance(anno, tuple) else (anno, None)
             for field_name, anno in fields.items()
-        },
+        },  # type: ignore[arg-type]
     )
+
+    model._version = parsed_version  # type: ignore[attr-defined]
+    model._modelstore_base_name = base_name  # type: ignore[attr-defined]
+    if partial_fingerprint is not None:
+        model._partial_fingerprint = partial_fingerprint  # type: ignore[attr-defined]
+    if hidden_fields is not None:
+        model._hidden_fields = hidden_fields  # type: ignore[attr-defined]
+
+    ModelStore.register(model)
+
+    return model
 
 
 @dataclass
@@ -146,12 +262,12 @@ class SignalSchema:
     values: dict[str, DataType]
     tree: dict[str, Any]
     setup_func: dict[str, Callable]
-    setup_values: Optional[dict[str, Any]]
+    setup_values: dict[str, Any] | None
 
     def __init__(
         self,
         values: dict[str, DataType],
-        setup: Optional[dict[str, Callable]] = None,
+        setup: dict[str, Callable] | None = None,
     ):
         self.values = values
         self.tree = self._build_tree(values)
@@ -190,13 +306,14 @@ class SignalSchema:
         return SignalSchema(signals)
 
     @staticmethod
-    def _get_bases(fr: type) -> list[tuple[str, str, Optional[str]]]:
-        bases: list[tuple[str, str, Optional[str]]] = []
+    def _get_bases(fr: type) -> list[tuple[str, str, str | None]]:
+        bases: list[tuple[str, str, str | None]] = []
         for base in fr.__mro__:
             model_store_name = (
                 ModelStore.get_name(base) if issubclass(base, DataModel) else None
             )
-            bases.append((base.__name__, base.__module__, model_store_name))
+            base_name = getattr(base, "_modelstore_base_name", base.__name__)
+            bases.append((base_name, base.__module__, model_store_name))
         return bases
 
     @staticmethod
@@ -224,8 +341,9 @@ class SignalSchema:
             fields=fields,
             bases=bases,
             hidden_fields=getattr(fr, "_hidden_fields", []),
+            partial_fingerprint=getattr(fr, "_partial_fingerprint", None),
         )
-        custom_types[version_name] = ct.model_dump()
+        custom_types[version_name] = ct.model_dump(exclude_none=True)
 
         return version_name
 
@@ -257,6 +375,11 @@ class SignalSchema:
             signals["_custom_types"] = custom_types
         return signals
 
+    def hash(self) -> str:
+        """Create SHA hash of this schema"""
+        json_str = json.dumps(self.serialize(), sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(json_str.encode("utf-8")).hexdigest()
+
     @staticmethod
     def _split_subtypes(type_name: str) -> list[str]:
         """This splits a list of subtypes, including proper square bracket handling."""
@@ -283,17 +406,22 @@ class SignalSchema:
     @staticmethod
     def _deserialize_custom_type(
         type_name: str, custom_types: dict[str, Any]
-    ) -> Optional[type]:
+    ) -> type | None:
         """Given a type name like MyType@v1 gets a type from ModelStore or recreates
         it based on the information from the custom types dict that includes fields and
         bases."""
-        model_name, version = ModelStore.parse_name_version(type_name)
-        fr = ModelStore.get(model_name, version)
-        if fr:
-            return fr
+        model_name, target_version = ModelStore.parse_name_version(type_name)
 
         if type_name in custom_types:
-            ct = CustomType.deserialize(custom_types[type_name], type_name)
+            try:
+                ct = CustomType.deserialize(custom_types[type_name], type_name)
+            except ValidationError as exc:
+                raise SignalSchemaError(
+                    f"cannot deserialize custom type '{type_name}': {exc}"
+                ) from exc
+
+            if fr := ModelStore.get(model_name, target_version):
+                return fr
 
             fields = {
                 field_name: SignalSchema._resolve_type(field_type_str, custom_types)
@@ -304,19 +432,25 @@ class SignalSchema:
             for base in ct.bases:
                 _, _, model_store_name = base
                 if model_store_name:
-                    model_name, version = ModelStore.parse_name_version(
+                    base_model_name, base_version = ModelStore.parse_name_version(
                         model_store_name
                     )
-                    base_model = ModelStore.get(model_name, version)
+                    base_model = ModelStore.get(base_model_name, base_version)
                     if base_model:
                         break
 
-            return create_feature_model(type_name, fields, base=base_model)
+            return create_feature_model(
+                type_name,
+                fields,
+                base=base_model,
+                hidden_fields=ct.hidden_fields,
+                partial_fingerprint=ct.partial_fingerprint,
+            )
 
-        return None
+        return ModelStore.get(model_name, target_version)
 
     @staticmethod
-    def _resolve_type(type_name: str, custom_types: dict[str, Any]) -> Optional[type]:
+    def _resolve_type(type_name: str, custom_types: dict[str, Any]) -> type | None:  # noqa: PLR0911
         """Convert a string-based type back into a python type."""
         type_name = type_name.strip()
         if not type_name:
@@ -325,7 +459,7 @@ class SignalSchema:
             return None
 
         bracket_idx = type_name.find("[")
-        subtypes: Optional[tuple[Optional[type], ...]] = None
+        subtypes: tuple[type | None | types.EllipsisType, ...] | None = None
         if bracket_idx > -1:
             if bracket_idx == 0:
                 raise ValueError("Type cannot start with '['")
@@ -341,7 +475,10 @@ class SignalSchema:
             )
             # Types like Union require the parameters to be a tuple of types.
             subtypes = tuple(
-                SignalSchema._resolve_type(st, custom_types) for st in subtype_names
+                Ellipsis
+                if st == "..."
+                else SignalSchema._resolve_type(st, custom_types)
+                for st in subtype_names
             )
             type_name = type_name[:bracket_idx].strip()
 
@@ -351,6 +488,11 @@ class SignalSchema:
                 if len(subtypes) == 1:
                     # Types like Optional require there to be only one argument.
                     return fr[subtypes[0]]  # type: ignore[index]
+                if fr is tuple:
+                    # Handle variadic tuples with ellipsis (tuple[T, ...])
+                    if len(subtypes) == 2 and subtypes[1] is Ellipsis:
+                        return fr[subtypes[0], ...]  # type: ignore[index]
+                    return fr[subtypes]  # type: ignore[index]
                 # Other types like Union require the parameters to be a tuple of types.
                 return fr[subtypes]  # type: ignore[index]
             return fr  # type: ignore[return-value]
@@ -456,13 +598,33 @@ class SignalSchema:
                 objs.append(self.setup_values.get(name))
             elif (fr := ModelStore.to_pydantic(fr_type)) is not None:
                 j, pos = unflatten_to_json_pos(fr, row, pos)
-                objs.append(fr(**j))
+                try:
+                    obj = fr(**j)
+                except ValidationError as e:
+                    if self._all_values_none(j):
+                        logger.debug("Failed to create input for %s: %s", name, e)
+                        obj = None
+                    else:
+                        raise
+                objs.append(obj)
             else:
                 objs.append(row[pos])
                 pos += 1
         return objs
 
-    def get_file_signal(self) -> Optional[str]:
+    @staticmethod
+    def _all_values_none(value: Any) -> bool:
+        if isinstance(value, dict):
+            return all(SignalSchema._all_values_none(v) for v in value.values())
+        if isinstance(value, (list, tuple, set)):
+            return all(SignalSchema._all_values_none(v) for v in value)
+        if isinstance(value, float):
+            # NaN is used to represent NULL and NaN float values in datachain
+            # Since SQLite does not have a separate NULL type, we need to check for NaN
+            return math.isnan(value) or value is None
+        return value is None
+
+    def get_file_signal(self) -> str | None:
         for signal_name, signal_type in self.values.items():
             if (fr := ModelStore.to_pydantic(signal_type)) is not None and issubclass(
                 fr, File
@@ -472,8 +634,8 @@ class SignalSchema:
 
     def slice(
         self,
-        params: dict[str, Union[DataType, Any]],
-        setup: Optional[dict[str, Callable]] = None,
+        params: dict[str, DataType | Any],
+        setup: dict[str, Callable] | None = None,
         is_batch: bool = False,
     ) -> "SignalSchema":
         """
@@ -497,9 +659,13 @@ class SignalSchema:
             schema_origin = get_origin(schema_type)
             param_origin = get_origin(param_type)
 
-            if schema_origin is Union and type(None) in get_args(schema_type):
+            if schema_origin in (Union, types.UnionType) and type(None) in get_args(
+                schema_type
+            ):
                 schema_type = get_args(schema_type)[0]
-                if param_origin is Union and type(None) in get_args(param_type):
+                if param_origin in (Union, types.UnionType) and type(None) in get_args(
+                    param_type
+                ):
                     param_type = get_args(param_type)[0]
 
             if is_batch:
@@ -535,14 +701,89 @@ class SignalSchema:
         pos = 0
         for fr_cls in self.values.values():
             if (fr := ModelStore.to_pydantic(fr_cls)) is None:
-                res.append(row[pos])
+                value = row[pos]
                 pos += 1
+                converted = self._convert_feature_value(fr_cls, value, catalog, cache)
+                res.append(converted)
             else:
                 json, pos = unflatten_to_json_pos(fr, row, pos)  # type: ignore[union-attr]
-                obj = fr(**json)
-                SignalSchema._set_file_stream(obj, catalog, cache)
+                try:
+                    obj = fr(**json)
+                    SignalSchema._set_file_stream(obj, catalog, cache)
+                except ValidationError as e:
+                    if self._all_values_none(json):
+                        logger.debug("Failed to create feature for %s: %s", fr_cls, e)
+                        obj = None
+                    else:
+                        raise
                 res.append(obj)
         return res
+
+    def _convert_feature_value(
+        self,
+        annotation: DataType,
+        value: Any,
+        catalog: "Catalog",
+        cache: bool,
+    ) -> Any:
+        """Convert raw DB value into declared annotation if needed."""
+        if value is None:
+            return None
+
+        result = value
+        origin = get_origin(annotation)
+
+        if origin in (Union, types.UnionType):
+            non_none_args = [
+                arg for arg in get_args(annotation) if arg is not type(None)
+            ]
+            if len(non_none_args) == 1:
+                annotation = non_none_args[0]
+                origin = get_origin(annotation)
+            else:
+                return result
+
+        if ModelStore.is_pydantic(annotation):
+            if isinstance(value, annotation):
+                obj = value
+            elif isinstance(value, Mapping):
+                obj = annotation(**value)
+            else:
+                return result
+            assert isinstance(obj, BaseModel)
+            SignalSchema._set_file_stream(obj, catalog, cache)
+            result = obj
+        elif origin is list:
+            args = get_args(annotation)
+            if args and isinstance(value, (list, tuple)):
+                item_type = args[0]
+                result = [
+                    self._convert_feature_value(item_type, item, catalog, cache)
+                    if item is not None
+                    else None
+                    for item in value
+                ]
+        elif origin is dict:
+            args = get_args(annotation)
+            if len(args) == 2 and isinstance(value, dict):
+                key_type, val_type = args
+                result = {}
+                for key, val in value.items():
+                    if key_type is str:
+                        converted_key = key
+                    else:
+                        loaded_key = json.loads(key)
+                        converted_key = self._convert_feature_value(
+                            key_type, loaded_key, catalog, cache
+                        )
+                    converted_val = (
+                        self._convert_feature_value(val_type, val, catalog, cache)
+                        if val_type is not Any
+                        else val
+                    )
+                    result[converted_key] = converted_val
+
+        return result
 
     @staticmethod
     def _set_file_stream(
@@ -572,8 +813,8 @@ class SignalSchema:
         raise SignalResolvingError([col_name], "is not found")
 
     def db_signals(
-        self, name: Optional[str] = None, as_columns=False, include_hidden: bool = True
-    ) -> Union[list[str], list[Column]]:
+        self, name: str | None = None, as_columns=False, include_hidden: bool = True
+    ) -> list[str] | list[Column]:
         """
         Returns DB columns as strings or Column objects with proper types
         Optionally, it can filter results by specific object, returning only his signals
@@ -599,6 +840,35 @@ class SignalSchema:
             ]
 
         return signals  # type: ignore[return-value]
+
+    def user_signals(
+        self,
+        *,
+        include_hidden: bool = True,
+        include_sys: bool = False,
+    ) -> list[str]:
+        return [
+            ".".join(path)
+            for path, _, has_subtree, _ in self.get_flat_tree(
+                include_hidden=include_hidden, include_sys=include_sys
+            )
+            if not has_subtree
+        ]
+
+    def compare_signals(
+        self,
+        other: "SignalSchema",
+        *,
+        include_hidden: bool = True,
+        include_sys: bool = False,
+    ) -> tuple[set[str], set[str]]:
+        left = set(
+            self.user_signals(include_hidden=include_hidden, include_sys=include_sys)
+        )
+        right = set(
+            other.user_signals(include_hidden=include_hidden, include_sys=include_sys)
+        )
+        return left - right, right - left
 
     def resolve(self, *names: str) -> "SignalSchema":
         schema = {}
@@ -643,29 +913,39 @@ class SignalSchema:
         return SignalSchema(schema.values | vals)
 
     def select_except_signals(self, *args: str) -> "SignalSchema":
-        def has_signal(signal: str):
-            signal = signal.replace(".", DEFAULT_DELIMITER)
-            return any(signal == s for s in self.db_signals())
+        """Return a schema excluding the provided signals.
 
-        schema = copy.deepcopy(self.values)
+        Unlike simply deleting top-level schema keys, this method supports nested
+        exclusions (e.g. ``"file.path"``) by rebuilding the remaining schema via
+        ``to_partial`` and generating partial models as needed.
+
+        The exclusion syntax matches ``DataChain.select_except``:
+
+        - Excluding a leaf: ``"file.path"`` removes just that leaf.
+        - Excluding a parent: ``"file"`` removes all leaves under that parent.
+        """
+
+        if not args:
+            return self
+
+        leaf_signals = set(self.user_signals(include_hidden=True, include_sys=True))
+        keep = set(leaf_signals)
+
         for signal in args:
             if not isinstance(signal, str):
                 raise SignalResolvingTypeError("select_except()", signal)
 
-            if signal not in self.values:
-                if has_signal(signal):
-                    raise SignalRemoveError(
-                        signal.split("."),
-                        "select_except() error - removing nested signal would"
-                        " break parent schema, which isn't supported.",
-                    )
-                raise SignalResolvingError(
+            matches = {
+                s for s in leaf_signals if s == signal or s.startswith(f"{signal}.")
+            }
+            if not matches:
+                raise SignalRemoveError(
                     signal.split("."),
                     "select_except() error - the signal does not exist",
                 )
-            del schema[signal]
+            keep -= matches
 
-        return SignalSchema(schema)
+        return self.to_partial(*sorted(keep)) if keep else SignalSchema({})
 
     def clone_without_file_signals(self) -> "SignalSchema":
         schema = copy.deepcopy(self.values)
@@ -733,12 +1013,30 @@ class SignalSchema:
         right_schema: "SignalSchema",
         rname: str,
     ) -> "SignalSchema":
-        schema_right = {
-            rname + key if key in self.values else key: type_
-            for key, type_ in right_schema.values.items()
-        }
+        merged_values = dict(self.values)
 
-        return SignalSchema(self.values | schema_right)
+        right_names = list(right_schema.values.keys())
+        root_mapping = generate_merge_root_mapping(
+            self.values.keys(),
+            right_names,
+            extract_root=self._extract_root,
+            prefix=rname,
+        )
+
+        for key, type_ in right_schema.values.items():
+            root = self._extract_root(key)
+            tail = key.partition(".")[2]
+            mapped_root = root_mapping[root]
+            new_name = mapped_root if not tail else f"{mapped_root}.{tail}"
+            merged_values[new_name] = type_
+
+        return SignalSchema(merged_values)
+
+    @staticmethod
+    def _extract_root(name: str) -> str:
+        if "." in name:
+            return name.split(".", 1)[0]
+        return name
 
     def append(self, right: "SignalSchema") -> "SignalSchema":
         missing_schema = {
@@ -758,29 +1056,38 @@ class SignalSchema:
         return create_model(
             name,
             __base__=(DataModel,),  # type: ignore[call-overload]
-            **fields,
+            **fields,  # type: ignore[arg-type]
         )
 
     @staticmethod
     def _build_tree(
         values: dict[str, DataType],
-    ) -> dict[str, tuple[DataType, Optional[dict]]]:
+    ) -> dict[str, tuple[DataType, dict | None]]:
         return {
             name: (val, SignalSchema._build_tree_for_type(val))
             for name, val in values.items()
         }
 
     def get_flat_tree(
-        self, include_hidden: bool = True
+        self,
+        include_hidden: bool = True,
+        include_sys: bool = True,
     ) -> Iterator[tuple[list[str], DataType, bool, int]]:
-        yield from self._get_flat_tree(self.tree, [], 0, include_hidden)
+        yield from self._get_flat_tree(self.tree, [], 0, include_hidden, include_sys)
 
     def _get_flat_tree(
-        self, tree: dict, prefix: list[str], depth: int, include_hidden: bool
+        self,
+        tree: dict,
+        prefix: list[str],
+        depth: int,
+        include_hidden: bool,
+        include_sys: bool,
     ) -> Iterator[tuple[list[str], DataType, bool, int]]:
         for name, (type_, substree) in tree.items():
             suffix = name.split(".")
             new_prefix = prefix + suffix
+            if not include_sys and new_prefix and new_prefix[0] == "sys":
+                continue
             hidden_fields = getattr(type_, "_hidden_fields", None)
             if hidden_fields and substree and not include_hidden:
                 substree = {
@@ -793,10 +1100,10 @@ class SignalSchema:
             yield new_prefix, type_, has_subtree, depth
             if substree is not None:
                 yield from self._get_flat_tree(
-                    substree, new_prefix, depth + 1, include_hidden
+                    substree, new_prefix, depth + 1, include_hidden, include_sys
                 )
 
-    def print_tree(self, indent: int = 2, start_at: int = 0, file: Optional[IO] = None):
+    def print_tree(self, indent: int = 2, start_at: int = 0, file: IO | None = None):
         for path, type_, _, depth in self.get_flat_tree():
             total_indent = start_at + depth * indent
             col_name = " " * total_indent + path[-1]
@@ -826,76 +1133,52 @@ class SignalSchema:
         ], max_length
 
     def __or__(self, other):
-        return self.__class__(self.values | other.values)
+        new_values = dict(self.values)
+
+        for name, new_type in other.values.items():
+            if name in new_values:
+                current_type = new_values[name]
+                if current_type != new_type:
+                    raise DataChainColumnError(
+                        name,
+                        "signal already exists with a different type",
+                    )
+                continue
+
+            root = self._extract_root(name)
+            if any(self._extract_root(existing) == root for existing in new_values):
+                raise DataChainColumnError(
+                    name,
+                    "signal root already exists in schema",
+                )
+
+            new_values[name] = new_type
+
+        return self.__class__(new_values)
 
     def __contains__(self, name: str):
         return name in self.values
 
-    def remove(self, name: str):
-        return self.values.pop(name)
-
     @staticmethod
-    def _type_to_str(type_: Optional[type], subtypes: Optional[list] = None) -> str:  # noqa: PLR0911
+    def _type_to_str(
+        type_: type | None | types.EllipsisType, subtypes: list | None = None
+    ) -> str:
         """Convert a type to a string-based representation."""
-        if type_ is None:
-            return "NoneType"
 
-        origin = get_origin(type_)
+        def _warn(msg: str) -> None:
+            warnings.warn(msg, SignalSchemaWarning, stacklevel=2)
 
-        if origin == Union:
-            args = get_args(type_)
-            formatted_types = ", ".join(
-                SignalSchema._type_to_str(arg, subtypes) for arg in args
-            )
-            return f"Union[{formatted_types}]"
-        if origin == Optional:
-            args = get_args(type_)
-            type_str = SignalSchema._type_to_str(args[0], subtypes)
-            return f"Optional[{type_str}]"
-        if origin in (list, List):  # noqa: UP006
-            args = get_args(type_)
-            type_str = SignalSchema._type_to_str(args[0], subtypes)
-            return f"list[{type_str}]"
-        if origin in (dict, Dict):  # noqa: UP006
-            args = get_args(type_)
-            type_str = (
-                SignalSchema._type_to_str(args[0], subtypes) if len(args) > 0 else ""
-            )
-            vals = (
-                f", {SignalSchema._type_to_str(args[1], subtypes)}"
-                if len(args) > 1
-                else ""
-            )
-            return f"dict[{type_str}{vals}]"
-        if origin == Annotated:
-            args = get_args(type_)
-            return SignalSchema._type_to_str(args[0], subtypes)
-        if origin in (Literal, LiteralEx) or type_ in (Literal, LiteralEx):
-            return "Literal"
-        if Any in (origin, type_):
-            return "Any"
-        if Final in (origin, type_):
-            return "Final"
-        if subtypes is not None:
-            # Include this type in the list of all subtypes, if requested.
-            subtypes.append(type_)
-        if not hasattr(type_, "__name__"):
-            # This can happen for some third-party or custom types, mostly on Python 3.9
-            warnings.warn(
-                f"Unable to determine name of type '{type_}'.",
-                SignalSchemaWarning,
-                stacklevel=2,
-            )
-            return "Any"
-        if ModelStore.is_pydantic(type_):
-            ModelStore.register(type_)
-            return ModelStore.get_name(type_)
-        return type_.__name__
+        return type_to_str(
+            type_,
+            subtypes,
+            warn_with=_warn,
+            register_pydantic=True,
+        )
 
     @staticmethod
     def _build_tree_for_type(
         model: DataType,
-    ) -> Optional[dict[str, tuple[DataType, Optional[dict]]]]:
+    ) -> dict[str, tuple[DataType, dict | None]] | None:
         if (fr := ModelStore.to_pydantic(model)) is not None:
             return SignalSchema._build_tree_for_model(fr)
         return None
@@ -903,8 +1186,8 @@ class SignalSchema:
     @staticmethod
     def _build_tree_for_model(
         model: type[BaseModel],
-    ) -> Optional[dict[str, tuple[DataType, Optional[dict]]]]:
-        res: dict[str, tuple[DataType, Optional[dict]]] = {}
+    ) -> dict[str, tuple[DataType, dict | None]] | None:
+        res: dict[str, tuple[DataType, dict | None]] = {}
 
         for name, f_info in model.model_fields.items():
             anno = f_info.annotation
@@ -916,147 +1199,175 @@ class SignalSchema:
 
         return res
 
-    def to_partial(self, *columns: str) -> "SignalSchema":  # noqa: C901
-        """
-        Convert the schema to a partial schema with only the specified columns.
+    def to_partial(self, *columns: str) -> "SignalSchema":  # noqa: C901, PLR0915
+        """Return a schema that contains only the requested signals.
 
-        E.g. if original schema is:
+        Selection syntax uses dot-separated paths for nested fields:
 
-            ```
-            signal: Foo@v1
+        - Top-level fields: ``"name"``
+        - Nested fields: ``"person.age"``
+
+        Selection merge rules:
+
+        - If a parent is selected (e.g. ``"person"``), it wins over any nested
+          selections (``"person.age"`` is redundant).
+        - If only some nested fields are selected (e.g. ``"person.age"``), a
+          partial model is generated for that nested model.
+        - If the nested selection ends up including *all* fields of a model, the
+          original model type is reused (no new partial model is created).
+
+        Example:
+
+            class Person(DataModel):
                 name: str
-                value: float
-            count: int
-            ```
+                age: int
 
-        Then `to_partial("signal.name", "count")` will return a partial schema:
+            schema = SignalSchema({"id": int, "person": Person})
+            partial = schema.to_partial("id", "person.age")
 
-            ```
-            signal: FooPartial@v1
-                name: str
-            count: int
-            ```
-
-        Note that partial schema will have a different name for the custom types
-        (e.g. `FooPartial@v1` instead of `Foo@v1`) to avoid conflicts
-        with the original schema.
+            person_type = ModelStore.to_pydantic(partial.values["person"])
+            assert person_type is not None
+            assert set(person_type.model_fields) == {"age"}
 
         Args:
-            *columns (str): The columns to include in the partial schema.
+            *columns: Signal names to include.
 
         Returns:
-            SignalSchema: The new partial schema.
+            A new ``SignalSchema`` restricted to the requested signals.
         """
-        serialized = self.serialize()
-        custom_types = serialized.get("_custom_types", {})
+        if not columns:
+            return SignalSchema({})
 
-        schema: dict[str, Any] = {}
-        schema_custom_types: dict[str, CustomType] = {}
+        selections: dict[str, dict[str, Any] | None] = {}
 
-        data_model_bases: Optional[list[tuple[str, str, Optional[str]]]] = None
+        def _validate_and_split_path(column: str) -> list[str]:
+            parts = column.split(".")
+            if parts[0] not in self.tree:
+                raise SignalSchemaError(f"Column {column} not found in the schema")
 
-        signal_partials: dict[str, str] = {}
-        partial_versions: dict[str, int] = {}
+            curr_type, curr_tree = self.tree[parts[0]]
 
-        def _type_name_to_partial(signal_name: str, type_name: str) -> str:
-            # Check if we need to create a partial for this type
-            # Only create partials for custom types that are in the custom_types dict
-            if type_name not in custom_types:
-                return type_name
+            for part in parts[1:]:
+                if curr_tree is None:
+                    raise SignalSchemaError(f"Column {column} not found in the schema")
 
-            if "@" in type_name:
-                model_name, _ = ModelStore.parse_name_version(type_name)
-            else:
-                model_name = type_name
+                node = curr_tree.get(part)
+                if node is None:
+                    parent_model = ModelStore.to_pydantic(curr_type)
+                    if parent_model is not None:
+                        raise SignalSchemaError(
+                            f"Field {part} not found in custom type "
+                            f"{parent_model.__name__}"
+                        )
+                    raise SignalSchemaError(f"Column {column} not found in the schema")
 
-            if signal_name not in signal_partials:
-                partial_versions.setdefault(model_name, 0)
-                partial_versions[model_name] += 1
-                version = partial_versions[model_name]
-                signal_partials[signal_name] = f"{model_name}Partial{version}"
+                curr_type, curr_tree = node
 
-            return signal_partials[signal_name]
+            return parts
+
+        def _merge_selection(parts: list[str]) -> None:
+            curr: dict[str, dict[str, Any] | None] = selections
+            missing = object()
+            for idx, part in enumerate(parts):
+                is_last = idx == len(parts) - 1
+                existing = curr.get(part, missing)
+
+                if existing is None:
+                    return
+
+                if is_last:
+                    curr[part] = None
+                    return
+
+                if existing is missing:
+                    next_sel: dict[str, Any] = {}
+                    curr[part] = next_sel
+                    curr = next_sel
+                else:
+                    curr = existing  # type: ignore[assignment]
 
         for column in columns:
-            parent_type, parent_type_partial = "", ""
-            column_parts = column.split(".")
-            for i, signal in enumerate(column_parts):
-                if i == 0:
-                    if signal not in serialized:
-                        raise SignalSchemaError(
-                            f"Column {column} not found in the schema"
-                        )
+            if not isinstance(column, str):
+                raise SignalResolvingTypeError("to_partial()", column)
 
-                    parent_type = serialized[signal]
-                    parent_type_partial = _type_name_to_partial(signal, parent_type)
+            column_parts = _validate_and_split_path(column)
+            _merge_selection(column_parts)
 
-                    schema[signal] = parent_type_partial
+        leaf_signals = self.user_signals(include_hidden=True, include_sys=True)
 
-                    # If this is a complex signal without field specifier (just "file")
-                    # and it's a custom type, include the entire complex signal
-                    if len(column_parts) == 1 and parent_type in custom_types:
-                        # Include the entire complex signal - no need to create partial
-                        schema[signal] = parent_type
-                        continue
+        def _build_partial_type(
+            base_type: Any, selection: dict[str, Any] | None, path: list[str]
+        ) -> Any:
+            if selection is None:
+                return base_type
 
-                    continue
-
-                if parent_type not in custom_types:
-                    raise SignalSchemaError(
-                        f"Custom type {parent_type} not found in the schema"
-                    )
-
-                custom_type = custom_types[parent_type]
-                signal_type = custom_type["fields"].get(signal)
-                if not signal_type:
-                    raise SignalSchemaError(
-                        f"Field {signal} not found in custom type {parent_type}"
-                    )
-
-                # Check if this is the last part and if the column type is a complex
-                is_last_part = i == len(column_parts) - 1
-                is_complex_signal = signal_type in custom_types
-
-                if is_last_part and is_complex_signal:
-                    schema[column] = signal_type
-                    # Also need to remove the partial schema entry we created for the
-                    # parent since we're promoting the nested complex column to root
-                    parent_signal = column_parts[0]
-                    schema.pop(parent_signal, None)
-                    # Don't create partial types for this case
-                    break
-
-                # Create partial type for this field
-                partial_type = _type_name_to_partial(
-                    ".".join(column_parts[: i + 1]),
-                    signal_type,
+            if not selection:  # pragma: no cover
+                raise RuntimeError(
+                    "Internal error in SignalSchema.to_partial(): "
+                    f"empty selection for '{'.'.join(path)}'"
                 )
 
-                if parent_type_partial in schema_custom_types:
-                    schema_custom_types[parent_type_partial].fields[signal] = (
-                        partial_type
-                    )
+            model = ModelStore.to_pydantic(base_type)
+            assert model is not None, "Expected complex type to be a Pydantic model"
+
+            # Check if all signals under this model are covered by requested columns
+            # We don't need to do partial model in that case
+            prefix = ".".join(path)
+            model_leaves = [s for s in leaf_signals if s.startswith(f"{prefix}.")]
+            if all(leaf in columns for leaf in model_leaves):
+                return base_type
+
+            field_types: dict[str, Any] = {}
+            for field_name, sub_selection in selection.items():
+                assert field_name in model.model_fields, (
+                    "Selection should match existing model fields"
+                )
+                field_info = model.model_fields[field_name]
+                field_type = field_info.annotation
+                assert field_type is not None, "Model fields must be typed"
+                partial_type = _build_partial_type(
+                    field_type, sub_selection, [*path, field_name]
+                )
+                if field_info.is_required():
+                    field_types[field_name] = partial_type
                 else:
-                    if data_model_bases is None:
-                        data_model_bases = SignalSchema._get_bases(DataModel)
+                    field_types[field_name] = (partial_type, field_info.default)
 
-                    partial_type_name, _ = ModelStore.parse_name_version(partial_type)
-                    schema_custom_types[parent_type_partial] = CustomType(
-                        schema_version=2,
-                        name=partial_type_name,
-                        fields={signal: partial_type},
-                        bases=[
-                            (partial_type_name, "__main__", partial_type),
-                            *data_model_bases,
-                        ],
-                    )
+            assert field_types, (
+                f"Empty field set when building partial for {model.__name__}"
+            )
 
-                parent_type, parent_type_partial = signal_type, partial_type
+            fingerprint = compute_model_fingerprint(model, selection)
+            base_name, _ = ModelStore.parse_name_version(ModelStore.get_name(model))
+            base_partial_name = f"{base_name}Partial_{fingerprint[:10]}"
+            base_hidden_fields = getattr(model, "_hidden_fields", [])
 
-        if schema_custom_types:
-            schema["_custom_types"] = {
-                type_name: ct.model_dump()
-                for type_name, ct in schema_custom_types.items()
-            }
+            version = 1
 
-        return SignalSchema.deserialize(schema)
+            existing = ModelStore.get(base_partial_name, version)
+            if existing is None:
+                partial_model = create_feature_model(
+                    f"{base_partial_name}@v{version}",
+                    field_types,
+                    base=DataModel,
+                    partial_fingerprint=fingerprint,
+                    hidden_fields=[
+                        fname for fname in base_hidden_fields if fname in field_types
+                    ],
+                )
+            elif getattr(existing, "_partial_fingerprint", None) == fingerprint:
+                partial_model = existing  # type: ignore[assignment]
+            else:
+                msg = (
+                    f"partial model name collision '{base_partial_name}@v{version}' "
+                    "with a different fingerprint"
+                )
+                raise SignalSchemaError(msg)
+            return partial_model
+
+        new_values: dict[str, DataType] = {}
+        for signal, selection in selections.items():
+            base_type = self.values[signal]
+            new_values[signal] = _build_partial_type(base_type, selection, [signal])
+
+        return SignalSchema(new_values)

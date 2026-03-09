@@ -1,10 +1,9 @@
 import os
-from typing import Optional, Union
 
-metrics: dict[str, Union[str, int, float, bool, None]] = {}
+metrics: dict[str, str | int | float | bool | None] = {}
 
 
-def set(key: str, value: Union[str, int, float, bool, None]) -> None:  # noqa: PYI041
+def set(key: str, value: str | int | float | bool | None) -> None:  # noqa: PYI041
     """Set a metric value."""
     if not isinstance(key, str):
         raise TypeError("Key must be a string")
@@ -21,6 +20,6 @@ def set(key: str, value: Union[str, int, float, bool, None]) -> None:  # noqa: P
         metastore.update_job(job_id, metrics=metrics)
 
 
-def get(key: str) -> Optional[Union[str, int, float, bool]]:
+def get(key: str) -> str | int | float | bool | None:
     """Get a metric value."""
     return metrics[key]

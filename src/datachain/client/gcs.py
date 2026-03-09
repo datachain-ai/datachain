@@ -3,7 +3,7 @@ import json
 import os
 from collections.abc import Iterable
 from datetime import datetime
-from typing import Any, Optional, cast
+from typing import Any, cast
 
 from dateutil.parser import isoparse
 from gcsfs import GCSFileSystem
@@ -15,7 +15,7 @@ from .fsspec import DELIMITER, Client, ResultQueue
 
 # Patch gcsfs for consistency with s3fs
 GCSFileSystem.set_session = GCSFileSystem._set_session
-PageQueue = asyncio.Queue[Optional[Iterable[dict[str, Any]]]]
+PageQueue = asyncio.Queue[Iterable[dict[str, Any]] | None]
 
 
 class GCSClient(Client):
@@ -141,5 +141,5 @@ class GCSClient(Client):
         )
 
     @classmethod
-    def version_path(cls, path: str, version_id: Optional[str]) -> str:
+    def version_path(cls, path: str, version_id: str | None) -> str:
         return f"{path}#{version_id}" if version_id else path

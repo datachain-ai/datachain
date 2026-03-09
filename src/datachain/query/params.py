@@ -1,11 +1,10 @@
 import json
 import os
-from typing import Optional
 
-params_cache: Optional[dict[str, str]] = None
+params_cache: dict[str, str] | None = None
 
 
-def param(key: str, default: Optional[str] = None) -> Optional[str]:
+def param(key: str, default: str | None = None) -> str | None:
     """Get query parameter."""
     if not isinstance(key, str):
         raise TypeError("Param key must be a string")

@@ -1,5 +1,4 @@
 from queue import Empty, Full
-from typing import Optional
 
 from datachain.query.dispatch import STOP_SIGNAL, get_from_queue, put_into_queue
 
@@ -8,7 +7,7 @@ class MockQueue:
     def __init__(self) -> None:
         self.return_empty_once = True
         self.return_full_once = True
-        self.put_signal: Optional[str] = None
+        self.put_signal: str | None = None
         self.put_count: int = 0
 
     def put_nowait(self, task: str) -> None:

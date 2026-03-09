@@ -1,5 +1,5 @@
 import glob
-from typing import TYPE_CHECKING, Union
+from typing import TYPE_CHECKING
 
 from datachain.client.fsspec import is_cloud_uri
 from datachain.lib.listing import ls
@@ -32,7 +32,7 @@ def validate_cloud_bucket_name(uri: str) -> None:
             raise ValueError(f"Glob patterns in bucket names are not supported: {uri}")
 
 
-def split_uri_pattern(uri: str) -> tuple[str, Union[str, None]]:
+def split_uri_pattern(uri: str) -> tuple[str, str | None]:
     """Split a URI into base path and glob pattern."""
     if not any(char in uri for char in ["*", "?", "[", "{", "}"]):
         return uri, None

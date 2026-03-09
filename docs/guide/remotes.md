@@ -19,6 +19,29 @@ DataChain uses [fsspec](https://filesystem-spec.readthedocs.io/en/latest/) to in
 - Azure Blob Storage: `az://container-name/path/to/data`
 - Hugging Face: `hf://dataset-name`
 
+## Export placement strategies
+
+Both `File.export` and `DataChain.to_storage` expose a `placement`
+parameter that controls how the target path is built for each file. Choose the
+strategy that fits your destination layout:
+
+- `filename`: keep only the original file name (no directories). Simple, but
+    colliding names overwrite each other.
+- `filepath`: preserve the relative directory structure inside the dataset.
+    This is the right choice when you want to mirror the source folder layout at
+    the destination.
+- `fullpath`: for remote sources, prefix paths with the storage host (for
+    example `s3://bucket/data/a.jpg` exports to `<output>/bucket/data/a.jpg`).
+    Local sources behave the same as `filepath`.
+- `etag`: use the file ETag with the original extension to guarantee unique
+    names when your storage exposes object digests.
+- `checksum`: reserved for future use. Calling it currently raises
+    `NotImplementedError`.
+
+Relative output directories such as `"."` or `".."`, as well as absolute
+paths, are supported. The placement strategy simply determines the appended
+sub-path.
+
 ## Extra configuration
 For the configuration parameters to the filesystem, you can pass the key and value pair as client_config dictionary that will be passed to the respective filesystem.
 

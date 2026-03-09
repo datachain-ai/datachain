@@ -1,6 +1,6 @@
 import asyncio
 import os
-from typing import Any, Optional, cast
+from typing import Any, cast
 from urllib.parse import parse_qs, urlsplit, urlunsplit
 
 from botocore.exceptions import NoCredentialsError
@@ -148,7 +148,7 @@ class ClientS3(Client):
         )
 
     @classmethod
-    def version_path(cls, path: str, version_id: Optional[str]) -> str:
+    def version_path(cls, path: str, version_id: str | None) -> str:
         parts = list(urlsplit(path))
         query = parse_qs(parts[3])
         if "versionId" in query:
@@ -187,7 +187,7 @@ class ClientS3(Client):
         return subdirs
 
     @staticmethod
-    def clean_s3_version(ver: Optional[str]) -> str:
+    def clean_s3_version(ver: str | None) -> str:
         return ver if (ver is not None and ver != "null") else ""
 
     def info_to_file(self, v: dict[str, Any], path: str) -> File:

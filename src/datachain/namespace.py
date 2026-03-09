@@ -1,7 +1,7 @@
 import builtins
 from dataclasses import dataclass, fields
 from datetime import datetime
-from typing import Any, Optional, TypeVar
+from typing import Any, TypeVar
 
 from datachain.error import InvalidNamespaceNameError
 
@@ -9,7 +9,7 @@ N = TypeVar("N", bound="Namespace")
 NAMESPACE_NAME_RESERVED_CHARS = [".", "@"]
 
 
-def parse_name(name: str) -> tuple[str, Optional[str]]:
+def parse_name(name: str) -> tuple[str, str | None]:
     """
     Parses namespace name into namespace and optional project name.
     If both namespace and project are defined in name, they need to be split by dot
@@ -33,7 +33,7 @@ class Namespace:
     id: int
     uuid: str
     name: str
-    descr: Optional[str]
+    descr: str | None
     created_at: datetime
 
     @staticmethod
@@ -73,7 +73,7 @@ class Namespace:
         id: int,
         uuid: str,
         name: str,
-        descr: Optional[str],
+        descr: str | None,
         created_at: datetime,
     ) -> "Namespace":
         return cls(id, uuid, name, descr, created_at)

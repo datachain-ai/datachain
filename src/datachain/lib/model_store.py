@@ -1,26 +1,35 @@
 import inspect
-import logging
-from typing import Any, ClassVar, Optional
+from typing import Any, ClassVar
 
 from pydantic import BaseModel
-
-logger = logging.getLogger(__name__)
 
 
 class ModelStore:
     store: ClassVar[dict[str, dict[int, type[BaseModel]]]] = {}
 
+    @staticmethod
+    def _base_name(model: type[BaseModel]) -> str:
+        # Some models are generated/restored with a versioned Python class name
+        # (e.g. `MyType_v1`) so that multiple versions can coexist in-process without
+        # `__name__` collisions.
+        #
+        # `_modelstore_base_name` preserves the original/logical name (e.g. `MyType`)
+        # after we alter the class name, so `ModelStore.get_name(model)` still
+        # returns `"MyType@v{model._version}"` and schema serialization stays stable.
+        return getattr(model, "_modelstore_base_name", model.__name__)
+
     @classmethod
     def get_version(cls, model: type[BaseModel]) -> int:
         if not hasattr(model, "_version"):
             return 0
-        return model._version
+        return model._version  # type: ignore[attr-defined]
 
     @classmethod
     def get_name(cls, model) -> str:
+        base_name = cls._base_name(model)
         if (version := cls.get_version(model)) > 0:
-            return f"{model.__name__}@v{version}"
-        return model.__name__
+            return f"{base_name}@v{version}"
+        return base_name
 
     @classmethod
     def register(cls, fr: type):
@@ -28,18 +37,25 @@ class ModelStore:
         if (model := ModelStore.to_pydantic(fr)) is None:
             return
 
-        name = model.__name__
-        if name not in cls.store:
-            cls.store[name] = {}
+        base_name = cls._base_name(model)
+        unique_name = model.__name__
         version = ModelStore.get_version(model)
-        cls.store[name][version] = model
+
+        # Register under both:
+        # - `base_name` (logical/original name, from `_modelstore_base_name` when set)
+        #   so callers can resolve by original name + version, e.g.
+        #   `ModelStore.get("Foo", 1)` after deserialization/restore.
+        # - `unique_name` (Python class `__name__`, e.g. `Foo_v1`) so callers can also
+        #   resolve by the runtime class name.
+        for name in (base_name, unique_name):
+            cls.store.setdefault(name, {})[version] = model
 
         for f_info in model.model_fields.values():
             if (anno := ModelStore.to_pydantic(f_info.annotation)) is not None:
                 cls.register(anno)
 
     @classmethod
-    def get(cls, name: str, version: Optional[int] = None) -> Optional[type]:
+    def get(cls, name: str, version: int | None = None) -> type | None:
         class_dict = cls.store.get(name, None)
         if class_dict is None:
             return None
@@ -65,8 +81,12 @@ class ModelStore:
     @classmethod
     def remove(cls, fr: type) -> None:
         version = fr._version  # type: ignore[attr-defined]
-        if fr.__name__ in cls.store and version in cls.store[fr.__name__]:
-            del cls.store[fr.__name__][version]
+        base_name = cls._base_name(fr)
+        unique_name = fr.__name__
+
+        for name in (base_name, unique_name):
+            if name in cls.store and version in cls.store[name]:
+                del cls.store[name][version]
 
     @staticmethod
     def is_pydantic(val: Any) -> bool:
@@ -77,7 +97,7 @@ class ModelStore:
         )
 
     @staticmethod
-    def to_pydantic(val) -> Optional[type[BaseModel]]:
+    def to_pydantic(val) -> type[BaseModel] | None:
         if val is None or not ModelStore.is_pydantic(val):
             return None
         return val
@@ -98,6 +118,21 @@ class ModelStore:
         (e.g. from by-value cloudpickle in workers) reports built state but
         nested model field schemas aren't fully resolved yet.
         """
+        visited: set[type[BaseModel]] = set()
+        visiting: set[type[BaseModel]] = set()
+
+        def visit(model: type[BaseModel]) -> None:
+            if model in visited or model in visiting:
+                return
+            visiting.add(model)
+            for field in model.model_fields.values():
+                child = cls.to_pydantic(field.annotation)
+                if child is not None:
+                    visit(child)
+            visiting.remove(model)
+            model.model_rebuild(force=True)
+            visited.add(model)
+
         for versions in cls.store.values():
             for model in versions.values():
-                model.model_rebuild(force=True)
+                visit(model)

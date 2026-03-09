@@ -1,12 +1,10 @@
-from typing import Union
-
 from datachain.query.schema import Column
 from datachain.sql.functions import numeric
 
 from .func import Func
 
 
-def bit_and(*args: Union[str, Column, Func, int]) -> Func:
+def bit_and(*args: str | Column | Func | int) -> Func:
     """
     Returns a function that computes the bitwise AND operation between two values.
 
@@ -51,7 +49,7 @@ def bit_and(*args: Union[str, Column, Func, int]) -> Func:
     )
 
 
-def bit_or(*args: Union[str, Column, Func, int]) -> Func:
+def bit_or(*args: str | Column | Func | int) -> Func:
     """
     Returns a function that computes the bitwise OR operation between two values.
 
@@ -96,7 +94,7 @@ def bit_or(*args: Union[str, Column, Func, int]) -> Func:
     )
 
 
-def bit_xor(*args: Union[str, Column, Func, int]) -> Func:
+def bit_xor(*args: str | Column | Func | int) -> Func:
     """
     Returns a function that computes the bitwise XOR operation between two values.
 
@@ -141,7 +139,7 @@ def bit_xor(*args: Union[str, Column, Func, int]) -> Func:
     )
 
 
-def int_hash_64(col: Union[str, Column, Func, int]) -> Func:
+def int_hash_64(col: str | Column | Func | int) -> Func:
     """
     Returns a function that computes the 64-bit hash of an integer.
 
@@ -177,7 +175,7 @@ def int_hash_64(col: Union[str, Column, Func, int]) -> Func:
     )
 
 
-def bit_hamming_distance(*args: Union[str, Column, Func, int]) -> Func:
+def bit_hamming_distance(*args: str | Column | Func | int) -> Func:
     """
     Returns a function that computes the Hamming distance between two integers.
 

@@ -4,10 +4,11 @@ import math
 import os
 import posixpath
 import tarfile
+from collections.abc import Callable
 from string import printable
 from tarfile import DIRTYPE, TarInfo
 from time import sleep, time
-from typing import Any, Callable, Optional
+from typing import Any
 
 import pytest
 import sqlalchemy as sa
@@ -138,8 +139,8 @@ def text_embedding(text: str) -> list[float]:
 
 
 def dataset_dependency_asdict(
-    dep: Optional[DatasetDependency],
-) -> Optional[dict[str, Any]]:
+    dep: DatasetDependency | None,
+) -> dict[str, Any] | None:
     """
     Converting to dict with making sure we don't have any additional fields
     that could've been added with subclasses
@@ -189,6 +190,11 @@ def assert_row_names(
 
 def images_equal(img1: Image.Image, img2: Image.Image):
     """Checks if two image objects have exactly the same data"""
+    # TODO: Remove conditional when Pillow>=12.1.0 is acceptable as minimum
+    # version get_flattened_data() was added in Pillow 12.1.0 as replacement
+    # for deprecated getdata()
+    if hasattr(img1, "get_flattened_data"):
+        return img1.get_flattened_data() == img2.get_flattened_data()
     return list(img1.getdata()) == list(img2.getdata())
 
 
@@ -222,8 +228,43 @@ def df_equal(df1, df2) -> bool:
     return sort_df(df1).equals(sort_df(df2))
 
 
-def table_row_count(db, table_name) -> Optional[int]:
+def table_row_count(db, table_name) -> int | None:
     if not db.has_table(table_name):
         return None
     query = sa.select(sa.func.count()).select_from(sa.table(table_name))
     return next(db.execute(query), (None,))[0]
+
+
+def reset_session_job_state():
+    """
+    Reset job state for testing purposes.
+    Useful for simulating multiple script runs.
+    """
+    import atexit
+
+    from datachain.query.session import Session
+
+    # Unregister atexit hook if registered
+    if Session._JOB_FINALIZE_HOOK is not None:
+        try:
+            atexit.unregister(Session._JOB_FINALIZE_HOOK)
+        except ValueError:
+            # Hook was already unregistered
+            pass
+        Session._JOB_FINALIZE_HOOK = None
+
+    # Clear job state (class-level attributes)
+    Session._CURRENT_JOB = None
+    Session._JOB_STATUS = None
+    Session._OWNS_JOB = None
+    Session._JOB_HOOKS_REGISTERED = False
+
+    # Clear checkpoint state (now in utils module)
+    from datachain.utils import _CheckpointState
+
+    _CheckpointState.disabled = False
+    _CheckpointState.warning_shown = False
+
+    # Clear DATACHAIN_JOB_ID env var to allow new job creation on next run
+    # This is important for studio/SaaS mode where job_id comes from env var
+    os.environ.pop("DATACHAIN_JOB_ID", None)

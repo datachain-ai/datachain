@@ -12,14 +12,15 @@ for sqlite we can use `sqlite.register_converter`
 ( https://docs.python.org/3/library/sqlite3.html#sqlite3.register_converter )
 """
 
+import numbers
 from datetime import datetime
 from types import MappingProxyType
 from typing import Any, Union
 
 import sqlalchemy as sa
-import ujson as jsonlib
 from sqlalchemy import TypeDecorator, types
 
+from datachain import json as jsonlib
 from datachain.lib.data_model import StandardType
 
 _registry: dict[str, "TypeConverter"] = {}
@@ -336,10 +337,28 @@ class Array(SQLType):
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> Union[type["SQLType"], "SQLType"]:
-        sub_t = NAME_TYPES_MAPPING[d["item_type"]["type"]].from_dict(  # type: ignore [attr-defined]
-            d["item_type"]
-        )
-        return cls(sub_t)
+        try:
+            array_item = d["item_type"]
+        except KeyError as e:
+            raise ValueError("Array type must have 'item_type' field") from e
+
+        if not isinstance(array_item, dict):
+            raise TypeError("Array 'item_type' field must be a dictionary")
+
+        try:
+            item_type = array_item["type"]
+        except KeyError as e:
+            raise ValueError("Array 'item_type' must have 'type' field") from e
+
+        try:
+            sub_t = NAME_TYPES_MAPPING[item_type]
+        except KeyError as e:
+            raise ValueError(f"Array item type '{item_type}' is not supported") from e
+
+        try:
+            return cls(sub_t.from_dict(d["item_type"]))  # type: ignore [attr-defined]
+        except KeyError as e:
+            raise ValueError(f"Array item type '{item_type}' is not supported") from e
 
     @staticmethod
     def default_value(dialect):
@@ -427,6 +446,18 @@ class TypeReadConverter:
         return value
 
     def boolean(self, value):
+        if value is None or isinstance(value, bool):
+            return value
+
+        if isinstance(value, numbers.Integral):
+            return bool(value)
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"true", "t", "yes", "y", "1"}:
+                return True
+            if normalized in {"false", "f", "no", "n", "0"}:
+                return False
+
         return value
 
     def int(self, value):

@@ -11,14 +11,13 @@ license-files = ["LICENSE"]
 authors = [{name = "Dmitry Petrov", email = "support@dvc.org"}]
 classifiers = [
   "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3.9",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
   "Development Status :: 2 - Pre-Alpha"
 ]
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dynamic = ["version"]
 dependencies = [
   "pyyaml",
@@ -31,11 +30,11 @@ dependencies = [
   "pyarrow",
   "typing-extensions",
   "python-dateutil>=2",
-  "dateparser>=1.0.0",
+  "dateparser>=1.3.0",
   "attrs>=21.3.0",
   "fsspec>=2024.2.0",
   "s3fs>=2024.2.0",
-  "gcsfs>=2024.2.0",
+  "gcsfs>=2026.2.0",
   "adlfs>=2024.2.0",
   "dvc-data>=3.10,<4",
   "dvc-objects>=4,<6",
@@ -45,13 +44,14 @@ dependencies = [
   "cloudpickle",
   "pydantic",
   "jmespath>=1.0",
-  "datamodel-code-generator>=0.25",
-  "Pillow>=10.0.0,<12",
+  "datamodel-code-generator>=0.28.4",
+  "Pillow>=12.1.1,<13",
   "msgpack>=1.0.4,<2",
   "psutil",
   "huggingface_hub",
   "iterative-telemetry>=0.0.10",
   "platformdirs",
+  "filelock",
   "dvc-studio-client>=0.21,<1",
   "tabulate",
   "websockets",
@@ -63,9 +63,9 @@ docs = [
   "mkdocs>=1.5.2",
   "mkdocs-gen-files>=0.5.0",
   "mkdocs-material==9.5.22",
-  "mkdocs-section-index>=0.3.6",
   "mkdocstrings-python>=1.6.3",
   "mkdocs-literate-nav>=0.6.1",
+  "mkdocs-section-index>=0.3.10",
   "eval-type-backport"
 ]
 torch = [
@@ -74,7 +74,6 @@ torch = [
   "transformers>=4.36.0"
 ]
 audio = [
-  "torchaudio",
   "soundfile"
 ]
 remote = [
@@ -101,7 +100,7 @@ postgres = [
 ]
 tests = [
   "datachain[torch,audio,remote,vector,hf,video,postgres]",
-  "pytest>=8,<9",
+  "pytest>=8,<10",
   "pytest-asyncio",
   "pytest-sugar>=0.9.6",
   "pytest-cov>=4.1.0",
@@ -109,6 +108,7 @@ tests = [
   "pytest-servers[all]>=0.5.9",
   "pytest-benchmark[histogram]",
   "pytest-xdist>=3.3.1",
+  "azure-storage-blob<12.28",  # Pin to avoid API version 2026-02-06 not supported by Azurite emulator
   "pytest-dotenv",
   "virtualenv",
   "dulwich",
@@ -120,7 +120,7 @@ tests = [
 ]
 dev = [
   "datachain[docs,tests]",
-  "mypy==1.18.1",
+  "mypy==1.19.1",
   "types-python-dateutil",
   "types-dateparser",
   "types-pytz",
@@ -133,15 +133,17 @@ examples = [
   "defusedxml",
   "accelerate",
   "huggingface_hub[hf_transfer]",
+  "transformers>=5.0.0",
   "ultralytics",
   "open_clip_torch",
-  "openai"
+  "openai",
+  "torchaudio"
 ]
 
 [project.urls]
 Documentation = "https://datachain.dvc.ai"
-Issues = "https://github.com/iterative/datachain/issues"
-Source = "https://github.com/iterative/datachain"
+Issues = "https://github.com/datachain-ai/datachain/issues"
+Source = "https://github.com/datachain-ai/datachain"
 
 [project.scripts]
 datachain = "datachain.cli:main"
@@ -154,7 +156,7 @@ namespaces = false
 [tool.setuptools_scm]
 
 [tool.pytest.ini_options]
-addopts = "-rfEs -m 'not examples' --benchmark-skip"
+addopts = "-rfEs -m 'not examples' --benchmark-skip --ignore=local"
 env_override_existing_values = true
 env_files = "local/.env.test"
 markers = [
@@ -167,16 +169,17 @@ markers = [
   "incremental_processing: Delta and retry examples"
 ]
 filterwarnings = [
-  "error::pandas.errors.PerformanceWarning",
-  "error::pydantic.warnings.PydanticDeprecatedSince20",
-  "error::pytest_mock.PytestMockWarning",
-  "error::pytest.PytestCollectionWarning",
-  "error::sqlalchemy.exc.SADeprecationWarning",
+  "error",  # Treat all warnings as errors by default
+  # Third-party deprecation warnings we can't fix
   "ignore::DeprecationWarning:timm.*",
   "ignore::DeprecationWarning:botocore.auth",
   "ignore::DeprecationWarning:datasets.utils._dill",
   "ignore::DeprecationWarning:librosa.core.intervals",
-  "ignore:Field name .* shadows an attribute in parent:UserWarning"  # datachain.lib.feature
+  "ignore::FutureWarning:google.api_core._python_version_support",  # Python 3.10 EOL warning
+  # Expected warnings from our code
+  "ignore:Field name .* shadows an attribute in parent:UserWarning",  # datachain.lib.feature
+  # Coverage limitation on Python 3.13
+  "ignore:Can't use core=sysmon:coverage.exceptions.CoverageWarning"
 ]
 
 [tool.coverage.run]
@@ -314,10 +317,13 @@ max-complexity = 15
 
 [tool.ruff.lint.per-file-ignores]
 "examples/**" = ["INP001"]
+"src/datachain/lib/convert/python_to_sql.py" = ["UP035"]
+"src/datachain/lib/signal_schema.py" = ["UP035"]
 "!src/datachain/lib/dc.py" = ["D"]
 "tests/scripts/**" = ["INP001"]
 "tests/**" = ["DTZ"]
 "tests/examples/wds_data.py" = ["E501"]
+"tests/unit/lib/test_signal_schema.py" = ["UP006", "UP007", "UP035", "UP045"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"

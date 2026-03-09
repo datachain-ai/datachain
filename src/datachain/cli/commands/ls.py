@@ -1,13 +1,14 @@
 import shlex
 from collections.abc import Iterable, Iterator
 from itertools import chain
-from typing import TYPE_CHECKING, Optional
-
-if TYPE_CHECKING:
-    from datachain.catalog import Catalog
+from typing import TYPE_CHECKING
 
 from datachain.cli.utils import determine_flavors
 from datachain.config import Config
+from datachain.query.session import Session
+
+if TYPE_CHECKING:
+    from datachain.catalog import Catalog
 
 
 def ls(
@@ -16,7 +17,7 @@ def ls(
     studio: bool = False,
     local: bool = False,
     all: bool = True,
-    team: Optional[str] = None,
+    team: str | None = None,
     **kwargs,
 ):
     token = Config().read().get("studio", {}).get("token")
@@ -32,18 +33,15 @@ def ls(
 def ls_local(
     sources,
     long: bool = False,
-    catalog: Optional["Catalog"] = None,
+    catalog=None,
     client_config=None,
     **kwargs,
 ):
     from datachain import listings
 
     if sources:
-        if catalog is None:
-            from datachain.catalog import get_catalog
-
-            catalog = get_catalog(client_config=client_config)
-
+        session = Session.get(catalog=catalog, client_config=client_config)
+        catalog = session.catalog
         actual_sources = list(ls_urls(sources, catalog=catalog, long=long, **kwargs))
         if len(actual_sources) == 1:
             for _, entries in actual_sources:
@@ -78,7 +76,7 @@ def format_ls_entry(entry: str) -> str:
 def ls_remote(
     paths: Iterable[str],
     long: bool = False,
-    team: Optional[str] = None,
+    team: str | None = None,
 ):
     from datachain.node import long_line_str
     from datachain.remote.studio import StudioClient
@@ -145,7 +143,7 @@ def _ls_urls_flat(
     long: bool,
     catalog: "Catalog",
     **kwargs,
-) -> Iterator[tuple[str, Iterator[str]]]:
+) -> Iterator[tuple[str, Iterable[str]]]:
     from datachain.client import Client
     from datachain.node import long_line_str
 
@@ -154,7 +152,9 @@ def _ls_urls_flat(
         if client_cls.is_root_url(source):
             buckets = client_cls.ls_buckets(**catalog.client_config)
             if long:
-                values = (long_line_str(b.name, b.created) for b in buckets)
+                values: Iterable[str] = (
+                    long_line_str(b.name, b.created) for b in buckets
+                )
             else:
                 values = (b.name for b in buckets)
             yield source, values
@@ -164,7 +164,7 @@ def _ls_urls_flat(
             if long:
                 fields.append("last_modified")
             for data_source, results in catalog.ls([source], fields=fields, **kwargs):
-                values = (_node_data_to_ls_values(r, long) for r in results)
+                values = [_node_data_to_ls_values(r, long) for r in results]
                 found = True
                 yield data_source.dirname(), values
             if not found:

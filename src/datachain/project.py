@@ -1,7 +1,7 @@
 import builtins
 from dataclasses import dataclass, fields
 from datetime import datetime
-from typing import Any, Optional, TypeVar
+from typing import Any, TypeVar
 
 from datachain.error import InvalidProjectNameError
 from datachain.namespace import Namespace
@@ -15,7 +15,7 @@ class Project:
     id: int
     uuid: str
     name: str
-    descr: Optional[str]
+    descr: str | None
     created_at: datetime
     namespace: Namespace
 
@@ -52,12 +52,12 @@ class Project:
         namespace_id: int,
         namespace_uuid: str,
         namespace_name: str,
-        namespace_descr: Optional[str],
+        namespace_descr: str | None,
         namespace_created_at: datetime,
         project_id: int,
         uuid: str,
         name: str,
-        descr: Optional[str],
+        descr: str | None,
         created_at: datetime,
         project_namespace_id: int,
     ) -> "Project":

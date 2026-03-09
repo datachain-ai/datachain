@@ -1,6 +1,5 @@
 import warnings
 from collections.abc import Iterator
-from typing import Optional
 
 import numpy as np
 from pydantic import BaseModel, Field
@@ -23,18 +22,18 @@ warnings.filterwarnings(
 
 class Laion(WDSReadableSubclass):
     uid: str = Field(default="")
-    face_bboxes: Optional[list[list[float]]] = Field(default=None)
-    caption: Optional[str] = Field(default=None)
-    url: Optional[str] = Field(default=None)
-    key: Optional[str] = Field(default=None)
-    status: Optional[str] = Field(default=None)
-    error_message: Optional[str] = Field(default=None)
-    width: Optional[int] = Field(default=None)
-    height: Optional[int] = Field(default=None)
-    original_width: Optional[int] = Field(default=None)
-    original_height: Optional[int] = Field(default=None)
-    exif: Optional[str] = Field(default=None)
-    sha256: Optional[str] = Field(default=None)
+    face_bboxes: list[list[float]] | None = Field(default=None)
+    caption: str | None = Field(default=None)
+    url: str | None = Field(default=None)
+    key: str | None = Field(default=None)
+    status: str | None = Field(default=None)
+    error_message: str | None = Field(default=None)
+    width: int | None = Field(default=None)
+    height: int | None = Field(default=None)
+    original_width: int | None = Field(default=None)
+    original_height: int | None = Field(default=None)
+    exif: str | None = Field(default=None)
+    sha256: str | None = Field(default=None)
 
     @staticmethod
     def _reader(builder, item):
@@ -42,13 +41,13 @@ class Laion(WDSReadableSubclass):
 
 
 class WDSLaion(WDSBasic):
-    txt: Optional[str] = Field(default=None)
-    json: Laion  # type: ignore[assignment]
+    txt: str | None = Field(default=None)
+    json: Laion = Field(default_factory=Laion)  # type: ignore[assignment]
 
 
 class LaionMeta(BaseModel):
     file: File
-    index: Optional[int] = Field(default=None)
+    index: int | None = Field(default=None)
     b32_img: list[float] = Field(default=[])
     b32_txt: list[float] = Field(default=[])
     l14_img: list[float] = Field(default=[])

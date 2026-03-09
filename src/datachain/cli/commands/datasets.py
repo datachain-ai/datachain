@@ -1,6 +1,6 @@
 import sys
 from collections.abc import Iterable, Iterator
-from typing import TYPE_CHECKING, Optional, Union
+from typing import TYPE_CHECKING
 
 from tabulate import tabulate
 
@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
 def group_dataset_versions(
     datasets: Iterable[tuple[str, str]], latest_only=True
-) -> dict[str, Union[str, list[str]]]:
+) -> dict[str, str | list[str]]:
     grouped: dict[str, list[tuple[int, int, int]]] = {}
 
     # Sort to ensure groupby works as expected
@@ -43,9 +43,9 @@ def list_datasets(
     studio: bool = False,
     local: bool = False,
     all: bool = True,
-    team: Optional[str] = None,
+    team: str | None = None,
     latest_only: bool = True,
-    name: Optional[str] = None,
+    name: str | None = None,
 ) -> None:
     token = Config().read().get("studio", {}).get("token")
     all, local, studio = determine_flavors(studio, local, all, token)
@@ -107,7 +107,7 @@ def list_datasets(
 
 
 def list_datasets_local(
-    catalog: "Catalog", name: Optional[str] = None
+    catalog: "Catalog", name: str | None = None
 ) -> Iterator[tuple[str, str]]:
     if name:
         yield from list_datasets_local_versions(catalog, name)
@@ -124,7 +124,10 @@ def list_datasets_local_versions(
     namespace_name, project_name, name = catalog.get_full_dataset_name(name)
 
     ds = catalog.get_dataset(
-        name, namespace_name=namespace_name, project_name=project_name
+        name,
+        namespace_name=namespace_name,
+        project_name=project_name,
+        include_incomplete=False,
     )
     for v in ds.versions:
         yield name, v.version
@@ -147,10 +150,10 @@ def _datasets_tabulate_row(name, both, local_version, studio_version) -> dict[st
 def rm_dataset(
     catalog: "Catalog",
     name: str,
-    version: Optional[str] = None,
-    force: Optional[bool] = False,
-    studio: Optional[bool] = False,
-    team: Optional[str] = None,
+    version: str | None = None,
+    force: bool | None = False,
+    studio: bool | None = False,
+    team: str | None = None,
 ) -> None:
     namespace_name, project_name, name = catalog.get_full_dataset_name(name)
 
@@ -177,10 +180,10 @@ def rm_dataset(
 def edit_dataset(
     catalog: "Catalog",
     name: str,
-    new_name: Optional[str] = None,
-    description: Optional[str] = None,
-    attrs: Optional[list[str]] = None,
-    team: Optional[str] = None,
+    new_name: str | None = None,
+    description: str | None = None,
+    attrs: list[str] | None = None,
+    team: str | None = None,
 ) -> None:
     from datachain.lib.dc.utils import is_studio
 

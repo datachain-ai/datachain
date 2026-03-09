@@ -125,7 +125,7 @@ def test_diff_no_status_col(test_session, str_default):
     assert diff.order_by("id").to_list() == expected
 
 
-def test_diff_read_hfs(test_session, str_default):
+def test_diff_read_dataset(test_session, str_default):
     ds1 = dc.read_values(
         id=[1, 2, 4],
         name=["John1", "Doe", "Andy"],
@@ -256,6 +256,24 @@ def test_diff_on_equal_datasets(test_session, on_self):
     assert diff.order_by("id").to_list(*collect_fields) == expected
 
 
+def test_diff_only_on_columns_treated_as_same(test_session):
+    ds1 = dc.read_values(
+        id=[1, 2],
+        session=test_session,
+    )
+    ds2 = dc.read_values(
+        id=[1, 2],
+        session=test_session,
+    )
+
+    diff = ds1.diff(ds2, on=["id"], same=True, status_col="diff")
+
+    assert diff.order_by("id").to_list("diff", "id") == [
+        (CompareStatus.SAME, 1),
+        (CompareStatus.SAME, 2),
+    ]
+
+
 def test_diff_multiple_columns(test_session, str_default):
     ds1 = dc.read_values(
         id=[1, 2, 4],
@@ -382,7 +400,7 @@ def test_diff_missing_on(test_session):
     ds2 = dc.read_values(id=[1, 2, 4], session=test_session)
 
     with pytest.raises(ValueError) as exc_info:
-        ds1.diff(ds2, on=None)
+        ds1.diff(ds2, on=None)  # type: ignore[arg-type]
 
     assert str(exc_info.value) == "'on' must be specified"
 
@@ -529,3 +547,44 @@ def test_file_diff_nested(test_session, str_default, int_default, status_col):
         collect_fields = collect_fields[1:]
 
     assert diff.order_by("nested.file.source").to_list(*collect_fields) == expected
+
+
+def test_multiple_diffs(test_session):
+    ds1 = dc.read_values(
+        id=[1, 2, 3, 4, 5],
+        name=["John", "Doe", "Andy", "Matt", "Rick"],
+        session=test_session,
+    )
+    ds2 = dc.read_values(
+        id=[1, 2, 3],
+        name=["John", "Doe", "Andy"],
+        session=test_session,
+    )
+    ds3 = dc.read_values(
+        id=[1, 2],
+        name=["John", "Doe"],
+        session=test_session,
+    )
+
+    diff = ds1.diff(
+        ds2,
+        added=True,
+        deleted=False,
+        modified=False,
+        same=False,
+        on=["id"],
+        status_col="diff",
+    ).diff(
+        ds3,
+        added=True,
+        deleted=False,
+        modified=False,
+        same=False,
+        on=["id"],
+        status_col="diff",
+    )
+
+    assert diff.order_by("id").to_list(*["diff", "id", "name"]) == [
+        ("A", 4, "Matt"),
+        ("A", 5, "Rick"),
+    ]

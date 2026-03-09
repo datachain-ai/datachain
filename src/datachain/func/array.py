@@ -1,5 +1,5 @@
 from collections.abc import Sequence
-from typing import Any, Optional, Union
+from typing import Any
 
 from datachain.query.schema import Column
 from datachain.sql.functions import array
@@ -7,7 +7,7 @@ from datachain.sql.functions import array
 from .func import Func
 
 
-def cosine_distance(*args: Union[str, Column, Func, Sequence]) -> Func:
+def cosine_distance(*args: str | Column | Func | Sequence) -> Func:
     """
     Returns the cosine distance between two vectors.
 
@@ -62,7 +62,7 @@ def cosine_distance(*args: Union[str, Column, Func, Sequence]) -> Func:
     )
 
 
-def euclidean_distance(*args: Union[str, Column, Func, Sequence]) -> Func:
+def euclidean_distance(*args: str | Column | Func | Sequence) -> Func:
     """
     Returns the Euclidean distance between two vectors.
 
@@ -115,7 +115,7 @@ def euclidean_distance(*args: Union[str, Column, Func, Sequence]) -> Func:
     )
 
 
-def length(arg: Union[str, Column, Func, Sequence]) -> Func:
+def length(arg: str | Column | Func | Sequence) -> Func:
     """
     Returns the length of the array.
 
@@ -151,7 +151,7 @@ def length(arg: Union[str, Column, Func, Sequence]) -> Func:
     return Func("length", inner=array.length, cols=cols, args=args, result_type=int)
 
 
-def contains(arr: Union[str, Column, Func, Sequence], elem: Any) -> Func:
+def contains(arr: str | Column | Func | Sequence, elem: Any) -> Func:
     """
     Checks whether the array contains the specified element.
 
@@ -196,9 +196,9 @@ def contains(arr: Union[str, Column, Func, Sequence], elem: Any) -> Func:
 
 
 def slice(
-    arr: Union[str, Column, Func, Sequence],
+    arr: str | Column | Func | Sequence,
     offset: int,
-    length: Optional[int] = None,
+    length: int | None = None,
 ) -> Func:
     """
     Returns a slice of the array starting from the specified offset.
@@ -272,7 +272,7 @@ def slice(
 
 
 def join(
-    arr: Union[str, Column, Func, Sequence],
+    arr: str | Column | Func | Sequence,
     sep: str = "",
 ) -> Func:
     """
@@ -322,10 +322,14 @@ def join(
     )
 
 
-def get_element(arg: Union[str, Column, Func, Sequence], index: int) -> Func:
+def get_element(arg: str | Column | Func | Sequence, index: int) -> Func:
     """
     Returns the element at the given index from the array.
-    If the index is out of bounds, it returns None or columns default value.
+
+    Uses 0-based indexing. Negative indices count from the end of the array
+    (e.g., -1 is the last element, -2 is second-to-last). If the index is
+    out of bounds in either direction, returns the column's default value
+    (typically None).
 
     Args:
         arg (str | Column | Func | Sequence): Array to get the element from.
@@ -333,7 +337,8 @@ def get_element(arg: Union[str, Column, Func, Sequence], index: int) -> Func:
             If a Column is provided, it is assumed to be an array column.
             If a Func is provided, it is assumed to be a function returning an array.
             If a sequence is provided, it is assumed to be an array of values.
-        index (int): Index of the element to get from the array.
+        index (int): 0-based index of the element to get from the array.
+            Negative values index from the end (-1 = last, -2 = second-to-last).
 
     Returns:
         Func: A `Func` object that represents the array get_element function.
@@ -344,11 +349,16 @@ def get_element(arg: Union[str, Column, Func, Sequence], index: int) -> Func:
             first_el=func.array.get_element("signal.values", 0),
             second_el=func.array.get_element(dc.C("signal.values"), 1),
             third_el=func.array.get_element([1, 2, 3, 4, 5], 2),
+            last_el=func.array.get_element("signal.values", -1),
+            second_last=func.array.get_element("signal.values", -2),
         )
         ```
 
     Notes:
         - The result column will always be the same type as the elements of the array.
+        - Out-of-bounds access (e.g., index 10 on a 3-element array, or -4 on a
+          3-element array) returns the column's default value rather than raising
+          an error.
     """
 
     def type_from_args(arr, _):
@@ -359,8 +369,8 @@ def get_element(arg: Union[str, Column, Func, Sequence], index: int) -> Func:
                 return str  # if the array is empty, return str as default type
         return None
 
-    cols: Optional[Union[str, Column, Func, Sequence]]
-    args: Union[str, Column, Func, Sequence, int]
+    cols: str | Column | Func | Sequence | None
+    args: str | Column | Func | Sequence | int
 
     if isinstance(arg, (str, Column, Func)):
         cols = [arg]
@@ -379,7 +389,7 @@ def get_element(arg: Union[str, Column, Func, Sequence], index: int) -> Func:
     )
 
 
-def sip_hash_64(arg: Union[str, Column, Func, Sequence]) -> Func:
+def sip_hash_64(arg: str | Column | Func | Sequence) -> Func:
     """
     Returns the SipHash-64 hash of the array.
 

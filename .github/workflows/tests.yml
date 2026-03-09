@@ -18,18 +18,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha || github.ref }}
 
-      - name: Set up Python 3.9
+      - name: Set up Python 3.10
         uses: actions/setup-python@v6
         with:
-          python-version: '3.9'
+          python-version: '3.10'
 
       - name: Setup uv
-        uses: astral-sh/setup-uv@v6
+        uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
           cache-suffix: lint
@@ -39,13 +39,13 @@ jobs:
         run: uv pip install nox --system
 
       - name: Cache mypy
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: .mypy_cache
           key: mypy-${{ runner.os }}-${{ env.pythonLocation }}-${{ hashFiles('pyproject.toml') }}
 
       - name: Cache pre-commit hooks
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cache/pre-commit
           key: pre-commit-3|${{ env.pythonLocation }}|${{ hashFiles('.pre-commit-config.yaml') }}
@@ -60,27 +60,27 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest-8-cores]
-        pyv: ['3.9', '3.10', '3.11', '3.12', '3.13']
+        pyv: ['3.10', '3.11', '3.12', '3.13']
         include:
           - os: macos-latest
-            pyv: '3.9'
+            pyv: '3.10'
           - os: macos-latest
             pyv: '3.13'
           - os: windows-latest
-            pyv: '3.9'
+            pyv: '3.10'
           - os: windows-latest
             pyv: '3.13'
 
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha || github.ref }}
 
       - name: Setup PostgreSQL
         if: runner.os != 'Windows'
-        uses: ikalnytskyi/action-setup-postgres@10ab8a56cc77b4823c2bfa57b1d4dd5605ef0481 # v7
+        uses: ikalnytskyi/action-setup-postgres@c4dda34aae1c821e3a771b68b73b13af3198a7ee # v8
         with:
           username: test
           password: test
@@ -102,7 +102,7 @@ jobs:
           python-version: ${{ matrix.pyv }}
 
       - name: Setup uv
-        uses: astral-sh/setup-uv@v6
+        uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
           cache-suffix: tests-${{ matrix.pyv }}
@@ -110,7 +110,7 @@ jobs:
 
       - name: Install FFmpeg on Windows
         if: runner.os == 'Windows'
-        run: choco install ffmpeg
+        run: choco install ffmpeg --version 7.0.2
 
       - name: Install FFmpeg on macOS
         if: runner.os == 'macOS'
@@ -166,19 +166,19 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        pyv: ['3.9', '3.13']
+        pyv: ['3.10', '3.13']
         group: ['get_started', 'computer_vision', 'multimodal']
         exclude:
-          - {os: ubuntu-latest, pyv: '3.9', group: 'multimodal'}
+          - {os: ubuntu-latest, pyv: '3.10', group: 'multimodal'}
           - {os: ubuntu-latest, pyv: '3.13', group: 'multimodal'}
         include:
           # HF runs against actual API - thus run it only once
           - {os: ubuntu-latest, pyv: "3.13", group: llm_and_nlp}
-          - {os: ubuntu-latest-4-cores, pyv: "3.9", group: multimodal}
+          - {os: ubuntu-latest-4-cores, pyv: "3.10", group: multimodal}
           - {os: ubuntu-latest-4-cores, pyv: "3.13", group: multimodal}
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.head.sha || github.ref }}
 
@@ -188,7 +188,7 @@ jobs:
           python-version: ${{ matrix.pyv }}
 
       - name: Setup uv
-        uses: astral-sh/setup-uv@v6
+        uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
           cache-suffix: examples-${{ matrix.pyv }}

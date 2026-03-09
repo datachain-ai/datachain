@@ -1,16 +1,14 @@
 import contextlib
 import math
 from abc import ABC, abstractmethod
-from collections.abc import Generator, Sequence
-from typing import Callable, Optional, Union
+from collections.abc import Callable, Generator, Sequence
 
 import sqlalchemy as sa
 
 from datachain.data_storage.schema import PARTITION_COLUMN_ID
-from datachain.query.utils import get_query_column
 
 RowsOutputBatch = Sequence[Sequence]
-RowsOutput = Union[Sequence, RowsOutputBatch]
+RowsOutput = Sequence | RowsOutputBatch
 
 
 class BatchingStrategy(ABC):
@@ -23,7 +21,7 @@ class BatchingStrategy(ABC):
         self,
         execute: Callable,
         query: sa.Select,
-        id_col: Optional[sa.ColumnElement] = None,
+        id_col: sa.ColumnElement | None = None,
     ) -> Generator[RowsOutput, None, None]:
         """Apply the provided parameters to the UDF."""
 
@@ -40,7 +38,7 @@ class NoBatching(BatchingStrategy):
         self,
         execute: Callable,
         query: sa.Select,
-        id_col: Optional[sa.ColumnElement] = None,
+        id_col: sa.ColumnElement | None = None,
     ) -> Generator[Sequence, None, None]:
         ids_only = False
         if id_col is not None:
@@ -66,7 +64,7 @@ class Batch(BatchingStrategy):
         self,
         execute: Callable,
         query: sa.Select,
-        id_col: Optional[sa.ColumnElement] = None,
+        id_col: sa.ColumnElement | None = None,
     ) -> Generator[RowsOutput, None, None]:
         from datachain.data_storage.warehouse import SELECT_BATCH_SIZE
 
@@ -105,9 +103,9 @@ class Partition(BatchingStrategy):
         self,
         execute: Callable,
         query: sa.Select,
-        id_col: Optional[sa.ColumnElement] = None,
+        id_col: sa.ColumnElement | None = None,
     ) -> Generator[RowsOutput, None, None]:
-        if (partition_col := get_query_column(query, PARTITION_COLUMN_ID)) is None:
+        if (partition_col := query.selected_columns.get(PARTITION_COLUMN_ID)) is None:
             raise RuntimeError("partition column not found in query")
 
         ids_only = False
@@ -115,7 +113,7 @@ class Partition(BatchingStrategy):
             query = query.with_only_columns(id_col, partition_col)
             ids_only = True
 
-        current_partition: Optional[int] = None
+        current_partition: int | None = None
         batch: list = []
 
         query_fields = [str(c.name) for c in query.selected_columns]

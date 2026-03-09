@@ -1,4 +1,4 @@
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import parse_qs, urlsplit, urlunsplit
 
 from adlfs import AzureBlobFileSystem
@@ -73,7 +73,7 @@ class AzureClient(Client):
             result_queue.put_nowait(None)
 
     @classmethod
-    def version_path(cls, path: str, version_id: Optional[str]) -> str:
+    def version_path(cls, path: str, version_id: str | None) -> str:
         parts = list(urlsplit(path))
         query = parse_qs(parts[3])
         if "versionid" in query:

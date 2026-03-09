@@ -5,6 +5,7 @@ import sys
 import pytest
 import sqlalchemy as sa
 
+from datachain.dataset import DatasetStatus
 from datachain.sql.types import Float32
 
 tests_dir = os.path.dirname(os.path.abspath(__file__))
@@ -30,12 +31,15 @@ def test_atomicity_feature_file(tmp_dir, catalog_tmpfile):
     else:
         popen_args = {"start_new_session": True}
 
-    catalog_tmpfile.create_dataset(
+    dataset = catalog_tmpfile.create_dataset(
         "existing_dataset",
         project,
         query_script="script",
         columns=[sa.Column("similarity", Float32)],
         create_rows=True,
+    )
+    catalog_tmpfile.metastore.update_dataset_status(
+        dataset, DatasetStatus.COMPLETE, version="1.0.0"
     )
 
     process = subprocess.Popen(  # noqa: S603
@@ -54,13 +58,16 @@ def test_atomicity_feature_file(tmp_dir, catalog_tmpfile):
 
     assert process.returncode == 1
 
-    # Local context datasets should be created in the catalog,
-    # but old should not be removed.
+    # All datasets should persist even after exceptions
     dataset_versions = list(catalog_tmpfile.list_datasets_versions())
-    assert len(dataset_versions) == 3
+    dataset_names = sorted([d[0].name for d in dataset_versions])
+    assert len(dataset_versions) == 6
 
-    assert sorted([d[0].name for d in dataset_versions]) == [
+    assert dataset_names == [
         "existing_dataset",
+        "global_error_class_v2",
+        "global_test_datachain_v1",
         "local_test_datachain",
+        "local_test_datachain_v2",
         "passed_as_argument",
     ]

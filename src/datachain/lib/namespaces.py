@@ -1,5 +1,3 @@
-from typing import Optional
-
 from datachain.error import (
     NamespaceCreateNotAllowedError,
     NamespaceDeleteNotAllowedError,
@@ -10,7 +8,7 @@ from datachain.query import Session
 
 
 def create(
-    name: str, descr: Optional[str] = None, session: Optional[Session] = None
+    name: str, descr: str | None = None, session: Session | None = None
 ) -> Namespace:
     """
     Creates a new namespace.
@@ -42,7 +40,7 @@ def create(
     return session.catalog.metastore.create_namespace(name, descr)
 
 
-def get(name: str, session: Optional[Session] = None) -> Namespace:
+def get(name: str, session: Session | None = None) -> Namespace:
     """
     Gets a namespace by name.
     If the namespace is not found, a `NamespaceNotFoundError` is raised.
@@ -61,7 +59,7 @@ def get(name: str, session: Optional[Session] = None) -> Namespace:
     return session.catalog.metastore.get_namespace(name)
 
 
-def ls(session: Optional[Session] = None) -> list[Namespace]:
+def ls(session: Session | None = None) -> list[Namespace]:
     """
     Gets a list of all namespaces.
 
@@ -77,7 +75,7 @@ def ls(session: Optional[Session] = None) -> list[Namespace]:
     return Session.get(session).catalog.metastore.list_namespaces()
 
 
-def delete_namespace(name: str, session: Optional[Session] = None) -> None:
+def delete_namespace(name: str, session: Session | None = None) -> None:
     """
     Removes a namespace by name.
 

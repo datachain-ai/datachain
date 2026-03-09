@@ -2,14 +2,14 @@ import os
 import posixpath
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 from fsspec.implementations.local import LocalFileSystem
 
 from datachain.lib.file import File
 
-from .fsspec import Client
+from .fsspec import Client, is_win_local_path
 
 if TYPE_CHECKING:
     from datachain.cache import Cache
@@ -57,9 +57,13 @@ class FileClient(Client):
             /home/user/animals/ -> file:///home/user/animals/
             C:\\windows\animals -> file:///C:/windows/animals
         """
+        parsed = urlparse(path)
+        if parsed.scheme and not is_win_local_path(path):
+            return path
+
         uri = Path(path).expanduser().absolute().resolve().as_uri()
-        if path[-1] == os.sep:
-            # we should keep os separator from the end of the path
+        if path and path[-1] in (os.sep, "/"):
+            # keep trailing separator so directory URIs stay rooted
             uri += "/"  # in uri (file:///...) all separators are / regardless of os
 
         return uri
@@ -102,10 +106,10 @@ class FileClient(Client):
         info = self.fs.info(self.get_full_path(file.get_path_normalized()))
         return self.info_to_file(info, "").etag
 
-    async def get_size(self, path: str, version_id: Optional[str] = None) -> int:
+    async def get_size(self, path: str, version_id: str | None = None) -> int:
         return self.fs.size(path)
 
-    async def get_file(self, lpath, rpath, callback, version_id: Optional[str] = None):
+    async def get_file(self, lpath, rpath, callback, version_id: str | None = None):
         return self.fs.get_file(lpath, rpath, callback=callback)
 
     async def ls_dir(self, path):
@@ -114,7 +118,7 @@ class FileClient(Client):
     def rel_path(self, path):
         return posixpath.relpath(path, self.name)
 
-    def get_full_path(self, rel_path, version_id: Optional[str] = None):
+    def get_full_path(self, rel_path, version_id: str | None = None):
         full_path = Path(self.name, rel_path).as_posix()
         if rel_path.endswith("/") or not rel_path:
             full_path += "/"

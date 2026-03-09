@@ -2,10 +2,10 @@ import glob
 import logging
 import os
 import posixpath
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Callable, Optional, TypeVar, Union
+from typing import TYPE_CHECKING, TypeVar
 
 from fsspec.asyn import get_loop
 from sqlalchemy.sql.expression import true
@@ -73,7 +73,7 @@ def get_file_info(uri: str, cache, client_config=None) -> File:
 def ls(
     dc: D,
     path: str,
-    recursive: Optional[bool] = True,
+    recursive: bool | None = True,
     column="file",
 ) -> D:
     """
@@ -150,8 +150,8 @@ def _reraise_as_client_error() -> Iterator[None]:
 
 
 def get_listing(
-    uri: Union[str, os.PathLike[str]], session: "Session", update: bool = False
-) -> tuple[Optional[str], str, str, bool]:
+    uri: str | os.PathLike[str], session: "Session", update: bool = False
+) -> tuple[str | None, str, str, bool]:
     """Returns correct listing dataset name that must be used for saving listing
     operation. It takes into account existing listings and reusability of those.
     It also returns boolean saying if returned dataset name is reused / already

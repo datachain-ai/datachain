@@ -1,5 +1,6 @@
-from collections.abc import Sequence
-from typing import Any, Callable, Optional, Union
+import typing as t
+from collections.abc import Callable, Sequence
+from typing import Any
 
 import pytest
 from pydantic import BaseModel
@@ -11,9 +12,9 @@ from datachain.lib.udf_signature import UdfSignature, UdfSignatureError
 
 
 def get_sign(
-    func: Optional[Callable] = None,
-    params: Union[None, str, Sequence[str]] = None,
-    output: Union[None, DataType, Sequence[str], dict[str, DataType]] = None,
+    func: Callable | None = None,
+    params: str | Sequence[str] | None = None,
+    output: DataType | Sequence[str] | dict[str, DataType] | None = None,
     **signal_map,
 ):
     return UdfSignature.parse("test", signal_map, func, params, output, False)
@@ -200,3 +201,28 @@ def test_udf_typed_param():
     sign = get_sign(s1=func_typed)
     assert sign.params == {"p1": int}
     assert sign.output_schema.values == {"s1": int}
+
+
+def test_unparameterized_iterator_defaults_to_str():
+    def iter_func(p1) -> t.Iterator:
+        yield "never"
+
+    sign = get_sign(s1=iter_func)
+    assert sign.output_schema.values == {"s1": str}
+
+
+def test_generator_requires_iterator_return_annotation_even_with_output_override():
+    def not_iter(p1) -> tuple[int, int]:
+        return (1, 2)
+
+    with pytest.raises(
+        UdfSignatureError, match="cannot be used in generator/aggregator"
+    ):
+        UdfSignature.parse(
+            "test",
+            {},
+            not_iter,
+            None,
+            {"a": int, "b": int},
+            True,
+        )

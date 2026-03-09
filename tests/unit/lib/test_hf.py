@@ -1,5 +1,3 @@
-from typing import Optional
-
 from datasets import Array2D, Dataset, DatasetDict, Sequence, Value
 
 from datachain.lib.data_model import dict_to_data_model
@@ -75,7 +73,7 @@ def test_hf_sequence_dict():
     new_features["pokemon"] = Sequence(feature={"name?": Value(dtype="string")})
     ds = ds.cast(new_features)
     schema, norm_names = get_output_schema(ds.features)
-    assert schema["pokemon"].model_fields["name"].annotation == Optional[list[str]]
+    assert schema["pokemon"].model_fields["name"].annotation == list[str] | None
 
     gen = HFGenerator(ds, dict_to_data_model("", schema, list(norm_names.values())))
     gen.setup()

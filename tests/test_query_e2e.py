@@ -5,6 +5,7 @@ import subprocess
 import sys
 import textwrap
 import threading
+from contextlib import nullcontext
 from textwrap import dedent
 from threading import Thread
 from typing import IO
@@ -85,8 +86,7 @@ E2E_STEPS = (
     },
     {
         "command": (
-            "datachain",
-            "query",
+            python_exc,
             os.path.join(tests_dir, "scripts", "feature_class.py"),
         ),
         "expected_rows": dedent(
@@ -113,7 +113,14 @@ E2E_STEPS = (
     },
     {
         "command": ("datachain", "gc"),
-        "expected": "Nothing to clean up.\n",
+        "expected": (
+            "Collecting temporary tables...\n"
+            "  No temporary tables to clean up.\n"
+            "Collecting failed dataset versions...\n"
+            "  No failed dataset versions to clean up.\n"
+            "Collecting outdated checkpoints...\n"
+            "  No outdated checkpoints to clean up.\n"
+        ),
     },
 )
 
@@ -152,28 +159,40 @@ def communicate_and_interrupt_process(
 
     for th in watch_threads:
         th.join()
+
+    # Close the pipes to avoid ResourceWarnings
+    if process.stdout:
+        process.stdout.close()
+    if process.stderr:
+        process.stderr.close()
+
     return "\n".join(stdout_lines), "\n".join(stderr_lines)
 
 
-def run_step(step, catalog):  # noqa: PLR0912
+def run_step(step, catalog):
     """Run an end-to-end query test step with a command and expected output."""
     command = step["command"]
     # Note that a process.returncode of -2 is the same as the shell returncode of 130
-    # (canceled by KeyboardInterrupt)
-    interrupt_exit_code = -2
+    # (canceled by KeyboardInterrupt). Also accept 130 explicitly as some Python
+    # scripts may exit with that code directly.
+    interrupt_exit_codes = (-2, 130)
     if sys.platform == "win32":
         # Windows has a different mechanism of creating a process group.
         popen_args = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
         # This is STATUS_CONTROL_C_EXIT which is equivalent to 0xC000013A
-        interrupt_exit_code = 3221225786
+        interrupt_exit_codes = (3221225786, 130)
     else:
         popen_args = {"start_new_session": True}
-    stdin_file = None
-    if step.get("stdin_file"):
-        # The "with" file open context manager cannot be used here without
-        # additional code duplication, as a file is only opened if needed.
-        stdin_file = open(step["stdin_file"])  # noqa: SIM115
-    try:
+    stdin_path = step.get("stdin_file")
+    with open(stdin_path) if stdin_path else nullcontext(None) as stdin_file:
+        # Build env without DATACHAIN_MAIN_PROCESS_PID so script starts fresh
+        # as its own main process (with checkpoints enabled)
+        script_env = {
+            k: v for k, v in os.environ.items() if k != "DATACHAIN_MAIN_PROCESS_PID"
+        }
+        script_env["DATACHAIN__METASTORE"] = catalog.metastore.serialize()
+        script_env["DATACHAIN__WAREHOUSE"] = catalog.warehouse.serialize()
+
         process = subprocess.Popen(  # noqa: S603
             command,
             shell=False,
@@ -181,11 +200,7 @@ def run_step(step, catalog):  # noqa: PLR0912
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             encoding="utf-8",
-            env={
-                **os.environ,
-                "DATACHAIN__METASTORE": catalog.metastore.serialize(),
-                "DATACHAIN__WAREHOUSE": catalog.warehouse.serialize(),
-            },
+            env=script_env,
             **popen_args,
         )
         interrupt_after = step.get("interrupt_after")
@@ -193,12 +208,9 @@ def run_step(step, catalog):  # noqa: PLR0912
             stdout, stderr = communicate_and_interrupt_process(process, interrupt_after)
         else:
             stdout, stderr = process.communicate(timeout=E2E_STEP_TIMEOUT_SEC)
-    finally:
-        if stdin_file:
-            stdin_file.close()
 
     if interrupt_after:
-        if process.returncode not in (interrupt_exit_code, 11):
+        if process.returncode not in (*interrupt_exit_codes, 11):
             print(f"Process stdout: {stdout}")
             print(f"Process stderr: {stderr}")
             raise RuntimeError(

@@ -1,10 +1,10 @@
-import json
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Optional, Union
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from pydantic import Field, field_validator
 
+from datachain import json
 from datachain.dataset import (
     DEFAULT_DATASET_VERSION,
     DatasetListRecord,
@@ -28,9 +28,9 @@ class DatasetInfo(DataModel):
     version: str = Field(default=DEFAULT_DATASET_VERSION)
     status: int = Field(default=DatasetStatus.CREATED)
     created_at: datetime = Field(default=TIME_ZERO)
-    finished_at: Optional[datetime] = Field(default=None)
-    num_objects: Optional[int] = Field(default=None)
-    size: Optional[int] = Field(default=None)
+    finished_at: datetime | None = Field(default=None)
+    num_objects: int | None = Field(default=None)
+    size: int | None = Field(default=None)
     params: dict[str, str] = Field(default={})
     metrics: dict[str, Any] = Field(default={})
     error_message: str = Field(default="")
@@ -59,7 +59,7 @@ class DatasetInfo(DataModel):
 
     @staticmethod
     def _validate_dict(
-        v: Optional[Union[str, dict]],
+        v: str | dict | None,
     ) -> dict:
         if v is None or v == "":
             return {}
@@ -88,7 +88,7 @@ class DatasetInfo(DataModel):
         cls,
         dataset: DatasetListRecord,
         version: DatasetListVersion,
-        job: Optional[Job],
+        job: Job | None,
     ) -> "Self":
         return cls(
             uuid=version.uuid,

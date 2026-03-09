@@ -1,7 +1,4 @@
-from typing import (
-    TYPE_CHECKING,
-    Optional,
-)
+from typing import TYPE_CHECKING
 
 from datachain.lib.listing import LISTING_PREFIX, ls
 from datachain.lib.listing_info import ListingInfo
@@ -56,7 +53,7 @@ class ReadOnlyQueryStep(QueryStep):
 
 
 def listings(
-    session: Optional[Session] = None,
+    session: Session | None = None,
     in_memory: bool = False,
     column: str = "listing",
     **kwargs,
@@ -84,10 +81,10 @@ def listings(
 
 def read_listing_dataset(
     name: str,
-    version: Optional[str] = None,
+    version: str | None = None,
     path: str = "",
-    session: Optional["Session"] = None,
-    settings: Optional[dict] = None,
+    session: Session | None = None,
+    settings: dict | None = None,
 ) -> tuple["DataChain", "DatasetVersion"]:
     """Read a listing dataset and return a DataChain and listing version.
 
@@ -123,7 +120,7 @@ def read_listing_dataset(
         name = LISTING_PREFIX + name
 
     session = Session.get(session)
-    dataset = session.catalog.get_dataset(name)
+    dataset = session.catalog.get_dataset(name, include_incomplete=False)
     if version is None:
         version = dataset.latest_version
 

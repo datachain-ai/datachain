@@ -2,6 +2,7 @@ import pytest
 from sqlalchemy import Label
 
 import datachain as dc
+from datachain import func
 from datachain.func import (
     and_,
     bit_hamming_distance,
@@ -18,6 +19,7 @@ from datachain.func.array import contains
 from datachain.func.random import rand
 from datachain.func.string import length as strlen
 from datachain.lib.signal_schema import SignalSchema
+from datachain.lib.utils import DataChainParamsError
 from datachain.sql.sqlite.base import (
     sqlite_bit_hamming_distance,
     sqlite_byte_hamming_distance,
@@ -67,6 +69,19 @@ def test_get_column():
     col = rnd.get_column(SignalSchema({}))
     assert isinstance(col, Label)
     assert col.name == "rand"
+
+
+def test_get_column_disallow_complex_object_in_sql_funcs():
+    class Rec(dc.DataModel):
+        i: int
+
+    schema = SignalSchema({"rec": Rec})
+
+    with pytest.raises(DataChainParamsError, match="doesn't support complex object"):
+        func.min("rec").get_column(schema)
+
+    with pytest.raises(DataChainParamsError, match="doesn't support complex object"):
+        func.collect("rec").get_column(schema)
 
 
 def test_add():

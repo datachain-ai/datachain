@@ -7,25 +7,18 @@ for examples of how to create a chain.
 
 ::: datachain.query.schema.C
 
-::: datachain.query.schema.Column
+::: datachain.lib.dc.database.ConnectionType
+
+
+::: datachain.lib.dc.listings.listings
 
 ::: datachain.lib.dc.csv.read_csv
 
 ::: datachain.lib.dc.datasets.read_dataset
 
-::: datachain.lib.dc.datasets.datasets
-
-::: datachain.lib.dc.datasets.delete_dataset
-
-::: datachain.lib.dc.datasets.move_dataset
-
-::: datachain.lib.namespaces.delete_namespace
-
 ::: datachain.lib.dc.hf.read_hf
 
 ::: datachain.lib.dc.json.read_json
-
-::: datachain.lib.dc.listings.listings
 
 ::: datachain.lib.dc.pandas.read_pandas
 
@@ -39,9 +32,27 @@ for examples of how to create a chain.
 
 ::: datachain.lib.dc.database.read_database
 
-::: datachain.lib.dc.database.ConnectionType
+::: datachain.lib.dc.datasets.datasets
+
+::: datachain.lib.dc.datasets.delete_dataset
+
+::: datachain.lib.dc.datasets.move_dataset
+
+::: datachain.lib.namespaces.delete_namespace
+
+
+::: datachain.lib.dc.utils.is_studio
+
+::: datachain.lib.dc.utils.is_local
+
+
+
+::: datachain.query.schema.Column
+
 
 ::: datachain.lib.dc.DataChain
+
+
 
 ::: datachain.lib.utils.DataChainError
 

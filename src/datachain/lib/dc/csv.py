@@ -1,6 +1,6 @@
 import os
-from collections.abc import Sequence
-from typing import TYPE_CHECKING, Callable, Optional, Union
+from collections.abc import Callable, Sequence
+from typing import TYPE_CHECKING
 
 from datachain.lib.dc.utils import DatasetPrepareError, OutputType
 from datachain.lib.model_store import ModelStore
@@ -13,18 +13,18 @@ if TYPE_CHECKING:
 
 
 def read_csv(
-    path: Union[str, os.PathLike[str], list[str], list[os.PathLike[str]]],
-    delimiter: Optional[str] = None,
+    path: str | os.PathLike[str] | list[str] | list[os.PathLike[str]],
+    delimiter: str | None = None,
     header: bool = True,
     output: OutputType = None,
     column: str = "",
     model_name: str = "",
     source: bool = True,
-    nrows: Optional[int] = None,
-    session: Optional[Session] = None,
-    settings: Optional[dict] = None,
-    column_types: Optional[dict[str, "Union[str, ArrowDataType]"]] = None,
-    parse_options: Optional[dict[str, "Union[str, Union[bool, Callable]]"]] = None,
+    nrows: int | None = None,
+    session: Session | None = None,
+    settings: dict | None = None,
+    column_types: dict[str, "str | ArrowDataType"] | None = None,
+    parse_options: dict[str, str | bool | Callable] | None = None,
     **kwargs,
 ) -> "DataChain":
     """Generate chain from csv files.
@@ -63,7 +63,7 @@ def read_csv(
         chain = dc.read_csv("s3://mybucket/dir")
         ```
     """
-    from pandas.io.parsers.readers import STR_NA_VALUES
+    from pandas._libs.parsers import STR_NA_VALUES
     from pyarrow.csv import ConvertOptions, ParseOptions, ReadOptions
     from pyarrow.dataset import CsvFileFormat
     from pyarrow.lib import type_for_alias

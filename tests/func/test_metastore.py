@@ -62,7 +62,7 @@ preview = [
     {"sys__id": 2, "signal_name": "bar"},
     {"sys__id": 3, "signal_name": "baz"},
 ]
-preview_json = json.dumps(preview)
+preview_json = json.dumps(preview, separators=(",", ":"))
 
 
 def test_create_dataset(metastore):
@@ -553,7 +553,7 @@ def test_list_datasets(metastore):
     )
 
     datasets = list(metastore.list_datasets())
-    assert {"dataset1", "dataset2", "dataset3"} == {ds.name for ds in datasets}
+    assert {"dataset2"} == {ds.name for ds in datasets}
     # Each dataset should have at least one version
     for ds in datasets:
         assert hasattr(ds, "versions")
@@ -565,7 +565,7 @@ def test_list_datasets_by_project_id(metastore, project):
 
     ds1 = metastore.create_dataset(name="dataset1", project_id=project.id)
     metastore.create_dataset_version(
-        dataset=ds1, version="1.0.0", status=DatasetStatus.CREATED
+        dataset=ds1, version="1.0.0", status=DatasetStatus.COMPLETE
     )
     ds2 = metastore.create_dataset(name="dataset2", project_id=project.id)
     metastore.create_dataset_version(
@@ -573,7 +573,7 @@ def test_list_datasets_by_project_id(metastore, project):
     )
     ds3 = metastore.create_dataset(name="dataset3")  # default project
     metastore.create_dataset_version(
-        dataset=ds3, version="3.0.0", status=DatasetStatus.FAILED
+        dataset=ds3, version="3.0.0", status=DatasetStatus.COMPLETE
     )
 
     datasets = list(metastore.list_datasets(project_id=project.id))
@@ -595,7 +595,7 @@ def test_list_datasets_by_prefix(metastore):
     )
 
     datasets = list(metastore.list_datasets_by_prefix("prefix_"))
-    assert {"prefix_foo", "prefix_bar"} == {ds.name for ds in datasets}
+    assert {"prefix_bar"} == {ds.name for ds in datasets}
     for ds in datasets:
         assert hasattr(ds, "versions")
         assert len(ds.versions) >= 1
@@ -907,3 +907,85 @@ def test_get_job_status(metastore):
     metastore.set_job_status(job_id, JobStatus.RUNNING)
     status2 = metastore.get_job_status(job_id)
     assert status2 == JobStatus.RUNNING
+
+
+@pytest.mark.parametrize("depth", [0, 1, 2, 3, 5])
+def test_get_ancestor_job_ids(metastore, depth):
+    """Test get_ancestor_job_ids with different hierarchy depths."""
+    # Create a chain of jobs with rerun relationships
+    # depth=0: single job with no rerun ancestor
+    # depth=1: job -> rerun_from
+    # depth=2: job -> rerun_from -> rerun_from
+
+    job_ids = []
+    rerun_from_id = None
+    group_id = None
+
+    for i in range(depth + 1):
+        job_id = metastore.create_job(
+            name=f"job_{i}",
+            query=f"SELECT {i}",
+            query_type=JobQueryType.PYTHON,
+            status=JobStatus.CREATED,
+            workers=1,
+            rerun_from_job_id=rerun_from_id,
+            run_group_id=group_id,
+        )
+        job_ids.append(job_id)
+        rerun_from_id = job_id
+        if group_id is None:
+            group_id = metastore.get_job(job_id).run_group_id
+
+    leaf_job_id = job_ids[-1]
+
+    ancestors = metastore.get_ancestor_job_ids(leaf_job_id)
+
+    expected_ancestors = list(reversed(job_ids[:-1]))
+
+    assert ancestors == expected_ancestors
+    assert len(ancestors) == depth
+
+
+def test_has_active_checkpoints_in_run_group_with_active(metastore):
+    job_id = metastore.create_job(
+        name="test_job",
+        query="SELECT 1",
+        query_type=JobQueryType.PYTHON,
+        status=JobStatus.CREATED,
+        workers=1,
+    )
+    job = metastore.get_job(job_id)
+    metastore.get_or_create_checkpoint(job_id, "hash123")
+
+    # TTL threshold is 4 hours ago, checkpoint is recent
+    ttl_threshold = datetime.now(timezone.utc) - timedelta(hours=4)
+
+    assert metastore._has_active_checkpoints_in_run_group(
+        job.run_group_id, ttl_threshold
+    )
+
+
+def test_has_active_checkpoints_in_run_group_only_outdated(metastore):
+    job_id = metastore.create_job(
+        name="test_job",
+        query="SELECT 1",
+        query_type=JobQueryType.PYTHON,
+        status=JobStatus.CREATED,
+        workers=1,
+    )
+    job = metastore.get_job(job_id)
+    checkpoint = metastore.get_or_create_checkpoint(job_id, "hash123")
+
+    # Make checkpoint old (5 hours ago)
+    old_time = datetime.now(timezone.utc) - timedelta(hours=5)
+    metastore.db.execute(
+        metastore._checkpoints.update()
+        .where(metastore._checkpoints.c.id == checkpoint.id)
+        .values(created_at=old_time)
+    )
+
+    ttl_threshold = datetime.now(timezone.utc) - timedelta(hours=4)
+
+    assert not metastore._has_active_checkpoints_in_run_group(
+        job.run_group_id, ttl_threshold
+    )

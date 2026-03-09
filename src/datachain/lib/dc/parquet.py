@@ -1,5 +1,5 @@
 import os
-from typing import TYPE_CHECKING, Any, Optional, Union
+from typing import TYPE_CHECKING, Any
 
 from datachain.lib.data_model import DataType
 from datachain.query import Session
@@ -13,14 +13,14 @@ if TYPE_CHECKING:
 
 
 def read_parquet(
-    path: Union[str, os.PathLike[str], list[str], list[os.PathLike[str]]],
+    path: str | os.PathLike[str] | list[str] | list[os.PathLike[str]],
     partitioning: Any = "hive",
-    output: Optional[dict[str, DataType]] = None,
+    output: dict[str, DataType] | None = None,
     column: str = "",
     model_name: str = "",
     source: bool = True,
-    session: Optional[Session] = None,
-    settings: Optional[dict] = None,
+    session: Session | None = None,
+    settings: dict | None = None,
     **kwargs,
 ) -> "DataChain":
     """Generate chain from parquet files.

@@ -1,8 +1,6 @@
-import random
-import string
 from collections.abc import Sequence
 from enum import Enum
-from typing import TYPE_CHECKING, Optional, Union
+from typing import TYPE_CHECKING
 
 from datachain.func import case, ifelse, isnone, or_
 from datachain.lib.signal_schema import SignalSchema
@@ -11,16 +9,12 @@ from datachain.query.schema import Column
 if TYPE_CHECKING:
     from datachain.lib.dc import DataChain
 
-
 C = Column
 
 
-def get_status_col_name() -> str:
-    """Returns new unique status col name"""
-    return "diff_" + "".join(
-        random.choice(string.ascii_letters)  # noqa: S311
-        for _ in range(10)
-    )
+STATUS_COL_NAME = "diff_7aeed3aa17ba4d50b8d1c368c76e16a6"
+LEFT_DIFF_COL_NAME = "diff_95f95344064a4b819c8625cd1a5cfc2b"
+RIGHT_DIFF_COL_NAME = "diff_5808838a49b54849aa461d7387376d34"
 
 
 class CompareStatus(str, Enum):
@@ -30,25 +24,25 @@ class CompareStatus(str, Enum):
     SAME = "S"
 
 
-def _compare(  # noqa: C901, PLR0912
+def _compare(  # noqa: C901
     left: "DataChain",
     right: "DataChain",
-    on: Union[str, Sequence[str]],
-    right_on: Optional[Union[str, Sequence[str]]] = None,
-    compare: Optional[Union[str, Sequence[str]]] = None,
-    right_compare: Optional[Union[str, Sequence[str]]] = None,
+    on: str | Sequence[str],
+    right_on: str | Sequence[str] | None = None,
+    compare: str | Sequence[str] | None = None,
+    right_compare: str | Sequence[str] | None = None,
     added: bool = True,
     deleted: bool = True,
     modified: bool = True,
     same: bool = True,
-    status_col: Optional[str] = None,
+    status_col: str | None = None,
 ) -> "DataChain":
     """Comparing two chains by identifying rows that are added, deleted, modified
     or same"""
     rname = "right_"
     schema = left.signals_schema  # final chain must have schema from left chain
 
-    def _to_list(obj: Optional[Union[str, Sequence[str]]]) -> Optional[list[str]]:
+    def _to_list(obj: str | Sequence[str] | None) -> list[str] | None:
         if obj is None:
             return None
         return [obj] if isinstance(obj, str) else list(obj)
@@ -101,21 +95,23 @@ def _compare(  # noqa: C901, PLR0912
         compare = right_compare = [c for c in cols if c in right_cols and c not in on]  # type: ignore[misc]
 
     # get diff column names
-    diff_col = status_col or get_status_col_name()
-    ldiff_col = get_status_col_name()
-    rdiff_col = get_status_col_name()
+    diff_col = status_col or STATUS_COL_NAME
+    ldiff_col = LEFT_DIFF_COL_NAME
+    rdiff_col = RIGHT_DIFF_COL_NAME
 
     # adding helper diff columns, which will be removed after
     left = left.mutate(**{ldiff_col: 1})
     right = right.mutate(**{rdiff_col: 1})
 
-    if not compare:
+    if compare is None:
         modified_cond = True
+    elif len(compare) == 0:
+        modified_cond = False
     else:
         modified_cond = or_(  # type: ignore[assignment]
             *[
                 C(c) != (C(f"{rname}{rc}") if c == rc else C(rc))
-                for c, rc in zip(compare, right_compare)  # type: ignore[arg-type]
+                for c, rc in zip(compare, right_compare, strict=False)  # type: ignore[arg-type]
             ]
         )
 
@@ -139,7 +135,7 @@ def _compare(  # noqa: C901, PLR0912
                     C(f"{rname + l_on if on == right_on else r_on}"),
                     C(l_on),
                 )
-                for l_on, r_on in zip(on, right_on)  # type: ignore[arg-type]
+                for l_on, r_on in zip(on, right_on, strict=False)  # type: ignore[arg-type]
             }
         )
         .select_except(ldiff_col, rdiff_col)
@@ -157,11 +153,7 @@ def _compare(  # noqa: C901, PLR0912
     if status_col:
         cols_select.append(diff_col)
 
-    if not dc_diff._sys:
-        # TODO workaround when sys signal is not available in diff
-        dc_diff = dc_diff.settings(sys=True).select(*cols_select).settings(sys=False)
-    else:
-        dc_diff = dc_diff.select(*cols_select)
+    dc_diff = dc_diff.select(*cols_select)
 
     # final schema is schema from the left chain with status column added if needed
     dc_diff.signals_schema = (
@@ -174,10 +166,10 @@ def _compare(  # noqa: C901, PLR0912
 def compare_and_split(
     left: "DataChain",
     right: "DataChain",
-    on: Union[str, Sequence[str]],
-    right_on: Optional[Union[str, Sequence[str]]] = None,
-    compare: Optional[Union[str, Sequence[str]]] = None,
-    right_compare: Optional[Union[str, Sequence[str]]] = None,
+    on: str | Sequence[str],
+    right_on: str | Sequence[str] | None = None,
+    compare: str | Sequence[str] | None = None,
+    right_compare: str | Sequence[str] | None = None,
     added: bool = True,
     deleted: bool = True,
     modified: bool = True,
@@ -227,7 +219,7 @@ def compare_and_split(
         )
         ```
     """
-    status_col = get_status_col_name()
+    status_col = STATUS_COL_NAME
 
     res = _compare(
         left,

@@ -110,7 +110,9 @@ if __name__ == "__main__":
         .limit(1)
         .setup(
             pipeline=lambda: pipeline(
-                model="pszemraj/led-large-book-summary", device=device
+                task="text-generation",
+                model="pszemraj/led-large-book-summary",
+                device=device,
             ),
             args=lambda: {"max_length": 150},
         )

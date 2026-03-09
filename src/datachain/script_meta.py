@@ -1,6 +1,6 @@
 import re
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 try:
     import tomllib
@@ -59,23 +59,23 @@ class ScriptConfig:
 
     """
 
-    python_version: Optional[str]
+    python_version: str | None
     dependencies: list[str]
     attachments: dict[str, str]
     params: dict[str, Any]
     inputs: dict[str, Any]
     outputs: dict[str, Any]
-    num_workers: Optional[int] = None
+    num_workers: int | None = None
 
     def __init__(
         self,
-        python_version: Optional[str] = None,
-        dependencies: Optional[list[str]] = None,
-        attachments: Optional[dict[str, str]] = None,
-        params: Optional[dict[str, Any]] = None,
-        inputs: Optional[dict[str, Any]] = None,
-        outputs: Optional[dict[str, Any]] = None,
-        num_workers: Optional[int] = None,
+        python_version: str | None = None,
+        dependencies: list[str] | None = None,
+        attachments: dict[str, str] | None = None,
+        params: dict[str, Any] | None = None,
+        inputs: dict[str, Any] | None = None,
+        outputs: dict[str, Any] | None = None,
+        num_workers: int | None = None,
     ):
         self.python_version = python_version
         self.dependencies = dependencies or []
@@ -98,7 +98,7 @@ class ScriptConfig:
         return self.attachments.get(name, default)
 
     @staticmethod
-    def read(script: str) -> Optional[dict]:
+    def read(script: str) -> dict | None:
         """Converts inline script metadata to dict with all found data"""
         regex = (
             r"(?m)^# \/\/\/ (?P<type>[a-zA-Z0-9-]+)[ \t]*$[\r\n|\r|\n]"
@@ -119,7 +119,7 @@ class ScriptConfig:
         return None
 
     @staticmethod
-    def parse(script: str) -> Optional["ScriptConfig"]:
+    def parse(script: str) -> "ScriptConfig | None":
         """
         Method that is parsing inline script metadata from datachain script and
         instantiating ScriptConfig class with found data. If no inline metadata is

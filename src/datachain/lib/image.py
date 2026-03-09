@@ -1,4 +1,4 @@
-from typing import Callable, Optional, Union
+from collections.abc import Callable
 
 import torch
 from PIL import Image as PILImage
@@ -6,7 +6,7 @@ from PIL import Image as PILImage
 from datachain.lib.file import File, FileError, Image, ImageFile
 
 
-def image_info(file: Union[File, ImageFile]) -> Image:
+def image_info(file: File | ImageFile) -> Image:
     """
     Returns image file information.
 
@@ -31,11 +31,11 @@ def image_info(file: Union[File, ImageFile]) -> Image:
 def convert_image(
     img: PILImage.Image,
     mode: str = "RGB",
-    size: Optional[tuple[int, int]] = None,
-    transform: Optional[Callable] = None,
-    encoder: Optional[Callable] = None,
-    device: Optional[Union[str, torch.device]] = None,
-) -> Union[PILImage.Image, torch.Tensor]:
+    size: tuple[int, int] | None = None,
+    transform: Callable | None = None,
+    encoder: Callable | None = None,
+    device: str | torch.device | None = None,
+) -> PILImage.Image | torch.Tensor:
     """
     Resize, transform, and otherwise convert an image.
 
@@ -71,13 +71,13 @@ def convert_image(
 
 
 def convert_images(
-    images: Union[PILImage.Image, list[PILImage.Image]],
+    images: PILImage.Image | list[PILImage.Image],
     mode: str = "RGB",
-    size: Optional[tuple[int, int]] = None,
-    transform: Optional[Callable] = None,
-    encoder: Optional[Callable] = None,
-    device: Optional[Union[str, torch.device]] = None,
-) -> Union[list[PILImage.Image], torch.Tensor]:
+    size: tuple[int, int] | None = None,
+    transform: Callable | None = None,
+    encoder: Callable | None = None,
+    device: str | torch.device | None = None,
+) -> list[PILImage.Image] | torch.Tensor:
     """
     Resize, transform, and otherwise convert one or more images.
 

@@ -4,6 +4,7 @@ from enum import Enum
 class JobStatus(int, Enum):
     CREATED = 1
     SCHEDULED = 10
+    PROVISIONING = 12
     QUEUED = 2
     INIT = 3
     RUNNING = 4
@@ -13,6 +14,7 @@ class JobStatus(int, Enum):
     CANCELED = 8
     CANCELING_SCHEDULED = 9
     TASK = 11
+    PENDING = 13
 
     @classmethod
     def finished(cls) -> tuple[int, ...]:

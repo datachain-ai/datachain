@@ -1,5 +1,3 @@
-from typing import Optional
-
 from datachain.error import ProjectCreateNotAllowedError, ProjectDeleteNotAllowedError
 from datachain.project import Project
 from datachain.query import Session
@@ -8,8 +6,8 @@ from datachain.query import Session
 def create(
     namespace: str,
     name: str,
-    descr: Optional[str] = None,
-    session: Optional[Session] = None,
+    descr: str | None = None,
+    session: Session | None = None,
 ) -> Project:
     """
     Creates a new project under a specified namespace.
@@ -42,7 +40,7 @@ def create(
     return session.catalog.metastore.create_project(namespace, name, descr)
 
 
-def get(name: str, namespace: str, session: Optional[Session]) -> Project:
+def get(name: str, namespace: str, session: Session | None) -> Project:
     """
     Gets a project by name in some namespace.
     If the project is not found, a `ProjectNotFoundError` is raised.
@@ -62,9 +60,7 @@ def get(name: str, namespace: str, session: Optional[Session]) -> Project:
     return Session.get(session).catalog.metastore.get_project(name, namespace)
 
 
-def ls(
-    namespace: Optional[str] = None, session: Optional[Session] = None
-) -> list[Project]:
+def ls(namespace: str | None = None, session: Session | None = None) -> list[Project]:
     """
     Gets a list of projects in a specific namespace or from all namespaces.
 
@@ -88,7 +84,7 @@ def ls(
     return session.catalog.metastore.list_projects(namespace_id)
 
 
-def delete(name: str, namespace: str, session: Optional[Session] = None) -> None:
+def delete(name: str, namespace: str, session: Session | None = None) -> None:
     """
     Removes a project by name within a namespace.
 

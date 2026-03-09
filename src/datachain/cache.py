@@ -2,7 +2,7 @@ import os
 from collections.abc import Iterator
 from contextlib import contextmanager
 from tempfile import mkdtemp
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 from dvc_data.hashfile.db.local import LocalHashFileDB
 from dvc_objects.fs.local import LocalFileSystem
@@ -22,14 +22,14 @@ def try_scandir(path):
         pass
 
 
-def get_temp_cache(tmp_dir: str, prefix: Optional[str] = None) -> "Cache":
+def get_temp_cache(tmp_dir: str, prefix: str | None = None) -> "Cache":
     cache_dir = mkdtemp(prefix=prefix, dir=tmp_dir)
     return Cache(cache_dir, tmp_dir=tmp_dir)
 
 
 @contextmanager
 def temporary_cache(
-    tmp_dir: str, prefix: Optional[str] = None, delete: bool = True
+    tmp_dir: str, prefix: str | None = None, delete: bool = True
 ) -> Iterator["Cache"]:
     cache = get_temp_cache(tmp_dir, prefix=prefix)
     try:
@@ -58,7 +58,7 @@ class Cache:  # noqa: PLW1641
     def tmp_dir(self):
         return self.odb.tmp_dir
 
-    def get_path(self, file: "File") -> Optional[str]:
+    def get_path(self, file: "File") -> str | None:
         if self.contains(file):
             return self.path_from_checksum(file.get_hash())
         return None
@@ -74,7 +74,7 @@ class Cache:  # noqa: PLW1641
         self.odb.delete(file.get_hash())
 
     async def download(
-        self, file: "File", client: "Client", callback: Optional[Callback] = None
+        self, file: "File", client: "Client", callback: Callback | None = None
     ) -> None:
         from dvc_objects.fs.utils import tmp_fname
 

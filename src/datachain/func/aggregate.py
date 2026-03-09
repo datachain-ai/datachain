@@ -1,5 +1,3 @@
-from typing import Optional, Union
-
 from sqlalchemy import func as sa_func
 
 from datachain.query.schema import Column
@@ -8,7 +6,7 @@ from datachain.sql.functions import aggregate
 from .func import Func
 
 
-def count(col: Optional[Union[str, Column]] = None) -> Func:
+def count(col: str | Column | None = None) -> Func:
     """
     Returns a COUNT aggregate SQL function for the specified column.
 
@@ -44,7 +42,7 @@ def count(col: Optional[Union[str, Column]] = None) -> Func:
     )
 
 
-def sum(col: Union[str, Column]) -> Func:
+def sum(col: str | Column) -> Func:
     """
     Returns the SUM aggregate SQL function for the specified column.
 
@@ -74,7 +72,7 @@ def sum(col: Union[str, Column]) -> Func:
     return Func("sum", inner=sa_func.sum, cols=[col])
 
 
-def avg(col: Union[str, Column]) -> Func:
+def avg(col: str | Column) -> Func:
     """
     Returns the AVG aggregate SQL function for the specified column.
 
@@ -104,7 +102,7 @@ def avg(col: Union[str, Column]) -> Func:
     return Func("avg", inner=aggregate.avg, cols=[col], result_type=float)
 
 
-def min(col: Union[str, Column]) -> Func:
+def min(col: str | Column) -> Func:
     """
     Returns the MIN aggregate SQL function for the specified column.
 
@@ -134,7 +132,7 @@ def min(col: Union[str, Column]) -> Func:
     return Func("min", inner=sa_func.min, cols=[col])
 
 
-def max(col: Union[str, Column]) -> Func:
+def max(col: str | Column) -> Func:
     """
     Returns the MAX aggregate SQL function for the given column name.
 
@@ -164,7 +162,7 @@ def max(col: Union[str, Column]) -> Func:
     return Func("max", inner=sa_func.max, cols=[col])
 
 
-def any_value(col: Union[str, Column]) -> Func:
+def any_value(col: str | Column) -> Func:
     """
     Returns the ANY_VALUE aggregate SQL function for the given column name.
 
@@ -198,7 +196,7 @@ def any_value(col: Union[str, Column]) -> Func:
     return Func("any_value", inner=aggregate.any_value, cols=[col])
 
 
-def collect(col: Union[str, Column]) -> Func:
+def collect(col: str | Column) -> Func:
     """
     Returns the COLLECT aggregate SQL function for the given column name.
 
@@ -229,7 +227,7 @@ def collect(col: Union[str, Column]) -> Func:
     return Func("collect", inner=aggregate.collect, cols=[col], is_array=True)
 
 
-def concat(col: Union[str, Column], separator="") -> Func:
+def concat(col: str | Column, separator="") -> Func:
     """
     Returns the CONCAT aggregate SQL function for the given column name.
 
@@ -348,7 +346,7 @@ def dense_rank() -> Func:
     return Func("dense_rank", inner=sa_func.dense_rank, result_type=int, is_window=True)
 
 
-def first(col: Union[str, Column]) -> Func:
+def first(col: str | Column) -> Func:
     """
     Returns the FIRST_VALUE window function for SQL queries.
 

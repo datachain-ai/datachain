@@ -1,4 +1,4 @@
-from typing import Optional, get_origin
+from typing import get_origin
 
 from sqlalchemy import literal
 
@@ -44,7 +44,7 @@ def length(col: ColT) -> Func:
     return Func("length", inner=string.length, cols=[col], result_type=int)
 
 
-def split(col: ColT, sep: str, limit: Optional[int] = None) -> Func:
+def split(col: ColT, sep: str, limit: int | None = None) -> Func:
     """
     Takes a column and split character and returns an array of the parts.
 

@@ -29,8 +29,6 @@ def test_gen_datamodel_code(tmp_dir, catalog):
     file._set_stream(catalog)
 
     expected = """\
-from __future__ import annotations
-
 from datachain.lib.data_model import DataModel
 from datachain.lib.meta_formats import UserModel
 

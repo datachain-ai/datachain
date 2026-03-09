@@ -1,18 +1,11 @@
 import logging
 import os
 import sqlite3
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from contextlib import contextmanager
 from functools import cached_property, wraps
 from time import sleep
-from typing import (
-    TYPE_CHECKING,
-    Any,
-    Callable,
-    ClassVar,
-    Optional,
-    Union,
-)
+from typing import TYPE_CHECKING, Any, ClassVar, Union
 
 import sqlalchemy
 from sqlalchemy import (
@@ -33,21 +26,25 @@ from sqlalchemy.sql.selectable import Select
 from tqdm.auto import tqdm
 
 import datachain.sql.sqlite
-from datachain import semver
 from datachain.data_storage import AbstractDBMetastore, AbstractWarehouse
+from datachain.data_storage.buffer import InsertBuffer
 from datachain.data_storage.db_engine import DatabaseEngine
 from datachain.data_storage.schema import DefaultSchema
-from datachain.data_storage.warehouse import INSERT_BATCH_SIZE
 from datachain.dataset import DatasetRecord, StorageURI
-from datachain.error import DataChainError, OutdatedDatabaseSchemaError
+from datachain.error import (
+    DataChainError,
+    OutdatedDatabaseSchemaError,
+    TableMissingError,
+)
 from datachain.namespace import Namespace
 from datachain.project import Project
 from datachain.sql.sqlite import create_user_defined_sql_functions, sqlite_dialect
 from datachain.sql.sqlite.base import load_usearch_extension
 from datachain.sql.types import SQLType
-from datachain.utils import DataChainDir, batched, batched_it
+from datachain.utils import DataChainDir, batched_it
 
 if TYPE_CHECKING:
+    from sqlalchemy import CTE, Subquery
     from sqlalchemy.dialects.sqlite import Insert
     from sqlalchemy.engine.base import Engine
     from sqlalchemy.schema import SchemaItem
@@ -88,6 +85,21 @@ def get_retry_sleep_sec(retry_count: int) -> int:
     return RETRY_START_SEC * (RETRY_FACTOR**retry_count)
 
 
+SQLITE_BUSY = 5
+SQLITE_LOCKED = 6
+
+
+def _is_sqlite_lock_error(exc: sqlite3.OperationalError) -> bool:
+    """Return True if the OperationalError is a transient lock/busy error."""
+    code = getattr(exc, "sqlite_errorcode", None)
+    if code is not None:
+        # Python >=3.11: use the precise error code
+        return code in (SQLITE_BUSY, SQLITE_LOCKED)
+    # Python 3.10: fall back to message matching
+    msg = str(exc).lower()
+    return "locked" in msg or "busy" in msg
+
+
 def retry_sqlite_locks(func):
     # This retries the database modification in case of concurrent access
     @wraps(func)
@@ -97,6 +109,8 @@ def retry_sqlite_locks(func):
             try:
                 return func(*args, **kwargs)
             except sqlite3.OperationalError as operror:
+                if not _is_sqlite_lock_error(operror):
+                    raise
                 exc = operror
                 sleep(get_retry_sleep_sec(retry_count))
         raise exc
@@ -105,8 +119,8 @@ def retry_sqlite_locks(func):
 
 
 def get_db_file_in_memory(
-    db_file: Optional[str] = None, in_memory: bool = False
-) -> Optional[str]:
+    db_file: str | None = None, in_memory: bool = False
+) -> str | None:
     """Get in-memory db_file and check that conflicting arguments are not provided."""
     if in_memory:
         if db_file and db_file != ":memory:":
@@ -119,7 +133,7 @@ class SQLiteDatabaseEngine(DatabaseEngine):
     dialect = sqlite_dialect
 
     db: sqlite3.Connection
-    db_file: Optional[str]
+    db_file: str | None
     is_closed: bool
 
     def __init__(
@@ -127,8 +141,8 @@ class SQLiteDatabaseEngine(DatabaseEngine):
         engine: "Engine",
         metadata: "MetaData",
         db: sqlite3.Connection,
-        db_file: Optional[str] = None,
-        max_variable_number: Optional[int] = 999,
+        db_file: str | None = None,
+        max_variable_number: int | None = 999,
     ):
         self.engine = engine
         self.metadata = metadata
@@ -138,12 +152,12 @@ class SQLiteDatabaseEngine(DatabaseEngine):
         self.max_variable_number = max_variable_number
 
     @classmethod
-    def from_db_file(cls, db_file: Optional[str] = None) -> "SQLiteDatabaseEngine":
+    def from_db_file(cls, db_file: str | None = None) -> "SQLiteDatabaseEngine":
         return cls(*cls._connect(db_file=db_file))
 
     @staticmethod
     def _connect(
-        db_file: Optional[str] = None,
+        db_file: str | None = None,
     ) -> tuple["Engine", "MetaData", sqlite3.Connection, str, int]:
         try:
             if db_file == ":memory:":
@@ -161,14 +175,24 @@ class SQLiteDatabaseEngine(DatabaseEngine):
             # ensure we run SA on_connect init (e.g it registers regexp function),
             # also makes sure that it's consistent. Otherwise in some cases it
             # seems we are getting different results if engine object is used in a
-            # different thread first and enine is not used in the Main thread.
+            # different thread first and engine is not used in the Main thread.
             engine.connect().close()
 
             db.isolation_level = None  # Use autocommit mode
             db.execute("PRAGMA foreign_keys = ON")
             db.execute("PRAGMA cache_size = -102400")  # 100 MiB
-            # Enable Write-Ahead Log Journaling
-            db.execute("PRAGMA journal_mode = WAL")
+            # Switching to WAL requires an exclusive lock, so retry briefly
+            # in case another process is initializing the same DB file.
+            for _ in range(5):
+                try:
+                    db.execute("PRAGMA journal_mode = WAL")
+                    break
+                except sqlite3.OperationalError as e:
+                    if not _is_sqlite_lock_error(e):
+                        raise
+                    sleep(1)
+            else:
+                db.execute("PRAGMA journal_mode = WAL")  # final attempt, let it raise
             db.execute("PRAGMA synchronous = NORMAL")
             db.execute("PRAGMA case_sensitive_like = ON")
 
@@ -201,9 +225,13 @@ class SQLiteDatabaseEngine(DatabaseEngine):
         """
         return (
             SQLiteDatabaseEngine.from_db_file,
-            [self.db_file],
+            [str(self.db_file)],
             {},
         )
+
+    @classmethod
+    def serialize_callable_name(cls) -> str:
+        return "sqlite.from_db_file"
 
     def _reconnect(self) -> None:
         if not self.is_closed:
@@ -220,46 +248,74 @@ class SQLiteDatabaseEngine(DatabaseEngine):
 
     def get_table(self, name: str) -> Table:
         if self.is_closed:
-            # Reconnect in case of being closed previously.
             self._reconnect()
         return super().get_table(name)
 
     @retry_sqlite_locks
-    def execute(
-        self,
-        query,
-        cursor: Optional[sqlite3.Cursor] = None,
-        conn=None,
-    ) -> sqlite3.Cursor:
+    def execute(self, query) -> sqlite3.Cursor:
         if self.is_closed:
             # Reconnect in case of being closed previously.
             self._reconnect()
-        if cursor is not None:
-            result = cursor.execute(*self.compile_to_args(query))
-        elif conn is not None:
-            result = conn.execute(*self.compile_to_args(query))
-        else:
-            result = self.db.execute(*self.compile_to_args(query))
-        if isinstance(query, CreateTable) and query.element.indexes:
-            for index in query.element.indexes:
-                self.execute(CreateIndex(index, if_not_exists=True), cursor=cursor)
-        return result
+        return self.db.execute(*self.compile_to_args(query))
 
     @retry_sqlite_locks
-    def executemany(
-        self, query, params, cursor: Optional[sqlite3.Cursor] = None, conn=None
-    ) -> sqlite3.Cursor:
-        if cursor:
-            return cursor.executemany(self.compile(query).string, params)
-        if conn:
-            return conn.executemany(self.compile(query).string, params)
-        return self.db.executemany(self.compile(query).string, params)
+    def executemany(self, query, params) -> None:
+        self.db.executemany(self.compile(query).string, params)
 
     @retry_sqlite_locks
     def execute_str(self, sql: str, parameters=None) -> sqlite3.Cursor:
         if parameters is None:
             return self.db.execute(sql)
         return self.db.execute(sql, parameters)
+
+    def list_tables(self, pattern: str = "") -> list[str]:
+        """List all table names, optionally filtered by a SQL LIKE pattern."""
+        sqlite_master = sqlalchemy.table(
+            "sqlite_master",
+            sqlalchemy.column("type"),
+            sqlalchemy.column("name"),
+        )
+        query = sqlalchemy.select(sqlite_master.c.name).where(
+            sqlite_master.c.type == "table"
+        )
+        if pattern:
+            query = query.where(sqlite_master.c.name.like(pattern))
+        result = self.execute(query)
+        return [row[0] for row in result.fetchall()]
+
+    def add_column(self, table_name: str, column: Column) -> None:
+        """
+        Add a column to an existing table.
+        Uses SQLAlchemy's type compilation to ensure proper type conversion.
+        """
+        compiled_type = column.type.compile(dialect=self.dialect)
+
+        parts = [column.name, str(compiled_type)]
+
+        if not column.nullable:
+            parts.append("NOT NULL")
+
+        if column.default is not None and hasattr(column.default, "arg"):
+            default_val = column.default.arg
+            if isinstance(default_val, str):
+                parts.append(f"DEFAULT '{default_val}'")
+            elif isinstance(default_val, bool):
+                parts.append(f"DEFAULT {int(default_val)}")
+            else:
+                parts.append(f"DEFAULT {default_val}")
+
+        column_def = " ".join(parts)
+        alter_query = f"ALTER TABLE {table_name} ADD COLUMN {column_def}"
+
+        try:
+            self.execute_str(alter_query)
+            logger.debug("Added column %s to table %s", column.name, table_name)
+        except sqlite3.OperationalError as e:
+            # Column likely already exists
+            if "duplicate column name" not in str(e).lower():
+                logger.debug(
+                    "Could not add column %s to %s: %s", column.name, table_name, e
+                )
 
     def insert_dataframe(self, table_name: str, df) -> int:
         # Dynamically calculates chunksize by dividing max variable limit in a
@@ -291,6 +347,8 @@ class SQLiteDatabaseEngine(DatabaseEngine):
         return self.db.cursor(factory)
 
     def close(self) -> None:
+        if self.is_closed:
+            return
         self.db.close()
         self.is_closed = True
 
@@ -327,16 +385,38 @@ class SQLiteDatabaseEngine(DatabaseEngine):
         query = "SELECT name FROM sqlite_master WHERE type='table';"
         return [r[0] for r in self.execute_str(query).fetchall()]
 
-    def create_table(self, table: "Table", if_not_exists: bool = True) -> None:
+    def create_table(
+        self,
+        table: "Table",
+        if_not_exists: bool = True,
+        *,
+        kind: str | None = None,
+    ) -> None:
+        """
+        Create table. Does nothing if table already exists when if_not_exists=True.
+        """
         self.execute(CreateTable(table, if_not_exists=if_not_exists))
 
     def drop_table(self, table: "Table", if_exists: bool = False) -> None:
         self.execute(DropTable(table, if_exists=if_exists))
+        # Remove the table from metadata to avoid stale references
+        if table.name in self.metadata.tables:
+            self.metadata.remove(table)
 
     def rename_table(self, old_name: str, new_name: str):
+        from datachain.error import TableRenameError
+
         comp_old_name = quote_schema(old_name)
         comp_new_name = quote_schema(new_name)
-        self.execute_str(f"ALTER TABLE {comp_old_name} RENAME TO {comp_new_name}")
+        try:
+            self.execute_str(f"ALTER TABLE {comp_old_name} RENAME TO {comp_new_name}")
+        except Exception as e:
+            raise TableRenameError(
+                f"Failed to rename table from '{old_name}' to '{new_name}': {e}"
+            ) from e
+        # Remove old table from metadata to avoid stale references
+        if old_name in self.metadata.tables:
+            self.metadata.remove(self.metadata.tables[old_name])
 
 
 class SQLiteMetastore(AbstractDBMetastore):
@@ -347,18 +427,15 @@ class SQLiteMetastore(AbstractDBMetastore):
 
     META_TABLE = "meta"
 
-    db: "SQLiteDatabaseEngine"
+    db: SQLiteDatabaseEngine
 
     def __init__(
         self,
-        uri: Optional[StorageURI] = None,
-        db: Optional["SQLiteDatabaseEngine"] = None,
-        db_file: Optional[str] = None,
+        db: SQLiteDatabaseEngine | None = None,
+        db_file: str | None = None,
         in_memory: bool = False,
     ):
-        uri = uri or StorageURI("")
         self.schema: DefaultSchema = DefaultSchema()
-        super().__init__(uri)
 
         # needed for dropping tables in correct order for tests because of
         # foreign keys
@@ -368,26 +445,19 @@ class SQLiteMetastore(AbstractDBMetastore):
 
         self.db = db or SQLiteDatabaseEngine.from_db_file(db_file)
 
-        self._init_meta_table()
-        self._init_meta_schema_value()
-        self._check_schema_version()
-        self._init_tables()
-        self._init_namespaces_projects()
+        with self._init_guard():
+            self._init_meta_table()
+            self._init_meta_schema_value()
+            self._check_schema_version()
+            self._init_tables()
+            self._init_namespaces_projects()
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
         """Close connection upon exit from context manager."""
         self.close()
 
-    def clone(
-        self,
-        uri: Optional[StorageURI] = None,
-        use_new_connection: bool = False,
-    ) -> "SQLiteMetastore":
-        uri = uri or StorageURI("")
-        if not uri and self.uri:
-            uri = self.uri
-
-        return SQLiteMetastore(uri=uri, db=self.db.clone())
+    def clone(self, use_new_connection: bool = False) -> "SQLiteMetastore":
+        return SQLiteMetastore(db=self.db.clone())
 
     def clone_params(self) -> tuple[Callable[..., Any], list[Any], dict[str, Any]]:
         """
@@ -398,20 +468,22 @@ class SQLiteMetastore(AbstractDBMetastore):
             SQLiteMetastore.init_after_clone,
             [],
             {
-                "uri": self.uri,
                 "db_clone_params": self.db.clone_params(),
             },
         )
 
     @classmethod
+    def serialize_callable_name(cls) -> str:
+        return "sqlite.metastore.init_after_clone"
+
+    @classmethod
     def init_after_clone(
         cls,
         *,
-        uri: StorageURI,
         db_clone_params: tuple[Callable, list, dict[str, Any]],
     ) -> "SQLiteMetastore":
         (db_class, db_args, db_kwargs) = db_clone_params
-        return cls(uri=uri, db=db_class(*db_args, **db_kwargs))
+        return cls(db=db_class(*db_args, **db_kwargs))
 
     @cached_property
     def _meta(self) -> Table:
@@ -445,20 +517,55 @@ class SQLiteMetastore(AbstractDBMetastore):
         )
         self.db.execute(stmt)
 
+    @property
+    def _metastore_tables(self) -> list[Table]:
+        """List of all metastore tables that require initialization and migration."""
+        return [
+            self._namespaces,
+            self._projects,
+            self._datasets,
+            self._datasets_versions,
+            self._datasets_dependencies,
+            self._jobs,
+            self._checkpoints,
+            self._checkpoint_events,
+            self._dataset_version_jobs,
+        ]
+
     def _init_tables(self) -> None:
-        """Initialize tables."""
-        self.db.create_table(self._namespaces, if_not_exists=True)
-        self.default_table_names.append(self._namespaces.name)
-        self.db.create_table(self._projects, if_not_exists=True)
-        self.default_table_names.append(self._projects.name)
-        self.db.create_table(self._datasets, if_not_exists=True)
-        self.default_table_names.append(self._datasets.name)
-        self.db.create_table(self._datasets_versions, if_not_exists=True)
-        self.default_table_names.append(self._datasets_versions.name)
-        self.db.create_table(self._datasets_dependencies, if_not_exists=True)
-        self.default_table_names.append(self._datasets_dependencies.name)
-        self.db.create_table(self._jobs, if_not_exists=True)
-        self.default_table_names.append(self._jobs.name)
+        """Initialize tables with automatic schema migration."""
+        for table in self._metastore_tables:
+            self.db.create_table(table, if_not_exists=True)
+            self.default_table_names.append(table.name)
+
+        # Auto-migrate: add missing columns based on schema definitions
+        for table in self._metastore_tables:
+            self._migrate_table_schema(table)
+
+    def _migrate_table_schema(self, table: Table) -> None:
+        """
+        Automatically add missing columns to match the SQLAlchemy schema definition.
+        This enables lazy schema evolution without manual migrations.
+        """
+        # Get actual columns in database
+        columns_query = f"PRAGMA table_info({table.name})"
+        existing_columns = self.db.execute_str(columns_query).fetchall()
+        existing_column_names = {col[1] for col in existing_columns}
+
+        # Get expected columns from SQLAlchemy Table definition and add missing ones
+        for column in table.columns:
+            if column.name not in existing_column_names:
+                self.db.add_column(table.name, column)
+
+        self._create_table_indexes(table)
+
+    def _create_table_indexes(self, table: Table) -> None:
+        """Create all indexes for a table, skipping if they fail."""
+        for index in table.indexes:
+            try:
+                self.db.execute(CreateIndex(index, if_not_exists=True))
+            except (sqlite3.OperationalError, sqlalchemy.exc.OperationalError) as e:
+                logger.debug("Could not create index %s: %s", index.name, e)
 
     def _init_namespaces_projects(self) -> None:
         """
@@ -485,9 +592,6 @@ class SQLiteMetastore(AbstractDBMetastore):
         if schema_version < SCHEMA_VERSION:
             raise OutdatedDatabaseSchemaError(OUTDATED_SCHEMA_ERROR_MESSAGE)
 
-    #
-    # Dataset dependencies
-    #
     @classmethod
     def _meta_columns(cls) -> list["SchemaItem"]:
         return [
@@ -520,10 +624,6 @@ class SQLiteMetastore(AbstractDBMetastore):
     def _datasets_dependencies_insert(self) -> "Insert":
         return sqlite.insert(self._datasets_dependencies)
 
-    #
-    # Dataset dependencies
-    #
-
     def _dataset_dependencies_select_columns(self) -> list["SchemaItem"]:
         return [
             self._namespaces.c.name,
@@ -536,24 +636,41 @@ class SQLiteMetastore(AbstractDBMetastore):
             self._datasets_versions.c.created_at,
         ]
 
-    #
-    # Jobs
-    #
+    def _dataset_dependency_nodes_select_columns(
+        self,
+        namespaces_subquery: "Subquery",
+        dependency_tree_cte: "CTE",
+        datasets_subquery: "Subquery",
+    ) -> list["ColumnElement"]:
+        return [
+            namespaces_subquery.c.name,
+            self._projects.c.name,
+            dependency_tree_cte.c.id,
+            dependency_tree_cte.c.dataset_id,
+            dependency_tree_cte.c.dataset_version_id,
+            datasets_subquery.c.name,
+            self._datasets_versions.c.version,
+            self._datasets_versions.c.created_at,
+            dependency_tree_cte.c.source_dataset_id,
+            dependency_tree_cte.c.source_dataset_version_id,
+            dependency_tree_cte.c.depth,
+        ]
 
     def _jobs_insert(self) -> "Insert":
         return sqlite.insert(self._jobs)
 
-    #
-    # Namespaces
-    #
+    def _checkpoints_insert(self) -> "Insert":
+        return sqlite.insert(self._checkpoints)
+
+    def _checkpoint_events_insert(self) -> "Insert":
+        return sqlite.insert(self._checkpoint_events)
+
+    def _dataset_version_jobs_insert(self) -> "Insert":
+        return sqlite.insert(self._dataset_version_jobs)
 
     @property
     def default_namespace_name(self):
         return Namespace.default()
-
-    #
-    # Projects
-    #
 
     @property
     def default_project_name(self):
@@ -566,15 +683,15 @@ class SQLiteWarehouse(AbstractWarehouse):
     This is currently used for the local cli.
     """
 
-    db: "SQLiteDatabaseEngine"
+    db: SQLiteDatabaseEngine
 
     # Cache for our defined column types to dialect specific TypeEngine relations
     _col_python_type: ClassVar[dict[type, "TypeEngine"]] = {}
 
     def __init__(
         self,
-        db: Optional["SQLiteDatabaseEngine"] = None,
-        db_file: Optional[str] = None,
+        db: SQLiteDatabaseEngine | None = None,
+        db_file: str | None = None,
         in_memory: bool = False,
     ):
         self.schema: DefaultSchema = DefaultSchema()
@@ -583,6 +700,7 @@ class SQLiteWarehouse(AbstractWarehouse):
         db_file = get_db_file_in_memory(db_file, in_memory)
 
         self.db = db or SQLiteDatabaseEngine.from_db_file(db_file)
+        self.buffers: dict[str, InsertBuffer] = {}
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
         """Close connection upon exit from context manager."""
@@ -601,6 +719,10 @@ class SQLiteWarehouse(AbstractWarehouse):
             [],
             {"db_clone_params": self.db.clone_params()},
         )
+
+    @classmethod
+    def serialize_callable_name(cls) -> str:
+        return "sqlite.warehouse.init_after_clone"
 
     @classmethod
     def init_after_clone(
@@ -625,7 +747,7 @@ class SQLiteWarehouse(AbstractWarehouse):
             only=filter_tables,
         )
 
-    def is_ready(self, timeout: Optional[int] = None) -> bool:
+    def is_ready(self, timeout: int | None = None) -> bool:
         return True
 
     def create_dataset_rows_table(
@@ -634,6 +756,10 @@ class SQLiteWarehouse(AbstractWarehouse):
         columns: Sequence["sqlalchemy.Column"] = (),
         if_not_exists: bool = True,
     ) -> Table:
+        # Return existing table if it exists (and caller allows it)
+        if if_not_exists and self.db.has_table(name):
+            return self.db.get_table(name)
+
         table = self.schema.dataset_row_cls.new_table(
             name,
             columns=columns,
@@ -647,91 +773,44 @@ class SQLiteWarehouse(AbstractWarehouse):
     ) -> list[StorageURI]:
         dr = self.dataset_rows(dataset, version)
         query = dr.select(dr.c("source", column="file")).distinct()
-        cur = self.db.cursor()
-        cur.row_factory = sqlite3.Row  # type: ignore[assignment]
-
-        return [
-            StorageURI(row["file__source"])
-            for row in self.db.execute(query, cursor=cur)
-        ]
-
-    def merge_dataset_rows(
-        self,
-        src: DatasetRecord,
-        dst: DatasetRecord,
-        src_version: str,
-        dst_version: str,
-    ) -> None:
-        dst_empty = False
-
-        if not self.db.has_table(self.dataset_table_name(src, src_version)):
-            # source table doesn't exist, nothing to do
-            return
-
-        src_dr = self.dataset_rows(src, src_version).table
-
-        if not self.db.has_table(self.dataset_table_name(dst, dst_version)):
-            # destination table doesn't exist, create it
-            self.create_dataset_rows_table(
-                self.dataset_table_name(dst, dst_version),
-                columns=src_dr.columns,
-            )
-            dst_empty = True
-
-        dst_dr = self.dataset_rows(dst, dst_version).table
-        merge_fields = [c.name for c in src_dr.columns if c.name != "sys__id"]
-        select_src = select(*(getattr(src_dr.columns, f) for f in merge_fields))
-
-        if dst_empty:
-            # we don't need union, but just select from source to destination
-            insert_query = sqlite.insert(dst_dr).from_select(merge_fields, select_src)
-        else:
-            dst_version_latest = None
-            # find the previous version of the destination dataset
-            dst_previous_versions = [
-                v.version
-                for v in dst.versions  # type: ignore [union-attr]
-                if semver.compare(v.version, dst_version) == -1
-            ]
-            if dst_previous_versions:
-                dst_version_latest = max(dst_previous_versions)
-
-            dst_dr_latest = self.dataset_rows(dst, dst_version_latest).table
-
-            select_dst_latest = select(
-                *(getattr(dst_dr_latest.c, f) for f in merge_fields)
-            )
-            union_query = sqlalchemy.union(select_src, select_dst_latest)
-            insert_query = (
-                sqlite.insert(dst_dr)
-                .from_select(merge_fields, union_query)
-                .prefix_with("OR IGNORE")
-            )
-
-        self.db.execute(insert_query)
+        return [StorageURI(row[0]) for row in self.db.execute(query)]
 
     def prepare_entries(self, entries: "Iterable[File]") -> Iterable[dict[str, Any]]:
         return (e.model_dump() for e in entries)
 
-    def insert_rows(
+    def _insert_from_buffer(
         self,
         table: Table,
-        rows: Iterable[dict[str, Any]],
-        batch_size: int = INSERT_BATCH_SIZE,
+        entries: list[dict[str, Any]],
+        final: bool = False,
+        cursor: Any = None,
     ) -> None:
-        for row_chunk in batched(rows, batch_size):
-            with self.db.transaction() as conn:
-                # transactions speeds up inserts significantly as there is no separate
-                # transaction created for each insert row
-                self.db.executemany(
-                    table.insert().values({f: bindparam(f) for f in row_chunk[0]}),
-                    row_chunk,
-                    conn=conn,
-                )
+        """Callback for InsertBuffer to insert a batch of entries."""
+        if not entries:
+            return
+        with self.db.transaction():
+            # transactions speeds up inserts significantly as there is no separate
+            # transaction created for each insert row
+            self.db.executemany(
+                table.insert().values({f: bindparam(f) for f in entries[0]}),
+                entries,
+            )
 
-    def insert_dataset_rows(self, df, dataset: DatasetRecord, version: str) -> int:
-        dr = self.dataset_rows(dataset, version)
-        return self.db.insert_dataframe(dr.table.name, df)
+    def get_buffer(
+        self,
+        table: Table,
+        buffer_size: int,
+        flush_interval: float,
+    ) -> InsertBuffer:
+        """Get or create an InsertBuffer for the given table."""
+        if table.name not in self.buffers:
+            self.buffers[table.name] = InsertBuffer(
+                table,
+                self._insert_from_buffer,
+                buffer_size,
+                flush_interval=flush_interval,
+            )
+        return self.buffers[table.name]
 
     def instr(self, source, target) -> "ColumnElement":
         return cast(func.instr(source, target), sqlalchemy.Boolean)
@@ -739,7 +818,10 @@ class SQLiteWarehouse(AbstractWarehouse):
     def get_table(self, name: str) -> sqlalchemy.Table:
         # load table with latest schema to metadata
         self._reflect_tables(filter_tables=lambda t, _: t == name)
-        return self.db.metadata.tables[name]
+        try:
+            return self.db.metadata.tables[name]
+        except KeyError:
+            raise TableMissingError(f"Table '{name}' not found") from None
 
     def python_type(self, col_type: Union["TypeEngine", "SQLType"]) -> Any:
         if isinstance(col_type, SQLType):
@@ -753,25 +835,23 @@ class SQLiteWarehouse(AbstractWarehouse):
 
         return col_type.python_type
 
-    def dataset_table_export_file_names(
-        self, dataset: DatasetRecord, version: str
-    ) -> list[str]:
-        raise NotImplementedError("Exporting dataset table not implemented for SQLite")
-
     def export_dataset_table(
         self,
-        bucket_uri: str,
+        bucket: str,
         dataset: DatasetRecord,
         version: str,
+        *,
+        file_format: str | None = None,
+        base_file_name: str,
         client_config=None,
-    ) -> list[str]:
+    ) -> None:
         raise NotImplementedError("Exporting dataset table not implemented for SQLite")
 
-    def copy_table(
+    def insert_into(
         self,
         table: Table,
         query: Select,
-        progress_cb: Optional[Callable[[int], None]] = None,
+        progress_cb: Callable[[int], None] | None = None,
     ) -> None:
         col_id = (
             query.selected_columns.sys__id
@@ -800,7 +880,7 @@ class SQLiteWarehouse(AbstractWarehouse):
             .limit(None)
         )
 
-        for batch in batched_it(ids, INSERT_BATCH_SIZE):
+        for batch in batched_it(ids, self.INSERT_BATCH_SIZE):
             batch_ids = [row[0] for row in batch]
             select_q._where_criteria = (col_id.in_(batch_ids),)
             q = table.insert().from_select(list(select_q.selected_columns), select_q)
@@ -855,21 +935,29 @@ class SQLiteWarehouse(AbstractWarehouse):
                 if isinstance(c, BinaryExpression):
                     right_left_join = add_left_rows_filter(c)
 
-        union = sqlalchemy.union(left_right_join, right_left_join).subquery()
-        return sqlalchemy.select(*union.c).select_from(union)
+        union_cte = sqlalchemy.union(left_right_join, right_left_join).cte()
+        return sqlalchemy.select(*union_cte.c).select_from(union_cte)
 
-    def create_pre_udf_table(self, query: "Select") -> "Table":
+    def _system_row_number_expr(self):
+        return func.row_number().over()
+
+    def _system_random_expr(self):
+        return self._system_row_number_expr() * 1103515245 + 12345
+
+    def create_pre_udf_table(self, query: "Select", name: str) -> "Table":
         """
         Create a temporary table from a query for use in a UDF.
+        Populates the table from the query, using a staging pattern for atomicity.
+
+        This ensures that if the process crashes during population, the next run
+        won't find a partially-populated table and incorrectly reuse it.
         """
-        columns = [
-            sqlalchemy.Column(c.name, c.type)
-            for c in query.selected_columns
-            if c.name != "sys__id"
-        ]
-        table = self.create_udf_table(columns)
+        columns = [sqlalchemy.Column(c.name, c.type) for c in query.selected_columns]
 
         with tqdm(desc="Preparing", unit=" rows", leave=False) as pbar:
-            self.copy_table(table, query, progress_cb=pbar.update)
-
-        return table
+            return self.create_table_from_query(
+                name,
+                query,
+                create_fn=lambda n: self.create_udf_table(columns, name=n),
+                progress_cb=pbar.update,
+            )

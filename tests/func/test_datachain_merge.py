@@ -1,6 +1,7 @@
 import pytest
 
 import datachain as dc
+from datachain import File
 from datachain.sql.types import Int
 
 
@@ -99,3 +100,35 @@ def test_merge_multiple(cloud_test_catalog, inner1, inner2, inner3):
             ("dogs/dog3", 1, signal_default_value),
             ("dogs/others/dog4", 1, signal_default_value),
         ]
+
+
+def test_full_outer_join_preserves_all_rows(test_session):
+    """Test that full outer join correctly saves all rows including right-only rows.
+    Checks also that sys columns are dropped on full outer join since it is not safe
+    to carry them over.
+    """
+    # Create two datasets with no overlapping file paths
+    ds1 = dc.read_values(
+        id=[1, 2, 3],
+        file=[File(path=str(i)) for i in [1, 2, 3]],
+        session=test_session,
+    ).persist()
+
+    ds2 = dc.read_values(
+        id=[5, 6, 7],
+        file=[File(path=str(i)) for i in [5, 6, 7]],
+        session=test_session,
+    ).persist()
+
+    merged = ds1.merge(ds2, on="file.path", full=True)
+
+    chain_with_sys = merged.settings(sys=True)
+    assert "sys__id" not in chain_with_sys.schema
+
+    df = chain_with_sys.to_pandas()
+    assert not any(str(col).startswith("sys__") for col in df.columns)
+
+    merged.save("test_merge")
+    count_after = dc.read_dataset("test_merge", session=test_session).count()
+
+    assert count_after == 6

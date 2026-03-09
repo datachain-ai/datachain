@@ -1,5 +1,8 @@
+import pytest
+
 import datachain as dc
 from datachain import func
+from datachain.lib.utils import DataChainParamsError
 
 
 def test_aggregate_avg(test_session):
@@ -169,3 +172,31 @@ def test_aggregate_any_value(test_session):
     assert all(isinstance(x[3], int) and x[3] in (20, 40, 60) for x in ds)
     assert all(isinstance(x[4], float) and x[4] in (2.0, 4.0, 6.0) for x in ds)
     assert all(isinstance(x[5], str) and x[5] in ("x", "y", "z") for x in ds)
+
+
+def test_funcs_disallow_complex_object_collect(test_session):
+    class Rec(dc.DataModel):
+        i: int
+
+    ds = dc.read_values(
+        id=(1, 2),
+        rec=(Rec(i=1), Rec(i=2)),
+        session=test_session,
+    )
+
+    with pytest.raises(DataChainParamsError, match="doesn't support complex object"):
+        ds.group_by(res=func.collect("rec"), partition_by="id")
+
+
+def test_funcs_disallow_complex_object_min(test_session):
+    class Rec(dc.DataModel):
+        i: int
+
+    ds = dc.read_values(
+        id=(1, 2),
+        rec=(Rec(i=1), Rec(i=2)),
+        session=test_session,
+    )
+
+    with pytest.raises(DataChainParamsError, match="doesn't support complex object"):
+        ds.group_by(res=func.min("rec"), partition_by="id")

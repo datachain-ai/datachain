@@ -12,14 +12,14 @@
 .. |Python Version| image:: https://img.shields.io/pypi/pyversions/datachain
    :target: https://pypi.org/project/datachain
    :alt: Python Version
-.. |Codecov| image:: https://codecov.io/gh/iterative/datachain/graph/badge.svg?token=byliXGGyGB
-   :target: https://codecov.io/gh/iterative/datachain
+.. |Codecov| image:: https://codecov.io/gh/datachain-ai/datachain/graph/badge.svg?token=byliXGGyGB
+   :target: https://codecov.io/gh/datachain-ai/datachain
    :alt: Codecov
-.. |Tests| image:: https://github.com/iterative/datachain/actions/workflows/tests.yml/badge.svg
-   :target: https://github.com/iterative/datachain/actions/workflows/tests.yml
+.. |Tests| image:: https://github.com/datachain-ai/datachain/actions/workflows/tests.yml/badge.svg
+   :target: https://github.com/datachain-ai/datachain/actions/workflows/tests.yml
    :alt: Tests
 .. |DeepWiki| image:: https://deepwiki.com/badge.svg
-   :target: https://deepwiki.com/iterative/datachain
+   :target: https://deepwiki.com/datachain-ai/datachain
    :alt: DeepWiki
 
 DataChain is a Python-based AI-data warehouse for transforming and analyzing unstructured
@@ -36,7 +36,7 @@ Use Cases
 2. **Analytics.** DataChain dataset is a table that combines all the information about data
    objects in one place + it provides dataframe-like API and vectorized engine to do analytics
    on these tables at scale.
-3. **Versioning.** DataChain doesn't store, require moving or copying data (unlike DVC).
+3. **Versioning.** DataChain doesn't store, require moving or copying data.
    Perfect use case is a bucket with thousands or millions of images, videos, audio, PDFs.
 4. **Incremental Processing.** DataChain's delta and retry features allow for efficient
    processing workflows:
@@ -222,7 +222,7 @@ DataChain Studio Platform
 - **Access control** including SSO and team based collaboration.
 
 .. _PyPI: https://pypi.org/
-.. _file an issue: https://github.com/iterative/datachain/issues
+.. _file an issue: https://github.com/datachain-ai/datachain/issues
 .. github-only
 .. _Contributor Guide: https://docs.datachain.ai/contributing
 .. _Pydantic: https://github.com/pydantic/pydantic

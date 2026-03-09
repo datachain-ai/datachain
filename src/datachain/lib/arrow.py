@@ -1,13 +1,13 @@
 from collections.abc import Sequence
 from itertools import islice
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 
 import pyarrow as pa
-import ujson as json
 from pyarrow._csv import ParseOptions
 from pyarrow.dataset import CsvFileFormat, dataset
 from tqdm.auto import tqdm
 
+from datachain import json
 from datachain.fs.reference import ReferenceFileSystem
 from datachain.lib.data_model import dict_to_data_model
 from datachain.lib.file import ArrowRow, File
@@ -44,10 +44,10 @@ class ArrowGenerator(Generator):
 
     def __init__(
         self,
-        input_schema: Optional["pa.Schema"] = None,
-        output_schema: Optional[type["BaseModel"]] = None,
+        input_schema: pa.Schema | None = None,
+        output_schema: type["BaseModel"] | None = None,
         source: bool = True,
-        nrows: Optional[int] = None,
+        nrows: int | None = None,
         **kwargs,
     ):
         """
@@ -112,7 +112,7 @@ class ArrowGenerator(Generator):
         record: dict[str, Any],
         file: File,
         index: int,
-        hf_schema: Optional[tuple["Features", dict[str, "DataType"]]],
+        hf_schema: tuple["Features", dict[str, "DataType"]] | None,
         use_datachain_schema: bool,
     ):
         if use_datachain_schema and self.output_schema:
@@ -141,7 +141,7 @@ class ArrowGenerator(Generator):
     def _process_non_datachain_record(
         self,
         record: dict[str, Any],
-        hf_schema: Optional[tuple["Features", dict[str, "DataType"]]],
+        hf_schema: tuple["Features", dict[str, "DataType"]] | None,
     ):
         vals = list(record.values())
         if not self.output_schema:
@@ -149,7 +149,9 @@ class ArrowGenerator(Generator):
 
         fields = self.output_schema.model_fields
         vals_dict = {}
-        for i, ((field, field_info), val) in enumerate(zip(fields.items(), vals)):
+        for i, ((field, field_info), val) in enumerate(
+            zip(fields.items(), vals, strict=False)
+        ):
             anno = field_info.annotation
             if hf_schema:
                 from datachain.lib.hf import convert_feature
@@ -180,7 +182,7 @@ def infer_schema(chain: "DataChain", **kwargs) -> pa.Schema:
 
 
 def schema_to_output(
-    schema: pa.Schema, col_names: Optional[Sequence[str]] = None
+    schema: pa.Schema, col_names: Sequence[str] | None = None
 ) -> tuple[dict[str, type], list[str]]:
     """
     Generate UDF output schema from pyarrow schema.
@@ -205,14 +207,15 @@ def schema_to_output(
     hf_schema = _get_hf_schema(schema)
     if hf_schema:
         return {
-            column: hf_type for hf_type, column in zip(hf_schema[1].values(), col_names)
+            column: hf_type
+            for hf_type, column in zip(hf_schema[1].values(), col_names, strict=False)
         }, list(normalized_col_dict.values())
 
     output = {}
-    for field, column in zip(schema, col_names):
+    for field, column in zip(schema, col_names, strict=False):
         dtype = arrow_type_mapper(field.type, column)
         if field.nullable and not ModelStore.is_pydantic(dtype):
-            dtype = Optional[dtype]  # type: ignore[assignment]
+            dtype = dtype | None  # type: ignore[assignment]
         output[column] = dtype
 
     return output, list(normalized_col_dict.values())
@@ -243,7 +246,7 @@ def arrow_type_mapper(col_type: pa.DataType, column: str = "") -> type:  # noqa:
         for field in col_type:
             dtype = arrow_type_mapper(field.type, field.name)
             if field.nullable and not ModelStore.is_pydantic(dtype):
-                dtype = Optional[dtype]  # type: ignore[assignment]
+                dtype = dtype | None  # type: ignore[assignment]
             type_dict[field.name] = dtype
         return dict_to_data_model(f"ArrowDataModel_{column}", type_dict)
     if pa.types.is_map(col_type):
@@ -257,7 +260,7 @@ def arrow_type_mapper(col_type: pa.DataType, column: str = "") -> type:  # noqa:
 
 def _get_hf_schema(
     schema: "pa.Schema",
-) -> Optional[tuple["Features", dict[str, "DataType"]]]:
+) -> tuple["Features", dict[str, "DataType"]] | None:
     if schema.metadata and b"huggingface" in schema.metadata:
         from datachain.lib.hf import get_output_schema, schema_from_arrow
 
@@ -266,7 +269,7 @@ def _get_hf_schema(
     return None
 
 
-def _get_datachain_schema(schema: "pa.Schema") -> Optional[SignalSchema]:
+def _get_datachain_schema(schema: "pa.Schema") -> SignalSchema | None:
     """Return a restored SignalSchema from parquet metadata, if any is found."""
     if schema.metadata and DATACHAIN_SIGNAL_SCHEMA_PARQUET_KEY in schema.metadata:
         serialized_signal_schema = json.loads(

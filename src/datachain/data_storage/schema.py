@@ -1,12 +1,6 @@
 import inspect
 from collections.abc import Iterable, Iterator, Sequence
-from typing import (
-    TYPE_CHECKING,
-    Any,
-    Generic,
-    Optional,
-    TypeVar,
-)
+from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 import sqlalchemy as sa
 from sqlalchemy.sql import func as f
@@ -17,7 +11,6 @@ from datachain.sql.types import (
     JSON,
     Boolean,
     DateTime,
-    Int,
     Int64,
     SQLType,
     String,
@@ -51,7 +44,7 @@ def dedup_columns(columns: Iterable[sa.Column]) -> list[sa.Column]:
     """
     c_set: dict[str, sa.Column] = {}
     for c in columns:
-        if (ec := c_set.get(c.name, None)) is not None:
+        if (ec := c_set.get(c.name)) is not None:
             if str(ec.type) != str(c.type):
                 raise ValueError(
                     f"conflicting types for column {c.name}:{c.type!s} and {ec.type!s}"
@@ -96,11 +89,11 @@ class DirExpansion:
     def __init__(self, column: str):
         self.column = column
 
-    def col_name(self, name: str, column: Optional[str] = None) -> str:
+    def col_name(self, name: str, column: str | None = None) -> str:
         column = column or self.column
         return col_name(name, column)
 
-    def c(self, query, name: str, column: Optional[str] = None) -> str:
+    def c(self, query, name: str, column: str | None = None) -> str:
         return getattr(query.c, self.col_name(name, column=column))
 
     def base_select(self, q):
@@ -161,7 +154,7 @@ class DataTable:
         self,
         name: str,
         engine: "DatabaseEngine",
-        column_types: Optional[dict[str, SQLType]] = None,
+        column_types: dict[str, SQLType] | None = None,
         column: str = "file",
     ):
         self.name: str = name
@@ -172,12 +165,12 @@ class DataTable:
     @staticmethod
     def copy_column(
         column: sa.Column,
-        primary_key: Optional[bool] = None,
-        index: Optional[bool] = None,
-        nullable: Optional[bool] = None,
-        default: Optional[Any] = None,
-        server_default: Optional[Any] = None,
-        unique: Optional[bool] = None,
+        primary_key: bool | None = None,
+        index: bool | None = None,
+        nullable: bool | None = None,
+        default: Any | None = None,
+        server_default: Any | None = None,
+        unique: bool | None = None,
     ) -> sa.Column:
         """
         Copy a sqlalchemy Column object intended for use as a signal column.
@@ -206,8 +199,8 @@ class DataTable:
     def new_table(
         cls,
         name: str,
-        columns: Sequence["sa.Column"] = (),
-        metadata: Optional["sa.MetaData"] = None,
+        columns: Sequence[sa.Column] = (),
+        metadata: sa.MetaData | None = None,
     ):
         # copy columns, since reusing the same objects from another table
         # may raise an error
@@ -218,7 +211,7 @@ class DataTable:
             metadata = sa.MetaData()
         return sa.Table(name, metadata, *columns)
 
-    def get_table(self) -> "sa.Table":
+    def get_table(self) -> sa.Table:
         table = self.engine.get_table(self.name)
 
         column_types = self.column_types | {c.name: c.type for c in self.sys_columns()}
@@ -233,19 +226,19 @@ class DataTable:
     def columns(self) -> "ReadOnlyColumnCollection[str, sa.Column[Any]]":
         return self.table.columns
 
-    def col_name(self, name: str, column: Optional[str] = None) -> str:
+    def col_name(self, name: str, column: str | None = None) -> str:
         column = column or self.column
         return col_name(name, column)
 
-    def without_object(self, column_name: str, column: Optional[str] = None) -> str:
+    def without_object(self, column_name: str, column: str | None = None) -> str:
         column = column or self.column
         return column_name.removeprefix(f"{column}{DEFAULT_DELIMITER}")
 
-    def c(self, name: str, column: Optional[str] = None):
+    def c(self, name: str, column: str | None = None):
         return getattr(self.columns, self.col_name(name, column=column))
 
     @property
-    def table(self) -> "sa.Table":
+    def table(self) -> sa.Table:
         return self.get_table()
 
     def apply_conditions(self, query: "Executable") -> "Executable":
@@ -275,7 +268,7 @@ class DataTable:
     @classmethod
     def sys_columns(cls):
         return [
-            sa.Column("sys__id", Int, primary_key=True),
+            sa.Column("sys__id", UInt64, primary_key=True),
             sa.Column(
                 "sys__rand", UInt64, nullable=False, server_default=f.abs(f.random())
             ),
@@ -303,7 +296,7 @@ PARTITION_COLUMN_ID = "partition_id"
 partition_col_names = [PARTITION_COLUMN_ID]
 
 
-def partition_columns() -> Sequence["sa.Column"]:
+def partition_columns() -> Sequence[sa.Column]:
     return [
         sa.Column(PARTITION_COLUMN_ID, sa.Integer),
     ]

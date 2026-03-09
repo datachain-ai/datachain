@@ -1,12 +1,13 @@
 import inspect
-from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any, Callable, Optional, Union, get_args, get_origin
+from collections.abc import Callable, Sequence
+from typing import TYPE_CHECKING, Any, Union, get_args, get_origin
 
 from sqlalchemy import BindParameter, Case, ColumnElement, Integer, cast, desc
 from sqlalchemy.sql import func as sa_func
 
 from datachain.lib.convert.python_to_sql import python_to_sql
 from datachain.lib.convert.sql_to_python import sql_to_python
+from datachain.lib.model_store import ModelStore
 from datachain.lib.utils import DataChainColumnError, DataChainParamsError
 from datachain.query.schema import Column, ColumnMeta
 from datachain.sql.functions import numeric
@@ -22,26 +23,29 @@ if TYPE_CHECKING:
     from .window import Window
 
 
-ColT = Union[str, Column, ColumnElement, "Func", tuple]
+ColT = Union[str, tuple, Column, ColumnElement, "Func"]
 
 
 class Func(Function):  # noqa: PLW1641
     """Represents a function to be applied to a column in a SQL query."""
 
+    cols: Sequence[ColT]
+    args: Sequence[Any]
+
     def __init__(
         self,
         name: str,
         inner: Callable,
-        cols: Optional[Sequence[ColT]] = None,
-        args: Optional[Sequence[Any]] = None,
-        kwargs: Optional[dict[str, Any]] = None,
-        result_type: Optional["DataType"] = None,
-        type_from_args: Optional[Callable[..., "DataType"]] = None,
+        cols: Sequence[ColT] | None = None,
+        args: Sequence[Any] | None = None,
+        kwargs: dict[str, Any] | None = None,
+        result_type: "DataType | None" = None,
+        type_from_args: Callable[..., "DataType"] | None = None,
         is_array: bool = False,
         from_array: bool = False,
         is_window: bool = False,
-        window: Optional["Window"] = None,
-        label: Optional[str] = None,
+        window: "Window | None" = None,
+        label: str | None = None,
     ) -> None:
         self.name = name
         self.inner = inner
@@ -95,7 +99,7 @@ class Func(Function):  # noqa: PLW1641
             else []
         )
 
-    def _db_col_type(self, signals_schema: "SignalSchema") -> Optional["DataType"]:
+    def _db_col_type(self, signals_schema: "SignalSchema") -> "DataType | None":
         if not self._db_cols:
             return None
 
@@ -125,145 +129,133 @@ class Func(Function):  # noqa: PLW1641
 
         return list[col_type] if self.is_array else col_type  # type: ignore[valid-type]
 
-    def __add__(self, other: Union[ColT, float]) -> "Func":
+    def __add__(self, other: ColT | float) -> "Func":
         if isinstance(other, (int, float)):
             return Func("add", lambda a: a + other, [self])
         return Func("add", lambda a1, a2: a1 + a2, [self, other])
 
-    def __radd__(self, other: Union[ColT, float]) -> "Func":
+    def __radd__(self, other: ColT | float) -> "Func":
         if isinstance(other, (int, float)):
             return Func("add", lambda a: other + a, [self])
         return Func("add", lambda a1, a2: a1 + a2, [other, self])
 
-    def __sub__(self, other: Union[ColT, float]) -> "Func":
+    def __sub__(self, other: ColT | float) -> "Func":
         if isinstance(other, (int, float)):
             return Func("sub", lambda a: a - other, [self])
         return Func("sub", lambda a1, a2: a1 - a2, [self, other])
 
-    def __rsub__(self, other: Union[ColT, float]) -> "Func":
+    def __rsub__(self, other: ColT | float) -> "Func":
         if isinstance(other, (int, float)):
             return Func("sub", lambda a: other - a, [self])
         return Func("sub", lambda a1, a2: a1 - a2, [other, self])
 
-    def __mul__(self, other: Union[ColT, float]) -> "Func":
+    def __mul__(self, other: ColT | float) -> "Func":
         if isinstance(other, (int, float)):
             return Func("mul", lambda a: a * other, [self])
         return Func("mul", lambda a1, a2: a1 * a2, [self, other])
 
-    def __rmul__(self, other: Union[ColT, float]) -> "Func":
+    def __rmul__(self, other: ColT | float) -> "Func":
         if isinstance(other, (int, float)):
             return Func("mul", lambda a: other * a, [self])
         return Func("mul", lambda a1, a2: a1 * a2, [other, self])
 
-    def __truediv__(self, other: Union[ColT, float]) -> "Func":
+    def __truediv__(self, other: ColT | float) -> "Func":
         if isinstance(other, (int, float)):
             return Func("div", lambda a: _truediv(a, other), [self], result_type=float)
-        return Func(
-            "div", lambda a1, a2: _truediv(a1, a2), [self, other], result_type=float
-        )
+        return Func("div", _truediv, [self, other], result_type=float)
 
-    def __rtruediv__(self, other: Union[ColT, float]) -> "Func":
+    def __rtruediv__(self, other: ColT | float) -> "Func":
         if isinstance(other, (int, float)):
             return Func("div", lambda a: _truediv(other, a), [self], result_type=float)
-        return Func(
-            "div", lambda a1, a2: _truediv(a1, a2), [other, self], result_type=float
-        )
+        return Func("div", _truediv, [other, self], result_type=float)
 
-    def __floordiv__(self, other: Union[ColT, float]) -> "Func":
+    def __floordiv__(self, other: ColT | float) -> "Func":
         if isinstance(other, (int, float)):
             return Func(
                 "floordiv", lambda a: _floordiv(a, other), [self], result_type=int
             )
-        return Func(
-            "floordiv", lambda a1, a2: _floordiv(a1, a2), [self, other], result_type=int
-        )
+        return Func("floordiv", _floordiv, [self, other], result_type=int)
 
-    def __rfloordiv__(self, other: Union[ColT, float]) -> "Func":
+    def __rfloordiv__(self, other: ColT | float) -> "Func":
         if isinstance(other, (int, float)):
             return Func(
                 "floordiv", lambda a: _floordiv(other, a), [self], result_type=int
             )
-        return Func(
-            "floordiv", lambda a1, a2: _floordiv(a1, a2), [other, self], result_type=int
-        )
+        return Func("floordiv", _floordiv, [other, self], result_type=int)
 
-    def __mod__(self, other: Union[ColT, float]) -> "Func":
+    def __mod__(self, other: ColT | float) -> "Func":
         if isinstance(other, (int, float)):
             return Func("mod", lambda a: a % other, [self], result_type=int)
         return Func("mod", lambda a1, a2: a1 % a2, [self, other], result_type=int)
 
-    def __rmod__(self, other: Union[ColT, float]) -> "Func":
+    def __rmod__(self, other: ColT | float) -> "Func":
         if isinstance(other, (int, float)):
             return Func("mod", lambda a: other % a, [self], result_type=int)
         return Func("mod", lambda a1, a2: a1 % a2, [other, self], result_type=int)
 
-    def __and__(self, other: Union[ColT, float]) -> "Func":
+    def __and__(self, other: ColT | float) -> "Func":
         if isinstance(other, (int, float)):
             return Func(
                 "and", lambda a: numeric.bit_and(a, other), [self], result_type=int
             )
         return Func(
             "and",
-            lambda a1, a2: numeric.bit_and(a1, a2),
+            numeric.bit_and,
             [self, other],
             result_type=int,
         )
 
-    def __rand__(self, other: Union[ColT, float]) -> "Func":
+    def __rand__(self, other: ColT | float) -> "Func":
         if isinstance(other, (int, float)):
             return Func(
                 "and", lambda a: numeric.bit_and(other, a), [self], result_type=int
             )
         return Func(
             "and",
-            lambda a1, a2: numeric.bit_and(a1, a2),
+            numeric.bit_and,
             [other, self],
             result_type=int,
         )
 
-    def __or__(self, other: Union[ColT, float]) -> "Func":
+    def __or__(self, other: ColT | float) -> "Func":
         if isinstance(other, (int, float)):
             return Func(
                 "or", lambda a: numeric.bit_or(a, other), [self], result_type=int
             )
-        return Func(
-            "or", lambda a1, a2: numeric.bit_or(a1, a2), [self, other], result_type=int
-        )
+        return Func("or", numeric.bit_or, [self, other], result_type=int)
 
-    def __ror__(self, other: Union[ColT, float]) -> "Func":
+    def __ror__(self, other: ColT | float) -> "Func":
         if isinstance(other, (int, float)):
             return Func(
                 "or", lambda a: numeric.bit_or(other, a), [self], result_type=int
             )
-        return Func(
-            "or", lambda a1, a2: numeric.bit_or(a1, a2), [other, self], result_type=int
-        )
+        return Func("or", numeric.bit_or, [other, self], result_type=int)
 
-    def __xor__(self, other: Union[ColT, float]) -> "Func":
+    def __xor__(self, other: ColT | float) -> "Func":
         if isinstance(other, (int, float)):
             return Func(
                 "xor", lambda a: numeric.bit_xor(a, other), [self], result_type=int
             )
         return Func(
             "xor",
-            lambda a1, a2: numeric.bit_xor(a1, a2),
+            numeric.bit_xor,
             [self, other],
             result_type=int,
         )
 
-    def __rxor__(self, other: Union[ColT, float]) -> "Func":
+    def __rxor__(self, other: ColT | float) -> "Func":
         if isinstance(other, (int, float)):
             return Func(
                 "xor", lambda a: numeric.bit_xor(other, a), [self], result_type=int
             )
         return Func(
             "xor",
-            lambda a1, a2: numeric.bit_xor(a1, a2),
+            numeric.bit_xor,
             [other, self],
             result_type=int,
         )
 
-    def __rshift__(self, other: Union[ColT, float]) -> "Func":
+    def __rshift__(self, other: ColT | float) -> "Func":
         if isinstance(other, (int, float)):
             return Func(
                 "rshift",
@@ -273,12 +265,12 @@ class Func(Function):  # noqa: PLW1641
             )
         return Func(
             "rshift",
-            lambda a1, a2: numeric.bit_rshift(a1, a2),
+            numeric.bit_rshift,
             [self, other],
             result_type=int,
         )
 
-    def __rrshift__(self, other: Union[ColT, float]) -> "Func":
+    def __rrshift__(self, other: ColT | float) -> "Func":
         if isinstance(other, (int, float)):
             return Func(
                 "rshift",
@@ -288,12 +280,12 @@ class Func(Function):  # noqa: PLW1641
             )
         return Func(
             "rshift",
-            lambda a1, a2: numeric.bit_rshift(a1, a2),
+            numeric.bit_rshift,
             [other, self],
             result_type=int,
         )
 
-    def __lshift__(self, other: Union[ColT, float]) -> "Func":
+    def __lshift__(self, other: ColT | float) -> "Func":
         if isinstance(other, (int, float)):
             return Func(
                 "lshift",
@@ -303,12 +295,12 @@ class Func(Function):  # noqa: PLW1641
             )
         return Func(
             "lshift",
-            lambda a1, a2: numeric.bit_lshift(a1, a2),
+            numeric.bit_lshift,
             [self, other],
             result_type=int,
         )
 
-    def __rlshift__(self, other: Union[ColT, float]) -> "Func":
+    def __rlshift__(self, other: ColT | float) -> "Func":
         if isinstance(other, (int, float)):
             return Func(
                 "lshift",
@@ -318,17 +310,17 @@ class Func(Function):  # noqa: PLW1641
             )
         return Func(
             "lshift",
-            lambda a1, a2: numeric.bit_lshift(a1, a2),
+            numeric.bit_lshift,
             [other, self],
             result_type=int,
         )
 
-    def __lt__(self, other: Union[ColT, float]) -> "Func":
+    def __lt__(self, other: ColT | float) -> "Func":
         if isinstance(other, (int, float)):
             return Func("lt", lambda a: a < other, [self], result_type=bool)
         return Func("lt", lambda a1, a2: a1 < a2, [self, other], result_type=bool)
 
-    def __le__(self, other: Union[ColT, float]) -> "Func":
+    def __le__(self, other: ColT | float) -> "Func":
         if isinstance(other, (int, float)):
             return Func("le", lambda a: a <= other, [self], result_type=bool)
         return Func("le", lambda a1, a2: a1 <= a2, [self, other], result_type=bool)
@@ -343,12 +335,12 @@ class Func(Function):  # noqa: PLW1641
             return Func("ne", lambda a: a != other, [self], result_type=bool)
         return Func("ne", lambda a1, a2: a1 != a2, [self, other], result_type=bool)
 
-    def __gt__(self, other: Union[ColT, float]) -> "Func":
+    def __gt__(self, other: ColT | float) -> "Func":
         if isinstance(other, (int, float)):
             return Func("gt", lambda a: a > other, [self], result_type=bool)
         return Func("gt", lambda a1, a2: a1 > a2, [self, other], result_type=bool)
 
-    def __ge__(self, other: Union[ColT, float]) -> "Func":
+    def __ge__(self, other: ColT | float) -> "Func":
         if isinstance(other, (int, float)):
             return Func("ge", lambda a: a >= other, [self], result_type=bool)
         return Func("ge", lambda a1, a2: a1 >= a2, [self, other], result_type=bool)
@@ -369,7 +361,7 @@ class Func(Function):  # noqa: PLW1641
             label,
         )
 
-    def get_col_name(self, label: Optional[str] = None) -> str:
+    def get_col_name(self, label: str | None = None) -> str:
         if label:
             return label
         if self.col_label:
@@ -384,7 +376,7 @@ class Func(Function):  # noqa: PLW1641
         return self.name
 
     def get_result_type(
-        self, signals_schema: Optional["SignalSchema"] = None
+        self, signals_schema: "SignalSchema | None" = None
     ) -> "DataType":
         if self.result_type:
             return self.result_type
@@ -408,10 +400,24 @@ class Func(Function):  # noqa: PLW1641
 
     def get_column(
         self,
-        signals_schema: Optional["SignalSchema"] = None,
-        label: Optional[str] = None,
-        table: Optional["TableClause"] = None,
+        signals_schema: "SignalSchema | None" = None,
+        label: str | None = None,
+        table: "TableClause | None" = None,
     ) -> Column:
+        # Guard against using complex (pydantic) object columns in SQL funcs
+        if signals_schema and self._db_cols:
+            for arg in self._db_cols:
+                # _db_cols normalizes known columns to strings; skip non-string args
+                if not isinstance(arg, str):
+                    continue
+                t_with_sub = signals_schema.get_column_type(arg, with_subtree=True)
+                if ModelStore.is_pydantic(t_with_sub):
+                    raise DataChainParamsError(
+                        f"Function {self.name} doesn't support complex object "
+                        f"columns like '{arg}'. Use a leaf field (e.g., "
+                        f"'{arg}.path') or use UDFs to operate on complex objects."
+                    )
+
         col_type = self.get_result_type(signals_schema)
         sql_type = python_to_sql(col_type)
 
@@ -431,6 +437,7 @@ class Func(Function):  # noqa: PLW1641
             return col
 
         cols = [get_col(col) for col in self._db_cols]
+
         kwargs = {k: get_col(v, string_as_literal=True) for k, v in self.kwargs.items()}
         func_col = self.inner(*cols, *self.args, **kwargs)
 
@@ -467,9 +474,8 @@ def get_db_col_type(signals_schema: "SignalSchema", col: ColT) -> "DataType":
     if isinstance(col, ColumnElement) and not hasattr(col, "name"):
         return sql_to_python(col)
 
-    return signals_schema.get_column_type(
-        col.name if isinstance(col, ColumnElement) else col  # type: ignore[arg-type]
-    )
+    name = col.name if isinstance(col, ColumnElement) else col  # type: ignore[assignment]
+    return signals_schema.get_column_type(name)  # type: ignore[arg-type]
 
 
 def _truediv(a, b):

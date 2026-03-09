@@ -14,6 +14,7 @@ from datachain.dataset import (
     DatasetVersion,
     parse_dataset_name,
     parse_dataset_uri,
+    parse_schema,
 )
 from datachain.error import InvalidDatasetNameError
 from datachain.sql.types import (
@@ -28,6 +29,7 @@ from datachain.sql.types import (
     Int64,
     String,
 )
+from datachain.utils import DatasetIdentifier
 
 
 def test_dataset_table_compilation():
@@ -202,3 +204,123 @@ def test_parse_dataset_name_empty_name():
 )
 def test_parse_dataset_uri(uri, namespace, project, name, version):
     assert parse_dataset_uri(uri) == (namespace, project, name, version)
+
+
+@pytest.mark.parametrize(
+    "dataset_name,expected_namespace,expected_project,expected_name,expected_version",
+    [
+        ("@namespace.project.dataset", "@namespace", "project", "dataset", None),
+        (
+            "@namespace.project.dataset@1.0.0",
+            "@namespace",
+            "project",
+            "dataset",
+            "1.0.0",
+        ),
+        ("dataset@1.0.0", None, None, "dataset", "1.0.0"),
+        ("dataset", None, None, "dataset", None),
+    ],
+)
+def test_catalog_parse_dataset_name(
+    catalog,
+    dataset_name,
+    expected_namespace,
+    expected_project,
+    expected_name,
+    expected_version,
+):
+    result = catalog.parse_dataset_name(dataset_name)
+
+    # Get default namespace and project from catalog if not specified
+    if expected_namespace is None:
+        expected_namespace = catalog.metastore.default_namespace_name
+    if expected_project is None:
+        expected_project = catalog.metastore.default_project_name
+
+    assert isinstance(result, DatasetIdentifier)
+    assert result.namespace == expected_namespace
+    assert result.project == expected_project
+    assert result.name == expected_name
+    assert result.version == expected_version
+
+
+def test_parse_dataset_schema():
+    schema_dict = {
+        "id": {"type": "Int"},
+        "name": {"type": "String"},
+        "scores": {"type": "Array", "item_type": {"type": "Float32"}},
+    }
+
+    parsed_schema = parse_schema(schema_dict)
+    assert list(parsed_schema.keys()) == ["id", "name", "scores"]
+    assert parsed_schema["id"] == Int
+    assert parsed_schema["name"] == String
+    assert isinstance(parsed_schema["scores"], Array)
+    assert isinstance(parsed_schema["scores"].item_type, Float32)
+
+
+def test_parse_empty_dataset_schema():
+    parsed_schema = parse_schema({})
+    assert parsed_schema == {}
+
+
+@pytest.mark.parametrize(
+    "schema_dict,exc,match_error",
+    [
+        (
+            "String",
+            TypeError,
+            "Schema definition must be a dictionary",
+        ),
+        ({"id": "Int64"}, TypeError, "Schema column 'id' type must be a dictionary"),
+        ({"id": {}}, ValueError, "Schema column 'id' type is not defined"),
+        (
+            {"id": {"type": "UnknownType"}},
+            ValueError,
+            "Schema column 'id' type 'UnknownType' is not supported",
+        ),
+        (
+            {"values": {"type": "Array"}},
+            ValueError,
+            (
+                "Schema column 'values' type 'Array' parsing error:"
+                " Array type must have 'item_type' field"
+            ),
+        ),
+        (
+            {"values": {"type": "Array", "item_type": "Foo"}},
+            ValueError,
+            (
+                "Schema column 'values' type 'Array' parsing error:"
+                " Array 'item_type' field must be a dictionary"
+            ),
+        ),
+        (
+            {"values": {"type": "Array", "item_type": {"foo": "Bar"}}},
+            ValueError,
+            (
+                "Schema column 'values' type 'Array' parsing error:"
+                " Array 'item_type' must have 'type' field"
+            ),
+        ),
+        (
+            {"values": {"type": "Array", "item_type": {"type": "UnknownType"}}},
+            ValueError,
+            (
+                "Schema column 'values' type 'Array' parsing error:"
+                " Array item type 'UnknownType' is not supported"
+            ),
+        ),
+        (
+            {"data": {"type": "Array", "item_type": {"type": "Array"}}},
+            ValueError,
+            (
+                "Schema column 'data' type 'Array' parsing error:"
+                " Array type must have 'item_type' field"
+            ),
+        ),
+    ],
+)
+def test_parse_invalid_dataset_schema(schema_dict, exc, match_error):
+    with pytest.raises(exc, match=match_error):
+        parse_schema(schema_dict)

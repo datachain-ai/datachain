@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, Callable, Optional, TypedDict, Union
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any, TypedDict
 
 if TYPE_CHECKING:
     from sqlalchemy import Select, Table
@@ -17,30 +18,34 @@ class UdfInfo(TypedDict):
     query: "Select"
     udf_fields: list[str]
     batching: "BatchingStrategy"
-    processes: Optional[int]
+    processes: int | None
     is_generator: bool
     cache: bool
     rows_total: int
-    batch_size: int
+    batch_size: int | None
 
 
 class AbstractUDFDistributor(ABC):
     @abstractmethod
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         catalog: "Catalog",
         table: "Table",
         query: "Select",
         udf_data: bytes,
         batching: "BatchingStrategy",
-        workers: Union[bool, int],
-        processes: Union[bool, int],
+        workers: bool | int,
+        processes: bool | int,
         udf_fields: list[str],
-        rows_total: int,
-        use_cache: bool,
+        rows_to_process: int,
+        rows_total: int | None = None,
+        use_cache: bool = False,
         is_generator: bool = False,
-        min_task_size: Optional[Union[str, int]] = None,
-        batch_size: Optional[int] = None,
+        min_task_size: str | int | None = None,
+        batch_size: int | None = None,
+        continued: bool = False,
+        rows_reused: int = 0,
+        output_rows_reused: int = 0,
     ) -> None: ...
 
     @abstractmethod
@@ -48,4 +53,4 @@ class AbstractUDFDistributor(ABC):
 
     @staticmethod
     @abstractmethod
-    def run_udf(fd: Optional[int] = None) -> int: ...
+    def run_udf() -> int: ...

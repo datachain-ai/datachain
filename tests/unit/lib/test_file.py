@@ -1,4 +1,5 @@
 import json
+import posixpath
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -50,7 +51,7 @@ def test_cache_get_path(catalog: Catalog):
 def test_get_destination_path_wrong_strategy():
     file = create_file("s3://mybkt")
     with pytest.raises(ValueError):
-        file.get_destination_path("", "wrong")
+        file.get_destination_path("", "wrong")  # type: ignore[arg-type]
 
 
 def test_get_destination_path_filename_strategy():
@@ -86,6 +87,55 @@ def test_get_destination_path_fullpath_strategy_file_source(catalog, tmp_path):
     assert (
         file.get_destination_path("output", "fullpath") == "output/dir1/dir2/test.txt"
     )
+
+
+def test_get_destination_path_filepath_strategy(catalog):
+    file = create_file("s3://mybkt")
+    file._set_stream(catalog, False)
+    assert (
+        file.get_destination_path("output", "filepath") == "output/dir1/dir2/test.txt"
+    )
+
+
+def test_get_destination_path_filepath_strategy_empty_output(catalog):
+    file = create_file("s3://mybkt")
+    file._set_stream(catalog, False)
+    assert file.get_destination_path("", "filepath") == "dir1/dir2/test.txt"
+
+
+@pytest.mark.parametrize("output", [".", ".."])
+@pytest.mark.parametrize(
+    ("placement", "expected"),
+    [
+        ("filename", "test.txt"),
+        ("filepath", "dir1/dir2/test.txt"),
+        ("fullpath", "mybkt/dir1/dir2/test.txt"),
+    ],
+)
+def test_get_destination_path_relative_output(catalog, output, placement, expected):
+    file = create_file("s3://mybkt")
+    file._set_stream(catalog, False)
+    assert file.get_destination_path(output, placement) == posixpath.join(
+        output, expected
+    )
+
+
+@pytest.mark.parametrize(
+    ("placement", "expected_suffix"),
+    [
+        ("filename", "test.txt"),
+        ("filepath", "dir1/dir2/test.txt"),
+        ("fullpath", "mybkt/dir1/dir2/test.txt"),
+    ],
+)
+def test_get_destination_path_absolute_output(
+    catalog, tmp_path, placement, expected_suffix
+):
+    file = create_file("s3://mybkt")
+    file._set_stream(catalog, False)
+    output = tmp_path / "dest"
+    expected = f"{output.as_posix()}/{expected_suffix}"
+    assert file.get_destination_path(output.as_posix(), placement) == expected
 
 
 def test_read_binary_data(tmp_path, catalog: Catalog):
@@ -322,11 +372,29 @@ def test_file_resolve_no_catalog():
         file.resolve()
 
 
+def test_file_resolve_sets_catalog(tmp_path, catalog):
+    # https://github.com/datachain-ai/datachain/pull/1393
+    file_name = "myfile"
+    file_path = tmp_path / file_name
+    file_path.write_text("this is a TexT data...")
+
+    file = File(path=file_name, source=f"file://{tmp_path}")
+    file._set_stream(catalog, True)
+
+    file_path.write_text("new data")
+    new_file = file.resolve()
+
+    assert new_file._catalog is catalog
+    new_file.ensure_cached()
+    assert new_file.read_text() == "new data"
+
+
 def test_resolve_function():
     mock_file = Mock(spec=File)
     mock_file.resolve.return_value = "resolved_file"
 
-    result = resolve(mock_file)
+    with pytest.deprecated_call(match=r"resolve\(\) is deprecated"):
+        result = resolve(mock_file)
 
     assert result == "resolved_file"
     mock_file.resolve.assert_called_once()
@@ -359,7 +427,13 @@ def test_export_with_symlink(tmp_path, catalog, use_cache):
     file.export(tmp_path / "dir", link_type="symlink", use_cache=use_cache)
     assert (tmp_path / "dir" / "myfile.txt").is_symlink()
 
-    dst = Path(file.get_local_path()) if use_cache else path
+    if use_cache:
+        cached_path = file.get_local_path()
+        assert cached_path is not None
+        dst = Path(cached_path)
+    else:
+        dst = path
+
     assert (tmp_path / "dir" / "myfile.txt").resolve() == dst
 
 

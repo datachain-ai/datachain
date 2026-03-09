@@ -1,6 +1,5 @@
 import logging
-from argparse import SUPPRESS, Action, ArgumentError, Namespace, _AppendAction
-from typing import Optional
+from argparse import SUPPRESS, Action, Namespace, _AppendAction
 
 from datachain.error import DataChainError
 
@@ -64,18 +63,6 @@ class CommaSeparatedArgs(_AppendAction):  # pylint: disable=protected-access
         setattr(namespace, self.dest, list(dict.fromkeys(items)))
 
 
-class KeyValueArgs(_AppendAction):  # pylint: disable=protected-access
-    def __call__(self, parser, namespace, values, option_string=None):
-        items = getattr(namespace, self.dest) or {}
-        for raw_value in filter(bool, values):
-            key, sep, value = raw_value.partition("=")
-            if not key or not sep or value == "":
-                raise ArgumentError(self, f"expected 'key=value', got {raw_value!r}")
-            items[key.strip()] = value
-
-        setattr(namespace, self.dest, items)
-
-
 def get_logging_level(args: Namespace) -> int:
     if args.quiet:
         return logging.CRITICAL
@@ -84,7 +71,7 @@ def get_logging_level(args: Namespace) -> int:
     return logging.INFO
 
 
-def determine_flavors(studio: bool, local: bool, all: bool, token: Optional[str]):
+def determine_flavors(studio: bool, local: bool, all: bool, token: str | None):
     if studio and not token:
         raise DataChainError(
             "Not logged in to Studio. Log in with 'datachain auth login'."

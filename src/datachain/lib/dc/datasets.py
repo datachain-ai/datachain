@@ -1,5 +1,5 @@
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Optional, Union, get_origin, get_type_hints
+from typing import TYPE_CHECKING, get_origin, get_type_hints
 
 from datachain.error import (
     DatasetNotFoundError,
@@ -26,20 +26,20 @@ if TYPE_CHECKING:
 
 def read_dataset(
     name: str,
-    namespace: Optional[str] = None,
-    project: Optional[str] = None,
-    version: Optional[Union[str, int]] = None,
-    session: Optional[Session] = None,
-    settings: Optional[dict] = None,
-    delta: Optional[bool] = False,
-    delta_on: Optional[Union[str, Sequence[str]]] = (
+    namespace: str | None = None,
+    project: str | None = None,
+    version: str | int | None = None,
+    session: Session | None = None,
+    settings: dict | None = None,
+    delta: bool | None = False,
+    delta_on: str | Sequence[str] | None = (
         "file.path",
         "file.etag",
         "file.version",
     ),
-    delta_result_on: Optional[Union[str, Sequence[str]]] = None,
-    delta_compare: Optional[Union[str, Sequence[str]]] = None,
-    delta_retry: Optional[Union[bool, str]] = None,
+    delta_result_on: str | Sequence[str] | None = None,
+    delta_compare: str | Sequence[str] | None = None,
+    delta_retry: bool | str | None = None,
     delta_unsafe: bool = False,
     update: bool = False,
 ) -> "DataChain":
@@ -149,7 +149,11 @@ def read_dataset(
 
     if version is not None:
         dataset = session.catalog.get_dataset_with_remote_fallback(
-            name, namespace_name, project_name, update=update
+            name,
+            namespace_name,
+            project_name,
+            update=update,
+            include_incomplete=False,  # Never include incomplete datasets
         )
 
         # Convert legacy integer versions to version specifiers
@@ -200,6 +204,10 @@ def read_dataset(
         signals_schema |= SignalSchema.deserialize(query.feature_schema)
     else:
         signals_schema |= SignalSchema.from_column_types(query.column_types or {})
+
+    if delta:
+        signals_schema = signals_schema.clone_without_sys_signals()
+
     chain = DataChain(query, _settings, signals_schema)
 
     if delta:
@@ -215,13 +223,13 @@ def read_dataset(
 
 
 def datasets(
-    session: Optional[Session] = None,
-    settings: Optional[dict] = None,
+    session: Session | None = None,
+    settings: dict | None = None,
     in_memory: bool = False,
-    column: Optional[str] = None,
+    column: str | None = None,
     include_listing: bool = False,
     studio: bool = False,
-    attrs: Optional[list[str]] = None,
+    attrs: list[str] | None = None,
 ) -> "DataChain":
     """Generate chain with list of registered datasets.
 
@@ -298,12 +306,12 @@ def datasets(
 
 def delete_dataset(
     name: str,
-    namespace: Optional[str] = None,
-    project: Optional[str] = None,
-    version: Optional[str] = None,
-    force: Optional[bool] = False,
-    studio: Optional[bool] = False,
-    session: Optional[Session] = None,
+    namespace: str | None = None,
+    project: str | None = None,
+    version: str | None = None,
+    force: bool | None = False,
+    studio: bool | None = False,
+    session: Session | None = None,
     in_memory: bool = False,
 ) -> None:
     """Removes specific dataset version or all dataset versions, depending on
@@ -367,6 +375,7 @@ def delete_dataset(
                 name,
                 namespace_name=ds_project.namespace.name,
                 project_name=ds_project.name,
+                include_incomplete=False,
             ).latest_version
         )
     else:
@@ -377,7 +386,7 @@ def delete_dataset(
 def move_dataset(
     src: str,
     dest: str,
-    session: Optional[Session] = None,
+    session: Session | None = None,
     in_memory: bool = False,
 ) -> None:
     """Moves an entire dataset between namespaces and projects.
@@ -414,7 +423,9 @@ def move_dataset(
     namespace, project, name = catalog.get_full_dataset_name(src)
     dest_namespace, dest_project, dest_name = catalog.get_full_dataset_name(dest)
 
-    dataset = catalog.get_dataset(name, namespace_name=namespace, project_name=project)
+    dataset = catalog.get_dataset(
+        name, namespace_name=namespace, project_name=project, include_incomplete=False
+    )
 
     catalog.update_dataset(
         dataset,

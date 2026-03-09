@@ -2,7 +2,6 @@ import glob
 import os
 import subprocess
 import sys
-from typing import Optional
 
 import pytest
 
@@ -27,7 +26,7 @@ computer_vision_examples = sorted(
 )
 
 
-def smoke_test(example: str, env: Optional[dict] = None):
+def smoke_test(example: str, env: dict | None = None):
     try:
         completed_process = subprocess.run(  # noqa: S603
             [sys.executable, example],

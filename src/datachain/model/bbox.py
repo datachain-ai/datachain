@@ -198,7 +198,9 @@ class BBox(DataModel):
     def pose_inside(self, pose: Union["Pose", "Pose3D"]) -> bool:
         """Return True if the pose is inside the bounding box."""
         return all(
-            self.point_inside(x, y) for x, y in zip(pose.x, pose.y) if x > 0 or y > 0
+            self.point_inside(x, y)
+            for x, y in zip(pose.x, pose.y, strict=False)
+            if x > 0 or y > 0
         )
 
     @staticmethod

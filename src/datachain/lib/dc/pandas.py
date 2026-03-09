@@ -1,7 +1,4 @@
-from typing import (
-    TYPE_CHECKING,
-    Optional,
-)
+from typing import TYPE_CHECKING
 
 from datachain.query import Session
 
@@ -19,8 +16,8 @@ if TYPE_CHECKING:
 def read_pandas(  # type: ignore[override]
     df: "pd.DataFrame",
     name: str = "",
-    session: Optional[Session] = None,
-    settings: Optional[dict] = None,
+    session: Session | None = None,
+    settings: dict | None = None,
     in_memory: bool = False,
     column: str = "",
 ) -> "DataChain":

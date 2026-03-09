@@ -1,8 +1,9 @@
-import json
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Optional, TypeVar, Union
+from typing import Any, TypeVar
+
+from datachain import json
 
 J = TypeVar("J", bound="Job")
 
@@ -18,27 +19,35 @@ class Job:
     workers: int
     params: dict[str, str]
     metrics: dict[str, Any]
-    finished_at: Optional[datetime] = None
-    python_version: Optional[str] = None
+    finished_at: datetime | None = None
+    python_version: str | None = None
     error_message: str = ""
     error_stack: str = ""
+    parent_job_id: str | None = None
+    rerun_from_job_id: str | None = None
+    run_group_id: str | None = None
+    is_remote_execution: bool = False
 
     @classmethod
-    def parse(
+    def parse(  # noqa: PLR0913
         cls,
-        id: Union[str, uuid.UUID],
+        id: str | uuid.UUID,
         name: str,
         status: int,
         created_at: datetime,
-        finished_at: Optional[datetime],
+        finished_at: datetime | None,
         query: str,
         query_type: int,
         workers: int,
-        python_version: Optional[str],
+        python_version: str | None,
         error_message: str,
         error_stack: str,
         params: str,
         metrics: str,
+        parent_job_id: str | None,
+        rerun_from_job_id: str | None,
+        run_group_id: str | None,
+        is_remote_execution: bool = False,
     ) -> "Job":
         return cls(
             str(id),
@@ -54,4 +63,8 @@ class Job:
             python_version,
             error_message,
             error_stack,
+            str(parent_job_id) if parent_job_id else None,
+            str(rerun_from_job_id) if rerun_from_job_id else None,
+            str(run_group_id) if run_group_id else None,
+            is_remote_execution,
         )

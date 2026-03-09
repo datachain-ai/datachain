@@ -1,37 +1,39 @@
 import copy
+import logging
 import os
 import os.path
 import sys
 import warnings
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from typing import (
     IO,
     TYPE_CHECKING,
     Any,
     BinaryIO,
-    Callable,
-    ClassVar,
     Literal,
-    Optional,
     TypeVar,
-    Union,
     cast,
     overload,
 )
 
 import sqlalchemy
-import ujson as json
 from pydantic import BaseModel
 from sqlalchemy.sql.elements import ColumnElement
 from tqdm import tqdm
 
-from datachain import semver
-from datachain.dataset import DatasetRecord
+from datachain import json, semver
+from datachain.checkpoint_event import CheckpointEventType, CheckpointStepType
+from datachain.dataset import DatasetRecord, create_dataset_full_name
 from datachain.delta import delta_disabled
-from datachain.error import ProjectCreateNotAllowedError, ProjectNotFoundError
+from datachain.error import (
+    JobAncestryDepthExceededError,
+    ProjectCreateNotAllowedError,
+    ProjectNotFoundError,
+)
 from datachain.func import literal
 from datachain.func.base import Function
 from datachain.func.func import Func
+from datachain.job import Job
 from datachain.lib.convert.python_to_sql import python_to_sql
 from datachain.lib.data_model import (
     DataModel,
@@ -40,19 +42,34 @@ from datachain.lib.data_model import (
     StandardType,
     dict_to_data_model,
 )
-from datachain.lib.file import EXPORT_FILES_MAX_THREADS, ArrowRow, FileExporter
+from datachain.lib.file import EXPORT_FILES_MAX_THREADS, ArrowRow, File, FileExporter
 from datachain.lib.file import ExportPlacement as FileExportPlacement
 from datachain.lib.model_store import ModelStore
 from datachain.lib.settings import Settings
-from datachain.lib.signal_schema import SignalResolvingError, SignalSchema
+from datachain.lib.signal_schema import (
+    SignalResolvingError,
+    SignalSchema,
+)
 from datachain.lib.udf import Aggregator, BatchMapper, Generator, Mapper, UDFBase
 from datachain.lib.udf_signature import UdfSignature
 from datachain.lib.utils import DataChainColumnError, DataChainParamsError
+from datachain.project import Project
 from datachain.query import Session
-from datachain.query.dataset import DatasetQuery, PartitionByType
+from datachain.query.dataset import (
+    DatasetQuery,
+    PartitionByType,
+    RegenerateSystemColumns,
+    UnionSchemaMismatchError,
+)
 from datachain.query.schema import DEFAULT_DELIMITER, Column
 from datachain.sql.functions import path as pathfunc
-from datachain.utils import batched_it, inside_notebook, row_to_nested_dict
+from datachain.utils import (
+    batched_it,
+    checkpoints_enabled,
+    env2bool,
+    inside_notebook,
+    row_to_nested_dict,
+)
 
 from .database import DEFAULT_DATABASE_BATCH_SIZE
 from .utils import (
@@ -67,6 +84,8 @@ from .utils import (
     resolve_columns,
 )
 
+logger = logging.getLogger("datachain")
+
 C = Column
 
 _T = TypeVar("_T")
@@ -78,19 +97,20 @@ if TYPE_CHECKING:
     import sqlite3
 
     import pandas as pd
+    from sqlalchemy.orm import Session as OrmSession
     from typing_extensions import ParamSpec, Self
 
     P = ParamSpec("P")
 
-    ConnectionType = Union[
-        str,
-        sqlalchemy.engine.URL,
-        sqlalchemy.engine.interfaces.Connectable,
-        sqlalchemy.engine.Engine,
-        sqlalchemy.engine.Connection,
-        "sqlalchemy.orm.Session",
-        sqlite3.Connection,
-    ]
+    ConnectionType = (
+        str
+        | sqlalchemy.engine.URL
+        | sqlalchemy.engine.interfaces.Connectable
+        | sqlalchemy.engine.Engine
+        | sqlalchemy.engine.Connection
+        | OrmSession
+        | sqlite3.Connection
+    )
 
 
 T = TypeVar("T", bound="DataChain")
@@ -168,32 +188,27 @@ class DataChain:
         ```
     """
 
-    DEFAULT_FILE_RECORD: ClassVar[dict] = {
-        "source": "",
-        "path": "",
-        "size": 0,
-    }
-
     def __init__(
         self,
         query: DatasetQuery,
         settings: Settings,
         signal_schema: SignalSchema,
-        setup: Optional[dict] = None,
+        setup: dict | None = None,
         _sys: bool = False,
     ) -> None:
         """Don't instantiate this directly, use one of the from_XXX constructors."""
-        self._query = query
         self._settings = settings
+        self._query = query
+        self._query.checkpoints_enabled = self._checkpoints_enabled
         self.signals_schema = signal_schema
         self._setup: dict = setup or {}
         self._sys = _sys
         self._delta = False
         self._delta_unsafe = False
-        self._delta_on: Optional[Union[str, Sequence[str]]] = None
-        self._delta_result_on: Optional[Union[str, Sequence[str]]] = None
-        self._delta_compare: Optional[Union[str, Sequence[str]]] = None
-        self._delta_retry: Optional[Union[bool, str]] = None
+        self._delta_on: str | Sequence[str] | None = None
+        self._delta_result_on: str | Sequence[str] | None = None
+        self._delta_compare: str | Sequence[str] | None = None
+        self._delta_retry: bool | str | None = None
 
     def __repr__(self) -> str:
         """Return a string representation of the chain."""
@@ -207,12 +222,20 @@ class DataChain:
         self.print_schema(file=file)
         return file.getvalue()
 
+    def hash(self) -> str:
+        """
+        Calculates SHA hash of this chain. Hash calculation is fast and consistent.
+        It takes into account all the steps added to the chain and their inputs.
+        Order of the steps is important.
+        """
+        return self._query.hash()
+
     def _as_delta(
         self,
-        on: Optional[Union[str, Sequence[str]]] = None,
-        right_on: Optional[Union[str, Sequence[str]]] = None,
-        compare: Optional[Union[str, Sequence[str]]] = None,
-        delta_retry: Optional[Union[bool, str]] = None,
+        on: str | Sequence[str] | None = None,
+        right_on: str | Sequence[str] | None = None,
+        compare: str | Sequence[str] | None = None,
+        delta_retry: bool | str | None = None,
         delta_unsafe: bool = False,
     ) -> "Self":
         """Marks this chain as delta, which means special delta process will be
@@ -262,7 +285,7 @@ class DataChain:
 
         raise ValueError(f"Column with name {name} not found in the schema")
 
-    def c(self, column: Union[str, Column]) -> Column:
+    def c(self, column: str | Column) -> Column:
         """Returns Column instance attached to the current chain."""
         c = self.column(column) if isinstance(column, str) else self.column(column.name)
         c.table = self._query.table
@@ -274,17 +297,33 @@ class DataChain:
         return self._query.session
 
     @property
-    def name(self) -> Optional[str]:
+    def _checkpoints_enabled(self) -> bool:
+        return checkpoints_enabled(ephemeral=self._settings.ephemeral)
+
+    @property
+    def job(self) -> Job:
+        """
+        Get existing job if running in SaaS, or creating new one if running locally.
+        """
+        if self._settings.ephemeral:
+            raise RuntimeError(
+                "Cannot access job in ephemeral mode. "
+                "Jobs are not created when running with .settings(ephemeral=True)."
+            )
+        return self.session.get_or_create_job()
+
+    @property
+    def name(self) -> str | None:
         """Name of the underlying dataset, if there is one."""
         return self._query.name
 
     @property
-    def version(self) -> Optional[str]:
+    def version(self) -> str | None:
         """Version of the underlying dataset, if there is one."""
         return self._query.version
 
     @property
-    def dataset(self) -> Optional[DatasetRecord]:
+    def dataset(self) -> DatasetRecord | None:
         """Underlying dataset, if there is one."""
         if not self.name:
             return None
@@ -292,13 +331,14 @@ class DataChain:
             self.name,
             namespace_name=self._query.project.namespace.name,
             project_name=self._query.project.name,
+            include_incomplete=False,
         )
 
     def __or__(self, other: "Self") -> "Self":
         """Return `self.union(other)`."""
         return self.union(other)
 
-    def print_schema(self, file: Optional[IO] = None) -> None:
+    def print_schema(self, file: IO | None = None) -> None:
         """Print schema of the chain."""
         self._effective_signals_schema.print_tree(file=file)
 
@@ -309,8 +349,8 @@ class DataChain:
     def _evolve(
         self,
         *,
-        query: Optional[DatasetQuery] = None,
-        settings: Optional[Settings] = None,
+        query: DatasetQuery | None = None,
+        settings: Settings | None = None,
         signal_schema=None,
         _sys=None,
     ) -> "Self":
@@ -338,15 +378,16 @@ class DataChain:
 
     def settings(
         self,
-        cache: Optional[bool] = None,
-        prefetch: Optional[Union[bool, int]] = None,
-        parallel: Optional[Union[bool, int]] = None,
-        workers: Optional[int] = None,
-        namespace: Optional[str] = None,
-        project: Optional[str] = None,
-        min_task_size: Optional[int] = None,
-        batch_size: Optional[int] = None,
-        sys: Optional[bool] = None,
+        cache: bool | None = None,
+        prefetch: bool | int | None = None,
+        parallel: bool | int | None = None,
+        workers: int | None = None,
+        namespace: str | None = None,
+        project: str | None = None,
+        min_task_size: int | None = None,
+        batch_size: int | None = None,
+        sys: bool | None = None,
+        ephemeral: bool | None = None,
     ) -> "Self":
         """
         Set chain execution parameters. Returns the chain itself, allowing method
@@ -370,6 +411,10 @@ class DataChain:
             batch_size: Number of rows per insert by UDF to fine tune and balance speed
                 and memory usage. This might be useful when processing large rows
                 or when running into memory issues. Defaults to 2000.
+            ephemeral: If True, no persistent objects are created in the metastore
+                (no jobs, checkpoints, or datasets). UDF execution still uses
+                temporary tables. Calling .save() in ephemeral mode will raise
+                an error.
 
         Example:
             ```py
@@ -393,13 +438,14 @@ class DataChain:
                 project=project,
                 min_task_size=min_task_size,
                 batch_size=batch_size,
+                ephemeral=ephemeral,
             )
         )
         return self._evolve(settings=settings, _sys=sys)
 
-    def reset_settings(self, settings: Optional[Settings] = None) -> "Self":
+    def reset_settings(self, settings: Settings | None = None) -> "Self":
         """Reset all chain settings to default values."""
-        self._settings = settings if settings else Settings()
+        self._settings = settings or Settings()
         return self
 
     @classmethod
@@ -449,8 +495,8 @@ class DataChain:
     def explode(
         self,
         col: str,
-        model_name: Optional[str] = None,
-        column: Optional[str] = None,
+        model_name: str | None = None,
+        column: str | None = None,
         schema_sample_size: int = 1,
     ) -> "DataChain":
         """Explodes a column containing JSON objects (dict or str DataChain type) into
@@ -491,7 +537,7 @@ class DataChain:
 
         model = dict_to_data_model(model_name, output, original_names)
 
-        def json_to_model(json_value: Union[str, dict]):
+        def json_to_model(json_value: str | dict):
             json_dict = (
                 json.loads(json_value) if isinstance(json_value, str) else json_value
             )
@@ -565,16 +611,17 @@ class DataChain:
             create=True,
         )
         return self._evolve(
-            query=self._query.save(project=project, feature_schema=schema)
+            query=self._query.save(project=project, feature_schema=schema),
+            signal_schema=self.signals_schema | SignalSchema({"sys": Sys}),
         )
 
     def save(  # type: ignore[override]
         self,
         name: str,
-        version: Optional[str] = None,
-        description: Optional[str] = None,
-        attrs: Optional[list[str]] = None,
-        update_version: Optional[str] = "patch",
+        version: str | None = None,
+        description: str | None = None,
+        attrs: list[str] | None = None,
+        update_version: str | None = "patch",
         **kwargs,
     ) -> "DataChain":
         """Save to a Dataset. It returns the chain itself.
@@ -592,91 +639,256 @@ class DataChain:
             update_version: which part of the dataset version to automatically increase.
                 Available values: `major`, `minor` or `patch`. Default is `patch`.
         """
-        catalog = self.session.catalog
-        if version is not None:
-            semver.validate(version)
 
-        if update_version is not None and update_version not in [
-            "patch",
-            "major",
-            "minor",
-        ]:
-            raise ValueError(
-                "update_version can have one of the following values: major, minor or"
-                " patch"
+        if self._settings.ephemeral:
+            raise RuntimeError(
+                "Cannot save datasets in ephemeral mode. "
+                "Remove .settings(ephemeral=True) to save datasets."
             )
+
+        catalog = self.session.catalog
+
+        result = None  # result chain that will be returned at the end
+
+        # Version validation
+        self._validate_version(version)
+        self._validate_update_version(update_version)
 
         namespace_name, project_name, name = catalog.get_full_dataset_name(
             name,
             namespace_name=self._settings.namespace,
             project_name=self._settings.project,
         )
+        project = self._get_or_create_project(namespace_name, project_name)
 
-        try:
-            project = self.session.catalog.metastore.get_project(
-                project_name,
-                namespace_name,
-                create=is_studio(),
-            )
-        except ProjectNotFoundError as e:
-            # not being able to create it as creation is not allowed
-            raise ProjectCreateNotAllowedError("Creating project is not allowed") from e
+        # Calculate hash including dataset name and job context to avoid conflicts
+        import hashlib
 
+        base_hash = self._query.hash(job_aware=True)
+        _hash = hashlib.sha256(
+            (base_hash + f"{namespace_name}/{project_name}/{name}").encode("utf-8")
+        ).hexdigest()
+
+        # Checkpoint handling
+        result = self._resolve_checkpoint(name, project, _hash, kwargs)
+        if bool(result):
+            # Checkpoint was found and reused
+            print(f"Checkpoint found for dataset '{name}', skipping creation")
+
+        # Schema preparation
         schema = self.signals_schema.clone_without_sys_signals().serialize()
 
         # Handle retry and delta functionality
-        if self.delta and name:
-            from datachain.delta import delta_retry_update
+        if not result:
+            result = self._handle_delta(name, version, project, schema, kwargs)
 
-            # Delta chains must have delta_on defined (ensured by _as_delta method)
-            assert self._delta_on is not None, "Delta chain must have delta_on defined"
-
-            result_ds, dependencies, has_changes = delta_retry_update(
-                self,
-                namespace_name,
-                project_name,
-                name,
-                on=self._delta_on,
-                right_on=self._delta_result_on,
-                compare=self._delta_compare,
-                delta_retry=self._delta_retry,
+        if not result:
+            # calculate chain if we already don't have result from checkpoint or delta
+            result = self._evolve(
+                query=self._query.save(
+                    name=name,
+                    version=version,
+                    project=project,
+                    description=description,
+                    attrs=attrs,
+                    feature_schema=schema,
+                    update_version=update_version,
+                    **kwargs,
+                )
             )
 
-            if result_ds:
-                return self._evolve(
-                    query=result_ds._query.save(
-                        name=name,
-                        version=version,
-                        project=project,
-                        feature_schema=schema,
-                        dependencies=dependencies,
-                        **kwargs,
-                    )
+            # Log checkpoint event for new dataset save
+            assert result.version is not None
+            full_dataset_name = create_dataset_full_name(
+                namespace_name, project_name, name, result.version
+            )
+            catalog.metastore.log_checkpoint_event(
+                job_id=self.job.id,
+                event_type=CheckpointEventType.DATASET_SAVE_COMPLETED,
+                step_type=CheckpointStepType.DATASET_SAVE,
+                run_group_id=self.job.run_group_id,
+                dataset_name=full_dataset_name,
+                checkpoint_hash=_hash,
+            )
+
+        if self._checkpoints_enabled:
+            catalog.metastore.get_or_create_checkpoint(self.job.id, _hash)
+        return result
+
+    def _validate_version(self, version: str | None) -> None:
+        """Validate dataset version if provided."""
+        if version is not None:
+            semver.validate(version)
+
+    def _validate_update_version(self, update_version: str | None) -> None:
+        """Ensure update_version is one of: major, minor, patch."""
+        allowed = ["major", "minor", "patch"]
+        if update_version not in allowed:
+            raise ValueError(f"update_version must be one of {allowed}")
+
+    def _get_or_create_project(self, namespace: str, project_name: str) -> Project:
+        """Get project or raise if creation not allowed."""
+        try:
+            return self.session.catalog.metastore.get_project(
+                project_name,
+                namespace,
+                create=is_studio(),
+            )
+        except ProjectNotFoundError as e:
+            raise ProjectCreateNotAllowedError("Creating project is not allowed") from e
+
+    def _resolve_checkpoint(
+        self,
+        name: str,
+        project: Project,
+        job_hash: str,
+        kwargs: dict,
+    ) -> "DataChain | None":
+        """Check if checkpoint exists and return cached dataset if possible."""
+        from .datasets import read_dataset
+
+        metastore = self.session.catalog.metastore
+        ignore_checkpoints = env2bool("DATACHAIN_IGNORE_CHECKPOINTS", undefined=False)
+
+        if (
+            self._checkpoints_enabled
+            and self.job.rerun_from_job_id
+            and not ignore_checkpoints
+            and metastore.find_checkpoint(self.job.rerun_from_job_id, job_hash)
+        ):
+            # checkpoint found → find which dataset version to reuse
+
+            # Find dataset version that was created by any ancestor job
+            try:
+                dataset_version = metastore.get_dataset_version_for_job_ancestry(
+                    name,
+                    project.namespace.name,
+                    project.name,
+                    self.job.id,
                 )
+            except JobAncestryDepthExceededError:
+                raise JobAncestryDepthExceededError(
+                    "Job continuation chain is too deep. "
+                    "Please run the job from scratch without continuing from a "
+                    "parent job."
+                ) from None
 
-            if not has_changes:
-                # sources have not been changed so new version of resulting dataset
-                # would be the same as previous one. To avoid duplicating exact
-                # datasets, we won't create new version of it and we will return
-                # current latest version instead.
-                from .datasets import read_dataset
-
-                return read_dataset(
-                    name, namespace=namespace_name, project=project_name, **kwargs
+            if not dataset_version:
+                logger.debug(
+                    "Checkpoint found but no dataset version for '%s' "
+                    "in job ancestry (job_id=%s). Creating new version.",
+                    name,
+                    self.job.id,
                 )
+                # Dataset version not found (e.g deleted by user) - skip
+                # checkpoint and recreate
+                return None
 
-        return self._evolve(
-            query=self._query.save(
-                name=name,
-                version=version,
-                project=project,
-                description=description,
-                attrs=attrs,
-                feature_schema=schema,
-                update_version=update_version,
+            logger.debug(
+                "Reusing dataset version '%s' v%s from job ancestry "
+                "(job_id=%s, dataset_version_id=%s)",
+                name,
+                dataset_version.version,
+                self.job.id,
+                dataset_version.id,
+            )
+
+            # Read the specific version from ancestry
+            chain = read_dataset(
+                name,
+                namespace=project.namespace.name,
+                project=project.name,
+                version=dataset_version.version,
                 **kwargs,
             )
+
+            # Link current job to this dataset version (not creator).
+            # This also updates dataset_version.job_id.
+            metastore.link_dataset_version_to_job(
+                dataset_version.id,
+                self.job.id,
+                is_creator=False,
+            )
+
+            # Log checkpoint event
+            full_dataset_name = create_dataset_full_name(
+                project.namespace.name, project.name, name, dataset_version.version
+            )
+            metastore.log_checkpoint_event(
+                job_id=self.job.id,
+                event_type=CheckpointEventType.DATASET_SAVE_SKIPPED,
+                step_type=CheckpointStepType.DATASET_SAVE,
+                run_group_id=self.job.run_group_id,
+                dataset_name=full_dataset_name,
+                checkpoint_hash=job_hash,
+                rerun_from_job_id=self.job.rerun_from_job_id,
+            )
+
+            return chain
+
+        return None
+
+    def _handle_delta(
+        self,
+        name: str,
+        version: str | None,
+        project: Project,
+        schema: dict,
+        kwargs: dict,
+    ) -> "DataChain | None":
+        """Try to save as a delta dataset.
+        Returns:
+            A DataChain if delta logic could handle it, otherwise None to fall back
+            to the regular save path (e.g., on first dataset creation).
+        """
+        from datachain.delta import delta_retry_update
+
+        from .datasets import read_dataset
+
+        if not self.delta or not name:
+            return None
+
+        assert self._delta_on is not None, "Delta chain must have delta_on defined"
+
+        result_ds, dependencies, has_changes = delta_retry_update(
+            self,
+            project.namespace.name,
+            project.name,
+            name,
+            on=self._delta_on,
+            right_on=self._delta_result_on,
+            compare=self._delta_compare,
+            delta_retry=self._delta_retry,
         )
+
+        # Case 1: delta produced a new dataset
+        if result_ds:
+            return self._evolve(
+                query=result_ds._query.save(
+                    name=name,
+                    version=version,
+                    project=project,
+                    feature_schema=schema,
+                    dependencies=dependencies,
+                    **kwargs,
+                )
+            )
+
+        # Case 2: no changes → reuse last version
+        if not has_changes:
+            # sources have not been changed so new version of resulting dataset
+            # would be the same as previous one. To avoid duplicating exact
+            # datasets, we won't create new version of it and we will return
+            # current latest version instead.
+            return read_dataset(
+                name,
+                namespace=project.namespace.name,
+                project=project.name,
+                **kwargs,
+            )
+
+        # Case 3: first creation of dataset
+        return None
 
     def apply(self, func, *args, **kwargs):
         """Apply any function to the chain.
@@ -703,8 +915,8 @@ class DataChain:
 
     def map(
         self,
-        func: Optional[Callable] = None,
-        params: Union[None, str, Sequence[str]] = None,
+        func: Callable | None = None,
+        params: str | Sequence[str] | None = None,
         output: OutputType = None,
         **signal_map: Any,
     ) -> "Self":
@@ -745,18 +957,19 @@ class DataChain:
         if (prefetch := self._settings.prefetch) is not None:
             udf_obj.prefetch = prefetch
 
+        sys_schema = SignalSchema({"sys": Sys})
         return self._evolve(
             query=self._query.add_signals(
                 udf_obj.to_udf_wrapper(self._settings.batch_size),
                 **self._settings.to_dict(),
             ),
-            signal_schema=self.signals_schema | udf_obj.output,
+            signal_schema=sys_schema | self.signals_schema | udf_obj.output,
         )
 
     def gen(
         self,
-        func: Optional[Union[Callable, Generator]] = None,
-        params: Union[None, str, Sequence[str]] = None,
+        func: Callable | Generator | None = None,
+        params: str | Sequence[str] | None = None,
         output: OutputType = None,
         **signal_map,
     ) -> "Self":
@@ -788,16 +1001,16 @@ class DataChain:
                 udf_obj.to_udf_wrapper(self._settings.batch_size),
                 **self._settings.to_dict(),
             ),
-            signal_schema=udf_obj.output,
+            signal_schema=SignalSchema({"sys": Sys}) | udf_obj.output,
         )
 
     @delta_disabled
     def agg(
         self,
         /,
-        func: Optional[Callable] = None,
-        partition_by: Optional[PartitionByType] = None,
-        params: Union[None, str, Sequence[str]] = None,
+        func: Callable | None = None,
+        partition_by: PartitionByType | None = None,
+        params: str | Sequence[str] | None = None,
         output: OutputType = None,
         **signal_map: Callable,
     ) -> "Self":
@@ -925,13 +1138,13 @@ class DataChain:
                 partition_by=processed_partition_by,
                 **self._settings.to_dict(),
             ),
-            signal_schema=udf_obj.output,
+            signal_schema=SignalSchema({"sys": Sys}) | udf_obj.output,
         )
 
     def batch_map(
         self,
-        func: Optional[Callable] = None,
-        params: Union[None, str, Sequence[str]] = None,
+        func: Callable | None = None,
+        params: str | Sequence[str] | None = None,
         output: OutputType = None,
         batch: int = 1000,
         **signal_map,
@@ -979,8 +1192,8 @@ class DataChain:
     def _udf_to_obj(
         self,
         target_class: type[UDFObjT],
-        func: Optional[Union[Callable, UDFObjT]],
-        params: Union[None, str, Sequence[str]],
+        func: Callable | UDFObjT | None,
+        params: str | Sequence[str] | None,
         output: OutputType,
         signal_map: dict[str, Callable],
     ) -> UDFObjT:
@@ -991,11 +1204,7 @@ class DataChain:
         sign = UdfSignature.parse(name, signal_map, func, params, output, is_generator)
         DataModel.register(list(sign.output_schema.values.values()))
 
-        signals_schema = self.signals_schema
-        if self._sys:
-            signals_schema = SignalSchema({"sys": Sys}) | signals_schema
-
-        params_schema = signals_schema.slice(
+        params_schema = self.signals_schema.slice(
             sign.params, self._setup, is_batch=is_batch
         )
 
@@ -1026,7 +1235,8 @@ class DataChain:
             the order of the records in the chain is important.
             Using `order_by` directly before `limit`, `to_list` and similar methods
             will give expected results.
-            See https://github.com/iterative/datachain/issues/477 for further details.
+            See https://github.com/datachain-ai/datachain/issues/477
+            for further details.
         """
         if descending:
             args = tuple(sqlalchemy.desc(a) for a in args)
@@ -1050,29 +1260,49 @@ class DataChain:
             )
         )
 
-    def select(self, *args: str, _sys: bool = True) -> "Self":
-        """Select only a specified set of signals."""
-        new_schema = self.signals_schema.resolve(*args)
-        if self._sys and _sys:
-            new_schema = SignalSchema({"sys": Sys}) | new_schema
+    def select(self, *args: str) -> "Self":
+        """Select only a specified set of signals.
+
+        Nested selections (e.g. ``"file.path"``) preserve the parent object by
+        generating partial models rather than flattening into standalone fields.
+        """
+        if not args:
+            return self
+        new_schema = self.signals_schema.to_partial(*args)
+
+        if "sys" in self.signals_schema.values and "sys" not in new_schema.values:
+            new_schema = SignalSchema({"sys": self.signals_schema.values["sys"]}) | (
+                new_schema
+            )
+
         columns = new_schema.db_signals()
         return self._evolve(
-            query=self._query.select(*columns), signal_schema=new_schema
+            query=self._query.select(*columns),
+            signal_schema=new_schema,
         )
 
     def select_except(self, *args: str) -> "Self":
-        """Select all the signals expect the specified signals."""
+        """Select all signals except the specified ones.
+
+        Supports excluding nested fields (e.g. ``"file.path"``), in which case a
+        partial model is generated for the parent signal.
+        """
+        if not args:
+            return self
+
         new_schema = self.signals_schema.select_except_signals(*args)
+
         columns = new_schema.db_signals()
         return self._evolve(
-            query=self._query.select(*columns), signal_schema=new_schema
+            query=self._query.select(*columns),
+            signal_schema=new_schema,
         )
 
     @delta_disabled  # type: ignore[arg-type]
     def group_by(  # noqa: C901, PLR0912
         self,
         *,
-        partition_by: Optional[Union[str, Func, Sequence[Union[str, Func]]]] = None,
+        partition_by: str | Func | Sequence[str | Func] | None = None,
         **kwargs: Func,
     ) -> "Self":
         """Group rows by specified set of signals and return new signals
@@ -1378,7 +1608,7 @@ class DataChain:
         """Convert every row to a dictionary."""
 
         def to_dict(cols: list[str], row: tuple[Any, ...]) -> dict[str, Any]:
-            return dict(zip(cols, row))
+            return dict(zip(cols, row, strict=False))
 
         return self.results(row_factory=to_dict)
 
@@ -1417,13 +1647,16 @@ class DataChain:
                 print(file)
             ```
         """
-        chain = self.select(*cols) if cols else self
-        signals_schema = chain._effective_signals_schema
+        signals_schema = (
+            self.signals_schema.resolve(*cols)
+            if cols
+            else self._effective_signals_schema
+        )
         db_signals = signals_schema.db_signals()
         with self._query.ordered_select(*db_signals).as_iterable() as rows:
             for row in rows:
                 ret = signals_schema.row_to_features(
-                    row, catalog=chain.session.catalog, cache=chain._settings.cache
+                    row, catalog=self.session.catalog, cache=self._settings.cache
                 )
                 yield tuple(ret)
 
@@ -1436,7 +1669,7 @@ class DataChain:
     @overload
     def collect(self, *cols: str) -> Iterator[tuple[DataValue, ...]]: ...
 
-    def collect(self, *cols: str) -> Iterator[Union[DataValue, tuple[DataValue, ...]]]:  # type: ignore[overload-overlap,misc]
+    def collect(self, *cols: str) -> Iterator[DataValue | tuple[DataValue, ...]]:  # type: ignore[overload-overlap,misc]
         """
         Deprecated. Use `to_iter` method instead.
         """
@@ -1501,8 +1734,8 @@ class DataChain:
     def merge(
         self,
         right_ds: "DataChain",
-        on: Union[MergeColType, Sequence[MergeColType]],
-        right_on: Optional[Union[MergeColType, Sequence[MergeColType]]] = None,
+        on: MergeColType | Sequence[MergeColType],
+        right_on: MergeColType | Sequence[MergeColType] | None = None,
         inner=False,
         full=False,
         rname="right_",
@@ -1570,8 +1803,8 @@ class DataChain:
 
         def _resolve(
             ds: DataChain,
-            col: Union[str, Function, sqlalchemy.ColumnElement],
-            side: Union[str, None],
+            col: str | Function | sqlalchemy.ColumnElement,
+            side: str | None,
         ):
             try:
                 if isinstance(col, Function):
@@ -1584,7 +1817,7 @@ class DataChain:
         ops = [
             _resolve(self, left, "left")
             == _resolve(right_ds, right, "right" if right_on else None)
-            for left, right in zip(on, right_on or on)
+            for left, right in zip(on, right_on or on, strict=False)
         ]
 
         if errors:
@@ -1593,16 +1826,17 @@ class DataChain:
             )
 
         query = self._query.join(
-            right_ds._query, sqlalchemy.and_(*ops), inner, full, rname + "{name}"
+            right_ds._query, sqlalchemy.and_(*ops), inner, full, rname
         )
         query.feature_schema = None
         ds = self._evolve(query=query)
 
+        # Note: merge drops sys signals from both sides, make sure to not include it
+        # in the resulting schema
         signals_schema = self.signals_schema.clone_without_sys_signals()
         right_signals_schema = right_ds.signals_schema.clone_without_sys_signals()
-        ds.signals_schema = SignalSchema({"sys": Sys}) | signals_schema.merge(
-            right_signals_schema, rname
-        )
+
+        ds.signals_schema = signals_schema.merge(right_signals_schema, rname)
 
         return ds
 
@@ -1613,13 +1847,23 @@ class DataChain:
         Parameters:
             other: chain whose rows will be added to `self`.
         """
+        self_schema = self.signals_schema
+        other_schema = other.signals_schema
+        missing_left, missing_right = self_schema.compare_signals(other_schema)
+        if missing_left or missing_right:
+            raise UnionSchemaMismatchError.from_column_sets(
+                missing_left,
+                missing_right,
+            )
+
+        self.signals_schema = self_schema.clone_without_sys_signals()
         return self._evolve(query=self._query.union(other._query))
 
     def subtract(  # type: ignore[override]
         self,
         other: "DataChain",
-        on: Optional[Union[str, Sequence[str]]] = None,
-        right_on: Optional[Union[str, Sequence[str]]] = None,
+        on: str | Sequence[str] | None = None,
+        right_on: str | Sequence[str] | None = None,
     ) -> "Self":
         """Remove rows that appear in another chain.
 
@@ -1649,16 +1893,18 @@ class DataChain:
 
         if on is None and right_on is None:
             other_columns = set(other._effective_signals_schema.db_signals())
-            signals = [
+            common_signals = [
                 c
                 for c in self._effective_signals_schema.db_signals()
                 if c in other_columns
             ]
-            if not signals:
+            if not common_signals:
                 raise DataChainParamsError("subtract(): no common columns")
+            signals = list(zip(common_signals, common_signals, strict=False))
         elif on is not None and right_on is None:
             right_on = on
-            signals = list(self.signals_schema.resolve(*on).db_signals())
+            resolved_signals = list(self.signals_schema.resolve(*on).db_signals())
+            signals = list(zip(resolved_signals, resolved_signals, strict=False))  # type: ignore[arg-type]
         elif on is None and right_on is not None:
             raise DataChainParamsError(
                 "'on' must be specified when 'right_on' is provided"
@@ -1676,6 +1922,7 @@ class DataChain:
                 zip(
                     self.signals_schema.resolve(*on).db_signals(),
                     other.signals_schema.resolve(*right_on).db_signals(),
+                    strict=False,
                 )  # type: ignore[arg-type]
             )
         return self._evolve(query=self._query.subtract(other._query, signals))  # type: ignore[arg-type]
@@ -1683,15 +1930,15 @@ class DataChain:
     def diff(
         self,
         other: "DataChain",
-        on: Union[str, Sequence[str]],
-        right_on: Optional[Union[str, Sequence[str]]] = None,
-        compare: Optional[Union[str, Sequence[str]]] = None,
-        right_compare: Optional[Union[str, Sequence[str]]] = None,
+        on: str | Sequence[str],
+        right_on: str | Sequence[str] | None = None,
+        compare: str | Sequence[str] | None = None,
+        right_compare: str | Sequence[str] | None = None,
         added: bool = True,
         deleted: bool = True,
         modified: bool = True,
         same: bool = False,
-        status_col: Optional[str] = None,
+        status_col: str | None = None,
     ) -> "DataChain":
         """Calculate differences between two chains.
 
@@ -1752,12 +1999,12 @@ class DataChain:
         self,
         other: "DataChain",
         on: str = "file",
-        right_on: Optional[str] = None,
+        right_on: str | None = None,
         added: bool = True,
         modified: bool = True,
         deleted: bool = False,
         same: bool = False,
-        status_col: Optional[str] = None,
+        status_col: str | None = None,
     ) -> "DataChain":
         """Calculate differences between two chains containing files.
 
@@ -1855,12 +2102,15 @@ class DataChain:
         self,
         flatten: bool = False,
         include_hidden: bool = True,
+        as_object: bool = False,
     ) -> "pd.DataFrame":
         """Return a pandas DataFrame from the chain.
 
         Parameters:
             flatten: Whether to use a multiindex or flatten column names.
             include_hidden: Whether to include hidden columns.
+            as_object: Whether to emit a dataframe backed by Python objects
+                rather than pandas-inferred dtypes.
 
         Returns:
             pd.DataFrame: A pandas DataFrame representation of the chain.
@@ -1870,12 +2120,18 @@ class DataChain:
         headers, max_length = self._effective_signals_schema.get_headers_with_length(
             include_hidden=include_hidden
         )
+
+        columns: list[str] | pd.MultiIndex
         if flatten or max_length < 2:
             columns = [".".join(filter(None, header)) for header in headers]
         else:
             columns = pd.MultiIndex.from_tuples(map(tuple, headers))
 
         results = self.results(include_hidden=include_hidden)
+        if as_object:
+            df = pd.DataFrame(results, columns=columns, dtype=object)
+            df.where(pd.notna(df), None, inplace=True)
+            return df
         return pd.DataFrame.from_records(results, columns=columns)
 
     def show(
@@ -1898,7 +2154,11 @@ class DataChain:
         import pandas as pd
 
         dc = self.limit(limit) if limit > 0 else self  # type: ignore[misc]
-        df = dc.to_pandas(flatten, include_hidden=include_hidden)
+        df = dc.to_pandas(
+            flatten,
+            include_hidden=include_hidden,
+            as_object=True,
+        )
 
         if df.empty:
             print("Empty result")
@@ -1957,7 +2217,7 @@ class DataChain:
         column: str = "",
         model_name: str = "",
         source: bool = True,
-        nrows: Optional[int] = None,
+        nrows: int | None = None,
         **kwargs: Any,
     ) -> "Self":
         """Generate chain from list of tabular files.
@@ -2091,10 +2351,10 @@ class DataChain:
 
     def to_parquet(
         self,
-        path: Union[str, os.PathLike[str], BinaryIO],
-        partition_cols: Optional[Sequence[str]] = None,
+        path: str | os.PathLike[str] | BinaryIO,
+        partition_cols: Sequence[str] | None = None,
         chunk_size: int = DEFAULT_PARQUET_CHUNK_SIZE,
-        fs_kwargs: Optional[dict[str, Any]] = None,
+        fs_kwargs: dict[str, Any] | None = None,
         **kwargs,
     ) -> None:
         """Save chain to parquet file with SignalSchema metadata.
@@ -2105,9 +2365,9 @@ class DataChain:
             partition_cols: Column names by which to partition the dataset.
             chunk_size: The chunk size of results to read and convert to columnar
                 data, to avoid running out of memory.
-            fs_kwargs: Optional kwargs to pass to the fsspec filesystem, used only for
-                write, for fsspec-type URLs, such as s3:// or hf:// when
-                provided as the destination path.
+            fs_kwargs: Optional kwargs forwarded to the underlying fsspec filesystem
+                when writing (e.g., s3://, gs://, hf://), fsspec-specific options
+                are supported.
         """
         import pyarrow as pa
         import pyarrow.parquet as pq
@@ -2151,7 +2411,7 @@ class DataChain:
             # pyarrow infers the best parquet schema from the python types of
             # the input data.
             table = pa.Table.from_pydict(
-                dict(zip(column_names, chunk)),
+                dict(zip(column_names, chunk, strict=False)),
                 schema=parquet_schema,
             )
 
@@ -2189,127 +2449,106 @@ class DataChain:
 
     def to_csv(
         self,
-        path: Union[str, os.PathLike[str]],
+        path: str | os.PathLike[str],
         delimiter: str = ",",
-        fs_kwargs: Optional[dict[str, Any]] = None,
+        fs_kwargs: dict[str, Any] | None = None,
         **kwargs,
-    ) -> None:
-        """Save chain to a csv (comma-separated values) file.
+    ) -> File:
+        """Save chain to a csv (comma-separated values) file and return the stored
+        `File`.
 
         Parameters:
             path: Path to save the file. This supports local paths as well as
                 remote paths, such as s3:// or hf:// with fsspec.
             delimiter: Delimiter to use for the resulting file.
-            fs_kwargs: Optional kwargs to pass to the fsspec filesystem, used only for
-                write, for fsspec-type URLs, such as s3:// or hf:// when
-                provided as the destination path.
+            fs_kwargs: Optional kwargs forwarded to the underlying fsspec filesystem
+                when writing (e.g., s3://, gs://, hf://), fsspec-specific options
+                are supported.
+        Returns:
+            File: The stored file with refreshed metadata (version, etag, size).
         """
         import csv
 
-        opener = open
-
-        if isinstance(path, str) and "://" in path:
-            from datachain.client.fsspec import Client
-
-            fs_kwargs = {
-                **self._query.catalog.client_config,
-                **(fs_kwargs or {}),
-            }
-
-            client = Client.get_implementation(path)
-
-            fsspec_fs = client.create_fs(**fs_kwargs)
-
-            opener = fsspec_fs.open
+        target = File.at(path, session=self.session)
 
         headers, _ = self._effective_signals_schema.get_headers_with_length()
         column_names = [".".join(filter(None, header)) for header in headers]
 
-        results_iter = self._leaf_values()
-
-        with opener(path, "w", newline="") as f:
+        with target.open("w", newline="", client_config=fs_kwargs) as f:
             writer = csv.writer(f, delimiter=delimiter, **kwargs)
             writer.writerow(column_names)
-
-            for row in results_iter:
+            for row in self._leaf_values():
                 writer.writerow(row)
+
+        return target
 
     def to_json(
         self,
-        path: Union[str, os.PathLike[str]],
-        fs_kwargs: Optional[dict[str, Any]] = None,
+        path: str | os.PathLike[str],
+        fs_kwargs: dict[str, Any] | None = None,
         include_outer_list: bool = True,
-    ) -> None:
-        """Save chain to a JSON file.
+    ) -> File:
+        """Save chain to a JSON file and return the stored `File`.
 
         Parameters:
             path: Path to save the file. This supports local paths as well as
                 remote paths, such as s3:// or hf:// with fsspec.
-            fs_kwargs: Optional kwargs to pass to the fsspec filesystem, used only for
-                write, for fsspec-type URLs, such as s3:// or hf:// when
-                provided as the destination path.
+            fs_kwargs: Optional kwargs forwarded to the underlying fsspec filesystem
+                when writing (e.g., s3://, gs://, hf://), fsspec-specific options
+                are supported.
             include_outer_list: Sets whether to include an outer list for all rows.
                 Setting this to True makes the file valid JSON, while False instead
                 writes in the JSON lines format.
+        Returns:
+            File: The stored file with refreshed metadata (version, etag, size).
         """
-        opener = open
-
-        if isinstance(path, str) and "://" in path:
-            from datachain.client.fsspec import Client
-
-            fs_kwargs = {
-                **self._query.catalog.client_config,
-                **(fs_kwargs or {}),
-            }
-
-            client = Client.get_implementation(path)
-
-            fsspec_fs = client.create_fs(**fs_kwargs)
-
-            opener = fsspec_fs.open
-
+        target = File.at(path, session=self.session)
         headers, _ = self._effective_signals_schema.get_headers_with_length()
-        headers = [list(filter(None, header)) for header in headers]
+        headers = [list(filter(None, h)) for h in headers]
+        with target.open("wb", client_config=fs_kwargs) as f:
+            self._write_json_stream(f, headers, include_outer_list)
+        return target
 
+    def _write_json_stream(
+        self,
+        f: IO[bytes],
+        headers: list[list[str]],
+        include_outer_list: bool,
+    ) -> None:
         is_first = True
-
-        with opener(path, "wb") as f:
-            if include_outer_list:
-                # This makes the file JSON instead of JSON lines.
-                f.write(b"[\n")
-            for row in self._leaf_values():
-                if not is_first:
-                    if include_outer_list:
-                        # This makes the file JSON instead of JSON lines.
-                        f.write(b",\n")
-                    else:
-                        f.write(b"\n")
-                else:
-                    is_first = False
-                f.write(
-                    json.dumps(
-                        row_to_nested_dict(headers, row), ensure_ascii=False
-                    ).encode("utf-8")
-                )
-            if include_outer_list:
-                # This makes the file JSON instead of JSON lines.
-                f.write(b"\n]\n")
+        if include_outer_list:
+            f.write(b"[\n")
+        for row in self._leaf_values():
+            if not is_first:
+                f.write(b",\n" if include_outer_list else b"\n")
+            else:
+                is_first = False
+            f.write(
+                json.dumps(
+                    row_to_nested_dict(headers, row),
+                    ensure_ascii=False,
+                ).encode("utf-8")
+            )
+        if include_outer_list:
+            f.write(b"\n]\n")
 
     def to_jsonl(
         self,
-        path: Union[str, os.PathLike[str]],
-        fs_kwargs: Optional[dict[str, Any]] = None,
-    ) -> None:
+        path: str | os.PathLike[str],
+        fs_kwargs: dict[str, Any] | None = None,
+    ) -> File:
         """Save chain to a JSON lines file.
 
         Parameters:
             path: Path to save the file. This supports local paths as well as
                 remote paths, such as s3:// or hf:// with fsspec.
-            fs_kwargs: Optional kwargs to pass to the fsspec filesystem, used only for
-                write, for fsspec-type URLs, such as s3:// or hf:// when
-                provided as the destination path.
+            fs_kwargs: Optional kwargs forwarded to the underlying fsspec filesystem
+                when writing (e.g., s3://, gs://, hf://), fsspec-specific options
+                are supported.
+        Returns:
+            File: The stored file with refreshed metadata (version, etag, size).
         """
-        self.to_json(path, fs_kwargs, include_outer_list=False)
+        return self.to_json(path, fs_kwargs, include_outer_list=False)
 
     def to_database(
         self,
@@ -2317,9 +2556,9 @@ class DataChain:
         connection: "ConnectionType",
         *,
         batch_size: int = DEFAULT_DATABASE_BATCH_SIZE,
-        on_conflict: Optional[str] = None,
-        conflict_columns: Optional[list[str]] = None,
-        column_mapping: Optional[dict[str, Optional[str]]] = None,
+        on_conflict: str | None = None,
+        conflict_columns: list[str] | None = None,
+        column_mapping: dict[str, str | None] | None = None,
     ) -> int:
         """Save chain to a database table using a given database connection.
 
@@ -2555,13 +2794,13 @@ class DataChain:
 
     def to_storage(
         self,
-        output: Union[str, os.PathLike[str]],
+        output: str | os.PathLike[str],
         signal: str = "file",
         placement: FileExportPlacement = "fullpath",
         link_type: Literal["copy", "symlink"] = "copy",
-        num_threads: Optional[int] = EXPORT_FILES_MAX_THREADS,
-        anon: Optional[bool] = None,
-        client_config: Optional[dict] = None,
+        num_threads: int | None = EXPORT_FILES_MAX_THREADS,
+        anon: bool | None = None,
+        client_config: dict | None = None,
     ) -> None:
         """Export files from a specified signal to a directory. Files can be
         exported to a local or cloud directory.
@@ -2570,7 +2809,19 @@ class DataChain:
             output: Path to the target directory for exporting files.
             signal: Name of the signal to export files from.
             placement: The method to use for naming exported files.
-                The possible values are: "filename", "etag", "fullpath", and "checksum".
+                The possible values are: "filename", "etag", "fullpath",
+                "filepath", and "checksum".
+                Example path translations for an object located at
+                ``s3://bucket/data/img.jpg`` and exported to ``./out``:
+
+                - "filename" -> ``./out/img.jpg`` (no directories)
+                - "filepath" -> ``./out/data/img.jpg`` (relative path kept)
+                - "fullpath" -> ``./out/bucket/data/img.jpg`` (remote host kept)
+                - "etag" -> ``./out/<etag>.jpg`` (unique name via object digest)
+
+                Local sources behave like "filepath" for "fullpath" placement.
+                Relative destinations such as "." or ".." and absolute paths
+                are supported for every strategy.
             link_type: Method to use for exporting files.
                 Falls back to `'copy'` if symlinking fails.
             num_threads: number of threads to use for exporting files.
@@ -2624,8 +2875,20 @@ class DataChain:
         )
 
     def shuffle(self) -> "Self":
-        """Shuffle the rows of the chain deterministically."""
-        return self.order_by("sys.rand")
+        """Shuffle rows with a best-effort deterministic ordering.
+
+        This produces repeatable shuffles. Merge and union operations can
+        lead to non-deterministic results. Use order by or save a dataset
+        afterward to guarantee the same result.
+        """
+        query = self._query.clone(new_table=False)
+        query.steps.append(RegenerateSystemColumns(self._query.catalog))
+
+        chain = self._evolve(
+            query=query,
+            signal_schema=SignalSchema({"sys": Sys}) | self.signals_schema,
+        )
+        return chain.order_by("sys.rand")
 
     def sample(self, n: int) -> "Self":
         """Return a random sample from the chain.

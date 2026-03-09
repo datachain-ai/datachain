@@ -1,7 +1,6 @@
 import posixpath
 import shutil
 import tempfile
-from typing import Optional, Union
 
 from numpy import ndarray
 
@@ -18,7 +17,7 @@ except ImportError as exc:
     ) from exc
 
 
-def video_info(file: Union[File, VideoFile]) -> Video:
+def video_info(file: File | VideoFile) -> Video:
     """
     Returns video file information.
 
@@ -108,7 +107,7 @@ def video_frame_np(video: VideoFile, frame: int) -> ndarray:
 def validate_frame_range(
     video: VideoFile,
     start: int = 0,
-    end: Optional[int] = None,
+    end: int | None = None,
     step: int = 1,
 ) -> tuple[int, int, int]:
     """
@@ -186,7 +185,7 @@ def save_video_fragment(
     start: float,
     end: float,
     output: str,
-    format: Optional[str] = None,
+    format: str | None = None,
 ) -> VideoFile:
     """
     Saves video interval as a new video file. If output is a remote path,

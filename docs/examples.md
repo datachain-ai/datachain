@@ -111,7 +111,7 @@ chain = (
 
 If you are interested in more LLM evaluation examples for DataChain, please follow this tutorial:
 
-[https://github.com/iterative/datachain-examples/blob/main/llm/llm_chatbot_evaluation.ipynb](https://github.com/iterative/datachain-examples/blob/main/llm/llm_chatbot_evaluation.ipynb) [Google Colab](https://colab.research.google.com/github/iterative/datachain-examples/blob/main/llm/llm_chatbot_evaluation.ipynb)
+[https://github.com/datachain-ai/datachain-examples/blob/main/llm/llm_chatbot_evaluation.ipynb](https://github.com/datachain-ai/datachain-examples/blob/main/llm/llm_chatbot_evaluation.ipynb) [Google Colab](https://colab.research.google.com/github/datachain-ai/datachain-examples/blob/main/llm/llm_chatbot_evaluation.ipynb)
 
 ### Vectorized analytics
 
@@ -256,11 +256,11 @@ images_with_dogs.select("annotations", "file.path").show()
 ```
 For in-depth review of working with JSON metadata, please follow this tutorial:
 
-[GitHub](https://github.com/iterative/datachain-examples/blob/main/formats/json-metadata-tutorial.ipynb) or [Google Colab](https://colab.research.google.com/github/iterative/datachain-examples/blob/main/formats/json-metadata-tutorial.ipynb)
+[GitHub](https://github.com/datachain-ai/datachain-examples/blob/main/formats/json-metadata-tutorial.ipynb) or [Google Colab](https://colab.research.google.com/github/datachain-ai/datachain-examples/blob/main/formats/json-metadata-tutorial.ipynb)
 
 ### Passing data to training
 
-Chain results can be exported or passed directly to Pytorch dataloader. For example, if we are interested in passing three columns to training, the following Pytorch code will do it:
+Chain results can be exported or passed directly to a PyTorch dataloader. For example, if we are interested in passing three columns to training, the following PyTorch code will do it:
 
 ```python
 
@@ -276,4 +276,4 @@ train(loader, model, optimizer)
 
 See a larger example for CLIP fine-tuning here:
 
-[GitHub](https://github.com/iterative/datachain-examples/blob/main/multimodal/clip_fine_tuning.ipynb) or [Google Colab](https://colab.research.google.com/github/iterative/datachain-examples/blob/main/multimodal/clip_fine_tuning.ipynb)
+[GitHub](https://github.com/datachain-ai/datachain-examples/blob/main/multimodal/clip_fine_tuning.ipynb) or [Google Colab](https://colab.research.google.com/github/datachain-ai/datachain-examples/blob/main/multimodal/clip_fine_tuning.ipynb)

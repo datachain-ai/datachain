@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING, Any, Optional, Union
+from typing import TYPE_CHECKING, Any
 
 from datachain.lib.data_model import dict_to_data_model
 from datachain.query import Session
@@ -15,10 +15,10 @@ if TYPE_CHECKING:
 
 
 def read_hf(
-    dataset: Union[str, "HFDatasetType"],
+    dataset: "HFDatasetType",
     *args: Any,
-    session: Optional[Session] = None,
-    settings: Optional[dict] = None,
+    session: Session | None = None,
+    settings: dict | None = None,
     column: str = "",
     model_name: str = "",
     limit: int = 0,

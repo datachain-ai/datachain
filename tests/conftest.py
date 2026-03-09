@@ -20,12 +20,13 @@ from datachain.catalog import Catalog
 from datachain.catalog.loader import get_metastore, get_warehouse
 from datachain.cli.utils import CommaSeparatedArgs
 from datachain.config import Config, ConfigLevel
+from datachain.data_storage import AbstractMetastore, JobQueryType, JobStatus
 from datachain.data_storage.sqlite import (
     SQLiteDatabaseEngine,
     SQLiteMetastore,
     SQLiteWarehouse,
 )
-from datachain.dataset import DatasetRecord
+from datachain.dataset import DatasetRecord, DatasetVersion
 from datachain.lib.dc import Sys
 from datachain.namespace import Namespace
 from datachain.project import Project
@@ -37,7 +38,7 @@ from datachain.utils import (
     DataChainDir,
 )
 
-from .utils import DEFAULT_TREE, instantiate_tree
+from .utils import DEFAULT_TREE, instantiate_tree, reset_session_job_state
 
 DEFAULT_DATACHAIN_BIN = "datachain"
 DEFAULT_DATACHAIN_GIT_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -108,10 +109,11 @@ def monkeypatch_session() -> Generator[MonkeyPatch, None, None]:
 
 
 @pytest.fixture(autouse=True)
-def clean_session() -> None:
+def clean_session() -> Generator[None, None, None]:
     """
-    Make sure we clean leftover session before each test case
+    Clean leftover sessions after each test while storage handles are still open.
     """
+    yield
     Session.cleanup_for_tests()
 
 
@@ -126,6 +128,16 @@ def clean_environment(
     working_dir = str(tmp_path_factory.mktemp("default_working_dir"))
     monkeypatch_session.chdir(working_dir)
     monkeypatch_session.delenv(DataChainDir.ENV_VAR, raising=False)
+    monkeypatch_session.delenv(DataChainDir.ENV_VAR_DATACHAIN_ROOT, raising=False)
+
+
+def _create_job(metastore: AbstractMetastore) -> str:
+    return metastore.create_job(
+        "my-job",
+        'import datachain as dc; dc.read_values(num=[1, 2, 3]).save("nums")',
+        query_type=JobQueryType.PYTHON,
+        status=JobStatus.RUNNING,
+    )
 
 
 @pytest.fixture
@@ -151,6 +163,8 @@ def cleanup_sqlite_db(
     for table in reversed(cleanup_tables):
         db.execute_str(f"DROP TABLE IF EXISTS '{table}'")
 
+    # Disable foreign key checks for cleanup to avoid constraint errors
+    db.execute_str("PRAGMA foreign_keys = OFF")
     for (table,) in tables:
         name = table.replace("'", "''")
         db.execute_str(f"DROP TABLE IF EXISTS '{name}'")
@@ -161,16 +175,22 @@ def cleanup_sqlite_db(
 
 
 @pytest.fixture
-def metastore():
+def metastore(monkeypatch):
     if os.environ.get("DATACHAIN_METASTORE"):
         _metastore = get_metastore()
+
+        job_id = _create_job(_metastore)
+        monkeypatch.setenv("DATACHAIN_JOB_ID", job_id)
+
         yield _metastore
 
+        Session.cleanup_for_tests()
         _metastore.cleanup_for_tests()
     else:
         _metastore = SQLiteMetastore(db_file=":memory:")
         yield _metastore
 
+        Session.cleanup_for_tests()
         cleanup_sqlite_db(_metastore.db.clone(), _metastore.default_table_names)
 
     # Close the connection so that the SQLite file is no longer open, to avoid
@@ -180,26 +200,43 @@ def metastore():
 
 
 def check_temp_tables_cleaned_up(original_warehouse):
-    """Ensure that temporary tables are cleaned up."""
+    """Ensure that temporary tables are cleaned up.
+
+    UDF tables are now expected to persist (they're shared across jobs),
+    so we only check for temp tables here.
+    """
     with original_warehouse.clone() as warehouse:
-        assert [
+        temp_tables = [
             t
             for t in sqlalchemy.inspect(warehouse.db.engine).get_table_names()
-            if t.startswith(
-                (warehouse.UDF_TABLE_NAME_PREFIX, warehouse.TMP_TABLE_NAME_PREFIX)
-            )
-        ] == []
+            if t.startswith(warehouse.TMP_TABLE_NAME_PREFIX)
+        ]
+        assert temp_tables == [], f"Temporary tables not cleaned up: {temp_tables}"
+
+
+def cleanup_udf_tables(warehouse):
+    """Clean up all UDF tables after each test.
+
+    UDF tables are shared across jobs and persist after chain finishes,
+    so we need to clean them up after each test to prevent interference.
+    """
+    for table_name in warehouse.db.list_tables(
+        pattern=f"{warehouse.UDF_TABLE_NAME_PREFIX}%"
+    ):
+        table = warehouse.db.get_table(table_name)
+        warehouse.db.drop_table(table, if_exists=True)
 
 
 @pytest.fixture
 def warehouse(metastore):
     if os.environ.get("DATACHAIN_WAREHOUSE"):
         _warehouse = get_warehouse()
-        yield _warehouse
         try:
             check_temp_tables_cleaned_up(_warehouse)
         finally:
+            cleanup_udf_tables(_warehouse)
             _warehouse.cleanup_for_tests()
+        yield _warehouse
     else:
         _warehouse = SQLiteWarehouse(db_file=":memory:")
         yield _warehouse
@@ -215,7 +252,11 @@ def warehouse(metastore):
 
 @pytest.fixture
 def catalog(metastore, warehouse):
-    return Catalog(metastore=metastore, warehouse=warehouse)
+    with Catalog(metastore=metastore, warehouse=warehouse) as catalog:
+        yield catalog
+
+    # Clean up job-related atexit hooks to prevent errors during pytest shutdown
+    reset_session_job_state()
 
 
 @pytest.fixture
@@ -223,18 +264,27 @@ def test_session(catalog):
     with Session("TestSession", catalog=catalog) as session:
         yield session
 
+    # Clean up job-related atexit hooks to prevent errors during pytest shutdown
+    reset_session_job_state()
+
 
 @pytest.fixture
-def metastore_tmpfile(tmp_path):
+def metastore_tmpfile(monkeypatch, tmp_path):
     if os.environ.get("DATACHAIN_METASTORE"):
         _metastore = get_metastore()
+
+        job_id = _create_job(_metastore)
+        monkeypatch.setenv("DATACHAIN_JOB_ID", job_id)
+
         yield _metastore
 
+        Session.cleanup_for_tests()
         _metastore.cleanup_for_tests()
     else:
-        _metastore = SQLiteMetastore(db_file=tmp_path / "test.db")
+        _metastore = SQLiteMetastore(db_file=str(tmp_path / "test.db"))
         yield _metastore
 
+        Session.cleanup_for_tests()
         cleanup_sqlite_db(_metastore.db.clone(), _metastore.default_table_names)
 
     # Close the connection so that the SQLite file is no longer open, to avoid
@@ -247,13 +297,14 @@ def metastore_tmpfile(tmp_path):
 def warehouse_tmpfile(tmp_path, metastore_tmpfile):
     if os.environ.get("DATACHAIN_WAREHOUSE"):
         _warehouse = get_warehouse()
-        yield _warehouse
         try:
             check_temp_tables_cleaned_up(_warehouse)
         finally:
+            cleanup_udf_tables(_warehouse)
             _warehouse.cleanup_for_tests()
+        yield _warehouse
     else:
-        _warehouse = SQLiteWarehouse(db_file=tmp_path / "test.db")
+        _warehouse = SQLiteWarehouse(db_file=str(tmp_path / "test.db"))
         yield _warehouse
         try:
             check_temp_tables_cleaned_up(_warehouse)
@@ -271,14 +322,19 @@ def warehouse_tmpfile(tmp_path, metastore_tmpfile):
 def catalog_tmpfile(metastore_tmpfile, warehouse_tmpfile):
     # For testing parallel and distributed processing, as these cannot use
     # in-memory databases.
-    return Catalog(metastore=metastore_tmpfile, warehouse=warehouse_tmpfile)
+    with Catalog(metastore=metastore_tmpfile, warehouse=warehouse_tmpfile) as catalog:
+        yield catalog
 
 
 @pytest.fixture
 def test_session_tmpfile(catalog_tmpfile):
     # For testing parallel and distributed processing, as these cannot use
     # in-memory databases.
-    return Session("TestSession", catalog=catalog_tmpfile)
+    with Session("TestSession", catalog=catalog_tmpfile) as session:
+        yield session
+
+    # Clean up job-related atexit hooks to prevent errors during pytest shutdown
+    reset_session_job_state()
 
 
 @pytest.fixture
@@ -456,25 +512,23 @@ def cloud_server(request, tmp_upath_factory, cloud_type, version_aware, tree):
     return make_cloud_server(src_path, cloud_type, tree)
 
 
-@pytest.fixture()
-def datachain_job_id(monkeypatch):
-    job_id = str(uuid.uuid4())
-    monkeypatch.setenv("DATACHAIN_JOB_ID", job_id)
-    return job_id
-
-
 @pytest.fixture
-def cloud_server_credentials(cloud_server, monkeypatch):
+def datachain_job_id(test_session, monkeypatch):
+    yield _create_job(test_session.catalog.metastore)
+
+
+@pytest.fixture(scope="session")
+def cloud_server_credentials(cloud_server):
     if cloud_server.kind == "s3":
         cfg = cloud_server.src.fs.client_kwargs
         try:
-            monkeypatch.delenv("AWS_PROFILE")
+            os.environ.pop("AWS_PROFILE")
         except KeyError:
             pass
-        monkeypatch.setenv("AWS_ACCESS_KEY_ID", cfg.get("aws_access_key_id"))
-        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", cfg.get("aws_secret_access_key"))
-        monkeypatch.setenv("AWS_SESSION_TOKEN", cfg.get("aws_session_token"))
-        monkeypatch.setenv("AWS_DEFAULT_REGION", cfg.get("region_name"))
+        os.environ["AWS_ACCESS_KEY_ID"] = cfg.get("aws_access_key_id")
+        os.environ["AWS_SECRET_ACCESS_KEY"] = cfg.get("aws_secret_access_key")
+        os.environ["AWS_SESSION_TOKEN"] = cfg.get("aws_session_token")
+        os.environ["AWS_DEFAULT_REGION"] = cfg.get("region_name")
 
 
 def get_cloud_test_catalog(cloud_server, tmp_path, metastore, warehouse):
@@ -501,7 +555,13 @@ def cloud_test_catalog(
     metastore,
     warehouse,
 ):
-    return get_cloud_test_catalog(cloud_server, tmp_path, metastore, warehouse)
+    catalog = get_cloud_test_catalog(cloud_server, tmp_path, metastore, warehouse)
+    try:
+        yield catalog
+    finally:
+        # Ensure catalog shuts down its metastore/warehouse connections between tests
+        catalog.catalog.close()
+        reset_session_job_state()
 
 
 @pytest.fixture
@@ -532,12 +592,20 @@ def cloud_test_catalog_tmpfile(
     metastore_tmpfile,
     warehouse_tmpfile,
 ):
-    return get_cloud_test_catalog(
+    catalog = get_cloud_test_catalog(
         cloud_server,
         tmp_path,
         metastore_tmpfile,
         warehouse_tmpfile,
     )
+    try:
+        yield catalog
+    finally:
+        # Clean up job-related atexit hooks to prevent errors during pytest shutdown
+        from tests.utils import reset_session_job_state
+
+        catalog.catalog.close()
+        reset_session_job_state()
 
 
 @pytest.fixture
@@ -572,7 +640,7 @@ def animal_dataset(listed_bucket, cloud_test_catalog):
         name, [src_uri], catalog.metastore.default_project, recursive=True
     )
     return catalog.update_dataset(
-        dataset, {"description": "animal dataset", "attrs": ["cats", "dogs"]}
+        dataset, description="animal dataset", attrs=["cats", "dogs"]
     )
 
 
@@ -588,7 +656,7 @@ def dogs_dataset(listed_bucket, cloud_test_catalog):
         recursive=True,
     )
     return catalog.update_dataset(
-        dataset, {"description": "dogs dataset", "attrs": ["dogs", "dataset"]}
+        dataset, description="dogs dataset", attrs=["dogs", "dataset"]
     )
 
 
@@ -601,7 +669,7 @@ def cats_dataset(listed_bucket, cloud_test_catalog):
         name, [f"{src_uri}/cats/*"], catalog.metastore.default_project, recursive=True
     )
     return catalog.update_dataset(
-        dataset, {"description": "cats dataset", "attrs": ["cats", "dataset"]}
+        dataset, description="cats dataset", attrs=["cats", "dataset"]
     )
 
 
@@ -612,7 +680,25 @@ def dataset_record():
         name=f"ds_{uuid.uuid4().hex}",
         description="",
         attrs=[],
-        versions=[],
+        versions=[
+            DatasetVersion(
+                id=1,
+                uuid=uuid.uuid4().hex,
+                dataset_id=1,
+                version="1.0.0",
+                status=1,
+                created_at=datetime.now(),
+                finished_at=datetime.now(),
+                error_message="",
+                error_stack="",
+                num_objects=6,
+                size=100,
+                feature_schema=None,
+                script_output="",
+                schema=None,
+                _preview_data=[],
+            )
+        ],
         status=1,
         schema={},
         feature_schema={},
@@ -815,34 +901,22 @@ def pseudo_random_ds(test_session):
 
 
 @pytest.fixture()
-def run_datachain_worker(datachain_job_id):
+def run_datachain_worker(monkeypatch):
     if not os.environ.get("DATACHAIN_DISTRIBUTED"):
         pytest.skip("Distributed tests are disabled")
 
     job_id = os.environ.get("DATACHAIN_JOB_ID")
     assert job_id, "DATACHAIN_JOB_ID environment variable is required for this test"
 
+    monkeypatch.delenv("DATACHAIN_DISTRIBUTED_DISABLED", raising=False)
+
     # This worker can take several tasks in parallel, as it's very handy
     # for testing, where we don't want [yet] to constrain the number of
     # available workers.
-    workers = []
-    worker_cmd = [
-        "celery",
-        "-A",
-        "datachain_worker.tasks",
-        "worker",
-        "--loglevel=INFO",
-        "--hostname=tests-datachain-worker-main",
-        "--pool=solo",
-        "--concurrency=1",
-        "--max-tasks-per-child=1",
-        "--prefetch-multiplier=1",
-        "-Q",
-        f"datachain-worker-main-{job_id}",
-    ]
-    print(f"Starting worker with command: {' '.join(worker_cmd)}")
-    workers.append(subprocess.Popen(worker_cmd, shell=False))  # noqa: S603
+    workers: list[subprocess.Popen] = []
+    queues: list[str] = []
     for i in range(2):
+        queue_name = f"udf-{uuid.uuid4()}"
         worker_cmd = [
             "celery",
             "-A",
@@ -855,10 +929,16 @@ def run_datachain_worker(datachain_job_id):
             "--max-tasks-per-child=1",
             "--prefetch-multiplier=1",
             "-Q",
-            "udf_runner_queue",
+            queue_name,
         ]
+        queues.append(queue_name)
         print(f"Starting worker with command: {' '.join(worker_cmd)}")
-        workers.append(subprocess.Popen(worker_cmd, shell=False))  # noqa: S603
+        worker_proc = subprocess.Popen(  # noqa: S603
+            worker_cmd,
+            env=os.environ,
+            shell=False,
+        )
+        workers.append(worker_proc)
     try:
         from datachain_worker.utils.celery import celery_app
 
@@ -872,6 +952,9 @@ def run_datachain_worker(datachain_job_id):
 
         if attempts == 10:
             raise RuntimeError("Celery worker(s) did not start in time")
+
+        monkeypatch.setenv("DATACHAIN_STEP_ID", "1")
+        monkeypatch.setenv("UDF_RUNNER_QUEUE_NAME_LIST", ",".join(queues))
 
         yield workers
     finally:
@@ -1041,6 +1124,52 @@ def dog_entries():
         ]
 
     return _create_dog_entries
+
+
+PRIMES_UP_TO_73 = (
+    2,
+    3,
+    5,
+    7,
+    11,
+    13,
+    17,
+    19,
+    23,
+    29,
+    31,
+    37,
+    41,
+    43,
+    47,
+    53,
+    59,
+    61,
+    67,
+    71,
+    73,
+)
+
+
+@pytest.fixture
+def numbers_ds(test_session) -> Generator[DatasetRecord, None, None]:
+    numbers = list(range(1, 74))
+    ds = dc.read_values(
+        number=numbers,
+        parity=["odd" if n % 2 else "even" for n in numbers],
+        primality=["prime" if n in PRIMES_UP_TO_73 else "composite" for n in numbers],
+        last_digit=[n % 10 for n in numbers],
+        session=test_session,
+    ).save("numbers_dataset")
+    assert ds.dataset is not None
+    yield ds.dataset
+    dc.delete_dataset(ds.dataset.name, force=True)
+
+
+@pytest.fixture
+def numbers_table(warehouse, numbers_ds) -> Generator[sqlalchemy.Table, None, None]:
+    table_name = warehouse.dataset_table_name(numbers_ds, numbers_ds.latest_version)
+    yield warehouse.get_table(table_name)
 
 
 @pytest.fixture

@@ -1,8 +1,14 @@
 import glob
 import os
+import sys
 from collections.abc import Iterable, Iterator
 from functools import cached_property
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
+
+if sys.version_info >= (3, 11):
+    from typing import Self
+else:
+    from typing_extensions import Self
 
 from sqlalchemy import Column
 from sqlalchemy.sql import func
@@ -25,8 +31,8 @@ class Listing:
         metastore: "AbstractMetastore",
         warehouse: "AbstractWarehouse",
         client: "Client",
-        dataset_name: Optional["str"] = None,
-        dataset_version: Optional[str] = None,
+        dataset_name: str | None = None,
+        dataset_version: str | None = None,
         column: str = "file",
     ):
         self.metastore = metastore
@@ -35,6 +41,7 @@ class Listing:
         self.dataset_name = dataset_name  # dataset representing bucket listing
         self.dataset_version = dataset_version  # dataset representing bucket listing
         self.column = column
+        self._closed = False
 
     def clone(self) -> "Listing":
         return self.__class__(
@@ -46,14 +53,20 @@ class Listing:
             self.column,
         )
 
-    def __enter__(self) -> "Listing":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
         self.close()
 
     def close(self) -> None:
-        self.warehouse.close()
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self.warehouse.close_on_exit()
+        finally:
+            self.metastore.close_on_exit()
 
     @property
     def uri(self):
@@ -102,7 +115,7 @@ class Listing:
     def collect_nodes_to_instantiate(
         self,
         sources: Iterable["DataSource"],
-        copy_to_filename: Optional[str],
+        copy_to_filename: str | None,
         recursive=False,
         copy_dir_contents=False,
         from_dataset=False,

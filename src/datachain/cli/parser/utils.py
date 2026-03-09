@@ -1,5 +1,4 @@
 from argparse import Action, ArgumentParser, ArgumentTypeError, HelpFormatter
-from typing import Union
 
 from datachain.cli.utils import CommaSeparatedArgs
 
@@ -44,7 +43,7 @@ def parse_find_column(column: str) -> str:
     )
 
 
-def add_sources_arg(parser: ArgumentParser, nargs: Union[str, int] = "+") -> Action:
+def add_sources_arg(parser: ArgumentParser, nargs: str | int = "+") -> Action:
     return parser.add_argument(
         "sources",
         type=str,

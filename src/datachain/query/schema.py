@@ -1,7 +1,8 @@
 import functools
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from fnmatch import fnmatch
-from typing import TYPE_CHECKING, Any, Callable, Optional, Union
+from typing import TYPE_CHECKING, Any
 
 import attrs
 import sqlalchemy as sa
@@ -42,7 +43,7 @@ class ColumnMeta(type):
 
 
 class Column(sa.ColumnClause, metaclass=ColumnMeta):
-    inherit_cache: Optional[bool] = True
+    inherit_cache: bool | None = True
 
     def __init__(self, text, type_=None, is_literal=False, _selectable=None):
         """Dataset column."""
@@ -177,7 +178,7 @@ class LocalFilename(UDFParameter):
     otherwise None will be returned.
     """
 
-    glob: Optional[str] = None
+    glob: str | None = None
 
     def get_value(
         self,
@@ -186,7 +187,7 @@ class LocalFilename(UDFParameter):
         *,
         cb: Callback = DEFAULT_CALLBACK,
         **kwargs,
-    ) -> Optional[str]:
+    ) -> str | None:
         if self.glob and not fnmatch(row["name"], self.glob):  # type: ignore[type-var]
             # If the glob pattern is specified and the row filename
             # does not match it, then return None
@@ -205,7 +206,7 @@ class LocalFilename(UDFParameter):
         cache: bool = False,
         cb: Callback = DEFAULT_CALLBACK,
         **kwargs,
-    ) -> Optional[str]:
+    ) -> str | None:
         if self.glob and not fnmatch(row["name"], self.glob):  # type: ignore[type-var]
             # If the glob pattern is specified and the row filename
             # does not match it, then return None
@@ -216,7 +217,7 @@ class LocalFilename(UDFParameter):
         return client.cache.get_path(file)
 
 
-UDFParamSpec = Union[str, Column, UDFParameter]
+UDFParamSpec = str | Column | UDFParameter
 
 
 def normalize_param(param: UDFParamSpec) -> UDFParameter:

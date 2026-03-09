@@ -1,20 +1,13 @@
-import json
 import tarfile
+import types
 import warnings
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
-from typing import (
-    Any,
-    Callable,
-    ClassVar,
-    Optional,
-    Union,
-    get_args,
-    get_origin,
-)
+from typing import Any, ClassVar, Union, get_args, get_origin
 
 from pydantic import Field
 
+from datachain import json
 from datachain.lib.data_model import DataModel
 from datachain.lib.file import File
 from datachain.lib.tar import build_tar_member
@@ -64,28 +57,28 @@ class WDSBasic(DataModel):
 
 
 class WDSAllFile(WDSBasic):
-    txt: Optional[str] = Field(default=None)
-    text: Optional[str] = Field(default=None)
-    cap: Optional[str] = Field(default=None)
-    transcript: Optional[str] = Field(default=None)
-    cls: Optional[int] = Field(default=None)
-    cls2: Optional[int] = Field(default=None)
-    index: Optional[int] = Field(default=None)
-    inx: Optional[int] = Field(default=None)
-    id: Optional[int] = Field(default=None)
-    json: Optional[dict] = Field(default=None)  # type: ignore[assignment]
-    jsn: Optional[dict] = Field(default=None)
+    txt: str | None = Field(default=None)
+    text: str | None = Field(default=None)
+    cap: str | None = Field(default=None)
+    transcript: str | None = Field(default=None)
+    cls: int | None = Field(default=None)
+    cls2: int | None = Field(default=None)
+    index: int | None = Field(default=None)
+    inx: int | None = Field(default=None)
+    id: int | None = Field(default=None)
+    json: dict | None = Field(default=None)  # type: ignore[assignment]
+    jsn: dict | None = Field(default=None)
 
-    pyd: Optional[bytes] = Field(default=None)
-    pickle: Optional[bytes] = Field(default=None)
-    pth: Optional[bytes] = Field(default=None)
-    ten: Optional[bytes] = Field(default=None)
-    tb: Optional[bytes] = Field(default=None)
-    mp: Optional[bytes] = Field(default=None)
-    msg: Optional[bytes] = Field(default=None)
-    npy: Optional[bytes] = Field(default=None)
-    npz: Optional[bytes] = Field(default=None)
-    cbor: Optional[bytes] = Field(default=None)
+    pyd: bytes | None = Field(default=None)
+    pickle: bytes | None = Field(default=None)
+    pth: bytes | None = Field(default=None)
+    ten: bytes | None = Field(default=None)
+    tb: bytes | None = Field(default=None)
+    mp: bytes | None = Field(default=None)
+    msg: bytes | None = Field(default=None)
+    npy: bytes | None = Field(default=None)
+    npz: bytes | None = Field(default=None)
+    cbor: bytes | None = Field(default=None)
 
 
 class WDSReadableSubclass(DataModel):
@@ -189,9 +182,11 @@ class Builder:
             return
 
         anno = field.annotation
-        if get_origin(anno) == Union:
-            args = get_args(anno)
-            anno = args[0]
+        anno_origin = get_origin(anno)
+        if anno_origin in (Union, types.UnionType):
+            anno_args = get_args(anno)
+            if len(anno_args) == 2 and type(None) in anno_args:
+                return anno_args[0] if anno_args[1] is type(None) else anno_args[1]
 
         return anno
 

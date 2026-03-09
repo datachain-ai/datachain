@@ -1,16 +1,17 @@
-from typing import Any, Callable, Optional, Union
+from collections.abc import Callable
+from typing import Any
 
 import torch
 from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 
 
 def convert_text(
-    text: Union[str, list[str]],
-    tokenizer: Optional[Callable] = None,
-    tokenizer_kwargs: Optional[dict[str, Any]] = None,
-    encoder: Optional[Callable] = None,
-    device: Optional[Union[str, torch.device]] = None,
-) -> Union[str, list[str], torch.Tensor]:
+    text: str | list[str],
+    tokenizer: Callable | None = None,
+    tokenizer_kwargs: dict[str, Any] | None = None,
+    encoder: Callable | None = None,
+    device: str | torch.device | None = None,
+) -> str | list[str] | torch.Tensor:
     """
     Tokenize and otherwise transform text.
 

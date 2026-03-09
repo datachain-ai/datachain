@@ -1,6 +1,6 @@
 import os
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 
 import attrs
 
@@ -53,11 +53,11 @@ class Node:
     sys__rand: int = 0
     path: str = ""
     etag: str = ""
-    version: Optional[str] = None
+    version: str | None = None
     is_latest: bool = True
-    last_modified: Optional[datetime] = None
+    last_modified: datetime | None = None
     size: int = 0
-    location: Optional[str] = None
+    location: str | None = None
     source: StorageURI = StorageURI("")  # noqa: RUF009
     dir_type: int = DirType.FILE
 
@@ -90,7 +90,7 @@ class Node:
             return self.path + "/"
         return self.path
 
-    def to_file(self, source: Optional[StorageURI] = None) -> File:
+    def to_file(self, source: StorageURI | None = None) -> File:
         if source is None:
             source = self.source
         return File(
@@ -189,7 +189,7 @@ class NodeWithPath:
 TIME_FMT = "%Y-%m-%d %H:%M"
 
 
-def long_line_str(name: str, timestamp: Optional[datetime]) -> str:
+def long_line_str(name: str, timestamp: datetime | None) -> str:
     if timestamp is None:
         time = "-"
     else:

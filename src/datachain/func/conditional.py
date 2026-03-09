@@ -1,5 +1,3 @@
-from typing import Optional, Union
-
 from sqlalchemy import ColumnElement
 from sqlalchemy import and_ as sql_and
 from sqlalchemy import case as sql_case
@@ -12,10 +10,10 @@ from datachain.sql.functions import conditional
 
 from .func import Func
 
-CaseT = Union[int, float, complex, bool, str, Func, ColumnElement]
+CaseT = int | float | complex | bool | str | Func | ColumnElement
 
 
-def greatest(*args: Union[str, Column, Func, float]) -> Func:
+def greatest(*args: str | Column | Func | float) -> Func:
     """
     Returns the greatest (largest) value from the given input values.
 
@@ -56,7 +54,7 @@ def greatest(*args: Union[str, Column, Func, float]) -> Func:
     )
 
 
-def least(*args: Union[str, Column, Func, float]) -> Func:
+def least(*args: str | Column | Func | float) -> Func:
     """
     Returns the least (smallest) value from the given input values.
 
@@ -94,7 +92,7 @@ def least(*args: Union[str, Column, Func, float]) -> Func:
 
 
 def case(
-    *args: tuple[Union[ColumnElement, Func, bool], CaseT], else_: Optional[CaseT] = None
+    *args: tuple[ColumnElement | Func | bool, CaseT], else_: CaseT | None = None
 ) -> Func:
     """
     Returns a case expression that evaluates a list of conditions and returns
@@ -163,9 +161,7 @@ def case(
     return Func("case", inner=sql_case, cols=args, kwargs=kwargs, result_type=type_)
 
 
-def ifelse(
-    condition: Union[ColumnElement, Func], if_val: CaseT, else_val: CaseT
-) -> Func:
+def ifelse(condition: ColumnElement | Func, if_val: CaseT, else_val: CaseT) -> Func:
     """
     Returns an if-else expression that evaluates a condition and returns one
     of two values based on the result. Values can be Python primitives
@@ -193,7 +189,7 @@ def ifelse(
     return case((condition, if_val), else_=else_val)
 
 
-def isnone(col: Union[str, ColumnElement]) -> Func:
+def isnone(col: str | ColumnElement) -> Func:
     """
     Returns a function that checks if the column value is `None` (NULL in DB).
 
@@ -221,7 +217,7 @@ def isnone(col: Union[str, ColumnElement]) -> Func:
     return case((col.is_(None) if col is not None else True, True), else_=False)
 
 
-def or_(*args: Union[ColumnElement, Func]) -> Func:
+def or_(*args: ColumnElement | Func) -> Func:
     """
     Returns the function that produces conjunction of expressions joined by OR
     logical operator.
@@ -256,7 +252,7 @@ def or_(*args: Union[ColumnElement, Func]) -> Func:
     return Func("or", inner=sql_or, cols=cols, args=func_args, result_type=bool)
 
 
-def and_(*args: Union[ColumnElement, Func]) -> Func:
+def and_(*args: ColumnElement | Func) -> Func:
     """
     Returns the function that produces conjunction of expressions joined by AND
     logical operator.
@@ -291,7 +287,7 @@ def and_(*args: Union[ColumnElement, Func]) -> Func:
     return Func("and", inner=sql_and, cols=cols, args=func_args, result_type=bool)
 
 
-def not_(arg: Union[ColumnElement, Func]) -> Func:
+def not_(arg: ColumnElement | Func) -> Func:
     """
     Returns the function that produces NOT of the given expressions.
 

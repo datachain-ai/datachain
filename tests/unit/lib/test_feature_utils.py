@@ -3,10 +3,7 @@ from typing import get_args, get_origin
 import pytest
 
 import datachain as dc
-from datachain.lib.convert.values_to_tuples import (
-    ValuesToTupleError,
-    values_to_tuples,
-)
+from datachain.lib.convert.values_to_tuples import ValuesToTupleError, values_to_tuples
 from datachain.query.schema import Column
 
 
@@ -102,3 +99,69 @@ def test_resolve_column():
 def test_resolve_column_attr():
     signal = Column.hello.world.again
     assert signal.name == "hello__world__again"
+
+
+def test_values_to_tuples_list_none_first():
+    # First element in the inner list is None; should infer list[int]
+    typ, _out, vals = values_to_tuples(col=[[None, 1, 2]])
+
+    assert get_origin(typ) is list
+    assert get_args(typ) == (int,)
+    assert vals == [[None, 1, 2]]
+
+
+def test_values_to_tuples_list_all_none_items():
+    # All items in the inner list are None; fallback to list[str]
+    typ, _out, vals = values_to_tuples(col=[[None, None]])
+
+    assert get_origin(typ) is list
+    assert get_args(typ) == (str,)
+    assert vals == [[None, None]]
+
+
+def test_values_to_tuples_nested_lists():
+    # Nested lists should infer list[list[int]]
+    typ, _out, _vals = values_to_tuples(col=[[[1, 2], [3, 4]]])
+
+    assert get_origin(typ) is list
+    inner = get_args(typ)[0]
+    assert get_origin(inner) is list
+    assert get_args(inner) == (int,)
+
+
+def test_values_to_tuples_dict_with_list_values():
+    # Dict with list values should infer dict[str, list[int]]
+    typ, _out, vals = values_to_tuples(col=[{"a": [1, 2], "b": [3, 4]}])
+
+    assert get_origin(typ) is dict
+    key_t, val_t = get_args(typ)
+    assert key_t is str
+    assert get_origin(val_t) is list
+    assert get_args(val_t) == (int,)
+    assert vals == [{"a": [1, 2], "b": [3, 4]}]
+
+
+def test_values_to_tuples_dict_with_first_value_none():
+    # First dict value is None; should skip to non-None and infer int
+    typ, _out, _vals = values_to_tuples(col=[{"a": None, "b": 1}])
+
+    assert get_origin(typ) is dict
+    key_t, val_t = get_args(typ)
+    assert key_t is str
+    assert val_t is int
+
+
+def test_values_to_tuples_list_none_then_string():
+    # None then a string in inner list; should infer list[str]
+    typ, _out, _vals = values_to_tuples(col=[[None, "hello"]])
+
+    assert get_origin(typ) is list
+    assert get_args(typ) == (str,)
+
+
+def test_values_to_tuples_empty_sequence_defaults_to_str():
+    # Empty signal sequence should default to type str and keep empty values
+    typ, _out, vals = values_to_tuples(col=[])
+
+    assert typ is str
+    assert vals == []
