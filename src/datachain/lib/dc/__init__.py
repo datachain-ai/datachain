@@ -9,7 +9,7 @@ from .pandas import read_pandas
 from .parquet import read_parquet
 from .records import read_records
 from .storage import read_storage
-from .utils import DatasetMergeError, DatasetPrepareError, Sys, is_studio
+from .utils import DatasetMergeError, DatasetPrepareError, Sys, is_local, is_studio
 from .values import read_values
 
 __all__ = [
@@ -21,6 +21,7 @@ __all__ = [
     "Sys",
     "datasets",
     "delete_dataset",
+    "is_local",
     "is_studio",
     "listings",
     "move_dataset",

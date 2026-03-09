@@ -225,6 +225,7 @@ def _get_source_info(
         source_ds.name,
         namespace_name=source_ds.project.namespace.name,
         project_name=source_ds.project.name,
+        include_incomplete=False,
     )
 
     return (
@@ -284,7 +285,10 @@ def delta_retry_update(
     # Check if dataset exists
     try:
         dataset = catalog.get_dataset(
-            name, namespace_name=namespace_name, project_name=project_name
+            name,
+            namespace_name=namespace_name,
+            project_name=project_name,
+            include_incomplete=False,
         )
         latest_version = dataset.latest_version
     except DatasetNotFoundError:

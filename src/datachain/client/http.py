@@ -75,7 +75,7 @@ class HTTPClient(Client):
             base_url = self.name
         else:
             if rel_path and "/" in rel_path:
-                first_part = rel_path.split("/")[0]
+                first_part = rel_path.split("/", maxsplit=1)[0]
                 if "." in first_part and not first_part.startswith("."):
                     return f"{self.protocol}://{rel_path}"
 

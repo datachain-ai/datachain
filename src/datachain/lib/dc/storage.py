@@ -120,7 +120,6 @@ def read_storage(
         )
         ```
     """
-    from .datachain import DataChain
     from .datasets import read_dataset
     from .records import read_records
     from .values import read_values
@@ -200,10 +199,12 @@ def read_storage(
         if update or not list_ds_exists:
 
             def lst_fn(ds_name, lst_uri):
-                # disable prefetch for listing, as it pre-downloads all files
+                # Start with a single dummy record so gen() has one row to iterate over.
+                # Disable prefetch=0 to prevent downloading files during listing.
                 (
                     read_records(
-                        DataChain.DEFAULT_FILE_RECORD,
+                        [{"seed": 0}],
+                        schema={"seed": int},
                         session=session,
                         settings=settings,
                         in_memory=in_memory,

@@ -181,7 +181,7 @@ def sqlite_session(sqlite_engine, ensure_sqlite_adapter):
 
 @pytest.fixture
 def sqlite3_connection(ensure_sqlite_adapter):
-    with sqlite3.connect(":memory:") as conn:
+    with closing(sqlite3.connect(":memory:")) as conn:
         yield conn
 
 
@@ -898,7 +898,7 @@ def test_to_database_table_cleanup_on_map_exception(connection, test_session):
     ).map(process_item, params=["id"], output={"data": str})
 
     # The export should fail during processing, after table creation
-    with pytest.raises(dc.DataChainError, match="Processing failed on third item"):
+    with pytest.raises(ValueError, match="Processing failed on third item"):
         chain.to_database(table_name, connection)
 
     # Verify the table was cleaned up (removed) due to the exception

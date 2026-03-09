@@ -109,10 +109,11 @@ def monkeypatch_session() -> Generator[MonkeyPatch, None, None]:
 
 
 @pytest.fixture(autouse=True)
-def clean_session() -> None:
+def clean_session() -> Generator[None, None, None]:
     """
-    Make sure we clean leftover session before each test case
+    Clean leftover sessions after each test while storage handles are still open.
     """
+    yield
     Session.cleanup_for_tests()
 
 
@@ -162,6 +163,8 @@ def cleanup_sqlite_db(
     for table in reversed(cleanup_tables):
         db.execute_str(f"DROP TABLE IF EXISTS '{table}'")
 
+    # Disable foreign key checks for cleanup to avoid constraint errors
+    db.execute_str("PRAGMA foreign_keys = OFF")
     for (table,) in tables:
         name = table.replace("'", "''")
         db.execute_str(f"DROP TABLE IF EXISTS '{name}'")
@@ -181,11 +184,13 @@ def metastore(monkeypatch):
 
         yield _metastore
 
+        Session.cleanup_for_tests()
         _metastore.cleanup_for_tests()
     else:
         _metastore = SQLiteMetastore(db_file=":memory:")
         yield _metastore
 
+        Session.cleanup_for_tests()
         cleanup_sqlite_db(_metastore.db.clone(), _metastore.default_table_names)
 
     # Close the connection so that the SQLite file is no longer open, to avoid
@@ -195,26 +200,43 @@ def metastore(monkeypatch):
 
 
 def check_temp_tables_cleaned_up(original_warehouse):
-    """Ensure that temporary tables are cleaned up."""
+    """Ensure that temporary tables are cleaned up.
+
+    UDF tables are now expected to persist (they're shared across jobs),
+    so we only check for temp tables here.
+    """
     with original_warehouse.clone() as warehouse:
-        assert [
+        temp_tables = [
             t
             for t in sqlalchemy.inspect(warehouse.db.engine).get_table_names()
-            if t.startswith(
-                (warehouse.UDF_TABLE_NAME_PREFIX, warehouse.TMP_TABLE_NAME_PREFIX)
-            )
-        ] == []
+            if t.startswith(warehouse.TMP_TABLE_NAME_PREFIX)
+        ]
+        assert temp_tables == [], f"Temporary tables not cleaned up: {temp_tables}"
+
+
+def cleanup_udf_tables(warehouse):
+    """Clean up all UDF tables after each test.
+
+    UDF tables are shared across jobs and persist after chain finishes,
+    so we need to clean them up after each test to prevent interference.
+    """
+    for table_name in warehouse.db.list_tables(
+        pattern=f"{warehouse.UDF_TABLE_NAME_PREFIX}%"
+    ):
+        table = warehouse.db.get_table(table_name)
+        warehouse.db.drop_table(table, if_exists=True)
 
 
 @pytest.fixture
 def warehouse(metastore):
     if os.environ.get("DATACHAIN_WAREHOUSE"):
         _warehouse = get_warehouse()
-        yield _warehouse
         try:
             check_temp_tables_cleaned_up(_warehouse)
         finally:
+            cleanup_udf_tables(_warehouse)
             _warehouse.cleanup_for_tests()
+        yield _warehouse
     else:
         _warehouse = SQLiteWarehouse(db_file=":memory:")
         yield _warehouse
@@ -230,8 +252,8 @@ def warehouse(metastore):
 
 @pytest.fixture
 def catalog(metastore, warehouse):
-    catalog = Catalog(metastore=metastore, warehouse=warehouse)
-    yield catalog
+    with Catalog(metastore=metastore, warehouse=warehouse) as catalog:
+        yield catalog
 
     # Clean up job-related atexit hooks to prevent errors during pytest shutdown
     reset_session_job_state()
@@ -256,11 +278,13 @@ def metastore_tmpfile(monkeypatch, tmp_path):
 
         yield _metastore
 
+        Session.cleanup_for_tests()
         _metastore.cleanup_for_tests()
     else:
         _metastore = SQLiteMetastore(db_file=str(tmp_path / "test.db"))
         yield _metastore
 
+        Session.cleanup_for_tests()
         cleanup_sqlite_db(_metastore.db.clone(), _metastore.default_table_names)
 
     # Close the connection so that the SQLite file is no longer open, to avoid
@@ -273,11 +297,12 @@ def metastore_tmpfile(monkeypatch, tmp_path):
 def warehouse_tmpfile(tmp_path, metastore_tmpfile):
     if os.environ.get("DATACHAIN_WAREHOUSE"):
         _warehouse = get_warehouse()
-        yield _warehouse
         try:
             check_temp_tables_cleaned_up(_warehouse)
         finally:
+            cleanup_udf_tables(_warehouse)
             _warehouse.cleanup_for_tests()
+        yield _warehouse
     else:
         _warehouse = SQLiteWarehouse(db_file=str(tmp_path / "test.db"))
         yield _warehouse
@@ -297,7 +322,8 @@ def warehouse_tmpfile(tmp_path, metastore_tmpfile):
 def catalog_tmpfile(metastore_tmpfile, warehouse_tmpfile):
     # For testing parallel and distributed processing, as these cannot use
     # in-memory databases.
-    return Catalog(metastore=metastore_tmpfile, warehouse=warehouse_tmpfile)
+    with Catalog(metastore=metastore_tmpfile, warehouse=warehouse_tmpfile) as catalog:
+        yield catalog
 
 
 @pytest.fixture
@@ -529,7 +555,13 @@ def cloud_test_catalog(
     metastore,
     warehouse,
 ):
-    return get_cloud_test_catalog(cloud_server, tmp_path, metastore, warehouse)
+    catalog = get_cloud_test_catalog(cloud_server, tmp_path, metastore, warehouse)
+    try:
+        yield catalog
+    finally:
+        # Ensure catalog shuts down its metastore/warehouse connections between tests
+        catalog.catalog.close()
+        reset_session_job_state()
 
 
 @pytest.fixture
@@ -566,12 +598,14 @@ def cloud_test_catalog_tmpfile(
         metastore_tmpfile,
         warehouse_tmpfile,
     )
-    yield catalog
+    try:
+        yield catalog
+    finally:
+        # Clean up job-related atexit hooks to prevent errors during pytest shutdown
+        from tests.utils import reset_session_job_state
 
-    # Clean up job-related atexit hooks to prevent errors during pytest shutdown
-    from tests.utils import reset_session_job_state
-
-    reset_session_job_state()
+        catalog.catalog.close()
+        reset_session_job_state()
 
 
 @pytest.fixture
@@ -606,7 +640,7 @@ def animal_dataset(listed_bucket, cloud_test_catalog):
         name, [src_uri], catalog.metastore.default_project, recursive=True
     )
     return catalog.update_dataset(
-        dataset, {"description": "animal dataset", "attrs": ["cats", "dogs"]}
+        dataset, description="animal dataset", attrs=["cats", "dogs"]
     )
 
 
@@ -622,7 +656,7 @@ def dogs_dataset(listed_bucket, cloud_test_catalog):
         recursive=True,
     )
     return catalog.update_dataset(
-        dataset, {"description": "dogs dataset", "attrs": ["dogs", "dataset"]}
+        dataset, description="dogs dataset", attrs=["dogs", "dataset"]
     )
 
 
@@ -635,7 +669,7 @@ def cats_dataset(listed_bucket, cloud_test_catalog):
         name, [f"{src_uri}/cats/*"], catalog.metastore.default_project, recursive=True
     )
     return catalog.update_dataset(
-        dataset, {"description": "cats dataset", "attrs": ["cats", "dataset"]}
+        dataset, description="cats dataset", attrs=["cats", "dataset"]
     )
 
 

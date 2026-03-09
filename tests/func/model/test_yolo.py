@@ -22,24 +22,32 @@ from datachain.model.ultralytics import (
 @pytest.fixture
 def running_img() -> np.ndarray:
     img_file = os.path.join(os.path.dirname(__file__), "data", "running.jpg")
-    return np.array(Image.open(img_file))
+    with Image.open(img_file) as img:
+        return np.array(img)
 
 
 @pytest.fixture
 def ships_img() -> np.ndarray:
     img_file = os.path.join(os.path.dirname(__file__), "data", "ships.jpg")
-    return np.array(Image.open(img_file))
+    with Image.open(img_file) as img:
+        return np.array(img)
 
 
 @pytest.fixture
 def running_img_masks() -> torch.Tensor:
     mask0_file = os.path.join(os.path.dirname(__file__), "data", "running-mask0.png")
-    mask0_np = np.array(Image.open(mask0_file))
+    with Image.open(mask0_file) as mask0_img:
+        mask0_np = np.array(mask0_img)
 
     mask1_file = os.path.join(os.path.dirname(__file__), "data", "running-mask1.png")
-    mask1_np = np.array(Image.open(mask1_file))
+    with Image.open(mask1_file) as mask1_img:
+        mask1_np = np.array(mask1_img)
 
-    return torch.tensor([mask0_np.astype(np.float32), mask1_np.astype(np.float32)])
+    stacked = np.stack(
+        [mask0_np.astype(np.float32), mask1_np.astype(np.float32)],
+        axis=0,
+    )
+    return torch.from_numpy(stacked)
 
 
 def test_yolo_bbox_from_results_empty(running_img):

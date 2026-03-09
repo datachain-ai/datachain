@@ -14,6 +14,7 @@ class JobStatus(int, Enum):
     CANCELED = 8
     CANCELING_SCHEDULED = 9
     TASK = 11
+    PENDING = 13
 
     @classmethod
     def finished(cls) -> tuple[int, ...]:

@@ -11,7 +11,8 @@ DataChain's API is organized into several modules:
     - [File](./data-types/file.md) - File handling and storage operations
     - [TextFile](./data-types/textfile.md) - Text file
     - [ImageFile](./data-types/imagefile.md) - Image file
-    - [VideoFile](./data-types/imagefile.md) - Video file
+    - [VideoFile](./data-types/videofile.md) - Video file
+    - [AudioFile](./data-types/audiofile.md) - Audio file
     - [TarVFile](./data-types/tarvfile.md) - Virtual file model for files extracted from tar archives
     - [ArrowRow](./data-types/arrowrow.md) - Working with Arrow-supported file
     - [BBox](./data-types/bbox.md) - Bounding box data type

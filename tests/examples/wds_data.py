@@ -87,7 +87,7 @@ WDS_TAR_SHARDS = [
 
 # data that represents metadata and goes to webdataset parquet file of webdataset
 # TODO change float values to something other than 0.5 to test if double precision
-# works as expected when https://github.com/iterative/datachain/issues/12 is done
+# works as expected when https://github.com/datachain-ai/datachain/issues/12 is done
 WDS_META = {
     "uid": {
         "0": "d142ae70686e14ccc379c01a571501b5",

@@ -42,7 +42,7 @@ def audio_info(file: "File | AudioFile") -> "Audio":
 
             if not format_name:
                 format_name = "unknown"
-            codec_name = info.subtype if info.subtype else ""
+            codec_name = info.subtype or ""
 
             # Calculate bit rate from subtype
             bits_per_sample = _get_bits_per_sample(info.subtype)

@@ -124,7 +124,10 @@ def list_datasets_local_versions(
     namespace_name, project_name, name = catalog.get_full_dataset_name(name)
 
     ds = catalog.get_dataset(
-        name, namespace_name=namespace_name, project_name=project_name
+        name,
+        namespace_name=namespace_name,
+        project_name=project_name,
+        include_incomplete=False,
     )
     for v in ds.versions:
         yield name, v.version

@@ -125,7 +125,7 @@ def test_diff_no_status_col(test_session, str_default):
     assert diff.order_by("id").to_list() == expected
 
 
-def test_diff_read_hfs(test_session, str_default):
+def test_diff_read_dataset(test_session, str_default):
     ds1 = dc.read_values(
         id=[1, 2, 4],
         name=["John1", "Doe", "Andy"],

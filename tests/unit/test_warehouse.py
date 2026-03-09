@@ -15,9 +15,12 @@ def test_serialize(sqlite_db):
 
     # Test clone
     obj2 = obj.clone()
-    assert isinstance(obj2, SQLiteWarehouse)
-    assert obj2.db.db_file == sqlite_db.db_file
-    assert obj2.clone_params() == obj.clone_params()
+    try:
+        assert isinstance(obj2, SQLiteWarehouse)
+        assert obj2.db.db_file == sqlite_db.db_file
+        assert obj2.clone_params() == obj.clone_params()
+    finally:
+        obj2.close_on_exit()
 
     # Test serialization JSON format
     serialized = obj.serialize()
@@ -32,14 +35,17 @@ def test_serialize(sqlite_db):
     assert nested["kwargs"] == {}
 
     obj3 = deserialize(serialized)
-    assert isinstance(obj3, SQLiteWarehouse)
-    assert obj3.db.db_file == sqlite_db.db_file
-    assert obj3.clone_params() == obj.clone_params()
+    try:
+        assert isinstance(obj3, SQLiteWarehouse)
+        assert obj3.db.db_file == sqlite_db.db_file
+        assert obj3.clone_params() == obj.clone_params()
+    finally:
+        obj3.close_on_exit()
 
 
 def test_is_temp_table_name(warehouse):
     assert warehouse.is_temp_table_name("tmp_vc12F") is True
-    assert warehouse.is_temp_table_name("udf_jh653") is True
+    assert warehouse.is_temp_table_name("udf_jh653") is False
     assert warehouse.is_temp_table_name("ds_my_dataset") is False
     assert warehouse.is_temp_table_name("src_my_bucket") is False
     assert warehouse.is_temp_table_name("ds_ds_my_query_script_1_1") is False

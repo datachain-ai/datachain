@@ -28,15 +28,22 @@ def fragments(file: AudioFile, meta: Audio) -> Iterator[AudioFragment]:
 
 
 def process(fragment: AudioFragment, pipeline: Pipeline) -> str:
-    audio_array, sample_rate = fragment.get_np()
+    audio_array, _ = fragment.get_np()
 
     # Convert to mono if stereo (average the channels)
     if len(audio_array.shape) > 1 and audio_array.shape[1] > 1:
         audio_array = audio_array.mean(axis=1)
 
-    # Pass the numpy array with exact sampling rate from fragment
+    # Ensure audio_array is 1D and float32
+    if len(audio_array.shape) > 1:
+        audio_array = audio_array.squeeze()
+    audio_array = audio_array.astype("float32")
+
+    # Use chunk_length_s to avoid the stride=None code path that requires num_frames
+    # This is a workaround for transformers 5.0 compatibility
     result = pipeline(
-        {"raw": audio_array, "sampling_rate": sample_rate},
+        audio_array,
+        chunk_length_s=30,  # Process in 30-second chunks
         generate_kwargs={"language": "en"},
     )
     return str(result["text"])

@@ -53,6 +53,7 @@ def add_jobs_parser(subparsers, parent_parser) -> None:
     studio_run_parser.add_argument(
         "--env",
         nargs="+",
+        action="append",
         help="Environment variables in KEY=VALUE format",
     )
 
@@ -120,6 +121,16 @@ def add_jobs_parser(subparsers, parent_parser) -> None:
         "--no-wait",
         action="store_true",
         help="Do not wait for the job to finish",
+    )
+    studio_run_parser.add_argument(
+        "--no-follow",
+        action="store_true",
+        help="Do not print the job logs to the console",
+    )
+    studio_run_parser.add_argument(
+        "--ignore-checkpoints",
+        action="store_true",
+        help="Ignore existing checkpoints and run from scratch",
     )
 
     studio_ls_help = "List jobs in Studio"

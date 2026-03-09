@@ -86,9 +86,9 @@ def test_get_frame_bytes(video_file, format, img_format, header):
     assert isinstance(frame, bytes)
     assert any(frame.startswith(h) for h in header)
 
-    img = Image.open(io.BytesIO(frame))
-    assert img.format == img_format
-    assert img.size == (640, 360)
+    with Image.open(io.BytesIO(frame)) as img:
+        assert img.format == img_format
+        assert img.size == (640, 360)
 
 
 @pytest.mark.parametrize("use_format", [True, False])
@@ -101,9 +101,9 @@ def test_save_frame(tmp_path, video_file, use_format):
     assert isinstance(frame_file, ImageFile)
 
     frame_file.ensure_cached()
-    img = Image.open(frame_file.get_local_path())
-    assert img.format == "JPEG"
-    assert img.size == (640, 360)
+    with Image.open(frame_file.get_local_path()) as img:
+        assert img.format == "JPEG"
+        assert img.size == (640, 360)
 
 
 def test_get_frames(video_file):
@@ -140,9 +140,9 @@ def test_save_frames(tmp_path, video_file):
 
     for frame_file in frame_files:
         frame_file.ensure_cached()
-        img = Image.open(frame_file.get_local_path())
-        assert img.format == "JPEG"
-        assert img.size == (640, 360)
+        with Image.open(frame_file.get_local_path()) as img:
+            assert img.format == "JPEG"
+            assert img.size == (640, 360)
 
 
 def test_get_fragment(video_file):

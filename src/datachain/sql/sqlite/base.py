@@ -3,18 +3,19 @@ import re
 import sqlite3
 import warnings
 from collections.abc import Callable, Iterable
+from contextlib import closing
 from datetime import MAXYEAR, MINYEAR, datetime, timezone
 from functools import cache
 from types import MappingProxyType
 
 import sqlalchemy as sa
-import ujson as json
 from sqlalchemy.dialects import sqlite
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.sql.elements import literal
 from sqlalchemy.sql.expression import case
 from sqlalchemy.sql.functions import func
 
+from datachain import json
 from datachain.sql.functions import (
     aggregate,
     array,
@@ -111,7 +112,10 @@ def setup():
     compiles(numeric.int_hash_64, "sqlite")(compile_int_hash_64)
     compiles(numeric.bit_hamming_distance, "sqlite")(compile_bit_hamming_distance)
 
-    if load_usearch_extension(sqlite3.connect(":memory:")):
+    with closing(sqlite3.connect(":memory:")) as _usearch_conn:
+        usearch_available = load_usearch_extension(_usearch_conn)
+
+    if usearch_available:
         compiles(array.cosine_distance, "sqlite")(compile_cosine_distance_ext)
         compiles(array.euclidean_distance, "sqlite")(compile_euclidean_distance_ext)
     else:
@@ -145,23 +149,34 @@ def functions_exist(
                 f"Found value of type {type(n).__name__}: {n!r}"
             )
 
+    close_connection = False
     if connection is None:
         connection = sqlite3.connect(":memory:")
+        close_connection = True
 
-    if not names:
-        return True
-    column1 = sa.column("column1", sa.String)
-    func_name_query = column1.not_in(
-        sa.select(sa.column("name", sa.String)).select_from(func.pragma_function_list())
-    )
-    query = (
-        sa.select(func.count() == 0)
-        .select_from(sa.values(column1).data([(n,) for n in names]))
-        .where(func_name_query)
-    )
-    comp = query.compile(dialect=sqlite_dialect)
-    args = (comp.string, comp.params) if comp.params else (comp.string,)
-    return bool(connection.execute(*args).fetchone()[0])
+    try:
+        if not names:
+            return True
+        column1 = sa.column("column1", sa.String)
+        func_name_query = column1.not_in(
+            sa.select(sa.column("name", sa.String)).select_from(
+                func.pragma_function_list()
+            )
+        )
+        query = (
+            sa.select(func.count() == 0)
+            .select_from(sa.values(column1).data([(n,) for n in names]))
+            .where(func_name_query)
+        )
+        comp = query.compile(dialect=sqlite_dialect)
+        if comp.params:
+            result = connection.execute(comp.string, comp.params)
+        else:
+            result = connection.execute(comp.string)
+        return bool(result.fetchone()[0])
+    finally:
+        if close_connection:
+            connection.close()
 
 
 def create_user_defined_sql_functions(connection):

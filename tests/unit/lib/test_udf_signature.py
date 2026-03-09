@@ -209,3 +209,20 @@ def test_unparameterized_iterator_defaults_to_str():
 
     sign = get_sign(s1=iter_func)
     assert sign.output_schema.values == {"s1": str}
+
+
+def test_generator_requires_iterator_return_annotation_even_with_output_override():
+    def not_iter(p1) -> tuple[int, int]:
+        return (1, 2)
+
+    with pytest.raises(
+        UdfSignatureError, match="cannot be used in generator/aggregator"
+    ):
+        UdfSignature.parse(
+            "test",
+            {},
+            not_iter,
+            None,
+            {"a": int, "b": int},
+            True,
+        )

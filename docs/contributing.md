@@ -12,15 +12,15 @@ requests.
 
 Here is a list of important resources for contributors:
 
--   [Source Code](https://github.com/iterative/datachain)
+-   [Source Code](https://github.com/datachain-ai/datachain)
 -   [Documentation](https://docs.dvc.ai/datachain)
--   [Issue Tracker](https://github.com/iterative/datachain/issues)
--   [Code of Conduct](https://github.com/iterative/datachain?tab=coc-ov-file)
+-   [Issue Tracker](https://github.com/datachain-ai/datachain/issues)
+-   [Code of Conduct](https://github.com/datachain-ai/datachain?tab=coc-ov-file)
 
 ## How to report a bug
 
 Report bugs on the [Issue
-Tracker](https://github.com/iterative/datachain/issues).
+Tracker](https://github.com/datachain-ai/datachain/issues).
 
 When filing an issue, make sure to answer these questions:
 
@@ -36,7 +36,7 @@ steps to reproduce the issue.
 ## How to request a feature
 
 Request features on the [Issue
-Tracker](https://github.com/iterative/datachain/issues).
+Tracker](https://github.com/datachain-ai/datachain/issues).
 
 ## How to set up your development environment
 
@@ -92,7 +92,7 @@ $ mkdocs serve
 
 ## How to submit changes
 
-Open a [pull request](https://github.com/iterative/datachain/pulls) to
+Open a [pull request](https://github.com/datachain-ai/datachain/pulls) to
 submit changes to this project.
 
 Your pull request needs to meet the following guidelines for acceptance:

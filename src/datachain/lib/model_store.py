@@ -7,6 +7,17 @@ from pydantic import BaseModel
 class ModelStore:
     store: ClassVar[dict[str, dict[int, type[BaseModel]]]] = {}
 
+    @staticmethod
+    def _base_name(model: type[BaseModel]) -> str:
+        # Some models are generated/restored with a versioned Python class name
+        # (e.g. `MyType_v1`) so that multiple versions can coexist in-process without
+        # `__name__` collisions.
+        #
+        # `_modelstore_base_name` preserves the original/logical name (e.g. `MyType`)
+        # after we alter the class name, so `ModelStore.get_name(model)` still
+        # returns `"MyType@v{model._version}"` and schema serialization stays stable.
+        return getattr(model, "_modelstore_base_name", model.__name__)
+
     @classmethod
     def get_version(cls, model: type[BaseModel]) -> int:
         if not hasattr(model, "_version"):
@@ -15,9 +26,10 @@ class ModelStore:
 
     @classmethod
     def get_name(cls, model) -> str:
+        base_name = cls._base_name(model)
         if (version := cls.get_version(model)) > 0:
-            return f"{model.__name__}@v{version}"
-        return model.__name__
+            return f"{base_name}@v{version}"
+        return base_name
 
     @classmethod
     def register(cls, fr: type):
@@ -25,11 +37,18 @@ class ModelStore:
         if (model := ModelStore.to_pydantic(fr)) is None:
             return
 
-        name = model.__name__
-        if name not in cls.store:
-            cls.store[name] = {}
+        base_name = cls._base_name(model)
+        unique_name = model.__name__
         version = ModelStore.get_version(model)
-        cls.store[name][version] = model
+
+        # Register under both:
+        # - `base_name` (logical/original name, from `_modelstore_base_name` when set)
+        #   so callers can resolve by original name + version, e.g.
+        #   `ModelStore.get("Foo", 1)` after deserialization/restore.
+        # - `unique_name` (Python class `__name__`, e.g. `Foo_v1`) so callers can also
+        #   resolve by the runtime class name.
+        for name in (base_name, unique_name):
+            cls.store.setdefault(name, {})[version] = model
 
         for f_info in model.model_fields.values():
             if (anno := ModelStore.to_pydantic(f_info.annotation)) is not None:
@@ -62,8 +81,12 @@ class ModelStore:
     @classmethod
     def remove(cls, fr: type) -> None:
         version = fr._version  # type: ignore[attr-defined]
-        if fr.__name__ in cls.store and version in cls.store[fr.__name__]:
-            del cls.store[fr.__name__][version]
+        base_name = cls._base_name(fr)
+        unique_name = fr.__name__
+
+        for name in (base_name, unique_name):
+            if name in cls.store and version in cls.store[name]:
+                del cls.store[name][version]
 
     @staticmethod
     def is_pydantic(val: Any) -> bool:

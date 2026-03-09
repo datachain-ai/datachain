@@ -1,7 +1,6 @@
 import errno
 import hashlib
 import io
-import json
 import logging
 import os
 import posixpath
@@ -21,6 +20,7 @@ from fsspec.callbacks import DEFAULT_CALLBACK, Callback
 from fsspec.utils import stringify_path
 from pydantic import Field, field_validator
 
+from datachain import json
 from datachain.client.fileslice import FileSlice
 from datachain.lib.data_model import DataModel
 from datachain.lib.utils import DataChainError, rebase_path
@@ -297,6 +297,16 @@ class File(DataModel):
         super().__init__(**kwargs)
         self._catalog = None
         self._caching_enabled: bool = False
+        self._download_cb: Callback = DEFAULT_CALLBACK
+
+    def __getstate__(self):
+        state = super().__getstate__()
+        # Exclude _catalog from pickling - it contains SQLAlchemy engine and other
+        # non-picklable objects. The catalog will be re-set by _set_stream() on the
+        # worker side when needed.
+        state["__dict__"] = state["__dict__"].copy()
+        state["__dict__"]["_catalog"] = None
+        return state
 
     def as_text_file(self) -> "TextFile":
         """Convert the file to a `TextFile` object."""
@@ -337,10 +347,34 @@ class File(DataModel):
         path: str | os.PathLike[str],
         catalog: "Catalog | None" = None,
     ) -> "Self":
-        if catalog is None:
-            from datachain.catalog.loader import get_catalog
+        """Upload bytes to a storage path and return a File pointing to it.
 
-            catalog = get_catalog()
+        Args:
+            data: The raw bytes to upload.
+            path: Destination path (local or remote, e.g. ``s3://bucket/file.txt``).
+            catalog: Optional catalog instance. If None, the current session
+                catalog is used.
+
+        Returns:
+            File: A new File object with metadata populated from the upload.
+
+        Example:
+            ```py
+            file = File.upload(b"hello world", "s3://bucket/hello.txt")
+            ```
+
+        Note:
+            To write data as a stream, use `File.at` with `open` instead:
+            ```py
+            file = File.at("s3://bucket/output.txt")
+            with file.open("wb") as f:
+                f.write(b"hello world")
+            ```
+        """
+        if catalog is None:
+            from datachain.query.session import Session
+
+            catalog = Session.get().catalog
         from datachain.client.fsspec import Client
 
         path_str = stringify_path(path)
@@ -361,9 +395,19 @@ class File(DataModel):
     ) -> "Self":
         """Construct a File from a full URI in one call.
 
+        Args:
+            uri: Full URI or path to the file
+                (e.g. ``s3://bucket/path/to/file.png`` or ``/local/path``).
+            session: Optional session instance. If None, the current session is used.
+
+        Returns:
+            File: A new File object pointing to the given URI.
+
         Example:
+            ```py
             file = File.at("s3://bucket/path/to/output.png")
             with file.open("wb") as f: ...
+            ```
         """
         from datachain.client.fsspec import Client
         from datachain.query.session import Session
@@ -372,10 +416,15 @@ class File(DataModel):
             session = Session.get()
         catalog = session.catalog
         uri_str = stringify_path(uri)
-
+        if uri_str.endswith(("/", os.sep)):
+            raise ValueError(
+                f"File.at directory URL/path given (trailing slash), got: {uri_str}"
+            )
         client_cls = Client.get_implementation(uri_str)
+        uri_str = client_cls.path_to_uri(uri_str)
         source, rel_path = client_cls.split_url(uri_str)
-        file = cls(source=client_cls.get_uri(source), path=rel_path)
+        source_uri = client_cls.get_uri(source)
+        file = cls(source=source_uri, path=rel_path)
         file._set_stream(catalog)
         return file
 
@@ -385,14 +434,36 @@ class File(DataModel):
 
     @property
     def name(self) -> str:
+        """The file name extracted from the path.
+
+        Example:
+            ```py
+            file = File(source="s3://bucket", path="data/subdir/image.jpg")
+            file.name  # 'image.jpg'
+            ```
+        """
         return PurePosixPath(self.path).name
 
     @property
     def parent(self) -> str:
+        """The parent directory of the file, extracted from the path.
+
+        Example:
+            ```py
+            file = File(source="s3://bucket", path="data/subdir/image.jpg")
+            file.parent  # 'data/subdir'
+            ```
+        """
         return str(PurePosixPath(self.path).parent)
 
     @contextmanager
-    def open(self, mode: str = "rb", **open_kwargs) -> Iterator[Any]:
+    def open(
+        self,
+        mode: str = "rb",
+        *,
+        client_config: dict[str, Any] | None = None,
+        **open_kwargs,
+    ) -> Iterator[Any]:
         """Open the file and return a file-like object.
 
         Supports both read ("rb", "r") and write modes (e.g. "wb", "w", "ab").
@@ -409,7 +480,9 @@ class File(DataModel):
         if self._catalog is None:
             raise RuntimeError("Cannot open file: catalog is not set")
 
-        client: Client = self._catalog.get_client(self.source)
+        base_cfg = getattr(self._catalog, "client_config", {}) or {}
+        merged_cfg = {**base_cfg, **(client_config or {})}
+        client: Client = self._catalog.get_client(self.source, **merged_cfg)
 
         if not writing:
             if self.location:
@@ -429,9 +502,12 @@ class File(DataModel):
         with client.fs.open(full_path, mode, **open_kwargs) as f:
             yield self._wrap_text(f, mode, open_kwargs)
 
-        # refresh metadata
-        info = client.fs.info(full_path)
-        refreshed = client.info_to_file(info, self.get_path_normalized())
+        version_hint = self._extract_write_version(f)
+
+        # refresh metadata pinned to the version that was just written
+        refreshed = client.get_file_info(
+            self.get_path_normalized(), version_id=version_hint
+        )
         for k, v in refreshed.model_dump().items():
             setattr(self, k, v)
 
@@ -443,6 +519,18 @@ class File(DataModel):
             k: open_kwargs[k] for k in self._TEXT_WRAPPER_ALLOWED if k in open_kwargs
         }
         return io.TextIOWrapper(f, **filtered)
+
+    def _extract_write_version(self, handle: Any) -> str | None:
+        """Best-effort extraction of object version after a write.
+
+        S3 (s3fs) and Azure (adlfs) populate version_id on the handle.
+        GCS (gcsfs) populates generation. Azure and GCS require upstream
+        fixes to be released.
+        """
+        for attr in ("version_id", "generation"):
+            if value := getattr(handle, attr, None):
+                return value
+        return None
 
     def read_bytes(self, length: int = -1):
         """Returns file contents as bytes."""
@@ -530,6 +618,19 @@ class File(DataModel):
         self._download_cb = download_cb
 
     def ensure_cached(self) -> None:
+        """Download the file to the local cache.
+
+        `get_local_path` can be used to return the path to the cached copy on disk.
+        This is useful when you need to pass the file to code that expects a local
+        filesystem path (e.g. ``ffmpeg``, ``opencv``, ``pandas``, etc).
+
+        Example:
+            ```py
+            file.ensure_cached()
+            local_path = file.get_local_path()
+            df = pandas.read_csv(local_path)
+            ```
+        """
         if self._catalog is None:
             raise RuntimeError(
                 "cannot download file to cache because catalog is not setup"
@@ -569,11 +670,9 @@ class File(DataModel):
         return PurePosixPath(self.path).suffix
 
     def get_file_ext(self):
-        """Returns last part of file name without `.`."""
         return PurePosixPath(self.path).suffix.lstrip(".")
 
     def get_file_stem(self):
-        """Returns file name without extension."""
         return PurePosixPath(self.path).stem
 
     def get_full_name(self):
@@ -609,19 +708,9 @@ class File(DataModel):
         return normpath
 
     def get_uri(self) -> str:
-        """Returns file URI."""
         return f"{self.source}/{self.get_path_normalized()}"
 
     def get_fs_path(self) -> str:
-        """
-        Returns file path with respect to the filescheme.
-
-        If `normalize` is True, the path is normalized to remove any redundant
-        separators and up-level references.
-
-        If the file scheme is "file", the path is converted to a local file path
-        using `url2pathname`. Otherwise, the original path with scheme is returned.
-        """
         path = unquote(self.get_uri())
         path_parsed = urlparse(path)
         if path_parsed.scheme == "file":
@@ -653,7 +742,6 @@ class File(DataModel):
         return posixpath.join(output, path)  # type: ignore[union-attr]
 
     def get_fs(self):
-        """Returns `fsspec` filesystem for the file."""
         return self._catalog.get_client(self.source).fs
 
     def get_hash(self) -> str:
@@ -743,14 +831,16 @@ class File(DataModel):
             ValueError: If old_base is not found in the file's URI
 
         Examples:
-            >>> file = File(source="s3://bucket", path="data/2025-05-27/file.wav")
-            >>> file.rebase("s3://bucket/data", "s3://output-bucket/processed", \
-                    extension="mp3")
-            's3://output-bucket/processed/2025-05-27/file.mp3'
+            ```py
+            file = File(source="s3://bucket", path="data/2025-05-27/file.wav")
+            file.rebase("s3://bucket/data", "s3://output-bucket/processed",
+                        extension="mp3")
+            # 's3://output-bucket/processed/2025-05-27/file.mp3'
 
-            >>> file.rebase("data/audio", "/local/output", suffix="_ch1",
-                    extension="npy")
-            '/local/output/file_ch1.npy'
+            file.rebase("data/audio", "/local/output", suffix="_ch1",
+                        extension="npy")
+            # '/local/output/file_ch1.npy'
+            ```
         """
         return rebase_path(self.get_uri(), old_base, new_base, suffix, extension)
 
@@ -787,10 +877,18 @@ class TextFile(File):
     """`DataModel` for reading text files."""
 
     @contextmanager
-    def open(self, mode: str = "r", **open_kwargs) -> Iterator[Any]:
+    def open(
+        self,
+        mode: str = "r",
+        *,
+        client_config: dict[str, Any] | None = None,
+        **open_kwargs,
+    ) -> Iterator[Any]:
         """Open the file and return a file-like object.
         Default to text mode"""
-        with super().open(mode=mode, **open_kwargs) as stream:
+        with super().open(
+            mode=mode, client_config=client_config, **open_kwargs
+        ) as stream:
             yield stream
 
     def read_text(self, **open_kwargs):

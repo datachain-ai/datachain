@@ -1,18 +1,18 @@
 import glob
 import io
-import json
 import logging
 import os
 import os.path as osp
 import random
 import re
 import sys
+import threading
 import time
 from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
-from datetime import date, datetime, timezone
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, TypeVar
-from uuid import UUID
 
 import cloudpickle
 import platformdirs
@@ -24,10 +24,22 @@ if TYPE_CHECKING:
     import pandas as pd
     from typing_extensions import Self
 
+    from datachain.dataset import DatasetDependency
+
 
 DEFAULT_BATCH_SIZE = 2000
 
 logger = logging.getLogger("datachain")
+
+
+class _CheckpointState:
+    """Internal state for checkpoint management."""
+
+    _lock = threading.Lock()
+    disabled = False
+    warning_shown = False
+    owner_thread: int | None = None  # Thread ident of the checkpoint owner
+
 
 NUL = b"\0"
 TIME_ZERO = datetime.fromtimestamp(0, tz=timezone.utc)
@@ -108,6 +120,132 @@ class DataChainDir:
             else:
                 raise NotADirectoryError(root)
         return instance
+
+
+@contextmanager
+def interprocess_file_lock(
+    lock_path: str,
+    *,
+    wait_message: str | None = None,
+    timeout: float = -1,
+) -> Iterator[None]:
+    """Acquire an inter-process lock backed by a file.
+
+    Intended for local-only concurrency control (multiple CLI processes sharing
+    the same DataChainDir). Locks are released automatically by the OS when the
+    process exits, including on SIGKILL.
+
+    Uses `filelock.FileLock` (OS-level file locking).
+    """
+
+    from filelock import FileLock, Timeout
+
+    lock_dir = osp.dirname(lock_path)
+    if lock_dir:
+        os.makedirs(lock_dir, exist_ok=True)
+    lock = FileLock(lock_path)
+    pid_path = f"{lock_path}.pid"
+
+    def _read_pid() -> int | None:
+        try:
+            with open(pid_path, encoding="utf-8") as f:
+                raw = f.read().strip()
+            return int(raw) if raw else None
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _write_pid() -> None:
+        try:
+            with open(pid_path, "w", encoding="utf-8") as f:
+                f.write(str(os.getpid()))
+        except Exception:
+            logger.debug(
+                "Failed to write PID into lock file %s",
+                pid_path,
+                exc_info=True,
+            )
+
+    def _print_wait_hint(pid: int | None) -> None:
+        if not wait_message:
+            return
+        pid_str = f" (pid={pid})" if pid is not None else ""
+        if pid is not None:
+            check_hint = (
+                f"If this looks stuck, first check the PID is running "
+                f"(e.g. `ps -p {pid}`), then if you are sure no process is "
+                f"running delete: {lock_path} (and {pid_path})"
+            )
+        else:
+            check_hint = f"If this looks stuck, delete: {lock_path} (and {pid_path})"
+        print(f"{wait_message}{pid_str}\n{check_hint}")
+
+    acquired = False
+    try:
+        if wait_message:
+            try:
+                lock.acquire(timeout=0)
+            except Timeout:
+                _print_wait_hint(_read_pid())
+                lock.acquire(timeout=timeout)
+        else:
+            lock.acquire(timeout=timeout)
+
+        acquired = True
+        _write_pid()
+        yield
+    finally:
+        if acquired:
+            try:
+                os.remove(pid_path)
+            except OSError:
+                logger.debug(
+                    "Failed to remove PID file %s during lock cleanup",
+                    pid_path,
+                    exc_info=True,
+                )
+            finally:
+                lock.release()
+
+
+@dataclass
+class DatasetIdentifier:
+    namespace: str
+    project: str
+    name: str
+    version: str | None
+
+    def __hash__(self):
+        return hash(f"{self.namespace}_{self.project}_{self.name}_{self.version}")
+
+    def __eq__(self, other):
+        if not isinstance(other, DatasetIdentifier):
+            return False
+        return (
+            self.namespace == other.namespace
+            and self.project == other.project
+            and self.name == other.name
+            and self.version == other.version
+        )
+
+    @classmethod
+    def from_dataset_dependency(
+        cls, dataset_dependency: "DatasetDependency"
+    ) -> "DatasetIdentifier":
+        return cls(
+            namespace=dataset_dependency.namespace,
+            project=dataset_dependency.project,
+            name=dataset_dependency.name,
+            version=dataset_dependency.version,
+        )
+
+    def __str__(self) -> str:
+        """Format DatasetIdentifier as a string: namespace.project.name@version"""
+        dataset_name = ".".join(
+            v for v in [self.namespace, self.project, self.name] if v
+        )
+        if self.version:
+            dataset_name += f"@{self.version}"
+        return dataset_name
 
 
 def system_config_dir():
@@ -402,18 +540,6 @@ def show_records(
     return show_df(df, collapse_columns=collapse_columns, system_columns=system_columns)
 
 
-class JSONSerialize(json.JSONEncoder):
-    def default(self, obj):
-        if isinstance(obj, bytes):
-            return list(obj[:1024])
-        if isinstance(obj, (datetime, date)):
-            return obj.isoformat()
-        if isinstance(obj, UUID):
-            return str(obj)
-
-        return super().default(obj)
-
-
 def inside_colab() -> bool:
     try:
         from google import colab  # type: ignore[attr-defined]  # noqa: F401
@@ -433,7 +559,7 @@ def inside_notebook() -> bool:
 
     if shell == "ZMQInteractiveShell":
         try:
-            import IPython
+            import IPython  # type: ignore[import-not-found]
 
             return IPython.__version__ >= "6.0.0"
         except ImportError:
@@ -489,6 +615,78 @@ def uses_glob(path: str) -> bool:
     return glob.has_magic(os.path.basename(os.path.normpath(path)))
 
 
+def checkpoints_enabled(ephemeral: bool = False) -> bool:
+    """
+    Check if checkpoints are enabled for the current execution context.
+
+    Checkpoints are automatically disabled when:
+    1. Running in ephemeral mode (no persistent metastore objects)
+    2. A user-created subprocess (detected via DATACHAIN_MAIN_PROCESS_PID mismatch)
+    3. A thread that is not the original checkpoint owner thread
+
+    DataChain-controlled subprocesses can enable checkpoints by setting
+    DATACHAIN_SUBPROCESS=1.
+
+    This is because each checkpoint hash depends on the hash of the previous
+    checkpoint, making the computation order-sensitive. Concurrent execution can
+    cause non-deterministic hash calculations due to unpredictable ordering.
+
+    Returns:
+        bool: True if checkpoints are enabled, False if disabled.
+    """
+    if ephemeral:
+        return False
+    # DataChain-controlled subprocess - explicitly allowed
+    if os.environ.get("DATACHAIN_SUBPROCESS"):
+        return True
+
+    # Track the original main process PID via environment variable
+    # This env var is inherited by all child processes (fork and spawn)
+    current_pid = str(os.getpid())
+    main_pid = os.environ.get("DATACHAIN_MAIN_PROCESS_PID")
+
+    if main_pid is None:
+        # First call ever - we're the main process, set the marker
+        os.environ["DATACHAIN_MAIN_PROCESS_PID"] = current_pid
+        main_pid = current_pid
+
+    if current_pid != main_pid:
+        # We're in a subprocess without DATACHAIN_SUBPROCESS flag
+        # This is a user-created subprocess - disable checkpoints
+        with _CheckpointState._lock:
+            if not _CheckpointState.warning_shown:
+                logger.warning(
+                    "User subprocess detected. "
+                    "Checkpoints will not be created in this subprocess. "
+                    "Previously created checkpoints remain valid and can be reused."
+                )
+                _CheckpointState.warning_shown = True
+        return False
+
+    # Thread ownership tracking - first thread to call becomes the owner
+    # Threads share memory, so all threads see the same _CheckpointState
+    current_thread = threading.current_thread().ident
+    with _CheckpointState._lock:
+        if _CheckpointState.owner_thread is None:
+            _CheckpointState.owner_thread = current_thread
+
+        is_owner = current_thread == _CheckpointState.owner_thread
+
+        if not is_owner and not _CheckpointState.disabled:
+            _CheckpointState.disabled = True
+            if not _CheckpointState.warning_shown:
+                logger.warning(
+                    "Concurrent thread detected. "
+                    "New checkpoints will not be created from this point forward. "
+                    "Previously created checkpoints remain valid and can be reused. "
+                    "To enable checkpoints, ensure your script runs sequentially "
+                    "without user-created threading."
+                )
+                _CheckpointState.warning_shown = True
+
+        return is_owner and not _CheckpointState.disabled
+
+
 def env2bool(var, undefined=False):
     """
     undefined: return value if env var is unset
@@ -529,7 +727,7 @@ def safe_closing(thing: T) -> Iterator[T]:
         yield thing
     finally:
         if hasattr(thing, "close"):
-            thing.close()
+            thing.close()  # type: ignore[attr-defined]
 
 
 def getenv_bool(name: str, default: bool = False) -> bool:
@@ -543,3 +741,26 @@ def ensure_sequence(x) -> Sequence:
     if isinstance(x, Sequence) and not isinstance(x, (str, bytes)):
         return x
     return [x]
+
+
+def with_last_flag(iterable):
+    """
+    Returns flag saying is this element the last in the iterator or not, together
+    with the element.
+
+    Example:
+    for item, is_last in with_last_flag(my_gen()):
+        ...
+    """
+    it = iter(iterable)
+    try:
+        prev = next(it)
+    except StopIteration:
+        return
+
+    for item in it:
+        yield prev, False
+        prev = item
+
+    # last item
+    yield prev, True

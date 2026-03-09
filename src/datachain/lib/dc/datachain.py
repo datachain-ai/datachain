@@ -1,5 +1,5 @@
 import copy
-import hashlib
+import logging
 import os
 import os.path
 import sys
@@ -10,7 +10,6 @@ from typing import (
     TYPE_CHECKING,
     Any,
     BinaryIO,
-    ClassVar,
     Literal,
     TypeVar,
     cast,
@@ -18,15 +17,16 @@ from typing import (
 )
 
 import sqlalchemy
-import ujson as json
 from pydantic import BaseModel
 from sqlalchemy.sql.elements import ColumnElement
 from tqdm import tqdm
 
-from datachain import semver
-from datachain.dataset import DatasetRecord
+from datachain import json, semver
+from datachain.checkpoint_event import CheckpointEventType, CheckpointStepType
+from datachain.dataset import DatasetRecord, create_dataset_full_name
 from datachain.delta import delta_disabled
 from datachain.error import (
+    JobAncestryDepthExceededError,
     ProjectCreateNotAllowedError,
     ProjectNotFoundError,
 )
@@ -42,11 +42,14 @@ from datachain.lib.data_model import (
     StandardType,
     dict_to_data_model,
 )
-from datachain.lib.file import EXPORT_FILES_MAX_THREADS, ArrowRow, FileExporter
+from datachain.lib.file import EXPORT_FILES_MAX_THREADS, ArrowRow, File, FileExporter
 from datachain.lib.file import ExportPlacement as FileExportPlacement
 from datachain.lib.model_store import ModelStore
 from datachain.lib.settings import Settings
-from datachain.lib.signal_schema import SignalResolvingError, SignalSchema
+from datachain.lib.signal_schema import (
+    SignalResolvingError,
+    SignalSchema,
+)
 from datachain.lib.udf import Aggregator, BatchMapper, Generator, Mapper, UDFBase
 from datachain.lib.udf_signature import UdfSignature
 from datachain.lib.utils import DataChainColumnError, DataChainParamsError
@@ -60,7 +63,13 @@ from datachain.query.dataset import (
 )
 from datachain.query.schema import DEFAULT_DELIMITER, Column
 from datachain.sql.functions import path as pathfunc
-from datachain.utils import batched_it, env2bool, inside_notebook, row_to_nested_dict
+from datachain.utils import (
+    batched_it,
+    checkpoints_enabled,
+    env2bool,
+    inside_notebook,
+    row_to_nested_dict,
+)
 
 from .database import DEFAULT_DATABASE_BATCH_SIZE
 from .utils import (
@@ -74,6 +83,8 @@ from .utils import (
     is_studio,
     resolve_columns,
 )
+
+logger = logging.getLogger("datachain")
 
 C = Column
 
@@ -177,12 +188,6 @@ class DataChain:
         ```
     """
 
-    DEFAULT_FILE_RECORD: ClassVar[dict] = {
-        "source": "",
-        "path": "",
-        "size": 0,
-    }
-
     def __init__(
         self,
         query: DatasetQuery,
@@ -192,8 +197,9 @@ class DataChain:
         _sys: bool = False,
     ) -> None:
         """Don't instantiate this directly, use one of the from_XXX constructors."""
-        self._query = query
         self._settings = settings
+        self._query = query
+        self._query.checkpoints_enabled = self._checkpoints_enabled
         self.signals_schema = signal_schema
         self._setup: dict = setup or {}
         self._sys = _sys
@@ -291,6 +297,22 @@ class DataChain:
         return self._query.session
 
     @property
+    def _checkpoints_enabled(self) -> bool:
+        return checkpoints_enabled(ephemeral=self._settings.ephemeral)
+
+    @property
+    def job(self) -> Job:
+        """
+        Get existing job if running in SaaS, or creating new one if running locally.
+        """
+        if self._settings.ephemeral:
+            raise RuntimeError(
+                "Cannot access job in ephemeral mode. "
+                "Jobs are not created when running with .settings(ephemeral=True)."
+            )
+        return self.session.get_or_create_job()
+
+    @property
     def name(self) -> str | None:
         """Name of the underlying dataset, if there is one."""
         return self._query.name
@@ -309,6 +331,7 @@ class DataChain:
             self.name,
             namespace_name=self._query.project.namespace.name,
             project_name=self._query.project.name,
+            include_incomplete=False,
         )
 
     def __or__(self, other: "Self") -> "Self":
@@ -364,6 +387,7 @@ class DataChain:
         min_task_size: int | None = None,
         batch_size: int | None = None,
         sys: bool | None = None,
+        ephemeral: bool | None = None,
     ) -> "Self":
         """
         Set chain execution parameters. Returns the chain itself, allowing method
@@ -387,6 +411,10 @@ class DataChain:
             batch_size: Number of rows per insert by UDF to fine tune and balance speed
                 and memory usage. This might be useful when processing large rows
                 or when running into memory issues. Defaults to 2000.
+            ephemeral: If True, no persistent objects are created in the metastore
+                (no jobs, checkpoints, or datasets). UDF execution still uses
+                temporary tables. Calling .save() in ephemeral mode will raise
+                an error.
 
         Example:
             ```py
@@ -410,13 +438,14 @@ class DataChain:
                 project=project,
                 min_task_size=min_task_size,
                 batch_size=batch_size,
+                ephemeral=ephemeral,
             )
         )
         return self._evolve(settings=settings, _sys=sys)
 
     def reset_settings(self, settings: Settings | None = None) -> "Self":
         """Reset all chain settings to default values."""
-        self._settings = settings if settings else Settings()
+        self._settings = settings or Settings()
         return self
 
     @classmethod
@@ -586,19 +615,6 @@ class DataChain:
             signal_schema=self.signals_schema | SignalSchema({"sys": Sys}),
         )
 
-    def _calculate_job_hash(self, job_id: str) -> str:
-        """
-        Calculates hash of the job at the place of this chain's save method.
-        Hash is calculated using previous job checkpoint hash (if exists) and
-        adding hash of this chain to produce new hash.
-        """
-        last_checkpoint = self.session.catalog.metastore.get_last_checkpoint(job_id)
-
-        return hashlib.sha256(
-            (bytes.fromhex(last_checkpoint.hash) if last_checkpoint else b"")
-            + bytes.fromhex(self.hash())
-        ).hexdigest()
-
     def save(  # type: ignore[override]
         self,
         name: str,
@@ -624,6 +640,12 @@ class DataChain:
                 Available values: `major`, `minor` or `patch`. Default is `patch`.
         """
 
+        if self._settings.ephemeral:
+            raise RuntimeError(
+                "Cannot save datasets in ephemeral mode. "
+                "Remove .settings(ephemeral=True) to save datasets."
+            )
+
         catalog = self.session.catalog
 
         result = None  # result chain that will be returned at the end
@@ -632,9 +654,6 @@ class DataChain:
         self._validate_version(version)
         self._validate_update_version(update_version)
 
-        # get existing job if running in SaaS, or creating new one if running locally
-        job = self.session.get_or_create_job()
-
         namespace_name, project_name, name = catalog.get_full_dataset_name(
             name,
             namespace_name=self._settings.namespace,
@@ -642,8 +661,19 @@ class DataChain:
         )
         project = self._get_or_create_project(namespace_name, project_name)
 
+        # Calculate hash including dataset name and job context to avoid conflicts
+        import hashlib
+
+        base_hash = self._query.hash(job_aware=True)
+        _hash = hashlib.sha256(
+            (base_hash + f"{namespace_name}/{project_name}/{name}").encode("utf-8")
+        ).hexdigest()
+
         # Checkpoint handling
-        _hash, result = self._resolve_checkpoint(name, project, job, kwargs)
+        result = self._resolve_checkpoint(name, project, _hash, kwargs)
+        if bool(result):
+            # Checkpoint was found and reused
+            print(f"Checkpoint found for dataset '{name}', skipping creation")
 
         # Schema preparation
         schema = self.signals_schema.clone_without_sys_signals().serialize()
@@ -663,12 +693,26 @@ class DataChain:
                     attrs=attrs,
                     feature_schema=schema,
                     update_version=update_version,
-                    job_id=job.id,
                     **kwargs,
                 )
             )
 
-        catalog.metastore.create_checkpoint(job.id, _hash)  # type: ignore[arg-type]
+            # Log checkpoint event for new dataset save
+            assert result.version is not None
+            full_dataset_name = create_dataset_full_name(
+                namespace_name, project_name, name, result.version
+            )
+            catalog.metastore.log_checkpoint_event(
+                job_id=self.job.id,
+                event_type=CheckpointEventType.DATASET_SAVE_COMPLETED,
+                step_type=CheckpointStepType.DATASET_SAVE,
+                run_group_id=self.job.run_group_id,
+                dataset_name=full_dataset_name,
+                checkpoint_hash=_hash,
+            )
+
+        if self._checkpoints_enabled:
+            catalog.metastore.get_or_create_checkpoint(self.job.id, _hash)
         return result
 
     def _validate_version(self, version: str | None) -> None:
@@ -697,29 +741,92 @@ class DataChain:
         self,
         name: str,
         project: Project,
-        job: Job,
+        job_hash: str,
         kwargs: dict,
-    ) -> tuple[str, "DataChain | None"]:
+    ) -> "DataChain | None":
         """Check if checkpoint exists and return cached dataset if possible."""
         from .datasets import read_dataset
 
         metastore = self.session.catalog.metastore
-        checkpoints_reset = env2bool("DATACHAIN_CHECKPOINTS_RESET", undefined=True)
-
-        _hash = self._calculate_job_hash(job.id)
+        ignore_checkpoints = env2bool("DATACHAIN_IGNORE_CHECKPOINTS", undefined=False)
 
         if (
-            job.parent_job_id
-            and not checkpoints_reset
-            and metastore.find_checkpoint(job.parent_job_id, _hash)
+            self._checkpoints_enabled
+            and self.job.rerun_from_job_id
+            and not ignore_checkpoints
+            and metastore.find_checkpoint(self.job.rerun_from_job_id, job_hash)
         ):
-            # checkpoint found → reuse dataset
-            chain = read_dataset(
-                name, namespace=project.namespace.name, project=project.name, **kwargs
-            )
-            return _hash, chain
+            # checkpoint found → find which dataset version to reuse
 
-        return _hash, None
+            # Find dataset version that was created by any ancestor job
+            try:
+                dataset_version = metastore.get_dataset_version_for_job_ancestry(
+                    name,
+                    project.namespace.name,
+                    project.name,
+                    self.job.id,
+                )
+            except JobAncestryDepthExceededError:
+                raise JobAncestryDepthExceededError(
+                    "Job continuation chain is too deep. "
+                    "Please run the job from scratch without continuing from a "
+                    "parent job."
+                ) from None
+
+            if not dataset_version:
+                logger.debug(
+                    "Checkpoint found but no dataset version for '%s' "
+                    "in job ancestry (job_id=%s). Creating new version.",
+                    name,
+                    self.job.id,
+                )
+                # Dataset version not found (e.g deleted by user) - skip
+                # checkpoint and recreate
+                return None
+
+            logger.debug(
+                "Reusing dataset version '%s' v%s from job ancestry "
+                "(job_id=%s, dataset_version_id=%s)",
+                name,
+                dataset_version.version,
+                self.job.id,
+                dataset_version.id,
+            )
+
+            # Read the specific version from ancestry
+            chain = read_dataset(
+                name,
+                namespace=project.namespace.name,
+                project=project.name,
+                version=dataset_version.version,
+                **kwargs,
+            )
+
+            # Link current job to this dataset version (not creator).
+            # This also updates dataset_version.job_id.
+            metastore.link_dataset_version_to_job(
+                dataset_version.id,
+                self.job.id,
+                is_creator=False,
+            )
+
+            # Log checkpoint event
+            full_dataset_name = create_dataset_full_name(
+                project.namespace.name, project.name, name, dataset_version.version
+            )
+            metastore.log_checkpoint_event(
+                job_id=self.job.id,
+                event_type=CheckpointEventType.DATASET_SAVE_SKIPPED,
+                step_type=CheckpointStepType.DATASET_SAVE,
+                run_group_id=self.job.run_group_id,
+                dataset_name=full_dataset_name,
+                checkpoint_hash=job_hash,
+                rerun_from_job_id=self.job.rerun_from_job_id,
+            )
+
+            return chain
+
+        return None
 
     def _handle_delta(
         self,
@@ -1128,7 +1235,8 @@ class DataChain:
             the order of the records in the chain is important.
             Using `order_by` directly before `limit`, `to_list` and similar methods
             will give expected results.
-            See https://github.com/iterative/datachain/issues/477 for further details.
+            See https://github.com/datachain-ai/datachain/issues/477
+            for further details.
         """
         if descending:
             args = tuple(sqlalchemy.desc(a) for a in args)
@@ -1153,19 +1261,41 @@ class DataChain:
         )
 
     def select(self, *args: str) -> "Self":
-        """Select only a specified set of signals."""
-        new_schema = self.signals_schema.resolve(*args)
+        """Select only a specified set of signals.
+
+        Nested selections (e.g. ``"file.path"``) preserve the parent object by
+        generating partial models rather than flattening into standalone fields.
+        """
+        if not args:
+            return self
+        new_schema = self.signals_schema.to_partial(*args)
+
+        if "sys" in self.signals_schema.values and "sys" not in new_schema.values:
+            new_schema = SignalSchema({"sys": self.signals_schema.values["sys"]}) | (
+                new_schema
+            )
+
         columns = new_schema.db_signals()
         return self._evolve(
-            query=self._query.select(*columns), signal_schema=new_schema
+            query=self._query.select(*columns),
+            signal_schema=new_schema,
         )
 
     def select_except(self, *args: str) -> "Self":
-        """Select all the signals expect the specified signals."""
+        """Select all signals except the specified ones.
+
+        Supports excluding nested fields (e.g. ``"file.path"``), in which case a
+        partial model is generated for the parent signal.
+        """
+        if not args:
+            return self
+
         new_schema = self.signals_schema.select_except_signals(*args)
+
         columns = new_schema.db_signals()
         return self._evolve(
-            query=self._query.select(*columns), signal_schema=new_schema
+            query=self._query.select(*columns),
+            signal_schema=new_schema,
         )
 
     @delta_disabled  # type: ignore[arg-type]
@@ -1517,13 +1647,16 @@ class DataChain:
                 print(file)
             ```
         """
-        chain = self.select(*cols) if cols else self
-        signals_schema = chain._effective_signals_schema
+        signals_schema = (
+            self.signals_schema.resolve(*cols)
+            if cols
+            else self._effective_signals_schema
+        )
         db_signals = signals_schema.db_signals()
         with self._query.ordered_select(*db_signals).as_iterable() as rows:
             for row in rows:
                 ret = signals_schema.row_to_features(
-                    row, catalog=chain.session.catalog, cache=chain._settings.cache
+                    row, catalog=self.session.catalog, cache=self._settings.cache
                 )
                 yield tuple(ret)
 
@@ -1760,16 +1893,18 @@ class DataChain:
 
         if on is None and right_on is None:
             other_columns = set(other._effective_signals_schema.db_signals())
-            signals = [
+            common_signals = [
                 c
                 for c in self._effective_signals_schema.db_signals()
                 if c in other_columns
             ]
-            if not signals:
+            if not common_signals:
                 raise DataChainParamsError("subtract(): no common columns")
+            signals = list(zip(common_signals, common_signals, strict=False))
         elif on is not None and right_on is None:
             right_on = on
-            signals = list(self.signals_schema.resolve(*on).db_signals())
+            resolved_signals = list(self.signals_schema.resolve(*on).db_signals())
+            signals = list(zip(resolved_signals, resolved_signals, strict=False))  # type: ignore[arg-type]
         elif on is None and right_on is not None:
             raise DataChainParamsError(
                 "'on' must be specified when 'right_on' is provided"
@@ -2230,9 +2365,9 @@ class DataChain:
             partition_cols: Column names by which to partition the dataset.
             chunk_size: The chunk size of results to read and convert to columnar
                 data, to avoid running out of memory.
-            fs_kwargs: Optional kwargs to pass to the fsspec filesystem, used only for
-                write, for fsspec-type URLs, such as s3:// or hf:// when
-                provided as the destination path.
+            fs_kwargs: Optional kwargs forwarded to the underlying fsspec filesystem
+                when writing (e.g., s3://, gs://, hf://), fsspec-specific options
+                are supported.
         """
         import pyarrow as pa
         import pyarrow.parquet as pq
@@ -2318,123 +2453,102 @@ class DataChain:
         delimiter: str = ",",
         fs_kwargs: dict[str, Any] | None = None,
         **kwargs,
-    ) -> None:
-        """Save chain to a csv (comma-separated values) file.
+    ) -> File:
+        """Save chain to a csv (comma-separated values) file and return the stored
+        `File`.
 
         Parameters:
             path: Path to save the file. This supports local paths as well as
                 remote paths, such as s3:// or hf:// with fsspec.
             delimiter: Delimiter to use for the resulting file.
-            fs_kwargs: Optional kwargs to pass to the fsspec filesystem, used only for
-                write, for fsspec-type URLs, such as s3:// or hf:// when
-                provided as the destination path.
+            fs_kwargs: Optional kwargs forwarded to the underlying fsspec filesystem
+                when writing (e.g., s3://, gs://, hf://), fsspec-specific options
+                are supported.
+        Returns:
+            File: The stored file with refreshed metadata (version, etag, size).
         """
         import csv
 
-        opener = open
-
-        if isinstance(path, str) and "://" in path:
-            from datachain.client.fsspec import Client
-
-            fs_kwargs = {
-                **self._query.catalog.client_config,
-                **(fs_kwargs or {}),
-            }
-
-            client = Client.get_implementation(path)
-
-            fsspec_fs = client.create_fs(**fs_kwargs)
-
-            opener = fsspec_fs.open
+        target = File.at(path, session=self.session)
 
         headers, _ = self._effective_signals_schema.get_headers_with_length()
         column_names = [".".join(filter(None, header)) for header in headers]
 
-        results_iter = self._leaf_values()
-
-        with opener(path, "w", newline="") as f:
+        with target.open("w", newline="", client_config=fs_kwargs) as f:
             writer = csv.writer(f, delimiter=delimiter, **kwargs)
             writer.writerow(column_names)
-
-            for row in results_iter:
+            for row in self._leaf_values():
                 writer.writerow(row)
+
+        return target
 
     def to_json(
         self,
         path: str | os.PathLike[str],
         fs_kwargs: dict[str, Any] | None = None,
         include_outer_list: bool = True,
-    ) -> None:
-        """Save chain to a JSON file.
+    ) -> File:
+        """Save chain to a JSON file and return the stored `File`.
 
         Parameters:
             path: Path to save the file. This supports local paths as well as
                 remote paths, such as s3:// or hf:// with fsspec.
-            fs_kwargs: Optional kwargs to pass to the fsspec filesystem, used only for
-                write, for fsspec-type URLs, such as s3:// or hf:// when
-                provided as the destination path.
+            fs_kwargs: Optional kwargs forwarded to the underlying fsspec filesystem
+                when writing (e.g., s3://, gs://, hf://), fsspec-specific options
+                are supported.
             include_outer_list: Sets whether to include an outer list for all rows.
                 Setting this to True makes the file valid JSON, while False instead
                 writes in the JSON lines format.
+        Returns:
+            File: The stored file with refreshed metadata (version, etag, size).
         """
-        opener = open
-
-        if isinstance(path, str) and "://" in path:
-            from datachain.client.fsspec import Client
-
-            fs_kwargs = {
-                **self._query.catalog.client_config,
-                **(fs_kwargs or {}),
-            }
-
-            client = Client.get_implementation(path)
-
-            fsspec_fs = client.create_fs(**fs_kwargs)
-
-            opener = fsspec_fs.open
-
+        target = File.at(path, session=self.session)
         headers, _ = self._effective_signals_schema.get_headers_with_length()
-        headers = [list(filter(None, header)) for header in headers]
+        headers = [list(filter(None, h)) for h in headers]
+        with target.open("wb", client_config=fs_kwargs) as f:
+            self._write_json_stream(f, headers, include_outer_list)
+        return target
 
+    def _write_json_stream(
+        self,
+        f: IO[bytes],
+        headers: list[list[str]],
+        include_outer_list: bool,
+    ) -> None:
         is_first = True
-
-        with opener(path, "wb") as f:
-            if include_outer_list:
-                # This makes the file JSON instead of JSON lines.
-                f.write(b"[\n")
-            for row in self._leaf_values():
-                if not is_first:
-                    if include_outer_list:
-                        # This makes the file JSON instead of JSON lines.
-                        f.write(b",\n")
-                    else:
-                        f.write(b"\n")
-                else:
-                    is_first = False
-                f.write(
-                    json.dumps(
-                        row_to_nested_dict(headers, row), ensure_ascii=False
-                    ).encode("utf-8")
-                )
-            if include_outer_list:
-                # This makes the file JSON instead of JSON lines.
-                f.write(b"\n]\n")
+        if include_outer_list:
+            f.write(b"[\n")
+        for row in self._leaf_values():
+            if not is_first:
+                f.write(b",\n" if include_outer_list else b"\n")
+            else:
+                is_first = False
+            f.write(
+                json.dumps(
+                    row_to_nested_dict(headers, row),
+                    ensure_ascii=False,
+                ).encode("utf-8")
+            )
+        if include_outer_list:
+            f.write(b"\n]\n")
 
     def to_jsonl(
         self,
         path: str | os.PathLike[str],
         fs_kwargs: dict[str, Any] | None = None,
-    ) -> None:
+    ) -> File:
         """Save chain to a JSON lines file.
 
         Parameters:
             path: Path to save the file. This supports local paths as well as
                 remote paths, such as s3:// or hf:// with fsspec.
-            fs_kwargs: Optional kwargs to pass to the fsspec filesystem, used only for
-                write, for fsspec-type URLs, such as s3:// or hf:// when
-                provided as the destination path.
+            fs_kwargs: Optional kwargs forwarded to the underlying fsspec filesystem
+                when writing (e.g., s3://, gs://, hf://), fsspec-specific options
+                are supported.
+        Returns:
+            File: The stored file with refreshed metadata (version, etag, size).
         """
-        self.to_json(path, fs_kwargs, include_outer_list=False)
+        return self.to_json(path, fs_kwargs, include_outer_list=False)
 
     def to_database(
         self,

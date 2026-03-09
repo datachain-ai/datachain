@@ -8,9 +8,16 @@ from datachain.lib.utils import DataChainParamsError
 
 class ValuesToTupleError(DataChainParamsError):
     def __init__(self, ds_name: str, msg: str):
+        self.ds_name = ds_name
+        self.msg = msg
+
         if ds_name:
             ds_name = f"' {ds_name}'"
+
         super().__init__(f"Cannot convert signals for dataset{ds_name}: {msg}")
+
+    def __reduce__(self):
+        return ValuesToTupleError, (self.ds_name, self.msg)
 
 
 def _find_first_non_none(sequence: Sequence[Any]) -> Any | None:
@@ -164,7 +171,7 @@ def values_to_tuples(
     length = -1
     for k, v in fr_map.items():
         if not isinstance(v, Sequence) or isinstance(v, str):  # type: ignore[unreachable]
-            raise ValuesToTupleError(ds_name, f"signals '{k}' is not a sequence")
+            raise ValuesToTupleError(ds_name, f"signal '{k}' is not a sequence")
         len_ = len(v)
 
         if output:
