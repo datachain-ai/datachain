@@ -1063,6 +1063,34 @@ class Catalog:
 
         return num_removed
 
+    def cleanup_temp_datasets(self) -> int:
+        """
+        Clean up orphaned temporary (session_*) datasets.
+
+        Removes dataset versions whose associated job has finished
+        (COMPLETE, FAILED, or CANCELED). These are left behind when
+        a worker is killed before the session cleanup runs.
+
+        Returns:
+            Number of removed dataset versions.
+        """
+        versions_to_clean = self.metastore.get_temp_datasets_to_clean()
+
+        num_removed = 0
+        for dataset, version in versions_to_clean:
+            try:
+                self.remove_dataset_version(dataset, version)
+                num_removed += 1
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "Failed to clean temp dataset %s version %s: %s",
+                    dataset.name,
+                    version,
+                    e,
+                )
+
+        return num_removed
+
     def create_dataset_from_sources(
         self,
         name: str,

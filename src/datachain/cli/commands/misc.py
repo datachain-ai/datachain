@@ -26,6 +26,13 @@ def garbage_collect(catalog: "Catalog", checkpoint_ttl: int | None = None):
     else:
         print("  No failed dataset versions to clean up.")
 
+    print("Collecting orphaned temporary datasets...")
+    num_temp = catalog.cleanup_temp_datasets()
+    if num_temp:
+        print(f"  Removed {num_temp} orphaned temporary datasets.")
+    else:
+        print("  No orphaned temporary datasets to clean up.")
+
     print("Collecting outdated checkpoints...")
     num_checkpoints = catalog.cleanup_checkpoints(ttl_seconds=checkpoint_ttl)
     if num_checkpoints:
