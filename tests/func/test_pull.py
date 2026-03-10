@@ -288,9 +288,9 @@ def test_pull_dataset_wrong_version(
 ):
     with pytest.raises(DataChainError) as exc_info:
         catalog.pull_dataset(
-            f"ds://{REMOTE_NAMESPACE_NAME}.{REMOTE_PROJECT_NAME}.dogs@v5"
+            f"ds://{REMOTE_NAMESPACE_NAME}.{REMOTE_PROJECT_NAME}.dogs@v5.0.0"
         )
-    assert str(exc_info.value) == "Dataset dogs doesn't have version 5 on server"
+    assert str(exc_info.value) == "Dataset dogs doesn't have version 5.0.0 on server"
 
 
 @skip_if_not_sqlite

@@ -691,10 +691,7 @@ class Catalog:
         for src in sources:  # Opt: parallel
             listing: Listing | None
             if src.startswith("ds://"):
-                ds_name, ds_version = parse_dataset_uri(src)
-                ds_namespace, ds_project, ds_name = parse_dataset_name(ds_name)
-                assert ds_namespace
-                assert ds_project
+                (ds_namespace, ds_project, ds_name, ds_version) = parse_dataset_uri(src)
                 dataset = self.get_dataset(
                     ds_name,
                     namespace_name=ds_namespace,
@@ -1638,13 +1635,12 @@ class Catalog:
         studio_client = StudioClient()
 
         try:
-            remote_ds_name, version = parse_dataset_uri(remote_ds_uri)
-        except Exception as e:
+            (remote_namespace, remote_project, remote_ds_name, version) = (
+                parse_dataset_uri(remote_ds_uri)
+            )
+        except ValueError as e:
             raise DataChainError("Error when parsing dataset uri") from e
 
-        remote_namespace, remote_project, remote_ds_name = parse_dataset_name(
-            remote_ds_name
-        )
         if not remote_namespace or not remote_project:
             raise DataChainError(
                 f"Invalid fully qualified dataset name {remote_ds_name}, namespace"
