@@ -4520,9 +4520,10 @@ def test_column_compute(test_session):
 
 def test_delete_dataset_and_create_with_same_name(test_session):
     chain = dc.read_values(num=[1, 2, 3], session=test_session)
-    chain.save("nums")
+    chain.save("nums", version="1.0.0")
     dc.delete_dataset("nums", force=True, session=test_session)
-    chain.save("nums")
+    assert "nums" not in dc.datasets(session=test_session).to_values("name")
+    chain.save("nums", version="1.0.0")
     assert "nums" in dc.datasets(session=test_session).to_values("name")
 
 
