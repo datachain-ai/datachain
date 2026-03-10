@@ -22,7 +22,6 @@ else:
 
 import sqlalchemy as sa
 from sqlalchemy import Column
-from tqdm.auto import tqdm
 
 from datachain.cache import Cache
 from datachain.checkpoint import Checkpoint, CheckpointStatus
@@ -53,6 +52,7 @@ from datachain.error import (
 from datachain.lib.listing import get_listing
 from datachain.node import DirType, Node, NodeWithPath
 from datachain.nodes_thread_pool import NodesThreadPool
+from datachain.progress import tqdm
 from datachain.project import Project
 from datachain.sql.types import DateTime, SQLType
 from datachain.utils import DataChainDir, DatasetIdentifier, interprocess_file_lock

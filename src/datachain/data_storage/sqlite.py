@@ -23,7 +23,6 @@ from sqlalchemy.sql import func
 from sqlalchemy.sql.elements import BinaryExpression, BooleanClauseList
 from sqlalchemy.sql.expression import bindparam, cast
 from sqlalchemy.sql.selectable import Select
-from tqdm.auto import tqdm
 
 import datachain.sql.sqlite
 from datachain.data_storage import AbstractDBMetastore, AbstractWarehouse
@@ -37,6 +36,7 @@ from datachain.error import (
     TableMissingError,
 )
 from datachain.namespace import Namespace
+from datachain.progress import tqdm
 from datachain.project import Project
 from datachain.sql.sqlite import create_user_defined_sql_functions, sqlite_dialect
 from datachain.sql.sqlite.base import load_usearch_extension
