@@ -50,7 +50,7 @@ import datachain as dc
 
 # Stage 1: Load and filter data
 filtered = (
-    dc.read_csv("s3://mybucket/data.csv")
+    dc.read_csv("s3://mybucket/data/")
     .filter(dc.C("score") > 0.5)
     .save("filtered_data")
 )
@@ -58,7 +58,7 @@ filtered = (
 # Stage 2: Transform data
 transformed = (
     filtered
-    .map(value=lambda x: x * 2, output=float)
+    .map(value=lambda score: score * 2, output=float)
     .save("transformed_data")
 )
 
@@ -66,7 +66,8 @@ transformed = (
 result = (
     transformed
     .agg(
-        total=lambda values: sum(values),
+        total=lambda value: [sum(value)],
+        output=float,
         partition_by="category",
     )
     .save("final_results")
