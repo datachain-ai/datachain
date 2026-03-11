@@ -32,6 +32,8 @@ def read_values(
         dc.read_values(fib=[1, 2, 3, 5, 8])
         ```
     """
+    from datachain.hash_utils import hash_values as _hash_values
+
     tuple_type, output, tuples = values_to_tuples(ds_name, output, **fr_map)
 
     def _func_fr() -> Iterator[tuple_type]:  # type: ignore[valid-type]
@@ -48,6 +50,8 @@ def read_values(
         settings=settings,
         in_memory=in_memory,
     )
+    # Override seed-data hash with actual input data hash
+    chain._query._content_hash = _hash_values(**fr_map)
     if column:
         output = {column: dict_to_data_model(column, output)}  # type: ignore[arg-type]
     return chain.gen(_func_fr, output=output)

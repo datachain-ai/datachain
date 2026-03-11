@@ -67,6 +67,49 @@ def serialize_column_element(expr: str | ColumnElement) -> dict:
     return {"type": "other", "repr": str(expr)}
 
 
+def _normalize_for_hash(val):
+    """Normalize a value for deterministic JSON serialization."""
+    from pydantic import BaseModel
+
+    if val is None or isinstance(val, (str, int, float, bool)):
+        return val
+    if isinstance(val, BaseModel):
+        return val.model_dump()
+    if isinstance(val, dict):
+        return {k: _normalize_for_hash(v) for k, v in sorted(val.items())}
+    if isinstance(val, (list, tuple)):
+        return [_normalize_for_hash(v) for v in val]
+    return str(val)
+
+
+def hash_data(records: "Sequence[dict]") -> str:
+    """Compute a deterministic streaming SHA256 hash from a sequence of record dicts.
+
+    Each record is serialized individually and fed to the hasher incrementally,
+    so memory usage is constant regardless of the number of records.
+    """
+    h = hashlib.sha256()
+    for record in records:
+        normalized = {k: _normalize_for_hash(v) for k, v in sorted(record.items())}
+        h.update(json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode())
+    return h.hexdigest()
+
+
+def hash_values(**fr_map) -> str:
+    """Compute a deterministic streaming SHA256 hash from keyword-argument value
+    sequences, as used by read_values().
+    """
+    h = hashlib.sha256()
+    for key in sorted(fr_map):
+        h.update(key.encode())
+        for val in fr_map[key]:
+            normalized = _normalize_for_hash(val)
+            h.update(
+                json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode()
+            )
+    return h.hexdigest()
+
+
 def hash_column_elements(columns: ColumnLike | Sequence[ColumnLike]) -> str:
     """
     Hash a list of ColumnElements deterministically, dialect agnostic.

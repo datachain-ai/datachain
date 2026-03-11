@@ -60,12 +60,24 @@ def mock_get_listing():
         yield mock
 
 
+def test_read_records_list():
+    assert (
+        dc.read_records([{"x": 1}, {"x": 2}], schema={"x": int}).hash()
+        == "72b7a8f063617534dd32b1a4682b194af023d770be7ae77dca0ac51cfcebc133"
+    )
+
+
+def test_read_records_generator():
+    """Generators cannot be hashed deterministically yet (known limitation)."""
+    h1 = dc.read_records(({"x": i} for i in range(3)), schema={"x": int}).hash()
+    h2 = dc.read_records(({"x": i} for i in range(3)), schema={"x": int}).hash()
+    assert h1 != h2
+
+
 def test_read_values():
-    """
-    Hash of the chain started with read_values is currently inconsistent.
-    Goal of this test is just to check it doesn't break.
-    """
-    assert dc.read_values(num=[1, 2, 3]).hash() is not None
+    assert dc.read_values(num=[1, 2, 3]).hash() == (
+        "37b04ca5f63c90089d1b544da9ba43bcb6160840913e262cfeb44659cbee1b6e"
+    )
 
 
 def test_read_csv(test_session, tmp_dir):
@@ -93,12 +105,19 @@ def test_read_json(test_session, tmp_dir):
 
 
 def test_read_pandas(test_session, tmp_dir):
-    """
-    Hash of the chain started with read_pandas is currently inconsistent.
-    Goal of this test is just to check it doesn't break.
-    """
     df = pd.DataFrame(DF_DATA)
-    assert dc.read_pandas(df, session=test_session).hash() is not None
+    assert dc.read_pandas(df, session=test_session).hash() == (
+        "6771b82a927962033fc5b8d755ad653eba36f3a9dee1d40108cde54c9f1ae384"
+    )
+
+
+def test_read_hf():
+    from datasets import Dataset
+
+    ds = Dataset.from_dict(DF_DATA)
+    assert dc.read_hf(ds).hash() == (
+        "fc70f8c7eb5b3ca85cb1b29dc35f5259e47d90a425e5251966d0d93ada324664"
+    )
 
 
 def test_read_parquet(test_session, tmp_dir):
