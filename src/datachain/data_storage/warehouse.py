@@ -658,17 +658,18 @@ class AbstractWarehouse(ABC, Serializable):
         q = de.query(
             dr.select().where(dr.c("is_latest") == true()).subquery()
         ).subquery()
-        path_glob = "/".join([*path_list, glob_name])
-        dirpath = path_glob[: -len(glob_name)]
-        relpath = sa.func.substr(de.c(q, "path"), len(dirpath) + 1)
+        parent_path = "/".join(path_list)
+        where_cond = pathfunc.parent(de.c(q, "path")) == parent_path
+        if parent_path == "":
+            where_cond = where_cond & (de.c(q, "path") != "")
+        if glob_name != "*":
+            where_cond = where_cond & (
+                pathfunc.name(de.c(q, "path")).op("GLOB")(glob_name)
+            )
 
         return self.get_nodes(
             self.expand_query(de, q, dr)
-            .where(
-                (de.c(q, "path").op("GLOB")(path_glob))
-                & ~self.instr(relpath, "/")
-                & (de.c(q, "path") != dirpath)
-            )
+            .where(where_cond)
             .order_by(de.c(q, "source"), de.c(q, "path"), de.c(q, "version")),
             dr,
         )
