@@ -136,11 +136,6 @@ def read_records(
     elif not to_insert:
         to_insert = []
 
-    # Compute content hash for concrete data (lists)
-    content_hash = None
-    if isinstance(to_insert, list):
-        content_hash = hash_data(to_insert)
-
     warehouse = catalog.warehouse
     dr = warehouse.dataset_rows(dsr)
     table = dr.get_table()
@@ -165,6 +160,6 @@ def read_records(
     )
 
     chain = read_dataset(name=dsr.full_name, session=session, settings=settings)
-    if content_hash:
-        chain._query._content_hash = content_hash
+    if isinstance(to_insert, list):
+        chain._query._content_hash = hash_data(to_insert)
     return chain
