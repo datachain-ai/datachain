@@ -5,6 +5,7 @@ import sqlalchemy
 from pydantic import BaseModel
 
 from datachain.dataset import DatasetStatus
+from datachain.hash_utils import hash_data
 from datachain.lib.convert.flatten import flatten
 from datachain.lib.data_model import DataType
 from datachain.lib.model_store import ModelStore
@@ -158,4 +159,7 @@ def read_records(
         dsr, DatasetStatus.COMPLETE, version=dsr.latest_version
     )
 
-    return read_dataset(name=dsr.full_name, session=session, settings=settings)
+    chain = read_dataset(name=dsr.full_name, session=session, settings=settings)
+    if isinstance(to_insert, list):
+        chain._query._content_hash = hash_data(to_insert)
+    return chain

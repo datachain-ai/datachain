@@ -1,4 +1,7 @@
+from datetime import datetime
+
 import pytest
+from pydantic import BaseModel
 from sqlalchemy import (
     Float,
     Integer,
@@ -16,7 +19,12 @@ from sqlalchemy import (
 from sqlalchemy import func as sa_func
 
 from datachain import C, func
-from datachain.hash_utils import hash_callable, hash_column_elements
+from datachain.hash_utils import (
+    hash_callable,
+    hash_column_elements,
+    hash_data,
+    hash_values,
+)
 
 
 def double(x):
@@ -423,3 +431,97 @@ def test_hash_column_elements_single_element():
     single_hash = hash_column_elements(C("name"))
     list_hash = hash_column_elements([C("name")])
     assert single_hash == list_hash
+
+
+# ---- hash_data / hash_values tests ----
+
+
+class _Person(BaseModel):
+    name: str
+    age: int
+
+
+class _Address(BaseModel):
+    city: str
+
+
+class _Employee(BaseModel):
+    name: str
+    addr: _Address
+
+
+@pytest.mark.parametrize(
+    "records,expected",
+    [
+        ([], "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"),
+        ([{}], "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"),
+        (
+            [{"x": 1}],
+            "5041bf1f713df204784353e82f6a4a535931cb64f1f4b4a5aeaffcb720918b22",
+        ),
+        (
+            [{"x": 1}, {"x": 2}, {"x": 3}],
+            "b666ef6aea469103ee7fb7af20732681604bb74fd64660eaef8f38d5895b52ab",
+        ),
+        (
+            [{"s": "hello", "i": 42, "f": 3.14, "b": True, "n": None}],
+            "a9c7cb80f63c5250f017a66d7e66e24e26e5f68e5c34cb76abb78fcdf9e5fa7f",
+        ),
+        (
+            [{"person": _Person(name="Alice", age=30)}],
+            "fda5c302c1148b50c8c459f9fc8d6e8320be60b7996d550f21a8dd07b6fb9df7",
+        ),
+        (
+            [{"emp": _Employee(name="Bob", addr=_Address(city="NYC"))}],
+            "730b6b3564e1e6701735f3715740ac80d6d61ca110546c77251e03e53723e0ce",
+        ),
+        (
+            [{"meta": {"key": "val", "num": 1}}],
+            "6250568f1c5746c46b42147ae8997382bf7380a1e2b68bec61fb84149e4dd07c",
+        ),
+        (
+            [{"tags": [1, 2, 3]}],
+            "8d29f57624dabfa3f60343092f1a72938971b85568dbe1b9e251ac27d264a83d",
+        ),
+        (
+            [{"coords": (1.0, 2.0)}],
+            "8706809744dc93aebda51625e3bf15c9134a4c7637d6822a5a9473591e18fcb8",
+        ),
+        (
+            [{"ts": datetime(2024, 1, 1, 12, 0, 0)}],
+            "fe1d38f42c181ca1d4522de3f4faf3779c6d155139641a21f9c745493032b0f6",
+        ),
+        (
+            [{"data": b"hello"}],
+            "985b5c54920cb559f8ae1926e8ecaa81114ab19cd76df4a6e872d01bd747197a",
+        ),
+    ],
+)
+def test_hash_data(records, expected):
+    assert hash_data(records) == expected
+
+
+def test_hash_data_key_order_invariant():
+    assert hash_data([{"b": 2, "a": 1}]) == hash_data([{"a": 1, "b": 2}])
+
+
+@pytest.mark.parametrize(
+    "kwargs,expected",
+    [
+        ({}, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"),
+        (
+            {"num": [1, 2, 3]},
+            "1fed18a6d326406c3c60459404ec8028e93b689a33fce56ff8d4587184405130",
+        ),
+        (
+            {"name": ["Alice", "Bob"], "age": [30, 25]},
+            "3f9cfde1f544cac4a3cf986c91c96fa32470f271997591469c2b8e34015933ed",
+        ),
+        (
+            {"person": [_Person(name="Alice", age=30)]},
+            "3a6c8fa67bca8e596064456c09a77e146ce59d218370f6253a1ace377835b2b1",
+        ),
+    ],
+)
+def test_hash_values(kwargs, expected):
+    assert hash_values(**kwargs) == expected

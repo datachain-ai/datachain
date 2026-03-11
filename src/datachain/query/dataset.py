@@ -2147,6 +2147,7 @@ class DatasetQuery:
         self.listing_fn: Callable | None = None
         self.update = update
         self.checkpoints_enabled: bool = True
+        self._content_hash: str | None = None
 
         self.list_ds_name: str | None = None
 
@@ -2192,6 +2193,8 @@ class DatasetQuery:
 
     @property
     def _starting_step_hash(self) -> str:
+        if self._content_hash:
+            return self._content_hash
         if self.starting_step:
             return self.starting_step.hash()
         assert self.list_ds_name
