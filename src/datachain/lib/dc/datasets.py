@@ -11,7 +11,7 @@ from datachain.lib.projects import get as get_project
 from datachain.lib.settings import Settings
 from datachain.lib.signal_schema import SignalSchema
 from datachain.query import Session
-from datachain.query.dataset import DatasetQuery
+from datachain.query.dataset import DatasetQuery, DeltaSpec
 
 from .utils import Sys, is_studio
 from .values import read_values
@@ -211,12 +211,16 @@ def read_dataset(
     chain = DataChain(query, _settings, signals_schema)
 
     if delta:
-        chain = chain._as_delta(
-            on=delta_on,
-            right_on=delta_result_on,
-            compare=delta_compare,
-            delta_retry=delta_retry,
-            delta_unsafe=delta_unsafe,
+        if delta_on is None:
+            raise ValueError("'delta on' fields must be defined")
+        query.set_delta_spec(
+            DeltaSpec(
+                on=delta_on,
+                right_on=delta_result_on,
+                compare=delta_compare,
+                delta_retry=delta_retry,
+                delta_unsafe=delta_unsafe,
+            )
         )
 
     return chain

@@ -290,6 +290,319 @@ def test_delta_update_unsafe(test_session):
     }
 
 
+def test_delta_update_unsafe_no_changes_reuses_previous_version(test_session):
+    source_name = f"unsafe_same_source_{uuid.uuid4().hex[:8]}"
+    merge_name = f"unsafe_same_merge_{uuid.uuid4().hex[:8]}"
+    result_name = f"unsafe_same_result_{uuid.uuid4().hex[:8]}"
+
+    dc.read_values(id=[1, 2, 3], value=[1, 2, 3], session=test_session).save(merge_name)
+    dc.read_values(id=[1, 2, 3], session=test_session).save(source_name)
+
+    dc.read_dataset(
+        source_name,
+        session=test_session,
+        delta=True,
+        delta_on="id",
+        delta_unsafe=True,
+    ).merge(
+        dc.read_dataset(merge_name, session=test_session),
+        on="id",
+        inner=True,
+    ).save(result_name)
+
+    res = (
+        dc.read_dataset(
+            source_name,
+            session=test_session,
+            delta=True,
+            delta_on="id",
+            delta_unsafe=True,
+        )
+        .merge(
+            dc.read_dataset(merge_name, session=test_session),
+            on="id",
+            inner=True,
+        )
+        .save(result_name)
+    )
+
+    assert res.version == "1.0.0"
+    with pytest.raises(DatasetNotFoundError):
+        dc.read_dataset(result_name, version="1.0.1", session=test_session)
+
+
+def test_delta_update_unsafe_only_processes_new_rows(test_session):
+    source_name = f"unsafe_add_source_{uuid.uuid4().hex[:8]}"
+    merge_name = f"unsafe_add_merge_{uuid.uuid4().hex[:8]}"
+    result_name = f"unsafe_add_result_{uuid.uuid4().hex[:8]}"
+    processed: list[tuple[int, int]] = []
+
+    def record(id: int, value: int) -> int:
+        processed.append((id, value))
+        return value
+
+    dc.read_values(
+        id=[1, 2, 3, 4, 5, 6],
+        value=[1, 2, 3, 4, 5, 6],
+        session=test_session,
+    ).save(merge_name)
+    dc.read_values(id=[1, 2, 3], session=test_session).save(source_name)
+
+    (
+        dc.read_dataset(
+            source_name,
+            session=test_session,
+            delta=True,
+            delta_on="id",
+            delta_unsafe=True,
+        )
+        .merge(dc.read_dataset(merge_name, session=test_session), on="id", inner=True)
+        .map(new_value=record, params=["id", "value"], output=int)
+        .save(result_name)
+    )
+
+    assert sorted(processed) == [(1, 1), (2, 2), (3, 3)]
+
+    dc.read_values(id=[1, 2, 3, 4, 5, 6], session=test_session).save(source_name)
+
+    (
+        dc.read_dataset(
+            source_name,
+            session=test_session,
+            delta=True,
+            delta_on="id",
+            delta_unsafe=True,
+        )
+        .merge(dc.read_dataset(merge_name, session=test_session), on="id", inner=True)
+        .map(new_value=record, params=["id", "value"], output=int)
+        .save(result_name)
+    )
+
+    assert sorted(processed[3:]) == [(4, 4), (5, 5), (6, 6)]
+
+
+def test_delta_update_unsafe_replays_each_delta_source_independently(test_session):
+    left_name = f"unsafe_multi_left_{uuid.uuid4().hex[:8]}"
+    right_name = f"unsafe_multi_right_{uuid.uuid4().hex[:8]}"
+    result_name = f"unsafe_multi_result_{uuid.uuid4().hex[:8]}"
+    processed: list[int] = []
+
+    def record(id: int, left_value: int, right_value: int) -> int:
+        processed.append(id)
+        return left_value + right_value
+
+    dc.read_values(
+        id=[1, 2, 3],
+        left_value=[10, 20, 30],
+        session=test_session,
+    ).save(left_name)
+    dc.read_values(
+        id=[1, 2],
+        right_value=[100, 200],
+        session=test_session,
+    ).save(right_name)
+
+    def build_chain():
+        return (
+            dc.read_dataset(
+                left_name,
+                session=test_session,
+                delta=True,
+                delta_on="id",
+                delta_unsafe=True,
+            )
+            .merge(
+                dc.read_dataset(
+                    right_name,
+                    session=test_session,
+                    delta=True,
+                    delta_on="id",
+                    delta_unsafe=True,
+                ),
+                on="id",
+                inner=True,
+            )
+            .map(
+                joined_value=record,
+                params=["id", "left_value", "right_value"],
+                output=int,
+            )
+        )
+
+    build_chain().save(result_name)
+
+    assert sorted(processed) == [1, 2]
+    assert set(dc.read_dataset(result_name, session=test_session).to_values("id")) == {
+        1,
+        2,
+    }
+
+    dc.read_values(
+        id=[1, 2, 3],
+        right_value=[100, 200, 300],
+        session=test_session,
+    ).save(right_name)
+
+    build_chain().save(result_name)
+
+    assert processed[2:] == [3]
+    assert set(dc.read_dataset(result_name, session=test_session).to_values("id")) == {
+        1,
+        2,
+        3,
+    }
+
+
+def test_delta_update_unsafe_matches_same_named_sources_by_full_identity(test_session):
+    catalog = test_session.catalog
+    suffix = uuid.uuid4().hex[:8]
+    source_short = f"shared_source_{suffix}"
+    left_name = f"namespace_a_{suffix}.project_a_{suffix}.{source_short}"
+    right_name = f"namespace_b_{suffix}.project_b_{suffix}.{source_short}"
+    result_name = f"same_name_delta_result_{suffix}"
+    processed: list[int] = []
+
+    dc.create_project(
+        f"namespace_a_{suffix}", f"project_a_{suffix}", session=test_session
+    )
+    dc.create_project(
+        f"namespace_b_{suffix}", f"project_b_{suffix}", session=test_session
+    )
+
+    def record(id: int, left_value: int, right_value: int) -> int:
+        processed.append(id)
+        return left_value + right_value
+
+    dc.read_values(
+        id=[1, 2],
+        left_value=[10, 20],
+        session=test_session,
+    ).save(left_name)
+    dc.read_values(
+        id=[1],
+        right_value=[100],
+        session=test_session,
+    ).save(right_name)
+
+    def build_chain():
+        return (
+            dc.read_dataset(
+                left_name,
+                session=test_session,
+                delta=True,
+                delta_on="id",
+                delta_unsafe=True,
+            )
+            .merge(
+                dc.read_dataset(
+                    right_name,
+                    session=test_session,
+                    delta=True,
+                    delta_on="id",
+                    delta_unsafe=True,
+                ),
+                on="id",
+                inner=True,
+            )
+            .map(
+                joined_value=record,
+                params=["id", "left_value", "right_value"],
+                output=int,
+            )
+        )
+
+    build_chain().save(result_name)
+
+    assert processed == [1]
+    assert _get_dependencies(catalog, result_name, "1.0.0") == [
+        (left_name, "1.0.0"),
+        (right_name, "1.0.0"),
+    ]
+    assert set(dc.read_dataset(result_name, session=test_session).to_values("id")) == {
+        1
+    }
+
+    dc.read_values(
+        id=[1, 2],
+        right_value=[100, 200],
+        session=test_session,
+    ).save(right_name)
+
+    build_chain().save(result_name)
+
+    assert processed[1:] == [2]
+    assert _get_dependencies(catalog, result_name, "1.0.1") == [
+        (left_name, "1.0.0"),
+        (right_name, "1.0.1"),
+    ]
+    assert set(dc.read_dataset(result_name, session=test_session).to_values("id")) == {
+        1,
+        2,
+    }
+
+
+def test_delta_update_unsafe_replays_same_dataset_occurrences_independently(
+    test_session,
+):
+    source_name = f"unsafe_same_occ_source_{uuid.uuid4().hex[:8]}"
+    result_name = f"unsafe_same_occ_result_{uuid.uuid4().hex[:8]}"
+    processed: list[int] = []
+
+    def record(row_id: int) -> int:
+        processed.append(row_id)
+        return row_id
+
+    dc.read_values(
+        row_id=[1, 10],
+        group=[1, 1],
+        side=["L", "R"],
+        session=test_session,
+    ).save(source_name)
+
+    def build_chain():
+        left = dc.read_dataset(
+            source_name,
+            session=test_session,
+            delta=True,
+            delta_on="row_id",
+            delta_unsafe=True,
+        ).filter(C("side") == "L")
+        right = dc.read_dataset(
+            source_name,
+            session=test_session,
+            delta=True,
+            delta_on="row_id",
+            delta_unsafe=True,
+        ).filter(C("side") == "R")
+        return left.merge(right, on="group", inner=True).map(
+            seen_id=record,
+            params=["row_id"],
+            output=int,
+        )
+
+    build_chain().save(result_name)
+
+    assert processed == [1]
+    assert dc.read_dataset(result_name, session=test_session).to_values("row_id") == [1]
+
+    dc.read_values(
+        row_id=[1, 2, 10],
+        group=[1, 1, 1],
+        side=["L", "L", "R"],
+        session=test_session,
+    ).save(source_name)
+
+    build_chain().save(result_name)
+
+    assert processed[1:] == [2]
+    assert set(
+        dc.read_dataset(result_name, session=test_session).to_values("row_id")
+    ) == {
+        1,
+        2,
+    }
+
+
 def test_delta_replay_regenerates_system_columns(test_session):
     source_name = f"regen_source_{uuid.uuid4().hex[:8]}"
     result_name = f"regen_result_{uuid.uuid4().hex[:8]}"
