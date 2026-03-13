@@ -12,7 +12,7 @@ from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
 from copy import copy
 from functools import wraps
 from types import GeneratorType
-from typing import TYPE_CHECKING, Any, Protocol, TypeVar
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar, cast
 from uuid import uuid4
 
 import attrs
@@ -191,6 +191,27 @@ class Step(ABC):
             f"{self.__class__.__name__}|{self.hash_inputs()}".encode()
         ).hexdigest()
 
+    def collect_delta_sources(
+        self,
+    ) -> list["DatasetQuery"]:
+        return []
+
+    def replace_source(
+        self,
+        source: "DatasetQuery",
+        replacement: "DatasetQuery",
+    ) -> "Step":
+        return self
+
+
+@frozen
+class DeltaSpec:
+    on: str | Sequence[str]
+    right_on: str | Sequence[str] | None = None
+    compare: str | Sequence[str] | None = None
+    delta_retry: bool | str | None = None
+    delta_unsafe: bool = False
+
 
 @frozen
 class QueryStep:
@@ -242,6 +263,21 @@ class DatasetDiffOperation(Step):
 
     def clone(self) -> "Self":
         return self.__class__(self.dq, self.catalog)
+
+    def collect_delta_sources(
+        self,
+    ) -> list["DatasetQuery"]:
+        return self.dq.delta_sources()
+
+    def replace_source(
+        self,
+        source: "DatasetQuery",
+        replacement: "DatasetQuery",
+    ) -> "Step":
+        return attrs.evolve(
+            self,
+            dq=self.dq.replace_source(source, replacement),
+        )
 
     @abstractmethod
     def query(
@@ -1810,6 +1846,22 @@ class SQLUnion(Step):
             bytes.fromhex(self.query1.hash()) + bytes.fromhex(self.query2.hash())
         ).hexdigest()
 
+    def collect_delta_sources(
+        self,
+    ) -> list["DatasetQuery"]:
+        return [*self.query1.delta_sources(), *self.query2.delta_sources()]
+
+    def replace_source(
+        self,
+        source: "DatasetQuery",
+        replacement: "DatasetQuery",
+    ) -> "Step":
+        return attrs.evolve(
+            self,
+            query1=self.query1.replace_source(source, replacement),
+            query2=self.query2.replace_source(source, replacement),
+        )
+
     def apply(
         self,
         query_generator: QueryGenerator,
@@ -1881,6 +1933,22 @@ class SQLJoin(Step):
         ]
 
         return hashlib.sha256(b"".join(parts)).hexdigest()
+
+    def collect_delta_sources(
+        self,
+    ) -> list["DatasetQuery"]:
+        return [*self.query1.delta_sources(), *self.query2.delta_sources()]
+
+    def replace_source(
+        self,
+        source: "DatasetQuery",
+        replacement: "DatasetQuery",
+    ) -> "Step":
+        return attrs.evolve(
+            self,
+            query1=self.query1.replace_source(source, replacement),
+            query2=self.query2.replace_source(source, replacement),
+        )
 
     def get_query(self, dq: "DatasetQuery", temp_tables: list[str]) -> sa.Subquery:
         temp_tables_before = len(dq.temp_table_names)
@@ -2139,6 +2207,7 @@ class DatasetQuery:
         self.dependencies: set[DatasetDependencyType] = set()
         self.table = self.get_table()
         self.starting_step: QueryStep | None = None
+        self.delta_spec: DeltaSpec | None = None
         self.name: str | None = None
         self.version: str | None = None
         self.feature_schema: dict | None = None
@@ -2189,6 +2258,9 @@ class DatasetQuery:
         if "sys__id" in self.column_types:
             self.column_types.pop("sys__id")
         self.project = ds.project
+
+    def set_delta_spec(self, spec: DeltaSpec) -> None:
+        self.delta_spec = spec
 
     @property
     def _starting_step_hash(self) -> str:
@@ -2458,7 +2530,35 @@ class DatasetQuery:
         if new_table:
             obj.table = self.get_table()
         obj.temp_table_names = []
+        obj.dependencies = set()
         return obj
+
+    def delta_sources(self) -> list["DatasetQuery"]:
+        sources: list[DatasetQuery] = []
+        for step in self.steps:
+            sources.extend(step.collect_delta_sources())
+        if self.delta_spec is not None and not sources:
+            sources.append(self)
+        return sources
+
+    def replace_source(
+        self,
+        source: "DatasetQuery",
+        replacement: "DatasetQuery",
+    ) -> "Self":
+        if self is source:
+            rewritten = replacement.clone(new_table=False)
+            rewritten.table = self.table
+            rewritten_steps = rewritten.steps.copy()
+        else:
+            rewritten = self.clone(new_table=False)
+            rewritten_steps = []
+
+        rewritten_steps.extend(
+            step.replace_source(source, replacement) for step in self.steps
+        )
+        rewritten.steps = rewritten_steps
+        return cast("Self", rewritten)
 
     @detach
     def select(self, *args, **kwargs) -> "Self":

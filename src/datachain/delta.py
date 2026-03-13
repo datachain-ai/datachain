@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 
     from datachain.lib.dc import DataChain
     from datachain.lib.signal_schema import SignalSchema
+    from datachain.query.dataset import DatasetQuery, DeltaSpec
 
     P = ParamSpec("P")
 
@@ -35,7 +36,7 @@ def delta_disabled(
 
     @wraps(method)
     def _inner(self: T, *args: "P.args", **kwargs: "P.kwargs") -> T:
-        if self.delta and not self._delta_unsafe:
+        if self.delta and not self.delta_unsafe:
             raise NotImplementedError(
                 f"Cannot use {method.__name__} with delta datasets - may cause"
                 " inconsistency. Use delta_unsafe flag to allow this operation."
@@ -45,14 +46,17 @@ def delta_disabled(
     return _inner
 
 
-def _append_steps(dc: "DataChain", other: "DataChain"):
-    """Returns cloned chain with appended steps from other chain.
-    Steps are all those modification methods applied like filters, mappers etc.
-    """
-    dc = dc.clone()
-    dc._query.steps += other._query.steps.copy()
-    dc.signals_schema = other.signals_schema
-    return dc
+def _replay_source(
+    source_chain: "DataChain",
+    original_chain: "DataChain",
+    source_query: "DatasetQuery",
+) -> "DataChain":
+    replay = source_chain.clone()
+    replay._query = original_chain._query.replace_source(
+        source_query, source_chain._query
+    )
+    replay.signals_schema = original_chain.signals_schema
+    return replay
 
 
 def _format_schema_drift_message(
@@ -197,12 +201,11 @@ def _get_source_info(
     Project | None,
     str | None,
     str | None,
-    list[DatasetDependency] | None,
 ]:
     """Get source dataset information and dependencies.
 
     Returns:
-        Tuple of (source_name, source_version, source_latest_version, dependencies)
+        Tuple of (source_name, source_project, source_version, source_latest_version).
         Returns (None, None, None, None) if source dataset was removed.
     """
     dependencies = catalog.get_dataset_dependencies(
@@ -214,11 +217,19 @@ def _get_source_info(
     )
 
     source_ds_dep = next(
-        (d for d in dependencies if d and d.name == source_ds.name), None
+        (
+            d
+            for d in dependencies
+            if d
+            and d.name == source_ds.name
+            and d.project == source_ds.project.name
+            and d.namespace == source_ds.project.namespace.name
+        ),
+        None,
     )
     if not source_ds_dep:
         # Starting dataset was removed, back off to normal dataset creation
-        return None, None, None, None, None
+        return None, None, None, None
 
     # Refresh starting dataset to have new versions if they are created
     source_ds = catalog.get_dataset(
@@ -233,8 +244,88 @@ def _get_source_info(
         source_ds.project,
         source_ds_dep.version,
         source_ds.latest_version,
-        dependencies,
     )
+
+
+def _normalize_dependencies(
+    dependencies: list[DatasetDependency | None],
+    updated_versions: dict[tuple[str, str, str], str],
+) -> list[DatasetDependency]:
+    normalized = [d for d in copy(dependencies) if d is not None]
+    for dep in normalized:
+        key = (dep.namespace, dep.project, dep.name)
+        if key in updated_versions:
+            dep.version = updated_versions[key]
+    return normalized
+
+
+def _get_processing_chain(
+    name: str,
+    namespace_name: str,
+    project_name: str,
+    latest_version: str,
+    source_query: "DatasetQuery",
+    spec: "DeltaSpec",
+) -> tuple["DataChain", str] | None:
+    if source_query.starting_step is None:
+        raise RuntimeError("Delta source query must be resolved before replay")
+
+    source_ds_name, source_ds_project, source_ds_version, source_ds_latest_version = (
+        _get_source_info(
+            source_query.starting_step.dataset,
+            name,
+            namespace_name,
+            project_name,
+            latest_version,
+            source_query.catalog,
+        )
+    )
+
+    if source_ds_name is None:
+        return None
+
+    assert source_ds_project is not None
+    assert source_ds_version is not None
+    assert source_ds_latest_version is not None
+
+    diff_chain = _get_delta_chain(
+        source_ds_name,
+        source_ds_project,
+        source_ds_version,
+        source_ds_latest_version,
+        spec.on,
+        spec.compare,
+    )
+
+    retry_chain = None
+    if spec.delta_retry:
+        retry_chain = _get_retry_chain(
+            name,
+            namespace_name,
+            project_name,
+            latest_version,
+            source_ds_name,
+            source_ds_project,
+            source_ds_version,
+            spec.on,
+            spec.right_on,
+            spec.delta_retry,
+            diff_chain,
+        )
+
+    if retry_chain is not None:
+        processing_chain = _safe_union(
+            diff_chain,
+            retry_chain,
+            context="combining retry records with delta changes",
+        )
+    else:
+        processing_chain = diff_chain
+
+    if processing_chain.empty:
+        return None
+
+    return processing_chain, source_ds_latest_version
 
 
 def delta_retry_update(
@@ -242,10 +333,6 @@ def delta_retry_update(
     namespace_name: str,
     project_name: str,
     name: str,
-    on: str | Sequence[str],
-    right_on: str | Sequence[str] | None = None,
-    compare: str | Sequence[str] | None = None,
-    delta_retry: bool | str | None = None,
 ) -> tuple["DataChain | None", list[DatasetDependency] | None, bool]:
     """
     Creates new chain that consists of the last version of current delta dataset
@@ -254,32 +341,11 @@ def delta_retry_update(
     (apply all the DataChain methods like filters, mappers, generators etc.)
     but just the diff part which is very important for performance.
 
-    Note that currently delta update works only if there is only one direct
-    dependency.
-
-    Additionally supports retry functionality to filter records that either:
-    1. Have a non-None value in the field specified by delta_retry (when it's a string)
-    2. Exist in the source dataset but are missing in the result dataset
-       (when delta_retry=True)
-
-    Parameters:
-        dc: The DataChain to filter for records that need reprocessing
-        name: Name of the destination dataset
-        on: Field(s) in source dataset that uniquely identify records
-        right_on: Corresponding field(s) in result dataset if they differ from
-                  source
-        compare: Field(s) used to check if the same row has been modified
-        delta_retry: If string, field in result dataset that indicates an error
-                    when not None. If True, include records missing from result dataset.
-                    If False/None, no retry functionality.
-
-    Returns:
-        A tuple containing (filtered chain for delta/retry processing,
-                          dependencies, found records flag)
+    Returns a tuple containing:
+        (filtered chain for delta/retry processing, dependencies, found records flag)
     """
 
     catalog = dc.session.catalog
-    # project = catalog.metastore.get_project(project_name, namespace_name)
     dc._query.apply_listing_pre_step()
 
     # Check if dataset exists
@@ -295,84 +361,96 @@ def delta_retry_update(
         # First creation of result dataset
         return None, None, True
 
-    # Initialize variables
-    diff_chain = None
-    dependencies = None
-    retry_chain = None
-    processing_chain = None
-
-    (
-        source_ds_name,
-        source_ds_project,
-        source_ds_version,
-        source_ds_latest_version,
-        dependencies,
-    ) = _get_source_info(
-        dc._query.starting_step.dataset,  # type: ignore[union-attr]
-        name,
-        namespace_name,
-        project_name,
-        latest_version,
-        catalog,
-    )
-
-    # If source_ds_name is None, starting dataset was removed
-    if source_ds_name is None:
+    delta_sources = dc._query.delta_sources()
+    if not delta_sources:
         return None, None, True
 
-    assert source_ds_project
-    assert source_ds_version
-    assert source_ds_latest_version
-
-    diff_chain = _get_delta_chain(
-        source_ds_name,
-        source_ds_project,
-        source_ds_version,
-        source_ds_latest_version,
-        on,
-        compare,
+    dependencies = catalog.get_dataset_dependencies(
+        name,
+        latest_version,
+        namespace_name=namespace_name,
+        project_name=project_name,
+        indirect=False,
     )
+    updated_versions: dict[tuple[str, str, str], str] = {}
+    result_keys = {
+        (fields,)
+        if isinstance(fields := source.delta_spec.right_on or source.delta_spec.on, str)
+        else tuple(fields)
+        for source in delta_sources
+        if source.delta_spec is not None
+    }
+    if len(result_keys) != 1:
+        raise NotImplementedError(
+            "Delta sources in the same query must use the same result key"
+        )
 
-    # Filter out removed dep
-    if dependencies:
-        dependencies = copy(dependencies)
-        dependencies = [d for d in dependencies if d is not None]
-        source_ds_dep = next(d for d in dependencies if d.name == source_ds_name)
-        # Update to latest version
-        source_ds_dep.version = source_ds_latest_version  # type: ignore[union-attr]
+    processing_chain = None
+    for source in delta_sources:
+        spec = source.delta_spec
+        assert spec is not None
+        source_step = source.starting_step
+        assert source_step is not None
+        source_dataset = source_step.dataset
 
-    # Handle retry functionality if enabled
-    if delta_retry:
-        retry_chain = _get_retry_chain(
+        source_info = _get_processing_chain(
             name,
             namespace_name,
             project_name,
             latest_version,
-            source_ds_name,
-            source_ds_project,
-            source_ds_version,
-            on,
-            right_on,
-            delta_retry,
-            diff_chain,
+            source,
+            spec,
         )
+        if source_info is None:
+            source_ds_name, source_ds_project, _, source_ds_latest_version = (
+                _get_source_info(
+                    source_dataset,
+                    name,
+                    namespace_name,
+                    project_name,
+                    latest_version,
+                    catalog,
+                )
+            )
+            if source_ds_name is None:
+                return None, None, True
+            assert source_ds_project is not None
+            assert source_ds_latest_version is not None
+            updated_versions[
+                (
+                    source_ds_project.namespace.name,
+                    source_ds_project.name,
+                    source_ds_name,
+                )
+            ] = source_ds_latest_version
+            continue
 
-    # Combine delta and retry chains
-    if retry_chain is not None:
-        processing_chain = _safe_union(
-            diff_chain,
-            retry_chain,
-            context="combining retry records with delta changes",
-        )
-    else:
-        processing_chain = diff_chain
+        source_processing_chain, source_ds_latest_version = source_info
+        updated_versions[
+            (
+                source_dataset.project.namespace.name,
+                source_dataset.project.name,
+                source_dataset.name,
+            )
+        ] = source_ds_latest_version
 
-    # Apply all the steps from the original chain to processing_chain
-    processing_chain = _append_steps(processing_chain, dc).persist()
+        replay_chain = _replay_source(source_processing_chain, dc, source).persist()
+        if replay_chain.empty:
+            continue
 
-    # Check if chain becomes empty after applying steps
-    if processing_chain is None or (processing_chain and processing_chain.empty):
+        if processing_chain is None:
+            processing_chain = replay_chain
+        else:
+            processing_chain = _safe_union(
+                processing_chain,
+                replay_chain,
+                context="combining replay results across delta sources",
+            )
+
+    if processing_chain is None:
         return None, None, False
+
+    normalized_dependencies = _normalize_dependencies(dependencies, updated_versions)
 
     latest_dataset = datachain.read_dataset(
         name,
@@ -380,9 +458,11 @@ def delta_retry_update(
         project=project_name,
         version=latest_version,
     )
+    result_key = next(iter(result_keys))
+    diff_on: str | Sequence[str] = result_key[0] if len(result_key) == 1 else result_key
     compared_chain = latest_dataset.diff(
         processing_chain,
-        on=right_on or on,
+        on=diff_on,
         added=True,
         modified=False,
         deleted=False,
@@ -392,4 +472,4 @@ def delta_retry_update(
         processing_chain,
         context="merging the delta output with the existing dataset version",
     )
-    return result_chain, dependencies, True
+    return result_chain, normalized_dependencies, True
