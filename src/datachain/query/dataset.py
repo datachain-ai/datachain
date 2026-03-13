@@ -216,9 +216,8 @@ class QueryStep:
         )
 
     def hash(self) -> str:
-        return hashlib.sha256(
-            self.dataset.uri(self.dataset_version).encode()
-        ).hexdigest()
+        version = self.dataset.get_version(self.dataset_version)
+        return hashlib.sha256(version.uuid.encode()).hexdigest()
 
 
 def generator_then_call(generator, func: Callable):
