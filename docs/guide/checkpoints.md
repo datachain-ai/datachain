@@ -48,17 +48,17 @@ Consider this script that processes data in multiple stages:
 ```python
 import datachain as dc
 
-# Stage 1: Load and filter data
+# Stage 1: List and filter files
 filtered = (
-    dc.read_csv("s3://mybucket/data/")
-    .filter(dc.C("score") > 0.5)
-    .save("filtered_data")
+    dc.read_storage("gs://datachain-demo/dogs-and-cats/", anon=True)
+    .filter(dc.C("file.path").glob("*.jpg"))
+    .save("filtered_files")
 )
 
 # Stage 2: Transform data
 transformed = (
     filtered
-    .map(value=lambda score: score * 2, output=float)
+    .map(size_kb=lambda file: file.size / 1024, output=float)
     .save("transformed_data")
 )
 
@@ -66,17 +66,16 @@ transformed = (
 result = (
     transformed
     .agg(
-        total=lambda value: [sum(value)],
+        total=lambda size_kb: [sum(size_kb)],
         output=float,
-        partition_by="category",
     )
     .save("final_results")
 )
 ```
 
-**First run:** The script executes all three stages and creates three datasets: `filtered_data`, `transformed_data`, and `final_results`. If the script fails during Stage 3, only `filtered_data` and `transformed_data` are saved.
+**First run:** The script executes all three stages and creates three datasets: `filtered_files`, `transformed_data`, and `final_results`. If the script fails during Stage 3, only `filtered_files` and `transformed_data` are saved.
 
-**Second run:** DataChain detects that `filtered_data` and `transformed_data` were already created in the previous run with matching hashes. It skips recreating them and proceeds directly to Stage 3, creating only `final_results`.
+**Second run:** DataChain detects that `filtered_files` and `transformed_data` were already created in the previous run with matching hashes. It skips recreating them and proceeds directly to Stage 3, creating only `final_results`.
 
 ## When Checkpoints Are Used
 
@@ -152,11 +151,11 @@ Changes that invalidate checkpoints include:
 
 ```python
 # First run - creates three checkpoints
-dc.read_csv("data.csv").save("stage1")  # Hash = H1
+dc.read_storage("gs://datachain-demo/dogs-and-cats/", anon=True).save("stage1")  # Hash = H1
 
-dc.read_dataset("stage1").filter(dc.C("x") > 5).save("stage2")  # Hash = H2 = hash(H1 + pipeline_hash)
+dc.read_dataset("stage1").filter(dc.C("file.path").glob("*.jpg")).save("stage2")  # Hash = H2 = hash(H1 + pipeline_hash)
 
-dc.read_dataset("stage2").select("name", "value").save("stage3")  # Hash = H3 = hash(H2 + pipeline_hash)
+dc.read_dataset("stage2").select("file").save("stage3")  # Hash = H3 = hash(H2 + pipeline_hash)
 ```
 
 **Second run (no changes):**
@@ -164,11 +163,11 @@ dc.read_dataset("stage2").select("name", "value").save("stage3")  # Hash = H3 = 
 
 **Second run (modified filter):**
 ```python
-dc.read_csv("data.csv").save("stage1")  # Hash = H1 matches ✓ → reused
+dc.read_storage("gs://datachain-demo/dogs-and-cats/", anon=True).save("stage1")  # Hash = H1 matches ✓ → reused
 
-dc.read_dataset("stage1").filter(dc.C("x") > 10).save("stage2")  # Hash ≠ H2 ✗ → recomputed
+dc.read_dataset("stage1").filter(dc.C("file.path").glob("*.png")).save("stage2")  # Hash ≠ H2 ✗ → recomputed
 
-dc.read_dataset("stage2").select("name", "value").save("stage3")  # Hash ≠ H3 ✗ → recomputed
+dc.read_dataset("stage2").select("file").save("stage3")  # Hash ≠ H3 ✗ → recomputed
 ```
 
 Because the filter changed, `stage2` has a different hash and must be recomputed. Since `stage3` depends on `stage2`, its hash also changes (because it includes H2 in the calculation), so it must be recomputed as well.
