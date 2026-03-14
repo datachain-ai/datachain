@@ -1,5 +1,5 @@
 # Feature Implementation for Issue #300
-from typing import Optional
+
 
 class FeatureManager:
     def __init__(self):
@@ -8,8 +8,9 @@ class FeatureManager:
     def register(self, name: str, enabled: bool = True) -> None:
         self.features[name] = enabled
 
-    def get(self, name: str) -> Optional[bool]:
+    def get(self, name: str) -> bool | None:
         return self.features.get(name)
+
 
 # Tests
 mgr = FeatureManager()
