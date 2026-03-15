@@ -40,7 +40,9 @@ def saved_dataset(test_session):
     chain = dc.read_values(val=[1, 2, 3, 4], session=test_session).save(name)
     catalog = test_session.catalog
     return catalog.update_dataset(
-        chain.dataset, {"description": "test dataset", "attrs": ["test", "dataset"]}
+        chain.dataset,
+        description="test dataset",
+        attrs=["test", "dataset"],
     )
 
 

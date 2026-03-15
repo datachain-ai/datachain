@@ -4,7 +4,6 @@ from typing import TYPE_CHECKING
 import sqlalchemy
 from pydantic import BaseModel
 
-from datachain.dataset import DatasetStatus
 from datachain.lib.convert.flatten import flatten
 from datachain.lib.data_model import DataType
 from datachain.lib.model_store import ModelStore
@@ -158,9 +157,7 @@ def read_records(
     warehouse.insert_rows(table, records)
     warehouse.insert_rows_done(table)
 
-    # Mark dataset as COMPLETE since it's fully created
-    catalog.metastore.update_dataset_status(
-        dsr, DatasetStatus.COMPLETE, version=dsr.latest_version
-    )
+    # Finalize warehouse-derived metadata before marking the version COMPLETE.
+    catalog.complete_dataset_version(dsr, dsr.latest_version)
 
     return read_dataset(name=dsr.full_name, session=session, settings=settings)

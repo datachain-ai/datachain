@@ -1080,6 +1080,31 @@ class Catalog:
 
         self.metastore.update_dataset_version(dataset, version, **values)
 
+    def complete_dataset_version(
+        self,
+        dataset: DatasetRecord,
+        version: str,
+        *,
+        error_message: str = "",
+        error_stack: str = "",
+        script_output: str = "",
+        **kwargs,
+    ) -> None:
+        """Finalize a dataset version after its rows table has been populated.
+
+        This refreshes warehouse-derived metadata first, then marks the version
+        as COMPLETE.
+        """
+        self.update_dataset_version_with_warehouse_info(dataset, version, **kwargs)
+        self.metastore.update_dataset_status(
+            dataset,
+            DatasetStatus.COMPLETE,
+            version=version,
+            error_message=error_message,
+            error_stack=error_stack,
+            script_output=script_output,
+        )
+
     def update_dataset(
         self, dataset: DatasetRecord, conn=None, **kwargs
     ) -> DatasetRecord:
@@ -1933,14 +1958,9 @@ class Catalog:
                     temp_table = self.warehouse.get_table(temp_table_name)
                     self.warehouse.rename_table(temp_table, final_table_name)
 
-                    self.update_dataset_version_with_warehouse_info(
-                        local_ds, local_ds_version
-                    )
-
-                    self.metastore.update_dataset_status(
+                    self.complete_dataset_version(
                         local_ds,
-                        DatasetStatus.COMPLETE,
-                        version=local_ds_version,
+                        local_ds_version,
                         error_message=remote_ds_version.error_message,
                         error_stack=remote_ds_version.error_stack,
                         script_output=remote_ds_version.script_output,

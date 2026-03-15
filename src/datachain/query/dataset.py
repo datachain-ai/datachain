@@ -40,7 +40,7 @@ from datachain.data_storage.schema import (
     partition_col_names,
     partition_columns,
 )
-from datachain.dataset import DatasetDependency, DatasetStatus, RowDict
+from datachain.dataset import DatasetDependency, RowDict
 from datachain.error import (
     DatasetNotFoundError,
     QueryScriptAbortError,
@@ -2824,6 +2824,7 @@ class DatasetQuery:
 
         try:
             query = self.apply_steps()
+            temp_table_name: str | None = None
 
             columns = [
                 c if isinstance(c, Column) else Column(c.name, c.type)
@@ -2834,6 +2835,12 @@ class DatasetQuery:
                     "No columns to save in the query. "
                     "Ensure at least one column (other than 'id') is selected."
                 )
+
+            def cleanup_temp_table() -> None:
+                if temp_table_name is None:
+                    return
+                with contextlib.suppress(Exception):
+                    self.catalog.warehouse.cleanup_tables([temp_table_name])
 
             # Phase 1: Create a temp staging table and populate it.
             # If the process dies here, only an orphaned tmp_ table remains,
@@ -2846,8 +2853,7 @@ class DatasetQuery:
             try:
                 self.catalog.warehouse.insert_into(temp_table, query.select())
             except Exception:
-                with contextlib.suppress(Exception):
-                    self.catalog.warehouse.cleanup_tables([temp_table_name])
+                cleanup_temp_table()
                 raise
 
             # Phase 2: Claim the version (metadata only).
@@ -2865,8 +2871,7 @@ class DatasetQuery:
                     **kwargs,
                 )
             except Exception:
-                with contextlib.suppress(Exception):
-                    self.catalog.warehouse.cleanup_tables([temp_table_name])
+                cleanup_temp_table()
                 raise
 
             version = version or dataset.latest_version
@@ -2877,13 +2882,10 @@ class DatasetQuery:
             )
             try:
                 self.catalog.warehouse.rename_table(temp_table, final_table_name)
+                temp_table_name = None
             except Exception:
-                with contextlib.suppress(Exception):
-                    self.catalog.warehouse.cleanup_tables([temp_table_name])
+                cleanup_temp_table()
                 raise
-
-            # Phase 4: Finalize metadata and mark COMPLETE.
-            self.catalog.update_dataset_version_with_warehouse_info(dataset, version)
 
             # Link this dataset version to the job that created it
             self.catalog.metastore.link_dataset_version_to_job(
@@ -2908,10 +2910,8 @@ class DatasetQuery:
 
             self._add_dependencies(dataset, version)  # type: ignore [arg-type]
 
-            # Mark as COMPLETE only after all operations succeed
-            self.catalog.metastore.update_dataset_status(
-                dataset, DatasetStatus.COMPLETE, version=version
-            )
+            # Mark as COMPLETE only after all operations succeed.
+            self.catalog.complete_dataset_version(dataset, version)
         finally:
             self.cleanup()
         return self.__class__(
