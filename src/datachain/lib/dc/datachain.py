@@ -1827,6 +1827,7 @@ class DataChain:
         self.signals_schema = self_schema.clone_without_sys_signals()
         return self._evolve(query=self._query.union(other._query))
 
+    @delta_disabled
     def subtract(  # type: ignore[override]
         self,
         other: "DataChain",
@@ -1895,6 +1896,7 @@ class DataChain:
             )
         return self._evolve(query=self._query.subtract(other._query, signals))  # type: ignore[arg-type]
 
+    @delta_disabled
     def diff(
         self,
         other: "DataChain",
@@ -1963,6 +1965,7 @@ class DataChain:
             status_col=status_col,
         )
 
+    @delta_disabled
     def file_diff(
         self,
         other: "DataChain",

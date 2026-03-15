@@ -37,6 +37,14 @@ def _get_dependencies(catalog, name, version) -> list[tuple[str, str]]:
     )
 
 
+def _delta_unsafe_required_message(method_name: str) -> str:
+    return (
+        f"Cannot use {method_name} with delta datasets - may cause inconsistency."
+        " Set delta_unsafe=True on every participating delta source"
+        " to allow this operation."
+    )
+
+
 def test_delta_update_from_dataset(test_session, tmp_dir, tmp_path):
     catalog = test_session.catalog
 
@@ -541,9 +549,14 @@ def test_delta_update_unsafe_matches_same_named_sources_by_full_identity(test_se
     }
 
 
-def test_delta_update_unsafe_replays_same_dataset_occurrences_independently(
+def test_delta_update_unsafe_treats_same_dataset_occurrences_independently(
     test_session,
 ):
+    # Ensure repeated uses of the same delta source are handled
+    # as independent query occurrences.
+    # "replay" must happen per source occurrence
+    # not per dataset name
+    # not by flattening one diff chain through the whole downstream query
     source_name = f"unsafe_same_occ_source_{uuid.uuid4().hex[:8]}"
     result_name = f"unsafe_same_occ_result_{uuid.uuid4().hex[:8]}"
     processed: list[int] = []
@@ -1040,10 +1053,7 @@ def test_delta_update_union(test_session, file_dataset):
             ).union(dc.read_dataset("numbers"), session=test_session)
         )
 
-    assert str(excinfo.value) == (
-        "Cannot use union with delta datasets - may cause inconsistency."
-        " Use delta_unsafe flag to allow this operation."
-    )
+    assert str(excinfo.value) == _delta_unsafe_required_message("union")
 
 
 def test_delta_update_merge(test_session, file_dataset):
@@ -1058,10 +1068,197 @@ def test_delta_update_merge(test_session, file_dataset):
             ).merge(dc.read_dataset("numbers"), on="id", session=test_session)
         )
 
-    assert str(excinfo.value) == (
-        "Cannot use merge with delta datasets - may cause inconsistency."
-        " Use delta_unsafe flag to allow this operation."
+    assert str(excinfo.value) == _delta_unsafe_required_message("merge")
+
+
+def test_delta_update_merge_requires_all_delta_inputs_unsafe(test_session):
+    left_name = f"mixed_merge_left_{uuid.uuid4().hex[:8]}"
+    right_name = f"mixed_merge_right_{uuid.uuid4().hex[:8]}"
+
+    dc.read_values(id=[1, 2], left_value=[10, 20], session=test_session).save(left_name)
+    dc.read_values(id=[1, 2], right_value=[100, 200], session=test_session).save(
+        right_name
     )
+
+    with pytest.raises(NotImplementedError) as excinfo:
+        (
+            dc.read_dataset(
+                left_name,
+                session=test_session,
+                delta=True,
+                delta_on="id",
+                delta_unsafe=True,
+            ).merge(
+                dc.read_dataset(
+                    right_name,
+                    session=test_session,
+                    delta=True,
+                    delta_on="id",
+                ),
+                on="id",
+                inner=True,
+            )
+        )
+
+    assert str(excinfo.value) == _delta_unsafe_required_message("merge")
+
+
+def test_delta_update_subtract_requires_all_delta_inputs_unsafe(test_session):
+    left_name = f"mixed_subtract_left_{uuid.uuid4().hex[:8]}"
+    right_name = f"mixed_subtract_right_{uuid.uuid4().hex[:8]}"
+
+    dc.read_values(id=[1, 2], left_value=[10, 20], session=test_session).save(left_name)
+    dc.read_values(id=[1, 2], right_value=[100, 200], session=test_session).save(
+        right_name
+    )
+
+    with pytest.raises(NotImplementedError) as excinfo:
+        (
+            dc.read_dataset(
+                left_name,
+                session=test_session,
+                delta=True,
+                delta_on="id",
+                delta_unsafe=True,
+            ).subtract(
+                dc.read_dataset(
+                    right_name,
+                    session=test_session,
+                    delta=True,
+                    delta_on="id",
+                ),
+                on="id",
+            )
+        )
+
+    assert str(excinfo.value) == _delta_unsafe_required_message("subtract")
+
+    with pytest.raises(NotImplementedError) as excinfo:
+        (
+            dc.read_dataset(
+                left_name,
+                session=test_session,
+                delta=True,
+                delta_on="id",
+            ).subtract(
+                dc.read_dataset(
+                    right_name,
+                    session=test_session,
+                    delta=True,
+                    delta_on="id",
+                    delta_unsafe=True,
+                ),
+                on="id",
+            )
+        )
+
+    assert str(excinfo.value) == _delta_unsafe_required_message("subtract")
+
+
+def test_delta_update_diff_requires_all_delta_inputs_unsafe(test_session):
+    left_name = f"mixed_diff_left_{uuid.uuid4().hex[:8]}"
+    right_name = f"mixed_diff_right_{uuid.uuid4().hex[:8]}"
+
+    dc.read_values(id=[1, 2], left_value=[10, 20], session=test_session).save(left_name)
+    dc.read_values(id=[1, 2], right_value=[100, 200], session=test_session).save(
+        right_name
+    )
+
+    with pytest.raises(NotImplementedError) as excinfo:
+        (
+            dc.read_dataset(
+                left_name,
+                session=test_session,
+                delta=True,
+                delta_on="id",
+                delta_unsafe=True,
+            ).diff(
+                dc.read_dataset(
+                    right_name,
+                    session=test_session,
+                    delta=True,
+                    delta_on="id",
+                ),
+                on="id",
+            )
+        )
+
+    assert str(excinfo.value) == _delta_unsafe_required_message("diff")
+
+
+def test_delta_update_file_diff_requires_all_delta_inputs_unsafe(test_session):
+    left_name = f"mixed_file_diff_left_{uuid.uuid4().hex[:8]}"
+    right_name = f"mixed_file_diff_right_{uuid.uuid4().hex[:8]}"
+
+    dc.read_values(
+        file=[File(path="a.jpg", source="s3://left-bucket")],
+        session=test_session,
+    ).save(left_name)
+    dc.read_values(
+        file=[File(path="a.jpg", source="s3://right-bucket")],
+        session=test_session,
+    ).save(right_name)
+
+    with pytest.raises(NotImplementedError) as excinfo:
+        (
+            dc.read_dataset(
+                left_name,
+                session=test_session,
+                delta=True,
+                delta_on=["file.source", "file.path"],
+                delta_unsafe=True,
+            ).file_diff(
+                dc.read_dataset(
+                    right_name,
+                    session=test_session,
+                    delta=True,
+                    delta_on=["file.source", "file.path"],
+                )
+            )
+        )
+
+    assert str(excinfo.value) == _delta_unsafe_required_message("file_diff")
+
+    with pytest.raises(NotImplementedError) as excinfo:
+        (
+            dc.read_dataset(
+                left_name,
+                session=test_session,
+                delta=True,
+                delta_on=["file.source", "file.path"],
+            ).file_diff(
+                dc.read_dataset(
+                    right_name,
+                    session=test_session,
+                    delta=True,
+                    delta_on=["file.source", "file.path"],
+                    delta_unsafe=True,
+                )
+            )
+        )
+
+    assert str(excinfo.value) == _delta_unsafe_required_message("file_diff")
+
+    with pytest.raises(NotImplementedError) as excinfo:
+        (
+            dc.read_dataset(
+                left_name,
+                session=test_session,
+                delta=True,
+                delta_on="id",
+            ).diff(
+                dc.read_dataset(
+                    right_name,
+                    session=test_session,
+                    delta=True,
+                    delta_on="id",
+                    delta_unsafe=True,
+                ),
+                on="id",
+            )
+        )
+
+    assert str(excinfo.value) == _delta_unsafe_required_message("diff")
 
 
 def test_delta_update_distinct(test_session, file_dataset):
@@ -1074,10 +1271,35 @@ def test_delta_update_distinct(test_session, file_dataset):
             ).distinct("file.path")
         )
 
-    assert str(excinfo.value) == (
-        "Cannot use distinct with delta datasets - may cause inconsistency."
-        " Use delta_unsafe flag to allow this operation."
-    )
+    assert str(excinfo.value) == _delta_unsafe_required_message("distinct")
+
+
+def test_delta_update_union_requires_all_delta_inputs_unsafe(test_session):
+    left_name = f"mixed_union_left_{uuid.uuid4().hex[:8]}"
+    right_name = f"mixed_union_right_{uuid.uuid4().hex[:8]}"
+
+    dc.read_values(id=[1, 2], session=test_session).save(left_name)
+    dc.read_values(id=[3, 4], session=test_session).save(right_name)
+
+    with pytest.raises(NotImplementedError) as excinfo:
+        (
+            dc.read_dataset(
+                left_name,
+                session=test_session,
+                delta=True,
+                delta_on="id",
+                delta_unsafe=True,
+            ).union(
+                dc.read_dataset(
+                    right_name,
+                    session=test_session,
+                    delta=True,
+                    delta_on="id",
+                )
+            )
+        )
+
+    assert str(excinfo.value) == _delta_unsafe_required_message("union")
 
 
 def test_delta_update_group_by(test_session, file_dataset):
@@ -1090,10 +1312,7 @@ def test_delta_update_group_by(test_session, file_dataset):
             ).group_by(cnt=func.count(), partition_by="file.path")
         )
 
-    assert str(excinfo.value) == (
-        "Cannot use group_by with delta datasets - may cause inconsistency."
-        " Use delta_unsafe flag to allow this operation."
-    )
+    assert str(excinfo.value) == _delta_unsafe_required_message("group_by")
 
 
 def test_delta_update_agg(test_session, file_dataset):
@@ -1106,7 +1325,4 @@ def test_delta_update_agg(test_session, file_dataset):
             ).agg(cnt=func.count(), partition_by="file.path")
         )
 
-    assert str(excinfo.value) == (
-        "Cannot use agg with delta datasets - may cause inconsistency."
-        " Use delta_unsafe flag to allow this operation."
-    )
+    assert str(excinfo.value) == _delta_unsafe_required_message("agg")

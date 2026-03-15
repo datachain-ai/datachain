@@ -2188,7 +2188,7 @@ class ResultIter:
 class DatasetQuery:
     def __init__(
         self,
-        name: str,
+        name: str | None = None,
         version: str | None = None,
         project_name: str | None = None,
         namespace_name: str | None = None,
@@ -2197,10 +2197,12 @@ class DatasetQuery:
         in_memory: bool = False,
         update: bool = False,
         include_incomplete: bool = False,
+        steps: Sequence[Step] = (),
+        checkpoints_enabled: bool = True,
     ) -> None:
         self.session = Session.get(session, catalog=catalog, in_memory=in_memory)
         self.catalog = catalog or self.session.catalog
-        self.steps: list[Step] = []
+        self.steps: list[Step] = list(steps)
         self._chunk_index: int | None = None
         self._chunk_total: int | None = None
         self.temp_table_names: list[str] = []
@@ -2215,12 +2217,33 @@ class DatasetQuery:
         self.before_steps: list[Callable] = []
         self.listing_fn: Callable | None = None
         self.update = update
-        self.checkpoints_enabled: bool = True
+        self.checkpoints_enabled = checkpoints_enabled
 
         self.list_ds_name: str | None = None
-
-        self.name = name
         self.dialect = self.catalog.warehouse.db.dialect
+
+        if name is None:
+            return
+
+        self._init_rooted_query(
+            name,
+            version=version,
+            project_name=project_name,
+            namespace_name=namespace_name,
+            update=update,
+            include_incomplete=include_incomplete,
+        )
+
+    def _init_rooted_query(
+        self,
+        name: str,
+        version: str | None = None,
+        project_name: str | None = None,
+        namespace_name: str | None = None,
+        update: bool = False,
+        include_incomplete: bool = False,
+    ) -> None:
+        self.name = name
         if version:
             self.version = version
 
@@ -2259,15 +2282,13 @@ class DatasetQuery:
             self.column_types.pop("sys__id")
         self.project = ds.project
 
-    def set_delta_spec(self, spec: DeltaSpec) -> None:
-        self.delta_spec = spec
-
     @property
     def _starting_step_hash(self) -> str:
         if self.starting_step:
             return self.starting_step.hash()
-        assert self.list_ds_name
-        return self.list_ds_name
+        if self.list_ds_name:
+            return self.list_ds_name
+        return ""
 
     @property
     def _last_checkpoint_hash(self) -> str | None:
@@ -2389,9 +2410,17 @@ class DatasetQuery:
             query = query.filter(C.sys__rand % total == index)
             query.steps = query.steps[-1:] + query.steps[:-1]
 
-        assert query.starting_step
-        result = query.starting_step.apply()
-        self.dependencies.update(result.dependencies)
+        if query.starting_step is not None:
+            result = query.starting_step.apply()
+            self.dependencies.update(result.dependencies)
+        elif query.steps:
+
+            def q(*columns):
+                return sqlalchemy.select(*columns)
+
+            result = step_result(q, ())
+        else:
+            raise RuntimeError("DatasetQuery has no starting dataset or steps")
 
         _hash = hasher.hexdigest()
         for step in query.steps:
@@ -2526,19 +2555,21 @@ class DatasetQuery:
 
     def clone(self, new_table=True) -> "Self":
         obj = copy(self)
-        obj.steps = obj.steps.copy()
+        obj.steps = self.steps.copy()
         if new_table:
             obj.table = self.get_table()
-        obj.temp_table_names = []
         obj.dependencies = set()
+        obj.temp_table_names = []
         return obj
 
     def delta_sources(self) -> list["DatasetQuery"]:
         sources: list[DatasetQuery] = []
         for step in self.steps:
             sources.extend(step.collect_delta_sources())
-        if self.delta_spec is not None and not sources:
+
+        if self.delta_spec is not None:
             sources.append(self)
+
         return sources
 
     def replace_source(
@@ -2726,15 +2757,16 @@ class DatasetQuery:
         query.steps.append(SQLGroupBy(cols, group_by))
         return query
 
-    @detach
-    def union(self, dataset_query: "DatasetQuery") -> "Self":
+    def union(self, dataset_query: "DatasetQuery") -> "DatasetQuery":
         left = self.clone()
         right = dataset_query.clone()
-        new_query = self.clone()
-        new_query.steps = [SQLUnion(left, right)]
-        return new_query
+        return DatasetQuery(
+            session=self.session,
+            catalog=self.catalog,
+            steps=[SQLUnion(left, right)],
+            checkpoints_enabled=self.checkpoints_enabled,
+        )
 
-    @detach
     def join(
         self,
         dataset_query: "DatasetQuery",
@@ -2742,7 +2774,7 @@ class DatasetQuery:
         inner=False,
         full=False,
         rname="right_",
-    ) -> "Self":
+    ) -> "DatasetQuery":
         left = self.clone(new_table=False)
         if self.table.name == dataset_query.table.name:
             # for use case where we join with itself, e.g dogs.join(dogs, "name")
@@ -2750,16 +2782,17 @@ class DatasetQuery:
         else:
             right = dataset_query.clone(new_table=False)
 
-        new_query = self.clone()
         predicates = (
             predicates
             if isinstance(predicates, (str, ColumnClause, ColumnElement))
             else tuple(predicates)
         )
-        new_query.steps = [
-            SQLJoin(self.catalog, left, right, predicates, inner, full, rname)
-        ]
-        return new_query
+        return DatasetQuery(
+            session=self.session,
+            catalog=self.catalog,
+            steps=[SQLJoin(self.catalog, left, right, predicates, inner, full, rname)],
+            checkpoints_enabled=self.checkpoints_enabled,
+        )
 
     @detach
     def chunk(self, index: int, total: int) -> "Self":

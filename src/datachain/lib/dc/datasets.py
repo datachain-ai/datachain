@@ -213,14 +213,12 @@ def read_dataset(
     if delta:
         if delta_on is None:
             raise ValueError("'delta on' fields must be defined")
-        query.set_delta_spec(
-            DeltaSpec(
-                on=delta_on,
-                right_on=delta_result_on,
-                compare=delta_compare,
-                delta_retry=delta_retry,
-                delta_unsafe=delta_unsafe,
-            )
+        query.delta_spec = DeltaSpec(
+            on=delta_on,
+            right_on=delta_result_on,
+            compare=delta_compare,
+            delta_retry=delta_retry,
+            delta_unsafe=delta_unsafe,
         )
 
     return chain
