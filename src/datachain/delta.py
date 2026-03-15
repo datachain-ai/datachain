@@ -25,12 +25,6 @@ if TYPE_CHECKING:
 T = TypeVar("T", bound="DataChain")
 
 
-def _is_delta_operand_without_unsafe_enabled(value: object) -> bool:
-    return bool(getattr(value, "delta", False)) and not bool(
-        getattr(value, "delta_unsafe", False)
-    )
-
-
 def _dataset_identity(dataset: DatasetRecord) -> tuple[str, str, str]:
     return (
         dataset.project.namespace.name,
@@ -50,10 +44,25 @@ def delta_disabled(
 
     @wraps(method)
     def _inner(self: T, *args: "P.args", **kwargs: "P.kwargs") -> T:
-        operands = (self, *args, *kwargs.values())
-        if any(
-            _is_delta_operand_without_unsafe_enabled(operand) for operand in operands
-        ):
+        from datachain.lib.dc import DataChain
+
+        if not isinstance(self, DataChain):
+            raise TypeError(
+                f"delta_disabled can only wrap DataChain methods, got {type(self)!r}"
+            )
+
+        operands = [
+            value
+            for value in (self, *args, *kwargs.values())
+            if isinstance(value, DataChain)
+        ]
+        if not operands:
+            raise RuntimeError(
+                "delta_disabled expected at least one DataChain operand "
+                f"for {method.__name__}"
+            )
+
+        if any(operand.delta and not operand.delta_unsafe for operand in operands):
             raise NotImplementedError(
                 f"Cannot use {method.__name__} with delta datasets - may cause"
                 " inconsistency. Set delta_unsafe=True on every participating"
@@ -148,10 +157,7 @@ def _build_source_diff_chain(
 
 
 def _build_source_retry_chain(
-    result_dataset_name: str,
-    result_namespace_name: str,
-    result_project_name: str,
-    result_latest_version: str,
+    result_dataset: "DataChain",
     source_ds_name: str,
     source_ds_project: Project,
     source_ds_version: str,
@@ -165,14 +171,6 @@ def _build_source_retry_chain(
     from datachain.lib.dc import C
 
     retry_chain = None
-
-    # Read the latest version of the result dataset for retry logic
-    result_dataset = datachain.read_dataset(
-        result_dataset_name,
-        namespace=result_namespace_name,
-        project=result_project_name,
-        version=result_latest_version,
-    )
     source_dc = datachain.read_dataset(
         source_ds_name,
         namespace=source_ds_project.namespace.name,
@@ -290,10 +288,7 @@ def _get_shared_result_key(
 def _build_source_replay_input(
     target_source_query: "DatasetQuery",
     target_source_spec: "DeltaSpec",
-    result_dataset_name: str,
-    result_namespace_name: str,
-    result_project_name: str,
-    result_latest_version: str,
+    result_dataset: "DataChain",
     result_dependencies: list[DatasetDependency | None],
 ) -> tuple["DataChain | None", str | None, bool]:
     """Build the delta/retry chain for `target_source_query` using
@@ -301,7 +296,7 @@ def _build_source_replay_input(
     `result_latest_version`, and return `(processing_chain,
     source_latest_version, dependency_missing)`.
     """
-    if target_source_query.starting_step is None:
+    if target_source_query.starting_step is None:  # pragma: no cover
         raise RuntimeError("Source dataset must be resolved before processing delta")
 
     source_ds_name, source_ds_project, source_ds_version, source_ds_latest_version = (
@@ -331,10 +326,7 @@ def _build_source_replay_input(
     retry_chain = None
     if target_source_spec.delta_retry:
         retry_chain = _build_source_retry_chain(
-            result_dataset_name,
-            result_namespace_name,
-            result_project_name,
-            result_latest_version,
+            result_dataset,
             source_ds_name,
             source_ds_project,
             source_ds_version,
@@ -403,6 +395,12 @@ def delta_retry_update(
         project_name=project_name,
         indirect=False,
     )
+    latest_dataset = datachain.read_dataset(
+        name,
+        namespace=namespace_name,
+        project=project_name,
+        version=latest_version,
+    )
     updated_versions: dict[tuple[str, str, str], str] = {}
     result_key = _get_shared_result_key(delta_sources)
 
@@ -421,10 +419,7 @@ def delta_retry_update(
         ) = _build_source_replay_input(
             target_source_query=source,
             target_source_spec=target_source_spec,
-            result_dataset_name=name,
-            result_namespace_name=namespace_name,
-            result_project_name=project_name,
-            result_latest_version=latest_version,
+            result_dataset=latest_dataset,
             result_dependencies=dependencies,
         )
         if dependency_missing:
@@ -460,12 +455,6 @@ def delta_retry_update(
 
     normalized_dependencies = _normalize_dependencies(dependencies, updated_versions)
 
-    latest_dataset = datachain.read_dataset(
-        name,
-        namespace=namespace_name,
-        project=project_name,
-        version=latest_version,
-    )
     compared_chain = latest_dataset.diff(
         combined_replay_chain,
         on=result_key,
