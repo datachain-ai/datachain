@@ -81,8 +81,10 @@ def read_dataset(
         update: If True always checks for newer versions available on Studio, even if
             some version of the dataset exists locally already. If False (default), it
             will only fetch the dataset from Studio if it is not found locally.
-        delta_unsafe: Allow restricted ops in delta: merge, agg, union, group_by,
-            distinct.
+        delta_unsafe: Allow restricted ops in delta: merge, union, subtract,
+            diff, file_diff, agg, group_by, distinct. When multiple delta
+            sources participate in one composed query, this must be enabled on
+            every participating delta source.
 
 
     Example:

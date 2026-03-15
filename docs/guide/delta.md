@@ -87,16 +87,23 @@ By default, delta updates cannot be combined with the following methods:
 
 1. `merge`
 2. `union`
-3. `distinct`
-4. `agg`
-5. `group_by`
+3. `subtract`
+4. `diff`
+5. `file_diff`
+6. `distinct`
+7. `agg`
+8. `group_by`
 
 These methods are restricted because they may produce **unexpected results** when used with delta processing. Delta runs the chain only on a subset of rows (new and changed records), while methods like `distinct`, `agg`, or `group_by` are designed to operate on the entire dataset.
 
-Similarly, combining delta with methods like `merge` or `union` may result in duplicated rows when merging with a static dataset.
+Similarly, combining delta with methods like `merge`, `union`, `subtract`, `diff`, or `file_diff` may produce inconsistent results because the operation is being applied to replayed delta inputs rather than to the full logical datasets.
 
 If you still need to use these methods together with delta, you can override this restriction by setting the additional flag:
 
 ```python
 delta_unsafe=True
 ```
+
+If more than one delta-enabled source participates in the same composed query, set `delta_unsafe=True` on every participating delta source.
+
+`delta_unsafe=True` is an advanced option. Use it only when you know the participating delta sources are updated in a consistent way and the result of replaying only the changed rows will still match the result of recomputing the full query.
