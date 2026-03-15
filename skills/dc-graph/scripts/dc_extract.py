@@ -13,7 +13,6 @@ import os
 import sys
 from datetime import datetime, timezone
 from glob import glob
-from pathlib import Path
 
 
 def cmd_db_mtime():
