@@ -125,6 +125,46 @@ def test_read_dataset(test_session):
     ).hash() == ("51f2e5b81e40a22062a75c1590d0ccab880d182df9b39f610c6ccc503a5eb33c")
 
 
+def test_read_dataset_delta_hash_changes_with_delta_spec(test_session):
+    dataset_name = "dev.animals.delta_hash"
+    dc.read_values(id=[1, 2, 3], value=[10, 20, 30], session=test_session).save(
+        dataset_name
+    )
+
+    base_hash = dc.read_dataset(
+        name=dataset_name,
+        version="1.0.0",
+        session=test_session,
+    ).hash()
+    delta_hash = dc.read_dataset(
+        name=dataset_name,
+        version="1.0.0",
+        session=test_session,
+        delta=True,
+        delta_on="id",
+    ).hash()
+    delta_compare_hash = dc.read_dataset(
+        name=dataset_name,
+        version="1.0.0",
+        session=test_session,
+        delta=True,
+        delta_on="id",
+        delta_compare="value",
+    ).hash()
+    delta_unsafe_hash = dc.read_dataset(
+        name=dataset_name,
+        version="1.0.0",
+        session=test_session,
+        delta=True,
+        delta_on="id",
+        delta_unsafe=True,
+    ).hash()
+
+    assert base_hash != delta_hash
+    assert delta_hash != delta_compare_hash
+    assert delta_hash != delta_unsafe_hash
+
+
 def test_order_of_steps(mock_get_listing):
     assert (
         dc.read_storage("s3://bucket").mutate(new=10).filter(C("age") > 20).hash()

@@ -212,6 +212,24 @@ class DeltaSpec:
     delta_retry: bool | str | None = None
     delta_unsafe: bool = False
 
+    @staticmethod
+    def _normalize_hash_value(
+        value: str | Sequence[str] | bool | None,
+    ) -> str | tuple[str, ...] | bool | None:
+        if isinstance(value, str) or value is None or isinstance(value, bool):
+            return value
+        return tuple(value)
+
+    def hash(self) -> str:
+        normalized = (
+            self._normalize_hash_value(self.on),
+            self._normalize_hash_value(self.right_on),
+            self._normalize_hash_value(self.compare),
+            self.delta_retry,
+            self.delta_unsafe,
+        )
+        return hashlib.sha256(repr(normalized).encode("utf-8")).hexdigest()
+
 
 @frozen
 class QueryStep:
@@ -2319,6 +2337,8 @@ class DatasetQuery:
             hasher.update(start_hash.encode("utf-8"))
 
         hasher.update(self._starting_step_hash.encode("utf-8"))
+        if self.delta_spec is not None:
+            hasher.update(self.delta_spec.hash().encode("utf-8"))
 
         for step in self.steps:
             hasher.update(step.hash().encode("utf-8"))
@@ -2389,6 +2409,8 @@ class DatasetQuery:
             hasher.update(start_hash.encode("utf-8"))
 
         hasher.update(self._starting_step_hash.encode("utf-8"))
+        if self.delta_spec is not None:
+            hasher.update(self.delta_spec.hash().encode("utf-8"))
 
         self.apply_listing_pre_step()
 
