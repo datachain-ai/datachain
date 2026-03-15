@@ -73,17 +73,20 @@ def delta_disabled(
     return _inner
 
 
-def _rewrite_query_for_source_replay(
-    replacement_source_chain: "DataChain",
+def _rewrite_query_for_delta_replay(
+    source_replacements: Sequence[tuple["DatasetQuery", "DataChain"]],
     original_query_chain: "DataChain",
-    source_occurrence_query: "DatasetQuery",
 ) -> "DataChain":
-    # Clone the original query and replace one source occurrence inside it
-    # with the source-specific replay input.
+    # Clone the original query and replace all delta source occurrences with
+    # their replay inputs before executing the tree once.
     replay = original_query_chain.clone()
-    replay._query = original_query_chain._query.replace_source(
-        source_occurrence_query, replacement_source_chain._query
-    )
+    replay_query = original_query_chain._query
+    for source_occurrence_query, replacement_source_chain in source_replacements:
+        replay_query = replay_query.replace_source(
+            source_occurrence_query, replacement_source_chain._query
+        )
+
+    replay._query = replay_query
     replay.signals_schema = original_query_chain.signals_schema
     return replay
 
@@ -345,9 +348,6 @@ def _build_source_replay_input(
     else:
         source_replay_input = diff_chain
 
-    if source_replay_input.empty:
-        return None, source_ds_latest_version, False
-
     return source_replay_input, source_ds_latest_version, False
 
 
@@ -404,7 +404,7 @@ def delta_retry_update(
     updated_versions: dict[tuple[str, str, str], str] = {}
     result_key = _get_shared_result_key(delta_sources)
 
-    combined_replay_chain = None
+    source_replacements: list[tuple[DatasetQuery, DataChain]] = []
     for source in delta_sources:
         target_source_spec = source.delta_spec
         assert target_source_spec is not None
@@ -430,33 +430,20 @@ def delta_retry_update(
             source_ds_latest_version
         )
 
-        if source_replay_input is None:
-            continue
+        assert source_replay_input is not None
+        source_replacements.append((source, source_replay_input))
 
-        source_replay_chain = _rewrite_query_for_source_replay(
-            source_replay_input,
-            dc,
-            source,
-        ).persist()
-        if source_replay_chain.empty:
-            continue
-
-        if combined_replay_chain is None:
-            combined_replay_chain = source_replay_chain
-        else:
-            combined_replay_chain = _safe_union(
-                combined_replay_chain,
-                source_replay_chain,
-                context="combining replay results across delta sources",
-            )
-
-    if combined_replay_chain is None:
+    replayed_delta_chain = _rewrite_query_for_delta_replay(
+        source_replacements,
+        dc,
+    ).persist()
+    if replayed_delta_chain.empty:
         return None, None, False
 
     normalized_dependencies = _normalize_dependencies(dependencies, updated_versions)
 
     compared_chain = latest_dataset.diff(
-        combined_replay_chain,
+        replayed_delta_chain,
         on=result_key,
         added=True,
         modified=False,
@@ -464,7 +451,7 @@ def delta_retry_update(
     )
     result_chain = _safe_union(
         compared_chain,
-        combined_replay_chain,
+        replayed_delta_chain,
         context="merging the delta output with the existing dataset version",
     )
     return result_chain, normalized_dependencies, True

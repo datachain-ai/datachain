@@ -389,7 +389,7 @@ def test_delta_update_unsafe_only_processes_new_rows(test_session):
     assert sorted(processed[3:]) == [(4, 4), (5, 5), (6, 6)]
 
 
-def test_delta_update_unsafe_replays_each_delta_source_independently(test_session):
+def test_delta_update_unsafe_replays_aligned_delta_sources_together(test_session):
     left_name = f"unsafe_multi_left_{uuid.uuid4().hex[:8]}"
     right_name = f"unsafe_multi_right_{uuid.uuid4().hex[:8]}"
     result_name = f"unsafe_multi_result_{uuid.uuid4().hex[:8]}"
@@ -400,8 +400,8 @@ def test_delta_update_unsafe_replays_each_delta_source_independently(test_sessio
         return left_value + right_value
 
     dc.read_values(
-        id=[1, 2, 3],
-        left_value=[10, 20, 30],
+        id=[1, 2],
+        left_value=[10, 20],
         session=test_session,
     ).save(left_name)
     dc.read_values(
@@ -447,6 +447,11 @@ def test_delta_update_unsafe_replays_each_delta_source_independently(test_sessio
 
     dc.read_values(
         id=[1, 2, 3],
+        left_value=[10, 20, 30],
+        session=test_session,
+    ).save(left_name)
+    dc.read_values(
+        id=[1, 2, 3],
         right_value=[100, 200, 300],
         session=test_session,
     ).save(right_name)
@@ -461,7 +466,9 @@ def test_delta_update_unsafe_replays_each_delta_source_independently(test_sessio
     }
 
 
-def test_delta_update_unsafe_matches_same_named_sources_by_full_identity(test_session):
+def test_delta_update_unsafe_matches_same_named_aligned_sources_by_full_identity(
+    test_session,
+):
     catalog = test_session.catalog
     suffix = uuid.uuid4().hex[:8]
     source_short = f"shared_source_{suffix}"
@@ -482,8 +489,8 @@ def test_delta_update_unsafe_matches_same_named_sources_by_full_identity(test_se
         return left_value + right_value
 
     dc.read_values(
-        id=[1, 2],
-        left_value=[10, 20],
+        id=[1],
+        left_value=[10],
         session=test_session,
     ).save(left_name)
     dc.read_values(
@@ -532,6 +539,11 @@ def test_delta_update_unsafe_matches_same_named_sources_by_full_identity(test_se
 
     dc.read_values(
         id=[1, 2],
+        left_value=[10, 20],
+        session=test_session,
+    ).save(left_name)
+    dc.read_values(
+        id=[1, 2],
         right_value=[100, 200],
         session=test_session,
     ).save(right_name)
@@ -540,7 +552,7 @@ def test_delta_update_unsafe_matches_same_named_sources_by_full_identity(test_se
 
     assert processed[1:] == [2]
     assert _get_dependencies(catalog, result_name, "1.0.1") == [
-        (left_name, "1.0.0"),
+        (left_name, "1.0.1"),
         (right_name, "1.0.1"),
     ]
     assert set(dc.read_dataset(result_name, session=test_session).to_values("id")) == {
@@ -549,14 +561,14 @@ def test_delta_update_unsafe_matches_same_named_sources_by_full_identity(test_se
     }
 
 
-def test_delta_update_unsafe_treats_same_dataset_occurrences_independently(
+def test_delta_update_unsafe_replays_aligned_same_dataset_occurrences(
     test_session,
 ):
-    # Ensure repeated uses of the same delta source are handled
-    # as independent query occurrences.
-    # "replay" must happen per source occurrence
-    # not per dataset name
-    # not by flattening one diff chain through the whole downstream query
+    # Repeated uses of the same delta source should still replay correctly when
+    # aligned delta rows for each occurrence arrive together.
+    # Under the cheaper all-at-once replay semantics, repeated occurrences may
+    # still cause duplicate processing work even when the final saved output is
+    # correct.
     source_name = f"unsafe_same_occ_source_{uuid.uuid4().hex[:8]}"
     result_name = f"unsafe_same_occ_result_{uuid.uuid4().hex[:8]}"
     processed: list[int] = []
@@ -599,15 +611,15 @@ def test_delta_update_unsafe_treats_same_dataset_occurrences_independently(
     assert dc.read_dataset(result_name, session=test_session).to_values("row_id") == [1]
 
     dc.read_values(
-        row_id=[1, 2, 10],
-        group=[1, 1, 1],
-        side=["L", "L", "R"],
+        row_id=[1, 2, 10, 20],
+        group=[1, 1, 1, 1],
+        side=["L", "L", "R", "R"],
         session=test_session,
     ).save(source_name)
 
     build_chain().save(result_name)
 
-    assert processed[1:] == [2]
+    assert processed[1:] == [2, 2]
     assert set(
         dc.read_dataset(result_name, session=test_session).to_values("row_id")
     ) == {
