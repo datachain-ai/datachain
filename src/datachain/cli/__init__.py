@@ -14,7 +14,9 @@ from .commands import (
     edit_dataset,
     garbage_collect,
     index,
+    install_skills,
     list_datasets,
+    list_skills,
     ls,
     rm_dataset,
     show,
@@ -101,6 +103,7 @@ def handle_command(args, catalog, client_config) -> int:
         "auth": lambda: process_auth_cli_args(args),
         "job": lambda: process_jobs_args(args),
         "pipeline": lambda: process_pipeline_args(args, catalog),
+        "skill": lambda: handle_skill_command(args),
     }
 
     handler = command_handlers.get(args.command)
@@ -259,6 +262,32 @@ def handle_index_command(args, catalog):
         args.sources,
         update=bool(args.update),
     )
+
+
+def handle_skill_command(args):
+    import sys
+
+    if args.skill_cmd is None:
+        print(
+            f"Use 'datachain {args.command} --help' to see available options",
+            file=sys.stderr,
+        )
+        return 1
+
+    skill_commands = {
+        "install": lambda: install_skills(
+            only=args.only,
+            target=args.target,
+            local=args.local,
+        ),
+        "list": lambda: list_skills(),
+    }
+
+    handler = skill_commands.get(args.skill_cmd)
+    if handler:
+        return handler()
+
+    raise Exception(f"Unexpected command {args.skill_cmd}")
 
 
 def handle_completion_command(args):
