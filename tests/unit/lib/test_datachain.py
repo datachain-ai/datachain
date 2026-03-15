@@ -4518,6 +4518,15 @@ def test_column_compute(test_session):
     assert chain.max("signals.signal.s3") == "eee"
 
 
+def test_delete_dataset_and_create_with_same_name(test_session):
+    chain = dc.read_values(num=[1, 2, 3], session=test_session)
+    chain.save("nums", version="1.0.0")
+    dc.delete_dataset("nums", force=True, session=test_session)
+    assert "nums" not in dc.datasets(session=test_session).to_values("name")
+    chain.save("nums", version="1.0.0")
+    assert "nums" in dc.datasets(session=test_session).to_values("name")
+
+
 def test_union_does_not_break_schema_order(test_session):
     class Meta(BaseModel):
         name: str

@@ -7,9 +7,9 @@ from typing import Any, cast
 
 from dateutil.parser import isoparse
 from gcsfs import GCSFileSystem
-from tqdm.auto import tqdm
 
 from datachain.lib.file import File
+from datachain.progress import tqdm
 
 from .fsspec import DELIMITER, Client, ResultQueue
 
