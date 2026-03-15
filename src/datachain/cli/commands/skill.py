@@ -39,9 +39,7 @@ def install_skills(only: str | None, target: str, local: bool) -> None:
     layout = TARGET_LAYOUT[target]
     base = Path(".") if local else Path.home()
 
-    skills_to_install = (
-        {only: SKILLS[only]} if only else dict(SKILLS)
-    )
+    skills_to_install = {only: SKILLS[only]} if only else dict(SKILLS)
 
     skills_dir = base / layout["skills_dir"]
     commands_dir = base / layout["commands_dir"] if layout["commands_dir"] else None

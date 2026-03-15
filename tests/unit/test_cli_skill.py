@@ -1,13 +1,11 @@
 """Tests for the `datachain skill` CLI command."""
 
-import shutil
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from datachain.cli.parser import get_parser
-
 
 # ---------------------------------------------------------------------------
 # Argument parsing tests
@@ -84,7 +82,9 @@ def _make_fake_skills_src(tmp_path: Path) -> Path:
     for skill_name in ("dc-core", "dc-graph"):
         skill_dir = skills_src / skill_name
         skill_dir.mkdir(parents=True)
-        (skill_dir / "SKILL.md").write_text(f"---\nname: {skill_name}\n---\n# {skill_name}\n")
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: {skill_name}\n---\n# {skill_name}\n"
+        )
         scripts = skill_dir / "scripts"
         scripts.mkdir()
         (scripts / "dc_extract.py").write_text("# stub\n")
@@ -104,12 +104,14 @@ def fake_home(tmp_path):
 def _run_install(fake_skills_src, fake_home, only, target, local, project_dir=None):
     from datachain.cli.commands.skill import install_skills
 
-    with patch(
-        "datachain.cli.commands.skill._skills_src", return_value=fake_skills_src
-    ), patch("pathlib.Path.home", return_value=fake_home):
+    with (
+        patch("datachain.cli.commands.skill._skills_src", return_value=fake_skills_src),
+        patch("pathlib.Path.home", return_value=fake_home),
+    ):
         if local and project_dir:
             orig_cwd = Path.cwd()
             import os
+
             os.chdir(project_dir)
             try:
                 install_skills(only=only, target=target, local=local)
@@ -189,8 +191,11 @@ def test_install_claude_local(tmp_path, fake_skills_src, fake_home):
 
     from datachain.cli.commands.skill import install_skills
 
-    with patch("datachain.cli.commands.skill._skills_src", return_value=fake_skills_src):
+    with patch(
+        "datachain.cli.commands.skill._skills_src", return_value=fake_skills_src
+    ):
         import os
+
         orig = os.getcwd()
         os.chdir(project_dir)
         try:
