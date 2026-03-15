@@ -2,9 +2,9 @@ from typing import Any
 from urllib.parse import parse_qs, urlsplit, urlunsplit
 
 from adlfs import AzureBlobFileSystem
-from tqdm.auto import tqdm
 
 from datachain.lib.file import File
+from datachain.progress import tqdm
 
 from .fsspec import DELIMITER, Client, ResultQueue
 

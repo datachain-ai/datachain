@@ -42,7 +42,7 @@ database for easy and efficient querying.
     including LLMs.
 2.  **Analytics.** DataChain dataset is a table that combines all the
     information about data objects in one place + it provides
-    dataframe-like API and vectorized engine to do analytics on these
+    DataFrame-like API and vectorized engine to do analytics on these
     tables at scale.
 3.  **Versioning.** DataChain doesn't store, require moving or copying
     data. Perfect use case is a bucket with thousands or millions of
@@ -75,7 +75,7 @@ database for easy and efficient querying.
         embeddings.
     -   High-performance vectorized operations on Python objects: sum,
         count, avg, etc.
-    -   Pass datasets to Pytorch and Tensorflow, or export them back
+    -   Pass datasets to PyTorch and TensorFlow, or export them back
         into storage.
 
 

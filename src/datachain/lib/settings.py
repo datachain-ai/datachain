@@ -22,8 +22,9 @@ class Settings:
     _project: str | None
     _min_task_size: int | None
     _batch_size: int | None
+    _ephemeral: bool | None
 
-    def __init__(  # noqa: C901, PLR0912
+    def __init__(  # noqa: C901, PLR0912, PLR0915
         self,
         cache: bool | None = None,
         prefetch: bool | int | None = None,
@@ -33,6 +34,7 @@ class Settings:
         project: str | None = None,
         min_task_size: int | None = None,
         batch_size: int | None = None,
+        ephemeral: bool | None = None,
     ) -> None:
         if cache is None:
             self._cache = None
@@ -142,6 +144,16 @@ class Settings:
                 )
             self._batch_size = batch_size
 
+        if ephemeral is None:
+            self._ephemeral = None
+        else:
+            if not isinstance(ephemeral, bool):
+                raise SettingsError(
+                    "'ephemeral' argument must be bool"
+                    f" while {ephemeral.__class__.__name__} was given"
+                )
+            self._ephemeral = ephemeral
+
     @property
     def cache(self) -> bool:
         return self._cache if self._cache is not None else DEFAULT_CACHE
@@ -174,6 +186,10 @@ class Settings:
     def batch_size(self) -> int | None:
         return self._batch_size if self._batch_size is not None else None
 
+    @property
+    def ephemeral(self) -> bool:
+        return self._ephemeral if self._ephemeral is not None else False
+
     def to_dict(self) -> dict[str, Any]:
         res: dict[str, Any] = {}
         if self._cache is not None:
@@ -192,6 +208,8 @@ class Settings:
             res["project"] = self.project
         if self._batch_size is not None:
             res["batch_size"] = self.batch_size
+        if self._ephemeral is not None:
+            res["ephemeral"] = self.ephemeral
         return res
 
     def add(self, settings: "Settings") -> None:
@@ -211,3 +229,5 @@ class Settings:
             self._min_task_size = settings._min_task_size
         if settings._batch_size is not None:
             self._batch_size = settings._batch_size
+        if settings._ephemeral is not None:
+            self._ephemeral = settings._ephemeral
