@@ -2847,7 +2847,6 @@ class DatasetQuery:
 
         try:
             query = self.apply_steps()
-            temp_table_name: str | None = None
 
             columns = [
                 c if isinstance(c, Column) else Column(c.name, c.type)
@@ -2859,43 +2858,30 @@ class DatasetQuery:
                     "Ensure at least one column (other than 'id') is selected."
                 )
 
-            def cleanup_temp_table() -> None:
-                if temp_table_name is None:
-                    return
-                with contextlib.suppress(Exception):
-                    self.catalog.warehouse.cleanup_tables([temp_table_name])
-
             # Phase 1: Create a temp staging table and populate it.
             # If the process dies here, only an orphaned tmp_ table remains,
             # cleaned up by 'datachain gc'.
-            temp_table_name = self.catalog.warehouse.temp_table_name()
+            temp_table_name: str = self.catalog.warehouse.temp_table_name()
             self.catalog.warehouse.create_dataset_rows_table(
                 temp_table_name, columns=columns
             )
+            self.temp_table_names.append(temp_table_name)
             temp_table = self.catalog.warehouse.get_table(temp_table_name)
-            try:
-                self.catalog.warehouse.insert_into(temp_table, query.select())
-            except Exception:
-                cleanup_temp_table()
-                raise
+            self.catalog.warehouse.insert_into(temp_table, query.select())
 
             # Phase 2: Claim the version (metadata only).
-            try:
-                dataset = self.catalog.create_dataset(
-                    name,
-                    project,
-                    version=version,
-                    feature_schema=feature_schema,
-                    columns=columns,
-                    description=description,
-                    attrs=attrs,
-                    update_version=update_version,
-                    job_id=job_id,
-                    **kwargs,
-                )
-            except Exception:
-                cleanup_temp_table()
-                raise
+            dataset = self.catalog.create_dataset(
+                name,
+                project,
+                version=version,
+                feature_schema=feature_schema,
+                columns=columns,
+                description=description,
+                attrs=attrs,
+                update_version=update_version,
+                job_id=job_id,
+                **kwargs,
+            )
 
             version = version or dataset.latest_version
 
@@ -2903,12 +2889,8 @@ class DatasetQuery:
             final_table_name = self.catalog.warehouse.dataset_table_name(
                 dataset, version
             )
-            try:
-                self.catalog.warehouse.rename_table(temp_table, final_table_name)
-                temp_table_name = None
-            except Exception:
-                cleanup_temp_table()
-                raise
+            self.catalog.warehouse.rename_table(temp_table, final_table_name)
+            self.temp_table_names.remove(temp_table_name)
 
             # Link this dataset version to the job that created it
             self.catalog.metastore.link_dataset_version_to_job(
