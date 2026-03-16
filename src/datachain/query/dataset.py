@@ -39,7 +39,7 @@ from datachain.data_storage.schema import (
     partition_col_names,
     partition_columns,
 )
-from datachain.dataset import DatasetDependency, DatasetStatus, RowDict
+from datachain.dataset import DatasetDependency, RowDict
 from datachain.error import (
     DatasetNotFoundError,
     QueryScriptAbortError,
@@ -2857,6 +2857,18 @@ class DatasetQuery:
                     "Ensure at least one column (other than 'id') is selected."
                 )
 
+            # Phase 1: Create a temp staging table and populate it.
+            # If the process dies here, only an orphaned tmp_ table remains,
+            # cleaned up by 'datachain gc'.
+            temp_table_name: str = self.catalog.warehouse.temp_table_name()
+            self.catalog.warehouse.create_dataset_rows_table(
+                temp_table_name, columns=columns
+            )
+            self.temp_table_names.append(temp_table_name)
+            temp_table = self.catalog.warehouse.get_table(temp_table_name)
+            self.catalog.warehouse.insert_into(temp_table, query.select())
+
+            # Phase 2: Claim the version (metadata only).
             dataset = self.catalog.create_dataset(
                 name,
                 project,
@@ -2869,13 +2881,15 @@ class DatasetQuery:
                 job_id=job_id,
                 **kwargs,
             )
+
             version = version or dataset.latest_version
 
-            dr = self.catalog.warehouse.dataset_rows(dataset)
-
-            self.catalog.warehouse.insert_into(dr.get_table(), query.select())
-
-            self.catalog.update_dataset_version_with_warehouse_info(dataset, version)
+            # Phase 3: Rename staging table to the final dataset table name.
+            final_table_name = self.catalog.warehouse.dataset_table_name(
+                dataset, version
+            )
+            self.catalog.warehouse.rename_table(temp_table, final_table_name)
+            self.temp_table_names.remove(temp_table_name)
 
             # Link this dataset version to the job that created it
             self.catalog.metastore.link_dataset_version_to_job(
@@ -2900,10 +2914,8 @@ class DatasetQuery:
 
             self._add_dependencies(dataset, version)  # type: ignore [arg-type]
 
-            # Mark as COMPLETE only after all operations succeed
-            self.catalog.metastore.update_dataset_status(
-                dataset, DatasetStatus.COMPLETE, version=version
-            )
+            # Mark as COMPLETE only after all operations succeed.
+            self.catalog.complete_dataset_version(dataset, version)
         finally:
             self.cleanup()
         return self.__class__(
