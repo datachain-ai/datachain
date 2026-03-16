@@ -60,7 +60,7 @@ def test_udf_signals_continue_from_partial(
 
     assert len(processed_nums) == fail_after_count
 
-    # -------------- SECOND RUN (FIXED UDF, SAME NAME) -------------------
+    # -------------- SECOND RUN (FIXED UDF) -------------------
     reset_session_job_state()
 
     processed_nums.clear()
@@ -116,12 +116,11 @@ def test_udf_generator_continue_from_partial(
 
     assert len(processed_nums) == fail_after_count
 
-    # -------------- SECOND RUN (FIXED GENERATOR, SAME NAME) -------------------
+    # -------------- SECOND RUN (FIXED GENERATOR) -------------------
     reset_session_job_state()
 
     processed_nums.clear()
 
-    # Use same function name so identity_hash matches (simulates fixing the bug)
     def buggy_generator(num) -> Iterator[int]:
         processed_nums.append(num)
         yield num * 10

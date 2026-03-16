@@ -282,7 +282,6 @@ def test_aggregator_always_runs_from_scratch(
 
 
 def test_different_function_name_no_partial_continuation(test_session, monkeypatch):
-    """Changing the UDF function name should NOT continue from partial checkpoint."""
     processed = []
 
     dc.read_values(num=[1, 2, 3, 4, 5, 6], session=test_session).save("nums")
@@ -319,7 +318,6 @@ def test_different_function_name_no_partial_continuation(test_session, monkeypat
 
 
 def test_lambda_change_no_partial_continuation(test_session, monkeypatch):
-    """Changing a lambda UDF should NOT continue from partial checkpoint."""
     processed = []
 
     dc.read_values(num=[1, 2, 3, 4, 5, 6], session=test_session).save("nums")

@@ -128,7 +128,6 @@ def test_checkpoints_modified_chains(
 
     assert len(catalog.get_dataset("nums1").versions) == 2 if reset_checkpoints else 1
     assert len(catalog.get_dataset("nums2").versions) == 2
-    # nums3 is unchanged (same chain hash) — no transient dependency on nums2
     assert len(catalog.get_dataset("nums3").versions) == 2 if reset_checkpoints else 1
 
     assert len(list(catalog.metastore.list_checkpoints([first_job_id]))) == 3
@@ -527,7 +526,6 @@ def test_ephemeral_mode_no_jobs_on_collect(test_session, nums_dataset):
 
 
 def test_independent_chains_no_transient_invalidation(test_session, nums_dataset):
-    """Modifying one chain should not invalidate an unrelated chain's UDF checkpoint."""
     call_count = {"count": 0}
 
     def add_ten(num) -> int:
@@ -557,7 +555,6 @@ def test_independent_chains_no_transient_invalidation(test_session, nums_dataset
 
 
 def test_reordering_chains_no_invalidation(test_session, nums_dataset):
-    """Reordering chains should not invalidate UDF checkpoints."""
     call_count_a = {"count": 0}
     call_count_b = {"count": 0}
 
@@ -591,8 +588,7 @@ def test_reordering_chains_no_invalidation(test_session, nums_dataset):
     assert call_count_b["count"] == 0, "triple UDF should be skipped"
 
 
-def test_try_catch_identical_chains_no_stale_partial_data(test_session, nums_dataset):
-    """Chain B should not inherit chain A's partial output table data."""
+def test_try_except_identical_chains(test_session, nums_dataset):
 
     def compute(num) -> int:
         if num > 3:
