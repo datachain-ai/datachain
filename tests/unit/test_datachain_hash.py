@@ -141,6 +141,46 @@ def test_read_dataset(test_session):
     ).hash() == ("58c939b8626443e5d68e9e419a9a5fd1bc7282ca0c5e06cfeb578635e9703a06")
 
 
+def test_read_dataset_delta_hash_changes_with_delta_spec(test_session):
+    dataset_name = "dev.animals.delta_hash"
+    dc.read_values(id=[1, 2, 3], value=[10, 20, 30], session=test_session).save(
+        dataset_name
+    )
+
+    base_hash = dc.read_dataset(
+        name=dataset_name,
+        version="1.0.0",
+        session=test_session,
+    ).hash()
+    delta_hash = dc.read_dataset(
+        name=dataset_name,
+        version="1.0.0",
+        session=test_session,
+        delta=True,
+        delta_on="id",
+    ).hash()
+    delta_compare_hash = dc.read_dataset(
+        name=dataset_name,
+        version="1.0.0",
+        session=test_session,
+        delta=True,
+        delta_on="id",
+        delta_compare="value",
+    ).hash()
+    delta_unsafe_hash = dc.read_dataset(
+        name=dataset_name,
+        version="1.0.0",
+        session=test_session,
+        delta=True,
+        delta_on="id",
+        delta_unsafe=True,
+    ).hash()
+
+    assert base_hash != delta_hash
+    assert delta_hash != delta_compare_hash
+    assert delta_hash != delta_unsafe_hash
+
+
 def test_order_of_steps(mock_get_listing):
     assert (
         dc.read_storage("s3://bucket").mutate(new=10).filter(C("age") > 20).hash()
@@ -217,7 +257,7 @@ def test_all_possible_steps(test_session):
             right_on=["player.name"],
         )
         .hash()
-    ) == "e760edeeb63769799131e1761bcee9ee5b648bb7a28bc7edec0cfaa2f4a6fcd0"
+    ) == "8e5cf0a718406a94c99ab7ffafc67aa5430f79a276deb1f1d87e5a5991bc56bf"
 
 
 def test_diff(test_session):
@@ -246,4 +286,4 @@ def test_diff(test_session):
             status_col="diff",
         )
         .hash()
-    ) == "8c90a90f20b0e5f7bf30b6ce25e1569017fc79ff88d53cb6379edc196a2c65da"
+    ) == "5d74e62f9722b62ba7a5ab0a9661570920cc08c68aa8102a0876390e376ba99b"

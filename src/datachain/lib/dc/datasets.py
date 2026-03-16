@@ -11,7 +11,7 @@ from datachain.lib.projects import get as get_project
 from datachain.lib.settings import Settings
 from datachain.lib.signal_schema import SignalSchema
 from datachain.query import Session
-from datachain.query.dataset import DatasetQuery
+from datachain.query.dataset import DatasetQuery, DeltaSpec
 
 from .utils import Sys, is_studio
 from .values import read_values
@@ -81,8 +81,10 @@ def read_dataset(
         update: If True always checks for newer versions available on Studio, even if
             some version of the dataset exists locally already. If False (default), it
             will only fetch the dataset from Studio if it is not found locally.
-        delta_unsafe: Allow restricted ops in delta: merge, agg, union, group_by,
-            distinct.
+        delta_unsafe: Allow restricted ops in delta: merge, union, subtract,
+            diff, file_diff, agg, group_by, distinct. When multiple delta
+            sources participate in one composed query, this must be enabled on
+            every participating delta source.
 
 
     Example:
@@ -211,7 +213,9 @@ def read_dataset(
     chain = DataChain(query, _settings, signals_schema)
 
     if delta:
-        chain = chain._as_delta(
+        if delta_on is None:
+            raise ValueError("'delta on' fields must be defined")
+        query.delta_spec = DeltaSpec(
             on=delta_on,
             right_on=delta_result_on,
             compare=delta_compare,
