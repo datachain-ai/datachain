@@ -1,5 +1,3 @@
-from unittest.mock import patch
-
 import pandas as pd
 import pytest
 from pydantic import BaseModel
@@ -7,6 +5,7 @@ from pydantic import BaseModel
 import datachain as dc
 from datachain import func
 from datachain.lib.dc import C
+from tests.utils import is_sha256_hex
 
 DF_DATA = {
     "first_name": ["Alice", "Bob", "Charlie", "David", "Eva"],
@@ -51,13 +50,6 @@ players = [
     Player(name="p3", sport="baseball"),
     Player(name="p4", sport="tennis"),
 ]
-
-
-@pytest.fixture
-def mock_get_listing():
-    with patch("datachain.lib.dc.storage.get_listing") as mock:
-        mock.return_value = ("lst__s3://my-bucket", "", "", True)
-        yield mock
 
 
 def _set_stable_uuid(test_session, name, uuid):
@@ -125,10 +117,28 @@ def test_read_parquet(test_session, tmp_dir):
     assert dc.read_parquet(path.as_uri(), session=test_session).hash() is not None
 
 
-def test_read_storage(mock_get_listing, test_session):
-    assert dc.read_storage("s3://bucket", session=test_session).hash() == (
-        "811e7089ead93a572d75d242220f6b94fd30f21def1bbcf37f095f083883bc41"
-    )
+def test_read_storage(test_session, tmp_dir):
+    (tmp_dir / "file1.txt").write_text("hello")
+    uri = tmp_dir.as_uri()
+    hash1 = dc.read_storage(uri, session=test_session).hash()
+    hash2 = dc.read_storage(uri, session=test_session).hash()
+    assert is_sha256_hex(hash1)
+    assert hash1 == hash2
+
+
+def test_read_storage_update_changes_hash(test_session, tmp_dir):
+    (tmp_dir / "file1.txt").write_text("hello")
+    uri = tmp_dir.as_uri()
+
+    hash1 = dc.read_storage(uri, session=test_session).hash()
+
+    # Add a new file and re-list with update=True
+    (tmp_dir / "file2.txt").write_text("world")
+    hash2 = dc.read_storage(uri, session=test_session, update=True).hash()
+
+    assert is_sha256_hex(hash1)
+    assert is_sha256_hex(hash2)
+    assert hash1 != hash2
 
 
 def test_read_dataset(test_session):
@@ -141,14 +151,26 @@ def test_read_dataset(test_session):
     ).hash() == ("58c939b8626443e5d68e9e419a9a5fd1bc7282ca0c5e06cfeb578635e9703a06")
 
 
-def test_order_of_steps(mock_get_listing):
-    assert (
-        dc.read_storage("s3://bucket").mutate(new=10).filter(C("age") > 20).hash()
-    ) == "b07f11244f1f84e4ecde87976fc380b4b8b656b0202294179e30be2112df7d3a"
+def test_order_of_steps(test_session, tmp_dir):
+    (tmp_dir / "file1.txt").write_text("hello")
+    uri = tmp_dir.as_uri()
 
-    assert (
-        dc.read_storage("s3://bucket").filter(C("age") > 20).mutate(new=10).hash()
-    ) == "82780df484ce63e499ceed6ef3418920fdf68461a6b5f24234d3c0628c311c02"
+    hash1 = (
+        dc.read_storage(uri, session=test_session)
+        .mutate(new=10)
+        .filter(C("age") > 20)
+        .hash()
+    )
+    hash2 = (
+        dc.read_storage(uri, session=test_session)
+        .filter(C("age") > 20)
+        .mutate(new=10)
+        .hash()
+    )
+
+    assert is_sha256_hex(hash1)
+    assert is_sha256_hex(hash2)
+    assert hash1 != hash2
 
 
 def test_all_possible_steps(test_session):

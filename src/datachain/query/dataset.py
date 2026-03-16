@@ -2218,6 +2218,10 @@ class DatasetQuery:
         Args:
             job_aware: If True, includes the last checkpoint hash from the job context.
         """
+        # Resolve listing dataset if needed so _starting_step_hash uses
+        # the actual dataset version (UUID) instead of bare listing name
+        self.apply_listing_pre_step()
+
         hasher = hashlib.sha256()
 
         start_hash = self._last_checkpoint_hash if job_aware else None
