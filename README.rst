@@ -22,174 +22,206 @@
    :target: https://deepwiki.com/datachain-ai/datachain
    :alt: DeepWiki
 
-DataChain is a Python-based AI-data warehouse for transforming and analyzing unstructured
-data like images, audio, videos, text and PDFs. It integrates with external storage
-(e.g. S3) to process data efficiently without data duplication and manages metadata
-in an internal database for easy and efficient querying.
+**The data context layer for object storage — S3, GCS, Azure ADLS.**
+**Built for AI agents and the engineers who work with them.**
 
 
-Use Cases
-=========
+The Problem
+===========
 
-1. **ETL.** Pythonic framework for describing and running unstructured data transformations
-   and enrichments, applying models to data, including LLMs.
-2. **Analytics.** DataChain dataset is a table that combines all the information about data
-   objects in one place + it provides dataframe-like API and vectorized engine to do analytics
-   on these tables at scale.
-3. **Versioning.** DataChain doesn't store, require moving or copying data.
-   Perfect use case is a bucket with thousands or millions of images, videos, audio, PDFs.
-4. **Incremental Processing.** DataChain's delta and retry features allow for efficient
-   processing workflows:
+Object storage gives agents nothing but file paths. Ask Claude Code or Cursor to build
+a pipeline over 500K sensor recordings and it produces this:
 
-   - **Delta Processing**: Process only new or changed files/records
-   - **Retry Processing**: Automatically reprocess records with errors or missing results
-   - **Combined Approach**: Process new data and fix errors in a single pipeline
+.. code:: python
 
-Getting Started
-===============
+    import boto3
 
-Visit `Quick Start <https://docs.datachain.ai/quick-start>`_ and `Docs <https://docs.datachain.ai/>`_
-to get started with `DataChain` and learn more.
+    s3 = boto3.client("s3")
+    objects = s3.list_objects_v2(Bucket="my-bucket", Prefix="recordings/")
+
+    for obj in objects["Contents"]:
+        file = download(obj["Key"])
+        embedding = run_model(file)
+        save_result(obj["Key"], embedding)
+
+This code re-processes all 500K files on every run, has no memory of what changed, and
+breaks silently when files are added or renamed. The agent isn't writing bad code — it
+has no data context to work with. So it generates the only thing it can: a naive loop
+over raw file paths.
+
+
+Data Context
+============
+
+DataChain builds and maintains a **data context** for your object storage — a versioned,
+queryable, metadata-rich layer that sits between your storage and your code.
+
+Data context is what your files mean: what metadata they carry, what version they're on,
+what code produced them, what changed since the last run. It accumulates as you work,
+persists across sessions, and gives agents something real to reason about.
+
+It is built around a first-class abstraction — the **dataset**: a typed, versioned
+collection of file references with no copies, no sidecar JSONs, no reinvented state
+management. Everything in DataChain is built on top of it.
+
+
+Install
+=======
 
 .. code:: bash
 
-        pip install datachain
+    pip install datachain
+    datachain skill install                      # Claude Code by default
+    datachain skill install --target cursor
+    datachain skill install --target codex
+
+This installs two skills into your agent — one that teaches it the data context API,
+one that makes your data context discoverable across the team.
 
 
-Example: Download Subset of Files Based on Metadata
----------------------------------------------------
+``dc-core`` — Data Context API in Agent Context
+================================================
 
-Sometimes users only need to download a specific subset of files from cloud storage,
-rather than the entire dataset.
-For example, you could use a JSON file's metadata to download just cat images with
-high confidence scores.
+``dc-core`` injects the full DataChain API reference, rules, and pipeline templates into
+your agent's context window. The agent now has the data context abstraction to reason
+with — and generates correct, idiomatic code on the first attempt.
 
+The same prompt now produces:
 
-.. code:: py
+.. code:: python
 
-    import datachain as dc
-
-    meta = dc.read_json("gs://datachain-demo/dogs-and-cats/*json", column="meta", anon=True)
-    images = dc.read_storage("gs://datachain-demo/dogs-and-cats/*jpg", anon=True)
-
-    images_id = images.map(id=lambda file: file.path.split('.')[-2])
-    annotated = images_id.merge(meta, on="id", right_on="meta.id")
-
-    likely_cats = annotated.filter((dc.Column("meta.inference.confidence") > 0.93) \
-                                   & (dc.Column("meta.inference.class_") == "cat"))
-    likely_cats.to_storage("high-confidence-cats/", signal="file")
-
-
-Example: Incremental Processing with Error Handling
----------------------------------------------------
-
-This example shows how to use both delta and retry processing for efficient handling of large
-datasets that evolve over time and may occasionally have processing errors.
-
-.. code:: py
+    # Generated by Claude Code with dc-core loaded
 
     import datachain as dc
 
-    def process_file(file: dc.File) -> tuple[str, str, str]:
-        """Analyze a file, may occasionally fail."""
-        try:
-            # Your processing logic here
-            content = file.read_text()
-            result = content.upper()
-            return content, result, ""  # No error
-        except Exception as e:
-            # Return an error that will trigger reprocessing next time
-            return "", "", str(e)  # Error field will trigger retry
+    def embed_file(file: dc.File) -> list[float]:
+        return run_model(file.read())
 
-    # Process files efficiently with delta and retry
-    # Run it many times, keep adding files, to see delta and retry in action
-    chain = (
-        dc.read_storage(
-            "data/",
-            update=True,
-            delta=True,              # Process only new/changed files
-            delta_on="file.path",    # Identify files by path
-            delta_retry="error",     # Process files with error again
-        )
-        .map(process_file, output=("content", "result", "error"))
-        .save("processed-data")
+    (
+        dc.read_storage("s3://my-bucket/recordings/", update=True,
+                        delta=True, delta_on="file.path",
+                        delta_compare="file.mtime", delta_retry="error")
+        .settings(parallel=-1, cache=True)
+        .map(embedding=embed_file)
+        .save("embeddings-v1")
     )
 
+.. code:: text
 
-Example: LLM based text-file evaluation
----------------------------------------
+    $ python embed.py
+    Processing 5,000 new files (495,000 unchanged)...
+    2 files with errors requeued from last run
+    Done. embeddings-v1 @ v0.0.2
 
-In this example, we evaluate chatbot conversations stored in text files
-using LLM based evaluation.
+Parallel. Cached. Versioned. Only new files processed. Failed files automatically
+requeued — because the dataset knows its own state.
 
-.. code:: shell
 
-    $ pip install mistralai # Requires version >=1.0.0
-    $ export MISTRAL_API_KEY=_your_key_
+``dc-graph`` — Data Context Discovery for Your Whole Team
+==========================================================
 
-Python code:
+In most teams, finding the right data takes longer than processing it. Which dataset has
+the embeddings from last week's capture run? Was it filtered? What model produced it?
+Who knows the schema? The answer is usually: ask around, check Slack, dig through
+notebooks.
 
-.. code:: py
+``dc-graph`` eliminates this. It reads your DataChain database and writes a structured
+Markdown knowledge base into ``.datachain/graph/`` — a semantic registry of every
+dataset in your project: what it contains, where it came from, what produced it, what
+version it's on.
 
-    import os
-    from mistralai import Mistral
+.. code:: text
+
+    .datachain/
+      graph/
+        index.md              # all datasets with descriptions and stats
+        datasets/
+          embeddings-v1.md    # schema, version, lineage, preview rows
+          raw-recordings.md
+          filtered-scenes.md
+
+Run ``/dc-graph`` at the start of a session (a Claude Code slash command installed with
+the skill). It checks staleness and rewrites only what changed.
+
+Now you stop specifying datasets. You just describe what you need:
+
+    *"Find scenes from outdoor captures with high model confidence and run similarity
+    search against this reference embedding."*
+
+.. code:: text
+
+    Agent reads: .datachain/graph/index.md
+    → scanning 14 datasets for outdoor captures + confidence scores + embeddings...
+    → match: embeddings-v1 — 12,000 rows, outdoor sensor recordings, confidence: float, embedding: list[float]
+    → produced by: embed_pipeline.py @ v0.3.1, torch==2.1.0
+
+    Agent reads: .datachain/graph/datasets/embeddings-v1.md
+    → confirmed schema, version v0.0.4
+
+.. code:: python
+
+    # Generated by Claude Code with dc-graph context
+
     import datachain as dc
+    from datachain import C, func
 
-    PROMPT = "Was this dialog successful? Answer in a single word: Success or Failure."
-
-    def eval_dialogue(file: dc.File) -> bool:
-         client = Mistral(api_key = os.environ["MISTRAL_API_KEY"])
-         response = client.chat.complete(
-             model="open-mixtral-8x22b",
-             messages=[{"role": "system", "content": PROMPT},
-                       {"role": "user", "content": file.read()}])
-         result = response.choices[0].message.content
-         return result.lower().startswith("success")
-
-    chain = (
-       dc.read_storage("gs://datachain-demo/chatbot-KiT/", column="file", anon=True)
-       .settings(parallel=4, cache=True)
-       .map(is_success=eval_dialogue)
-       .save("mistral_files")
+    (
+        dc.read_dataset("embeddings-v1")
+        .filter(C("confidence") > 0.9)
+        .mutate(dist=func.cosine_distance(C("embedding"), reference))
+        .order_by("dist")
+        .limit(50)
+        .save("similar-outdoor-scenes")
     )
 
-    successful_chain = chain.filter(dc.Column("is_success") == True)
-    successful_chain.to_storage("./output_mistral")
+.. code:: text
 
-    print(f"{successful_chain.count()} files were exported")
+    $ python search.py
+    Searched 12,000 rows → top 50 matches
+    similar-outdoor-scenes @ v0.0.1
 
-
-
-With the instruction above, the Mistral model considers 31/50 files to hold the successful dialogues:
-
-.. code:: shell
-
-    $ ls output_mistral/datachain-demo/chatbot-KiT/
-    1.txt  15.txt 18.txt 2.txt  22.txt 25.txt 28.txt 33.txt 37.txt 4.txt  41.txt ...
-    $ ls output_mistral/datachain-demo/chatbot-KiT/ | wc -l
-    31
+The agent found the right dataset, read its schema, and generated correct code — without
+you knowing the dataset name, the column types, or which pipeline produced it. This is
+what data context makes possible at the team level.
 
 
-Key Features
-============
+What Data Context Remembers
+===========================
 
-📂 **Multimodal Dataset Versioning.**
-   - Version unstructured data without moving or creating data copies, by supporting
-     references to S3, GCP, Azure, and local file systems.
-   - Multimodal data support: images, video, text, PDFs, JSONs, CSVs, parquet, etc.
-   - Unite files and metadata together into persistent, versioned, columnar datasets.
+Data context accumulates as you work. Agents can reason about it across sessions — not
+just within a single run.
 
-🐍 **Python-friendly.**
-   - Operate on Python objects and object fields: float scores, strings, matrixes,
-     LLM response objects.
-   - Run Python code in a high-scale, terabytes size datasets, with built-in
-     parallelization and memory-efficient computing — no SQL or Spark required.
+**Incremental state.** Every run knows what changed. New files processed, failed files
+requeued, dataset version bumped. No custom diffing logic, no state files, no full
+rescans.
 
-🧠 **Data Enrichment and Processing.**
-   - Generate metadata using local AI models and LLM APIs.
-   - Filter, join, and group datasets by metadata. Search by vector embeddings.
-   - High-performance vectorized operations on Python objects: sum, count, avg, etc.
-   - Pass datasets to Pytorch and Tensorflow, or export them back into storage.
+**Versioning and reproducibility.** Every ``.save()`` is a versioned snapshot — which
+files, which metadata, which code produced it. ``.diff()`` gives an exact file-level
+manifest between any two versions. You can always reconstruct what went into a model
+run.
+
+**Lineage.** DataChain stores the code and dependencies that produced each dataset
+version — down to library versions. Every dataset knows its full history.
+
+**Knowledge graph.** ``dc-graph`` indexes all of the above into a searchable Markdown
+registry. The agent finds the right dataset, the right schema, and the right version —
+without being told which one to use.
+
+
+Built for Heavy Data
+====================
+
+DataChain is designed for domains where files are large, multimodal, and expensive to
+process:
+
+- **Physical AI** — sensor recordings, video, LiDAR linked across modalities. Naive
+  naming conventions break at scale; DataChain makes cross-modal joins a dataset
+  operation.
+- **Robotics** — millions of episode recordings where re-embedding after a model update
+  costs GPU hours DataChain eliminates by tracking what's already been processed.
+- **Neuroscience** — EEG and imaging cohorts where reproducing a training set months
+  later requires knowing exactly which files, versions, and preprocessing code were
+  used.
 
 
 Contributing
@@ -208,18 +240,11 @@ Community and Support
 * `Twitter <https://twitter.com/DVCorg>`_
 
 
-DataChain Studio Platform
-=========================
+DataChain Studio
+================
 
-`DataChain Studio`_ is a proprietary solution for teams that offers:
-
-- **Centralized dataset registry** to manage data, code and
-  dependencies in one place.
-- **Data Lineage** for data sources as well as derivative dataset.
-- **UI for Multimodal Data** like images, videos, and PDFs.
-- **Scalable Compute** to handle large datasets (100M+ files) and in-house
-  AI model inference.
-- **Access control** including SSO and team based collaboration.
+For teams: centralized dataset registry, data lineage UI, scalable compute for 100M+
+files, access control and SSO. `studio.datachain.ai <https://studio.datachain.ai>`_
 
 .. _PyPI: https://pypi.org/
 .. _file an issue: https://github.com/datachain-ai/datachain/issues
