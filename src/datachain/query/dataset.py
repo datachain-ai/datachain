@@ -1158,9 +1158,12 @@ class UDFStep(Step, ABC):
 
         input_table = self.get_or_create_input_table(query, hash_input, job)
 
-        partial_output_table = self.create_output_table(
-            Checkpoint.partial_output_table_name(run_id, partial_hash),
+        partial_table_name = Checkpoint.partial_output_table_name(run_id, partial_hash)
+        # Drop stale partial table from earlier chain with same hash in this job
+        self.warehouse.db.drop_table(
+            sa.Table(partial_table_name, sa.MetaData()), if_exists=True
         )
+        partial_output_table = self.create_output_table(partial_table_name)
 
         if self.partition_by is not None:
             input_query = query

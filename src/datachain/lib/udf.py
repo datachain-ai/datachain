@@ -109,18 +109,7 @@ class UDFAdapter:
     def hash(self) -> str:
         return self.inner.hash()
 
-    def output_schema_hash(self) -> str:
-        """Hash of just the output schema (not including code or inputs)."""
-        return self.inner.output_schema_hash()
-
     def identity_hash(self) -> str:
-        """Hash of UDF identity: function name, inputs, and output schema.
-
-        Excludes function code body so users can fix bugs and continue from
-        partial checkpoints. Includes function name to distinguish different
-        UDFs with the same signature. For lambdas, includes the full code hash
-        since all lambdas share the name '<lambda>'.
-        """
         return self.inner.identity_hash()
 
     def get_batching(self, use_partitioning: bool = False) -> BatchingStrategy:
@@ -233,14 +222,6 @@ class UDFBase(AbstractUDF):
         return hashlib.sha256(
             b"".join([bytes.fromhex(part) for part in parts])
         ).hexdigest()
-
-    def output_schema_hash(self) -> str:
-        """Hash of just the output schema (not including code or inputs).
-
-        Used for partial checkpoint hash to detect schema changes while
-        allowing code-only bug fixes to continue from partial results.
-        """
-        return self.output.hash()
 
     def identity_hash(self) -> str:
         """Hash of UDF identity: function name, inputs, and output schema.

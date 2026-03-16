@@ -589,3 +589,34 @@ def test_reordering_chains_no_invalidation(test_session, nums_dataset):
 
     assert call_count_a["count"] == 0, "double UDF should be skipped"
     assert call_count_b["count"] == 0, "triple UDF should be skipped"
+
+
+def test_try_catch_identical_chains_no_stale_partial_data(test_session, nums_dataset):
+    """Chain B should not inherit chain A's partial output table data."""
+
+    def compute(num) -> int:
+        if num > 3:
+            raise CustomMapperError("Simulated failure")
+        return num * 10
+
+    reset_session_job_state()
+
+    # Chain A crashes mid-UDF, leaves partial output table with 3 rows
+    try:
+        dc.read_dataset("nums", session=test_session).settings(batch_size=1).map(
+            result=compute, output=int
+        ).save("ds1")
+    except CustomMapperError:
+        pass
+
+    # Chain B: same function name, same partial_hash, no crash
+    def compute(num) -> int:
+        return num * 10
+
+    dc.read_dataset("nums", session=test_session).settings(batch_size=1).map(
+        result=compute, output=int
+    ).save("ds2")
+
+    # ds2 should have exactly 6 rows, not 9 (6 + chain A's 3 leftover)
+    result = sorted(dc.read_dataset("ds2", session=test_session).to_list("result"))
+    assert result == [(10,), (20,), (30,), (40,), (50,), (60,)]
