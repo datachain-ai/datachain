@@ -10,10 +10,10 @@ from dateutil.parser import isoparse
 from fsspec.asyn import get_loop, sync
 from fsspec.callbacks import DEFAULT_CALLBACK, Callback
 from gcsfs import GCSFileSystem
-from tqdm.auto import tqdm
 
 from datachain.client.fileslice import FileWrapper
 from datachain.lib.file import File
+from datachain.progress import tqdm
 
 from .fsspec import DELIMITER, Client, ResultQueue
 

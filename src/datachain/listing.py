@@ -12,9 +12,9 @@ else:
 
 from sqlalchemy import Column
 from sqlalchemy.sql import func
-from tqdm.auto import tqdm
 
 from datachain.node import DirType, Node, NodeWithPath
+from datachain.progress import tqdm
 from datachain.sql.functions import path as pathfunc
 from datachain.utils import suffix_to_number
 

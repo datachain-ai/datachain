@@ -17,6 +17,7 @@ from pydantic import BaseModel
 
 import datachain as dc
 from datachain import Column, func
+from datachain.dataset import DatasetStatus
 from datachain.error import (
     DatasetInvalidVersionError,
     DatasetNotFoundError,
@@ -244,6 +245,19 @@ def test_read_records_and_gen(test_session):
     )
 
     assert [r[1] for r in ds.order_by("t1.nnn", "t1.count").to_list()] == features
+
+
+def test_read_records_populates_dataset_metadata(test_session):
+    chain = dc.read_records([{"seed": 0}], schema={"seed": int}, session=test_session)
+
+    dataset = test_session.catalog.get_dataset(chain.name)
+    version = dataset.get_version(chain.version)
+
+    assert version.status == DatasetStatus.COMPLETE
+    assert version.num_objects == 1
+    assert version.size is not None
+    assert version.preview
+    assert version.preview[0]["seed"] == 0
 
 
 def test_read_record_empty_chain_with_schema(test_session):
@@ -4516,6 +4530,15 @@ def test_column_compute(test_session):
     assert chain.max("signals.signal.i3") == 15
     assert chain.max("signals.signal.f3") == 7.5
     assert chain.max("signals.signal.s3") == "eee"
+
+
+def test_delete_dataset_and_create_with_same_name(test_session):
+    chain = dc.read_values(num=[1, 2, 3], session=test_session)
+    chain.save("nums", version="1.0.0")
+    dc.delete_dataset("nums", force=True, session=test_session)
+    assert "nums" not in dc.datasets(session=test_session).to_values("name")
+    chain.save("nums", version="1.0.0")
+    assert "nums" in dc.datasets(session=test_session).to_values("name")
 
 
 def test_union_does_not_break_schema_order(test_session):

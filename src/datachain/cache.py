@@ -84,7 +84,7 @@ class Cache:  # noqa: PLW1641
         size = file.size
         if size < 0:
             size = await client.get_size(file)
-        from tqdm.auto import tqdm
+        from datachain.progress import tqdm
 
         cb = callback or TqdmCallback(
             tqdm_kwargs={

@@ -1,5 +1,5 @@
+import hashlib
 import math
-from dataclasses import replace
 
 import pytest
 import sqlalchemy as sa
@@ -7,6 +7,7 @@ from pydantic import BaseModel
 
 import datachain as dc
 from datachain import C, func
+from datachain.dataset import DatasetRecord, DatasetVersion
 from datachain.func.func import Func
 from datachain.lib.signal_schema import SignalSchema
 from datachain.lib.udf import Aggregator, Generator, Mapper
@@ -276,7 +277,7 @@ def test_union_hash(test_session, numbers_dataset):
     chain2 = dc.read_dataset("dev.num.numbers").filter(C("num") < 50).limit(20)
 
     assert SQLUnion(chain1._query, chain2._query).hash() == (
-        "a8bf8e31e33af266201985ac5e75b3d5e05f1b3b058ed5f87c173f888e0f0154"
+        "9f4eeae85a1e0f7c07cf17ce0e46dc41d977ca28395091dd1c39b9d149320c6f"
     )
 
 
@@ -288,21 +289,21 @@ def test_union_hash(test_session, numbers_dataset):
             True,
             False,
             "{name}_right",
-            "8dd0ed4b89968a76e0f674f9ce00ae5a31192da828c7d1ecfdf1af55e2f215b0",
+            "6bca2e4e06e631483221f5b642507ed146d0a4109020a14990863c620fd5066f",
         ),
         (
             ("id", "name"),
             False,
             True,
             "{name}_r",
-            "e0d5d0cd0ed8b45053edaf159390645baf44671b41bcb9662b19c9caed85b64e",
+            "4ec7bb4d36be2a67b142160f6f817120be0df4c87c0d748c3c86765dcf5297d4",
         ),
         (
             sa.column("id"),
             True,
             False,
             "{name}_right",
-            "6c202f10e09a90ffd1edb2ae3a806cd7cd9aec391e00c7d3a0b970f7f7bba795",
+            "5581e10682a965ccefdde12bc26d039658ebd092ddfa1c207307a1a3f2141245",
         ),
     ],
 )
@@ -360,15 +361,15 @@ def test_group_by_hash(columns, partition_by, _hash):
     [
         (
             [("id", "id")],
-            "5f90fc7c0a5287c8665c0fd912b0d91fb2a8baca416e68dd7bb38f75ad8926a1",
+            "29b42a9c41e0a0b3a71e31dcef451497b9cff7e080fe83ee35a5b098b5f48532",
         ),
         (
             [("id", "id"), ("name", "name")],
-            "f595869a8990a259023ec5cefa9d27868750931ebaaf91c13e2296a0d5ded990",
+            "332f0cf5a9af7d5f261d4bf64b3e63e4a9778f982b2e4f6a303b9f6cb35b3289",
         ),
         (
             [],
-            "0f1100306f3029d8897dc826ef1ebb2c950673682b2479582bf19e38c12a3f5d",
+            "685cf9e015267f01892cbca1fc443a4b13a342c5a3ff446e34f36c3d419cb7c8",
         ),
     ],
 )
@@ -500,41 +501,51 @@ def test_udf_aggregator_hash(
     assert RowGenerator(udf_adapter, None, partition_by=partition_by).hash() == _hash
 
 
-@pytest.mark.parametrize(
-    "namespace_name,project_name,name,version,_hash",
-    [
-        (
-            "default",
-            "default",
-            "numbers",
-            "1.0.4",
-            "8173fb1d88df5cca3e904cbd17a9b80a0c8a682425c32cd95e32e1e196b7eff8",
-        ),
-        (
-            "dev",
-            "animals",
-            "cats",
-            "1.0.1",
-            "e0aec7fe323ae3482ee2e74030a87ebb73dbb823ce970e15fdfcbd43e7abe2da",
-        ),
-        (
-            "system",
-            "listing",
-            "lst__s3://bucket",
-            "1.0.1",
-            "19dff9f21030312c7469de7284cac2841063c22c62a7948a68f25ca018777c6d",
-        ),
-    ],
-)
-def test_query_step_hash(
-    dataset_record, namespace_name, project_name, name, version, _hash
-):
-    namespace = replace(dataset_record.project.namespace, name=namespace_name)
-    project = dataset_record.project
-    project = replace(project, namespace=namespace)
-    project = replace(project, name=project_name)
-    dataset_record.project = project
-    dataset_record.name = name
-    dataset_record.versions[0].version = version
+def test_query_step_hash_uses_version_uuid():
+    """QueryStep hash is based on dataset version UUID, not name/version string."""
+    uuid1 = "a1b2c3d4-e5f6-4a1b-8c3d-4e5f6a1b2c3d"
+    uuid2 = "f6e5d4c3-b2a1-4f6e-8d4c-3b2a1f6e5d4c"
 
-    assert QueryStep(None, dataset_record, version).hash() == _hash
+    ds = DatasetRecord(
+        id=1,
+        name="test_ds",
+        description="",
+        attrs=[],
+        versions=[
+            DatasetVersion(
+                id=1,
+                uuid=uuid1,
+                dataset_id=1,
+                version="1.0.0",
+                status=1,
+                created_at=None,
+                finished_at=None,
+                error_message="",
+                error_stack="",
+                num_objects=0,
+                size=0,
+                feature_schema=None,
+                script_output="",
+                schema=None,
+                _preview_data=[],
+            ),
+        ],
+        status=1,
+        schema={},
+        feature_schema={},
+        project=None,
+    )
+
+    hash1 = QueryStep(None, ds, "1.0.0").hash()
+    assert hash1 == hashlib.sha256(uuid1.encode()).hexdigest()
+
+    # Same name/version but different UUID produces different hash
+    ds.versions[0].uuid = uuid2
+    hash2 = QueryStep(None, ds, "1.0.0").hash()
+    assert hash2 == hashlib.sha256(uuid2.encode()).hexdigest()
+    assert hash1 != hash2
+
+    # Same UUID with different dataset name produces same hash
+    ds.versions[0].uuid = uuid1
+    ds.name = "completely_different_name"
+    assert QueryStep(None, ds, "1.0.0").hash() == hash1

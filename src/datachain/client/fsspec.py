@@ -15,13 +15,13 @@ from urllib.parse import urlparse
 from dvc_objects.fs.system import reflink
 from fsspec.asyn import get_loop, sync
 from fsspec.callbacks import DEFAULT_CALLBACK, Callback
-from tqdm.auto import tqdm
 
 from datachain.cache import Cache
 from datachain.client.fileslice import FileWrapper
 from datachain.fs.utils import is_win_local_path
 from datachain.nodes_fetcher import NodesFetcher
 from datachain.nodes_thread_pool import NodeChunk
+from datachain.progress import tqdm
 
 if TYPE_CHECKING:
     from fsspec.spec import AbstractFileSystem

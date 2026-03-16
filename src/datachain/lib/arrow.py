@@ -5,7 +5,6 @@ from typing import TYPE_CHECKING, Any
 import pyarrow as pa
 from pyarrow._csv import ParseOptions
 from pyarrow.dataset import CsvFileFormat, dataset
-from tqdm.auto import tqdm
 
 from datachain import json
 from datachain.fs.reference import ReferenceFileSystem
@@ -15,6 +14,7 @@ from datachain.lib.model_store import ModelStore
 from datachain.lib.signal_schema import SignalSchema
 from datachain.lib.udf import Generator
 from datachain.lib.utils import normalize_col_names
+from datachain.progress import tqdm
 
 if TYPE_CHECKING:
     from datasets.features.features import Features
