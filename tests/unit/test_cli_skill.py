@@ -87,7 +87,7 @@ def _make_fake_skills_src(tmp_path: Path) -> Path:
         )
         scripts = skill_dir / "scripts"
         scripts.mkdir()
-        (scripts / "dc_extract.py").write_text("# stub\n")
+        (scripts / "graph.py").write_text("# stub\n")
     return skills_src
 
 
@@ -135,7 +135,7 @@ def test_install_all_claude_global(tmp_path, fake_skills_src, fake_home, capsys)
         assert (commands_base / f"{skill}.md").exists()
 
     # dc-graph should have its scripts directory too
-    assert (skills_base / "dc-graph" / "scripts" / "dc_extract.py").exists()
+    assert (skills_base / "dc-graph" / "scripts" / "graph.py").exists()
 
 
 def test_install_only_core_claude_global(tmp_path, fake_skills_src, fake_home):

@@ -34,7 +34,7 @@ Use the local path if the skill directory exists under the project root; otherwi
 
 Run:
 ```
-python3 {skill_dir}/scripts/dc_extract.py --db-mtime
+python3 {skill_dir}/scripts/graph.py --db-mtime
 ```
 
 This prints an ISO-8601 UTC timestamp (e.g. `2024-01-15T10:30:00Z`) representing the last modification time of the `.datachain/db*` files.
@@ -48,7 +48,7 @@ Read `.datachain/graph/index.md` (if it exists) and extract the `db_last_updated
 
 Run:
 ```
-python3 {skill_dir}/scripts/dc_extract.py --list
+python3 {skill_dir}/scripts/graph.py --list
 ```
 
 Output is JSON:
@@ -84,7 +84,7 @@ Each name is a wikilink: `[[name_slug]]`.
 
 **For each stale dataset**, run:
 ```
-python3 {skill_dir}/scripts/dc_extract.py --dataset <name>
+python3 {skill_dir}/scripts/graph.py --dataset <name>
 ```
 
 Output:
