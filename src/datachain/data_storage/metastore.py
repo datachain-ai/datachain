@@ -542,10 +542,6 @@ class AbstractMetastore(ABC, Serializable):
         """List checkpoints, optionally filtered by job IDs and/or status."""
 
     @abstractmethod
-    def get_last_checkpoint(self, job_id: str) -> Checkpoint | None:
-        """Get last created checkpoint for some job."""
-
-    @abstractmethod
     def get_checkpoint_by_id(self, checkpoint_id: str) -> Checkpoint:
         """Gets single checkpoint by id"""
 
@@ -2359,10 +2355,18 @@ class AbstractDBMetastore(AbstractMetastore):
                 status=CheckpointStatus.ACTIVE,
             )
 
-            # Use on_conflict_do_nothing to handle race conditions
-            if not hasattr(query, "on_conflict_do_nothing"):
-                raise RuntimeError("Database must support on_conflict_do_nothing")
-            query = query.on_conflict_do_nothing(index_elements=["job_id", "hash"])
+            # Use upsert to handle re-activation of deleted checkpoints
+            # (e.g. same hash in same job after previous run)
+            if not hasattr(query, "on_conflict_do_update"):
+                raise RuntimeError("Database must support on_conflict_do_update")
+            query = query.on_conflict_do_update(
+                index_elements=["job_id", "hash"],
+                set_={
+                    "partial": partial,
+                    "status": CheckpointStatus.ACTIVE,
+                    "created_at": datetime.now(timezone.utc),
+                },
+            )
 
             self.db.execute(query)
 
@@ -2411,18 +2415,6 @@ class AbstractDBMetastore(AbstractMetastore):
             ch.c.hash == _hash,
             ch.c.partial == partial,
             ch.c.status == CheckpointStatus.ACTIVE,
-        )
-        rows = list(self.db.execute(query))
-        if not rows:
-            return None
-        return self.checkpoint_class.parse(*rows[0])
-
-    def get_last_checkpoint(self, job_id: str) -> Checkpoint | None:
-        query = (
-            self._checkpoints_query()
-            .where(self._checkpoints.c.job_id == job_id)
-            .order_by(desc(self._checkpoints.c.created_at))
-            .limit(1)
         )
         rows = list(self.db.execute(query))
         if not rows:

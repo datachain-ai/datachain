@@ -990,11 +990,11 @@ class UDFStep(Step, ABC):
     ) -> "StepResult":
         query = query_generator.select()
 
-        # Calculate partial hash that includes output schema
+        # Calculate partial hash using UDF identity (name + params + output schema).
         # This allows continuing from partial when only code changes (bug fix),
-        # but forces re-run when output schema changes (incompatible)
+        # but distinguishes different UDFs and forces re-run when schema changes.
         partial_hash = hashlib.sha256(
-            (hash_input + self.udf.output_schema_hash()).encode()
+            (hash_input + self.udf.identity_hash()).encode()
         ).hexdigest()
 
         if not checkpoints_enabled:
@@ -1169,8 +1169,15 @@ class UDFStep(Step, ABC):
 
         self.populate_udf_output_table(partial_output_table, input_query)
 
+        final_table_name = Checkpoint.output_table_name(run_id, hash_output)
+        try:
+            # Same hash may already have a final table from earlier in this job
+            existing = self.warehouse.get_table(final_table_name)
+            self.warehouse.db.drop_table(existing)
+        except TableMissingError:
+            pass
         output_table = self.warehouse.rename_table(
-            partial_output_table, Checkpoint.output_table_name(run_id, hash_output)
+            partial_output_table, final_table_name
         )
 
         if checkpoints_enabled and job:
@@ -2197,33 +2204,18 @@ class DatasetQuery:
         assert self.list_ds_name
         return self.list_ds_name
 
-    @property
-    def _last_checkpoint_hash(self) -> str | None:
-        if not self.checkpoints_enabled:
-            return None
-        job = self.session.get_or_create_job()
-        last_checkpoint = self.catalog.metastore.get_last_checkpoint(job.id)
-        return last_checkpoint.hash if last_checkpoint else None
-
     def __iter__(self):
         return iter(self.db_results())
 
     def __or__(self, other):
         return self.union(other)
 
-    def hash(self, job_aware: bool = False) -> str:
+    def hash(self) -> str:
         """
         Calculates hash of this class taking into account hash of starting step
         and hashes of each following steps. Ordering is important.
-
-        Args:
-            job_aware: If True, includes the last checkpoint hash from the job context.
         """
         hasher = hashlib.sha256()
-
-        start_hash = self._last_checkpoint_hash if job_aware else None
-        if start_hash:
-            hasher.update(start_hash.encode("utf-8"))
 
         hasher.update(self._starting_step_hash.encode("utf-8"))
 
@@ -2291,10 +2283,6 @@ class DatasetQuery:
         sqlalchemy.SelectBase.
         """
         hasher = hashlib.sha256()
-        start_hash = self._last_checkpoint_hash
-        if start_hash:
-            hasher.update(start_hash.encode("utf-8"))
-
         hasher.update(self._starting_step_hash.encode("utf-8"))
 
         self.apply_listing_pre_step()

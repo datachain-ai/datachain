@@ -113,6 +113,16 @@ class UDFAdapter:
         """Hash of just the output schema (not including code or inputs)."""
         return self.inner.output_schema_hash()
 
+    def identity_hash(self) -> str:
+        """Hash of UDF identity: function name, inputs, and output schema.
+
+        Excludes function code body so users can fix bugs and continue from
+        partial checkpoints. Includes function name to distinguish different
+        UDFs with the same signature. For lambdas, includes the full code hash
+        since all lambdas share the name '<lambda>'.
+        """
+        return self.inner.identity_hash()
+
     def get_batching(self, use_partitioning: bool = False) -> BatchingStrategy:
         if use_partitioning:
             return Partition()
@@ -231,6 +241,40 @@ class UDFBase(AbstractUDF):
         allowing code-only bug fixes to continue from partial results.
         """
         return self.output.hash()
+
+    def identity_hash(self) -> str:
+        """Hash of UDF identity: function name, inputs, and output schema.
+
+        Excludes function code body so users can fix bugs and continue from
+        partial checkpoints. Includes function name to distinguish different
+        UDFs with the same signature. For lambdas, includes the full code hash
+        since all lambdas share the name '<lambda>' and can't be meaningfully
+        "fixed" without becoming a different lambda.
+        """
+        func_to_hash = self._func or self.process
+
+        try:
+            is_lambda = func_to_hash.__name__ == "<lambda>"
+        except AttributeError:
+            is_lambda = False
+
+        if is_lambda:
+            # Lambdas all share '<lambda>' name, use full code hash instead
+            name_part = hash_callable(func_to_hash)
+        else:
+            # Named functions/classes: use qualified name for identity
+            qualname = getattr(func_to_hash, "__qualname__", "") or ""
+            name_part = hashlib.sha256(qualname.encode()).hexdigest()
+
+        parts = [
+            name_part,
+            self.params.hash() if self.params else "",
+            self.output.hash(),
+        ]
+
+        return hashlib.sha256(
+            b"".join([bytes.fromhex(part) for part in parts])
+        ).hexdigest()
 
     def process(self, *args, **kwargs):
         """Processing function that needs to be defined by user"""
