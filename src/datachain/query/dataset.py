@@ -12,7 +12,7 @@ from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
 from copy import copy
 from functools import wraps
 from types import GeneratorType
-from typing import TYPE_CHECKING, Any, Protocol, TypeVar
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar, cast
 from uuid import uuid4
 
 import attrs
@@ -39,7 +39,7 @@ from datachain.data_storage.schema import (
     partition_col_names,
     partition_columns,
 )
-from datachain.dataset import DatasetDependency, DatasetStatus, RowDict
+from datachain.dataset import DatasetDependency, RowDict
 from datachain.error import (
     DatasetNotFoundError,
     QueryScriptAbortError,
@@ -191,6 +191,45 @@ class Step(ABC):
             f"{self.__class__.__name__}|{self.hash_inputs()}".encode()
         ).hexdigest()
 
+    def collect_delta_sources(
+        self,
+    ) -> list["DatasetQuery"]:
+        return []
+
+    def replace_source(
+        self,
+        source: "DatasetQuery",
+        replacement: "DatasetQuery",
+    ) -> "Step":
+        return self
+
+
+@frozen
+class DeltaSpec:
+    on: str | Sequence[str]
+    right_on: str | Sequence[str] | None = None
+    compare: str | Sequence[str] | None = None
+    delta_retry: bool | str | None = None
+    delta_unsafe: bool = False
+
+    @staticmethod
+    def _normalize_hash_value(
+        value: str | Sequence[str] | bool | None,
+    ) -> str | tuple[str, ...] | bool | None:
+        if isinstance(value, str) or value is None or isinstance(value, bool):
+            return value
+        return tuple(value)
+
+    def hash(self) -> str:
+        normalized = (
+            self._normalize_hash_value(self.on),
+            self._normalize_hash_value(self.right_on),
+            self._normalize_hash_value(self.compare),
+            self.delta_retry,
+            self.delta_unsafe,
+        )
+        return hashlib.sha256(repr(normalized).encode("utf-8")).hexdigest()
+
 
 @frozen
 class QueryStep:
@@ -241,6 +280,21 @@ class DatasetDiffOperation(Step):
 
     def clone(self) -> "Self":
         return self.__class__(self.dq, self.catalog)
+
+    def collect_delta_sources(
+        self,
+    ) -> list["DatasetQuery"]:
+        return self.dq.delta_sources()
+
+    def replace_source(
+        self,
+        source: "DatasetQuery",
+        replacement: "DatasetQuery",
+    ) -> "Step":
+        return attrs.evolve(
+            self,
+            dq=self.dq.replace_source(source, replacement),
+        )
 
     @abstractmethod
     def query(
@@ -1809,6 +1863,22 @@ class SQLUnion(Step):
             bytes.fromhex(self.query1.hash()) + bytes.fromhex(self.query2.hash())
         ).hexdigest()
 
+    def collect_delta_sources(
+        self,
+    ) -> list["DatasetQuery"]:
+        return [*self.query1.delta_sources(), *self.query2.delta_sources()]
+
+    def replace_source(
+        self,
+        source: "DatasetQuery",
+        replacement: "DatasetQuery",
+    ) -> "Step":
+        return attrs.evolve(
+            self,
+            query1=self.query1.replace_source(source, replacement),
+            query2=self.query2.replace_source(source, replacement),
+        )
+
     def apply(
         self,
         query_generator: QueryGenerator,
@@ -1880,6 +1950,22 @@ class SQLJoin(Step):
         ]
 
         return hashlib.sha256(b"".join(parts)).hexdigest()
+
+    def collect_delta_sources(
+        self,
+    ) -> list["DatasetQuery"]:
+        return [*self.query1.delta_sources(), *self.query2.delta_sources()]
+
+    def replace_source(
+        self,
+        source: "DatasetQuery",
+        replacement: "DatasetQuery",
+    ) -> "Step":
+        return attrs.evolve(
+            self,
+            query1=self.query1.replace_source(source, replacement),
+            query2=self.query2.replace_source(source, replacement),
+        )
 
     def get_query(self, dq: "DatasetQuery", temp_tables: list[str]) -> sa.Subquery:
         temp_tables_before = len(dq.temp_table_names)
@@ -2119,7 +2205,7 @@ class ResultIter:
 class DatasetQuery:
     def __init__(
         self,
-        name: str,
+        name: str | None = None,
         version: str | None = None,
         project_name: str | None = None,
         namespace_name: str | None = None,
@@ -2128,16 +2214,19 @@ class DatasetQuery:
         in_memory: bool = False,
         update: bool = False,
         include_incomplete: bool = False,
+        steps: Sequence[Step] = (),
+        checkpoints_enabled: bool = True,
     ) -> None:
         self.session = Session.get(session, catalog=catalog, in_memory=in_memory)
         self.catalog = catalog or self.session.catalog
-        self.steps: list[Step] = []
+        self.steps: list[Step] = list(steps)
         self._chunk_index: int | None = None
         self._chunk_total: int | None = None
         self.temp_table_names: list[str] = []
         self.dependencies: set[DatasetDependencyType] = set()
         self.table = self.get_table()
         self.starting_step: QueryStep | None = None
+        self.delta_spec: DeltaSpec | None = None
         self.name: str | None = None
         self.version: str | None = None
         self.feature_schema: dict | None = None
@@ -2145,12 +2234,33 @@ class DatasetQuery:
         self.before_steps: list[Callable] = []
         self.listing_fn: Callable | None = None
         self.update = update
-        self.checkpoints_enabled: bool = True
+        self.checkpoints_enabled = checkpoints_enabled
 
         self.list_ds_name: str | None = None
-
-        self.name = name
         self.dialect = self.catalog.warehouse.db.dialect
+
+        if name is None:
+            return
+
+        self._init_rooted_query(
+            name,
+            version=version,
+            project_name=project_name,
+            namespace_name=namespace_name,
+            update=update,
+            include_incomplete=include_incomplete,
+        )
+
+    def _init_rooted_query(
+        self,
+        name: str,
+        version: str | None = None,
+        project_name: str | None = None,
+        namespace_name: str | None = None,
+        update: bool = False,
+        include_incomplete: bool = False,
+    ) -> None:
+        self.name = name
         if version:
             self.version = version
 
@@ -2193,8 +2303,9 @@ class DatasetQuery:
     def _starting_step_hash(self) -> str:
         if self.starting_step:
             return self.starting_step.hash()
-        assert self.list_ds_name
-        return self.list_ds_name
+        if self.list_ds_name:
+            return self.list_ds_name
+        return ""
 
     @property
     def _last_checkpoint_hash(self) -> str | None:
@@ -2229,6 +2340,8 @@ class DatasetQuery:
             hasher.update(start_hash.encode("utf-8"))
 
         hasher.update(self._starting_step_hash.encode("utf-8"))
+        if self.delta_spec is not None:
+            hasher.update(self.delta_spec.hash().encode("utf-8"))
 
         for step in self.steps:
             hasher.update(step.hash().encode("utf-8"))
@@ -2299,6 +2412,8 @@ class DatasetQuery:
             hasher.update(start_hash.encode("utf-8"))
 
         hasher.update(self._starting_step_hash.encode("utf-8"))
+        if self.delta_spec is not None:
+            hasher.update(self.delta_spec.hash().encode("utf-8"))
 
         self.apply_listing_pre_step()
 
@@ -2320,9 +2435,17 @@ class DatasetQuery:
             query = query.filter(C.sys__rand % total == index)
             query.steps = query.steps[-1:] + query.steps[:-1]
 
-        assert query.starting_step
-        result = query.starting_step.apply()
-        self.dependencies.update(result.dependencies)
+        if query.starting_step is not None:
+            result = query.starting_step.apply()
+            self.dependencies.update(result.dependencies)
+        elif query.steps:
+
+            def q(*columns):
+                return sqlalchemy.select(*columns)
+
+            result = step_result(q, ())
+        else:
+            raise RuntimeError("DatasetQuery has no starting dataset or steps")
 
         _hash = hasher.hexdigest()
         for step in query.steps:
@@ -2457,11 +2580,41 @@ class DatasetQuery:
 
     def clone(self, new_table=True) -> "Self":
         obj = copy(self)
-        obj.steps = obj.steps.copy()
+        obj.steps = self.steps.copy()
         if new_table:
             obj.table = self.get_table()
+        obj.dependencies = set()
         obj.temp_table_names = []
         return obj
+
+    def delta_sources(self) -> list["DatasetQuery"]:
+        sources: list[DatasetQuery] = []
+        for step in self.steps:
+            sources.extend(step.collect_delta_sources())
+
+        if self.delta_spec is not None:
+            sources.append(self)
+
+        return sources
+
+    def replace_source(
+        self,
+        source: "DatasetQuery",
+        replacement: "DatasetQuery",
+    ) -> "Self":
+        if self is source:
+            rewritten = replacement.clone(new_table=False)
+            rewritten.table = self.table
+            rewritten_steps = rewritten.steps.copy()
+        else:
+            rewritten = self.clone(new_table=False)
+            rewritten_steps = []
+
+        rewritten_steps.extend(
+            step.replace_source(source, replacement) for step in self.steps
+        )
+        rewritten.steps = rewritten_steps
+        return cast("Self", rewritten)
 
     @detach
     def select(self, *args, **kwargs) -> "Self":
@@ -2629,15 +2782,16 @@ class DatasetQuery:
         query.steps.append(SQLGroupBy(cols, group_by))
         return query
 
-    @detach
-    def union(self, dataset_query: "DatasetQuery") -> "Self":
+    def union(self, dataset_query: "DatasetQuery") -> "DatasetQuery":
         left = self.clone()
         right = dataset_query.clone()
-        new_query = self.clone()
-        new_query.steps = [SQLUnion(left, right)]
-        return new_query
+        return DatasetQuery(
+            session=self.session,
+            catalog=self.catalog,
+            steps=[SQLUnion(left, right)],
+            checkpoints_enabled=self.checkpoints_enabled,
+        )
 
-    @detach
     def join(
         self,
         dataset_query: "DatasetQuery",
@@ -2645,7 +2799,7 @@ class DatasetQuery:
         inner=False,
         full=False,
         rname="right_",
-    ) -> "Self":
+    ) -> "DatasetQuery":
         left = self.clone(new_table=False)
         if self.table.name == dataset_query.table.name:
             # for use case where we join with itself, e.g dogs.join(dogs, "name")
@@ -2653,16 +2807,17 @@ class DatasetQuery:
         else:
             right = dataset_query.clone(new_table=False)
 
-        new_query = self.clone()
         predicates = (
             predicates
             if isinstance(predicates, (str, ColumnClause, ColumnElement))
             else tuple(predicates)
         )
-        new_query.steps = [
-            SQLJoin(self.catalog, left, right, predicates, inner, full, rname)
-        ]
-        return new_query
+        return DatasetQuery(
+            session=self.session,
+            catalog=self.catalog,
+            steps=[SQLJoin(self.catalog, left, right, predicates, inner, full, rname)],
+            checkpoints_enabled=self.checkpoints_enabled,
+        )
 
     @detach
     def chunk(self, index: int, total: int) -> "Self":
@@ -2861,6 +3016,18 @@ class DatasetQuery:
                     "Ensure at least one column (other than 'id') is selected."
                 )
 
+            # Phase 1: Create a temp staging table and populate it.
+            # If the process dies here, only an orphaned tmp_ table remains,
+            # cleaned up by 'datachain gc'.
+            temp_table_name: str = self.catalog.warehouse.temp_table_name()
+            self.catalog.warehouse.create_dataset_rows_table(
+                temp_table_name, columns=columns
+            )
+            self.temp_table_names.append(temp_table_name)
+            temp_table = self.catalog.warehouse.get_table(temp_table_name)
+            self.catalog.warehouse.insert_into(temp_table, query.select())
+
+            # Phase 2: Claim the version (metadata only).
             dataset = self.catalog.create_dataset(
                 name,
                 project,
@@ -2873,13 +3040,15 @@ class DatasetQuery:
                 job_id=job_id,
                 **kwargs,
             )
+
             version = version or dataset.latest_version
 
-            dr = self.catalog.warehouse.dataset_rows(dataset)
-
-            self.catalog.warehouse.insert_into(dr.get_table(), query.select())
-
-            self.catalog.update_dataset_version_with_warehouse_info(dataset, version)
+            # Phase 3: Rename staging table to the final dataset table name.
+            final_table_name = self.catalog.warehouse.dataset_table_name(
+                dataset, version
+            )
+            self.catalog.warehouse.rename_table(temp_table, final_table_name)
+            self.temp_table_names.remove(temp_table_name)
 
             # Link this dataset version to the job that created it
             self.catalog.metastore.link_dataset_version_to_job(
@@ -2904,10 +3073,8 @@ class DatasetQuery:
 
             self._add_dependencies(dataset, version)  # type: ignore [arg-type]
 
-            # Mark as COMPLETE only after all operations succeed
-            self.catalog.metastore.update_dataset_status(
-                dataset, DatasetStatus.COMPLETE, version=version
-            )
+            # Mark as COMPLETE only after all operations succeed.
+            self.catalog.complete_dataset_version(dataset, version)
         finally:
             self.cleanup()
         return self.__class__(
