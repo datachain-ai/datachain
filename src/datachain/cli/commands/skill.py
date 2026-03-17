@@ -35,11 +35,21 @@ def _skills_src() -> Path:
     return _SKILLS_SRC
 
 
-def install_skills(only: str | None, target: str, local: bool) -> None:
+def install_skills(skills: str | None, target: str, local: bool) -> None:
     layout = TARGET_LAYOUT[target]
     base = Path(".") if local else Path.home()
 
-    skills_to_install = {only: SKILLS[only]} if only else dict(SKILLS)
+    if skills:
+        requested = [s.strip() for s in skills.split(",")]
+        invalid = [s for s in requested if s not in SKILLS.values()]
+        if invalid:
+            valid = ", ".join(SKILLS.values())
+            raise ValueError(
+                f"Unknown skill(s): {', '.join(invalid)}. Valid skills: {valid}"
+            )
+        skills_to_install = {k: v for k, v in SKILLS.items() if v in requested}
+    else:
+        skills_to_install = dict(SKILLS)
 
     skills_dir = base / layout["skills_dir"]
     commands_dir = base / layout["commands_dir"] if layout["commands_dir"] else None
