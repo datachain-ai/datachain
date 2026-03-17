@@ -33,8 +33,8 @@ DATASET_NAME_RESERVED_CHARS = [".", "@"]
 DATASET_NAME_REPLACEMENT_CHAR = "_"
 
 
-# StorageURI represents a normalised URI to a valid storage location (full bucket or
-# absolute local path).
+# StorageURI represents a normalized URI to a valid storage location
+# (full bucket or absolute local path).
 # Valid examples: s3://foo, file:///var/data
 # Invalid examples: s3://foo/, s3://foo/bar, file://~
 StorageURI = NewType("StorageURI", str)

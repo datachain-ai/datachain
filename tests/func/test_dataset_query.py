@@ -900,7 +900,6 @@ def test_join_with_using_functions_in_expression(
     )
 
 
-@pytest.mark.parametrize("cloud_type", ["s3", "azure", "gs"], indirect=True)
 def test_simple_dataset_query(cloud_test_catalog):
     ctc = cloud_test_catalog
     catalog = ctc.catalog
