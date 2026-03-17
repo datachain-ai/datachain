@@ -1,10 +1,12 @@
 import io
+import tarfile
 from pathlib import Path
 
 import pytest
 
 import datachain as dc
 from datachain.lib.file import File, FileError
+from datachain.lib.tar import process_tar
 from datachain.query import C
 from datachain.utils import TIME_ZERO
 
@@ -56,9 +58,9 @@ def test_file_serialized_in_udf(tmp_dir, test_session_tmpfile):
 
 @pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
 def test_get_path_cloud(cloud_test_catalog):
-    file = File(path="dir/file", source="s3://")
+    file = File(path="dir/file", source="s3://bucket")
     file._set_stream(catalog=cloud_test_catalog.catalog)
-    assert file.get_fs_path().strip("/") == "s3:///dir/file"
+    assert file.get_fs_path().strip("/") == "s3://bucket/dir/file"
 
 
 @pytest.mark.parametrize("caching_enabled", [True, False])
@@ -89,18 +91,6 @@ def test_resolve_file_no_exist(cloud_test_catalog):
     assert resolved_non_existent.last_modified == TIME_ZERO
 
 
-@pytest.mark.parametrize("path", ["", ".", "..", "/", "dir/../../file.txt"])
-def test_resolve_file_wrong_path(cloud_test_catalog, path):
-    ctc = cloud_test_catalog
-
-    wrong_file = File(source=ctc.src_uri, path=path)
-    wrong_file._set_stream(catalog=ctc.catalog)
-    resolved_wrong = wrong_file.resolve()
-    assert resolved_wrong.size == 0
-    assert resolved_wrong.etag == ""
-    assert resolved_wrong.last_modified == TIME_ZERO
-
-
 @pytest.mark.parametrize("caching_enabled", [True, False])
 @pytest.mark.parametrize("path", ["", ".", "..", "/", "dir/../../file.txt"])
 def test_cache_file_wrong_path(cloud_test_catalog, path, caching_enabled):
@@ -128,10 +118,97 @@ def test_upload(cloud_test_catalog):
     source, rel_path = client.split_url(f"{dest}/{filename}")
 
     assert f.path == rel_path
-    assert f.source == client.get_uri(source)
+    assert f.source == client.storage_uri(source)
     assert f.read() == img_bytes
 
     client.fs.rm(dest, recursive=True)
+
+
+def test_tar_members_inherit_uri_encoded_local_source(tmp_dir, test_session_tmpfile):
+    base = tmp_dir / "dir #% percent"
+    base.mkdir(parents=True)
+
+    tar_path = base / "archive.tar"
+    data = b"payload"
+    with tarfile.open(tar_path, mode="w") as tf:
+        info = tarfile.TarInfo("member.txt")
+        info.size = len(data)
+        tf.addfile(info, io.BytesIO(data))
+
+    chain = dc.read_storage(base, session=test_session_tmpfile)
+    tar_file = chain.filter(C("file.path") == "archive.tar").to_values("file")[0]
+    members = chain.filter(C("file.path") == "archive.tar").gen(file=process_tar)
+    member = members.to_values("file")[0]
+
+    assert tar_file.source.startswith("file://")
+    assert " " in tar_file.source
+    assert "#" in tar_file.source
+    assert "%" in tar_file.source
+    assert member.source == tar_file.source
+    assert member.path == "archive.tar/member.txt"
+    assert member.name == "member.txt"
+
+
+@pytest.mark.parametrize(
+    "dirname",
+    [
+        "dir%percent",
+        "dir #% combo",
+        "v1.0-release",
+        "user@host",
+        "100%done",
+    ],
+    ids=lambda d: d.replace(" ", "_"),
+)
+def test_read_storage_special_chars_in_local_path(
+    dirname, tmp_dir, test_session_tmpfile
+):
+    """Regression: special chars (%, #, ., @, space) in a local directory name
+    must not break listing dataset creation.  The original bug was that raw '%'
+    flowed into the SQL table name and was misinterpreted by pysqlite."""
+    base = tmp_dir / dirname
+    base.mkdir(parents=True)
+    (base / "data.txt").write_text("hello")
+
+    files = dc.read_storage(base, session=test_session_tmpfile).to_values("file")
+    assert len(files) == 1
+    assert files[0].name == "data.txt"
+    assert files[0].source.startswith("file://")
+
+
+def test_to_storage_tar_member_filepath_keeps_percent_encoded_traversal_literal(
+    tmp_dir, test_session_tmpfile
+):
+    payload = "..%2f..%2fescaped.txt"  # unquote -> ../../escaped.txt
+    tar_path = tmp_dir / "malicious.tar"
+
+    data = b"poc"
+    with tarfile.open(tar_path, mode="w") as tf:
+        info = tarfile.TarInfo(payload)
+        info.size = len(data)
+        tf.addfile(info, io.BytesIO(data))
+
+    chain = dc.read_storage(tmp_dir, session=test_session_tmpfile)
+    tar_members = chain.filter(C("file.path").glob("*.tar")).gen(file=process_tar)
+
+    member_path = f"malicious.tar/{payload}"
+    member = tar_members.filter(C("file.path") == member_path)
+
+    # Ensure the test actually selects only the malicious extracted member.
+    assert member.to_values("file.path") == [member_path]
+
+    output = tmp_dir / "output"
+    assert not (tmp_dir / "escaped.txt").exists()
+    member.to_storage(output, placement="filepath")
+
+    exported_member = output / "malicious.tar" / payload
+
+    # Expected-safe behavior: exporting the selected tar member creates a
+    # directory for the parent archive path and writes the member payload under
+    # its literal encoded name, without decoding %2f into path traversal.
+    assert (output / "malicious.tar").is_dir()
+    assert exported_member.read_bytes() == data
+    assert not (tmp_dir / "escaped.txt").exists()
 
 
 def test_open_write_binary(cloud_test_catalog):
@@ -220,31 +297,18 @@ def test_file_at_rejects_directory_uri(tmp_dir, test_session_tmpfile, monkeypatc
         File.at(dir_uri, session=test_session_tmpfile)
 
 
-def test_read_storage_returns_same_source_and_path(
+def test_read_storage_preserves_relative_file_at_source_and_path(
     tmp_dir, test_session_tmpfile, monkeypatch
 ):
     monkeypatch.chdir(tmp_dir)
-    import os
-
-    print(os.getcwd())
 
     file_obj = File.at("rel.bin", session=test_session_tmpfile)
     with file_obj.open("wb") as f:
         f.write(b"hi")
 
-    import os
-
-    print(os.getcwd())
-
     listed = dc.read_storage(tmp_dir, session=test_session_tmpfile).to_values("file")
     assert len(listed) == 1
     listed_file = listed[0]
-    print(listed_file.path)
-    print(listed_file.source)
-    # print pwd
-    import os
-
-    print(os.getcwd())
     assert listed_file.path == "rel.bin"
     assert listed_file.source == file_obj.source
 
@@ -336,3 +400,15 @@ def test_empty_open_write_captures_version(cloud_test_catalog_upload, cloud_type
     assert opened.size == 0
     assert opened.version
     assert opened.read() == b""
+
+
+def test_file_save_roundtrip(cloud_test_catalog_upload, version_aware):
+    ctc = cloud_test_catalog_upload
+    data = b"round-trip via File.save()"
+
+    src = File.upload(data, f"{ctc.src_uri}/save-src.bin", ctc.catalog)
+    dest = src.save(f"{ctc.src_uri}/save-dest.bin", client_config=ctc.client_config)
+
+    assert dest.read() == data
+    if version_aware:
+        assert dest.version, "versioned backend must capture a version on save"

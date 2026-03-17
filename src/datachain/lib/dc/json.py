@@ -77,6 +77,7 @@ def read_json(
             model_name=model_name,
             jmespath=jmespath,
             nrows=nrows,
+            session=kwargs.get("session"),
         ),
         "params": {"file": File},
     }

@@ -60,6 +60,19 @@ def mock_get_listing():
         yield mock
 
 
+def _set_stable_uuid(test_session, name, uuid):
+    """Set a stable UUID on a dataset version for deterministic hash tests."""
+    parts = name.split(".")
+    ds_name = parts[-1]
+    ns = parts[0] if len(parts) > 1 else "default"
+    proj = parts[1] if len(parts) > 2 else "default"
+    test_session.catalog.metastore.update_dataset_version(
+        test_session.catalog.get_dataset(ds_name, namespace_name=ns, project_name=proj),
+        "1.0.0",
+        uuid=uuid,
+    )
+
+
 def test_read_values():
     """
     Hash of the chain started with read_values is currently inconsistent.
@@ -120,9 +133,52 @@ def test_read_storage(mock_get_listing, test_session):
 
 def test_read_dataset(test_session):
     dc.read_values(num=[1, 2, 3], session=test_session).save("dev.animals.cats")
+    _set_stable_uuid(
+        test_session, "dev.animals.cats", "b1c2d3e4-f5a6-4b1c-8d3e-4f5a6b1c2d3e"
+    )
     assert dc.read_dataset(
         name="dev.animals.cats", version="1.0.0", session=test_session
-    ).hash() == ("51f2e5b81e40a22062a75c1590d0ccab880d182df9b39f610c6ccc503a5eb33c")
+    ).hash() == ("58c939b8626443e5d68e9e419a9a5fd1bc7282ca0c5e06cfeb578635e9703a06")
+
+
+def test_read_dataset_delta_hash_changes_with_delta_spec(test_session):
+    dataset_name = "dev.animals.delta_hash"
+    dc.read_values(id=[1, 2, 3], value=[10, 20, 30], session=test_session).save(
+        dataset_name
+    )
+
+    base_hash = dc.read_dataset(
+        name=dataset_name,
+        version="1.0.0",
+        session=test_session,
+    ).hash()
+    delta_hash = dc.read_dataset(
+        name=dataset_name,
+        version="1.0.0",
+        session=test_session,
+        delta=True,
+        delta_on="id",
+    ).hash()
+    delta_compare_hash = dc.read_dataset(
+        name=dataset_name,
+        version="1.0.0",
+        session=test_session,
+        delta=True,
+        delta_on="id",
+        delta_compare="value",
+    ).hash()
+    delta_unsafe_hash = dc.read_dataset(
+        name=dataset_name,
+        version="1.0.0",
+        session=test_session,
+        delta=True,
+        delta_on="id",
+        delta_unsafe=True,
+    ).hash()
+
+    assert base_hash != delta_hash
+    assert delta_hash != delta_compare_hash
+    assert delta_hash != delta_unsafe_hash
 
 
 def test_order_of_steps(mock_get_listing):
@@ -157,6 +213,12 @@ def test_all_possible_steps(test_session):
 
     dc.read_values(person=persons, session=test_session).save(persons_ds_name)
     dc.read_values(player=players, session=test_session).save(players_ds_name)
+    _set_stable_uuid(
+        test_session, persons_ds_name, "a1a1a1a1-b2b2-4c3c-8d4d-e5e5e5e5e5e5"
+    )
+    _set_stable_uuid(
+        test_session, players_ds_name, "f6f6f6f6-a7a7-4b8b-8c9c-d0d0d0d0d0d0"
+    )
 
     players_chain = dc.read_dataset(
         players_ds_name, version="1.0.0", session=test_session
@@ -195,7 +257,7 @@ def test_all_possible_steps(test_session):
             right_on=["player.name"],
         )
         .hash()
-    ) == "bd685bd97746a8e0e012c7029c7f2c8b17fc7eb5b7a5cd8fa5dacada57d75a07"
+    ) == "8e5cf0a718406a94c99ab7ffafc67aa5430f79a276deb1f1d87e5a5991bc56bf"
 
 
 def test_diff(test_session):
@@ -204,6 +266,12 @@ def test_diff(test_session):
 
     dc.read_values(person=persons, session=test_session).save(persons_ds_name)
     dc.read_values(player=players, session=test_session).save(players_ds_name)
+    _set_stable_uuid(
+        test_session, persons_ds_name, "a1a1a1a1-b2b2-4c3c-8d4d-e5e5e5e5e5e5"
+    )
+    _set_stable_uuid(
+        test_session, players_ds_name, "f6f6f6f6-a7a7-4b8b-8c9c-d0d0d0d0d0d0"
+    )
 
     players_chain = dc.read_dataset(
         players_ds_name, version="1.0.0", session=test_session
@@ -218,4 +286,4 @@ def test_diff(test_session):
             status_col="diff",
         )
         .hash()
-    ) == "02a8596af8465a78b6369bb3d09c823c5a5fdcbbfd3695abd57ed1a01c9bb5f3"
+    ) == "5d74e62f9722b62ba7a5ab0a9661570920cc08c68aa8102a0876390e376ba99b"

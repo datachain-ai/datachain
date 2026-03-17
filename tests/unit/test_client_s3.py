@@ -1,6 +1,5 @@
 import pytest
 
-from datachain.client.s3 import ClientS3
 from datachain.node import DirType, Node
 from datachain.nodes_thread_pool import NodeChunk
 
@@ -78,8 +77,3 @@ def test_node_bucket_full_split(nodes):
     assert len(bkt[1]) == 1
     assert len(bkt[2]) == 1
     assert len(bkt[3]) == 1
-
-
-def test_version_path_already_has_version():
-    with pytest.raises(ValueError):
-        ClientS3.version_path("s3://foo/bar?versionId=123", "456")

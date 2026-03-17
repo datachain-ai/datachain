@@ -1,19 +1,13 @@
 from datetime import datetime, timedelta, timezone
 
-from datachain.client import Client
 from datachain.lib.dataset_info import DatasetInfo
-from datachain.lib.listing import LISTING_PREFIX, LISTING_TTL
+from datachain.lib.listing import LISTING_PREFIX, LISTING_TTL, _desanitize_ds_name
 
 
 class ListingInfo(DatasetInfo):
     @property
     def uri(self) -> str:
-        return self.name.removeprefix(LISTING_PREFIX)
-
-    @property
-    def storage_uri(self) -> str:
-        uri, _ = Client.parse_url(self.uri)
-        return uri
+        return _desanitize_ds_name(self.name.removeprefix(LISTING_PREFIX))
 
     @property
     def expires(self) -> datetime | None:

@@ -1,6 +1,8 @@
 import os
+from pathlib import Path
 
 import pytest
+from fsspec.asyn import get_loop, sync
 
 from datachain.cache import Cache, get_temp_cache, temporary_cache
 from datachain.lib.file import File
@@ -79,3 +81,22 @@ def test_temporary_cache(tmp_path):
     with temporary_cache(tmp_path, prefix="test-") as temp:
         assert os.path.isdir(temp.cache_dir)
     assert not os.path.exists(temp.cache_dir)
+
+
+def test_cache_download_reserved_chars_in_path(cloud_test_catalog_upload):
+    rel_path = "dir #% percent/hello.txt"
+
+    catalog = cloud_test_catalog_upload.catalog
+    source = cloud_test_catalog_upload.src_uri
+    client = catalog.get_client(source)
+    client.upload(b"hi", rel_path)
+
+    file = File(path=rel_path, source=source, size=-1)
+    file._set_stream(catalog, False)
+
+    sync(get_loop(), catalog.cache.download, file, client)
+
+    cached_path = catalog.cache.get_path(file)
+    assert cached_path is not None
+    contents = Path(cached_path).read_text(encoding="utf-8")
+    assert contents == "hi"
