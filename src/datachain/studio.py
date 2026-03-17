@@ -371,14 +371,15 @@ def _get_job_status(client, job_id: str) -> str | None:
     return None
 
 
-def _process_logs_message(logs: list, last_log_id: int) -> tuple[bool, int]:
+def _process_logs_message(
+    logs: list, last_log_id: int, filter_up_to: int
+) -> tuple[bool, int]:
     received = False
     for log in logs:
-        log_id = log.get("id")
-        if log_id is not None and log_id <= last_log_id:
+        log_id = log["id"]
+        if log_id <= filter_up_to:
             continue
-        if log_id is not None:
-            last_log_id = max(last_log_id, log_id)
+        last_log_id = max(last_log_id, log_id)
         received = True
         print(log["message"], end="")
     return received, last_log_id
@@ -394,6 +395,7 @@ def show_logs_from_client(  # noqa: C901
         log_blobs_processed = False
         while True:
             received_streaming_data = False
+            session_start_id = last_log_id
             async for message in client.tail_job_logs(job_id, no_follow=no_follow):
                 if "log_blobs" in message and not no_follow:
                     log_blobs = message.get("log_blobs", [])
@@ -404,7 +406,7 @@ def show_logs_from_client(  # noqa: C901
 
                 elif "logs" in message and not no_follow:
                     received, last_log_id = _process_logs_message(
-                        message["logs"], last_log_id
+                        message["logs"], last_log_id, session_start_id
                     )
                     received_streaming_data |= received
                 elif "job" in message:
@@ -479,13 +481,7 @@ def show_logs_from_client(  # noqa: C901
     else:
         print("\n\nNo dataset versions created during the job.")
 
-    if final_status.upper() == "COMPLETE":
-        return 0
-    if final_status.upper() == "FAILED":
-        return 1
-    if final_status.upper() == "CANCELED":
-        return 2
-    return 0
+    return {"COMPLETE": 0, "FAILED": 1, "CANCELED": 2}.get(final_status.upper(), 0)
 
 
 def create_job(  # noqa: PLR0913

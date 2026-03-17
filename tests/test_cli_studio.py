@@ -1194,15 +1194,19 @@ def test_studio_run_log_deduplication_on_reconnect(
     mocker.patch(
         "datachain.studio.StudioClient.tail_job_logs", side_effect=mock_tail_job_logs
     )
-    mocker.patch(
-        "datachain.studio._get_job_status", side_effect=["RUNNING", "COMPLETE"]
-    )
     mocker.patch("asyncio.sleep")
 
     with requests_mock.mock() as m:
         m.post(
             f"{STUDIO_URL}/api/datachain/jobs/",
             json={"id": job_id, "url": "https://example.com"},
+        )
+        m.get(
+            re.compile(rf"^{re.escape(STUDIO_URL)}/api/datachain/jobs/"),
+            [
+                {"json": [{"status": "RUNNING"}]},
+                {"json": [{"status": "COMPLETE"}]},
+            ],
         )
         m.get(
             f"{STUDIO_URL}/api/datachain/datasets/dataset_job_versions?job_id={job_id}&team_name=team_name",
@@ -1236,13 +1240,16 @@ def test_studio_run_reconnect_resets_counter_on_streaming_data(
         "datachain.studio.StudioClient.tail_job_logs", side_effect=mock_tail_job_logs
     )
     mocker.patch("datachain.studio.RECONNECT_MAX_ATTEMPTS", 1)
-    mocker.patch("datachain.studio._get_job_status", return_value="RUNNING")
     mocker.patch("asyncio.sleep")
 
     with requests_mock.mock() as m:
         m.post(
             f"{STUDIO_URL}/api/datachain/jobs/",
             json={"id": job_id, "url": "https://example.com"},
+        )
+        m.get(
+            re.compile(rf"^{re.escape(STUDIO_URL)}/api/datachain/jobs/"),
+            json=[{"status": "RUNNING"}],
         )
         (tmp_dir / "example_query.py").write_text("print(1)")
         with caplog.at_level(logging.DEBUG, logger="datachain"):
