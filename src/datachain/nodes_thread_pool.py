@@ -105,7 +105,7 @@ class NodesThreadPool(ABC):
         return results
 
     def cancel_all(self):
-        self.cancel = True
+        self.canceled = True
         # Canceling tasks just in case any of them is scheduled to run.
         # Note that running tasks cannot be canceled, instead we will wait for
         # them to finish when shutting down thread loop executor by calling
