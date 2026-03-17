@@ -653,8 +653,8 @@ def test_studio_run_non_zero_exit_code(
 
     # Mock tail_job_logs to return a status
     async def mock_tail_job_logs(jid, no_follow=False):
-        yield {"logs": [{"message": "Starting job...\n"}]}
-        yield {"logs": [{"message": "Processing data...\n"}]}
+        yield {"logs": [{"message": "Starting job...\n", "id": 1}]}
+        yield {"logs": [{"message": "Processing data...\n", "id": 2}]}
         yield {"job": {"status": status}}
 
     mocker.patch(
@@ -713,7 +713,7 @@ def test_studio_run_websocket_disconnect_fetches_status_via_rest(
     job_id = str(uuid.uuid4())
 
     async def mock_tail_job_logs(jid, no_follow=False):
-        yield {"logs": [{"message": "Starting job...\n"}]}
+        yield {"logs": [{"message": "Starting job...\n", "id": 1}]}
         yield {"job": {"status": "RUNNING"}}
 
     mocker.patch(
@@ -763,7 +763,7 @@ def test_studio_run_websocket_disconnect_job_still_running(
     job_id = str(uuid.uuid4())
 
     async def mock_tail_job_logs(jid, no_follow=False):
-        yield {"logs": [{"message": "Starting job...\n"}]}
+        yield {"logs": [{"message": "Starting job...\n", "id": 1}]}
         yield {"job": {"status": "RUNNING"}}
 
     mocker.patch(
