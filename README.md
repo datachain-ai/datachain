@@ -202,7 +202,7 @@ A human would spend days answering these questions before writing a line of code
 
 With DataChain, the agent knows context and best practices already:
 
-```
+```python
 lidar_100ms = (
     dc.read_dataset("lidar")
     .mutate(time_100ms=dc.C("lidar.timestamp_us") // 100_000)
