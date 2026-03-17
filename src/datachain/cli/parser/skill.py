@@ -29,10 +29,14 @@ def add_skill_parser(subparsers, parent_parser) -> None:
         formatter_class=CustomHelpFormatter,
     )
     install_parser.add_argument(
-        "--only",
-        choices=["core", "graph"],
+        "skills",
+        nargs="?",
         default=None,
-        help="Install only the specified skill (default: install all)",
+        metavar="SKILLS",
+        help=(
+            "Comma-separated skill names to install: dc-core, dc-graph "
+            "(default: install all)"
+        ),
     )
     install_parser.add_argument(
         "--target",

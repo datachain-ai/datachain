@@ -276,7 +276,7 @@ def handle_skill_command(args):
 
     skill_commands = {
         "install": lambda: install_skills(
-            only=args.only,
+            skills=args.skills,
             target=args.target,
             local=args.local,
         ),

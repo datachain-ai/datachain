@@ -17,21 +17,21 @@ def test_skill_install_defaults():
     args = parser.parse_args(["skill", "install"])
     assert args.command == "skill"
     assert args.skill_cmd == "install"
-    assert args.only is None
+    assert args.skills is None
     assert args.target == "claude"
     assert args.local is False
 
 
-def test_skill_install_only_core():
+def test_skill_install_one_skill():
     parser = get_parser()
-    args = parser.parse_args(["skill", "install", "--only", "core"])
-    assert args.only == "core"
+    args = parser.parse_args(["skill", "install", "dc-graph"])
+    assert args.skills == "dc-graph"
 
 
-def test_skill_install_only_graph():
+def test_skill_install_multiple_skills():
     parser = get_parser()
-    args = parser.parse_args(["skill", "install", "--only", "graph"])
-    assert args.only == "graph"
+    args = parser.parse_args(["skill", "install", "dc-graph,dc-core"])
+    assert args.skills == "dc-graph,dc-core"
 
 
 def test_skill_install_target_cursor():
@@ -50,12 +50,6 @@ def test_skill_install_local_flag():
     parser = get_parser()
     args = parser.parse_args(["skill", "install", "--local"])
     assert args.local is True
-
-
-def test_skill_install_invalid_only(capsys):
-    parser = get_parser()
-    with pytest.raises(SystemExit):
-        parser.parse_args(["skill", "install", "--only", "invalid"])
 
 
 def test_skill_install_invalid_target(capsys):
@@ -101,7 +95,7 @@ def fake_home(tmp_path):
     return tmp_path / "home"
 
 
-def _run_install(fake_skills_src, fake_home, only, target, local, project_dir=None):
+def _run_install(fake_skills_src, fake_home, skills, target, local, project_dir=None):
     from datachain.cli.commands.skill import install_skills
 
     with (
@@ -114,18 +108,18 @@ def _run_install(fake_skills_src, fake_home, only, target, local, project_dir=No
 
             os.chdir(project_dir)
             try:
-                install_skills(only=only, target=target, local=local)
+                install_skills(skills=skills, target=target, local=local)
             finally:
                 os.chdir(orig_cwd)
         else:
-            install_skills(only=only, target=target, local=local)
+            install_skills(skills=skills, target=target, local=local)
 
 
 # --- claude, global ---
 
 
 def test_install_all_claude_global(tmp_path, fake_skills_src, fake_home, capsys):
-    _run_install(fake_skills_src, fake_home, only=None, target="claude", local=False)
+    _run_install(fake_skills_src, fake_home, skills=None, target="claude", local=False)
 
     skills_base = fake_home / ".claude" / "skills"
     commands_base = fake_home / ".claude" / "commands"
@@ -139,7 +133,7 @@ def test_install_all_claude_global(tmp_path, fake_skills_src, fake_home, capsys)
 
 
 def test_install_only_core_claude_global(tmp_path, fake_skills_src, fake_home):
-    _run_install(fake_skills_src, fake_home, only="core", target="claude", local=False)
+    _run_install(fake_skills_src, fake_home, skills="dc-core", target="claude", local=False)
 
     skills_base = fake_home / ".claude" / "skills"
     assert (skills_base / "dc-core" / "SKILL.md").exists()
@@ -147,7 +141,7 @@ def test_install_only_core_claude_global(tmp_path, fake_skills_src, fake_home):
 
 
 def test_install_only_graph_claude_global(tmp_path, fake_skills_src, fake_home):
-    _run_install(fake_skills_src, fake_home, only="graph", target="claude", local=False)
+    _run_install(fake_skills_src, fake_home, skills="dc-graph", target="claude", local=False)
 
     skills_base = fake_home / ".claude" / "skills"
     assert (skills_base / "dc-graph" / "SKILL.md").exists()
@@ -158,7 +152,7 @@ def test_install_only_graph_claude_global(tmp_path, fake_skills_src, fake_home):
 
 
 def test_install_all_cursor_global(tmp_path, fake_skills_src, fake_home):
-    _run_install(fake_skills_src, fake_home, only=None, target="cursor", local=False)
+    _run_install(fake_skills_src, fake_home, skills=None, target="cursor", local=False)
 
     skills_base = fake_home / ".cursor" / "skills"
     rules_base = fake_home / ".cursor" / "rules"
@@ -172,7 +166,7 @@ def test_install_all_cursor_global(tmp_path, fake_skills_src, fake_home):
 
 
 def test_install_all_codex_global(tmp_path, fake_skills_src, fake_home):
-    _run_install(fake_skills_src, fake_home, only=None, target="codex", local=False)
+    _run_install(fake_skills_src, fake_home, skills=None, target="codex", local=False)
 
     skills_base = fake_home / ".codex" / "skills"
     for skill in ("dc-core", "dc-graph"):
@@ -199,7 +193,7 @@ def test_install_claude_local(tmp_path, fake_skills_src, fake_home):
         orig = os.getcwd()
         os.chdir(project_dir)
         try:
-            install_skills(only=None, target="claude", local=True)
+            install_skills(skills=None, target="claude", local=True)
         finally:
             os.chdir(orig)
 
