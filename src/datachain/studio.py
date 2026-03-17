@@ -371,6 +371,18 @@ def _get_job_status(client, job_id: str) -> str | None:
     return None
 
 
+def _print_reconnect_msg(sleep_sec: float) -> str:
+    msg = f"\r>>>> WebSocket closed, reconnecting in {sleep_sec:.0f}s..."
+    print(msg, end="", flush=True)
+    return msg
+
+
+def _clear_line(msg: str) -> str:
+    if msg:
+        print("\r" + " " * len(msg) + "\r", end="", flush=True)
+    return ""
+
+
 def _process_logs_message(
     logs: list, last_log_id: int, filter_up_to: int
 ) -> tuple[bool, int]:
@@ -392,7 +404,7 @@ def show_logs_from_client(  # noqa: C901
         retry_count = last_log_id = 0
         latest_status = None
         processed_statuses = set()
-        log_blobs_processed = False
+        log_blobs_processed = reconnect_msg = ""
         while True:
             received_streaming_data = False
             session_start_id = last_log_id
@@ -418,6 +430,7 @@ def show_logs_from_client(  # noqa: C901
                     print(f"\n>>>> Job is now in {latest_status} status.")
 
             if received_streaming_data:
+                reconnect_msg = _clear_line(reconnect_msg)
                 retry_count = 0
 
             rest_status = _get_job_status(client, job_id)
@@ -438,6 +451,7 @@ def show_logs_from_client(  # noqa: C901
                     RECONNECT_BACKOFF_MAX_SEC,
                 ) + random.uniform(0, 1)  # noqa: S311
                 retry_count += 1
+                reconnect_msg = _print_reconnect_msg(sleep_sec)
                 logger.debug(
                     "WebSocket closed, reconnecting in %.1fs (attempt %d/%d)",
                     sleep_sec,
