@@ -7,7 +7,7 @@
 [![DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/datachain-ai/datachain)
 
 
-**Direcotry in object storage is not a dataset**
+**Object storage knows nothing about your data. DataChain fixes that.**
 
 Built for ML engineers and researchers:
 - Your data is multimodal — images, video, sensors, not rows and column
@@ -146,7 +146,87 @@ Agent:
 
 **Your agents stop guessing. They start using knowledge.**
 
-## 3. Studio (optional)
+## 3. Multimodal schemas
+
+LiDAR arrives as point clouds, camera as JPEG frames, radar as CSVs - each with its own schema. SQL tables can't model this. DataChain uses Pydantic instead.
+
+**Your data is not tabular. Don’t force it to be.**
+
+```python
+import datachain as dc
+from pydantic import BaseModel
+
+
+class LidarScanInfo(BaseModel):
+    width: int
+    height: int         # > 1 means ring-organized scan
+    n_points: int
+    fields: list[str]   # ["x", "y", "z", "intensity", "ring", "time"]
+    data_format: str    # "binary" | "binary_compressed" | "ascii"
+
+class LidarViewpoint(BaseModel):
+    tx: float; ty: float; tz: float
+    qw: float; qx: float; qy: float; qz: float
+
+class LidarMeta(BaseModel):
+    sensor_id: str
+    timestamp_us: float
+    scan: LidarScanInfo
+    viewpoint: LidarViewpoint
+
+
+def parse_lidar(file: dc.File) -> LidarMeta:
+    ...
+
+lidar = (
+    dc.read_storage("s3://bucket/lidar/**/*.pcd", update=True, delta=True)
+    .settings(parallel=8)
+    .map(lidar=parse_lidar)
+    .save("lidar")
+)
+```
+
+Each `.save()` preserves schema, lineage, and source code into. 
+The next agent that needs LiDAR data will find it.
+
+## 4. Your agents stop hallucinating
+
+Without DataChain, this prompt produces confusion:
+
+❯ Align lidar signals with camera frames by nearest frame within a 100ms window. One camera frame per LiDAR scan. Save the result as lidar-camera-aligned.
+
+Without context, an agent hits a wall immediately: What datasets exist? What's frame? What columns? Which pipeline flagged edge cases? 
+
+A human would spend days answering these questions before writing a line of code.
+
+
+With DataChain, the agent knows context and best practices already:
+
+```
+lidar_100ms = (
+    dc.read_dataset("lidar")
+    .mutate(time_100ms=dc.C("lidar.timestamp_us") // 100_000)
+)
+
+camera_100ms = (
+    dc.read_dataset("camera-frames")
+    .mutate(time_100ms=dc.C("cam.timestamp_us") // 100_000)
+)
+
+# coarse align on 100ms bucket, then pick nearest camera frame per bucket
+w = func.window(partition_by="time_100ms", order_by="cam.timestamp_us")
+
+(
+    lidar_100ms.merge(camera_100ms, on="time_100ms")
+    .mutate(rank=func.row_number().over(w))
+    .filter(dc.C("rank") == 1)
+    .save("lidar-camera-aligned")
+)
+```
+
+**This is what agents look like when they have memory.**
+
+## 5. Studio (optional)
 
 Run the same pipelines in the cloud with:
 - scheduling
