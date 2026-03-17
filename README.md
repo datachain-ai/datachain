@@ -186,7 +186,7 @@ lidar = (
 )
 ```
 
-Each `.save()` preserves schema, lineage, and source code into. 
+Each `.save()` preserves schema, lineage, and source code into.
 The next agent that needs LiDAR data will find it.
 
 ## 4. Your agents stop hallucinating
@@ -195,7 +195,7 @@ Without DataChain, this prompt produces confusion:
 
 ❯ Align lidar signals with camera frames by nearest frame within a 100ms window. One camera frame per LiDAR scan. Save the result as lidar-camera-aligned.
 
-Without context, an agent hits a wall immediately: What datasets exist? What's frame? What columns? Which pipeline flagged edge cases? 
+Without context, an agent hits a wall immediately: What datasets exist? What's frame? What columns? Which pipeline flagged edge cases?
 
 A human would spend days answering these questions before writing a line of code.
 
