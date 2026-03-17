@@ -133,7 +133,9 @@ def test_install_all_claude_global(tmp_path, fake_skills_src, fake_home, capsys)
 
 
 def test_install_only_core_claude_global(tmp_path, fake_skills_src, fake_home):
-    _run_install(fake_skills_src, fake_home, skills="dc-core", target="claude", local=False)
+    _run_install(
+        fake_skills_src, fake_home, skills="dc-core", target="claude", local=False
+    )
 
     skills_base = fake_home / ".claude" / "skills"
     assert (skills_base / "dc-core" / "SKILL.md").exists()
@@ -141,7 +143,9 @@ def test_install_only_core_claude_global(tmp_path, fake_skills_src, fake_home):
 
 
 def test_install_only_graph_claude_global(tmp_path, fake_skills_src, fake_home):
-    _run_install(fake_skills_src, fake_home, skills="dc-graph", target="claude", local=False)
+    _run_install(
+        fake_skills_src, fake_home, skills="dc-graph", target="claude", local=False
+    )
 
     skills_base = fake_home / ".claude" / "skills"
     assert (skills_base / "dc-graph" / "SKILL.md").exists()
