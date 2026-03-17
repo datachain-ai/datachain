@@ -132,6 +132,7 @@ You describe what you want, not how and where data lives:
 ❯ Find outdoor scenes with high confidence and find top 20 similar to the scene anomalies.txt
 ────────────────────────────────────────────────────────────────────────────────────────
 ⏺ Reading anomalies.txt
+⏺ Bash(python skills/dc-graph/scripts/graph.py --db-mtime)
 ⏺ Now find relevant outdor scenes dataset in knowledge graph
 ⏺ Found 12 datasets, finding the best one
 ⏺ Creating simularity search code
