@@ -4,14 +4,8 @@ import os
 import os.path
 import sys
 import warnings
-from collections.abc import (
-    Callable,
-    Iterator,
-    Sequence,
-)
-from collections.abc import (
-    Generator as IteratorGenerator,
-)
+from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Generator as IteratorGenerator
 from contextlib import closing
 from typing import (
     IO,

@@ -1,5 +1,6 @@
 import os
 import posixpath
+import signal
 import subprocess
 import sys
 import textwrap
@@ -168,7 +169,7 @@ def test_to_storage_from_path_object(test_session, tmp_dir, tmp_path):
             assert images_equal(img["data"], exported_img)
 
 
-def test_to_storage_relative_path(test_session, tmp_path):
+def test_to_storage_relative_path(test_session, tmp_path, monkeypatch):
     images = [
         {"name": "img1.jpg", "data": Image.new(mode="RGB", size=(64, 64))},
         {"name": "img2.jpg", "data": Image.new(mode="RGB", size=(128, 128))},
@@ -176,6 +177,10 @@ def test_to_storage_relative_path(test_session, tmp_path):
 
     for img in images:
         img["data"].save(tmp_path / img["name"])
+
+    work_dir = tmp_path / "cwd"
+    work_dir.mkdir()
+    monkeypatch.chdir(work_dir)
 
     dc.read_values(
         file=[
@@ -218,7 +223,6 @@ def test_to_storage_keyboard_interrupt_does_not_lock_cleanup(tmp_path, catalog_t
 
     script.write_text(
         textwrap.dedent(f"""
-            import os
             import signal
             import threading
             import time
@@ -235,7 +239,7 @@ def test_to_storage_keyboard_interrupt_does_not_lock_cleanup(tmp_path, catalog_t
 
                     def interrupt():
                         time.sleep(0.2)
-                        os.kill(os.getpid(), signal.SIGINT)
+                        signal.raise_signal(signal.SIGINT)
 
                     threading.Thread(
                         target=interrupt,
@@ -267,7 +271,11 @@ def test_to_storage_keyboard_interrupt_does_not_lock_cleanup(tmp_path, catalog_t
         },
     )
 
-    assert result.returncode == 130
+    interrupt_exit_codes = (-signal.SIGINT, 130)
+    if sys.platform == "win32":
+        interrupt_exit_codes = (3221225786, 130)
+
+    assert result.returncode in interrupt_exit_codes
     assert "KeyboardInterrupt" in result.stderr
     assert "database is locked" not in result.stderr
     assert "Error in sys.excepthook" not in result.stderr
