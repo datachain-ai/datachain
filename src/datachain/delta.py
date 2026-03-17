@@ -388,6 +388,9 @@ def delta_retry_update(
     if not delta_sources:
         return None, None, True
 
+    for source in delta_sources:
+        source.apply_listing_pre_step()
+
     dependencies = catalog.get_dataset_dependencies(
         name,
         latest_version,
