@@ -1,7 +1,9 @@
+import os
 import posixpath
 import shutil
 import tempfile
 
+from fsspec.utils import stringify_path
 from numpy import ndarray
 
 from datachain.lib.file import File, FileError, ImageFile, Video, VideoFile
@@ -157,52 +159,61 @@ def video_frame_bytes(video: VideoFile, frame: int, format: str = "jpg") -> byte
 def save_video_frame(
     video: VideoFile,
     frame: int,
-    output: str,
+    destination: str | os.PathLike[str],
     format: str = "jpg",
+    client_config: dict | None = None,
 ) -> ImageFile:
     """
-    Saves video frame as a new image file. If output is a remote path,
-    the image file will be uploaded to the remote storage.
+    Saves video frame as a new image file. If ``destination`` is a remote
+    path, the image will be uploaded to remote storage.
 
     Args:
-        video (VideoFile): Video file object.
-        frame (int): Frame index.
-        output (str): Output path, can be a local path or a remote path.
-        format (str): Image format (default: 'jpg').
+        video: Video file object.
+        frame: Frame index.
+        destination: Output directory path or URI (e.g. ``s3://…``, ``gs://…``).
+        format: Image format (default: 'jpg').
+        client_config: Optional client configuration (e.g. credentials).
 
     Returns:
         ImageFile: Image file model.
     """
+    destination = stringify_path(destination)
     img = video_frame_bytes(video, frame, format=format)
     output_file = posixpath.join(
-        output, f"{video.get_file_stem()}_{frame:04d}.{format}"
+        destination, f"{video.get_file_stem()}_{frame:04d}.{format}"
     )
-    return ImageFile.upload(img, output_file, catalog=video._catalog)
+    client, rel_path = video._resolve_destination(output_file, client_config)
+    result = client.upload(img, rel_path)
+    image = ImageFile(**result.model_dump())
+    image._set_stream(video._catalog)
+    return image
 
 
 def save_video_fragment(
     video: VideoFile,
     start: float,
     end: float,
-    output: str,
+    destination: str | os.PathLike[str],
     format: str | None = None,
+    client_config: dict | None = None,
 ) -> VideoFile:
     """
-    Saves video interval as a new video file. If output is a remote path,
-    the video file will be uploaded to the remote storage.
+    Saves video interval as a new video file. If ``destination`` is a remote
+    path, the video will be uploaded to remote storage.
 
     Args:
-        video (VideoFile): Video file object.
-        start (float): Start time in seconds.
-        end (float): End time in seconds.
-        output (str): Output path, can be a local path or a remote path.
-        format (str, optional): Output format (default: None). If not provided,
-                                the format will be inferred from the video fragment
-                                file extension.
+        video: Video file object.
+        start: Start time in seconds.
+        end: End time in seconds.
+        destination: Output directory path or URI (e.g. ``s3://…``, ``gs://…``).
+        format: Output format. If None, inferred from the file extension.
+        client_config: Optional client configuration (e.g. credentials).
 
     Returns:
         VideoFile: Video fragment model.
     """
+    destination = stringify_path(destination)
+
     if start < 0 or end < 0 or start >= end:
         raise ValueError(
             f"Can't save video fragment for '{video.path}', "
@@ -215,7 +226,7 @@ def save_video_fragment(
     start_ms = int(start * 1000)
     end_ms = int(end * 1000)
     output_file = posixpath.join(
-        output, f"{video.get_file_stem()}_{start_ms:06d}_{end_ms:06d}.{format}"
+        destination, f"{video.get_file_stem()}_{start_ms:06d}_{end_ms:06d}.{format}"
     )
 
     temp_dir = tempfile.mkdtemp()
@@ -228,6 +239,12 @@ def save_video_fragment(
         ).output(output_file_tmp).run(quiet=True)
 
         with open(output_file_tmp, "rb") as f:
-            return VideoFile.upload(f.read(), output_file, catalog=video._catalog)
+            data = f.read()
     finally:
         shutil.rmtree(temp_dir)
+
+    client, rel_path = video._resolve_destination(output_file, client_config)
+    result = client.upload(data, rel_path)
+    vf = VideoFile(**result.model_dump())
+    vf._set_stream(video._catalog)
+    return vf

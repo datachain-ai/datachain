@@ -203,12 +203,6 @@ class DataChain:
         self.signals_schema = signal_schema
         self._setup: dict = setup or {}
         self._sys = _sys
-        self._delta = False
-        self._delta_unsafe = False
-        self._delta_on: str | Sequence[str] | None = None
-        self._delta_result_on: str | Sequence[str] | None = None
-        self._delta_compare: str | Sequence[str] | None = None
-        self._delta_retry: bool | str | None = None
 
     def __repr__(self) -> str:
         """Return a string representation of the chain."""
@@ -230,26 +224,6 @@ class DataChain:
         """
         return self._query.hash()
 
-    def _as_delta(
-        self,
-        on: str | Sequence[str] | None = None,
-        right_on: str | Sequence[str] | None = None,
-        compare: str | Sequence[str] | None = None,
-        delta_retry: bool | str | None = None,
-        delta_unsafe: bool = False,
-    ) -> "Self":
-        """Marks this chain as delta, which means special delta process will be
-        called on saving dataset for optimization"""
-        if on is None:
-            raise ValueError("'delta on' fields must be defined")
-        self._delta = True
-        self._delta_on = on
-        self._delta_result_on = right_on
-        self._delta_compare = compare
-        self._delta_retry = delta_retry
-        self._delta_unsafe = delta_unsafe
-        return self
-
     @property
     def empty(self) -> bool:
         """Returns True if chain has zero number of rows"""
@@ -258,11 +232,17 @@ class DataChain:
     @property
     def delta(self) -> bool:
         """Returns True if this chain is ran in "delta" update mode"""
-        return self._delta
+        return self._query.delta_spec is not None or bool(self._query.delta_sources())
 
     @property
     def delta_unsafe(self) -> bool:
-        return self._delta_unsafe
+        if self._query.delta_spec is not None:
+            return self._query.delta_spec.delta_unsafe
+        delta_sources = self._query.delta_sources()
+        return bool(delta_sources) and all(
+            source.delta_spec is not None and source.delta_spec.delta_unsafe
+            for source in delta_sources
+        )
 
     @property
     def schema(self) -> dict[str, DataType]:
@@ -362,19 +342,13 @@ class DataChain:
             signal_schema = copy.deepcopy(self.signals_schema)
         if _sys is None:
             _sys = self._sys
-        chain = type(self)(
-            query, settings, signal_schema=signal_schema, setup=self._setup, _sys=_sys
+        return type(self)(
+            query,
+            settings,
+            signal_schema=signal_schema,
+            setup=self._setup,
+            _sys=_sys,
         )
-        if self.delta:
-            chain = chain._as_delta(
-                on=self._delta_on,
-                right_on=self._delta_result_on,
-                compare=self._delta_compare,
-                delta_retry=self._delta_retry,
-                delta_unsafe=self._delta_unsafe,
-            )
-
-        return chain
 
     def settings(
         self,
@@ -848,17 +822,11 @@ class DataChain:
         if not self.delta or not name:
             return None
 
-        assert self._delta_on is not None, "Delta chain must have delta_on defined"
-
         result_ds, dependencies, has_changes = delta_retry_update(
             self,
             project.namespace.name,
             project.name,
             name,
-            on=self._delta_on,
-            right_on=self._delta_result_on,
-            compare=self._delta_compare,
-            delta_retry=self._delta_retry,
         )
 
         # Case 1: delta produced a new dataset
@@ -1859,6 +1827,7 @@ class DataChain:
         self.signals_schema = self_schema.clone_without_sys_signals()
         return self._evolve(query=self._query.union(other._query))
 
+    @delta_disabled
     def subtract(  # type: ignore[override]
         self,
         other: "DataChain",
@@ -1927,6 +1896,7 @@ class DataChain:
             )
         return self._evolve(query=self._query.subtract(other._query, signals))  # type: ignore[arg-type]
 
+    @delta_disabled
     def diff(
         self,
         other: "DataChain",
@@ -1995,6 +1965,7 @@ class DataChain:
             status_col=status_col,
         )
 
+    @delta_disabled
     def file_diff(
         self,
         other: "DataChain",

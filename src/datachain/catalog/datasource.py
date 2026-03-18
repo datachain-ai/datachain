@@ -12,11 +12,11 @@ class DataSource:
             as_container  # Indicates whether a .tar file is handled as a container
         )
 
-    def get_node_full_path(self, node):
-        return self.client.get_full_path(node.full_path)
+    def get_node_uri(self, node):
+        return self.client.get_uri(node.full_path)
 
-    def get_node_full_path_from_path(self, full_path):
-        return self.client.get_full_path(full_path)
+    def get_node_uri_from_path(self, full_path):
+        return self.client.get_uri(full_path)
 
     def is_single_object(self):
         return self.node.dir_type == DirType.FILE or (

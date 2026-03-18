@@ -37,6 +37,14 @@ def _get_dependencies(catalog, name, version) -> list[tuple[str, str]]:
     )
 
 
+def _delta_unsafe_required_message(method_name: str) -> str:
+    return (
+        f"Cannot use {method_name} with delta datasets - may cause inconsistency."
+        " Set delta_unsafe=True on every participating delta source"
+        " to allow this operation."
+    )
+
+
 def test_delta_update_from_dataset(test_session, tmp_dir, tmp_path):
     catalog = test_session.catalog
 
@@ -287,6 +295,336 @@ def test_delta_update_unsafe(test_session):
         (4, 4),
         (5, 5),
         (6, 6),
+    }
+
+
+def test_delta_update_unsafe_no_changes_reuses_previous_version(test_session):
+    source_name = f"unsafe_same_source_{uuid.uuid4().hex[:8]}"
+    merge_name = f"unsafe_same_merge_{uuid.uuid4().hex[:8]}"
+    result_name = f"unsafe_same_result_{uuid.uuid4().hex[:8]}"
+
+    dc.read_values(id=[1, 2, 3], value=[1, 2, 3], session=test_session).save(merge_name)
+    dc.read_values(id=[1, 2, 3], session=test_session).save(source_name)
+
+    dc.read_dataset(
+        source_name,
+        session=test_session,
+        delta=True,
+        delta_on="id",
+        delta_unsafe=True,
+    ).merge(
+        dc.read_dataset(merge_name, session=test_session),
+        on="id",
+        inner=True,
+    ).save(result_name)
+
+    res = (
+        dc.read_dataset(
+            source_name,
+            session=test_session,
+            delta=True,
+            delta_on="id",
+            delta_unsafe=True,
+        )
+        .merge(
+            dc.read_dataset(merge_name, session=test_session),
+            on="id",
+            inner=True,
+        )
+        .save(result_name)
+    )
+
+    assert res.version == "1.0.0"
+    with pytest.raises(DatasetNotFoundError):
+        dc.read_dataset(result_name, version="1.0.1", session=test_session)
+
+
+def test_delta_update_unsafe_only_processes_new_rows(test_session):
+    source_name = f"unsafe_add_source_{uuid.uuid4().hex[:8]}"
+    merge_name = f"unsafe_add_merge_{uuid.uuid4().hex[:8]}"
+    result_name = f"unsafe_add_result_{uuid.uuid4().hex[:8]}"
+    processed: list[tuple[int, int]] = []
+
+    def record(id: int, value: int) -> int:
+        processed.append((id, value))
+        return value
+
+    dc.read_values(
+        id=[1, 2, 3, 4, 5, 6],
+        value=[1, 2, 3, 4, 5, 6],
+        session=test_session,
+    ).save(merge_name)
+    dc.read_values(id=[1, 2, 3], session=test_session).save(source_name)
+
+    (
+        dc.read_dataset(
+            source_name,
+            session=test_session,
+            delta=True,
+            delta_on="id",
+            delta_unsafe=True,
+        )
+        .merge(dc.read_dataset(merge_name, session=test_session), on="id", inner=True)
+        .map(new_value=record, params=["id", "value"], output=int)
+        .save(result_name)
+    )
+
+    assert sorted(processed) == [(1, 1), (2, 2), (3, 3)]
+
+    dc.read_values(id=[1, 2, 3, 4, 5, 6], session=test_session).save(source_name)
+
+    (
+        dc.read_dataset(
+            source_name,
+            session=test_session,
+            delta=True,
+            delta_on="id",
+            delta_unsafe=True,
+        )
+        .merge(dc.read_dataset(merge_name, session=test_session), on="id", inner=True)
+        .map(new_value=record, params=["id", "value"], output=int)
+        .save(result_name)
+    )
+
+    assert sorted(processed[3:]) == [(4, 4), (5, 5), (6, 6)]
+
+
+def test_delta_update_unsafe_replays_aligned_delta_sources_together(test_session):
+    left_name = f"unsafe_multi_left_{uuid.uuid4().hex[:8]}"
+    right_name = f"unsafe_multi_right_{uuid.uuid4().hex[:8]}"
+    result_name = f"unsafe_multi_result_{uuid.uuid4().hex[:8]}"
+    processed: list[int] = []
+
+    def record(id: int, left_value: int, right_value: int) -> int:
+        processed.append(id)
+        return left_value + right_value
+
+    dc.read_values(
+        id=[1, 2],
+        left_value=[10, 20],
+        session=test_session,
+    ).save(left_name)
+    dc.read_values(
+        id=[1, 2],
+        right_value=[100, 200],
+        session=test_session,
+    ).save(right_name)
+
+    def build_chain():
+        return (
+            dc.read_dataset(
+                left_name,
+                session=test_session,
+                delta=True,
+                delta_on="id",
+                delta_unsafe=True,
+            )
+            .merge(
+                dc.read_dataset(
+                    right_name,
+                    session=test_session,
+                    delta=True,
+                    delta_on="id",
+                    delta_unsafe=True,
+                ),
+                on="id",
+                inner=True,
+            )
+            .map(
+                joined_value=record,
+                params=["id", "left_value", "right_value"],
+                output=int,
+            )
+        )
+
+    build_chain().save(result_name)
+
+    assert sorted(processed) == [1, 2]
+    assert set(dc.read_dataset(result_name, session=test_session).to_values("id")) == {
+        1,
+        2,
+    }
+
+    dc.read_values(
+        id=[1, 2, 3],
+        left_value=[10, 20, 30],
+        session=test_session,
+    ).save(left_name)
+    dc.read_values(
+        id=[1, 2, 3],
+        right_value=[100, 200, 300],
+        session=test_session,
+    ).save(right_name)
+
+    build_chain().save(result_name)
+
+    assert processed[2:] == [3]
+    assert set(dc.read_dataset(result_name, session=test_session).to_values("id")) == {
+        1,
+        2,
+        3,
+    }
+
+
+def test_delta_update_unsafe_matches_same_named_aligned_sources_by_full_identity(
+    test_session,
+):
+    catalog = test_session.catalog
+    suffix = uuid.uuid4().hex[:8]
+    source_short = f"shared_source_{suffix}"
+    left_name = f"namespace_a_{suffix}.project_a_{suffix}.{source_short}"
+    right_name = f"namespace_b_{suffix}.project_b_{suffix}.{source_short}"
+    result_name = f"same_name_delta_result_{suffix}"
+    processed: list[int] = []
+
+    dc.create_project(
+        f"namespace_a_{suffix}", f"project_a_{suffix}", session=test_session
+    )
+    dc.create_project(
+        f"namespace_b_{suffix}", f"project_b_{suffix}", session=test_session
+    )
+
+    def record(id: int, left_value: int, right_value: int) -> int:
+        processed.append(id)
+        return left_value + right_value
+
+    dc.read_values(
+        id=[1],
+        left_value=[10],
+        session=test_session,
+    ).save(left_name)
+    dc.read_values(
+        id=[1],
+        right_value=[100],
+        session=test_session,
+    ).save(right_name)
+
+    def build_chain():
+        return (
+            dc.read_dataset(
+                left_name,
+                session=test_session,
+                delta=True,
+                delta_on="id",
+                delta_unsafe=True,
+            )
+            .merge(
+                dc.read_dataset(
+                    right_name,
+                    session=test_session,
+                    delta=True,
+                    delta_on="id",
+                    delta_unsafe=True,
+                ),
+                on="id",
+                inner=True,
+            )
+            .map(
+                joined_value=record,
+                params=["id", "left_value", "right_value"],
+                output=int,
+            )
+        )
+
+    build_chain().save(result_name)
+
+    assert processed == [1]
+    assert _get_dependencies(catalog, result_name, "1.0.0") == [
+        (left_name, "1.0.0"),
+        (right_name, "1.0.0"),
+    ]
+    assert set(dc.read_dataset(result_name, session=test_session).to_values("id")) == {
+        1
+    }
+
+    dc.read_values(
+        id=[1, 2],
+        left_value=[10, 20],
+        session=test_session,
+    ).save(left_name)
+    dc.read_values(
+        id=[1, 2],
+        right_value=[100, 200],
+        session=test_session,
+    ).save(right_name)
+
+    build_chain().save(result_name)
+
+    assert processed[1:] == [2]
+    assert _get_dependencies(catalog, result_name, "1.0.1") == [
+        (left_name, "1.0.1"),
+        (right_name, "1.0.1"),
+    ]
+    assert set(dc.read_dataset(result_name, session=test_session).to_values("id")) == {
+        1,
+        2,
+    }
+
+
+def test_delta_update_unsafe_replays_aligned_same_dataset_occurrences(
+    test_session,
+):
+    # Repeated uses of the same delta source should still replay correctly when
+    # aligned delta rows for each occurrence arrive together.
+    # Under the cheaper all-at-once replay semantics, repeated occurrences may
+    # still cause duplicate processing work even when the final saved output is
+    # correct.
+    source_name = f"unsafe_same_occ_source_{uuid.uuid4().hex[:8]}"
+    result_name = f"unsafe_same_occ_result_{uuid.uuid4().hex[:8]}"
+    processed: list[int] = []
+
+    def record(row_id: int) -> int:
+        processed.append(row_id)
+        return row_id
+
+    dc.read_values(
+        row_id=[1, 10],
+        group=[1, 1],
+        side=["L", "R"],
+        session=test_session,
+    ).save(source_name)
+
+    def build_chain():
+        left = dc.read_dataset(
+            source_name,
+            session=test_session,
+            delta=True,
+            delta_on="row_id",
+            delta_unsafe=True,
+        ).filter(C("side") == "L")
+        right = dc.read_dataset(
+            source_name,
+            session=test_session,
+            delta=True,
+            delta_on="row_id",
+            delta_unsafe=True,
+        ).filter(C("side") == "R")
+        return left.merge(right, on="group", inner=True).map(
+            seen_id=record,
+            params=["row_id"],
+            output=int,
+        )
+
+    build_chain().save(result_name)
+
+    assert processed == [1]
+    assert dc.read_dataset(result_name, session=test_session).to_values("row_id") == [1]
+
+    dc.read_values(
+        row_id=[1, 2, 10, 20],
+        group=[1, 1, 1, 1],
+        side=["L", "L", "R", "R"],
+        session=test_session,
+    ).save(source_name)
+
+    build_chain().save(result_name)
+
+    assert processed[1:] == [2, 2]
+    assert set(
+        dc.read_dataset(result_name, session=test_session).to_values("row_id")
+    ) == {
+        1,
+        2,
     }
 
 
@@ -727,10 +1065,7 @@ def test_delta_update_union(test_session, file_dataset):
             ).union(dc.read_dataset("numbers"), session=test_session)
         )
 
-    assert str(excinfo.value) == (
-        "Cannot use union with delta datasets - may cause inconsistency."
-        " Use delta_unsafe flag to allow this operation."
-    )
+    assert str(excinfo.value) == _delta_unsafe_required_message("union")
 
 
 def test_delta_update_merge(test_session, file_dataset):
@@ -745,10 +1080,197 @@ def test_delta_update_merge(test_session, file_dataset):
             ).merge(dc.read_dataset("numbers"), on="id", session=test_session)
         )
 
-    assert str(excinfo.value) == (
-        "Cannot use merge with delta datasets - may cause inconsistency."
-        " Use delta_unsafe flag to allow this operation."
+    assert str(excinfo.value) == _delta_unsafe_required_message("merge")
+
+
+def test_delta_update_merge_requires_all_delta_inputs_unsafe(test_session):
+    left_name = f"mixed_merge_left_{uuid.uuid4().hex[:8]}"
+    right_name = f"mixed_merge_right_{uuid.uuid4().hex[:8]}"
+
+    dc.read_values(id=[1, 2], left_value=[10, 20], session=test_session).save(left_name)
+    dc.read_values(id=[1, 2], right_value=[100, 200], session=test_session).save(
+        right_name
     )
+
+    with pytest.raises(NotImplementedError) as excinfo:
+        (
+            dc.read_dataset(
+                left_name,
+                session=test_session,
+                delta=True,
+                delta_on="id",
+                delta_unsafe=True,
+            ).merge(
+                dc.read_dataset(
+                    right_name,
+                    session=test_session,
+                    delta=True,
+                    delta_on="id",
+                ),
+                on="id",
+                inner=True,
+            )
+        )
+
+    assert str(excinfo.value) == _delta_unsafe_required_message("merge")
+
+
+def test_delta_update_subtract_requires_all_delta_inputs_unsafe(test_session):
+    left_name = f"mixed_subtract_left_{uuid.uuid4().hex[:8]}"
+    right_name = f"mixed_subtract_right_{uuid.uuid4().hex[:8]}"
+
+    dc.read_values(id=[1, 2], left_value=[10, 20], session=test_session).save(left_name)
+    dc.read_values(id=[1, 2], right_value=[100, 200], session=test_session).save(
+        right_name
+    )
+
+    with pytest.raises(NotImplementedError) as excinfo:
+        (
+            dc.read_dataset(
+                left_name,
+                session=test_session,
+                delta=True,
+                delta_on="id",
+                delta_unsafe=True,
+            ).subtract(
+                dc.read_dataset(
+                    right_name,
+                    session=test_session,
+                    delta=True,
+                    delta_on="id",
+                ),
+                on="id",
+            )
+        )
+
+    assert str(excinfo.value) == _delta_unsafe_required_message("subtract")
+
+    with pytest.raises(NotImplementedError) as excinfo:
+        (
+            dc.read_dataset(
+                left_name,
+                session=test_session,
+                delta=True,
+                delta_on="id",
+            ).subtract(
+                dc.read_dataset(
+                    right_name,
+                    session=test_session,
+                    delta=True,
+                    delta_on="id",
+                    delta_unsafe=True,
+                ),
+                on="id",
+            )
+        )
+
+    assert str(excinfo.value) == _delta_unsafe_required_message("subtract")
+
+
+def test_delta_update_diff_requires_all_delta_inputs_unsafe(test_session):
+    left_name = f"mixed_diff_left_{uuid.uuid4().hex[:8]}"
+    right_name = f"mixed_diff_right_{uuid.uuid4().hex[:8]}"
+
+    dc.read_values(id=[1, 2], left_value=[10, 20], session=test_session).save(left_name)
+    dc.read_values(id=[1, 2], right_value=[100, 200], session=test_session).save(
+        right_name
+    )
+
+    with pytest.raises(NotImplementedError) as excinfo:
+        (
+            dc.read_dataset(
+                left_name,
+                session=test_session,
+                delta=True,
+                delta_on="id",
+                delta_unsafe=True,
+            ).diff(
+                dc.read_dataset(
+                    right_name,
+                    session=test_session,
+                    delta=True,
+                    delta_on="id",
+                ),
+                on="id",
+            )
+        )
+
+    assert str(excinfo.value) == _delta_unsafe_required_message("diff")
+
+
+def test_delta_update_file_diff_requires_all_delta_inputs_unsafe(test_session):
+    left_name = f"mixed_file_diff_left_{uuid.uuid4().hex[:8]}"
+    right_name = f"mixed_file_diff_right_{uuid.uuid4().hex[:8]}"
+
+    dc.read_values(
+        file=[File(path="a.jpg", source="s3://left-bucket")],
+        session=test_session,
+    ).save(left_name)
+    dc.read_values(
+        file=[File(path="a.jpg", source="s3://right-bucket")],
+        session=test_session,
+    ).save(right_name)
+
+    with pytest.raises(NotImplementedError) as excinfo:
+        (
+            dc.read_dataset(
+                left_name,
+                session=test_session,
+                delta=True,
+                delta_on=["file.source", "file.path"],
+                delta_unsafe=True,
+            ).file_diff(
+                dc.read_dataset(
+                    right_name,
+                    session=test_session,
+                    delta=True,
+                    delta_on=["file.source", "file.path"],
+                )
+            )
+        )
+
+    assert str(excinfo.value) == _delta_unsafe_required_message("file_diff")
+
+    with pytest.raises(NotImplementedError) as excinfo:
+        (
+            dc.read_dataset(
+                left_name,
+                session=test_session,
+                delta=True,
+                delta_on=["file.source", "file.path"],
+            ).file_diff(
+                dc.read_dataset(
+                    right_name,
+                    session=test_session,
+                    delta=True,
+                    delta_on=["file.source", "file.path"],
+                    delta_unsafe=True,
+                )
+            )
+        )
+
+    assert str(excinfo.value) == _delta_unsafe_required_message("file_diff")
+
+    with pytest.raises(NotImplementedError) as excinfo:
+        (
+            dc.read_dataset(
+                left_name,
+                session=test_session,
+                delta=True,
+                delta_on="id",
+            ).diff(
+                dc.read_dataset(
+                    right_name,
+                    session=test_session,
+                    delta=True,
+                    delta_on="id",
+                    delta_unsafe=True,
+                ),
+                on="id",
+            )
+        )
+
+    assert str(excinfo.value) == _delta_unsafe_required_message("diff")
 
 
 def test_delta_update_distinct(test_session, file_dataset):
@@ -761,10 +1283,35 @@ def test_delta_update_distinct(test_session, file_dataset):
             ).distinct("file.path")
         )
 
-    assert str(excinfo.value) == (
-        "Cannot use distinct with delta datasets - may cause inconsistency."
-        " Use delta_unsafe flag to allow this operation."
-    )
+    assert str(excinfo.value) == _delta_unsafe_required_message("distinct")
+
+
+def test_delta_update_union_requires_all_delta_inputs_unsafe(test_session):
+    left_name = f"mixed_union_left_{uuid.uuid4().hex[:8]}"
+    right_name = f"mixed_union_right_{uuid.uuid4().hex[:8]}"
+
+    dc.read_values(id=[1, 2], session=test_session).save(left_name)
+    dc.read_values(id=[3, 4], session=test_session).save(right_name)
+
+    with pytest.raises(NotImplementedError) as excinfo:
+        (
+            dc.read_dataset(
+                left_name,
+                session=test_session,
+                delta=True,
+                delta_on="id",
+                delta_unsafe=True,
+            ).union(
+                dc.read_dataset(
+                    right_name,
+                    session=test_session,
+                    delta=True,
+                    delta_on="id",
+                )
+            )
+        )
+
+    assert str(excinfo.value) == _delta_unsafe_required_message("union")
 
 
 def test_delta_update_group_by(test_session, file_dataset):
@@ -777,10 +1324,7 @@ def test_delta_update_group_by(test_session, file_dataset):
             ).group_by(cnt=func.count(), partition_by="file.path")
         )
 
-    assert str(excinfo.value) == (
-        "Cannot use group_by with delta datasets - may cause inconsistency."
-        " Use delta_unsafe flag to allow this operation."
-    )
+    assert str(excinfo.value) == _delta_unsafe_required_message("group_by")
 
 
 def test_delta_update_agg(test_session, file_dataset):
@@ -793,7 +1337,4 @@ def test_delta_update_agg(test_session, file_dataset):
             ).agg(cnt=func.count(), partition_by="file.path")
         )
 
-    assert str(excinfo.value) == (
-        "Cannot use agg with delta datasets - may cause inconsistency."
-        " Use delta_unsafe flag to allow this operation."
-    )
+    assert str(excinfo.value) == _delta_unsafe_required_message("agg")
