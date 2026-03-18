@@ -317,24 +317,28 @@ class StudioClient:
         if no_follow:
             ws_url += "&no_follow=true"
 
-        async with websockets.connect(
-            ws_url,
-            additional_headers={"Authorization": f"token {self.token}"},
-        ) as websocket:
-            while True:
-                try:
-                    message = await websocket.recv()
-                    data = json.loads(message)
-                    if data.get("type") == "ping":
-                        continue
-                    # Yield the parsed message data
-                    yield data
+        try:
+            async with websockets.connect(
+                ws_url,
+                additional_headers={"Authorization": f"token {self.token}"},
+            ) as websocket:
+                while True:
+                    try:
+                        message = await websocket.recv()
+                        data = json.loads(message)
+                        if data.get("type") == "ping":
+                            continue
+                        # Yield the parsed message data
+                        yield data
 
-                except websockets.exceptions.ConnectionClosed:
-                    break
-                except Exception as e:  # noqa: BLE001
-                    logger.error("Error receiving websocket message: %s", e)
-                    break
+                    except websockets.exceptions.ConnectionClosed:
+                        break
+                    except Exception as e:  # noqa: BLE001
+                        logger.error("Error receiving websocket message: %s", e)
+                        break
+        except (websockets.exceptions.WebSocketException, OSError) as e:
+            logger.debug("WebSocket connection failed: %s", e)
+            return
 
     def ls(self, paths: Iterable[str]) -> Iterator[tuple[str, Response[LsData]]]:
         # TODO: change LsData (response.data value) to be list of lists
