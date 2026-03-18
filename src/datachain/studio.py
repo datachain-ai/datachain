@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import random
 import sys
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
@@ -31,8 +32,9 @@ POST_LOGIN_MESSAGE = (
     "Once you've logged in, return here "
     "and you'll be ready to start using DataChain with Studio."
 )
-RETRY_MAX_TIMES = 10
-RETRY_SLEEP_SEC = 1
+RECONNECT_MAX_ATTEMPTS = 15
+RECONNECT_BACKOFF_BASE_SEC = 1
+RECONNECT_BACKOFF_MAX_SEC = 60
 
 
 def process_jobs_args(args: "Namespace"):
@@ -369,48 +371,94 @@ def _get_job_status(client, job_id: str) -> str | None:
     return None
 
 
+def _print_reconnect_msg(sleep_sec: float) -> str:
+    msg = f"\r>>>> WebSocket closed, reconnecting in {sleep_sec:.0f}s..."
+    print(msg, end="", flush=True)
+    return msg
+
+
+def _clear_line(msg: str) -> str:
+    if msg:
+        print("\r" + " " * len(msg) + "\r", end="", flush=True)
+    return ""
+
+
+def _process_logs_message(
+    logs: list, last_log_id: int, filter_up_to: int
+) -> tuple[bool, int]:
+    received = False
+    for log in logs:
+        log_id = log["id"]
+        if log_id <= filter_up_to:
+            continue
+        last_log_id = max(last_log_id, log_id)
+        received = True
+        print(log["message"], end="")
+    return received, last_log_id
+
+
 def show_logs_from_client(  # noqa: C901
     client, job_id: str, no_follow: bool = False
 ):
     async def _run():
-        retry_count = 0
+        retry_count = last_log_id = 0
         latest_status = None
         processed_statuses = set()
-        log_blobs_processed = False
+        log_blobs_processed, reconnect_msg = False, ""
         while True:
+            received_streaming_data = False
+            session_start_id = last_log_id
             async for message in client.tail_job_logs(job_id, no_follow=no_follow):
+                reconnect_msg = _clear_line(reconnect_msg)
                 if "log_blobs" in message and not no_follow:
                     log_blobs = message.get("log_blobs", [])
                     if log_blobs and not log_blobs_processed:
                         log_blobs_processed = True
+                        received_streaming_data = True
                         await _show_log_blobs(log_blobs, client)
 
                 elif "logs" in message and not no_follow:
-                    for log in message["logs"]:
-                        print(log["message"], end="")
+                    received, last_log_id = _process_logs_message(
+                        message["logs"], last_log_id, session_start_id
+                    )
+                    received_streaming_data |= received
                 elif "job" in message:
                     latest_status = message["job"]["status"]
                     if latest_status in processed_statuses:
                         continue
+                    received_streaming_data = True
                     processed_statuses.add(latest_status)
                     print(f"\n>>>> Job is now in {latest_status} status.")
 
-            # After websocket closes, check actual job status via REST
+            if received_streaming_data:
+                retry_count = 0
+
             rest_status = _get_job_status(client, job_id)
-            if rest_status and rest_status != latest_status:
-                print(f"\n>>>> Job is now in {rest_status} status.")
             if rest_status:
+                if rest_status != latest_status:
+                    print(f"\n>>>> Job is now in {rest_status} status.")
                 latest_status = rest_status
 
             try:
                 if latest_status and JobStatus[latest_status] in JobStatus.finished():
                     logger.debug("Job is in finished status: %s", latest_status)
                     break
-                if retry_count > RETRY_MAX_TIMES:
-                    logger.debug("Max retry count reached: %s", retry_count)
+                if retry_count >= RECONNECT_MAX_ATTEMPTS:
+                    logger.debug("Max reconnect attempts reached: %d", retry_count)
                     break
-                await asyncio.sleep(RETRY_SLEEP_SEC)
+                sleep_sec = min(
+                    RECONNECT_BACKOFF_BASE_SEC * 2**retry_count,
+                    RECONNECT_BACKOFF_MAX_SEC,
+                ) + random.uniform(0, 1)  # noqa: S311
                 retry_count += 1
+                logger.debug(
+                    "WebSocket closed, reconnecting in %.1fs (attempt %d/%d)",
+                    sleep_sec,
+                    retry_count,
+                    RECONNECT_MAX_ATTEMPTS,
+                )
+                reconnect_msg = _print_reconnect_msg(sleep_sec)
+                await asyncio.sleep(sleep_sec)
             except KeyError:
                 break
 
@@ -426,7 +474,12 @@ def show_logs_from_client(  # noqa: C901
 
     if not job_finished:
         logger.debug("Job is not finished: %s.", final_status or "unknown")
-        print(f"\n>>>> Lost connection. Job status: {final_status or 'unknown'}.")
+        print(
+            f"\n>>>> Failed to reconnect after {RECONNECT_MAX_ATTEMPTS} attempts."
+            f" Job status: {final_status or 'unknown'}."
+            f"\nThe job may still be running. To resume monitoring:"
+            f"\n    datachain job logs {job_id}"
+        )
         return 1
 
     # Show dataset versions only for finished jobs
@@ -434,22 +487,15 @@ def show_logs_from_client(  # noqa: C901
     if not response.ok:
         raise DataChainError(response.message)
 
-    response_data = response.data
-    if response_data and response_data.get("dataset_versions"):
-        dataset_versions = response_data.get("dataset_versions", [])
+    if response.data and response.data.get("dataset_versions"):
+        dataset_versions = response.data.get("dataset_versions", [])
         print("\n\n>>>> Dataset versions created during the job:")
         for version in dataset_versions:
             print(f"    - {version.get('dataset_name')}@v{version.get('version')}")
     else:
         print("\n\nNo dataset versions created during the job.")
 
-    if final_status.upper() == "COMPLETE":
-        return 0
-    if final_status.upper() == "FAILED":
-        return 1
-    if final_status.upper() == "CANCELED":
-        return 2
-    return 0
+    return {"COMPLETE": 0, "FAILED": 1, "CANCELED": 2}.get(final_status.upper(), 0)
 
 
 def create_job(  # noqa: PLR0913
