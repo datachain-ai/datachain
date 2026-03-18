@@ -551,6 +551,10 @@ class AbstractMetastore(ABC, Serializable):
         """List checkpoints, optionally filtered by job IDs and/or status."""
 
     @abstractmethod
+    def get_last_checkpoint(self, job_id: str) -> Checkpoint | None:
+        """Get last created checkpoint for some job."""
+
+    @abstractmethod
     def get_checkpoint_by_id(self, checkpoint_id: str) -> Checkpoint:
         """Gets single checkpoint by id"""
 
@@ -2432,6 +2436,18 @@ class AbstractDBMetastore(AbstractMetastore):
         rows = list(self.db.execute(query))
         if not rows:
             raise CheckpointNotFoundError(f"Checkpoint {checkpoint_id} not found")
+        return self.checkpoint_class.parse(*rows[0])
+
+    def get_last_checkpoint(self, job_id: str) -> Checkpoint | None:
+        query = (
+            self._checkpoints_query()
+            .where(self._checkpoints.c.job_id == job_id)
+            .order_by(desc(self._checkpoints.c.created_at))
+            .limit(1)
+        )
+        rows = list(self.db.execute(query))
+        if not rows:
+            return None
         return self.checkpoint_class.parse(*rows[0])
 
     def find_checkpoint(
