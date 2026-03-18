@@ -404,7 +404,7 @@ def show_logs_from_client(  # noqa: C901
         retry_count = last_log_id = 0
         latest_status = None
         processed_statuses = set()
-        log_blobs_processed = reconnect_msg = ""
+        log_blobs_processed, reconnect_msg = False, ""
         while True:
             received_streaming_data = False
             session_start_id = last_log_id
@@ -429,8 +429,8 @@ def show_logs_from_client(  # noqa: C901
                     processed_statuses.add(latest_status)
                     print(f"\n>>>> Job is now in {latest_status} status.")
 
+            reconnect_msg = _clear_line(reconnect_msg)
             if received_streaming_data:
-                reconnect_msg = _clear_line(reconnect_msg)
                 retry_count = 0
 
             rest_status = _get_job_status(client, job_id)
