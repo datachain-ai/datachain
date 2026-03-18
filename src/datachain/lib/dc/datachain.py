@@ -627,7 +627,6 @@ class DataChain:
         )
         project = self._get_or_create_project(namespace_name, project_name)
 
-        self._query.resolve_listing()
         # Calculate hash including dataset name and job context to avoid conflicts
         import hashlib
 

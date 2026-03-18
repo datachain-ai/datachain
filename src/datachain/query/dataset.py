@@ -2332,6 +2332,8 @@ class DatasetQuery:
         Args:
             job_aware: If True, includes the last checkpoint hash from the job context.
         """
+        self.resolve_listing()
+
         hasher = hashlib.sha256()
 
         start_hash = self._last_checkpoint_hash if job_aware else None
