@@ -5,6 +5,8 @@ import os.path
 import sys
 import warnings
 from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Generator as IteratorGenerator
+from contextlib import closing
 from typing import (
     IO,
     TYPE_CHECKING,
@@ -1572,7 +1574,9 @@ class DataChain:
 
         return self.results(row_factory=to_dict)
 
-    def to_iter(self, *cols: str) -> Iterator[tuple[DataValue, ...]]:
+    def to_iter(
+        self, *cols: str
+    ) -> IteratorGenerator[tuple[DataValue, ...], None, None]:
         """Yields rows of values, optionally limited to the specified columns.
 
         Args:
@@ -2832,10 +2836,11 @@ class DataChain:
             max_threads=num_threads or 1,
             client_config=client_config,
         )
-        file_exporter.run(
-            (rows[0] for rows in chain.to_iter(signal)),
-            progress_bar,
-        )
+        with closing(chain.to_iter(signal)) as rows_iter:
+            file_exporter.run(
+                (rows[0] for rows in rows_iter),
+                progress_bar,
+            )
 
     def shuffle(self) -> "Self":
         """Shuffle rows with a best-effort deterministic ordering.
