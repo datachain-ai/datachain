@@ -2438,18 +2438,6 @@ class AbstractDBMetastore(AbstractMetastore):
             raise CheckpointNotFoundError(f"Checkpoint {checkpoint_id} not found")
         return self.checkpoint_class.parse(*rows[0])
 
-    def get_last_checkpoint(self, job_id: str) -> Checkpoint | None:
-        query = (
-            self._checkpoints_query()
-            .where(self._checkpoints.c.job_id == job_id)
-            .order_by(desc(self._checkpoints.c.created_at))
-            .limit(1)
-        )
-        rows = list(self.db.execute(query))
-        if not rows:
-            return None
-        return self.checkpoint_class.parse(*rows[0])
-
     def find_checkpoint(
         self, job_id: str, _hash: str, partial: bool = False
     ) -> Checkpoint | None:
@@ -2463,6 +2451,18 @@ class AbstractDBMetastore(AbstractMetastore):
             ch.c.hash == _hash,
             ch.c.partial == partial,
             ch.c.status == CheckpointStatus.ACTIVE,
+        )
+        rows = list(self.db.execute(query))
+        if not rows:
+            return None
+        return self.checkpoint_class.parse(*rows[0])
+
+    def get_last_checkpoint(self, job_id: str) -> Checkpoint | None:
+        query = (
+            self._checkpoints_query()
+            .where(self._checkpoints.c.job_id == job_id)
+            .order_by(desc(self._checkpoints.c.created_at))
+            .limit(1)
         )
         rows = list(self.db.execute(query))
         if not rows:
