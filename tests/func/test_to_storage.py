@@ -36,10 +36,11 @@ def test_to_storage(
     file_type,
     num_threads,
 ):
-    call_count = {"count": 0}
+    call_count = 0
 
     def mapper(file_path):
-        call_count["count"] += 1
+        nonlocal call_count
+        call_count += 1
         return len(file_path)
 
     ctc = cloud_test_catalog
@@ -93,7 +94,7 @@ def test_to_storage(
         with (output_root / destination_rel).open() as f:
             assert f.read() == expected[file_obj.name]
 
-    assert call_count["count"] == len(expected)
+    assert call_count == len(expected)
 
 
 @pytest.mark.parametrize("use_cache", [True, False])
@@ -213,12 +214,19 @@ def test_to_storage_files_filename_placement_not_unique_files(tmp_dir, test_sess
 
 
 @skip_if_not_sqlite
-def test_to_storage_keyboard_interrupt_does_not_lock_cleanup(tmp_path, catalog_tmpfile):
+@pytest.mark.parametrize(
+    "num_threads",
+    [1, 5],
+    ids=["single_thread", "multiple_threads"],
+)
+def test_to_storage_keyboard_interrupt_does_not_lock_cleanup(
+    tmp_path, catalog_tmpfile, num_threads
+):
     script = tmp_path / "test_to_storage_interrupt.py"
     input_dir = tmp_path / "input"
     output_dir = tmp_path / "output"
     input_dir.mkdir()
-    for idx in range(3):
+    for idx in range(100):
         (input_dir / f"{idx}.txt").write_text(f"file-{idx}")
 
     script.write_text(
@@ -253,7 +261,7 @@ def test_to_storage_keyboard_interrupt_does_not_lock_cleanup(tmp_path, catalog_t
             dc.read_storage({str(input_dir)!r}).to_storage(
                 {str(output_dir)!r},
                 placement="filename",
-                num_threads=1,
+                num_threads={num_threads},
             )
         """),
     )
