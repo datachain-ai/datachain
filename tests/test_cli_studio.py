@@ -653,8 +653,8 @@ def test_studio_run_non_zero_exit_code(
 
     # Mock tail_job_logs to return a status
     async def mock_tail_job_logs(jid, no_follow=False):
-        yield {"logs": [{"message": "Starting job...\n"}]}
-        yield {"logs": [{"message": "Processing data...\n"}]}
+        yield {"logs": [{"message": "Starting job...\n", "id": 1}]}
+        yield {"logs": [{"message": "Processing data...\n", "id": 2}]}
         yield {"job": {"status": status}}
 
     mocker.patch(
@@ -713,7 +713,7 @@ def test_studio_run_websocket_disconnect_fetches_status_via_rest(
     job_id = str(uuid.uuid4())
 
     async def mock_tail_job_logs(jid, no_follow=False):
-        yield {"logs": [{"message": "Starting job...\n"}]}
+        yield {"logs": [{"message": "Starting job...\n", "id": 1}]}
         yield {"job": {"status": "RUNNING"}}
 
     mocker.patch(
@@ -763,7 +763,7 @@ def test_studio_run_websocket_disconnect_job_still_running(
     job_id = str(uuid.uuid4())
 
     async def mock_tail_job_logs(jid, no_follow=False):
-        yield {"logs": [{"message": "Starting job...\n"}]}
+        yield {"logs": [{"message": "Starting job...\n", "id": 1}]}
         yield {"job": {"status": "RUNNING"}}
 
     mocker.patch(
@@ -771,8 +771,7 @@ def test_studio_run_websocket_disconnect_job_still_running(
         side_effect=mock_tail_job_logs,
     )
 
-    mocker.patch("datachain.studio.RETRY_MAX_TIMES", 0)
-    mocker.patch("datachain.studio.RETRY_SLEEP_SEC", 0.01)
+    mocker.patch("datachain.studio.RECONNECT_MAX_ATTEMPTS", 0)
 
     with requests_mock.mock() as m:
         m.post(
@@ -799,7 +798,8 @@ def test_studio_run_websocket_disconnect_job_still_running(
 
     out = capsys.readouterr().out
     assert ">>>> Job is now in RUNNING status." in out
-    assert ">>>> Lost connection." in out
+    assert ">>>> Failed to reconnect after" in out
+    assert "datachain job logs" in out
     # Should NOT show dataset versions since job didn't complete
     assert ">>>> Dataset versions created during the job:" not in out
 
@@ -835,7 +835,7 @@ def test_studio_run_invalid_job_status(caplog, capsys, mocker, tmp_dir, studio_t
     assert "Job status is not a valid status: INVALID_STATUS" in caplog.text
     assert "Job is not finished: INVALID_STATUS" in caplog.text
     out = capsys.readouterr().out
-    assert ">>>> Lost connection." in out
+    assert ">>>> Failed to reconnect after" in out
 
 
 def test_studio_run_tail_job_logs_filters_ping_and_no_follow(
@@ -945,8 +945,7 @@ def test_studio_run_verbose_max_retry(caplog, capsys, mocker, tmp_dir, studio_to
         "datachain.studio.StudioClient.tail_job_logs",
         side_effect=mock_tail_job_logs,
     )
-    mocker.patch("datachain.studio.RETRY_MAX_TIMES", 0)
-    mocker.patch("datachain.studio.RETRY_SLEEP_SEC", 0.01)
+    mocker.patch("datachain.studio.RECONNECT_MAX_ATTEMPTS", 0)
 
     with requests_mock.mock() as m:
         m.post(
@@ -965,7 +964,7 @@ def test_studio_run_verbose_max_retry(caplog, capsys, mocker, tmp_dir, studio_to
 
         assert exit_code == 1
 
-    assert "Max retry count reached:" in caplog.text
+    assert "Max reconnect attempts reached:" in caplog.text
     assert "Job is not finished: RUNNING." in caplog.text
 
 
@@ -1163,6 +1162,100 @@ def test_studio_run_task_status_returns_zero(capsys, mocker, tmp_dir, studio_tok
         exit_code = main(["job", "run", "example_query.py"])
 
         assert exit_code == 0
+
+
+def test_studio_run_log_deduplication_on_reconnect(
+    capsys, mocker, tmp_dir, studio_token
+):
+    job_id = str(uuid.uuid4())
+    call_count = 0
+
+    async def mock_tail_job_logs(jid, no_follow=False):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            yield {
+                "logs": [
+                    {"id": 1, "message": "line 1\n"},
+                    {"id": 2, "message": "line 2\n"},
+                ]
+            }
+            yield {"job": {"status": "RUNNING"}}
+        else:
+            yield {
+                "logs": [
+                    {"id": 1, "message": "line 1\n"},
+                    {"id": 2, "message": "line 2\n"},
+                    {"id": 3, "message": "line 3\n"},
+                ]
+            }
+            yield {"job": {"status": "COMPLETE"}}
+
+    mocker.patch(
+        "datachain.studio.StudioClient.tail_job_logs", side_effect=mock_tail_job_logs
+    )
+    mocker.patch("asyncio.sleep")
+
+    with requests_mock.mock() as m:
+        m.post(
+            f"{STUDIO_URL}/api/datachain/jobs/",
+            json={"id": job_id, "url": "https://example.com"},
+        )
+        m.get(
+            re.compile(rf"^{re.escape(STUDIO_URL)}/api/datachain/jobs/"),
+            [
+                {"json": [{"status": "RUNNING"}]},
+                {"json": [{"status": "COMPLETE"}]},
+            ],
+        )
+        m.get(
+            f"{STUDIO_URL}/api/datachain/datasets/dataset_job_versions?job_id={job_id}&team_name=team_name",
+            json={"dataset_versions": []},
+        )
+        (tmp_dir / "example_query.py").write_text("print(1)")
+        assert main(["job", "run", "example_query.py"]) == 0
+
+    out = capsys.readouterr().out
+    assert out.count("line 1\n") == 1
+    assert out.count("line 2\n") == 1
+    assert out.count("line 3\n") == 1
+
+
+def test_studio_run_reconnect_resets_counter_on_streaming_data(
+    caplog, mocker, tmp_dir, studio_token
+):
+    job_id = str(uuid.uuid4())
+    call_count = 0
+
+    async def mock_tail_job_logs(jid, no_follow=False):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            yield {"logs": [{"id": 1, "message": "output\n"}]}
+            yield {"job": {"status": "RUNNING"}}
+        else:
+            yield {"job": {"status": "RUNNING"}}
+
+    mocker.patch(
+        "datachain.studio.StudioClient.tail_job_logs", side_effect=mock_tail_job_logs
+    )
+    mocker.patch("datachain.studio.RECONNECT_MAX_ATTEMPTS", 1)
+    mocker.patch("asyncio.sleep")
+
+    with requests_mock.mock() as m:
+        m.post(
+            f"{STUDIO_URL}/api/datachain/jobs/",
+            json={"id": job_id, "url": "https://example.com"},
+        )
+        m.get(
+            re.compile(rf"^{re.escape(STUDIO_URL)}/api/datachain/jobs/"),
+            json=[{"status": "RUNNING"}],
+        )
+        (tmp_dir / "example_query.py").write_text("print(1)")
+        with caplog.at_level(logging.DEBUG, logger="datachain"):
+            assert main(["job", "run", "-v", "example_query.py"]) == 1
+
+    assert "Max reconnect attempts reached:" in caplog.text
 
 
 def test_unpacker_hook_unknown_ext_type():
