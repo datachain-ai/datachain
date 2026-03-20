@@ -73,14 +73,30 @@ class HfClient(Client):
     def FS_CLASS(cls):  # noqa: N802, N805
         return get_hf_filesystem_cls()
 
+    def _file_info_kwargs(self, version_id: str | None = None) -> dict[str, Any]:
+        return {
+            **self._version_kwargs(version_id),
+            "expand_info": True,
+        }
+
+    def _ls_dir_kwargs(self) -> dict[str, Any]:
+        return {"expand_info": True}
+
     def info_to_file(self, v: dict[str, Any], path: str) -> File:
+        last_commit = v.get("last_commit")
+        if last_commit is None:
+            raise RuntimeError(
+                "huggingface_hub returned file metadata without last_commit; "
+                "expected expanded HF metadata for file version tracking"
+            )
+
         return File(
             source=self.uri,
             path=path,
             size=v["size"],
-            version=v["last_commit"].oid,
             etag=v.get("blob_id", ""),
-            last_modified=v["last_commit"].date,
+            version=last_commit.oid,
+            last_modified=last_commit.date,
         )
 
     def rel_path(self, path):
