@@ -378,6 +378,8 @@ class AbstractMetastore(ABC, Serializable):
         self,
         uuid: str,
         include_incomplete: bool = False,
+        *,
+        include_preview: bool = False,
     ) -> DatasetRecord:
         """Gets a dataset that contains a version with the given UUID."""
         raise NotImplementedError
@@ -389,8 +391,9 @@ class AbstractMetastore(ABC, Serializable):
         namespace_name: str | None = None,
         project_name: str | None = None,
         *,
+        versions: list[str] | None = None,
         include_incomplete: bool = True,
-        include_preview: bool = True,
+        include_preview: bool = False,
     ) -> DatasetRecord:
         """Gets a single dataset by name."""
 
@@ -1482,7 +1485,7 @@ class AbstractDBMetastore(AbstractMetastore):
         dataset_version_fields: list[str],
         isouter: bool = True,
         include_incomplete: bool = True,
-        include_preview: bool = True,
+        include_preview: bool = False,
     ) -> "Select":
         if not (
             self.db.has_table(self._datasets.name)
@@ -1526,7 +1529,7 @@ class AbstractDBMetastore(AbstractMetastore):
         self,
         include_incomplete: bool = True,
         *,
-        include_preview: bool = True,
+        include_preview: bool = False,
     ) -> "Select":
         # When filtering by status, use inner join so datasets without COMPLETE
         # versions are excluded
@@ -1590,7 +1593,7 @@ class AbstractDBMetastore(AbstractMetastore):
         uuid: str,
         include_incomplete: bool = False,
         *,
-        include_preview: bool = True,
+        include_preview: bool = False,
     ) -> DatasetRecord:
         """Gets a dataset that contains a version with the given UUID."""
         dv = self._datasets_versions
@@ -1610,8 +1613,9 @@ class AbstractDBMetastore(AbstractMetastore):
         namespace_name: str | None = None,
         project_name: str | None = None,
         *,
+        versions: list[str] | None = None,
         include_incomplete: bool = True,
-        include_preview: bool = True,
+        include_preview: bool = False,
     ) -> DatasetRecord:
         """
         Gets a single dataset in project by dataset name.
@@ -1620,6 +1624,7 @@ class AbstractDBMetastore(AbstractMetastore):
         project_name = project_name or self.default_project_name
 
         d = self._datasets
+        dv = self._datasets_versions
         n = self._namespaces
         p = self._projects
         query = self._base_dataset_query(
@@ -1631,6 +1636,8 @@ class AbstractDBMetastore(AbstractMetastore):
             n.c.name == namespace_name,
             p.c.name == project_name,
         )  # type: ignore [attr-defined]
+        if versions is not None:
+            query = query.where(dv.c.version.in_(versions))
         ds = self._parse_dataset(self.db.execute(query))
         if not ds:
             raise DatasetNotFoundError(
@@ -1685,7 +1692,10 @@ class AbstractDBMetastore(AbstractMetastore):
             *(getattr(n.c, f) for f in self._namespaces_fields),
             *(getattr(p.c, f) for f in self._projects_fields),
             *(getattr(d.c, f) for f in self._dataset_fields),
-            *(getattr(dv.c, f) for f in self._dataset_version_fields),
+            *(
+                literal(None).label("preview") if f == "preview" else getattr(dv.c, f)
+                for f in self._dataset_version_fields
+            ),
         )
         base_from = (
             n.join(p, n.c.id == p.c.namespace_id)

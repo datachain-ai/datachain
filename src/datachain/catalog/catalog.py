@@ -1222,6 +1222,7 @@ class Catalog:
             name,
             namespace_name=project.namespace.name,
             project_name=project.name,
+            include_preview=True,
         )
 
         self.update_dataset_version_with_warehouse_info(
@@ -1298,8 +1299,9 @@ class Catalog:
         namespace_name: str | None = None,
         project_name: str | None = None,
         *,
+        versions: list[str] | None = None,
         include_incomplete: bool = True,
-        include_preview: bool = True,
+        include_preview: bool = False,
     ) -> DatasetRecord:
         from datachain.lib.listing import is_listing_dataset
 
@@ -1314,6 +1316,7 @@ class Catalog:
             name,
             namespace_name=namespace_name,
             project_name=project_name,
+            versions=versions,
             include_incomplete=include_incomplete,
             include_preview=include_preview,
         )
