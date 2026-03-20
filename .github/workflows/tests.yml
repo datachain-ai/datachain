@@ -217,6 +217,10 @@ jobs:
         if: matrix.group == 'llm_and_nlp'
         run: echo 'HF_TOKEN=${{ secrets.HF_TOKEN }}' >> "$GITHUB_ENV"
 
+      - name: Set OpenAI API key
+        if: matrix.group == 'multimodal'
+        run: echo 'OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}' >> "$GITHUB_ENV"
+
       - name: Run examples
         run: nox -s examples -p ${{ matrix.pyv }} -- -m "${{ matrix.group }}"
 
