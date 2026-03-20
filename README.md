@@ -1,4 +1,4 @@
-# ![DataChain](docs/assets/datachain.svg) DataChain
+# ![DataChain](docs/assets/datachain.svg) DataChain - Data Context Layer for Object Storage
 
 [![PyPI](https://img.shields.io/pypi/v/datachain.svg)](https://pypi.org/project/datachain/)
 [![Python Version](https://img.shields.io/pypi/pyversions/datachain)](https://pypi.org/project/datachain)
@@ -7,25 +7,26 @@
 [![DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/datachain-ai/datachain)
 
 
-**Object storage knows nothing about your data. DataChain fixes that.**
+**Object storage provides files, not structure.**
 
-Built for ML engineers and researchers:
-- Your data is multimodal — images, video, sensors, not rows and column
-- Your agents generate inefficient, non-resumable code
-- Your team keeps reprocessing the same data
+DataChain is a Python library for processing data in object storage.
 
-Object storage gives you files. Nothing else.
+It adds:
+- named datasets
+- incremental updates (delta)
+- data checkpoints
+- lineage (how data was produced)
 
-**DataChain turns object storage into datasets — and builds a knowledge graph from them.**
+DataChain records data operations as you read, transform, and save data. From this, it builds a **knowledge graph** that agents (like Claude Code, Codex, and Cursor) can query to reuse datasets and dependencies instead of reprocessing raw files.
 
-```bash
-pip install datachain
-```
+This works like persistent data memory for agents.
 
-Works with S3, GCS, Azure Blob, and local filesystem.
+Built for ML engineers working with Physical AI, Robotics, and other large-scale unstructured data:
+- Data lives in S3, GCS, Azure or local filesystem
+- Not only tables — images, video, sensors, documents  
+- Agents hallucinating and write slow, non-resumable, unreliable code
 
-
-## The Problem
+## The Problem - agent can’t use object storage
 
 Ask Claude Code or Cursor to process 500K sensor recordings in S3:
 
@@ -33,124 +34,107 @@ Ask Claude Code or Cursor to process 500K sensor recordings in S3:
 for obj in s3.list_objects(...):
     file = download(obj["Key"])         # no delta: reprocesses all 500K every run
     embedding = run_model(file)         # no checkpoints: crash = start over
-    save_result(obj["Key"], embedding)  # no lineage: result is unattributable
+    save_result(obj["Key"] + ".npy", embedding)  # no lineage: result is unattributable
                                         # no parallelism: sequential downloads
 ```
 
 This code:
-- reprocesses everything
-- breaks on failure
-- produces results you can’t trace
+- efficiency: processes files one by one
+- reprocesses everything every run
+- crashes → starts over
+- no memory of what was done
 
-Your team runs this again next week. And again. Nothing compounds.
+Next week:
 
-**This is not a prompt problem. It’s an abstraction problem.**
+> “where are the embeddings? what algorithm was used? are there embeddings for newly added files?”
 
+There is nothing to re-use. So the agent and people do the only thing they can: **it starts over** and create more mess.
 
-## The fix: datasets
+**This is not a prompt problem. It's an abstraction problem.**
 
-DataChain introduces a dataset abstraction on top of object storage.
+## 1. Install
 
-A **dataset**:
-- knows what files it contains (refereces, not data copy)
-- tracks what changed
-- remembers how it was produced (including code)
+```bash
+pip install datachain
+```
 
-### Example
+DataChain exposes two agent skills — `dc-core` (dataset operations) and `dc-graph` (knowledge graph queries). Install both for your agent:
+```bash
+datachain skill install --target claude   # or --target cursor, --target codex
+claude
+```
+
+## 2. DataChain makes agents work with S3 and such
+
+Ask Claude code or Cursor:
+> Find outdoor scenes and compute embeddings
+
+Result:
+>> Embeddings are stored in dataset embeddings@0.0.1
+
+Generated code `embed.py` with efficient processing and dataset registration `save()`:
 
 ```python
 import datachain as dc
 
 (
-    dc.read_storage("s3://my-bucket/recordings/**/*.jpg", update=True, delta=True)
+    dc.read_storage("s3://my-bucket/**/*.jpg", update=True, delta=True)
     .settings(parallel=8)
     .map(embedding=embed_file)
     .save("embeddings")
 )
 ```
 
-What you get:
-- only new files processed
-- failed due to a bug? fix and re-run - it resumes
-- versioned dataset with lineage
-- automatically added to your knowledge graph
+Now your data has structure:
+- a named dataset (`embeddings` verison `0.0.1`)
+- tracked changes (only new files processed)
+- lineage (how it was created including code)
 
-Processing 5,000 new files (495,000 unchanged)...
-Done. embeddings @ v1.0.2
+Next time you ask:
 
+> there are new outdoor scenes in the bucket. Update embeddings.
 
-## The knowledge graph
+It'll run the script again and save embeddings@0.0.2 without recomputing the old ones.
 
-Every dataset `.save()` automatically becomes part of a **knowledge graph** in `.datachain/graph/` directory:
-```
-.datachain/graph/
-    index.md
-    datasets/
-        embeddings.md
-        raw-recordings.md
-```
+## 3. How it works
 
-Each dataset includes:
-- schema
-- all versions and what changed
-- lineage (what produced it)
-- source code
+DataChain has two layers:
 
-**Work turns data into knowledge. Knowledge improves future work.**
+**Operational layer** (ground truth):
+- registry of datasets
+- schemas and source code of datasets
+- lineage: dependencies between them
+- stored in `.datachain/db`
 
-### Enable knowledge graph
+**Knowledge graph**
+- dataset summaries derived from operational data
+- dataset evolution
+- used by agents for queries
+- stored in `.datachain/graph/`
 
-```bash
-datachain skills install dc-graph
-```
+Core abstraction: **dataset**
+- name, version, references to dependency datasets
+- references to files (no data copy)
+- metadata (per file)
+- stored in `.datachain/db`
 
-It installs skill plugging for Claude Code, Codex and Cursor. You can limit by `--target claude`.
+**Agents query the knowledge graph instead of inferring state from raw files.**
 
-This is not metadata.
+## 4. Hard Problems, Solved
 
-**This is a growing memory of your team data work.**
+Physical AI, robotics, neuroscience — these domains have the hardest data problems. Complex schemas, multi-sensor alignment, nested types. Hard for people. Straightforward for an agent that has data context.
 
+### 4.1. Multimodal schemas
 
-## Why this matters for agents
+Sensor data doesn't fit in tables. LiDAR arrives as point clouds, camera as JPEG frames, radar as CSVs - each with its own schema. SQL tables can't model this.
 
-Without DataChain:
-- agents see only file paths
-- they rewrite pipelines from scratch
-- they don’t know what data exists
-
-With DataChain:
-- agents read your dataset graph
-- find the right dataset automatically
-- generate correct code using it
-
-You describe what you want, not how and where data lives:
-```
- ▐▛███▜▌   Claude Code v2.1.76
-▝▜█████▛▘  Sonnet 4.6 · Claude Pro
-  ▘▘ ▝▝    ~/src/acme-sensors
-────────────────────────────────────────────────────────────────────────────────────────
-❯ Find outdoor scenes with high confidence and find top 20 similar to the scene anomalies.txt
-────────────────────────────────────────────────────────────────────────────────────────
-⏺ Reading anomalies.txt
-⏺ Bash(python skills/dc-graph/scripts/graph.py --db-mtime)
-⏺ Now find relevant outdor scenes dataset in knowledge graph
-⏺ Found 12 datasets, finding the best one
-⏺ Creating simularity search code
-```
-
-Agent:
-- scans graph
-- finds relevant dataset with schemas and code
-- decides what dataset to reuse
-- writes correct, efficient pipeline
-
-**Your agents stop guessing. They start using knowledge.**
-
-## 3. Multimodal schemas
-
-LiDAR arrives as point clouds, camera as JPEG frames, radar as CSVs - each with its own schema. SQL tables can't model this. DataChain uses Pydantic instead.
+DataChain uses Pydantic instead of tables — define the schema once, every agent knows what the data contains.
 
 **Your data is not tabular. Don’t force it to be.**
+
+Prompt:
+
+> New lidar data is periodically coming to s3://bucket/lidar/. I need a dataset that contains all the metadata in a useful format to mix it with my other dataset.
 
 ```python
 import datachain as dc
@@ -186,10 +170,13 @@ lidar = (
 )
 ```
 
-Each `.save()` preserves schema, lineage, and source code into.
+Each `.save()` create records in the operational database and enriches the knowledge graph.
+
 The next agent that needs LiDAR data will find it.
 
-## 4. Your agents stop hallucinating
+## 4.2 Complex Processing
+
+Multi-sensor alignment, temporal joins, nested types — an agent with context writes this in one shot.
 
 Without DataChain, this prompt produces confusion:
 
@@ -197,8 +184,7 @@ Without DataChain, this prompt produces confusion:
 
 Without context, an agent hits a wall immediately: What datasets exist? What's frame? What columns? Which pipeline flagged edge cases?
 
-A human would spend days answering these questions before writing a line of code.
-
+A human would spend days manually analysing data and answering these questions before writing a line of code.
 
 With DataChain, the agent knows context and best practices already:
 
@@ -224,15 +210,21 @@ w = func.window(partition_by="time_100ms", order_by="cam.timestamp_us")
 )
 ```
 
-**This is what agents look like when they have memory.**
+**This is what agents look like when they have data context.**
 
-## 5. Studio (optional)
+## 5. Studio
 
-Run the same pipelines in the cloud with:
+DataChain starts locally — but data context shouldn’t live on one machine.
+
+Studio makes datasets, and context shared across your team:
+- everyone sees the same datasets and versions
+- access control to data
+- pipelines and results are reproducible (not it worked at my machine issues)
+- UI for data (video, DICOM, NIfTI, etc) and lineage graphs
+
+You can process data at scale with:
 - scheduling
-- data and lineage UI
-- scalable compute: 100s of CPU/GPU
-- access control
+- scalable compute (100s of CPU/GPU)
 
 ```bash
 $ datachain auth login
@@ -246,8 +238,7 @@ See [studio.datachain.ai](https://studio.datachain.ai)
 
 ## Contributing
 
-Contributions are very welcome. To learn more, see the [Contributor Guide](https://docs.
-datachain.ai/contributing).
+Contributions are very welcome. To learn more, see the [Contributor Guide](https://docs.datachain.ai/contributing).
 
 ## Community and Support
 
