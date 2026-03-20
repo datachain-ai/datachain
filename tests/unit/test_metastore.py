@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+import datachain as dc
 from datachain.checkpoint import CheckpointStatus
 from datachain.data_storage.job import JobQueryType, JobStatus
 from datachain.data_storage.serializer import deserialize
@@ -128,3 +129,14 @@ def test_expire_checkpoints():
         assert all(cp.status == CheckpointStatus.ACTIVE for cp in job2_checkpoints)
     finally:
         metastore.close_on_exit()
+
+
+def test_get_dataset_can_skip_preview_loading(test_session):
+    ds = dc.read_values(value=["a", "b"], session=test_session).save("preview-ds")
+    metastore = test_session.catalog.metastore
+
+    with_preview = metastore.get_dataset(ds.name)
+    without_preview = metastore.get_dataset(ds.name, include_preview=False)
+
+    assert with_preview.get_version("1.0.0").preview is not None
+    assert without_preview.get_version("1.0.0").preview is None

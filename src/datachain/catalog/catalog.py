@@ -1297,7 +1297,9 @@ class Catalog:
         name: str,
         namespace_name: str | None = None,
         project_name: str | None = None,
+        *,
         include_incomplete: bool = True,
+        include_preview: bool = True,
     ) -> DatasetRecord:
         from datachain.lib.listing import is_listing_dataset
 
@@ -1313,6 +1315,7 @@ class Catalog:
             namespace_name=namespace_name,
             project_name=project_name,
             include_incomplete=include_incomplete,
+            include_preview=include_preview,
         )
 
     def get_dataset_with_remote_fallback(
