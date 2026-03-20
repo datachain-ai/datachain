@@ -65,17 +65,18 @@ def test_udf_signals_continue_from_partial(
 
     processed_nums.clear()
 
-    def process_fixed(num) -> int:
+    # Use same function name so identity_hash matches (simulates fixing the bug)
+    def process_buggy(num) -> int:
         processed_nums.append(num)
         return num * 10
 
-    chain.map(result=process_fixed, output=int).save("results")
+    chain.map(result=process_buggy, output=int).save("results")
 
     result = dc.read_dataset("results", session=test_session).to_list("result")
     assert sorted(result) == [(10,), (20,), (30,), (40,), (50,), (60,)]
 
-    # Second run should process remaining rows (checkpoint continuation working)
-    assert 0 < len(processed_nums) <= 6
+    # Continuation must skip already-processed inputs, not reprocess all 6
+    assert 0 < len(processed_nums) < 6
 
 
 @pytest.mark.parametrize(
@@ -120,12 +121,12 @@ def test_udf_generator_continue_from_partial(
 
     processed_nums.clear()
 
-    def fixed_generator(num) -> Iterator[int]:
+    def buggy_generator(num) -> Iterator[int]:
         processed_nums.append(num)
         yield num * 10
         yield num * num
 
-    chain.gen(value=fixed_generator, output=int).save("gen_results")
+    chain.gen(value=buggy_generator, output=int).save("gen_results")
 
     result = sorted(
         dc.read_dataset("gen_results", session=test_session).to_list("value")
@@ -149,8 +150,8 @@ def test_udf_generator_continue_from_partial(
 
     assert result == expected
 
-    # Second run should process remaining inputs (checkpoint continuation working)
-    assert 0 < len(processed_nums) <= 6
+    # Continuation must skip already-processed inputs, not reprocess all 6
+    assert 0 < len(processed_nums) < 6
 
 
 def test_generator_incomplete_input_recovery(test_session):
