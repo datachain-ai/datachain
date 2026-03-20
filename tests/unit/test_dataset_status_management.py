@@ -302,6 +302,32 @@ def test_public_api_move_dataset_rejects_non_complete(
         move_dataset(dataset_failed.name, "new_name_failed", session=test_session)
 
 
+@pytest.mark.parametrize(
+    "job_status, should_clean",
+    [
+        (JobStatus.FAILED, True),
+        (JobStatus.RUNNING, False),
+    ],
+    ids=["finished-job", "running-job"],
+)
+def test_cleanup_temp_datasets(test_session, job, job_status, should_clean):
+    """Test catalog.cleanup_temp_datasets respects job status."""
+    ds = dc.read_values(value=["a", "b"], session=test_session).save(
+        "session_test_abc123"
+    )
+    test_session.catalog.metastore.set_job_status(job.id, job_status)
+
+    num_removed = test_session.catalog.cleanup_temp_datasets()
+
+    if should_clean:
+        assert num_removed >= 1
+        with pytest.raises(DatasetNotFoundError):
+            test_session.catalog.get_dataset(ds.dataset.name)
+    else:
+        assert num_removed == 0
+        test_session.catalog.get_dataset(ds.dataset.name)  # still exists
+
+
 @pytest.fixture
 def dataset_marked_for_removal(test_session, job) -> DatasetRecord:
     ds = dc.read_values(value=["v1"], session=test_session).save(
