@@ -628,6 +628,69 @@ def test_delta_update_unsafe_replays_aligned_same_dataset_occurrences(
     }
 
 
+def test_delta_update_unsafe_merge_with_two_storage_sources(test_session, tmp_dir):
+    left_dir = tmp_dir / f"unsafe_storage_left_{uuid.uuid4().hex[:8]}"
+    right_dir = tmp_dir / f"unsafe_storage_right_{uuid.uuid4().hex[:8]}"
+    left_dir.mkdir()
+    right_dir.mkdir()
+
+    result_name = f"unsafe_storage_merge_result_{uuid.uuid4().hex[:8]}"
+    processed: list[int] = []
+
+    def record(row_id: int) -> int:
+        processed.append(row_id)
+        return row_id
+
+    def file_id(file: File) -> int:
+        match = re.search(r"item(\d+)\.txt$", file.path)
+        assert match
+        return int(match.group(1))
+
+    (left_dir / "item1.txt").write_text("left-1")
+    (right_dir / "item1.txt").write_text("right-1")
+
+    def build_chain():
+        left = dc.read_storage(
+            left_dir.as_uri(),
+            session=test_session,
+            update=True,
+            delta=True,
+            delta_on=["file.path"],
+            delta_result_on=["id"],
+            delta_unsafe=True,
+        ).map(id=file_id, output=int)
+        right = dc.read_storage(
+            right_dir.as_uri(),
+            session=test_session,
+            update=True,
+            delta=True,
+            delta_on=["file.path"],
+            delta_result_on=["id"],
+            delta_unsafe=True,
+        ).map(id=file_id, output=int)
+        return left.merge(right, on="id", inner=True).map(
+            seen_id=record,
+            params=["id"],
+            output=int,
+        )
+
+    build_chain().save(result_name)
+
+    assert processed == [1]
+    assert dc.read_dataset(result_name, session=test_session).to_values("id") == [1]
+
+    (left_dir / "item2.txt").write_text("left-2")
+    (right_dir / "item2.txt").write_text("right-2")
+
+    build_chain().save(result_name)
+
+    assert processed[1:] == [2]
+    assert set(dc.read_dataset(result_name, session=test_session).to_values("id")) == {
+        1,
+        2,
+    }
+
+
 def test_delta_replay_regenerates_system_columns(test_session):
     source_name = f"regen_source_{uuid.uuid4().hex[:8]}"
     result_name = f"regen_result_{uuid.uuid4().hex[:8]}"
