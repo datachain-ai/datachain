@@ -17,6 +17,7 @@ from pydantic import BaseModel
 
 import datachain as dc
 from datachain import Column, func
+from datachain.dataset import DatasetStatus
 from datachain.error import (
     DatasetInvalidVersionError,
     DatasetNotFoundError,
@@ -244,6 +245,19 @@ def test_read_records_and_gen(test_session):
     )
 
     assert [r[1] for r in ds.order_by("t1.nnn", "t1.count").to_list()] == features
+
+
+def test_read_records_populates_dataset_metadata(test_session):
+    chain = dc.read_records([{"seed": 0}], schema={"seed": int}, session=test_session)
+
+    dataset = test_session.catalog.get_dataset(chain.name)
+    version = dataset.get_version(chain.version)
+
+    assert version.status == DatasetStatus.COMPLETE
+    assert version.num_objects == 1
+    assert version.size is not None
+    assert version.preview
+    assert version.preview[0]["seed"] == 0
 
 
 def test_read_record_empty_chain_with_schema(test_session):
@@ -570,7 +584,7 @@ def test_listings(test_session, tmp_dir):
     assert len(listings) == 1
     listing = listings[0]
     assert isinstance(listing, ListingInfo)
-    assert listing.storage_uri == uri
+    assert listing.uri.rstrip("/") == uri
     assert listing.is_expired is False
     assert listing.expires
     assert listing.version == "1.0.0"
@@ -597,9 +611,9 @@ def test_listings_reindex(test_session, tmp_dir):
     listings = list(dc.listings(session=test_session).to_values("listing"))
     assert len(listings) == 2
     listings.sort(key=lambda lst: lst.version)
-    assert listings[0].storage_uri == uri
+    assert listings[0].uri.rstrip("/") == uri
     assert listings[0].version == "1.0.0"
-    assert listings[1].storage_uri == uri
+    assert listings[1].uri.rstrip("/") == uri
     assert listings[1].version == "2.0.0"
 
 

@@ -632,7 +632,7 @@ def usearch_sqlite_path() -> str | None:
 
         try:
             return usearch.sqlite_path()
-        except FileNotFoundError:
+        except (FileNotFoundError, OSError):
             return None
 
 

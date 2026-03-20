@@ -25,7 +25,7 @@ example = {
 @pytest.mark.filterwarnings("ignore::pydantic.warnings.PydanticDeprecatedSince20")
 def test_gen_datamodel_code(tmp_dir, catalog):
     (tmp_dir / "valid.json").write_text(json.dumps(example), encoding="utf8")
-    file = TextFile(path=tmp_dir / "valid.json")
+    file = TextFile(path="valid.json", source=f"file://{tmp_dir}")
     file._set_stream(catalog)
 
     expected = """\
@@ -65,7 +65,7 @@ spec = Image"""
 @pytest.mark.filterwarnings("ignore::pydantic.warnings.PydanticDeprecatedSince20")
 def test_read_meta(tmp_dir, catalog):
     (tmp_dir / "valid.json").write_text(json.dumps(example), encoding="utf8")
-    file = TextFile(path=tmp_dir / "valid.json")
+    file = TextFile(path="valid.json", source=f"file://{tmp_dir}")
     file._set_stream(catalog)
 
     parser = read_meta(
@@ -80,6 +80,6 @@ def test_read_meta(tmp_dir, catalog):
     (tmp_dir / "invalid.json").write_text(
         json.dumps({"hello": "world"}), encoding="utf8"
     )
-    invalid_file = TextFile(path=tmp_dir / "invalid.json")
+    invalid_file = TextFile(path="invalid.json", source=f"file://{tmp_dir}")
     invalid_file._set_stream(catalog)
     assert not list(parser(invalid_file))

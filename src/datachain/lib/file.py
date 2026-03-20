@@ -4,6 +4,7 @@ import io
 import logging
 import os
 import posixpath
+import re
 import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
@@ -11,17 +12,17 @@ from contextlib import contextmanager
 from datetime import datetime
 from functools import partial
 from io import BytesIO
-from pathlib import Path, PurePath, PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
-from urllib.parse import unquote, urlparse
-from urllib.request import url2pathname
+from urllib.parse import urlparse
 
 from fsspec.callbacks import DEFAULT_CALLBACK, Callback
 from fsspec.utils import stringify_path
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
 from datachain import json
 from datachain.client.fileslice import FileSlice
+from datachain.fs.utils import path_to_fsspec_uri
 from datachain.lib.data_model import DataModel
 from datachain.lib.utils import DataChainError, rebase_path
 from datachain.nodes_thread_pool import NodesThreadPool
@@ -40,6 +41,8 @@ if TYPE_CHECKING:
 sha256 = partial(hashlib.sha256, usedforsecurity=False)
 
 logger = logging.getLogger("datachain")
+
+_SOURCE_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
 
 # how to create file path when exporting
 ExportPlacement = Literal["filename", "etag", "fullpath", "checksum", "filepath"]
@@ -283,10 +286,32 @@ class File(DataModel):
     def validate_location(cls, v):
         return File._validate_dict(v)
 
-    @field_validator("path", mode="before")
+    @model_validator(mode="after")
+    def _normalize_path(self) -> "File":
+        # On Windows, local paths may contain backslash separators from
+        # os.path.join / Path objects. Normalize them to forward slashes so
+        # PurePosixPath-based helpers (.name, .parent, …) work correctly.
+        # Cloud object keys are left untouched - a literal backslash is a
+        # valid character in S3/GCS keys and must not be silently replaced.
+        if (
+            os.name == "nt"
+            and "\\" in self.path
+            and (not self.source or self.source.startswith("file://"))
+        ):
+            self.path = self.path.replace("\\", "/")
+        return self
+
+    @field_validator("source")
     @classmethod
-    def validate_path(cls, path: str) -> str:
-        return PurePath(path).as_posix() if path else ""
+    def validate_source(cls, source: str) -> str:
+        # Allow empty source for intermediate/placeholder objects, but when set
+        # require an explicit scheme to avoid ambiguous handling.
+        if source and not _SOURCE_SCHEME_RE.match(source):
+            raise ValueError(
+                "File.source must start with a URI scheme (e.g. file://, s3://), "
+                f"got: {source!r}"
+            )
+        return source
 
     def model_dump_custom(self):
         res = self.model_dump()
@@ -298,6 +323,7 @@ class File(DataModel):
         self._catalog = None
         self._caching_enabled: bool = False
         self._download_cb: Callback = DEFAULT_CALLBACK
+        self._fs_path_cache: tuple[str, str, str] | None = None
 
     def __getstate__(self):
         state = super().__getstate__()
@@ -382,7 +408,7 @@ class File(DataModel):
         client_cls = Client.get_implementation(path_str)
         source, rel_path = client_cls.split_url(path_str)
 
-        client = catalog.get_client(client_cls.get_uri(source))
+        client = catalog.get_client(client_cls.storage_uri(source))
         file = client.upload(data, rel_path)
         if not isinstance(file, cls):
             file = cls(**file.model_dump())
@@ -421,9 +447,8 @@ class File(DataModel):
                 f"File.at directory URL/path given (trailing slash), got: {uri_str}"
             )
         client_cls = Client.get_implementation(uri_str)
-        uri_str = client_cls.path_to_uri(uri_str)
         source, rel_path = client_cls.split_url(uri_str)
-        source_uri = client_cls.get_uri(source)
+        source_uri = client_cls.storage_uri(source)
         file = cls(source=source_uri, path=rel_path)
         file._set_stream(catalog)
         return file
@@ -487,45 +512,70 @@ class File(DataModel):
         if not writing:
             if self.location:
                 with VFileRegistry.open(self, self.location) as f:  # type: ignore[arg-type]
-                    yield self._wrap_text(f, mode, open_kwargs)
+                    with self._wrap_text(f, mode, open_kwargs=open_kwargs) as wrapped:
+                        yield wrapped
                 return
             if self._caching_enabled:
                 self.ensure_cached()
             with client.open_object(
                 self, use_cache=self._caching_enabled, cb=self._download_cb
             ) as f:
-                yield self._wrap_text(f, mode, open_kwargs)
+                with self._wrap_text(f, mode, open_kwargs=open_kwargs) as wrapped:
+                    yield wrapped
             return
 
         # write path
-        full_path = client.get_full_path(self.get_path_normalized())
-        with client.fs.open(full_path, mode, **open_kwargs) as f:
-            yield self._wrap_text(f, mode, open_kwargs)
+        full_path = self.get_fs_path()
+        fs_mode = mode if "b" in mode else f"{mode}b"
+        binary_kwargs = {
+            k: v for k, v in open_kwargs.items() if k not in self._TEXT_WRAPPER_ALLOWED
+        }
+        with client.fs.open(full_path, fs_mode, **binary_kwargs) as raw_handle:
+            with self._wrap_text(
+                raw_handle,
+                mode,
+                open_kwargs=open_kwargs,
+            ) as wrapped:
+                yield wrapped
 
-        version_hint = self._extract_write_version(f)
+        version_hint = self._extract_write_version(raw_handle)
 
         # refresh metadata pinned to the version that was just written
-        refreshed = client.get_file_info(
-            self.get_path_normalized(), version_id=version_hint
-        )
+        refreshed = client.get_file_info(self.path, version_id=version_hint)
         for k, v in refreshed.model_dump().items():
             setattr(self, k, v)
 
-    def _wrap_text(self, f: Any, mode: str, open_kwargs: dict[str, Any]) -> Any:
-        """Return stream possibly wrapped for text."""
+    @contextmanager
+    def _wrap_text(
+        self,
+        f: Any,
+        mode: str,
+        *,
+        open_kwargs: dict[str, Any] | None = None,
+    ) -> Iterator[Any]:
+        """Yield a stream, optionally wrapped for text, with correct close ordering."""
         if "b" in mode or isinstance(f, io.TextIOBase):
-            return f
-        filtered = {
-            k: open_kwargs[k] for k in self._TEXT_WRAPPER_ALLOWED if k in open_kwargs
+            yield f
+            return
+
+        text_kwargs = {
+            k: v
+            for k, v in (open_kwargs or {}).items()
+            if k in self._TEXT_WRAPPER_ALLOWED
         }
-        return io.TextIOWrapper(f, **filtered)
+        wrapper = io.TextIOWrapper(f, **text_kwargs)
+        try:
+            yield wrapper
+        finally:
+            wrapper.flush()
+            wrapper.detach()
 
     def _extract_write_version(self, handle: Any) -> str | None:
         """Best-effort extraction of object version after a write.
 
         S3 (s3fs) and Azure (adlfs) populate version_id on the handle.
-        GCS (gcsfs) populates generation. Azure and GCS require upstream
-        fixes to be released.
+        GCS (gcsfs>=2026.2.0) populates generation. Azure and GCS require
+        upstream fixes to be released.
         """
         for attr in ("version_id", "generation"):
             if value := getattr(handle, attr, None):
@@ -534,7 +584,7 @@ class File(DataModel):
 
     def read_bytes(self, length: int = -1):
         """Returns file contents as bytes."""
-        with self.open() as stream:
+        with self.open(mode="rb") as stream:
             return stream.read(length)
 
     def read_text(self, **open_kwargs):
@@ -544,13 +594,6 @@ class File(DataModel):
             Extra keyword arguments forwarded to ``open(mode="r", ...)``
             (e.g. ``encoding="utf-8"``, ``errors="ignore"``)
         """
-        if self.location:
-            raise VFileError(
-                "Reading text from virtual file is not supported",
-                self.source,
-                self.path,
-            )
-
         with self.open(mode="r", **open_kwargs) as stream:
             return stream.read()
 
@@ -558,15 +601,54 @@ class File(DataModel):
         """Returns file contents."""
         return self.read_bytes(length)
 
-    def save(self, destination: str, client_config: dict | None = None):
-        """Writes it's content to destination"""
+    def save(self, destination: str, client_config: dict | None = None) -> "File":
+        """Write file contents to *destination*.
+
+        Args:
+            destination: Target path or URI.  Accepts a local OS path, a
+                cloud URI (``s3://…``, ``gs://…``, ``az://…``), or an
+                unencoded ``file://`` URI as produced by
+                :func:`~datachain.fs.utils.path_to_fsspec_uri`.
+                Do **not** pass ``Path.as_uri()`` output — that produces
+                RFC percent-encoded URIs (e.g. ``file:///my%20dir``) which
+                fsspec does not decode, causing ``FileNotFoundError`` for
+                paths containing spaces, ``#``, or ``%``.
+            client_config: Optional extra kwargs forwarded to the storage
+                client (e.g. credentials, endpoint URL).
+
+        Returns:
+            A ``File`` representing the newly written destination, with
+            ``version`` populated on versioned backends.
+
+        Example:
+            ```py
+            file.save("/local/output/result.bin")
+            file.save("s3://my-bucket/output/result.bin")
+            file.save("~/output/result.bin")
+            ```
+        """
+        if self._catalog is None:
+            raise RuntimeError("Cannot save file: catalog is not set")
+
         destination = stringify_path(destination)
-        client: Client = self._catalog.get_client(destination, **(client_config or {}))
+        client, rel_path = self._resolve_destination(destination, client_config)
+        result = client.upload(self.read_bytes(), rel_path)
+        result._set_stream(self._catalog)
+        return result
 
-        if client.PREFIX == "file://" and not destination.startswith(client.PREFIX):
-            destination = Path(destination).absolute().as_uri()
+    def _resolve_destination(
+        self, destination: str, client_config: dict | None = None
+    ) -> "tuple[Client, str]":
+        """Return (client rooted at the storage, rel_path) for *destination*."""
+        from datachain.client.fsspec import Client as FSClient
 
-        client.upload(self.read(), destination)
+        uri = path_to_fsspec_uri(destination)
+        client_cls = FSClient.get_implementation(uri)
+        storage, rel_path = client_cls.split_url(uri)
+        client = self._catalog.get_client(  # type: ignore[union-attr]
+            client_cls.storage_uri(storage), **(client_config or {})
+        )
+        return client, rel_path
 
     def _symlink_to(self, destination: str) -> None:
         if self.location:
@@ -591,12 +673,80 @@ class File(DataModel):
         link_type: Literal["copy", "symlink"] = "copy",
         client_config: dict | None = None,
     ) -> None:
-        """Export file to new location."""
+        """Copy or link this file into an output directory.
+
+        Args:
+            output: Destination directory.  Accepts a local OS path, a cloud
+                prefix fsspec URI (``s3://…``, ``gs://…``, ``az://…``).
+            placement: How to build the path under *output*:
+
+                - ``"fullpath"`` (default) — ``output/bucket/dir/file.txt``
+                - ``"filepath"`` — ``output/dir/file.txt``
+                - ``"filename"`` — ``output/file.txt``
+                - ``"etag"`` — ``output/<etag>.txt``
+            use_cache: If True, download to local cache first.  Also
+                required for symlinking remote files.
+            link_type: ``"copy"`` (default) or ``"symlink"``.
+                Symlink falls back to copy for virtual files and for
+                remote files when *use_cache* is False.
+            client_config: Extra kwargs forwarded to the storage client.
+
+        Example:
+            ```py
+            # flat export by filename
+            f.export("./export", placement="filename")
+
+            # export to a cloud prefix
+            f.export("s3://output-bucket/results", placement="filepath")
+
+            # pass storage credentials via client_config
+            f.export("s3://bucket/out", client_config={"aws_access_key_id": "…"})
+
+            # symlink from local cache (avoids re-downloading)
+            f.export("./local_out", use_cache=True, link_type="symlink")
+            ```
+        """
+        if self._catalog is None:
+            raise RuntimeError("Cannot export file: catalog is not set")
+
         self._caching_enabled = use_cache
-        dst = self.get_destination_path(output, placement)
-        dst_dir = os.path.dirname(dst)
-        client: Client = self._catalog.get_client(dst_dir, **(client_config or {}))
-        client.fs.makedirs(dst_dir, exist_ok=True)
+
+        suffix = self._get_destination_suffix(placement)
+        output_str = stringify_path(output)
+        client = self._catalog.get_client(output_str, **(client_config or {}))
+
+        # Normalization and traversal safety: for local exports, resolve to absolute
+        # and validate the suffix. Cloud exports skip this — the cloud client already
+        # rejects path-traversal characters in object keys.
+        if client.PREFIX == "file://":
+            from datachain.fs.utils import is_subpath
+
+            output_os = client.fs._strip_protocol(output_str)
+            # On Windows, normalize backslash separators to forward slashes
+            # so posixpath.join produces consistent paths.  On Linux/macOS
+            # backslash is a legal filename character and must not be replaced.
+            output_abs = os.path.abspath(output_os)
+            if os.name == "nt":
+                output_abs = output_abs.replace("\\", "/")
+            dst = posixpath.join(output_abs, suffix)
+
+            try:
+                client.validate_file_path(suffix)
+            except ValueError as exc:
+                raise FileError(str(exc), stringify_path(output), suffix) from None
+
+            if not is_subpath(output_abs, dst):
+                raise FileError(
+                    "destination is not within output directory",
+                    stringify_path(output),
+                    dst,
+                )
+        else:
+            # For cloud exports, simply join the output prefix and suffix.
+            # Relying on cloud clients to do their own validation.
+            dst = posixpath.join(output_str, suffix)
+
+        client.fs.makedirs(posixpath.dirname(dst), exist_ok=True)
 
         if link_type == "symlink":
             try:
@@ -666,7 +816,6 @@ class File(DataModel):
         return self._catalog.cache.get_path(self)
 
     def get_file_suffix(self):
-        """Returns last part of file name with `.`."""
         return PurePosixPath(self.path).suffix
 
     def get_file_ext(self):
@@ -675,71 +824,105 @@ class File(DataModel):
     def get_file_stem(self):
         return PurePosixPath(self.path).stem
 
-    def get_full_name(self):
-        """
-        [DEPRECATED] Use `file.path` directly instead.
-
-        Returns name with parent directories.
-        """
+    def get_uri(self) -> str:
+        """Deprecated: Return a URI-like string for this file."""
         warnings.warn(
-            "file.get_full_name() is deprecated and will be removed "
-            "in a future version. Use `file.path` directly.",
+            (
+                "File.get_uri() is deprecated and will be removed in a future version. "
+                "Use file.get_fs_path() for I/O locators."
+            ),
             DeprecationWarning,
             stacklevel=2,
         )
-        return self.path
 
-    def get_path_normalized(self) -> str:
-        if not self.path:
-            raise FileError("path must not be empty", self.source, self.path)
+        if not self.source:
+            return self.get_fs_path()
 
-        if self.path.endswith("/"):
-            raise FileError("path must not be a directory", self.source, self.path)
-
-        normpath = os.path.normpath(self.path)
-        normpath = PurePath(normpath).as_posix()
-
-        if normpath == ".":
-            raise FileError("path must not be a directory", self.source, self.path)
-
-        if any(part == ".." for part in PurePath(normpath).parts):
-            raise FileError("path must not contain '..'", self.source, self.path)
-
-        return normpath
-
-    def get_uri(self) -> str:
-        return f"{self.source}/{self.get_path_normalized()}"
+        # For cloud, get_fs_path returns a full URI; for local, a bare path.
+        # Wrap in path_to_fsspec_uri so we always return a URI.
+        return path_to_fsspec_uri(self.get_fs_path())
 
     def get_fs_path(self) -> str:
-        path = unquote(self.get_uri())
-        path_parsed = urlparse(path)
-        if path_parsed.scheme == "file":
-            path = url2pathname(path_parsed.path)
-        return path
+        """Combine ``source`` and ``path`` into the full location string.
 
-    def get_destination_path(
-        self, output: str | os.PathLike[str], placement: ExportPlacement
-    ) -> str:
+        For cloud backends the result is a full URI-like (``s3://…``, ``gs://…``).
+        For local files the result is a **bare OS path** (no ``file://``
+        prefix).
+
+        Examples:
+            ```py
+            # Cloud (S3, GCS, Azure, …)
+            f = File(source="s3://my-bucket", path="data/image.jpg")
+            f.get_fs_path()  # 's3://my-bucket/data/image.jpg'
+
+            # Local files
+            f = File(source="file:///home/user/project", path="out/result.csv")
+            f.get_fs_path()  # '/home/user/project/out/result.csv'
+
+            # No source — returns the relative path as-is
+            f = File(source="", path="dir/file.txt")
+            f.get_fs_path()  # 'dir/file.txt'
+            ```
+
+        Raises:
+            FileError: If ``path`` is empty, ends with ``/``, or contains
+                ``.`` / ``..`` segments.  For local files, also rejects
+                absolute paths, drive letters, and empty segments.
         """
-        Returns full destination path of a file for exporting to some output
-        based on export placement
-        """
+        # Fast path: return cached result when source and path are unchanged.
+        cache = self._fs_path_cache
+        if cache is not None and cache[0] == self.source and cache[1] == self.path:
+            return cache[2]
+
+        from datachain.client.fsspec import Client
+
+        client_cls = Client.get_implementation(self.source or "")
+        try:
+            client_cls.validate_file_path(self.path)
+            client_cls.validate_source(self.source)
+        except ValueError as exc:
+            raise FileError(str(exc), self.source, self.path) from exc
+        path = self.path
+
+        if not self.source:
+            result = path
+        elif self.source.startswith("file://"):
+            base_path = client_cls.FS_CLASS._strip_protocol(self.source)
+            result = Path(base_path, *PurePosixPath(path).parts).as_posix()
+        else:
+            # Cloud: build a full URI.
+            name = client_cls.FS_CLASS._strip_protocol(self.source)
+            base = str(client_cls.storage_uri(name))
+            if base.endswith("/"):
+                result = f"{base}{path}"
+            else:
+                result = f"{base}/{path}"
+
+        self._fs_path_cache = (self.source, self.path, result)
+        return result
+
+    def _get_destination_suffix(self, placement: ExportPlacement) -> str:
+        """Return the relative suffix used when exporting to an output prefix."""
         if placement == "filename":
-            path = unquote(self.name)
+            path = self.name
         elif placement == "etag":
             path = f"{self.etag}{self.get_file_suffix()}"
         elif placement == "fullpath":
-            path = unquote(self.get_path_normalized())
+            path = self.path
             source = urlparse(self.source)
             if source.scheme and source.scheme != "file":
-                path = posixpath.join(source.netloc, path)
+                path = posixpath.join(source.netloc, path.lstrip("/"))
         elif placement == "filepath":
-            path = unquote(self.get_path_normalized())
+            path = self.path
         elif placement == "checksum":
             raise NotImplementedError("Checksum placement not implemented yet")
         else:
             raise ValueError(f"Unsupported file export placement: {placement}")
-        return posixpath.join(output, path)  # type: ignore[union-attr]
+
+        # Always treat the computed suffix as relative for joining.
+        # This prevents `posixpath.join()` from dropping the output prefix when
+        # `path` starts with '/'.
+        return path.lstrip("/")
 
     def get_fs(self):
         return self._catalog.get_client(self.source).fs
@@ -760,6 +943,13 @@ class File(DataModel):
         if self._catalog is None:
             raise RuntimeError("Cannot resolve file: catalog is not set")
 
+        if self.location:
+            raise VFileError(
+                "Resolving a virtual file is not supported",
+                self.source,
+                self.path,
+            )
+
         try:
             client = self._catalog.get_client(self.source)
         except NotImplementedError as e:
@@ -768,28 +958,15 @@ class File(DataModel):
             ) from e
 
         try:
-            normalized_path = self.get_path_normalized()
-            info = client.fs.info(client.get_full_path(normalized_path))
-            converted_info = client.info_to_file(info, normalized_path)
-            res = type(self)(
-                path=self.path,
-                source=self.source,
-                size=converted_info.size,
-                etag=converted_info.etag,
-                version=converted_info.version,
-                is_latest=converted_info.is_latest,
-                last_modified=converted_info.last_modified,
-                location=self.location,
-            )
+            converted_info = client.get_file_info(self.path)
+            # get_file_info always returns a base File; re-wrap as type(self)
+            # so resolve() preserves the subclass (TextFile, ImageFile, …).
+            res = type(self)(**converted_info.model_dump())
             res._set_stream(self._catalog)
             return res
-        except FileError as e:
-            logger.warning(
-                "File error when resolving %s/%s: %s", self.source, self.path, str(e)
-            )
         except (FileNotFoundError, PermissionError, OSError) as e:
             logger.warning(
-                "File system error when resolving %s/%s: %s",
+                "Error when resolving %s/%s: %s",
                 self.source,
                 self.path,
                 str(e),
@@ -803,7 +980,6 @@ class File(DataModel):
             version="",
             is_latest=True,
             last_modified=TIME_ZERO,
-            location=self.location,
         )
         res._set_stream(self._catalog)
         return res
@@ -842,7 +1018,7 @@ class File(DataModel):
             # '/local/output/file_ch1.npy'
             ```
         """
-        return rebase_path(self.get_uri(), old_base, new_base, suffix, extension)
+        return rebase_path(self.get_fs_path(), old_base, new_base, suffix, extension)
 
 
 def resolve(file: File) -> File:
@@ -891,6 +1067,10 @@ class TextFile(File):
         ) as stream:
             yield stream
 
+    def read(self, **open_kwargs):
+        """Return file contents as text (default mode for TextFile)."""
+        return self.read_text(**open_kwargs)
+
     def read_text(self, **open_kwargs):
         """Return file contents as text.
 
@@ -900,13 +1080,12 @@ class TextFile(File):
         with self.open(**open_kwargs) as stream:
             return stream.read()
 
-    def save(self, destination: str, client_config: dict | None = None):
-        """Writes it's content to destination"""
-        destination = stringify_path(destination)
-
-        client: Client = self._catalog.get_client(destination, **(client_config or {}))
-        with client.fs.open(destination, mode="w") as f:
-            f.write(self.read_text())
+    def save(self, destination: str, client_config: dict | None = None) -> "TextFile":
+        """Writes its content to destination"""
+        result = super().save(destination, client_config=client_config)
+        tf = TextFile(**result.model_dump())
+        tf._set_stream(self._catalog)
+        return tf
 
 
 class ImageFile(File):
@@ -935,11 +1114,15 @@ class ImageFile(File):
         destination: str,
         format: str | None = None,
         client_config: dict | None = None,
-    ):
-        """Writes it's content to destination"""
-        destination = stringify_path(destination)
+    ) -> "ImageFile":
+        """Save the image to *destination*, optionally re-encoding to *format*.
 
-        client: Client = self._catalog.get_client(destination, **(client_config or {}))
+        If ``destination`` is a remote path, the image will be uploaded to
+        remote storage.  See :meth:`File.save` for full destination semantics.
+        """
+        if self._catalog is None:
+            raise RuntimeError("Cannot save file: catalog is not set")
+        destination = stringify_path(destination)
 
         # If format is not provided, determine it from the file extension
         if format is None:
@@ -957,8 +1140,13 @@ class ImageFile(File):
                 self.path,
             )
 
-        with client.fs.open(destination, mode="wb") as f:
-            self.read().save(f, format=format)
+        buf = BytesIO()
+        self.read().save(buf, format=format)
+        client, rel_path = self._resolve_destination(destination, client_config)
+        result = client.upload(buf.getvalue(), rel_path)
+        img = ImageFile(**result.model_dump())
+        img._set_stream(self._catalog)
+        return img
 
 
 class Image(DataModel):
@@ -1101,6 +1289,17 @@ class VideoFile(File):
             yield self.get_fragment(start, min(start + duration, end))
             start += duration
 
+    def save(  # type: ignore[override]
+        self,
+        destination: str,
+        client_config: dict | None = None,
+    ) -> "VideoFile":
+        """Writes its content to destination"""
+        result = super().save(destination, client_config=client_config)
+        vf = VideoFile(**result.model_dump())
+        vf._set_stream(self._catalog)
+        return vf
+
 
 class AudioFile(File):
     """
@@ -1189,7 +1388,7 @@ class AudioFile(File):
 
     def save(  # type: ignore[override]
         self,
-        output: str,
+        destination: str,
         format: str | None = None,
         start: float = 0,
         end: float | None = None,
@@ -1197,24 +1396,30 @@ class AudioFile(File):
     ) -> "AudioFile":
         """Save audio file or extract fragment to specified format.
 
+        If ``destination`` is a remote path, the audio file will be uploaded
+        to remote storage.
+
         Args:
-            output: Output directory path
-            format: Output format ('wav', 'mp3', etc). Defaults to source format
-            start: Start time in seconds (>= 0). Defaults to 0
-            end: End time in seconds. If None, extracts to end of file
-            client_config: Optional client configuration
+            destination: Output directory path or URI (e.g. ``s3://…``, ``gs://…``).
+            format: Output format ('wav', 'mp3', etc). Defaults to source format.
+            start: Start time in seconds (>= 0). Defaults to 0.
+            end: End time in seconds. If None, extracts to end of file.
+            client_config: Optional client configuration.
 
         Returns:
-            AudioFile: New audio file with format conversion/extraction applied
+            AudioFile: New audio file with format conversion/extraction applied.
 
         Examples:
             audio.save("/path", "mp3")                        # Entire file to MP3
             audio.save("s3://bucket/path", "wav", start=2.5)  # From 2.5s to end as WAV
             audio.save("/path", "flac", start=1, end=3)       # 1-3s fragment as FLAC
         """
+        if self._catalog is None:
+            raise RuntimeError("Cannot save file: catalog is not set")
+
         from .audio import save_audio
 
-        return save_audio(self, output, format, start, end)
+        return save_audio(self, destination, format, start, end, client_config)
 
 
 class AudioFragment(DataModel):
@@ -1264,25 +1469,37 @@ class AudioFragment(DataModel):
         duration = self.end - self.start
         return audio_to_bytes(self.audio, format, self.start, duration)
 
-    def save(self, output: str, format: str | None = None) -> "AudioFile":
+    def save(
+        self,
+        destination: str,
+        format: str | None = None,
+        client_config: dict | None = None,
+    ) -> "AudioFile":
         """
         Saves the audio fragment as a new audio file.
 
-        If `output` is a remote path, the audio file will be uploaded to remote storage.
+        If ``destination`` is a remote path, the audio file will be uploaded
+        to remote storage.
 
         Args:
-            output (str): The destination path, which can be a local file path
-                          or a remote URL.
-            format (str, optional): The output audio format (e.g., 'wav', 'mp3').
-                                    If None, the format is inferred from the
-                                    file extension.
+            destination: Output directory path or URI (e.g. ``s3://…``, ``gs://…``).
+            format: Output audio format (e.g., 'wav', 'mp3').
+                    If None, inferred from the file extension.
+            client_config: Optional client configuration (e.g. credentials).
 
         Returns:
             AudioFile: A Model representing the saved audio file.
         """
         from .audio import save_audio
 
-        return save_audio(self.audio, output, format, self.start, self.end)
+        return save_audio(
+            self.audio,
+            destination,
+            format,
+            self.start,
+            self.end,
+            client_config=client_config,
+        )
 
 
 class VideoFrame(DataModel):
@@ -1329,23 +1546,31 @@ class VideoFrame(DataModel):
 
         return video_frame_bytes(self.video, self.frame, format)
 
-    def save(self, output: str, format: str = "jpg") -> "ImageFile":
+    def save(
+        self,
+        destination: str,
+        format: str = "jpg",
+        client_config: dict | None = None,
+    ) -> "ImageFile":
         """
         Saves the current video frame as an image file.
 
-        If `output` is a remote path, the image file will be uploaded to remote storage.
+        If ``destination`` is a remote path, the image file will be uploaded
+        to remote storage.
 
         Args:
-            output (str): The destination path, which can be a local file path
-                          or a remote URL.
-            format (str): The image format (e.g., 'jpg', 'png'). Defaults to 'jpg'.
+            destination: Output directory path or URI (e.g. ``s3://…``, ``gs://…``).
+            format: Image format (e.g., 'jpg', 'png'). Defaults to 'jpg'.
+            client_config: Optional client configuration (e.g. credentials).
 
         Returns:
             ImageFile: A Model representing the saved image file.
         """
         from .video import save_video_frame
 
-        return save_video_frame(self.video, self.frame, output, format)
+        return save_video_frame(
+            self.video, self.frame, destination, format, client_config=client_config
+        )
 
 
 class VideoFragment(DataModel):
@@ -1367,25 +1592,37 @@ class VideoFragment(DataModel):
     start: float
     end: float
 
-    def save(self, output: str, format: str | None = None) -> "VideoFile":
+    def save(
+        self,
+        destination: str,
+        format: str | None = None,
+        client_config: dict | None = None,
+    ) -> "VideoFile":
         """
         Saves the video fragment as a new video file.
 
-        If `output` is a remote path, the video file will be uploaded to remote storage.
+        If ``destination`` is a remote path, the video file will be uploaded
+        to remote storage.
 
         Args:
-            output (str): The destination path, which can be a local file path
-                          or a remote URL.
-            format (str, optional): The output video format (e.g., 'mp4', 'avi').
-                                    If None, the format is inferred from the
-                                    file extension.
+            destination: Output directory path or URI (e.g. ``s3://…``, ``gs://…``).
+            format: Output video format (e.g., 'mp4', 'avi').
+                    If None, inferred from the file extension.
+            client_config: Optional client configuration (e.g. credentials).
 
         Returns:
             VideoFile: A Model representing the saved video file.
         """
         from .video import save_video_fragment
 
-        return save_video_fragment(self.video, self.start, self.end, output, format)
+        return save_video_fragment(
+            self.video,
+            self.start,
+            self.end,
+            destination,
+            format,
+            client_config=client_config,
+        )
 
 
 class Video(DataModel):

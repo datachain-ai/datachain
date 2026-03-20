@@ -298,8 +298,14 @@ class AbstractMetastore(ABC, Serializable):
         preview: list[dict] | None = None,
         job_id: str | None = None,
         uuid: str | None = None,
-    ) -> DatasetRecord:
-        """Creates new dataset version."""
+    ) -> tuple[DatasetRecord, bool]:
+        """Creates new dataset version.
+
+        Returns:
+            A tuple of (dataset_record, version_created) where version_created
+            is True if this call actually created the version, False if the
+            version already existed (only possible when ignore_if_exists=True).
+        """
 
     @abstractmethod
     def remove_dataset(self, dataset: DatasetRecord) -> None:
@@ -329,14 +335,17 @@ class AbstractMetastore(ABC, Serializable):
         self, job_id: str | None = None
     ) -> list[tuple[DatasetRecord, str]]:
         """
-        Get incomplete dataset versions to clean up.
+        Get incomplete, stale, or removed dataset versions to clean up.
 
         When job_id is provided, returns versions belonging to that specific
         job (used during job failure cleanup).
 
-        When job_id is None, returns all incomplete dataset versions
-        whose associated job is finished, plus versions with no job_id
-        that are older than STALE_CREATED_THRESHOLD_HOURS (used by gc).
+        When job_id is None, returns all versions that are safe to delete:
+        - Status CREATED, FAILED, STALE where either:
+          - the associated job has finished, or
+          - there is no associated job (job_id is NULL) and the version is
+            older than STALE_CREATED_THRESHOLD_HOURS
+        - Status REMOVING: marked for deletion
 
         Returns:
             List of (DatasetRecord, version_string) tuples. Each DatasetRecord
@@ -1248,16 +1257,24 @@ class AbstractDBMetastore(AbstractMetastore):
         preview: list[dict] | None = None,
         job_id: str | None = None,
         uuid: str | None = None,
-    ) -> DatasetRecord:
-        """Creates new dataset version."""
+    ) -> tuple[DatasetRecord, bool]:
+        """Creates new dataset version.
+
+        Returns:
+            A tuple of (dataset_record, version_created) where version_created
+            is True if this call actually created the version, False if the
+            version already existed (only possible when ignore_if_exists=True).
+        """
         if status in [DatasetStatus.COMPLETE, DatasetStatus.FAILED]:
             finished_at = finished_at or datetime.now(timezone.utc)
         else:
             finished_at = None
 
+        my_uuid = uuid or str(uuid4())
+
         query = self._datasets_versions_insert().values(
             dataset_id=dataset.id,
-            uuid=uuid or str(uuid4()),
+            uuid=my_uuid,
             version=version,
             status=status,
             feature_schema=json.dumps(feature_schema or {}),
@@ -1282,12 +1299,20 @@ class AbstractDBMetastore(AbstractMetastore):
             )
         self.db.execute(query)
 
-        return self.get_dataset(
+        dataset = self.get_dataset(
             dataset.name,
             namespace_name=dataset.project.namespace.name,
             project_name=dataset.project.name,
             include_incomplete=True,
         )
+
+        # Detect whether this call actually created the version by comparing
+        # the UUID we attempted to insert with the one stored in the DB.
+        # If another writer won the ON CONFLICT race, the stored UUID will
+        # differ from ours.
+        version_created = dataset.get_version(version).uuid == my_uuid
+
+        return dataset, version_created
 
     def remove_dataset(self, dataset: DatasetRecord) -> None:
         """Removes dataset."""
@@ -1670,7 +1695,14 @@ class AbstractDBMetastore(AbstractMetastore):
                 )
             )
             .where(
-                dv.c.status.in_([DatasetStatus.CREATED, DatasetStatus.FAILED]),
+                dv.c.status.in_(
+                    [
+                        DatasetStatus.CREATED,
+                        DatasetStatus.FAILED,
+                        DatasetStatus.STALE,
+                        DatasetStatus.REMOVING,
+                    ]
+                ),
                 or_(
                     # job is finished
                     j.c.status.in_(
