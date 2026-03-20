@@ -163,6 +163,8 @@ E2E_STEPS = (
             "  No temporary tables to clean up.\n"
             "Collecting failed dataset versions...\n"
             "  No failed dataset versions to clean up.\n"
+            "Collecting orphaned temporary datasets...\n"
+            "  No orphaned temporary datasets to clean up.\n"
             "Collecting outdated checkpoints...\n"
             "  No outdated checkpoints to clean up.\n"
         ),
