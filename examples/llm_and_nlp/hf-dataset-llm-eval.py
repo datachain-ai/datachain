@@ -11,7 +11,7 @@ HF_TOKEN = os.environ.get("HF_TOKEN")
 if not HF_TOKEN:
     print("This example requires a Hugging Face token")
     print("Add your token using the HF_TOKEN environment variable.")
-    sys.exit(0)
+    sys.exit(1)
 
 PROMPT = """
 Was this dialog successful? Put result as a single word: Success or Failure.

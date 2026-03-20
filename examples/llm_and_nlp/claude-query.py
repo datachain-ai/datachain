@@ -28,7 +28,7 @@ API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 if not API_KEY:
     print("This example requires an Anthropic API key")
     print("Add your key using the ANTHROPIC_API_KEY environment variable.")
-    sys.exit(0)
+    sys.exit(1)
 
 
 class Rating(BaseModel):
