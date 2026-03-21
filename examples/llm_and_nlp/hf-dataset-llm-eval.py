@@ -2,7 +2,7 @@ import os
 import sys
 
 from huggingface_hub import InferenceClient
-from requests import HTTPError
+from huggingface_hub.errors import HfHubHTTPError
 
 import datachain as dc
 
@@ -45,7 +45,7 @@ def eval_dialog(
                 "json_schema": {"schema": DialogEval.model_json_schema()},
             },
         )
-    except HTTPError as e:
+    except HfHubHTTPError as e:
         return DialogEval(result="Error", reason=str(e))
 
     message = completion.choices[0].message
@@ -69,12 +69,15 @@ def eval_dialog(
     .to_parquet("hf://datasets/dvcorg/test-datachain-llm-eval/data.parquet")
 )
 
+result = dc.read_parquet(
+    "hf://datasets/dvcorg/test-datachain-llm-eval/data.parquet", source=False
+)
+errors = result.filter(dc.C("response.result") == "Error")
+
+if result.count() == errors.count():
+    errors.show(3)
+    raise RuntimeError("All Hugging Face inference requests failed.")
+
 # Read it back to filter and show.
 # It restores the Pydantic model from Parquet under the hood.
-(
-    dc.read_parquet(
-        "hf://datasets/dvcorg/test-datachain-llm-eval/data.parquet", source=False
-    )
-    .filter(dc.C("response.result") == "Failure")
-    .show(3)
-)
+result.filter(dc.C("response.result") == "Failure").show(3)
