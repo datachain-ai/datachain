@@ -23,7 +23,7 @@ This works like persistent data memory for agents.
 
 Built for ML engineers working with Physical AI, Robotics, and other large-scale unstructured data:
 - Data lives in S3, GCS, Azure or local filesystem
-- Not only tables — images, video, sensors, documents  
+- Not only tables — images, video, sensors, documents
 - Agents hallucinating and write slow, non-resumable, unreliable code
 
 ## The Problem - agent can’t use object storage
