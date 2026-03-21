@@ -2201,6 +2201,10 @@ class ResultIter:
     def __iter__(self):
         yield from self._row_iter
 
+    def close(self) -> None:
+        if hasattr(self._row_iter, "close"):
+            self._row_iter.close()  # type: ignore[attr-defined]
+
 
 class DatasetQuery:
     def __init__(
@@ -2508,14 +2512,18 @@ class DatasetQuery:
 
     @contextlib.contextmanager
     def as_iterable(self, **kwargs) -> Iterator[ResultIter]:
+        result: ResultIter | None = None
         try:
             query = self.apply_steps().select()
             selected_columns = [c.name for c in query.selected_columns]
-            yield ResultIter(
+            result = ResultIter(
                 self.catalog.warehouse.dataset_rows_select(query, **kwargs),
                 selected_columns,
             )
+            yield result
         finally:
+            if result is not None:
+                result.close()
             self.cleanup()
 
     def extract(
