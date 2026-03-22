@@ -44,11 +44,12 @@ def _parse_name_version(
     """
     if "@" in name:
         parsed_name, name_version = name.split("@", 1)
-        if version is not None:
-            raise ValueError(
-                "Cannot specify version both in the dataset name and as a parameter"
-            )
-        return parsed_name, name_version
+        if parsed_name:
+            if version is not None:
+                raise ValueError(
+                    "Cannot specify version both in the dataset name and as a parameter"
+                )
+            return parsed_name, name_version
     return name, version
 
 
