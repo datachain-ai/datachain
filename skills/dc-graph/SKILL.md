@@ -61,7 +61,7 @@ Datasets in namespace `system` or project `listing` are already filtered out by 
 ### Phase 3 — Diff Against Existing Graph
 
 For each dataset returned in Phase 2:
-1. Derive the filename: replace `.` and `/` with `_`, lowercase → `{name_slug}.md`
+1. Derive the filename: replace `.` and `/` with `_`, lowercase → `{name_slug}.md`. **Never include a version in the filename.**
 2. Read `.datachain/graph/datasets/{name_slug}.md` (if it exists)
 3. Extract `latest_version` and `num_objects` from its YAML frontmatter
 4. Mark the dataset as **stale** if either field differs from the `--list` output, or if the file does not exist
@@ -82,12 +82,12 @@ dataset_count: <N>
 Body: a table listing all datasets with columns: Name, Version, Objects, Updated.
 Each name is a wikilink: `[[name_slug]]`.
 
-**For each stale dataset**, run:
+**For each stale dataset**, run one script call using the dataset's `latest_version`:
 ```
-python3 {skill_dir}/scripts/graph.py --dataset <name>@<version>
+python3 {skill_dir}/scripts/graph.py --dataset <name>@<latest_version>
 ```
 
-Pass the `name` and `version` from the `--list` output as `name@version`.
+Pass the `name` and `version` from the `--list` output as `name@version`. **One call per stale dataset, not per version.**
 
 Output:
 ```json
@@ -155,6 +155,14 @@ Render schema: for each signal, print `{signal}: {type}`, then if `fields` is no
 
 Render preview: use `columns` as table headers, `rows` as table rows.
 
+## Query Script
+
+```python
+dc.read_csv(...).save('image_ratio')
+```
+
+Omit the `## Query Script` section if `query_script` is null or empty.
+
 ## Changes
 
 Omit this section if `changes` is null (first version of the dataset).
@@ -173,14 +181,6 @@ Compared to 1.0.0:
 - `raw_images` updated 1.0.0 → 1.0.1 (filter condition tightened)
 ```
 
-## Query Script
-
-```python
-dc.read_csv(...).save('image_ratio')
-```
-
-Omit the `## Query Script` section if `query_script` is null or empty.
-
 ## Dependencies
 
 | Dataset | Version | Type |
@@ -190,6 +190,19 @@ Omit the `## Query Script` section if `query_script` is null or empty.
 
 Omit the `## Dependencies` section if `dependencies` is empty.
 For each top-level dependency, list it as a wikilink row. If it has child dependencies, add them as indented sub-rows or a nested list below the table.
+
+## Version History
+
+| Version | Objects | Updated | Changes |
+|---------|---------|---------|---------|
+| 1.0.1   | 12400   | 2026-03-20 | script changed; `raw_images` 1.0.0→1.0.1 |
+| 1.0.0   | 11000   | 2026-03-10 | — |
+```
+
+**Version History update rule:**
+
+- **File already exists**: read the existing Version History table from the file, then prepend a new row for the new `latest_version` at the top. The one-line `Changes` summary for the new row is a brief phrase derived from the `changes` field (e.g. "script changed; `raw_images` 1.0.0→1.0.1"), or "—" if `changes` is null. Carry over all older rows from the existing file unchanged.
+- **File does not exist**: write a single-row Version History table with "—" in the Changes column.
 
 All files use Obsidian-compatible wikilinks (`[[name_slug]]`) and YAML frontmatter.
 
