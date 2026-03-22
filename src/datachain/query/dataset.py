@@ -2382,7 +2382,9 @@ class DatasetQuery:
             listing_ds = None
             try:
                 listing_ds = self.catalog.get_dataset(
-                    self.list_ds_name, include_incomplete=False
+                    self.list_ds_name,
+                    versions=None,
+                    include_incomplete=False,
                 )
             except DatasetNotFoundError:
                 pass
@@ -2391,7 +2393,9 @@ class DatasetQuery:
                 assert self.listing_fn
                 self.listing_fn()
                 listing_ds = self.catalog.get_dataset(
-                    self.list_ds_name, include_incomplete=False
+                    self.list_ds_name,
+                    versions=None,
+                    include_incomplete=False,
                 )
 
             # at this point we know what is our starting listing dataset name
