@@ -5,7 +5,7 @@ Functional tests for read_dataset with PEP 440 version specifiers.
 import pytest
 
 import datachain as dc
-from datachain.error import DatasetVersionNotFoundError
+from datachain.error import DatasetNotFoundError, DatasetVersionNotFoundError
 
 
 def test_read_dataset_version_specifiers(test_session):
@@ -127,7 +127,7 @@ def test_delete_dataset_version_in_name(test_session):
     dc.delete_dataset(f"{dataset_name}@1.0.0", session=test_session)
 
     # Version 1.0.0 should be gone, 2.0.0 should still exist
-    with pytest.raises(Exception):
+    with pytest.raises(DatasetNotFoundError):
         dc.read_dataset(f"{dataset_name}@1.0.0", session=test_session).collect()
 
     result = dc.read_dataset(f"{dataset_name}@2.0.0", session=test_session)
