@@ -1,5 +1,5 @@
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, get_origin, get_type_hints
+from typing import TYPE_CHECKING, get_origin, get_type_hints, overload
 
 from datachain.error import (
     DatasetNotFoundError,
@@ -22,6 +22,35 @@ if TYPE_CHECKING:
     from .datachain import DataChain
 
     P = ParamSpec("P")
+
+
+@overload
+def _parse_name_version(name: str, version: str | None) -> tuple[str, str | None]: ...
+
+
+@overload
+def _parse_name_version(
+    name: str, version: str | int | None
+) -> tuple[str, str | int | None]: ...
+
+
+def _parse_name_version(
+    name: str, version: str | int | None
+) -> tuple[str, str | int | None]:
+    """Split an optional ``@version`` suffix from a dataset name.
+
+    Allows callers to pass ``"my_dataset@1.0.0"`` instead of
+    ``name="my_dataset", version="1.0.0"``.
+    """
+    if "@" in name:
+        parsed_name, name_version = name.split("@", 1)
+        if parsed_name:
+            if version is not None:
+                raise ValueError(
+                    "Cannot specify version both in the dataset name and as a parameter"
+                )
+            return parsed_name, name_version
+    return name, version
 
 
 def read_dataset(
@@ -50,7 +79,9 @@ def read_dataset(
         name: The dataset name, which can be a fully qualified name including the
             namespace and project. Alternatively, it can be a regular name, in which
             case the explicitly defined namespace and project will be used if they are
-            set; otherwise, default values will be applied.
+            set; otherwise, default values will be applied. The name can also include
+            a version using the ``name@version`` format (e.g. ``"my_dataset@1.0.0"``),
+            which is equivalent to passing ``version="1.0.0"`` separately.
         namespace: optional name of namespace in which dataset to read is created
         project: optional name of project in which dataset to read is created
         version: dataset version. Supports:
@@ -103,6 +134,11 @@ def read_dataset(
         ```
 
         ```py
+        # Version can also be embedded in the name using the @ syntax
+        chain = dc.read_dataset("my_cats@1.0.0")
+        ```
+
+        ```py
         # Using version specifiers (PEP 440)
         chain = dc.read_dataset("my_cats", version=">=1.0.0,<2.0.0")
         ```
@@ -137,6 +173,8 @@ def read_dataset(
     from datachain.telemetry import telemetry
 
     from .datachain import DataChain
+
+    name, version = _parse_name_version(name, version)
 
     telemetry.send_event_once("class", "datachain_init", name=name, version=version)
 
@@ -349,6 +387,8 @@ def delete_dataset(
         ```
     """
     from datachain.studio import remove_studio_dataset
+
+    name, version = _parse_name_version(name, version)
 
     session = Session.get(session, in_memory=in_memory)
     catalog = session.catalog

@@ -19,8 +19,11 @@ def show(
     include_hidden: bool = False,
 ) -> None:
     from datachain import Session, read_dataset
+    from datachain.lib.dc.datasets import _parse_name_version
     from datachain.query.dataset import DatasetQuery
     from datachain.utils import show_records
+
+    name, version = _parse_name_version(name, version)
 
     dataset = catalog.get_dataset(name, include_incomplete=False)
     dataset_version = dataset.get_version(version or dataset.latest_version)
