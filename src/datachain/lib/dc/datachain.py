@@ -218,14 +218,6 @@ class DataChain:
         self.print_schema(file=file)
         return file.getvalue()
 
-    def hash(self) -> str:
-        """
-        Calculates SHA hash of this chain. Hash calculation is fast and consistent.
-        It takes into account all the steps added to the chain and their inputs.
-        Order of the steps is important.
-        """
-        return self._query.hash()
-
     @property
     def empty(self) -> bool:
         """Returns True if chain has zero number of rows"""

@@ -2308,7 +2308,10 @@ class DatasetQuery:
         if self.starting_step:
             return self.starting_step.hash()
         if self.list_ds_name:
-            return self.list_ds_name
+            raise RuntimeError(
+                "Cannot compute hash: listing not resolved. "
+                "Call resolve_listing() first."
+            )
         return ""
 
     @property
@@ -2333,6 +2336,8 @@ class DatasetQuery:
         Args:
             job_aware: If True, includes the last checkpoint hash from the job context.
         """
+        self.resolve_listing()
+
         hasher = hashlib.sha256()
 
         start_hash = self._last_checkpoint_hash if job_aware else None
@@ -2380,7 +2385,7 @@ class DatasetQuery:
         """Setting listing function to be run if needed"""
         self.listing_fn = fn
 
-    def apply_listing_pre_step(self) -> None:
+    def resolve_listing(self) -> None:
         """Runs listing pre-step if needed"""
         if self.list_ds_name and not self.starting_step:
             listing_ds = None
@@ -2406,6 +2411,8 @@ class DatasetQuery:
         Apply the steps in the query and return the resulting
         sqlalchemy.SelectBase.
         """
+        self.resolve_listing()
+
         hasher = hashlib.sha256()
         start_hash = self._last_checkpoint_hash
         if start_hash:
@@ -2414,8 +2421,6 @@ class DatasetQuery:
         hasher.update(self._starting_step_hash.encode("utf-8"))
         if self.delta_spec is not None:
             hasher.update(self.delta_spec.hash().encode("utf-8"))
-
-        self.apply_listing_pre_step()
 
         query = self.clone()
 

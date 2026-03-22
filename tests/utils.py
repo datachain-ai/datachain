@@ -293,6 +293,11 @@ def sort_df(df):
     return df.sort_values(by=df.columns.tolist()).reset_index(drop=True)
 
 
+def is_sha256_hex(s: str) -> bool:
+    """Check if string is a valid SHA256 hex digest."""
+    return len(s) == 64 and all(c in "0123456789abcdef" for c in s)
+
+
 def df_equal(df1, df2) -> bool:
     """Helper function to check if two dataframes are equal regardless of ordering"""
     return sort_df(df1).equals(sort_df(df2))
