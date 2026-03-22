@@ -490,23 +490,23 @@ class DatasetRecord:
         sources: str,
         query_script: str,
         schema: str,
-        version_id: int,
-        version_uuid: str,
-        version_dataset_id: int,
-        version: str,
-        version_status: int,
-        version_feature_schema: str | None,
-        version_created_at: datetime,
-        version_finished_at: datetime | None,
-        version_error_message: str,
-        version_error_stack: str,
-        version_script_output: str,
-        version_num_objects: int | None,
-        version_size: int | None,
-        version_preview: str | None,
-        version_sources: str | None,
-        version_query_script: str | None,
-        version_schema: str,
+        version_id: int | None = None,
+        version_uuid: str | None = None,
+        version_dataset_id: int | None = None,
+        version: str | None = None,
+        version_status: int | None = None,
+        version_feature_schema: str | None = None,
+        version_created_at: datetime | None = None,
+        version_finished_at: datetime | None = None,
+        version_error_message: str | None = None,
+        version_error_stack: str | None = None,
+        version_script_output: str | None = None,
+        version_num_objects: int | None = None,
+        version_size: int | None = None,
+        version_preview: str | None = None,
+        version_sources: str | None = None,
+        version_query_script: str | None = None,
+        version_schema: str | None = None,
         version_job_id: str | None = None,
     ) -> "DatasetRecord":
         attrs_lst: list[str] = json.loads(attrs) if attrs else []
@@ -529,26 +529,41 @@ class DatasetRecord:
             namespace,
         )
 
-        dataset_version = DatasetVersion.parse(
-            version_id,
-            version_uuid,
-            version_dataset_id,
-            version,
-            version_status,
-            version_feature_schema,
-            version_created_at,
-            version_finished_at,
-            version_error_message,
-            version_error_stack,
-            version_script_output,
-            version_num_objects,
-            version_size,
-            version_preview,
-            version_schema,
-            version_sources,  # type: ignore[arg-type]
-            version_query_script,  # type: ignore[arg-type]
-            version_job_id,
-        )
+        if version_id is None:
+            # No version columns in the row (lightweight query)
+            versions_list: list[DatasetVersion] = []
+        else:
+            assert version_uuid is not None
+            assert version_dataset_id is not None
+            assert version is not None
+            assert version_status is not None
+            assert version_created_at is not None
+            assert version_error_message is not None
+            assert version_error_stack is not None
+            assert version_script_output is not None
+            assert version_schema is not None
+
+            dataset_version = DatasetVersion.parse(
+                version_id,
+                version_uuid,
+                version_dataset_id,
+                version,
+                version_status,
+                version_feature_schema,
+                version_created_at,
+                version_finished_at,
+                version_error_message,
+                version_error_stack,
+                version_script_output,
+                version_num_objects,
+                version_size,
+                version_preview,
+                version_schema,
+                version_sources or "",
+                version_query_script or "",
+                version_job_id,
+            )
+            versions_list = [dataset_version]
 
         return cls(
             dataset_id,
@@ -558,7 +573,7 @@ class DatasetRecord:
             attrs_lst,
             parse_schema(schema_dct),  # type: ignore[arg-type]
             json.loads(feature_schema) if feature_schema else {},
-            [dataset_version],
+            versions_list,
             status,
             created_at,
             finished_at,
@@ -612,6 +627,9 @@ class DatasetRecord:
         Checks if a number can be a valid next latest version for dataset.
         The only rule is that it cannot be lower than current latest version
         """
+        if not any(v.version for v in self.versions):
+            return True
+
         return not (
             self.latest_version
             and semver.value(self.latest_version) >= semver.value(version)
