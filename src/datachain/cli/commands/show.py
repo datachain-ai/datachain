@@ -18,8 +18,6 @@ def show(
     script: bool = False,
 ) -> None:
     from datachain import Session, read_dataset
-    from datachain.query.dataset import DatasetQuery
-    from datachain.utils import show_records
 
     dataset = catalog.get_dataset(name, include_incomplete=False)
     dataset_version = dataset.get_version(version or dataset.latest_version)
