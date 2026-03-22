@@ -2,9 +2,10 @@
 """Standalone DataChain metadata extractor for the datachain-graph skill.
 
 Usage:
-    python3 dc_extract.py --db-mtime           # ISO-8601 UTC mtime of .datachain/db* files
-    python3 dc_extract.py --list               # JSON list of all user datasets
-    python3 dc_extract.py --dataset <name>     # JSON schema + preview for one dataset
+    python3 graph.py --db-mtime               # ISO-8601 UTC mtime of .datachain/db* files
+    python3 graph.py --list                   # JSON list of all user datasets
+    python3 graph.py --dataset <name>         # JSON schema, preview, and dependencies
+    python3 graph.py --dataset <name@version> # same, for a specific version
 """
 
 import argparse
@@ -69,7 +70,7 @@ def cmd_list():
     print(json.dumps({"datasets": datasets}))
 
 
-def cmd_dataset(name: str):
+def cmd_dataset(name_version: str):
     try:
         import datachain as dc
     except ImportError:
@@ -79,7 +80,15 @@ def cmd_dataset(name: str):
         )
         sys.exit(1)
 
-    chain = dc.read_dataset(name)
+    # Parse optional @version suffix
+    if "@" in name_version:
+        name, version = name_version.split("@", 1)
+        chain = dc.read_dataset(name, version=version)
+    else:
+        name = name_version
+        version = None
+        chain = dc.read_dataset(name)
+
     schema = {
         col: str(typ)
         for col, typ in chain.schema.items()
@@ -87,14 +96,69 @@ def cmd_dataset(name: str):
     }
     cols = list(schema.keys())
 
+    def _serialize(val):
+        if isinstance(val, (str, int, float, bool, type(None))):
+            return val
+        return str(val)
+
     preview = []
     for row in chain.select(*cols).limit(10).to_iter():
         if isinstance(row, tuple):
-            preview.append(dict(zip(cols, row)))
+            preview.append({k: _serialize(v) for k, v in zip(cols, row)})
         else:
-            preview.append({cols[0]: row} if cols else {})
+            preview.append({cols[0]: _serialize(row)} if cols else {})
 
-    print(json.dumps({"name": name, "schema": schema, "preview": preview}))
+    # Resolve version if not provided (needed for dependency lookup)
+    if version is None:
+        for row in dc.datasets(column="dataset").to_iter():
+            info = row[0]
+            if info.name == name:
+                version = str(info.version)
+                break
+
+    # Fetch dependency tree
+    dependencies = []
+    try:
+        catalog = chain.session.catalog
+        if version:
+            deps = catalog.get_dataset_dependencies(
+                name=name, version=version, indirect=True
+            )
+            for dep in deps or []:
+                if not dep:
+                    continue
+                dep_entry = {
+                    "name": dep.name,
+                    "version": str(dep.version) if dep.version is not None else None,
+                    "type": str(dep.type) if dep.type is not None else None,
+                    "dependencies": [
+                        {
+                            "name": child.name,
+                            "version": (
+                                str(child.version)
+                                if child.version is not None
+                                else None
+                            ),
+                            "type": str(child.type) if child.type is not None else None,
+                        }
+                        for child in (dep.dependencies or [])
+                        if child
+                    ],
+                }
+                dependencies.append(dep_entry)
+    except Exception:
+        pass  # dependencies are best-effort
+
+    print(
+        json.dumps(
+            {
+                "name": name,
+                "schema": schema,
+                "preview": preview,
+                "dependencies": dependencies,
+            }
+        )
+    )
 
 
 def main():

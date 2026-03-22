@@ -84,12 +84,24 @@ Each name is a wikilink: `[[name_slug]]`.
 
 **For each stale dataset**, run:
 ```
-python3 {skill_dir}/scripts/graph.py --dataset <name>
+python3 {skill_dir}/scripts/graph.py --dataset <name>@<version>
 ```
+
+Pass the `name` and `version` from the `--list` output as `name@version`.
 
 Output:
 ```json
-{"name": "...", "schema": {"col": "type", ...}, "preview": [{...}, ...]}
+{
+  "name": "...",
+  "schema": {"col": "type", ...},
+  "preview": [{...}, ...],
+  "dependencies": [
+    {
+      "name": "...", "version": "...", "type": "...",
+      "dependencies": [{"name": "...", "version": "...", "type": "..."}]
+    }
+  ]
+}
 ```
 
 Write `.datachain/graph/datasets/{name_slug}.md`:
@@ -114,7 +126,16 @@ updated_at: <updated_at>
 | col1 | col2 | ... |
 |------|------|-----|
 | val  | val  | ... |
+
+## Dependencies
+
+| Dataset | Version | Type |
+|---------|---------|------|
+| [[dep_name_slug]] | version | type |
 ```
+
+Omit the `## Dependencies` section if `dependencies` is empty.
+For each top-level dependency, list it as a wikilink row. If it has child dependencies, add them as indented sub-rows or a nested list below the table.
 
 All files use Obsidian-compatible wikilinks (`[[name_slug]]`) and YAML frontmatter.
 
@@ -130,7 +151,8 @@ Output: .datachain/graph/
 
 ## Notes
 
-- The script is standalone — no CLI args beyond the three flags.
+- The script is standalone — flags: `--db-mtime`, `--list`, `--dataset <name>` or `--dataset <name@version>`.
 - `status` field is a raw integer from the DB (4 = complete). Map to human-readable strings in the Markdown if desired: `{1: "pending", 2: "running", 3: "failed", 4: "complete"}`.
-- Never read `.datachain/db` directly — always go through `dc_extract.py`.
-- If `dc_extract.py` fails (DataChain not installed, no DB), report the error and stop gracefully.
+- Never read `.datachain/db` directly — always go through `graph.py`.
+- If `graph.py` fails (DataChain not installed, no DB), report the error and stop gracefully.
+- `dependencies` in `--dataset` output is best-effort: if unavailable it is an empty list — do not error.
