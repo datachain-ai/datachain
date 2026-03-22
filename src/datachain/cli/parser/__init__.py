@@ -468,7 +468,7 @@ def get_parser() -> ArgumentParser:  # noqa: PLR0915
     show_parser.add_argument(
         "--script",
         action="store_true",
-        help="Print the query script to stdout",
+        help="Print the script of source code",
     )
     add_show_args(show_parser)
 
