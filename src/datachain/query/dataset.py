@@ -2985,6 +2985,7 @@ class DatasetQuery:
         # Get job from session to link dataset version to job
         job = self.session.get_or_create_job()
         job_id = job.id
+        query_script = job.query
 
         project = project or self.catalog.metastore.default_project
         try:
@@ -3042,6 +3043,7 @@ class DatasetQuery:
                 attrs=attrs,
                 update_version=update_version,
                 job_id=job_id,
+                query_script=query_script,
                 **kwargs,
             )
 
