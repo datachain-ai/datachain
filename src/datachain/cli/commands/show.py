@@ -19,19 +19,11 @@ def show(
 ) -> None:
     from datachain import Session, read_dataset
 
-    dataset = catalog.get_dataset(name, include_incomplete=False)
-    dataset_version = dataset.get_version(version or dataset.latest_version)
-
     if script:
+        dataset = catalog.get_dataset(name, include_incomplete=False)
+        dataset_version = dataset.get_version(version or dataset.latest_version)
         print(dataset_version.query_script)
         return
-
-    if include_hidden:
-        hidden_fields = []
-    else:
-        hidden_fields = SignalSchema.get_flatten_hidden_fields(
-            dataset_version.feature_schema
-        )
 
     session = Session.get(catalog=catalog)
     dc = read_dataset(name=name, version=version, session=session)
