@@ -1,5 +1,5 @@
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, overload, get_origin, get_type_hints
+from typing import TYPE_CHECKING, get_origin, get_type_hints, overload
 
 from datachain.error import (
     DatasetNotFoundError,
