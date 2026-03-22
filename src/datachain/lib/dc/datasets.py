@@ -1,5 +1,5 @@
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, get_origin, get_type_hints
+from typing import TYPE_CHECKING, overload, get_origin, get_type_hints
 
 from datachain.error import (
     DatasetNotFoundError,
@@ -24,9 +24,19 @@ if TYPE_CHECKING:
     P = ParamSpec("P")
 
 
+@overload
+def _parse_name_version(name: str, version: str | None) -> tuple[str, str | None]: ...
+
+
+@overload
 def _parse_name_version(
-    name: str, version: "str | int | None"
-) -> "tuple[str, str | int | None]":
+    name: str, version: str | int | None
+) -> tuple[str, str | int | None]: ...
+
+
+def _parse_name_version(
+    name: str, version: str | int | None
+) -> tuple[str, str | int | None]:
     """Split an optional ``@version`` suffix from a dataset name.
 
     Allows callers to pass ``"my_dataset@1.0.0"`` instead of
