@@ -36,6 +36,7 @@ class DatasetInfo(DataModel):
     error_message: str = Field(default="")
     error_stack: str = Field(default="")
     attrs: list[str] = Field(default=[])
+    query_script: str = Field(default="")
 
     @property
     def is_temp(self) -> bool:
@@ -106,4 +107,5 @@ class DatasetInfo(DataModel):
             error_message=version.error_message,
             error_stack=version.error_stack,
             attrs=dataset.attrs,
+            query_script=version.query_script,
         )

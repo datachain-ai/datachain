@@ -17,6 +17,7 @@ def show(
     no_collapse: bool = False,
     schema: bool = False,
     include_hidden: bool = False,
+    script: bool = False,
 ) -> None:
     from datachain import Session, read_dataset
     from datachain.query.dataset import DatasetQuery
@@ -24,6 +25,10 @@ def show(
 
     dataset = catalog.get_dataset(name, include_incomplete=False)
     dataset_version = dataset.get_version(version or dataset.latest_version)
+
+    if script:
+        print(dataset_version.query_script)
+        return
 
     if include_hidden:
         hidden_fields = []

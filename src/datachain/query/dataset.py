@@ -2979,12 +2979,16 @@ class DatasetQuery:
         description: str | None = None,
         attrs: list[str] | None = None,
         update_version: str | None = "patch",
+        query_script: str | None = None,
         **kwargs,
     ) -> "Self":
         """Save the query as a dataset."""
         # Get job from session to link dataset version to job
         job = self.session.get_or_create_job()
         job_id = job.id
+        # Use job.query as the script source unless explicitly overridden
+        if query_script is None:
+            query_script = job.query
 
         project = project or self.catalog.metastore.default_project
         try:
@@ -3042,6 +3046,7 @@ class DatasetQuery:
                 attrs=attrs,
                 update_version=update_version,
                 job_id=job_id,
+                query_script=query_script,
                 **kwargs,
             )
 

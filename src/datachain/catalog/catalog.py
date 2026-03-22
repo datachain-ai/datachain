@@ -1194,7 +1194,7 @@ class Catalog:
         dc = reduce(lambda dc1, dc2: dc1.union(dc2), chains)
         try:
             dc = dc.settings(project=project.name, namespace=project.namespace.name)
-            dc.save(name)
+            dc.save(name, query_script="")
         except Exception as e:  # noqa: BLE001
             try:
                 ds = self.get_dataset(

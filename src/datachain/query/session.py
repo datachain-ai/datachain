@@ -146,8 +146,14 @@ class Session:
             Session._OWNS_JOB = False
         else:
             # Local run: create new job
+            query = ""
             if is_script_run():
                 script = os.path.abspath(sys.argv[0])
+                try:
+                    with open(script) as f:
+                        query = f.read()
+                except OSError:
+                    pass
             else:
                 # Interactive session or module run - use unique name to avoid
                 # linking unrelated sessions
@@ -159,7 +165,7 @@ class Session:
 
             job_id = self.catalog.metastore.create_job(
                 name=script,
-                query="",
+                query=query,
                 query_type=JobQueryType.PYTHON,
                 status=JobStatus.RUNNING,
                 python_version=python_version,
