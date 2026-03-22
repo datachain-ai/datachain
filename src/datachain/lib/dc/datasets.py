@@ -50,7 +50,9 @@ def read_dataset(
         name: The dataset name, which can be a fully qualified name including the
             namespace and project. Alternatively, it can be a regular name, in which
             case the explicitly defined namespace and project will be used if they are
-            set; otherwise, default values will be applied.
+            set; otherwise, default values will be applied. The name can also include
+            a version using the ``name@version`` format (e.g. ``"my_dataset@1.0.0"``),
+            which is equivalent to passing ``version="1.0.0"`` separately.
         namespace: optional name of namespace in which dataset to read is created
         project: optional name of project in which dataset to read is created
         version: dataset version. Supports:
@@ -103,6 +105,11 @@ def read_dataset(
         ```
 
         ```py
+        # Version can also be embedded in the name using the @ syntax
+        chain = dc.read_dataset("my_cats@1.0.0")
+        ```
+
+        ```py
         # Using version specifiers (PEP 440)
         chain = dc.read_dataset("my_cats", version=">=1.0.0,<2.0.0")
         ```
@@ -137,6 +144,14 @@ def read_dataset(
     from datachain.telemetry import telemetry
 
     from .datachain import DataChain
+
+    if "@" in name:
+        name, name_version = name.split("@", 1)
+        if version is not None:
+            raise ValueError(
+                "Cannot specify version both in the dataset name and as a parameter"
+            )
+        version = name_version
 
     telemetry.send_event_once("class", "datachain_init", name=name, version=version)
 

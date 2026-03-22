@@ -86,3 +86,27 @@ def test_read_dataset_version_specifiers_exact_version(test_session):
     # Test reading by exact version int - backward compatibility
     result = dc.read_dataset(dataset_name, version=1, session=test_session)
     assert result.to_values("dataset_version")[0] == "1.0.0"
+
+
+def test_read_dataset_version_in_name(test_session):
+    """Test read_dataset with version embedded in name using the @ syntax."""
+    dataset_name = "test_version_in_name"
+
+    for version in ["1.0.0", "2.0.0"]:
+        (
+            dc.read_values(data=[1, 2], session=test_session)
+            .mutate(dataset_version=version)
+            .save(dataset_name, version=version)
+        )
+
+    # Test exact version embedded in name
+    result = dc.read_dataset(f"{dataset_name}@1.0.0", session=test_session)
+    assert result.to_values("dataset_version")[0] == "1.0.0"
+
+    # Test version specifier embedded in name
+    result = dc.read_dataset(f"{dataset_name}@>=1.0.0,<2.0.0", session=test_session)
+    assert result.to_values("dataset_version")[0] == "1.0.0"
+
+    # Test that specifying version both in name and as parameter raises an error
+    with pytest.raises(ValueError, match="Cannot specify version both"):
+        dc.read_dataset(f"{dataset_name}@1.0.0", version="2.0.0", session=test_session)
