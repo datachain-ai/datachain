@@ -103,6 +103,17 @@ Output:
     "rows": [["dogs-and-cats/cat.1.jpg", 16880, 123, 456, "1:1"]]
   },
   "query_script": "dc.read_csv(...).save('image_ratio')",
+  "changes": {
+    "previous_version": "1.0.0",
+    "script_changed": true,
+    "previous_script": "dc.read_csv(...).save('image_ratio')",
+    "deps_added": [],
+    "deps_removed": [],
+    "deps_updated": [
+      {"name": "raw_images", "version_from": "1.0.0", "version_to": "1.0.1",
+       "script_changed": true, "previous_script": "...", "current_script": "..."}
+    ]
+  },
   "dependencies": [
     {
       "name": "...", "version": "...", "type": "...",
@@ -144,6 +155,24 @@ Render schema: for each signal, print `{signal}: {type}`, then if `fields` is no
 
 Render preview: use `columns` as table headers, `rows` as table rows.
 
+## Changes
+
+Omit this section if `changes` is null (first version of the dataset).
+
+When present, write a human-readable summary relative to `previous_version`:
+- If `script_changed` is true: describe what changed between `previous_script` and the current `query_script`
+- For each entry in `deps_added`: note the new dependency
+- For each entry in `deps_removed`: note the removed dependency
+- For each entry in `deps_updated`: note the version bump, and if `script_changed` is true describe the script difference between `previous_script` and `current_script`
+
+Example:
+
+```
+Compared to 1.0.0:
+- Query script: switched from CSV reader to Parquet reader
+- `raw_images` updated 1.0.0 → 1.0.1 (filter condition tightened)
+```
+
 ## Query Script
 
 ```python
@@ -182,3 +211,4 @@ Output: .datachain/graph/
 - If `graph.py` fails (DataChain not installed, no DB), report the error and stop gracefully.
 - `dependencies` in `--dataset` output is best-effort: if unavailable it is an empty list — do not error.
 - `query_script` in `--dataset` output is best-effort: if unavailable or empty it is null — omit the section.
+- `changes` in `--dataset` output is null for the first version and best-effort otherwise — omit the section when null.

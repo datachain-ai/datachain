@@ -145,16 +145,25 @@ def cmd_dataset(name_version: str):
                 version = str(info.version)
                 break
 
-    # Fetch query_script and dependency tree
+    # Fetch query_script and locate previous version for Changes section
     query_script = None
+    _prev_version_info = None  # (prev_version_str, prev_script)
     dependencies = []
     try:
         catalog = chain.session.catalog
         dataset = catalog.get_dataset(name, include_incomplete=False)
-        dv = dataset.get_version(version or dataset.latest_version)
+        resolved_ver = version or dataset.latest_version
+        dv = dataset.get_version(resolved_ver)
         query_script = dv.query_script or None
+        sorted_vers = sorted(dataset.versions, key=lambda v: v.version_value)
+        idx = next(
+            (i for i, v in enumerate(sorted_vers) if v.version == resolved_ver), None
+        )
+        if idx is not None and idx > 0:
+            p = sorted_vers[idx - 1]
+            _prev_version_info = (p.version, p.query_script or None)
     except Exception:
-        pass  # query_script is best-effort
+        pass  # query_script and previous-version lookup are best-effort
 
     try:
         catalog = chain.session.catalog
@@ -187,6 +196,66 @@ def cmd_dataset(name_version: str):
     except Exception:
         pass  # dependencies are best-effort
 
+    # Compute Changes section vs previous version
+    changes = None
+    if _prev_version_info is not None:
+        prev_version_str, prev_script = _prev_version_info
+        script_changed = query_script != prev_script
+        changes = {
+            "previous_version": prev_version_str,
+            "script_changed": script_changed,
+            "previous_script": prev_script if script_changed else None,
+            "deps_added": [],
+            "deps_removed": [],
+            "deps_updated": [],
+        }
+        try:
+            catalog = chain.session.catalog
+            prev_deps_raw = (
+                catalog.get_dataset_dependencies(
+                    name=name, version=prev_version_str, indirect=True
+                )
+                or []
+            )
+            curr_dep_map = {d["name"]: d["version"] for d in dependencies}
+            prev_dep_map = {
+                d.name: (str(d.version) if d.version is not None else None)
+                for d in prev_deps_raw
+                if d
+            }
+            curr_names = set(curr_dep_map)
+            prev_names = set(prev_dep_map)
+            changes["deps_added"] = [
+                {"name": n, "version": curr_dep_map[n]}
+                for n in sorted(curr_names - prev_names)
+            ]
+            changes["deps_removed"] = [
+                {"name": n, "version": prev_dep_map[n]}
+                for n in sorted(prev_names - curr_names)
+            ]
+            for n in sorted(curr_names & prev_names):
+                cv, pv = curr_dep_map[n], prev_dep_map[n]
+                if cv != pv:
+                    entry = {
+                        "name": n,
+                        "version_from": pv,
+                        "version_to": cv,
+                        "script_changed": False,
+                    }
+                    try:
+                        dep_ds = catalog.get_dataset(n, include_incomplete=False)
+                        cs = dep_ds.get_version(cv).query_script or None
+                        ps = dep_ds.get_version(pv).query_script or None
+                        if cs != ps:
+                            entry["script_changed"] = True
+                            entry["previous_script"] = ps
+                            entry["current_script"] = cs
+                    except Exception:
+                        pass
+                    changes["deps_updated"].append(entry)
+        except Exception:
+            pass  # dep-level changes are best-effort
+
     print(
         json.dumps(
             {
@@ -194,6 +263,7 @@ def cmd_dataset(name_version: str):
                 "schema": schema,
                 "preview": preview,
                 "query_script": query_script,
+                "changes": changes,
                 "dependencies": dependencies,
             }
         )
