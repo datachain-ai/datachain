@@ -17,37 +17,11 @@ def test_read_dataset_version_specifiers(test_session):
             dataset_name, version=version
         )
 
-    # Test exact version specifier
-    assert (
-        dc.read_dataset(dataset_name, version="==1.1.0", session=test_session).version
-        == "1.1.0"
-    )
-
-    # Test greater than or equal specifier - should get latest (2.0.0)
-    assert (
-        dc.read_dataset(dataset_name, version=">=1.1.0", session=test_session).version
-        == "2.0.0"
-    )
-
-    # Test less than specifier - should get 1.2.0 (latest before 2.0.0)
-    assert (
-        dc.read_dataset(dataset_name, version="<2.0.0", session=test_session).version
-        == "1.2.0"
-    )
-
-    # Test compatible release specifier - should get latest 1.x (1.2.0)
-    assert (
-        dc.read_dataset(dataset_name, version="~=1.0", session=test_session).version
-        == "1.2.0"
-    )
-
-    # Test version pattern - should get latest 1.x (1.2.0)
-    assert (
-        dc.read_dataset(dataset_name, version="==1.*", session=test_session).version
-        == "1.2.0"
-    )
-
-    # Test complex specifier - should get 1.2.0
+    assert dc.read_dataset(dataset_name, version="==1.1.0", session=test_session).version == "1.1.0"
+    assert dc.read_dataset(dataset_name, version=">=1.1.0", session=test_session).version == "2.0.0"
+    assert dc.read_dataset(dataset_name, version="<2.0.0", session=test_session).version == "1.2.0"
+    assert dc.read_dataset(dataset_name, version="~=1.0", session=test_session).version == "1.2.0"
+    assert dc.read_dataset(dataset_name, version="==1.*", session=test_session).version == "1.2.0"
     assert (
         dc.read_dataset(
             dataset_name, version=">=1.1.0,<2.0.0", session=test_session
@@ -60,9 +34,7 @@ def test_read_dataset_version_specifiers_no_match(test_session):
     """Test read_dataset with version specifiers that don't match any version."""
     dataset_name = "test_no_match_specifiers"
 
-    dc.read_values(data=[1, 2], session=test_session).save(
-        dataset_name, version="1.0.0"
-    )
+    dc.read_values(data=[1, 2], session=test_session).save(dataset_name, version="1.0.0")
 
     with pytest.raises(DatasetVersionNotFoundError) as exc_info:
         dc.read_dataset(dataset_name, version=">=2.0.0", session=test_session)
@@ -77,21 +49,10 @@ def test_read_dataset_version_specifiers_exact_version(test_session):
     """Test that version specifiers work alongside with exact version reads."""
     dataset_name = "test_backward_compatibility"
 
-    dc.read_values(data=[1, 2], session=test_session).save(
-        dataset_name, version="1.0.0"
-    )
+    dc.read_values(data=[1, 2], session=test_session).save(dataset_name, version="1.0.0")
 
-    # Test reading by exact version
-    assert (
-        dc.read_dataset(dataset_name, version="1.0.0", session=test_session).version
-        == "1.0.0"
-    )
-
-    # Test reading by exact version int - backward compatibility
-    assert (
-        dc.read_dataset(dataset_name, version=1, session=test_session).version
-        == "1.0.0"
-    )
+    assert dc.read_dataset(dataset_name, version="1.0.0", session=test_session).version == "1.0.0"
+    assert dc.read_dataset(dataset_name, version=1, session=test_session).version == "1.0.0"
 
 
 def test_read_dataset_version_in_name(test_session):
@@ -103,21 +64,19 @@ def test_read_dataset_version_in_name(test_session):
             dataset_name, version=version
         )
 
-    # Test exact version embedded in name
-    assert (
-        dc.read_dataset(f"{dataset_name}@1.0.0", session=test_session).version
-        == "1.0.0"
-    )
-
-    # Test version specifier embedded in name
+    assert dc.read_dataset(f"{dataset_name}@1.0.0", session=test_session).version == "1.0.0"
     assert (
         dc.read_dataset(f"{dataset_name}@>=1.0.0,<2.0.0", session=test_session).version
         == "1.0.0"
     )
 
-    # Test that specifying version both in name and as parameter raises an error
-    with pytest.raises(ValueError, match="Cannot specify version both"):
-        dc.read_dataset(f"{dataset_name}@1.0.0", version="2.0.0", session=test_session)
+    # Explicit version parameter takes priority over @version in name
+    assert (
+        dc.read_dataset(
+            f"{dataset_name}@1.0.0", version="2.0.0", session=test_session
+        ).version
+        == "2.0.0"
+    )
 
 
 def test_delete_dataset_version_in_name(test_session):
@@ -129,20 +88,9 @@ def test_delete_dataset_version_in_name(test_session):
             dataset_name, version=version
         )
 
-    # Delete specific version using @ syntax
     dc.delete_dataset(f"{dataset_name}@1.0.0", session=test_session)
 
-    # Version 1.0.0 should be gone, 2.0.0 should still exist
     with pytest.raises(DatasetNotFoundError):
         dc.read_dataset(f"{dataset_name}@1.0.0", session=test_session).collect()
 
-    assert (
-        dc.read_dataset(f"{dataset_name}@2.0.0", session=test_session).version
-        == "2.0.0"
-    )
-
-    # Test that specifying version both in name and as parameter raises an error
-    with pytest.raises(ValueError, match="Cannot specify version both"):
-        dc.delete_dataset(
-            f"{dataset_name}@2.0.0", version="2.0.0", session=test_session
-        )
+    assert dc.read_dataset(f"{dataset_name}@2.0.0", session=test_session).version == "2.0.0"

@@ -1,6 +1,7 @@
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, get_origin, get_type_hints, overload
+from typing import TYPE_CHECKING, get_origin, get_type_hints
 
+from datachain.dataset import parse_dataset_with_version
 from datachain.error import (
     DatasetNotFoundError,
     DatasetVersionNotFoundError,
@@ -22,35 +23,6 @@ if TYPE_CHECKING:
     from .datachain import DataChain
 
     P = ParamSpec("P")
-
-
-@overload
-def _parse_name_version(name: str, version: str | None) -> tuple[str, str | None]: ...
-
-
-@overload
-def _parse_name_version(
-    name: str, version: str | int | None
-) -> tuple[str, str | int | None]: ...
-
-
-def _parse_name_version(
-    name: str, version: str | int | None
-) -> tuple[str, str | int | None]:
-    """Split an optional ``@version`` suffix from a dataset name.
-
-    Allows callers to pass ``"my_dataset@1.0.0"`` instead of
-    ``name="my_dataset", version="1.0.0"``.
-    """
-    if "@" in name:
-        parsed_name, name_version = name.split("@", 1)
-        if parsed_name:
-            if version is not None:
-                raise ValueError(
-                    "Cannot specify version both in the dataset name and as a parameter"
-                )
-            return parsed_name, name_version
-    return name, version
 
 
 def read_dataset(
@@ -174,7 +146,9 @@ def read_dataset(
 
     from .datachain import DataChain
 
-    name, version = _parse_name_version(name, version)
+    name, name_version = parse_dataset_with_version(name)
+    if version is None:
+        version = name_version
 
     telemetry.send_event_once("class", "datachain_init", name=name, version=version)
 
@@ -388,7 +362,9 @@ def delete_dataset(
     """
     from datachain.studio import remove_studio_dataset
 
-    name, version = _parse_name_version(name, version)
+    name, name_version = parse_dataset_with_version(name)
+    if version is None:
+        version = name_version
 
     session = Session.get(session, in_memory=in_memory)
     catalog = session.catalog
