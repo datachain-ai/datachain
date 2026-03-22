@@ -18,6 +18,11 @@ def show(
     script: bool = False,
 ) -> None:
     from datachain import Session, read_dataset
+    from datachain.dataset import parse_dataset_with_version
+
+    name, name_version = parse_dataset_with_version(name)
+    if version is None:
+        version = name_version
 
     if script:
         dataset = catalog.get_dataset(name, include_incomplete=False)

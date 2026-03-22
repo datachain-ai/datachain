@@ -155,6 +155,9 @@ def rm_dataset(
     studio: bool | None = False,
     team: str | None = None,
 ) -> None:
+    from datachain.lib.dc.datasets import _parse_name_version
+
+    name, version = _parse_name_version(name, version)
     namespace_name, project_name, name = catalog.get_full_dataset_name(name)
 
     if studio:
