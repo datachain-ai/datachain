@@ -102,6 +102,7 @@ Output:
     "columns": ["file.path", "file.size", "meta.width", "meta.height", "ratio"],
     "rows": [["dogs-and-cats/cat.1.jpg", 16880, 123, 456, "1:1"]]
   },
+  "query_script": "dc.read_csv(...).save('image_ratio')",
   "dependencies": [
     {
       "name": "...", "version": "...", "type": "...",
@@ -143,6 +144,14 @@ Render schema: for each signal, print `{signal}: {type}`, then if `fields` is no
 
 Render preview: use `columns` as table headers, `rows` as table rows.
 
+## Query Script
+
+```python
+dc.read_csv(...).save('image_ratio')
+```
+
+Omit the `## Query Script` section if `query_script` is null or empty.
+
 ## Dependencies
 
 | Dataset | Version | Type |
@@ -172,3 +181,4 @@ Output: .datachain/graph/
 - Never read `.datachain/db` directly — always go through `graph.py`.
 - If `graph.py` fails (DataChain not installed, no DB), report the error and stop gracefully.
 - `dependencies` in `--dataset` output is best-effort: if unavailable it is an empty list — do not error.
+- `query_script` in `--dataset` output is best-effort: if unavailable or empty it is null — omit the section.

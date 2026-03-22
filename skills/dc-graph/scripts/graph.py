@@ -116,14 +116,10 @@ def cmd_dataset(name_version: str):
         )
         sys.exit(1)
 
-    # Parse optional @version suffix
-    if "@" in name_version:
-        name, version = name_version.split("@", 1)
-        chain = dc.read_dataset(name, version=version)
-    else:
-        name = name_version
-        version = None
-        chain = dc.read_dataset(name)
+    from datachain.dataset import parse_dataset_with_version
+
+    name, version = parse_dataset_with_version(name_version)
+    chain = dc.read_dataset(name_version)
 
     schema = {
         col: _expand_signal(typ)
@@ -149,8 +145,17 @@ def cmd_dataset(name_version: str):
                 version = str(info.version)
                 break
 
-    # Fetch dependency tree
+    # Fetch query_script and dependency tree
+    query_script = None
     dependencies = []
+    try:
+        catalog = chain.session.catalog
+        dataset = catalog.get_dataset(name, include_incomplete=False)
+        dv = dataset.get_version(version or dataset.latest_version)
+        query_script = dv.query_script or None
+    except Exception:
+        pass  # query_script is best-effort
+
     try:
         catalog = chain.session.catalog
         if version:
@@ -188,6 +193,7 @@ def cmd_dataset(name_version: str):
                 "name": name,
                 "schema": schema,
                 "preview": preview,
+                "query_script": query_script,
                 "dependencies": dependencies,
             }
         )
