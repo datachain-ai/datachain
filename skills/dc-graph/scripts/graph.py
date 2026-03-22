@@ -101,8 +101,7 @@ def _expand_signal(typ):
     if issubclass(typ, File):
         return {"type": type_name, "fields": None}  # skip — covered by dc-core
     fields = {
-        fname: _type_name(finfo.annotation)
-        for fname, finfo in typ.model_fields.items()
+        fname: _type_name(finfo.annotation) for fname, finfo in typ.model_fields.items()
     }
     return {"type": type_name, "fields": fields}
 
@@ -139,10 +138,7 @@ def cmd_dataset(name_version: str):
 
     df = chain.limit(10).to_pandas(flatten=True, include_hidden=False)
     preview_columns = list(df.columns)
-    preview_rows = [
-        [_serialize(v) for v in row]
-        for row in df.itertuples(index=False)
-    ]
+    preview_rows = [[_serialize(v) for v in row] for row in df.itertuples(index=False)]
     preview = {"columns": preview_columns, "rows": preview_rows}
 
     # Resolve version if not provided (needed for dependency lookup)
