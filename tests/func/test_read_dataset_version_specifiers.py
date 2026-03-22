@@ -110,3 +110,31 @@ def test_read_dataset_version_in_name(test_session):
     # Test that specifying version both in name and as parameter raises an error
     with pytest.raises(ValueError, match="Cannot specify version both"):
         dc.read_dataset(f"{dataset_name}@1.0.0", version="2.0.0", session=test_session)
+
+
+def test_delete_dataset_version_in_name(test_session):
+    """Test delete_dataset with version embedded in name using the @ syntax."""
+    dataset_name = "test_delete_version_in_name"
+
+    for version in ["1.0.0", "2.0.0"]:
+        (
+            dc.read_values(data=[1, 2], session=test_session)
+            .mutate(dataset_version=version)
+            .save(dataset_name, version=version)
+        )
+
+    # Delete specific version using @ syntax
+    dc.delete_dataset(f"{dataset_name}@1.0.0", session=test_session)
+
+    # Version 1.0.0 should be gone, 2.0.0 should still exist
+    with pytest.raises(Exception):
+        dc.read_dataset(f"{dataset_name}@1.0.0", session=test_session).collect()
+
+    result = dc.read_dataset(f"{dataset_name}@2.0.0", session=test_session)
+    assert result.to_values("dataset_version")[0] == "2.0.0"
+
+    # Test that specifying version both in name and as parameter raises an error
+    with pytest.raises(ValueError, match="Cannot specify version both"):
+        dc.delete_dataset(
+            f"{dataset_name}@2.0.0", version="2.0.0", session=test_session
+        )

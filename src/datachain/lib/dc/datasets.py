@@ -24,6 +24,24 @@ if TYPE_CHECKING:
     P = ParamSpec("P")
 
 
+def _parse_name_version(
+    name: str, version: "str | int | None"
+) -> "tuple[str, str | int | None]":
+    """Split an optional ``@version`` suffix from a dataset name.
+
+    Allows callers to pass ``"my_dataset@1.0.0"`` instead of
+    ``name="my_dataset", version="1.0.0"``.
+    """
+    if "@" in name:
+        parsed_name, name_version = name.split("@", 1)
+        if version is not None:
+            raise ValueError(
+                "Cannot specify version both in the dataset name and as a parameter"
+            )
+        return parsed_name, name_version
+    return name, version
+
+
 def read_dataset(
     name: str,
     namespace: str | None = None,
@@ -145,13 +163,7 @@ def read_dataset(
 
     from .datachain import DataChain
 
-    if "@" in name:
-        name, name_version = name.split("@", 1)
-        if version is not None:
-            raise ValueError(
-                "Cannot specify version both in the dataset name and as a parameter"
-            )
-        version = name_version
+    name, version = _parse_name_version(name, version)
 
     telemetry.send_event_once("class", "datachain_init", name=name, version=version)
 
@@ -364,6 +376,8 @@ def delete_dataset(
         ```
     """
     from datachain.studio import remove_studio_dataset
+
+    name, version = _parse_name_version(name, version)
 
     session = Session.get(session, in_memory=in_memory)
     catalog = session.catalog
