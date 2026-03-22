@@ -93,8 +93,15 @@ Output:
 ```json
 {
   "name": "...",
-  "schema": {"col": "type", ...},
-  "preview": [{...}, ...],
+  "schema": {
+    "file": {"type": "File", "fields": null},
+    "meta": {"type": "ImageMeta", "fields": {"width": "int", "height": "int", "mode": "str"}},
+    "ratio": {"type": "str", "fields": null}
+  },
+  "preview": {
+    "columns": ["file.path", "file.size", "meta.width", "meta.height", "ratio"],
+    "rows": [["dogs-and-cats/cat.1.jpg", 16880, 123, 456, "1:1"]]
+  },
   "dependencies": [
     {
       "name": "...", "version": "...", "type": "...",
@@ -117,15 +124,24 @@ updated_at: <updated_at>
 
 ## Schema
 
-| Column | Type |
-|--------|------|
-| col    | type |
+```
+file: File          ← no fields (well-known, see dc-core)
+meta: ImageMeta
+  width: int
+  height: int
+  mode: str
+ratio: str
+```
+
+Render schema: for each signal, print `{signal}: {type}`, then if `fields` is not null indent each field as `  {name}: {type}`.
 
 ## Preview
 
-| col1 | col2 | ... |
-|------|------|-----|
-| val  | val  | ... |
+| file.path | file.size | meta.width | meta.height | ratio |
+|-----------|-----------|------------|-------------|-------|
+| ...       | ...       | ...        | ...         | ...   |
+
+Render preview: use `columns` as table headers, `rows` as table rows.
 
 ## Dependencies
 
