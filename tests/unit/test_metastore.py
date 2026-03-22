@@ -135,8 +135,16 @@ def test_get_dataset_can_skip_preview_loading(test_session):
     ds = dc.read_values(value=["a", "b"], session=test_session).save("preview-ds")
     metastore = test_session.catalog.metastore
 
-    with_preview = metastore.get_dataset(ds.name)
-    without_preview = metastore.get_dataset(ds.name, include_preview=False)
+    with_preview = metastore.get_dataset(
+        ds.name,
+        versions=None,
+        include_preview=True,
+    )
+    without_preview = metastore.get_dataset(
+        ds.name,
+        versions=None,
+        include_preview=False,
+    )
 
     assert with_preview.get_version("1.0.0").preview is not None
     assert without_preview.get_version("1.0.0").preview is None

@@ -5,7 +5,6 @@ import os.path
 import posixpath
 import sys
 import time
-import traceback
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import contextmanager, suppress
 from copy import copy
@@ -77,7 +76,6 @@ DEFAULT_DATASET_DIR = "dataset"
 CHECKPOINTS_TTL = 4 * 60 * 60
 
 INDEX_INTERNAL_ERROR_MESSAGE = "Internal error on indexing"
-DATASET_INTERNAL_ERROR_MESSAGE = "Internal error on creating dataset"
 # exit code we use if query script was canceled
 QUERY_SCRIPT_CANCELED_EXIT_CODE = 11
 # exit code we use if the job is already in a terminal state (failed/canceled elsewhere)
@@ -697,6 +695,7 @@ class Catalog:
                     ds_name,
                     namespace_name=ds_namespace,
                     project_name=ds_project,
+                    versions=[ds_version] if ds_version else None,
                     include_incomplete=False,
                 )
                 if not ds_version:
@@ -802,6 +801,7 @@ class Catalog:
         columns: Sequence[Column],
         feature_schema: dict | None = None,
         query_script: str = "",
+        sources: str = "",
         validate_version: bool | None = True,
         listing: bool | None = False,
         uuid: str | None = None,
@@ -827,6 +827,7 @@ class Catalog:
                 name,
                 namespace_name=project.namespace.name if project else None,
                 project_name=project.name if project else None,
+                versions=None,
             )
 
             if (description or attrs) and (
@@ -864,6 +865,7 @@ class Catalog:
             project=project,
             feature_schema=feature_schema,
             query_script=query_script,
+            sources=sources,
             columns=columns,
             uuid=uuid,
             job_id=job_id,
@@ -895,6 +897,7 @@ class Catalog:
         project: Project | None,
         feature_schema: dict | None,
         query_script: str,
+        sources: str,
         columns: Sequence[Column],
         uuid: str | None,
         job_id: str | None,
@@ -929,6 +932,7 @@ class Catalog:
                 target_version,
                 feature_schema=feature_schema,
                 query_script=query_script,
+                sources=sources,
                 columns=columns,
                 uuid=uuid,
                 job_id=job_id,
@@ -953,6 +957,7 @@ class Catalog:
                 name,
                 namespace_name=project.namespace.name if project else None,
                 project_name=project.name if project else None,
+                versions=None,
             )
             target_version = self._next_auto_version(dataset, update_version)
 
@@ -1173,7 +1178,7 @@ class Catalog:
         project: Project | None = None,
         client_config=None,
         recursive=False,
-    ) -> DatasetRecord:
+    ):
         if not sources:
             raise ValueError("Sources needs to be non empty list")
 
@@ -1186,55 +1191,20 @@ class Catalog:
             if source.startswith(DATASET_PREFIX):
                 dc = read_dataset(source[len(DATASET_PREFIX) :], session=self.session)
             else:
-                dc = read_storage(source, session=self.session, recursive=recursive)
+                dc = read_storage(
+                    source,
+                    session=self.session,
+                    recursive=recursive,
+                    client_config=client_config,
+                )
 
             chains.append(dc)
 
         # create union of all dataset queries created from sources
-        dc = reduce(lambda dc1, dc2: dc1.union(dc2), chains)
-        try:
-            dc = dc.settings(project=project.name, namespace=project.namespace.name)
-            dc.save(name)
-        except Exception as e:  # noqa: BLE001
-            try:
-                ds = self.get_dataset(
-                    name,
-                    namespace_name=project.namespace.name,
-                    project_name=project.name,
-                )
-                self.metastore.update_dataset_status(
-                    ds,
-                    DatasetStatus.FAILED,
-                    version=ds.latest_version,
-                    error_message=DATASET_INTERNAL_ERROR_MESSAGE,
-                    error_stack=traceback.format_exc(),
-                )
-                self._remove_dataset_rows_and_warehouse_info(
-                    ds,
-                    ds.latest_version,
-                    sources="\n".join(sources),
-                )
-                raise
-            except DatasetNotFoundError:
-                raise e from None
-
-        ds = self.get_dataset(
-            name,
-            namespace_name=project.namespace.name,
-            project_name=project.name,
-            include_preview=True,
-        )
-
-        self.update_dataset_version_with_warehouse_info(
-            ds,
-            ds.latest_version,
-            sources="\n".join(sources),
-        )
-
-        return self.get_dataset(
-            name,
-            namespace_name=project.namespace.name,
-            project_name=project.name,
+        return (
+            reduce(lambda dc1, dc2: dc1.union(dc2), chains)
+            .settings(project=project.name, namespace=project.namespace.name)
+            .save(name, sources="\n".join(sources))
         )
 
     def get_full_dataset_name(
@@ -1299,7 +1269,7 @@ class Catalog:
         namespace_name: str | None = None,
         project_name: str | None = None,
         *,
-        versions: list[str] | None = None,
+        versions: Sequence[str] | None = (),
         include_incomplete: bool = True,
         include_preview: bool = False,
     ) -> DatasetRecord:
@@ -1352,6 +1322,7 @@ class Catalog:
                     name,
                     namespace_name=namespace_name,
                     project_name=project_name,
+                    versions=None,
                     include_incomplete=include_incomplete,
                 )
                 if not version or ds.has_version(version):
@@ -1381,6 +1352,7 @@ class Catalog:
                 name,
                 namespace_name=namespace_name,
                 project_name=project_name,
+                versions=None,
                 include_incomplete=include_incomplete,
             )
 
@@ -1449,6 +1421,7 @@ class Catalog:
             name,
             namespace_name=namespace_name,
             project_name=project_name,
+            versions=[version],
             include_incomplete=False,
         )
         dataset_version = dataset.get_version(version)
@@ -1622,6 +1595,7 @@ class Catalog:
             name,
             namespace_name=project.namespace.name if project else None,
             project_name=project.name if project else None,
+            versions=[version],
         )
 
         self.warehouse.export_dataset_table(
@@ -1644,6 +1618,7 @@ class Catalog:
             name,
             namespace_name=project.namespace.name if project else None,
             project_name=project.name if project else None,
+            versions=None,
         )
         if not version and not force:
             raise ValueError(f"Missing dataset version from input for dataset {name}")
@@ -1861,6 +1836,7 @@ class Catalog:
                     local_ds_name,
                     namespace_name=namespace.name,
                     project_name=project.name,
+                    versions=None,
                     include_incomplete=True,
                 )
                 if local_dataset.has_version(local_ds_version):
