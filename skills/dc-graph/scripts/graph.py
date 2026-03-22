@@ -9,9 +9,12 @@ Usage:
 """
 
 import argparse
+import inspect
 import json
 import os
 import sys
+import types
+import typing
 from datetime import datetime, timezone
 from glob import glob
 
@@ -70,6 +73,40 @@ def cmd_list():
     print(json.dumps({"datasets": datasets}))
 
 
+def _type_name(tp):
+    if tp is type(None):
+        return "None"
+    if isinstance(tp, types.UnionType):  # Python 3.10+ X | Y
+        return " | ".join(_type_name(a) for a in tp.__args__)
+    origin = getattr(tp, "__origin__", None)
+    if origin is typing.Union:
+        return " | ".join(_type_name(a) for a in tp.__args__)
+    if origin is list:
+        args = getattr(tp, "__args__", ())
+        return f"list[{_type_name(args[0])}]" if args else "list"
+    if origin is dict:
+        return "dict"
+    return getattr(tp, "__name__", str(tp))
+
+
+def _expand_signal(typ):
+    """Return {"type": name, "fields": {name: type_str} | None}.
+    Fields is None for File subclasses (well-known) and primitives."""
+    from datachain.lib.data_model import DataModel
+    from datachain.lib.file import File
+
+    type_name = _type_name(typ)
+    if not (inspect.isclass(typ) and issubclass(typ, DataModel)):
+        return {"type": type_name, "fields": None}
+    if issubclass(typ, File):
+        return {"type": type_name, "fields": None}  # skip — covered by dc-core
+    fields = {
+        fname: _type_name(finfo.annotation)
+        for fname, finfo in typ.model_fields.items()
+    }
+    return {"type": type_name, "fields": fields}
+
+
 def cmd_dataset(name_version: str):
     try:
         import datachain as dc
@@ -90,23 +127,23 @@ def cmd_dataset(name_version: str):
         chain = dc.read_dataset(name)
 
     schema = {
-        col: str(typ)
+        col: _expand_signal(typ)
         for col, typ in chain.schema.items()
         if col != "sys" and not col.startswith("sys.")
     }
-    cols = list(schema.keys())
 
     def _serialize(val):
         if isinstance(val, (str, int, float, bool, type(None))):
             return val
         return str(val)
 
-    preview = []
-    for row in chain.select(*cols).limit(10).to_iter():
-        if isinstance(row, tuple):
-            preview.append({k: _serialize(v) for k, v in zip(cols, row)})
-        else:
-            preview.append({cols[0]: _serialize(row)} if cols else {})
+    df = chain.limit(10).to_pandas(flatten=True, include_hidden=False)
+    preview_columns = list(df.columns)
+    preview_rows = [
+        [_serialize(v) for v in row]
+        for row in df.itertuples(index=False)
+    ]
+    preview = {"columns": preview_columns, "rows": preview_rows}
 
     # Resolve version if not provided (needed for dependency lookup)
     if version is None:
