@@ -98,7 +98,6 @@ def test_read_dataset_version_in_name(test_session):
         == "1.0.0"
     )
 
-    # Explicit version parameter takes priority over @version in name
     assert (
         dc.read_dataset(
             f"{dataset_name}@1.0.0", version="2.0.0", session=test_session

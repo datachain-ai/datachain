@@ -52,8 +52,8 @@ def read_dataset(
             namespace and project. Alternatively, it can be a regular name, in which
             case the explicitly defined namespace and project will be used if they are
             set; otherwise, default values will be applied. The name can also include
-            a version using the ``name@version`` format (e.g. ``"my_dataset@1.0.0"``),
-            which is equivalent to passing ``version="1.0.0"`` separately.
+            a version using the ``name@version`` format (e.g. ``"my_dataset@1.0.0"``).
+            If ``version`` is also provided explicitly, it takes priority.
         namespace: optional name of namespace in which dataset to read is created
         project: optional name of project in which dataset to read is created
         version: dataset version. Supports:
