@@ -1166,7 +1166,7 @@ class Catalog:
 
         return num_removed
 
-    def cleanup_temp_datasets(self) -> int:
+    def cleanup_session_datasets(self) -> int:
         """
         Clean up orphaned temporary (session_*) datasets.
 

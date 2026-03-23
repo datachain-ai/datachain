@@ -310,14 +310,14 @@ def test_public_api_move_dataset_rejects_non_complete(
     ],
     ids=["finished-job", "running-job"],
 )
-def test_cleanup_temp_datasets(test_session, job, job_status, should_clean):
-    """Test catalog.cleanup_temp_datasets respects job status."""
+def test_cleanup_session_datasets(test_session, job, job_status, should_clean):
+    """Test catalog.cleanup_session_datasets respects job status."""
     ds = dc.read_values(value=["a", "b"], session=test_session).save(
         "session_test_abc123"
     )
     test_session.catalog.metastore.set_job_status(job.id, job_status)
 
-    num_removed = test_session.catalog.cleanup_temp_datasets()
+    num_removed = test_session.catalog.cleanup_session_datasets()
 
     if should_clean:
         assert num_removed >= 1
