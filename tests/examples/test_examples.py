@@ -62,16 +62,6 @@ def test_get_started_examples(example):
 @pytest.mark.llm_and_nlp
 @pytest.mark.parametrize("example", llm_and_nlp_examples)
 def test_llm_and_nlp_examples(example):
-    # TODO fix anthropic api key
-    pytest.skip("Skipping because of outdated ANTHROPIC_API_KEY")
-    name = os.path.basename(example)
-    if "hf-" in name:
-        import huggingface_hub
-
-        if not huggingface_hub.get_token():
-            pytest.skip("Hugging Face token not set")
-    if "claude" in name and "ANTHROPIC_API_KEY" not in os.environ:
-        pytest.skip("ANTHROPIC_API_KEY not set")
     smoke_test(example)
 
 
@@ -79,8 +69,6 @@ def test_llm_and_nlp_examples(example):
 @pytest.mark.multimodal
 @pytest.mark.parametrize("example", multimodal_examples)
 def test_multimodal(example):
-    if "openai" in os.path.basename(example) and "OPENAI_API_KEY" not in os.environ:
-        pytest.skip("OPENAI_API_KEY not set")
     smoke_test(
         example,
         {

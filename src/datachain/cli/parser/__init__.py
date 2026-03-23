@@ -465,6 +465,11 @@ def get_parser() -> ArgumentParser:  # noqa: PLR0915
         help="Dataset version",
     )
     show_parser.add_argument("--schema", action="store_true", help="Show schema")
+    show_parser.add_argument(
+        "--script",
+        action="store_true",
+        help="Print the script of source code",
+    )
     add_show_args(show_parser)
 
     parse_clear_cache = subp.add_parser(

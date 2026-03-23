@@ -71,7 +71,9 @@ python my_script.py              # checkpoints enabled
 datachain job run my_script.py   # checkpoints enabled (Studio)
 ```
 
-In Studio UI, you can choose between **Run from scratch** (ignores checkpoints) and **Continue from last checkpoint** when triggering a job.
+In Studio UI, you can choose between **Run** (ignores checkpoints) and **Resume** (continues from last checkpoint) when triggering a job.
+
+![Run and Resume buttons in Studio](images/run_resume_cta.png)
 
 Checkpoints are **not** used in:
 
@@ -135,9 +137,69 @@ def extract_parts(file) -> Iterator[str]:
 
 Generators (`.gen()`) that yield multiple rows per input also support partial recovery. If `extract_parts` crashes mid-execution, the next run continues from where it stopped — already-processed inputs are skipped, and incomplete inputs are re-processed.
 
+### What recomputes and what doesn't
+
+**Recomputes** — changing a filter:
+
+```python
+# Run 1
+dc.read_storage("gs://datachain-demo/dogs-and-cats/", anon=True).filter(
+    dc.C("file.size") > 10000
+).save("filtered")
+
+# Run 2 — changed threshold
+dc.read_storage("gs://datachain-demo/dogs-and-cats/", anon=True).filter(
+    dc.C("file.size") > 20000
+).save("filtered")
+# → "filtered" recomputes
+```
+
+**Recomputes** — changing UDF code after successful completion:
+
+```python
+# Run 1 — succeeds
+def score(file) -> float:
+    return file.size
+
+# Run 2 — changed logic
+def score(file) -> float:
+    return file.size / 1024
+# → UDF recomputes from scratch
+```
+
+**Does NOT recompute** — fixing a bug after a crash:
+
+```python
+# Run 1 — crashes mid-UDF
+def score(file) -> float:
+    if "cat" in file.path:
+        raise ValueError("bug")
+    return file.size
+
+# Run 2 — bug fixed, same output type
+def score(file) -> float:
+    return file.size
+# → UDF continues from where it stopped, already-processed rows are skipped
+```
+
+**Does NOT recompute** — changing an unrelated chain:
+
+```python
+# Chain 1 — changed
+dc.read_storage("gs://datachain-demo/dogs-and-cats/", anon=True).filter(
+    dc.C("file.size") > 20000  # was 10000
+).save("large_files")
+
+# Chain 2 — untouched
+dc.read_storage("gs://datachain-demo/dogs-and-cats/", anon=True).map(
+    path=lambda file: file.path, output=str
+).save("all_paths")
+# → "all_paths" is reused, only "large_files" recomputes
+```
+
 ## Limitations
 
 - **Script path matters:** DataChain links runs by the script's absolute path. Moving the script breaks checkpoint linking.
 - **Threading/multiprocessing:** Checkpoints are automatically disabled when Python threading or multiprocessing is detected. DataChain's built-in `parallel` setting for UDFs is not affected.
-- **Aggregations:** `.agg()` checkpoints are only created on successful completion. If an aggregation fails, it restarts from scratch on re-run (no partial progress tracking).
-- **Unhashable callables:** Built-in functions (`len`, `str`), C extensions, and `Mock` objects cannot be reliably hashed. Use regular `def` functions or lambdas for UDFs.
+- **Aggregations:** Unlike `.map()` and `.gen()`, aggregations (`.agg()`) do not save progress incrementally. If an aggregation fails partway through, the entire aggregation restarts from the beginning on the next run.
+- **Unhashable callables:** Built-in functions (`len`, `str`), C extensions, and `Mock` objects produce a different hash on each run, so checkpoints using these as UDFs will always recompute. Use regular `def` functions or lambdas instead.

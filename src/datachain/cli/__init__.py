@@ -219,6 +219,7 @@ def handle_show_command(args, catalog):
         no_collapse=args.no_collapse,
         schema=args.schema,
         include_hidden=args.hidden,
+        script=args.script,
     )
 
 
