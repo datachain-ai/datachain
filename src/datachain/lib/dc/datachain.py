@@ -629,6 +629,9 @@ class DataChain:
         )
         project = self._get_or_create_project(namespace_name, project_name)
 
+        # Resolve all listings (including sub-queries in union/join) before hashing
+        self._query.resolve_all_listings()
+
         # Calculate hash including dataset name and job context to avoid conflicts
         import hashlib
 

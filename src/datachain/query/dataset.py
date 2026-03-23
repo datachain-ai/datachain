@@ -196,6 +196,11 @@ class Step(ABC):
     ) -> list["DatasetQuery"]:
         return []
 
+    @property
+    def sub_queries(self) -> list["DatasetQuery"]:
+        """Immediate sub-queries contained in this step."""
+        return []
+
     def replace_source(
         self,
         source: "DatasetQuery",
@@ -285,6 +290,10 @@ class DatasetDiffOperation(Step):
         self,
     ) -> list["DatasetQuery"]:
         return self.dq.delta_sources()
+
+    @property
+    def sub_queries(self) -> list["DatasetQuery"]:
+        return [self.dq]
 
     def replace_source(
         self,
@@ -1868,6 +1877,10 @@ class SQLUnion(Step):
     ) -> list["DatasetQuery"]:
         return [*self.query1.delta_sources(), *self.query2.delta_sources()]
 
+    @property
+    def sub_queries(self) -> list["DatasetQuery"]:
+        return [self.query1, self.query2]
+
     def replace_source(
         self,
         source: "DatasetQuery",
@@ -1955,6 +1968,10 @@ class SQLJoin(Step):
         self,
     ) -> list["DatasetQuery"]:
         return [*self.query1.delta_sources(), *self.query2.delta_sources()]
+
+    @property
+    def sub_queries(self) -> list["DatasetQuery"]:
+        return [self.query1, self.query2]
 
     def replace_source(
         self,
@@ -2336,8 +2353,6 @@ class DatasetQuery:
         Args:
             job_aware: If True, includes the last checkpoint hash from the job context.
         """
-        self.resolve_listing()
-
         hasher = hashlib.sha256()
 
         start_hash = self._last_checkpoint_hash if job_aware else None
@@ -2406,12 +2421,19 @@ class DatasetQuery:
             # at this point we know what is our starting listing dataset name
             self._set_starting_step(listing_ds)  # type: ignore [arg-type]
 
+    def resolve_all_listings(self) -> None:
+        """Recursively resolve listings for this query and all sub-queries."""
+        self.resolve_listing()
+        for step in self.steps:
+            for sub_query in step.sub_queries:
+                sub_query.resolve_all_listings()
+
     def apply_steps(self) -> QueryGenerator:
         """
         Apply the steps in the query and return the resulting
         sqlalchemy.SelectBase.
         """
-        self.resolve_listing()
+        self.resolve_all_listings()
 
         hasher = hashlib.sha256()
         start_hash = self._last_checkpoint_hash
