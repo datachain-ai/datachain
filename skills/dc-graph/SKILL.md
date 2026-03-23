@@ -98,21 +98,38 @@ updated_at: <updated_at of latest version>
 
 <human-explained summary: what changed vs previous version, or "Initial version.">
 
+**Previous script** (if `changes.script_changed` is true — show old code then new code):
+```python
+<changes.previous_script>
+```
+
 **Query Script:**
 ```python
 <query_script>
 ```
 
+**Dependencies:**
+| Dataset | Version | Type |
+|---------|---------|------|
+| dep | version | type |
+
 **Dependency changes:**
-- <dep> bumped X → Y
+- added: `dep` v1.0.0
+- removed: `dep` v1.0.0
+- updated: `dep` 1.0.0 → 1.0.1
 ```
 
 **Section rules:**
 - Omit `## Schema` and `## Preview` if both are null (Studio dataset with no local access).
 - Omit `## Query Script` if `query_script` is null.
 - Omit `## Changes` if `changes` is null (first version).
-- Omit `## Dependencies` if `dependencies` is empty.
-- In `## Changes` and version sub-sections: describe `changes` in plain prose. If `script_changed` is true, describe what changed between scripts. List `deps_added`, `deps_removed`, `deps_updated`.
+- Omit `## Dependencies` (top-level section) if the latest version's `dependencies` array is empty. Populate it from `versions[-1].dependencies`.
+- In `## Changes`: describe in plain prose. If `script_changed` is true, show what changed between `previous_script` and `query_script` in prose. List added/removed/updated deps.
+- In each version history sub-section:
+  - Omit `**Previous script**` block if `changes` is null or `changes.script_changed` is false.
+  - Omit `**Query Script**` if `query_script` is null.
+  - Omit `**Dependencies**` table if `dependencies` is empty for that version.
+  - Omit `**Dependency changes**` if `deps_added`, `deps_removed`, and `deps_updated` are all empty.
 - Version History: newest-first. Write sub-sections for `versions_to_fetch` only; carry over existing sub-sections verbatim for versions in `file_versions` but not `versions_to_fetch`.
 - If `history_complete` is false, append at the end of Version History: `_(Older versions exist but were not included in this sync.)_`
 - Wikilinks use `[[path|display]]` syntax — path uses `/`-separated slugs, display uses the dot-separated dataset name. Local datasets: `[[name_slug|name]]`. Studio datasets: `[[namespace/project/bare_name_slug|namespace.project.bare_name]]`.
