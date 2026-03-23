@@ -250,7 +250,7 @@ def test_read_records_and_gen(test_session):
 def test_read_records_populates_dataset_metadata(test_session):
     chain = dc.read_records([{"seed": 0}], schema={"seed": int}, session=test_session)
 
-    dataset = test_session.catalog.get_dataset(chain.name)
+    dataset = test_session.catalog.get_dataset(chain.name, versions=[chain.version])
     version = dataset.get_version(chain.version)
 
     assert version.status == DatasetStatus.COMPLETE
@@ -4167,7 +4167,7 @@ def test_semver_preview_ok(test_session):
     dc.read_values(num=[1, 2], session=test_session).save(ds_name)
     dc.read_values(num=[3, 4], session=test_session).save(ds_name)
 
-    dataset = test_session.catalog.get_dataset(ds_name)
+    dataset = test_session.catalog.get_dataset(ds_name, versions=["1.0.0", "1.0.1"])
     assert sorted([p["num"] for p in dataset.get_version("1.0.0").preview]) == [1, 2]
     assert sorted([p["num"] for p in dataset.get_version("1.0.1").preview]) == [3, 4]
 

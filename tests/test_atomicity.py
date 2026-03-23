@@ -108,7 +108,11 @@ def test_concurrent_save_retries_auto_version(tmp_dir, catalog_tmpfile):
     assert versions == ["1.0.0", "1.0.1"]
     assert attempts == [1, 2]
 
-    dataset = catalog_tmpfile.get_dataset(dataset_name, include_incomplete=True)
+    dataset = catalog_tmpfile.get_dataset(
+        dataset_name,
+        include_incomplete=True,
+        versions=None,
+    )
     assert [v.version for v in dataset.versions if v.version] == ["1.0.0", "1.0.1"]
 
     for version in ("1.0.0", "1.0.1"):
@@ -175,7 +179,11 @@ def test_concurrent_save_fails_after_max_retries(tmp_dir, catalog_tmpfile):
         "Failed to claim a version" in result["error_message"] for result in failures
     )
 
-    dataset = catalog_tmpfile.get_dataset(dataset_name, include_incomplete=True)
+    dataset = catalog_tmpfile.get_dataset(
+        dataset_name,
+        include_incomplete=True,
+        versions=None,
+    )
     assert [v.version for v in dataset.versions if v.version] == [
         "1.0.0",
         "1.0.1",

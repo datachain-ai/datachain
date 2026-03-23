@@ -550,7 +550,7 @@ def test_edit_dataset_remove_attrs_and_description(test_session, saved_dataset):
         attrs=[],
     )
 
-    dataset = catalog.get_dataset(dataset_new_name)
+    dataset = catalog.get_dataset(dataset_new_name, versions=None)
     assert [v.version for v in dataset.versions] == ["1.0.0"]
     assert dataset.name == dataset_new_name
     assert dataset.description == ""
@@ -696,7 +696,11 @@ def test_dataset_preview_custom_columns(cloud_test_catalog, dogs_dataset):
         .save("dogs_custom_columns")
     )
 
-    for r in catalog.get_dataset("dogs_custom_columns").get_version("1.0.0").preview:
+    for r in (
+        catalog.get_dataset("dogs_custom_columns", versions=["1.0.0"])
+        .get_version("1.0.0")
+        .preview
+    ):
         assert r["int_col"] == 5
         assert r["int_col_32"] == 5
         assert r["int_col_64"] == 5
@@ -725,7 +729,11 @@ def test_dataset_preview_order(test_session):
 
     preview_values = []
 
-    for r in catalog.get_dataset(dataset_name).get_version("1.0.0").preview:
+    for r in (
+        catalog.get_dataset(dataset_name, versions=["1.0.0"])
+        .get_version("1.0.0")
+        .preview
+    ):
         id = ids.pop()
         o = order.pop()
         entry = (id, o)
@@ -734,14 +742,22 @@ def test_dataset_preview_order(test_session):
 
     dc.read_dataset(dataset_name, session=test_session).save(dataset_name)
 
-    for r in catalog.get_dataset(dataset_name).get_version("1.0.1").preview:
+    for r in (
+        catalog.get_dataset(dataset_name, versions=["1.0.1"])
+        .get_version("1.0.1")
+        .preview
+    ):
         assert (r["id"], r["order"]) == preview_values.pop(0)
 
     dc.read_dataset(dataset_name, version="1.0.1", session=test_session).order_by(
         "id"
     ).save(dataset_name)
 
-    for r in catalog.get_dataset(dataset_name).get_version("1.0.2").preview:
+    for r in (
+        catalog.get_dataset(dataset_name, versions=["1.0.2"])
+        .get_version("1.0.2")
+        .preview
+    ):
         assert r["id"] == ids.pop(0)
         assert r["order"] == order.pop(0)
 
@@ -757,7 +773,11 @@ def test_dataset_preview_last_modified(cloud_test_catalog, dogs_dataset):
         catalog=catalog,
     ).save("dogs_custom_columns", project=project)
 
-    for r in catalog.get_dataset("dogs_custom_columns").get_version("1.0.0").preview:
+    for r in (
+        catalog.get_dataset("dogs_custom_columns", versions=["1.0.0"])
+        .get_version("1.0.0")
+        .preview
+    ):
         assert isinstance(r.get("file__last_modified"), str)
 
 
@@ -791,7 +811,9 @@ def test_row_random(cloud_test_catalog):
 
 def test_dataset_stats_registered_ds(cloud_test_catalog, dogs_dataset):
     catalog = cloud_test_catalog.catalog
-    dataset = catalog.get_dataset(dogs_dataset.name).get_version("1.0.0")
+    dataset = catalog.get_dataset(dogs_dataset.name, versions=["1.0.0"]).get_version(
+        "1.0.0"
+    )
     assert dataset.num_objects == 4
     assert dataset.size == 15
     rows_count = catalog.warehouse.dataset_rows_count(dogs_dataset, "1.0.0")
