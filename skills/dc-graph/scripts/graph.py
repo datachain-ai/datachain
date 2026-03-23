@@ -76,9 +76,8 @@ def _dataset_file_path(name, source):
         namespace, project, bare_name = dot_parts
         bare_name_slug = bare_name.lower().replace(".", "_")
         return f"datasets/{namespace}/{project}/{bare_name_slug}.md"
-    else:
-        name_slug = name.lower().replace(".", "_")
-        return f"datasets/{name_slug}.md"
+    name_slug = name.lower().replace(".", "_")
+    return f"datasets/{name_slug}.md"
 
 
 def cmd_db_mtime():
@@ -201,7 +200,11 @@ def cmd_plan(studio: bool = False):
 
     # Step 3: early exit if timestamps match (local mode only)
     if not studio_mode and db_last_updated and db_last_updated == index_db_updated:
-        print(json.dumps({"up_to_date": True, "db_last_updated": db_last_updated, "datasets": []}))
+        print(
+            json.dumps(
+                {"up_to_date": True, "db_last_updated": db_last_updated, "datasets": []}
+            )
+        )
         return
 
     # Step 4: collect datasets
@@ -272,19 +275,21 @@ def cmd_plan(studio: bool = False):
         # history_complete: false if oldest known version is not "1.0.0"
         history_complete = versions_sorted[0] == "1.0.0"
 
-        datasets_out.append({
-            "name": name,
-            "source": source,
-            "file_path": file_path,
-            "status": status,
-            "latest_version": latest_version,
-            "num_objects": latest_entry.get("num_objects"),
-            "updated_at": latest_entry.get("updated_at"),
-            "known_versions": versions_sorted,
-            "file_versions": file_versions,
-            "versions_to_fetch": versions_to_fetch,
-            "history_complete": history_complete,
-        })
+        datasets_out.append(
+            {
+                "name": name,
+                "source": source,
+                "file_path": file_path,
+                "status": status,
+                "latest_version": latest_version,
+                "num_objects": latest_entry.get("num_objects"),
+                "updated_at": latest_entry.get("updated_at"),
+                "known_versions": versions_sorted,
+                "file_versions": file_versions,
+                "versions_to_fetch": versions_to_fetch,
+                "history_complete": history_complete,
+            }
+        )
 
     up_to_date = bool(datasets_out) and all(d["status"] == "ok" for d in datasets_out)
 
@@ -610,22 +615,32 @@ def cmd_dataset_all(name: str):
             (e for e in version_entries if e["version"] == version), None
         )
         data = _fetch_version_data(f"{name}@{version}")
-        versions_out.append({
-            "version": version,
-            "num_objects": version_entry.get("num_objects") if version_entry else None,
-            "updated_at": version_entry.get("updated_at") if version_entry else None,
-            "schema": data.get("schema"),
-            "preview": data.get("preview"),
-            "query_script": data.get("query_script"),
-            "changes": data.get("changes"),
-            "dependencies": data.get("dependencies", []),
-        })
+        versions_out.append(
+            {
+                "version": version,
+                "num_objects": version_entry.get("num_objects")
+                if version_entry
+                else None,
+                "updated_at": version_entry.get("updated_at")
+                if version_entry
+                else None,
+                "schema": data.get("schema"),
+                "preview": data.get("preview"),
+                "query_script": data.get("query_script"),
+                "changes": data.get("changes"),
+                "dependencies": data.get("dependencies", []),
+            }
+        )
 
-    print(json.dumps({
-        "name": name,
-        "source": source,
-        "versions": versions_out,
-    }))
+    print(
+        json.dumps(
+            {
+                "name": name,
+                "source": source,
+                "versions": versions_out,
+            }
+        )
+    )
 
 
 def main():
