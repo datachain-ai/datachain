@@ -73,7 +73,7 @@ def test_skill_list_no_args():
 def _make_fake_skills_src(tmp_path: Path) -> Path:
     """Create a minimal skills source tree for testing."""
     skills_src = tmp_path / "skills_src"
-    for skill_name in ("dc-core", "dc-graph"):
+    for skill_name in ("dc-core", "dc-graph", "dc-jobs"):
         skill_dir = skills_src / skill_name
         skill_dir.mkdir(parents=True)
         (skill_dir / "SKILL.md").write_text(
@@ -124,7 +124,7 @@ def test_install_all_claude_global(tmp_path, fake_skills_src, fake_home, capsys)
     skills_base = fake_home / ".claude" / "skills"
     commands_base = fake_home / ".claude" / "commands"
 
-    for skill in ("dc-core", "dc-graph"):
+    for skill in ("dc-core", "dc-graph", "dc-jobs"):
         assert (skills_base / skill / "SKILL.md").exists()
         assert (commands_base / f"{skill}.md").exists()
 
@@ -161,7 +161,7 @@ def test_install_all_cursor_global(tmp_path, fake_skills_src, fake_home):
     skills_base = fake_home / ".cursor" / "skills"
     rules_base = fake_home / ".cursor" / "rules"
 
-    for skill in ("dc-core", "dc-graph"):
+    for skill in ("dc-core", "dc-graph", "dc-jobs"):
         assert (skills_base / skill / "SKILL.md").exists()
         assert (rules_base / f"{skill}.mdc").exists()
 
@@ -173,7 +173,7 @@ def test_install_all_codex_global(tmp_path, fake_skills_src, fake_home):
     _run_install(fake_skills_src, fake_home, skills=None, target="codex", local=False)
 
     skills_base = fake_home / ".codex" / "skills"
-    for skill in ("dc-core", "dc-graph"):
+    for skill in ("dc-core", "dc-graph", "dc-jobs"):
         assert (skills_base / skill / "SKILL.md").exists()
 
     # codex has no commands dir
@@ -204,7 +204,7 @@ def test_install_claude_local(tmp_path, fake_skills_src, fake_home):
     skills_base = project_dir / ".claude" / "skills"
     commands_base = project_dir / ".claude" / "commands"
 
-    for skill in ("dc-core", "dc-graph"):
+    for skill in ("dc-core", "dc-graph", "dc-jobs"):
         assert (skills_base / skill / "SKILL.md").exists()
         assert (commands_base / f"{skill}.md").exists()
 
@@ -224,6 +224,7 @@ def test_list_skills_output(capsys):
     out = capsys.readouterr().out
     assert "core" in out
     assert "graph" in out
+    assert "jobs" in out
     assert "claude" in out
     assert "cursor" in out
     assert "codex" in out

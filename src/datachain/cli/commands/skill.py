@@ -4,6 +4,7 @@ from pathlib import Path
 SKILLS = {
     "core": "dc-core",
     "graph": "dc-graph",
+    "jobs": "dc-jobs",
 }
 
 # For each target: dirs relative to base (home or project root), and command extension.
