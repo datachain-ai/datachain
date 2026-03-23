@@ -10,7 +10,6 @@ Usage:
 
 import argparse
 import json
-import os
 import sys
 from datetime import datetime, timedelta, timezone
 
@@ -60,6 +59,7 @@ def _duration_str(seconds: int) -> str:
 def _strip_ordinal(value: str) -> str:
     """Strip trailing ordinal suffix like ' (3rd)' or ' (4th)' from a string."""
     import re
+
     return re.sub(r"\s*\(\w+\)\s*$", "", value).strip()
 
 
@@ -158,7 +158,14 @@ def _enrich_job(client, job: dict) -> dict:
         if response.ok and response.data and len(response.data) > 0:
             detail = response.data[0]
             # Merge fields that may be richer in the per-job response
-            for field in ("workers", "finished_at", "python_version", "cluster", "compute_cluster_name", "cluster_name"):
+            for field in (
+                "workers",
+                "finished_at",
+                "python_version",
+                "cluster",
+                "compute_cluster_name",
+                "cluster_name",
+            ):
                 if detail.get(field) is not None:
                     job[field] = detail[field]
     except Exception:
@@ -223,7 +230,8 @@ def cmd_fetch(days: int, limit: int, enrich: bool):
     to_enrich = []
     if enrich:
         to_enrich = [
-            j for j in filtered
+            j
+            for j in filtered
             if _normalize_status(j.get("status")) in TERMINAL_STATUSES
         ]
         n = min(len(to_enrich), ENRICH_LIMIT)
@@ -287,7 +295,9 @@ def cmd_fetch(days: int, limit: int, enrich: bool):
                 "created_by": j.get("created_by"),
                 "finished_at": j.get("finished_at"),
                 "duration_seconds": duration_seconds,
-                "duration_str": _duration_str(duration_seconds) if duration_seconds is not None else None,
+                "duration_str": _duration_str(duration_seconds)
+                if duration_seconds is not None
+                else None,
                 "workers": j.get("workers") or 1,
                 "cluster_name": cluster_name,
                 "python_version": j.get("python_version"),
@@ -314,7 +324,10 @@ def cmd_fetch(days: int, limit: int, enrich: bool):
                 "failed_count": failed_count,
                 "complete_count": complete_count,
                 "running_count": running_count,
-                "other_count": len(jobs_out) - failed_count - complete_count - running_count,
+                "other_count": len(jobs_out)
+                - failed_count
+                - complete_count
+                - running_count,
                 "clusters": clusters_list,
                 "jobs": jobs_out,
             }
@@ -327,11 +340,27 @@ def main():
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--plan", action="store_true", help="Check index.md staleness")
     group.add_argument("--fetch", action="store_true", help="Fetch jobs from Studio")
-    group.add_argument("--clusters", action="store_true", help="List available clusters")
+    group.add_argument(
+        "--clusters", action="store_true", help="List available clusters"
+    )
 
-    parser.add_argument("--days", type=int, default=DEFAULT_DAYS, help=f"Days to look back (default: {DEFAULT_DAYS})")
-    parser.add_argument("--limit", type=int, default=DEFAULT_LIMIT, help=f"Max jobs to fetch (default: {DEFAULT_LIMIT})")
-    parser.add_argument("--enrich", action="store_true", help="Fetch per-job details for workers/duration/cluster")
+    parser.add_argument(
+        "--days",
+        type=int,
+        default=DEFAULT_DAYS,
+        help=f"Days to look back (default: {DEFAULT_DAYS})",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=DEFAULT_LIMIT,
+        help=f"Max jobs to fetch (default: {DEFAULT_LIMIT})",
+    )
+    parser.add_argument(
+        "--enrich",
+        action="store_true",
+        help="Fetch per-job details for workers/duration/cluster",
+    )
 
     args = parser.parse_args()
 

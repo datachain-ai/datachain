@@ -195,7 +195,11 @@ def cmd_plan(studio: bool = False):
 
     # Step 3: early exit if timestamps match
     if db_last_updated and db_last_updated == index_db_updated:
-        print(json.dumps({"up_to_date": True, "db_last_updated": db_last_updated, "datasets": []}))
+        print(
+            json.dumps(
+                {"up_to_date": True, "db_last_updated": db_last_updated, "datasets": []}
+            )
+        )
         return
 
     # Step 4: collect datasets
