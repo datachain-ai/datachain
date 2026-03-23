@@ -114,14 +114,17 @@ def parse_dataset_name(name: str) -> tuple[str | None, str | None, str]:
 
 
 def parse_dataset_with_version(dataset_input: str) -> tuple[str, str | None]:
+    """Parse an optional ``@version`` suffix from a dataset name.
+
+    Supports exact versions (``"1.2.3"``), PEP 440 specifiers
+    (``">=1.0.0,<2.0.0"``), and legacy integer versions (``"1"``).
+    Returns the bare name and the version string, or ``(dataset_input, None)``
+    if no version suffix is present.
+    """
     parts = dataset_input.rsplit("@", 1)
 
-    if len(parts) == 2 and parts[1]:
-        try:
-            semver.validate(parts[1])
-            return parts[0], parts[1]
-        except ValueError:
-            pass
+    if len(parts) == 2 and parts[0] and parts[1]:
+        return parts[0], parts[1]
     return dataset_input, None
 
 

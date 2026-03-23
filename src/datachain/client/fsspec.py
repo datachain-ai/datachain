@@ -221,7 +221,7 @@ class Client(ABC):
 
     async def get_current_etag(self, file: "File") -> str:
         full_path = file.get_fs_path()
-        info = await self.fs._info(full_path, **self._version_kwargs(file.version))
+        info = await self.fs._info(full_path, **self._file_info_kwargs(file.version))
         return self.info_to_file(info, file.path).etag
 
     def get_file_info(self, path: str, version_id: str | None = None) -> "File":
@@ -231,7 +231,7 @@ class Client(ABC):
             get_loop(),
             self.fs._info,
             full_path,
-            **self._version_kwargs(version_id),
+            **self._file_info_kwargs(version_id),
         )
         return self.info_to_file(info, path)
 
@@ -353,11 +353,16 @@ class Client(ABC):
             return {"version_id": version_id}
         return {}
 
-    async def ls_dir(self, path):
-        kwargs = {}
+    def _file_info_kwargs(self, version_id: str | None = None) -> dict[str, Any]:
+        return self._version_kwargs(version_id)
+
+    def _ls_dir_kwargs(self) -> dict[str, Any]:
         if self._is_version_aware():
-            kwargs = {"versions": True}
-        return await self.fs._ls(path, detail=True, **kwargs)
+            return {"versions": True}
+        return {}
+
+    async def ls_dir(self, path):
+        return await self.fs._ls(path, detail=True, **self._ls_dir_kwargs())
 
     def rel_path(self, path: str) -> str:
         return self.fs.split_path(path)[1]
@@ -431,7 +436,7 @@ class Client(ABC):
         self.fs.makedirs(parent, exist_ok=True)
 
         self.fs.pipe_file(full_path, data)
-        file_info = self.fs.info(full_path)
+        file_info = self.fs.info(full_path, **self._file_info_kwargs())
         return self.info_to_file(file_info, rel_path)
 
     def download(self, file: "File", *, callback: Callback = DEFAULT_CALLBACK) -> None:

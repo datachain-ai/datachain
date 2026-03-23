@@ -39,7 +39,7 @@ def test_get_or_create_creates_job(test_session, patch_argv, monkeypatch):
     db_job = test_session.catalog.metastore.get_job(job.id)
     assert db_job is not None
     assert db_job.name.endswith("script.py")
-    assert db_job.query == ""
+    assert db_job.query == "print('hello world')\n"
     assert db_job.status == JobStatus.RUNNING
 
 

@@ -1204,7 +1204,7 @@ class Catalog:
         return (
             reduce(lambda dc1, dc2: dc1.union(dc2), chains)
             .settings(project=project.name, namespace=project.namespace.name)
-            .save(name, sources="\n".join(sources))
+            .save(name, sources="\n".join(sources), query_script="")
         )
 
     def get_full_dataset_name(

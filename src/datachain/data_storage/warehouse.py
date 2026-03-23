@@ -34,7 +34,7 @@ from datachain.query.batch import RowsOutput
 from datachain.query.schema import ColumnMeta
 from datachain.sql.functions import path as pathfunc
 from datachain.sql.types import SQLType
-from datachain.utils import sql_escape_like
+from datachain.utils import safe_closing, sql_escape_like
 
 if TYPE_CHECKING:
     from sqlalchemy.sql._typing import (
@@ -421,10 +421,10 @@ class AbstractWarehouse(ABC, Serializable):
         """
         Fetch dataset rows from database.
         """
-        rows = self.db.execute(query, **kwargs)
-        yield from convert_rows_custom_column_types(
-            query.selected_columns, rows, self.db.dialect
-        )
+        with safe_closing(self.db.execute(query, **kwargs)) as rows:
+            yield from convert_rows_custom_column_types(
+                query.selected_columns, rows, self.db.dialect
+            )
 
     def dataset_rows_select_from_ids(
         self,
