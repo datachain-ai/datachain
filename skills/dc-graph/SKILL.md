@@ -56,15 +56,20 @@ Output is JSON:
 {"datasets": [{"name": "...", "version": "...", "num_objects": 123, "status": 4, "namespace": "...", "project": "...", "created_at": "...", "updated_at": "..."}]}
 ```
 
-Datasets in namespace `system` or project `listing` are already filtered out by the script.
+**One entry per dataset×version** — a dataset with three versions appears three times with the same `name` but different `version`, `num_objects`, and `updated_at`. Datasets in namespace `system` or project `listing` are already filtered out by the script.
 
 ### Phase 3 — Diff Against Existing Graph
 
-For each dataset returned in Phase 2:
+Group the `--list` entries by `name`. For each unique dataset name:
 1. Derive the filename: replace `.` and `/` with `_`, lowercase → `{name_slug}.md`. **Never include a version in the filename.**
-2. Read `.datachain/graph/datasets/{name_slug}.md` (if it exists)
-3. Extract `latest_version` and `num_objects` from its YAML frontmatter
-4. Mark the dataset as **stale** if either field differs from the `--list` output, or if the file does not exist
+2. Identify `latest_version` as the highest version among all entries for this dataset.
+3. Read `.datachain/graph/datasets/{name_slug}.md` (if it exists).
+4. Extract `latest_version` and `num_objects` from its YAML frontmatter.
+5. Collect the set of versions already present as `### version` sub-sections in the Version History.
+6. Mark the dataset as **stale** if any of:
+   - The file does not exist
+   - `latest_version` or `num_objects` (for the latest version) differs from the file's frontmatter
+   - Any version from `--list` is missing from the Version History sub-sections
 
 ### Phase 4 — Write
 
@@ -82,12 +87,13 @@ dataset_count: <N>
 Body: a table listing all datasets with columns: Name, Version, Objects, Updated.
 Each name is a wikilink: `[[name_slug]]`.
 
-**For each stale dataset**, run one script call using the dataset's `latest_version`:
+**For each stale dataset**, run one script call **per version that is missing from the Version History**, plus always one call for `latest_version` (even if it already has an entry, to refresh the top-level metadata). Run calls oldest-version-first so `changes` fields chain correctly.
+
 ```
-python3 {skill_dir}/scripts/graph.py --dataset <name>@<latest_version>
+python3 {skill_dir}/scripts/graph.py --dataset <name>@<version>
 ```
 
-Pass the `name` and `version` from the `--list` output as `name@version`. **One call per stale dataset, not per version.**
+Run this once per version that needs a new or updated sub-section. **Do not call for versions already present verbatim in the history unless they are the latest.**
 
 Output:
 ```json
@@ -193,16 +199,48 @@ For each top-level dependency, list it as a wikilink row. If it has child depend
 
 ## Version History
 
-| Version | Objects | Updated | Changes |
-|---------|---------|---------|---------|
-| 1.0.1   | 12400   | 2026-03-20 | script changed; `raw_images` 1.0.0→1.0.1 |
-| 1.0.0   | 11000   | 2026-03-10 | — |
+### 1.0.1 — 2026-03-20 (12400 objects)
+
+Script switched from CSV reader to Parquet reader.
+`raw_images` updated 1.0.0 → 1.0.1 (filter condition tightened).
+
+**Query Script:**
+```python
+dc.read_parquet(...).save('image_ratio')
 ```
+
+**Dependency changes:**
+- `raw_images` bumped 1.0.0 → 1.0.1
+
+### 1.0.0 — 2026-03-10 (11000 objects)
+
+Initial version.
+
+**Query Script:**
+```python
+dc.read_csv(...).save('image_ratio')
+```
+```
+
+Each `### {version}` sub-section heading format: `### {version} — {updated_at} ({num_objects} objects)`
+
+Sub-section contents (in order):
+1. **Human-explained summary** (plain prose paragraph): derived from the `changes` field — describe what changed vs the previous version. For the first version write "Initial version." If `changes` is null on a non-first version write "No recorded changes."
+2. **Query Script** (fenced code block, label `**Query Script:**`): omit if `query_script` is null.
+3. **Dependency changes** (bulleted list, label `**Dependency changes:**`): list deps added, removed, or version-bumped. Omit entirely if no dependency changes.
 
 **Version History update rule:**
 
-- **File already exists**: read the existing Version History table from the file, then prepend a new row for the new `latest_version` at the top. The one-line `Changes` summary for the new row is a brief phrase derived from the `changes` field (e.g. "script changed; `raw_images` 1.0.0→1.0.1"), or "—" if `changes` is null. Carry over all older rows from the existing file unchanged.
-- **File does not exist**: write a single-row Version History table with "—" in the Changes column.
+The goal is **one sub-section per known version, newest first, with no gaps**.
+
+- Collect all versions from the `--list` output for this dataset (there is one entry per version).
+- Collect all `### version` sub-sections already in the file (if it exists).
+- For every version that has no sub-section yet (including versions older than the current file), run `--dataset name@version` and write a new sub-section from the script output.
+- Carry over all existing sub-sections verbatim — do not re-fetch versions already in the file unless they are `latest_version`.
+- Always re-run `--dataset name@latest_version` and replace (or write) its sub-section with fresh data.
+- Write all sub-sections sorted newest-first.
+
+**Handling leftover versioned files:** If old versioned files (e.g. `flower-large_1_0_0.md`) exist in `.datachain/graph/datasets/`, delete them when rewriting the dataset to the canonical unversioned filename.
 
 All files use Obsidian-compatible wikilinks (`[[name_slug]]`) and YAML frontmatter.
 
