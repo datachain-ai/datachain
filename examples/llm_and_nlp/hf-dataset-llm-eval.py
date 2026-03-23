@@ -1,9 +1,17 @@
 import os
+import sys
 
 from huggingface_hub import InferenceClient
-from requests import HTTPError
+from huggingface_hub.errors import HfHubHTTPError
 
 import datachain as dc
+
+HF_TOKEN = os.environ.get("HF_TOKEN")
+
+if not HF_TOKEN:
+    print("This example requires a Hugging Face token")
+    print("Add your token using the HF_TOKEN environment variable.")
+    sys.exit(1)
 
 PROMPT = """
 Was this dialog successful? Put result as a single word: Success or Failure.
@@ -25,7 +33,7 @@ def eval_dialog(
 ) -> DialogEval:
     try:
         completion = client.chat_completion(
-            model="HuggingFaceTB/SmolLM3-3B",
+            model="Qwen/Qwen2.5-7B-Instruct",
             messages=[
                 {
                     "role": "user",
@@ -37,7 +45,7 @@ def eval_dialog(
                 "json_schema": {"schema": DialogEval.model_json_schema()},
             },
         )
-    except HTTPError as e:
+    except HfHubHTTPError as e:
         return DialogEval(result="Error", reason=str(e))
 
     message = completion.choices[0].message
@@ -56,21 +64,20 @@ def eval_dialog(
         "hf://datasets/infinite-dataset-hub/MobilePlanAssistant/data.csv", source=False
     )
     .settings(parallel=True)
-    .setup(
-        client=lambda: InferenceClient(
-            provider="hf-inference", api_key=os.environ["HF_TOKEN"]
-        )
-    )
+    .setup(client=lambda: InferenceClient(api_key=HF_TOKEN))
     .map(response=eval_dialog)
     .to_parquet("hf://datasets/dvcorg/test-datachain-llm-eval/data.parquet")
 )
 
+result = dc.read_parquet(
+    "hf://datasets/dvcorg/test-datachain-llm-eval/data.parquet", source=False
+)
+errors = result.filter(dc.C("response.result") == "Error")
+
+if result.count() == errors.count():
+    errors.show(3)
+    raise RuntimeError("All Hugging Face inference requests failed.")
+
 # Read it back to filter and show.
 # It restores the Pydantic model from Parquet under the hood.
-(
-    dc.read_parquet(
-        "hf://datasets/dvcorg/test-datachain-llm-eval/data.parquet", source=False
-    )
-    .filter(dc.C("response.result") == "Failure")
-    .show(3)
-)
+result.filter(dc.C("response.result") == "Failure").show(3)

@@ -1,5 +1,6 @@
 import base64
 import os
+import sys
 
 import openai
 
@@ -9,9 +10,9 @@ from datachain import C, File
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
 if not OPENAI_API_KEY:
-    raise ValueError(
-        "No key found. Please pass key or set the OPENAI_API_KEY environment variable."
-    )
+    print("This example requires an OpenAI API key")
+    print("Add your key using the OPENAI_API_KEY environment variable.")
+    sys.exit(1)
 
 
 def describe_image(file: File, client: openai.OpenAI) -> tuple[str, str]:

@@ -213,11 +213,11 @@ jobs:
           sudo apt update
           sudo apt install -y ffmpeg
 
-      - name: Set hf token
-        if: matrix.group == 'llm_and_nlp'
-        run: echo 'HF_TOKEN=${{ secrets.HF_TOKEN }}' >> "$GITHUB_ENV"
-
       - name: Run examples
+        env:
+          HF_TOKEN: ${{ matrix.group == 'llm_and_nlp' && secrets.HF_TOKEN || '' }}
+          ANTHROPIC_API_KEY: ${{ matrix.group == 'llm_and_nlp' && secrets.ANTHROPIC_API_KEY || '' }}
+          OPENAI_API_KEY: ${{ matrix.group == 'multimodal' && secrets.OPENAI_API_KEY || '' }}
         run: nox -s examples -p ${{ matrix.pyv }} -- -m "${{ matrix.group }}"
 
   check:
