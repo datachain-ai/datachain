@@ -23,6 +23,7 @@ def _studio_available() -> bool:
     """Return True if a Studio token is configured (env var or config file)."""
     try:
         from datachain.remote.studio import is_token_set
+
         return is_token_set()
     except Exception:
         return False
