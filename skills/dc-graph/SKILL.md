@@ -34,6 +34,7 @@ python3 {skill_dir}/scripts/graph.py --plan [--studio]
 
 - Do **NOT** add `--studio` unless the user's message contains an explicit request to update from Studio (e.g. "update from Studio", "refresh Studio datasets", "include Studio datasets"). An empty datasets list or `"studio_available": true` in the plan output does **not** justify adding `--studio`.
 - If `"up_to_date": true` → print "Graph is up to date." and stop.
+- If the output contains a `"warnings"` key → report those warnings to the user after the update summary.
 - If `graph.py` fails → report the error and stop gracefully.
 
 The output tells you exactly what to do: `datasets[].status` is `"ok"` (skip), `"stale"` (update), or `"new"` (create). `file_path` is the exact path to write, relative to `.datachain/graph/`. `versions_to_fetch` lists which versions need a new or refreshed sub-section.

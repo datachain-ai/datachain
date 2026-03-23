@@ -137,8 +137,8 @@ def _collect_datasets(dc, studio: bool) -> list[dict]:
                     ),
                 }
             )
-    except Exception:
-        pass  # best-effort per source
+    except Exception as e:
+        print(f"[dc-graph warning] collect_datasets(studio={studio}): {e}", file=sys.stderr)
     return results
 
 
@@ -299,6 +299,20 @@ def cmd_plan(studio: bool = False):
     print(json.dumps(result))
 
 
+def _serialize(val):
+    """Serialize a value to a JSON-safe type."""
+    if isinstance(val, (str, int, float, bool, type(None))):
+        return val
+    return str(val)
+
+
+def _get_catalog():
+    """Get a DataChain catalog from the current session, independent of read_dataset."""
+    from datachain import Session
+
+    return Session.get().catalog
+
+
 def _type_name(tp):
     if tp is type(None):
         return "None"
@@ -373,11 +387,6 @@ def _fetch_version_data(name_version: str) -> dict:
         except Exception:
             pass
 
-    def _serialize(val):
-        if isinstance(val, (str, int, float, bool, type(None))):
-            return val
-        return str(val)
-
     preview = None
     if chain is not None:
         try:
@@ -421,7 +430,23 @@ def _fetch_version_data(name_version: str) -> dict:
         except Exception:
             pass  # best-effort
     else:
+        # Get catalog independently — do not rely on read_dataset success.
+        catalog = None
+        if chain is not None:
+            catalog = chain.session.catalog
+        if catalog is None:
+            try:
+                catalog = _get_catalog()
+            except Exception:
+                pass
+
         # Resolve version for local datasets
+        if version is None and catalog is not None:
+            try:
+                ds = catalog.get_dataset(_bare_name, include_incomplete=False)
+                version = ds.latest_version
+            except Exception:
+                pass
         if version is None:
             for row in dc.datasets(column="dataset").to_iter():
                 info = row[0]
@@ -431,7 +456,6 @@ def _fetch_version_data(name_version: str) -> dict:
 
         # Fetch from local catalog
         try:
-            catalog = chain.session.catalog if chain is not None else None
             if catalog is not None:
                 dataset = catalog.get_dataset(_bare_name, include_incomplete=False)
                 resolved_ver = version or dataset.latest_version
@@ -450,7 +474,6 @@ def _fetch_version_data(name_version: str) -> dict:
 
         # Dependencies (local metastore only)
         try:
-            catalog = chain.session.catalog if chain is not None else None
             if catalog is not None and version:
                 deps = catalog.get_dataset_dependencies(
                     name=_bare_name, version=version, indirect=True
@@ -500,7 +523,6 @@ def _fetch_version_data(name_version: str) -> dict:
         # Dep-level changes only available from local metastore
         if not is_studio_dataset:
             try:
-                catalog = chain.session.catalog if chain is not None else None
                 if catalog is not None:
                     prev_deps_raw = (
                         catalog.get_dataset_dependencies(
@@ -578,6 +600,24 @@ def cmd_dataset(name_version: str):
     print(json.dumps(_fetch_version_data(name_version)))
 
 
+def _dep_to_dict(dep) -> dict:
+    """Convert a dependency object to a JSON-serializable dict."""
+    return {
+        "name": dep.name,
+        "version": str(dep.version) if dep.version is not None else None,
+        "type": str(dep.type) if dep.type is not None else None,
+        "dependencies": [
+            {
+                "name": child.name,
+                "version": str(child.version) if child.version is not None else None,
+                "type": str(child.type) if child.type is not None else None,
+            }
+            for child in (dep.dependencies or [])
+            if child
+        ],
+    }
+
+
 def cmd_dataset_all(name: str):
     """Fetch data for all versions of a dataset in one call."""
     try:
@@ -591,52 +631,225 @@ def cmd_dataset_all(name: str):
     is_studio = len(dot_parts) == 3
     source = "studio" if is_studio else "local"
 
-    # Collect all versions for this dataset
-    all_entries = _collect_datasets(dc, studio=is_studio)
-    version_entries = [e for e in all_entries if e["name"] == name]
+    warnings_list: list[str] = []
 
-    if not version_entries:
-        print(json.dumps({"error": f"Dataset '{name}' not found"}), file=sys.stderr)
-        sys.exit(1)
-
-    versions_sorted = sorted(
-        [e["version"] for e in version_entries if e["version"]],
-        key=_parse_semver,
-    )
-
-    # Build per-version data (oldest first so changes chain correctly)
-    versions_out = []
-    for version in versions_sorted:
-        version_entry = next(
-            (e for e in version_entries if e["version"] == version), None
+    if is_studio:
+        # Studio path: unchanged, use _fetch_version_data per version.
+        all_entries = _collect_datasets(dc, studio=True)
+        version_entries = [e for e in all_entries if e["name"] == name]
+        if not version_entries:
+            print(json.dumps({"error": f"Dataset '{name}' not found"}), file=sys.stderr)
+            sys.exit(1)
+        versions_sorted = sorted(
+            [e["version"] for e in version_entries if e["version"]],
+            key=_parse_semver,
         )
-        data = _fetch_version_data(f"{name}@{version}")
+        versions_out = []
+        for version in versions_sorted:
+            version_entry = next(
+                (e for e in version_entries if e["version"] == version), None
+            )
+            data = _fetch_version_data(f"{name}@{version}")
+            versions_out.append(
+                {
+                    "version": version,
+                    "num_objects": version_entry.get("num_objects") if version_entry else None,
+                    "updated_at": version_entry.get("updated_at") if version_entry else None,
+                    "schema": data.get("schema"),
+                    "preview": data.get("preview"),
+                    "query_script": data.get("query_script"),
+                    "changes": data.get("changes"),
+                    "dependencies": data.get("dependencies", []),
+                }
+            )
+        print(json.dumps({"name": name, "source": source, "versions": versions_out}))
+        return
+
+    # Local path: efficient single-catalog-query implementation.
+    bare_name = name
+
+    # 1. Get catalog once — independent of read_dataset.
+    catalog = None
+    try:
+        catalog = _get_catalog()
+    except Exception as e:
+        warnings_list.append(f"catalog: {e}")
+
+    # 2. Get full dataset record once — has all versions with query_script, num_objects.
+    versions_sorted_obj = []
+    if catalog is not None:
+        try:
+            dataset_record = catalog.get_dataset(bare_name, include_incomplete=False)
+            versions_sorted_obj = sorted(
+                dataset_record.versions, key=lambda v: v.version_value
+            )
+        except Exception as e:
+            warnings_list.append(f"get_dataset: {e}")
+
+    if not versions_sorted_obj:
+        # Fallback: enumerate via dc.datasets() if catalog failed.
+        all_entries = _collect_datasets(dc, studio=False)
+        version_entries = [e for e in all_entries if e["name"] == name]
+        if not version_entries:
+            print(json.dumps({"error": f"Dataset '{name}' not found"}), file=sys.stderr)
+            sys.exit(1)
+        # Fall back to old per-version approach.
+        versions_sorted_str = sorted(
+            [e["version"] for e in version_entries if e["version"]],
+            key=_parse_semver,
+        )
+        versions_out = []
+        for version in versions_sorted_str:
+            version_entry = next(
+                (e for e in version_entries if e["version"] == version), None
+            )
+            data = _fetch_version_data(f"{name}@{version}")
+            versions_out.append(
+                {
+                    "version": version,
+                    "num_objects": version_entry.get("num_objects") if version_entry else None,
+                    "updated_at": version_entry.get("updated_at") if version_entry else None,
+                    "schema": data.get("schema"),
+                    "preview": data.get("preview"),
+                    "query_script": data.get("query_script"),
+                    "changes": data.get("changes"),
+                    "dependencies": data.get("dependencies", []),
+                }
+            )
+        result = {"name": bare_name, "source": source, "versions": versions_out}
+        if warnings_list:
+            result["warnings"] = warnings_list
+        print(json.dumps(result))
+        return
+
+    # 3. Fetch schema + preview for latest version only.
+    latest_ver_obj = versions_sorted_obj[-1]
+    latest_version_str = latest_ver_obj.version
+    chain = None
+    schema: dict = {}
+    preview = None
+    try:
+        chain = dc.read_dataset(f"{bare_name}@{latest_version_str}")
+    except Exception as e:
+        warnings_list.append(f"read_dataset: {e}")
+
+    if chain is not None:
+        try:
+            schema = {
+                col: _expand_signal(typ)
+                for col, typ in chain.schema.items()
+                if col != "sys" and not col.startswith("sys.")
+            }
+        except Exception as e:
+            warnings_list.append(f"schema: {e}")
+        try:
+            df = chain.limit(10).to_pandas(flatten=True, include_hidden=False)
+            preview = {
+                "columns": list(df.columns),
+                "rows": [
+                    [_serialize(v) for v in row] for row in df.itertuples(index=False)
+                ],
+            }
+        except Exception as e:
+            warnings_list.append(f"preview: {e}")
+
+    # 4. Fetch deps once per version — cache to avoid fetching prev-version deps twice.
+    deps_by_version: dict[str, list[dict]] = {}
+    for ver_obj in versions_sorted_obj:
+        v_str = ver_obj.version
+        deps: list[dict] = []
+        try:
+            raw_deps = (
+                catalog.get_dataset_dependencies(
+                    name=bare_name, version=v_str, indirect=True
+                )
+                or []
+            )
+            deps = [_dep_to_dict(d) for d in raw_deps if d]
+        except Exception as e:
+            warnings_list.append(f"deps {v_str}: {e}")
+        deps_by_version[v_str] = deps
+
+    # 5. Build per-version output oldest-first.
+    versions_out = []
+    for i, ver_obj in enumerate(versions_sorted_obj):
+        v_str = ver_obj.version
+        query_script = ver_obj.query_script or None
+        ver_deps = deps_by_version.get(v_str, [])
+
+        # Changes vs previous version — reuse cached deps, no extra queries.
+        changes = None
+        if i > 0:
+            prev_ver_obj = versions_sorted_obj[i - 1]
+            prev_v_str = prev_ver_obj.version
+            prev_script = prev_ver_obj.query_script or None
+            script_changed = query_script != prev_script
+            prev_deps = deps_by_version.get(prev_v_str, [])
+
+            curr_dep_map = {d["name"]: d["version"] for d in ver_deps}
+            prev_dep_map = {d["name"]: d["version"] for d in prev_deps}
+            curr_names = set(curr_dep_map)
+            prev_names = set(prev_dep_map)
+
+            deps_added = [
+                {"name": n, "version": curr_dep_map[n]}
+                for n in sorted(curr_names - prev_names)
+            ]
+            deps_removed = [
+                {"name": n, "version": prev_dep_map[n]}
+                for n in sorted(prev_names - curr_names)
+            ]
+            deps_updated = []
+            for n in sorted(curr_names & prev_names):
+                cv, pv = curr_dep_map[n], prev_dep_map[n]
+                if cv != pv:
+                    entry: dict = {
+                        "name": n,
+                        "version_from": pv,
+                        "version_to": cv,
+                        "script_changed": False,
+                    }
+                    try:
+                        dep_ds = catalog.get_dataset(n, include_incomplete=False)
+                        cs = dep_ds.get_version(cv).query_script or None
+                        ps = dep_ds.get_version(pv).query_script or None
+                        if cs != ps:
+                            entry["script_changed"] = True
+                            entry["previous_script"] = ps
+                            entry["current_script"] = cs
+                    except Exception:
+                        pass
+                    deps_updated.append(entry)
+
+            changes = {
+                "previous_version": prev_v_str,
+                "script_changed": script_changed,
+                "previous_script": prev_script if script_changed else None,
+                "deps_added": deps_added,
+                "deps_removed": deps_removed,
+                "deps_updated": deps_updated,
+            }
+
+        is_latest = i == len(versions_sorted_obj) - 1
         versions_out.append(
             {
-                "version": version,
-                "num_objects": version_entry.get("num_objects")
-                if version_entry
+                "version": v_str,
+                "num_objects": ver_obj.num_objects,
+                "updated_at": ver_obj.finished_at.isoformat()
+                if ver_obj.finished_at
                 else None,
-                "updated_at": version_entry.get("updated_at")
-                if version_entry
-                else None,
-                "schema": data.get("schema"),
-                "preview": data.get("preview"),
-                "query_script": data.get("query_script"),
-                "changes": data.get("changes"),
-                "dependencies": data.get("dependencies", []),
+                "schema": schema if is_latest else {},
+                "preview": preview if is_latest else None,
+                "query_script": query_script,
+                "changes": changes,
+                "dependencies": ver_deps,
             }
         )
 
-    print(
-        json.dumps(
-            {
-                "name": name,
-                "source": source,
-                "versions": versions_out,
-            }
-        )
-    )
+    result = {"name": bare_name, "source": source, "versions": versions_out}
+    if warnings_list:
+        result["warnings"] = warnings_list
+    print(json.dumps(result))
 
 
 def main():
