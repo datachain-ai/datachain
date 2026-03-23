@@ -181,13 +181,8 @@ def cmd_plan(studio: bool = False):
 
     # Step 1: get DB mtime
     matches = glob(".datachain/db*")
-    db_last_updated = None
-    studio_mode = False
     if not matches:
-        if _studio_available():
-            studio_mode = True
-        else:
-            db_last_updated = "1970-01-01T00:00:00Z"
+        db_last_updated = "1970-01-01T00:00:00Z"
     else:
         mtime = max(os.path.getmtime(p) for p in matches)
         dt = datetime.fromtimestamp(mtime, tz=timezone.utc)
@@ -198,13 +193,9 @@ def cmd_plan(studio: bool = False):
     index_fm = _read_frontmatter(index_path)
     index_db_updated = index_fm.get("db_last_updated", "")
 
-    # Step 3: early exit if timestamps match (local mode only)
-    if not studio_mode and db_last_updated and db_last_updated == index_db_updated:
-        print(
-            json.dumps(
-                {"up_to_date": True, "db_last_updated": db_last_updated, "datasets": []}
-            )
-        )
+    # Step 3: early exit if timestamps match
+    if db_last_updated and db_last_updated == index_db_updated:
+        print(json.dumps({"up_to_date": True, "db_last_updated": db_last_updated, "datasets": []}))
         return
 
     # Step 4: collect datasets
@@ -295,6 +286,7 @@ def cmd_plan(studio: bool = False):
 
     result: dict = {
         "up_to_date": up_to_date,
+        "studio_available": _studio_available(),
         "datasets": datasets_out,
     }
     if db_last_updated:

@@ -32,7 +32,7 @@ Use the local path if the skill directory exists under the project root; otherwi
 python3 {skill_dir}/scripts/graph.py --plan [--studio]
 ```
 
-- Add `--studio` **only** when the user explicitly requests Studio sync (e.g. "sync Studio", "update graph from Studio").
+- Do **NOT** add `--studio` unless the user's message contains an explicit request to update from Studio (e.g. "update from Studio", "refresh Studio datasets", "include Studio datasets"). An empty datasets list or `"studio_available": true` in the plan output does **not** justify adding `--studio`.
 - If `"up_to_date": true` → print "Graph is up to date." and stop.
 - If `graph.py` fails → report the error and stop gracefully.
 
@@ -131,7 +131,7 @@ updated_at: <updated_at of latest version>
   - Omit `**Dependencies**` table if `dependencies` is empty for that version.
   - Omit `**Dependency changes**` if `deps_added`, `deps_removed`, and `deps_updated` are all empty.
 - Version History: newest-first. Write sub-sections for `versions_to_fetch` only; carry over existing sub-sections verbatim for versions in `file_versions` but not `versions_to_fetch`.
-- If `history_complete` is false, append at the end of Version History: `_(Older versions exist but were not included in this sync.)_`
+- If `history_complete` is false, append at the end of Version History: `_(Older versions exist but were not included in this update.)_`
 - Wikilinks use `[[path|display]]` syntax — path uses `/`-separated slugs, display uses the dot-separated dataset name. Local datasets: `[[name_slug|name]]`. Studio datasets: `[[namespace/project/bare_name_slug|namespace.project.bare_name]]`.
 
 **Always rewrite `index.md`** (`.datachain/graph/index.md`):
