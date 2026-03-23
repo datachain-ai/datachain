@@ -1115,13 +1115,17 @@ class Catalog:
     ) -> None:
         """
         Deletes one single dataset version.
-        If it was last version, it removes dataset completely
+        If it was last version, it removes dataset completely.
+
+        Table is dropped first to avoid orphaned tables — if the process crashes
+        after metadata removal but before table drop, the table would remain
+        with no metadata pointing to it, blocking future version creation.
         """
         if not dataset.has_version(version):
             return
-        dataset = self.metastore.remove_dataset_version(dataset, version)
         if drop_rows:
             self.warehouse.drop_dataset_rows_table(dataset, version)
+        dataset = self.metastore.remove_dataset_version(dataset, version)
 
     def get_temp_table_names(self) -> list[str]:
         return self.warehouse.get_temp_table_names()
