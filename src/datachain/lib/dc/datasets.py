@@ -395,6 +395,7 @@ def delete_dataset(
                 name,
                 namespace_name=ds_project.namespace.name,
                 project_name=ds_project.name,
+                versions=None,
                 include_incomplete=False,
             ).latest_version
         )

@@ -3004,6 +3004,7 @@ class DatasetQuery:
                     name,
                     namespace_name=project.namespace.name,
                     project_name=project.name,
+                    versions=[version],
                     include_incomplete=True,
                 ).has_version(version)
             ):
@@ -3079,6 +3080,7 @@ class DatasetQuery:
                                 dep.name,
                                 namespace_name=dep.namespace,
                                 project_name=dep.project,
+                                versions=[dep.version],
                                 include_incomplete=False,
                             ),
                             dep.version,

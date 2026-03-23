@@ -127,6 +127,7 @@ def list_datasets_local_versions(
         name,
         namespace_name=namespace_name,
         project_name=project_name,
+        versions=None,
         include_incomplete=False,
     )
     for v in ds.versions:
