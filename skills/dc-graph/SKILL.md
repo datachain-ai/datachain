@@ -54,9 +54,15 @@ Run:
 python3 {skill_dir}/scripts/graph.py --list
 ```
 
+This returns **local datasets only**. Studio datasets are **not** included unless the user explicitly requests a Studio sync (e.g. "sync Studio datasets", "update graph from Studio"). In that case, also run:
+```
+python3 {skill_dir}/scripts/graph.py --list-studio
+```
+and merge both outputs, deduplicating by `(name, version)`.
+
 Output is JSON:
 ```json
-{"datasets": [{"name": "...", "version": "...", "num_objects": 123, "status": 4, "namespace": "...", "project": "...", "created_at": "...", "updated_at": "..."}]}
+{"datasets": [{"name": "...", "version": "...", "num_objects": 123, "status": 4, "namespace": "...", "project": "...", "source": "local", "created_at": "...", "updated_at": "..."}]}
 ```
 
 **One entry per dataset×version** — a dataset with three versions appears three times with the same `name` but different `version`, `num_objects`, and `updated_at`. Datasets in namespace `system` or project `listing` are already filtered out by the script.
@@ -279,4 +285,4 @@ Output: .datachain/graph/
 - `dependencies` in `--dataset` output is best-effort: if unavailable it is an empty list — do not error.
 - `query_script` in `--dataset` output is best-effort: if unavailable or empty it is null — omit the section.
 - `changes` in `--dataset` output is null for the first version and best-effort otherwise — omit the section when null.
-- **Studio mode**: when `--db-mtime` returns `studio`, the project has no local DB and all datasets come from DataChain Studio. The `--list` output includes a `"source"` field (`"local"` or `"studio"`) for display only. Studio dataset `name` values are formatted as `namespace/project/bare_name`; the `/` signals the skill to create a directory hierarchy and pass the qualified name to `--dataset`.
+- **Studio datasets are opt-in**: `--list` always returns local datasets only. Use `--list-studio` only when the user explicitly requests a Studio sync. Studio dataset `name` values are formatted as `namespace/project/bare_name`; the `/` signals the skill to create a directory hierarchy and pass the qualified name to `--dataset`. The `"source"` field (`"local"` or `"studio"`) in list output is for display only.

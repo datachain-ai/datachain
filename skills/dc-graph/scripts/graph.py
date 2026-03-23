@@ -91,7 +91,7 @@ def _collect_datasets(dc, studio: bool) -> list[dict]:
     return results
 
 
-def cmd_list():
+def cmd_list(studio: bool = False):
     try:
         import datachain as dc
     except ImportError:
@@ -104,18 +104,14 @@ def cmd_list():
     datasets = []
     seen = set()  # (name, version) dedup across sources
 
-    has_local_db = bool(glob(".datachain/db*"))
-    has_studio = _studio_available()
-
-    if has_local_db:
-        for entry in _collect_datasets(dc, studio=False):
+    if studio:
+        for entry in _collect_datasets(dc, studio=True):
             key = (entry["name"], entry["version"])
             if key not in seen:
                 seen.add(key)
                 datasets.append(entry)
-
-    if has_studio:
-        for entry in _collect_datasets(dc, studio=True):
+    else:
+        for entry in _collect_datasets(dc, studio=False):
             key = (entry["name"], entry["version"])
             if key not in seen:
                 seen.add(key)
@@ -350,7 +346,12 @@ def main():
     group.add_argument(
         "--list",
         action="store_true",
-        help="Print JSON list of all user datasets",
+        help="Print JSON list of local datasets",
+    )
+    group.add_argument(
+        "--list-studio",
+        action="store_true",
+        help="Print JSON list of Studio datasets (requires auth token)",
     )
     group.add_argument(
         "--dataset",
@@ -362,7 +363,9 @@ def main():
     if args.db_mtime:
         cmd_db_mtime()
     elif args.list:
-        cmd_list()
+        cmd_list(studio=False)
+    elif args.list_studio:
+        cmd_list(studio=True)
     elif args.dataset:
         cmd_dataset(args.dataset)
 
