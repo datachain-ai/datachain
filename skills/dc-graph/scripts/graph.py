@@ -210,7 +210,9 @@ def cmd_dataset(name_version: str):
         try:
             df = chain.limit(10).to_pandas(flatten=True, include_hidden=False)
             preview_columns = list(df.columns)
-            preview_rows = [[_serialize(v) for v in row] for row in df.itertuples(index=False)]
+            preview_rows = [
+                [_serialize(v) for v in row] for row in df.itertuples(index=False)
+            ]
             preview = {"columns": preview_columns, "rows": preview_rows}
         except Exception:
             pass  # data not locally accessible
@@ -223,8 +225,9 @@ def cmd_dataset(name_version: str):
     if is_studio_dataset:
         # Fetch full dataset record directly from Studio API — no local catalog needed.
         try:
-            from datachain.remote.studio import StudioClient
             from datachain.dataset import DatasetRecord
+            from datachain.remote.studio import StudioClient
+
             client = StudioClient()
             response = client.dataset_info(_namespace, _project, _bare_name)
             if response.ok and response.data:
@@ -284,7 +287,9 @@ def cmd_dataset(name_version: str):
                         continue
                     dep_entry = {
                         "name": dep.name,
-                        "version": str(dep.version) if dep.version is not None else None,
+                        "version": str(dep.version)
+                        if dep.version is not None
+                        else None,
                         "type": str(dep.type) if dep.type is not None else None,
                         "dependencies": [
                             {
@@ -294,7 +299,9 @@ def cmd_dataset(name_version: str):
                                     if child.version is not None
                                     else None
                                 ),
-                                "type": str(child.type) if child.type is not None else None,
+                                "type": str(child.type)
+                                if child.type is not None
+                                else None,
                             }
                             for child in (dep.dependencies or [])
                             if child
@@ -354,7 +361,9 @@ def cmd_dataset(name_version: str):
                                 "script_changed": False,
                             }
                             try:
-                                dep_ds = catalog.get_dataset(n, include_incomplete=False)
+                                dep_ds = catalog.get_dataset(
+                                    n, include_incomplete=False
+                                )
                                 cs = dep_ds.get_version(cv).query_script or None
                                 ps = dep_ds.get_version(pv).query_script or None
                                 if cs != ps:
@@ -369,7 +378,9 @@ def cmd_dataset(name_version: str):
 
     # Return the fully-qualified dot-separated name for Studio datasets so the skill
     # uses it in headings and frontmatter; bare name for local datasets.
-    output_name = f"{_namespace}.{_project}.{_bare_name}" if is_studio_dataset else _bare_name
+    output_name = (
+        f"{_namespace}.{_project}.{_bare_name}" if is_studio_dataset else _bare_name
+    )
 
     print(
         json.dumps(
