@@ -2940,6 +2940,7 @@ class DatasetQuery:
                                     dep.name,
                                     namespace_name=dep.namespace,
                                     project_name=dep.project,
+                                    versions=[dep.version],
                                     include_incomplete=False,
                                 ),
                                 dep.version,

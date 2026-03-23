@@ -183,8 +183,15 @@ def test_create_dataset_from_sources(listed_bucket, cloud_test_catalog, project)
     src_uri = cloud_test_catalog.src_uri
     catalog = cloud_test_catalog.catalog
 
-    dataset = catalog.create_dataset_from_sources(
+    chain = catalog.create_dataset_from_sources(
         dataset_name, [f"{src_uri}/dogs/"], project, recursive=True
+    )
+    dataset = catalog.get_dataset(
+        chain.name,
+        namespace_name=project.namespace.name,
+        project_name=project.name,
+        versions=None,
+        include_preview=True,
     )
 
     dataset_version = dataset.get_version(dataset.latest_version)
@@ -222,8 +229,15 @@ def test_create_dataset_from_sources_dataset(cloud_test_catalog, dogs_dataset, p
     catalog = cloud_test_catalog.catalog
     ds_uri = f"ds://{dogs_dataset.full_name}"
 
-    dataset = catalog.create_dataset_from_sources(
+    chain = catalog.create_dataset_from_sources(
         dataset_name, [ds_uri], project, recursive=True
+    )
+    dataset = catalog.get_dataset(
+        chain.name,
+        namespace_name=project.namespace.name,
+        project_name=project.name,
+        versions=None,
+        include_preview=True,
     )
 
     dataset_version = dataset.get_version(dataset.latest_version)

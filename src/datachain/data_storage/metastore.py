@@ -60,7 +60,6 @@ from datachain.error import (
     CheckpointNotFoundError,
     DataChainError,
     DatasetNotFoundError,
-    DatasetVersionNotFoundError,
     NamespaceDeleteNotAllowedError,
     NamespaceNotFoundError,
     ProjectDeleteNotAllowedError,
@@ -1428,8 +1427,10 @@ class AbstractDBMetastore(AbstractMetastore):
                 values[field] = value
                 version_values[field] = value
 
+        dataset_version = dataset.get_version(version)
+
         if not values:
-            return dataset.get_version(version)
+            return dataset_version
 
         logger.debug(
             "Writing to database for %s@%s: num_objects=%s, size=%s, "
@@ -1449,23 +1450,17 @@ class AbstractDBMetastore(AbstractMetastore):
             .values(values),
         )  # type: ignore [attr-defined]
 
-        for v in dataset.versions:
-            if v.version == version:
-                v.update(**version_values)
-                logger.debug(
-                    "Dataset version updated successfully: %s@%s, "
-                    "final_num_objects=%s, final_size=%s, has_preview=%s",
-                    dataset.name,
-                    version,
-                    v.num_objects,
-                    v.size,
-                    bool(getattr(v, "_preview_data", None)),
-                )
-                return v
-
-        raise DatasetVersionNotFoundError(
-            f"Dataset {dataset.name} does not have version {version}"
+        dataset_version.update(**version_values)
+        logger.debug(
+            "Dataset version updated successfully: %s@%s, "
+            "final_num_objects=%s, final_size=%s, has_preview=%s",
+            dataset.name,
+            version,
+            dataset_version.num_objects,
+            dataset_version.size,
+            bool(getattr(dataset_version, "_preview_data", None)),
         )
+        return dataset_version
 
     def _parse_dataset(self, rows) -> DatasetRecord | None:
         versions = [self.dataset_class.parse(*r) for r in rows]
