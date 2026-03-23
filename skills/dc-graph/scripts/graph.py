@@ -59,10 +59,10 @@ def _collect_datasets(dc, studio: bool) -> list[dict]:
                 continue
             namespace = getattr(info, "namespace", None)
             project = getattr(info, "project", None)
-            # Fully-qualify Studio dataset names so --dataset can route to the
-            # Studio API when fetching metadata (query_script, changes, deps).
+            # Fully-qualify Studio dataset names using dot-notation (namespace.project.name).
+            # Dots are used in all human-visible content; / is used only for file paths.
             if studio and namespace and project:
-                full_name = f"{namespace}/{project}/{info.name}"
+                full_name = f"{namespace}.{project}.{info.name}"
             else:
                 full_name = info.name
             results.append(
@@ -178,88 +178,133 @@ def cmd_dataset(name_version: str):
     else:
         _namespace, _project, _bare_name = None, None, name
 
-    chain = dc.read_dataset(name_version)
+    is_studio_dataset = bool(_namespace and _project)
 
-    schema = {
-        col: _expand_signal(typ)
-        for col, typ in chain.schema.items()
-        if col != "sys" and not col.startswith("sys.")
-    }
+    # --- Schema and Preview: requires live data access ---
+    # dc.read_dataset() works for local datasets; for Studio-only datasets it may
+    # raise DatasetNotFoundError or succeed but fail on row iteration.
+    chain = None
+    try:
+        chain = dc.read_dataset(name_version)
+    except Exception:
+        pass
+
+    schema = {}
+    if chain is not None:
+        try:
+            schema = {
+                col: _expand_signal(typ)
+                for col, typ in chain.schema.items()
+                if col != "sys" and not col.startswith("sys.")
+            }
+        except Exception:
+            pass
 
     def _serialize(val):
         if isinstance(val, (str, int, float, bool, type(None))):
             return val
         return str(val)
 
-    df = chain.limit(10).to_pandas(flatten=True, include_hidden=False)
-    preview_columns = list(df.columns)
-    preview_rows = [[_serialize(v) for v in row] for row in df.itertuples(index=False)]
-    preview = {"columns": preview_columns, "rows": preview_rows}
+    preview = None
+    if chain is not None:
+        try:
+            df = chain.limit(10).to_pandas(flatten=True, include_hidden=False)
+            preview_columns = list(df.columns)
+            preview_rows = [[_serialize(v) for v in row] for row in df.itertuples(index=False)]
+            preview = {"columns": preview_columns, "rows": preview_rows}
+        except Exception:
+            pass  # data not locally accessible
 
-    # Resolve version if not provided (needed for dependency lookup)
-    if version is None:
-        for row in dc.datasets(column="dataset").to_iter():
-            info = row[0]
-            if info.name == _bare_name:
-                version = str(info.version)
-                break
-
-    # Fetch query_script and locate previous version for Changes section
+    # --- Metadata: query_script, version history ---
     query_script = None
-    _prev_version_info = None  # (prev_version_str, prev_script)
+    _prev_version_info = None
     dependencies = []
-    try:
-        catalog = chain.session.catalog
-        if _namespace and _project:
-            # Studio dataset — fetch full record (all versions + scripts) from Studio API
-            dataset = catalog.get_remote_dataset(_namespace, _project, _bare_name)
-        else:
-            dataset = catalog.get_dataset(_bare_name, include_incomplete=False)
-        resolved_ver = version or dataset.latest_version
-        dv = dataset.get_version(resolved_ver)
-        query_script = dv.query_script or None
-        sorted_vers = sorted(dataset.versions, key=lambda v: v.version_value)
-        idx = next(
-            (i for i, v in enumerate(sorted_vers) if v.version == resolved_ver), None
-        )
-        if idx is not None and idx > 0:
-            p = sorted_vers[idx - 1]
-            _prev_version_info = (p.version, p.query_script or None)
-    except Exception:
-        pass  # query_script and previous-version lookup are best-effort
 
-    try:
-        catalog = chain.session.catalog
-        if version:
-            deps = catalog.get_dataset_dependencies(
-                name=_bare_name, version=version, indirect=True
-            )
-            for dep in deps or []:
-                if not dep:
-                    continue
-                dep_entry = {
-                    "name": dep.name,
-                    "version": str(dep.version) if dep.version is not None else None,
-                    "type": str(dep.type) if dep.type is not None else None,
-                    "dependencies": [
-                        {
-                            "name": child.name,
-                            "version": (
-                                str(child.version)
-                                if child.version is not None
-                                else None
-                            ),
-                            "type": str(child.type) if child.type is not None else None,
-                        }
-                        for child in (dep.dependencies or [])
-                        if child
-                    ],
-                }
-                dependencies.append(dep_entry)
-    except Exception:
-        pass  # dependencies are best-effort
+    if is_studio_dataset:
+        # Fetch full dataset record directly from Studio API — no local catalog needed.
+        try:
+            from datachain.remote.studio import StudioClient
+            from datachain.dataset import DatasetRecord
+            client = StudioClient()
+            response = client.dataset_info(_namespace, _project, _bare_name)
+            if response.ok and response.data:
+                dataset = DatasetRecord.from_dict(response.data)
+                resolved_ver = version or dataset.latest_version
+                if version is None:
+                    version = resolved_ver
+                dv = dataset.get_version(resolved_ver)
+                query_script = dv.query_script or None
+                sorted_vers = sorted(dataset.versions, key=lambda v: v.version_value)
+                idx = next(
+                    (i for i, v in enumerate(sorted_vers) if v.version == resolved_ver),
+                    None,
+                )
+                if idx is not None and idx > 0:
+                    p = sorted_vers[idx - 1]
+                    _prev_version_info = (p.version, p.query_script or None)
+        except Exception:
+            pass  # best-effort
+    else:
+        # Resolve version for local datasets
+        if version is None:
+            for row in dc.datasets(column="dataset").to_iter():
+                info = row[0]
+                if info.name == _bare_name:
+                    version = str(info.version)
+                    break
 
-    # Compute Changes section vs previous version
+        # Fetch from local catalog
+        try:
+            catalog = chain.session.catalog if chain is not None else None
+            if catalog is not None:
+                dataset = catalog.get_dataset(_bare_name, include_incomplete=False)
+                resolved_ver = version or dataset.latest_version
+                dv = dataset.get_version(resolved_ver)
+                query_script = dv.query_script or None
+                sorted_vers = sorted(dataset.versions, key=lambda v: v.version_value)
+                idx = next(
+                    (i for i, v in enumerate(sorted_vers) if v.version == resolved_ver),
+                    None,
+                )
+                if idx is not None and idx > 0:
+                    p = sorted_vers[idx - 1]
+                    _prev_version_info = (p.version, p.query_script or None)
+        except Exception:
+            pass
+
+        # Dependencies (local metastore only)
+        try:
+            catalog = chain.session.catalog if chain is not None else None
+            if catalog is not None and version:
+                deps = catalog.get_dataset_dependencies(
+                    name=_bare_name, version=version, indirect=True
+                )
+                for dep in deps or []:
+                    if not dep:
+                        continue
+                    dep_entry = {
+                        "name": dep.name,
+                        "version": str(dep.version) if dep.version is not None else None,
+                        "type": str(dep.type) if dep.type is not None else None,
+                        "dependencies": [
+                            {
+                                "name": child.name,
+                                "version": (
+                                    str(child.version)
+                                    if child.version is not None
+                                    else None
+                                ),
+                                "type": str(child.type) if child.type is not None else None,
+                            }
+                            for child in (dep.dependencies or [])
+                            if child
+                        ],
+                    }
+                    dependencies.append(dep_entry)
+        except Exception:
+            pass
+
+    # --- Changes section ---
     changes = None
     if _prev_version_info is not None:
         prev_version_str, prev_script = _prev_version_info
@@ -272,57 +317,64 @@ def cmd_dataset(name_version: str):
             "deps_removed": [],
             "deps_updated": [],
         }
-        try:
-            catalog = chain.session.catalog
-            prev_deps_raw = (
-                catalog.get_dataset_dependencies(
-                    name=_bare_name, version=prev_version_str, indirect=True
-                )
-                or []
-            )
-            curr_dep_map = {d["name"]: d["version"] for d in dependencies}
-            prev_dep_map = {
-                d.name: (str(d.version) if d.version is not None else None)
-                for d in prev_deps_raw
-                if d
-            }
-            curr_names = set(curr_dep_map)
-            prev_names = set(prev_dep_map)
-            changes["deps_added"] = [
-                {"name": n, "version": curr_dep_map[n]}
-                for n in sorted(curr_names - prev_names)
-            ]
-            changes["deps_removed"] = [
-                {"name": n, "version": prev_dep_map[n]}
-                for n in sorted(prev_names - curr_names)
-            ]
-            for n in sorted(curr_names & prev_names):
-                cv, pv = curr_dep_map[n], prev_dep_map[n]
-                if cv != pv:
-                    entry = {
-                        "name": n,
-                        "version_from": pv,
-                        "version_to": cv,
-                        "script_changed": False,
+        # Dep-level changes only available from local metastore
+        if not is_studio_dataset:
+            try:
+                catalog = chain.session.catalog if chain is not None else None
+                if catalog is not None:
+                    prev_deps_raw = (
+                        catalog.get_dataset_dependencies(
+                            name=_bare_name, version=prev_version_str, indirect=True
+                        )
+                        or []
+                    )
+                    curr_dep_map = {d["name"]: d["version"] for d in dependencies}
+                    prev_dep_map = {
+                        d.name: (str(d.version) if d.version is not None else None)
+                        for d in prev_deps_raw
+                        if d
                     }
-                    try:
-                        dep_ds = catalog.get_dataset(n, include_incomplete=False)
-                        cs = dep_ds.get_version(cv).query_script or None
-                        ps = dep_ds.get_version(pv).query_script or None
-                        if cs != ps:
-                            entry["script_changed"] = True
-                            entry["previous_script"] = ps
-                            entry["current_script"] = cs
-                    except Exception:
-                        pass
-                    changes["deps_updated"].append(entry)
-        except Exception:
-            pass  # dep-level changes are best-effort
+                    curr_names = set(curr_dep_map)
+                    prev_names = set(prev_dep_map)
+                    changes["deps_added"] = [
+                        {"name": n, "version": curr_dep_map[n]}
+                        for n in sorted(curr_names - prev_names)
+                    ]
+                    changes["deps_removed"] = [
+                        {"name": n, "version": prev_dep_map[n]}
+                        for n in sorted(prev_names - curr_names)
+                    ]
+                    for n in sorted(curr_names & prev_names):
+                        cv, pv = curr_dep_map[n], prev_dep_map[n]
+                        if cv != pv:
+                            entry = {
+                                "name": n,
+                                "version_from": pv,
+                                "version_to": cv,
+                                "script_changed": False,
+                            }
+                            try:
+                                dep_ds = catalog.get_dataset(n, include_incomplete=False)
+                                cs = dep_ds.get_version(cv).query_script or None
+                                ps = dep_ds.get_version(pv).query_script or None
+                                if cs != ps:
+                                    entry["script_changed"] = True
+                                    entry["previous_script"] = ps
+                                    entry["current_script"] = cs
+                            except Exception:
+                                pass
+                            changes["deps_updated"].append(entry)
+            except Exception:
+                pass
+
+    # Return the fully-qualified dot-separated name for Studio datasets so the skill
+    # uses it in headings and frontmatter; bare name for local datasets.
+    output_name = f"{_namespace}.{_project}.{_bare_name}" if is_studio_dataset else _bare_name
 
     print(
         json.dumps(
             {
-                "name": _bare_name,
+                "name": output_name,
                 "schema": schema,
                 "preview": preview,
                 "query_script": query_script,

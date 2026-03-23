@@ -72,13 +72,14 @@ Output is JSON:
 Group the `--list` entries by `name`. For each unique dataset name:
 
 1. **Derive the file path** from the `name` field:
-   - If `name` contains `/` (Studio dataset, format `namespace/project/bare_name`):
+   - If `name` contains `.` and splits into exactly 3 parts on the first two dots (Studio dataset, format `namespace.project.bare_name`):
      - `bare_name_slug` = `bare_name` lowercased, `.` → `_`
      - File: `.datachain/graph/datasets/{namespace}/{project}/{bare_name_slug}.md`
    - Otherwise (local dataset):
      - `name_slug` = `name` lowercased, `.` → `_`
      - File: `.datachain/graph/datasets/{name_slug}.md`
    - **Never include a version in the filename.**
+   - The dot-separated `name` is used everywhere in Markdown content (frontmatter, headings, wikilink display text). The `/`-separated path is used only for file system paths and wikilink routing.
 
 2. Identify `latest_version` as the highest version among all entries for this dataset.
 3. Read the file at the derived path (if it exists).
@@ -98,14 +99,24 @@ Create `.datachain/graph/index.md` with YAML frontmatter:
 ---
 db_last_updated: <value from Phase 1>   # omit this field if Phase 1 returned "studio"
 generated_at: <current UTC timestamp>
-dataset_count: <N>
+local_dataset_count: <N>
+studio_dataset_count: <M>   # omit if no Studio datasets were synced this run
 ---
 ```
 
-Body: a table listing all datasets with columns: Name, Version, Objects, Updated.
-Each name is a wikilink using the file path relative to `.datachain/graph/datasets/`:
-- Studio dataset: `[[namespace/project/bare_name_slug]]`
-- Local dataset: `[[name_slug]]`
+Body: a table listing all datasets with columns: Name, Source, Version, Objects, Updated.
+- `Source` is `local` or `studio` (from the `source` field in `--list` / `--list-studio` output).
+- Each name is a wikilink with separate path and display text (`[[path|display]]`):
+  - Studio dataset: `[[namespace/project/bare_name_slug|namespace.project.bare_name]]`
+  - Local dataset: `[[name_slug|name]]`
+
+Example:
+```
+| Name | Source | Version | Objects | Updated |
+|------|--------|---------|---------|---------|
+| [[flower-large\|flower-large]] | local | 1.0.1 | 2014 | 2026-03-20 |
+| [[vladimir/default/300k\|vladimir.default.300k]] | studio | 1.0.5 | 300000 | 2026-03-18 |
+```
 
 **For each stale dataset**, run one script call **per version that is missing from the Version History**, plus always one call for `latest_version` (even if it already has an entry, to refresh the top-level metadata). Run calls oldest-version-first so `changes` fields chain correctly.
 
@@ -113,7 +124,7 @@ Each name is a wikilink using the file path relative to `.datachain/graph/datase
 python3 {skill_dir}/scripts/graph.py --dataset <name>@<version>
 ```
 
-Run this once per version that needs a new or updated sub-section. **Do not call for versions already present verbatim in the history unless they are the latest.**
+Pass `<name>` exactly as it appears in the `--list` / `--list-studio` output: dot-separated (`namespace.project.bare_name`) for Studio datasets, plain for local datasets. Run once per version that needs a new or updated sub-section. **Do not call for versions already present verbatim in the history unless they are the latest.**
 
 Output:
 ```json
@@ -183,7 +194,7 @@ Render schema: for each signal, print `{signal}: {type}`, then if `fields` is no
 |-----------|-----------|------------|-------------|-------|
 | ...       | ...       | ...        | ...         | ...   |
 
-Render preview: use `columns` as table headers, `rows` as table rows.
+Render preview: use `columns` as table headers, `rows` as table rows. Omit the `## Preview` section entirely if `preview` is null (data not locally accessible).
 
 ## Query Script
 
@@ -257,14 +268,24 @@ Sub-section contents (in order):
 
 The goal is **one sub-section per known version, newest first, with no gaps**.
 
-- Collect all versions from the `--list` output for this dataset (there is one entry per version).
+- Collect all versions from the `--list` / `--list-studio` output for this dataset (one entry per version).
 - Collect all `### version` sub-sections already in the file (if it exists).
-- For every version that has no sub-section yet (including versions older than the current file), run `--dataset name@version` and write a new sub-section from the script output.
+- For every version that has no sub-section yet, run `--dataset name@version` and write a new sub-section from the script output.
 - Carry over all existing sub-sections verbatim — do not re-fetch versions already in the file unless they are `latest_version`.
 - Always re-run `--dataset name@latest_version` and replace (or write) its sub-section with fresh data.
 - Write all sub-sections sorted newest-first.
 
-All files use Obsidian-compatible wikilinks (`[[name_slug]]`) and YAML frontmatter.
+**Incomplete history note:** If the `--list-studio` output for a dataset does not start from version `1.0.0` (i.e. older versions may exist that were not included in this sync), append this note at the very end of the Version History section:
+
+```
+_(Older versions exist but were not included in this sync. Run a full Studio sync to populate the complete history.)_
+```
+
+Do **not** add this note for local datasets — their full history is always available.
+
+**Schema and Preview for Studio datasets:** `schema` and `preview` fields in the `--dataset` output may be `null` for Studio-only datasets (data is not accessible locally). In that case omit the `## Schema` and `## Preview` sections entirely — do not write placeholder text or "not available" messages.
+
+All files use Obsidian-compatible wikilinks with `[[path|display]]` syntax — path uses `/`-separated slugs for routing, display text uses the dot-separated dataset name.
 
 ### Phase 5 — Report
 
@@ -285,4 +306,6 @@ Output: .datachain/graph/
 - `dependencies` in `--dataset` output is best-effort: if unavailable it is an empty list — do not error.
 - `query_script` in `--dataset` output is best-effort: if unavailable or empty it is null — omit the section.
 - `changes` in `--dataset` output is null for the first version and best-effort otherwise — omit the section when null.
-- **Studio datasets are opt-in**: `--list` always returns local datasets only. Use `--list-studio` only when the user explicitly requests a Studio sync. Studio dataset `name` values are formatted as `namespace/project/bare_name`; the `/` signals the skill to create a directory hierarchy and pass the qualified name to `--dataset`. The `"source"` field (`"local"` or `"studio"`) in list output is for display only.
+- **Studio datasets are opt-in**: `--list` always returns local datasets only. Use `--list-studio` only when the user explicitly requests a Studio sync.
+- **Studio dataset names**: `--list-studio` emits `name` as `namespace.project.bare_name` (dot-separated). Dots are used in all Markdown content (frontmatter `name:`, headings, wikilink display text). File paths and wikilink routing use `/`-separated slugs derived by splitting on the first two dots: `namespace/project/bare_name_slug.md`. Pass the dot-separated name directly to `--dataset`.
+- **Studio metadata availability**: `schema` and `preview` in `--dataset` output are `null` when dataset rows aren't locally accessible. `query_script` and `changes` come from the Studio API and are always populated when the dataset exists. `dependencies` are unavailable for Studio datasets (local metastore only).
