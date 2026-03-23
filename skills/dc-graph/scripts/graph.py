@@ -19,15 +19,67 @@ from datetime import datetime, timezone
 from glob import glob
 
 
+def _studio_available() -> bool:
+    """Return True if a Studio token is configured (env var or config file)."""
+    try:
+        from datachain.remote.studio import is_token_set
+        return is_token_set()
+    except Exception:
+        return False
+
+
 def cmd_db_mtime():
     matches = glob(".datachain/db*")
     if not matches:
-        # No DB files found — return epoch so the graph is always stale
-        print("1970-01-01T00:00:00Z")
+        if _studio_available():
+            # No local DB but Studio is configured — signal Studio mode.
+            # The skill will skip the timestamp comparison and always refresh.
+            print("studio")
+        else:
+            # No DB, no Studio — return epoch so the graph is always stale
+            print("1970-01-01T00:00:00Z")
         return
     mtime = max(os.path.getmtime(p) for p in matches)
     dt = datetime.fromtimestamp(mtime, tz=timezone.utc)
     print(dt.strftime("%Y-%m-%dT%H:%M:%SZ"))
+
+
+def _collect_datasets(dc, studio: bool) -> list[dict]:
+    """Return a list of dataset dicts from local or Studio source."""
+    results = []
+    try:
+        for row in dc.datasets(column="dataset", studio=studio).to_iter():
+            info = row[0]
+            if getattr(info, "namespace", None) in ("system", "listing"):
+                continue
+            if getattr(info, "project", None) == "listing":
+                continue
+            if getattr(info, "is_temp", False):
+                continue
+            results.append(
+                {
+                    "name": info.name,
+                    "version": str(info.version) if info.version is not None else None,
+                    "num_objects": getattr(info, "num_objects", None),
+                    "status": getattr(info, "status", None),
+                    "namespace": getattr(info, "namespace", None),
+                    "project": getattr(info, "project", None),
+                    "source": "studio" if studio else "local",
+                    "created_at": (
+                        info.created_at.isoformat()
+                        if getattr(info, "created_at", None) is not None
+                        else None
+                    ),
+                    "updated_at": (
+                        info.updated_at.isoformat()
+                        if getattr(info, "updated_at", None) is not None
+                        else None
+                    ),
+                }
+            )
+    except Exception:
+        pass  # best-effort per source
+    return results
 
 
 def cmd_list():
@@ -41,34 +93,24 @@ def cmd_list():
         sys.exit(1)
 
     datasets = []
-    for row in dc.datasets(column="dataset").to_iter():
-        info = row[0]
-        if getattr(info, "namespace", None) in ("system", "listing"):
-            continue
-        if getattr(info, "project", None) == "listing":
-            continue
-        if getattr(info, "is_temp", False):
-            continue
-        datasets.append(
-            {
-                "name": info.name,
-                "version": str(info.version) if info.version is not None else None,
-                "num_objects": getattr(info, "num_objects", None),
-                "status": getattr(info, "status", None),
-                "namespace": getattr(info, "namespace", None),
-                "project": getattr(info, "project", None),
-                "created_at": (
-                    info.created_at.isoformat()
-                    if getattr(info, "created_at", None) is not None
-                    else None
-                ),
-                "updated_at": (
-                    info.updated_at.isoformat()
-                    if getattr(info, "updated_at", None) is not None
-                    else None
-                ),
-            }
-        )
+    seen = set()  # (name, version) dedup across sources
+
+    has_local_db = bool(glob(".datachain/db*"))
+    has_studio = _studio_available()
+
+    if has_local_db:
+        for entry in _collect_datasets(dc, studio=False):
+            key = (entry["name"], entry["version"])
+            if key not in seen:
+                seen.add(key)
+                datasets.append(entry)
+
+    if has_studio:
+        for entry in _collect_datasets(dc, studio=True):
+            key = (entry["name"], entry["version"])
+            if key not in seen:
+                seen.add(key)
+                datasets.append(entry)
 
     print(json.dumps({"datasets": datasets}))
 

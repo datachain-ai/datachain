@@ -37,10 +37,13 @@ Run:
 python3 {skill_dir}/scripts/graph.py --db-mtime
 ```
 
-This prints an ISO-8601 UTC timestamp (e.g. `2024-01-15T10:30:00Z`) representing the last modification time of the `.datachain/db*` files.
+This prints either:
+- An ISO-8601 UTC timestamp (e.g. `2024-01-15T10:30:00Z`) — local DB mtime
+- The string `studio` — no local DB, but Studio is authenticated; staleness is determined per-dataset in Phase 3
 
-Read `.datachain/graph/index.md` (if it exists) and extract the `db_last_updated` field from its YAML frontmatter.
+**If the output is `studio`:** skip the timestamp comparison entirely and always proceed to Phase 2.
 
+**Otherwise:** read `.datachain/graph/index.md` (if it exists) and extract the `db_last_updated` field from its YAML frontmatter.
 - If the timestamps match → print "Graph is up to date." and stop.
 - If `.datachain/graph/index.md` does not exist, or the timestamps differ → proceed to Phase 2.
 
@@ -78,7 +81,7 @@ Group the `--list` entries by `name`. For each unique dataset name:
 Create `.datachain/graph/index.md` with YAML frontmatter:
 ```yaml
 ---
-db_last_updated: <value from Phase 1>
+db_last_updated: <value from Phase 1>   # omit this field if Phase 1 returned "studio"
 generated_at: <current UTC timestamp>
 dataset_count: <N>
 ---
@@ -263,3 +266,4 @@ Output: .datachain/graph/
 - `dependencies` in `--dataset` output is best-effort: if unavailable it is an empty list — do not error.
 - `query_script` in `--dataset` output is best-effort: if unavailable or empty it is null — omit the section.
 - `changes` in `--dataset` output is null for the first version and best-effort otherwise — omit the section when null.
+- **Studio mode**: when `--db-mtime` returns `studio`, the project has no local DB and all datasets come from DataChain Studio. The `--list` output includes a `"source"` field (`"local"` or `"studio"`) — use it for display only; it does not affect filename derivation or any other logic. Studio datasets may use fully-qualified names (`namespace.project.dataset`); the skill handles them identically to local datasets.
