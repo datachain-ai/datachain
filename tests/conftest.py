@@ -639,7 +639,7 @@ def animal_dataset(listed_bucket, cloud_test_catalog):
     catalog.create_dataset_from_sources(
         name, [src_uri], catalog.metastore.default_project, recursive=True
     )
-    dataset = catalog.get_dataset(name)
+    dataset = catalog.get_dataset(name, versions=["1.0.0"])
     return catalog.update_dataset(
         dataset,
         description="animal dataset",
@@ -658,7 +658,7 @@ def dogs_dataset(listed_bucket, cloud_test_catalog):
         catalog.metastore.default_project,
         recursive=True,
     )
-    dataset = catalog.get_dataset(name)
+    dataset = catalog.get_dataset(name, versions=["1.0.0"])
     return catalog.update_dataset(
         dataset,
         description="dogs dataset",
@@ -674,7 +674,7 @@ def cats_dataset(listed_bucket, cloud_test_catalog):
     catalog.create_dataset_from_sources(
         name, [f"{src_uri}/cats/*"], catalog.metastore.default_project, recursive=True
     )
-    dataset = catalog.get_dataset(name)
+    dataset = catalog.get_dataset(name, versions=["1.0.0"])
     return catalog.update_dataset(
         dataset,
         description="cats dataset",
