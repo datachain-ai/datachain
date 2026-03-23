@@ -64,9 +64,18 @@ Output is JSON:
 ### Phase 3 — Diff Against Existing Graph
 
 Group the `--list` entries by `name`. For each unique dataset name:
-1. Derive the filename: replace `.` and `/` with `_`, lowercase → `{name_slug}.md`. **Never include a version in the filename.**
+
+1. **Derive the file path** from the `name` field:
+   - If `name` contains `/` (Studio dataset, format `namespace/project/bare_name`):
+     - `bare_name_slug` = `bare_name` lowercased, `.` → `_`
+     - File: `.datachain/graph/datasets/{namespace}/{project}/{bare_name_slug}.md`
+   - Otherwise (local dataset):
+     - `name_slug` = `name` lowercased, `.` → `_`
+     - File: `.datachain/graph/datasets/{name_slug}.md`
+   - **Never include a version in the filename.**
+
 2. Identify `latest_version` as the highest version among all entries for this dataset.
-3. Read `.datachain/graph/datasets/{name_slug}.md` (if it exists).
+3. Read the file at the derived path (if it exists).
 4. Extract `latest_version` and `num_objects` from its YAML frontmatter.
 5. Collect the set of versions already present as `### version` sub-sections in the Version History.
 6. Mark the dataset as **stale** if any of:
@@ -88,7 +97,9 @@ dataset_count: <N>
 ```
 
 Body: a table listing all datasets with columns: Name, Version, Objects, Updated.
-Each name is a wikilink: `[[name_slug]]`.
+Each name is a wikilink using the file path relative to `.datachain/graph/datasets/`:
+- Studio dataset: `[[namespace/project/bare_name_slug]]`
+- Local dataset: `[[name_slug]]`
 
 **For each stale dataset**, run one script call **per version that is missing from the Version History**, plus always one call for `latest_version` (even if it already has an entry, to refresh the top-level metadata). Run calls oldest-version-first so `changes` fields chain correctly.
 
@@ -132,7 +143,11 @@ Output:
 }
 ```
 
-Write `.datachain/graph/datasets/{name_slug}.md`:
+Write to the path derived in Phase 3:
+- Studio dataset: `.datachain/graph/datasets/{namespace}/{project}/{bare_name_slug}.md`
+- Local dataset: `.datachain/graph/datasets/{name_slug}.md`
+
+Create parent directories as needed.
 ```markdown
 ---
 name: <name>
@@ -243,8 +258,6 @@ The goal is **one sub-section per known version, newest first, with no gaps**.
 - Always re-run `--dataset name@latest_version` and replace (or write) its sub-section with fresh data.
 - Write all sub-sections sorted newest-first.
 
-**Handling leftover versioned files:** If old versioned files (e.g. `flower-large_1_0_0.md`) exist in `.datachain/graph/datasets/`, delete them when rewriting the dataset to the canonical unversioned filename.
-
 All files use Obsidian-compatible wikilinks (`[[name_slug]]`) and YAML frontmatter.
 
 ### Phase 5 — Report
@@ -266,4 +279,4 @@ Output: .datachain/graph/
 - `dependencies` in `--dataset` output is best-effort: if unavailable it is an empty list — do not error.
 - `query_script` in `--dataset` output is best-effort: if unavailable or empty it is null — omit the section.
 - `changes` in `--dataset` output is null for the first version and best-effort otherwise — omit the section when null.
-- **Studio mode**: when `--db-mtime` returns `studio`, the project has no local DB and all datasets come from DataChain Studio. The `--list` output includes a `"source"` field (`"local"` or `"studio"`) — use it for display only; it does not affect filename derivation or any other logic. Studio datasets may use fully-qualified names (`namespace.project.dataset`); the skill handles them identically to local datasets.
+- **Studio mode**: when `--db-mtime` returns `studio`, the project has no local DB and all datasets come from DataChain Studio. The `--list` output includes a `"source"` field (`"local"` or `"studio"`) for display only. Studio dataset `name` values are formatted as `namespace/project/bare_name`; the `/` signals the skill to create a directory hierarchy and pass the qualified name to `--dataset`.

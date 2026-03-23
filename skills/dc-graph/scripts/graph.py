@@ -56,14 +56,22 @@ def _collect_datasets(dc, studio: bool) -> list[dict]:
                 continue
             if getattr(info, "is_temp", False):
                 continue
+            namespace = getattr(info, "namespace", None)
+            project = getattr(info, "project", None)
+            # Fully-qualify Studio dataset names so --dataset can route to the
+            # Studio API when fetching metadata (query_script, changes, deps).
+            if studio and namespace and project:
+                full_name = f"{namespace}/{project}/{info.name}"
+            else:
+                full_name = info.name
             results.append(
                 {
-                    "name": info.name,
+                    "name": full_name,
                     "version": str(info.version) if info.version is not None else None,
                     "num_objects": getattr(info, "num_objects", None),
                     "status": getattr(info, "status", None),
-                    "namespace": getattr(info, "namespace", None),
-                    "project": getattr(info, "project", None),
+                    "namespace": namespace,
+                    "project": project,
                     "source": "studio" if studio else "local",
                     "created_at": (
                         info.created_at.isoformat()
@@ -161,6 +169,18 @@ def cmd_dataset(name_version: str):
     from datachain.dataset import parse_dataset_with_version
 
     name, version = parse_dataset_with_version(name_version)
+
+    # Detect Studio routing: name is namespace/project/bare_name (slash-separated,
+    # from --list) or namespace.project.bare_name (dot-separated, typed manually).
+    slash_parts = name.split("/", 2)
+    dot_parts = name.split(".", 2)
+    if len(slash_parts) == 3:
+        _namespace, _project, _bare_name = slash_parts
+    elif len(dot_parts) == 3:
+        _namespace, _project, _bare_name = dot_parts
+    else:
+        _namespace, _project, _bare_name = None, None, name
+
     chain = dc.read_dataset(name_version)
 
     schema = {
@@ -183,7 +203,7 @@ def cmd_dataset(name_version: str):
     if version is None:
         for row in dc.datasets(column="dataset").to_iter():
             info = row[0]
-            if info.name == name:
+            if info.name == _bare_name:
                 version = str(info.version)
                 break
 
@@ -193,7 +213,11 @@ def cmd_dataset(name_version: str):
     dependencies = []
     try:
         catalog = chain.session.catalog
-        dataset = catalog.get_dataset(name, include_incomplete=False)
+        if _namespace and _project:
+            # Studio dataset — fetch full record (all versions + scripts) from Studio API
+            dataset = catalog.get_remote_dataset(_namespace, _project, _bare_name)
+        else:
+            dataset = catalog.get_dataset(_bare_name, include_incomplete=False)
         resolved_ver = version or dataset.latest_version
         dv = dataset.get_version(resolved_ver)
         query_script = dv.query_script or None
@@ -211,7 +235,7 @@ def cmd_dataset(name_version: str):
         catalog = chain.session.catalog
         if version:
             deps = catalog.get_dataset_dependencies(
-                name=name, version=version, indirect=True
+                name=_bare_name, version=version, indirect=True
             )
             for dep in deps or []:
                 if not dep:
@@ -255,7 +279,7 @@ def cmd_dataset(name_version: str):
             catalog = chain.session.catalog
             prev_deps_raw = (
                 catalog.get_dataset_dependencies(
-                    name=name, version=prev_version_str, indirect=True
+                    name=_bare_name, version=prev_version_str, indirect=True
                 )
                 or []
             )
@@ -301,7 +325,7 @@ def cmd_dataset(name_version: str):
     print(
         json.dumps(
             {
-                "name": name,
+                "name": _bare_name,
                 "schema": schema,
                 "preview": preview,
                 "query_script": query_script,
