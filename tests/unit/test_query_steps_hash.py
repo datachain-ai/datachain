@@ -517,7 +517,7 @@ def test_query_step_hash_uses_version_uuid():
         name="test_ds",
         description="",
         attrs=[],
-        versions=[
+        _versions=[
             DatasetVersion(
                 id=1,
                 uuid=uuid1,

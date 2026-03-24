@@ -689,7 +689,7 @@ def dataset_record():
         name=f"ds_{uuid.uuid4().hex}",
         description="",
         attrs=[],
-        versions=[
+        _versions=[
             DatasetVersion(
                 id=1,
                 uuid=uuid.uuid4().hex,

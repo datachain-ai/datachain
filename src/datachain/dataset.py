@@ -1,6 +1,6 @@
 import builtins
 import re
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 from datetime import datetime
 from typing import (
     Any,
@@ -272,7 +272,9 @@ class DatasetVersion:
     schema: dict[str, SQLType | type[SQLType]]
     num_objects: int | None
     size: int | None
-    _preview_data: str | list[dict] | None
+    _preview_data: str | list[dict] | None = field(
+        default=None, metadata={"alias": "preview"}
+    )
     sources: str = ""
     query_script: str = ""
     job_id: str | None = None
@@ -454,7 +456,9 @@ class DatasetRecord:
     attrs: list[str]
     schema: dict[str, SQLType | type[SQLType]]
     feature_schema: dict
-    versions: list[DatasetVersion]
+    _versions: list[DatasetVersion] = field(
+        default_factory=list, metadata={"alias": "versions"}
+    )
     status: int = DatasetStatus.CREATED
     created_at: datetime | None = None
     finished_at: datetime | None = None
@@ -465,13 +469,14 @@ class DatasetRecord:
     query_script: str = ""
     _versions_loaded: bool = True
 
-    def __getattribute__(self, name: str):
-        if name == "versions" and not object.__getattribute__(self, "_versions_loaded"):
+    @property
+    def versions(self) -> list[DatasetVersion]:
+        if not self._versions_loaded:
             raise DatasetStateNotLoadedError(
                 "Dataset versions were not loaded. Fetch the dataset with "
                 "versions=None or an explicit versions=[...] before accessing versions."
             )
-        return object.__getattribute__(self, name)
+        return self._versions
 
     def __hash__(self):
         return hash(f"{self.id}")
@@ -601,7 +606,7 @@ class DatasetRecord:
             attrs=attrs_lst,
             schema=parse_schema(schema_dct),  # type: ignore[arg-type]
             feature_schema=json.loads(feature_schema) if feature_schema else {},
-            versions=versions_list,
+            _versions=versions_list,
             status=status,
             created_at=created_at,
             finished_at=finished_at,
@@ -638,16 +643,14 @@ class DatasetRecord:
         """Merge versions from another dataset"""
         if other.id != self.id:
             raise RuntimeError("Cannot merge versions of datasets with different ids")
-        other_versions = object.__getattribute__(other, "versions")
-        if not other_versions:
+        if not other._versions:
             # nothing to merge
             return self
-        self_versions = object.__getattribute__(self, "versions")
-        if not self_versions:
-            self.versions = []
+        if not self._versions:
+            self._versions = []
 
-        self.versions = list(set(self_versions + other_versions))
-        self.versions.sort(key=lambda v: v.version_value)
+        self._versions = list(set(self._versions + other._versions))
+        self._versions.sort(key=lambda v: v.version_value)
         return self
 
     def has_version(self, version: str) -> bool:
@@ -685,7 +688,7 @@ class DatasetRecord:
         if not self.versions or not self.has_version(version):
             return
 
-        self.versions = [v for v in self.versions if v.version != version]
+        self._versions = [v for v in self.versions if v.version != version]
 
     def identifier(self, version: str) -> str:
         """
@@ -799,7 +802,7 @@ class DatasetRecord:
         project = Project.from_dict(d.pop("project"))
         versions = [DatasetVersion.from_dict(v) for v in d.pop("versions", [])]
         kwargs = {f.name: d[f.name] for f in fields(cls) if f.name in d}
-        return cls(**kwargs, versions=versions, project=project)
+        return cls(**kwargs, _versions=versions, project=project)
 
 
 @dataclass
