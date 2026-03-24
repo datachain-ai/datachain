@@ -67,11 +67,11 @@ lambda3 = lambda z: z - 1  # noqa: E731
         ),
         (
             [sa_func.coalesce(C("name"), "unknown")],
-            "54f932d64722aeb4cc167d68e12c149e10547b3737f4fce91c536d56cbf8c6bd",
+            "13532bc4a1a250e6ea24420bddda3cc1dc15b0ce710b1d2a73c815129152caad",
         ),
         (
             [sa_func.nullif(C("age"), 0)],
-            "ff437af7c0cf5586358b78ecd7bc6cdfdd714bb23d6a0732b940e671585a8d50",
+            "57c0d74f3881dd687a1d97717e662ecea668d89be62f75487ab6824d2e176761",
         ),
         # Window functions
         (
@@ -153,11 +153,11 @@ lambda3 = lambda z: z - 1  # noqa: E731
         ),
         (
             [sa_func.concat(C("first_name"), " ", C("last_name"))],
-            "6bb32f278bc048cb177941749d1e30e18d5eb747b1d74e274a118ea27e5044eb",
+            "b7b6b68d73eb0ea274e8d1d418541a52023cc978106bcf914d92a0bee810566a",
         ),
         (
             [sa_func.lower(C("name"))],
-            "fcc14e7bdef5ffd2400a81bf8dcc38a42186da7114fa10bd44734d8a85ad14a8",
+            "09ce2d422c40e4db6dd0c1a1dc8d34457786dc366c8dca23b87aca2a76af1542",
         ),
         # NULL operations
         (
@@ -318,11 +318,11 @@ lambda3 = lambda z: z - 1  # noqa: E731
         ),
         (
             [sa_func.abs(C("value"))],
-            "1b7730de86ee63596f01acb68a8b894b4fc1d3e0b166f6c285614b20e7535fc6",
+            "0f32eade11cd2591bf7c948760c8658c66f9c3986b15affc7488a5646e2f6e39",
         ),
         (
             [sa_func.round(C("price"), 2)],
-            "215bb8748e030d0dcab919f730d35bef28a40eace1d14c04f79f31783822592b",
+            "1c0223a26f3884bfceca93e69dc9e0adbcb0dbe00d96338c4343b4128330ef63",
         ),
     ],
 )
