@@ -126,9 +126,8 @@ def gen_datamodel_code(
 DataModel.register({model_name})
 spec = {model_name}
 """
-        # Remove 'from __future__ import annotations' lines: newer versions of
-        # datamodel-code-generator may emit them after other imports, which is
-        # a SyntaxError.  The annotation is not needed for our generated models.
+        # Strip misplaced `from __future__` lines that newer datamodel-code-generator
+        # versions may emit after other imports, causing a SyntaxError on exec().
         model_code = "\n".join(
             line
             for line in output.read_text().splitlines()

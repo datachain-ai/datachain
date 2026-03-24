@@ -436,11 +436,7 @@ def test_group_by_with_functions_in_partition_by(test_session):
 
 
 def test_group_by_with_unlabeled_func_in_partition_by(test_session):
-    """Test that inline func expressions in partition_by work without .label().
-
-    When no label is provided, the function name is used as the column name.
-    See: https://github.com/datachain-ai/datachain/issues/1676
-    """
+    """Inline func in partition_by without .label() uses the function name."""
 
     class CustomFile(DataModel):
         path: str
@@ -455,14 +451,13 @@ def test_group_by_with_unlabeled_func_in_partition_by(test_session):
         CustomFile(path="config.yaml", size=50),
     ]
 
-    # Without .label(), function name "parent" is used as the column name
     ds = dc.read_values(
         custom_file=custom_data,
         session=test_session,
     ).group_by(
         cnt=func.count(),
         sum=func.sum("custom_file.size"),
-        partition_by=func.path.parent("custom_file.path"),  # no .label()
+        partition_by=func.path.parent("custom_file.path"),
     )
 
     assert len(ds.to_list("parent")) == 4
@@ -471,13 +466,12 @@ def test_group_by_with_unlabeled_func_in_partition_by(test_session):
     assert ds.filter(dc.C("parent") == "tests").to_list("cnt", "sum")[0] == (1, 250)
     assert ds.filter(dc.C("parent") == "").to_list("cnt", "sum")[0] == (1, 50)
 
-    # Also test with C() column reference
     ds2 = dc.read_values(
         custom_file=custom_data,
         session=test_session,
     ).group_by(
         cnt=func.count(),
-        partition_by=func.path.parent(dc.C("custom_file.path")),  # no .label()
+        partition_by=func.path.parent(dc.C("custom_file.path")),
     )
 
     assert len(ds2.to_list("parent")) == 4
