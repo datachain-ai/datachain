@@ -534,7 +534,7 @@ def test_edit_dataset_same_name(test_session, saved_dataset):
         saved_dataset.name, saved_dataset.project, new_name=dataset_new_name
     )
 
-    dataset = catalog.get_dataset(dataset_new_name)
+    dataset = catalog.get_dataset(dataset_new_name, versions=None)
     assert dataset.name == dataset_new_name
 
     # check if dataset tables are renamed correctly

@@ -714,6 +714,7 @@ def test_pull_failure_after_saving_leaves_incomplete_version_and_retry_succeeds(
         "dogs",
         namespace_name=REMOTE_NAMESPACE_NAME,
         project_name=REMOTE_PROJECT_NAME,
+        versions=None,
         include_incomplete=True,
     )
     assert dataset.get_version("1.0.0").status != DatasetStatus.COMPLETE
@@ -770,6 +771,7 @@ def test_pull_cleans_stale_incomplete_version_with_different_uuid(
         "dogs",
         namespace_name=REMOTE_NAMESPACE_NAME,
         project_name=REMOTE_PROJECT_NAME,
+        versions=None,
         include_incomplete=True,
     )
     assert ds.get_version("1.0.0").uuid == stale_uuid
@@ -789,6 +791,7 @@ def test_pull_cleans_stale_incomplete_version_with_different_uuid(
         "dogs",
         namespace_name=REMOTE_NAMESPACE_NAME,
         project_name=REMOTE_PROJECT_NAME,
+        versions=None,
     )
     assert dataset.status == DatasetStatus.COMPLETE
     assert dataset.get_version("1.0.0").uuid == REMOTE_DATASET_UUID

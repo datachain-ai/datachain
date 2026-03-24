@@ -296,10 +296,11 @@ class DatasetVersion:
         size: int | None,
         preview: str | list[dict] | None,
         schema: str | dict[str, SQLType | type[SQLType]],
-        preview_loaded: bool = True,
         sources: str = "",
         query_script: str = "",
         job_id: str | None = None,
+        *,
+        preview_loaded: bool = True,
     ):
         if isinstance(schema, str):
             schema_parsed = parse_schema(json.loads(schema) if schema else {})
@@ -531,6 +532,7 @@ class DatasetRecord:
         version_query_script: str | None = None,
         version_schema: str | None = None,
         version_job_id: str | None = None,
+        *,
         versions_loaded: bool = True,
         preview_loaded: bool = True,
     ) -> "DatasetRecord":
@@ -584,10 +586,10 @@ class DatasetRecord:
                 version_size,
                 version_preview,
                 version_schema,
-                preview_loaded,
                 version_sources or "",
                 version_query_script or "",
                 version_job_id,
+                preview_loaded=preview_loaded,
             )
             versions_list = [dataset_version]
 
