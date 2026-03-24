@@ -1,3 +1,5 @@
+import importlib
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -21,11 +23,9 @@ DF_DATA = {
 def require_torchcodec(test_case):
     """
     Decorator marking a test that requires torchcodec (not available on Windows).
-    These tests are skipped when torchcodec isn't installed or its native library can't load.
+    These tests are skipped when torchcodec isn't installed.
     """
-    try:
-        import torchcodec  # noqa: F401
-    except (ImportError, RuntimeError):
+    if not importlib.util.find_spec("torchcodec"):
         test_case = pytest.mark.skip(
             "test requires torchcodec, not available on Windows yet"
         )(test_case)
