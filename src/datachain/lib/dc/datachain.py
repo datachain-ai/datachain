@@ -1356,7 +1356,11 @@ class DataChain:
                             keep_columns.append(col)
                         schema_partition_by.append(col)
             elif isinstance(col, Function):
-                column = col.get_column(self.signals_schema)
+                # If no label is set, use the function name as the column label
+                # so the output column has a meaningful name (e.g., "parent"
+                # instead of the input column db name like "file__path").
+                effective_label = col.col_label or col.name
+                column = col.get_column(self.signals_schema, label=effective_label)
                 col_db_name = column.name
                 col_type = column.type.python_type
                 schema_fields[col_db_name] = col_type

@@ -257,7 +257,7 @@ def test_all_possible_steps(test_session):
             right_on=["player.name"],
         )
         .hash()
-    ) == "8e5cf0a718406a94c99ab7ffafc67aa5430f79a276deb1f1d87e5a5991bc56bf"
+    ) == "69073ebeebd02e600f0f83ea11c09e5f2659edd48f47c8287597b87a5c3233cb"
 
 
 def test_diff(test_session):

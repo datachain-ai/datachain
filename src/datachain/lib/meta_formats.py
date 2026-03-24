@@ -120,14 +120,21 @@ def gen_datamodel_code(
             class_name=model_name,
             additional_imports=["datachain.lib.data_model.DataModel"],
             use_standard_collections=True,
-            disable_future_imports=True,
             formatters=[],
         )
         epilogue = f"""
 DataModel.register({model_name})
 spec = {model_name}
 """
-        return output.read_text() + epilogue
+        # Remove 'from __future__ import annotations' lines: newer versions of
+        # datamodel-code-generator may emit them after other imports, which is
+        # a SyntaxError.  The annotation is not needed for our generated models.
+        model_code = "\n".join(
+            line
+            for line in output.read_text().splitlines()
+            if line.strip() != "from __future__ import annotations"
+        )
+        return model_code + epilogue
 
 
 #

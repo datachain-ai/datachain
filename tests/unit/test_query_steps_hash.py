@@ -182,7 +182,7 @@ def test_filter_hash(inputs, _hash):
         (
             {"new_id": func.sum("id")},
             SignalSchema({"id": int}),
-            "60f3a9e31aa77dabb8045060659e75f050133278fd613f0a0075b309747eb80e",
+            "47f57e322e79be378d12cb8823273567f93e52b245c9c0736562826b54cd6f7e",
         ),
         (
             {"new_id": C("id") * 10, "old_id": C("id")},
@@ -335,17 +335,17 @@ def test_join_hash(
             [
                 C("id"),
             ],
-            "dad35b97c6a47beaa605df6ccc46225c7279180d93f01b43cf2918fccca0a7ed",
+            "27df6281d3e83a7012edcab01715b1a44225a128df9c9f59586178ecdba6b8e6",
         ),
         (
             {"cnt": func.count(), "sum": func.sum("id")},
             [C("id"), C("name")],
-            "5ebb814165256f4cd4717d8ec255d6d67bc4abb165bffaa95b09b49b0f90c6e5",
+            "02ed6a8bee48bf53928cdd9d22d2f383749da48c376d6b9965b4beb89f194da3",
         ),
         (
             {"cnt": func.count()},
             [],
-            "96512eb2367f9940e53e37d450d79f9a08d3de19b6c36d79a6939b55487d657c",
+            "021558fa58a0aef53df616927a8bc12dae0f86afdb8e6f1f8be593bac4708fc4",
         ),
     ],
 )
