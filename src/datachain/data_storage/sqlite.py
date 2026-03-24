@@ -852,6 +852,7 @@ class SQLiteWarehouse(AbstractWarehouse):
         table: Table,
         query: Select,
         progress_cb: Callable[[int], None] | None = None,
+        preserve_ids: bool = False,
     ) -> None:
         col_id = (
             query.selected_columns.sys__id
@@ -859,12 +860,16 @@ class SQLiteWarehouse(AbstractWarehouse):
             else None
         )
 
+        columns = (
+            list(query.selected_columns)
+            if preserve_ids
+            else [c for c in query.selected_columns if c.name != "sys__id"]
+        )
+
         # If there is no sys__id column, we cannot copy the table in batches,
         # and we need to copy all rows at once. Same if there is a group by clause.
         if col_id is None or len(query._group_by_clause) > 0:
-            select_q = query.with_only_columns(
-                *[c for c in query.selected_columns if c.name != "sys__id"]
-            )
+            select_q = query.with_only_columns(*columns)
             q = table.insert().from_select(list(select_q.selected_columns), select_q)
             self.db.execute(q)
             return
@@ -872,13 +877,7 @@ class SQLiteWarehouse(AbstractWarehouse):
         select_ids = query.with_only_columns(col_id)
         ids = self.db.execute(select_ids).fetchall()
 
-        select_q = (
-            query.with_only_columns(
-                *[c for c in query.selected_columns if c.name != "sys__id"]
-            )
-            .offset(None)
-            .limit(None)
-        )
+        select_q = query.with_only_columns(*columns).offset(None).limit(None)
 
         for batch in batched_it(ids, self.INSERT_BATCH_SIZE):
             batch_ids = [row[0] for row in batch]
