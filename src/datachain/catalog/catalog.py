@@ -1116,11 +1116,6 @@ class Catalog:
         """
         Deletes one single dataset version.
         If it was last version, it removes dataset completely.
-
-        Uses a 3-phase approach to avoid orphaned tables or metadata:
-        1. Mark version as REMOVING (so GC can retry if crash occurs)
-        2. Drop warehouse table
-        3. Remove metadata
         """
         if not dataset.has_version(version):
             return
