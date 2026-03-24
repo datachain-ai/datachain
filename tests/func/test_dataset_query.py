@@ -36,7 +36,7 @@ def dogs_cats_dataset(listed_bucket, cloud_test_catalog, dogs_dataset, cats_data
         .union(DatasetQuery(name=cats_dataset.name, version="1.0.0", catalog=catalog))
         .save(dataset_name)
     )
-    return catalog.get_dataset(dataset_name)
+    return catalog.get_dataset(dataset_name, versions=["1.0.0"])
 
 
 @pytest.mark.parametrize(
@@ -119,9 +119,19 @@ def test_instance_returned_after_save(cloud_test_catalog, dogs_cats_dataset):
     ds2 = ds.save("dogs_cats_2")
     assert isinstance(ds2, DatasetQuery)
     expected_names = {"cat1", "cat2", "dog1", "dog2", "dog3", "dog4"}
+    dogs_cats_dataset = catalog.get_dataset(
+        dogs_cats_dataset.name,
+        namespace_name=dogs_cats_dataset.project.namespace.name,
+        project_name=dogs_cats_dataset.project.name,
+        versions=["1.0.0"],
+        include_preview=True,
+    )
     assert_row_names(catalog, dogs_cats_dataset, "1.0.0", expected_names)
     assert_row_names(
-        catalog, catalog.get_dataset("dogs_cats_2"), "1.0.0", expected_names
+        catalog,
+        catalog.get_dataset("dogs_cats_2", versions=["1.0.0"], include_preview=True),
+        "1.0.0",
+        expected_names,
     )
 
 
@@ -193,9 +203,17 @@ def test_chain_after_save(cloud_test_catalog, dogs_cats_dataset):
     )
 
     assert_row_names(
-        catalog, catalog.get_dataset("ds1"), "1.0.0", {"dog1", "dog2", "dog3", "dog4"}
+        catalog,
+        catalog.get_dataset("ds1", versions=["1.0.0"], include_preview=True),
+        "1.0.0",
+        {"dog1", "dog2", "dog3", "dog4"},
     )
-    assert_row_names(catalog, catalog.get_dataset("ds2"), "1.0.0", {"dog2"})
+    assert_row_names(
+        catalog,
+        catalog.get_dataset("ds2", versions=["1.0.0"], include_preview=True),
+        "1.0.0",
+        {"dog2"},
+    )
 
 
 @pytest.mark.parametrize(
@@ -910,7 +928,7 @@ def test_simple_dataset_query(cloud_test_catalog):
 
     ds_queries = []
     for ds_name in ("ds1", "ds2"):
-        ds = metastore.get_dataset(ds_name)
+        ds = metastore.get_dataset(ds_name, versions=None)
         dr = warehouse.dataset_rows(ds)
         dq = dr.select().order_by(dr.c("path"))
         ds_queries.append(dq)

@@ -2,7 +2,6 @@ import builtins
 import re
 from dataclasses import dataclass, fields
 from datetime import datetime
-from functools import cached_property
 from typing import (
     Any,
     NewType,
@@ -13,7 +12,11 @@ from packaging.specifiers import SpecifierSet
 from packaging.version import Version
 
 from datachain import json, semver
-from datachain.error import DatasetVersionNotFoundError, InvalidDatasetNameError
+from datachain.error import (
+    DatasetStateNotLoadedError,
+    DatasetVersionNotFoundError,
+    InvalidDatasetNameError,
+)
 from datachain.namespace import Namespace
 from datachain.project import Project
 from datachain.sql.types import NAME_TYPES_MAPPING, SQLType
@@ -273,6 +276,7 @@ class DatasetVersion:
     sources: str = ""
     query_script: str = ""
     job_id: str | None = None
+    _preview_loaded: bool = True
 
     @classmethod
     def parse(  # noqa: PLR0913
@@ -292,6 +296,7 @@ class DatasetVersion:
         size: int | None,
         preview: str | list[dict] | None,
         schema: str | dict[str, SQLType | type[SQLType]],
+        preview_loaded: bool = True,
         sources: str = "",
         query_script: str = "",
         job_id: str | None = None,
@@ -302,24 +307,25 @@ class DatasetVersion:
             schema_parsed = schema
 
         return cls(
-            id,
-            uuid,
-            dataset_id,
-            version,
-            status,
-            json.loads(feature_schema) if feature_schema else {},
-            created_at,
-            finished_at,
-            error_message,
-            error_stack,
-            script_output,
-            schema_parsed,
-            num_objects,
-            size,
-            preview,
-            sources,
-            query_script,
-            job_id,
+            id=id,
+            uuid=uuid,
+            dataset_id=dataset_id,
+            version=version,
+            status=status,
+            feature_schema=json.loads(feature_schema) if feature_schema else {},
+            created_at=created_at,
+            finished_at=finished_at,
+            error_message=error_message,
+            error_stack=error_stack,
+            script_output=script_output,
+            schema=schema_parsed,
+            num_objects=num_objects,
+            size=size,
+            _preview_data=preview,
+            sources=sources,
+            query_script=query_script,
+            job_id=job_id,
+            _preview_loaded=preview_loaded,
         )
 
     @property
@@ -361,8 +367,13 @@ class DatasetVersion:
             for c_name, c_type in self.schema.items()
         }
 
-    @cached_property
+    @property
     def preview(self) -> list[dict] | None:
+        if not self._preview_loaded:
+            raise DatasetStateNotLoadedError(
+                "Dataset preview was not loaded. Fetch the dataset with "
+                "include_preview=True before accessing preview."
+            )
         if isinstance(self._preview_data, str):
             return json.loads(self._preview_data)
         return self._preview_data or None
@@ -451,6 +462,15 @@ class DatasetRecord:
     script_output: str = ""
     sources: str = ""
     query_script: str = ""
+    _versions_loaded: bool = True
+
+    def __getattribute__(self, name: str):
+        if name == "versions" and not object.__getattribute__(self, "_versions_loaded"):
+            raise DatasetStateNotLoadedError(
+                "Dataset versions were not loaded. Fetch the dataset with "
+                "versions=None or an explicit versions=[...] before accessing versions."
+            )
+        return object.__getattribute__(self, name)
 
     def __hash__(self):
         return hash(f"{self.id}")
@@ -511,6 +531,8 @@ class DatasetRecord:
         version_query_script: str | None = None,
         version_schema: str | None = None,
         version_job_id: str | None = None,
+        versions_loaded: bool = True,
+        preview_loaded: bool = True,
     ) -> "DatasetRecord":
         attrs_lst: list[str] = json.loads(attrs) if attrs else []
         schema_dct: dict[str, Any] = json.loads(schema) if schema else {}
@@ -562,6 +584,7 @@ class DatasetRecord:
                 version_size,
                 version_preview,
                 version_schema,
+                preview_loaded,
                 version_sources or "",
                 version_query_script or "",
                 version_job_id,
@@ -569,22 +592,23 @@ class DatasetRecord:
             versions_list = [dataset_version]
 
         return cls(
-            dataset_id,
-            name,
-            project,
-            description,
-            attrs_lst,
-            parse_schema(schema_dct),  # type: ignore[arg-type]
-            json.loads(feature_schema) if feature_schema else {},
-            versions_list,
-            status,
-            created_at,
-            finished_at,
-            error_message,
-            error_stack,
-            script_output,
-            sources,
-            query_script,
+            id=dataset_id,
+            name=name,
+            project=project,
+            description=description,
+            attrs=attrs_lst,
+            schema=parse_schema(schema_dct),  # type: ignore[arg-type]
+            feature_schema=json.loads(feature_schema) if feature_schema else {},
+            versions=versions_list,
+            status=status,
+            created_at=created_at,
+            finished_at=finished_at,
+            error_message=error_message,
+            error_stack=error_stack,
+            script_output=script_output,
+            sources=sources,
+            query_script=query_script,
+            _versions_loaded=versions_loaded,
         )
 
     @property
@@ -612,13 +636,15 @@ class DatasetRecord:
         """Merge versions from another dataset"""
         if other.id != self.id:
             raise RuntimeError("Cannot merge versions of datasets with different ids")
-        if not other.versions:
+        other_versions = object.__getattribute__(other, "versions")
+        if not other_versions:
             # nothing to merge
             return self
-        if not self.versions:
+        self_versions = object.__getattribute__(self, "versions")
+        if not self_versions:
             self.versions = []
 
-        self.versions = list(set(self.versions + other.versions))
+        self.versions = list(set(self_versions + other_versions))
         self.versions.sort(key=lambda v: v.version_value)
         return self
 
@@ -643,19 +669,11 @@ class DatasetRecord:
             raise DatasetVersionNotFoundError(
                 f"Dataset {self.name} does not have version {version}"
             )
-        return next(
-            v
-            for v in self.versions  # type: ignore [union-attr]
-            if v.version == version
-        )
+        return next(v for v in self.versions if v.version == version)
 
     def get_version_by_uuid(self, uuid: str) -> DatasetVersion:
         try:
-            return next(
-                v
-                for v in self.versions  # type: ignore [union-attr]
-                if v.uuid == uuid
-            )
+            return next(v for v in self.versions if v.uuid == uuid)
         except StopIteration:
             raise DatasetVersionNotFoundError(
                 f"Dataset {self.name} does not have version with uuid {uuid}"

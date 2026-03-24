@@ -58,6 +58,10 @@ class DatasetVersionNotFoundError(NotFoundError):
     pass
 
 
+class DatasetStateNotLoadedError(DataChainError):
+    pass
+
+
 class DatasetInvalidVersionError(Exception):
     pass
 

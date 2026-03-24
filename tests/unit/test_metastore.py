@@ -9,7 +9,7 @@ from datachain.checkpoint import CheckpointStatus
 from datachain.data_storage.job import JobQueryType, JobStatus
 from datachain.data_storage.serializer import deserialize
 from datachain.data_storage.sqlite import SCHEMA_VERSION, SQLiteMetastore
-from datachain.error import OutdatedDatabaseSchemaError
+from datachain.error import DatasetStateNotLoadedError, OutdatedDatabaseSchemaError
 from tests.conftest import cleanup_sqlite_db
 
 
@@ -147,4 +147,5 @@ def test_get_dataset_can_skip_preview_loading(test_session):
     )
 
     assert with_preview.get_version("1.0.0").preview is not None
-    assert without_preview.get_version("1.0.0").preview is None
+    with pytest.raises(DatasetStateNotLoadedError):
+        _ = without_preview.get_version("1.0.0").preview

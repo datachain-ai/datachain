@@ -616,17 +616,6 @@ class Catalog:
 
         return lst, client, list_path
 
-    def _remove_dataset_rows_and_warehouse_info(
-        self, dataset: DatasetRecord, version: str, **kwargs
-    ):
-        self.warehouse.drop_dataset_rows_table(dataset, version)
-        self.update_dataset_version_with_warehouse_info(
-            dataset,
-            version,
-            rows_dropped=True,
-            **kwargs,
-        )
-
     @contextmanager
     def enlist_sources(
         self,
@@ -1018,20 +1007,17 @@ class Catalog:
         return dataset, version_created
 
     def update_dataset_version_with_warehouse_info(
-        self, dataset: DatasetRecord, version: str, rows_dropped=False, **kwargs
+        self, dataset: DatasetRecord, version: str, **kwargs
     ) -> None:
         from datachain.query.dataset import DatasetQuery
 
         dataset_version = dataset.get_version(version)
+        assert not dataset_version._preview_loaded, (
+            "update_dataset_version_with_warehouse_info expects preview to be "
+            "unloaded and regenerates it from warehouse rows"
+        )
 
         values = {**kwargs}
-
-        if rows_dropped:
-            values["num_objects"] = None
-            values["size"] = None
-            values["preview"] = None
-            self.metastore.update_dataset_version(dataset, version, **values)
-            return
 
         stats_num_objects = None
         stats_size = None
@@ -1044,22 +1030,20 @@ class Catalog:
             if size != dataset_version.size:
                 values["size"] = size
 
-        preview_rows = None
-        if not dataset_version.preview:
-            preview = (
-                DatasetQuery(
-                    name=dataset.name,
-                    namespace_name=dataset.project.namespace.name,
-                    project_name=dataset.project.name,
-                    version=version,
-                    catalog=self,
-                    include_incomplete=True,  # Allow reading CREATED version
-                )
-                .limit(20)
-                .to_db_records()
+        preview = (
+            DatasetQuery(
+                name=dataset.name,
+                namespace_name=dataset.project.namespace.name,
+                project_name=dataset.project.name,
+                version=version,
+                catalog=self,
+                include_incomplete=True,  # Allow reading CREATED version
             )
-            preview_rows = len(preview)
-            values["preview"] = preview
+            .limit(20)
+            .to_db_records()
+        )
+        preview_rows = len(preview)
+        values["preview"] = preview
 
         # Log anomaly: dataset_stats returned 0 but preview has data
         if stats_num_objects == 0 and preview_rows and preview_rows > 0:
@@ -1073,7 +1057,7 @@ class Catalog:
                 version,
                 dataset_version.num_objects,
                 dataset_version.size,
-                bool(dataset_version.preview),
+                False,
                 stats_num_objects,
                 stats_size,
                 preview_rows,
@@ -1659,6 +1643,7 @@ class Catalog:
             name,
             namespace_name=project.namespace.name if project else None,
             project_name=project.name if project else None,
+            versions=None,
         )
         return self.update_dataset(dataset, **update_data)
 

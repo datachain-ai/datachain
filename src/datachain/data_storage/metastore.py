@@ -1307,7 +1307,8 @@ class AbstractDBMetastore(AbstractMetastore):
         # the UUID we attempted to insert with the one stored in the DB.
         # If another writer won the ON CONFLICT race, the stored UUID will
         # differ from ours.
-        version_created = dataset.get_version(version).uuid == my_uuid
+        dataset_version = dataset.get_version(version)
+        version_created = dataset_version.uuid == my_uuid
 
         return dataset, version_created
 
@@ -1462,8 +1463,22 @@ class AbstractDBMetastore(AbstractMetastore):
         )
         return dataset_version
 
-    def _parse_dataset(self, rows) -> DatasetRecord | None:
-        versions = [self.dataset_class.parse(*r) for r in rows]
+    def _parse_dataset(
+        self,
+        rows,
+        *,
+        versions_loaded: bool,
+        preview_loaded: bool,
+    ) -> DatasetRecord | None:
+        parse_dataset: Any = self.dataset_class.parse
+        versions = [
+            parse_dataset(
+                *r,
+                versions_loaded=versions_loaded,
+                preview_loaded=preview_loaded,
+            )
+            for r in rows
+        ]
         if not versions:
             return None
         return reduce(lambda ds, version: ds.merge_versions(version), versions)
@@ -1510,6 +1525,13 @@ class AbstractDBMetastore(AbstractMetastore):
                 *(getattr(d.c, f) for f in dataset_fields),
             )
             j = n.join(p, n.c.id == p.c.namespace_id).join(d, p.c.id == d.c.project_id)
+            if not include_incomplete:
+                j = j.join(
+                    dv,
+                    and_(
+                        d.c.id == dv.c.dataset_id, dv.c.status == DatasetStatus.COMPLETE
+                    ),
+                )
             return query.select_from(j)
 
         version_columns = []
@@ -1623,7 +1645,11 @@ class AbstractDBMetastore(AbstractMetastore):
             include_preview=include_preview,
         )
         query = query.where(dv.c.uuid == uuid)
-        ds = self._parse_dataset(self.db.execute(query))
+        ds = self._parse_dataset(
+            self.db.execute(query),
+            versions_loaded=True,
+            preview_loaded=include_preview,
+        )
         if not ds:
             raise DatasetNotFoundError(f"Dataset with version uuid {uuid} not found.")
         return ds
@@ -1659,7 +1685,11 @@ class AbstractDBMetastore(AbstractMetastore):
             p.c.name == project_name,
         )  # type: ignore [attr-defined]
 
-        ds = self._parse_dataset(self.db.execute(query))
+        ds = self._parse_dataset(
+            self.db.execute(query),
+            versions_loaded=versions is None or bool(versions),
+            preview_loaded=include_preview,
+        )
         if not ds:
             raise DatasetNotFoundError(
                 f"Dataset {name} not found in namespace {namespace_name}"
