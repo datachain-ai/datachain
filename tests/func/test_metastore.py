@@ -991,3 +991,55 @@ def test_has_active_checkpoints_in_run_group_only_outdated(metastore):
     assert not metastore._has_active_checkpoints_in_run_group(
         job.run_group_id, ttl_threshold
     )
+
+
+@pytest.mark.parametrize(
+    "dataset_name, job_status, has_job_id, expected",
+    [
+        ("session_abc123", JobStatus.FAILED, True, True),
+        ("session_abc123", JobStatus.COMPLETE, True, True),
+        ("session_abc123", JobStatus.CANCELED, True, True),
+        ("session_abc123", JobStatus.RUNNING, True, False),
+        ("session_abc123", JobStatus.CREATED, True, False),
+        ("regular_dataset", JobStatus.FAILED, True, False),
+        ("session_abc123", None, False, False),
+    ],
+    ids=[
+        "failed-job",
+        "complete-job",
+        "canceled-job",
+        "running-job",
+        "created-job",
+        "non-session-name",
+        "no-job-id",
+    ],
+)
+def test_cleanup_session_dataset_versions(
+    metastore, dataset_name, job_status, has_job_id, expected
+):
+    if has_job_id:
+        job_id = metastore.create_job(
+            name="job",
+            query="q",
+            query_type=JobQueryType.PYTHON,
+            status=job_status,
+        )
+    else:
+        job_id = None
+
+    ds = metastore.create_dataset(name=dataset_name)
+    ds, _ = metastore.create_dataset_version(
+        dataset=ds,
+        version="1.0.0",
+        status=DatasetStatus.COMPLETE,
+        job_id=job_id,
+    )
+    if not has_job_id:
+        dv = metastore._datasets_versions
+        metastore.db.execute(
+            dv.update().where(dv.c.dataset_id == ds.id).values(job_id=None)
+        )
+
+    to_clean = metastore.get_dataset_versions_to_clean()
+    found = ds.name in {d.name for d, _ in to_clean}
+    assert found == expected
