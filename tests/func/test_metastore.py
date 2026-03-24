@@ -1014,7 +1014,7 @@ def test_has_active_checkpoints_in_run_group_only_outdated(metastore):
         "no-job-id",
     ],
 )
-def test_get_temp_datasets_to_clean(
+def test_cleanup_session_dataset_versions(
     metastore, dataset_name, job_status, has_job_id, expected
 ):
     if has_job_id:
@@ -1040,6 +1040,6 @@ def test_get_temp_datasets_to_clean(
             dv.update().where(dv.c.dataset_id == ds.id).values(job_id=None)
         )
 
-    to_clean = metastore.get_temp_datasets_to_clean()
+    to_clean = metastore.get_dataset_versions_to_clean()
     found = ds.name in {d.name for d, _ in to_clean}
     assert found == expected

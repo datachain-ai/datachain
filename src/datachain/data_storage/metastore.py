@@ -331,7 +331,7 @@ class AbstractMetastore(ABC, Serializable):
         """
 
     @abstractmethod
-    def get_incomplete_dataset_versions(
+    def get_dataset_versions_to_clean(
         self, job_id: str | None = None
     ) -> list[tuple[DatasetRecord, str]]:
         """
@@ -350,22 +350,6 @@ class AbstractMetastore(ABC, Serializable):
         Returns:
             List of (DatasetRecord, version_string) tuples. Each DatasetRecord
             contains only one version (the incomplete version to clean).
-        """
-
-    @abstractmethod
-    def get_temp_datasets_to_clean(self) -> list[tuple[DatasetRecord, str]]:
-        """
-        Get temporary (session_*) dataset versions to clean up.
-
-        Returns versions of datasets whose name starts with 'session_'
-        and whose associated job is in a final state (COMPLETE, FAILED,
-        CANCELED).
-
-        Versions without a job_id are skipped — they may belong to
-        an in-flight operation.
-
-        Returns:
-            List of (DatasetRecord, version_string) tuples.
         """
 
     @abstractmethod
@@ -1662,7 +1646,7 @@ class AbstractDBMetastore(AbstractMetastore):
         dataset.remove_version(version)
         return dataset
 
-    def get_incomplete_dataset_versions(
+    def get_dataset_versions_to_clean(
         self, job_id: str | None = None
     ) -> list[tuple[DatasetRecord, str]]:
         n = self._namespaces
@@ -1695,26 +1679,45 @@ class AbstractDBMetastore(AbstractMetastore):
                 )
             )
             .where(
-                dv.c.status.in_(
-                    [
-                        DatasetStatus.CREATED,
-                        DatasetStatus.FAILED,
-                        DatasetStatus.STALE,
-                        DatasetStatus.REMOVING,
-                    ]
-                ),
                 or_(
-                    # job is finished
-                    j.c.status.in_(
-                        [JobStatus.COMPLETE, JobStatus.FAILED, JobStatus.CANCELED]
-                    ),
-                    # or no job at all (e.g. pull_dataset) — but only
-                    # if old enough to not be an in-flight operation
+                    # Incomplete/failed/stale versions from finished jobs
                     and_(
-                        dv.c.job_id.is_(None),
-                        dv.c.created_at
-                        < datetime.now(timezone.utc)
-                        - timedelta(hours=STALE_CREATED_THRESHOLD_HOURS),
+                        dv.c.status.in_(
+                            [
+                                DatasetStatus.CREATED,
+                                DatasetStatus.FAILED,
+                                DatasetStatus.STALE,
+                                DatasetStatus.REMOVING,
+                            ]
+                        ),
+                        or_(
+                            j.c.status.in_(
+                                [
+                                    JobStatus.COMPLETE,
+                                    JobStatus.FAILED,
+                                    JobStatus.CANCELED,
+                                ]
+                            ),
+                            and_(
+                                dv.c.job_id.is_(None),
+                                dv.c.created_at
+                                < datetime.now(timezone.utc)
+                                - timedelta(hours=STALE_CREATED_THRESHOLD_HOURS),
+                            ),
+                        ),
+                    ),
+                    # Session datasets from finished jobs (orphaned intermediates)
+                    and_(
+                        d.c.name.startswith("session_"),
+                        dv.c.status == DatasetStatus.COMPLETE,
+                        dv.c.job_id.isnot(None),
+                        j.c.status.in_(
+                            [
+                                JobStatus.COMPLETE,
+                                JobStatus.FAILED,
+                                JobStatus.CANCELED,
+                            ]
+                        ),
                     ),
                 ),
             )
@@ -1728,51 +1731,6 @@ class AbstractDBMetastore(AbstractMetastore):
         for row in self.db.execute(query):
             dataset = self.dataset_class.parse(*row)
             # Each DatasetRecord has one version (the failed one from this row)
-            if dataset.versions:
-                version = dataset.versions[0].version
-                results.append((dataset, version))
-
-        return results
-
-    def get_temp_datasets_to_clean(self) -> list[tuple[DatasetRecord, str]]:
-        n = self._namespaces
-        p = self._projects
-        d = self._datasets
-        dv = self._datasets_versions
-        j = self._jobs
-
-        select_cols = (
-            *(getattr(n.c, f) for f in self._namespaces_fields),
-            *(getattr(p.c, f) for f in self._projects_fields),
-            *(getattr(d.c, f) for f in self._dataset_fields),
-            *(getattr(dv.c, f) for f in self._dataset_version_fields),
-        )
-        base_from = (
-            n.join(p, n.c.id == p.c.namespace_id)
-            .join(d, p.c.id == d.c.project_id)
-            .join(dv, d.c.id == dv.c.dataset_id)
-        )
-
-        query = (
-            self._datasets_select(*select_cols)
-            .select_from(
-                base_from.join(
-                    j,
-                    cast(dv.c.job_id, j.c.id.type) == j.c.id,
-                )
-            )
-            .where(
-                d.c.name.startswith("session_"),
-                dv.c.job_id.isnot(None),
-                j.c.status.in_(
-                    [JobStatus.COMPLETE, JobStatus.FAILED, JobStatus.CANCELED]
-                ),
-            )
-        )
-
-        results = []
-        for row in self.db.execute(query):
-            dataset = self.dataset_class.parse(*row)
             if dataset.versions:
                 version = dataset.versions[0].version
                 results.append((dataset, version))
