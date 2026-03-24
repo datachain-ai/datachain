@@ -126,7 +126,7 @@ class AsyncMapper(Generic[InputT, ResultT]):
             )
             self.gather_exceptions(done)
             assert join.done()
-        except:
+        except BaseException:
             await self.cancel_all()
             await self._break_iteration()
             raise
