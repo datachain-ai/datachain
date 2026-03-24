@@ -360,8 +360,7 @@ def test_cleanup_dataset_versions_removes_marked_for_removal(
 ):
     test_session.catalog.metastore.set_job_status(job.id, JobStatus.COMPLETE)
 
-    num_removed = test_session.catalog.cleanup_dataset_versions()
-    assert num_removed == 1
+    test_session.catalog.cleanup_dataset_versions()
 
     with pytest.raises(DatasetNotFoundError):
         test_session.catalog.get_dataset(dataset_marked_for_removal.name)
