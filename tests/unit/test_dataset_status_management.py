@@ -139,15 +139,15 @@ def test_status_filtering_hides_non_complete_versions(
     assert dataset_failed.name not in dataset_names
 
 
-def test_get_incomplete_dataset_versions(
+def test_get_dataset_versions_to_clean(
     test_session, job, dataset_created, dataset_failed, dataset_complete
 ):
-    """Test get_incomplete_dataset_versions."""
+    """Test get_dataset_versions_to_clean."""
     # Mark job as failed
     test_session.catalog.metastore.set_job_status(job.id, JobStatus.FAILED)
 
     # Get failed versions to clean
-    to_clean = test_session.catalog.metastore.get_incomplete_dataset_versions()
+    to_clean = test_session.catalog.metastore.get_dataset_versions_to_clean()
 
     # Should return CREATED and FAILED datasets, not COMPLETE
     cleaned_names = {dataset.name for dataset, _ in to_clean}
@@ -161,38 +161,38 @@ def test_get_incomplete_dataset_versions(
         assert len(dataset.versions) == 1
 
 
-def test_get_incomplete_dataset_versions_skips_running_jobs(
+def test_get_dataset_versions_to_clean_skips_running_jobs(
     test_session, job, dataset_created
 ):
     """Test that gc skips versions whose job is still running."""
     # Job is RUNNING — its versions should NOT be returned
-    to_clean = test_session.catalog.metastore.get_incomplete_dataset_versions()
+    to_clean = test_session.catalog.metastore.get_dataset_versions_to_clean()
     assert dataset_created.name not in {ds.name for ds, _ in to_clean}
 
     # Mark job as complete — now it should be returned
     test_session.catalog.metastore.set_job_status(job.id, JobStatus.COMPLETE)
-    to_clean = test_session.catalog.metastore.get_incomplete_dataset_versions()
+    to_clean = test_session.catalog.metastore.get_dataset_versions_to_clean()
     assert dataset_created.name in {ds.name for ds, _ in to_clean}
 
 
-def test_get_incomplete_dataset_versions_scoped_to_job(
+def test_get_dataset_versions_to_clean_scoped_to_job(
     test_session, job, dataset_created
 ):
-    """Test that get_incomplete_dataset_versions with job_id scopes to that job."""
+    """Test that get_dataset_versions_to_clean with job_id scopes to that job."""
     test_session.catalog.metastore.set_job_status(job.id, JobStatus.FAILED)
-    to_clean = test_session.catalog.metastore.get_incomplete_dataset_versions(
+    to_clean = test_session.catalog.metastore.get_dataset_versions_to_clean(
         job_id=job.id
     )
     assert dataset_created.name in {ds.name for ds, _ in to_clean}
 
     # Non-existent job_id returns nothing
-    to_clean = test_session.catalog.metastore.get_incomplete_dataset_versions(
+    to_clean = test_session.catalog.metastore.get_dataset_versions_to_clean(
         job_id="nonexistent"
     )
     assert len(to_clean) == 0
 
 
-def test_get_incomplete_dataset_versions_finds_no_job_id(test_session):
+def test_get_dataset_versions_to_clean_finds_no_job_id(test_session):
     """Test that gc finds stale versions with no job_id (e.g. from pull_dataset)."""
 
     dataset = test_session.catalog.create_dataset(
@@ -209,7 +209,7 @@ def test_get_incomplete_dataset_versions_finds_no_job_id(test_session):
     )
 
     # Freshly created — should NOT be returned (protects in-flight pulls)
-    to_clean = test_session.catalog.metastore.get_incomplete_dataset_versions()
+    to_clean = test_session.catalog.metastore.get_dataset_versions_to_clean()
     assert dataset.name not in {ds.name for ds, _ in to_clean}
 
     # Backdate created_at to exceed the staleness threshold
@@ -220,17 +220,17 @@ def test_get_incomplete_dataset_versions_finds_no_job_id(test_session):
     )
 
     # Now it should be returned
-    to_clean = test_session.catalog.metastore.get_incomplete_dataset_versions()
+    to_clean = test_session.catalog.metastore.get_dataset_versions_to_clean()
     assert dataset.name in {ds.name for ds, _ in to_clean}
 
 
-def test_cleanup_failed_dataset_versions(test_session, job, dataset_failed):
-    """Test cleanup_failed_dataset_versions removes datasets and returns IDs."""
+def test_cleanup_dataset_versions(test_session, job, dataset_failed):
+    """Test cleanup_dataset_versions removes datasets and returns IDs."""
     # Mark job as failed
     test_session.catalog.metastore.set_job_status(job.id, JobStatus.FAILED)
 
     # Cleanup failed versions
-    num_removed = test_session.catalog.cleanup_failed_dataset_versions()
+    num_removed = test_session.catalog.cleanup_dataset_versions()
 
     # Should return the cleaned version ID
     assert num_removed == 1
@@ -302,6 +302,32 @@ def test_public_api_move_dataset_rejects_non_complete(
         move_dataset(dataset_failed.name, "new_name_failed", session=test_session)
 
 
+@pytest.mark.parametrize(
+    "job_status, should_clean",
+    [
+        (JobStatus.FAILED, True),
+        (JobStatus.RUNNING, False),
+    ],
+    ids=["finished-job", "running-job"],
+)
+def test_cleanup_session_dataset_versions(test_session, job, job_status, should_clean):
+    """Test that cleanup_dataset_versions also cleans session_* datasets."""
+    ds = dc.read_values(value=["a", "b"], session=test_session).save(
+        "session_test_abc123"
+    )
+    test_session.catalog.metastore.set_job_status(job.id, job_status)
+
+    num_removed = test_session.catalog.cleanup_dataset_versions()
+
+    if should_clean:
+        assert num_removed >= 1
+        with pytest.raises(DatasetNotFoundError):
+            test_session.catalog.get_dataset(ds.dataset.name)
+    else:
+        assert num_removed == 0
+        test_session.catalog.get_dataset(ds.dataset.name)  # still exists
+
+
 @pytest.fixture
 def dataset_marked_for_removal(test_session, job) -> DatasetRecord:
     ds = dc.read_values(value=["v1"], session=test_session).save(
@@ -318,24 +344,23 @@ def dataset_marked_for_removal(test_session, job) -> DatasetRecord:
     return test_session.catalog.get_dataset(dataset.name, include_incomplete=True)
 
 
-def test_get_incomplete_dataset_versions_includes_marked_for_removal(
+def test_get_dataset_versions_to_clean_includes_marked_for_removal(
     test_session, job, dataset_marked_for_removal
 ):
-    to_clean = test_session.catalog.metastore.get_incomplete_dataset_versions()
+    to_clean = test_session.catalog.metastore.get_dataset_versions_to_clean()
     assert dataset_marked_for_removal.name not in {ds.name for ds, _ in to_clean}
 
     test_session.catalog.metastore.set_job_status(job.id, JobStatus.COMPLETE)
-    to_clean = test_session.catalog.metastore.get_incomplete_dataset_versions()
+    to_clean = test_session.catalog.metastore.get_dataset_versions_to_clean()
     assert dataset_marked_for_removal.name in {ds.name for ds, _ in to_clean}
 
 
-def test_cleanup_failed_dataset_versions_removes_marked_for_removal(
+def test_cleanup_dataset_versions_removes_marked_for_removal(
     test_session, job, dataset_marked_for_removal
 ):
     test_session.catalog.metastore.set_job_status(job.id, JobStatus.COMPLETE)
 
-    num_removed = test_session.catalog.cleanup_failed_dataset_versions()
-    assert num_removed == 1
+    test_session.catalog.cleanup_dataset_versions()
 
     with pytest.raises(DatasetNotFoundError):
         test_session.catalog.get_dataset(dataset_marked_for_removal.name)
