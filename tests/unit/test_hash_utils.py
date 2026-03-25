@@ -134,6 +134,28 @@ def test_hash_column_elements_unique():
     assert len(set(hashes)) == len(hashes)
 
 
+def test_hash_column_elements_near_miss():
+    """Minor modifications produce different hashes."""
+    assert hash_column_elements([C("name")]) != hash_column_elements([C("name2")])
+    assert hash_column_elements([C("age") > 20]) != hash_column_elements(
+        [C("age") > 21]
+    )
+    assert hash_column_elements([C("age") + 10]) != hash_column_elements(
+        [C("age") + 11]
+    )
+    assert hash_column_elements([C("age") * 2]) != hash_column_elements([C("age") * 3])
+    assert hash_column_elements([literal(42)]) != hash_column_elements([literal(43)])
+    assert hash_column_elements([literal("hello")]) != hash_column_elements(
+        [literal("hell")]
+    )
+    assert hash_column_elements([C("name").like("A%")]) != hash_column_elements(
+        [C("name").like("B%")]
+    )
+    assert hash_column_elements([C("age").in_([1, 2])]) != hash_column_elements(
+        [C("age").in_([1, 3])]
+    )
+
+
 def test_hash_named_functions():
     h1 = hash_callable(double)
     h2 = hash_callable(double_arg_annot)
