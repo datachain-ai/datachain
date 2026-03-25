@@ -89,6 +89,10 @@ jobs:
             backend/datachain_server/pyproject.toml
             backend/datachain/pyproject.toml
 
+      - name: Use CPU-only PyTorch on Linux
+        # torch 2.11+ on PyPI pulls CUDA deps missing libnppicc (nvidia-npp)
+        run: echo "UV_TORCH_BACKEND=cpu" >> "$GITHUB_ENV"
+
       - name: Update DataChain requirement in Studio
         if: ${{ env.BRANCH != 'main' }}
         working-directory: backend
@@ -143,7 +147,7 @@ jobs:
       - name: Print installed worker venv packages
         env:
           DATACHAIN_VENV_DIR: /tmp/local/datachain_venv/python${{ matrix.pyv }}
-        run: ${DATACHAIN_VENV_DIR}/default/bin/python -m pip list
+        run: uv pip list -p "${DATACHAIN_VENV_DIR}/default/bin/python"
 
       - name: Run tests
         # Generate `.test_durations` file with `pytest --store-durations --durations-path ../.github/.test_durations ...`
