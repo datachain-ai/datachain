@@ -84,6 +84,13 @@ class DatasetInfo(DataModel):
     def validate_metrics(cls, v):
         return cls._validate_dict(v)
 
+    @field_validator("attrs", mode="before")
+    @classmethod
+    def validate_attrs(cls, v):
+        if v is None:
+            return []
+        return v
+
     @classmethod
     def from_models(
         cls,
