@@ -85,9 +85,6 @@ vector = [
 ]
 hf = [
   "numba>=0.60.0",
-  # datasets[audio] currently pulls in torchcodec, which is not yet compatible
-  # with torch 2.11.
-  "torch>=2.1.0,<2.11",
   "datasets[vision]>=4.0.0",
   # https://github.com/pytorch/torchcodec/issues/640
   "datasets[audio]>=4.0.0 ; (sys_platform == 'linux' or sys_platform == 'darwin')",
@@ -137,7 +134,6 @@ examples = [
   "accelerate",
   "anthropic",
   "huggingface_hub[hf_transfer]",
-  "torch>=2.1.0,<2.11",
   "transformers>=5.0.0",
   "ultralytics",
   "open_clip_torch",
