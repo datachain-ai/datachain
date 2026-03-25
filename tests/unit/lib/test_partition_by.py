@@ -8,6 +8,7 @@ from datachain import func
 from datachain.lib.data_model import DataModel
 from datachain.lib.file import File
 from datachain.lib.signal_schema import SignalResolvingError
+from datachain.lib.utils import DataChainColumnError
 
 
 def test_complex_signal_partition_by_file(test_session):
@@ -630,3 +631,15 @@ def test_aggregate_after_group_by(test_session):
     ).to_list("files", "total")
 
     assert result == [(3, 100)]
+
+
+def test_group_by_partition_by_name_conflicts_with_agg_column(test_session):
+    """partition_by func name clashing with an aggregation kwarg raises an error."""
+    files = [
+        File(source="s3://bucket", path="docs/a.txt", size=100),
+    ]
+    with pytest.raises(DataChainColumnError, match="conflicts with aggregation"):
+        dc.read_values(file=files, session=test_session).group_by(
+            parent=func.count(),
+            partition_by=func.path.parent("file.path"),  # also resolves to "parent"
+        )

@@ -1375,6 +1375,16 @@ class DataChain:
 
         if not kwargs:
             raise ValueError("At least one column should be provided for group_by")
+
+        partition_func_names = {c.name for c in partition_by_columns}
+        overlap = partition_func_names & set(kwargs.keys())
+        if overlap:
+            name = next(iter(overlap))
+            raise DataChainColumnError(
+                name,
+                f"partition_by name '{name}' conflicts with aggregation column name",
+            )
+
         for col_name, func in kwargs.items():
             if not isinstance(func, Func):
                 raise DataChainColumnError(
