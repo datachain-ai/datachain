@@ -71,6 +71,13 @@ class Project:
 
         return cls(project_id, uuid, name, descr, created_at, namespace)
 
+    def to_dict(self) -> dict[str, Any]:
+        result = {}
+        for f in fields(self):
+            value = getattr(self, f.name)
+            result[f.name] = value.to_dict() if hasattr(value, "to_dict") else value
+        return result
+
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "Project":
         namespace = Namespace.from_dict(d.pop("namespace"))

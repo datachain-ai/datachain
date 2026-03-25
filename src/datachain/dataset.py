@@ -183,6 +183,16 @@ class DatasetDependency:
     created_at: datetime
     dependencies: list["DatasetDependency | None"]
 
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            f.name: [
+                d.to_dict() if d is not None else None for d in getattr(self, f.name)
+            ]
+            if f.name == "dependencies"
+            else getattr(self, f.name)
+            for f in fields(self)
+        }
+
     @property
     def dataset_name(self) -> str:
         """Returns clean dependency dataset name"""
@@ -275,8 +285,8 @@ class DatasetVersion:
     # Preview arrives as a raw JSON string from the database because the
     # metastore double-encodes it (json.dumps into a JSON column).  We keep
     # the raw string here and decode lazily in the ``preview`` property so
-    # that serialization paths (_serialize_dataclass / msgpack) can pass it
-    # through without an unnecessary decode-then-re-encode round-trip.
+    # that serialization paths (to_dict / msgpack) can pass it through
+    # without an unnecessary decode-then-re-encode round-trip.
     _preview_data: str | list[dict] | None = field(
         default=None, metadata={"alias": "preview"}
     )
@@ -386,6 +396,12 @@ class DatasetVersion:
             self._preview_data = json.loads(self._preview_data)
         return self._preview_data or None  # type: ignore[return-value]
 
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            f.metadata.get("alias", f.name): object.__getattribute__(self, f.name)
+            for f in fields(self)
+        }
+
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "DatasetVersion":
         kwargs = {f.name: d[f.name] for f in fields(cls) if f.name in d}
@@ -443,6 +459,9 @@ class DatasetListVersion:
             query_script,
             job_id,
         )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {f.name: getattr(self, f.name) for f in fields(self)}
 
     def __hash__(self):
         return hash(f"{self.dataset_id}_{self.version}")
@@ -802,6 +821,18 @@ class DatasetRecord:
         # Return the latest compatible version
         return max(compatible_versions).version
 
+    def to_dict(self) -> dict[str, Any]:
+        result = {}
+        for f in fields(self):
+            key = f.metadata.get("alias", f.name)
+            value = object.__getattribute__(self, f.name)
+            if hasattr(value, "to_dict"):
+                value = value.to_dict()
+            elif isinstance(value, list) and value and hasattr(value[0], "to_dict"):
+                value = [v.to_dict() for v in value]
+            result[key] = value
+        return result
+
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "DatasetRecord":
         project = Project.from_dict(d.pop("project"))
@@ -935,6 +966,17 @@ class DatasetListRecord:
 
     def has_version_with_uuid(self, uuid: str) -> bool:
         return any(v.uuid == uuid for v in self.versions)
+
+    def to_dict(self) -> dict[str, Any]:
+        result = {}
+        for f in fields(self):
+            value = getattr(self, f.name)
+            if hasattr(value, "to_dict"):
+                value = value.to_dict()
+            elif isinstance(value, list) and value and hasattr(value[0], "to_dict"):
+                value = [v.to_dict() for v in value]
+            result[f.name] = value
+        return result
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "DatasetListRecord":
