@@ -272,13 +272,18 @@ class DatasetVersion:
     schema: dict[str, SQLType | type[SQLType]]
     num_objects: int | None
     size: int | None
+    # Preview arrives as a raw JSON string from the database because the
+    # metastore double-encodes it (json.dumps into a JSON column).  We keep
+    # the raw string here and decode lazily in the ``preview`` property so
+    # that serialization paths (_serialize_dataclass / msgpack) can pass it
+    # through without an unnecessary decode-then-re-encode round-trip.
     _preview_data: str | list[dict] | None = field(
         default=None, metadata={"alias": "preview"}
     )
+    _preview_loaded: bool = True
     sources: str = ""
     query_script: str = ""
     job_id: str | None = None
-    _preview_loaded: bool = True
 
     @classmethod
     def parse(  # noqa: PLR0913
@@ -378,13 +383,13 @@ class DatasetVersion:
                 "include_preview=True before accessing preview."
             )
         if isinstance(self._preview_data, str):
-            return json.loads(self._preview_data)
-        return self._preview_data or None
+            self._preview_data = json.loads(self._preview_data)
+        return self._preview_data or None  # type: ignore[return-value]
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "DatasetVersion":
         kwargs = {f.name: d[f.name] for f in fields(cls) if f.name in d}
-        if not hasattr(kwargs, "_preview_data"):
+        if "_preview_data" not in kwargs:
             kwargs["_preview_data"] = d.get("preview")
         return cls(**kwargs)
 

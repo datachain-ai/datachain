@@ -1525,14 +1525,19 @@ class AbstractDBMetastore(AbstractMetastore):
                 *(getattr(d.c, f) for f in dataset_fields),
             )
             j = n.join(p, n.c.id == p.c.namespace_id).join(d, p.c.id == d.c.project_id)
+            query = query.select_from(j)
             if not include_incomplete:
-                j = j.join(
-                    dv,
-                    and_(
-                        d.c.id == dv.c.dataset_id, dv.c.status == DatasetStatus.COMPLETE
-                    ),
+                query = query.where(
+                    select(literal(1))
+                    .where(
+                        and_(
+                            dv.c.dataset_id == d.c.id,
+                            dv.c.status == DatasetStatus.COMPLETE,
+                        )
+                    )
+                    .exists()
                 )
-            return query.select_from(j)
+            return query
 
         version_columns = []
         for field in dataset_version_fields:
