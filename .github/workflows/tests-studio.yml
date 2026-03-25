@@ -108,6 +108,9 @@ jobs:
       - name: Install dependencies
         run: uv pip install --system ./backend/datachain_server[tests] ./backend/datachain[tests]
 
+      - name: Print installed system packages
+        run: uv pip list --system
+
       - name: Initialize datachain venv
         env:
           PYTHON_VERSION: ${{ matrix.pyv }}
@@ -136,6 +139,11 @@ jobs:
             --find-links="$pip_wheel_dir" \
             --cache-dir="${DATACHAIN_VENV_DIR}/.cache/uv" \
             -p "${DATACHAIN_VENV_DIR}/default/bin/python"
+
+      - name: Print installed worker venv packages
+        env:
+          DATACHAIN_VENV_DIR: /tmp/local/datachain_venv/python${{ matrix.pyv }}
+        run: ${DATACHAIN_VENV_DIR}/default/bin/python -m pip list
 
       - name: Run tests
         # Generate `.test_durations` file with `pytest --store-durations --durations-path ../.github/.test_durations ...`
