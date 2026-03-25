@@ -1119,8 +1119,8 @@ class Catalog:
         """
         if not dataset.has_version(version):
             return
-        dataset = self.metastore.update_dataset_status(
-            dataset, DatasetStatus.REMOVING, version=version
+        self.metastore.update_dataset_version(
+            dataset, version, status=DatasetStatus.REMOVING
         )
         if drop_rows:
             self.warehouse.drop_dataset_rows_table(dataset, version)
