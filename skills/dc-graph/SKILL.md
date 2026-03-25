@@ -29,13 +29,13 @@ Use the local path if the skill directory exists under the project root; otherwi
 ## Step 1 — Check & Plan
 
 ```
-python3 {skill_dir}/scripts/graph.py --plan [--studio]
+python3 {skill_dir}/scripts/plan.py [--studio]
 ```
 
 - Do **NOT** add `--studio` unless the user's message contains an explicit request to update from Studio (e.g. "update from Studio", "refresh Studio datasets", "include Studio datasets"). An empty datasets list or `"studio_available": true` in the plan output does **not** justify adding `--studio`.
 - If `"up_to_date": true` → print "Graph is up to date." and stop.
 - If the output contains a `"warnings"` key → report those warnings to the user after the update summary.
-- If `graph.py` fails → report the error and stop gracefully.
+- If the script fails → report the error and stop gracefully.
 
 The output tells you exactly what to do: `datasets[].status` is `"ok"` (skip), `"stale"` (update), or `"new"` (create). `file_path` is the exact path to write, relative to `.datachain/graph/`. `versions_to_fetch` lists which versions need a new or refreshed sub-section.
 
@@ -46,7 +46,7 @@ The output tells you exactly what to do: `datasets[].status` is `"ok"` (skip), `
 **For each dataset where `status != "ok"`**, run one call for all its versions:
 
 ```
-python3 {skill_dir}/scripts/graph.py --dataset-all <name>
+python3 {skill_dir}/scripts/dataset_all.py <name>
 ```
 
 Pass `<name>` exactly as it appears in the plan output.
