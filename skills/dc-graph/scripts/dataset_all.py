@@ -27,9 +27,7 @@ def cmd_dataset_all(name: str):
         all_entries = collect_datasets(dc, studio=True)
         version_entries = [e for e in all_entries if e["name"] == name]
         if not version_entries:
-            print(
-                json.dumps({"error": f"Dataset '{name}' not found"}), file=sys.stderr
-            )
+            print(json.dumps({"error": f"Dataset '{name}' not found"}), file=sys.stderr)
             sys.exit(1)
         versions_sorted = sorted(
             [e["version"] for e in version_entries if e["version"]],
@@ -86,9 +84,7 @@ def cmd_dataset_all(name: str):
         all_entries = collect_datasets(dc, studio=False)
         version_entries = [e for e in all_entries if e["name"] == name]
         if not version_entries:
-            print(
-                json.dumps({"error": f"Dataset '{name}' not found"}), file=sys.stderr
-            )
+            print(json.dumps({"error": f"Dataset '{name}' not found"}), file=sys.stderr)
             sys.exit(1)
         # Fall back to old per-version approach.
         versions_sorted_str = sorted(

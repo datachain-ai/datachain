@@ -1,10 +1,8 @@
 """Shared pure helpers for the dc-graph skill scripts."""
 
 import json
-import os
 import re
 import sys
-from glob import glob
 
 
 def dc_import():

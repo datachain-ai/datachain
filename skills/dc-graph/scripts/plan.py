@@ -4,7 +4,6 @@
 import argparse
 import json
 import os
-import sys
 from datetime import datetime, timezone
 from glob import glob
 
@@ -134,9 +133,7 @@ def cmd_plan(studio: bool = False):
             }
         )
 
-    up_to_date = bool(datasets_out) and all(
-        d["status"] == "ok" for d in datasets_out
-    )
+    up_to_date = bool(datasets_out) and all(d["status"] == "ok" for d in datasets_out)
 
     result: dict = {
         "up_to_date": up_to_date,

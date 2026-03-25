@@ -3,7 +3,6 @@
 
 import argparse
 import json
-import sys
 
 from changes import build_changes, dep_to_dict
 from schema import extract_preview, extract_schema, get_catalog, parse_dataset_name
