@@ -35,6 +35,9 @@ jobs:
           cache-suffix: lint
           cache-dependency-glob: pyproject.toml
 
+      - name: Use CPU-only PyTorch on Linux
+        run: echo "UV_TORCH_BACKEND=cpu" >> "$GITHUB_ENV"
+
       - name: Install nox
         run: uv pip install nox --system
 

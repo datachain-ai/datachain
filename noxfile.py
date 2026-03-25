@@ -4,6 +4,7 @@
 # ///
 
 import glob
+import shutil
 
 import nox
 
@@ -17,7 +18,10 @@ locations = "src", "tests"
 
 
 def log_installed_packages(session: nox.Session) -> None:
-    session.run("uv", "pip", "list")
+    if shutil.which("uv"):
+        session.run("uv", "pip", "list")
+    else:
+        session.run("python", "-m", "pip", "list")
 
 
 @nox.session
