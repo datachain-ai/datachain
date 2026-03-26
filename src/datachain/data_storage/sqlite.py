@@ -852,7 +852,7 @@ class SQLiteWarehouse(AbstractWarehouse):
         table: Table,
         query: Select,
         progress_cb: Callable[[int], None] | None = None,
-        preserve_ids: bool = False,
+        preserve_sys_ids: bool = False,
     ) -> None:
         col_id = (
             query.selected_columns.sys__id
@@ -860,9 +860,13 @@ class SQLiteWarehouse(AbstractWarehouse):
             else None
         )
 
+        assert not (preserve_sys_ids and len(query._group_by_clause) > 0), (
+            "preserve_sys_ids cannot be used with GROUP BY queries"
+        )
+
         columns = (
             list(query.selected_columns)
-            if preserve_ids
+            if preserve_sys_ids
             else [c for c in query.selected_columns if c.name != "sys__id"]
         )
 

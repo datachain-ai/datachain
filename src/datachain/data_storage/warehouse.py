@@ -1034,13 +1034,13 @@ class AbstractWarehouse(ABC, Serializable):
         table: sa.Table,
         query: sa.Select,
         progress_cb: Callable[[int], None] | None = None,
-        preserve_ids: bool = False,
+        preserve_sys_ids: bool = False,
     ) -> None:
         """
         Insert the results of a query into an existing table.
 
         Args:
-            preserve_ids: If True, preserve sys__id from source instead of
+            preserve_sys_ids: If True, preserve sys__id from source instead of
                 generating new ones.
         """
 
@@ -1050,7 +1050,7 @@ class AbstractWarehouse(ABC, Serializable):
         query: sa.Select,
         create_fn: Callable[[str], sa.Table],
         progress_cb: Callable[[int], None] | None = None,
-        preserve_ids: bool = False,
+        preserve_sys_ids: bool = False,
     ) -> sa.Table:
         """
         Atomically create and populate a table from a query.
@@ -1066,7 +1066,7 @@ class AbstractWarehouse(ABC, Serializable):
             query: Query to populate the table from
             create_fn: Function that creates an empty table given a name
             progress_cb: Optional callback for progress updates
-            preserve_ids: If True, preserve sys__id from source
+            preserve_sys_ids: If True, preserve sys__id from source
 
         Returns:
             The created and populated table
@@ -1075,7 +1075,10 @@ class AbstractWarehouse(ABC, Serializable):
         staging_table = create_fn(staging_name)
 
         self.insert_into(
-            staging_table, query, progress_cb=progress_cb, preserve_ids=preserve_ids
+            staging_table,
+            query,
+            progress_cb=progress_cb,
+            preserve_sys_ids=preserve_sys_ids,
         )
 
         try:

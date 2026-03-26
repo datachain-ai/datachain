@@ -1334,14 +1334,14 @@ class UDFStep(Step, ABC):
                 partial_table_name,
                 filtered_query,
                 create_fn=self.create_output_table,
-                preserve_ids=True,
+                preserve_sys_ids=True,
             )
         else:
             partial_table = self.warehouse.create_table_from_query(
                 partial_table_name,
                 sa.select(parent_partial_table),
                 create_fn=self.create_output_table,
-                preserve_ids=True,
+                preserve_sys_ids=True,
             )
 
         input_query = self.get_input_query(input_table.name, query)
