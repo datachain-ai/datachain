@@ -1,7 +1,9 @@
 """Shared pure helpers for the dc-graph skill scripts."""
 
 import json
+import re
 import sys
+from urllib.parse import urlparse
 
 
 def dc_import():
@@ -144,3 +146,85 @@ def collect_datasets(dc, studio: bool) -> list[dict]:
             file=sys.stderr,
         )
     return results
+
+
+# ---------------------------------------------------------------------------
+# Bucket helpers
+# ---------------------------------------------------------------------------
+
+
+def parse_uri(uri: str) -> dict:
+    """Parse a storage URI into scheme, bucket, and prefix.
+
+    Examples:
+        s3://my-bucket/         -> scheme=s3, bucket=my-bucket, prefix=""
+        gs://demo/dogs-cats/    -> scheme=gs, bucket=demo,      prefix="dogs-cats/"
+    """
+    parsed = urlparse(uri)
+    return {
+        "scheme": parsed.scheme,
+        "bucket": parsed.netloc,
+        "prefix": parsed.path.lstrip("/"),
+    }
+
+
+def _sanitize(s: str) -> str:
+    """Sanitize a name segment: lowercase, replace non-alphanumeric with _."""
+    return re.sub(r"[^a-z0-9]+", "_", s.lower()).strip("_")
+
+
+def bucket_file_path(uri: str) -> str:
+    """Derive the relative file path (from .datachain/graph/) for a bucket, without extension.
+
+    Examples:
+        s3://my-bucket/           -> buckets/s3/my_bucket
+        gs://demo/dogs-cats/      -> buckets/gs/demo__dogs_cats
+    """
+    parts = parse_uri(uri)
+    slug = _sanitize(parts["bucket"])
+    prefix = parts["prefix"]
+    if prefix:
+        segments = [s for s in prefix.split("/") if s]
+        if segments:
+            slug += "__" + "__".join(_sanitize(s) for s in segments)
+    return f"buckets/{parts['scheme']}/{slug}"
+
+
+def read_json_data(path: str) -> dict | None:
+    """Read a JSON data file. Returns dict or None."""
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def human_size(nbytes: int | float) -> str:
+    """Convert bytes to human-readable string."""
+    if nbytes < 1024:
+        return f"{int(nbytes)} B"
+    for unit in ("KB", "MB", "GB", "TB"):
+        nbytes /= 1024
+        if nbytes < 1024:
+            return f"{nbytes:.1f} {unit}"
+    return f"{nbytes:.1f} PB"
+
+
+def get_listing_finished_at(uri: str) -> str | None:
+    """Get the listing finished_at timestamp for a URI from the DataChain catalog."""
+    try:
+        from datachain.query import Session
+
+        session = Session.get()
+        catalog = session.catalog
+        listings = catalog.listings()
+
+        for listing in listings:
+            if listing.uri.rstrip("/") == uri.rstrip("/") or uri.rstrip(
+                "/"
+            ).startswith(listing.uri.rstrip("/")):
+                if listing.finished_at:
+                    return listing.finished_at.isoformat()
+        return None
+    except Exception:
+        return None

@@ -1,6 +1,6 @@
 ---
 name: datachain-graph
-description: Use when you need to discover, understand, or navigate DataChain datasets in the current project. Apply this skill to answer questions about what datasets exist, their schemas, row counts, versions, and relationships. Generates and maintains a knowledge base at .datachain/graph/ (JSON data + AI-enriched markdown) so dataset context is always available to the AI without running queries each time.
+description: Use when you need to discover, understand, or navigate DataChain datasets or cloud storage buckets. Generates and maintains a knowledge base at .datachain/graph/ (JSON data + AI-enriched markdown) so context is always available without running queries or browsing cloud consoles.
 triggers:
   - "what datasets exist"
   - "show me the schema"
@@ -8,9 +8,21 @@ triggers:
   - "datachain graph"
   - "update the graph"
   - "refresh dataset docs"
+  - "what's in this bucket"
+  - "explore bucket"
+  - "scan bucket"
+  - "bucket overview"
+  - "what files are in s3://"
+  - "what files are in gs://"
 ---
 
-You are now loaded with the datachain-graph skill. Maintain a dataset knowledge base at `.datachain/graph/`. Each dataset has a `.json` file (structured data, source of truth) and a `.md` file (AI-generated human-readable summary). Follow the 4-step flow below exactly.
+You are now loaded with the datachain-graph skill. Maintain a knowledge base at `.datachain/graph/`. Both datasets and buckets have a `.json` file (structured data, source of truth) and a `.md` file (AI-generated human-readable summary). Follow the 4-step flow below.
+
+## Critical Rules
+
+1. **Never pass `update=True`** to `dc.read_storage()` unless the user explicitly asks to refresh the listing.
+2. **Prefer DataChain operations** over plain Python for all metadata analysis.
+3. **Bounded output** — JSON and markdown files stay small regardless of data size.
 
 ---
 
@@ -28,30 +40,42 @@ Use the local path if the skill directory exists under the project root; otherwi
 
 ## Step 1 — Sync
 
-Sync the dataset list from DB, diff against the existing graph, save the plan to disk, and update the index.
+Plan what needs updating. The plan covers datasets, buckets, or both.
 
+**Datasets only** (default):
 ```bash
 python3 {skill_dir}/scripts/plan.py [--studio] > .datachain/graph/.plan.json
 ```
 
-- Do **NOT** add `--studio` unless the user explicitly requests it (e.g. "update from Studio", "refresh Studio datasets").
-- If the output contains `"up_to_date": true` → print "Graph is up to date." and stop.
-- If the output contains `"warnings"` → report them to the user after the update summary.
-- If the script fails → report the error and stop gracefully.
+**Buckets only** (user provides URIs):
+```bash
+python3 {skill_dir}/scripts/plan.py --buckets <uri> [<uri> ...] > .datachain/graph/.plan.json
+```
+
+**Both** (datasets + buckets):
+```bash
+python3 {skill_dir}/scripts/plan.py --studio --buckets <uri> [<uri> ...] > .datachain/graph/.plan.json
+```
+
+- Do **NOT** add `--studio` unless the user explicitly requests it.
+- Do **NOT** add `--buckets` unless the user provides bucket URIs.
+- If `"up_to_date": true` → print "Graph is up to date." and stop.
+- If the output contains `"warnings"` → report them after the update summary.
 
 Then update the index:
-
 ```bash
 python3 {skill_dir}/scripts/render_index.py --plan .datachain/graph/.plan.json --output .datachain/graph/index.md
 ```
 
-Review `.plan.json` to understand what's new. Datasets with `status` of `"new"` or `"stale"` need processing in Step 2. Datasets with `"ok"` are skipped entirely.
+Review `.plan.json`. Entries with `status` of `"new"` or `"stale"` need processing in Step 2. Entries with `"ok"` are skipped.
 
 ---
 
 ## Step 2 — Save Data
 
-For each dataset where `status != "ok"` in the plan, fetch its data and save as JSON:
+### Datasets
+
+For each dataset where `status != "ok"` in `plan.datasets[]`:
 
 ```bash
 python3 {skill_dir}/scripts/dataset_all.py <name> \
@@ -59,30 +83,53 @@ python3 {skill_dir}/scripts/dataset_all.py <name> \
   --output .datachain/graph/<file_path>.json
 ```
 
-- `<name>` and `<file_path>` come from the plan's `datasets[]` entries. `file_path` is extensionless — append `.json` here.
-- With `--plan` and `--output`, `dataset_all.py` merges new version data with the existing `.json` file (if any), preserving versions not being re-fetched.
-- Without `--plan`/`--output`, it prints JSON to stdout (useful for debugging).
+- `<name>` and `<file_path>` come from the plan's `datasets[]` entries.
 - Do **not** modify the output — it is deterministic and complete.
-- If the output contains `"warnings"` → collect and report them in Step 4.
+
+### Buckets
+
+For each bucket where `status != "ok"` in `plan.buckets[]`:
+
+```bash
+python3 {skill_dir}/scripts/bucket_scan.py <uri> \
+  --output .datachain/graph/<file_path>.json
+```
+
+- `<uri>` and `<file_path>` come from the plan's `buckets[]` entries.
+- The script aggregates metadata (extensions, directories, sizes, timestamps) and samples files.
+- Progress is printed to stderr.
 
 ---
 
 ## Step 3 — Enrich
 
-For each dataset processed in Step 2, generate a human-readable markdown summary from the JSON data.
+For each dataset or bucket processed in Step 2, generate a human-readable markdown summary from the JSON data.
+
+### Datasets
 
 1. Read the enrichment prompt at `{skill_dir}/prompts/enrich.md`.
 2. For each dataset, read `.datachain/graph/<file_path>.json`.
-3. Following the prompt instructions, write `.datachain/graph/<file_path>.md`.
+3. Following the prompt, write `.datachain/graph/<file_path>.md`.
 
-The prompt defines the exact markdown structure: dataset description, stats, schema, preview, and version history with AI-optimized summaries. Skip this step only if the user requests raw output only.
+### Buckets
+
+1. Read the enrichment prompt at `{skill_dir}/prompts/enrich_bucket.md`.
+2. For each bucket, read `.datachain/graph/<file_path>.json`.
+3. Following the prompt, write `.datachain/graph/<file_path>.md`.
+
+Skip this step only if the user requests raw output only.
 
 ---
 
 ## Step 4 — Report
 
 ```
-Graph updated: <N> datasets total, <M> updated, <K> unchanged.
+Graph updated: <N> datasets (<M> updated, <K> unchanged), <B> buckets (<X> scanned, <Y> unchanged).
+```
+
+If any buckets have `listing_expired: true`, add:
+```
+Warning: Listing for <bucket> is expired (last scanned: <date>). Run dc.read_storage("<uri>", update=True) to refresh.
 ```
 
 Include any warnings collected from Steps 1-2.
