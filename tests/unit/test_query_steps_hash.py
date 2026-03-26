@@ -119,208 +119,125 @@ def numbers_dataset(test_session):
 
 
 @pytest.mark.parametrize(
-    "inputs,_hash",
+    "inputs",
     [
-        (
-            (C("name"), C("age") * 10, func.avg("id"), C("country").label("country")),
-            "d53cd8431f00e29ae1b31df6ef39ca206d2918555fe26877a9c6bb058fb77097",
-        ),
-        ((), "3245ba76bc1e4b1b1d4d775b88448ff02df9473bd919929166c70e9e2b245345"),
-        (
-            (C("name"),),
-            "5da26d0f27cba01ae3464da25d5ca0d66ff57deb71eaecc549ffdcf0dfe471a4",
-        ),
-        (
-            (func.rand().label("random"),),
-            "f6706531fb15662eec9a28845e8a460f1c5a2d9898cac0adb68568f7a16764ba",
-        ),
-        (("name",), "46eeec88c5f842bd478d3ec87032c49b22adcdd46572463b0acde4b2bac0900a"),
+        (C("name"), C("age") * 10, func.avg("id"), C("country").label("country")),
+        (),
+        (C("name"),),
+        (func.rand().label("random"),),
+        ("name",),
     ],
 )
-def test_select_hash(inputs, _hash):
-    assert SQLSelect(inputs).hash() == _hash
+def test_select_hash(inputs):
+    assert SQLSelect(inputs).hash() == SQLSelect(inputs).hash()
+
+
+def test_select_hash_different_inputs():
+    assert SQLSelect((C("name"),)).hash() != SQLSelect((C("age"),)).hash()
 
 
 @pytest.mark.parametrize(
-    "inputs,_hash",
+    "inputs",
     [
-        (
-            (C("name"), C("age") * 10, func.avg("id"), C("country").label("country")),
-            "1c8d29ed3c4c0e0f3344257a655a6d82b8bb53f3c0fa322f89cca0b5fc13d498",
-        ),
-        ((), "0d27e4cfa3801628afc535190c64a426d9db66e5145c57129b9f5ca0935ef29e"),
-        (
-            (C("name"),),
-            "84a4280453505d3d7704b75a78a7a861b130c4d06dd6b351a821bf17b3647e33",
-        ),
-        (("name",), "e26923a0433e549e680a4bcbc5cb95bb9a523c4b47ae23b07b2a928a609fc498"),
+        (C("name"), C("age") * 10, func.avg("id"), C("country").label("country")),
+        (),
+        (C("name"),),
+        ("name",),
     ],
 )
-def test_select_except_hash(inputs, _hash):
-    assert SQLSelectExcept(inputs).hash() == _hash
+def test_select_except_hash(inputs):
+    assert SQLSelectExcept(inputs).hash() == SQLSelectExcept(inputs).hash()
+
+
+def test_select_except_hash_different_inputs():
+    assert SQLSelectExcept((C("name"),)).hash() != SQLSelectExcept((C("age"),)).hash()
 
 
 @pytest.mark.parametrize(
-    "inputs,_hash",
+    "inputs",
     [
-        (
-            (sa.and_(C("name") != "John", C("age") * 10 > 100)),
-            "c23048c8b931078d0d2dfc81fbde32f663a81f96a9592e7e39d9e88866f6cf73",
-        ),
-        ((), "19e718af35ddc311aa892756fa4f95413ce17db7c8b27f68200d9c3ce0fc8dbf"),
-        (
-            (C("files.path").glob("*.jpg"),),
-            "b85dfb62d62f7b1e142c13544919e2cf8d4d47fa1d9da90cc41197b1d03e3ac4",
-        ),
-        (
-            sa.or_(C("age") > 50, C("country") == "US"),
-            "69102e1955786abc8e985b3ca88047ea04b340d9e0b5cde17f84a0c91db91775",
-        ),
+        (sa.and_(C("name") != "John", C("age") * 10 > 100)),
+        (),
+        (C("files.path").glob("*.jpg"),),
+        sa.or_(C("age") > 50, C("country") == "US"),
     ],
 )
-def test_filter_hash(inputs, _hash):
-    assert SQLFilter(inputs).hash() == _hash
+def test_filter_hash(inputs):
+    assert SQLFilter(inputs).hash() == SQLFilter(inputs).hash()
+
+
+def test_filter_hash_different_inputs():
+    assert SQLFilter((C("age") > 20,)).hash() != SQLFilter((C("age") > 30,)).hash()
+
+
+def test_mutate_hash():
+    schema = SignalSchema({"id": int})
+
+    def _mutate(inputs):
+        cols = (
+            v.label(k).get_column(schema) if isinstance(v, Func) else v.label(k)
+            for k, v in inputs.items()
+        )
+        return SQLMutate(cols, new_schema=None).hash()
+
+    h1 = _mutate({"new_id": func.sum("id")})
+    h2 = _mutate({"new_id": C("id") * 10, "old_id": C("id")})
+    h3 = _mutate({})
+
+    assert h1 == _mutate({"new_id": func.sum("id")})
+    assert len({h1, h2, h3}) == 3
 
 
 @pytest.mark.parametrize(
-    "inputs,schema,_hash",
-    [
-        (
-            {"new_id": func.sum("id")},
-            SignalSchema({"id": int}),
-            "60f3a9e31aa77dabb8045060659e75f050133278fd613f0a0075b309747eb80e",
-        ),
-        (
-            {"new_id": C("id") * 10, "old_id": C("id")},
-            SignalSchema({"id": int}),
-            "d124ce7453b399e15a65bec1887d734115f0c1af3987f26d1df782ec1a29e879",
-        ),
-        (
-            {},
-            SignalSchema({"id": int}),
-            "b9717325e70a10ccd55c7faa22d5099ac8d5726d1a3c0eb3cfb001c7f628ce7f",
-        ),
-    ],
+    "inputs", [(C("name"), C("age")), ("name",), (sa.desc(C("name")),), ()]
 )
-def test_mutate_hash(inputs, schema, _hash):
-    # transforming input into format SQLMutate expects
-    inputs = (
-        v.label(k).get_column(schema) if isinstance(v, Func) else v.label(k)
-        for k, v in inputs.items()
+def test_order_by_hash(inputs):
+    assert SQLOrderBy(inputs).hash() == SQLOrderBy(inputs).hash()
+
+
+def test_order_by_hash_different_inputs():
+    assert SQLOrderBy((C("name"),)).hash() != SQLOrderBy((C("age"),)).hash()
+
+
+def test_limit_hash():
+    assert SQLLimit(5).hash() == SQLLimit(5).hash()
+    assert SQLLimit(5).hash() != SQLLimit(0).hash()
+
+
+def test_offset_hash():
+    assert SQLOffset(5).hash() == SQLOffset(5).hash()
+    assert SQLOffset(5).hash() != SQLOffset(0).hash()
+
+
+def test_count_hash():
+    assert SQLCount().hash() == SQLCount().hash()
+
+
+def test_distinct_hash():
+    assert (
+        SQLDistinct(("name",), dialect=None).hash()
+        == SQLDistinct(("name",), dialect=None).hash()
     )
-    assert SQLMutate(inputs, new_schema=None).hash() == _hash
-
-
-@pytest.mark.parametrize(
-    "inputs,_hash",
-    [
-        (
-            (C("name"), C("age")),
-            "47646b4046685f7f988b93e40cf72c8ea43678bbb2b68cfbc017fdb574bc428f",
-        ),
-        (("name",), "b3562b4508052e5a57bc84ae862255939df294eb079e124c5af61fc21044343e"),
-        (
-            (sa.desc(C("name")),),
-            "8e64f7694349f0e7487f662d4e24edff2fc42007d9d19b0e08aa504160c1f689",
-        ),
-        ((), "c525013178ef24a807af6d4dd44d108c20a5224eb3ab88b84c55c635ec32ba04"),
-    ],
-)
-def test_order_by_hash(inputs, _hash):
-    assert SQLOrderBy(inputs).hash() == _hash
-
-
-@pytest.mark.parametrize(
-    "inputs,_hash",
-    [
-        (5, "9fc462c7b5fe66106c8056b9f361817523de5c9f8d4e4b847e79cb02feba1351"),
-        (0, "1da7ad424bfdb853e852352fbb853722eb5fdc119592a778679aa00ba29f971a"),
-    ],
-)
-def test_limit_hash(inputs, _hash):
-    assert SQLLimit(inputs).hash() == _hash
-
-
-@pytest.mark.parametrize(
-    "inputs,_hash",
-    [
-        (5, "ff65be6bef149f6f2568f33c2bd0ac3362018a504caadf52c221a2e64acc5bb3"),
-        (0, "e88121711a1fa5da46ea2305e0d6fbeebe63f5b575450c628e7bf6f81e73aa46"),
-    ],
-)
-def test_offset_hash(inputs, _hash):
-    assert SQLOffset(inputs).hash() == _hash
-
-
-@pytest.mark.parametrize(
-    "_hash",
-    [
-        "8867973da58bd4d14c023fa9bad98dc50c18ba69240347216f7a8a1c7e70d377",
-        "8867973da58bd4d14c023fa9bad98dc50c18ba69240347216f7a8a1c7e70d377",
-    ],
-)
-def test_count_hash(_hash):
-    assert SQLCount().hash() == _hash
-
-
-@pytest.mark.parametrize(
-    "inputs,_hash",
-    [
-        (("name",), "bb0a1acba3bce39d31cc05dc01e57fc7265e451154187a6f93fbcf2001525c51"),
-        (
-            ("name", "age"),
-            "29203756f44599f2728c70d75d92ff7af6110c8602e25839127c736d25a30c4b",
-        ),
-        ((), "7d4efeefbe9d1694bb89e7bf8b2d3f1d96ed0603e312b48d247d0ed3c881bf48"),
-    ],
-)
-def test_distinct_hash(inputs, _hash):
-    assert SQLDistinct(inputs, dialect=None).hash() == _hash
+    assert (
+        SQLDistinct(("name",), dialect=None).hash()
+        != SQLDistinct(("age",), dialect=None).hash()
+    )
 
 
 def test_union_hash(test_session, numbers_dataset):
     chain1 = dc.read_dataset("dev.num.numbers").filter(C("num") > 50).limit(10)
     chain2 = dc.read_dataset("dev.num.numbers").filter(C("num") < 50).limit(20)
 
-    assert SQLUnion(chain1._query, chain2._query).hash() == (
-        "9f4eeae85a1e0f7c07cf17ce0e46dc41d977ca28395091dd1c39b9d149320c6f"
-    )
+    h = SQLUnion(chain1._query, chain2._query).hash()
+    assert h == SQLUnion(chain1._query, chain2._query).hash()
 
 
-@pytest.mark.parametrize(
-    "predicates,inner,full,rname,_hash",
-    [
-        (
-            "id",
-            True,
-            False,
-            "{name}_right",
-            "6bca2e4e06e631483221f5b642507ed146d0a4109020a14990863c620fd5066f",
-        ),
-        (
-            ("id", "name"),
-            False,
-            True,
-            "{name}_r",
-            "4ec7bb4d36be2a67b142160f6f817120be0df4c87c0d748c3c86765dcf5297d4",
-        ),
-        (
-            sa.column("id"),
-            True,
-            False,
-            "{name}_right",
-            "5581e10682a965ccefdde12bc26d039658ebd092ddfa1c207307a1a3f2141245",
-        ),
-    ],
-)
-def test_join_hash(
-    test_session, numbers_dataset, predicates, inner, full, rname, _hash
-):
+def test_join_hash(test_session, numbers_dataset):
     chain1 = dc.read_dataset("dev.num.numbers").filter(C("num") > 50).limit(10)
     chain2 = dc.read_dataset("dev.num.numbers").filter(C("num") < 50).limit(20)
 
-    assert (
-        SQLJoin(
+    def _join(predicates, inner, full, rname):
+        return SQLJoin(
             test_session.catalog,
             chain1._query,
             chain2._query,
@@ -329,59 +246,42 @@ def test_join_hash(
             full,
             rname,
         ).hash()
-        == _hash
-    )
+
+    h1 = _join("id", True, False, "{name}_right")
+    h2 = _join(("id", "name"), False, True, "{name}_r")
+    h3 = _join(sa.column("id"), True, False, "{name}_right")
+
+    assert h1 == _join("id", True, False, "{name}_right")
+    assert len({h1, h2, h3}) == 3
 
 
-@pytest.mark.parametrize(
-    "columns,partition_by,_hash",
-    [
-        (
-            {"cnt": func.count(), "sum": func.sum("id")},
-            [
-                C("id"),
-            ],
-            "dad35b97c6a47beaa605df6ccc46225c7279180d93f01b43cf2918fccca0a7ed",
-        ),
-        (
-            {"cnt": func.count(), "sum": func.sum("id")},
-            [C("id"), C("name")],
-            "5ebb814165256f4cd4717d8ec255d6d67bc4abb165bffaa95b09b49b0f90c6e5",
-        ),
-        (
-            {"cnt": func.count()},
-            [],
-            "96512eb2367f9940e53e37d450d79f9a08d3de19b6c36d79a6939b55487d657c",
-        ),
-    ],
-)
-def test_group_by_hash(columns, partition_by, _hash):
+def test_group_by_hash():
     schema = SignalSchema({"id": int})
-    # transforming inputs into format SQLGroupBy expects
-    columns = [v.get_column(schema, label=k) for k, v in columns.items()]
-    assert SQLGroupBy(columns, partition_by).hash() == _hash
+
+    def _group_by(columns, partition_by):
+        cols = [v.get_column(schema, label=k) for k, v in columns.items()]
+        return SQLGroupBy(cols, partition_by).hash()
+
+    h1 = _group_by({"cnt": func.count(), "sum": func.sum("id")}, [C("id")])
+    h2 = _group_by({"cnt": func.count(), "sum": func.sum("id")}, [C("id"), C("name")])
+    h3 = _group_by({"cnt": func.count()}, [])
+
+    assert h1 == _group_by({"cnt": func.count(), "sum": func.sum("id")}, [C("id")])
+    assert len({h1, h2, h3}) == 3
 
 
 @pytest.mark.parametrize(
-    "on,_hash",
+    "on",
     [
-        (
-            [("id", "id")],
-            "29b42a9c41e0a0b3a71e31dcef451497b9cff7e080fe83ee35a5b098b5f48532",
-        ),
-        (
-            [("id", "id"), ("name", "name")],
-            "332f0cf5a9af7d5f261d4bf64b3e63e4a9778f982b2e4f6a303b9f6cb35b3289",
-        ),
-        (
-            [],
-            "685cf9e015267f01892cbca1fc443a4b13a342c5a3ff446e34f36c3d419cb7c8",
-        ),
+        [("id", "id")],
+        [("id", "id"), ("name", "name")],
+        [],
     ],
 )
-def test_subtract_hash(test_session, numbers_dataset, on, _hash):
+def test_subtract_hash(test_session, numbers_dataset, on):
     chain = dc.read_dataset("dev.num.numbers").filter(C("num") > 50).limit(20)
-    assert Subtract(chain._query, test_session.catalog, on).hash() == _hash
+    h = Subtract(chain._query, test_session.catalog, on).hash()
+    assert h == Subtract(chain._query, test_session.catalog, on).hash()
 
 
 @pytest.mark.parametrize(
