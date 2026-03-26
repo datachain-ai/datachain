@@ -3,11 +3,7 @@ import shutil
 from importlib.resources import files
 from pathlib import Path
 
-SKILLS = {
-    "core": "dc-core",
-    "graph": "dc-graph",
-    "jobs": "dc-jobs",
-}
+SKILLS = ("core", "graph", "jobs")
 
 # For each target: dirs relative to base (home or project root), and command extension.
 # commands_dir=None means no command file is copied (skills only).
@@ -53,7 +49,7 @@ def _transform_cursor_mdc(skill_md_path: Path) -> str:
             if line.startswith("description:"):
                 description = line.split(":", 1)[1].strip()
                 break
-        body = text[fm_match.end() :]
+        body = text[fm_match.end():]
     else:
         body = text
 
@@ -66,15 +62,15 @@ def install_skills(skills: str | None, target: str, local: bool) -> None:
 
     if skills:
         requested = [s.strip() for s in skills.split(",")]
-        invalid = [s for s in requested if s not in SKILLS.values()]
+        invalid = [s for s in requested if s not in SKILLS]
         if invalid:
-            valid = ", ".join(SKILLS.values())
+            valid = ", ".join(SKILLS)
             raise ValueError(
                 f"Unknown skill(s): {', '.join(invalid)}. Valid skills: {valid}"
             )
-        skills_to_install = {k: v for k, v in SKILLS.items() if v in requested}
+        skills_to_install = requested
     else:
-        skills_to_install = dict(SKILLS)
+        skills_to_install = list(SKILLS)
 
     skills_dir = base / layout["skills_dir"]
 
@@ -88,7 +84,7 @@ def install_skills(skills: str | None, target: str, local: bool) -> None:
     command_ext = layout["command_ext"]
 
     installed = []
-    for skill_key, skill_name in skills_to_install.items():
+    for skill_name in skills_to_install:
         src = _skills_src() / skill_name
         if not src.exists():
             print(f"Warning: skill source not found: {src}")
@@ -111,7 +107,7 @@ def install_skills(skills: str | None, target: str, local: bool) -> None:
             commands_dir.mkdir(parents=True, exist_ok=True)
             skill_md = src / "SKILL.md"
             if skill_md.exists():
-                cmd_dest = commands_dir / f"{skill_name}{command_ext}"
+                cmd_dest = commands_dir / f"datachain-{skill_name}{command_ext}"
                 skill_dir_resolved = str(dest.resolve())
                 if command_ext == ".mdc":
                     content = _transform_cursor_mdc(skill_md)
@@ -132,8 +128,8 @@ def install_skills(skills: str | None, target: str, local: bool) -> None:
 
 def list_skills() -> None:
     targets = ", ".join(TARGET_LAYOUT.keys())
-    header = f"{'Skill':<12}  {'Directory':<20}  Targets"
+    header = f"{'Skill':<12}  Targets"
     print(header)
     print("-" * len(header))
-    for key, name in SKILLS.items():
-        print(f"{key:<12}  {name:<20}  {targets}")
+    for name in SKILLS:
+        print(f"{name:<12}  {targets}")
