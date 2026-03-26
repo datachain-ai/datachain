@@ -4,7 +4,7 @@ import pytest
 
 import datachain as dc
 from datachain.lib.file import File
-from tests.utils import reset_session_job_state
+from tests.utils import reset_session_job_state, skip_if_not_sqlite
 
 
 @pytest.fixture(autouse=True)
@@ -715,6 +715,7 @@ def test_aggregator_checkpoint_no_partial_continuation(test_session):
     assert result == [(6, 3), (15, 3)]
 
 
+@skip_if_not_sqlite
 def test_continue_udf_preserves_sys_ids(test_session_tmpfile):
     """sys__id must be preserved when copying partial output table on continuation.
 

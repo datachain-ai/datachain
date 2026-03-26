@@ -852,7 +852,7 @@ class SQLiteWarehouse(AbstractWarehouse):
         table: Table,
         query: Select,
         progress_cb: Callable[[int], None] | None = None,
-        preserve_sys_ids: bool = False,
+        preserve_sys_ids: bool = True,
     ) -> None:
         col_id = (
             query.selected_columns.sys__id
@@ -860,9 +860,9 @@ class SQLiteWarehouse(AbstractWarehouse):
             else None
         )
 
-        assert not (preserve_sys_ids and len(query._group_by_clause) > 0), (
-            "preserve_sys_ids cannot be used with GROUP BY queries"
-        )
+        # GROUP BY produces aggregated rows where sys__id is not meaningful
+        if len(query._group_by_clause) > 0:
+            preserve_sys_ids = False
 
         columns = (
             list(query.selected_columns)
@@ -963,4 +963,5 @@ class SQLiteWarehouse(AbstractWarehouse):
                 query,
                 create_fn=lambda n: self.create_udf_table(columns, name=n),
                 progress_cb=pbar.update,
+                preserve_sys_ids=False,
             )
