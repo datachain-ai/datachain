@@ -49,7 +49,7 @@ def _transform_cursor_mdc(skill_md_path: Path) -> str:
             if line.startswith("description:"):
                 description = line.split(":", 1)[1].strip()
                 break
-        body = text[fm_match.end():]
+        body = text[fm_match.end() :]
     else:
         body = text
 
