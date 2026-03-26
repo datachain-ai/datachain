@@ -16,7 +16,6 @@ from datetime import datetime, timezone
 
 from utils import dc_import, parse_uri
 
-
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -42,17 +41,15 @@ def get_listing_info(uri: str) -> dict:
         catalog = session.catalog
 
         for listing in catalog.listings():
-            if listing.uri.rstrip("/") == uri.rstrip("/") or uri.rstrip(
-                "/"
-            ).startswith(listing.uri.rstrip("/")):
+            if listing.uri.rstrip("/") == uri.rstrip("/") or uri.rstrip("/").startswith(
+                listing.uri.rstrip("/")
+            ):
                 return {
                     "listing_created_at": (
                         listing.created_at.isoformat() if listing.created_at else None
                     ),
                     "listing_finished_at": (
-                        listing.finished_at.isoformat()
-                        if listing.finished_at
-                        else None
+                        listing.finished_at.isoformat() if listing.finished_at else None
                     ),
                     "listing_expires_at": (
                         listing.expires.isoformat() if listing.expires else None
@@ -212,11 +209,11 @@ def compute_size_distribution(chain) -> dict:
     # Percentiles via Python (DataChain lacks percentile funcs)
     try:
         if total <= 10000:
-            sizes = sorted(v for v, in chain.to_iter("file.size"))
+            sizes = sorted(v for (v,) in chain.to_iter("file.size"))
         else:
             sizes = sorted(
                 v
-                for v, in chain.mutate(rnd=func.rand())
+                for (v,) in chain.mutate(rnd=func.rand())
                 .order_by("rnd")
                 .limit(10000)
                 .to_iter("file.size")
@@ -233,12 +230,10 @@ def compute_size_distribution(chain) -> dict:
         result["p90_bytes"] = int(sizes[int(n * 0.9)]) if n >= 10 else int(sizes[-1])
 
     try:
-        empty_df = chain.filter(C("file.size") == 0).group_by(
-            cnt=func.count()
-        ).to_pandas()
-        result["empty_count"] = (
-            int(empty_df["cnt"].iloc[0]) if len(empty_df) > 0 else 0
+        empty_df = (
+            chain.filter(C("file.size") == 0).group_by(cnt=func.count()).to_pandas()
         )
+        result["empty_count"] = int(empty_df["cnt"].iloc[0]) if len(empty_df) > 0 else 0
     except Exception:
         result["empty_count"] = 0
 
@@ -262,12 +257,16 @@ def compute_time_range(chain) -> dict:
             "oldest": (
                 oldest.isoformat()
                 if hasattr(oldest, "isoformat")
-                else str(oldest) if oldest else None
+                else str(oldest)
+                if oldest
+                else None
             ),
             "newest": (
                 newest.isoformat()
                 if hasattr(newest, "isoformat")
-                else str(newest) if newest else None
+                else str(newest)
+                if newest
+                else None
             ),
         }
     except Exception:
@@ -351,8 +350,9 @@ def _enrich_sample(file_obj, ext: str, type_detected: str, info: dict):
 
 def _enrich_image(file_obj, info):
     try:
-        from PIL import Image
         import io
+
+        from PIL import Image
 
         data = file_obj.read()
         img = Image.open(io.BytesIO(data))
@@ -393,6 +393,7 @@ def _enrich_structured(file_obj, ext, info):
     try:
         if ext == "parquet":
             import io
+
             import pyarrow.parquet as pq
 
             pf = pq.ParquetFile(io.BytesIO(file_obj.read()))
@@ -445,9 +446,7 @@ def scan_bucket(uri: str, output: str | None = None):
             total_bytes=func.sum(C("file.size")),
         ).to_pandas()
         total_files = int(totals["total_files"].iloc[0]) if len(totals) > 0 else 0
-        total_size_bytes = (
-            int(totals["total_bytes"].iloc[0]) if len(totals) > 0 else 0
-        )
+        total_size_bytes = int(totals["total_bytes"].iloc[0]) if len(totals) > 0 else 0
     except Exception as e:
         print(f"[dc-graph error] totals: {e}", file=sys.stderr)
         total_files = 0

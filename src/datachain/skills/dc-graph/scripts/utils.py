@@ -199,7 +199,7 @@ def read_json_data(path: str) -> dict | None:
         return None
 
 
-def human_size(nbytes: int | float) -> str:
+def human_size(nbytes: float) -> str:
     """Convert bytes to human-readable string."""
     if nbytes < 1024:
         return f"{int(nbytes)} B"
@@ -220,9 +220,9 @@ def get_listing_finished_at(uri: str) -> str | None:
         listings = catalog.listings()
 
         for listing in listings:
-            if listing.uri.rstrip("/") == uri.rstrip("/") or uri.rstrip(
-                "/"
-            ).startswith(listing.uri.rstrip("/")):
+            if listing.uri.rstrip("/") == uri.rstrip("/") or uri.rstrip("/").startswith(
+                listing.uri.rstrip("/")
+            ):
                 if listing.finished_at:
                     return listing.finished_at.isoformat()
         return None

@@ -117,9 +117,7 @@ def install_skills(skills: str | None, target: str, local: bool) -> None:
                     content = _transform_cursor_mdc(skill_md)
                 else:
                     content = skill_md.read_text()
-                cmd_dest.write_text(
-                    content.replace("{skill_dir}", skill_dir_resolved)
-                )
+                cmd_dest.write_text(content.replace("{skill_dir}", skill_dir_resolved))
 
         installed.append(f"  {skill_name} → {dest}")
 

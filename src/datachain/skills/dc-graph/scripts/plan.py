@@ -23,7 +23,9 @@ from utils import (
 )
 
 
-def plan_datasets(dc, db_last_updated: str, studio: bool = False) -> tuple[list[dict], bool]:
+def plan_datasets(
+    dc, db_last_updated: str, studio: bool = False
+) -> tuple[list[dict], bool]:
     """Plan dataset updates. Returns (datasets_out, up_to_date)."""
     # Read existing index.md to check timestamp
     index_path = ".datachain/graph/index.md"
@@ -131,9 +133,9 @@ def plan_buckets(uris: list[str]) -> list[dict]:
         else:
             scanned_at = existing.get("scanned_at")
             listing_finished = get_listing_finished_at(uri)
-            if scanned_at and listing_finished and scanned_at >= listing_finished:
-                status = "ok"
-            elif scanned_at and not listing_finished:
+            if (scanned_at and listing_finished and scanned_at >= listing_finished) or (
+                scanned_at and not listing_finished
+            ):
                 status = "ok"
             else:
                 status = "stale"
@@ -175,8 +177,8 @@ def cmd_plan(studio: bool = False, bucket_uris: list[str] | None = None):
 
     # Plan buckets
     buckets_out = plan_buckets(bucket_uris) if bucket_uris else []
-    buckets_up_to_date = (
-        not buckets_out or all(b["status"] == "ok" for b in buckets_out)
+    buckets_up_to_date = not buckets_out or all(
+        b["status"] == "ok" for b in buckets_out
     )
 
     # Overall up_to_date: both must be true, and at least one must have entries
