@@ -3,6 +3,7 @@
 
 import argparse
 import json
+import os
 import sys
 
 from changes import build_changes, dep_to_dict
@@ -11,8 +12,8 @@ from schema import extract_preview, extract_schema, get_catalog
 from utils import collect_datasets, dc_import, parse_semver
 
 
-def cmd_dataset_all(name: str):
-    """Fetch data for all versions of a dataset in one call."""
+def _fetch_all_versions(name: str) -> dict:
+    """Fetch data for all versions of a dataset. Returns result dict."""
     dc = dc_import()
 
     # Detect source
@@ -55,8 +56,10 @@ def cmd_dataset_all(name: str):
                     "dependencies": data.get("dependencies", []),
                 }
             )
-        print(json.dumps({"name": name, "source": source, "versions": versions_out}))
-        return
+        result = {"name": name, "source": source, "versions": versions_out}
+        if warnings_list:
+            result["warnings"] = warnings_list
+        return result
 
     # Local path: efficient single-catalog-query implementation.
     bare_name = name
@@ -116,8 +119,7 @@ def cmd_dataset_all(name: str):
         result = {"name": bare_name, "source": source, "versions": versions_out}
         if warnings_list:
             result["warnings"] = warnings_list
-        print(json.dumps(result))
-        return
+        return result
 
     # 3. Fetch schema + preview for latest version only.
     latest_ver_obj = versions_sorted_obj[-1]
@@ -198,7 +200,66 @@ def cmd_dataset_all(name: str):
     result = {"name": bare_name, "source": source, "versions": versions_out}
     if warnings_list:
         result["warnings"] = warnings_list
-    print(json.dumps(result))
+    return result
+
+
+def _merge_versions(existing_versions, new_versions, versions_to_fetch):
+    """Merge existing and new version lists.
+
+    Keep existing versions not in versions_to_fetch,
+    replace/add versions from new data.
+    """
+    fetch_set = set(versions_to_fetch)
+    merged = [v for v in existing_versions if v.get("version") not in fetch_set]
+    merged.extend(new_versions)
+    merged.sort(key=lambda v: parse_semver(v.get("version", "0.0.0")))
+    return merged
+
+
+def cmd_dataset_all(name: str, plan_path: str = None, output_path: str = None):
+    """Fetch all versions of a dataset, optionally merge and save to file."""
+    new_data = _fetch_all_versions(name)
+
+    if not plan_path or not output_path:
+        # No plan/output — just print JSON to stdout.
+        print(json.dumps(new_data, indent=2))
+        return
+
+    # Read plan to get versions_to_fetch.
+    with open(plan_path) as f:
+        plan = json.load(f)
+
+    plan_entry = next(
+        (d for d in plan.get("datasets", []) if d["name"] == name), None
+    )
+    versions_to_fetch = plan_entry.get("versions_to_fetch", []) if plan_entry else []
+
+    # Read existing JSON if it exists.
+    existing_versions = []
+    try:
+        with open(output_path) as f:
+            existing_data = json.load(f)
+        existing_versions = existing_data.get("versions", [])
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+
+    # Merge versions.
+    merged_versions = _merge_versions(
+        existing_versions, new_data.get("versions", []), versions_to_fetch
+    )
+
+    result = {
+        "name": name,
+        "source": new_data.get("source", "local"),
+        "versions": merged_versions,
+    }
+    if new_data.get("warnings"):
+        result["warnings"] = new_data["warnings"]
+
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    with open(output_path, "w") as f:
+        json.dump(result, f, indent=2)
+        f.write("\n")
 
 
 def main():
@@ -206,8 +267,14 @@ def main():
         description="Fetch data for all versions of a dataset."
     )
     parser.add_argument("name", help="Dataset name")
+    parser.add_argument("--plan", help="Path to .plan.json (enables merge + file output)")
+    parser.add_argument("--output", help="Output .json file path (requires --plan)")
     args = parser.parse_args()
-    cmd_dataset_all(args.name)
+
+    if bool(args.plan) != bool(args.output):
+        parser.error("--plan and --output must be used together")
+
+    cmd_dataset_all(args.name, plan_path=args.plan, output_path=args.output)
 
 
 if __name__ == "__main__":

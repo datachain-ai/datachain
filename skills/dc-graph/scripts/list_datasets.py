@@ -26,7 +26,7 @@ def cmd_list(studio: bool = False):
                 seen.add(key)
                 datasets.append(entry)
 
-    print(json.dumps({"datasets": datasets}))
+    print(json.dumps({"datasets": datasets}, indent=2))
 
 
 def main():

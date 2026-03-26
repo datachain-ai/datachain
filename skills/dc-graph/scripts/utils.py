@@ -1,7 +1,6 @@
 """Shared pure helpers for the dc-graph skill scripts."""
 
 import json
-import re
 import sys
 
 
@@ -53,25 +52,42 @@ def read_frontmatter(path):
         return {}
 
 
-def read_file_versions(path):
-    """Find all '### X.Y.Z' headings in a markdown file, in order."""
+def read_json_versions(path):
+    """Read version list from a dataset JSON file. Returns list of version strings."""
     try:
         with open(path) as f:
-            content = f.read()
-        return re.findall(r"^### (\d+\.\d+\.\d+)", content, re.MULTILINE)
+            data = json.load(f)
+        return [v["version"] for v in data.get("versions", []) if v.get("version")]
     except Exception:
         return []
 
 
+def read_json_metadata(path):
+    """Read latest_version and num_objects from a dataset JSON file."""
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        versions = data.get("versions", [])
+        if not versions:
+            return {}
+        latest = versions[-1]
+        return {
+            "latest_version": latest.get("version", ""),
+            "num_objects": str(latest.get("num_objects", "")),
+        }
+    except Exception:
+        return {}
+
+
 def dataset_file_path(name, source):
-    """Derive the relative file path (from .datachain/graph/) for a dataset."""
+    """Derive the relative file path (from .datachain/graph/) for a dataset, without extension."""
     dot_parts = name.split(".", 2)
     if source == "studio" and len(dot_parts) == 3:
         namespace, project, bare_name = dot_parts
         bare_name_slug = bare_name.lower().replace(".", "_")
-        return f"datasets/{namespace}/{project}/{bare_name_slug}.md"
+        return f"datasets/{namespace}/{project}/{bare_name_slug}"
     name_slug = name.lower().replace(".", "_")
-    return f"datasets/{name_slug}.md"
+    return f"datasets/{name_slug}"
 
 
 def serialize(val):

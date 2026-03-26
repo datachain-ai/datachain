@@ -12,8 +12,9 @@ from utils import (
     dataset_file_path,
     dc_import,
     parse_semver,
-    read_file_versions,
     read_frontmatter,
+    read_json_metadata,
+    read_json_versions,
     studio_available,
 )
 
@@ -44,7 +45,8 @@ def cmd_plan(studio: bool = False):
                     "up_to_date": True,
                     "db_last_updated": db_last_updated,
                     "datasets": [],
-                }
+                },
+                indent=2,
             )
         )
         return
@@ -85,14 +87,14 @@ def cmd_plan(studio: bool = False):
             (e for e in entries if e["version"] == latest_version), entries[-1]
         )
 
-        # Derive file path
+        # Derive file path (extensionless)
         file_path = dataset_file_path(name, source)
-        abs_file_path = os.path.join(".datachain/graph", file_path)
+        abs_json_path = os.path.join(".datachain/graph", file_path + ".json")
 
-        # Read existing file
-        file_exists = os.path.exists(abs_file_path)
-        file_versions = read_file_versions(abs_file_path) if file_exists else []
-        file_fm = read_frontmatter(abs_file_path) if file_exists else {}
+        # Read existing JSON file
+        file_exists = os.path.exists(abs_json_path)
+        file_versions = read_json_versions(abs_json_path) if file_exists else []
+        file_fm = read_json_metadata(abs_json_path) if file_exists else {}
 
         # versions_to_fetch: all versions not yet in file
         file_versions_set = set(file_versions)
@@ -143,7 +145,7 @@ def cmd_plan(studio: bool = False):
     if db_last_updated:
         result["db_last_updated"] = db_last_updated
 
-    print(json.dumps(result))
+    print(json.dumps(result, indent=2))
 
 
 def main():

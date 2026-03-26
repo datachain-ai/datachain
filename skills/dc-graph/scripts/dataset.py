@@ -185,7 +185,7 @@ def main():
         help="Dataset name, optionally with @version (e.g. my_dataset@1.0.0)",
     )
     args = parser.parse_args()
-    print(json.dumps(fetch_version_data(args.name)))
+    print(json.dumps(fetch_version_data(args.name), indent=2))
 
 
 if __name__ == "__main__":
