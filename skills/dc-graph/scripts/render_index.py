@@ -3,7 +3,6 @@
 
 import argparse
 import json
-import sys
 from datetime import datetime, timezone
 
 from utils import dataset_file_path

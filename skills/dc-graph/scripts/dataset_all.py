@@ -229,9 +229,7 @@ def cmd_dataset_all(name: str, plan_path: str = None, output_path: str = None):
     with open(plan_path) as f:
         plan = json.load(f)
 
-    plan_entry = next(
-        (d for d in plan.get("datasets", []) if d["name"] == name), None
-    )
+    plan_entry = next((d for d in plan.get("datasets", []) if d["name"] == name), None)
     versions_to_fetch = plan_entry.get("versions_to_fetch", []) if plan_entry else []
 
     # Read existing JSON if it exists.
@@ -267,7 +265,9 @@ def main():
         description="Fetch data for all versions of a dataset."
     )
     parser.add_argument("name", help="Dataset name")
-    parser.add_argument("--plan", help="Path to .plan.json (enables merge + file output)")
+    parser.add_argument(
+        "--plan", help="Path to .plan.json (enables merge + file output)"
+    )
     parser.add_argument("--output", help="Output .json file path (requires --plan)")
     args = parser.parse_args()
 
