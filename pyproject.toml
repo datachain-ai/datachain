@@ -155,7 +155,7 @@ where = ["src"]
 namespaces = false
 
 [tool.setuptools.package-data]
-"datachain.skills" = ["**/*.md", "**/*.py"]
+"datachain.skill" = ["**/*.md", "**/*.py"]
 
 [tool.setuptools_scm]
 

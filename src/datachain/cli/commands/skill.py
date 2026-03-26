@@ -34,7 +34,7 @@ _COPYTREE_IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc", ".datachain")
 
 def _skills_src() -> Path:
     """Return the path to the bundled skills source directory."""
-    return Path(str(files("datachain.skills")))
+    return Path(str(files("datachain.skill")))
 
 
 def _transform_cursor_mdc(skill_md_path: Path) -> str:
