@@ -708,6 +708,7 @@ def dataset_record():
                 _preview_data=[],
             )
         ],
+        _versions_loaded=True,
         status=1,
         schema={},
         feature_schema={},

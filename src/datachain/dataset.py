@@ -290,7 +290,7 @@ class DatasetVersion:
     _preview_data: str | list[dict] | None = field(
         default=None, metadata={"alias": "preview"}
     )
-    _preview_loaded: bool = True
+    _preview_loaded: bool = False
     sources: str = ""
     query_script: str = ""
     job_id: str | None = None
@@ -397,16 +397,26 @@ class DatasetVersion:
         return self._preview_data or None  # type: ignore[return-value]
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            f.metadata.get("alias", f.name): object.__getattribute__(self, f.name)
-            for f in fields(self)
-        }
+        result = {}
+        for f in fields(self):
+            value = object.__getattribute__(self, f.name)
+            # Exclude True to avoid crashing old clients that don't know
+            # about this field.  Receivers infer True (loaded) when the
+            # key is missing.  (Can be removed once all clients
+            # are upgraded.)
+            if f.name == "_preview_loaded" and value is True:
+                continue
+            result[f.metadata.get("alias", f.name)] = value
+        return result
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "DatasetVersion":
         kwargs = {f.name: d[f.name] for f in fields(cls) if f.name in d}
         if "_preview_data" not in kwargs:
             kwargs["_preview_data"] = d.get("preview")
+        # Infer loaded=True when the key is absent (same rationale as
+        # DatasetRecord.from_dict — see comment there).
+        kwargs.setdefault("_preview_loaded", True)
         return cls(**kwargs)
 
 
@@ -491,7 +501,7 @@ class DatasetRecord:
     script_output: str = ""
     sources: str = ""
     query_script: str = ""
-    _versions_loaded: bool = True
+    _versions_loaded: bool = False
 
     @property
     def versions(self) -> list[DatasetVersion]:
@@ -667,6 +677,7 @@ class DatasetRecord:
         """Merge versions from another dataset"""
         if other.id != self.id:
             raise RuntimeError("Cannot merge versions of datasets with different ids")
+        assert self._versions_loaded and other._versions_loaded
         if not other._versions:
             # nothing to merge
             return self
@@ -770,6 +781,8 @@ class DatasetRecord:
     @property
     def latest_version(self) -> str:
         """Returns latest version of a dataset"""
+        if not self.versions:
+            raise DatasetVersionNotFoundError("Dataset has no versions")
         return max(self.versions).version
 
     def latest_major_version(self, major: int) -> str | None:
@@ -824,8 +837,14 @@ class DatasetRecord:
     def to_dict(self) -> dict[str, Any]:
         result = {}
         for f in fields(self):
-            key = f.metadata.get("alias", f.name)
             value = object.__getattribute__(self, f.name)
+            # Exclude True to avoid crashing old clients that don't know
+            # about this field.  Receivers infer True (loaded) when the
+            # key is missing.  (Can be removed once all clients
+            # are upgraded.)
+            if f.name == "_versions_loaded" and value is True:
+                continue
+            key = f.metadata.get("alias", f.name)
             if hasattr(value, "to_dict"):
                 value = value.to_dict()
             elif isinstance(value, list) and value and hasattr(value[0], "to_dict"):
@@ -838,6 +857,11 @@ class DatasetRecord:
         project = Project.from_dict(d.pop("project"))
         versions = [DatasetVersion.from_dict(v) for v in d.pop("versions", [])]
         kwargs = {f.name: d[f.name] for f in fields(cls) if f.name in d}
+        # Infer loaded=True when the key is absent: either the server
+        # excluded it (True is omitted for backward compat) or an old
+        # server never sent it.  In both cases the versions were
+        # deserialized from the dict, so they are loaded.
+        kwargs.setdefault("_versions_loaded", True)
         return cls(**kwargs, _versions=versions, project=project)
 
 

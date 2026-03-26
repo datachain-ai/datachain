@@ -536,6 +536,7 @@ def test_query_step_hash_uses_version_uuid():
                 _preview_data=[],
             ),
         ],
+        _versions_loaded=True,
         status=1,
         schema={},
         feature_schema={},

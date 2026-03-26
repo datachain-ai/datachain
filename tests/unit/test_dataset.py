@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from datetime import datetime, timezone
 
 import pytest
@@ -16,7 +17,11 @@ from datachain.dataset import (
     parse_dataset_uri,
     parse_schema,
 )
-from datachain.error import InvalidDatasetNameError
+from datachain.error import (
+    DatasetStateNotLoadedError,
+    DatasetVersionNotFoundError,
+    InvalidDatasetNameError,
+)
 from datachain.sql.types import (
     JSON,
     Array,
@@ -126,6 +131,7 @@ def test_dataset_dependency_dataset_name(dep_name, dep_type, expected):
     [True, False],
 )
 def test_dataset_version_from_dict(use_string):
+    # use_string=True covers the double-encoded JSON string from the metastore
     preview = [{"id": 1, "thing": "a"}, {"id": 2, "thing": "b"}]
 
     preview_data = json.dumps(preview) if use_string else preview
@@ -339,3 +345,58 @@ def test_parse_empty_dataset_schema():
 def test_parse_invalid_dataset_schema(schema_dict, exc, match_error):
     with pytest.raises(exc, match=match_error):
         parse_schema(schema_dict)
+
+
+def test_dataset_record_roundtrip_versions_loaded_true(dataset_record):
+    # True is omitted from the dict to avoid crashing old clients
+    d = dataset_record.to_dict()
+    assert "_versions_loaded" not in d
+    restored = DatasetRecord.from_dict(d)
+    assert restored._versions_loaded is True
+    assert restored.versions[0].version == "1.0.0"
+
+
+def test_dataset_record_roundtrip_versions_loaded_false(dataset_record):
+    record = replace(dataset_record, _versions=[], _versions_loaded=False)
+    d = record.to_dict()
+    assert d["_versions_loaded"] is False
+    restored = DatasetRecord.from_dict(d)
+    assert restored._versions_loaded is False
+
+
+def test_dataset_version_roundtrip_preview_loaded_true(dataset_record):
+    # True is omitted from the dict to avoid crashing old clients
+    version = replace(
+        dataset_record.versions[0], _preview_data=[{"a": 1}], _preview_loaded=True
+    )
+    d = version.to_dict()
+    assert "_preview_loaded" not in d
+    restored = DatasetVersion.from_dict(d)
+    assert restored._preview_loaded is True
+    assert restored.preview == [{"a": 1}]
+
+
+def test_dataset_version_roundtrip_preview_loaded_false(dataset_record):
+    version = replace(dataset_record.versions[0], _preview_loaded=False)
+    d = version.to_dict()
+    assert d["_preview_loaded"] is False
+    restored = DatasetVersion.from_dict(d)
+    assert restored._preview_loaded is False
+
+
+def test_versions_raises_when_not_loaded(dataset_record):
+    record = replace(dataset_record, _versions_loaded=False)
+    with pytest.raises(DatasetStateNotLoadedError):
+        _ = record.versions
+
+
+def test_preview_raises_when_not_loaded(dataset_record):
+    version = replace(dataset_record.versions[0], _preview_loaded=False)
+    with pytest.raises(DatasetStateNotLoadedError):
+        _ = version.preview
+
+
+def test_latest_version_empty_raises(dataset_record):
+    record = replace(dataset_record, _versions=[], _versions_loaded=True)
+    with pytest.raises(DatasetVersionNotFoundError, match="has no versions"):
+        _ = record.latest_version
