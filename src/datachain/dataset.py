@@ -512,6 +512,10 @@ class DatasetRecord:
             )
         return self._versions
 
+    @versions.setter
+    def versions(self, value: list[DatasetVersion]) -> None:
+        self._versions = value
+
     def __hash__(self):
         return hash(f"{self.id}")
 
