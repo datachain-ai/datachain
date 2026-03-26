@@ -1115,13 +1115,16 @@ class Catalog:
     ) -> None:
         """
         Deletes one single dataset version.
-        If it was last version, it removes dataset completely
+        If it was last version, it removes dataset completely.
         """
         if not dataset.has_version(version):
             return
-        dataset = self.metastore.remove_dataset_version(dataset, version)
+        self.metastore.update_dataset_version(
+            dataset, version, status=DatasetStatus.REMOVING
+        )
         if drop_rows:
             self.warehouse.drop_dataset_rows_table(dataset, version)
+        dataset = self.metastore.remove_dataset_version(dataset, version)
 
     def get_temp_table_names(self) -> list[str]:
         return self.warehouse.get_temp_table_names()

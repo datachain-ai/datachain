@@ -4,6 +4,7 @@
 # ///
 
 import glob
+import shutil
 
 import nox
 
@@ -16,6 +17,13 @@ python_versions = nox.project.python_versions(project)
 locations = "src", "tests"
 
 
+def log_installed_packages(session: nox.Session) -> None:
+    if shutil.which("uv"):
+        session.run("uv", "pip", "list")
+    else:
+        session.run("python", "-m", "pip", "list")
+
+
 @nox.session
 def docs(session: nox.Session) -> None:
     session.install(".[docs]")
@@ -25,6 +33,7 @@ def docs(session: nox.Session) -> None:
 @nox.session
 def bench(session: nox.Session) -> None:
     session.install(".[tests]")
+    log_installed_packages(session)
     session.run(
         "pytest",
         "--benchmark-only",
@@ -37,6 +46,7 @@ def bench(session: nox.Session) -> None:
 @nox.session(python=python_versions)
 def tests(session: nox.Session) -> None:
     session.install(".[tests]")
+    log_installed_packages(session)
     env = {"COVERAGE_FILE": f".coverage.{session.python}"}
     if session.python in ("3.12", "3.13"):
         # improve performance of tests in Python>=3.12 when used with coverage
@@ -59,6 +69,7 @@ def tests(session: nox.Session) -> None:
 @nox.session(python=python_versions)
 def e2e(session: nox.Session) -> None:
     session.install(".[tests]")
+    log_installed_packages(session)
     session.run(
         "pytest",
         "--durations=0",
@@ -90,7 +101,7 @@ def build(session: nox.Session) -> None:
 @nox.session(python=python_versions)
 def examples(session: nox.Session) -> None:
     session.install(".[examples]")
-    session.run("uv", "pip", "list")
+    log_installed_packages(session)
     session.run(
         "pytest",
         "--durations=0",
