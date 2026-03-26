@@ -26,18 +26,6 @@ You are now loaded with the datachain-graph skill. Maintain a knowledge base at 
 
 ---
 
-## Resolving {skill_dir}
-
-| Tool | Local (per-project) | Global (user-wide) |
-|------|--------------------|--------------------|
-| Claude Code | `.claude/skills/dc-graph` | `~/.claude/skills/dc-graph` |
-| Cursor | `.cursor/skills/dc-graph` | `~/.cursor/skills/dc-graph` |
-| Codex | `.codex/skills/dc-graph` | `~/.codex/skills/dc-graph` |
-
-Use the local path if the skill directory exists under the project root; otherwise fall back to the global path.
-
----
-
 ## Step 1 — Sync
 
 Plan what needs updating. The plan covers datasets, buckets, or both.

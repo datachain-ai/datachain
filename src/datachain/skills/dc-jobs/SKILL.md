@@ -18,18 +18,6 @@ You are now loaded with the datachain-jobs skill. Maintain a jobs analytics file
 
 ---
 
-## Resolving {skill_dir}
-
-| Tool | Local (per-project) | Global (user-wide) |
-|------|--------------------|--------------------|
-| Claude Code | `.claude/skills/dc-jobs` | `~/.claude/skills/dc-jobs` |
-| Cursor | `.cursor/skills/dc-jobs` | `~/.cursor/skills/dc-jobs` |
-| Codex | `.codex/skills/dc-jobs` | `~/.codex/skills/dc-jobs` |
-
-Use the local path if the skill directory exists under the project root; otherwise fall back to the global path.
-
----
-
 ## Step 1 — Check Staleness
 
 ```

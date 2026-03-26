@@ -77,11 +77,16 @@ def _make_fake_skills_src(tmp_path: Path) -> Path:
         skill_dir = skills_src / skill_name
         skill_dir.mkdir(parents=True)
         (skill_dir / "SKILL.md").write_text(
-            f"---\nname: {skill_name}\n---\n# {skill_name}\n"
+            f"---\nname: {skill_name}\ndescription: Test skill {skill_name}\n---\n# {skill_name}\n"
+            "```bash\npython3 {skill_dir}/scripts/plan.py\n```\n"
         )
         scripts = skill_dir / "scripts"
         scripts.mkdir()
         (scripts / "graph.py").write_text("# stub\n")
+        # Add __pycache__ junk to verify it gets filtered
+        pycache = scripts / "__pycache__"
+        pycache.mkdir()
+        (pycache / "graph.cpython-312.pyc").write_bytes(b"\x00")
     return skills_src
 
 
@@ -103,9 +108,9 @@ def _run_install(fake_skills_src, fake_home, skills, target, local, project_dir=
         patch("pathlib.Path.home", return_value=fake_home),
     ):
         if local and project_dir:
-            orig_cwd = Path.cwd()
             import os
 
+            orig_cwd = Path.cwd()
             os.chdir(project_dir)
             try:
                 install_skills(skills=skills, target=target, local=local)
@@ -118,18 +123,25 @@ def _run_install(fake_skills_src, fake_home, skills, target, local, project_dir=
 # --- claude, global ---
 
 
-def test_install_all_claude_global(tmp_path, fake_skills_src, fake_home, capsys):
+def test_install_all_claude_global(tmp_path, fake_skills_src, fake_home):
     _run_install(fake_skills_src, fake_home, skills=None, target="claude", local=False)
 
     skills_base = fake_home / ".claude" / "skills"
-    commands_base = fake_home / ".claude" / "commands"
 
     for skill in ("dc-core", "dc-graph", "dc-jobs"):
         assert (skills_base / skill / "SKILL.md").exists()
-        assert (commands_base / f"{skill}.md").exists()
 
     # dc-graph should have its scripts directory too
     assert (skills_base / "dc-graph" / "scripts" / "graph.py").exists()
+
+    # Claude global installs should NOT create commands
+    # (~/.claude/commands/ is not a real Claude Code path)
+    assert not (fake_home / ".claude" / "commands").exists()
+
+    # {skill_dir} should be resolved to absolute path in installed SKILL.md
+    content = (skills_base / "dc-graph" / "SKILL.md").read_text()
+    assert "{skill_dir}" not in content
+    assert "scripts/plan.py" in content
 
 
 def test_install_only_core_claude_global(tmp_path, fake_skills_src, fake_home):
@@ -163,7 +175,14 @@ def test_install_all_cursor_global(tmp_path, fake_skills_src, fake_home):
 
     for skill in ("dc-core", "dc-graph", "dc-jobs"):
         assert (skills_base / skill / "SKILL.md").exists()
-        assert (rules_base / f"{skill}.mdc").exists()
+        mdc_file = rules_base / f"{skill}.mdc"
+        assert mdc_file.exists()
+        # Verify Cursor .mdc has correct frontmatter format
+        content = mdc_file.read_text()
+        assert "alwaysApply: true" in content
+        assert "description: Test skill" in content
+        # Original SKILL.md frontmatter fields should NOT appear
+        assert "triggers:" not in content
 
 
 # --- codex, global ---
@@ -206,10 +225,25 @@ def test_install_claude_local(tmp_path, fake_skills_src, fake_home):
 
     for skill in ("dc-core", "dc-graph", "dc-jobs"):
         assert (skills_base / skill / "SKILL.md").exists()
+        # Local Claude installs SHOULD create commands (valid project-level slash commands)
         assert (commands_base / f"{skill}.md").exists()
 
     # Nothing written to home
     assert not (fake_home / ".claude").exists()
+
+
+# --- __pycache__ filtering ---
+
+
+def test_pycache_not_copied(tmp_path, fake_skills_src, fake_home):
+    """Verify __pycache__ and .pyc files are not copied to the destination."""
+    _run_install(fake_skills_src, fake_home, skills=None, target="claude", local=False)
+
+    skills_base = fake_home / ".claude" / "skills"
+    # Scripts should exist
+    assert (skills_base / "dc-graph" / "scripts" / "graph.py").exists()
+    # But __pycache__ should NOT
+    assert not (skills_base / "dc-graph" / "scripts" / "__pycache__").exists()
 
 
 # ---------------------------------------------------------------------------

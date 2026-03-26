@@ -1,4 +1,6 @@
+import re
 import shutil
+from importlib.resources import files
 from pathlib import Path
 
 SKILLS = {
@@ -8,32 +10,54 @@ SKILLS = {
 }
 
 # For each target: dirs relative to base (home or project root), and command extension.
-# command_ext=None means no command file is copied (skills only).
+# commands_dir=None means no command file is copied (skills only).
+# commands_local_only=True means commands are only written for --local installs.
 TARGET_LAYOUT = {
     "claude": {
         "commands_dir": ".claude/commands",
         "skills_dir": ".claude/skills",
         "command_ext": ".md",
+        "commands_local_only": True,
     },
     "cursor": {
         "commands_dir": ".cursor/rules",
         "skills_dir": ".cursor/skills",
         "command_ext": ".mdc",
+        "commands_local_only": False,
     },
     "codex": {
         "commands_dir": None,
         "skills_dir": ".codex/skills",
         "command_ext": None,
+        "commands_local_only": False,
     },
 }
 
-# Path to the bundled skills directory inside this package installation.
-_SKILLS_SRC = Path(__file__).parent.parent.parent.parent.parent / "skills"
+_COPYTREE_IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc", ".datachain")
 
 
 def _skills_src() -> Path:
     """Return the path to the bundled skills source directory."""
-    return _SKILLS_SRC
+    return Path(str(files("datachain.skills")))
+
+
+def _transform_cursor_mdc(skill_md_path: Path) -> str:
+    """Read SKILL.md and transform its frontmatter to Cursor .mdc format."""
+    text = skill_md_path.read_text()
+
+    # Extract description from existing frontmatter
+    description = ""
+    fm_match = re.match(r"^---\s*\n(.*?)\n---\s*\n", text, re.DOTALL)
+    if fm_match:
+        for line in fm_match.group(1).splitlines():
+            if line.startswith("description:"):
+                description = line.split(":", 1)[1].strip()
+                break
+        body = text[fm_match.end() :]
+    else:
+        body = text
+
+    return f"---\ndescription: {description}\nglobs:\nalwaysApply: true\n---\n{body}"
 
 
 def install_skills(skills: str | None, target: str, local: bool) -> None:
@@ -53,7 +77,14 @@ def install_skills(skills: str | None, target: str, local: bool) -> None:
         skills_to_install = dict(SKILLS)
 
     skills_dir = base / layout["skills_dir"]
-    commands_dir = base / layout["commands_dir"] if layout["commands_dir"] else None
+
+    # Determine whether to write command/rule files
+    write_commands = (
+        layout["commands_dir"] is not None
+        and layout["command_ext"] is not None
+        and (local or not layout["commands_local_only"])
+    )
+    commands_dir = base / layout["commands_dir"] if write_commands else None
     command_ext = layout["command_ext"]
 
     installed = []
@@ -65,16 +96,32 @@ def install_skills(skills: str | None, target: str, local: bool) -> None:
 
         dest = skills_dir / skill_name
         dest.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(src, dest, dirs_exist_ok=True)
+        shutil.copytree(src, dest, dirs_exist_ok=True, ignore=_COPYTREE_IGNORE)
+
+        # Resolve {skill_dir} placeholder in installed SKILL.md so the agent
+        # doesn't have to probe the filesystem to find its own scripts.
+        installed_skill_md = dest / "SKILL.md"
+        if installed_skill_md.exists():
+            resolved = installed_skill_md.read_text().replace(
+                "{skill_dir}", str(dest.resolve())
+            )
+            installed_skill_md.write_text(resolved)
 
         if commands_dir is not None and command_ext is not None:
             commands_dir.mkdir(parents=True, exist_ok=True)
             skill_md = src / "SKILL.md"
             if skill_md.exists():
-                shutil.copy2(skill_md, commands_dir / f"{skill_name}{command_ext}")
+                cmd_dest = commands_dir / f"{skill_name}{command_ext}"
+                skill_dir_resolved = str(dest.resolve())
+                if command_ext == ".mdc":
+                    content = _transform_cursor_mdc(skill_md)
+                else:
+                    content = skill_md.read_text()
+                cmd_dest.write_text(
+                    content.replace("{skill_dir}", skill_dir_resolved)
+                )
 
-        location = str(dest)
-        installed.append(f"  {skill_name} → {location}")
+        installed.append(f"  {skill_name} → {dest}")
 
     if installed:
         scope = "local" if local else "global"
