@@ -461,12 +461,9 @@ def test_group_by_with_unlabeled_func_in_partition_by(test_session):
         partition_by=func.path.parent("custom_file.path"),
     )
 
-    # Partition column is not exposed in output
     assert set(ds.signals_schema.values.keys()) == {"cnt", "sum"}
-    # 4 distinct groups, correct aggregation values
     assert sorted(ds.to_list("cnt", "sum")) == [(1, 50), (1, 250), (2, 300), (2, 450)]
 
-    # Same behavior with C() arg
     ds2 = dc.read_values(
         custom_file=custom_data,
         session=test_session,
@@ -476,7 +473,7 @@ def test_group_by_with_unlabeled_func_in_partition_by(test_session):
     )
 
     assert set(ds2.signals_schema.values.keys()) == {"cnt"}
-    assert len(ds2.to_list("cnt")) == 4
+    assert len(ds2.to_values("cnt")) == 4
 
 
 def test_partition_by_nested_file(test_session):
@@ -632,6 +629,43 @@ def test_aggregate_after_group_by(test_session):
     ).to_list("files", "total")
 
     assert result == [(3, 100)]
+
+
+def test_group_by_with_column_element_in_partition_by(test_session):
+    """Raw ColumnElement expression in partition_by groups correctly; not in output schema."""
+    files = [
+        File(source="s3://bucket", path="a.txt", size=50),
+        File(source="s3://bucket", path="b.txt", size=50),
+        File(source="s3://bucket", path="c.txt", size=50),
+        File(source="s3://bucket", path="d.txt", size=150),
+    ]
+
+    ds = dc.read_values(file=files, session=test_session).group_by(
+        cnt=func.count(),
+        partition_by=dc.C("file.size") // 100,
+    )
+
+    assert set(ds.signals_schema.values.keys()) == {"cnt"}
+    assert set(ds.to_values("cnt")) == {1, 3}
+
+    ds2 = dc.read_values(file=files, session=test_session).group_by(
+        cnt=func.count(),
+        partition_by=[dc.C("file.size") // 100],
+    )
+    assert set(ds2.to_values("cnt")) == {1, 3}
+
+def test_group_by_partition_by_multi_column_expression(test_session):
+    """Multi-column ColumnElement expression in partition_by groups correctly."""
+    ds = dc.read_values(
+        a=[10, 10, 10, 20],
+        b=[5, 5, 5, 3],
+        session=test_session,
+    ).group_by(
+        cnt=func.count(),
+        partition_by=dc.C("a") + dc.C("b"),
+    )
+    assert set(ds.signals_schema.values.keys()) == {"cnt"}
+    assert set(ds.to_values("cnt")) == {1, 3}
 
 
 def test_group_by_partition_by_name_conflicts_with_agg_column(test_session):

@@ -1,4 +1,5 @@
 import copy
+import hashlib
 import logging
 import os
 import os.path
@@ -1300,7 +1301,7 @@ class DataChain:
         """
         if partition_by is None:
             partition_by = []
-        elif isinstance(partition_by, (str, Func)):
+        elif isinstance(partition_by, (str, Func, ColumnElement)):
             partition_by = [partition_by]
 
         partition_by_columns: list[Column] = []
@@ -1370,15 +1371,19 @@ class DataChain:
                         signal_name = col_arg.name.replace("__", "_")
                     column = col.get_column(
                         self.signals_schema,
-                        label=f"grpby_{col.name}_{signal_name}",
+                        label=f"grpby_func_{col.name}_{signal_name}",
                     )
                     partition_by_columns.append(column)
+            elif isinstance(col, ColumnElement):
+                expr_str = str(col.compile(compile_kwargs={"literal_binds": True}))
+                suffix = hashlib.md5(expr_str.encode()).hexdigest()[:8]
+                partition_by_columns.append(col.label(f"grpby_expr_{suffix}"))
             else:
                 raise DataChainColumnError(
                     col,
                     (
                         f"partition_by column {col} has type {type(col)}"
-                        " but expected str or Function"
+                        " but expected str, Function, or ColumnElement"
                     ),
                 )
 
