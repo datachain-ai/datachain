@@ -1273,7 +1273,7 @@ class DataChain:
     def group_by(  # noqa: C901, PLR0912
         self,
         *,
-        partition_by: str | Func | Sequence[str | Func] | None = None,
+        partition_by: str | Func | ColumnElement | Sequence[str | Func | ColumnElement] | None = None,
         **kwargs: Func,
     ) -> "Self":
         """Group rows by specified set of signals and return new signals
@@ -1367,8 +1367,10 @@ class DataChain:
                     col_arg = col.cols[0]
                     if isinstance(col_arg, str):
                         signal_name = col_arg.replace(".", "_")
-                    else:
+                    elif isinstance(col_arg, ColumnElement):
                         signal_name = col_arg.name.replace("__", "_")
+                    else:
+                        signal_name = str(col_arg)
                     column = col.get_column(
                         self.signals_schema,
                         label=f"grpby_func_{col.name}_{signal_name}",
@@ -1377,7 +1379,7 @@ class DataChain:
             elif isinstance(col, ColumnElement):
                 expr_str = str(col.compile(compile_kwargs={"literal_binds": True}))
                 suffix = hashlib.md5(expr_str.encode()).hexdigest()[:8]
-                partition_by_columns.append(col.label(f"grpby_expr_{suffix}"))
+                partition_by_columns.append(cast("Column", col.label(f"grpby_expr_{suffix}")))
             else:
                 raise DataChainColumnError(
                     col,
