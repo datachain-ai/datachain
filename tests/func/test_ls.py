@@ -119,7 +119,9 @@ def test_ls_glob_sub(cloud_test_catalog, cloud_type, capsys):
 
 
 def list_dataset_name(uri, path):
-    return _sanitize_ds_name(f"{LISTING_PREFIX}{uri}/{posixpath.join(path, '').lstrip('/')}")
+    return _sanitize_ds_name(
+        f"{LISTING_PREFIX}{uri}/{posixpath.join(path, '').lstrip('/')}"
+    )
 
 
 def test_ls_partial_indexing(cloud_test_catalog, cloud_type, capsys):
