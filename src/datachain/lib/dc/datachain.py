@@ -1270,14 +1270,12 @@ class DataChain:
         )
 
     @delta_disabled  # type: ignore[arg-type]
-    def group_by(  # noqa: C901, PLR0912
+    def group_by(  # noqa: C901, PLR0912, PLR0915
         self,
         *,
-        partition_by: str
-        | Func
-        | ColumnElement
-        | Sequence[str | Func | ColumnElement]
-        | None = None,
+        partition_by: (
+            str | Func | ColumnElement | Sequence[str | Func | ColumnElement] | None
+        ) = None,
         **kwargs: Func,
     ) -> "Self":
         """Group rows by specified set of signals and return new signals
@@ -1382,10 +1380,11 @@ class DataChain:
                     partition_by_columns.append(column)
             elif isinstance(col, ColumnElement):
                 expr_str = str(col.compile(compile_kwargs={"literal_binds": True}))
-                suffix = hashlib.md5(expr_str.encode()).hexdigest()[:8]
-                partition_by_columns.append(
-                    cast("Column", col.label(f"grpby_expr_{suffix}"))
-                )
+                suffix = hashlib.md5(
+                    expr_str.encode(), usedforsecurity=False
+                ).hexdigest()[:8]
+                labeled = cast("Column", col.label(f"grpby_expr_{suffix}"))
+                partition_by_columns.append(labeled)
             else:
                 raise DataChainColumnError(
                     col,
