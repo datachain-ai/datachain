@@ -11,6 +11,7 @@ from datachain.data_storage.schema import DataTable
 from datachain.dataset import (
     DatasetDependency,
     DatasetDependencyType,
+    DatasetListRecord,
     DatasetRecord,
     DatasetVersion,
     parse_dataset_name,
@@ -400,3 +401,46 @@ def test_latest_version_empty_raises(dataset_record):
     record = replace(dataset_record, _versions=[], _versions_loaded=True)
     with pytest.raises(DatasetVersionNotFoundError, match="has no versions"):
         _ = record.latest_version
+
+
+def test_dataset_list_record_to_dict(dataset_list_record):
+    d = dataset_list_record.to_dict()
+
+    assert d["id"] == dataset_list_record.id
+    assert d["name"] == dataset_list_record.name
+    assert d["project"]["name"] == dataset_list_record.project.name
+    assert (
+        d["project"]["namespace"]["name"] == dataset_list_record.project.namespace.name
+    )
+    assert len(d["versions"]) == 2
+    assert d["versions"][0]["version"] == "1.0.0"
+    assert d["versions"][1]["version"] == "2.0.0"
+
+
+def test_dataset_list_record_roundtrip(dataset_list_record):
+    d = dataset_list_record.to_dict()
+    restored = DatasetListRecord.from_dict(d)
+
+    assert restored.id == dataset_list_record.id
+    assert restored.name == dataset_list_record.name
+    assert restored.description == dataset_list_record.description
+    assert restored.attrs == dataset_list_record.attrs
+    assert restored.project.name == dataset_list_record.project.name
+    assert restored.project.namespace.name == dataset_list_record.project.namespace.name
+    assert len(restored.versions) == len(dataset_list_record.versions)
+    for orig, rest in zip(dataset_list_record.versions, restored.versions, strict=True):
+        assert rest.id == orig.id
+        assert rest.version == orig.version
+        assert rest.uuid == orig.uuid
+        assert rest.status == orig.status
+
+
+def test_dataset_list_record_has_version_with_uuid(dataset_list_record):
+    assert (
+        dataset_list_record.has_version_with_uuid(dataset_list_record.versions[0].uuid)
+        is True
+    )
+    assert dataset_list_record.has_version_with_uuid("nonexistent") is False
+
+    record = replace(dataset_list_record, versions=[])
+    assert record.has_version_with_uuid("anything") is False

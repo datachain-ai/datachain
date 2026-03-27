@@ -5,7 +5,7 @@ from uuid import uuid4
 import pytest
 
 from datachain.data_storage import JobQueryType, JobStatus
-from datachain.dataset import DatasetStatus
+from datachain.dataset import DatasetListRecord, DatasetStatus
 from datachain.sql import types as dc_types
 
 feature_schema = {
@@ -611,6 +611,56 @@ def test_list_datasets_by_prefix(metastore):
         assert len(ds.versions) >= 1
 
     assert [ds.name for ds in metastore.list_datasets_by_prefix("foo")] == []
+
+
+def test_list_dataset_to_dict_roundtrip(metastore):
+    ds = metastore.create_dataset(name="roundtrip_ds")
+    metastore.create_dataset_version(
+        dataset=ds, version="1.0.0", status=DatasetStatus.COMPLETE
+    )
+    metastore.create_dataset_version(
+        dataset=ds, version="2.0.0", status=DatasetStatus.COMPLETE
+    )
+
+    datasets = list(metastore.list_datasets())
+    assert len(datasets) == 1
+
+    record = datasets[0]
+    d = record.to_dict()
+    restored = DatasetListRecord.from_dict(d)
+
+    assert restored.id == record.id
+    assert restored.name == record.name
+    assert restored.project.name == record.project.name
+    assert restored.project.namespace.name == record.project.namespace.name
+    assert len(restored.versions) == len(record.versions)
+    for orig, rest in zip(record.versions, restored.versions, strict=True):
+        assert rest.id == orig.id
+        assert rest.version == orig.version
+        assert rest.uuid == orig.uuid
+
+
+def test_list_dataset_has_version_with_uuid(metastore):
+    ds = metastore.create_dataset(name="uuid_ds")
+    ds, _ = metastore.create_dataset_version(
+        dataset=ds, version="1.0.0", status=DatasetStatus.COMPLETE
+    )
+    ds, _ = metastore.create_dataset_version(
+        dataset=ds, version="2.0.0", status=DatasetStatus.COMPLETE
+    )
+
+    # Get version UUIDs from the full dataset record
+    full_ds = metastore.get_dataset("uuid_ds", versions=None)
+    v1_uuid = full_ds.get_version("1.0.0").uuid
+    v2_uuid = full_ds.get_version("2.0.0").uuid
+
+    datasets = list(metastore.list_datasets())
+    assert len(datasets) == 1
+
+    record = datasets[0]
+    assert record.has_version_with_uuid(v1_uuid) is True
+    assert record.has_version_with_uuid(v2_uuid) is True
+    assert record.has_version_with_uuid("nonexistent") is False
 
 
 def test_get_dataset(metastore):

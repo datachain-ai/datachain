@@ -26,7 +26,12 @@ from datachain.data_storage.sqlite import (
     SQLiteMetastore,
     SQLiteWarehouse,
 )
-from datachain.dataset import DatasetRecord, DatasetVersion
+from datachain.dataset import (
+    DatasetListRecord,
+    DatasetListVersion,
+    DatasetRecord,
+    DatasetVersion,
+)
 from datachain.lib.dc import Sys
 from datachain.namespace import Namespace
 from datachain.project import Project
@@ -726,6 +731,61 @@ def dataset_record():
                 descr="",
             ),
         ),
+    )
+
+
+@pytest.fixture
+def dataset_list_record():
+    return DatasetListRecord(
+        id=1,
+        name=f"ds_{uuid.uuid4().hex}",
+        project=Project(
+            id=1,
+            uuid=str(uuid.uuid4()),
+            name="animals",
+            created_at=datetime.now(),
+            descr="",
+            namespace=Namespace(
+                id=1,
+                uuid=str(uuid.uuid4()),
+                name="dev",
+                created_at=datetime.now(),
+                descr="",
+            ),
+        ),
+        description="",
+        attrs=[],
+        versions=[
+            DatasetListVersion(
+                id=1,
+                uuid=uuid.uuid4().hex,
+                dataset_id=1,
+                version="1.0.0",
+                status=4,
+                created_at=datetime.now(),
+                finished_at=datetime.now(),
+                error_message="",
+                error_stack="",
+                num_objects=50,
+                size=5000,
+                query_script="",
+                job_id="",
+            ),
+            DatasetListVersion(
+                id=2,
+                uuid=uuid.uuid4().hex,
+                dataset_id=1,
+                version="2.0.0",
+                status=4,
+                created_at=datetime.now(),
+                finished_at=None,
+                error_message="",
+                error_stack="",
+                num_objects=100,
+                size=10000,
+            ),
+        ],
+        created_at=datetime.now(),
     )
 
 
