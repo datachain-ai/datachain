@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 import attrs
 import sqlalchemy as sa
 from fsspec.callbacks import DEFAULT_CALLBACK, Callback
-from sqlalchemy import Integer, cast
+from sqlalchemy import Float, Integer, cast
 from sqlalchemy.sql import func as sa_func
 
 from datachain.lib.file import File
@@ -58,10 +58,10 @@ class Column(sa.ColumnClause, metaclass=ColumnMeta):
         return Column(self.name + DEFAULT_DELIMITER + name)
 
     def __truediv__(self, other):
-        return sa_func.divide(self, other)
+        return sa_func.divide(self, other, type_=Float)
 
     def __rtruediv__(self, other):
-        return sa_func.divide(other, self)
+        return sa_func.divide(other, self, type_=Float)
 
     def __floordiv__(self, other):
         return cast(sa_func.divide(self, other), Integer)
