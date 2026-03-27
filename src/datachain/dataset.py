@@ -411,9 +411,16 @@ class DatasetVersion:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "DatasetVersion":
-        kwargs = {f.name: d[f.name] for f in fields(cls) if f.name in d}
-        if "_preview_data" not in kwargs:
-            kwargs["_preview_data"] = d.get("preview")
+        if "_preview_data" in d:
+            raise ValueError(
+                "Serialized dataset version must use 'preview', not '_preview_data'"
+            )
+        kwargs = {
+            f.name: d[f.name]
+            for f in fields(cls)
+            if f.name in d and f.name != "_preview_data"
+        }
+        kwargs["_preview_data"] = d["preview"]
         # Infer loaded=True when the key is absent (same rationale as
         # DatasetRecord.from_dict — see comment there).
         kwargs.setdefault("_preview_loaded", True)
@@ -472,6 +479,11 @@ class DatasetListVersion:
 
     def to_dict(self) -> dict[str, Any]:
         return {f.name: getattr(self, f.name) for f in fields(self)}
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "DatasetListVersion":
+        kwargs = {f.name: d[f.name] for f in fields(cls) if f.name in d}
+        return cls(**kwargs)
 
     def __hash__(self):
         return hash(f"{self.dataset_id}_{self.version}")
@@ -858,9 +870,17 @@ class DatasetRecord:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "DatasetRecord":
-        project = Project.from_dict(d.pop("project"))
-        versions = [DatasetVersion.from_dict(v) for v in d.pop("versions", [])]
-        kwargs = {f.name: d[f.name] for f in fields(cls) if f.name in d}
+        if "_versions" in d:
+            raise ValueError(
+                "Serialized dataset record must use 'versions', not '_versions'"
+            )
+        project = Project.from_dict(d["project"])
+        versions = [DatasetVersion.from_dict(v) for v in d["versions"]]
+        kwargs = {
+            f.name: d[f.name]
+            for f in fields(cls)
+            if f.name in d and f.name not in {"_versions", "project"}
+        }
         # Infer loaded=True when the key is absent: either the server
         # excluded it (True is omitted for backward compat) or an old
         # server never sent it.  In both cases the versions were
@@ -1008,9 +1028,13 @@ class DatasetListRecord:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "DatasetListRecord":
-        project = Project.from_dict(d.pop("project"))
-        versions = [DatasetListVersion.parse(**v) for v in d.get("versions", [])]
-        kwargs = {f.name: d[f.name] for f in fields(cls) if f.name in d}
+        project = Project.from_dict(d["project"])
+        versions = [DatasetListVersion.from_dict(v) for v in d["versions"]]
+        kwargs = {
+            f.name: d[f.name]
+            for f in fields(cls)
+            if f.name in d and f.name not in {"project", "versions"}
+        }
         kwargs["versions"] = versions
         kwargs["project"] = project
         return cls(**kwargs)

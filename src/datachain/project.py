@@ -80,6 +80,10 @@ class Project:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "Project":
-        namespace = Namespace.from_dict(d.pop("namespace"))
-        kwargs = {f.name: d[f.name] for f in fields(cls) if f.name in d}
+        namespace = Namespace.from_dict(d["namespace"])
+        kwargs = {
+            f.name: d[f.name]
+            for f in fields(cls)
+            if f.name in d and f.name != "namespace"
+        }
         return cls(**kwargs, namespace=namespace)

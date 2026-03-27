@@ -385,6 +385,23 @@ def test_dataset_version_roundtrip_preview_loaded_false(dataset_record):
     assert restored._preview_loaded is False
 
 
+def test_dataset_version_from_dict_rejects_internal_preview_key(dataset_record):
+    version = replace(dataset_record.versions[0], _preview_data=[{"a": 1}])
+    d = version.to_dict()
+    d["_preview_data"] = d.pop("preview")
+
+    with pytest.raises(ValueError, match="'preview'"):
+        DatasetVersion.from_dict(d)
+
+
+def test_dataset_record_from_dict_rejects_internal_versions_key(dataset_record):
+    d = dataset_record.to_dict()
+    d["_versions"] = d.pop("versions")
+
+    with pytest.raises(ValueError, match="'versions'"):
+        DatasetRecord.from_dict(d)
+
+
 def test_versions_raises_when_not_loaded(dataset_record):
     record = replace(dataset_record, _versions_loaded=False)
     with pytest.raises(DatasetStateNotLoadedError):
