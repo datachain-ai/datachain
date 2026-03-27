@@ -1992,7 +1992,7 @@ class SQLJoin(Step):
         )
         temp_tables.append(temp_table.name)
 
-        warehouse.insert_into(temp_table, query, preserve_sys_ids=False)
+        warehouse.insert_into(temp_table, query, preserve_sys_ids=True)
 
         return temp_table.select().subquery(dq.table.name)
 
