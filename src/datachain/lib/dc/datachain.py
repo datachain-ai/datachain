@@ -1356,14 +1356,23 @@ class DataChain:
                             keep_columns.append(col)
                         schema_partition_by.append(col)
             elif isinstance(col, Function):
-                column = col.get_column(
-                    self.signals_schema, label=col.col_label or col.name
-                )
-                col_db_name = column.name
-                col_type = column.type.python_type
-                schema_fields[col_db_name] = col_type
-                partition_by_columns.append(column)
-                signal_columns.append(column)
+                if col.col_label:
+                    column = col.get_column(self.signals_schema, label=col.col_label)
+                    col_db_name = column.name
+                    schema_fields[col_db_name] = col_type = column.type.python_type
+                    partition_by_columns.append(column)
+                    signal_columns.append(column)
+                else:
+                    col_arg = col.cols[0]
+                    if isinstance(col_arg, str):
+                        signal_name = col_arg.replace(".", "_")
+                    else:
+                        signal_name = col_arg.name.replace("__", "_")
+                    column = col.get_column(
+                        self.signals_schema,
+                        label=f"grpby_{col.name}_{signal_name}",
+                    )
+                    partition_by_columns.append(column)
             else:
                 raise DataChainColumnError(
                     col,
@@ -1376,8 +1385,8 @@ class DataChain:
         if not kwargs:
             raise ValueError("At least one column should be provided for group_by")
 
-        partition_func_names = {c.name for c in partition_by_columns}
-        overlap = partition_func_names & set(kwargs.keys())
+        partition_output_names = {c.name for c in signal_columns}
+        overlap = partition_output_names & set(kwargs.keys())
         if overlap:
             name = next(iter(overlap))
             raise DataChainColumnError(

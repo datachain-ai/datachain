@@ -437,7 +437,7 @@ def test_group_by_with_functions_in_partition_by(test_session):
 
 
 def test_group_by_with_unlabeled_func_in_partition_by(test_session):
-    """Inline func in partition_by without .label() uses the function name."""
+    """Unlabeled func in partition_by groups correctly; partition col not in output."""
 
     class CustomFile(DataModel):
         path: str
@@ -461,12 +461,12 @@ def test_group_by_with_unlabeled_func_in_partition_by(test_session):
         partition_by=func.path.parent("custom_file.path"),
     )
 
-    assert len(ds.to_list("parent")) == 4
-    assert ds.filter(dc.C("parent") == "docs").to_list("cnt", "sum")[0] == (2, 300)
-    assert ds.filter(dc.C("parent") == "src").to_list("cnt", "sum")[0] == (2, 450)
-    assert ds.filter(dc.C("parent") == "tests").to_list("cnt", "sum")[0] == (1, 250)
-    assert ds.filter(dc.C("parent") == "").to_list("cnt", "sum")[0] == (1, 50)
+    # Partition column is not exposed in output
+    assert set(ds.signals_schema.values.keys()) == {"cnt", "sum"}
+    # 4 distinct groups, correct aggregation values
+    assert sorted(ds.to_list("cnt", "sum")) == [(1, 50), (1, 250), (2, 300), (2, 450)]
 
+    # Same behavior with C() arg
     ds2 = dc.read_values(
         custom_file=custom_data,
         session=test_session,
@@ -475,7 +475,8 @@ def test_group_by_with_unlabeled_func_in_partition_by(test_session):
         partition_by=func.path.parent(dc.C("custom_file.path")),
     )
 
-    assert len(ds2.to_list("parent")) == 4
+    assert set(ds2.signals_schema.values.keys()) == {"cnt"}
+    assert len(ds2.to_list("cnt")) == 4
 
 
 def test_partition_by_nested_file(test_session):
@@ -634,12 +635,12 @@ def test_aggregate_after_group_by(test_session):
 
 
 def test_group_by_partition_by_name_conflicts_with_agg_column(test_session):
-    """partition_by func name clashing with an aggregation kwarg raises an error."""
+    """Labeled partition_by func name clashing with an aggregation kwarg raises an error."""
     files = [
         File(source="s3://bucket", path="docs/a.txt", size=100),
     ]
     with pytest.raises(DataChainColumnError, match="conflicts with aggregation"):
         dc.read_values(file=files, session=test_session).group_by(
             parent=func.count(),
-            partition_by=func.path.parent("file.path"),  # also resolves to "parent"
+            partition_by=func.path.parent("file.path").label("parent"),
         )
