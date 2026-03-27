@@ -4387,6 +4387,34 @@ def test_save_create_project_not_allowed(test_session, is_studio):
         )
 
 
+def test_save_preserves_sys_ids_without_order_by(test_session):
+    """save() preserves sys__id from source when chain has no order_by."""
+    dc.read_values(num=[10, 20, 30], session=test_session).save("source")
+
+    # Read source sys__ids
+    source = dc.read_dataset("source", session=test_session).to_list("sys.id")
+    source_ids = [r[0] for r in source]
+
+    dc.read_dataset("source", session=test_session).filter(dc.C("num") > 10).save(
+        "filtered"
+    )
+    filtered = dc.read_dataset("filtered", session=test_session).to_list("sys.id")
+    filtered_ids = [r[0] for r in filtered]
+
+    # Without order_by, sys__id should be preserved from source
+    assert set(filtered_ids).issubset(set(source_ids))
+
+
+def test_save_regenerates_sys_ids_with_order_by(test_session):
+    """save() regenerates sys__id when chain has order_by to preserve row order."""
+    dc.read_values(num=[3, 1, 2], session=test_session).save("source")
+
+    dc.read_dataset("source", session=test_session).order_by("num").save("sorted")
+
+    result = dc.read_dataset("sorted", session=test_session).to_list("num")
+    assert result == [(1,), (2,), (3,)]
+
+
 def test_save_raises_in_ephemeral_mode(test_session):
     chain = dc.read_values(num=[1, 2, 3], session=test_session).settings(ephemeral=True)
 

@@ -1992,7 +1992,7 @@ class SQLJoin(Step):
         )
         temp_tables.append(temp_table.name)
 
-        warehouse.insert_into(temp_table, query, preserve_sys_ids=True)
+        warehouse.insert_into(temp_table, query)
 
         return temp_table.select().subquery(dq.table.name)
 
@@ -3038,8 +3038,11 @@ class DatasetQuery:
             )
             self.temp_table_names.append(temp_table_name)
             temp_table = self.catalog.warehouse.get_table(temp_table_name)
+            # Regenerate sys__id when chain has order_by so the saved
+            # dataset's row order matches the query order on read.
+            has_ordering = any(isinstance(s, SQLOrderBy) for s in self.steps)
             self.catalog.warehouse.insert_into(
-                temp_table, query.select(), preserve_sys_ids=False
+                temp_table, query.select(), preserve_sys_ids=not has_ordering
             )
 
             # Phase 2: Claim the version (metadata only).
