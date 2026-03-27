@@ -632,7 +632,6 @@ def test_aggregate_after_group_by(test_session):
 
 
 def test_group_by_with_column_element_in_partition_by(test_session):
-    """Raw ColumnElement expression in partition_by groups correctly; not in output schema."""
     files = [
         File(source="s3://bucket", path="a.txt", size=50),
         File(source="s3://bucket", path="b.txt", size=50),
@@ -655,7 +654,6 @@ def test_group_by_with_column_element_in_partition_by(test_session):
     assert set(ds2.to_values("cnt")) == {1, 3}
 
 def test_group_by_partition_by_multi_column_expression(test_session):
-    """Multi-column ColumnElement expression in partition_by groups correctly."""
     ds = dc.read_values(
         a=[10, 10, 10, 20],
         b=[5, 5, 5, 3],
@@ -668,8 +666,25 @@ def test_group_by_partition_by_multi_column_expression(test_session):
     assert set(ds.to_values("cnt")) == {1, 3}
 
 
+def test_group_by_partition_by_func_and_column_expression(test_session):
+    files = [
+        File(source="s3://bucket", path="a.txt", size=5),   # 5+5
+        File(source="s3://bucket", path="ab.txt", size=5),  # 6+5
+        File(source="s3://bucket", path="ab.txt", size=5),  # 6+5
+        File(source="s3://bucket", path="a.txt", size=7),   # 5+7
+        File(source="s3://bucket", path="a.txt", size=7),   # 5+7
+        File(source="s3://bucket", path="a.txt", size=7),   # 5+7
+    ]
+
+    ds = dc.read_values(file=files, session=test_session).group_by(
+        n=func.count(),
+        partition_by=func.string.length(dc.C("file.path")) + dc.C("file.size"),
+    )
+    assert set(ds.signals_schema.values.keys()) == {"n"}
+    assert set(ds.to_values("n")) == {1, 2, 3}
+
+
 def test_group_by_partition_by_name_conflicts_with_agg_column(test_session):
-    """Labeled partition_by func name clashing with an aggregation kwarg raises an error."""
     files = [
         File(source="s3://bucket", path="docs/a.txt", size=100),
     ]
