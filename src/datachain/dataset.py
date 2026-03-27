@@ -527,6 +527,7 @@ class DatasetRecord:
     @versions.setter
     def versions(self, value: list[DatasetVersion]) -> None:
         self._versions = value
+        self._versions_loaded = True
 
     def __hash__(self):
         return hash(f"{self.id}")
@@ -693,12 +694,11 @@ class DatasetRecord:
         """Merge versions from another dataset"""
         if other.id != self.id:
             raise RuntimeError("Cannot merge versions of datasets with different ids")
-        assert self._versions_loaded and other._versions_loaded
+        if not self._versions_loaded or not other._versions_loaded:
+            raise RuntimeError("Cannot merge versions when versions are not loaded")
         if not other._versions:
             # nothing to merge
             return self
-        if not self._versions:
-            self._versions = []
 
         self._versions = list(set(self._versions + other._versions))
         self._versions.sort(key=lambda v: v.version_value)
@@ -712,7 +712,7 @@ class DatasetRecord:
         Checks if a number can be a valid next latest version for dataset.
         The only rule is that it cannot be lower than current latest version
         """
-        if not any(v.version for v in self.versions):
+        if not self.versions:
             return True
 
         return not (
@@ -988,8 +988,6 @@ class DatasetListRecord:
         if not other.versions:
             # nothing to merge
             return self
-        if not self.versions:
-            self.versions = []
 
         self.versions = list(set(self.versions + other.versions))
         self.versions.sort(key=lambda v: v.version_value)

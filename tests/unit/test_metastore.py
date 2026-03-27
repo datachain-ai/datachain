@@ -149,3 +149,17 @@ def test_get_dataset_can_skip_preview_loading(test_session):
     assert with_preview.get_version("1.0.0").preview is not None
     with pytest.raises(DatasetStateNotLoadedError):
         _ = without_preview.get_version("1.0.0").preview
+
+
+def test_dataset_record_versions_setter_marks_loaded(test_session):
+    ds = dc.read_values(value=["a", "b"], session=test_session).save("setter-ds")
+    metastore = test_session.catalog.metastore
+
+    record = metastore.get_dataset(ds.name, versions=())
+    with pytest.raises(DatasetStateNotLoadedError):
+        _ = record.versions
+
+    loaded = metastore.get_dataset(ds.name, versions=None)
+    record.versions = loaded.versions
+
+    assert record.versions == loaded.versions

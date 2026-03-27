@@ -1821,7 +1821,7 @@ class AbstractDBMetastore(AbstractMetastore):
         # Parse results and return (dataset, version) tuples
         results = []
         for row in self.db.execute(query):
-            dataset = self.dataset_class.parse(*row)
+            dataset = self.dataset_class.parse(*row, preview_loaded=False)
             # Each DatasetRecord has one version (the failed one from this row)
             if dataset.versions:
                 version = dataset.versions[0].version

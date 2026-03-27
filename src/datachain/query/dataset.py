@@ -761,21 +761,9 @@ class UDFStep(Step, ABC):
                     exec_cmd = get_datachain_executable()
                     cmd = [*exec_cmd, "internal-run-udf"]
                     envs = dict(os.environ)
-                    pythonpath_entries = [
-                        os.path.abspath(
-                            os.path.join(os.path.dirname(__file__), "..", "..")
-                        )
-                    ]
-                    if current_pythonpath := envs.get("PYTHONPATH"):
-                        pythonpath_entries.extend(
-                            os.path.abspath(path)
-                            for path in current_pythonpath.split(os.pathsep)
-                            if path
-                        )
-                    pythonpath_entries.append(os.path.abspath(os.getcwd()))
                     envs.update(
                         {
-                            "PYTHONPATH": os.pathsep.join(pythonpath_entries),
+                            "PYTHONPATH": os.getcwd(),
                             # Mark as DataChain-controlled subprocess to enable
                             # checkpoints
                             "DATACHAIN_SUBPROCESS": "1",
