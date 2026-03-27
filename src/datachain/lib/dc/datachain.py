@@ -640,7 +640,7 @@ class DataChain:
         # Calculate hash including dataset name and job context to avoid conflicts
         import hashlib
 
-        base_hash = self._query.hash(job_aware=True)
+        base_hash = self._query.hash()
         _hash = hashlib.sha256(
             (base_hash + f"{namespace_name}/{project_name}/{name}").encode("utf-8")
         ).hexdigest()

@@ -128,7 +128,7 @@ def test_checkpoints_modified_chains(
 
     assert len(catalog.get_dataset("nums1").versions) == 2 if reset_checkpoints else 1
     assert len(catalog.get_dataset("nums2").versions) == 2
-    assert len(catalog.get_dataset("nums3").versions) == 2
+    assert len(catalog.get_dataset("nums3").versions) == 2 if reset_checkpoints else 1
 
     assert len(list(catalog.metastore.list_checkpoints([first_job_id]))) == 3
     assert len(list(catalog.metastore.list_checkpoints([second_job_id]))) == 3
@@ -271,8 +271,8 @@ def test_udf_checkpoints_multiple_calls_same_job(
 ):
     """
     Test that UDF execution creates checkpoints, but subsequent calls in the same
-    job will re-execute because the hash changes (includes previous checkpoint hash).
-    Checkpoint reuse is designed for cross-job execution, not within-job execution.
+    job will re-execute. Checkpoint reuse is designed for cross-job execution,
+    not within-job execution.
     """
     call_count = {"count": 0}
 
@@ -291,7 +291,7 @@ def test_udf_checkpoints_multiple_calls_same_job(
     first_calls = call_count["count"]
     assert first_calls == 6, "Mapper should be called 6 times on first count()"
 
-    # Second count() - will re-execute because hash includes previous checkpoint
+    # Second count() - re-executes in same job
     call_count["count"] = 0
     assert chain.count() == 6
     assert call_count["count"] == 6, "Mapper re-executes in same job"
@@ -523,3 +523,96 @@ def test_ephemeral_mode_no_jobs_on_collect(test_session, nums_dataset):
 
     assert _count_rows(metastore, metastore._jobs) == jobs_before
     assert _count_rows(metastore, metastore._checkpoints) == checkpoints_before
+
+
+def test_independent_chains_no_transient_invalidation(test_session, nums_dataset):
+    call_count = {"count": 0}
+
+    def add_ten(num) -> int:
+        call_count["count"] += 1
+        return num + 10
+
+    # -------------- FIRST RUN -------------------
+    reset_session_job_state()
+    dc.read_dataset("nums", session=test_session).filter(dc.C("num") > 3).save("big")
+    dc.read_dataset("nums", session=test_session).map(
+        plus_ten=add_ten, output=int
+    ).save("mapped")
+
+    assert call_count["count"] == 6
+
+    # -------------- SECOND RUN - modify the filter chain -------------------
+    reset_session_job_state()
+    call_count["count"] = 0
+
+    # Change the filter — this should NOT affect the map chain
+    dc.read_dataset("nums", session=test_session).filter(dc.C("num") > 1).save("big")
+    dc.read_dataset("nums", session=test_session).map(
+        plus_ten=add_ten, output=int
+    ).save("mapped")
+
+    assert call_count["count"] == 0, "UDF should be skipped — unrelated chain changed"
+
+
+def test_reordering_chains_no_invalidation(test_session, nums_dataset):
+    call_count_a = {"count": 0}
+    call_count_b = {"count": 0}
+
+    def double(num) -> int:
+        call_count_a["count"] += 1
+        return num * 2
+
+    def triple(num) -> int:
+        call_count_b["count"] += 1
+        return num * 3
+
+    chain = dc.read_dataset("nums", session=test_session)
+
+    # -------------- FIRST RUN: double then triple -------------------
+    reset_session_job_state()
+    chain.map(result=double, output=int).save("doubled")
+    chain.map(result=triple, output=int).save("tripled")
+
+    assert call_count_a["count"] == 6
+    assert call_count_b["count"] == 6
+
+    # -------------- SECOND RUN: triple then double (swapped) -------------------
+    reset_session_job_state()
+    call_count_a["count"] = 0
+    call_count_b["count"] = 0
+
+    chain.map(result=triple, output=int).save("tripled")
+    chain.map(result=double, output=int).save("doubled")
+
+    assert call_count_a["count"] == 0, "double UDF should be skipped"
+    assert call_count_b["count"] == 0, "triple UDF should be skipped"
+
+
+def test_try_except_identical_chains(test_session, nums_dataset):
+
+    def compute(num) -> int:
+        if num > 3:
+            raise CustomMapperError("Simulated failure")
+        return num * 10
+
+    reset_session_job_state()
+
+    # Chain A crashes mid-UDF, leaves partial output table with 3 rows
+    try:
+        dc.read_dataset("nums", session=test_session).settings(batch_size=1).map(
+            result=compute, output=int
+        ).save("ds1")
+    except CustomMapperError:
+        pass
+
+    # Chain B: same function name, same partial_hash, no crash
+    def compute(num) -> int:
+        return num * 10
+
+    dc.read_dataset("nums", session=test_session).settings(batch_size=1).map(
+        result=compute, output=int
+    ).save("ds2")
+
+    # ds2 should have exactly 6 rows, not 9 (6 + chain A's 3 leftover)
+    result = sorted(dc.read_dataset("ds2", session=test_session).to_list("result"))
+    assert result == [(10,), (20,), (30,), (40,), (50,), (60,)]
