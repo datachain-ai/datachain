@@ -864,13 +864,8 @@ class Catalog:
 
     @staticmethod
     def _next_auto_version(dataset: "DatasetRecord", update_version: str | None) -> str:
-        """Compute the next version for a dataset based on the update strategy.
-
-        Handles brand-new datasets whose versions list may contain a single
-        phantom entry with ``version=None`` (artifact of the LEFT JOIN used
-        by ``get_dataset``).
-        """
-        if not any(v.version for v in dataset.versions):
+        """Compute the next version for a dataset based on the update strategy."""
+        if not dataset.versions:
             return DEFAULT_DATASET_VERSION
         if update_version == "major":
             return dataset.next_version_major
