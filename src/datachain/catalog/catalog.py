@@ -1007,10 +1007,11 @@ class Catalog:
         from datachain.query.dataset import DatasetQuery
 
         dataset_version = dataset.get_version(version)
-        assert not dataset_version._preview_loaded, (
-            "update_dataset_version_with_warehouse_info expects preview to be "
-            "unloaded and regenerates it from warehouse rows"
-        )
+        if dataset_version._preview_loaded:
+            raise RuntimeError(
+                "update_dataset_version_with_warehouse_info expects preview to be "
+                "unloaded and regenerates it from warehouse rows"
+            )
 
         values = {**kwargs}
 
