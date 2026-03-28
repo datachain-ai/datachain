@@ -158,6 +158,46 @@ Python code:
 
     print(f"{successful_chain.count()} files were exported")
 
+You can also use `MiniMax <https://www.minimax.io>`_ as an alternative LLM provider
+via the OpenAI-compatible API:
+
+.. code:: shell
+
+    $ pip install openai
+    $ export MINIMAX_API_KEY=_your_key_
+
+.. code:: py
+
+    import os
+    import openai
+    import datachain as dc
+
+    PROMPT = "Was this dialog successful? Answer in a single word: Success or Failure."
+
+    def eval_dialogue(file: dc.File, client: openai.OpenAI) -> bool:
+         response = client.chat.completions.create(
+             model="MiniMax-M2.7",
+             messages=[{"role": "system", "content": PROMPT},
+                       {"role": "user", "content": file.read()}])
+         result = response.choices[0].message.content
+         return result.lower().startswith("success")
+
+    chain = (
+       dc.read_storage("gs://datachain-demo/chatbot-KiT/", column="file", anon=True)
+       .settings(parallel=4, cache=True)
+       .setup(client=lambda: openai.OpenAI(
+           api_key=os.environ["MINIMAX_API_KEY"],
+           base_url="https://api.minimax.io/v1",
+       ))
+       .map(is_success=eval_dialogue)
+       .save("minimax_files")
+    )
+
+    successful_chain = chain.filter(dc.Column("is_success") == True)
+    successful_chain.to_storage("./output_minimax")
+
+    print(f"{successful_chain.count()} files were exported")
+
 
 
 With the instruction above, the Mistral model considers 31/50 files to hold the successful dialogues:

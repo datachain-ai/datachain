@@ -113,6 +113,54 @@ If you are interested in more LLM evaluation examples for DataChain, please foll
 
 [https://github.com/datachain-ai/datachain-examples/blob/main/llm/llm_chatbot_evaluation.ipynb](https://github.com/datachain-ai/datachain-examples/blob/main/llm/llm_chatbot_evaluation.ipynb) [Google Colab](https://colab.research.google.com/github/datachain-ai/datachain-examples/blob/main/llm/llm_chatbot_evaluation.ipynb)
 
+### Using MiniMax
+
+[MiniMax](https://www.minimax.io) provides an OpenAI-compatible API, making it easy to
+use as an alternative LLM provider with DataChain via the `openai` SDK:
+
+```python
+# pip install openai
+# export MINIMAX_API_KEY='your key'
+
+import os
+import openai
+from pydantic import BaseModel
+import datachain as dc
+
+PROMPT = "Was this dialog successful? Describe the 'result' as 'Yes' or 'No' in a short JSON"
+
+class Rating(BaseModel):
+    status: str = ""
+    explanation: str = ""
+
+def rate(client: openai.OpenAI, file: dc.File) -> Rating:
+    response = client.chat.completions.create(
+        model="MiniMax-M2.7",
+        temperature=0.9,
+        response_format={"type": "json_object"},
+        messages=[
+            {"role": "system", "content": PROMPT},
+            {"role": "user", "content": file.read()},
+        ],
+    )
+    return Rating.model_validate_json(response.choices[0].message.content or "{}")
+
+chain = (
+    dc.read_storage("gs://datachain-demo/chatbot-KiT/", type="text", anon=True)
+    .filter(dc.Column("file.path").glob("*.txt"))
+    .limit(5)
+    .settings(parallel=4, cache=True)
+    .setup(client=lambda: openai.OpenAI(
+        api_key=os.environ["MINIMAX_API_KEY"],
+        base_url="https://api.minimax.io/v1",
+    ))
+    .map(rating=rate)
+    .save("minimax-rating")
+)
+
+chain.select("file.path", "rating").show()
+```
+
 ### Vectorized analytics
 
 Datachain internally represents datasets as tables, so analytical queries on the chain are automatically vectorized:
