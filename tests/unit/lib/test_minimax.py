@@ -123,9 +123,7 @@ class TestMiniMaxRateFunction:
             model="MiniMax-M2.7",
             messages=[{"role": "user", "content": "test"}],
         )
-        result = Rating.model_validate_json(
-            response.choices[0].message.content or "{}"
-        )
+        result = Rating.model_validate_json(response.choices[0].message.content or "{}")
         assert result.status == ""
         assert result.explanation == ""
 
@@ -277,9 +275,7 @@ class TestMiniMaxDataChainIntegration:
             return response.choices[0].message.content
 
         results = list(
-            dc.read_values(
-                val=["a", "b", "c", "d"], session=test_session_tmpfile
-            )
+            dc.read_values(val=["a", "b", "c", "d"], session=test_session_tmpfile)
             .settings(parallel=2)
             .setup(client=mock_client_factory)
             .map(result=rate)
