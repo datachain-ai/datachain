@@ -1,6 +1,6 @@
 ---
 name: datachain-jobs
-description: Use when asked about Studio job analytics — compute hours, user spend, failure rates, cost estimation, cluster usage. Generates and maintains .datachain/graph/jobs/index.md.
+description: Use when asked about Studio job analytics — compute hours, user spend, failure rates, cost estimation, cluster usage. Generates and maintains datachain/graph/jobs/index.md.
 triggers:
   - "how many hours"
   - "compute time"
@@ -14,7 +14,7 @@ triggers:
   - "how much did we spend"
 ---
 
-You are now loaded with the datachain-jobs skill. Maintain a jobs analytics file at `.datachain/graph/jobs/index.md`. Follow the 3-step flow below exactly.
+You are now loaded with the datachain-jobs skill. Maintain a jobs analytics file at `datachain/graph/jobs/index.md`. Follow the 3-step flow below exactly.
 
 ---
 
@@ -40,7 +40,7 @@ python3 {skill_dir}/scripts/jobs.py --fetch [--days N] [--limit N] [--enrich]
 - Add `--enrich` only when the question requires duration, workers, or cluster data AND `enriched: false` in an existing index — tell the user it makes one API call per terminal job.
 - If the script fails → report the error and stop.
 
-Write `.datachain/graph/jobs/index.md` using EXACTLY this format:
+Write `datachain/graph/jobs/index.md` using EXACTLY this format:
 
 ```markdown
 ---
@@ -82,7 +82,7 @@ truncated: <true|false>
 
 ## Step 3 — Answer
 
-Read `.datachain/graph/jobs/index.md` and answer the user's question.
+Read `datachain/graph/jobs/index.md` and answer the user's question.
 
 ### Duration arithmetic
 Duration cells contain plain seconds strings like `"9000s"`. Parse the integer before `s`, sum, then convert:

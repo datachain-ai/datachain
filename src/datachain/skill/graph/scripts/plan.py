@@ -28,7 +28,7 @@ def plan_datasets(
 ) -> tuple[list[dict], bool]:
     """Plan dataset updates. Returns (datasets_out, up_to_date)."""
     # Read existing index.md to check timestamp
-    index_path = ".datachain/graph/index.md"
+    index_path = "datachain/graph/index.md"
     index_fm = read_frontmatter(index_path)
     index_db_updated = index_fm.get("db_last_updated", "")
 
@@ -69,7 +69,7 @@ def plan_datasets(
         )
 
         file_path = dataset_file_path(name, source)
-        abs_json_path = os.path.join(".datachain/graph", file_path + ".json")
+        abs_json_path = os.path.join("datachain/graph", file_path + ".json")
 
         file_exists = os.path.exists(abs_json_path)
         file_versions = read_json_versions(abs_json_path) if file_exists else []
@@ -123,7 +123,7 @@ def plan_buckets(uris: list[str]) -> list[dict]:
 
         parts = parse_uri(uri)
         file_path = bucket_file_path(uri)
-        abs_json_path = os.path.join(".datachain/graph", file_path + ".json")
+        abs_json_path = os.path.join("datachain/graph", file_path + ".json")
 
         existing = read_json_data(abs_json_path)
 

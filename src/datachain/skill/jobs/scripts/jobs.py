@@ -17,7 +17,7 @@ STALE_AFTER_HOURS = 12
 DEFAULT_DAYS = 30
 DEFAULT_LIMIT = 500
 ENRICH_LIMIT = 200
-INDEX_PATH = ".datachain/graph/jobs/index.md"
+INDEX_PATH = "datachain/graph/jobs/index.md"
 
 TERMINAL_STATUSES = {"complete", "failed", "canceled", "task"}
 

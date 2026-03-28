@@ -74,7 +74,7 @@ def render_index(plan: dict) -> str:
             file_path = b.get("file_path", bucket_file_path(uri))
 
             # Read JSON for rich stats
-            abs_json_path = os.path.join(".datachain/graph", file_path + ".json")
+            abs_json_path = os.path.join("datachain/graph", file_path + ".json")
             data = read_json_data(abs_json_path)
 
             total_files = ""

@@ -1,6 +1,6 @@
 ---
 name: datachain-graph
-description: Use when you need to discover, understand, or navigate DataChain datasets or cloud storage buckets. Generates and maintains a knowledge base at .datachain/graph/ (JSON data + AI-enriched markdown) so context is always available without running queries or browsing cloud consoles.
+description: Use when you need to discover, understand, or navigate DataChain datasets or cloud storage buckets. Generates and maintains a knowledge base at datachain/graph/ (JSON data + AI-enriched markdown) so context is always available without running queries or browsing cloud consoles.
 triggers:
   - "what datasets exist"
   - "show me the schema"
@@ -16,7 +16,7 @@ triggers:
   - "what files are in gs://"
 ---
 
-You are now loaded with the datachain-graph skill. Maintain a knowledge base at `.datachain/graph/`. Both datasets and buckets have a `.json` file (structured data, source of truth) and a `.md` file (AI-generated human-readable summary). Follow the 4-step flow below.
+You are now loaded with the datachain-graph skill. Maintain a knowledge base at `datachain/graph/`. Both datasets and buckets have a `.json` file (structured data, source of truth) and a `.md` file (AI-generated human-readable summary). Follow the 4-step flow below.
 
 ## Critical Rules
 
@@ -32,17 +32,17 @@ Plan what needs updating. The plan covers datasets, buckets, or both.
 
 **Datasets only** (default):
 ```bash
-python3 {skill_dir}/scripts/plan.py [--studio] > .datachain/graph/.plan.json
+python3 {skill_dir}/scripts/plan.py [--studio] > datachain/graph/.plan.json
 ```
 
 **Buckets only** (user provides URIs):
 ```bash
-python3 {skill_dir}/scripts/plan.py --buckets <uri> [<uri> ...] > .datachain/graph/.plan.json
+python3 {skill_dir}/scripts/plan.py --buckets <uri> [<uri> ...] > datachain/graph/.plan.json
 ```
 
 **Both** (datasets + buckets):
 ```bash
-python3 {skill_dir}/scripts/plan.py --studio --buckets <uri> [<uri> ...] > .datachain/graph/.plan.json
+python3 {skill_dir}/scripts/plan.py --studio --buckets <uri> [<uri> ...] > datachain/graph/.plan.json
 ```
 
 - Do **NOT** add `--studio` unless the user explicitly requests it.
@@ -52,7 +52,7 @@ python3 {skill_dir}/scripts/plan.py --studio --buckets <uri> [<uri> ...] > .data
 
 Then update the index:
 ```bash
-python3 {skill_dir}/scripts/render_index.py --plan .datachain/graph/.plan.json --output .datachain/graph/index.md
+python3 {skill_dir}/scripts/render_index.py --plan datachain/graph/.plan.json --output datachain/graph/index.md
 ```
 
 Review `.plan.json`. Entries with `status` of `"new"` or `"stale"` need processing in Step 2. Entries with `"ok"` are skipped.
@@ -67,8 +67,8 @@ For each dataset where `status != "ok"` in `plan.datasets[]`:
 
 ```bash
 python3 {skill_dir}/scripts/dataset_all.py <name> \
-  --plan .datachain/graph/.plan.json \
-  --output .datachain/graph/<file_path>.json
+  --plan datachain/graph/.plan.json \
+  --output datachain/graph/<file_path>.json
 ```
 
 - `<name>` and `<file_path>` come from the plan's `datasets[]` entries.
@@ -80,7 +80,7 @@ For each bucket where `status != "ok"` in `plan.buckets[]`:
 
 ```bash
 python3 {skill_dir}/scripts/bucket_scan.py <uri> \
-  --output .datachain/graph/<file_path>.json
+  --output datachain/graph/<file_path>.json
 ```
 
 - `<uri>` and `<file_path>` come from the plan's `buckets[]` entries.
@@ -96,14 +96,14 @@ For each dataset or bucket processed in Step 2, generate a human-readable markdo
 ### Datasets
 
 1. Read the enrichment prompt at `{skill_dir}/prompts/enrich.md`.
-2. For each dataset, read `.datachain/graph/<file_path>.json`.
-3. Following the prompt, write `.datachain/graph/<file_path>.md`.
+2. For each dataset, read `datachain/graph/<file_path>.json`.
+3. Following the prompt, write `datachain/graph/<file_path>.md`.
 
 ### Buckets
 
 1. Read the enrichment prompt at `{skill_dir}/prompts/enrich_bucket.md`.
-2. For each bucket, read `.datachain/graph/<file_path>.json`.
-3. Following the prompt, write `.datachain/graph/<file_path>.md`.
+2. For each bucket, read `datachain/graph/<file_path>.json`.
+3. Following the prompt, write `datachain/graph/<file_path>.md`.
 
 Skip this step only if the user requests raw output only.
 

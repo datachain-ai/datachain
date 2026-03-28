@@ -82,7 +82,7 @@ def read_json_metadata(path):
 
 
 def dataset_file_path(name, source):
-    """Derive the relative file path (from .datachain/graph/) for a dataset, without extension."""
+    """Derive the relative file path (from datachain/graph/) for a dataset, without extension."""
     dot_parts = name.split(".", 2)
     if source == "studio" and len(dot_parts) == 3:
         namespace, project, bare_name = dot_parts
@@ -174,7 +174,7 @@ def _sanitize(s: str) -> str:
 
 
 def bucket_file_path(uri: str) -> str:
-    """Derive the relative file path (from .datachain/graph/) for a bucket, without extension.
+    """Derive the relative file path (from datachain/graph/) for a bucket, without extension.
 
     Examples:
         s3://my-bucket/           -> buckets/s3/my_bucket
