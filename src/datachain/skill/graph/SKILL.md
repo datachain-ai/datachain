@@ -20,9 +20,10 @@ You are now loaded with the datachain-graph skill. Maintain a knowledge base at 
 
 ## Critical Rules
 
-1. **Never pass `update=True`** to `dc.read_storage()` unless the user explicitly asks to refresh the listing.
-2. **Prefer DataChain operations** over plain Python for all metadata analysis.
-3. **Bounded output** — JSON and markdown files stay small regardless of data size.
+1. **Path is `datachain/graph/`** — NOT `.datachain/graph/`. The `.datachain/` directory is the internal database; the knowledge base lives at `datachain/graph/` (no leading dot).
+2. **Never pass `update=True`** to `dc.read_storage()` unless the user explicitly asks to refresh the listing.
+3. **Prefer DataChain operations** over plain Python for all metadata analysis.
+4. **Bounded output** — JSON and markdown files stay small regardless of data size.
 
 ---
 
