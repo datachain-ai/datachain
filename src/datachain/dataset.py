@@ -377,15 +377,6 @@ class DatasetVersion:
                 setattr(self, key, value)
 
     @property
-    def serialized_schema(self) -> dict[str, Any]:
-        return {
-            c_name: c_type.to_dict()
-            if isinstance(c_type, SQLType)
-            else c_type().to_dict()
-            for c_name, c_type in self.schema.items()
-        }
-
-    @property
     def preview(self) -> list[dict] | None:
         if not self._preview_loaded:
             raise DatasetStateNotLoadedError(
@@ -668,15 +659,6 @@ class DatasetRecord:
             query_script=query_script,
             _versions_loaded=versions_loaded,
         )
-
-    @property
-    def serialized_schema(self) -> dict[str, Any]:
-        return {
-            c_name: c_type.to_dict()
-            if isinstance(c_type, SQLType)
-            else c_type().to_dict()
-            for c_name, c_type in self.schema.items()
-        }
 
     @property
     def full_name(self) -> str:

@@ -26,11 +26,9 @@ from datachain.error import (
 from datachain.sql.types import (
     JSON,
     Array,
-    Binary,
     Boolean,
     Float,
     Float32,
-    Float64,
     Int,
     Int64,
     String,
@@ -77,28 +75,6 @@ def test_dataset_table_compilation():
         ")\n"
         "\n"
     )
-
-
-def test_schema_serialization(dataset_record):
-    dataset_record.schema = {"int_col": Int}
-    assert dataset_record.serialized_schema == {"int_col": {"type": "Int"}}
-
-    dataset_record.schema = {
-        "binary_col": Binary,
-        "float_32_col": Float32,
-    }
-    assert dataset_record.serialized_schema == {
-        "binary_col": {"type": "Binary"},
-        "float_32_col": {"type": "Float32"},
-    }
-
-    dataset_record.schema = {"nested_col": Array(Array(Float64))}
-    assert dataset_record.serialized_schema == {
-        "nested_col": {
-            "type": "Array",
-            "item_type": {"type": "Array", "item_type": {"type": "Float64"}},
-        }
-    }
 
 
 @pytest.mark.parametrize(
