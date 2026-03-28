@@ -151,6 +151,35 @@ def test_get_dataset_can_skip_preview_loading(test_session):
         _ = without_preview.get_version("1.0.0").preview
 
 
+def test_update_dataset_version_marks_preview_loaded_after_explicit_preview_update(
+    test_session,
+):
+    ds = dc.read_values(value=["a", "b"], session=test_session).save(
+        "preview-update-ds"
+    )
+    metastore = test_session.catalog.metastore
+
+    without_preview = metastore.get_dataset(
+        ds.name,
+        versions=None,
+        include_preview=False,
+    )
+    version = without_preview.get_version("1.0.0")
+
+    with pytest.raises(DatasetStateNotLoadedError):
+        _ = version.preview
+
+    updated = metastore.update_dataset_version(
+        without_preview,
+        "1.0.0",
+        preview=[{"sys__id": 1, "value": "updated"}],
+    )
+
+    assert updated._preview_loaded is True
+    assert updated.preview == [{"sys__id": 1, "value": "updated"}]
+    assert "_preview_loaded" not in updated.to_dict()
+
+
 def test_dataset_record_versions_setter_marks_loaded(test_session):
     ds = dc.read_values(value=["a", "b"], session=test_session).save("setter-ds")
     metastore = test_session.catalog.metastore

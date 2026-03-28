@@ -1424,6 +1424,7 @@ class AbstractDBMetastore(AbstractMetastore):
                 else:
                     values[field] = json.dumps(value, serialize_bytes=True)
                 version_values["_preview_data"] = value
+                version_values["_preview_loaded"] = True
             else:
                 values[field] = value
                 version_values[field] = value
