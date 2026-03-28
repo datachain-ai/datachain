@@ -30,6 +30,8 @@ Write a markdown file with this structure:
 and how it is produced. Infer purpose from schema fields, query_script logic,
 and dependency names. Be specific — mention data types and transformations.}
 
+**Source data:** [{json_filename}]({json_filename})
+
 ## Stats
 
 - **Latest version:** {version}
@@ -81,3 +83,4 @@ Mention dependency changes only if significant (new data source, version bump).}
 - **No dependency tables in version summaries.** Only mention a dependency if it was added, removed, or significantly changed.
 - **No script blocks in version summaries.** The full scripts live in the JSON for reference — the markdown is a summary, not a data dump.
 - **If nothing meaningful changed** between versions (no script change, no dep changes), write "Data refreshed; no functional changes."
+- **Source data link.** `{json_filename}` is the basename of the JSON input file (e.g. `my_dataset.json`). The link lets readers access the raw structured data.

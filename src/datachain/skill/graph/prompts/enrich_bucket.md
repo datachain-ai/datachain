@@ -36,6 +36,8 @@ scanned_at: {scanned_at}
 
 # {bucket}{" / " + prefix if prefix else ""}
 
+**Source data:** [{json_filename}]({json_filename})
+
 {AI-generated description: 1-3 sentences explaining what this bucket contains
 and what it is likely used for. Infer purpose from directory structure, file types,
 naming patterns, and sample content. Be specific — mention data modalities,
@@ -132,3 +134,4 @@ Always use the actual URI from the JSON.}
 - **No raw JSON dumps.** The markdown is a summary, not a data dump.
 - **Practical Getting Started.** The code snippets should work copy-paste. Use the actual URI and file types from the data.
 - **Listing freshness is critical.** Users need to know if they're looking at stale data. Always show the listing timestamp.
+- **Source data link.** `{json_filename}` is the basename of the JSON input file (e.g. `datachain_demo.json`). The link lets readers access the raw structured data.
