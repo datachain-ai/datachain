@@ -65,6 +65,7 @@ if TYPE_CHECKING:
     from datachain.data_storage import AbstractMetastore, AbstractWarehouse
     from datachain.dataset import DatasetListVersion
     from datachain.job import Job
+    from datachain.lib.dc.datachain import DataChain
     from datachain.lib.listing_info import ListingInfo
     from datachain.listing import Listing
     from datachain.remote.studio import StudioClient
@@ -1160,7 +1161,7 @@ class Catalog:
         project: Project | None = None,
         client_config=None,
         recursive=False,
-    ):
+    ) -> "DataChain":
         if not sources:
             raise ValueError("Sources needs to be non empty list")
 
