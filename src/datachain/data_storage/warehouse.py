@@ -1034,9 +1034,14 @@ class AbstractWarehouse(ABC, Serializable):
         table: sa.Table,
         query: sa.Select,
         progress_cb: Callable[[int], None] | None = None,
+        preserve_sys_ids: bool = True,
     ) -> None:
         """
         Insert the results of a query into an existing table.
+
+        Args:
+            preserve_sys_ids: If True (default), preserve sys__id from source.
+                Set to False for operations that need fresh IDs (e.g. join).
         """
 
     def create_table_from_query(
@@ -1045,6 +1050,7 @@ class AbstractWarehouse(ABC, Serializable):
         query: sa.Select,
         create_fn: Callable[[str], sa.Table],
         progress_cb: Callable[[int], None] | None = None,
+        preserve_sys_ids: bool = True,
     ) -> sa.Table:
         """
         Atomically create and populate a table from a query.
@@ -1060,6 +1066,7 @@ class AbstractWarehouse(ABC, Serializable):
             query: Query to populate the table from
             create_fn: Function that creates an empty table given a name
             progress_cb: Optional callback for progress updates
+            preserve_sys_ids: If True, preserve sys__id from source
 
         Returns:
             The created and populated table
@@ -1067,7 +1074,12 @@ class AbstractWarehouse(ABC, Serializable):
         staging_name = self.temp_table_name()
         staging_table = create_fn(staging_name)
 
-        self.insert_into(staging_table, query, progress_cb=progress_cb)
+        self.insert_into(
+            staging_table,
+            query,
+            progress_cb=progress_cb,
+            preserve_sys_ids=preserve_sys_ids,
+        )
 
         try:
             return self.rename_table(staging_table, name)

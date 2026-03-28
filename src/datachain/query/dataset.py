@@ -591,8 +591,13 @@ class UDFStep(Step, ABC):
           input was not fully processed and needs to be re-run. Nullable because
           mappers (1:1) don't use this field.
         """
+        sys_id_type = next(
+            c.type
+            for c in self.warehouse.dataset_row_cls.sys_columns()
+            if c.name == "sys__id"
+        )
         return [
-            sa.Column("sys__input_id", sa.Integer, nullable=True),
+            sa.Column("sys__input_id", type(sys_id_type), nullable=True),
             sa.Column("sys__partial", sa.Boolean, nullable=True),
             sa.Column("sys__empty", sa.Boolean, nullable=True),
         ]
@@ -3039,7 +3044,12 @@ class DatasetQuery:
             )
             self.temp_table_names.append(temp_table_name)
             temp_table = self.catalog.warehouse.get_table(temp_table_name)
-            self.catalog.warehouse.insert_into(temp_table, query.select())
+            # Regenerate sys__id when chain has order_by so the saved
+            # dataset's row order matches the query order on read.
+            has_ordering = any(isinstance(s, SQLOrderBy) for s in self.steps)
+            self.catalog.warehouse.insert_into(
+                temp_table, query.select(), preserve_sys_ids=not has_ordering
+            )
 
             # Phase 2: Claim the version (metadata only).
             dataset = self.catalog.create_dataset(

@@ -4,7 +4,7 @@ import pytest
 
 import datachain as dc
 from datachain.lib.file import File
-from tests.utils import reset_session_job_state
+from tests.utils import reset_session_job_state, skip_if_not_sqlite
 
 
 @pytest.fixture(autouse=True)
@@ -713,3 +713,69 @@ def test_aggregator_checkpoint_no_partial_continuation(test_session):
     )
     # Group "a": sum(1,2,3)=6, count=3; Group "b": sum(4,5,6)=15, count=3
     assert result == [(6, 3), (15, 3)]
+
+
+@skip_if_not_sqlite
+def test_continue_udf_preserves_sys_ids(test_session_tmpfile):
+    """sys__id must be preserved when copying partial output table on continuation.
+
+    Without preserve_sys_ids, the copy generates fresh sequential IDs that don't
+    match the input table's IDs, causing wrong result-to-input pairings in the
+    join performed by create_result_query.
+    """
+    test_session = test_session_tmpfile
+    processed = []
+
+    dc.read_values(num=[1, 2, 3, 4, 5, 6], session=test_session).save("nums")
+
+    def process_buggy(num) -> int:
+        if len(processed) >= 3:
+            raise Exception("Simulated failure")
+        processed.append(num)
+        return num * 10
+
+    chain = dc.read_dataset("nums", session=test_session).settings(batch_size=1)
+
+    # -------------- FIRST RUN (crashes after 3 rows) -------------------
+    reset_session_job_state()
+    with pytest.raises(Exception, match="Simulated failure"):
+        chain.map(result=process_buggy, output=int).save("results")
+
+    assert len(processed) == 3
+
+    # Scramble sys__id to non-sequential values so that the test is deterministic.
+    # Without preserve_sys_ids, the partial table copy generates fresh IDs (1,2,3)
+    # that won't match the input table's scrambled IDs (100,200,300,400,500,600),
+    # causing continuation to reprocess all rows instead of skipping processed ones.
+    job = test_session.get_or_create_job()
+    warehouse_db = test_session.catalog.warehouse.db
+    all_tables = list(
+        set(
+            warehouse_db.list_tables(f"udf_{job.id}%")
+            + warehouse_db.list_tables(f"udf_{job.run_group_id}%")
+        )
+    )
+    for table_name in all_tables:
+        if "_input" in table_name or "_output_partial" in table_name:
+            tbl = warehouse_db.get_table(table_name)
+            for i in range(1, 7):
+                warehouse_db.execute(
+                    tbl.update().where(tbl.c.sys__id == i).values(sys__id=i * 100)
+                )
+
+    # -------------- SECOND RUN (fixed UDF, same function name) -------------------
+    reset_session_job_state()
+    processed.clear()
+
+    def process_buggy(num) -> int:
+        processed.append(num)
+        return num * 10
+
+    chain.map(result=process_buggy, output=int).save("results")
+
+    result = dc.read_dataset("results", session=test_session).to_list("result")
+    assert sorted(result) == [(10,), (20,), (30,), (40,), (50,), (60,)]
+    # Continuation should skip already-processed rows (3 out of 6)
+    assert len(processed) < 6, (
+        f"Expected continuation to skip rows, but all {len(processed)} were processed"
+    )
