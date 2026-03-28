@@ -134,4 +134,5 @@ Always use the actual URI from the JSON.}
 - **No raw JSON dumps.** The markdown is a summary, not a data dump.
 - **Practical Getting Started.** The code snippets should work copy-paste. Use the actual URI and file types from the data.
 - **Listing freshness is critical.** Users need to know if they're looking at stale data. Always show the listing timestamp.
+- **Human-readable timestamps.** Format all timestamps as `YYYY-MM-DD HH:MM:SS` (no `T`, no `Z`).
 - **Source data link.** `{json_filename}` is the basename of the JSON input file (e.g. `datachain_demo.json`). The link lets readers access the raw structured data.

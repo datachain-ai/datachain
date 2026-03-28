@@ -21,7 +21,7 @@ def render_index(plan: dict) -> str:
     studio_count = sum(1 for d in datasets if d["source"] == "studio")
 
     # Frontmatter
-    now = datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     lines = ["---"]
     if "db_last_updated" in plan:
         lines.append(f"db_last_updated: {plan['db_last_updated']}")
@@ -51,7 +51,7 @@ def render_index(plan: dict) -> str:
                 updated_at = updated_at.split("T")[0]
 
             file_path = ds.get("file_path", dataset_file_path(name, source))
-            link = f"[[{file_path}.md|{name}]]"
+            link = f"[{name}]({file_path}.md)"
 
             lines.append(
                 f"| {link} | {source} | {version} | {num_objects} | {updated_at} |"
@@ -91,7 +91,7 @@ def render_index(plan: dict) -> str:
             if scanned_at and "T" in scanned_at:
                 scanned_at = scanned_at.split("T")[0]
 
-            link = f"[[{file_path}.md|{uri}]]"
+            link = f"[{uri}]({file_path}.md)"
 
             lines.append(
                 f"| {link} | {scheme} | {prefix} | {total_files} | {total_size} | {scanned_at} |"

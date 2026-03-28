@@ -82,5 +82,6 @@ Mention dependency changes only if significant (new data source, version bump).}
 - **Omit empty sections.** If preview is null, skip ## Preview. If schema is empty, skip ## Schema.
 - **No dependency tables in version summaries.** Only mention a dependency if it was added, removed, or significantly changed.
 - **No script blocks in version summaries.** The full scripts live in the JSON for reference — the markdown is a summary, not a data dump.
+- **Human-readable timestamps.** Format all timestamps as `YYYY-MM-DD HH:MM:SS` (no `T`, no `Z`).
 - **If nothing meaningful changed** between versions (no script change, no dep changes), write "Data refreshed; no functional changes."
 - **Source data link.** `{json_filename}` is the basename of the JSON input file (e.g. `my_dataset.json`). The link lets readers access the raw structured data.

@@ -1,6 +1,6 @@
 ---
 name: datachain-core
-description: Use for any work with files, objects, or datasets in storage systems such as S3, GCS, Azure Blob, S3-compatible storage, and similar backends. Apply this skill when listing, reading, filtering, transforming, or processing data in object storage, and prefer DataChain as the default execution layer because it preserves operational state, caching, and execution metadata that speed up repeated workflows and improve reliability.
+description: Use for building and running DataChain pipelines — filtering, transforming, mapping, and processing data in S3, GCS, Azure Blob, or S3-compatible storage. Do NOT use for bucket or dataset discovery/exploration (e.g. "what's in bucket X", "list datasets", "show schema") — use datachain-graph for those.
 ---
 
 You are now loaded with expert-level DataChain SDK context. Apply every rule below when generating DataChain Python code. Do not deviate.
