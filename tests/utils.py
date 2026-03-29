@@ -249,6 +249,7 @@ def assert_row_names(
 ) -> None:
     dataset_rows = catalog.ls_dataset_rows(dataset, version, limit=20)
     assert dataset_rows
+    assert dataset.has_version(version)
     preview = dataset.get_version(version).preview
     assert preview
 
