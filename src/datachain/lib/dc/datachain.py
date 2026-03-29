@@ -1275,7 +1275,8 @@ class DataChain:
         """Infer the Python type of a ColumnElement expression from the schema."""
         from sqlalchemy.sql import visitors
 
-        from datachain.query.schema import Column as C
+        from datachain.lib.signal_schema import SignalResolvingError
+        from datachain.query.schema import Column
 
         result = sql_to_python(expr)
         if result is not str:
@@ -1283,10 +1284,10 @@ class DataChain:
 
         col_types = set()
         for elem in visitors.iterate(expr, {}):
-            if isinstance(elem, C):
+            if isinstance(elem, Column):
                 try:
                     col_types.add(signals_schema.get_column_type(elem.name))
-                except Exception:
+                except SignalResolvingError:
                     pass
 
         if not col_types:
