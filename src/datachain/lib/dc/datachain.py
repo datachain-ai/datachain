@@ -1,4 +1,5 @@
 import copy
+import hashlib
 import logging
 import os
 import os.path
@@ -36,6 +37,7 @@ from datachain.func.base import Function
 from datachain.func.func import Func
 from datachain.job import Job
 from datachain.lib.convert.python_to_sql import python_to_sql
+from datachain.lib.convert.sql_to_python import sql_to_python
 from datachain.lib.data_model import (
     DataModel,
     DataType,
@@ -639,7 +641,6 @@ class DataChain:
         project = self._get_or_create_project(namespace_name, project_name)
 
         # Calculate hash including dataset name and job context to avoid conflicts
-        import hashlib
 
         base_hash = self._query.hash(job_aware=True)
         _hash = hashlib.sha256(
@@ -1269,11 +1270,41 @@ class DataChain:
             signal_schema=new_schema,
         )
 
+    @staticmethod
+    def _infer_expr_type(expr, signals_schema):
+        """Infer the Python type of a ColumnElement expression from the schema."""
+        from sqlalchemy.sql import visitors
+
+        from datachain.lib.signal_schema import SignalResolvingError
+        from datachain.query.schema import Column
+
+        result = sql_to_python(expr)
+        if result is not str:
+            return result
+
+        col_types = set()
+        for elem in visitors.iterate(expr, {}):
+            if isinstance(elem, Column):
+                try:
+                    col_types.add(signals_schema.get_column_type(elem.name))
+                except SignalResolvingError:
+                    pass
+
+        if not col_types:
+            return str
+        if len(col_types) == 1:
+            return col_types.pop()
+        if col_types == {int, float}:
+            return float
+        return str
+
     @delta_disabled  # type: ignore[arg-type]
-    def group_by(  # noqa: C901, PLR0912
+    def group_by(  # noqa: C901, PLR0912, PLR0915
         self,
         *,
-        partition_by: str | Func | Sequence[str | Func] | None = None,
+        partition_by: (
+            str | Func | ColumnElement | Sequence[str | Func | ColumnElement] | None
+        ) = None,
         **kwargs: Func,
     ) -> "Self":
         """Group rows by specified set of signals and return new signals
@@ -1301,7 +1332,7 @@ class DataChain:
         """
         if partition_by is None:
             partition_by = []
-        elif isinstance(partition_by, (str, Func)):
+        elif isinstance(partition_by, (str, Func, ColumnElement)):
             partition_by = [partition_by]
 
         partition_by_columns: list[Column] = []
@@ -1310,6 +1341,7 @@ class DataChain:
         keep_columns: list[str] = []
         partial_fields: list[str] = []  # Track specific fields for partial creation
         schema_partition_by: list[str] = []
+        partition_counter = 0
 
         for col in partition_by:
             if isinstance(col, str):
@@ -1357,23 +1389,53 @@ class DataChain:
                             keep_columns.append(col)
                         schema_partition_by.append(col)
             elif isinstance(col, Function):
-                column = col.get_column(self.signals_schema)
-                col_db_name = column.name
-                col_type = column.type.python_type
-                schema_fields[col_db_name] = col_type
-                partition_by_columns.append(column)
-                signal_columns.append(column)
+                if col.col_label:
+                    column = col.get_column(self.signals_schema, label=col.col_label)
+                    col_db_name = column.name
+                    schema_fields[col_db_name] = col_type = column.type.python_type
+                    partition_by_columns.append(column)
+                    signal_columns.append(column)
+                else:
+                    col_label = f"gr_{partition_counter}"
+                    partition_counter += 1
+                    column = col.get_column(
+                        self.signals_schema,
+                        label=col_label,
+                    )
+                    partition_by_columns.append(column)
+                    signal_columns.append(column)
+                    schema_fields[column.name] = column.type.python_type
+            elif isinstance(col, ColumnElement):
+                col_label = f"gr_{partition_counter}"
+                partition_counter += 1
+                labeled = cast("Column", col.label(col_label))
+                inferred = self._infer_expr_type(col, self.signals_schema)
+                sql_type = python_to_sql(inferred)
+                labeled.type = sql_type() if isinstance(sql_type, type) else sql_type
+                partition_by_columns.append(labeled)
+                signal_columns.append(labeled)
+                schema_fields[col_label] = inferred
             else:
                 raise DataChainColumnError(
                     col,
                     (
                         f"partition_by column {col} has type {type(col)}"
-                        " but expected str or Function"
+                        " but expected str, Function, or ColumnElement"
                     ),
                 )
 
         if not kwargs:
             raise ValueError("At least one column should be provided for group_by")
+
+        partition_output_names = {c.name for c in signal_columns}
+        overlap = partition_output_names & set(kwargs.keys())
+        if overlap:
+            name = next(iter(overlap))
+            raise DataChainColumnError(
+                name,
+                f"partition_by name '{name}' conflicts with aggregation column name",
+            )
+
         for col_name, func in kwargs.items():
             if not isinstance(func, Func):
                 raise DataChainColumnError(
