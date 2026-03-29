@@ -914,7 +914,7 @@ class SignalSchema:
         from sqlalchemy.sql.elements import BinaryExpression, Grouping
         from sqlalchemy.sql.functions import Function as SAFunction
 
-        typed_cols = {c.name: c for c in self.db_signals(as_columns=True)}
+        typed_cols = {c.name: c for c in self.db_signals(as_columns=True) if isinstance(c, Column)}
 
         def rebuild(node):
             if isinstance(node, Column):
