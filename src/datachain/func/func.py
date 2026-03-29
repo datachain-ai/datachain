@@ -472,7 +472,7 @@ def get_db_col_type(signals_schema: "SignalSchema", col: ColT) -> "DataType":
         return col.get_result_type(signals_schema)
 
     if isinstance(col, ColumnElement) and not hasattr(col, "name"):
-        return sql_to_python(col)
+        return sql_to_python(signals_schema.enrich_expr_types(col))
 
     name = col.name if isinstance(col, ColumnElement) else col  # type: ignore[assignment]
     return signals_schema.get_column_type(name)  # type: ignore[arg-type]
