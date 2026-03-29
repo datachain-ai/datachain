@@ -37,6 +37,7 @@ from datachain.func.base import Function
 from datachain.func.func import Func
 from datachain.job import Job
 from datachain.lib.convert.python_to_sql import python_to_sql
+from datachain.lib.convert.sql_to_python import sql_to_python
 from datachain.lib.data_model import (
     DataModel,
     DataType,
@@ -1269,6 +1270,33 @@ class DataChain:
             signal_schema=new_schema,
         )
 
+    @staticmethod
+    def _infer_expr_type(expr, signals_schema):
+        """Infer the Python type of a ColumnElement expression from the schema."""
+        from sqlalchemy.sql import visitors
+
+        from datachain.query.schema import Column as C
+
+        result = sql_to_python(expr)
+        if result is not str:
+            return result
+
+        col_types = set()
+        for elem in visitors.iterate(expr, {}):
+            if isinstance(elem, C):
+                try:
+                    col_types.add(signals_schema.get_column_type(elem.name))
+                except Exception:
+                    pass
+
+        if not col_types:
+            return str
+        if len(col_types) == 1:
+            return col_types.pop()
+        if col_types == {int, float}:
+            return float
+        return str
+
     @delta_disabled  # type: ignore[arg-type]
     def group_by(  # noqa: C901, PLR0912, PLR0915
         self,
@@ -1312,6 +1340,7 @@ class DataChain:
         keep_columns: list[str] = []
         partial_fields: list[str] = []  # Track specific fields for partial creation
         schema_partition_by: list[str] = []
+        partition_counter = 0
 
         for col in partition_by:
             if isinstance(col, str):
@@ -1366,25 +1395,25 @@ class DataChain:
                     partition_by_columns.append(column)
                     signal_columns.append(column)
                 else:
-                    col_arg = col.cols[0]
-                    if isinstance(col_arg, str):
-                        signal_name = col_arg.replace(".", "_")
-                    elif isinstance(col_arg, ColumnElement):
-                        signal_name = col_arg.name.replace("__", "_")
-                    else:
-                        signal_name = str(col_arg)
+                    col_label = f"gr_{partition_counter}"
+                    partition_counter += 1
                     column = col.get_column(
                         self.signals_schema,
-                        label=f"grpby_func_{col.name}_{signal_name}",
+                        label=col_label,
                     )
                     partition_by_columns.append(column)
+                    signal_columns.append(column)
+                    schema_fields[column.name] = column.type.python_type
             elif isinstance(col, ColumnElement):
-                expr_str = str(col.compile(compile_kwargs={"literal_binds": True}))
-                suffix = hashlib.md5(
-                    expr_str.encode(), usedforsecurity=False
-                ).hexdigest()[:8]
-                labeled = cast("Column", col.label(f"grpby_expr_{suffix}"))
+                col_label = f"gr_{partition_counter}"
+                partition_counter += 1
+                labeled = cast("Column", col.label(col_label))
+                inferred = self._infer_expr_type(col, self.signals_schema)
+                sql_type = python_to_sql(inferred)
+                labeled.type = sql_type() if isinstance(sql_type, type) else sql_type
                 partition_by_columns.append(labeled)
+                signal_columns.append(labeled)
+                schema_fields[col_label] = inferred
             else:
                 raise DataChainColumnError(
                     col,
