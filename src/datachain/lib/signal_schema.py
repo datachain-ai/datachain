@@ -911,7 +911,7 @@ class SignalSchema:
         types correctly through operators.
         """
         from sqlalchemy import Cast, cast
-        from sqlalchemy.sql.elements import BinaryExpression, BindParameter, Grouping
+        from sqlalchemy.sql.elements import BinaryExpression, Grouping
         from sqlalchemy.sql.functions import Function as SAFunction
 
         typed_cols = {c.name: c for c in self.db_signals(as_columns=True)}
