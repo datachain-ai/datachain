@@ -1,6 +1,6 @@
 ---
 name: datachain-core
-description: Use for building and running DataChain pipelines — filtering, transforming, mapping, and processing data in S3, GCS, Azure Blob, or S3-compatible storage. Do NOT use for bucket or dataset discovery/exploration (e.g. "what's in bucket X", "list datasets", "show schema") — use datachain-graph for those.
+description: Use ONLY for abstract DataChain SDK questions — API usage, method signatures, or code patterns — when no specific dataset or bucket is referenced. If the request mentions creating, saving, listing, exploring datasets or buckets, use datachain-graph instead.
 ---
 
 You are now loaded with expert-level DataChain SDK context. Apply every rule below when generating DataChain Python code. Do not deviate.

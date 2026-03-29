@@ -1,7 +1,8 @@
 ---
 name: datachain-graph
-description: Use when you need to discover, understand, or navigate DataChain datasets or cloud storage buckets. Generates and maintains a knowledge base at datachain/graph/ (JSON data + AI-enriched markdown) so context is always available without running queries or browsing cloud consoles.
+description: Use whenever datasets, cloud storage buckets, or data pipelines are mentioned — creating, saving, querying, listing, exploring, deleting, or processing data in S3, GCS, Azure Blob, or local storage. Also use when running any script that may create datasets as a side effect. Maintains a knowledge base at datachain/graph/ (JSON + markdown). ALWAYS use this skill when the user creates a dataset, saves pipeline output, runs a data script, or references any storage bucket.
 triggers:
+  # Discovery
   - "what datasets exist"
   - "show me the schema"
   - "list datasets"
@@ -14,6 +15,36 @@ triggers:
   - "bucket overview"
   - "what files are in s3://"
   - "what files are in gs://"
+  # Creation & mutation
+  - "create dataset"
+  - "save dataset"
+  - "delete dataset"
+  - "new dataset"
+  - "build dataset"
+  - "make dataset"
+  - "generate dataset"
+  # Pipeline output
+  - "save the results"
+  - "save to dataset"
+  # Storage references
+  - "s3://"
+  - "gs://"
+  - "az://"
+  - "read_storage"
+  - "from bucket"
+  - "from s3"
+  - "from gcs"
+  # Data processing
+  - "process images"
+  - "process files"
+  - "extract metadata"
+  - "filter dataset"
+  - "query dataset"
+  # Script execution (may create datasets as side effects)
+  - "run script"
+  - "run pipeline"
+  - "python scan"
+  - "run scan"
 ---
 
 You are now loaded with the datachain-graph skill. Maintain a knowledge base at `datachain/graph/`. Both datasets and buckets have a `.json` file (structured data, source of truth) and a `.md` file (AI-generated human-readable summary). Follow the 4-step flow below.
@@ -24,6 +55,29 @@ You are now loaded with the datachain-graph skill. Maintain a knowledge base at 
 2. **Never pass `update=True`** to `dc.read_storage()` unless the user explicitly asks to refresh the listing.
 3. **Prefer DataChain operations** over plain Python for all metadata analysis.
 4. **Bounded output** — JSON and markdown files stay small regardless of data size.
+
+---
+
+## Workflow Mode Detection
+
+When loaded, determine the user's intent:
+
+**Mode A — Discovery/Exploration** (e.g., "what datasets exist", "show schema", "explore bucket"):
+→ Run Steps 1–4 as normal.
+
+**Mode B — Dataset Creation/Pipeline** (e.g., "create dataset X from ...", "process images and save"):
+→ Read `{skill_dir}/../core/SKILL.md` for DataChain SDK rules and patterns.
+→ Build and execute the pipeline the user requested, following core skill rules.
+→ After the pipeline completes, **always** run Steps 1–4 to update the knowledge base.
+→ Report both: pipeline result AND graph update status.
+
+**Mode C — Script Execution** (e.g., user runs an existing script, or agent runs a .py file that touches data):
+→ Scripts can create datasets as side effects (e.g., `scan.py` calls `.save()` internally).
+→ After ANY data-related script finishes, run Steps 1–4 to detect and record new/changed datasets.
+→ This applies even if the script was not written by the agent — always check the DB afterward.
+
+**Mode D — Graph Maintenance** (e.g., "update the graph", "refresh dataset docs"):
+→ Run Steps 1–4 as normal.
 
 ---
 
