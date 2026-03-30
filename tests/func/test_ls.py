@@ -11,7 +11,7 @@ import pytest
 import datachain as dc
 from datachain.cli import ls
 from datachain.config import Config, ConfigLevel
-from datachain.lib.listing import LISTING_PREFIX
+from datachain.lib.listing import LISTING_PREFIX, _sanitize_ds_name
 
 
 @pytest.fixture
@@ -119,7 +119,9 @@ def test_ls_glob_sub(cloud_test_catalog, cloud_type, capsys):
 
 
 def list_dataset_name(uri, path):
-    return f"{LISTING_PREFIX}{uri}/{posixpath.join(path, '').lstrip('/')}"
+    return _sanitize_ds_name(
+        f"{LISTING_PREFIX}{uri}/{posixpath.join(path, '').lstrip('/')}"
+    )
 
 
 def test_ls_partial_indexing(cloud_test_catalog, cloud_type, capsys):

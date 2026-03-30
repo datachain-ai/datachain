@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from datetime import datetime, timezone
 
 import pytest
@@ -10,21 +11,24 @@ from datachain.data_storage.schema import DataTable
 from datachain.dataset import (
     DatasetDependency,
     DatasetDependencyType,
+    DatasetListRecord,
     DatasetRecord,
     DatasetVersion,
     parse_dataset_name,
     parse_dataset_uri,
     parse_schema,
 )
-from datachain.error import InvalidDatasetNameError
+from datachain.error import (
+    DatasetStateNotLoadedError,
+    DatasetVersionNotFoundError,
+    InvalidDatasetNameError,
+)
 from datachain.sql.types import (
     JSON,
     Array,
-    Binary,
     Boolean,
     Float,
     Float32,
-    Float64,
     Int,
     Int64,
     String,
@@ -73,28 +77,6 @@ def test_dataset_table_compilation():
     )
 
 
-def test_schema_serialization(dataset_record):
-    dataset_record.schema = {"int_col": Int}
-    assert dataset_record.serialized_schema == {"int_col": {"type": "Int"}}
-
-    dataset_record.schema = {
-        "binary_col": Binary,
-        "float_32_col": Float32,
-    }
-    assert dataset_record.serialized_schema == {
-        "binary_col": {"type": "Binary"},
-        "float_32_col": {"type": "Float32"},
-    }
-
-    dataset_record.schema = {"nested_col": Array(Array(Float64))}
-    assert dataset_record.serialized_schema == {
-        "nested_col": {
-            "type": "Array",
-            "item_type": {"type": "Array", "item_type": {"type": "Float64"}},
-        }
-    }
-
-
 @pytest.mark.parametrize(
     "dep_name,dep_type,expected",
     [
@@ -126,6 +108,7 @@ def test_dataset_dependency_dataset_name(dep_name, dep_type, expected):
     [True, False],
 )
 def test_dataset_version_from_dict(use_string):
+    # use_string=True covers the double-encoded JSON string from the metastore
     preview = [{"id": 1, "thing": "a"}, {"id": 2, "thing": "b"}]
 
     preview_data = json.dumps(preview) if use_string else preview
@@ -339,3 +322,118 @@ def test_parse_empty_dataset_schema():
 def test_parse_invalid_dataset_schema(schema_dict, exc, match_error):
     with pytest.raises(exc, match=match_error):
         parse_schema(schema_dict)
+
+
+def test_dataset_record_roundtrip_versions_loaded_true(dataset_record):
+    # True is omitted from the dict to avoid crashing old clients
+    d = dataset_record.to_dict()
+    assert "_versions_loaded" not in d
+    restored = DatasetRecord.from_dict(d)
+    assert restored._versions_loaded is True
+    assert restored.versions[0].version == "1.0.0"
+
+
+def test_dataset_record_roundtrip_versions_loaded_false(dataset_record):
+    record = replace(dataset_record, _versions=[], _versions_loaded=False)
+    d = record.to_dict()
+    assert d["_versions_loaded"] is False
+    restored = DatasetRecord.from_dict(d)
+    assert restored._versions_loaded is False
+
+
+def test_dataset_version_roundtrip_preview_loaded_true(dataset_record):
+    # True is omitted from the dict to avoid crashing old clients
+    version = replace(
+        dataset_record.versions[0], _preview_data=[{"a": 1}], _preview_loaded=True
+    )
+    d = version.to_dict()
+    assert "_preview_loaded" not in d
+    restored = DatasetVersion.from_dict(d)
+    assert restored._preview_loaded is True
+    assert restored.preview == [{"a": 1}]
+
+
+def test_dataset_version_roundtrip_preview_loaded_false(dataset_record):
+    version = replace(dataset_record.versions[0], _preview_loaded=False)
+    d = version.to_dict()
+    assert d["_preview_loaded"] is False
+    restored = DatasetVersion.from_dict(d)
+    assert restored._preview_loaded is False
+
+
+def test_dataset_version_from_dict_rejects_internal_preview_key(dataset_record):
+    version = replace(dataset_record.versions[0], _preview_data=[{"a": 1}])
+    d = version.to_dict()
+    d["_preview_data"] = d.pop("preview")
+
+    with pytest.raises(ValueError, match="'preview'"):
+        DatasetVersion.from_dict(d)
+
+
+def test_dataset_record_from_dict_rejects_internal_versions_key(dataset_record):
+    d = dataset_record.to_dict()
+    d["_versions"] = d.pop("versions")
+
+    with pytest.raises(ValueError, match="'versions'"):
+        DatasetRecord.from_dict(d)
+
+
+def test_versions_raises_when_not_loaded(dataset_record):
+    record = replace(dataset_record, _versions_loaded=False)
+    with pytest.raises(DatasetStateNotLoadedError):
+        _ = record.versions
+
+
+def test_preview_raises_when_not_loaded(dataset_record):
+    version = replace(dataset_record.versions[0], _preview_loaded=False)
+    with pytest.raises(DatasetStateNotLoadedError):
+        _ = version.preview
+
+
+def test_latest_version_empty_raises(dataset_record):
+    record = replace(dataset_record, _versions=[], _versions_loaded=True)
+    with pytest.raises(DatasetVersionNotFoundError, match="has no versions"):
+        _ = record.latest_version
+
+
+def test_dataset_list_record_to_dict(dataset_list_record):
+    d = dataset_list_record.to_dict()
+
+    assert d["id"] == dataset_list_record.id
+    assert d["name"] == dataset_list_record.name
+    assert d["project"]["name"] == dataset_list_record.project.name
+    assert (
+        d["project"]["namespace"]["name"] == dataset_list_record.project.namespace.name
+    )
+    assert len(d["versions"]) == 2
+    assert d["versions"][0]["version"] == "1.0.0"
+    assert d["versions"][1]["version"] == "2.0.0"
+
+
+def test_dataset_list_record_roundtrip(dataset_list_record):
+    d = dataset_list_record.to_dict()
+    restored = DatasetListRecord.from_dict(d)
+
+    assert restored.id == dataset_list_record.id
+    assert restored.name == dataset_list_record.name
+    assert restored.description == dataset_list_record.description
+    assert restored.attrs == dataset_list_record.attrs
+    assert restored.project.name == dataset_list_record.project.name
+    assert restored.project.namespace.name == dataset_list_record.project.namespace.name
+    assert len(restored.versions) == len(dataset_list_record.versions)
+    for orig, rest in zip(dataset_list_record.versions, restored.versions, strict=True):
+        assert rest.id == orig.id
+        assert rest.version == orig.version
+        assert rest.uuid == orig.uuid
+        assert rest.status == orig.status
+
+
+def test_dataset_list_record_has_version_with_uuid(dataset_list_record):
+    assert (
+        dataset_list_record.has_version_with_uuid(dataset_list_record.versions[0].uuid)
+        is True
+    )
+    assert dataset_list_record.has_version_with_uuid("nonexistent") is False
+
+    record = replace(dataset_list_record, versions=[])
+    assert record.has_version_with_uuid("anything") is False

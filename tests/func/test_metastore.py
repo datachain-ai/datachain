@@ -5,7 +5,7 @@ from uuid import uuid4
 import pytest
 
 from datachain.data_storage import JobQueryType, JobStatus
-from datachain.dataset import DatasetStatus
+from datachain.dataset import DatasetListRecord, DatasetStatus
 from datachain.sql import types as dc_types
 
 feature_schema = {
@@ -164,10 +164,18 @@ def test_create_dataset_version(metastore):
     assert dv.schema == expected_schema
     assert dv.num_objects == 100
     assert dv.size == 1000
-    assert dv._preview_data in (preview, preview_json)
     assert dv.sources == "gs://test_source"
     assert dv.query_script == query_script
     assert dv.job_id == job_id
+
+    ds_with_preview = metastore.get_dataset(
+        ds.name,
+        namespace_name=ds.project.namespace.name,
+        project_name=ds.project.name,
+        versions=["1.2.3"],
+        include_preview=True,
+    )
+    assert ds_with_preview.get_version("1.2.3").preview == preview
 
 
 def test_create_dataset_version_finished_at(metastore):
@@ -605,6 +613,56 @@ def test_list_datasets_by_prefix(metastore):
     assert [ds.name for ds in metastore.list_datasets_by_prefix("foo")] == []
 
 
+def test_list_dataset_to_dict_roundtrip(metastore):
+    ds = metastore.create_dataset(name="roundtrip_ds")
+    metastore.create_dataset_version(
+        dataset=ds, version="1.0.0", status=DatasetStatus.COMPLETE
+    )
+    metastore.create_dataset_version(
+        dataset=ds, version="2.0.0", status=DatasetStatus.COMPLETE
+    )
+
+    datasets = list(metastore.list_datasets())
+    assert len(datasets) == 1
+
+    record = datasets[0]
+    d = record.to_dict()
+    restored = DatasetListRecord.from_dict(d)
+
+    assert restored.id == record.id
+    assert restored.name == record.name
+    assert restored.project.name == record.project.name
+    assert restored.project.namespace.name == record.project.namespace.name
+    assert len(restored.versions) == len(record.versions)
+    for orig, rest in zip(record.versions, restored.versions, strict=True):
+        assert rest.id == orig.id
+        assert rest.version == orig.version
+        assert rest.uuid == orig.uuid
+
+
+def test_list_dataset_has_version_with_uuid(metastore):
+    ds = metastore.create_dataset(name="uuid_ds")
+    ds, _ = metastore.create_dataset_version(
+        dataset=ds, version="1.0.0", status=DatasetStatus.COMPLETE
+    )
+    ds, _ = metastore.create_dataset_version(
+        dataset=ds, version="2.0.0", status=DatasetStatus.COMPLETE
+    )
+
+    # Get version UUIDs from the full dataset record
+    full_ds = metastore.get_dataset("uuid_ds", versions=None)
+    v1_uuid = full_ds.get_version("1.0.0").uuid
+    v2_uuid = full_ds.get_version("2.0.0").uuid
+
+    datasets = list(metastore.list_datasets())
+    assert len(datasets) == 1
+
+    record = datasets[0]
+    assert record.has_version_with_uuid(v1_uuid) is True
+    assert record.has_version_with_uuid(v2_uuid) is True
+    assert record.has_version_with_uuid("nonexistent") is False
+
+
 def test_get_dataset(metastore):
     with pytest.raises(Exception, match="not found"):
         metastore.get_dataset(str(uuid4()))
@@ -617,7 +675,7 @@ def test_get_dataset(metastore):
     metastore.create_dataset_version(
         dataset=ds, version="1.0.0", status=DatasetStatus.CREATED
     )
-    fetched = metastore.get_dataset("my_dataset")
+    fetched = metastore.get_dataset("my_dataset", versions=None)
     assert fetched.name == "my_dataset"
     assert hasattr(fetched, "versions")
     assert len(fetched.versions) == 1
@@ -627,7 +685,7 @@ def test_get_dataset(metastore):
     metastore.create_dataset_version(
         dataset=fetched, version="2.0.0", status=DatasetStatus.COMPLETE
     )
-    fetched2 = metastore.get_dataset("my_dataset")
+    fetched2 = metastore.get_dataset("my_dataset", versions=None)
     assert fetched2.name == "my_dataset"
     assert len(fetched2.versions) == 2
     assert {v.version for v in fetched2.versions} == {"1.0.0", "2.0.0"}
@@ -653,7 +711,7 @@ def test_remove_dataset_version(metastore):
     assert len(ds.versions) == 1
     assert ds.versions[0].version == "2.0.0"
     # Dataset can still be fetched
-    fetched = metastore.get_dataset("ds")
+    fetched = metastore.get_dataset("ds", versions=None)
     assert len(fetched.versions) == 1
     assert fetched.versions[0].version == "2.0.0"
 
@@ -780,9 +838,12 @@ def test_update_dataset_dependency_source_default_new_source(metastore):
     assert deps[0].name == "tgt"
     assert deps[0].version == "1.0.0"
 
-    # Call update_dataset_dependency_source without new_source_dataset
+    # Move the dependency to a different version of the same dataset.
     metastore.update_dataset_dependency_source(
-        src, "1.0.0", new_source_dataset_version="2.0.0"
+        src,
+        "1.0.0",
+        new_source_dataset=src,
+        new_source_dataset_version="2.0.0",
     )
     assert len(metastore.get_direct_dataset_dependencies(src, "1.0.0")) == 0
     deps_after = metastore.get_direct_dataset_dependencies(src, "2.0.0")

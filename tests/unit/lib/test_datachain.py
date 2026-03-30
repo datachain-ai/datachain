@@ -250,7 +250,11 @@ def test_read_records_and_gen(test_session):
 def test_read_records_populates_dataset_metadata(test_session):
     chain = dc.read_records([{"seed": 0}], schema={"seed": int}, session=test_session)
 
-    dataset = test_session.catalog.get_dataset(chain.name)
+    dataset = test_session.catalog.get_dataset(
+        chain.name,
+        versions=[chain.version],
+        include_preview=True,
+    )
     version = dataset.get_version(chain.version)
 
     assert version.status == DatasetStatus.COMPLETE
@@ -276,7 +280,9 @@ def test_read_record_empty_chain_with_schema(test_session):
 
     # check that columns have actually been created from schema
     catalog = test_session.catalog
-    dr = catalog.warehouse.dataset_rows(catalog.get_dataset(ds_name))
+    dr = catalog.warehouse.dataset_rows(
+        catalog.get_dataset(ds_name, versions=["1.0.0"])
+    )
     assert sorted([c.name for c in dr.columns]) == sorted(
         ds.signals_schema.db_signals()
     )
@@ -4167,7 +4173,11 @@ def test_semver_preview_ok(test_session):
     dc.read_values(num=[1, 2], session=test_session).save(ds_name)
     dc.read_values(num=[3, 4], session=test_session).save(ds_name)
 
-    dataset = test_session.catalog.get_dataset(ds_name)
+    dataset = test_session.catalog.get_dataset(
+        ds_name,
+        versions=["1.0.0", "1.0.1"],
+        include_preview=True,
+    )
     assert sorted([p["num"] for p in dataset.get_version("1.0.0").preview]) == [1, 2]
     assert sorted([p["num"] for p in dataset.get_version("1.0.1").preview]) == [3, 4]
 
@@ -4574,7 +4584,7 @@ def test_union_does_not_break_schema_order(test_session):
         .save("union")
     )
 
-    dat = test_session.catalog.get_dataset("union")
+    dat = test_session.catalog.get_dataset("union", versions=["1.0.0"])
     assert list(dat.versions[0].schema.keys()) == [
         "key",
         "val",

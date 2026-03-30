@@ -84,6 +84,7 @@ class Listing:
             self.dataset_name,
             namespace_name=project.namespace.name,
             project_name=project.name,
+            versions=[self.dataset_version] if self.dataset_version else None,
         )
 
     @cached_property

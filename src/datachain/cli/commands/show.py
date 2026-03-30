@@ -25,7 +25,11 @@ def show(
         version = name_version
 
     if script:
-        dataset = catalog.get_dataset(name, include_incomplete=False)
+        dataset = catalog.get_dataset(
+            name,
+            versions=[version] if version else None,
+            include_incomplete=False,
+        )
         dataset_version = dataset.get_version(version or dataset.latest_version)
         print(dataset_version.query_script)
         return

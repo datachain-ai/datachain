@@ -246,6 +246,7 @@ def _get_source_info(
         source_ds.name,
         namespace_name=source_ds.project.namespace.name,
         project_name=source_ds.project.name,
+        versions=None,
         include_incomplete=False,
     )
 
@@ -377,6 +378,7 @@ def delta_retry_update(
             name,
             namespace_name=namespace_name,
             project_name=project_name,
+            versions=None,
             include_incomplete=False,
         )
         latest_version = dataset.latest_version
