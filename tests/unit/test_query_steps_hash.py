@@ -101,14 +101,20 @@ def numbers_dataset(test_session):
     dc.read_values(num=list(range(100)), session=test_session).save("dev.num.numbers")
     test_session.catalog.metastore.update_dataset_version(
         test_session.catalog.get_dataset(
-            "numbers", namespace_name="dev", project_name="num"
+            "numbers",
+            namespace_name="dev",
+            project_name="num",
+            versions=["1.0.0"],
         ),
         "1.0.0",
         uuid="9045d46d-7c57-4442-aae3-3ca9e9f286c4",
     )
 
     return test_session.catalog.get_dataset(
-        "numbers", namespace_name="dev", project_name="num"
+        "numbers",
+        namespace_name="dev",
+        project_name="num",
+        versions=["1.0.0"],
     )
 
 
@@ -411,7 +417,7 @@ def test_query_step_hash_uses_version_uuid():
         name="test_ds",
         description="",
         attrs=[],
-        versions=[
+        _versions=[
             DatasetVersion(
                 id=1,
                 uuid=uuid1,
@@ -430,6 +436,7 @@ def test_query_step_hash_uses_version_uuid():
                 _preview_data=[],
             ),
         ],
+        _versions_loaded=True,
         status=1,
         schema={},
         feature_schema={},

@@ -67,7 +67,12 @@ def _set_stable_uuid(test_session, name, uuid):
     ns = parts[0] if len(parts) > 1 else "default"
     proj = parts[1] if len(parts) > 2 else "default"
     test_session.catalog.metastore.update_dataset_version(
-        test_session.catalog.get_dataset(ds_name, namespace_name=ns, project_name=proj),
+        test_session.catalog.get_dataset(
+            ds_name,
+            namespace_name=ns,
+            project_name=proj,
+            versions=["1.0.0"],
+        ),
         "1.0.0",
         uuid=uuid,
     )

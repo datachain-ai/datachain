@@ -25,8 +25,8 @@ def clone_session(session: Session) -> Session:
         Session: A new session with cloned catalog components.
     """
     catalog = session.catalog
-    thread_metastore = catalog.metastore.clone()
-    thread_warehouse = catalog.warehouse.clone()
+    thread_metastore = catalog.metastore.clone(use_new_connection=True)
+    thread_warehouse = catalog.warehouse.clone(use_new_connection=True)
     thread_catalog = Catalog(metastore=thread_metastore, warehouse=thread_warehouse)
     return Session("TestSession", catalog=thread_catalog)
 

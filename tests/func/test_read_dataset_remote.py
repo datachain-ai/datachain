@@ -973,6 +973,7 @@ def test_read_dataset_remote_cleanup_on_update_dataset_status_fail(
         "dogs",
         namespace_name=REMOTE_NAMESPACE_NAME,
         project_name=REMOTE_PROJECT_NAME,
+        versions=None,
         include_incomplete=True,
     )
     assert dataset.get_version("1.0.0").status != DatasetStatus.COMPLETE
