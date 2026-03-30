@@ -2,13 +2,22 @@ import re
 import shutil
 from importlib.resources import files
 from pathlib import Path
+from typing import TypedDict
 
 SKILLS = ("core", "graph", "jobs")
+
+
+class _TargetLayout(TypedDict):
+    commands_dir: str | None
+    skills_dir: str
+    command_ext: str | None
+    commands_local_only: bool
+
 
 # For each target: dirs relative to base (home or project root), and command extension.
 # commands_dir=None means no command file is copied (skills only).
 # commands_local_only=True means commands are only written for --local installs.
-TARGET_LAYOUT = {
+TARGET_LAYOUT: dict[str, _TargetLayout] = {
     "claude": {
         "commands_dir": ".claude/commands",
         "skills_dir": ".claude/skills",
@@ -80,7 +89,7 @@ def install_skills(skills: str | None, target: str, local: bool) -> None:
         and layout["command_ext"] is not None
         and (local or not layout["commands_local_only"])
     )
-    commands_dir = base / layout["commands_dir"] if write_commands else None
+    commands_dir = base / layout["commands_dir"] if write_commands and layout["commands_dir"] else None
     command_ext = layout["command_ext"]
 
     installed = []

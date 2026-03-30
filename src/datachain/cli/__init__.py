@@ -281,7 +281,7 @@ def handle_skill_command(args):
             target=args.target,
             local=args.local,
         ),
-        "list": lambda: list_skills(),
+        "list": list_skills,
     }
 
     handler = skill_commands.get(args.skill_cmd)

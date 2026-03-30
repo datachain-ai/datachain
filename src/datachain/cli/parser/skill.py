@@ -49,7 +49,8 @@ def add_skill_parser(subparsers, parent_parser) -> None:
         action="store_true",
         default=False,
         help=(
-            "Install into the current project directory instead of the user home directory"
+            "Install into the current project directory"
+            " instead of the user home directory"
         ),
     )
 

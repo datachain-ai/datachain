@@ -170,7 +170,7 @@ def cmd_plan(studio: bool = False, bucket_uris: list[str] | None = None):
     # Plan datasets (unless only buckets requested)
     if bucket_uris and not studio:
         # --buckets without --studio: skip dataset planning
-        datasets_out = []
+        datasets_out: list[dict] = []
         datasets_up_to_date = True
     else:
         datasets_out, datasets_up_to_date = plan_datasets(dc, db_last_updated, studio)

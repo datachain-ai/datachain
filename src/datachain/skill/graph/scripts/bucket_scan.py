@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Scan a bucket URI: compute metadata aggregations and sample files.
 
 Outputs a JSON data file with extensions, directories, size distribution,
@@ -13,6 +12,7 @@ import json
 import os
 import sys
 from datetime import datetime, timezone
+from typing import Any
 
 from utils import dc_import, parse_uri
 
@@ -56,7 +56,7 @@ def get_listing_info(uri: str) -> dict:
                     ),
                     "listing_expired": listing.is_expired,
                 }
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         print(f"[dc-graph warning] listing info: {e}", file=sys.stderr)
 
     return {
@@ -72,7 +72,7 @@ def get_listing_info(uri: str) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def compute_extensions(chain) -> list[dict]:
+def compute_extensions(chain) -> list[dict[str, Any]]:
     """File extension breakdown via DataChain group_by."""
     from datachain import C, func
 
@@ -84,13 +84,13 @@ def compute_extensions(chain) -> list[dict]:
 
     try:
         df = ext_chain.to_pandas()
-    except Exception:
+    except Exception:  # noqa: BLE001
         return []
 
     total_files = int(df["cnt"].sum()) if len(df) > 0 else 0
     total_bytes_all = int(df["total_bytes"].sum()) if len(df) > 0 else 0
 
-    results = []
+    results: list[dict[str, Any]] = []
     for _, row in df.iterrows():
         raw_ext = str(row.get("ext", "") or "")
         ext_display = f".{raw_ext}" if raw_ext else ""
@@ -135,7 +135,7 @@ def compute_extensions(chain) -> list[dict]:
     return results
 
 
-def compute_directories(chain) -> list[dict]:
+def compute_directories(chain) -> list[dict[str, Any]]:
     """Directory breakdown via DataChain group_by, capped at MAX_DIRECTORIES."""
     from datachain import C, func
 
@@ -147,10 +147,10 @@ def compute_directories(chain) -> list[dict]:
 
     try:
         df = dir_chain.to_pandas()
-    except Exception:
+    except Exception:  # noqa: BLE001
         return []
 
-    results = []
+    results: list[dict[str, Any]] = []
     for _, row in df.iterrows():
         dir_path = str(row.get("dir", "") or "")
         if dir_path and not dir_path.endswith("/"):
@@ -203,7 +203,7 @@ def compute_size_distribution(chain) -> dict:
         min_bytes = int(stats_df["min_size"].iloc[0])
         max_bytes = int(stats_df["max_size"].iloc[0])
         total = int(stats_df["total"].iloc[0])
-    except Exception:
+    except Exception:  # noqa: BLE001
         return {}
 
     # Percentiles via Python (DataChain lacks percentile funcs)
@@ -218,7 +218,7 @@ def compute_size_distribution(chain) -> dict:
                 .limit(10000)
                 .to_iter("file.size")
             )
-    except Exception:
+    except Exception:  # noqa: BLE001
         sizes = []
 
     result = {"min_bytes": min_bytes, "max_bytes": max_bytes}
@@ -234,7 +234,7 @@ def compute_size_distribution(chain) -> dict:
             chain.filter(C("file.size") == 0).group_by(cnt=func.count()).to_pandas()
         )
         result["empty_count"] = int(empty_df["cnt"].iloc[0]) if len(empty_df) > 0 else 0
-    except Exception:
+    except Exception:  # noqa: BLE001
         result["empty_count"] = 0
 
     return result
@@ -269,7 +269,7 @@ def compute_time_range(chain) -> dict:
                 else None
             ),
         }
-    except Exception:
+    except Exception:  # noqa: BLE001
         return {}
 
 
@@ -311,7 +311,7 @@ def sample_files(chain, extensions: list[dict]) -> dict:
 
             if files_info:
                 samples[ext] = {"type_detected": type_detected, "files": files_info}
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             print(f"[dc-graph warning] sampling {ext}: {e}", file=sys.stderr)
 
     return samples
@@ -344,7 +344,7 @@ def _enrich_sample(file_obj, ext: str, type_detected: str, info: dict):
             _enrich_structured(file_obj, ext, info)
         elif type_detected == "text":
             _enrich_text(file_obj, info)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         info["sample_error"] = str(e)
 
 
@@ -359,7 +359,7 @@ def _enrich_image(file_obj, info):
         info["width"] = img.width
         info["height"] = img.height
         info["format"] = img.format
-    except Exception:
+    except Exception:  # noqa: BLE001, S110
         pass
 
 
@@ -372,7 +372,7 @@ def _enrich_audio(file_obj, info):
             info["duration"] = ai.duration
             info["sample_rate"] = ai.sample_rate
             info["channels"] = ai.channels
-    except Exception:
+    except Exception:  # noqa: BLE001, S110
         pass
 
 
@@ -385,7 +385,7 @@ def _enrich_video(file_obj, info):
             info["duration"] = vi.duration
             info["fps"] = vi.fps
             info["codec"] = vi.codec
-    except Exception:
+    except Exception:  # noqa: BLE001, S110
         pass
 
 
@@ -405,17 +405,17 @@ def _enrich_structured(file_obj, ext, info):
             if lines:
                 sep = "\t" if ext == "tsv" else ","
                 info["columns"] = [c.strip().strip('"') for c in lines[0].split(sep)]
-                info["row_count_approx"] = len([l for l in lines if l.strip()]) - 1
+                info["row_count_approx"] = len([ln for ln in lines if ln.strip()]) - 1
         elif ext in ("json", "jsonl", "ndjson"):
             info["snippet"] = file_obj.read_text()[:500]
-    except Exception:
+    except Exception:  # noqa: BLE001, S110
         pass
 
 
 def _enrich_text(file_obj, info):
     try:
         info["snippet"] = file_obj.read_text()[:500]
-    except Exception:
+    except Exception:  # noqa: BLE001, S110
         pass
 
 
@@ -447,7 +447,7 @@ def scan_bucket(uri: str, output: str | None = None):
         ).to_pandas()
         total_files = int(totals["total_files"].iloc[0]) if len(totals) > 0 else 0
         total_size_bytes = int(totals["total_bytes"].iloc[0]) if len(totals) > 0 else 0
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         print(f"[dc-graph error] totals: {e}", file=sys.stderr)
         total_files = 0
         total_size_bytes = 0
