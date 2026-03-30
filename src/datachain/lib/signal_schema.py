@@ -921,8 +921,6 @@ class SignalSchema:
         def rebuild(node):
             if isinstance(node, Column):
                 return typed_cols.get(node.name, node)
-            if isinstance(node, BindParameter):
-                return node
             if isinstance(node, Grouping):
                 return Grouping(rebuild(node.element))
             if isinstance(node, BinaryExpression):
