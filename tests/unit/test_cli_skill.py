@@ -272,3 +272,73 @@ def test_list_skills_output(capsys):
     assert "claude" in out
     assert "cursor" in out
     assert "codex" in out
+
+
+# ---------------------------------------------------------------------------
+# install edge cases
+# ---------------------------------------------------------------------------
+
+
+def test_install_missing_source_returns_nonzero(tmp_path, fake_home):
+    """If a skill source dir is missing, install returns 1."""
+    from datachain.cli.commands.skill import install_skills
+
+    # Create a skills_src with only "core" — graph and jobs missing
+    skills_src = tmp_path / "partial_src"
+    core = skills_src / "core"
+    core.mkdir(parents=True)
+    (core / "SKILL.md").write_text("---\nname: core\n---\n# core\n")
+
+    with (
+        patch(
+            "datachain.cli.commands.skill._skills_src",
+            return_value=skills_src,
+        ),
+        patch("pathlib.Path.home", return_value=fake_home),
+    ):
+        result = install_skills(skills=None, target="claude", local=False)
+
+    # core installed, but graph+jobs missing → non-zero
+    assert result == 1
+    assert (fake_home / ".claude" / "skills" / "core" / "SKILL.md").exists()
+
+
+def test_transform_cursor_mdc_no_frontmatter():
+    """SKILL.md without frontmatter markers produces valid .mdc."""
+    from datachain.cli.commands.skill import _transform_cursor_mdc
+
+    p = Path(__file__).parent / "_test_no_fm.md"
+    try:
+        p.write_text("# No frontmatter here\nJust body.\n")
+        result = _transform_cursor_mdc(p)
+        assert "alwaysApply: true" in result
+        assert "# No frontmatter here" in result
+        # description should be empty
+        assert "description: \n" in result
+    finally:
+        p.unlink(missing_ok=True)
+
+
+def test_transform_cursor_mdc_missing_description():
+    """SKILL.md with frontmatter but no description field."""
+    from datachain.cli.commands.skill import _transform_cursor_mdc
+
+    p = Path(__file__).parent / "_test_no_desc.md"
+    try:
+        p.write_text("---\nname: test-skill\n---\n# Body\n")
+        result = _transform_cursor_mdc(p)
+        assert "alwaysApply: true" in result
+        assert "description: \n" in result
+    finally:
+        p.unlink(missing_ok=True)
+
+
+def test_skills_src_resolves_real_package():
+    """importlib.resources finds the bundled SKILL.md files."""
+    from datachain.cli.commands.skill import SKILLS, _skills_src
+
+    src = _skills_src()
+    assert src.is_dir(), f"_skills_src() returned non-directory: {src}"
+    for skill_name in SKILLS:
+        skill_md = src / skill_name / "SKILL.md"
+        assert skill_md.exists(), f"Missing bundled {skill_name}/SKILL.md"
