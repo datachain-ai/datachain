@@ -79,8 +79,10 @@ def _make_fake_skills_src(tmp_path: Path) -> Path:
         skill_dir = skills_src / skill_name
         skill_dir.mkdir(parents=True)
         (skill_dir / "SKILL.md").write_text(
-            f"---\nname: datachain-{skill_name}\ndescription: Test skill {skill_name}\n---\n# {skill_name}\n"
-            "```bash\npython3 {skill_dir}/scripts/plan.py\n```\n"
+            f"---\nname: datachain-{skill_name}\n"
+            f"description: Test skill {skill_name}\n"
+            f"---\n# {skill_name}\n"
+            "```bash\npython3 scripts/plan.py\n```\n"
         )
         scripts = skill_dir / "scripts"
         scripts.mkdir()
@@ -227,7 +229,7 @@ def test_install_claude_local(tmp_path, fake_skills_src, fake_home):
 
     for skill in ALL_SKILLS:
         assert (skills_base / skill / "SKILL.md").exists()
-        # Local Claude installs SHOULD create commands (valid project-level slash commands)
+        # Local Claude installs SHOULD create commands
         assert (commands_base / f"datachain-{skill}.md").exists()
 
     # Nothing written to home

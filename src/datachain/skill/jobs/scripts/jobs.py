@@ -1,10 +1,9 @@
-#!/usr/bin/env python3
 """Standalone DataChain Studio job fetcher for the datachain-jobs skill.
 
 Usage:
     python3 jobs.py --plan                          # JSON: staleness check for index.md
     python3 jobs.py --fetch [--days N] [--limit N]  # JSON: fetch jobs from Studio
-    python3 jobs.py --fetch --enrich                # also fetch per-job details (workers, duration, cluster)
+    python3 jobs.py --fetch --enrich                # also fetch per-job details
     python3 jobs.py --clusters                      # JSON: list available clusters
 """
 
@@ -28,7 +27,7 @@ def _studio_available() -> bool:
         from datachain.remote.studio import is_token_set
 
         return is_token_set()
-    except Exception:
+    except Exception:  # noqa: BLE001
         return False
 
 
@@ -47,7 +46,7 @@ def _read_frontmatter(path):
                 key, _, val = line.partition(":")
                 result[key.strip()] = val.strip().strip('"').strip("'")
         return result
-    except Exception:
+    except Exception:  # noqa: BLE001
         return {}
 
 
@@ -74,7 +73,7 @@ def _parse_dt(s) -> datetime | None:
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         return dt
-    except Exception:
+    except Exception:  # noqa: BLE001
         return None
 
 
@@ -101,7 +100,8 @@ def cmd_plan():
 
     if not studio_ok:
         result["error"] = (
-            "Studio token not set. Run `datachain auth login` or set DATACHAIN_STUDIO_TOKEN."
+            "Studio token not set. Run `datachain auth login`"
+            " or set DATACHAIN_STUDIO_TOKEN."
         )
         print(json.dumps(result))
         return
@@ -168,12 +168,12 @@ def _enrich_job(client, job: dict) -> dict:
             ):
                 if detail.get(field) is not None:
                     job[field] = detail[field]
-    except Exception:
+    except Exception:  # noqa: BLE001, S110
         pass
     return job
 
 
-def cmd_fetch(days: int, limit: int, enrich: bool):
+def cmd_fetch(days: int, limit: int, enrich: bool):  # noqa: C901
     """Fetch jobs from Studio and output JSON."""
     from datachain.remote.studio import StudioClient
 
@@ -201,7 +201,7 @@ def cmd_fetch(days: int, limit: int, enrich: bool):
                     clusters_by_id[c["id"]] = c.get("name", c["id"])
                 if c.get("name"):
                     clusters_by_id[c["name"]] = c["name"]
-    except Exception:
+    except Exception:  # noqa: BLE001, S110
         pass
 
     # Fetch jobs
@@ -237,7 +237,8 @@ def cmd_fetch(days: int, limit: int, enrich: bool):
         n = min(len(to_enrich), ENRICH_LIMIT)
         if len(to_enrich) > ENRICH_LIMIT:
             print(
-                f"Warning: {len(to_enrich)} terminal jobs found, enriching first {ENRICH_LIMIT} only.",
+                f"Warning: {len(to_enrich)} terminal jobs found,"
+                f" enriching first {ENRICH_LIMIT} only.",
                 file=sys.stderr,
             )
             to_enrich = to_enrich[:ENRICH_LIMIT]
