@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """List all user datasets as JSON."""
 
 import argparse

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Print max mtime of .datachain/db* files as ISO-8601 UTC."""
 
 import os

@@ -57,7 +57,7 @@ def compute_dep_changes(
                         entry["script_changed"] = True
                         entry["previous_script"] = ps
                         entry["current_script"] = cs
-                except Exception:
+                except Exception:  # noqa: BLE001, S110
                     pass
             deps_updated.append(entry)
 
@@ -76,7 +76,10 @@ def build_changes(
     prev_deps: list[dict],
     catalog=None,
 ) -> dict:
-    """Build the full changes dict for a version, including script and dependency diffs."""
+    """Build the full changes dict for a version.
+
+    Includes script and dependency diffs.
+    """
     script_changed = query_script != prev_script
     dep_changes = compute_dep_changes(curr_deps, prev_deps, catalog=catalog)
     return {

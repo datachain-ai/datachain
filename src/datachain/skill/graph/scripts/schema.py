@@ -81,5 +81,5 @@ def extract_preview(chain) -> dict | None:
             "columns": list(df.columns),
             "rows": [[serialize(v) for v in row] for row in df.itertuples(index=False)],
         }
-    except Exception:
+    except Exception:  # noqa: BLE001
         return None

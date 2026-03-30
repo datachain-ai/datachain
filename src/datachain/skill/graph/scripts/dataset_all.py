@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Fetch data for all versions of a dataset in one call."""
 
 import argparse
@@ -12,7 +11,7 @@ from schema import extract_preview, extract_schema, get_catalog
 from utils import collect_datasets, dc_import, parse_semver
 
 
-def _fetch_all_versions(name: str) -> dict:
+def _fetch_all_versions(name: str) -> dict:  # noqa: C901, PLR0912, PLR0915
     """Fetch data for all versions of a dataset. Returns result dict."""
     dc = dc_import()
 
@@ -68,7 +67,7 @@ def _fetch_all_versions(name: str) -> dict:
     catalog = None
     try:
         catalog = get_catalog()
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         warnings_list.append(f"catalog: {e}")
 
     # 2. Get full dataset record once — has all versions with query_script, num_objects.
@@ -79,7 +78,7 @@ def _fetch_all_versions(name: str) -> dict:
             versions_sorted_obj = sorted(
                 dataset_record.versions, key=lambda v: v.version_value
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             warnings_list.append(f"get_dataset: {e}")
 
     if not versions_sorted_obj:
@@ -129,13 +128,13 @@ def _fetch_all_versions(name: str) -> dict:
     preview = None
     try:
         chain = dc.read_dataset(f"{bare_name}@{latest_version_str}")
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         warnings_list.append(f"read_dataset: {e}")
 
     if chain is not None:
         try:
             schema = extract_schema(chain)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             warnings_list.append(f"schema: {e}")
         preview = extract_preview(chain)
         if preview is None:
@@ -154,7 +153,7 @@ def _fetch_all_versions(name: str) -> dict:
                 or []
             )
             deps = [dep_to_dict(d) for d in raw_deps if d]
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             warnings_list.append(f"deps {v_str}: {e}")
         deps_by_version[v_str] = deps
 

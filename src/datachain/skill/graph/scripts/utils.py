@@ -18,12 +18,12 @@ def dc_import():
 
 
 def studio_available() -> bool:
-    """Return True if a Studio token is configured (env var or config file)."""
+    """Return True if a Studio token is configured."""
     try:
         from datachain.remote.studio import is_token_set
 
         return is_token_set()
-    except Exception:
+    except Exception:  # noqa: BLE001
         return False
 
 
@@ -50,17 +50,21 @@ def read_frontmatter(path):
                 key, _, val = line.partition(":")
                 result[key.strip()] = val.strip().strip('"').strip("'")
         return result
-    except Exception:
+    except Exception:  # noqa: BLE001
         return {}
 
 
 def read_json_versions(path):
-    """Read version list from a dataset JSON file. Returns list of version strings."""
+    """Read version list from a dataset JSON file."""
     try:
         with open(path) as f:
             data = json.load(f)
-        return [v["version"] for v in data.get("versions", []) if v.get("version")]
-    except Exception:
+        return [
+            v["version"]
+            for v in data.get("versions", [])
+            if v.get("version")
+        ]
+    except Exception:  # noqa: BLE001
         return []
 
 
@@ -77,12 +81,15 @@ def read_json_metadata(path):
             "latest_version": latest.get("version", ""),
             "num_objects": str(latest.get("num_objects", "")),
         }
-    except Exception:
+    except Exception:  # noqa: BLE001
         return {}
 
 
 def dataset_file_path(name, source):
-    """Derive the relative file path (from datachain/graph/) for a dataset, without extension."""
+    """Derive the relative file path (from datachain/graph/) for a dataset.
+
+    Returns the path without extension.
+    """
     dot_parts = name.split(".", 2)
     if source == "studio" and len(dot_parts) == 3:
         namespace, project, bare_name = dot_parts
@@ -103,9 +110,14 @@ def collect_datasets(dc, studio: bool) -> list[dict]:
     """Return a list of dataset dicts from local or Studio source."""
     results = []
     try:
-        for row in dc.datasets(column="dataset", studio=studio).to_iter():
+        for row in dc.datasets(
+            column="dataset", studio=studio
+        ).to_iter():
             info = row[0]
-            if getattr(info, "namespace", None) in ("system", "listing"):
+            if getattr(info, "namespace", None) in (
+                "system",
+                "listing",
+            ):
                 continue
             if getattr(info, "project", None) == "listing":
                 continue
@@ -113,8 +125,9 @@ def collect_datasets(dc, studio: bool) -> list[dict]:
                 continue
             namespace = getattr(info, "namespace", None)
             project = getattr(info, "project", None)
-            # Fully-qualify Studio dataset names using dot-notation (namespace.project.name).
-            # Dots are used in all human-visible content; / is used only for file paths.
+            # Fully-qualify Studio dataset names using
+            # dot-notation (namespace.project.name).
+            # Dots in human-visible content; / for file paths.
             if studio and namespace and project:
                 full_name = f"{namespace}.{project}.{info.name}"
             else:
@@ -122,7 +135,11 @@ def collect_datasets(dc, studio: bool) -> list[dict]:
             results.append(
                 {
                     "name": full_name,
-                    "version": str(info.version) if info.version is not None else None,
+                    "version": (
+                        str(info.version)
+                        if info.version is not None
+                        else None
+                    ),
                     "num_objects": getattr(info, "num_objects", None),
                     "status": getattr(info, "status", None),
                     "namespace": namespace,
@@ -140,7 +157,7 @@ def collect_datasets(dc, studio: bool) -> list[dict]:
                     ),
                 }
             )
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         print(
             f"[dc-graph warning] collect_datasets(studio={studio}): {e}",
             file=sys.stderr,
@@ -157,8 +174,8 @@ def parse_uri(uri: str) -> dict:
     """Parse a storage URI into scheme, bucket, and prefix.
 
     Examples:
-        s3://my-bucket/         -> scheme=s3, bucket=my-bucket, prefix=""
-        gs://demo/dogs-cats/    -> scheme=gs, bucket=demo,      prefix="dogs-cats/"
+        s3://my-bucket/       -> scheme=s3, bucket=my-bucket, prefix=""
+        gs://demo/dogs-cats/  -> scheme=gs, bucket=demo, prefix="dogs-cats/"
     """
     parsed = urlparse(uri)
     return {
@@ -169,12 +186,12 @@ def parse_uri(uri: str) -> dict:
 
 
 def _sanitize(s: str) -> str:
-    """Sanitize a name segment: lowercase, replace non-alphanumeric with _."""
+    """Sanitize a name segment: lowercase, replace non-alnum with _."""
     return re.sub(r"[^a-z0-9]+", "_", s.lower()).strip("_")
 
 
 def bucket_file_path(uri: str) -> str:
-    """Derive the relative file path (from datachain/graph/) for a bucket, without extension.
+    """Derive the relative file path for a bucket, without extension.
 
     Examples:
         s3://my-bucket/           -> buckets/s3/my_bucket
@@ -195,7 +212,7 @@ def read_json_data(path: str) -> dict | None:
     try:
         with open(path) as f:
             return json.load(f)
-    except Exception:
+    except Exception:  # noqa: BLE001
         return None
 
 
@@ -211,7 +228,7 @@ def human_size(nbytes: float) -> str:
 
 
 def get_listing_finished_at(uri: str) -> str | None:
-    """Get the listing finished_at timestamp for a URI from the DataChain catalog."""
+    """Get the listing finished_at timestamp for a URI."""
     try:
         from datachain.query import Session
 
@@ -220,11 +237,12 @@ def get_listing_finished_at(uri: str) -> str | None:
         listings = catalog.listings()
 
         for listing in listings:
-            if listing.uri.rstrip("/") == uri.rstrip("/") or uri.rstrip("/").startswith(
-                listing.uri.rstrip("/")
-            ):
-                if listing.finished_at:
-                    return listing.finished_at.isoformat()
+            uri_match = (
+                listing.uri.rstrip("/") == uri.rstrip("/")
+                or uri.rstrip("/").startswith(listing.uri.rstrip("/"))
+            )
+            if uri_match and listing.finished_at:
+                return listing.finished_at.isoformat()
         return None
-    except Exception:
+    except Exception:  # noqa: BLE001
         return None

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Render index.md from a plan JSON file.
 
 Supports both datasets and buckets sections in a single index.
@@ -69,7 +68,6 @@ def render_index(plan: dict) -> str:
         for b in sorted(buckets, key=lambda x: x["uri"]):
             uri = b["uri"]
             scheme = b["scheme"]
-            bucket_name = b["bucket"]
             prefix = b.get("prefix", "")
             file_path = b.get("file_path", bucket_file_path(uri))
 
@@ -93,9 +91,12 @@ def render_index(plan: dict) -> str:
 
             link = f"[{uri}]({file_path}.md)"
 
-            lines.append(
-                f"| {link} | {scheme} | {prefix} | {total_files} | {total_size} | {scanned_at} |"
+            row = (
+                f"| {link} | {scheme} | {prefix}"
+                f" | {total_files} | {total_size}"
+                f" | {scanned_at} |"
             )
+            lines.append(row)
 
         lines.append("")
 

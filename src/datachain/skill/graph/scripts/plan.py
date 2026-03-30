@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Compute what needs updating and output a JSON plan."""
 
 import argparse
@@ -201,7 +200,10 @@ def cmd_plan(studio: bool = False, bucket_uris: list[str] | None = None):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Compute what datasets/buckets need updating and output a JSON plan."
+        description=(
+            "Compute what datasets/buckets need updating"
+            " and output a JSON plan."
+        )
     )
     parser.add_argument(
         "--studio",

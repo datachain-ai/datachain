@@ -1,5 +1,4 @@
-#!/usr/bin/env python3
-"""Fetch schema, preview, query_script, changes, and dependencies for one dataset version."""
+"""Fetch schema, preview, query_script, changes, and deps for one dataset version."""
 
 import argparse
 import json
@@ -9,10 +8,11 @@ from schema import extract_preview, extract_schema, get_catalog, parse_dataset_n
 from utils import dc_import
 
 
-def fetch_version_data(name_version: str) -> dict:
-    """Fetch schema, preview, query_script, changes, and dependencies for one dataset version.
+def fetch_version_data(name_version: str) -> dict:  # noqa: C901, PLR0912, PLR0915
+    """Fetch schema, preview, query_script, changes, and deps.
 
-    Returns a dict with keys: name, schema, preview, query_script, changes, dependencies.
+    Returns a dict with keys:
+    name, schema, preview, query_script, changes, dependencies.
     """
     dc = dc_import()
     from datachain.dataset import parse_dataset_with_version
@@ -25,14 +25,14 @@ def fetch_version_data(name_version: str) -> dict:
     chain = None
     try:
         chain = dc.read_dataset(name_version)
-    except Exception:
+    except Exception:  # noqa: BLE001, S110
         pass
 
     schema = {}
     if chain is not None:
         try:
             schema = extract_schema(chain)
-        except Exception:
+        except Exception:  # noqa: BLE001, S110
             pass
 
     preview = None
@@ -45,13 +45,15 @@ def fetch_version_data(name_version: str) -> dict:
     dependencies = []
 
     if is_studio_dataset:
-        # Fetch full dataset record directly from Studio API — no local catalog needed.
+        # Fetch full dataset record directly from Studio API.
         try:
             from datachain.dataset import DatasetRecord
             from datachain.remote.studio import StudioClient
 
             client = StudioClient()
-            response = client.dataset_info(_namespace, _project, _bare_name)
+            response = client.dataset_info(
+                _namespace, _project, _bare_name
+            )
             if response.ok and response.data:
                 dataset = DatasetRecord.from_dict(response.data)
                 resolved_ver = version or dataset.latest_version
@@ -59,33 +61,44 @@ def fetch_version_data(name_version: str) -> dict:
                     version = resolved_ver
                 dv = dataset.get_version(resolved_ver)
                 query_script = dv.query_script or None
-                sorted_vers = sorted(dataset.versions, key=lambda v: v.version_value)
+                sorted_vers = sorted(
+                    dataset.versions, key=lambda v: v.version_value
+                )
                 idx = next(
-                    (i for i, v in enumerate(sorted_vers) if v.version == resolved_ver),
+                    (
+                        i
+                        for i, v in enumerate(sorted_vers)
+                        if v.version == resolved_ver
+                    ),
                     None,
                 )
                 if idx is not None and idx > 0:
                     p = sorted_vers[idx - 1]
-                    _prev_version_info = (p.version, p.query_script or None)
-        except Exception:
+                    _prev_version_info = (
+                        p.version,
+                        p.query_script or None,
+                    )
+        except Exception:  # noqa: BLE001, S110
             pass  # best-effort
     else:
-        # Get catalog independently — do not rely on read_dataset success.
+        # Get catalog independently.
         catalog = None
         if chain is not None:
             catalog = chain.session.catalog
         if catalog is None:
             try:
                 catalog = get_catalog()
-            except Exception:
+            except Exception:  # noqa: BLE001, S110
                 pass
 
         # Resolve version for local datasets
         if version is None and catalog is not None:
             try:
-                ds = catalog.get_dataset(_bare_name, include_incomplete=False)
+                ds = catalog.get_dataset(
+                    _bare_name, include_incomplete=False
+                )
                 version = ds.latest_version
-            except Exception:
+            except Exception:  # noqa: BLE001, S110
                 pass
         if version is None:
             for row in dc.datasets(column="dataset").to_iter():
@@ -97,19 +110,30 @@ def fetch_version_data(name_version: str) -> dict:
         # Fetch from local catalog
         try:
             if catalog is not None:
-                dataset = catalog.get_dataset(_bare_name, include_incomplete=False)
+                dataset = catalog.get_dataset(
+                    _bare_name, include_incomplete=False
+                )
                 resolved_ver = version or dataset.latest_version
                 dv = dataset.get_version(resolved_ver)
                 query_script = dv.query_script or None
-                sorted_vers = sorted(dataset.versions, key=lambda v: v.version_value)
+                sorted_vers = sorted(
+                    dataset.versions, key=lambda v: v.version_value
+                )
                 idx = next(
-                    (i for i, v in enumerate(sorted_vers) if v.version == resolved_ver),
+                    (
+                        i
+                        for i, v in enumerate(sorted_vers)
+                        if v.version == resolved_ver
+                    ),
                     None,
                 )
                 if idx is not None and idx > 0:
                     p = sorted_vers[idx - 1]
-                    _prev_version_info = (p.version, p.query_script or None)
-        except Exception:
+                    _prev_version_info = (
+                        p.version,
+                        p.query_script or None,
+                    )
+        except Exception:  # noqa: BLE001, S110
             pass
 
         # Dependencies (local metastore only)
@@ -122,7 +146,7 @@ def fetch_version_data(name_version: str) -> dict:
                     if not dep:
                         continue
                     dependencies.append(dep_to_dict(dep))
-        except Exception:
+        except Exception:  # noqa: BLE001, S110
             pass
 
     # --- Changes section ---
@@ -136,12 +160,16 @@ def fetch_version_data(name_version: str) -> dict:
                 if catalog is not None:
                     prev_deps_raw = (
                         catalog.get_dataset_dependencies(
-                            name=_bare_name, version=prev_version_str, indirect=True
+                            name=_bare_name,
+                            version=prev_version_str,
+                            indirect=True,
                         )
                         or []
                     )
-                    prev_deps = [dep_to_dict(d) for d in prev_deps_raw if d]
-            except Exception:
+                    prev_deps = [
+                        dep_to_dict(d) for d in prev_deps_raw if d
+                    ]
+            except Exception:  # noqa: BLE001, S110
                 pass
             changes = build_changes(
                 query_script,
@@ -160,10 +188,12 @@ def fetch_version_data(name_version: str) -> dict:
                 [],
             )
 
-    # Return the fully-qualified dot-separated name for Studio datasets so the skill
-    # uses it in headings and frontmatter; bare name for local datasets.
+    # Return fully-qualified dot-separated name for Studio datasets;
+    # bare name for local datasets.
     output_name = (
-        f"{_namespace}.{_project}.{_bare_name}" if is_studio_dataset else _bare_name
+        f"{_namespace}.{_project}.{_bare_name}"
+        if is_studio_dataset
+        else _bare_name
     )
 
     return {
@@ -178,7 +208,7 @@ def fetch_version_data(name_version: str) -> dict:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Fetch schema, preview, and dependencies for a dataset version."
+        description="Fetch schema, preview, and deps for a dataset version."
     )
     parser.add_argument(
         "name",
