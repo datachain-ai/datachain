@@ -80,6 +80,7 @@ def test_install_invalid_skill_raises(tmp_path, fake_skills_src, fake_home):
     ):
         install_skills(skills="nope", target="claude", local=False)
 
+
 ALL_SKILLS = ("core", "graph", "jobs")
 
 
@@ -116,8 +117,13 @@ def fake_home(tmp_path):
 
 
 def _run_install(
-    fake_skills_src, fake_home, skills, target, local,
-    monkeypatch=None, project_dir=None,
+    fake_skills_src,
+    fake_home,
+    skills,
+    target,
+    local,
+    monkeypatch=None,
+    project_dir=None,
 ):
     from datachain.cli.commands.skill import install_skills
 
