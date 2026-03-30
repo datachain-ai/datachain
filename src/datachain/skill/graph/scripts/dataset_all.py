@@ -216,7 +216,9 @@ def _merge_versions(existing_versions, new_versions, versions_to_fetch):
     return merged
 
 
-def cmd_dataset_all(name: str, plan_path: str | None = None, output_path: str | None = None):
+def cmd_dataset_all(
+    name: str, plan_path: str | None = None, output_path: str | None = None
+):
     """Fetch all versions of a dataset, optionally merge and save to file."""
     new_data = _fetch_all_versions(name)
 

@@ -89,7 +89,11 @@ def install_skills(skills: str | None, target: str, local: bool) -> None:
         and layout["command_ext"] is not None
         and (local or not layout["commands_local_only"])
     )
-    commands_dir = base / layout["commands_dir"] if write_commands and layout["commands_dir"] else None
+    commands_dir = (
+        base / layout["commands_dir"]
+        if write_commands and layout["commands_dir"]
+        else None
+    )
     command_ext = layout["command_ext"]
 
     installed = []
