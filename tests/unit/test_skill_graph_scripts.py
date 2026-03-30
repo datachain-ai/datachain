@@ -5,8 +5,6 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-import pytest
-
 # Insert the scripts directory so bare imports work (matches runtime behavior).
 SCRIPTS_DIR = str(
     Path(__file__).resolve().parents[2] / "src/datachain/skill/graph/scripts"
@@ -160,12 +158,16 @@ class TestSerialize:
 class TestReadJsonVersions:
     def test_valid(self, tmp_path):
         p = tmp_path / "ds.json"
-        p.write_text(json.dumps({
-            "versions": [
-                {"version": "1.0.0"},
-                {"version": "2.0.0"},
-            ]
-        }))
+        p.write_text(
+            json.dumps(
+                {
+                    "versions": [
+                        {"version": "1.0.0"},
+                        {"version": "2.0.0"},
+                    ]
+                }
+            )
+        )
         assert read_json_versions(str(p)) == ["1.0.0", "2.0.0"]
 
     def test_empty_versions(self, tmp_path):
@@ -180,9 +182,9 @@ class TestReadJsonVersions:
 class TestReadJsonMetadata:
     def test_valid(self, tmp_path):
         p = tmp_path / "ds.json"
-        p.write_text(json.dumps({
-            "versions": [{"version": "1.0.0", "num_objects": 42}]
-        }))
+        p.write_text(
+            json.dumps({"versions": [{"version": "1.0.0", "num_objects": 42}]})
+        )
         result = read_json_metadata(str(p))
         assert result["latest_version"] == "1.0.0"
         assert result["num_objects"] == "42"

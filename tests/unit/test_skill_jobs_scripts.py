@@ -110,9 +110,7 @@ class TestJobsReadFrontmatter:
         from jobs import _read_frontmatter
 
         p = tmp_path / "index.md"
-        p.write_text(
-            "---\ntotal_jobs: 42\nenriched: true\n---\n## Jobs\n"
-        )
+        p.write_text("---\ntotal_jobs: 42\nenriched: true\n---\n## Jobs\n")
         fm = _read_frontmatter(str(p))
         assert fm["total_jobs"] == "42"
         assert fm["enriched"] == "true"
