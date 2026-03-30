@@ -5,7 +5,7 @@ import os.path
 import posixpath
 import sys
 import time
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager, suppress
 from copy import copy
 from dataclasses import dataclass
@@ -508,29 +508,20 @@ class Catalog:
         cache_dir=None,
         tmp_dir=None,
         client_config: dict[str, Any] | None = None,
-        warehouse_ready_callback: Callable[["AbstractWarehouse"], None] | None = None,
         in_memory: bool = False,
     ):
         datachain_dir = DataChainDir(cache=cache_dir, tmp=tmp_dir)
         datachain_dir.init()
         self.metastore = metastore
-        self._warehouse = warehouse
+        self.warehouse = warehouse
         self.cache = Cache(datachain_dir.cache, datachain_dir.tmp)
         self.client_config = client_config if client_config is not None else {}
         self._init_params = {
             "cache_dir": cache_dir,
             "tmp_dir": tmp_dir,
         }
-        self._warehouse_ready_callback = warehouse_ready_callback
         self.in_memory = in_memory
         self._owns_connections = True  # False for copies, prevents double-close
-
-    @cached_property
-    def warehouse(self) -> "AbstractWarehouse":
-        if self._warehouse_ready_callback:
-            self._warehouse_ready_callback(self._warehouse)
-
-        return self._warehouse
 
     @cached_property
     def session(self):
@@ -555,7 +546,6 @@ class Catalog:
         result._owns_connections = False
         if not db:
             result.metastore = None
-            result._warehouse = None
             result.warehouse = None
         return result
 
@@ -565,9 +555,9 @@ class Catalog:
         if self.metastore is not None:
             with suppress(Exception):
                 self.metastore.close_on_exit()
-        if self._warehouse is not None:
+        if self.warehouse is not None:
             with suppress(Exception):
-                self._warehouse.close_on_exit()
+                self.warehouse.close_on_exit()
 
     def __enter__(self) -> Self:
         return self
