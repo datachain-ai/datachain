@@ -201,8 +201,7 @@ def cmd_plan(studio: bool = False, bucket_uris: list[str] | None = None):
 def main():
     parser = argparse.ArgumentParser(
         description=(
-            "Compute what datasets/buckets need updating"
-            " and output a JSON plan."
+            "Compute what datasets/buckets need updating and output a JSON plan."
         )
     )
     parser.add_argument(

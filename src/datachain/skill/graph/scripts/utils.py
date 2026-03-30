@@ -59,11 +59,7 @@ def read_json_versions(path):
     try:
         with open(path) as f:
             data = json.load(f)
-        return [
-            v["version"]
-            for v in data.get("versions", [])
-            if v.get("version")
-        ]
+        return [v["version"] for v in data.get("versions", []) if v.get("version")]
     except Exception:  # noqa: BLE001
         return []
 
@@ -110,9 +106,7 @@ def collect_datasets(dc, studio: bool) -> list[dict]:
     """Return a list of dataset dicts from local or Studio source."""
     results = []
     try:
-        for row in dc.datasets(
-            column="dataset", studio=studio
-        ).to_iter():
+        for row in dc.datasets(column="dataset", studio=studio).to_iter():
             info = row[0]
             if getattr(info, "namespace", None) in (
                 "system",
@@ -136,9 +130,7 @@ def collect_datasets(dc, studio: bool) -> list[dict]:
                 {
                     "name": full_name,
                     "version": (
-                        str(info.version)
-                        if info.version is not None
-                        else None
+                        str(info.version) if info.version is not None else None
                     ),
                     "num_objects": getattr(info, "num_objects", None),
                     "status": getattr(info, "status", None),
@@ -237,10 +229,9 @@ def get_listing_finished_at(uri: str) -> str | None:
         listings = catalog.listings()
 
         for listing in listings:
-            uri_match = (
-                listing.uri.rstrip("/") == uri.rstrip("/")
-                or uri.rstrip("/").startswith(listing.uri.rstrip("/"))
-            )
+            uri_match = listing.uri.rstrip("/") == uri.rstrip("/") or uri.rstrip(
+                "/"
+            ).startswith(listing.uri.rstrip("/"))
             if uri_match and listing.finished_at:
                 return listing.finished_at.isoformat()
         return None

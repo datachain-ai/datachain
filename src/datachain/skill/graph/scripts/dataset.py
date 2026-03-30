@@ -51,9 +51,7 @@ def fetch_version_data(name_version: str) -> dict:  # noqa: C901, PLR0912, PLR09
             from datachain.remote.studio import StudioClient
 
             client = StudioClient()
-            response = client.dataset_info(
-                _namespace, _project, _bare_name
-            )
+            response = client.dataset_info(_namespace, _project, _bare_name)
             if response.ok and response.data:
                 dataset = DatasetRecord.from_dict(response.data)
                 resolved_ver = version or dataset.latest_version
@@ -61,15 +59,9 @@ def fetch_version_data(name_version: str) -> dict:  # noqa: C901, PLR0912, PLR09
                     version = resolved_ver
                 dv = dataset.get_version(resolved_ver)
                 query_script = dv.query_script or None
-                sorted_vers = sorted(
-                    dataset.versions, key=lambda v: v.version_value
-                )
+                sorted_vers = sorted(dataset.versions, key=lambda v: v.version_value)
                 idx = next(
-                    (
-                        i
-                        for i, v in enumerate(sorted_vers)
-                        if v.version == resolved_ver
-                    ),
+                    (i for i, v in enumerate(sorted_vers) if v.version == resolved_ver),
                     None,
                 )
                 if idx is not None and idx > 0:
@@ -94,9 +86,7 @@ def fetch_version_data(name_version: str) -> dict:  # noqa: C901, PLR0912, PLR09
         # Resolve version for local datasets
         if version is None and catalog is not None:
             try:
-                ds = catalog.get_dataset(
-                    _bare_name, include_incomplete=False
-                )
+                ds = catalog.get_dataset(_bare_name, include_incomplete=False)
                 version = ds.latest_version
             except Exception:  # noqa: BLE001, S110
                 pass
@@ -110,21 +100,13 @@ def fetch_version_data(name_version: str) -> dict:  # noqa: C901, PLR0912, PLR09
         # Fetch from local catalog
         try:
             if catalog is not None:
-                dataset = catalog.get_dataset(
-                    _bare_name, include_incomplete=False
-                )
+                dataset = catalog.get_dataset(_bare_name, include_incomplete=False)
                 resolved_ver = version or dataset.latest_version
                 dv = dataset.get_version(resolved_ver)
                 query_script = dv.query_script or None
-                sorted_vers = sorted(
-                    dataset.versions, key=lambda v: v.version_value
-                )
+                sorted_vers = sorted(dataset.versions, key=lambda v: v.version_value)
                 idx = next(
-                    (
-                        i
-                        for i, v in enumerate(sorted_vers)
-                        if v.version == resolved_ver
-                    ),
+                    (i for i, v in enumerate(sorted_vers) if v.version == resolved_ver),
                     None,
                 )
                 if idx is not None and idx > 0:
@@ -166,9 +148,7 @@ def fetch_version_data(name_version: str) -> dict:  # noqa: C901, PLR0912, PLR09
                         )
                         or []
                     )
-                    prev_deps = [
-                        dep_to_dict(d) for d in prev_deps_raw if d
-                    ]
+                    prev_deps = [dep_to_dict(d) for d in prev_deps_raw if d]
             except Exception:  # noqa: BLE001, S110
                 pass
             changes = build_changes(
@@ -191,9 +171,7 @@ def fetch_version_data(name_version: str) -> dict:  # noqa: C901, PLR0912, PLR09
     # Return fully-qualified dot-separated name for Studio datasets;
     # bare name for local datasets.
     output_name = (
-        f"{_namespace}.{_project}.{_bare_name}"
-        if is_studio_dataset
-        else _bare_name
+        f"{_namespace}.{_project}.{_bare_name}" if is_studio_dataset else _bare_name
     )
 
     return {
