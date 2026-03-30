@@ -3038,12 +3038,14 @@ class DatasetQuery:
             )
             self.temp_table_names.append(temp_table_name)
             temp_table = self.catalog.warehouse.get_table(temp_table_name)
-            # Regenerate sys__id when chain has order_by so the saved
-            # dataset's row order matches the query order on read.
-            has_ordering = any(isinstance(s, SQLOrderBy) for s in self.steps)
-            self.catalog.warehouse.insert_into(
-                temp_table, query.select(), preserve_sys_ids=not has_ordering
-            )
+            # Strip sys__id when chain has order_by so fresh sequential IDs
+            # encode the sorted order (both SQLite and ClickHouse read by sys__id).
+            select_q = query.select()
+            if any(isinstance(s, SQLOrderBy) for s in self.steps):
+                select_q = select_q.with_only_columns(
+                    *[c for c in select_q.selected_columns if c.name != "sys__id"]
+                )
+            self.catalog.warehouse.insert_into(temp_table, select_q)
 
             # Phase 2: Claim the version (metadata only).
             dataset = self.catalog.create_dataset(

@@ -719,9 +719,9 @@ def test_aggregator_checkpoint_no_partial_continuation(test_session):
 def test_continue_udf_preserves_sys_ids(test_session_tmpfile):
     """sys__id must be preserved when copying partial output table on continuation.
 
-    Without preserve_sys_ids, the copy generates fresh sequential IDs that don't
-    match the input table's IDs, causing wrong result-to-input pairings in the
-    join performed by create_result_query.
+    If sys__id is stripped during copy, fresh sequential IDs are generated that
+    don't match the input table's IDs, causing wrong result-to-input pairings
+    in the join performed by create_result_query.
     """
     test_session = test_session_tmpfile
     processed = []
@@ -744,9 +744,9 @@ def test_continue_udf_preserves_sys_ids(test_session_tmpfile):
     assert len(processed) == 3
 
     # Scramble sys__id to non-sequential values so that the test is deterministic.
-    # Without preserve_sys_ids, the partial table copy generates fresh IDs (1,2,3)
-    # that won't match the input table's scrambled IDs (100,200,300,400,500,600),
-    # causing continuation to reprocess all rows instead of skipping processed ones.
+    # If sys__id is stripped during copy, fresh IDs (1,2,3) won't match the input
+    # table's scrambled IDs (100,200,300,400,500,600), causing continuation to
+    # reprocess all rows instead of skipping processed ones.
     job = test_session.get_or_create_job()
     warehouse_db = test_session.catalog.warehouse.db
     all_tables = list(
