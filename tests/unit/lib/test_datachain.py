@@ -3315,9 +3315,7 @@ def test_mutate_values_with_untyped_columns(test_session, expr_fn, expected_valu
 def test_mutate_with_nonexistent_column_expression(test_session):
     """enrich_expr_types can't resolve unknown columns — NullType persists, error raised."""
     with pytest.raises(DataChainColumnError):
-        dc.read_values(id=[1, 2], session=test_session).mutate(
-            new=(Column("nope") - 1)
-        )
+        dc.read_values(id=[1, 2], session=test_session).mutate(new=(Column("nope") - 1))
 
 
 def test_read_values_nan_inf(test_session):
