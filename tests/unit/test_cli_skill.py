@@ -69,6 +69,17 @@ def test_skill_list_no_args():
 # install_skills() functional tests
 # ---------------------------------------------------------------------------
 
+
+def test_install_invalid_skill_raises(tmp_path, fake_skills_src, fake_home):
+    from datachain.cli.commands.skill import install_skills
+
+    with (
+        patch("datachain.cli.commands.skill._skills_src", return_value=fake_skills_src),
+        patch("pathlib.Path.home", return_value=fake_home),
+        pytest.raises(ValueError, match=r"Unknown skill.*nope"),
+    ):
+        install_skills(skills="nope", target="claude", local=False)
+
 ALL_SKILLS = ("core", "graph", "jobs")
 
 
@@ -104,7 +115,10 @@ def fake_home(tmp_path):
     return tmp_path / "home"
 
 
-def _run_install(fake_skills_src, fake_home, skills, target, local, project_dir=None):
+def _run_install(
+    fake_skills_src, fake_home, skills, target, local,
+    monkeypatch=None, project_dir=None,
+):
     from datachain.cli.commands.skill import install_skills
 
     with (
@@ -112,16 +126,8 @@ def _run_install(fake_skills_src, fake_home, skills, target, local, project_dir=
         patch("pathlib.Path.home", return_value=fake_home),
     ):
         if local and project_dir:
-            import os
-
-            orig_cwd = Path.cwd()
-            os.chdir(project_dir)
-            try:
-                install_skills(skills=skills, target=target, local=local)
-            finally:
-                os.chdir(orig_cwd)
-        else:
-            install_skills(skills=skills, target=target, local=local)
+            monkeypatch.chdir(project_dir)
+        install_skills(skills=skills, target=target, local=local)
 
 
 # --- claude, global ---
@@ -206,7 +212,7 @@ def test_install_all_codex_global(tmp_path, fake_skills_src, fake_home):
 # --- local install ---
 
 
-def test_install_claude_local(tmp_path, fake_skills_src, fake_home):
+def test_install_claude_local(tmp_path, fake_skills_src, fake_home, monkeypatch):
     project_dir = tmp_path / "project"
     project_dir.mkdir()
 
@@ -215,14 +221,8 @@ def test_install_claude_local(tmp_path, fake_skills_src, fake_home):
     with patch(
         "datachain.cli.commands.skill._skills_src", return_value=fake_skills_src
     ):
-        import os
-
-        orig = os.getcwd()
-        os.chdir(project_dir)
-        try:
-            install_skills(skills=None, target="claude", local=True)
-        finally:
-            os.chdir(orig)
+        monkeypatch.chdir(project_dir)
+        install_skills(skills=None, target="claude", local=True)
 
     skills_base = project_dir / ".claude" / "skills"
     commands_base = project_dir / ".claude" / "commands"

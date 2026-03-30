@@ -1,5 +1,6 @@
 import re
 import shutil
+import sys
 from importlib.resources import files
 from pathlib import Path
 from typing import TypedDict
@@ -65,9 +66,9 @@ def _transform_cursor_mdc(skill_md_path: Path) -> str:
     return f"---\ndescription: {description}\nglobs:\nalwaysApply: true\n---\n{body}"
 
 
-def install_skills(skills: str | None, target: str, local: bool) -> None:
+def install_skills(skills: str | None, target: str, local: bool) -> int:
     layout = TARGET_LAYOUT[target]
-    base = Path(".") if local else Path.home()
+    base = Path.cwd() if local else Path.home()
 
     if skills:
         requested = [s.strip() for s in skills.split(",")]
@@ -97,10 +98,12 @@ def install_skills(skills: str | None, target: str, local: bool) -> None:
     command_ext = layout["command_ext"]
 
     installed = []
+    missing = []
     for skill_name in skills_to_install:
         src = _skills_src() / skill_name
         if not src.exists():
-            print(f"Warning: skill source not found: {src}")
+            print(f"Warning: skill source not found: {src}", file=sys.stderr)
+            missing.append(skill_name)
             continue
 
         dest = skills_dir / skill_name
@@ -138,11 +141,16 @@ def install_skills(skills: str | None, target: str, local: bool) -> None:
     else:
         print("No skills installed.")
 
+    if missing:
+        return 1
+    return 0
 
-def list_skills() -> None:
+
+def list_skills() -> int:
     targets = ", ".join(TARGET_LAYOUT.keys())
     header = f"{'Skill':<12}  Targets"
     print(header)
     print("-" * len(header))
     for name in SKILLS:
         print(f"{name:<12}  {targets}")
+    return 0

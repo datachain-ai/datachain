@@ -288,7 +288,7 @@ def handle_skill_command(args):
     if handler:
         return handler()
 
-    raise Exception(f"Unexpected command {args.skill_cmd}")
+    raise RuntimeError(f"Unexpected command {args.skill_cmd}")
 
 
 def handle_completion_command(args):

@@ -1,3 +1,4 @@
+from datachain.cli.commands.skill import TARGET_LAYOUT
 from datachain.cli.parser.utils import CustomHelpFormatter
 
 
@@ -40,7 +41,7 @@ def add_skill_parser(subparsers, parent_parser) -> None:
     )
     install_parser.add_argument(
         "--target",
-        choices=["claude", "codex", "cursor"],
+        choices=sorted(TARGET_LAYOUT.keys()),
         default="claude",
         help="Target AI coding tool to install skills into (default: claude)",
     )

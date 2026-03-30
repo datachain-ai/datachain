@@ -2,10 +2,15 @@
 
 import argparse
 import json
+import sys
 
 from changes import build_changes, dep_to_dict
 from schema import extract_preview, extract_schema, get_catalog, parse_dataset_name
 from utils import dc_import
+
+
+def _warn(msg: str) -> None:
+    print(f"[dc-graph warning] {msg}", file=sys.stderr)
 
 
 def fetch_version_data(name_version: str) -> dict:  # noqa: C901, PLR0912, PLR0915
@@ -25,15 +30,15 @@ def fetch_version_data(name_version: str) -> dict:  # noqa: C901, PLR0912, PLR09
     chain = None
     try:
         chain = dc.read_dataset(name_version)
-    except Exception:  # noqa: BLE001, S110
-        pass
+    except Exception as e:  # noqa: BLE001
+        _warn(f"read_dataset({name_version}): {e}")
 
     schema = {}
     if chain is not None:
         try:
             schema = extract_schema(chain)
-        except Exception:  # noqa: BLE001, S110
-            pass
+        except Exception as e:  # noqa: BLE001
+            _warn(f"extract_schema({name}): {e}")
 
     preview = None
     if chain is not None:
@@ -70,8 +75,8 @@ def fetch_version_data(name_version: str) -> dict:  # noqa: C901, PLR0912, PLR09
                         p.version,
                         p.query_script or None,
                     )
-        except Exception:  # noqa: BLE001, S110
-            pass  # best-effort
+        except Exception as e:  # noqa: BLE001
+            _warn(f"Studio dataset_info({name}): {e}")
     else:
         # Get catalog independently.
         catalog = None
@@ -80,16 +85,16 @@ def fetch_version_data(name_version: str) -> dict:  # noqa: C901, PLR0912, PLR09
         if catalog is None:
             try:
                 catalog = get_catalog()
-            except Exception:  # noqa: BLE001, S110
-                pass
+            except Exception as e:  # noqa: BLE001
+                _warn(f"get_catalog(): {e}")
 
         # Resolve version for local datasets
         if version is None and catalog is not None:
             try:
                 ds = catalog.get_dataset(_bare_name, include_incomplete=False)
                 version = ds.latest_version
-            except Exception:  # noqa: BLE001, S110
-                pass
+            except Exception as e:  # noqa: BLE001
+                _warn(f"resolve version for {_bare_name}: {e}")
         if version is None:
             for row in dc.datasets(column="dataset").to_iter():
                 info = row[0]
@@ -115,8 +120,8 @@ def fetch_version_data(name_version: str) -> dict:  # noqa: C901, PLR0912, PLR09
                         p.version,
                         p.query_script or None,
                     )
-        except Exception:  # noqa: BLE001, S110
-            pass
+        except Exception as e:  # noqa: BLE001
+            _warn(f"local catalog metadata for {_bare_name}: {e}")
 
         # Dependencies (local metastore only)
         try:
@@ -128,8 +133,8 @@ def fetch_version_data(name_version: str) -> dict:  # noqa: C901, PLR0912, PLR09
                     if not dep:
                         continue
                     dependencies.append(dep_to_dict(dep))
-        except Exception:  # noqa: BLE001, S110
-            pass
+        except Exception as e:  # noqa: BLE001
+            _warn(f"dependencies for {_bare_name}@{version}: {e}")
 
     # --- Changes section ---
     changes = None
@@ -149,8 +154,8 @@ def fetch_version_data(name_version: str) -> dict:  # noqa: C901, PLR0912, PLR09
                         or []
                     )
                     prev_deps = [dep_to_dict(d) for d in prev_deps_raw if d]
-            except Exception:  # noqa: BLE001, S110
-                pass
+            except Exception as e:  # noqa: BLE001
+                _warn(f"prev dependencies for {_bare_name}@{prev_version_str}: {e}")
             changes = build_changes(
                 query_script,
                 prev_version_str,
