@@ -3271,6 +3271,29 @@ def test_mutate_with_complex_expression(test_session):
 
 
 @skip_if_not_sqlite
+def test_mutate_with_composed_func_expression(test_session):
+    from datachain.lib.file import File
+
+    files = [
+        File(path="dir1/a.txt"),
+        File(path="dir1/dir2/hello.txt"),
+        File(path="readme.md"),
+    ]
+    ds = dc.read_values(file=files, session=test_session)
+    result = list(
+        ds.mutate(
+            csv_len=func.string.length(
+                func.path.file_stem(dc.C("file.path")) + func.literal(".csv")
+            ),
+        )
+        .order_by("file.path")
+        .to_values("csv_len")
+    )
+    # "a" + ".csv" = 5, "hello" + ".csv" = 9, "readme" + ".csv" = 10
+    assert result == [5, 9, 10]
+
+
+@skip_if_not_sqlite
 def test_mutate_with_saving(test_session):
     ds = dc.read_values(id=[1, 2], session=test_session)
     ds = ds.mutate(new=dc.C("id") / 2).save("mutated")
