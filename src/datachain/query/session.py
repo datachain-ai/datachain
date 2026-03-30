@@ -233,7 +233,7 @@ class Session:
                 Session._CURRENT_JOB.id
             )
             # Finally clean all incomplete dataset versions
-            self.catalog.cleanup_failed_dataset_versions(job_id=Session._CURRENT_JOB.id)
+            self.catalog.cleanup_dataset_versions(job_id=Session._CURRENT_JOB.id)
 
             Session._JOB_STATUS = JobStatus.FAILED
 

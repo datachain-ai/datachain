@@ -153,7 +153,7 @@ def test_dataset_version_job_id_updates_to_latest(
     chain.save(name)
     job1_id = test_session.get_or_create_job().id
 
-    dataset = catalog.get_dataset(name)
+    dataset = catalog.get_dataset(name, versions=None)
     assert dataset.get_version(dataset.latest_version).job_id == job1_id
 
     # -------------- SECOND RUN: Reuse via checkpoint -------------------
@@ -162,7 +162,7 @@ def test_dataset_version_job_id_updates_to_latest(
     job2_id = test_session.get_or_create_job().id
 
     # job_id should now point to job2 (latest)
-    dataset = catalog.get_dataset(name)
+    dataset = catalog.get_dataset(name, versions=None)
     assert dataset.get_version(dataset.latest_version).job_id == job2_id
 
     # -------------- THIRD RUN: Another reuse -------------------
@@ -171,7 +171,7 @@ def test_dataset_version_job_id_updates_to_latest(
     job3_id = test_session.get_or_create_job().id
 
     # job_id should now point to job3 (latest)
-    dataset = catalog.get_dataset(name)
+    dataset = catalog.get_dataset(name, versions=None)
     assert dataset.get_version(dataset.latest_version).job_id == job3_id
 
 

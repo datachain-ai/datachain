@@ -4,7 +4,7 @@ import pytest
 
 import datachain as dc
 from datachain.lib.file import File
-from datachain.lib.listing import list_bucket, parse_listing_uri
+from datachain.lib.listing import _sanitize_ds_name, list_bucket, parse_listing_uri
 from tests.data import ENTRIES
 
 
@@ -90,7 +90,7 @@ def test_read_storage_percent_encoding_is_opaque_across_backends(
 def test_parse_listing_uri(cloud_test_catalog, cloud_type):
     ctc = cloud_test_catalog
     dataset_name, listing_uri, listing_path = parse_listing_uri(f"{ctc.src_uri}/dogs")
-    assert dataset_name == f"lst__{ctc.src_uri}/dogs/"
+    assert dataset_name == _sanitize_ds_name(f"lst__{ctc.src_uri}/dogs/")
     assert listing_uri == f"{ctc.src_uri}/dogs/"
     if cloud_type == "file":
         assert listing_path == ""
@@ -106,6 +106,6 @@ def test_parse_listing_uri(cloud_test_catalog, cloud_type):
 def test_parse_listing_uri_with_glob(cloud_test_catalog):
     ctc = cloud_test_catalog
     dataset_name, listing_uri, listing_path = parse_listing_uri(f"{ctc.src_uri}/dogs/*")
-    assert dataset_name == f"lst__{ctc.src_uri}/dogs/"
+    assert dataset_name == _sanitize_ds_name(f"lst__{ctc.src_uri}/dogs/")
     assert listing_uri == f"{ctc.src_uri}/dogs"
     assert listing_path == "dogs/*"

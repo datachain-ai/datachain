@@ -35,6 +35,9 @@ jobs:
           cache-suffix: lint
           cache-dependency-glob: pyproject.toml
 
+      - name: Use CPU-only PyTorch on Linux
+        run: echo "UV_TORCH_BACKEND=cpu" >> "$GITHUB_ENV"
+
       - name: Install nox
         run: uv pip install nox --system
 
@@ -107,6 +110,12 @@ jobs:
           enable-cache: true
           cache-suffix: tests-${{ matrix.pyv }}
           cache-dependency-glob: pyproject.toml
+
+      - name: Use CPU-only PyTorch on Linux
+        if: runner.os == 'Linux'
+        # torch 2.11+ on PyPI pulls CUDA deps that aren't fully available on
+        # CPU-only runners (missing libnppicc from nvidia-npp).
+        run: echo "UV_TORCH_BACKEND=cpu" >> "$GITHUB_ENV"
 
       - name: Install FFmpeg on Windows
         if: runner.os == 'Windows'
@@ -193,6 +202,10 @@ jobs:
           enable-cache: true
           cache-suffix: examples-${{ matrix.pyv }}
           cache-dependency-glob: pyproject.toml
+
+      - name: Use CPU-only PyTorch on Linux
+        if: runner.os == 'Linux'
+        run: echo "UV_TORCH_BACKEND=cpu" >> "$GITHUB_ENV"
 
       - name: Install nox
         run: uv pip install nox --system

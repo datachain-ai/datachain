@@ -27,7 +27,7 @@ lazy_modules = [
 
 
 def _import_time_chain(test_session):
-    proc = subprocess.run(  # noqa: S603
+    proc = subprocess.run(
         [sys.executable, "-X", "importtime", "-c", "import datachain"],
         stderr=subprocess.PIPE,
         check=True,

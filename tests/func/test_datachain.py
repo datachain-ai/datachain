@@ -117,7 +117,7 @@ def test_read_storage_reindex_expired(tmp_dir, test_session):
     pd.DataFrame({"name": ["Charlie", "David"]}).to_parquet(tmp_dir / "test2.parquet")
     # mark dataset as expired
     test_session.catalog.metastore.update_dataset_version(
-        test_session.catalog.get_dataset(lst_ds_name),
+        test_session.catalog.get_dataset(lst_ds_name, versions=["1.0.0"]),
         "1.0.0",
         finished_at=datetime.now(timezone.utc) - timedelta(seconds=LISTING_TTL + 20),
     )
@@ -555,7 +555,10 @@ def test_read_storage_dataset_stats(tmp_dir, test_session):
         (tmp_dir / f"file{i}.txt").write_text(f"file{i}")
 
     chain = dc.read_storage(tmp_dir.as_uri(), session=test_session).save("test-data")
-    version = test_session.catalog.get_dataset(chain.name).get_version(chain.version)
+    version = test_session.catalog.get_dataset(
+        chain.name,
+        versions=[chain.version],
+    ).get_version(chain.version)
     assert version.num_objects == 4
     assert version.size == 20
 
