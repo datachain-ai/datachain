@@ -16,7 +16,7 @@ from tests.utils import DEFAULT_TREE, skip_if_not_sqlite, tree_from_path
 
 def listing_stats(uri, catalog):
     list_dataset_name, _, _ = parse_listing_uri(uri)
-    dataset = catalog.get_dataset(list_dataset_name)
+    dataset = catalog.get_dataset(list_dataset_name, versions=None)
     dataset_version = dataset.get_version(dataset.latest_version)
     return dataset_version.num_objects, dataset_version.size
 
@@ -510,7 +510,9 @@ def test_dataset_stats(test_session):
         file=[dc.File(path=name, size=size) for name, size in values],
         session=test_session,
     ).persist()
-    dataset_version1 = test_session.catalog.get_dataset(ds1.name).get_version("1.0.0")
+    dataset_version1 = test_session.catalog.get_dataset(
+        ds1.name, versions=["1.0.0"]
+    ).get_version("1.0.0")
     assert dataset_version1.num_objects == 3
     assert dataset_version1.size == 6
 
@@ -520,7 +522,9 @@ def test_dataset_stats(test_session):
         file2=[dc.File(path=name, size=size * 2) for name, size in values],
         session=test_session,
     ).persist()
-    dataset_version2 = test_session.catalog.get_dataset(ds2.name).get_version("1.0.0")
+    dataset_version2 = test_session.catalog.get_dataset(
+        ds2.name, versions=["1.0.0"]
+    ).get_version("1.0.0")
     assert dataset_version2.num_objects == 3
     assert dataset_version2.size == 18
 

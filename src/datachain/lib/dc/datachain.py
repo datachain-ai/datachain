@@ -313,6 +313,7 @@ class DataChain:
             self.name,
             namespace_name=self._query.project.namespace.name,
             project_name=self._query.project.name,
+            versions=[self.version] if self.version else None,
             include_incomplete=False,
         )
 

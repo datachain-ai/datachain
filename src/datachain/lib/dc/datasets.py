@@ -395,6 +395,7 @@ def delete_dataset(
                 name,
                 namespace_name=ds_project.namespace.name,
                 project_name=ds_project.name,
+                versions=None,
                 include_incomplete=False,
             ).latest_version
         )
@@ -444,7 +445,11 @@ def move_dataset(
     dest_namespace, dest_project, dest_name = catalog.get_full_dataset_name(dest)
 
     dataset = catalog.get_dataset(
-        name, namespace_name=namespace, project_name=project, include_incomplete=False
+        name,
+        namespace_name=namespace,
+        project_name=project,
+        versions=None,
+        include_incomplete=False,
     )
 
     catalog.update_dataset(
