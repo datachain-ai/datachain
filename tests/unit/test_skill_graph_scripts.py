@@ -12,10 +12,10 @@ SCRIPTS_DIR = str(
 if SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, SCRIPTS_DIR)
 
-from changes import build_changes, compute_dep_changes
-from render_index import render_index
-from schema import parse_dataset_name, type_name
-from utils import (
+from changes import build_changes, compute_dep_changes  # noqa: E402
+from render_index import render_index  # noqa: E402
+from schema import parse_dataset_name, type_name  # noqa: E402
+from utils import (  # noqa: E402
     bucket_file_path,
     dataset_file_path,
     human_size,
@@ -305,7 +305,7 @@ class TestTypeName:
     def test_optional(self):
         from typing import Optional
 
-        result = type_name(Optional[int])
+        result = type_name(Optional[int])  # noqa: UP045
         assert "int" in result
         assert "None" in result
 

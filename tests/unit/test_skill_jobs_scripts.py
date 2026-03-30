@@ -4,8 +4,6 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from utils import read_frontmatter
-
 # Insert the scripts directory so bare imports work.
 SCRIPTS_DIR = str(
     Path(__file__).resolve().parents[2] / "src/datachain/skill/jobs/scripts"
@@ -13,7 +11,12 @@ SCRIPTS_DIR = str(
 if SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, SCRIPTS_DIR)
 
-from jobs import _duration_str, _normalize_status, _parse_dt, _strip_ordinal
+from jobs import (  # noqa: E402
+    _duration_str,
+    _normalize_status,
+    _parse_dt,
+    _strip_ordinal,
+)
 
 # Also test the duplicated frontmatter parser
 GRAPH_SCRIPTS_DIR = str(
@@ -22,6 +25,7 @@ GRAPH_SCRIPTS_DIR = str(
 if GRAPH_SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, GRAPH_SCRIPTS_DIR)
 
+from utils import read_frontmatter  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # _parse_dt
