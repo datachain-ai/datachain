@@ -17,6 +17,9 @@ comment:
   # updates the comment on PRs when coverage changes
   behavior: default
 
+ignore:
+  - "src/datachain/skill/**"
+
 flags:
   datachain:
     paths:
