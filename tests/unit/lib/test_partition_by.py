@@ -437,8 +437,6 @@ def test_group_by_with_functions_in_partition_by(test_session):
 
 
 def test_group_by_with_unlabeled_func_in_partition_by(test_session):
-    """Unlabeled func in partition_by groups correctly; partition col not in output."""
-
     class CustomFile(DataModel):
         path: str
         size: int
