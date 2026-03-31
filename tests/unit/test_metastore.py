@@ -4,11 +4,12 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+import datachain as dc
 from datachain.checkpoint import CheckpointStatus
 from datachain.data_storage.job import JobQueryType, JobStatus
 from datachain.data_storage.serializer import deserialize
 from datachain.data_storage.sqlite import SCHEMA_VERSION, SQLiteMetastore
-from datachain.error import OutdatedDatabaseSchemaError
+from datachain.error import DatasetStateNotLoadedError, OutdatedDatabaseSchemaError
 from tests.conftest import cleanup_sqlite_db
 
 
@@ -128,3 +129,66 @@ def test_expire_checkpoints():
         assert all(cp.status == CheckpointStatus.ACTIVE for cp in job2_checkpoints)
     finally:
         metastore.close_on_exit()
+
+
+def test_get_dataset_can_skip_preview_loading(test_session):
+    ds = dc.read_values(value=["a", "b"], session=test_session).save("preview-ds")
+    metastore = test_session.catalog.metastore
+
+    with_preview = metastore.get_dataset(
+        ds.name,
+        versions=None,
+        include_preview=True,
+    )
+    without_preview = metastore.get_dataset(
+        ds.name,
+        versions=None,
+        include_preview=False,
+    )
+
+    assert with_preview.get_version("1.0.0").preview is not None
+    with pytest.raises(DatasetStateNotLoadedError):
+        _ = without_preview.get_version("1.0.0").preview
+
+
+def test_update_dataset_version_marks_preview_loaded_after_explicit_preview_update(
+    test_session,
+):
+    ds = dc.read_values(value=["a", "b"], session=test_session).save(
+        "preview-update-ds"
+    )
+    metastore = test_session.catalog.metastore
+
+    without_preview = metastore.get_dataset(
+        ds.name,
+        versions=None,
+        include_preview=False,
+    )
+    version = without_preview.get_version("1.0.0")
+
+    with pytest.raises(DatasetStateNotLoadedError):
+        _ = version.preview
+
+    updated = metastore.update_dataset_version(
+        without_preview,
+        "1.0.0",
+        preview=[{"sys__id": 1, "value": "updated"}],
+    )
+
+    assert updated._preview_loaded is True
+    assert updated.preview == [{"sys__id": 1, "value": "updated"}]
+    assert "_preview_loaded" not in updated.to_dict()
+
+
+def test_dataset_record_versions_setter_marks_loaded(test_session):
+    ds = dc.read_values(value=["a", "b"], session=test_session).save("setter-ds")
+    metastore = test_session.catalog.metastore
+
+    record = metastore.get_dataset(ds.name, versions=())
+    with pytest.raises(DatasetStateNotLoadedError):
+        _ = record.versions
+
+    loaded = metastore.get_dataset(ds.name, versions=None)
+    record.versions = loaded.versions
+
+    assert record.versions == loaded.versions

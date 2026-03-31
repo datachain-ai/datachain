@@ -249,6 +249,7 @@ def assert_row_names(
 ) -> None:
     dataset_rows = catalog.ls_dataset_rows(dataset, version, limit=20)
     assert dataset_rows
+    assert dataset.has_version(version)
     preview = dataset.get_version(version).preview
     assert preview
 
@@ -296,6 +297,11 @@ def sort_df(df):
 def df_equal(df1, df2) -> bool:
     """Helper function to check if two dataframes are equal regardless of ordering"""
     return sort_df(df1).equals(sort_df(df2))
+
+
+def is_sha256_hex(s: str) -> bool:
+    """Check if string is a valid SHA256 hex digest."""
+    return len(s) == 64 and all(c in "0123456789abcdef" for c in s)
 
 
 def table_row_count(db, table_name) -> int | None:

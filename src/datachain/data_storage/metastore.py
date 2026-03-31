@@ -3,7 +3,7 @@ import logging
 import os
 import sys
 from abc import ABC, abstractmethod
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager, suppress
 from datetime import datetime, timedelta, timezone
 from functools import cached_property, reduce
@@ -60,7 +60,6 @@ from datachain.error import (
     CheckpointNotFoundError,
     DataChainError,
     DatasetNotFoundError,
-    DatasetVersionNotFoundError,
     NamespaceDeleteNotAllowedError,
     NamespaceNotFoundError,
     ProjectDeleteNotAllowedError,
@@ -378,6 +377,8 @@ class AbstractMetastore(ABC, Serializable):
         self,
         uuid: str,
         include_incomplete: bool = False,
+        *,
+        include_preview: bool = False,
     ) -> DatasetRecord:
         """Gets a dataset that contains a version with the given UUID."""
         raise NotImplementedError
@@ -388,9 +389,19 @@ class AbstractMetastore(ABC, Serializable):
         name: str,  # normal, not full dataset name
         namespace_name: str | None = None,
         project_name: str | None = None,
+        *,
+        versions: Sequence[str] | None = (),
         include_incomplete: bool = True,
+        include_preview: bool = False,
     ) -> DatasetRecord:
-        """Gets a single dataset by name."""
+        """Gets a single dataset by name.
+
+        Args:
+            versions: Controls which dataset versions are loaded.
+                - () (default): no versions are fetched (empty versions list).
+                - None: all versions are fetched.
+                - list[str]: only the specified versions are fetched.
+        """
 
     @abstractmethod
     def update_dataset_status(
@@ -435,8 +446,8 @@ class AbstractMetastore(ABC, Serializable):
         self,
         source_dataset: DatasetRecord,
         source_dataset_version: str,
-        new_source_dataset: DatasetRecord | None = None,
-        new_source_dataset_version: str | None = None,
+        new_source_dataset: DatasetRecord,
+        new_source_dataset_version: str,
     ) -> None:
         """Updates dataset dependency source."""
 
@@ -1218,6 +1229,7 @@ class AbstractDBMetastore(AbstractMetastore):
             name,
             namespace_name=project.namespace.name,
             project_name=project.name,
+            versions=None,
             include_incomplete=True,
         )
 
@@ -1287,6 +1299,7 @@ class AbstractDBMetastore(AbstractMetastore):
             dataset.name,
             namespace_name=dataset.project.namespace.name,
             project_name=dataset.project.name,
+            versions=None,
             include_incomplete=True,
         )
 
@@ -1294,7 +1307,8 @@ class AbstractDBMetastore(AbstractMetastore):
         # the UUID we attempted to insert with the one stored in the DB.
         # If another writer won the ON CONFLICT race, the stored UUID will
         # differ from ours.
-        version_created = dataset.get_version(version).uuid == my_uuid
+        dataset_version = dataset.get_version(version)
+        version_created = dataset_version.uuid == my_uuid
 
         return dataset, version_created
 
@@ -1410,12 +1424,15 @@ class AbstractDBMetastore(AbstractMetastore):
                 else:
                     values[field] = json.dumps(value, serialize_bytes=True)
                 version_values["_preview_data"] = value
+                version_values["_preview_loaded"] = True
             else:
                 values[field] = value
                 version_values[field] = value
 
+        dataset_version = dataset.get_version(version)
+
         if not values:
-            return dataset.get_version(version)
+            return dataset_version
 
         logger.debug(
             "Writing to database for %s@%s: num_objects=%s, size=%s, "
@@ -1435,26 +1452,34 @@ class AbstractDBMetastore(AbstractMetastore):
             .values(values),
         )  # type: ignore [attr-defined]
 
-        for v in dataset.versions:
-            if v.version == version:
-                v.update(**version_values)
-                logger.debug(
-                    "Dataset version updated successfully: %s@%s, "
-                    "final_num_objects=%s, final_size=%s, has_preview=%s",
-                    dataset.name,
-                    version,
-                    v.num_objects,
-                    v.size,
-                    bool(getattr(v, "_preview_data", None)),
-                )
-                return v
-
-        raise DatasetVersionNotFoundError(
-            f"Dataset {dataset.name} does not have version {version}"
+        dataset_version.update(**version_values)
+        logger.debug(
+            "Dataset version updated successfully: %s@%s, "
+            "final_num_objects=%s, final_size=%s, has_preview=%s",
+            dataset.name,
+            version,
+            dataset_version.num_objects,
+            dataset_version.size,
+            bool(getattr(dataset_version, "_preview_data", None)),
         )
+        return dataset_version
 
-    def _parse_dataset(self, rows) -> DatasetRecord | None:
-        versions = [self.dataset_class.parse(*r) for r in rows]
+    def _parse_dataset(
+        self,
+        rows,
+        *,
+        versions_loaded: bool,
+        preview_loaded: bool,
+    ) -> DatasetRecord | None:
+        parse_dataset: Any = self.dataset_class.parse
+        versions = [
+            parse_dataset(
+                *r,
+                versions_loaded=versions_loaded,
+                preview_loaded=preview_loaded,
+            )
+            for r in rows
+        ]
         if not versions:
             return None
         return reduce(lambda ds, version: ds.merge_versions(version), versions)
@@ -1480,6 +1505,8 @@ class AbstractDBMetastore(AbstractMetastore):
         dataset_version_fields: list[str],
         isouter: bool = True,
         include_incomplete: bool = True,
+        include_preview: bool = False,
+        versions: Sequence[str] | None = None,
     ) -> "Select":
         if not (
             self.db.has_table(self._datasets.name)
@@ -1492,11 +1519,39 @@ class AbstractDBMetastore(AbstractMetastore):
         d = self._datasets
         dv = self._datasets_versions
 
+        if versions is not None and not versions:
+            query = self._datasets_select(
+                *(getattr(n.c, f) for f in namespace_fields),
+                *(getattr(p.c, f) for f in project_fields),
+                *(getattr(d.c, f) for f in dataset_fields),
+            )
+            j = n.join(p, n.c.id == p.c.namespace_id).join(d, p.c.id == d.c.project_id)
+            query = query.select_from(j)
+            if not include_incomplete:
+                query = query.where(
+                    select(literal(1))
+                    .where(
+                        and_(
+                            dv.c.dataset_id == d.c.id,
+                            dv.c.status == DatasetStatus.COMPLETE,
+                        )
+                    )
+                    .exists()
+                )
+            return query
+
+        version_columns = []
+        for field in dataset_version_fields:
+            if field == "preview" and not include_preview:
+                version_columns.append(literal(None).label("preview"))
+                continue
+            version_columns.append(getattr(dv.c, field))
+
         query = self._datasets_select(
             *(getattr(n.c, f) for f in namespace_fields),
             *(getattr(p.c, f) for f in project_fields),
             *(getattr(d.c, f) for f in dataset_fields),
-            *(getattr(dv.c, f) for f in dataset_version_fields),
+            *version_columns,
         )
 
         # Build join condition with status filter
@@ -1510,9 +1565,20 @@ class AbstractDBMetastore(AbstractMetastore):
             .join(d, p.c.id == d.c.project_id)
             .join(dv, join_condition, isouter=isouter)
         )
-        return query.select_from(j)
+        query = query.select_from(j)
 
-    def _base_dataset_query(self, include_incomplete: bool = True) -> "Select":
+        if versions is not None:
+            query = query.where(dv.c.version.in_(versions))
+
+        return query
+
+    def _base_dataset_query(
+        self,
+        include_incomplete: bool = True,
+        *,
+        include_preview: bool = False,
+        versions: Sequence[str] | None = None,
+    ) -> "Select":
         # When filtering by status, use inner join so datasets without COMPLETE
         # versions are excluded
         isouter = include_incomplete
@@ -1523,6 +1589,8 @@ class AbstractDBMetastore(AbstractMetastore):
             self._dataset_version_fields,
             isouter=isouter,
             include_incomplete=include_incomplete,
+            include_preview=include_preview,
+            versions=versions,
         )
 
     def _base_list_datasets_query(self, include_incomplete: bool = True) -> "Select":
@@ -1573,12 +1641,21 @@ class AbstractDBMetastore(AbstractMetastore):
         self,
         uuid: str,
         include_incomplete: bool = False,
+        *,
+        include_preview: bool = False,
     ) -> DatasetRecord:
         """Gets a dataset that contains a version with the given UUID."""
         dv = self._datasets_versions
-        query = self._base_dataset_query(include_incomplete=include_incomplete)
+        query = self._base_dataset_query(
+            include_incomplete=include_incomplete,
+            include_preview=include_preview,
+        )
         query = query.where(dv.c.uuid == uuid)
-        ds = self._parse_dataset(self.db.execute(query))
+        ds = self._parse_dataset(
+            self.db.execute(query),
+            versions_loaded=True,
+            preview_loaded=include_preview,
+        )
         if not ds:
             raise DatasetNotFoundError(f"Dataset with version uuid {uuid} not found.")
         return ds
@@ -1588,7 +1665,10 @@ class AbstractDBMetastore(AbstractMetastore):
         name: str,  # normal, not full dataset name
         namespace_name: str | None = None,
         project_name: str | None = None,
+        *,
+        versions: Sequence[str] | None = (),
         include_incomplete: bool = True,
+        include_preview: bool = False,
     ) -> DatasetRecord:
         """
         Gets a single dataset in project by dataset name.
@@ -1599,13 +1679,23 @@ class AbstractDBMetastore(AbstractMetastore):
         d = self._datasets
         n = self._namespaces
         p = self._projects
-        query = self._base_dataset_query(include_incomplete=include_incomplete)
+
+        query = self._base_dataset_query(
+            include_incomplete=include_incomplete,
+            include_preview=include_preview,
+            versions=versions,
+        )
         query = query.where(
             d.c.name == name,
             n.c.name == namespace_name,
             p.c.name == project_name,
         )  # type: ignore [attr-defined]
-        ds = self._parse_dataset(self.db.execute(query))
+
+        ds = self._parse_dataset(
+            self.db.execute(query),
+            versions_loaded=versions is None or bool(versions),
+            preview_loaded=include_preview,
+        )
         if not ds:
             raise DatasetNotFoundError(
                 f"Dataset {name} not found in namespace {namespace_name}"
@@ -1659,7 +1749,10 @@ class AbstractDBMetastore(AbstractMetastore):
             *(getattr(n.c, f) for f in self._namespaces_fields),
             *(getattr(p.c, f) for f in self._projects_fields),
             *(getattr(d.c, f) for f in self._dataset_fields),
-            *(getattr(dv.c, f) for f in self._dataset_version_fields),
+            *(
+                literal(None).label("preview") if f == "preview" else getattr(dv.c, f)
+                for f in self._dataset_version_fields
+            ),
         )
         base_from = (
             n.join(p, n.c.id == p.c.namespace_id)
@@ -1729,7 +1822,7 @@ class AbstractDBMetastore(AbstractMetastore):
         # Parse results and return (dataset, version) tuples
         results = []
         for row in self.db.execute(query):
-            dataset = self.dataset_class.parse(*row)
+            dataset = self.dataset_class.parse(*row, preview_loaded=False)
             # Each DatasetRecord has one version (the failed one from this row)
             if dataset.versions:
                 version = dataset.versions[0].version
@@ -1819,13 +1912,10 @@ class AbstractDBMetastore(AbstractMetastore):
         self,
         source_dataset: DatasetRecord,
         source_dataset_version: str,
-        new_source_dataset: DatasetRecord | None = None,
-        new_source_dataset_version: str | None = None,
+        new_source_dataset: DatasetRecord,
+        new_source_dataset_version: str,
     ) -> None:
         dd = self._datasets_dependencies
-
-        if not new_source_dataset:
-            new_source_dataset = source_dataset
 
         q = self._datasets_dependencies_update().where(
             dd.c.source_dataset_id == source_dataset.id
@@ -1835,11 +1925,12 @@ class AbstractDBMetastore(AbstractMetastore):
             == source_dataset.get_version(source_dataset_version).id
         )
 
-        data = {"source_dataset_id": new_source_dataset.id}
-        if new_source_dataset_version:
-            data["source_dataset_version_id"] = new_source_dataset.get_version(
+        data = {
+            "source_dataset_id": new_source_dataset.id,
+            "source_dataset_version_id": new_source_dataset.get_version(
                 new_source_dataset_version
-            ).id
+            ).id,
+        }
 
         q = q.values(**data)
         self.db.execute(q)
