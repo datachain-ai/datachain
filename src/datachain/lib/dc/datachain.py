@@ -1341,9 +1341,9 @@ class DataChain:
         keep_columns: list[str] = []
         partial_fields: list[str] = []  # Track specific fields for partial creation
         schema_partition_by: list[str] = []
-        # Start counter past any existing gr_N columns to avoid shadowing
+        # Start counter past any existing gr_N columns and kwargs to avoid collisions
         partition_counter = 0
-        for name in self.signals_schema.values:
+        for name in (*self.signals_schema.values, *kwargs):
             if name.startswith("gr_"):
                 try:
                     partition_counter = max(partition_counter, int(name[3:]) + 1)
