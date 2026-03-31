@@ -29,7 +29,7 @@ ColT = Union[str, tuple, Column, ColumnExpr, "Func"]
 
 class Func(Function):  # noqa: PLW1641
     """A built-in function applied to dataset columns, created by calling functions
-    from the [`func`][datachain.func] module.
+    from the `func` module.
 
     There are three kinds of functions:
 
@@ -41,8 +41,7 @@ class Func(Function):  # noqa: PLW1641
     - **Aggregate** — collapse rows into a single value, used in
       [`group_by`][datachain.lib.dc.DataChain.group_by]:
       `func.count()`, `func.sum("file.size")`, `func.avg("score")`
-    - **Window** — compute over a partition of rows, require
-      [`.over()`][datachain.func.func.Func.over]:
+    - **Window** — compute over a partition of rows, require `.over()`:
       `func.row_number().over(window)`, `func.rank().over(window)`
     """
 
