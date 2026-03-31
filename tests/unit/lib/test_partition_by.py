@@ -802,5 +802,12 @@ def test_name_collision_in_multiple_group_by(test_session):
     )
     assert set(ds2.signals_schema.values.keys()) == {"gr_2", "gr_3", "total"}
 
-    result = sorted(zip(ds2.to_values("gr_2"), ds2.to_values("gr_3"), ds2.to_values("total")))
+    result = sorted(
+        zip(
+            ds2.to_values("gr_2"),
+            ds2.to_values("gr_3"),
+            ds2.to_values("total"),
+            strict=True,
+        )
+    )
     assert result == [(22, 2, 1), (24, 2, 1), (42, 3, 1), (44, 3, 1)]

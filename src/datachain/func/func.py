@@ -3,8 +3,8 @@ from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any, Union, get_args, get_origin
 
 from sqlalchemy import BindParameter, Case, Integer, cast, desc
-from sqlalchemy.sql.elements import ColumnElement
 from sqlalchemy.sql import func as sa_func
+from sqlalchemy.sql.elements import ColumnElement
 
 from datachain.lib.convert.python_to_sql import python_to_sql
 from datachain.lib.convert.sql_to_python import sql_to_python
