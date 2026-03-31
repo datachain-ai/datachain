@@ -781,3 +781,26 @@ def test_group_by_partition_by_name_conflicts_with_agg_column(test_session):
             parent=func.count(),
             partition_by=func.path.parent("file.path").label("parent"),
         )
+
+
+def test_name_collision_in_multiple_group_by(test_session):
+    ds = (
+        dc.read_values(
+            a=[1, 1, 2, 2], b=[10, 20, 10, 20], c=[100, 200, 100, 200],
+            session=test_session,
+        )
+        .group_by(
+            cnt=func.count(),
+            partition_by=[dc.C("a") + dc.C("b"), dc.C("c") // 100],
+        )
+    )
+    assert set(ds.signals_schema.values.keys()) == {"gr_0", "gr_1", "cnt"}
+
+    ds2 = ds.group_by(
+        total=func.sum("cnt"),
+        partition_by=[dc.C("gr_0") * 2, dc.C("gr_1") + 1],
+    )
+    assert set(ds2.signals_schema.values.keys()) == {"gr_2", "gr_3", "total"}
+
+    result = sorted(zip(ds2.to_values("gr_2"), ds2.to_values("gr_3"), ds2.to_values("total")))
+    assert result == [(22, 2, 1), (24, 2, 1), (42, 3, 1), (44, 3, 1)]
