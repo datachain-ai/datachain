@@ -89,9 +89,7 @@ def render_index(plan: dict) -> str:
 
             link = f"[{uri}]({file_path}.md)"
 
-            lines.append(
-                f"| {link} | {total_files} | {total_size} | {scanned_at} |"
-            )
+            lines.append(f"| {link} | {total_files} | {total_size} | {scanned_at} |")
 
         lines.append("")
 

@@ -126,9 +126,7 @@ def plan_buckets() -> list[dict]:
     buckets_out = []
     for listing in listings:
         uri = listing.uri.rstrip("/") + "/"
-        finished_at = (
-            listing.finished_at.isoformat() if listing.finished_at else None
-        )
+        finished_at = listing.finished_at.isoformat() if listing.finished_at else None
 
         parts = parse_uri(uri)
         file_path = bucket_file_path(uri)

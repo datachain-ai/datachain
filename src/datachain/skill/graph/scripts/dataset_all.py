@@ -74,7 +74,9 @@ def _fetch_all_versions(name: str) -> dict:  # noqa: C901, PLR0912, PLR0915
     versions_sorted_obj = []
     if catalog is not None:
         try:
-            dataset_record = catalog.get_dataset(bare_name, versions=None, include_incomplete=False)
+            dataset_record = catalog.get_dataset(
+                bare_name, versions=None, include_incomplete=False
+            )
             versions_sorted_obj = sorted(
                 dataset_record.versions, key=lambda v: v.version_value
             )
