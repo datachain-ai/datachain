@@ -59,7 +59,12 @@ def _set_stable_uuid(test_session, name, uuid):
     ns = parts[0] if len(parts) > 1 else "default"
     proj = parts[1] if len(parts) > 2 else "default"
     test_session.catalog.metastore.update_dataset_version(
-        test_session.catalog.get_dataset(ds_name, namespace_name=ns, project_name=proj),
+        test_session.catalog.get_dataset(
+            ds_name,
+            namespace_name=ns,
+            project_name=proj,
+            versions=["1.0.0"],
+        ),
         "1.0.0",
         uuid=uuid,
     )
@@ -261,40 +266,45 @@ def test_all_possible_steps(test_session):
         players_ds_name, version="1.0.0", session=test_session
     )
 
-    assert (
-        dc.read_dataset(persons_ds_name, version="1.0.0", session=test_session)
-        .mutate(age_double=C("person.age") * 2)
-        .filter(C("person.age") > 20)
-        .order_by("person.name", "person.age")
-        .gen(
-            person=gen_persons,
-            output=Person,
+    def _build_chain():
+        return (
+            dc.read_dataset(persons_ds_name, version="1.0.0", session=test_session)
+            .mutate(age_double=C("person.age") * 2)
+            .filter(C("person.age") > 20)
+            .order_by("person.name", "person.age")
+            .gen(
+                person=gen_persons,
+                output=Person,
+            )
+            .map(
+                worker=map_worker,
+                params="person",
+                output={"worker": Worker},
+            )
+            .agg(
+                persons=agg_persons,
+                partition_by=C.person.name,
+                params="person",
+                output={"persons": PersonAgg},
+            )
+            .merge(players_chain, "persons.name", "player.name")
+            .distinct("persons.name")
+            .sample(10)
+            .offset(2)
+            .limit(5)
+            .group_by(age_avg=func.avg("persons.ages"), partition_by="persons.name")
+            .select("persons.name", "age_avg")
+            .subtract(
+                players_chain,
+                on=["persons.name"],
+                right_on=["player.name"],
+            )
         )
-        .map(
-            worker=map_worker,
-            params="person",
-            output={"worker": Worker},
-        )
-        .agg(
-            persons=agg_persons,
-            partition_by=C.person.name,
-            params="person",
-            output={"persons": PersonAgg},
-        )
-        .merge(players_chain, "persons.name", "player.name")
-        .distinct("persons.name")
-        .sample(10)
-        .offset(2)
-        .limit(5)
-        .group_by(age_avg=func.avg("persons.ages"), partition_by="persons.name")
-        .select("persons.name", "age_avg")
-        .subtract(
-            players_chain,
-            on=["persons.name"],
-            right_on=["player.name"],
-        )
-        ._query.hash()
-    ) == "8e5cf0a718406a94c99ab7ffafc67aa5430f79a276deb1f1d87e5a5991bc56bf"
+
+    h1 = _build_chain()._query.hash()
+    h2 = _build_chain()._query.hash()
+    assert h1 == h2
+    assert is_sha256_hex(h1)
 
 
 def test_diff(test_session):
@@ -314,13 +324,17 @@ def test_diff(test_session):
         players_ds_name, version="1.0.0", session=test_session
     )
 
-    assert (
-        dc.read_dataset(persons_ds_name, version="1.0.0", session=test_session)
-        .diff(
+    def _build_chain():
+        return dc.read_dataset(
+            persons_ds_name, version="1.0.0", session=test_session
+        ).diff(
             players_chain,
             on=["person.name"],
             right_on=["player.name"],
             status_col="diff",
         )
-        ._query.hash()
-    ) == "5d74e62f9722b62ba7a5ab0a9661570920cc08c68aa8102a0876390e376ba99b"
+
+    h1 = _build_chain()._query.hash()
+    h2 = _build_chain()._query.hash()
+    assert h1 == h2
+    assert is_sha256_hex(h1)

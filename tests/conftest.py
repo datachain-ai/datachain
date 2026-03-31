@@ -26,7 +26,12 @@ from datachain.data_storage.sqlite import (
     SQLiteMetastore,
     SQLiteWarehouse,
 )
-from datachain.dataset import DatasetRecord, DatasetVersion
+from datachain.dataset import (
+    DatasetListRecord,
+    DatasetListVersion,
+    DatasetRecord,
+    DatasetVersion,
+)
 from datachain.lib.dc import Sys
 from datachain.namespace import Namespace
 from datachain.project import Project
@@ -636,9 +641,10 @@ def animal_dataset(listed_bucket, cloud_test_catalog):
     name = uuid.uuid4().hex
     catalog = cloud_test_catalog.catalog
     src_uri = cloud_test_catalog.src_uri
-    dataset = catalog.create_dataset_from_sources(
+    catalog.create_dataset_from_sources(
         name, [src_uri], catalog.metastore.default_project, recursive=True
     )
+    dataset = catalog.get_dataset(name, versions=["1.0.0"])
     return catalog.update_dataset(
         dataset,
         description="animal dataset",
@@ -651,12 +657,13 @@ def dogs_dataset(listed_bucket, cloud_test_catalog):
     name = uuid.uuid4().hex
     catalog = cloud_test_catalog.catalog
     src_uri = cloud_test_catalog.src_uri
-    dataset = catalog.create_dataset_from_sources(
+    catalog.create_dataset_from_sources(
         name,
         [f"{src_uri}/dogs/"],
         catalog.metastore.default_project,
         recursive=True,
     )
+    dataset = catalog.get_dataset(name, versions=["1.0.0"])
     return catalog.update_dataset(
         dataset,
         description="dogs dataset",
@@ -669,9 +676,10 @@ def cats_dataset(listed_bucket, cloud_test_catalog):
     name = uuid.uuid4().hex
     catalog = cloud_test_catalog.catalog
     src_uri = cloud_test_catalog.src_uri
-    dataset = catalog.create_dataset_from_sources(
+    catalog.create_dataset_from_sources(
         name, [f"{src_uri}/cats/*"], catalog.metastore.default_project, recursive=True
     )
+    dataset = catalog.get_dataset(name, versions=["1.0.0"])
     return catalog.update_dataset(
         dataset,
         description="cats dataset",
@@ -686,7 +694,7 @@ def dataset_record():
         name=f"ds_{uuid.uuid4().hex}",
         description="",
         attrs=[],
-        versions=[
+        _versions=[
             DatasetVersion(
                 id=1,
                 uuid=uuid.uuid4().hex,
@@ -705,6 +713,7 @@ def dataset_record():
                 _preview_data=[],
             )
         ],
+        _versions_loaded=True,
         status=1,
         schema={},
         feature_schema={},
@@ -722,6 +731,61 @@ def dataset_record():
                 descr="",
             ),
         ),
+    )
+
+
+@pytest.fixture
+def dataset_list_record():
+    return DatasetListRecord(
+        id=1,
+        name=f"ds_{uuid.uuid4().hex}",
+        project=Project(
+            id=1,
+            uuid=str(uuid.uuid4()),
+            name="animals",
+            created_at=datetime.now(),
+            descr="",
+            namespace=Namespace(
+                id=1,
+                uuid=str(uuid.uuid4()),
+                name="dev",
+                created_at=datetime.now(),
+                descr="",
+            ),
+        ),
+        description="",
+        attrs=[],
+        versions=[
+            DatasetListVersion(
+                id=1,
+                uuid=uuid.uuid4().hex,
+                dataset_id=1,
+                version="1.0.0",
+                status=4,
+                created_at=datetime.now(),
+                finished_at=datetime.now(),
+                error_message="",
+                error_stack="",
+                num_objects=50,
+                size=5000,
+                query_script="",
+                job_id="",
+            ),
+            DatasetListVersion(
+                id=2,
+                uuid=uuid.uuid4().hex,
+                dataset_id=1,
+                version="2.0.0",
+                status=4,
+                created_at=datetime.now(),
+                finished_at=None,
+                error_message="",
+                error_stack="",
+                num_objects=100,
+                size=10000,
+            ),
+        ],
+        created_at=datetime.now(),
     )
 
 

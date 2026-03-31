@@ -55,7 +55,7 @@ def dataset_complete(test_session, job) -> DatasetRecord:
 def test_mark_job_dataset_versions_as_failed(test_session, job, dataset_created):
     """Test that mark_job_dataset_versions_as_failed marks versions as FAILED."""
     # Verify initial status is CREATED
-    dataset = test_session.catalog.get_dataset(dataset_created.name)
+    dataset = test_session.catalog.get_dataset(dataset_created.name, versions=None)
     dataset_version = dataset.get_version(dataset.latest_version)
     assert dataset_version.status == DatasetStatus.CREATED
     assert dataset_version.job_id == job.id
@@ -64,7 +64,7 @@ def test_mark_job_dataset_versions_as_failed(test_session, job, dataset_created)
     test_session.catalog.metastore.mark_job_dataset_versions_as_failed(job.id)
 
     # Verify status is now FAILED
-    dataset = test_session.catalog.get_dataset(dataset_created.name)
+    dataset = test_session.catalog.get_dataset(dataset_created.name, versions=None)
     dataset_version = dataset.get_version(dataset.latest_version)
     assert dataset_version.status == DatasetStatus.FAILED
     assert dataset_version.finished_at is not None
@@ -75,7 +75,7 @@ def test_mark_job_dataset_versions_as_failed_skips_complete(
 ):
     """Test that mark_job_dataset_versions_as_failed skips COMPLETE versions."""
     # Verify initial status is COMPLETE
-    dataset = test_session.catalog.get_dataset(dataset_complete.name)
+    dataset = test_session.catalog.get_dataset(dataset_complete.name, versions=None)
     dataset_version = dataset.get_version(dataset_complete.latest_version)
     assert dataset_version.status == DatasetStatus.COMPLETE
     assert dataset_version.job_id == job.id
@@ -84,7 +84,7 @@ def test_mark_job_dataset_versions_as_failed_skips_complete(
     test_session.catalog.metastore.mark_job_dataset_versions_as_failed(job.id)
 
     # Verify COMPLETE status is unchanged
-    dataset = test_session.catalog.get_dataset(dataset_complete.name)
+    dataset = test_session.catalog.get_dataset(dataset_complete.name, versions=None)
     dataset_version = dataset.get_version(dataset_complete.latest_version)
     assert dataset_version.status == DatasetStatus.COMPLETE
 

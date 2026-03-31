@@ -121,7 +121,7 @@ def test_cleanup_temp_datasets_all_states(catalog, project):
         ds_created = dc.read_dataset(fqn, session=session).save(
             session.generate_temp_dataset_name()
         )
-        ds_created_record = catalog.get_dataset(ds_created.name)
+        ds_created_record = catalog.get_dataset(ds_created.name, versions=["1.0.0"])
         catalog.metastore.update_dataset_status(
             ds_created_record, DatasetStatus.CREATED, version="1.0.0"
         )
@@ -135,7 +135,7 @@ def test_cleanup_temp_datasets_all_states(catalog, project):
         ds_failed = dc.read_dataset(fqn, session=session).save(
             session.generate_temp_dataset_name()
         )
-        ds_failed_record = catalog.get_dataset(ds_failed.name)
+        ds_failed_record = catalog.get_dataset(ds_failed.name, versions=["1.0.0"])
         catalog.metastore.update_dataset_status(
             ds_failed_record, DatasetStatus.FAILED, version="1.0.0"
         )

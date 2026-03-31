@@ -179,6 +179,7 @@ def test_pull_dataset_success(
         local_ds_name or "dogs",
         namespace_name=project.namespace.name,
         project_name=project.name,
+        versions=None,
     )
     assert dataset.project.namespace.uuid == REMOTE_NAMESPACE_UUID
     assert dataset.project.uuid == REMOTE_PROJECT_UUID
@@ -196,6 +197,15 @@ def test_pull_dataset_success(
     assert dataset_version.num_objects == 4
     assert dataset_version.size == 15
     assert dataset_version.uuid == REMOTE_DATASET_UUID
+
+    dataset = catalog.get_dataset(
+        dataset.name,
+        namespace_name=dataset.project.namespace.name,
+        project_name=dataset.project.name,
+        versions=[local_ds_version or "1.0.0"],
+        include_preview=True,
+        include_incomplete=True,
+    )
 
     assert_row_names(
         catalog,
@@ -377,7 +387,10 @@ def test_pull_dataset_already_exists_locally(
 
     project = catalog.metastore.get_project(REMOTE_PROJECT_NAME, REMOTE_NAMESPACE_NAME)
     other = catalog.get_dataset(
-        "other", namespace_name=project.namespace.name, project_name=project.name
+        "other",
+        namespace_name=project.namespace.name,
+        project_name=project.name,
+        versions=["1.0.0"],
     )
     other_version = other.get_version("1.0.0")
     assert other_version.uuid == REMOTE_DATASET_UUID
@@ -489,6 +502,7 @@ def test_pull_dataset_empty_signed_urls(
         "dogs",
         namespace_name=REMOTE_NAMESPACE_NAME,
         project_name=REMOTE_PROJECT_NAME,
+        versions=["1.0.0"],
     )
     assert dataset.status == DatasetStatus.COMPLETE
 
@@ -700,6 +714,7 @@ def test_pull_failure_after_saving_leaves_incomplete_version_and_retry_succeeds(
         "dogs",
         namespace_name=REMOTE_NAMESPACE_NAME,
         project_name=REMOTE_PROJECT_NAME,
+        versions=None,
         include_incomplete=True,
     )
     assert dataset.get_version("1.0.0").status != DatasetStatus.COMPLETE
@@ -756,6 +771,7 @@ def test_pull_cleans_stale_incomplete_version_with_different_uuid(
         "dogs",
         namespace_name=REMOTE_NAMESPACE_NAME,
         project_name=REMOTE_PROJECT_NAME,
+        versions=None,
         include_incomplete=True,
     )
     assert ds.get_version("1.0.0").uuid == stale_uuid
@@ -775,6 +791,7 @@ def test_pull_cleans_stale_incomplete_version_with_different_uuid(
         "dogs",
         namespace_name=REMOTE_NAMESPACE_NAME,
         project_name=REMOTE_PROJECT_NAME,
+        versions=None,
     )
     assert dataset.status == DatasetStatus.COMPLETE
     assert dataset.get_version("1.0.0").uuid == REMOTE_DATASET_UUID

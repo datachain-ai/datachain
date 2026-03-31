@@ -183,8 +183,15 @@ def test_create_dataset_from_sources(listed_bucket, cloud_test_catalog, project)
     src_uri = cloud_test_catalog.src_uri
     catalog = cloud_test_catalog.catalog
 
-    dataset = catalog.create_dataset_from_sources(
+    chain = catalog.create_dataset_from_sources(
         dataset_name, [f"{src_uri}/dogs/"], project, recursive=True
+    )
+    dataset = catalog.get_dataset(
+        chain.name,
+        namespace_name=project.namespace.name,
+        project_name=project.name,
+        versions=None,
+        include_preview=True,
     )
 
     dataset_version = dataset.get_version(dataset.latest_version)
@@ -222,8 +229,15 @@ def test_create_dataset_from_sources_dataset(cloud_test_catalog, dogs_dataset, p
     catalog = cloud_test_catalog.catalog
     ds_uri = f"ds://{dogs_dataset.full_name}"
 
-    dataset = catalog.create_dataset_from_sources(
+    chain = catalog.create_dataset_from_sources(
         dataset_name, [ds_uri], project, recursive=True
+    )
+    dataset = catalog.get_dataset(
+        chain.name,
+        namespace_name=project.namespace.name,
+        project_name=project.name,
+        versions=None,
+        include_preview=True,
     )
 
     dataset_version = dataset.get_version(dataset.latest_version)
@@ -313,8 +327,23 @@ def test_create_dataset_whole_bucket(listed_bucket, cloud_test_catalog, project)
         "dog4",
     }
 
-    assert_row_names(catalog, ds1.dataset, ds1.dataset.latest_version, expected_rows)
-    assert_row_names(catalog, ds2.dataset, ds2.dataset.latest_version, expected_rows)
+    ds1_dataset = catalog.get_dataset(
+        ds1.dataset.name,
+        namespace_name=ds1.dataset.project.namespace.name,
+        project_name=ds1.dataset.project.name,
+        versions=[ds1.dataset.latest_version],
+        include_preview=True,
+    )
+    ds2_dataset = catalog.get_dataset(
+        ds2.dataset.name,
+        namespace_name=ds2.dataset.project.namespace.name,
+        project_name=ds2.dataset.project.name,
+        versions=[ds2.dataset.latest_version],
+        include_preview=True,
+    )
+
+    assert_row_names(catalog, ds1_dataset, ds1_dataset.latest_version, expected_rows)
+    assert_row_names(catalog, ds2_dataset, ds2_dataset.latest_version, expected_rows)
 
 
 def test_remove_dataset(test_session, saved_dataset):
@@ -383,7 +412,7 @@ def test_edit_dataset(test_session, saved_dataset):
         attrs=["cats", "birds"],
     )
 
-    dataset = catalog.get_dataset(dataset_new_name)
+    dataset = catalog.get_dataset(dataset_new_name, versions=["1.0.0"])
     assert dataset.name == dataset_new_name
     assert dataset.description == "new description"
     assert dataset.attrs == ["cats", "birds"]
@@ -505,7 +534,7 @@ def test_edit_dataset_same_name(test_session, saved_dataset):
         saved_dataset.name, saved_dataset.project, new_name=dataset_new_name
     )
 
-    dataset = catalog.get_dataset(dataset_new_name)
+    dataset = catalog.get_dataset(dataset_new_name, versions=None)
     assert dataset.name == dataset_new_name
 
     # check if dataset tables are renamed correctly
@@ -536,7 +565,7 @@ def test_edit_dataset_remove_attrs_and_description(test_session, saved_dataset):
         attrs=[],
     )
 
-    dataset = catalog.get_dataset(dataset_new_name)
+    dataset = catalog.get_dataset(dataset_new_name, versions=None)
     assert [v.version for v in dataset.versions] == ["1.0.0"]
     assert dataset.name == dataset_new_name
     assert dataset.description == ""
@@ -682,7 +711,15 @@ def test_dataset_preview_custom_columns(cloud_test_catalog, dogs_dataset):
         .save("dogs_custom_columns")
     )
 
-    for r in catalog.get_dataset("dogs_custom_columns").get_version("1.0.0").preview:
+    for r in (
+        catalog.get_dataset(
+            "dogs_custom_columns",
+            versions=["1.0.0"],
+            include_preview=True,
+        )
+        .get_version("1.0.0")
+        .preview
+    ):
         assert r["int_col"] == 5
         assert r["int_col_32"] == 5
         assert r["int_col_64"] == 5
@@ -711,7 +748,15 @@ def test_dataset_preview_order(test_session):
 
     preview_values = []
 
-    for r in catalog.get_dataset(dataset_name).get_version("1.0.0").preview:
+    for r in (
+        catalog.get_dataset(
+            dataset_name,
+            versions=["1.0.0"],
+            include_preview=True,
+        )
+        .get_version("1.0.0")
+        .preview
+    ):
         id = ids.pop()
         o = order.pop()
         entry = (id, o)
@@ -720,14 +765,30 @@ def test_dataset_preview_order(test_session):
 
     dc.read_dataset(dataset_name, session=test_session).save(dataset_name)
 
-    for r in catalog.get_dataset(dataset_name).get_version("1.0.1").preview:
+    for r in (
+        catalog.get_dataset(
+            dataset_name,
+            versions=["1.0.1"],
+            include_preview=True,
+        )
+        .get_version("1.0.1")
+        .preview
+    ):
         assert (r["id"], r["order"]) == preview_values.pop(0)
 
     dc.read_dataset(dataset_name, version="1.0.1", session=test_session).order_by(
         "id"
     ).save(dataset_name)
 
-    for r in catalog.get_dataset(dataset_name).get_version("1.0.2").preview:
+    for r in (
+        catalog.get_dataset(
+            dataset_name,
+            versions=["1.0.2"],
+            include_preview=True,
+        )
+        .get_version("1.0.2")
+        .preview
+    ):
         assert r["id"] == ids.pop(0)
         assert r["order"] == order.pop(0)
 
@@ -743,7 +804,15 @@ def test_dataset_preview_last_modified(cloud_test_catalog, dogs_dataset):
         catalog=catalog,
     ).save("dogs_custom_columns", project=project)
 
-    for r in catalog.get_dataset("dogs_custom_columns").get_version("1.0.0").preview:
+    for r in (
+        catalog.get_dataset(
+            "dogs_custom_columns",
+            versions=["1.0.0"],
+            include_preview=True,
+        )
+        .get_version("1.0.0")
+        .preview
+    ):
         assert isinstance(r.get("file__last_modified"), str)
 
 
@@ -777,7 +846,9 @@ def test_row_random(cloud_test_catalog):
 
 def test_dataset_stats_registered_ds(cloud_test_catalog, dogs_dataset):
     catalog = cloud_test_catalog.catalog
-    dataset = catalog.get_dataset(dogs_dataset.name).get_version("1.0.0")
+    dataset = catalog.get_dataset(dogs_dataset.name, versions=["1.0.0"]).get_version(
+        "1.0.0"
+    )
     assert dataset.num_objects == 4
     assert dataset.size == 15
     rows_count = catalog.warehouse.dataset_rows_count(dogs_dataset, "1.0.0")
@@ -796,7 +867,7 @@ def test_dataset_storage_dependencies(cloud_test_catalog, cloud_type, indirect):
     dc.read_storage(uri, session=ctc.session).save(ds_name)
 
     lst_ds_name, _, _ = parse_listing_uri(uri)
-    lst_dataset = catalog.get_dataset(lst_ds_name)
+    lst_dataset = catalog.get_dataset(lst_ds_name, versions=["1.0.0"])
 
     assert [
         dataset_dependency_asdict(d)
