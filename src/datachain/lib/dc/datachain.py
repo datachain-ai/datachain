@@ -218,14 +218,6 @@ class DataChain:
         self.print_schema(file=file)
         return file.getvalue()
 
-    def hash(self) -> str:
-        """
-        Calculates SHA hash of this chain. Hash calculation is fast and consistent.
-        It takes into account all the steps added to the chain and their inputs.
-        Order of the steps is important.
-        """
-        return self._query.hash()
-
     @property
     def empty(self) -> bool:
         """Returns True if chain has zero number of rows"""
@@ -637,6 +629,9 @@ class DataChain:
             project_name=self._settings.project,
         )
         project = self._get_or_create_project(namespace_name, project_name)
+
+        # Resolve all listings (including sub-queries in union/join) before hashing
+        self._query.resolve_all_listings()
 
         # Calculate hash including dataset name and job context to avoid conflicts
         import hashlib

@@ -196,6 +196,11 @@ class Step(ABC):
     ) -> list["DatasetQuery"]:
         return []
 
+    @property
+    def sub_queries(self) -> list["DatasetQuery"]:
+        """Immediate sub-queries contained in this step."""
+        return []
+
     def replace_source(
         self,
         source: "DatasetQuery",
@@ -285,6 +290,10 @@ class DatasetDiffOperation(Step):
         self,
     ) -> list["DatasetQuery"]:
         return self.dq.delta_sources()
+
+    @property
+    def sub_queries(self) -> list["DatasetQuery"]:
+        return [self.dq]
 
     def replace_source(
         self,
@@ -1868,6 +1877,10 @@ class SQLUnion(Step):
     ) -> list["DatasetQuery"]:
         return [*self.query1.delta_sources(), *self.query2.delta_sources()]
 
+    @property
+    def sub_queries(self) -> list["DatasetQuery"]:
+        return [self.query1, self.query2]
+
     def replace_source(
         self,
         source: "DatasetQuery",
@@ -1955,6 +1968,10 @@ class SQLJoin(Step):
         self,
     ) -> list["DatasetQuery"]:
         return [*self.query1.delta_sources(), *self.query2.delta_sources()]
+
+    @property
+    def sub_queries(self) -> list["DatasetQuery"]:
+        return [self.query1, self.query2]
 
     def replace_source(
         self,
@@ -2308,7 +2325,10 @@ class DatasetQuery:
         if self.starting_step:
             return self.starting_step.hash()
         if self.list_ds_name:
-            return self.list_ds_name
+            raise RuntimeError(
+                "Cannot compute hash: listing not resolved. "
+                "Call resolve_listing() first."
+            )
         return ""
 
     @property
@@ -2380,7 +2400,7 @@ class DatasetQuery:
         """Setting listing function to be run if needed"""
         self.listing_fn = fn
 
-    def apply_listing_pre_step(self) -> None:
+    def resolve_listing(self) -> None:
         """Runs listing pre-step if needed"""
         if self.list_ds_name and not self.starting_step:
             listing_ds = None
@@ -2405,11 +2425,20 @@ class DatasetQuery:
             # at this point we know what is our starting listing dataset name
             self._set_starting_step(listing_ds)  # type: ignore [arg-type]
 
+    def resolve_all_listings(self) -> None:
+        """Recursively resolve listings for this query and all sub-queries."""
+        self.resolve_listing()
+        for step in self.steps:
+            for sub_query in step.sub_queries:
+                sub_query.resolve_all_listings()
+
     def apply_steps(self) -> QueryGenerator:
         """
         Apply the steps in the query and return the resulting
         sqlalchemy.SelectBase.
         """
+        self.resolve_all_listings()
+
         hasher = hashlib.sha256()
         start_hash = self._last_checkpoint_hash
         if start_hash:
@@ -2418,8 +2447,6 @@ class DatasetQuery:
         hasher.update(self._starting_step_hash.encode("utf-8"))
         if self.delta_spec is not None:
             hasher.update(self.delta_spec.hash().encode("utf-8"))
-
-        self.apply_listing_pre_step()
 
         query = self.clone()
 
