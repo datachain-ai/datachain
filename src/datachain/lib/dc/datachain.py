@@ -1409,8 +1409,7 @@ class DataChain:
                 partition_counter += 1
                 labeled = cast("Column", col.label(col_label))
                 inferred = self._infer_expr_type(col, self.signals_schema)
-                sql_type = python_to_sql(inferred)
-                labeled.type = sql_type() if isinstance(sql_type, type) else sql_type
+                labeled.type = python_to_sql(inferred)()
                 partition_by_columns.append(labeled)
                 signal_columns.append(labeled)
                 schema_fields[col_label] = inferred
