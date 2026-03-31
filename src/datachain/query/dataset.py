@@ -97,9 +97,7 @@ if TYPE_CHECKING:
     P = ParamSpec("P")
 
 
-PartitionByType = (
-    str | Function | ColumnExpr | Sequence[str | Function | ColumnExpr]
-)
+PartitionByType = str | Function | ColumnExpr | Sequence[str | Function | ColumnExpr]
 JoinPredicateType = str | ColumnExpr
 DatasetDependencyType = tuple["DatasetRecord", str]
 

@@ -784,15 +784,14 @@ def test_group_by_partition_by_name_conflicts_with_agg_column(test_session):
 
 
 def test_name_collision_in_multiple_group_by(test_session):
-    ds = (
-        dc.read_values(
-            a=[1, 1, 2, 2], b=[10, 20, 10, 20], c=[100, 200, 100, 200],
-            session=test_session,
-        )
-        .group_by(
-            cnt=func.count(),
-            partition_by=[dc.C("a") + dc.C("b"), dc.C("c") // 100],
-        )
+    ds = dc.read_values(
+        a=[1, 1, 2, 2],
+        b=[10, 20, 10, 20],
+        c=[100, 200, 100, 200],
+        session=test_session,
+    ).group_by(
+        cnt=func.count(),
+        partition_by=[dc.C("a") + dc.C("b"), dc.C("c") // 100],
     )
     assert set(ds.signals_schema.values.keys()) == {"gr_0", "gr_1", "cnt"}
 
