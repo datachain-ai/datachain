@@ -17,7 +17,7 @@ Read the JSON file at the path provided. It contains:
     - `script_changed`: boolean
     - `previous_script`: the prior version's script (if changed)
     - `deps_added`, `deps_removed`, `deps_updated`: dependency change lists
-  - `dependencies[]`: upstream datasets with `name`, `version`, `type`
+  - `dependencies[]`: upstream datasets/listings with `name`, `version`, `type`, and optional `file_path` (relative link target for listings)
 
 ## Output Format
 
@@ -41,7 +41,8 @@ and dependency names. Be specific — mention data types and transformations.}
 
 ## Dependencies
 
-List of dependencies.
+List dependencies as clickable links when `file_path` is present:
+`[{name}]({file_path}.md)`. Otherwise, just the name.
 
 ## Schema
 

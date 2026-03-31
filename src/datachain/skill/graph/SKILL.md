@@ -83,32 +83,16 @@ When loaded, determine the user's intent:
 
 ## Step 1 — Sync
 
-Plan what needs updating. The plan covers datasets, buckets, or both.
+Plan what needs updating. The plan auto-discovers both datasets and buckets from the catalog.
 
-**Datasets only** (default):
 ```bash
-python3 {skill_dir}/scripts/plan.py [--studio] > datachain/graph/.plan.json
+python3 {skill_dir}/scripts/plan.py [--studio] --output datachain/graph/.plan.json
 ```
 
-**Buckets only** (user provides URIs):
-```bash
-python3 {skill_dir}/scripts/plan.py --buckets <uri> [<uri> ...] > datachain/graph/.plan.json
-```
-
-**Both** (datasets + buckets):
-```bash
-python3 {skill_dir}/scripts/plan.py --studio --buckets <uri> [<uri> ...] > datachain/graph/.plan.json
-```
-
+- Buckets are auto-discovered from catalog listings (every bucket that `dc.read_storage()` has ever listed). No flag needed.
 - Do **NOT** add `--studio` unless the user explicitly requests it.
-- Do **NOT** add `--buckets` unless the user provides bucket URIs.
 - If `"up_to_date": true` → print "Graph is up to date." and stop.
 - If the output contains `"warnings"` → report them after the update summary.
-
-Then update the index:
-```bash
-python3 {skill_dir}/scripts/render_index.py --plan datachain/graph/.plan.json --output datachain/graph/index.md
-```
 
 Review `.plan.json`. Entries with `status` of `"new"` or `"stale"` need processing in Step 2. Entries with `"ok"` are skipped.
 
@@ -140,7 +124,13 @@ python3 {skill_dir}/scripts/bucket_scan.py <uri> \
 
 - `<uri>` and `<file_path>` come from the plan's `buckets[]` entries.
 - The script aggregates metadata (extensions, directories, sizes, timestamps) and samples files.
-- Progress is printed to stderr.
+
+Run independent `dataset_all.py` and `bucket_scan.py` calls concurrently when multiple items need processing.
+
+Then update the index (must run after data scripts so it can read their JSON output):
+```bash
+python3 {skill_dir}/scripts/render_index.py --plan datachain/graph/.plan.json --output datachain/graph/index.md
+```
 
 ---
 

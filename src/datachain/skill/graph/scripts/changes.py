@@ -1,22 +1,40 @@
 """Dependency serialization and version-diff logic."""
 
+from utils import bucket_file_path
+
+
+def _clean_dep_name(name: str) -> str:
+    """Convert listing dataset names (lst__...) to clean URIs."""
+    try:
+        from datachain.lib.listing import is_listing_dataset, listing_uri_from_name
+
+        if is_listing_dataset(name):
+            return listing_uri_from_name(name)
+    except Exception:  # noqa: BLE001
+        pass
+    return name
+
+
+def _dep_entry(dep) -> dict:
+    """Build a single dependency dict with clean names and file_path."""
+    name = _clean_dep_name(dep.name)
+    entry: dict = {
+        "name": name,
+        "version": str(dep.version) if dep.version is not None else None,
+        "type": str(dep.type) if dep.type is not None else None,
+    }
+    if name != dep.name and name.endswith("/"):
+        entry["file_path"] = bucket_file_path(name)
+    return entry
+
 
 def dep_to_dict(dep) -> dict:
     """Convert a dependency object to a JSON-serializable dict."""
-    return {
-        "name": dep.name,
-        "version": str(dep.version) if dep.version is not None else None,
-        "type": str(dep.type) if dep.type is not None else None,
-        "dependencies": [
-            {
-                "name": child.name,
-                "version": str(child.version) if child.version is not None else None,
-                "type": str(child.type) if child.type is not None else None,
-            }
-            for child in (dep.dependencies or [])
-            if child
-        ],
-    }
+    entry = _dep_entry(dep)
+    entry["dependencies"] = [
+        _dep_entry(child) for child in (dep.dependencies or []) if child
+    ]
+    return entry
 
 
 def compute_dep_changes(

@@ -106,23 +106,6 @@ E.g., ".parquet" with columns → "Parquet files with columns: id, embedding, la
 - If max_bytes is very large relative to median (>100x), note outliers
 - If nothing notable, omit this section entirely.}
 
-## Getting Started
-
-```python
-import datachain as dc
-
-# List all files
-dc.read_storage("{uri}").show()
-
-# Filter by type
-dc.read_storage("{uri}", type="image").show()
-```
-
-{Add 1-2 more DataChain snippets tailored to the actual content:
-- If images found: show image processing example
-- If structured data: show read_csv/read_json/read_parquet example
-- If train/val splits detected: show filtering by split
-Always use the actual URI from the JSON.}
 ```
 
 ## Guidelines
@@ -132,7 +115,6 @@ Always use the actual URI from the JSON.}
 - **Human-readable numbers.** Use comma separators (10,000) and human-readable sizes (3.2 GB).
 - **Omit empty sections.** If time_range is empty, skip date info. If no quality issues, skip Data Quality.
 - **No raw JSON dumps.** The markdown is a summary, not a data dump.
-- **Practical Getting Started.** The code snippets should work copy-paste. Use the actual URI and file types from the data.
 - **Listing freshness is critical.** Users need to know if they're looking at stale data. Always show the listing timestamp.
 - **Human-readable timestamps.** Format all timestamps as `YYYY-MM-DD HH:MM:SS` (no `T`, no `Z`).
 - **Source data link.** `{json_filename}` is the basename of the JSON input file (e.g. `datachain_demo.json`). The link lets readers access the raw structured data.

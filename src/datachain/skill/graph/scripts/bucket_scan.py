@@ -432,8 +432,6 @@ def scan_bucket(uri: str, output: str | None = None):
     parts = parse_uri(uri)
     now = datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    print(f"Scanning {uri} ...", file=sys.stderr)
-
     # Never pass update=True
     chain = dc.read_storage(uri)
 
@@ -452,20 +450,15 @@ def scan_bucket(uri: str, output: str | None = None):
         total_files = 0
         total_size_bytes = 0
 
-    print("  Computing extension breakdown...", file=sys.stderr)
     extensions = compute_extensions(chain)
 
-    print("  Computing directory structure...", file=sys.stderr)
     directories = compute_directories(chain)
     max_depth = max((d["depth"] for d in directories), default=0)
 
-    print("  Computing size distribution...", file=sys.stderr)
     size_distribution = compute_size_distribution(chain)
 
-    print("  Computing time range...", file=sys.stderr)
     time_range = compute_time_range(chain)
 
-    print("  Sampling files for content detection...", file=sys.stderr)
     samples = sample_files(chain, extensions)
 
     result = {
@@ -491,7 +484,6 @@ def scan_bucket(uri: str, output: str | None = None):
         os.makedirs(os.path.dirname(output), exist_ok=True)
         with open(output, "w") as f:
             f.write(json_str)
-        print(f"  Wrote {output}", file=sys.stderr)
     else:
         print(json_str)
 

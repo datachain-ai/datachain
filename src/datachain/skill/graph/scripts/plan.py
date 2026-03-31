@@ -11,7 +11,6 @@ from utils import (
     collect_datasets,
     dataset_file_path,
     dc_import,
-    get_listing_finished_at,
     parse_semver,
     parse_uri,
     read_frontmatter,
@@ -113,12 +112,23 @@ def plan_datasets(
     return datasets_out, up_to_date
 
 
-def plan_buckets(uris: list[str]) -> list[dict]:
-    """Plan bucket scans. Returns list of bucket entries with status."""
+def plan_buckets() -> list[dict]:
+    """Auto-discover all bucket listings from the catalog."""
+    try:
+        from datachain.query import Session
+
+        session = Session.get()
+        catalog = session.catalog
+        listings = catalog.listings()
+    except Exception:  # noqa: BLE001
+        return []
+
     buckets_out = []
-    for uri in uris:
-        if not uri.endswith("/"):
-            uri = uri + "/"
+    for listing in listings:
+        uri = listing.uri.rstrip("/") + "/"
+        finished_at = (
+            listing.finished_at.isoformat() if listing.finished_at else None
+        )
 
         parts = parse_uri(uri)
         file_path = bucket_file_path(uri)
@@ -131,9 +141,8 @@ def plan_buckets(uris: list[str]) -> list[dict]:
             scanned_at = None
         else:
             scanned_at = existing.get("scanned_at")
-            listing_finished = get_listing_finished_at(uri)
-            if (scanned_at and listing_finished and scanned_at >= listing_finished) or (
-                scanned_at and not listing_finished
+            if (scanned_at and finished_at and scanned_at >= finished_at) or (
+                scanned_at and not finished_at
             ):
                 status = "ok"
             else:
@@ -148,12 +157,14 @@ def plan_buckets(uris: list[str]) -> list[dict]:
                 "file_path": file_path,
                 "status": status,
                 "scanned_at": scanned_at,
+                "listing_finished_at": finished_at,
+                "listing_expired": listing.is_expired,
             }
         )
     return buckets_out
 
 
-def cmd_plan(studio: bool = False, bucket_uris: list[str] | None = None):
+def cmd_plan(studio: bool = False, output: str | None = None):
     """Compute what needs updating and output a JSON plan."""
     dc = dc_import()
 
@@ -166,16 +177,11 @@ def cmd_plan(studio: bool = False, bucket_uris: list[str] | None = None):
         dt = datetime.fromtimestamp(mtime, tz=timezone.utc)
         db_last_updated = dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    # Plan datasets (unless only buckets requested)
-    if bucket_uris and not studio:
-        # --buckets without --studio: skip dataset planning
-        datasets_out: list[dict] = []
-        datasets_up_to_date = True
-    else:
-        datasets_out, datasets_up_to_date = plan_datasets(dc, db_last_updated, studio)
+    # Plan datasets
+    datasets_out, datasets_up_to_date = plan_datasets(dc, db_last_updated, studio)
 
-    # Plan buckets
-    buckets_out = plan_buckets(bucket_uris) if bucket_uris else []
+    # Auto-discover buckets from catalog listings
+    buckets_out = plan_buckets()
     buckets_up_to_date = not buckets_out or all(
         b["status"] == "ok" for b in buckets_out
     )
@@ -190,12 +196,17 @@ def cmd_plan(studio: bool = False, bucket_uris: list[str] | None = None):
     }
     if db_last_updated:
         result["db_last_updated"] = db_last_updated
-    if datasets_out or not bucket_uris:
-        result["datasets"] = datasets_out
-    if buckets_out:
-        result["buckets"] = buckets_out
+    result["datasets"] = datasets_out
+    result["buckets"] = buckets_out
 
-    print(json.dumps(result, indent=2))
+    json_str = json.dumps(result, indent=2)
+
+    if output:
+        os.makedirs(os.path.dirname(output), exist_ok=True)
+        with open(output, "w") as f:
+            f.write(json_str)
+    else:
+        print(json_str)
 
 
 def main():
@@ -209,14 +220,9 @@ def main():
         action="store_true",
         help="Include Studio datasets",
     )
-    parser.add_argument(
-        "--buckets",
-        nargs="+",
-        metavar="URI",
-        help="One or more bucket URIs to plan (e.g., s3://bucket/ gs://bucket/prefix/)",
-    )
+    parser.add_argument("--output", help="Output JSON file path (default: stdout)")
     args = parser.parse_args()
-    cmd_plan(studio=args.studio, bucket_uris=args.buckets)
+    cmd_plan(studio=args.studio, output=args.output)
 
 
 if __name__ == "__main__":

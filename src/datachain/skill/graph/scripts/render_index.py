@@ -60,15 +60,13 @@ def render_index(plan: dict) -> str:
 
     # Buckets table
     if buckets:
-        lines.append("## Buckets")
+        lines.append("## Listings")
         lines.append("")
-        lines.append("| Bucket | Scheme | Prefix | Files | Size | Scanned |")
-        lines.append("|--------|--------|--------|------:|-----:|---------|")
+        lines.append("| Listing | Files | Size | Scanned |")
+        lines.append("|---------|------:|-----:|---------|")
 
         for b in sorted(buckets, key=lambda x: x["uri"]):
             uri = b["uri"]
-            scheme = b["scheme"]
-            prefix = b.get("prefix", "")
             file_path = b.get("file_path", bucket_file_path(uri))
 
             # Read JSON for rich stats
@@ -91,12 +89,9 @@ def render_index(plan: dict) -> str:
 
             link = f"[{uri}]({file_path}.md)"
 
-            row = (
-                f"| {link} | {scheme} | {prefix}"
-                f" | {total_files} | {total_size}"
-                f" | {scanned_at} |"
+            lines.append(
+                f"| {link} | {total_files} | {total_size} | {scanned_at} |"
             )
-            lines.append(row)
 
         lines.append("")
 
