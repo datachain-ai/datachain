@@ -1265,34 +1265,6 @@ class DataChain:
             signal_schema=new_schema,
         )
 
-    @staticmethod
-    def _infer_expr_type(expr, signals_schema):
-        """Infer the Python type of a ColumnElement expression from the schema."""
-        from sqlalchemy.sql import visitors
-
-        from datachain.lib.signal_schema import SignalResolvingError
-        from datachain.query.schema import Column
-
-        result = sql_to_python(expr)
-        if result is not str:
-            return result
-
-        col_types = set()
-        for elem in visitors.iterate(expr, {}):
-            if isinstance(elem, Column):
-                try:
-                    col_types.add(signals_schema.get_column_type(elem.name))
-                except SignalResolvingError:
-                    pass
-
-        if not col_types:
-            return str
-        if len(col_types) == 1:
-            return col_types.pop()
-        if col_types == {int, float}:
-            return float
-        return str
-
     @delta_disabled  # type: ignore[arg-type]
     def group_by(  # noqa: C901, PLR0912, PLR0915
         self,
@@ -1402,9 +1374,9 @@ class DataChain:
             elif isinstance(col, ColumnElement):
                 col_label = f"gr_{partition_counter}"
                 partition_counter += 1
-                labeled = cast("Column", col.label(col_label))
-                inferred = self._infer_expr_type(col, self.signals_schema)
-                labeled.type = python_to_sql(inferred)()
+                enriched = self.signals_schema.enrich_expr_types(col)
+                labeled = cast("Column", enriched.label(col_label))
+                inferred = sql_to_python(enriched)
                 partition_by_columns.append(labeled)
                 signal_columns.append(labeled)
                 schema_fields[col_label] = inferred
