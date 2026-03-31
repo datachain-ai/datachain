@@ -20,7 +20,7 @@ If `datachain/graph/index.md` exists, read it at conversation start for dataset 
 
 2. TYPE HINTS NOT params/output: Never pass params= or output= to map/gen/agg.
    DataChain auto-infers from function signature and return type annotation.
-   ✓ def fn(file: ImageFile) -> list[float]: ...
+   ✓ def fn(file: dc.ImageFile) -> list[float]: ...
      chain.map(emb=fn)
    ✗ chain.map(fn, params=["file"], output={"emb": list[float]})
 
@@ -34,7 +34,7 @@ If `datachain/graph/index.md` exists, read it at conversation start for dataset 
    chain.gen(frame=fn)      → column is named "frame"
 
 5. INPUT PARAM: The file column is always named "file" regardless of modality.
-   def process(file: ImageFile) -> ...  ← always "file", not "image"
+   def process(file: dc.ImageFile) -> ...  ← always "file", not "image"
 
 6. ALWAYS PARALLEL: Every chain with map/gen/agg must call .settings(parallel=True).
    Without it, execution is single-threaded. Only reduce parallelism for heavy
@@ -54,16 +54,16 @@ If `datachain/graph/index.md` exists, read it at conversation start for dataset 
    ✗ DataChain.from_csv("s3://data.csv")  ← deprecated
 
 9. ONE SIGNAL PER MAP/GEN/AGG: Each call accepts exactly one signal (keyword).
-   For multiple columns, chain calls or return a DataModel.
+   For multiple columns, chain calls or return a Pydantic BaseModel.
    ✓ chain.map(a=fn1).map(b=fn2)          # chained — two columns
-   ✓ chain.map(info=fn)                    # DataModel with named fields
+   ✓ chain.map(info=fn)                    # BaseModel with named fields
    ✗ chain.map(a=fn1, b=fn2)              # ERROR: multiple signals
 
-10. NO TUPLE RETURNS: Always prefer DataModel classes to tuple in map/gen/agg functions
-    until user directly asks for tuple.
-    ✓ def fn(file: File) -> MyModel: ...   # named fields via DataModel
-    ✓ def fn(file: File) -> int: ...       # single scalar
-    ✗ def fn(file: File) -> tuple[int, int]: ...  # → col_0, col_1
+10. NO TUPLE RETURNS: Always prefer Pydantic BaseModel classes to tuple in map/gen/agg
+    functions until user directly asks for tuple.
+    ✓ def fn(file: dc.File) -> MyModel: ...   # named fields via BaseModel
+    ✓ def fn(file: dc.File) -> int: ...       # single scalar
+    ✗ def fn(file: dc.File) -> tuple[int, int]: ...  # → col_0, col_1
 ```
 
 ---
@@ -90,22 +90,11 @@ Everything else → use filter/mutate/group_by/merge with func.*
 
 ```python
 import datachain as dc
-from datachain import DataChain, C, DataModel, File
-from datachain import TextFile, ImageFile, VideoFile, AudioFile
-from datachain import BBox, OBBox, Pose, Pose3D, Segment
-from datachain import func
+from pydantic import BaseModel
 ```
 
-Stateful UDF base classes (two equivalent styles):
-```python
-# Style 1 (preferred shorthand)
-class MyMapper(dc.Mapper): ...
-class MyGen(dc.Generator): ...
-class MyAgg(dc.Aggregator): ...
-
-# Style 2 (explicit import)
-from datachain.udf import Mapper, Generator, Aggregator
-```
+Always use `dc.` prefix for DataChain types: `dc.File`, `dc.ImageFile`, `dc.C`, `dc.func`,
+`dc.BBox`, `dc.Mapper`, etc. Do NOT use `from datachain import File, C, func, ...`.
 
 ---
 
@@ -127,6 +116,7 @@ dc.read_dataset("name", version="2.0.0")  # specific version
 ```
 
 **Metadata operations (run in engine, fast):**
+In all examples below, `C` = `dc.C` and `func` = `dc.func`.
 ```python
 chain.filter(C("file.size") > 1000)
 chain.filter((C("det.label") == "cat") & (C("det.conf") > 0.9))
@@ -211,65 +201,61 @@ dc.read_storage("s3://bucket/", update=True, delta=True,
 
 ## Section 5 — Type System
 
-**DataModel -- custom structured types:**
+**Structured types — use Pydantic BaseModel:**
 ```python
-from datachain import DataModel
-
-class Detection(DataModel):
+class Detection(BaseModel):
     label: str
     confidence: float
-    bbox: BBox
-
-# External Pydantic models must be registered:
-dc.DataModel.register(MistralResponse)
+    bbox: dc.BBox
 ```
 
-**File types (all inherit from File → DataModel):**
+**File types (all inherit from dc.File):**
 
 | Type | `type=` param | `.read()` returns | Extra methods |
 |---|---|---|---|
-| `File` | (default) | `bytes` | `.read_text()`, `.open()`, `.ensure_cached()` |
-| `TextFile` | `"text"` | `str` | `.read_text()` |
-| `ImageFile` | `"image"` | `PIL.Image` | `.get_info()` → `Image(width,height,format)` |
-| `VideoFile` | `"video"` | -- | `.get_frames(step=N)` → `VideoFrame[]`, `.get_fragments(duration)` → `VideoFragment[]`, `.get_info()` → `Video(fps,duration,codec,...)` |
-| `AudioFile` | `"audio"` | -- | `.get_fragments(duration)` → `AudioFragment[]`, `.get_info()` → `Audio(sample_rate,channels,duration,...)` |
+| `dc.File` | (default) | `bytes` | `.read_text()`, `.open()`, `.ensure_cached()` |
+| `dc.TextFile` | `"text"` | `str` | `.read_text()` |
+| `dc.ImageFile` | `"image"` | `PIL.Image` | `.get_info()` → `Image(width,height,format)` |
+| `dc.VideoFile` | `"video"` | -- | `.get_frames(step=N)` → `VideoFrame[]`, `.get_fragments(duration)` → `VideoFragment[]`, `.get_info()` → `Video(fps,duration,codec,...)` |
+| `dc.AudioFile` | `"audio"` | -- | `.get_fragments(duration)` → `AudioFragment[]`, `.get_info()` → `Audio(sample_rate,channels,duration,...)` |
 
-Sub-file units (DataModel):
+Sub-file units:
 - `VideoFrame` -- `.get_np()` → ndarray, `.save(path)`
 - `VideoFragment` -- `.save(path)`
 - `AudioFragment` -- `.get_np()` → `(ndarray, sample_rate)`, `.save(path)`
 
 **Annotation types:**
 ```python
-BBox(title="car", coords=[x1,y1,x2,y2])            # PASCAL VOC
-BBox.from_coco([x,y,w,h], title="car")
-BBox.from_yolo([cx,cy,w,h], img_size=(640,480))
-BBox.from_albumentations([x1n,y1n,x2n,y2n], img_size)
+dc.BBox(title="car", coords=[x1,y1,x2,y2])            # PASCAL VOC
+dc.BBox.from_coco([x,y,w,h], title="car")
+dc.BBox.from_yolo([cx,cy,w,h], img_size=(640,480))
+dc.BBox.from_albumentations([x1n,y1n,x2n,y2n], img_size)
 bbox.to_coco() / .to_yolo(img_size) / .to_albumentations(img_size) / .to_voc()
 bbox.point_inside(x, y)  # → bool
 bbox.pose_inside(pose)   # → bool
 
-OBBox(...)                # oriented bbox -- four corner points
+dc.OBBox(...)                # oriented bbox -- four corner points
 
-Pose(x=[...], y=[...])                       # 2D keypoints
-Pose3D(x=[...], y=[...], visible=[...])      # 3D with visibility
+dc.Pose(x=[...], y=[...])                       # 2D keypoints
+dc.Pose3D(x=[...], y=[...], visible=[...])      # 3D with visibility
 
-Segment(title="road", x=[...], y=[...])      # instance segmentation polygon
+dc.Segment(title="road", x=[...], y=[...])      # instance segmentation polygon
 ```
 
 **Column references:**
 ```python
-C("file.size")               # top-level column
-C("det.bbox.x1")             # nested field access
-C("file.path").glob("*.jpg") # path glob
-chain.column("price")        # typed column for arithmetic between columns
+dc.C("file.size")               # top-level column
+dc.C("det.bbox.x1")             # nested field access
+dc.C("file.path").glob("*.jpg") # path glob
+chain.column("price")           # typed column for arithmetic between columns
 ```
 
 ---
 
 ## Section 6 — func Module
 
-All run natively in the metadata engine (no Python, no deserialization):
+All run natively in the metadata engine (no Python, no deserialization).
+In examples below, `C` = `dc.C`, `func` = `dc.func`.
 
 ```python
 # Distance (for vector search)
@@ -323,15 +309,14 @@ func.int_hash_64(C("file.path"))
 **Basic: read → filter → map → save**
 ```python
 import datachain as dc
-from datachain import C, ImageFile
 
-def compute_embedding(file: ImageFile) -> list[float]:
+def compute_embedding(file: dc.ImageFile) -> list[float]:
     img = file.read().convert("RGB")
     return model.encode(img).tolist()
 
 (
     dc.read_storage("s3://bucket/images/", type="image")
-    .filter(C("file.size") > 1000)
+    .filter(dc.C("file.size") > 1000)
     .settings(parallel=True, cache=True)
     .map(emb=compute_embedding)
     .save("image_embeddings")
@@ -363,9 +348,7 @@ class ImageEncoder(dc.Mapper):
 
 **Inline setup() for model/client initialization:**
 ```python
-from datachain import File
-
-def caption(file: File, pipeline) -> str:
+def caption(file: dc.File, pipeline) -> str:
     return pipeline(file.read().convert("RGB"))[0]["generated_text"]
 
 (
@@ -399,10 +382,9 @@ dc.read_storage("s3://docs/*.pdf").settings(parallel=True).gen(chunk=split_pdf).
 
 **Generator: 1 input → many outputs (video frames, audio segments, PDF pages):**
 ```python
-from datachain import VideoFile, VideoFragment
 from typing import Iterator
 
-def split_clips(file: VideoFile) -> Iterator[VideoFragment]:
+def split_clips(file: dc.VideoFile) -> Iterator[dc.VideoFragment]:
     yield from file.get_fragments(duration=10.0)
 
 (
@@ -423,11 +405,10 @@ annotated = images.merge(meta, on="file.path", right_on="images.file_name")
 **Vector similarity search:**
 ```python
 import datachain as dc
-from datachain import C, func
 
 (
     dc.read_dataset("image_embeddings")
-    .mutate(dist=func.cosine_distance(C("emb"), query_embedding))
+    .mutate(dist=dc.func.cosine_distance(dc.C("emb"), query_embedding))
     .order_by("dist")
     .limit(10)
     .show()
@@ -436,14 +417,14 @@ from datachain import C, func
 
 **LLM extraction with structured Pydantic output:**
 ```python
-from datachain import DataModel, File
+from pydantic import BaseModel
 
-class Analysis(DataModel):
+class Analysis(BaseModel):
     sentiment: str
     confidence: float
     topics: list[str]
 
-def analyze(file: File, client) -> Analysis:
+def analyze(file: dc.File, client) -> Analysis:
     resp = client.messages.create(model="claude-sonnet-4-6", ...)
     return Analysis.model_validate_json(resp.content[0].text)
 
@@ -458,11 +439,11 @@ def analyze(file: File, client) -> Analysis:
 ```python
 (
     dc.read_storage("gs://bucket/")
-    .filter(C("file.size") > 0)
+    .filter(dc.C("file.size") > 0)
     .group_by(
-        count=func.count(),
-        total=func.sum(C("file.size")),
-        partition_by=func.path.file_ext(C("file.path")),
+        count=dc.func.count(),
+        total=dc.func.sum(dc.C("file.size")),
+        partition_by=dc.func.path.file_ext(dc.C("file.path")),
     )
     .order_by("total", descending=True)
     .show()
@@ -483,12 +464,11 @@ def analyze(file: File, client) -> Analysis:
 **File paths to File objects (manifest CSV → file processing):**
 ```python
 import datachain as dc
-from datachain import File
 
-def to_file(path: str) -> File:
-    return File.at(path)
+def to_file(path: str) -> dc.File:
+    return dc.File.at(path)
 
-def process_file(file: File) -> str:
+def process_file(file: dc.File) -> str:
     return summarize(file.read_text())
 
 (
@@ -522,14 +502,17 @@ combined = images.merge(labels, on="file.name", right_on="labels.name")
 ## Section 8 — Anti-Patterns
 
 ```
+✗ Importing symbols from datachain:
+    from datachain import File, C, func  ← clutters namespace
+    Use dc.File, dc.C, dc.func after `import datachain as dc`
 ✗ Omitting trailing slash → permission error on anonymous/restricted storage
 ✗ Using params= or output= with map/gen/agg → breaks auto-inference
 ✗ Lambda for non-str return types → DataChain defaults to str → wrong schema
 ✗ Pulling all data to Python for filtering:
     chain.to_list() then iterating in Python  ← never do this for metadata ops
     Use chain.filter(C("x") > 0) instead
-✗ External Pydantic model not registered:
-    dc.DataModel.register(ExternalModel)  ← required for non-DataModel subclasses
+✗ Using DataModel instead of BaseModel:
+    Use pydantic.BaseModel for custom types — DataChain accepts it natively
 ✗ Missing .settings(parallel=True) for Python operations → single-threaded execution
 ✗ Using C() for column-column arithmetic:
     C("price") * C("qty")  ← no type info → engine error
@@ -539,7 +522,7 @@ combined = images.merge(labels, on="file.name", right_on="labels.name")
     Use chain.group_by(...) natively instead
 ✗ Reading files in a Python loop outside the chain:
     rows = chain.to_list(); for path in rows: open(path)  ← no parallelism, no cache
-    Use File.at(path) inside map() instead
+    Use dc.File.at(path) inside map() instead
 ✗ Using deprecated DataChain.from_*() methods:
     DataChain.from_csv(...)  ← deprecated
     Use dc.read_csv(...) instead
@@ -568,5 +551,5 @@ combined = images.merge(labels, on="file.name", right_on="labels.name")
     Instead, use: chain.map(a=fn1).map(b=fn2)
 ✗ Tuple return type in map/gen/agg:
     def fn(...) -> tuple[int, int]: ...  ← creates col_0, col_1
-    Always prefer using DataModel for named fields instead
+    Always prefer using BaseModel for named fields instead
 ```
