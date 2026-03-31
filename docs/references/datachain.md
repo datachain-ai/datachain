@@ -49,6 +49,8 @@ for examples of how to create a chain.
 
 ::: datachain.query.schema.Column
 
+::: datachain.query.schema.ColumnExpr
+
 
 ::: datachain.lib.dc.DataChain
 

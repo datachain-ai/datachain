@@ -8,7 +8,7 @@ from sqlalchemy.sql.functions import GenericFunction
 from datachain.func.base import Function
 from datachain.lib.data_model import DataModel, DataType
 from datachain.lib.utils import DataChainParamsError
-from datachain.query.schema import DEFAULT_DELIMITER
+from datachain.query.schema import DEFAULT_DELIMITER, ColumnExpr
 from datachain.utils import getenv_bool
 
 if TYPE_CHECKING:
@@ -73,7 +73,7 @@ class DatasetFromValuesError(DataChainParamsError):
         super().__init__(f"Dataset{name} from values error: {msg}")
 
 
-MergeColType = str | Function | sqlalchemy.ColumnElement
+MergeColType = str | Function | ColumnExpr
 
 
 def _validate_merge_on(

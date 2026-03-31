@@ -65,7 +65,7 @@ from datachain.query.dataset import (
     RegenerateSystemColumns,
     UnionSchemaMismatchError,
 )
-from datachain.query.schema import DEFAULT_DELIMITER, Column
+from datachain.query.schema import DEFAULT_DELIMITER, Column, ColumnExpr
 from datachain.sql.functions import path as pathfunc
 from datachain.utils import (
     batched_it,
@@ -1303,7 +1303,7 @@ class DataChain:
         self,
         *,
         partition_by: (
-            str | Func | ColumnElement | Sequence[str | Func | ColumnElement] | None
+            str | Func | ColumnExpr | Sequence[str | Func | ColumnExpr] | None
         ) = None,
         **kwargs: Func,
     ) -> "Self":

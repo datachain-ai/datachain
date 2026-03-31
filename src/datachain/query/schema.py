@@ -2,7 +2,7 @@ import functools
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from fnmatch import fnmatch
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeAlias
 
 import attrs
 import sqlalchemy as sa
@@ -245,3 +245,15 @@ def normalize_param(param: UDFParamSpec) -> UDFParameter:
 
 
 C = Column
+
+ColumnExpr: TypeAlias = sa.ColumnElement
+"""A column expression — either a [`Column`][datachain.query.schema.Column] reference
+like `C("file.size")` or any arithmetic or comparison expression built from columns.
+
+Examples:
+    ```python
+    C("width") * C("height")
+    C("file.size") // 1024
+    (C("score") > 0.5) | (C("label") == "positive")
+    ```
+"""
