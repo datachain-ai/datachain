@@ -1396,22 +1396,14 @@ class DataChain:
                             keep_columns.append(col)
                         schema_partition_by.append(col)
             elif isinstance(col, Function):
-                if col.col_label:
-                    column = col.get_column(self.signals_schema, label=col.col_label)
-                    col_db_name = column.name
-                    schema_fields[col_db_name] = col_type = column.type.python_type
-                    partition_by_columns.append(column)
-                    signal_columns.append(column)
-                else:
-                    col_label = f"gr_{partition_counter}"
+                label = col.col_label
+                if not label:
+                    label = f"gr_{partition_counter}"
                     partition_counter += 1
-                    column = col.get_column(
-                        self.signals_schema,
-                        label=col_label,
-                    )
-                    partition_by_columns.append(column)
-                    signal_columns.append(column)
-                    schema_fields[column.name] = column.type.python_type
+                column = col.get_column(self.signals_schema, label=label)
+                partition_by_columns.append(column)
+                signal_columns.append(column)
+                schema_fields[column.name] = column.type.python_type
             elif isinstance(col, ColumnElement):
                 col_label = f"gr_{partition_counter}"
                 partition_counter += 1
