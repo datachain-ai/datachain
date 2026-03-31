@@ -52,6 +52,18 @@ If `datachain/graph/index.md` exists, read it at conversation start for dataset 
 8. READ NOT FROM: Use dc.read_* module functions, not deprecated DataChain.from_* methods.
    ✓ dc.read_csv("s3://data.csv")
    ✗ DataChain.from_csv("s3://data.csv")  ← deprecated
+
+9. ONE SIGNAL PER MAP/GEN/AGG: Each call accepts exactly one signal (keyword).
+   For multiple columns, chain calls or return a DataModel.
+   ✓ chain.map(a=fn1).map(b=fn2)          # chained — two columns
+   ✓ chain.map(info=fn)                    # DataModel with named fields
+   ✗ chain.map(a=fn1, b=fn2)              # ERROR: multiple signals
+
+10. NO TUPLE RETURNS: Always prefer DataModel classes to tuple in map/gen/agg functions
+    until user directly asks for tuple.
+    ✓ def fn(file: File) -> MyModel: ...   # named fields via DataModel
+    ✓ def fn(file: File) -> int: ...       # single scalar
+    ✗ def fn(file: File) -> tuple[int, int]: ...  # → col_0, col_1
 ```
 
 ---
@@ -551,4 +563,10 @@ combined = images.merge(labels, on="file.name", right_on="labels.name")
     Use dc.Mapper when you need:
       self.model + self.tokenizer + self.config (multiple fields)
       custom __init__ args passed at pipeline construction time
+✗ Multiple signals in one map/gen/agg call:
+    chain.map(a=fn1, b=fn2)  ← UdfSignatureError
+    Instead, use: chain.map(a=fn1).map(b=fn2)
+✗ Tuple return type in map/gen/agg:
+    def fn(...) -> tuple[int, int]: ...  ← creates col_0, col_1
+    Always prefer using DataModel for named fields instead
 ```
