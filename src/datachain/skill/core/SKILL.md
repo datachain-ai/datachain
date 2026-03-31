@@ -36,10 +36,10 @@ If `datachain/graph/index.md` exists, read it at conversation start for dataset 
 5. INPUT PARAM: The file column is always named "file" regardless of modality.
    def process(file: ImageFile) -> ...  ← always "file", not "image"
 
-6. ALWAYS PARALLEL: Every chain with map/gen/agg must call .settings(parallel=-1).
+6. ALWAYS PARALLEL: Every chain with map/gen/agg must call .settings(parallel=True).
    Without it, execution is single-threaded. Only reduce parallelism for heavy
    per-worker memory loads (large ML models).
-   ✓ chain.settings(parallel=-1).map(emb=fn)
+   ✓ chain.settings(parallel=True).map(emb=fn)
    ✗ chain.map(emb=fn)  ← single-threaded, wastes cores
 
 7. COLUMN-COLUMN ARITHMETIC: Use chain.column() instead of C() when combining two columns.
@@ -169,7 +169,7 @@ chain.batch_map(fn, batch_size=32)
 **Setup and execution settings:**
 ```python
 chain.setup(model=lambda: load_model())   # initialize once per worker
-chain.settings(parallel=-1, cache=True, prefetch=10, workers=50)
+chain.settings(parallel=True, cache=True, prefetch=10, workers=50)
 ```
 
 **Terminal operations (trigger execution):**
@@ -320,7 +320,7 @@ def compute_embedding(file: ImageFile) -> list[float]:
 (
     dc.read_storage("s3://bucket/images/", type="image")
     .filter(C("file.size") > 1000)
-    .settings(parallel=-1, cache=True)
+    .settings(parallel=True, cache=True)
     .map(emb=compute_embedding)
     .save("image_embeddings")
 )
@@ -343,7 +343,7 @@ class ImageEncoder(dc.Mapper):
 
 (
     dc.read_storage("s3://bucket/images/", type="image")
-    .settings(parallel=-1, cache=True)
+    .settings(parallel=True, cache=True)
     .map(emb=ImageEncoder("ViT-B-32", "laion2b_s34b_b79k"))
     .save("image_embeddings")
 )
@@ -358,7 +358,7 @@ def caption(file: File, pipeline) -> str:
 
 (
     dc.read_storage("gs://bucket/images/", type="image")
-    .settings(cache=True, parallel=-1)
+    .settings(cache=True, parallel=True)
     .setup(pipeline=lambda: load_pipeline("image-to-text", model="blip-large"))
     .map(caption=caption)
     .save("captions")
@@ -368,19 +368,19 @@ def caption(file: File, pipeline) -> str:
 **Multi-stage pipeline:**
 ```python
 # Stage 1
-dc.read_storage("s3://docs/*.pdf").settings(parallel=-1).gen(chunk=split_pdf).save("chunks")
+dc.read_storage("s3://docs/*.pdf").settings(parallel=True).gen(chunk=split_pdf).save("chunks")
 
 # Stage 2
 (dc.read_dataset("chunks")
    .setup(model=lambda: load_embedding_model())
-   .settings(parallel=-1)
+   .settings(parallel=True)
    .map(emb=embed_chunk)
    .save("chunk_embeddings"))
 
 # Stage 3
 (dc.read_dataset("chunk_embeddings")
    .setup(client=lambda: create_llm_client())
-   .settings(parallel=-1)
+   .settings(parallel=True)
    .map(category=classify)
    .save("classified_chunks"))
 ```
@@ -395,7 +395,7 @@ def split_clips(file: VideoFile) -> Iterator[VideoFragment]:
 
 (
     dc.read_storage("s3://videos/", type="video")
-    .settings(parallel=-1)
+    .settings(parallel=True)
     .gen(frag=split_clips)
     .save("video_clips")
 )
@@ -437,7 +437,7 @@ def analyze(file: File, client) -> Analysis:
 
 (dc.read_storage("s3://docs/")
    .setup(client=lambda: anthropic.Anthropic())
-   .settings(parallel=-1)
+   .settings(parallel=True)
    .map(result=analyze)
    .save("analyzed"))
 ```
@@ -462,7 +462,7 @@ def analyze(file: File, client) -> Analysis:
 (
     dc.read_storage("s3://bucket/data/", update=True, delta=True,
                     delta_on="file.path", delta_compare="file.mtime")
-    .settings(parallel=-1)
+    .settings(parallel=True)
     .map(result=process_file)
     .save("processed_data")
 )
@@ -482,7 +482,7 @@ def process_file(file: File) -> str:
 (
     dc.read_csv("s3://data/manifest.csv")
     .map(file=to_file)
-    .settings(parallel=-1, prefetch=3, cache=True)
+    .settings(parallel=True, prefetch=3, cache=True)
     .map(result=process_file)
     .save("summaries")
 )
@@ -518,7 +518,7 @@ combined = images.merge(labels, on="file.name", right_on="labels.name")
     Use chain.filter(C("x") > 0) instead
 ✗ External Pydantic model not registered:
     dc.DataModel.register(ExternalModel)  ← required for non-DataModel subclasses
-✗ Missing .settings(parallel=-1) for Python operations → single-threaded execution
+✗ Missing .settings(parallel=True) for Python operations → single-threaded execution
 ✗ Using C() for column-column arithmetic:
     C("price") * C("qty")  ← no type info → engine error
     Use chain.column("price") * chain.column("qty") instead
