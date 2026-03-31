@@ -274,9 +274,9 @@ def test_column_floordiv_uses_divide():
     assert "CAST" in sql
 
 
-def test_column_floordiv_mutate():
+def test_column_floordiv_mutate(test_session):
     res = (
-        dc.read_values(num=[50, 75, 150])
+        dc.read_values(num=[50, 75, 150], session=test_session)
         .mutate(bucket=dc.C("num") // 100)
         .order_by("num")
         .to_values("bucket")
@@ -284,9 +284,9 @@ def test_column_floordiv_mutate():
     assert res == [0, 0, 1]
 
 
-def test_column_truediv_mutate():
+def test_column_truediv_mutate(test_session):
     res = (
-        dc.read_values(num=[10, 20, 30])
+        dc.read_values(num=[10, 20, 30], session=test_session)
         .mutate(half=dc.C("num") / 2)
         .order_by("num")
         .to_values("half")
