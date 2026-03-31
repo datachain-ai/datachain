@@ -20,7 +20,8 @@ from typing import (
 )
 
 from pydantic import BaseModel, Field, ValidationError, create_model
-from sqlalchemy import ColumnElement
+from sqlalchemy import Cast, ColumnElement, cast
+from sqlalchemy.sql.elements import BinaryExpression, Grouping
 
 from datachain import json
 from datachain.func import literal
@@ -910,8 +911,6 @@ class SignalSchema:
         expression tree replacing them with typed columns so SQLAlchemy propagates
         types correctly through operators.
         """
-        from sqlalchemy import Cast, cast
-        from sqlalchemy.sql.elements import BinaryExpression, Grouping
 
         typed_cols = {
             c.name: c for c in self.db_signals(as_columns=True) if isinstance(c, Column)

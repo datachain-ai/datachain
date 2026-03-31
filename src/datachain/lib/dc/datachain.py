@@ -1446,12 +1446,12 @@ class DataChain:
         for col_name, expr in kwargs.items():
             if not isinstance(expr, (*primitives, Column, Func)):
                 if isinstance(expr, ColumnElement):
-                    kwargs[col_name] = self.signals_schema.enrich_expr_types(expr)
-                    expr = kwargs[col_name]
+                    expr = self.signals_schema.enrich_expr_types(expr)
                 if isinstance(expr.type, NullType):
                     raise DataChainColumnError(
-                        col_name, f"Cannot infer type with expression {expr}"
+                        col_name, f"Cannot infer type for expression {expr}"
                     )
+                kwargs[col_name] = expr
 
         mutated = {}
         schema = self.signals_schema
