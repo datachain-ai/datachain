@@ -945,12 +945,6 @@ class SQLiteWarehouse(AbstractWarehouse):
         """
         columns = [sqlalchemy.Column(c.name, c.type) for c in query.selected_columns]
 
-        # Strip sys__id so UDF input table gets fresh sequential IDs
-        # matching the query's row order.
-        query = query.with_only_columns(
-            *[c for c in query.selected_columns if c.name != "sys__id"]
-        )
-
         with tqdm(desc="Preparing", unit=" rows", leave=False) as pbar:
             return self.create_table_from_query(
                 name,
