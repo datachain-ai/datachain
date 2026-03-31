@@ -1804,7 +1804,7 @@ class DataChain:
 
         def _resolve(
             ds: DataChain,
-            col: str | Function | sqlalchemy.ColumnExpr,
+            col: str | Function | ColumnExpr,
             side: str | None,
         ):
             try:
