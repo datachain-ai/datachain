@@ -1385,7 +1385,7 @@ class DataChain:
                     col,
                     (
                         f"partition_by column {col} has type {type(col)}"
-                        " but expected str, Function, or ColumnElement"
+                        " but expected str, Function, or ColumnExpr"
                     ),
                 )
 
