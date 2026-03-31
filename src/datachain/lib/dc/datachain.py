@@ -21,8 +21,6 @@ from typing import (
 
 import sqlalchemy
 from pydantic import BaseModel
-from sqlalchemy.sql.elements import ColumnElement
-
 from datachain import json, semver
 from datachain.checkpoint_event import CheckpointEventType, CheckpointStepType
 from datachain.dataset import DatasetRecord, create_dataset_full_name
@@ -1075,12 +1073,12 @@ class DataChain:
         """
         if partition_by is not None:
             # Convert string partition_by parameters to Column objects
-            if isinstance(partition_by, (str, Function, ColumnElement)):
+            if isinstance(partition_by, (str, Function, ColumnExpr)):
                 list_partition_by = [partition_by]
             else:
                 list_partition_by = list(partition_by)
 
-            processed_partition_columns: list[ColumnElement] = []
+            processed_partition_columns: list[ColumnExpr] = []
             for col in list_partition_by:
                 if isinstance(col, str):
                     columns = self.signals_schema.db_signals(name=col, as_columns=True)
@@ -1091,7 +1089,7 @@ class DataChain:
                     column = col.get_column(self.signals_schema)
                     processed_partition_columns.append(column)
                 else:
-                    # Assume it's already a ColumnElement
+                    # Assume it's already a ColumnExpr
                     processed_partition_columns.append(col)
 
             processed_partition_by = processed_partition_columns
@@ -1299,7 +1297,7 @@ class DataChain:
         """
         if partition_by is None:
             partition_by = []
-        elif isinstance(partition_by, (str, Func, ColumnElement)):
+        elif isinstance(partition_by, (str, Func, ColumnExpr)):
             partition_by = [partition_by]
 
         partition_by_columns: list[Column] = []
@@ -1371,7 +1369,7 @@ class DataChain:
                 partition_by_columns.append(column)
                 signal_columns.append(column)
                 schema_fields[column.name] = column.type.python_type
-            elif isinstance(col, ColumnElement):
+            elif isinstance(col, ColumnExpr):
                 col_label = f"gr_{partition_counter}"
                 partition_counter += 1
                 enriched = self.signals_schema.enrich_expr_types(col)
@@ -1477,7 +1475,7 @@ class DataChain:
 
         for col_name, expr in kwargs.items():
             if not isinstance(expr, (*primitives, Column, Func)):
-                if isinstance(expr, ColumnElement):
+                if isinstance(expr, ColumnExpr):
                     expr = self.signals_schema.enrich_expr_types(expr)
                 if isinstance(expr.type, NullType):
                     raise DataChainColumnError(
@@ -1805,7 +1803,7 @@ class DataChain:
 
         def _resolve(
             ds: DataChain,
-            col: str | Function | sqlalchemy.ColumnElement,
+            col: str | Function | sqlalchemy.ColumnExpr,
             side: str | None,
         ):
             try:

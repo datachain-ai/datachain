@@ -80,7 +80,7 @@ def _validate_merge_on(
     on: MergeColType | Sequence[MergeColType],
     ds: "DataChain",
 ) -> Sequence[MergeColType]:
-    if isinstance(on, (str, sqlalchemy.ColumnElement)):
+    if isinstance(on, (str, ColumnExpr)):
         return [on]
     if isinstance(on, Function):
         return [on.get_column(table=ds._query.table)]
@@ -98,7 +98,7 @@ def _get_merge_error_str(col: MergeColType) -> str:
         return f"{col.name}()"
     if isinstance(col, sqlalchemy.Column):
         return col.name.replace(DEFAULT_DELIMITER, ".")
-    if isinstance(col, sqlalchemy.ColumnElement) and hasattr(col, "name"):
+    if isinstance(col, ColumnExpr) and hasattr(col, "name"):
         return f"{col.name} expression"
     return str(col)
 
