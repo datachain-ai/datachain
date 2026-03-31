@@ -39,7 +39,7 @@ def test_get_or_create_creates_job(test_session, patch_argv, monkeypatch):
     db_job = test_session.catalog.metastore.get_job(job.id)
     assert db_job is not None
     assert db_job.name.endswith("script.py")
-    assert db_job.query == ""
+    assert db_job.query == "print('hello world')\n"
     assert db_job.status == JobStatus.RUNNING
 
 
@@ -184,6 +184,6 @@ def test_job_is_created_after_save(test_session, monkeypatch, use_datachain_job_
 
     dc.read_values(value=["val1", "val2"], session=test_session).save("my-ds")
 
-    dataset = test_session.catalog.get_dataset("my-ds")
+    dataset = test_session.catalog.get_dataset("my-ds", versions=None)
     result_job_id = dataset.get_version(dataset.latest_version).job_id
     assert result_job_id == test_session.get_or_create_job().id

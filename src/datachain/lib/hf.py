@@ -29,12 +29,12 @@ from io import BytesIO
 from typing import TYPE_CHECKING, Any, TypeAlias
 
 import PIL
-from tqdm.auto import tqdm
 
 from datachain.lib.arrow import arrow_type_mapper
 from datachain.lib.data_model import DataModel, DataType, dict_to_data_model
 from datachain.lib.udf import Generator
 from datachain.lib.utils import normalize_col_names
+from datachain.progress import tqdm
 
 if TYPE_CHECKING:
     import pyarrow as pa

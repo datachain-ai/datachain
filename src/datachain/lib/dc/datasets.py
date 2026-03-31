@@ -1,6 +1,7 @@
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, get_origin, get_type_hints
 
+from datachain.dataset import parse_dataset_with_version
 from datachain.error import (
     DatasetNotFoundError,
     DatasetVersionNotFoundError,
@@ -11,7 +12,7 @@ from datachain.lib.projects import get as get_project
 from datachain.lib.settings import Settings
 from datachain.lib.signal_schema import SignalSchema
 from datachain.query import Session
-from datachain.query.dataset import DatasetQuery
+from datachain.query.dataset import DatasetQuery, DeltaSpec
 
 from .utils import Sys, is_studio
 from .values import read_values
@@ -50,7 +51,9 @@ def read_dataset(
         name: The dataset name, which can be a fully qualified name including the
             namespace and project. Alternatively, it can be a regular name, in which
             case the explicitly defined namespace and project will be used if they are
-            set; otherwise, default values will be applied.
+            set; otherwise, default values will be applied. The name can also include
+            a version using the ``name@version`` format (e.g. ``"my_dataset@1.0.0"``).
+            If ``version`` is also provided explicitly, it takes priority.
         namespace: optional name of namespace in which dataset to read is created
         project: optional name of project in which dataset to read is created
         version: dataset version. Supports:
@@ -81,8 +84,10 @@ def read_dataset(
         update: If True always checks for newer versions available on Studio, even if
             some version of the dataset exists locally already. If False (default), it
             will only fetch the dataset from Studio if it is not found locally.
-        delta_unsafe: Allow restricted ops in delta: merge, agg, union, group_by,
-            distinct.
+        delta_unsafe: Allow restricted ops in delta: merge, union, subtract,
+            diff, file_diff, agg, group_by, distinct. When multiple delta
+            sources participate in one composed query, this must be enabled on
+            every participating delta source.
 
 
     Example:
@@ -98,6 +103,11 @@ def read_dataset(
 
         ```py
         chain = dc.read_dataset("my_cats", version="1.0.0")
+        ```
+
+        ```py
+        # Version can also be embedded in the name using the @ syntax
+        chain = dc.read_dataset("my_cats@1.0.0")
         ```
 
         ```py
@@ -135,6 +145,10 @@ def read_dataset(
     from datachain.telemetry import telemetry
 
     from .datachain import DataChain
+
+    name, name_version = parse_dataset_with_version(name)
+    if version is None:
+        version = name_version
 
     telemetry.send_event_once("class", "datachain_init", name=name, version=version)
 
@@ -211,7 +225,9 @@ def read_dataset(
     chain = DataChain(query, _settings, signals_schema)
 
     if delta:
-        chain = chain._as_delta(
+        if delta_on is None:
+            raise ValueError("'delta on' fields must be defined")
+        query.delta_spec = DeltaSpec(
             on=delta_on,
             right_on=delta_result_on,
             compare=delta_compare,
@@ -346,6 +362,10 @@ def delete_dataset(
     """
     from datachain.studio import remove_studio_dataset
 
+    name, name_version = parse_dataset_with_version(name)
+    if version is None:
+        version = name_version
+
     session = Session.get(session, in_memory=in_memory)
     catalog = session.catalog
 
@@ -375,6 +395,7 @@ def delete_dataset(
                 name,
                 namespace_name=ds_project.namespace.name,
                 project_name=ds_project.name,
+                versions=None,
                 include_incomplete=False,
             ).latest_version
         )
@@ -424,7 +445,11 @@ def move_dataset(
     dest_namespace, dest_project, dest_name = catalog.get_full_dataset_name(dest)
 
     dataset = catalog.get_dataset(
-        name, namespace_name=namespace, project_name=project, include_incomplete=False
+        name,
+        namespace_name=namespace,
+        project_name=project,
+        versions=None,
+        include_incomplete=False,
     )
 
     catalog.update_dataset(

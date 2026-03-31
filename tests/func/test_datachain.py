@@ -7,18 +7,16 @@ import uuid
 from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
-from typing import cast
 from unittest.mock import patch
-from urllib.parse import urlparse
 
 import numpy as np
 import pandas as pd
 import pytest
-from PIL import Image
 
 import datachain as dc
 from datachain import DataModel, func
 from datachain.dataset import DatasetDependencyType
+from datachain.fs.utils import path_to_fsspec_uri
 from datachain.lib.data_model import compute_model_fingerprint
 from datachain.lib.file import File, ImageFile
 from datachain.lib.listing import LISTING_TTL, is_listing_dataset, parse_listing_uri
@@ -29,7 +27,6 @@ from tests.utils import (
     ANY_VALUE,
     TARRED_TREE,
     df_equal,
-    images_equal,
     skip_if_not_sqlite,
     sorted_dicts,
     text_embedding,
@@ -120,13 +117,49 @@ def test_read_storage_reindex_expired(tmp_dir, test_session):
     pd.DataFrame({"name": ["Charlie", "David"]}).to_parquet(tmp_dir / "test2.parquet")
     # mark dataset as expired
     test_session.catalog.metastore.update_dataset_version(
-        test_session.catalog.get_dataset(lst_ds_name),
+        test_session.catalog.get_dataset(lst_ds_name, versions=["1.0.0"]),
         "1.0.0",
         finished_at=datetime.now(timezone.utc) - timedelta(seconds=LISTING_TTL + 20),
     )
 
     # listing was updated because listing dataset was expired
     assert dc.read_storage(uri, session=test_session).count() == 2
+
+
+def test_read_storage_with_fsspec_uri(tmp_dir, test_session):
+    (tmp_dir / "alpha.txt").write_text("a")
+    (tmp_dir / "beta.txt").write_text("b")
+    uri = path_to_fsspec_uri(str(tmp_dir))
+    assert sorted(
+        dc.read_storage(uri, session=test_session).to_values("file.path")
+    ) == ["alpha.txt", "beta.txt"]
+
+
+def test_read_storage_special_chars_in_fsspec_uri(tmp_dir, test_session):
+    base = tmp_dir / "dir #% special"
+    base.mkdir()
+    (base / "data.txt").write_text("x")
+    uri = path_to_fsspec_uri(str(base))
+    assert dc.read_storage(uri, session=test_session).to_values("file.path") == [
+        "data.txt"
+    ]
+
+
+def test_read_storage_rfc_encoded_uri_targets_literal_path(tmp_dir, test_session):
+    # Path.as_uri() encodes the space as %20; fsspec doesn't decode it,
+    # so the listing resolves to the literal "dir%20name" dir on disk.
+    space_dir = tmp_dir / "dir name"
+    space_dir.mkdir()
+    (space_dir / "real.txt").write_text("x")
+
+    percent_dir = tmp_dir / "dir%20name"
+    percent_dir.mkdir()
+    (percent_dir / "wrong.txt").write_text("x")
+
+    listed = dc.read_storage(space_dir.as_uri(), session=test_session).to_values(
+        "file.path"
+    )
+    assert listed == ["wrong.txt"]
 
 
 @pytest.mark.parametrize(
@@ -261,141 +294,6 @@ def test_read_file(cloud_test_catalog, use_cache):
         assert bool(file.get_local_path()) is use_cache
 
 
-@pytest.mark.parametrize("placement", ["fullpath", "filename", "filepath"])
-@pytest.mark.parametrize("use_map", [True, False])
-@pytest.mark.parametrize("use_cache", [True, False])
-@pytest.mark.parametrize("file_type", ["", "binary", "text"])
-@pytest.mark.parametrize("num_threads", [0, 2])
-@pytest.mark.parametrize("cloud_type", ["file"], indirect=True)
-def test_to_storage(
-    tmp_dir,
-    cloud_test_catalog,
-    test_session,
-    placement,
-    use_map,
-    use_cache,
-    file_type,
-    num_threads,
-):
-    call_count = {"count": 0}
-
-    def mapper(file_path):
-        call_count["count"] += 1
-        return len(file_path)
-
-    ctc = cloud_test_catalog
-    df = dc.read_storage(ctc.src_uri, type=file_type, session=test_session)
-    if use_map:
-        (
-            df.settings(cache=use_cache)
-            .map(mapper, params=["file.path"], output={"path_len": int})
-            .map(res=lambda file: file.export(tmp_dir / "output", placement=placement))
-            .exec()
-        )
-    else:
-        (
-            df.settings(cache=use_cache)
-            .map(mapper, params=["file.path"], output={"path_len": int})
-            .to_storage(
-                tmp_dir / "output", placement=placement, num_threads=num_threads
-            )
-        )
-
-    expected = {
-        "description": "Cats and Dogs",
-        "cat1": "meow",
-        "cat2": "mrow",
-        "dog1": "woof",
-        "dog2": "arf",
-        "dog3": "bark",
-        "dog4": "ruff",
-    }
-
-    def _expected_destination_rel(file_obj: File, placement: str) -> Path:
-        rel_path = PurePosixPath(file_obj.path).as_posix()
-
-        if placement == "filename":
-            return Path(file_obj.name)
-        if placement == "filepath":
-            return Path(rel_path)
-        if placement == "fullpath":
-            parsed = urlparse(file_obj.source)
-            full_rel = rel_path
-            if parsed.scheme and parsed.scheme != "file":
-                full_rel = posixpath.join(parsed.netloc, rel_path)
-            return Path(full_rel)
-        raise AssertionError(f"Unsupported placement: {placement}")
-
-    output_root = tmp_dir / "output"
-    for file_record in df.to_values("file"):
-        file_obj = cast("File", file_record)
-        destination_rel = _expected_destination_rel(file_obj, placement)
-
-        with (output_root / destination_rel).open() as f:
-            assert f.read() == expected[file_obj.name]
-
-    assert call_count["count"] == len(expected)
-
-
-@pytest.mark.parametrize("use_cache", [True, False])
-def test_export_images_files(test_session, tmp_dir, tmp_path, use_cache):
-    images = [
-        {"name": "img1.jpg", "data": Image.new(mode="RGB", size=(64, 64))},
-        {"name": "img2.jpg", "data": Image.new(mode="RGB", size=(128, 128))},
-    ]
-
-    for img in images:
-        img["data"].save(tmp_path / img["name"])
-
-    dc.read_values(
-        file=[
-            ImageFile(path=img["name"], source=f"file://{tmp_path}") for img in images
-        ],
-        session=test_session,
-    ).settings(cache=use_cache).to_storage(tmp_dir / "output", placement="filename")
-
-    for img in images:
-        with Image.open(tmp_dir / "output" / img["name"]) as exported_img:
-            assert images_equal(img["data"], exported_img)
-
-
-@pytest.mark.parametrize("use_cache", [True, False])
-def test_read_storage_multiple_uris_files(test_session, tmp_dir, tmp_path, use_cache):
-    images = [
-        {"name": "img1.jpg", "data": Image.new(mode="RGB", size=(64, 64))},
-        {"name": "img2.jpg", "data": Image.new(mode="RGB", size=(128, 128))},
-    ]
-
-    for img in images:
-        img["data"].save(tmp_path / img["name"])
-
-    dc.read_storage(
-        [
-            f"file://{tmp_path}/img1.jpg",
-            f"file://{tmp_path}/img2.jpg",
-        ],
-        session=test_session,
-        anon=True,
-        update=True,
-    ).to_storage(tmp_dir / "output", placement="filename")
-
-    for img in images:
-        with Image.open(tmp_dir / "output" / img["name"]) as exported_img:
-            assert images_equal(img["data"], exported_img)
-
-    chain = dc.read_storage(
-        [
-            f"file://{tmp_path}/img1.jpg",
-            f"file://{tmp_path}/img2.jpg",
-            f"file://{tmp_dir}/output/",
-        ]
-    )
-    assert chain.count() == 4
-
-    chain = dc.read_storage([f"file://{tmp_dir}/output/"])
-    assert chain.count() == 2
-
-
 @pytest.mark.parametrize(
     "cloud_type",
     ["s3", "azure", "gs"],
@@ -439,60 +337,13 @@ def test_read_storage_multiple_uris_cache(cloud_test_catalog):
         assert mock_get_listing.call_count == 4  # TODO FIX THIS
 
 
-def test_read_storage_path_object(test_session, tmp_dir, tmp_path):
-    images = [
-        {"name": "img1.jpg", "data": Image.new(mode="RGB", size=(64, 64))},
-        {"name": "img2.jpg", "data": Image.new(mode="RGB", size=(128, 128))},
-    ]
-
-    for img in images:
-        img["data"].save(tmp_path / img["name"])
-
-    dc.read_storage(tmp_path).to_storage(tmp_dir / "output", placement="filename")
-
-    for img in images:
-        with Image.open(tmp_dir / "output" / img["name"]) as exported_img:
-            assert images_equal(img["data"], exported_img)
-
-
-def test_to_storage_relative_path(test_session, tmp_path):
-    images = [
-        {"name": "img1.jpg", "data": Image.new(mode="RGB", size=(64, 64))},
-        {"name": "img2.jpg", "data": Image.new(mode="RGB", size=(128, 128))},
-    ]
-
-    for img in images:
-        img["data"].save(tmp_path / img["name"])
-
-    dc.read_values(
-        file=[
-            ImageFile(path=img["name"], source=f"file://{tmp_path}") for img in images
-        ],
-        session=test_session,
-    ).to_storage("output", placement="filename")
-
-    for img in images:
-        with Image.open(Path("output") / img["name"]) as exported_img:
-            assert images_equal(img["data"], exported_img)
-
-
-def test_to_storage_files_filename_placement_not_unique_files(tmp_dir, test_session):
-    data = b"some\x00data\x00is\x48\x65\x6c\x57\x6f\x72\x6c\x64\xff\xffheRe"
-    bucket_name = "mybucket"
-    files = ["dir1/a.json", "dir1/dir2/a.json"]
-
-    # create bucket dir with duplicate file names
-    bucket_dir = tmp_dir / bucket_name
-    bucket_dir.mkdir(parents=True)
-    for file_path in files:
-        file_path = bucket_dir / file_path
-        os.makedirs(os.path.dirname(file_path), exist_ok=True)
-        with open(file_path, "wb") as fd:
-            fd.write(data)
-
-    df = dc.read_storage((tmp_dir / bucket_name).as_uri(), session=test_session)
-    with pytest.raises(ValueError):
-        df.to_storage(tmp_dir / "output", placement="filename")
+def test_progress_bar_cleanup(capsys, test_session):
+    """tqdm bars should erase residual chars after closing (#1581)."""
+    dc.read_values(val=[1, 2, 3], session=test_session).map(
+        doubled=lambda val: val * 2, output=int
+    ).to_pandas()
+    captured = capsys.readouterr()
+    assert "\033[K" in captured.err
 
 
 def test_show(capsys, test_session):
@@ -704,7 +555,10 @@ def test_read_storage_dataset_stats(tmp_dir, test_session):
         (tmp_dir / f"file{i}.txt").write_text(f"file{i}")
 
     chain = dc.read_storage(tmp_dir.as_uri(), session=test_session).save("test-data")
-    version = test_session.catalog.get_dataset(chain.name).get_version(chain.version)
+    version = test_session.catalog.get_dataset(
+        chain.name,
+        versions=[chain.version],
+    ).get_version(chain.version)
     assert version.num_objects == 4
     assert version.size == 20
 

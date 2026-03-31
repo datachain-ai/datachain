@@ -161,8 +161,8 @@ E2E_STEPS = (
         "expected": (
             "Collecting temporary tables...\n"
             "  No temporary tables to clean up.\n"
-            "Collecting failed dataset versions...\n"
-            "  No failed dataset versions to clean up.\n"
+            "Collecting dataset versions to clean up...\n"
+            "  No dataset versions to clean up.\n"
             "Collecting outdated checkpoints...\n"
             "  No outdated checkpoints to clean up.\n"
         ),

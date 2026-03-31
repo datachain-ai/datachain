@@ -3,6 +3,8 @@ import io
 import math
 import os
 import posixpath
+import subprocess
+import sys
 import tarfile
 from collections.abc import Callable
 from string import printable
@@ -174,11 +176,80 @@ def wait_for_condition(
     raise TimeoutError(f"Timeout expired while waiting for: {message}")
 
 
+def run_test_subprocess(command, env: dict[str, str], capture_output: bool = True):
+    stdout = subprocess.PIPE if capture_output else None
+    stderr = subprocess.PIPE if capture_output else None
+
+    if sys.platform == "win32":
+        return subprocess.Popen(  # noqa: S603
+            command,
+            shell=False,
+            encoding="utf-8",
+            stdout=stdout,
+            stderr=stderr,
+            env=env,
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+        )
+
+    return subprocess.Popen(  # noqa: S603
+        command,
+        shell=False,
+        encoding="utf-8",
+        stdout=stdout,
+        stderr=stderr,
+        env=env,
+        start_new_session=True,
+    )
+
+
+def wait_for_test_subprocess(proc, timeout: float = 60):
+    """Wait for a subprocess to finish with timeout and diagnostic output."""
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        stdout, stderr = proc.communicate()
+        raise AssertionError(
+            f"Subprocess timed out after {timeout}s\n"
+            f"stdout: {(stdout or '').strip()}\n"
+            f"stderr: {(stderr or '').strip()}"
+        ) from None
+    return proc.returncode, stdout or "", stderr or ""
+
+
+def wait_for_test_signal_file(
+    proc,
+    signal_file,
+    timeout: float = 30,
+    poll_interval: float = 0.05,
+):
+    """Wait for a subprocess to create a signal file before continuing."""
+    deadline = time() + timeout
+    while not signal_file.exists():
+        if proc.poll() is not None:
+            _, stdout, stderr = wait_for_test_subprocess(proc, timeout=1)
+            raise AssertionError(
+                f"Subprocess exited early (code {proc.returncode})\n"
+                f"stdout: {stdout}\n"
+                f"stderr: {stderr}"
+            )
+        if time() >= deadline:
+            proc.kill()
+            _, stdout, stderr = wait_for_test_subprocess(proc, timeout=1)
+            raise AssertionError(
+                f"Subprocess did not create signal file within {timeout}s\n"
+                f"stdout: {stdout}\n"
+                f"stderr: {stderr}"
+            )
+        sleep(poll_interval)
+
+
 def assert_row_names(
     catalog: Catalog, dataset: DatasetRecord, version: str, expected_names: set
 ) -> None:
     dataset_rows = catalog.ls_dataset_rows(dataset, version, limit=20)
     assert dataset_rows
+    assert dataset.has_version(version)
     preview = dataset.get_version(version).preview
     assert preview
 
@@ -194,7 +265,7 @@ def images_equal(img1: Image.Image, img2: Image.Image):
     # version get_flattened_data() was added in Pillow 12.1.0 as replacement
     # for deprecated getdata()
     if hasattr(img1, "get_flattened_data"):
-        return img1.get_flattened_data() == img2.get_flattened_data()
+        return img1.get_flattened_data() == img2.get_flattened_data()  # type: ignore[attr-defined]
     return list(img1.getdata()) == list(img2.getdata())
 
 
@@ -226,6 +297,11 @@ def sort_df(df):
 def df_equal(df1, df2) -> bool:
     """Helper function to check if two dataframes are equal regardless of ordering"""
     return sort_df(df1).equals(sort_df(df2))
+
+
+def is_sha256_hex(s: str) -> bool:
+    """Check if string is a valid SHA256 hex digest."""
+    return len(s) == 64 and all(c in "0123456789abcdef" for c in s)
 
 
 def table_row_count(db, table_name) -> int | None:

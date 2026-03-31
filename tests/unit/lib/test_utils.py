@@ -170,9 +170,26 @@ def test_rebase_path_with_extension_change():
 
 def test_rebase_path_base_dir_not_in_path():
     with pytest.raises(
-        ValueError, match="old_base '/data/audio' not found in src_path"
+        ValueError, match="old_base '/data/audio' not found at a path boundary"
     ):
         rebase_path("/different/path/file.wav", "/data/audio", "/output")
+
+
+def test_rebase_path_substring_not_at_boundary():
+    # "data" is a substring of "dataset" — must not match
+    with pytest.raises(ValueError, match="not found at a path boundary"):
+        rebase_path("/home/user/dataset/audio/file.wav", "data", "/output")
+
+    # "data" in "data_dir" — trailing character is not "/"
+    with pytest.raises(ValueError, match="not found at a path boundary"):
+        rebase_path("/home/user/data_dir/audio/file.wav", "data", "/output")
+
+
+def test_rebase_path_boundary_match_picks_correct_occurrence():
+    # First occurrence of "audio" is inside "audiobooks" (bad boundary),
+    # second occurrence is a proper component — should resolve to second.
+    result = rebase_path("/data/audiobooks/audio/file.wav", "audio", "/output")
+    assert result == "/output/file.wav"
 
 
 def test_rebase_path_partial_match_base_dir():

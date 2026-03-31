@@ -1,5 +1,27 @@
 from fsspec import Callback
 from fsspec.callbacks import TqdmCallback
+from tqdm.auto import tqdm as _tqdm
+
+
+class Tqdm(_tqdm):
+    """tqdm subclass that erases residual characters on close.
+
+    When tqdm clears a bar (leave=False), it writes \\r + spaces + \\r.
+    The space characters remain on the terminal line and corrupt subsequent
+    output such as the Python REPL prompt or DataFrame text (#1581).
+    Writing the ANSI "Erase in Line" sequence after close removes them.
+    """
+
+    def close(self):
+        was_enabled = not self.disable
+        super().close()
+        if was_enabled:
+            self.fp.write("\r\033[K")
+            self.fp.flush()
+
+
+# Alias for drop-in replacement of tqdm imports
+tqdm = Tqdm
 
 
 class CombinedDownloadCallback(Callback):

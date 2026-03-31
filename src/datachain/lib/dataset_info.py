@@ -36,6 +36,7 @@ class DatasetInfo(DataModel):
     error_message: str = Field(default="")
     error_stack: str = Field(default="")
     attrs: list[str] = Field(default=[])
+    query_script: str = Field(default="")
 
     @property
     def is_temp(self) -> bool:
@@ -83,6 +84,13 @@ class DatasetInfo(DataModel):
     def validate_metrics(cls, v):
         return cls._validate_dict(v)
 
+    @field_validator("attrs", mode="before")
+    @classmethod
+    def validate_attrs(cls, v):
+        if v is None:
+            return []
+        return v
+
     @classmethod
     def from_models(
         cls,
@@ -106,4 +114,5 @@ class DatasetInfo(DataModel):
             error_message=version.error_message,
             error_stack=version.error_stack,
             attrs=dataset.attrs,
+            query_script=version.query_script,
         )

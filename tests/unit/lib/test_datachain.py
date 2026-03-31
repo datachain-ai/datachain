@@ -17,6 +17,7 @@ from pydantic import BaseModel
 
 import datachain as dc
 from datachain import Column, func
+from datachain.dataset import DatasetStatus
 from datachain.error import (
     DatasetInvalidVersionError,
     DatasetNotFoundError,
@@ -246,6 +247,23 @@ def test_read_records_and_gen(test_session):
     assert [r[1] for r in ds.order_by("t1.nnn", "t1.count").to_list()] == features
 
 
+def test_read_records_populates_dataset_metadata(test_session):
+    chain = dc.read_records([{"seed": 0}], schema={"seed": int}, session=test_session)
+
+    dataset = test_session.catalog.get_dataset(
+        chain.name,
+        versions=[chain.version],
+        include_preview=True,
+    )
+    version = dataset.get_version(chain.version)
+
+    assert version.status == DatasetStatus.COMPLETE
+    assert version.num_objects == 1
+    assert version.size is not None
+    assert version.preview
+    assert version.preview[0]["seed"] == 0
+
+
 def test_read_record_empty_chain_with_schema(test_session):
     schema = {"my_file": File, "my_col": int}
     ds = dc.read_records([], schema=schema, session=test_session)
@@ -262,7 +280,9 @@ def test_read_record_empty_chain_with_schema(test_session):
 
     # check that columns have actually been created from schema
     catalog = test_session.catalog
-    dr = catalog.warehouse.dataset_rows(catalog.get_dataset(ds_name))
+    dr = catalog.warehouse.dataset_rows(
+        catalog.get_dataset(ds_name, versions=["1.0.0"])
+    )
     assert sorted([c.name for c in dr.columns]) == sorted(
         ds.signals_schema.db_signals()
     )
@@ -570,7 +590,7 @@ def test_listings(test_session, tmp_dir):
     assert len(listings) == 1
     listing = listings[0]
     assert isinstance(listing, ListingInfo)
-    assert listing.storage_uri == uri
+    assert listing.uri.rstrip("/") == uri
     assert listing.is_expired is False
     assert listing.expires
     assert listing.version == "1.0.0"
@@ -597,9 +617,9 @@ def test_listings_reindex(test_session, tmp_dir):
     listings = list(dc.listings(session=test_session).to_values("listing"))
     assert len(listings) == 2
     listings.sort(key=lambda lst: lst.version)
-    assert listings[0].storage_uri == uri
+    assert listings[0].uri.rstrip("/") == uri
     assert listings[0].version == "1.0.0"
-    assert listings[1].storage_uri == uri
+    assert listings[1].uri.rstrip("/") == uri
     assert listings[1].version == "2.0.0"
 
 
@@ -4153,7 +4173,11 @@ def test_semver_preview_ok(test_session):
     dc.read_values(num=[1, 2], session=test_session).save(ds_name)
     dc.read_values(num=[3, 4], session=test_session).save(ds_name)
 
-    dataset = test_session.catalog.get_dataset(ds_name)
+    dataset = test_session.catalog.get_dataset(
+        ds_name,
+        versions=["1.0.0", "1.0.1"],
+        include_preview=True,
+    )
     assert sorted([p["num"] for p in dataset.get_version("1.0.0").preview]) == [1, 2]
     assert sorted([p["num"] for p in dataset.get_version("1.0.1").preview]) == [3, 4]
 
@@ -4518,6 +4542,15 @@ def test_column_compute(test_session):
     assert chain.max("signals.signal.s3") == "eee"
 
 
+def test_delete_dataset_and_create_with_same_name(test_session):
+    chain = dc.read_values(num=[1, 2, 3], session=test_session)
+    chain.save("nums", version="1.0.0")
+    dc.delete_dataset("nums", force=True, session=test_session)
+    assert "nums" not in dc.datasets(session=test_session).to_values("name")
+    chain.save("nums", version="1.0.0")
+    assert "nums" in dc.datasets(session=test_session).to_values("name")
+
+
 def test_union_does_not_break_schema_order(test_session):
     class Meta(BaseModel):
         name: str
@@ -4551,7 +4584,7 @@ def test_union_does_not_break_schema_order(test_session):
         .save("union")
     )
 
-    dat = test_session.catalog.get_dataset("union")
+    dat = test_session.catalog.get_dataset("union", versions=["1.0.0"])
     assert list(dat.versions[0].schema.keys()) == [
         "key",
         "val",

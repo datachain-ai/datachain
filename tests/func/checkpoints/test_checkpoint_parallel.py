@@ -43,9 +43,9 @@ def test_checkpoints_parallel(test_session_tmpfile, monkeypatch):
     chain.save("nums3")
     second_job_id = test_session.get_or_create_job().id
 
-    assert len(catalog.get_dataset("nums1").versions) == 1
-    assert len(catalog.get_dataset("nums2").versions) == 1
-    assert len(catalog.get_dataset("nums3").versions) == 1
+    assert len(catalog.get_dataset("nums1", versions=None).versions) == 1
+    assert len(catalog.get_dataset("nums2", versions=None).versions) == 1
+    assert len(catalog.get_dataset("nums3", versions=None).versions) == 1
 
     assert len(list(catalog.metastore.list_checkpoints([first_job_id]))) == 3
     assert len(list(catalog.metastore.list_checkpoints([second_job_id]))) == 3

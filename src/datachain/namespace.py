@@ -78,6 +78,9 @@ class Namespace:
     ) -> "Namespace":
         return cls(id, uuid, name, descr, created_at)
 
+    def to_dict(self) -> dict[str, Any]:
+        return {f.name: getattr(self, f.name) for f in fields(self)}
+
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "Namespace":
         kwargs = {f.name: d[f.name] for f in fields(cls) if f.name in d}

@@ -78,9 +78,11 @@ def read_storage(
               (error mode)
             - True: Reprocess records missing from the result dataset (missing mode)
             - None: No retry processing (default)
-        delta_unsafe: Allow restricted ops in delta: merge, agg, union, group_by,
-            distinct. Caller must ensure datasets are consistent and not partially
-            updated.
+        delta_unsafe: Allow restricted ops in delta: merge, union, subtract,
+            diff, file_diff, agg, group_by, distinct. When multiple delta
+            sources participate in one composed query, this must be enabled on
+            every participating delta source. Caller must ensure datasets are
+            consistent and not partially updated.
 
     Returns:
         DataChain: A DataChain object containing the file information.

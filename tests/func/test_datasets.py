@@ -34,9 +34,20 @@ def add_column(engine, table_name, column, catalog):
     catalog.warehouse.db.execute_str(query_str)
 
 
-@pytest.mark.parametrize("create_rows", [True, False])
-def test_create_dataset_no_version_specified(cloud_test_catalog, project, create_rows):
-    catalog = cloud_test_catalog.catalog
+@pytest.fixture
+def saved_dataset(test_session):
+    name = uuid.uuid4().hex
+    chain = dc.read_values(val=[1, 2, 3, 4], session=test_session).save(name)
+    catalog = test_session.catalog
+    return catalog.update_dataset(
+        chain.dataset,
+        description="test dataset",
+        attrs=["test", "dataset"],
+    )
+
+
+def test_create_dataset_no_version_specified(test_session, project):
+    catalog = test_session.catalog
 
     name = uuid.uuid4().hex
     dataset = catalog.create_dataset(
@@ -44,7 +55,6 @@ def test_create_dataset_no_version_specified(cloud_test_catalog, project, create
         project,
         query_script="script",
         columns=[sa.Column("similarity", Float32)],
-        create_rows=create_rows,
     )
 
     assert [v.version for v in dataset.versions] == ["1.0.0"]
@@ -59,15 +69,11 @@ def test_create_dataset_no_version_specified(cloud_test_catalog, project, create
     assert dataset_version.status == DatasetStatus.CREATED
     assert dataset_version.uuid
     assert dataset.status == DatasetStatus.CREATED  # dataset status is deprecated
-    if create_rows:
-        assert dataset_version.num_objects == 0
-    else:
-        assert dataset_version.num_objects is None
+    assert dataset_version.num_objects is None
 
 
-@pytest.mark.parametrize("create_rows", [True, False])
-def test_create_dataset_with_explicit_version(cloud_test_catalog, project, create_rows):
-    catalog = cloud_test_catalog.catalog
+def test_create_dataset_with_explicit_version(test_session, project):
+    catalog = test_session.catalog
 
     name = uuid.uuid4().hex
     dataset = catalog.create_dataset(
@@ -76,7 +82,6 @@ def test_create_dataset_with_explicit_version(cloud_test_catalog, project, creat
         version="1.0.0",
         query_script="script",
         columns=[sa.Column("similarity", Float32)],
-        create_rows=create_rows,
     )
 
     dataset_version = dataset.get_version("1.0.0")
@@ -89,81 +94,85 @@ def test_create_dataset_with_explicit_version(cloud_test_catalog, project, creat
     assert dataset_version.status == DatasetStatus.CREATED
     assert dataset_version.uuid
     assert dataset.status == DatasetStatus.CREATED
-    if create_rows:
-        assert dataset_version.num_objects == 0
-    else:
-        assert dataset_version.num_objects is None
+    assert dataset_version.num_objects is None
+
+
+def test_create_dataset_does_not_create_rows_table(test_session, project):
+    catalog = test_session.catalog
+
+    name = uuid.uuid4().hex
+    dataset = catalog.create_dataset(
+        name,
+        project,
+        columns=[sa.Column("similarity", Float32)],
+    )
+
+    table_name = catalog.warehouse.dataset_table_name(dataset, "1.0.0")
+    assert table_row_count(catalog.warehouse.db, table_name) is None
 
 
 def test_create_dataset_already_exist_but_in_different_project(
-    cloud_test_catalog, dogs_dataset, project
+    test_session, saved_dataset, project
 ):
-    catalog = cloud_test_catalog.catalog
+    catalog = test_session.catalog
     dataset = catalog.create_dataset(
-        dogs_dataset.name,
+        saved_dataset.name,
         project,
         query_script="script",
         columns=[sa.Column("similarity", Float32)],
     )
 
-    assert dataset.id != dogs_dataset.id
-    assert dataset.name == dogs_dataset.name
+    assert dataset.id != saved_dataset.id
+    assert dataset.name == saved_dataset.name
     assert dataset.project == project
-    assert dataset.project != dogs_dataset.project
+    assert dataset.project != saved_dataset.project
 
 
-@pytest.mark.parametrize("create_rows", [True, False])
-def test_create_dataset_already_exist(cloud_test_catalog, dogs_dataset, create_rows):
-    catalog = cloud_test_catalog.catalog
+def test_create_dataset_already_exist(test_session, saved_dataset):
+    catalog = test_session.catalog
 
     dataset = catalog.create_dataset(
-        dogs_dataset.name,
-        dogs_dataset.project,
+        saved_dataset.name,
+        saved_dataset.project,
         query_script="script",
         columns=[sa.Column("similarity", Float32)],
-        create_rows=create_rows,
     )
 
     assert sorted([v.version for v in dataset.versions]) == sorted(["1.0.0", "1.0.1"])
 
     dataset_version = dataset.get_version("1.0.1")
 
-    assert dataset.name == dogs_dataset.name
-    assert dataset.project == dogs_dataset.project
+    assert dataset.name == saved_dataset.name
+    assert dataset.project == saved_dataset.project
     assert dataset_version.query_script == "script"
     assert dataset_version.schema["similarity"] == Float32
     assert dataset_version.status == DatasetStatus.CREATED
     assert dataset.status == DatasetStatus.COMPLETE
-    if create_rows:
-        assert dataset_version.num_objects == 0
-    else:
-        assert dataset_version.num_objects is None
+    assert dataset_version.num_objects is None
 
 
-@pytest.mark.parametrize("create_rows", [True, False])
-def test_create_dataset_already_exist_wrong_version(
-    cloud_test_catalog, dogs_dataset, create_rows
-):
-    catalog = cloud_test_catalog.catalog
+def test_create_dataset_already_exist_wrong_version(test_session, saved_dataset):
+    catalog = test_session.catalog
 
     with pytest.raises(DatasetInvalidVersionError) as exc_info:
         catalog.create_dataset(
-            dogs_dataset.name,
-            dogs_dataset.project,
+            saved_dataset.name,
+            saved_dataset.project,
             version="1.0.0",
-            columns=[sa.Column(name, typ) for name, typ in dogs_dataset.schema.items()],
-            create_rows=create_rows,
+            columns=[
+                sa.Column(name, typ) for name, typ in saved_dataset.schema.items()
+            ],
         )
     assert str(exc_info.value) == (
-        f"Version 1.0.0 already exists in dataset {dogs_dataset.name}"
+        f"Version 1.0.0 already exists in dataset {saved_dataset.name}"
     )
 
 
-def test_get_dataset(cloud_test_catalog, dogs_dataset):
-    catalog = cloud_test_catalog.catalog
+def test_get_dataset(test_session, saved_dataset):
+    catalog = test_session.catalog
 
-    dataset = catalog.get_dataset(dogs_dataset.name)
-    assert dataset.name == dogs_dataset.name
+    dataset = catalog.get_dataset(saved_dataset.name)
+    assert dataset.name == saved_dataset.name
 
     with pytest.raises(DatasetNotFoundError):
         catalog.get_dataset("wrong name")
@@ -174,8 +183,15 @@ def test_create_dataset_from_sources(listed_bucket, cloud_test_catalog, project)
     src_uri = cloud_test_catalog.src_uri
     catalog = cloud_test_catalog.catalog
 
-    dataset = catalog.create_dataset_from_sources(
+    chain = catalog.create_dataset_from_sources(
         dataset_name, [f"{src_uri}/dogs/"], project, recursive=True
+    )
+    dataset = catalog.get_dataset(
+        chain.name,
+        namespace_name=project.namespace.name,
+        project_name=project.name,
+        versions=None,
+        include_preview=True,
     )
 
     dataset_version = dataset.get_version(dataset.latest_version)
@@ -213,8 +229,15 @@ def test_create_dataset_from_sources_dataset(cloud_test_catalog, dogs_dataset, p
     catalog = cloud_test_catalog.catalog
     ds_uri = f"ds://{dogs_dataset.full_name}"
 
-    dataset = catalog.create_dataset_from_sources(
+    chain = catalog.create_dataset_from_sources(
         dataset_name, [ds_uri], project, recursive=True
+    )
+    dataset = catalog.get_dataset(
+        chain.name,
+        namespace_name=project.namespace.name,
+        project_name=project.name,
+        versions=None,
+        include_preview=True,
     )
 
     dataset_version = dataset.get_version(dataset.latest_version)
@@ -246,9 +269,9 @@ def test_create_dataset_from_sources_dataset(cloud_test_catalog, dogs_dataset, p
     assert dataset_version.preview
 
 
-def test_create_dataset_from_sources_empty_sources(cloud_test_catalog, project):
+def test_create_dataset_from_sources_empty_sources(test_session, project):
     dataset_name = uuid.uuid4().hex
-    catalog = cloud_test_catalog.catalog
+    catalog = test_session.catalog
 
     with pytest.raises(ValueError) as exc_info:
         catalog.create_dataset_from_sources(dataset_name, [], project, recursive=True)
@@ -304,83 +327,100 @@ def test_create_dataset_whole_bucket(listed_bucket, cloud_test_catalog, project)
         "dog4",
     }
 
-    assert_row_names(catalog, ds1.dataset, ds1.dataset.latest_version, expected_rows)
-    assert_row_names(catalog, ds2.dataset, ds2.dataset.latest_version, expected_rows)
+    ds1_dataset = catalog.get_dataset(
+        ds1.dataset.name,
+        namespace_name=ds1.dataset.project.namespace.name,
+        project_name=ds1.dataset.project.name,
+        versions=[ds1.dataset.latest_version],
+        include_preview=True,
+    )
+    ds2_dataset = catalog.get_dataset(
+        ds2.dataset.name,
+        namespace_name=ds2.dataset.project.namespace.name,
+        project_name=ds2.dataset.project.name,
+        versions=[ds2.dataset.latest_version],
+        include_preview=True,
+    )
+
+    assert_row_names(catalog, ds1_dataset, ds1_dataset.latest_version, expected_rows)
+    assert_row_names(catalog, ds2_dataset, ds2_dataset.latest_version, expected_rows)
 
 
-def test_remove_dataset(cloud_test_catalog, dogs_dataset):
-    catalog = cloud_test_catalog.catalog
+def test_remove_dataset(test_session, saved_dataset):
+    catalog = test_session.catalog
 
-    dataset_version = dogs_dataset.get_version("1.0.0")
+    dataset_version = saved_dataset.get_version("1.0.0")
     assert dataset_version.num_objects
 
-    catalog.remove_dataset(dogs_dataset.name, dogs_dataset.project, force=True)
+    catalog.remove_dataset(saved_dataset.name, saved_dataset.project, force=True)
     with pytest.raises(DatasetNotFoundError):
-        catalog.get_dataset(dogs_dataset.name)
+        catalog.get_dataset(saved_dataset.name)
 
-    dataset_table_name = catalog.warehouse.dataset_table_name(dogs_dataset, "1.0.0")
+    dataset_table_name = catalog.warehouse.dataset_table_name(saved_dataset, "1.0.0")
     assert table_row_count(catalog.warehouse.db, dataset_table_name) is None
 
     assert (
-        catalog.metastore.get_direct_dataset_dependencies(dogs_dataset, "1.0.0") == []
+        catalog.metastore.get_direct_dataset_dependencies(saved_dataset, "1.0.0") == []
     )
 
 
-def test_remove_dataset_with_multiple_versions(cloud_test_catalog, dogs_dataset):
-    catalog = cloud_test_catalog.catalog
+def test_remove_dataset_with_multiple_versions(test_session, saved_dataset):
+    catalog = test_session.catalog
 
-    columns = tuple(sa.Column(name, typ) for name, typ in dogs_dataset.schema.items())
-    updated_dogs_dataset = catalog.create_dataset_version(
-        dogs_dataset, "2.0.0", columns=columns
+    columns = tuple(sa.Column(name, typ) for name, typ in saved_dataset.schema.items())
+    updated_dataset, _ = catalog.create_dataset_version(
+        saved_dataset, "2.0.0", columns=columns
     )
-    assert updated_dogs_dataset.has_version("2.0.0")
-    assert updated_dogs_dataset.has_version("1.0.0")
+    assert updated_dataset.has_version("2.0.0")
+    assert updated_dataset.has_version("1.0.0")
 
-    catalog.remove_dataset(updated_dogs_dataset.name, dogs_dataset.project, force=True)
+    catalog.remove_dataset(updated_dataset.name, saved_dataset.project, force=True)
     with pytest.raises(DatasetNotFoundError):
-        catalog.get_dataset(updated_dogs_dataset.name)
+        catalog.get_dataset(updated_dataset.name)
 
     assert (
-        catalog.metastore.get_direct_dataset_dependencies(updated_dogs_dataset, "1.0.0")
+        catalog.metastore.get_direct_dataset_dependencies(updated_dataset, "1.0.0")
         == []
     )
 
 
-def test_remove_dataset_dataset_not_found(cloud_test_catalog, project):
-    catalog = cloud_test_catalog.catalog
+def test_remove_dataset_dataset_not_found(test_session, project):
+    catalog = test_session.catalog
 
     with pytest.raises(DatasetNotFoundError):
         catalog.remove_dataset("wrong_name", project, force=True)
 
 
-def test_remove_dataset_wrong_version(cloud_test_catalog, dogs_dataset):
-    catalog = cloud_test_catalog.catalog
+def test_remove_dataset_wrong_version(test_session, saved_dataset):
+    catalog = test_session.catalog
 
     with pytest.raises(DatasetInvalidVersionError):
         catalog.remove_dataset(
-            dogs_dataset.name, dogs_dataset.project, version="100.0.0"
+            saved_dataset.name, saved_dataset.project, version="100.0.0"
         )
 
 
-def test_edit_dataset(cloud_test_catalog, dogs_dataset):
+def test_edit_dataset(test_session, saved_dataset):
     dataset_new_name = uuid.uuid4().hex
-    catalog = cloud_test_catalog.catalog
+    catalog = test_session.catalog
 
     catalog.edit_dataset(
-        dogs_dataset.name,
-        dogs_dataset.project,
+        saved_dataset.name,
+        saved_dataset.project,
         new_name=dataset_new_name,
         description="new description",
         attrs=["cats", "birds"],
     )
 
-    dataset = catalog.get_dataset(dataset_new_name)
+    dataset = catalog.get_dataset(dataset_new_name, versions=["1.0.0"])
     assert dataset.name == dataset_new_name
     assert dataset.description == "new description"
     assert dataset.attrs == ["cats", "birds"]
 
     # check if dataset tables are renamed correctly
-    old_dataset_table_name = catalog.warehouse.dataset_table_name(dogs_dataset, "1.0.0")
+    old_dataset_table_name = catalog.warehouse.dataset_table_name(
+        saved_dataset, "1.0.0"
+    )
     new_dataset_table_name = catalog.warehouse.dataset_table_name(dataset, "1.0.0")
 
     assert table_row_count(catalog.warehouse.db, old_dataset_table_name) is None
@@ -486,19 +526,21 @@ def test_move_dataset_error_in_session_moved_dataset_persisted(catalog):
     assert datasets[0].namespace == "new"
 
 
-def test_edit_dataset_same_name(cloud_test_catalog, dogs_dataset):
-    dataset_new_name = dogs_dataset.name
-    catalog = cloud_test_catalog.catalog
+def test_edit_dataset_same_name(test_session, saved_dataset):
+    dataset_new_name = saved_dataset.name
+    catalog = test_session.catalog
 
     catalog.edit_dataset(
-        dogs_dataset.name, dogs_dataset.project, new_name=dataset_new_name
+        saved_dataset.name, saved_dataset.project, new_name=dataset_new_name
     )
 
-    dataset = catalog.get_dataset(dataset_new_name)
+    dataset = catalog.get_dataset(dataset_new_name, versions=None)
     assert dataset.name == dataset_new_name
 
     # check if dataset tables are renamed correctly
-    old_dataset_table_name = catalog.warehouse.dataset_table_name(dogs_dataset, "1.0.0")
+    old_dataset_table_name = catalog.warehouse.dataset_table_name(
+        saved_dataset, "1.0.0"
+    )
     new_dataset_table_name = catalog.warehouse.dataset_table_name(dataset, "1.0.0")
 
     expected_table_row_count = table_row_count(
@@ -511,19 +553,19 @@ def test_edit_dataset_same_name(cloud_test_catalog, dogs_dataset):
     )
 
 
-def test_edit_dataset_remove_attrs_and_description(cloud_test_catalog, dogs_dataset):
+def test_edit_dataset_remove_attrs_and_description(test_session, saved_dataset):
     dataset_new_name = uuid.uuid4().hex
-    catalog = cloud_test_catalog.catalog
+    catalog = test_session.catalog
 
     catalog.edit_dataset(
-        dogs_dataset.name,
-        dogs_dataset.project,
+        saved_dataset.name,
+        saved_dataset.project,
         new_name=dataset_new_name,
         description="",
         attrs=[],
     )
 
-    dataset = catalog.get_dataset(dataset_new_name)
+    dataset = catalog.get_dataset(dataset_new_name, versions=None)
     assert [v.version for v in dataset.versions] == ["1.0.0"]
     assert dataset.name == dataset_new_name
     assert dataset.description == ""
@@ -669,7 +711,15 @@ def test_dataset_preview_custom_columns(cloud_test_catalog, dogs_dataset):
         .save("dogs_custom_columns")
     )
 
-    for r in catalog.get_dataset("dogs_custom_columns").get_version("1.0.0").preview:
+    for r in (
+        catalog.get_dataset(
+            "dogs_custom_columns",
+            versions=["1.0.0"],
+            include_preview=True,
+        )
+        .get_version("1.0.0")
+        .preview
+    ):
         assert r["int_col"] == 5
         assert r["int_col_32"] == 5
         assert r["int_col_64"] == 5
@@ -698,7 +748,15 @@ def test_dataset_preview_order(test_session):
 
     preview_values = []
 
-    for r in catalog.get_dataset(dataset_name).get_version("1.0.0").preview:
+    for r in (
+        catalog.get_dataset(
+            dataset_name,
+            versions=["1.0.0"],
+            include_preview=True,
+        )
+        .get_version("1.0.0")
+        .preview
+    ):
         id = ids.pop()
         o = order.pop()
         entry = (id, o)
@@ -707,14 +765,30 @@ def test_dataset_preview_order(test_session):
 
     dc.read_dataset(dataset_name, session=test_session).save(dataset_name)
 
-    for r in catalog.get_dataset(dataset_name).get_version("1.0.1").preview:
+    for r in (
+        catalog.get_dataset(
+            dataset_name,
+            versions=["1.0.1"],
+            include_preview=True,
+        )
+        .get_version("1.0.1")
+        .preview
+    ):
         assert (r["id"], r["order"]) == preview_values.pop(0)
 
     dc.read_dataset(dataset_name, version="1.0.1", session=test_session).order_by(
         "id"
     ).save(dataset_name)
 
-    for r in catalog.get_dataset(dataset_name).get_version("1.0.2").preview:
+    for r in (
+        catalog.get_dataset(
+            dataset_name,
+            versions=["1.0.2"],
+            include_preview=True,
+        )
+        .get_version("1.0.2")
+        .preview
+    ):
         assert r["id"] == ids.pop(0)
         assert r["order"] == order.pop(0)
 
@@ -730,7 +804,15 @@ def test_dataset_preview_last_modified(cloud_test_catalog, dogs_dataset):
         catalog=catalog,
     ).save("dogs_custom_columns", project=project)
 
-    for r in catalog.get_dataset("dogs_custom_columns").get_version("1.0.0").preview:
+    for r in (
+        catalog.get_dataset(
+            "dogs_custom_columns",
+            versions=["1.0.0"],
+            include_preview=True,
+        )
+        .get_version("1.0.0")
+        .preview
+    ):
         assert isinstance(r.get("file__last_modified"), str)
 
 
@@ -764,7 +846,9 @@ def test_row_random(cloud_test_catalog):
 
 def test_dataset_stats_registered_ds(cloud_test_catalog, dogs_dataset):
     catalog = cloud_test_catalog.catalog
-    dataset = catalog.get_dataset(dogs_dataset.name).get_version("1.0.0")
+    dataset = catalog.get_dataset(dogs_dataset.name, versions=["1.0.0"]).get_version(
+        "1.0.0"
+    )
     assert dataset.num_objects == 4
     assert dataset.size == 15
     rows_count = catalog.warehouse.dataset_rows_count(dogs_dataset, "1.0.0")
@@ -783,7 +867,7 @@ def test_dataset_storage_dependencies(cloud_test_catalog, cloud_type, indirect):
     dc.read_storage(uri, session=ctc.session).save(ds_name)
 
     lst_ds_name, _, _ = parse_listing_uri(uri)
-    lst_dataset = catalog.get_dataset(lst_ds_name)
+    lst_dataset = catalog.get_dataset(lst_ds_name, versions=["1.0.0"])
 
     assert [
         dataset_dependency_asdict(d)

@@ -12,9 +12,9 @@ else:
 
 from sqlalchemy import Column
 from sqlalchemy.sql import func
-from tqdm.auto import tqdm
 
 from datachain.node import DirType, Node, NodeWithPath
+from datachain.progress import tqdm
 from datachain.sql.functions import path as pathfunc
 from datachain.utils import suffix_to_number
 
@@ -84,6 +84,7 @@ class Listing:
             self.dataset_name,
             namespace_name=project.namespace.name,
             project_name=project.name,
+            versions=[self.dataset_version] if self.dataset_version else None,
         )
 
     @cached_property

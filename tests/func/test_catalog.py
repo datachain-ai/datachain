@@ -5,7 +5,6 @@ from urllib.parse import urlparse
 
 import pytest
 import requests
-from fsspec.implementations.local import LocalFileSystem
 
 import datachain as dc
 from datachain.cli import garbage_collect
@@ -17,7 +16,7 @@ from tests.utils import DEFAULT_TREE, skip_if_not_sqlite, tree_from_path
 
 def listing_stats(uri, catalog):
     list_dataset_name, _, _ = parse_listing_uri(uri)
-    dataset = catalog.get_dataset(list_dataset_name)
+    dataset = catalog.get_dataset(list_dataset_name, versions=None)
     dataset_version = dataset.get_version(dataset.latest_version)
     return dataset_version.num_objects, dataset_version.size
 
@@ -108,10 +107,6 @@ def test_find_names_columns(cloud_test_catalog, cloud_type):
     src_uri = cloud_test_catalog.src_uri
     catalog = cloud_test_catalog.catalog
 
-    src_uri_path = src_uri
-    if cloud_type == "file":
-        src_uri_path = LocalFileSystem._strip_protocol(src_uri)
-
     assert set(
         catalog.find(
             [src_uri],
@@ -121,9 +116,9 @@ def test_find_names_columns(cloud_test_catalog, cloud_type):
     ) == {
         "\t".join(columns)
         for columns in [
-            ["8", "cats", f"{src_uri_path}/cats/", "0", "d"],
-            ["4", "cat1", f"{src_uri_path}/cats/cat1", "4", "f"],
-            ["4", "cat2", f"{src_uri_path}/cats/cat2", "4", "f"],
+            ["8", "cats", f"{src_uri}/cats/", "0", "d"],
+            ["4", "cat1", f"{src_uri}/cats/cat1", "4", "f"],
+            ["4", "cat2", f"{src_uri}/cats/cat2", "4", "f"],
         ]
     }
 
@@ -429,14 +424,11 @@ def test_du(cloud_test_catalog, cloud_type):
     src_uri = cloud_test_catalog.src_uri
     catalog = cloud_test_catalog.catalog
 
-    src_uri_path = src_uri
-    if cloud_type == "file":
-        src_uri_path = LocalFileSystem._strip_protocol(src_uri)
     expected_results = [
-        (f"{src_uri_path}/cats/", 8),
-        (f"{src_uri_path}/dogs/others/", 4),
-        (f"{src_uri_path}/dogs/", 15),
-        (f"{src_uri_path}/", 36),
+        (f"{src_uri}/cats/", 8),
+        (f"{src_uri}/dogs/others/", 4),
+        (f"{src_uri}/dogs/", 15),
+        (f"{src_uri}/", 36),
     ]
 
     results = catalog.du([src_uri])
@@ -518,7 +510,9 @@ def test_dataset_stats(test_session):
         file=[dc.File(path=name, size=size) for name, size in values],
         session=test_session,
     ).persist()
-    dataset_version1 = test_session.catalog.get_dataset(ds1.name).get_version("1.0.0")
+    dataset_version1 = test_session.catalog.get_dataset(
+        ds1.name, versions=["1.0.0"]
+    ).get_version("1.0.0")
     assert dataset_version1.num_objects == 3
     assert dataset_version1.size == 6
 
@@ -528,7 +522,9 @@ def test_dataset_stats(test_session):
         file2=[dc.File(path=name, size=size * 2) for name, size in values],
         session=test_session,
     ).persist()
-    dataset_version2 = test_session.catalog.get_dataset(ds2.name).get_version("1.0.0")
+    dataset_version2 = test_session.catalog.get_dataset(
+        ds2.name, versions=["1.0.0"]
+    ).get_version("1.0.0")
     assert dataset_version2.num_objects == 3
     assert dataset_version2.size == 18
 
@@ -582,7 +578,6 @@ def test_ls_datasets_no_json(test_session):
             assert not hasattr(v, "feature_schema")
 
 
-@pytest.mark.parametrize("cloud_type", ["s3", "azure", "gs"], indirect=True)
 def test_listing_stats(cloud_test_catalog):
     catalog = cloud_test_catalog.catalog
     src_uri = cloud_test_catalog.src_uri
@@ -613,7 +608,6 @@ def test_listing_stats(cloud_test_catalog):
     assert size == 36
 
 
-@pytest.mark.parametrize("cloud_type", ["s3", "azure", "gs"], indirect=True)
 def test_enlist_source_handles_slash(cloud_test_catalog):
     catalog = cloud_test_catalog.catalog
     src_uri = cloud_test_catalog.src_uri
@@ -633,7 +627,6 @@ def test_enlist_source_handles_slash(cloud_test_catalog):
     assert size == 15
 
 
-@pytest.mark.parametrize("cloud_type", ["s3", "azure", "gs"], indirect=True)
 def test_enlist_source_handles_glob(cloud_test_catalog):
     catalog = cloud_test_catalog.catalog
     src_uri = cloud_test_catalog.src_uri
@@ -647,7 +640,6 @@ def test_enlist_source_handles_glob(cloud_test_catalog):
     assert size == 15
 
 
-@pytest.mark.parametrize("cloud_type", ["s3", "azure", "gs"], indirect=True)
 def test_enlist_source_handles_file(cloud_test_catalog):
     catalog = cloud_test_catalog.catalog
     src_uri = cloud_test_catalog.src_uri

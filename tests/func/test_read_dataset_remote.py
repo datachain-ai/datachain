@@ -4,7 +4,6 @@ import socketserver
 import subprocess
 import sys
 import threading
-import time
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -25,7 +24,12 @@ from tests.conftest import (
     REMOTE_NAMESPACE_NAME,
     REMOTE_PROJECT_NAME,
 )
-from tests.utils import skip_if_not_sqlite
+from tests.utils import (
+    run_test_subprocess,
+    skip_if_not_sqlite,
+    wait_for_test_signal_file,
+    wait_for_test_subprocess,
+)
 
 
 @pytest.fixture
@@ -343,11 +347,10 @@ setattr(target_module.{class_name}, "{method_name}", _hang_wrapper)
                 "DATACHAIN_STUDIO_TEAM": "test-team",
             }
         )
-        proc = subprocess.Popen(  # noqa: S603
+        proc = run_test_subprocess(
             [sys.executable, str(script_file)],
-            stdout=subprocess.PIPE if capture_output else subprocess.DEVNULL,
-            stderr=subprocess.PIPE if capture_output else subprocess.DEVNULL,
-            env=env,
+            env,
+            capture_output=capture_output,
         )
         processes.append(proc)
         return proc
@@ -825,53 +828,6 @@ def test_read_dataset_remote_cleanup_on_insertion_failure(
     )
 
 
-def _wait_for_signal_file(proc, signal_file, timeout=30, poll_interval=0.05):
-    """Wait for a subprocess to create a signal file.
-
-    Raises AssertionError if the process exits early or the timeout expires.
-    """
-    deadline = time.time() + timeout
-    while not signal_file.exists():
-        if proc.poll() is not None:
-            stdout, stderr = proc.communicate()
-            raise AssertionError(
-                f"Subprocess exited early (code {proc.returncode})\n"
-                f"stdout: {stdout.decode(errors='replace')}\n"
-                f"stderr: {stderr.decode(errors='replace')}"
-            )
-        if time.time() >= deadline:
-            proc.kill()
-            stdout, stderr = proc.communicate()
-            raise AssertionError(
-                f"Subprocess did not create signal file within {timeout}s\n"
-                f"stdout: {stdout.decode(errors='replace')}\n"
-                f"stderr: {stderr.decode(errors='replace')}"
-            )
-        time.sleep(poll_interval)
-
-
-def _wait_for_subprocess(proc, timeout=60):
-    """Wait for a subprocess to finish with timeout and diagnostic output.
-
-    Returns (returncode, stdout, stderr). Raises AssertionError on timeout.
-    """
-    try:
-        stdout, stderr = proc.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        stdout, stderr = proc.communicate()
-        raise AssertionError(
-            f"Subprocess timed out after {timeout}s\n"
-            f"stdout: {stdout.decode(errors='replace')}\n"
-            f"stderr: {stderr.decode(errors='replace')}"
-        ) from None
-    return (
-        proc.returncode,
-        stdout.decode(errors="replace"),
-        stderr.decode(errors="replace"),
-    )
-
-
 @skip_if_not_sqlite
 @pytest.mark.parametrize("is_studio", (False,))
 def test_read_dataset_remote_sigkill_then_retry_succeeds(
@@ -895,7 +851,7 @@ dc.read_dataset("dev.animals.dogs", version="1.0.0")
         signal_file=signal_file,
     )
 
-    _wait_for_signal_file(proc, signal_file)
+    wait_for_test_signal_file(proc, signal_file)
 
     proc.kill()
     proc.communicate()
@@ -914,7 +870,7 @@ Path("{results_file.as_posix()}").write_text(json.dumps({{
 """,
         capture_output=True,
     )
-    rc, stdout, stderr = _wait_for_subprocess(retry)
+    rc, stdout, stderr = wait_for_test_subprocess(retry)
     assert rc == 0, (
         f"Retry after crash should succeed with atomic pull\n"
         f"stdout: {stdout}\nstderr: {stderr}"
@@ -948,7 +904,7 @@ dc.read_dataset("dev.animals.dogs", version="1.0.0")
         signal_file=signal_file,
     )
 
-    _wait_for_signal_file(proc, signal_file)
+    wait_for_test_signal_file(proc, signal_file)
 
     proc.kill()
     proc.communicate()
@@ -967,7 +923,7 @@ Path("{results_file.as_posix()}").write_text(json.dumps({{
 """,
         capture_output=True,
     )
-    rc, stdout, stderr = _wait_for_subprocess(retry)
+    rc, stdout, stderr = wait_for_test_subprocess(retry)
     assert rc == 0, (
         f"Retry after crash during insertion should succeed\n"
         f"stdout: {stdout}\nstderr: {stderr}"
@@ -1017,6 +973,7 @@ def test_read_dataset_remote_cleanup_on_update_dataset_status_fail(
         "dogs",
         namespace_name=REMOTE_NAMESPACE_NAME,
         project_name=REMOTE_PROJECT_NAME,
+        versions=None,
         include_incomplete=True,
     )
     assert dataset.get_version("1.0.0").status != DatasetStatus.COMPLETE
@@ -1066,7 +1023,7 @@ dc.read_dataset("dev.animals.dogs", version="1.0.0")
         signal_file=signal_file,
     )
 
-    _wait_for_signal_file(proc, signal_file)
+    wait_for_test_signal_file(proc, signal_file)
     proc.kill()
     proc.communicate()
 
@@ -1096,7 +1053,7 @@ Path("{results_file.as_posix()}").write_text(json.dumps({{
 """,
         capture_output=True,
     )
-    rc, stdout, stderr = _wait_for_subprocess(gc_proc)
+    rc, stdout, stderr = wait_for_test_subprocess(gc_proc)
     assert rc == 0, f"gc subprocess failed\nstdout: {stdout}\nstderr: {stderr}"
 
     results = json.loads(results_file.read_text())
@@ -1132,8 +1089,8 @@ Path("{results_file}").write_text(json.dumps({{
         capture_output=True,
     )
 
-    rc_a, stdout_a, stderr_a = _wait_for_subprocess(proc_a)
-    rc_b, stdout_b, stderr_b = _wait_for_subprocess(proc_b)
+    rc_a, stdout_a, stderr_a = wait_for_test_subprocess(proc_a)
+    rc_b, stdout_b, stderr_b = wait_for_test_subprocess(proc_b)
 
     # Both processes must succeed
     assert rc_a == 0, (

@@ -5,8 +5,7 @@ import os.path
 import posixpath
 import sys
 import time
-import traceback
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager, suppress
 from copy import copy
 from dataclasses import dataclass
@@ -22,7 +21,6 @@ else:
 
 import sqlalchemy as sa
 from sqlalchemy import Column
-from tqdm.auto import tqdm
 
 from datachain.cache import Cache
 from datachain.checkpoint import Checkpoint, CheckpointStatus
@@ -53,6 +51,7 @@ from datachain.error import (
 from datachain.lib.listing import get_listing
 from datachain.node import DirType, Node, NodeWithPath
 from datachain.nodes_thread_pool import NodesThreadPool
+from datachain.progress import tqdm
 from datachain.project import Project
 from datachain.sql.types import DateTime, SQLType
 from datachain.utils import DataChainDir, DatasetIdentifier, interprocess_file_lock
@@ -66,6 +65,7 @@ if TYPE_CHECKING:
     from datachain.data_storage import AbstractMetastore, AbstractWarehouse
     from datachain.dataset import DatasetListVersion
     from datachain.job import Job
+    from datachain.lib.dc.datachain import DataChain
     from datachain.lib.listing_info import ListingInfo
     from datachain.listing import Listing
     from datachain.remote.studio import StudioClient
@@ -77,7 +77,6 @@ DEFAULT_DATASET_DIR = "dataset"
 CHECKPOINTS_TTL = 4 * 60 * 60
 
 INDEX_INTERNAL_ERROR_MESSAGE = "Internal error on indexing"
-DATASET_INTERNAL_ERROR_MESSAGE = "Internal error on creating dataset"
 # exit code we use if query script was canceled
 QUERY_SCRIPT_CANCELED_EXIT_CODE = 11
 # exit code we use if the job is already in a terminal state (failed/canceled elsewhere)
@@ -89,6 +88,7 @@ PULL_DATASET_MAX_THREADS = 5
 PULL_DATASET_CHUNK_TIMEOUT = 3600
 PULL_DATASET_SLEEP_INTERVAL = 0.1  # sleep time while waiting for chunk to be available
 PULL_DATASET_CHECK_STATUS_INTERVAL = 20  # interval to check export status in Studio
+_MAX_VERSION_CLAIM_RETRIES = 5
 
 
 def _round_robin_batch(urls: list[str], num_workers: int) -> list[list[str]]:
@@ -478,7 +478,7 @@ def find_column_to_str(  # noqa: PLR0911
             full_path = path + "/"
         else:
             full_path = path
-        return src.get_node_full_path_from_path(full_path)
+        return src.get_node_uri_from_path(full_path)
     if column == "size":
         return str(row[field_lookup["size"]])
     if column == "type":
@@ -508,29 +508,20 @@ class Catalog:
         cache_dir=None,
         tmp_dir=None,
         client_config: dict[str, Any] | None = None,
-        warehouse_ready_callback: Callable[["AbstractWarehouse"], None] | None = None,
         in_memory: bool = False,
     ):
         datachain_dir = DataChainDir(cache=cache_dir, tmp=tmp_dir)
         datachain_dir.init()
         self.metastore = metastore
-        self._warehouse = warehouse
+        self.warehouse = warehouse
         self.cache = Cache(datachain_dir.cache, datachain_dir.tmp)
         self.client_config = client_config if client_config is not None else {}
         self._init_params = {
             "cache_dir": cache_dir,
             "tmp_dir": tmp_dir,
         }
-        self._warehouse_ready_callback = warehouse_ready_callback
         self.in_memory = in_memory
         self._owns_connections = True  # False for copies, prevents double-close
-
-    @cached_property
-    def warehouse(self) -> "AbstractWarehouse":
-        if self._warehouse_ready_callback:
-            self._warehouse_ready_callback(self._warehouse)
-
-        return self._warehouse
 
     @cached_property
     def session(self):
@@ -555,7 +546,6 @@ class Catalog:
         result._owns_connections = False
         if not db:
             result.metastore = None
-            result._warehouse = None
             result.warehouse = None
         return result
 
@@ -565,9 +555,9 @@ class Catalog:
         if self.metastore is not None:
             with suppress(Exception):
                 self.metastore.close_on_exit()
-        if self._warehouse is not None:
+        if self.warehouse is not None:
             with suppress(Exception):
-                self._warehouse.close_on_exit()
+                self.warehouse.close_on_exit()
 
     def __enter__(self) -> Self:
         return self
@@ -616,17 +606,6 @@ class Catalog:
             )
 
         return lst, client, list_path
-
-    def _remove_dataset_rows_and_warehouse_info(
-        self, dataset: DatasetRecord, version: str, **kwargs
-    ):
-        self.warehouse.drop_dataset_rows_table(dataset, version)
-        self.update_dataset_version_with_warehouse_info(
-            dataset,
-            version,
-            rows_dropped=True,
-            **kwargs,
-        )
 
     @contextmanager
     def enlist_sources(
@@ -691,14 +670,12 @@ class Catalog:
         for src in sources:  # Opt: parallel
             listing: Listing | None
             if src.startswith("ds://"):
-                ds_name, ds_version = parse_dataset_uri(src)
-                ds_namespace, ds_project, ds_name = parse_dataset_name(ds_name)
-                assert ds_namespace
-                assert ds_project
+                (ds_namespace, ds_project, ds_name, ds_version) = parse_dataset_uri(src)
                 dataset = self.get_dataset(
                     ds_name,
                     namespace_name=ds_namespace,
                     project_name=ds_project,
+                    versions=[ds_version] if ds_version else None,
                     include_incomplete=False,
                 )
                 if not ds_version:
@@ -804,7 +781,7 @@ class Catalog:
         columns: Sequence[Column],
         feature_schema: dict | None = None,
         query_script: str = "",
-        create_rows: bool | None = True,
+        sources: str = "",
         validate_version: bool | None = True,
         listing: bool | None = False,
         uuid: str | None = None,
@@ -825,19 +802,13 @@ class Catalog:
             raise RuntimeError(
                 "Cannot create dataset that starts with source prefix, e.g s3://"
             )
-        default_version = DEFAULT_DATASET_VERSION
         try:
             dataset = self.get_dataset(
                 name,
                 namespace_name=project.namespace.name if project else None,
                 project_name=project.name if project else None,
+                versions=None,
             )
-            if not version:
-                default_version = dataset.next_version_patch
-                if update_version == "major":
-                    default_version = dataset.next_version_major
-                if update_version == "minor":
-                    default_version = dataset.next_version_minor
 
             if (description or attrs) and (
                 dataset.description != description or dataset.attrs != attrs
@@ -866,27 +837,113 @@ class Catalog:
                 attrs=attrs,
             )
 
-        version = version or default_version
-
-        if dataset.has_version(version):
-            raise DatasetInvalidVersionError(
-                f"Version {version} already exists in dataset {name}"
-            )
-
-        if validate_version and not dataset.is_valid_next_version(version):
-            raise DatasetInvalidVersionError(
-                f"Version {version} must be higher than the current latest one"
-            )
-
-        return self.create_dataset_version(
-            dataset,
-            version,
+        # Claim the version (with retry for auto-versioned saves).
+        return self._try_claim_version(
+            dataset=dataset,
+            name=name,
+            version=version,
+            project=project,
             feature_schema=feature_schema,
             query_script=query_script,
-            create_rows_table=create_rows,
+            sources=sources,
             columns=columns,
             uuid=uuid,
             job_id=job_id,
+            validate_version=validate_version,
+            update_version=update_version,
+        )
+
+    @staticmethod
+    def _next_auto_version(dataset: "DatasetRecord", update_version: str | None) -> str:
+        """Compute the next version for a dataset based on the update strategy."""
+        if not dataset.versions:
+            return DEFAULT_DATASET_VERSION
+        if update_version == "major":
+            return dataset.next_version_major
+        if update_version == "minor":
+            return dataset.next_version_minor
+        return dataset.next_version_patch
+
+    def _try_claim_version(
+        self,
+        dataset: "DatasetRecord",
+        name: str,
+        version: str | None,
+        project: Project | None,
+        feature_schema: dict | None,
+        query_script: str,
+        sources: str,
+        columns: Sequence[Column],
+        uuid: str | None,
+        job_id: str | None,
+        validate_version: bool | None,
+        update_version: str | None,
+    ) -> "DatasetRecord":
+        """
+        Try to claim a dataset version, retrying on conflict.
+
+        When *version* is explicit (not None), a single attempt is made and
+        a conflict raises immediately.  When *version* is None the target is
+        auto-computed from the dataset and retried up to
+        ``_MAX_VERSION_CLAIM_RETRIES`` times on conflict.
+        """
+        max_retries = 0 if version else _MAX_VERSION_CLAIM_RETRIES
+        target_version = version or self._next_auto_version(dataset, update_version)
+
+        for attempt in range(1 + max_retries):
+            if dataset.has_version(target_version):
+                raise DatasetInvalidVersionError(
+                    f"Version {target_version} already exists in dataset {name}"
+                )
+
+            if validate_version and not dataset.is_valid_next_version(target_version):
+                raise DatasetInvalidVersionError(
+                    f"Version {target_version} must be higher than"
+                    f" the current latest one"
+                )
+
+            dataset, version_created = self.create_dataset_version(
+                dataset,
+                target_version,
+                feature_schema=feature_schema,
+                query_script=query_script,
+                sources=sources,
+                columns=columns,
+                uuid=uuid,
+                job_id=job_id,
+            )
+
+            if version_created:
+                return dataset
+
+            # Another writer claimed this version between our check and insert.
+            if attempt >= max_retries:
+                break
+
+            logger.debug(
+                "Version %s of dataset %s was claimed by another writer "
+                "(attempt %d/%d), retrying with next version",
+                target_version,
+                name,
+                attempt + 1,
+                1 + max_retries,
+            )
+            dataset = self.get_dataset(
+                name,
+                namespace_name=project.namespace.name if project else None,
+                project_name=project.name if project else None,
+                versions=None,
+            )
+            target_version = self._next_auto_version(dataset, update_version)
+
+        if version:
+            raise DatasetInvalidVersionError(
+                f"Version {target_version} of dataset {name} was claimed by"
+                " another writer"
+            )
+        raise DatasetInvalidVersionError(
+            f"Failed to claim a version for dataset {name} after"
+            f" {1 + max_retries} attempts due to concurrent writers"
         )
 
     def create_dataset_version(
@@ -901,20 +958,23 @@ class Catalog:
         error_message="",
         error_stack="",
         script_output="",
-        create_rows_table=True,
         job_id: str | None = None,
         uuid: str | None = None,
-    ) -> DatasetRecord:
+    ) -> tuple[DatasetRecord, bool]:
         """
-        Creates dataset version if it doesn't exist.
-        If create_rows is False, dataset rows table will not be created
+        Creates dataset version metadata (no rows table).
+
+        Returns:
+            A tuple of (dataset_record, version_created) where version_created
+            is True if this call actually created the version, False if the
+            version already existed (when ignore_if_exists applies).
         """
         assert [c.name for c in columns if c.name != "sys__id"], f"got {columns=}"
         schema = {
             c.name: c.type.to_dict() for c in columns if isinstance(c.type, SQLType)
         }
 
-        dataset = self.metastore.create_dataset_version(
+        dataset, version_created = self.metastore.create_dataset_version(
             dataset,
             version,
             status=DatasetStatus.CREATED,
@@ -930,28 +990,21 @@ class Catalog:
             uuid=uuid,
         )
 
-        if create_rows_table:
-            table_name = self.warehouse.dataset_table_name(dataset, version)
-            self.warehouse.create_dataset_rows_table(table_name, columns=columns)
-            self.update_dataset_version_with_warehouse_info(dataset, version)
-
-        return dataset
+        return dataset, version_created
 
     def update_dataset_version_with_warehouse_info(
-        self, dataset: DatasetRecord, version: str, rows_dropped=False, **kwargs
+        self, dataset: DatasetRecord, version: str, **kwargs
     ) -> None:
         from datachain.query.dataset import DatasetQuery
 
         dataset_version = dataset.get_version(version)
+        if dataset_version._preview_loaded:
+            raise RuntimeError(
+                "update_dataset_version_with_warehouse_info expects preview to be "
+                "unloaded and regenerates it from warehouse rows"
+            )
 
         values = {**kwargs}
-
-        if rows_dropped:
-            values["num_objects"] = None
-            values["size"] = None
-            values["preview"] = None
-            self.metastore.update_dataset_version(dataset, version, **values)
-            return
 
         stats_num_objects = None
         stats_size = None
@@ -964,22 +1017,20 @@ class Catalog:
             if size != dataset_version.size:
                 values["size"] = size
 
-        preview_rows = None
-        if not dataset_version.preview:
-            preview = (
-                DatasetQuery(
-                    name=dataset.name,
-                    namespace_name=dataset.project.namespace.name,
-                    project_name=dataset.project.name,
-                    version=version,
-                    catalog=self,
-                    include_incomplete=True,  # Allow reading CREATED version
-                )
-                .limit(20)
-                .to_db_records()
+        preview = (
+            DatasetQuery(
+                name=dataset.name,
+                namespace_name=dataset.project.namespace.name,
+                project_name=dataset.project.name,
+                version=version,
+                catalog=self,
+                include_incomplete=True,  # Allow reading CREATED version
             )
-            preview_rows = len(preview)
-            values["preview"] = preview
+            .limit(20)
+            .to_db_records()
+        )
+        preview_rows = len(preview)
+        values["preview"] = preview
 
         # Log anomaly: dataset_stats returned 0 but preview has data
         if stats_num_objects == 0 and preview_rows and preview_rows > 0:
@@ -993,7 +1044,7 @@ class Catalog:
                 version,
                 dataset_version.num_objects,
                 dataset_version.size,
-                bool(dataset_version.preview),
+                False,
                 stats_num_objects,
                 stats_size,
                 preview_rows,
@@ -1003,6 +1054,31 @@ class Catalog:
             return
 
         self.metastore.update_dataset_version(dataset, version, **values)
+
+    def complete_dataset_version(
+        self,
+        dataset: DatasetRecord,
+        version: str,
+        *,
+        error_message: str = "",
+        error_stack: str = "",
+        script_output: str = "",
+        **kwargs,
+    ) -> None:
+        """Finalize a dataset version after its rows table has been populated.
+
+        This refreshes warehouse-derived metadata first, then marks the version
+        as COMPLETE.
+        """
+        self.update_dataset_version_with_warehouse_info(dataset, version, **kwargs)
+        self.metastore.update_dataset_status(
+            dataset,
+            DatasetStatus.COMPLETE,
+            version=version,
+            error_message=error_message,
+            error_stack=error_stack,
+            script_output=script_output,
+        )
 
     def update_dataset(self, dataset: DatasetRecord, **kwargs) -> DatasetRecord:
         """Updates dataset fields."""
@@ -1015,13 +1091,16 @@ class Catalog:
     ) -> None:
         """
         Deletes one single dataset version.
-        If it was last version, it removes dataset completely
+        If it was last version, it removes dataset completely.
         """
         if not dataset.has_version(version):
             return
-        dataset = self.metastore.remove_dataset_version(dataset, version)
+        self.metastore.update_dataset_version(
+            dataset, version, status=DatasetStatus.REMOVING
+        )
         if drop_rows:
             self.warehouse.drop_dataset_rows_table(dataset, version)
+        dataset = self.metastore.remove_dataset_version(dataset, version)
 
     def get_temp_table_names(self) -> list[str]:
         return self.warehouse.get_temp_table_names()
@@ -1035,20 +1114,19 @@ class Catalog:
         """
         self.warehouse.cleanup_tables(names)
 
-    def cleanup_failed_dataset_versions(self, job_id: str | None = None) -> int:
+    def cleanup_dataset_versions(self, job_id: str | None = None) -> int:
         """
-        Clean up failed/incomplete dataset versions.
+        Clean up dataset versions that are no longer needed.
 
         Removes dataset versions that:
-        - Have status CREATED or FAILED
+        - Have status CREATED, FAILED, STALE, or REMOVING
         - Belong to completed/failed/canceled jobs (not running)
+        - Are session_* datasets from finished jobs (orphaned intermediates)
 
         Returns:
             Number of removed versions
         """
-        versions_to_clean = self.metastore.get_incomplete_dataset_versions(
-            job_id=job_id
-        )
+        versions_to_clean = self.metastore.get_dataset_versions_to_clean(job_id=job_id)
 
         num_removed = 0
         for dataset, version in versions_to_clean:
@@ -1073,7 +1151,7 @@ class Catalog:
         project: Project | None = None,
         client_config=None,
         recursive=False,
-    ) -> DatasetRecord:
+    ) -> "DataChain":
         if not sources:
             raise ValueError("Sources needs to be non empty list")
 
@@ -1086,54 +1164,20 @@ class Catalog:
             if source.startswith(DATASET_PREFIX):
                 dc = read_dataset(source[len(DATASET_PREFIX) :], session=self.session)
             else:
-                dc = read_storage(source, session=self.session, recursive=recursive)
+                dc = read_storage(
+                    source,
+                    session=self.session,
+                    recursive=recursive,
+                    client_config=client_config,
+                )
 
             chains.append(dc)
 
         # create union of all dataset queries created from sources
-        dc = reduce(lambda dc1, dc2: dc1.union(dc2), chains)
-        try:
-            dc = dc.settings(project=project.name, namespace=project.namespace.name)
-            dc.save(name)
-        except Exception as e:  # noqa: BLE001
-            try:
-                ds = self.get_dataset(
-                    name,
-                    namespace_name=project.namespace.name,
-                    project_name=project.name,
-                )
-                self.metastore.update_dataset_status(
-                    ds,
-                    DatasetStatus.FAILED,
-                    version=ds.latest_version,
-                    error_message=DATASET_INTERNAL_ERROR_MESSAGE,
-                    error_stack=traceback.format_exc(),
-                )
-                self._remove_dataset_rows_and_warehouse_info(
-                    ds,
-                    ds.latest_version,
-                    sources="\n".join(sources),
-                )
-                raise
-            except DatasetNotFoundError:
-                raise e from None
-
-        ds = self.get_dataset(
-            name,
-            namespace_name=project.namespace.name,
-            project_name=project.name,
-        )
-
-        self.update_dataset_version_with_warehouse_info(
-            ds,
-            ds.latest_version,
-            sources="\n".join(sources),
-        )
-
-        return self.get_dataset(
-            name,
-            namespace_name=project.namespace.name,
-            project_name=project.name,
+        return (
+            reduce(lambda dc1, dc2: dc1.union(dc2), chains)
+            .settings(project=project.name, namespace=project.namespace.name)
+            .save(name, sources="\n".join(sources), query_script="")
         )
 
     def get_full_dataset_name(
@@ -1197,7 +1241,10 @@ class Catalog:
         name: str,
         namespace_name: str | None = None,
         project_name: str | None = None,
+        *,
+        versions: Sequence[str] | None = (),
         include_incomplete: bool = True,
+        include_preview: bool = False,
     ) -> DatasetRecord:
         from datachain.lib.listing import is_listing_dataset
 
@@ -1212,7 +1259,9 @@ class Catalog:
             name,
             namespace_name=namespace_name,
             project_name=project_name,
+            versions=versions,
             include_incomplete=include_incomplete,
+            include_preview=include_preview,
         )
 
     def get_dataset_with_remote_fallback(
@@ -1246,6 +1295,7 @@ class Catalog:
                     name,
                     namespace_name=namespace_name,
                     project_name=project_name,
+                    versions=None,
                     include_incomplete=include_incomplete,
                 )
                 if not version or ds.has_version(version):
@@ -1275,6 +1325,7 @@ class Catalog:
                 name,
                 namespace_name=namespace_name,
                 project_name=project_name,
+                versions=None,
                 include_incomplete=include_incomplete,
             )
 
@@ -1343,6 +1394,7 @@ class Catalog:
             name,
             namespace_name=namespace_name,
             project_name=project_name,
+            versions=[version],
             include_incomplete=False,
         )
         dataset_version = dataset.get_version(version)
@@ -1516,6 +1568,7 @@ class Catalog:
             name,
             namespace_name=project.namespace.name if project else None,
             project_name=project.name if project else None,
+            versions=[version],
         )
 
         self.warehouse.export_dataset_table(
@@ -1538,6 +1591,7 @@ class Catalog:
             name,
             namespace_name=project.namespace.name if project else None,
             project_name=project.name if project else None,
+            versions=None,
         )
         if not version and not force:
             raise ValueError(f"Missing dataset version from input for dataset {name}")
@@ -1578,6 +1632,7 @@ class Catalog:
             name,
             namespace_name=project.namespace.name if project else None,
             project_name=project.name if project else None,
+            versions=None,
         )
         return self.update_dataset(dataset, **update_data)
 
@@ -1638,13 +1693,12 @@ class Catalog:
         studio_client = StudioClient()
 
         try:
-            remote_ds_name, version = parse_dataset_uri(remote_ds_uri)
-        except Exception as e:
+            (remote_namespace, remote_project, remote_ds_name, version) = (
+                parse_dataset_uri(remote_ds_uri)
+            )
+        except ValueError as e:
             raise DataChainError("Error when parsing dataset uri") from e
 
-        remote_namespace, remote_project, remote_ds_name = parse_dataset_name(
-            remote_ds_name
-        )
         if not remote_namespace or not remote_project:
             raise DataChainError(
                 f"Invalid fully qualified dataset name {remote_ds_name}, namespace"
@@ -1756,6 +1810,7 @@ class Catalog:
                     local_ds_name,
                     namespace_name=namespace.name,
                     project_name=project.name,
+                    versions=None,
                     include_incomplete=True,
                 )
                 if local_dataset.has_version(local_ds_version):
@@ -1843,8 +1898,6 @@ class Catalog:
                         project,
                         local_ds_version,
                         query_script=remote_ds_version.query_script,
-                        # Don't create table, we'll rename the temp table.
-                        create_rows=False,
                         columns=columns,
                         feature_schema=remote_ds_version.feature_schema,
                         validate_version=False,
@@ -1857,14 +1910,9 @@ class Catalog:
                     temp_table = self.warehouse.get_table(temp_table_name)
                     self.warehouse.rename_table(temp_table, final_table_name)
 
-                    self.update_dataset_version_with_warehouse_info(
-                        local_ds, local_ds_version
-                    )
-
-                    self.metastore.update_dataset_status(
+                    self.complete_dataset_version(
                         local_ds,
-                        DatasetStatus.COMPLETE,
-                        version=local_ds_version,
+                        local_ds_version,
                         error_message=remote_ds_version.error_message,
                         error_stack=remote_ds_version.error_stack,
                         script_output=remote_ds_version.script_output,
@@ -2022,7 +2070,7 @@ class Catalog:
                     for sd in subdirs:
                         yield from du_dirs(src, sd, subdepth - 1)
                 yield (
-                    src.get_node_full_path(node),
+                    src.get_node_uri(node),
                     src.listing.du(node)[0],
                 )
 

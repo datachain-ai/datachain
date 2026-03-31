@@ -63,7 +63,9 @@ def test_datachain_save(test_session):
 
     ds = dc.read_values(outer=[outer], nums=[1], session=test_session).persist()
 
-    version = test_session.catalog.get_dataset(ds.name).get_version("1.0.0")
+    version = test_session.catalog.get_dataset(ds.name, versions=["1.0.0"]).get_version(
+        "1.0.0"
+    )
     feature_schema = version.feature_schema
 
     hidden_fields = SignalSchema.get_flatten_hidden_fields(feature_schema)

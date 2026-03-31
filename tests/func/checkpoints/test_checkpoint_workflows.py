@@ -95,9 +95,13 @@ def test_checkpoints(
     second_job_id = test_session.get_or_create_job().id
 
     expected_versions = 1 if with_delta or not reset_checkpoints else 2
-    assert len(catalog.get_dataset("nums1").versions) == expected_versions
-    assert len(catalog.get_dataset("nums2").versions) == expected_versions
-    assert len(catalog.get_dataset("nums3").versions) == 1
+    assert (
+        len(catalog.get_dataset("nums1", versions=None).versions) == expected_versions
+    )
+    assert (
+        len(catalog.get_dataset("nums2", versions=None).versions) == expected_versions
+    )
+    assert len(catalog.get_dataset("nums3", versions=None).versions) == 1
 
     assert len(list(catalog.metastore.list_checkpoints([first_job_id]))) == 3
     assert len(list(catalog.metastore.list_checkpoints([second_job_id]))) == 3
@@ -126,9 +130,13 @@ def test_checkpoints_modified_chains(
     chain.save("nums3")
     second_job_id = test_session.get_or_create_job().id
 
-    assert len(catalog.get_dataset("nums1").versions) == 2 if reset_checkpoints else 1
-    assert len(catalog.get_dataset("nums2").versions) == 2
-    assert len(catalog.get_dataset("nums3").versions) == 2
+    assert (
+        len(catalog.get_dataset("nums1", versions=None).versions) == 2
+        if reset_checkpoints
+        else 1
+    )
+    assert len(catalog.get_dataset("nums2", versions=None).versions) == 2
+    assert len(catalog.get_dataset("nums3", versions=None).versions) == 2
 
     assert len(list(catalog.metastore.list_checkpoints([first_job_id]))) == 3
     assert len(list(catalog.metastore.list_checkpoints([second_job_id]))) == 3
@@ -179,9 +187,9 @@ def test_checkpoints_multiple_runs(
     chain.save("nums3")
     fourth_job_id = test_session.get_or_create_job().id
 
-    num1_versions = len(catalog.get_dataset("nums1").versions)
-    num2_versions = len(catalog.get_dataset("nums2").versions)
-    num3_versions = len(catalog.get_dataset("nums3").versions)
+    num1_versions = len(catalog.get_dataset("nums1", versions=None).versions)
+    num2_versions = len(catalog.get_dataset("nums2", versions=None).versions)
+    num3_versions = len(catalog.get_dataset("nums3", versions=None).versions)
 
     if reset_checkpoints:
         assert num1_versions == 4
@@ -243,7 +251,7 @@ def test_checkpoint_with_deleted_dataset_version(
     chain.save("nums_deleted")
     test_session.get_or_create_job()
 
-    dataset = catalog.get_dataset("nums_deleted")
+    dataset = catalog.get_dataset("nums_deleted", versions=None)
     assert len(dataset.versions) == 1
     assert dataset.latest_version == "1.0.0"
 
@@ -258,7 +266,7 @@ def test_checkpoint_with_deleted_dataset_version(
     job2_id = test_session.get_or_create_job().id
 
     # Should create a NEW version since old one was deleted
-    dataset = catalog.get_dataset("nums_deleted")
+    dataset = catalog.get_dataset("nums_deleted", versions=None)
     assert len(dataset.versions) == 1
     assert dataset.latest_version == "1.0.0"
 

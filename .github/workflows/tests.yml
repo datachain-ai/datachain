@@ -35,6 +35,9 @@ jobs:
           cache-suffix: lint
           cache-dependency-glob: pyproject.toml
 
+      - name: Use CPU-only PyTorch on Linux
+        run: echo "UV_TORCH_BACKEND=cpu" >> "$GITHUB_ENV"
+
       - name: Install nox
         run: uv pip install nox --system
 
@@ -107,6 +110,12 @@ jobs:
           enable-cache: true
           cache-suffix: tests-${{ matrix.pyv }}
           cache-dependency-glob: pyproject.toml
+
+      - name: Use CPU-only PyTorch on Linux
+        if: runner.os == 'Linux'
+        # torch 2.11+ on PyPI pulls CUDA deps that aren't fully available on
+        # CPU-only runners (missing libnppicc from nvidia-npp).
+        run: echo "UV_TORCH_BACKEND=cpu" >> "$GITHUB_ENV"
 
       - name: Install FFmpeg on Windows
         if: runner.os == 'Windows'
@@ -194,6 +203,10 @@ jobs:
           cache-suffix: examples-${{ matrix.pyv }}
           cache-dependency-glob: pyproject.toml
 
+      - name: Use CPU-only PyTorch on Linux
+        if: runner.os == 'Linux'
+        run: echo "UV_TORCH_BACKEND=cpu" >> "$GITHUB_ENV"
+
       - name: Install nox
         run: uv pip install nox --system
 
@@ -213,11 +226,11 @@ jobs:
           sudo apt update
           sudo apt install -y ffmpeg
 
-      - name: Set hf token
-        if: matrix.group == 'llm_and_nlp'
-        run: echo 'HF_TOKEN=${{ secrets.HF_TOKEN }}' >> "$GITHUB_ENV"
-
       - name: Run examples
+        env:
+          HF_TOKEN: ${{ matrix.group == 'llm_and_nlp' && secrets.HF_TOKEN || '' }}
+          ANTHROPIC_API_KEY: ${{ matrix.group == 'llm_and_nlp' && secrets.ANTHROPIC_API_KEY || '' }}
+          OPENAI_API_KEY: ${{ matrix.group == 'multimodal' && secrets.OPENAI_API_KEY || '' }}
         run: nox -s examples -p ${{ matrix.pyv }} -- -m "${{ matrix.group }}"
 
   check:
