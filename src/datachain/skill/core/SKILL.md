@@ -517,13 +517,31 @@ combined = images.merge(labels, on="file.name", right_on="labels.name")
 ## Section 8 — Anti-Patterns
 
 ```
-✗ Using os.walk / os.listdir / glob.glob / pathlib to discover data files:
-    NEVER walk the filesystem manually — it breaks lineage and skips optimisations.
-    Always use dc.read_storage() for local dirs, S3, GCS, or Azure paths.
+✗ Using os.walk / os.listdir / glob.glob / pathlib to discover or read data files:
+    NEVER walk the filesystem or open files manually — it breaks lineage and
+    skips optimisations. Always use dc.read_storage() for local dirs, S3, GCS,
+    or Azure paths, and parse file content inside map()/gen().
     ✗ for f in Path("/data").rglob("*.jpg"): ...
     ✗ files = glob.glob("s3://bucket/*.csv")
     ✓ dc.read_storage("/data/", type="image")
     ✓ dc.read_storage("s3://bucket/", type="csv")
+✗ Reading data files with open()/Path then feeding into read_values/read_records:
+    NEVER parse files outside the chain and reconstruct with read_values().
+    This loses lineage to the source files and bypasses DataChain's engine.
+    ✗ with open("annotations.txt") as f:           ← manual file I/O
+          rows = [parse(line) for line in f]
+      dc.read_values(label=[r["label"] for r in rows])  ← no lineage
+    ✗ for xml in Path("xmls/").glob("*.xml"):      ← manual walk + parse
+          data.append(parse_xml(xml))
+      dc.read_records(data)                         ← no lineage
+    ✓ Read ALL files (images, annotations, XMLs) via dc.read_storage(),
+      then parse inside map()/gen() and merge():
+      annotations = dc.read_storage("./annotations/", type="text")
+        .filter(dc.C("file.path").glob("**/list.txt"))
+        .gen(info=parse_list_file)
+      xmls = dc.read_storage("./annotations/xmls/").map(bbox=parse_xml)
+      images = dc.read_storage("./images/", type="image")
+      dataset = images.merge(annotations, ...).merge(xmls, ...)
 ✗ Importing symbols from datachain:
     from datachain import File, C, func  ← clutters namespace
     Use dc.File, dc.C, dc.func after `import datachain as dc`
