@@ -94,7 +94,8 @@ from pydantic import BaseModel
 ```
 
 Always use `dc.` prefix for DataChain types: `dc.File`, `dc.ImageFile`, `dc.C`, `dc.func`,
-`dc.BBox`, `dc.Mapper`, etc. Do NOT use `from datachain import File, C, func, ...`.
+ `dc.Mapper`, etc. Do NOT use `from datachain import File, C, func, ...`. Exception
+ is `from datachain import model` for computer vision and audio data models.
 
 ---
 
@@ -179,7 +180,8 @@ chain.save("dataset_name")                     # versioned named dataset
 chain.save("ns.proj.name", update_version="minor")
 chain.persist()                                # anonymous cache
 chain.show(limit=10)
-chain.to_list("col1", "col2")                  # → list of tuples
+chain.to_values("col")                         # → flat list from one column
+chain.to_list("col1", "col2")                  # → list of tuples (multiple cols)
 chain.to_iter("col1", "col2")                  # → iterator of tuples
 chain.to_pandas()
 chain.to_parquet("output.parquet")
@@ -203,10 +205,12 @@ dc.read_storage("s3://bucket/", update=True, delta=True,
 
 **Structured types — use Pydantic BaseModel:**
 ```python
+from datachain import model
+
 class Detection(BaseModel):
     label: str
     confidence: float
-    bbox: dc.BBox
+    bbox: model.BBox
 ```
 
 **File types (all inherit from dc.File):**
@@ -226,20 +230,22 @@ Sub-file units:
 
 **Annotation types:**
 ```python
-dc.BBox(title="car", coords=[x1,y1,x2,y2])            # PASCAL VOC
-dc.BBox.from_coco([x,y,w,h], title="car")
-dc.BBox.from_yolo([cx,cy,w,h], img_size=(640,480))
-dc.BBox.from_albumentations([x1n,y1n,x2n,y2n], img_size)
+from datachain import model # import is mandatory, dc.model.BBox is not enough
+
+model.BBox(title="car", coords=[x1,y1,x2,y2])            # PASCAL VOC
+model.BBox.from_coco([x,y,w,h], title="car")
+model.BBox.from_yolo([cx,cy,w,h], img_size=(640,480))
+model.BBox.from_albumentations([x1n,y1n,x2n,y2n], img_size)
 bbox.to_coco() / .to_yolo(img_size) / .to_albumentations(img_size) / .to_voc()
 bbox.point_inside(x, y)  # → bool
 bbox.pose_inside(pose)   # → bool
 
-dc.OBBox(...)                # oriented bbox -- four corner points
+model.OBBox(...)                # oriented bbox -- four corner points
 
-dc.Pose(x=[...], y=[...])                       # 2D keypoints
-dc.Pose3D(x=[...], y=[...], visible=[...])      # 3D with visibility
+model.Pose(x=[...], y=[...])                       # 2D keypoints
+model.Pose3D(x=[...], y=[...], visible=[...])      # 3D with visibility
 
-dc.Segment(title="road", x=[...], y=[...])      # instance segmentation polygon
+model.Segment(title="road", x=[...], y=[...])      # instance segmentation polygon
 ```
 
 **Column references:**
