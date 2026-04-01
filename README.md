@@ -21,6 +21,7 @@ Claude Code (Codex, Cursor, etc) isn't just a chat interface with a shell - it's
 
 DataChain extends that harness to data. The agent that understands your codebase now also understands your datasets: schemas, lineage, what's already computed.
 
+```
 ┌──────────────────────┐                   ┌──────────────────────┐
 │     Claude Code      │─── skill / MCP ──▶│      DataChain       │
 ├──────────────────────┤                   ├──────────────────────┤
@@ -34,7 +35,7 @@ DataChain extends that harness to data. The agent that understands your codebase
           │                                          │
        codebase                               object storage
      (git + files)                          (S3, GCS, local FS)
-
+```
 
 ## 1. Simple flow
 
