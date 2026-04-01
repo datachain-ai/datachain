@@ -71,17 +71,27 @@ If `datachain/graph/index.md` exists, read it at conversation start for dataset 
 ## Section 2 — Golden Rule
 
 ```
-Prefer metadata operations over Python operations.
-Metadata ops run in the engine (SQLite local / ClickHouse Studio) at warehouse speed.
-Python ops (map/gen/agg) spin up Python workers and are expensive.
+1. ALWAYS use dc.read_storage() to access files in storage (local, S3, GCS, Azure).
+   NEVER use os.walk, os.listdir, glob.glob, pathlib, or any manual file-system
+   traversal to discover or read data files. read_storage is vectorised, optimised,
+   and is the only way to preserve data lineage.
+   ✓ dc.read_storage("/data/images/", type="image").map(emb=encode)
+   ✗ for f in os.listdir("/data/images/"): ...   ← breaks lineage, slow
+   ✗ paths = glob.glob("*.csv"); dc.read_values(paths=paths)  ← no lineage
 
-Use Python ops ONLY when you need:
-  - File content (file.read(), file.open())
-  - ML model inference
-  - LLM calls
-  - External API calls
+2. Prefer engine-side operations over Python operations.
+   Engine-side ops — filter(), mutate(), group_by(), order_by(), select(),
+   merge(), union(), distinct(), limit() — run in SQL (SQLite local /
+   ClickHouse Studio) at warehouse speed using dc.C() and dc.func.*.
+   Python ops (map/gen/agg) spin up Python workers and are expensive.
 
-Everything else → use filter/mutate/group_by/merge with func.*
+   Use Python ops ONLY when you need:
+     - File content (file.read(), file.open())
+     - ML model inference
+     - LLM calls
+     - External API calls
+
+   Everything else → use filter/mutate/group_by/merge with dc.C() and dc.func.*
 ```
 
 ---
@@ -507,6 +517,13 @@ combined = images.merge(labels, on="file.name", right_on="labels.name")
 ## Section 8 — Anti-Patterns
 
 ```
+✗ Using os.walk / os.listdir / glob.glob / pathlib to discover data files:
+    NEVER walk the filesystem manually — it breaks lineage and skips optimisations.
+    Always use dc.read_storage() for local dirs, S3, GCS, or Azure paths.
+    ✗ for f in Path("/data").rglob("*.jpg"): ...
+    ✗ files = glob.glob("s3://bucket/*.csv")
+    ✓ dc.read_storage("/data/", type="image")
+    ✓ dc.read_storage("s3://bucket/", type="csv")
 ✗ Importing symbols from datachain:
     from datachain import File, C, func  ← clutters namespace
     Use dc.File, dc.C, dc.func after `import datachain as dc`
