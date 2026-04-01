@@ -6,35 +6,33 @@
 [![Tests](https://github.com/datachain-ai/datachain/actions/workflows/tests.yml/badge.svg)](https://github.com/datachain-ai/datachain/actions/workflows/tests.yml)
 [![DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/datachain-ai/datachain)
 
-# DataChain
-
-**Coding agents write great code but fall apart with data — they can't see what's in your buckets, what's already computed, or how datasets relate. DataChain fixes that.**
+**Coding agents write great code but fall apart with data - they can't see what's in your buckets, what's already computed, or how datasets relate. DataChain fixes that.**
 
 ```bash
 pip install datachain
 datachain skill install --target claude   # or --target cursor, --target codex
 ```
 
-## How DataChain extends coding agents
+## Extend coding agents with data
 
 Claude Code (Codex, Cursor, etc) isn't just a chat interface with a shell - it's a harness that gives the LLM repo context, dedicated tools, and persistent memory. That's what makes it good.
 
-DataChain extends that harness to data. The agent that understands your codebase now also understands your datasets: schemas, lineage, what's already computed.
+DataChain extends that harness to data. The agent that understands your codebase now also understands your storages and datasets: schemas, dependencies, what's already computed, what's mid-run, and what changed since last time.
 
 ```
-┌──────────────────────┐                   ┌──────────────────────┐
-│     Claude Code      │─── skill / MCP ──▶│      DataChain       │
-├──────────────────────┤                   ├──────────────────────┤
-│  git + commits       │                   │  datasets + versions │
-│  Prompt caching      │                   │  data lineage graph  │
-│  file tree           │                   │  schemas + types     │
-├──────────────────────┤                   ├──────────────────────┤
-│  Grep / Glob / LSP   │                   │  async · parallel    │
-│  session memory      │                   │  execution state     │
-└──────────────────────┘                   └──────────────────────┘
-          │                                          │
-       codebase                               object storage
-     (git + files)                          (S3, GCS, local FS)
+┌──────────────────────┐             ┌──────────────────────┐
+│     Claude Code      │─── skill ──▶│      DataChain       │
+├──────────────────────┤             ├──────────────────────┤
+│  git + commits       │             │  datasets + versions │
+│  Prompt caching      │             │  data lineage graph  │
+│  file tree           │             │  schemas + types     │
+├──────────────────────┤             ├──────────────────────┤
+│  Grep / Glob / LSP   │             │  async · parallel    │
+│  session memory      │             │  execution state     │
+└──────────────────────┘             └──────────────────────┘
+          │                                     │
+       codebase                           object storage
+     (git + files)                    (S3, GCS, AZ, local FS)
 ```
 
 ## 1. Simple flow
