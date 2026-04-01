@@ -299,6 +299,11 @@ def df_equal(df1, df2) -> bool:
     return sort_df(df1).equals(sort_df(df2))
 
 
+def is_sha256_hex(s: str) -> bool:
+    """Check if string is a valid SHA256 hex digest."""
+    return len(s) == 64 and all(c in "0123456789abcdef" for c in s)
+
+
 def table_row_count(db, table_name) -> int | None:
     if not db.has_table(table_name):
         return None

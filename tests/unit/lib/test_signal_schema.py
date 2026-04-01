@@ -1474,3 +1474,36 @@ def test_column_types(column_type, signal_type):
 )
 def test_hash(schema, _hash):
     assert SignalSchema(schema).hash() == _hash
+
+
+@pytest.mark.parametrize(
+    "expr_fn, expected_type",
+    [
+        # Column node: untyped → typed
+        (lambda: Column("a"), int),
+        # BinaryExpression: int + literal
+        (lambda: Column("a") + 1, int),
+        # Grouping: (int + literal) * literal
+        (lambda: (Column("a") + 1) * 2, int),
+        # Cast: cast(int, Float)
+        (lambda: __import__("sqlalchemy").cast(Column("a"), Float), float),
+        # Floor division: Cast(Function('divide', ...), Integer)
+        (lambda: Column("a") // 2, int),
+        # Mixed types: int + float → float
+        (lambda: Column("a") + Column("b"), float),
+    ],
+)
+def test_enrich_expr_types(expr_fn, expected_type):
+    from datachain.lib.convert.sql_to_python import sql_to_python
+
+    schema = SignalSchema({"a": int, "b": float})
+    result = schema.enrich_expr_types(expr_fn())
+    assert sql_to_python(result) is expected_type
+
+
+def test_enrich_expr_types_unknown_column():
+    from sqlalchemy.sql.sqltypes import NullType
+
+    schema = SignalSchema({"a": int})
+    result = schema.enrich_expr_types(Column("nope"))
+    assert isinstance(result.type, NullType)

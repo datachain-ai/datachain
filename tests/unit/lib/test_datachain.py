@@ -3233,22 +3233,22 @@ def test_column(test_session):
 
 def test_mutate_with_subtraction(test_session):
     ds = dc.read_values(id=[1, 2], session=test_session)
-    assert ds.mutate(new=ds.column("id") - 1).signals_schema.values["new"] is int
+    assert ds.mutate(new=dc.C("id") - 1).signals_schema.values["new"] is int
 
 
 def test_mutate_with_addition(test_session):
     ds = dc.read_values(id=[1, 2], session=test_session)
-    assert ds.mutate(new=ds.column("id") + 1).signals_schema.values["new"] is int
+    assert ds.mutate(new=dc.C("id") + 1).signals_schema.values["new"] is int
 
 
 def test_mutate_with_division(test_session):
     ds = dc.read_values(id=[1, 2], session=test_session)
-    assert ds.mutate(new=ds.column("id") / 10).signals_schema.values["new"] is float
+    assert ds.mutate(new=dc.C("id") / 10).signals_schema.values["new"] is float
 
 
 def test_mutate_with_multiplication(test_session):
     ds = dc.read_values(id=[1, 2], session=test_session)
-    assert ds.mutate(new=ds.column("id") * 10).signals_schema.values["new"] is int
+    assert ds.mutate(new=dc.C("id") * 10).signals_schema.values["new"] is int
 
 
 def test_mutate_with_sql_func(test_session):
@@ -3271,24 +3271,73 @@ def test_mutate_with_complex_expression(test_session):
 
 
 @skip_if_not_sqlite
+def test_mutate_with_composed_func_expression(test_session):
+    from datachain.lib.file import File
+
+    files = [
+        File(path="dir1/a.txt"),
+        File(path="dir1/dir2/hello.txt"),
+        File(path="readme.md"),
+    ]
+    ds = dc.read_values(file=files, session=test_session)
+    result = list(
+        ds.mutate(
+            csv_len=func.string.length(
+                func.path.file_stem(dc.C("file.path")) + func.literal(".csv")
+            ),
+        )
+        .order_by("file.path")
+        .to_values("csv_len")
+    )
+    # "a" + ".csv" = 5, "hello" + ".csv" = 9, "readme" + ".csv" = 10
+    assert result == [5, 9, 10]
+
+
+@skip_if_not_sqlite
 def test_mutate_with_saving(test_session):
     ds = dc.read_values(id=[1, 2], session=test_session)
-    ds = ds.mutate(new=ds.column("id") / 2).save("mutated")
+    ds = ds.mutate(new=dc.C("id") / 2).save("mutated")
 
     ds = dc.read_dataset(name="mutated", session=test_session)
     assert ds.signals_schema.values["new"] is float
     assert ds.to_values("new") == [0.5, 1.0]
 
 
-def test_mutate_with_expression_without_type(test_session):
-    with pytest.raises(DataChainColumnError) as excinfo:
-        dc.read_values(id=[1, 2], session=test_session).mutate(
-            new=(Column("id") - 1)
-        ).persist()
+@pytest.mark.parametrize(
+    "expr_fn, expected_type",
+    [
+        (lambda: dc.C("id") + dc.C("val"), float),  # int + float
+        (lambda: dc.C("val") * dc.C("val"), float),  # float * float
+        (lambda: dc.C("id") // 10, int),  # int // literal
+    ],
+)
+def test_mutate_type_inference_with_untyped_columns(
+    test_session, expr_fn, expected_type
+):
+    ds = dc.read_values(id=[1, 2], val=[1.5, 2.5], session=test_session)
+    result = ds.mutate(new=expr_fn())
+    assert result.signals_schema.values["new"] is expected_type
 
-    assert str(excinfo.value) == (
-        "Error for column new: Cannot infer type with expression id - :id_1"
-    )
+
+@skip_if_not_sqlite
+@pytest.mark.parametrize(
+    "expr_fn, expected_values",
+    [
+        (lambda: dc.C("id") + 1, [2, 3]),
+        (lambda: dc.C("id") - 1, [0, 1]),
+        (lambda: dc.C("id") * 10, [10, 20]),
+        (lambda: dc.C("id") / 2, [0.5, 1.0]),
+        (lambda: dc.C("id") // 2, [0, 1]),
+    ],
+)
+def test_mutate_values_with_untyped_columns(test_session, expr_fn, expected_values):
+    ds = dc.read_values(id=[1, 2], session=test_session)
+    assert list(ds.mutate(new=expr_fn()).to_values("new")) == expected_values
+
+
+def test_mutate_with_nonexistent_column_expression(test_session):
+    with pytest.raises(DataChainColumnError):
+        dc.read_values(id=[1, 2], session=test_session).mutate(new=(Column("nope") - 1))
 
 
 def test_read_values_nan_inf(test_session):
@@ -3961,6 +4010,31 @@ def test_window_error(test_session):
         ),
     ):
         chain.mutate(first=func.sum("col2").over(window))
+
+
+def test_window_with_column_element(test_session):
+    from datachain import func
+
+    files = [
+        File(source="s3://bucket", path="a.txt", size=50),
+        File(source="s3://bucket", path="b.txt", size=75),
+        File(source="s3://bucket", path="c.txt", size=150),
+    ]
+    window = func.window(
+        partition_by=dc.C("file.size") // 100,
+        order_by="file.size",
+    )
+    ds = dc.read_values(file=files, session=test_session).mutate(
+        rn=func.row_number().over(window),
+    )
+
+    assert ds.schema == {"file": File, "rn": int}
+
+    # a.txt(50) and b.txt(75) are in bucket 0, c.txt(150) is in bucket 1
+    path_to_rn = {f.path: rn for f, rn in ds.to_list("file", "rn")}
+    assert path_to_rn["a.txt"] == 1
+    assert path_to_rn["b.txt"] == 2
+    assert path_to_rn["c.txt"] == 1
 
 
 def test_delete_dataset_version(test_session):
