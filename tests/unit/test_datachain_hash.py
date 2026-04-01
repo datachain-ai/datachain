@@ -1,5 +1,3 @@
-from unittest.mock import patch
-
 import pandas as pd
 import pytest
 from pydantic import BaseModel
@@ -54,13 +52,6 @@ players = [
 ]
 
 
-@pytest.fixture
-def mock_get_listing():
-    with patch("datachain.lib.dc.storage.get_listing") as mock:
-        mock.return_value = ("lst__s3://my-bucket", "", "", True)
-        yield mock
-
-
 def _set_stable_uuid(test_session, name, uuid):
     """Set a stable UUID on a dataset version for deterministic hash tests."""
     parts = name.split(".")
@@ -84,7 +75,7 @@ def test_read_values():
     Hash of the chain started with read_values is currently inconsistent.
     Goal of this test is just to check it doesn't break.
     """
-    assert dc.read_values(num=[1, 2, 3]).hash() is not None
+    assert dc.read_values(num=[1, 2, 3])._query.hash() is not None
 
 
 def test_read_csv(test_session, tmp_dir):
@@ -94,7 +85,7 @@ def test_read_csv(test_session, tmp_dir):
     """
     path = tmp_dir / "test.csv"
     pd.DataFrame(DF_DATA).to_csv(path, index=False)
-    assert dc.read_csv(path.as_uri(), session=test_session).hash() is not None
+    assert dc.read_csv(path.as_uri(), session=test_session)._query.hash() is not None
 
 
 @pytest.mark.filterwarnings("ignore::pydantic.warnings.PydanticDeprecatedSince20")
@@ -106,7 +97,7 @@ def test_read_json(test_session, tmp_dir):
     path = tmp_dir / "test.jsonl"
     dc.read_pandas(pd.DataFrame(DF_DATA), session=test_session).to_jsonl(path)
     assert (
-        dc.read_json(path.as_uri(), format="jsonl", session=test_session).hash()
+        dc.read_json(path.as_uri(), format="jsonl", session=test_session)._query.hash()
         is not None
     )
 
@@ -117,7 +108,7 @@ def test_read_pandas(test_session, tmp_dir):
     Goal of this test is just to check it doesn't break.
     """
     df = pd.DataFrame(DF_DATA)
-    assert dc.read_pandas(df, session=test_session).hash() is not None
+    assert dc.read_pandas(df, session=test_session)._query.hash() is not None
 
 
 def test_read_parquet(test_session, tmp_dir):
@@ -128,13 +119,45 @@ def test_read_parquet(test_session, tmp_dir):
     df = pd.DataFrame(DF_DATA)
     path = tmp_dir / "test.parquet"
     dc.read_pandas(df, session=test_session).to_parquet(path)
-    assert dc.read_parquet(path.as_uri(), session=test_session).hash() is not None
+    assert (
+        dc.read_parquet(path.as_uri(), session=test_session)._query.hash() is not None
+    )
 
 
-def test_read_storage(mock_get_listing, test_session):
-    h1 = dc.read_storage("s3://bucket", session=test_session).hash()
-    h2 = dc.read_storage("s3://bucket", session=test_session).hash()
-    assert h1 == h2
+def test_read_storage(test_session, tmp_dir):
+    (tmp_dir / "file1.txt").write_text("hello")
+    uri = tmp_dir.as_uri()
+
+    chain1 = dc.read_storage(uri, session=test_session)
+    chain1._query.resolve_listing()
+    hash1 = chain1._query.hash()
+
+    chain2 = dc.read_storage(uri, session=test_session)
+    chain2._query.resolve_listing()
+    hash2 = chain2._query.hash()
+
+    assert is_sha256_hex(hash1)
+    assert hash1 == hash2
+
+
+def test_read_storage_update_changes_hash(test_session, tmp_dir):
+    (tmp_dir / "file1.txt").write_text("hello")
+    uri = tmp_dir.as_uri()
+
+    chain1 = dc.read_storage(uri, session=test_session)
+    chain1._query.resolve_listing()
+    hash1 = chain1._query.hash()
+
+    # Add a new file and re-list with update=True
+    (tmp_dir / "file2.txt").write_text("world")
+
+    chain2 = dc.read_storage(uri, session=test_session, update=True)
+    chain2._query.resolve_listing()
+    hash2 = chain2._query.hash()
+
+    assert is_sha256_hex(hash1)
+    assert is_sha256_hex(hash2)
+    assert hash1 != hash2
 
 
 def test_read_dataset(test_session):
@@ -144,7 +167,9 @@ def test_read_dataset(test_session):
     )
     assert dc.read_dataset(
         name="dev.animals.cats", version="1.0.0", session=test_session
-    ).hash() == ("58c939b8626443e5d68e9e419a9a5fd1bc7282ca0c5e06cfeb578635e9703a06")
+    )._query.hash() == (
+        "58c939b8626443e5d68e9e419a9a5fd1bc7282ca0c5e06cfeb578635e9703a06"
+    )
 
 
 def test_read_dataset_delta_hash_changes_with_delta_spec(test_session):
@@ -157,14 +182,14 @@ def test_read_dataset_delta_hash_changes_with_delta_spec(test_session):
         name=dataset_name,
         version="1.0.0",
         session=test_session,
-    ).hash()
+    )._query.hash()
     delta_hash = dc.read_dataset(
         name=dataset_name,
         version="1.0.0",
         session=test_session,
         delta=True,
         delta_on="id",
-    ).hash()
+    )._query.hash()
     delta_compare_hash = dc.read_dataset(
         name=dataset_name,
         version="1.0.0",
@@ -172,7 +197,7 @@ def test_read_dataset_delta_hash_changes_with_delta_spec(test_session):
         delta=True,
         delta_on="id",
         delta_compare="value",
-    ).hash()
+    )._query.hash()
     delta_unsafe_hash = dc.read_dataset(
         name=dataset_name,
         version="1.0.0",
@@ -180,20 +205,32 @@ def test_read_dataset_delta_hash_changes_with_delta_spec(test_session):
         delta=True,
         delta_on="id",
         delta_unsafe=True,
-    ).hash()
+    )._query.hash()
 
     assert base_hash != delta_hash
     assert delta_hash != delta_compare_hash
     assert delta_hash != delta_unsafe_hash
 
 
-def test_order_of_steps(mock_get_listing):
-    h1 = dc.read_storage("s3://bucket").mutate(new=10).filter(C("age") > 20).hash()
-    h2 = dc.read_storage("s3://bucket").filter(C("age") > 20).mutate(new=10).hash()
-    assert (
-        h1 == dc.read_storage("s3://bucket").mutate(new=10).filter(C("age") > 20).hash()
+def test_order_of_steps(test_session, tmp_dir):
+    (tmp_dir / "file1.txt").write_text("hello")
+    uri = tmp_dir.as_uri()
+
+    chain1 = (
+        dc.read_storage(uri, session=test_session).mutate(new=10).filter(C("age") > 20)
     )
-    assert h1 != h2
+    chain1._query.resolve_listing()
+    hash1 = chain1._query.hash()
+
+    chain2 = (
+        dc.read_storage(uri, session=test_session).filter(C("age") > 20).mutate(new=10)
+    )
+    chain2._query.resolve_listing()
+    hash2 = chain2._query.hash()
+
+    assert is_sha256_hex(hash1)
+    assert is_sha256_hex(hash2)
+    assert hash1 != hash2
 
 
 def test_all_possible_steps(test_session):
@@ -264,8 +301,8 @@ def test_all_possible_steps(test_session):
             )
         )
 
-    h1 = _build_chain().hash()
-    h2 = _build_chain().hash()
+    h1 = _build_chain()._query.hash()
+    h2 = _build_chain()._query.hash()
     assert h1 == h2
     assert is_sha256_hex(h1)
 
@@ -297,7 +334,7 @@ def test_diff(test_session):
             status_col="diff",
         )
 
-    h1 = _build_chain().hash()
-    h2 = _build_chain().hash()
+    h1 = _build_chain()._query.hash()
+    h2 = _build_chain()._query.hash()
     assert h1 == h2
     assert is_sha256_hex(h1)
