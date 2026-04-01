@@ -2,6 +2,7 @@ from datachain.lib.data_model import DataModel, DataType, is_chain_type
 from datachain.lib.dc import (
     C,
     Column,
+    ColumnExpr,
     DataChain,
     Sys,
     datasets,
@@ -54,6 +55,7 @@ __all__ = [
     "AudioFragment",
     "C",
     "Column",
+    "ColumnExpr",
     "DataChain",
     "DataChainError",
     "DataModel",

@@ -370,7 +370,7 @@ def delta_retry_update(
     """
 
     catalog = dc.session.catalog
-    dc._query.apply_listing_pre_step()
+    dc._query.resolve_listing()
 
     # Check if dataset exists
     try:
@@ -391,7 +391,7 @@ def delta_retry_update(
         return None, None, True
 
     for source in delta_sources:
-        source.apply_listing_pre_step()
+        source.resolve_listing()
 
     dependencies = catalog.get_dataset_dependencies(
         name,

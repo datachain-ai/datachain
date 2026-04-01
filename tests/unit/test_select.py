@@ -206,22 +206,22 @@ def test_select_preserves_sys_columns(test_session):
 
 def test_select_no_args_returns_self(test_session):
     chain = dc.read_values(name=["a", "b"], session=test_session)
-    before_hash = chain.hash()
+    before_hash = chain._query.hash()
 
     selected = chain.select()
 
     assert selected is chain
-    assert selected.hash() == before_hash
+    assert selected._query.hash() == before_hash
 
 
 def test_select_except_no_args_returns_self(test_session):
     chain = dc.read_values(name=["a", "b"], session=test_session)
-    before_hash = chain.hash()
+    before_hash = chain._query.hash()
 
     selected = chain.select_except()
 
     assert selected is chain
-    assert selected.hash() == before_hash
+    assert selected._query.hash() == before_hash
 
 
 def test_to_values_and_to_iter_keep_flattening(test_session):
