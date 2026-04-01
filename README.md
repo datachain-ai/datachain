@@ -13,6 +13,8 @@ pip install datachain
 datachain skill install --target claude   # or --target cursor, --target codex
 ```
 
+Built for large-scale unstructured data - millions of images, video, audio, sensor streams, documents - stored in S3, GCS, or local filesystem.
+
 ## Extend coding agents with data
 
 Claude Code (Codex, Cursor, etc) isn't just a chat interface with a shell - it's a harness that gives the LLM repo context, dedicated tools, and persistent memory. That's what makes it good.
@@ -37,24 +39,13 @@ DataChain extends that harness to data. The agent that understands your codebase
 
 ## 1. Simple flow
 
-Three prompts to the agent. Each one builds on the last — without you thinking about it.
+Three prompts to the agent. Each one builds on the last - without you thinking about it.
 
-## Data Setup
+### 1.1 Create dataset
 
-Download the [Oxford Pets dataset](https://www.robots.ox.ac.uk/~vgg/data/pets/):
-
-```bash
-wget https://www.robots.ox.ac.uk/~vgg/data/pets/data/images.tar.gz
-wget https://www.robots.ox.ac.uk/~vgg/data/pets/data/annotations.tar.gz
-mkdir data
-tar xf images.tar.gz -C data/
-tar xf annotations.tar.gz -C data/
-```
-
-### 1.1 Ingest: parse labels from filenames
-
+Prompt:
 ```prompt
-Create a dataset of images from ./data/. Include all possible annotations from annotation files as well as image filenames.
+Create a dataset of images from s3://datachain-usw2-main-dev/oxford-pets-small. Include all possible metadata from annotation dir as well as image filenames.
 ```
 
 ```
@@ -106,14 +97,31 @@ def parse_pet(file: dc.File) -> PetMeta:
 
 </details>
 
+
+### 1.2 Chat with agent
+
+Prompt:
+```copy
+What dogs breed are there?
 ```
-Saved oxford-pets@0.0.1  {file, meta: {breed, species, split, index}}  5,000 records  18s
+```
+...
 ```
 
-### 1.2 Find images similar to Abyssinian_1.jpg
+This run agains internal context layer in DB - vectorized and supper efficiently. Works even in 100s million file scale within seconds.
+No westing time on parsing thousands of jsons from S3.
 
+
+### 1.3 Find similar images
+
+Get an image:
+```copy
+datachain cp s3://datachain-usw2-main-dev/oxford-pets/images/Abyssinian_113.jpg my_cat.jpg
 ```
-❯ Find the 10 images most similar to Abyssinian_113.jpg but not Abyssinian breed
+
+Prompt:
+```
+Find the 3 images most similar to my_cat.jpg but not Abyssinian breed
 ```
 
 No embeddings exist yet. The agent notices, generates the embedding pipeline, runs it, registers the result, then does the search.
@@ -168,14 +176,10 @@ ref = list(ref_emb)[0]
 
 </details>
 
-```
-oxford-pets-emb@0.0.1 created  5,000 embeddings  4m 12s
-similar-to-abyssinian-1@0.0.1  elapsed: 3s
-```
 
-### 1.3 Find similar dogs to scottish_terrier_132.jpg
+### 1.4 Find similar dogs but not the same
 
-This is when magic starts. All knowledge is accomulated and now agent can efficiently use it.
+This is when magic starts. All knowledge is accomulated and now agent can efficiently use it the existing precomputed embeddings as well as metadata - without even touching slow storage - all in from context.
 
 ```prompt
 Find top 5 similar dogs to scottish_terrier_132.jpg but not Scottish Terrier that has bounding box
@@ -213,7 +217,26 @@ No scripts were generated - agent just found the answer in second.
 **2 seconds, not 4 minutes.** The agent found existing embeddings in the knowledge graph and reused them — no model loading, no reprocessing. Every `.save()` compounds. The agent gets smarter about your data with every run.
 
 
+
+
 ## 2. Incremental updates and checkpoints
+
+### 2.000. 
+
+Prompt:
+```prompt
+Make a dataset from dir gs://datachain-demo/dogs-and-cats/ and include image sizes.
+```
+
+In the session:
+```
+```
+
+<details>
+<summary>Generated: <code>create_dogs_cats.py</code></summary>
+```python
+```
+</details>
 
 ### 2.1 New images arrive
 
