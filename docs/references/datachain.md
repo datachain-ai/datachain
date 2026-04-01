@@ -49,6 +49,17 @@ for examples of how to create a chain.
 
 ::: datachain.query.schema.Column
 
+### ColumnExpr
+
+A column expression — either a [`Column`](#datachain.query.schema.Column) reference
+like `C("file.size")` or any arithmetic or comparison expression built from columns.
+
+```python
+C("width") * C("height")
+C("file.size") // 1024
+(C("score") > 0.5) | (C("label") == "positive")
+```
+
 
 ::: datachain.lib.dc.DataChain
 

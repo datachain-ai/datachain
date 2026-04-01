@@ -8,6 +8,7 @@ from datachain import func
 from datachain.lib.data_model import DataModel
 from datachain.lib.file import File
 from datachain.lib.signal_schema import SignalResolvingError
+from datachain.lib.utils import DataChainColumnError
 
 
 def test_complex_signal_partition_by_file(test_session):
@@ -435,6 +436,44 @@ def test_group_by_with_functions_in_partition_by(test_session):
     assert len(persist.to_list("file_dir")) == 4
 
 
+def test_group_by_with_unlabeled_func_in_partition_by(test_session):
+    class CustomFile(DataModel):
+        path: str
+        size: int
+
+    custom_data = [
+        CustomFile(path="docs/readme.txt", size=100),
+        CustomFile(path="docs/guide.txt", size=200),
+        CustomFile(path="src/main.py", size=300),
+        CustomFile(path="src/utils.py", size=150),
+        CustomFile(path="tests/test_main.py", size=250),
+        CustomFile(path="config.yaml", size=50),
+    ]
+
+    ds = dc.read_values(
+        custom_file=custom_data,
+        session=test_session,
+    ).group_by(
+        cnt=func.count(),
+        sum=func.sum("custom_file.size"),
+        partition_by=func.path.parent("custom_file.path"),
+    )
+
+    assert set(ds.signals_schema.values.keys()) == {"cnt", "sum", "gr_0"}
+    assert sorted(ds.to_list("cnt", "sum")) == [(1, 50), (1, 250), (2, 300), (2, 450)]
+
+    ds2 = dc.read_values(
+        custom_file=custom_data,
+        session=test_session,
+    ).group_by(
+        cnt=func.count(),
+        partition_by=func.path.parent(dc.C("custom_file.path")),
+    )
+
+    assert set(ds2.signals_schema.values.keys()) == {"cnt", "gr_0"}
+    assert len(ds2.to_values("cnt")) == 4
+
+
 def test_partition_by_nested_file(test_session):
     class Signal(DataModel):
         file: File
@@ -588,3 +627,184 @@ def test_aggregate_after_group_by(test_session):
     ).to_list("files", "total")
 
     assert result == [(3, 100)]
+
+
+def test_group_by_with_column_element_in_partition_by(test_session):
+    files = [
+        File(source="s3://bucket", path="a.txt", size=50),
+        File(source="s3://bucket", path="b.txt", size=50),
+        File(source="s3://bucket", path="c.txt", size=50),
+        File(source="s3://bucket", path="d.txt", size=150),
+    ]
+
+    ds = dc.read_values(file=files, session=test_session).group_by(
+        cnt=func.count(),
+        partition_by=dc.C("file.size") // 100,
+    )
+
+    assert set(ds.signals_schema.values.keys()) == {"cnt", "gr_0"}
+    assert set(ds.to_values("cnt")) == {1, 3}
+
+    ds2 = dc.read_values(file=files, session=test_session).group_by(
+        cnt=func.count(),
+        partition_by=[dc.C("file.size") // 100],
+    )
+    assert set(ds2.to_values("cnt")) == {1, 3}
+
+
+def test_group_by_partition_by_multi_column_expression(test_session):
+    ds = dc.read_values(
+        a=[10, 10, 10, 20],
+        b=[5, 5, 5, 3],
+        session=test_session,
+    ).group_by(
+        cnt=func.count(),
+        partition_by=dc.C("a") + dc.C("b"),
+    )
+    assert set(ds.signals_schema.values.keys()) == {"cnt", "gr_0"}
+    assert set(ds.to_values("cnt")) == {1, 3}
+
+
+def test_group_by_partition_by_func_and_column_expression(test_session):
+    files = [
+        File(source="s3://bucket", path="a.txt", size=5),  # 5+5
+        File(source="s3://bucket", path="ab.txt", size=5),  # 6+5
+        File(source="s3://bucket", path="ab.txt", size=5),  # 6+5
+        File(source="s3://bucket", path="a.txt", size=7),  # 5+7
+        File(source="s3://bucket", path="a.txt", size=7),  # 5+7
+        File(source="s3://bucket", path="a.txt", size=7),  # 5+7
+    ]
+
+    ds = dc.read_values(file=files, session=test_session).group_by(
+        n=func.count(),
+        partition_by=func.string.length(dc.C("file.path")) + dc.C("file.size"),
+    )
+    assert set(ds.signals_schema.values.keys()) == {"n", "gr_0"}
+    assert set(ds.to_values("n")) == {1, 2, 3}
+
+
+def test_group_by_partition_by_mixed_labeled_and_unlabeled(test_session):
+    """One partition_by func has a label, another does not."""
+
+    class CustomFile(DataModel):
+        path: str
+        size: int
+
+    custom_data = [
+        CustomFile(path="docs/readme.txt", size=100),
+        CustomFile(path="docs/guide.txt", size=200),
+        CustomFile(path="src/main.py", size=300),
+        CustomFile(path="src/utils.py", size=150),
+    ]
+
+    ds = dc.read_values(
+        custom_file=custom_data,
+        session=test_session,
+    ).group_by(
+        cnt=func.count(),
+        partition_by=[
+            func.path.parent("custom_file.path").label("file_dir"),
+            func.string.length(dc.C("custom_file.path")),
+        ],
+    )
+
+    keys = set(ds.signals_schema.values.keys())
+    assert "file_dir" in keys
+    assert "gr_0" in keys
+    assert "cnt" in keys
+    assert len(keys) == 3
+
+
+def test_group_by_partition_by_expression_type_inference(test_session):
+    """Verify correct Python type inference for ColumnElement partition expressions."""
+    ds = dc.read_values(
+        a=[10, 10, 20],
+        b=[5, 5, 3],
+        c=[1.5, 2.5, 3.5],
+        session=test_session,
+    )
+
+    # int + int → int
+    r1 = ds.group_by(cnt=func.count(), partition_by=dc.C("a") + dc.C("b"))
+    assert r1.signals_schema.values["gr_0"] is int
+
+    # int // literal → int
+    r2 = ds.group_by(cnt=func.count(), partition_by=dc.C("a") // 10)
+    assert r2.signals_schema.values["gr_0"] is int
+
+    # int + float → float
+    r3 = ds.group_by(cnt=func.count(), partition_by=dc.C("a") + dc.C("c"))
+    assert r3.signals_schema.values["gr_0"] is float
+
+    # int / literal → float
+    r4 = ds.group_by(cnt=func.count(), partition_by=dc.C("a") / 10)
+    assert r4.signals_schema.values["gr_0"] is float
+
+    # str + str → str
+    ds_str = dc.read_values(
+        s=["aa", "bb", "aa"],
+        t=["xx", "yy", "xx"],
+        session=test_session,
+    )
+    r5 = ds_str.group_by(cnt=func.count(), partition_by=dc.C("s") + dc.C("t"))
+    assert r5.signals_schema.values["gr_0"] is str
+
+    # bool + bool → bool
+    ds_bool = dc.read_values(
+        x=[True, False, True],
+        y=[False, True, False],
+        session=test_session,
+    )
+    r6 = ds_bool.group_by(cnt=func.count(), partition_by=dc.C("x") + dc.C("y"))
+    assert r6.signals_schema.values["gr_0"] is bool
+
+    # datetime + datetime → datetime
+    from datetime import datetime
+
+    ds_dt = dc.read_values(
+        ts=[datetime(2024, 1, 1), datetime(2024, 1, 1), datetime(2024, 1, 2)],
+        ts2=[datetime(2024, 6, 1), datetime(2024, 6, 1), datetime(2024, 6, 2)],
+        session=test_session,
+    )
+    r7 = ds_dt.group_by(cnt=func.count(), partition_by=dc.C("ts") + dc.C("ts2"))
+    assert r7.signals_schema.values["gr_0"] is datetime
+
+
+def test_group_by_partition_by_name_conflicts_with_agg_column(test_session):
+    files = [
+        File(source="s3://bucket", path="docs/a.txt", size=100),
+    ]
+    with pytest.raises(DataChainColumnError, match="conflicts with aggregation"):
+        dc.read_values(file=files, session=test_session).group_by(
+            parent=func.count(),
+            partition_by=func.path.parent("file.path").label("parent"),
+        )
+
+
+def test_name_collision_in_multiple_group_by(test_session):
+    ds = dc.read_values(
+        a=[1, 1, 2, 2],
+        b=[10, 20, 10, 20],
+        c=[100, 200, 100, 200],
+        session=test_session,
+    ).group_by(
+        cnt=func.count(),
+        partition_by=[dc.C("a") + dc.C("b"), dc.C("c") // 100],
+    )
+    assert set(ds.signals_schema.values.keys()) == {"gr_0", "gr_1", "cnt"}
+
+    ds2 = ds.group_by(
+        total=func.sum("cnt"),
+        partition_by=[dc.C("gr_0") * 2, dc.C("gr_1") + 1],
+    )
+    assert set(ds2.signals_schema.values.keys()) == {"gr_2", "gr_3", "total"}
+
+    result = sorted(
+        zip(
+            ds2.to_values("gr_2"),
+            ds2.to_values("gr_3"),
+            ds2.to_values("total"),
+            strict=True,
+        )
+    )
+    assert result == [(22, 2, 1), (24, 2, 1), (42, 3, 1), (44, 3, 1)]

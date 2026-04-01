@@ -4012,6 +4012,31 @@ def test_window_error(test_session):
         chain.mutate(first=func.sum("col2").over(window))
 
 
+def test_window_with_column_element(test_session):
+    from datachain import func
+
+    files = [
+        File(source="s3://bucket", path="a.txt", size=50),
+        File(source="s3://bucket", path="b.txt", size=75),
+        File(source="s3://bucket", path="c.txt", size=150),
+    ]
+    window = func.window(
+        partition_by=dc.C("file.size") // 100,
+        order_by="file.size",
+    )
+    ds = dc.read_values(file=files, session=test_session).mutate(
+        rn=func.row_number().over(window),
+    )
+
+    assert ds.schema == {"file": File, "rn": int}
+
+    # a.txt(50) and b.txt(75) are in bucket 0, c.txt(150) is in bucket 1
+    path_to_rn = {f.path: rn for f, rn in ds.to_list("file", "rn")}
+    assert path_to_rn["a.txt"] == 1
+    assert path_to_rn["b.txt"] == 2
+    assert path_to_rn["c.txt"] == 1
+
+
 def test_delete_dataset_version(test_session):
     name = "numbers"
     dc.read_values(num=[1, 2, 3], session=test_session).save(name, version="1.0.0")

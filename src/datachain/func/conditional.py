@@ -1,16 +1,15 @@
-from sqlalchemy import ColumnElement
 from sqlalchemy import and_ as sql_and
 from sqlalchemy import case as sql_case
 from sqlalchemy import not_ as sql_not
 from sqlalchemy import or_ as sql_or
 
 from datachain.lib.utils import DataChainParamsError
-from datachain.query.schema import Column
+from datachain.query.schema import Column, ColumnExpr
 from datachain.sql.functions import conditional
 
 from .func import Func
 
-CaseT = int | float | complex | bool | str | Func | ColumnElement
+CaseT = int | float | complex | bool | str | Func | ColumnExpr
 
 
 def greatest(*args: str | Column | Func | float) -> Func:
@@ -92,7 +91,7 @@ def least(*args: str | Column | Func | float) -> Func:
 
 
 def case(
-    *args: tuple[ColumnElement | Func | bool, CaseT], else_: CaseT | None = None
+    *args: tuple[ColumnExpr | Func | bool, CaseT], else_: CaseT | None = None
 ) -> Func:
     """
     Returns a case expression that evaluates a list of conditions and returns
@@ -100,7 +99,7 @@ def case(
     nested functions (including case function), or columns.
 
     Args:
-        args (tuple[ColumnElement | Func | bool, CaseT]): Tuples of (condition, value)
+        args (tuple[ColumnExpr | Func | bool, CaseT]): Tuples of (condition, value)
             pairs. Each condition is evaluated in order, and the corresponding value
             is returned for the first condition that evaluates to True.
         else_ (CaseT, optional): Value to return if no conditions are satisfied.
@@ -161,16 +160,16 @@ def case(
     return Func("case", inner=sql_case, cols=args, kwargs=kwargs, result_type=type_)
 
 
-def ifelse(condition: ColumnElement | Func, if_val: CaseT, else_val: CaseT) -> Func:
+def ifelse(condition: ColumnExpr | Func, if_val: CaseT, else_val: CaseT) -> Func:
     """
     Returns an if-else expression that evaluates a condition and returns one
     of two values based on the result. Values can be Python primitives
     (string, numbers, booleans), nested functions, or columns.
 
     Args:
-        condition (ColumnElement | Func): Condition to evaluate.
-        if_val (ColumnElement | Func | literal): Value to return if condition is True.
-        else_val (ColumnElement | Func | literal): Value to return if condition
+        condition (ColumnExpr | Func): Condition to evaluate.
+        if_val (ColumnExpr | Func | literal): Value to return if condition is True.
+        else_val (ColumnExpr | Func | literal): Value to return if condition
             is False.
 
     Returns:
@@ -189,7 +188,7 @@ def ifelse(condition: ColumnElement | Func, if_val: CaseT, else_val: CaseT) -> F
     return case((condition, if_val), else_=else_val)
 
 
-def isnone(col: str | ColumnElement) -> Func:
+def isnone(col: str | ColumnExpr) -> Func:
     """
     Returns a function that checks if the column value is `None` (NULL in DB).
 
@@ -217,13 +216,13 @@ def isnone(col: str | ColumnElement) -> Func:
     return case((col.is_(None) if col is not None else True, True), else_=False)
 
 
-def or_(*args: ColumnElement | Func) -> Func:
+def or_(*args: ColumnExpr | Func) -> Func:
     """
     Returns the function that produces conjunction of expressions joined by OR
     logical operator.
 
     Args:
-        args (ColumnElement | Func): The expressions for OR statement.
+        args (ColumnExpr | Func): The expressions for OR statement.
             If a string is provided, it is assumed to be the name of the column.
             If a Column is provided, it is assumed to be a column in the dataset.
             If a Func is provided, it is assumed to be a function returning a value.
@@ -252,13 +251,13 @@ def or_(*args: ColumnElement | Func) -> Func:
     return Func("or", inner=sql_or, cols=cols, args=func_args, result_type=bool)
 
 
-def and_(*args: ColumnElement | Func) -> Func:
+def and_(*args: ColumnExpr | Func) -> Func:
     """
     Returns the function that produces conjunction of expressions joined by AND
     logical operator.
 
     Args:
-        args (ColumnElement | Func): The expressions for AND statement.
+        args (ColumnExpr | Func): The expressions for AND statement.
             If a string is provided, it is assumed to be the name of the column.
             If a Column is provided, it is assumed to be a column in the dataset.
             If a Func is provided, it is assumed to be a function returning a value.
@@ -287,12 +286,12 @@ def and_(*args: ColumnElement | Func) -> Func:
     return Func("and", inner=sql_and, cols=cols, args=func_args, result_type=bool)
 
 
-def not_(arg: ColumnElement | Func) -> Func:
+def not_(arg: ColumnExpr | Func) -> Func:
     """
     Returns the function that produces NOT of the given expressions.
 
     Args:
-        arg (ColumnElement | Func): The expression for NOT statement.
+        arg (ColumnExpr | Func): The expression for NOT statement.
             If a string is provided, it is assumed to be the name of the column.
             If a Column is provided, it is assumed to be a column in the dataset.
             If a Func is provided, it is assumed to be a function returning a value.

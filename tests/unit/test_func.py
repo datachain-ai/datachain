@@ -254,6 +254,46 @@ def test_floordiv_mutate(chain):
     assert res == [1, 1, 1, 1, 1]
 
 
+def test_column_truediv_uses_divide():
+    col = dc.C("x")
+    sql = str((col / 100).compile(compile_kwargs={"literal_binds": True}))
+    assert "divide" in sql
+
+    sql = str((100 / col).compile(compile_kwargs={"literal_binds": True}))
+    assert "divide" in sql
+
+
+def test_column_floordiv_uses_divide():
+    col = dc.C("x")
+    sql = str((col // 100).compile(compile_kwargs={"literal_binds": True}))
+    assert "divide" in sql
+    assert "CAST" in sql
+
+    sql = str((100 // col).compile(compile_kwargs={"literal_binds": True}))
+    assert "divide" in sql
+    assert "CAST" in sql
+
+
+def test_column_floordiv_mutate(test_session):
+    res = (
+        dc.read_values(num=[50, 75, 150], session=test_session)
+        .mutate(bucket=dc.C("num") // 100)
+        .order_by("num")
+        .to_values("bucket")
+    )
+    assert res == [0, 0, 1]
+
+
+def test_column_truediv_mutate(test_session):
+    res = (
+        dc.read_values(num=[10, 20, 30], session=test_session)
+        .mutate(half=dc.C("num") / 2)
+        .order_by("num")
+        .to_values("half")
+    )
+    assert res == [5.0, 10.0, 15.0]
+
+
 def test_mod():
     rnd1, rnd2 = rand(), rand()
 

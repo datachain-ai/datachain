@@ -20,7 +20,7 @@ from typing import (
 )
 
 from pydantic import BaseModel, Field, ValidationError, create_model
-from sqlalchemy import Cast, ColumnElement, cast
+from sqlalchemy import Cast, cast
 from sqlalchemy.sql.elements import BinaryExpression, Grouping
 
 from datachain import json
@@ -42,7 +42,7 @@ from datachain.lib.utils import (
     DataChainParamsError,
     type_to_str,
 )
-from datachain.query.schema import DEFAULT_DELIMITER, C, Column, ColumnMeta
+from datachain.query.schema import DEFAULT_DELIMITER, C, Column, ColumnExpr, ColumnMeta
 from datachain.sql.types import SQLType
 
 if TYPE_CHECKING:
@@ -904,8 +904,8 @@ class SignalSchema:
 
         return curr_type
 
-    def enrich_expr_types(self, expr: "ColumnElement") -> "ColumnElement":
-        """Rebuild a ColumnElement expression with typed columns from the schema.
+    def enrich_expr_types(self, expr: "ColumnExpr") -> "ColumnExpr":
+        """Rebuild a ColumnExpr expression with typed columns from the schema.
 
         dc.C("col") creates untyped columns (NullType). This method rebuilds the
         expression tree replacing them with typed columns so SQLAlchemy propagates
@@ -1012,7 +1012,7 @@ class SignalSchema:
                 val = literal(value)
                 val.type = python_to_sql(type(value))()
                 new_values[name] = sql_to_python(val)
-            elif isinstance(value, ColumnElement):
+            elif isinstance(value, ColumnExpr):
                 # adding new signal
                 new_values[name] = sql_to_python(self.enrich_expr_types(value))
             else:

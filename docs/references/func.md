@@ -20,6 +20,10 @@ DataChain provides several categories of functions for different types of operat
 - **[String Functions](functions/string.md)** - Functions for string manipulation and processing
 - **[Window Functions](functions/window.md)** - Functions for window operations
 
+::: datachain.func.func.Func
+    options:
+      members: false
+
 ## Usage
 
 ```python

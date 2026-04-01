@@ -1,4 +1,5 @@
 import copy
+import hashlib
 import logging
 import os
 import os.path
@@ -20,7 +21,6 @@ from typing import (
 
 import sqlalchemy
 from pydantic import BaseModel
-from sqlalchemy.sql.elements import ColumnElement
 
 from datachain import json, semver
 from datachain.checkpoint_event import CheckpointEventType, CheckpointStepType
@@ -36,6 +36,7 @@ from datachain.func.base import Function
 from datachain.func.func import Func
 from datachain.job import Job
 from datachain.lib.convert.python_to_sql import python_to_sql
+from datachain.lib.convert.sql_to_python import sql_to_python
 from datachain.lib.data_model import (
     DataModel,
     DataType,
@@ -63,7 +64,7 @@ from datachain.query.dataset import (
     RegenerateSystemColumns,
     UnionSchemaMismatchError,
 )
-from datachain.query.schema import DEFAULT_DELIMITER, Column
+from datachain.query.schema import DEFAULT_DELIMITER, Column, ColumnExpr
 from datachain.sql.functions import path as pathfunc
 from datachain.utils import (
     batched_it,
@@ -634,7 +635,6 @@ class DataChain:
         self._query.resolve_all_listings()
 
         # Calculate hash including dataset name and job context to avoid conflicts
-        import hashlib
 
         base_hash = self._query.hash(job_aware=True)
         _hash = hashlib.sha256(
@@ -1074,12 +1074,12 @@ class DataChain:
         """
         if partition_by is not None:
             # Convert string partition_by parameters to Column objects
-            if isinstance(partition_by, (str, Function, ColumnElement)):
+            if isinstance(partition_by, (str, Function, ColumnExpr)):
                 list_partition_by = [partition_by]
             else:
                 list_partition_by = list(partition_by)
 
-            processed_partition_columns: list[ColumnElement] = []
+            processed_partition_columns: list[ColumnExpr] = []
             for col in list_partition_by:
                 if isinstance(col, str):
                     columns = self.signals_schema.db_signals(name=col, as_columns=True)
@@ -1090,7 +1090,7 @@ class DataChain:
                     column = col.get_column(self.signals_schema)
                     processed_partition_columns.append(column)
                 else:
-                    # Assume it's already a ColumnElement
+                    # Assume it's already a ColumnExpr
                     processed_partition_columns.append(col)
 
             processed_partition_by = processed_partition_columns
@@ -1265,10 +1265,12 @@ class DataChain:
         )
 
     @delta_disabled  # type: ignore[arg-type]
-    def group_by(  # noqa: C901, PLR0912
+    def group_by(  # noqa: C901, PLR0912, PLR0915
         self,
         *,
-        partition_by: str | Func | Sequence[str | Func] | None = None,
+        partition_by: (
+            str | Func | ColumnExpr | Sequence[str | Func | ColumnExpr] | None
+        ) = None,
         **kwargs: Func,
     ) -> "Self":
         """Group rows by specified set of signals and return new signals
@@ -1296,7 +1298,7 @@ class DataChain:
         """
         if partition_by is None:
             partition_by = []
-        elif isinstance(partition_by, (str, Func)):
+        elif isinstance(partition_by, (str, Func, ColumnExpr)):
             partition_by = [partition_by]
 
         partition_by_columns: list[Column] = []
@@ -1305,6 +1307,14 @@ class DataChain:
         keep_columns: list[str] = []
         partial_fields: list[str] = []  # Track specific fields for partial creation
         schema_partition_by: list[str] = []
+        # Start counter past any existing gr_N columns and kwargs to avoid collisions
+        partition_counter = 0
+        for name in (*self.signals_schema.values, *kwargs):
+            if name.startswith("gr_"):
+                try:
+                    partition_counter = max(partition_counter, int(name[3:]) + 1)
+                except ValueError:
+                    pass
 
         for col in partition_by:
             if isinstance(col, str):
@@ -1352,23 +1362,44 @@ class DataChain:
                             keep_columns.append(col)
                         schema_partition_by.append(col)
             elif isinstance(col, Function):
-                column = col.get_column(self.signals_schema)
-                col_db_name = column.name
-                col_type = column.type.python_type
-                schema_fields[col_db_name] = col_type
+                label = col.col_label
+                if not label:
+                    label = f"gr_{partition_counter}"
+                    partition_counter += 1
+                column = col.get_column(self.signals_schema, label=label)
                 partition_by_columns.append(column)
                 signal_columns.append(column)
+                schema_fields[column.name] = column.type.python_type
+            elif isinstance(col, ColumnExpr):
+                col_label = f"gr_{partition_counter}"
+                partition_counter += 1
+                enriched = self.signals_schema.enrich_expr_types(col)
+                labeled = cast("Column", enriched.label(col_label))
+                inferred = sql_to_python(enriched)
+                partition_by_columns.append(labeled)
+                signal_columns.append(labeled)
+                schema_fields[col_label] = inferred
             else:
                 raise DataChainColumnError(
                     col,
                     (
                         f"partition_by column {col} has type {type(col)}"
-                        " but expected str or Function"
+                        " but expected str, Function, or ColumnExpr"
                     ),
                 )
 
         if not kwargs:
             raise ValueError("At least one column should be provided for group_by")
+
+        partition_output_names = {c.name for c in signal_columns}
+        overlap = partition_output_names & set(kwargs.keys())
+        if overlap:
+            name = next(iter(overlap))
+            raise DataChainColumnError(
+                name,
+                f"partition_by name '{name}' conflicts with aggregation column name",
+            )
+
         for col_name, func in kwargs.items():
             if not isinstance(func, Func):
                 raise DataChainColumnError(
@@ -1445,7 +1476,7 @@ class DataChain:
 
         for col_name, expr in kwargs.items():
             if not isinstance(expr, (*primitives, Column, Func)):
-                if isinstance(expr, ColumnElement):
+                if isinstance(expr, ColumnExpr):
                     expr = self.signals_schema.enrich_expr_types(expr)
                 if isinstance(expr.type, NullType):
                     raise DataChainColumnError(
@@ -1773,7 +1804,7 @@ class DataChain:
 
         def _resolve(
             ds: DataChain,
-            col: str | Function | sqlalchemy.ColumnElement,
+            col: str | Function | ColumnExpr,
             side: str | None,
         ):
             try:

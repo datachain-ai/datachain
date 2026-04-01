@@ -59,7 +59,13 @@ from datachain.progress import (
     tqdm,
 )
 from datachain.project import Project
-from datachain.query.schema import DEFAULT_DELIMITER, C, UDFParamSpec, normalize_param
+from datachain.query.schema import (
+    DEFAULT_DELIMITER,
+    C,
+    ColumnExpr,
+    UDFParamSpec,
+    normalize_param,
+)
 from datachain.query.session import Session
 from datachain.query.udf import UdfInfo
 from datachain.sql.functions.random import rand
@@ -91,10 +97,8 @@ if TYPE_CHECKING:
     P = ParamSpec("P")
 
 
-PartitionByType = (
-    str | Function | ColumnElement | Sequence[str | Function | ColumnElement]
-)
-JoinPredicateType = str | ColumnClause | ColumnElement
+PartitionByType = str | Function | ColumnExpr | Sequence[str | Function | ColumnExpr]
+JoinPredicateType = str | ColumnExpr
 DatasetDependencyType = tuple["DatasetRecord", str]
 
 logger = logging.getLogger("datachain")
