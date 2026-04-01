@@ -3,6 +3,7 @@ from collections.abc import Iterator
 import pytest
 
 import datachain as dc
+from datachain import func
 from datachain.lib.file import File
 from tests.utils import reset_session_job_state, skip_if_not_sqlite
 
@@ -758,3 +759,53 @@ def test_continue_udf_preserves_sys_ids(test_session_tmpfile):
     assert len(processed) < 6, (
         f"Expected continuation to skip rows, but all {len(processed)} were processed"
     )
+
+
+def test_udf_continue_after_group_by(test_session_tmpfile):
+    """UDF continuation works correctly when group_by precedes the UDF.
+
+    group_by produces a query with GROUP BY clause that has no sys__id.
+    The UDF input table gets fresh IDs. On continuation, the partial output
+    table's sys__id must still match the input table's IDs.
+    """
+    test_session = test_session_tmpfile
+    processed = []
+
+    dc.read_values(
+        category=["a", "a", "b", "b", "c", "c"],
+        value=[1, 2, 3, 4, 5, 6],
+        session=test_session,
+    ).save("data")
+
+    def process_buggy(total) -> int:
+        if len(processed) >= 2:
+            raise Exception("Simulated failure")
+        processed.append(total)
+        return total * 10
+
+    chain = (
+        dc.read_dataset("data", session=test_session)
+        .group_by(total=func.sum("value"), partition_by="category")
+        .settings(batch_size=1)
+    )
+
+    # -------------- FIRST RUN (crashes after 2 rows) -------------------
+    reset_session_job_state()
+    with pytest.raises(Exception, match="Simulated failure"):
+        chain.map(result=process_buggy, output=int).save("results")
+
+    assert len(processed) == 2
+
+    # -------------- SECOND RUN (fixed UDF) -------------------
+    reset_session_job_state()
+    processed.clear()
+
+    def process_buggy(total) -> int:
+        processed.append(total)
+        return total * 10
+
+    chain.map(result=process_buggy, output=int).save("results")
+
+    result = dc.read_dataset("results", session=test_session).to_list("result")
+    # group a: 1+2=3 -> 30, group b: 3+4=7 -> 70, group c: 5+6=11 -> 110
+    assert sorted(result) == [(30,), (70,), (110,)]
