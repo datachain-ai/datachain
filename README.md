@@ -221,7 +221,7 @@ No scripts were generated - agent just found the answer in second.
 
 ## 2. Incremental updates and checkpoints
 
-### 2.000. 
+### 2.000.
 
 Prompt:
 ```prompt
