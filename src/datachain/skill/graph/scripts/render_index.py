@@ -60,7 +60,7 @@ def render_index(plan: dict) -> str:
 
     # Buckets table
     if buckets:
-        lines.append("## Listings")
+        lines.append("## Buckets")
         lines.append("")
         lines.append("| Listing | Files | Size | Scanned |")
         lines.append("|---------|------:|-----:|---------|")

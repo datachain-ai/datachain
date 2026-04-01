@@ -36,11 +36,11 @@ If `datachain/graph/index.md` exists, read it at conversation start for dataset 
 5. INPUT PARAM: The file column is always named "file" regardless of modality.
    def process(file: dc.ImageFile) -> ...  ← always "file", not "image"
 
-6. ALWAYS PARALLEL: Every chain with map/gen/agg must call .settings(parallel=True).
-   Without it, execution is single-threaded. Only reduce parallelism for heavy
-   per-worker memory loads (large ML models).
-   ✓ chain.settings(parallel=True).map(emb=fn)
-   ✗ chain.map(emb=fn)  ← single-threaded, wastes cores
+6. PARALLEL WHEN NEEDED: Only use .settings(parallel=True) when files are large
+   or per-row processing is expensive (ML inference, LLM calls, heavy file I/O).
+   For simple/lightweight operations, omit parallel — sequential is the default.
+   ✓ chain.settings(parallel=True).map(emb=model_fn)  # ML inference → parallel
+   ✓ chain.map(label=classify)                         # lightweight → sequential OK
 
 7. COLUMN-COLUMN ARITHMETIC: Use chain.column() instead of C() when combining two columns.
    C() does not carry type info → engine can't infer the result type.
@@ -165,7 +165,6 @@ chain.file_diff(other)
 chain.map(col_name=fn)        # 1 input → 1 output record
 chain.gen(col_name=fn)        # 1 input → N output records
 chain.agg(col_name=fn, partition_by="key")  # group → aggregate
-chain.batch_map(fn, batch_size=32)
 ```
 
 **Setup and execution settings:**
@@ -180,7 +179,8 @@ chain.save("dataset_name")                     # versioned named dataset
 chain.save("ns.proj.name", update_version="minor")
 chain.persist()                                # anonymous cache
 chain.show(limit=10)
-chain.collect("col1", "col2")                  # → list of tuples
+chain.to_list("col1", "col2")                  # → list of tuples
+chain.to_iter("col1", "col2")                  # → iterator of tuples
 chain.to_pandas()
 chain.to_parquet("output.parquet")
 chain.to_csv("output.csv")
@@ -455,7 +455,6 @@ def analyze(file: dc.File, client) -> Analysis:
 (
     dc.read_storage("s3://bucket/data/", update=True, delta=True,
                     delta_on="file.path", delta_compare="file.mtime")
-    .settings(parallel=True)
     .map(result=process_file)
     .save("processed_data")
 )
@@ -474,7 +473,7 @@ def process_file(file: dc.File) -> str:
 (
     dc.read_csv("s3://data/manifest.csv")
     .map(file=to_file)
-    .settings(parallel=True, prefetch=3, cache=True)
+    .settings(cache=True)
     .map(result=process_file)
     .save("summaries")
 )
@@ -513,7 +512,8 @@ combined = images.merge(labels, on="file.name", right_on="labels.name")
     Use chain.filter(C("x") > 0) instead
 ✗ Using DataModel instead of BaseModel:
     Use pydantic.BaseModel for custom types — DataChain accepts it natively
-✗ Missing .settings(parallel=True) for Python operations → single-threaded execution
+✗ Using parallel=True for lightweight operations → unnecessary overhead
+   Only use parallel for expensive per-row work (ML, LLM, heavy file I/O)
 ✗ Using C() for column-column arithmetic:
     C("price") * C("qty")  ← no type info → engine error
     Use chain.column("price") * chain.column("qty") instead
@@ -523,9 +523,20 @@ combined = images.merge(labels, on="file.name", right_on="labels.name")
 ✗ Reading files in a Python loop outside the chain:
     rows = chain.to_list(); for path in rows: open(path)  ← no parallelism, no cache
     Use dc.File.at(path) inside map() instead
-✗ Using deprecated DataChain.from_*() methods:
-    DataChain.from_csv(...)  ← deprecated
-    Use dc.read_csv(...) instead
+✗ DEPRECATED APIs — never use these:
+    DataChain.from_storage()  → dc.read_storage()
+    DataChain.from_dataset()  → dc.read_dataset()
+    DataChain.from_csv()      → dc.read_csv()
+    DataChain.from_json()     → dc.read_json()
+    DataChain.from_parquet()  → dc.read_parquet()
+    DataChain.from_values()   → dc.read_values()
+    DataChain.from_pandas()   → dc.read_pandas()
+    DataChain.from_hf()       → dc.read_hf()
+    DataChain.from_records()  → dc.read_records()
+    DataChain.datasets()      → dc.datasets()
+    DataChain.listings()      → dc.listings()
+    chain.collect()           → chain.to_list() / chain.to_iter() / chain.to_values()
+    File.get_uri()            → file.get_fs_path()
 ✗ Using .concat() in mutate() → engine can't infer type; use it only in filter()
 ✗ Using C("col").asc() / .desc() in order_by():
     Use order_by("col", descending=True) instead
