@@ -1036,7 +1036,7 @@ class UDFStep(Step, ABC):
         return self.warehouse.create_pre_udf_table(query, input_table_name)
 
     def _get_partition_table_for_continue(
-        self, checkpoint: Checkpoint, input_query: Select, _hash: str, job: Job
+        self, checkpoint: Checkpoint, _hash: str, job: Job
     ) -> "Table":
         """
         Get partition table from parent for continue flow.
@@ -1084,7 +1084,7 @@ class UDFStep(Step, ABC):
             assert ch_partial
             assert job
             partition_tbl = self._get_partition_table_for_continue(
-                ch_partial, query, hash_input, job
+                ch_partial, hash_input, job
             )
         elif job:
             partition_tbl = self.create_partitions_table(
