@@ -8,20 +8,37 @@
 
 # DataChain
 
-**AI coding agents are great at writing code. They fall apart with data they can't see.**
-
-Point Claude Code at a folder of images. Ask it to find similar ones. Watch it load a model, re-embed everything, ignore the work you did last week.
-
-The problem isn't the agent. It's that your data has no context. DataChain fixes that.
-
-Every pipeline you run registers a **dataset** in a knowledge graph: name, version, schema, source, lineage. Agents read the graph before writing code. They reuse what exists instead of recomputing from scratch.
+**Coding agents write great code but fall apart with data — they can't see what's in your buckets, what's already computed, or how datasets relate. DataChain fixes that.**
 
 ```bash
 pip install datachain
 datachain skill install --target claude   # or --target cursor, --target codex
 ```
 
----
+## How DataChain extends coding agents
+
+Claude Code (Codex, Cursor, etc) isn't just a chat interface with a shell - it's a harness that gives the LLM repo context, dedicated tools, and persistent memory. That's what makes it good.
+
+DataChain extends that harness to data. The agent that understands your codebase now also understands your datasets: schemas, lineage, what's already computed.
+
+┌──────────────────────┐                   ┌──────────────────────┐
+│     Claude Code      │─── skill / MCP ──▶│      DataChain       │
+├──────────────────────┤                   ├──────────────────────┤
+│  git + commits       │                   │  datasets + versions │
+│  Prompt caching      │                   │  data lineage graph  │
+│  file tree           │                   │  schemas + types     │
+├──────────────────────┤                   ├──────────────────────┤
+│  Grep / Glob / LSP   │                   │  async · parallel    │
+│  session memory      │                   │  execution state     │
+└──────────────────────┘                   └──────────────────────┘
+          │                                          │
+       codebase                               object storage
+     (git + files)                          (S3, GCS, local FS)
+
+
+## 1. Simple flow
+
+Three prompts to the agent. Each one builds on the last — without you thinking about it.
 
 ## Data Setup
 
@@ -35,17 +52,16 @@ tar xf images.tar.gz -C data/
 tar xf annotations.tar.gz -C data/
 ```
 
----
-
-## 1. Simple flow
-
-Three prompts to the agent. Each one builds on the last — without you thinking about it.
-
 ### 1.1 Ingest: parse labels from filenames
 
+```prompt
+Create a dataset of images from ./data/. Include all possible annotations from annotation files as well as image filenames.
 ```
-❯ Create a dataset of images from ./data/. Include all possible annotations from annotation files as well as image filenames.
-...
+
+```
+⏺ Bash(python3 -c "
+      import datachain as dc…)
+⏺ Results:
 ```
 
 <details>
@@ -162,11 +178,11 @@ similar-to-abyssinian-1@0.0.1  elapsed: 3s
 
 This is when magic starts. All knowledge is accomulated and now agent can efficiently use it.
 
+```prompt
+Find top 5 similar dogs to scottish_terrier_132.jpg but not Scottish Terrier that has bounding box
+```
 
 ```
-❯ Find top 5 similar dogs to scottish_terrier_132.jpg but not Scottish Terrier that has
- bounding box
-
 ⏺ Bash(python3 -c "
       import datachain as dc…)
 ⏺ Results:
@@ -197,7 +213,6 @@ No scripts were generated - agent just found the answer in second.
 
 **2 seconds, not 4 minutes.** The agent found existing embeddings in the knowledge graph and reused them — no model loading, no reprocessing. Every `.save()` compounds. The agent gets smarter about your data with every run.
 
----
 
 ## 2. Incremental updates and checkpoints
 
@@ -296,7 +311,6 @@ Saved oxford-pets-caps@0.0.1  (3,182 processed, 4,218 from checkpoint)
 
 Same script, same command. 3,182 LLM calls — not 7,400.
 
----
 
 ## 3. Physical AI: multi-sensor data
 
@@ -418,7 +432,6 @@ Saved av-finetune@0.0.1
 
 New data in any source bucket? Re-run ingest (delta-aware), re-run alignment. The context layer tracks what changed across all three sources.
 
----
 
 ## How it works
 
@@ -469,7 +482,6 @@ New data in any source bucket? Re-run ingest (delta-aware), re-run alignment. Th
 
 Plain text. Agents read it. Humans can audit it. Lives in your repo alongside your code.
 
----
 
 ## Team and cloud: Studio
 
