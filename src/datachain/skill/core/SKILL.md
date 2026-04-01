@@ -53,13 +53,21 @@ If `datachain/graph/index.md` exists, read it at conversation start for dataset 
    ✓ dc.read_csv("s3://data.csv")
    ✗ DataChain.from_csv("s3://data.csv")  ← deprecated
 
-9. ONE SIGNAL PER MAP/GEN/AGG: Each call accepts exactly one signal (keyword).
+9. GLOB IN PATH: When filtering by file extension or name pattern, put the glob
+   directly in the read_storage() path instead of a separate .filter() call.
+   This preserves per-file lineage (not just directory-level).
+   ✓ dc.read_storage("s3://bucket/images/**/*.{jpg,jpeg,png}", type="image")
+   ✓ dc.read_storage("s3://data/**/*.csv")
+   ✗ dc.read_storage("s3://bucket/images/", type="image")
+     .filter(dc.C("file.path").glob("*.jpg") | dc.C("file.path").glob("*.png"))
+
+10. ONE SIGNAL PER MAP/GEN/AGG: Each call accepts exactly one signal (keyword).
    For multiple columns, chain calls or return a Pydantic BaseModel.
    ✓ chain.map(a=fn1).map(b=fn2)          # chained — two columns
    ✓ chain.map(info=fn)                    # BaseModel with named fields
    ✗ chain.map(a=fn1, b=fn2)              # ERROR: multiple signals
 
-10. NO TUPLE RETURNS: Always prefer Pydantic BaseModel classes to tuple in map/gen/agg
+11. NO TUPLE RETURNS: Always prefer Pydantic BaseModel classes to tuple in map/gen/agg
     functions until user directly asks for tuple.
     ✓ def fn(file: dc.File) -> MyModel: ...   # named fields via BaseModel
     ✓ def fn(file: dc.File) -> int: ...       # single scalar
@@ -114,6 +122,7 @@ Always use `dc.` prefix for DataChain types: `dc.File`, `dc.ImageFile`, `dc.C`, 
 **Entry points:**
 ```python
 dc.read_storage("s3://bucket/prefix/", type="image")   # File / ImageFile etc.
+dc.read_storage("s3://bucket/imgs/**/*.{jpg,png}", type="image")  # glob in path
 dc.read_csv("s3://bucket/data.csv")
 dc.read_json("s3://bucket/ann.json", jmespath="images")
 dc.read_parquet("s3://bucket/data/*.parquet")
@@ -536,8 +545,7 @@ combined = images.merge(labels, on="file.name", right_on="labels.name")
       dc.read_records(data)                         ← no lineage
     ✓ Read ALL files (images, annotations, XMLs) via dc.read_storage(),
       then parse inside map()/gen() and merge():
-      annotations = dc.read_storage("./annotations/", type="text")
-        .filter(dc.C("file.path").glob("**/list.txt"))
+      annotations = dc.read_storage("./annotations/**/list.txt", type="text")
         .gen(info=parse_list_file)
       xmls = dc.read_storage("./annotations/xmls/").map(bbox=parse_xml)
       images = dc.read_storage("./images/", type="image")
@@ -604,4 +612,10 @@ combined = images.merge(labels, on="file.name", right_on="labels.name")
 ✗ Tuple return type in map/gen/agg:
     def fn(...) -> tuple[int, int]: ...  ← creates col_0, col_1
     Always prefer using BaseModel for named fields instead
+✗ Using filter() with C("file.path").glob() for file extension filtering right after read_storage():
+    dc.read_storage("s3://bucket/images/", type="image")
+      .filter(dc.C("file.path").glob("*.jpg") | dc.C("file.path").glob("*.png"))
+    ← lineage points to directory, not individual files; verbose
+    Put glob patterns directly in the read_storage() path:
+    ✓ dc.read_storage("s3://bucket/images/**/*.{jpg,png}", type="image")
 ```
