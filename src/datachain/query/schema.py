@@ -2,11 +2,13 @@ import functools
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from fnmatch import fnmatch
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeAlias
 
 import attrs
 import sqlalchemy as sa
 from fsspec.callbacks import DEFAULT_CALLBACK, Callback
+from sqlalchemy import Float, Integer, cast
+from sqlalchemy.sql import func as sa_func
 
 from datachain.lib.file import File
 
@@ -54,6 +56,18 @@ class Column(sa.ColumnClause, metaclass=ColumnMeta):
 
     def __getattr__(self, name: str):
         return Column(self.name + DEFAULT_DELIMITER + name)
+
+    def __truediv__(self, other):
+        return sa_func.divide(self, other, type_=Float)
+
+    def __rtruediv__(self, other):
+        return sa_func.divide(other, self, type_=Float)
+
+    def __floordiv__(self, other):
+        return cast(sa_func.divide(self, other), Integer)
+
+    def __rfloordiv__(self, other):
+        return cast(sa_func.divide(other, self), Integer)
 
     def glob(self, glob_str):
         """Search for matches using glob pattern matching."""
@@ -231,3 +245,5 @@ def normalize_param(param: UDFParamSpec) -> UDFParameter:
 
 
 C = Column
+
+ColumnExpr: TypeAlias = sa.ColumnElement

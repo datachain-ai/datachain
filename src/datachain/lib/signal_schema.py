@@ -20,7 +20,8 @@ from typing import (
 )
 
 from pydantic import BaseModel, Field, ValidationError, create_model
-from sqlalchemy import ColumnElement
+from sqlalchemy import Cast, cast
+from sqlalchemy.sql.elements import BinaryExpression, Grouping
 
 from datachain import json
 from datachain.func import literal
@@ -41,7 +42,7 @@ from datachain.lib.utils import (
     DataChainParamsError,
     type_to_str,
 )
-from datachain.query.schema import DEFAULT_DELIMITER, C, Column, ColumnMeta
+from datachain.query.schema import DEFAULT_DELIMITER, C, Column, ColumnExpr, ColumnMeta
 from datachain.sql.types import SQLType
 
 if TYPE_CHECKING:
@@ -903,6 +904,31 @@ class SignalSchema:
 
         return curr_type
 
+    def enrich_expr_types(self, expr: "ColumnExpr") -> "ColumnExpr":
+        """Rebuild a ColumnExpr expression with typed columns from the schema.
+
+        dc.C("col") creates untyped columns (NullType). This method rebuilds the
+        expression tree replacing them with typed columns so SQLAlchemy propagates
+        types correctly through operators.
+        """
+
+        typed_cols = {
+            c.name: c for c in self.db_signals(as_columns=True) if isinstance(c, Column)
+        }
+
+        def rebuild(node):
+            if isinstance(node, Column):
+                return typed_cols.get(node.name, node)
+            if isinstance(node, Grouping):
+                return Grouping(rebuild(node.element))
+            if isinstance(node, BinaryExpression):
+                return rebuild(node.left).operate(node.operator, rebuild(node.right))
+            if isinstance(node, Cast):
+                return cast(rebuild(node.clause), node.typeclause.type)
+            return node
+
+        return rebuild(expr)
+
     def group_by(
         self, partition_by: Sequence[str], new_column: Sequence[Column]
     ) -> "SignalSchema":
@@ -986,9 +1012,9 @@ class SignalSchema:
                 val = literal(value)
                 val.type = python_to_sql(type(value))()
                 new_values[name] = sql_to_python(val)
-            elif isinstance(value, ColumnElement):
+            elif isinstance(value, ColumnExpr):
                 # adding new signal
-                new_values[name] = sql_to_python(value)
+                new_values[name] = sql_to_python(self.enrich_expr_types(value))
             else:
                 new_values[name] = value
 

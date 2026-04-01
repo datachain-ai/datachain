@@ -2,14 +2,15 @@ import inspect
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any, Union, get_args, get_origin
 
-from sqlalchemy import BindParameter, Case, ColumnElement, Integer, cast, desc
+from sqlalchemy import BindParameter, Case, Integer, cast, desc
 from sqlalchemy.sql import func as sa_func
+from sqlalchemy.sql.elements import ColumnElement
 
 from datachain.lib.convert.python_to_sql import python_to_sql
 from datachain.lib.convert.sql_to_python import sql_to_python
 from datachain.lib.model_store import ModelStore
 from datachain.lib.utils import DataChainColumnError, DataChainParamsError
-from datachain.query.schema import Column, ColumnMeta
+from datachain.query.schema import Column, ColumnExpr, ColumnMeta
 from datachain.sql.functions import numeric
 
 from .base import Function
@@ -23,11 +24,26 @@ if TYPE_CHECKING:
     from .window import Window
 
 
-ColT = Union[str, tuple, Column, ColumnElement, "Func"]
+ColT = Union[str, tuple, Column, ColumnExpr, "Func"]
 
 
 class Func(Function):  # noqa: PLW1641
-    """Represents a function to be applied to a column in a SQL query."""
+    """A built-in function applied to dataset columns, created by calling functions
+    from the `func` module.
+
+    There are three kinds of functions:
+
+    - **Row-level** — transform each row independently, used in
+      [`mutate`][datachain.lib.dc.DataChain.mutate],
+      [`filter`][datachain.lib.dc.DataChain.filter], and
+      [`merge`][datachain.lib.dc.DataChain.merge]:
+      `func.path.file_stem(C("file.path"))`, `func.string.length(C("name"))`
+    - **Aggregate** — collapse rows into a single value, used in
+      [`group_by`][datachain.lib.dc.DataChain.group_by]:
+      `func.count()`, `func.sum("file.size")`, `func.avg("score")`
+    - **Window** — compute over a partition of rows, require `.over()`:
+      `func.row_number().over(window)`, `func.rank().over(window)`
+    """
 
     cols: Sequence[ColT]
     args: Sequence[Any]
@@ -472,7 +488,7 @@ def get_db_col_type(signals_schema: "SignalSchema", col: ColT) -> "DataType":
         return col.get_result_type(signals_schema)
 
     if isinstance(col, ColumnElement) and not hasattr(col, "name"):
-        return sql_to_python(col)
+        return sql_to_python(signals_schema.enrich_expr_types(col))
 
     name = col.name if isinstance(col, ColumnElement) else col  # type: ignore[assignment]
     return signals_schema.get_column_type(name)  # type: ignore[arg-type]
