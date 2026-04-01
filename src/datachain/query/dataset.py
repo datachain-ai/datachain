@@ -1109,11 +1109,16 @@ class UDFStep(Step, ABC):
     ) -> "StepResult":
         query = query_generator.select()
 
-        # Calculate partial hash that includes output schema
+        # Calculate partial hash that includes output schema and partition_by.
         # This allows continuing from partial when only code changes (bug fix),
-        # but forces re-run when output schema changes (incompatible)
+        # but forces re-run when output schema or partitioning changes.
+        partition_by = ensure_sequence(self.partition_by or [])
         partial_hash = hashlib.sha256(
-            (hash_input + self.udf.output_schema_hash()).encode()
+            (
+                hash_input
+                + self.udf.output_schema_hash()
+                + hash_column_elements(partition_by)
+            ).encode()
         ).hexdigest()
 
         if not checkpoints_enabled:

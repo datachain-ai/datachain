@@ -189,3 +189,53 @@ def test_mapper_output_schema_change_triggers_rerun(test_session, monkeypatch):
         ]
     )
     assert result == expected
+
+
+def test_partition_by_change_triggers_rerun(test_session):
+    """Changing partition_by should invalidate partial checkpoint."""
+    processed_v1 = []
+    processed_v2 = []
+
+    dc.read_values(
+        num=[1, 2, 3, 4, 5, 6],
+        letter=["A", "A", "B", "B", "C", "C"],
+        category=["x", "x", "x", "y", "y", "y"],
+        session=test_session,
+    ).save("data")
+
+    # -------------- FIRST RUN (partition_by="letter", crashes) -------------------
+    def agg_v1(num) -> Iterator[int]:
+        processed_v1.extend(num)
+        if 4 in num:
+            raise Exception("Simulated failure")
+        yield sum(num)
+
+    reset_session_job_state()
+    with pytest.raises(Exception, match="Simulated failure"):
+        dc.read_dataset("data", session=test_session).agg(
+            total=agg_v1,
+            partition_by="letter",
+            output=int,
+        ).save("agg_results")
+
+    assert len(processed_v1) > 0
+
+    # -------------- SECOND RUN (partition_by="category") -------------------
+    def agg_v1(num) -> Iterator[int]:
+        processed_v2.extend(num)
+        yield sum(num)
+
+    reset_session_job_state()
+    dc.read_dataset("data", session=test_session).agg(
+        total=agg_v1,
+        partition_by="category",
+        output=int,
+    ).save("agg_results")
+
+    # All inputs should be processed
+    assert sorted(processed_v2) == [1, 2, 3, 4, 5, 6]
+
+    result = sorted(
+        dc.read_dataset("agg_results", session=test_session).to_list("total")
+    )
+    assert result == [(6,), (15,)]
