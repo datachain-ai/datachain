@@ -44,8 +44,8 @@ Three prompts to the agent. Each one builds on the last — without you thinking
 ### 1.1 Ingest: parse labels from filenames
 
 ```
-Create a dataset from ./batch1/ with breed, species, and train/test split
-parsed from filenames and annotation files.
+❯ Create a dataset of images from ./data/. Include all possible annotations from annotation files as well as image filenames.
+...
 ```
 
 <details>
@@ -98,50 +98,56 @@ Saved oxford-pets@0.0.1  {file, meta: {breed, species, split, index}}  5,000 rec
 ### 1.2 Find images similar to Abyssinian_1.jpg
 
 ```
-Find the 20 images most similar to Abyssinian_1.jpg
+❯ Find the 10 images most similar to Abyssinian_113.jpg but not Abyssinian breed
 ```
 
 No embeddings exist yet. The agent notices, generates the embedding pipeline, runs it, registers the result, then does the search.
 
 <details>
-<summary>Generated: <code>embed.py</code> + <code>search.py</code></summary>
+<summary>Generated: <code>find_similar.py</code></summary>
 
 ```python
-# embed.py
 import datachain as dc
-import torch, clip
+import open_clip
+import torch
+from PIL import Image
 
-model, preprocess = clip.load("ViT-B/32")
+# Step 1: Compute embeddings for all images
+model, _, preprocess = open_clip.create_model_and_transforms("ViT-B-32", "laion2b_s34b_b79k")
+model.eval()
+
 
 def embed(file: dc.ImageFile) -> list[float]:
-    img = preprocess(file.get_image()).unsqueeze(0)
+    img = preprocess(file.read().convert("RGB")).unsqueeze(0)
     with torch.no_grad():
-        return model.encode_image(img).squeeze().tolist()
+        emb = model.encode_image(img)
+        emb = emb / emb.norm(dim=-1, keepdim=True)
+    return emb[0].tolist()
 
-(
-    dc.read_dataset("oxford-pets")
-    .settings(parallel=4, cache=True)
+ds = (
+    dc.read_dataset("pet_images_annotated")
+    .settings(cache=True)
     .map(emb=embed)
-    .save("oxford-pets-emb")
+    .save("pet_embeddings")
 )
-```
 
-```python
-# search.py
-import datachain as dc
-
-ref = (
-    dc.read_dataset("oxford-pets-emb")
-    .filter(dc.C("file.path").glob("**/Abyssinian_1.jpg"))
+# Step 2: Get reference embedding
+ref_emb = (
+    dc.read_dataset("pet_embeddings")
+    .filter(dc.C("file.path").glob("*Abyssinian_113*"))
     .collect("emb")
-)[0]
+)
+ref = list(ref_emb)[0]
 
+# Step 3: Find top 20 similar, excluding Abyssinian
 (
-    dc.read_dataset("oxford-pets-emb")
-    .mutate(dist=dc.func.cosine_distance(dc.C("emb"), list(ref)))
+    dc.read_dataset("pet_embeddings")
+    .filter(~dc.C("ann.breed_name").glob("Abyssinian*"))
+    .mutate(dist=dc.func.cosine_distance(dc.C("emb"), ref))
     .order_by("dist")
     .limit(20)
-    .save("similar-to-abyssinian-1")
+    .select("file", "ann.breed_name", "ann.species", "dist")
+    .show()
 )
 ```
 
@@ -152,47 +158,42 @@ oxford-pets-emb@0.0.1 created  5,000 embeddings  4m 12s
 similar-to-abyssinian-1@0.0.1  elapsed: 3s
 ```
 
-### 1.3 Find similar dogs to beagle_1.jpg with height > 200px
+### 1.3 Find similar dogs to scottish_terrier_132.jpg
+
+This is when magic starts. All knowledge is accomulated and now agent can efficiently use it.
+
 
 ```
-Find the 20 images most similar to beagle_1.jpg — dogs only, height greater than 200px
+❯ Find top 5 similar dogs to scottish_terrier_132.jpg but not Scottish Terrier that has
+ bounding box
+
+⏺ Bash(python3 -c "
+      import datachain as dc…)
+⏺ Results:
+
+  ┌─────┬──────────────────────────┬────────────┬───────┬────────────────┬────────┐
+  │ Ran │          Image           │   Breed    │ Pose  │      BBox      │ Distan │
+  │  k  │                          │            │       │                │   ce   │
+  ├─────┼──────────────────────────┼────────────┼───────┼────────────────┼────────┤
+  │   1 │ wheaten_terrier_114.jpg  │ Wheaten    │ Front │ (272,93,347,16 │  0.237 │
+  │     │                          │ Terrier    │ al    │ 6)             │        │
+  ├─────┼──────────────────────────┼────────────┼───────┼────────────────┼────────┤
+  │   2 │ wheaten_terrier_106.jpg  │ Wheaten    │ Front │ (84,40,313,262 │  0.238 │
+  │     │                          │ Terrier    │ al    │ )              │        │
+
+❯ how long did it take
+
+⏺ Under 1 second — the embeddings were already saved in pet_embeddings, so it was just a
+   metadata query (filter + cosine distance in SQLite). No images were read, no model
+  inference ran.
 ```
 
 <details>
 <summary>Generated: <code>search_filtered.py</code></summary>
 
-```python
-import datachain as dc
-
-ref = (
-    dc.read_dataset("oxford-pets-emb")
-    .filter(dc.C("file.path").glob("**/beagle_1.jpg"))
-    .collect("emb")
-)[0]
-
-(
-    dc.read_dataset("oxford-pets-emb")
-    .merge(dc.read_dataset("oxford-pets"), on="file.path")
-    .filter(
-        (dc.C("meta.species") == "dog") &
-        (dc.C("meta.height") > 200)
-    )
-    .mutate(dist=dc.func.cosine_distance(dc.C("emb"), list(ref)))
-    .order_by("dist")
-    .limit(20)
-    .save("similar-to-beagle-1-dogs-tall")
-)
-```
+No scripts were generated - agent just found the answer in second.
 
 </details>
-
-```
-Agent reads knowledge graph...
-  ✓ oxford-pets-emb@0.0.1 — 5,000 embeddings already computed, reusing
-  ✓ oxford-pets@0.0.1     — species and height available, joining
-
-Saved similar-to-beagle-1-dogs-tall@0.0.1  (elapsed: 2s)
-```
 
 **2 seconds, not 4 minutes.** The agent found existing embeddings in the knowledge graph and reused them — no model loading, no reprocessing. Every `.save()` compounds. The agent gets smarter about your data with every run.
 
