@@ -107,6 +107,16 @@ If `datachain/graph/index.md` exists, read it at conversation start for dataset 
     ✗ text = dc.TextFile.at("list.txt").read()
       lookup = {name: label for name, label in parse(text)}  ← dict outside chain
       dc.read_storage("./images/").map(ann=lambda f: lookup[f.path])  ← closure
+
+15. SHARED LISTING PREFIX: When multiple read_storage() calls target the same
+    bucket or directory tree, use the common parent prefix and glob from there.
+    DataChain caches listings by prefix — shared prefix = one listing + cache hits.
+    ✓ dc.read_storage("s3://bucket/data/**/*.txt", type="text")
+      dc.read_storage("s3://bucket/data/**/*.xml")
+      dc.read_storage("s3://bucket/data/**/*.jpg", type="image")
+    ✗ dc.read_storage("s3://bucket/data/annotations/**/*.txt", type="text")
+      dc.read_storage("s3://bucket/data/annotations/xmls/**/*.xml")
+      dc.read_storage("s3://bucket/data/images/**/*.jpg", type="image")
 ```
 
 ---
@@ -163,6 +173,12 @@ Always use `dc.` prefix for DataChain types: `dc.File`, `dc.ImageFile`, `dc.C`, 
 ## Section 4 — Core API Reference
 
 **Entry points:**
+
+`read_storage()` creates a **listing** — a cached snapshot of the bucket or directory.
+The listing prefix is the path before the first glob (`**`). Subsequent `read_storage()`
+calls with the same prefix reuse the cached listing. Use a shared parent prefix when
+reading multiple file types from the same tree (see rule 15).
+
 ```python
 dc.read_storage("s3://bucket/prefix/", type="image")   # File / ImageFile etc.
 dc.read_storage("s3://bucket/imgs/**/*.{jpg,png}", type="image")  # glob in path
@@ -472,10 +488,10 @@ annotated = images.merge(meta, on="file.path", right_on="images.file_name")
 
 **Multi-source dataset (images + annotations + XMLs → merge):**
 ```python
-# Each data source is its own chain; parse file content inside gen()/map()
-annotations = dc.read_storage("gs://b/annotations/**/*.txt", type="text").gen(ann=parse_list)
-xmls = dc.read_storage("gs://b/annotations/xmls/**/*.xml").map(bbox=parse_xml)
-images = dc.read_storage("gs://b/images/**/*.jpg", type="image")
+# Each data source is its own chain; shared prefix = one listing + cache hits
+annotations = dc.read_storage("gs://b/**/*.txt", type="text").gen(ann=parse_list)
+xmls = dc.read_storage("gs://b/**/*.xml").map(bbox=parse_xml)
+images = dc.read_storage("gs://b/**/*.jpg", type="image")
 
 # Merge on file stem — engine-side join, no Python dicts
 (
