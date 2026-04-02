@@ -290,7 +290,7 @@ Sub-file units:
 - `VideoFragment` -- `.save(path)`
 - `AudioFragment` -- `.get_np()` → `(ndarray, sample_rate)`, `.save(path)`
 
-**Annotation types:**
+**Annotation types (prefer these over custom BaseModels for bbox/pose/segment):**
 ```python
 from datachain import model # import is mandatory, dc.model.BBox is not enough
 
@@ -465,7 +465,7 @@ def split_clips(file: dc.VideoFile) -> Iterator[dc.VideoFragment]:
 
 **Merge sidecar metadata:**
 ```python
-images = dc.read_storage("gs://bucket/images/", type="image", anon=True)
+images = dc.read_storage("gs://bucket/images/", type="image")
 meta = dc.read_json("gs://bucket/annotations.json", jmespath="images")
 annotated = images.merge(meta, on="file.path", right_on="images.file_name")
 ```
@@ -698,4 +698,8 @@ combined = images.merge(labels, on="file.name", right_on="labels.name")
     ✓ dc.File.at("s3://bucket/annotations.json").read_bytes()
     ✓ dc.read_json("s3://bucket/annotations.json")   # if you want a DataChain
     ✓ dc.read_csv("s3://bucket/labels.csv")           # single CSV → DataChain
+✗ Custom BaseModel for bounding boxes, poses, or segments:
+    Use built-in model.BBox / model.Pose / model.Segment instead of custom classes.
+    ✗ class HeadBBox(BaseModel): xmin: int; ymin: int; xmax: int; ymax: int
+    ✓ model.BBox(title="head", coords=[xmin, ymin, xmax, ymax])  # PASCAL VOC
 ```
