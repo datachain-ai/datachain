@@ -41,58 +41,33 @@ DataChain extends that harness to data. The agent that understands your codebase
 
 Three prompts to the agent. Each one builds on the last - without you thinking about it.
 
+use your favorite coding agent:
+```bash
+claude # --dangerously-skip-permissions
+```
+
 ### 1.1 Create dataset
 
-Prompt:
+Type prompt:
 ```prompt
 Create a dataset of images from s3://datachain-usw2-main-dev/oxford-pets-small. Include all possible metadata from annotation dir as well as image filenames.
 ```
 
+Ouptut:
 ```
+⏺ Skill(graph)
+  ⎿  Successfully loaded skill
+
 ⏺ Bash(python3 -c "
       import datachain as dc…)
-⏺ Results:
+...
 ```
 
 <details>
 <summary>Generated: <code>ingest.py</code></summary>
 
 ```python
-import datachain as dc
-from pydantic import BaseModel
 
-# load train/test split from annotation files
-train_ids = set()
-with open("annotations/trainval.txt") as f:
-    for line in f:
-        train_ids.add(line.split()[0])  # e.g. "Abyssinian_1"
-
-
-class PetMeta(BaseModel):
-    breed: str
-    species: str   # "cat" | "dog"
-    split: str     # "train" | "test"
-    index: int
-
-
-def parse_pet(file: dc.File) -> PetMeta:
-    stem = file.path.rsplit("/", 1)[-1].rsplit(".", 1)[0]  # "Abyssinian_1"
-    breed, idx = stem.rsplit("_", 1)
-    return PetMeta(
-        breed=breed,
-        species="cat" if breed[0].isupper() else "dog",
-        split="train" if stem in train_ids else "test",
-        index=int(idx),
-    )
-
-
-(
-    dc.read_storage("./batch1/", type="image")
-    .filter(dc.C("file.path").glob("*.jpg"))
-    .settings(parallel=True, cache=True)
-    .map(meta=parse_pet)
-    .save("oxford-pets")
-)
 ```
 
 </details>
@@ -102,19 +77,28 @@ def parse_pet(file: dc.File) -> PetMeta:
 
 Prompt:
 ```copy
-What dogs breed are there?
-```
-```
-...
+What dogs breed are in the dataset?
 ```
 
-This run agains internal context layer in DB - vectorized and supper efficiently. Works even in 100s million file scale within seconds.
+Output:
+```
+⏺ The dataset in this project is the Oxford-IIIT Pet Dataset, containing 25 dog breeds
+  (346 images total):
+
+  1. American Bulldog (11)
+  2. American Pit Bull Terrier (16)
+  3. Basset Hound (15)
+  4. Beagle (15)
+  ...
+```
+
+This run agains internal context layer runs efficiently. Works even in 100s million file scale within seconds.
 No westing time on parsing thousands of jsons from S3.
 
 
 ### 1.3 Find similar images
 
-Get an image:
+Prepare data. Get an image (or use your own):
 ```copy
 datachain cp s3://datachain-usw2-main-dev/oxford-pets/images/Abyssinian_113.jpg my_cat.jpg
 ```
@@ -125,6 +109,30 @@ Find the 3 images most similar to my_cat.jpg but not Abyssinian breed
 ```
 
 No embeddings exist yet. The agent notices, generates the embedding pipeline, runs it, registers the result, then does the search.
+
+Output:
+```
+⏺ Results — Similarity Search:
+
+  The 3 images most similar to my_cat.jpg (excluding Abyssinian breed), ranked by CLIP
+  cosine distance:
+
+  ┌──────┬──────────────────────────┬───────────────────┬──────────┐
+  │ Rank │          Image           │       Breed       │ Distance │
+  ├──────┼──────────────────────────┼───────────────────┼──────────┤
+  │ 1    │ British_Shorthair_25.jpg │ British Shorthair │ 0.201    │
+  ├──────┼──────────────────────────┼───────────────────┼──────────┤
+  │ 2    │ Russian_Blue_140.jpg     │ Russian Blue      │ 0.201    │
+  ├──────┼──────────────────────────┼───────────────────┼──────────┤
+  │ 3    │ Russian_Blue_76.jpg      │ Russian Blue      │ 0.205    │
+  └──────┴──────────────────────────┴───────────────────┴──────────┘
+
+  The pipeline used CLIP ViT-B-32 embeddings + cosine distance across all 962
+  non-Abyssinian images. The script is saved at find_similar.py.
+
+  Graph updated: 1 dataset (1 updated, 0 unchanged), 1 bucket (1 scanned, 0 unchanged).
+```
+
 
 <details>
 <summary>Generated: <code>find_similar.py</code></summary>
@@ -215,8 +223,6 @@ No scripts were generated - agent just found the answer in second.
 </details>
 
 **2 seconds, not 4 minutes.** The agent found existing embeddings in the knowledge graph and reused them — no model loading, no reprocessing. Every `.save()` compounds. The agent gets smarter about your data with every run.
-
-
 
 
 ## 2. Incremental updates and checkpoints
