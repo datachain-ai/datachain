@@ -591,6 +591,11 @@ combined = images.merge(labels, on="file.name", right_on="labels.name")
    Only use parallel for expensive per-row work (ML, LLM, heavy file I/O)
 ✗ Using cache=True by default in single-pass pipelines → wastes disk, no benefit
    Only cache when files are read multiple times or the user explicitly requests it
+✗ Using select() with a long column list to drop one or two columns:
+    chain.select("file", "col1", "col2", "col3", "col4")  ← fragile, verbose
+    Use select_except() to drop the few you don't need:
+    ✓ chain.select_except("tmp_col")                       # drop 1-2 columns
+    ✓ chain.select("file", "score")                        # pick 2-3 specific columns
 ✗ Using C() for column-column arithmetic:
     C("price") * C("qty")  ← no type info → engine error
     Use chain.column("price") * chain.column("qty") instead
