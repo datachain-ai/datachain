@@ -4,7 +4,7 @@ from .index import index
 from .ls import ls
 from .misc import clear_cache, completion, garbage_collect
 from .show import show
-from .skill import install_skills, list_skills
+from .skill import install_skills, list_skills, uninstall_skills
 
 __all__ = [
     "clear_cache",
@@ -17,6 +17,7 @@ __all__ = [
     "list_datasets",
     "list_datasets_local",
     "list_skills",
+    "uninstall_skills",
     "ls",
     "rm_dataset",
     "show",

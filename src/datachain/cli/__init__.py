@@ -17,6 +17,7 @@ from .commands import (
     install_skills,
     list_datasets,
     list_skills,
+    uninstall_skills,
     ls,
     rm_dataset,
     show,
@@ -277,6 +278,11 @@ def handle_skill_command(args):
 
     skill_commands = {
         "install": lambda: install_skills(
+            skills=args.skills,
+            target=args.target,
+            local=args.local,
+        ),
+        "uninstall": lambda: uninstall_skills(
             skills=args.skills,
             target=args.target,
             local=args.local,

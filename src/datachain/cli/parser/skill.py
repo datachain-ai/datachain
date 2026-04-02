@@ -55,6 +55,43 @@ def add_skill_parser(subparsers, parent_parser) -> None:
         ),
     )
 
+    uninstall_help = "Uninstall DataChain skills from an AI coding tool"
+    uninstall_description = (
+        "Remove previously installed DataChain skills from an AI coding tool."
+    )
+    uninstall_parser = skill_subparser.add_parser(
+        "uninstall",
+        parents=[parent_parser],
+        description=uninstall_description,
+        help=uninstall_help,
+        formatter_class=CustomHelpFormatter,
+    )
+    uninstall_parser.add_argument(
+        "skills",
+        nargs="?",
+        default=None,
+        metavar="SKILLS",
+        help=(
+            "Comma-separated skill names to uninstall: core, graph, jobs "
+            "(default: uninstall all)"
+        ),
+    )
+    uninstall_parser.add_argument(
+        "--target",
+        choices=sorted(TARGET_LAYOUT.keys()),
+        default="claude",
+        help="Target AI coding tool to uninstall skills from (default: claude)",
+    )
+    uninstall_parser.add_argument(
+        "--local",
+        action="store_true",
+        default=False,
+        help=(
+            "Uninstall from the current project directory"
+            " instead of the user home directory"
+        ),
+    )
+
     list_help = "List available DataChain skills"
     list_description = "List all available DataChain skills and supported targets."
     skill_subparser.add_parser(

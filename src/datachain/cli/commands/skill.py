@@ -146,6 +146,70 @@ def install_skills(skills: str | None, target: str, local: bool) -> int:
     return 0
 
 
+def uninstall_skills(skills: str | None, target: str, local: bool) -> int:
+    layout = TARGET_LAYOUT[target]
+    base = Path.cwd() if local else Path.home()
+
+    if skills:
+        requested = [s.strip() for s in skills.split(",")]
+        invalid = [s for s in requested if s not in SKILLS]
+        if invalid:
+            valid = ", ".join(SKILLS)
+            raise ValueError(
+                f"Unknown skill(s): {', '.join(invalid)}. Valid skills: {valid}"
+            )
+        skills_to_uninstall = requested
+    else:
+        skills_to_uninstall = list(SKILLS)
+
+    skills_dir = base / layout["skills_dir"]
+
+    write_commands = (
+        layout["commands_dir"] is not None
+        and layout["command_ext"] is not None
+        and (local or not layout["commands_local_only"])
+    )
+    commands_dir = (
+        base / layout["commands_dir"]
+        if write_commands and layout["commands_dir"]
+        else None
+    )
+    command_ext = layout["command_ext"]
+
+    removed = []
+    not_found = []
+    for skill_name in skills_to_uninstall:
+        skill_dest = skills_dir / skill_name
+        cmd_dest = (
+            commands_dir / f"datachain-{skill_name}{command_ext}"
+            if commands_dir and command_ext
+            else None
+        )
+
+        found = False
+        if skill_dest.exists():
+            shutil.rmtree(skill_dest)
+            found = True
+        if cmd_dest and cmd_dest.exists():
+            cmd_dest.unlink()
+            found = True
+
+        if found:
+            removed.append(f"  {skill_name}")
+        else:
+            not_found.append(skill_name)
+
+    if removed:
+        scope = "local" if local else "global"
+        print(f"Uninstalled skills ({scope}, target={target}):")
+        for line in removed:
+            print(line)
+    if not_found:
+        print(f"Not found (already uninstalled): {', '.join(not_found)}")
+
+    return 0
+
+
 def list_skills() -> int:
     targets = ", ".join(TARGET_LAYOUT.keys())
     header = f"{'Skill':<12}  Targets"
