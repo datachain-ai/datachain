@@ -1,3 +1,5 @@
+from datetime import datetime
+
 import pytest
 from sqlalchemy import Label
 
@@ -62,6 +64,23 @@ def test_col_name():
 def test_result_type():
     rnd = rand()
     assert rnd.get_result_type(SignalSchema({})) is int
+
+
+@pytest.mark.parametrize(
+    "target_type",
+    [int, float, str, bool, bytes, datetime, list[int], dict[str, int]],
+)
+def test_cast_result_type(target_type):
+    result = func.cast("num", target_type)
+    assert result.get_result_type(SignalSchema({"num": str})) == target_type
+
+
+def test_cast_invalid_target_type():
+    class Unsupported:
+        pass
+
+    with pytest.raises(TypeError, match="Cannot recognize type"):
+        func.cast("num", Unsupported)
 
 
 def test_get_column():

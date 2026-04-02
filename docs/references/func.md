@@ -5,7 +5,7 @@ Use built-in functions for data manipulation and analysis to operate on the unde
 Functions are organized by category and accessed through their respective modules. For example, string functions are accessed via `func.string.length()`, array functions via `func.array.contains()`, etc.
 
 !!! note "Global Function Access"
-    Only a subset of functions are available directly from `datachain.func` (e.g., `func.length`). Most functions should be accessed through their specific module namespace (e.g., `func.string.length`) to avoid naming conflicts.
+    Only a subset of functions are available directly from `datachain.func` (e.g., `func.length`, `func.cast`). Most functions should be accessed through their specific module namespace (e.g., `func.string.length`) to avoid naming conflicts.
 
 ## Function Categories
 
@@ -37,6 +37,9 @@ dc.mutate(
 )
 
 # Some commonly used functions are also available directly
-from datachain.func import sum, count, length, ifelse
+from datachain.func import sum, count, length, ifelse, cast
 dc.mutate(total=sum("amount"))
+
+# Cast expressions use normal Python types
+dc.mutate(amount_int=cast("amount_str", int))
 ```
