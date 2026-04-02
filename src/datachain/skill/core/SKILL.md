@@ -232,7 +232,8 @@ chain.distinct("response.text")
 chain.limit(100)
 chain.select("file", "score", "label")
 chain.select_except("internal_id")
-chain.merge(other, on="id", right_on="meta.id")
+chain.merge(other, on="id", right_on="meta.id")  # duped cols get right_ prefix
+chain.merge(...).select_except("right_file")     # drop duped columns after merge
 chain.union(other)
 chain.subtract(other)
 chain.diff(other, on="id", compare=["score"])
@@ -494,6 +495,7 @@ xmls = dc.read_storage("gs://b/**/*.xml").map(bbox=parse_xml)
 images = dc.read_storage("gs://b/**/*.jpg", type="image")
 
 # Merge on file stem — engine-side join, no Python dicts
+# After merge, drop duplicated columns (right_ prefix) and source file columns
 (
     images
     .merge(annotations,
@@ -501,6 +503,7 @@ images = dc.read_storage("gs://b/**/*.jpg", type="image")
     .merge(xmls,
            on=dc.func.path.file_stem(dc.C("file.path")),
            right_on=dc.func.path.file_stem(dc.C("file.path")))
+    .select_except("right_file", "ann.name")
     .save("annotated_images")
 )
 ```
