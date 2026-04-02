@@ -127,6 +127,22 @@ If `datachain/graph/index.md` exists, read it at conversation start for dataset 
     ✗ dc.read_storage("s3://bucket/data/annotations/**/*.txt", type="text")
       dc.read_storage("s3://bucket/data/annotations/xmls/**/*.xml")
       dc.read_storage("s3://bucket/data/images/**/*.jpg", type="image")
+
+16. LAZY CHAINS — NO DOUBLE EXECUTION: Chains are lazy — each terminal operation
+    (save, show, to_list, …) re-executes the entire pipeline. Never call two
+    terminal operations on the same unmaterialized chain.
+    - After save(): use the returned chain (save() returns the saved dataset).
+    - When a chain is reused multiple times: call .persist() to materialize it,
+      then use the persisted chain for all subsequent operations.
+    ✓ saved = chain.save("my_data")
+      saved.show(5)
+    ✓ materialized = chain.persist()       # materialize once
+      materialized.show(5)                 # reuse without re-executing
+      materialized.to_csv("out.csv")
+    ✗ chain.save("my_data")
+      chain.show(5)               ← runs the whole pipeline a second time
+    ✗ chain.show(5)
+      chain.to_csv("out.csv")    ← also double execution
 ```
 
 ---
