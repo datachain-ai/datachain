@@ -47,7 +47,7 @@ triggers:
   - "run scan"
 ---
 
-You are now loaded with the datachain-graph skill. Maintain a knowledge base at `datachain/graph/`. Both datasets and buckets have a `.json` file (structured data, source of truth) and a `.md` file (AI-generated human-readable summary). Follow the 4-step flow below.
+You are now loaded with the datachain-graph skill. Maintain a knowledge base at `datachain/graph/`. `.md` files are the persistent output — they contain frontmatter metadata, schema, code, and version history. `.json` files are intermediate (generated in Step 2, consumed in Step 3, then deleted). Follow the workflow below.
 
 ## Critical Rules
 
@@ -151,6 +151,18 @@ For each dataset or bucket processed in Step 2, generate a human-readable markdo
 3. Following the prompt, write `datachain/graph/<file_path>.md`.
 
 Skip this step only if the user requests raw output only.
+
+---
+
+## Step 3.5 — Cleanup
+
+Delete intermediate `.json` files for all datasets and buckets processed in Step 2. Keep `.plan.json` (needed for Step 4 report).
+
+```bash
+python3 {skill_dir}/scripts/cleanup_json.py --plan datachain/graph/.plan.json
+```
+
+Skip this step if the user explicitly requests to keep JSON files (e.g., for debugging).
 
 ---
 

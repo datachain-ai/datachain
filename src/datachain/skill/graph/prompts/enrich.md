@@ -9,7 +9,7 @@ Read the JSON file at the path provided. It contains:
 - `name`: dataset name
 - `source`: `"local"` or `"studio"`
 - `versions[]`: array ordered oldest-first, each with:
-  - `version`, `num_objects`, `updated_at`
+  - `version`, `uuid`, `num_objects`, `updated_at`
   - `schema`: column definitions (latest version has full schema; older versions may have `{}`)
   - `preview`: `{columns, rows}` sample data (latest version only)
   - `query_script`: Python code that produced this version (may be `null`)
@@ -24,13 +24,21 @@ Read the JSON file at the path provided. It contains:
 Write a markdown file with this structure:
 
 ```
+---
+name: {name}
+uuid: {uuid from the latest version}
+source: {source}
+latest_version: {version}
+num_objects: {num_objects}
+updated_at: {updated_at}
+known_versions: [{comma-separated list of all version strings, e.g. 1.0.0, 1.0.1}]
+---
+
 # {dataset_name}
 
 {AI-generated description: 1-3 sentences explaining what this dataset contains
 and how it is produced. Infer purpose from schema fields, query_script logic,
 and dependency names. Be specific — mention data types and transformations.}
-
-**Source data:** [{json_filename}]({json_filename})
 
 ## Stats
 
@@ -68,11 +76,19 @@ If preview is null, omit this section entirely.}
 {For the latest version: 1-2 sentences describing the current state — what the
 dataset produces and its key characteristics.}
 
-{For older versions with changes: 1-2 sentences summarizing what changed.
-Focus on meaning — "Added ratio classification logic" not "script_changed: true".
-Mention dependency changes only if significant (new data source, version bump).}
+```python
+{query_script}
+```
 
-{For the initial version (no changes): just "Initial version."}
+{For older versions with changes.script_changed == true: 1-2 sentences summarizing
+what changed. Include the full query_script in a python code block.}
+
+{For older versions with changes.script_changed == false: 1-2 sentences describing
+what changed (dependency updates, data refresh, etc.). Do NOT include code — the
+reader can refer to the nearest version above that shows code.}
+
+{For the initial version (no changes): "Initial version." followed by the
+query_script in a python block if available.}
 ```
 
 ## Guidelines
@@ -82,7 +98,12 @@ Mention dependency changes only if significant (new data source, version bump).}
 - **Compress old versions.** The reader wants to understand evolution at a glance. Do not reproduce raw diffs, full dependency tables, or scripts.
 - **Omit empty sections.** If preview is null, skip ## Preview. If schema is empty, skip ## Schema.
 - **No dependency tables in version summaries.** Only mention a dependency if it was added, removed, or significantly changed.
-- **No script blocks in version summaries.** The full scripts live in the JSON for reference — the markdown is a summary, not a data dump.
+- **Code inclusion rules:**
+  - **Latest version:** ALWAYS include the full `query_script` in a ```python block. This is mandatory when query_script is not null.
+  - **Older versions:** Include `query_script` ONLY when `changes.script_changed` is true. Otherwise, describe changes textually.
+  - **Initial version:** Include `query_script` if available.
+  - **Code reconstructibility:** When omitting code for a version, the textual summary must describe what changed clearly enough that combined with the nearest version that shows code, any version's code can be reconstructed.
+  - If `query_script` is null for all versions, omit code blocks entirely.
 - **Human-readable timestamps.** Format all timestamps as `YYYY-MM-DD HH:MM:SS` (no `T`, no `Z`).
 - **If nothing meaningful changed** between versions (no script change, no dep changes), write "Data refreshed; no functional changes."
-- **Source data link.** `{json_filename}` is the basename of the JSON input file (e.g. `my_dataset.json`). The link lets readers access the raw structured data.
+- **Frontmatter `known_versions`** must list every version string from the input, comma-separated inside brackets. This field is used by tooling to detect which versions are documented.

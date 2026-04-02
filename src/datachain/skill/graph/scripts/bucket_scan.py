@@ -45,6 +45,7 @@ def get_listing_info(uri: str) -> dict:
                 listing.uri.rstrip("/")
             ):
                 return {
+                    "listing_uuid": getattr(listing, "uuid", None),
                     "listing_created_at": (
                         listing.created_at.isoformat() if listing.created_at else None
                     ),
@@ -60,6 +61,7 @@ def get_listing_info(uri: str) -> dict:
         print(f"[dc-graph warning] listing info: {e}", file=sys.stderr)
 
     return {
+        "listing_uuid": None,
         "listing_created_at": None,
         "listing_finished_at": None,
         "listing_expires_at": None,

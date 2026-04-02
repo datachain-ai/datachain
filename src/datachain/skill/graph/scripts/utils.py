@@ -81,6 +81,30 @@ def read_json_metadata(path):
         return {}
 
 
+def read_md_versions(path):
+    """Read known_versions from .md frontmatter. Returns list of version strings."""
+    fm = read_frontmatter(path)
+    raw = fm.get("known_versions", "")
+    if raw.startswith("[") and raw.endswith("]"):
+        return [v.strip() for v in raw[1:-1].split(",") if v.strip()]
+    return []
+
+
+def read_md_metadata(path):
+    """Read latest_version and num_objects from .md frontmatter."""
+    fm = read_frontmatter(path)
+    return {
+        "latest_version": fm.get("latest_version", ""),
+        "num_objects": fm.get("num_objects", ""),
+    }
+
+
+def read_md_scanned_at(path):
+    """Read scanned_at from bucket .md frontmatter."""
+    fm = read_frontmatter(path)
+    return fm.get("scanned_at")
+
+
 def dataset_file_path(name, source):
     """Derive the relative file path (from datachain/graph/) for a dataset.
 

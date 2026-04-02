@@ -42,6 +42,7 @@ def _fetch_all_versions(name: str) -> dict:  # noqa: C901, PLR0912, PLR0915
             versions_out.append(
                 {
                     "version": version,
+                    "uuid": data.get("uuid"),
                     "num_objects": version_entry.get("num_objects")
                     if version_entry
                     else None,
@@ -104,6 +105,7 @@ def _fetch_all_versions(name: str) -> dict:  # noqa: C901, PLR0912, PLR0915
             versions_out.append(
                 {
                     "version": version,
+                    "uuid": data.get("uuid"),
                     "num_objects": version_entry.get("num_objects")
                     if version_entry
                     else None,
@@ -186,6 +188,7 @@ def _fetch_all_versions(name: str) -> dict:  # noqa: C901, PLR0912, PLR0915
         versions_out.append(
             {
                 "version": v_str,
+                "uuid": getattr(ver_obj, "uuid", None),
                 "num_objects": ver_obj.num_objects,
                 "updated_at": (ver_obj.finished_at or ver_obj.created_at).isoformat(),
                 "schema": schema if is_latest else {},

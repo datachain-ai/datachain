@@ -11,6 +11,7 @@ Read the JSON file at the path provided. It contains:
 - `bucket`: bucket name
 - `prefix`: subdirectory prefix (empty string if whole bucket)
 - `scanned_at`: when this scan was performed
+- `listing_uuid`: unique identifier for the listing
 - `listing_created_at`, `listing_expires_at`, `listing_expired`: listing freshness
 - `total_files`, `total_size_bytes`: aggregate counts
 - `max_depth`: deepest directory nesting level
@@ -32,11 +33,10 @@ prefix: {prefix}
 total_files: {total_files}
 total_size: {human-readable size}
 scanned_at: {scanned_at}
+listing_uuid: {listing_uuid}
 ---
 
 # {bucket}{" / " + prefix if prefix else ""}
-
-**Source data:** [{json_filename}]({json_filename})
 
 {AI-generated description: 1-3 sentences explaining what this bucket contains
 and what it is likely used for. Infer purpose from directory structure, file types,
@@ -117,4 +117,3 @@ E.g., ".parquet" with columns → "Parquet files with columns: id, embedding, la
 - **No raw JSON dumps.** The markdown is a summary, not a data dump.
 - **Listing freshness is critical.** Users need to know if they're looking at stale data. Always show the listing timestamp.
 - **Human-readable timestamps.** Format all timestamps as `YYYY-MM-DD HH:MM:SS` (no `T`, no `Z`).
-- **Source data link.** `{json_filename}` is the basename of the JSON input file (e.g. `datachain_demo.json`). The link lets readers access the raw structured data.

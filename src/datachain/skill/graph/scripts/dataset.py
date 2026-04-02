@@ -44,8 +44,9 @@ def fetch_version_data(name_version: str) -> dict:  # noqa: C901, PLR0912, PLR09
     if chain is not None:
         preview = extract_preview(chain)
 
-    # --- Metadata: query_script, version history ---
+    # --- Metadata: query_script, uuid, version history ---
     query_script = None
+    uuid = None
     _prev_version_info = None
     dependencies = []
 
@@ -64,6 +65,7 @@ def fetch_version_data(name_version: str) -> dict:  # noqa: C901, PLR0912, PLR09
                     version = resolved_ver
                 dv = dataset.get_version(resolved_ver)
                 query_script = dv.query_script or None
+                uuid = getattr(dv, "uuid", None)
                 sorted_vers = sorted(dataset.versions, key=lambda v: v.version_value)
                 idx = next(
                     (i for i, v in enumerate(sorted_vers) if v.version == resolved_ver),
@@ -109,6 +111,7 @@ def fetch_version_data(name_version: str) -> dict:  # noqa: C901, PLR0912, PLR09
                 resolved_ver = version or dataset.latest_version
                 dv = dataset.get_version(resolved_ver)
                 query_script = dv.query_script or None
+                uuid = getattr(dv, "uuid", None)
                 sorted_vers = sorted(dataset.versions, key=lambda v: v.version_value)
                 idx = next(
                     (i for i, v in enumerate(sorted_vers) if v.version == resolved_ver),
@@ -181,6 +184,7 @@ def fetch_version_data(name_version: str) -> dict:  # noqa: C901, PLR0912, PLR09
 
     return {
         "name": output_name,
+        "uuid": uuid,
         "schema": schema,
         "preview": preview,
         "query_script": query_script,

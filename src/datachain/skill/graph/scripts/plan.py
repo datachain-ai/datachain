@@ -17,6 +17,9 @@ from utils import (
     read_json_data,
     read_json_metadata,
     read_json_versions,
+    read_md_metadata,
+    read_md_scanned_at,
+    read_md_versions,
     studio_available,
 )
 
@@ -68,10 +71,19 @@ def plan_datasets(
 
         file_path = dataset_file_path(name, source)
         abs_json_path = os.path.join("datachain/graph", file_path + ".json")
+        abs_md_path = os.path.join("datachain/graph", file_path + ".md")
 
-        file_exists = os.path.exists(abs_json_path)
-        file_versions = read_json_versions(abs_json_path) if file_exists else []
-        file_fm = read_json_metadata(abs_json_path) if file_exists else {}
+        if os.path.exists(abs_json_path):
+            file_versions = read_json_versions(abs_json_path)
+            file_fm = read_json_metadata(abs_json_path)
+        elif os.path.exists(abs_md_path):
+            file_versions = read_md_versions(abs_md_path)
+            file_fm = read_md_metadata(abs_md_path)
+        else:
+            file_versions = []
+            file_fm = {}
+
+        file_exists = bool(file_versions)
 
         file_versions_set = set(file_versions)
         versions_to_fetch = [v for v in versions_sorted if v not in file_versions_set]
@@ -131,8 +143,13 @@ def plan_buckets() -> list[dict]:
         parts = parse_uri(uri)
         file_path = bucket_file_path(uri)
         abs_json_path = os.path.join("datachain/graph", file_path + ".json")
+        abs_md_path = os.path.join("datachain/graph", file_path + ".md")
 
         existing = read_json_data(abs_json_path)
+        if existing is None:
+            md_scanned = read_md_scanned_at(abs_md_path)
+            if md_scanned:
+                existing = {"scanned_at": md_scanned}
 
         if existing is None:
             status = "new"
