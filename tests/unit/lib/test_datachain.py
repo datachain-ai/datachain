@@ -2195,6 +2195,51 @@ def test_order_by_with_nested_columns(test_session, with_function):
     ]
 
 
+def test_order_by_with_column_expression(test_session):
+    chain = dc.read_values(id=[2, 1, 3], session=test_session).order_by(
+        dc.C("id"), descending=True
+    )
+
+    assert chain.to_values("id") == [3, 2, 1]
+
+
+def test_order_by_with_multi_column_expression(test_session):
+    chain = dc.read_values(
+        row_id=[1, 2, 3],
+        a=[10, 1, 5],
+        b=[1, 20, 2],
+        session=test_session,
+    ).order_by(dc.C("a") + dc.C("b"), descending=True)
+
+    assert chain.to_values("row_id") == [2, 1, 3]
+
+
+def test_order_by_with_multiple_expression_keys_descending(test_session):
+    chain = dc.read_values(
+        row_id=[1, 2, 3, 4],
+        a=[1, 1, 1, 2],
+        b=[1, 1, 2, 0],
+        c=[1, 3, 0, 2],
+        session=test_session,
+    ).order_by(dc.C("a") + dc.C("b"), dc.C("c") * 2, descending=True)
+
+    assert chain.to_values("row_id") == [3, 2, 4, 1]
+
+
+def test_order_by_with_func_and_column_expression(test_session):
+    files = [
+        File(source="s3://bucket", path="a.txt", size=5),
+        File(source="s3://bucket", path="ccc.txt", size=4),
+        File(source="s3://bucket", path="bb.txt", size=6),
+    ]
+
+    chain = dc.read_values(file=files, session=test_session).order_by(
+        func.string.length(dc.C("file.path")) + dc.C("file.size")
+    )
+
+    assert chain.to_values("file.path") == ["a.txt", "ccc.txt", "bb.txt"]
+
+
 def test_order_by_to_list(test_session):
     numbers = [6, 2, 3, 1, 5, 7, 4]
     letters = ["u", "y", "x", "z", "v", "t", "w"]

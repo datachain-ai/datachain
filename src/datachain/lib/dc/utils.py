@@ -1,9 +1,8 @@
 from collections.abc import Sequence
 from functools import wraps
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING, TypeVar, cast
 
 import sqlalchemy
-from sqlalchemy.sql.functions import GenericFunction
 
 from datachain.func.base import Function
 from datachain.lib.data_model import DataModel, DataType
@@ -37,25 +36,32 @@ def is_local() -> bool:
 def resolve_columns(
     method: "Callable[Concatenate[D, P], D]",
 ) -> "Callable[Concatenate[D, P], D]":
-    """Decorator that resolvs input column names to their actual DB names. This is
+    """Decorator that resolves input column names to their actual DB names. This is
     specially important for nested columns as user works with them by using dot
     notation e.g (file.path) but are actually defined with default delimiter
     in DB, e.g file__path.
-    If there are any sql functions in arguments, they will just be transferred as is
-    to a method.
+    String column names are resolved to DB column names.
+    DataChain function expressions are converted to SQL using the current schema.
+    Existing SQL expressions are passed through unchanged.
     """
 
     @wraps(method)
     def _inner(self: D, *args: "P.args", **kwargs: "P.kwargs") -> D:
-        resolved_args = self.signals_schema.resolve(
-            *[arg for arg in args if not isinstance(arg, GenericFunction)]  # type: ignore[arg-type]
-        ).db_signals()
+        resolved_args: list[object] = []
+        for arg in args:
+            if isinstance(arg, Function):
+                resolved_args.append(arg.get_column(self.signals_schema))
+            elif isinstance(arg, ColumnExpr):
+                resolved_args.append(arg)
+            else:
+                resolved_args.extend(
+                    cast(
+                        "list[str]",
+                        self.signals_schema.resolve(cast("str", arg)).db_signals(),
+                    )
+                )
 
-        for idx, arg in enumerate(args):
-            if isinstance(arg, GenericFunction):
-                resolved_args.insert(idx, arg)  # type: ignore[arg-type]
-
-        return method(self, *resolved_args, **kwargs)
+        return method(self, *resolved_args, **kwargs)  # type: ignore[arg-type,misc]
 
     return _inner
 
