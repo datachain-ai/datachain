@@ -61,13 +61,29 @@ If `datachain/graph/index.md` exists, read it at conversation start for dataset 
    ✗ dc.read_storage("s3://bucket/images/", type="image")
      .filter(dc.C("file.path").glob("*.jpg") | dc.C("file.path").glob("*.png"))
 
-10. ONE SIGNAL PER MAP/GEN/AGG: Each call accepts exactly one signal (keyword).
+10. SINGLE FILE vs MULTI FILE: Use the right API for the job.
+    - For one known file: use dc.File.at() (or dc.TextFile.at(), dc.ImageFile.at()).
+    - For one known CSV/JSON/Parquet: use dc.read_csv(), dc.read_json(), dc.read_parquet().
+    - For listing/processing many files in a directory: use dc.read_storage().
+    read_storage() is designed for directory listing — don't use it for a single known file.
+    ✓ file = dc.File.at("s3://bucket/config.json")
+      data = json.loads(file.read_bytes())
+    ✓ dc.read_csv("s3://bucket/labels.csv")
+    ✓ dc.read_storage("s3://bucket/images/", type="image")  # many files
+    ✗ dc.read_storage("s3://bucket/config.json")             # single file
+
+    For small files (<300 MB) that fit in memory, it is fine to read the whole
+    file and process in Python if the code is simpler and cleaner.
+    ✓ img = dc.ImageFile.at("s3://b/photo.jpg").read()       # PIL Image in memory
+    ✓ text = dc.TextFile.at("s3://b/readme.txt").read()      # string in memory
+
+11. ONE SIGNAL PER MAP/GEN/AGG: Each call accepts exactly one signal (keyword).
    For multiple columns, chain calls or return a Pydantic BaseModel.
    ✓ chain.map(a=fn1).map(b=fn2)          # chained — two columns
    ✓ chain.map(info=fn)                    # BaseModel with named fields
    ✗ chain.map(a=fn1, b=fn2)              # ERROR: multiple signals
 
-11. NO TUPLE RETURNS: Always prefer Pydantic BaseModel classes to tuple in map/gen/agg
+12. NO TUPLE RETURNS: Always prefer Pydantic BaseModel classes to tuple in map/gen/agg
     functions until user directly asks for tuple.
     ✓ def fn(file: dc.File) -> MyModel: ...   # named fields via BaseModel
     ✓ def fn(file: dc.File) -> int: ...       # single scalar
@@ -79,11 +95,14 @@ If `datachain/graph/index.md` exists, read it at conversation start for dataset 
 ## Section 2 — Golden Rule
 
 ```
-1. ALWAYS use dc.read_storage() to access files in storage (local, S3, GCS, Azure).
+1. ALWAYS use DataChain to access files in storage (local, S3, GCS, Azure).
    NEVER use os.walk, os.listdir, glob.glob, pathlib, or any manual file-system
-   traversal to discover or read data files. read_storage is vectorised, optimised,
-   and is the only way to preserve data lineage.
+   traversal to discover or read data files.
+   - Single known file: dc.File.at(), dc.TextFile.at(), dc.ImageFile.at()
+   - Single CSV/JSON/Parquet: dc.read_csv(), dc.read_json(), dc.read_parquet()
+   - Many files in a directory: dc.read_storage() (vectorised, preserves lineage)
    ✓ dc.read_storage("/data/images/", type="image").map(emb=encode)
+   ✓ dc.File.at("s3://bucket/config.json").read_bytes()
    ✗ for f in os.listdir("/data/images/"): ...   ← breaks lineage, slow
    ✗ paths = glob.glob("*.csv"); dc.read_values(paths=paths)  ← no lineage
 
@@ -618,4 +637,10 @@ combined = images.merge(labels, on="file.name", right_on="labels.name")
     ← lineage points to directory, not individual files; verbose
     Put glob patterns directly in the read_storage() path:
     ✓ dc.read_storage("s3://bucket/images/**/*.{jpg,png}", type="image")
+✗ Using read_storage() for a single known file:
+    dc.read_storage("s3://bucket/annotations.json")  ← overkill, listing machinery
+    Use the single-file API instead:
+    ✓ dc.File.at("s3://bucket/annotations.json").read_bytes()
+    ✓ dc.read_json("s3://bucket/annotations.json")   # if you want a DataChain
+    ✓ dc.read_csv("s3://bucket/labels.csv")           # single CSV → DataChain
 ```
