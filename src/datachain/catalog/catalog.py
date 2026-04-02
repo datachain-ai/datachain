@@ -1604,8 +1604,8 @@ class Catalog:
             self.remove_dataset_version(dataset, version)
             return
 
-        while dataset.versions:
-            version = dataset.versions[0].version
+        for v in dataset.versions:
+            version = v.version
             self.remove_dataset_version(
                 dataset,
                 version,
