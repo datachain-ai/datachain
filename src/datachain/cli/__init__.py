@@ -17,10 +17,10 @@ from .commands import (
     install_skills,
     list_datasets,
     list_skills,
-    uninstall_skills,
     ls,
     rm_dataset,
     show,
+    uninstall_skills,
 )
 from .parser import get_parser
 

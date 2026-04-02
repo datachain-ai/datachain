@@ -17,8 +17,8 @@ __all__ = [
     "list_datasets",
     "list_datasets_local",
     "list_skills",
-    "uninstall_skills",
     "ls",
     "rm_dataset",
     "show",
+    "uninstall_skills",
 ]
