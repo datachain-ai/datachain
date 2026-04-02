@@ -1114,22 +1114,11 @@ class Catalog:
         """
         self.warehouse.cleanup_tables(names)
 
-    def cleanup_dataset_versions(self, job_id: str | None = None) -> int:
-        """
-        Clean up dataset versions that are no longer needed.
-
-        Removes dataset versions that:
-        - Have status CREATED, FAILED, STALE, or REMOVING
-        - Belong to completed/failed/canceled jobs (not running)
-        - Are session_* datasets from finished jobs (orphaned intermediates)
-
-        Returns:
-            Number of removed versions
-        """
-        versions_to_clean = self.metastore.get_dataset_versions_to_clean(job_id=job_id)
-
+    def _remove_dataset_version_pairs(
+        self, pairs: Iterable[tuple[DatasetRecord, str]]
+    ) -> int:
         num_removed = 0
-        for dataset, version in versions_to_clean:
+        for dataset, version in pairs:
             try:
                 # Remove dataset version (drops warehouse table and metastore record)
                 self.remove_dataset_version(dataset, version)
@@ -1141,8 +1130,56 @@ class Catalog:
                     version,
                     e,
                 )
-
         return num_removed
+
+    def cleanup_dataset_versions(
+        self,
+        job_id: str | None = None,
+        *,
+        include_complete: bool = False,
+    ) -> int:
+        """
+        Clean up dataset versions that are no longer needed.
+
+        By default removes dataset versions that:
+        - Have status CREATED, FAILED, STALE, or REMOVING
+        - Belong to completed/failed/canceled jobs (not running)
+        - Are session_* datasets from finished jobs (orphaned intermediates)
+
+        With job_id set and include_complete=True, removes every dataset version
+        for that job, including COMPLETE (e.g. Studio full job purge).
+        include_complete requires job_id.
+
+        Returns:
+            Number of removed versions
+        """
+        versions_to_clean = self.metastore.get_dataset_versions_to_clean(
+            job_id=job_id,
+            include_complete=include_complete,
+        )
+
+        return self._remove_dataset_version_pairs(versions_to_clean)
+
+    def remove_by_version_ids(
+        self,
+        versions: Sequence[int],
+        job_id: str | None = None,
+    ) -> int:
+        """
+        Remove dataset versions by metastore row id (datasets_versions.id).
+
+        Optional job_id restricts to versions whose job_id column matches.
+
+        Returns:
+            Number of removed versions
+        """
+        if not versions:
+            return 0
+
+        versions_to_remove = self.metastore.list_dataset_versions_by_ids(
+            versions, job_id=job_id
+        )
+        return self._remove_dataset_version_pairs(versions_to_remove)
 
     def create_dataset_from_sources(
         self,
