@@ -788,3 +788,63 @@ def test_aggregator_skip_completed(test_session, nums_letters):
         )
     )
     assert result == expected
+
+
+def test_aggregator_fallback_when_partition_table_missing(test_session):
+    """If partition table is missing on continuation, fall back to run from scratch."""
+    processed = []
+
+    dc.read_values(
+        num=[1, 2, 3, 4, 5, 6],
+        letter=["A", "A", "B", "B", "C", "C"],
+        session=test_session,
+    ).save("nums_letters")
+
+    def buggy_agg(letter, num) -> Iterator[tuple[str, int]]:
+        nums_list = list(num)
+        processed.append(nums_list)
+        if any(n > 4 for n in nums_list):
+            raise Exception("Simulated failure")
+        yield letter[0], sum(nums_list)
+
+    chain = dc.read_dataset("nums_letters", session=test_session).settings(batch_size=1)
+
+    # -------------- FIRST RUN (crashes) -------------------
+    reset_session_job_state()
+    with pytest.raises(Exception, match="Simulated failure"):
+        chain.agg(
+            total=buggy_agg,
+            partition_by="letter",
+        ).save("agg_results")
+
+    first_job_id = test_session.get_or_create_job().id
+
+    # Delete partition tables to simulate them being cleaned up
+    warehouse_db = test_session.catalog.warehouse.db
+    for table_name in warehouse_db.list_tables(f"udf_{first_job_id}%"):
+        if "_partition" in table_name:
+            warehouse_db.drop_table(warehouse_db.get_table(table_name), if_exists=True)
+
+    # -------------- SECOND RUN (should fall back to from scratch) -------------------
+    reset_session_job_state()
+    processed.clear()
+
+    def buggy_agg(letter, num) -> Iterator[tuple[str, int]]:
+        nums_list = list(num)
+        processed.append(nums_list)
+        yield letter[0], sum(nums_list)
+
+    chain.agg(
+        total=buggy_agg,
+        partition_by="letter",
+    ).save("agg_results")
+
+    # All partitions should be processed (fell back to from scratch)
+    assert len(processed) == 3
+
+    result = sorted(
+        dc.read_dataset("agg_results", session=test_session).to_list(
+            "total_0", "total_1"
+        )
+    )
+    assert result == [("A", 3), ("B", 7), ("C", 11)]

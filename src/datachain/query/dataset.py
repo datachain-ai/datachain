@@ -41,7 +41,6 @@ from datachain.data_storage.schema import (
 )
 from datachain.dataset import DatasetDependency, RowDict
 from datachain.error import (
-    DataChainError,
     DatasetNotFoundError,
     QueryScriptAbortError,
     QueryScriptCancelError,
@@ -1049,13 +1048,7 @@ class UDFStep(Step, ABC):
             checkpoint.job_id, _hash
         )
 
-        try:
-            parent_table = self.warehouse.get_table(parent_partition_table_name)
-        except TableMissingError:
-            raise DataChainError(
-                f"Parent partition table not found for checkpoint {checkpoint}. "
-                "Cannot continue from partial aggregation."
-            ) from None
+        parent_table = self.warehouse.get_table(parent_partition_table_name)
 
         current_partition_table_name = Checkpoint.partition_table_name(job.id, _hash)
 
@@ -1075,17 +1068,35 @@ class UDFStep(Step, ABC):
         job: "Job | None" = None,
         ch_partial: "Checkpoint | None" = None,
         _continue: bool = False,
-    ) -> Select:
-        """Create input and partition tables for partition_by, return updated query."""
+    ) -> tuple[Select, bool]:
+        """Create input and partition tables for partition_by.
+
+        Returns (updated_query, continue_flag). The continue flag may be set
+        to False if the parent partition table is missing and we fall back
+        to creating a fresh one.
+        """
         input_table = self.get_or_create_input_table(query, hash_input, job)
         query = self.get_input_query(input_table.name, query)
 
         if _continue:
             assert ch_partial
             assert job
-            partition_tbl = self._get_partition_table_for_continue(
-                ch_partial, hash_input, job
-            )
+            try:
+                partition_tbl = self._get_partition_table_for_continue(
+                    ch_partial, hash_input, job
+                )
+            except TableMissingError:
+                logger.warning(
+                    "UDF(%s) [job=%s run_group=%s]: Parent partition table "
+                    "not found. Running from scratch.",
+                    self._udf_name,
+                    self._job_id_short(job),
+                    self._run_group_id_short(job),
+                )
+                _continue = False
+                partition_tbl = self.create_partitions_table(
+                    query, Checkpoint.partition_table_name(job.id, hash_input)
+                )
         elif job:
             partition_tbl = self.create_partitions_table(
                 query, Checkpoint.partition_table_name(job.id, hash_input)
@@ -1094,10 +1105,11 @@ class UDFStep(Step, ABC):
             partition_tbl = self.create_partitions_table(query)
             temp_tables.append(partition_tbl.name)
 
-        return query.outerjoin(
+        result_query = query.outerjoin(
             partition_tbl,
             partition_tbl.c.sys__id == query.selected_columns.sys__id,
         ).add_columns(*partition_columns())
+        return result_query, _continue
 
     def apply(
         self,
@@ -1123,7 +1135,7 @@ class UDFStep(Step, ABC):
 
         if not checkpoints_enabled:
             if self.partition_by is not None:
-                query = self._prepare_partition_query(
+                query, _ = self._prepare_partition_query(
                     query,
                     hash_input,
                     temp_tables,
@@ -1153,7 +1165,7 @@ class UDFStep(Step, ABC):
             _continue = bool(not _skip and ch_partial)
 
             if self.partition_by is not None and not _skip:
-                query = self._prepare_partition_query(
+                query, _continue = self._prepare_partition_query(
                     query,
                     hash_input,
                     temp_tables,
