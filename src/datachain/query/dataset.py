@@ -568,12 +568,18 @@ class UDFStep(Step, ABC):
     session: "Session"
     partition_by: PartitionByType | None = None
     is_generator = False
+    is_aggregator = False
     # Parameters from Settings
     cache: bool = False
     parallel: int | None = None
     workers: bool | int = False
     min_task_size: int | None = None
     batch_size: int | None = None
+
+    @property
+    def is_single_partition_aggregator(self) -> bool:
+        """Aggregator without partition_by — processes all rows as a single batch."""
+        return self.is_aggregator and self.partition_by is None
 
     def hash_inputs(self) -> str:
         partition_by = ensure_sequence(self.partition_by or [])
@@ -1162,7 +1168,9 @@ class UDFStep(Step, ABC):
             )
 
             _skip = bool(ch)
-            _continue = bool(not _skip and ch_partial)
+            _continue = bool(
+                not _skip and ch_partial and not self.is_single_partition_aggregator
+            )
 
             if self.partition_by is not None and not _skip:
                 query, _continue = self._prepare_partition_query(
@@ -1687,6 +1695,7 @@ class RowGenerator(UDFStep):
     session: "Session"
     partition_by: PartitionByType | None = None
     is_generator = True
+    is_aggregator: bool = False
     # Parameters from Settings
     cache: bool = False
     parallel: int | None = None
@@ -3025,6 +3034,7 @@ class DatasetQuery:
         self,
         udf: "UDFAdapter",
         partition_by: PartitionByType | None = None,
+        is_aggregator: bool = False,
         # Parameters from Settings
         cache: bool = False,
         parallel: int | None = None,
@@ -3044,6 +3054,7 @@ class DatasetQuery:
                 udf,
                 self.session,
                 partition_by=partition_by,
+                is_aggregator=is_aggregator,
                 parallel=parallel,
                 workers=workers,
                 min_task_size=min_task_size,

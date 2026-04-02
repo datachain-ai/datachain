@@ -848,3 +848,45 @@ def test_aggregator_fallback_when_partition_table_missing(test_session):
         )
     )
     assert result == [("A", 3), ("B", 7), ("C", 11)]
+
+
+def test_aggregator_without_partition_by_runs_from_scratch(test_session):
+    """Non-partitioned aggregator runs from scratch on re-run, not continue."""
+    processed = []
+
+    dc.read_values(num=[1, 2, 3, 4, 5, 6], session=test_session).save("nums")
+
+    def buggy_agg(num) -> Iterator[int]:
+        processed.extend(num)
+        if any(n > 3 for n in num):
+            raise Exception("Simulated failure")
+        yield sum(num)
+
+    # -------------- FIRST RUN (crashes) -------------------
+    reset_session_job_state()
+    with pytest.raises(Exception, match="Simulated failure"):
+        dc.read_dataset("nums", session=test_session).agg(
+            total=buggy_agg,
+            output=int,
+        ).save("agg_results")
+
+    assert len(processed) > 0
+
+    # -------------- SECOND RUN (fixed) -------------------
+    reset_session_job_state()
+    processed.clear()
+
+    def buggy_agg(num) -> Iterator[int]:
+        processed.extend(num)
+        yield sum(num)
+
+    dc.read_dataset("nums", session=test_session).agg(
+        total=buggy_agg,
+        output=int,
+    ).save("agg_results")
+
+    # All inputs processed — no partial continuation for non-partitioned aggregators
+    assert sorted(processed) == [1, 2, 3, 4, 5, 6]
+
+    result = dc.read_dataset("agg_results", session=test_session).to_list("total")
+    assert result == [(21,)]
