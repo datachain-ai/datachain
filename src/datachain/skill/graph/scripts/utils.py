@@ -209,18 +209,23 @@ def _sanitize(s: str) -> str:
 def bucket_file_path(uri: str) -> str:
     """Derive the relative file path for a bucket, without extension.
 
+    Whole-bucket listings produce a flat file; partial listings (with a prefix)
+    go into a subdirectory named after the bucket.
+
     Examples:
-        s3://my-bucket/           -> buckets/s3/my_bucket
-        gs://demo/dogs-cats/      -> buckets/gs/demo__dogs_cats
+        s3://my-bucket/                  -> buckets/s3/my_bucket
+        gs://demo/dogs-cats/             -> buckets/gs/demo/dogs_cats
+        gs://demo/dogs-cats/annotations/ -> buckets/gs/demo/dogs_cats__annotations
     """
     parts = parse_uri(uri)
-    slug = _sanitize(parts["bucket"])
+    bucket_slug = _sanitize(parts["bucket"])
     prefix = parts["prefix"]
     if prefix:
         segments = [s for s in prefix.split("/") if s]
         if segments:
-            slug += "__" + "__".join(_sanitize(s) for s in segments)
-    return f"buckets/{parts['scheme']}/{slug}"
+            dir_slug = "__".join(_sanitize(s) for s in segments)
+            return f"buckets/{parts['scheme']}/{bucket_slug}/{dir_slug}"
+    return f"buckets/{parts['scheme']}/{bucket_slug}"
 
 
 def read_json_data(path: str) -> dict | None:
