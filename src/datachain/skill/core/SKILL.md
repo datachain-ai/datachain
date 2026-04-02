@@ -127,6 +127,11 @@ If `datachain/graph/index.md` exists, read it at conversation start for dataset 
      - External API calls
 
    Everything else → use filter/mutate/group_by/merge with dc.C() and dc.func.*
+
+3. NO to_iter() FOR PROCESSING. Use map()/gen() to process, to_list()/to_values()
+   to extract final results. to_iter() loses parallelism, lineage, and checkpointing.
+   ✓ chain.map(result=process_fn).save("output")
+   ✗ for row in chain.to_iter("file"): process(row)
 ```
 
 ---
@@ -605,6 +610,7 @@ combined = images.merge(labels, on="file.name", right_on="labels.name")
 ✗ Reading files in a Python loop outside the chain:
     rows = chain.to_list(); for path in rows: open(path)  ← no parallelism, no cache
     Use dc.File.at(path) inside map() instead
+✗ Using to_iter() as a processing loop — use map()/gen() instead
 ✗ DEPRECATED APIs — never use these:
     DataChain.from_storage()  → dc.read_storage()
     DataChain.from_dataset()  → dc.read_dataset()
