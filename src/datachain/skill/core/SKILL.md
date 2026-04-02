@@ -96,6 +96,17 @@ If `datachain/graph/index.md` exists, read it at conversation start for dataset 
     ✓ def fn(file: dc.File) -> MyModel: ...   # named fields via BaseModel
     ✓ def fn(file: dc.File) -> int: ...       # single scalar
     ✗ def fn(file: dc.File) -> tuple[int, int]: ...  # → col_0, col_1
+
+14. MERGE NOT DICTS: When combining multiple data sources, read each as its own
+    chain, parse inside map()/gen(), then merge(). Never build Python dicts outside
+    the chain and close over them in map()/gen() — even via dc.TextFile.at().read().
+    ✓ annotations = dc.read_storage("./**/list.txt", type="text").gen(ann=parse_list)
+      images = dc.read_storage("./images/", type="image")
+      images.merge(annotations, on=dc.func.path.file_stem(dc.C("file.path")),
+                   right_on="ann.name")
+    ✗ text = dc.TextFile.at("list.txt").read()
+      lookup = {name: label for name, label in parse(text)}  ← dict outside chain
+      dc.read_storage("./images/").map(ann=lambda f: lookup[f.path])  ← closure
 ```
 
 ---
@@ -459,6 +470,25 @@ meta = dc.read_json("gs://bucket/annotations.json", jmespath="images")
 annotated = images.merge(meta, on="file.path", right_on="images.file_name")
 ```
 
+**Multi-source dataset (images + annotations + XMLs → merge):**
+```python
+# Each data source is its own chain; parse file content inside gen()/map()
+annotations = dc.read_storage("gs://b/annotations/**/*.txt", type="text").gen(ann=parse_list)
+xmls = dc.read_storage("gs://b/annotations/xmls/**/*.xml").map(bbox=parse_xml)
+images = dc.read_storage("gs://b/images/**/*.jpg", type="image")
+
+# Merge on file stem — engine-side join, no Python dicts
+(
+    images
+    .merge(annotations,
+           on=dc.func.path.file_stem(dc.C("file.path")), right_on="ann.name")
+    .merge(xmls,
+           on=dc.func.path.file_stem(dc.C("file.path")),
+           right_on=dc.func.path.file_stem(dc.C("file.path")))
+    .save("annotated_images")
+)
+```
+
 **Vector similarity search:**
 ```python
 import datachain as dc
@@ -565,8 +595,9 @@ combined = images.merge(labels, on="file.name", right_on="labels.name")
     ✗ files = glob.glob("s3://bucket/*.csv")
     ✓ dc.read_storage("/data/", type="image")
     ✓ dc.read_storage("s3://bucket/", type="csv")
-✗ Reading data files with open()/Path then feeding into read_values/read_records:
-    NEVER parse files outside the chain and reconstruct with read_values().
+✗ Reading data files outside the chain to build Python dicts/lists:
+    NEVER parse files outside the chain and reconstruct with read_values(),
+    read_records(), or Python dicts used as lookup tables in map()/gen().
     This loses lineage to the source files and bypasses DataChain's engine.
     ✗ with open("annotations.txt") as f:           ← manual file I/O
           rows = [parse(line) for line in f]
@@ -574,6 +605,10 @@ combined = images.merge(labels, on="file.name", right_on="labels.name")
     ✗ for xml in Path("xmls/").glob("*.xml"):      ← manual walk + parse
           data.append(parse_xml(xml))
       dc.read_records(data)                         ← no lineage
+    Same applies when using DataChain's single-file API to build lookup dicts:
+    ✗ text = dc.TextFile.at("list.txt").read()     ← outside the chain
+      lookup = {line.split()[0]: line.split()[1] for line in text.splitlines()}
+      dc.read_storage("./images/").map(ann=lambda f: lookup[stem(f)])  ← closure
     ✓ Read ALL files (images, annotations, XMLs) via dc.read_storage(),
       then parse inside map()/gen() and merge():
       annotations = dc.read_storage("./annotations/**/list.txt", type="text")
