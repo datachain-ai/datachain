@@ -18,6 +18,12 @@ If `datachain/graph/index.md` exists, read it at conversation start for dataset 
    ✓ dc.read_storage("s3://bucket/images/")
    ✗ dc.read_storage("s3://bucket/images")  ← permission error on anon access
 
+1a. ANON FOR GCS: Always add anon=True for gs:// buckets. Without it, the GCS
+    client tries credential discovery first, adding ~1 min delay. Remove anon=True
+    only if the user says they need authenticated access to a private bucket.
+    ✓ dc.read_storage("gs://bucket/data/", anon=True)
+    ✗ dc.read_storage("gs://bucket/data/")  ← 1 min credential timeout
+
 2. TYPE HINTS NOT params/output: Never pass params= or output= to map/gen/agg.
    DataChain auto-infers from function signature and return type annotation.
    ✓ def fn(file: dc.ImageFile) -> list[float]: ...
@@ -72,13 +78,17 @@ If `datachain/graph/index.md` exists, read it at conversation start for dataset 
 11. SINGLE FILE vs MULTI FILE: Use the right API for the job.
     - For one known file: use dc.File.at() (or dc.TextFile.at(), dc.ImageFile.at()).
     - For one known CSV/JSON/Parquet: use dc.read_csv(), dc.read_json(), dc.read_parquet().
+    - For a small fixed set of known files: use one read_storage() with a glob pattern.
     - For listing/processing many files in a directory: use dc.read_storage().
     read_storage() is designed for directory listing — don't use it for a single known file.
     ✓ file = dc.File.at("s3://bucket/config.json")
       data = json.loads(file.read_bytes())
     ✓ dc.read_csv("s3://bucket/labels.csv")
-    ✓ dc.read_storage("s3://bucket/images/", type="image")  # many files
-    ✗ dc.read_storage("s3://bucket/config.json")             # single file
+    ✓ dc.read_storage("s3://bucket/**/{trainval,test}.txt")  # fixed set via glob
+    ✓ dc.read_storage("s3://bucket/images/", type="image")   # many files
+    ✗ dc.read_storage("s3://bucket/config.json")              # single file
+    ✗ dc.read_storage("s3://bucket/trainval.txt")             # single known file
+      dc.read_storage("s3://bucket/test.txt")                 # ← two listings for two files
 
     For small files (<300 MB) that fit in memory, it is fine to read the whole
     file and process in Python if the code is simpler and cleaner.
