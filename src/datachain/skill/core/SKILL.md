@@ -42,18 +42,26 @@ If `datachain/graph/index.md` exists, read it at conversation start for dataset 
    ✓ chain.settings(parallel=True).map(emb=model_fn)  # ML inference → parallel
    ✓ chain.map(label=classify)                         # lightweight → sequential OK
 
-7. COLUMN-COLUMN ARITHMETIC: Use chain.column() instead of C() when combining two columns.
+7. CACHE ONLY WHEN NEEDED: Do not add cache=True by default. Only use it when:
+   - The user explicitly asks for caching, OR
+   - The same files are read multiple times in the pipeline (e.g., multi-stage
+     pipelines where stage 2 re-reads files processed in stage 1).
+   Caching downloads files to local disk — unnecessary for single-pass pipelines.
+   ✓ chain.settings(cache=True).map(emb=fn)            # multi-pass → cache
+   ✗ dc.read_storage("s3://b/").settings(cache=True).map(fn).save("out")  # single pass
+
+8. COLUMN-COLUMN ARITHMETIC: Use chain.column() instead of C() when combining two columns.
    C() does not carry type info → engine can't infer the result type.
    chain.column("name") returns a typed column derived from the chain's schema.
    ✓ chain.mutate(total=chain.column("price") * chain.column("qty"))
    ✓ chain.mutate(discounted=C("price") * 0.9)          # scalar literal → type inferred
    ✗ chain.mutate(total=C("price") * C("qty"))           # no type → error
 
-8. READ NOT FROM: Use dc.read_* module functions, not deprecated DataChain.from_* methods.
+9. READ NOT FROM: Use dc.read_* module functions, not deprecated DataChain.from_* methods.
    ✓ dc.read_csv("s3://data.csv")
    ✗ DataChain.from_csv("s3://data.csv")  ← deprecated
 
-9. GLOB IN PATH: When filtering by file extension or name pattern, put the glob
+10. GLOB IN PATH: When filtering by file extension or name pattern, put the glob
    directly in the read_storage() path instead of a separate .filter() call.
    This preserves per-file lineage (not just directory-level).
    ✓ dc.read_storage("s3://bucket/images/**/*.{jpg,jpeg,png}", type="image")
@@ -61,7 +69,7 @@ If `datachain/graph/index.md` exists, read it at conversation start for dataset 
    ✗ dc.read_storage("s3://bucket/images/", type="image")
      .filter(dc.C("file.path").glob("*.jpg") | dc.C("file.path").glob("*.png"))
 
-10. SINGLE FILE vs MULTI FILE: Use the right API for the job.
+11. SINGLE FILE vs MULTI FILE: Use the right API for the job.
     - For one known file: use dc.File.at() (or dc.TextFile.at(), dc.ImageFile.at()).
     - For one known CSV/JSON/Parquet: use dc.read_csv(), dc.read_json(), dc.read_parquet().
     - For listing/processing many files in a directory: use dc.read_storage().
@@ -77,13 +85,13 @@ If `datachain/graph/index.md` exists, read it at conversation start for dataset 
     ✓ img = dc.ImageFile.at("s3://b/photo.jpg").read()       # PIL Image in memory
     ✓ text = dc.TextFile.at("s3://b/readme.txt").read()      # string in memory
 
-11. ONE SIGNAL PER MAP/GEN/AGG: Each call accepts exactly one signal (keyword).
+12. ONE SIGNAL PER MAP/GEN/AGG: Each call accepts exactly one signal (keyword).
    For multiple columns, chain calls or return a Pydantic BaseModel.
    ✓ chain.map(a=fn1).map(b=fn2)          # chained — two columns
    ✓ chain.map(info=fn)                    # BaseModel with named fields
    ✗ chain.map(a=fn1, b=fn2)              # ERROR: multiple signals
 
-12. NO TUPLE RETURNS: Always prefer Pydantic BaseModel classes to tuple in map/gen/agg
+13. NO TUPLE RETURNS: Always prefer Pydantic BaseModel classes to tuple in map/gen/agg
     functions until user directly asks for tuple.
     ✓ def fn(file: dc.File) -> MyModel: ...   # named fields via BaseModel
     ✓ def fn(file: dc.File) -> int: ...       # single scalar
@@ -209,7 +217,7 @@ chain.agg(col_name=fn, partition_by="key")  # group → aggregate
 **Setup and execution settings:**
 ```python
 chain.setup(model=lambda: load_model())   # initialize once per worker
-chain.settings(parallel=True, cache=True, prefetch=10, workers=50)
+chain.settings(parallel=True, cache=True, prefetch=10, workers=50)  # cache only if needed
 ```
 
 **Terminal operations (trigger execution):**
@@ -361,7 +369,7 @@ def compute_embedding(file: dc.ImageFile) -> list[float]:
 (
     dc.read_storage("s3://bucket/images/", type="image")
     .filter(dc.C("file.size") > 1000)
-    .settings(parallel=True, cache=True)
+    .settings(parallel=True)
     .map(emb=compute_embedding)
     .save("image_embeddings")
 )
@@ -384,7 +392,7 @@ class ImageEncoder(dc.Mapper):
 
 (
     dc.read_storage("s3://bucket/images/", type="image")
-    .settings(parallel=True, cache=True)
+    .settings(parallel=True)
     .map(emb=ImageEncoder("ViT-B-32", "laion2b_s34b_b79k"))
     .save("image_embeddings")
 )
@@ -397,7 +405,7 @@ def caption(file: dc.File, pipeline) -> str:
 
 (
     dc.read_storage("gs://bucket/images/", type="image")
-    .settings(cache=True, parallel=True)
+    .settings(parallel=True)
     .setup(pipeline=lambda: load_pipeline("image-to-text", model="blip-large"))
     .map(caption=caption)
     .save("captions")
@@ -517,7 +525,6 @@ def process_file(file: dc.File) -> str:
 (
     dc.read_csv("s3://data/manifest.csv")
     .map(file=to_file)
-    .settings(cache=True)
     .map(result=process_file)
     .save("summaries")
 )
@@ -582,6 +589,8 @@ combined = images.merge(labels, on="file.name", right_on="labels.name")
     Use pydantic.BaseModel for custom types — DataChain accepts it natively
 ✗ Using parallel=True for lightweight operations → unnecessary overhead
    Only use parallel for expensive per-row work (ML, LLM, heavy file I/O)
+✗ Using cache=True by default in single-pass pipelines → wastes disk, no benefit
+   Only cache when files are read multiple times or the user explicitly requests it
 ✗ Using C() for column-column arithmetic:
     C("price") * C("qty")  ← no type info → engine error
     Use chain.column("price") * chain.column("qty") instead
