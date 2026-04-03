@@ -5,6 +5,10 @@ description: Use ONLY for abstract DataChain SDK questions — API usage, method
 
 You are now loaded with expert-level DataChain SDK context. Apply every rule below when generating DataChain Python code. Do not deviate.
 
+### Code style
+
+Write self-explanatory code. Use clear variable names, function names, and type hints instead of comments. Add a comment only when the code alone cannot convey *why* something is done (non-obvious workarounds, surprising constraints). Never add comments that restate what the code does.
+
 ### Graph context (read-only)
 
 If `datachain/graph/index.md` exists, read it at conversation start for dataset and bucket awareness. When the user mentions a specific dataset or bucket by name, read the matching `.md` file under `datachain/graph/datasets/` or `datachain/graph/buckets/`. Never create or modify files under `datachain/graph/` — that directory is owned by the datachain-graph skill.
@@ -95,6 +99,8 @@ If `datachain/graph/index.md` exists, read it at conversation start for dataset 
     - For a small fixed set of known files: use one read_storage() with a glob pattern.
     - For listing/processing many files in a directory: use dc.read_storage().
     read_storage() is designed for directory listing — don't use it for a single known file.
+
+    File.at() signature: dc.File.at(uri) — accepts ONLY the URI string.
     ✓ file = dc.File.at("s3://bucket/config.json")
       data = json.loads(file.read_bytes())
     ✓ dc.read_csv("s3://bucket/labels.csv")
@@ -201,10 +207,18 @@ If `datachain/graph/index.md` exists, read it at conversation start for dataset 
 
    Everything else → use filter/mutate/group_by/merge with dc.C() and dc.func.*
 
-3. NO to_iter() FOR PROCESSING. Use map()/gen() to process, to_list()/to_values()
-   to extract final results. to_iter() loses parallelism, lineage, and checkpointing.
+3. EXTRACTING RESULTS: Use to_values() for a single column (returns flat list),
+   to_list() for multiple columns (returns list of tuples).
+   Never use to_iter() — it loses parallelism and lineage compared to map().
+   For processing, use map()/gen() instead of extracting and looping.
+   ✓ ids = chain.to_values("id")              # → [5, 8, 15]
+   ✓ files = chain.to_values("file")          # → [File(...), File(...), ...]
+   ✓ rows = chain.to_list("file", "label")    # → [(File, "cat"), (File, "dog")]
+   ✗ for f, id in chain.to_list("file", "id"): # to_list returns tuples
    ✓ chain.map(result=process_fn).save("output")
-   ✗ for row in chain.to_iter("file"): process(row)
+   ✗ for row in chain.to_iter("file"): ...    # to_iter is an anti-pattern
+   ✗ for row in chain.to_list("file"):        # to_list returns tuples
+       row.read_text()                         # ← AttributeError: tuple has no read_text
 ```
 
 ---
@@ -311,9 +325,9 @@ chain.save("dataset_name")                     # versioned named dataset
 chain.save("ns.proj.name", update_version="minor")
 chain.persist()                                # anonymous cache
 chain.show(limit=10)
-chain.to_values("col")                         # → flat list from one column
-chain.to_list("col1", "col2")                  # → list of tuples (multiple cols)
-chain.to_iter("col1", "col2")                  # → iterator of tuples
+chain.to_values("col")                         # → flat list: [val1, val2, ...]
+chain.to_list("col1", "col2")                  # → list of tuples: [(v1,v2), ...]
+# NOTE: to_values for 1 column, to_list for 2+. Do NOT use to_iter (anti-pattern).
 chain.to_pandas()
 chain.to_parquet("output.parquet")
 chain.to_csv("output.csv")
@@ -714,7 +728,11 @@ combined = images.merge(labels, on="file.name", right_on="labels.name")
 ✗ Reading files in a Python loop outside the chain:
     rows = chain.to_list(); for path in rows: open(path)  ← no parallelism, no cache
     Use dc.File.at(path) inside map() instead
-✗ Using to_iter() as a processing loop — use map()/gen() instead
+✗ Using to_iter() — always an anti-pattern. Use to_values() for one column,
+    to_list() for multiple columns, map()/gen() for processing.
+    ✗ for row in chain.to_iter("file"): row.read_text()  ← tuple, not File
+    ✗ for row in chain.to_list("file"): row.read_text()  ← also tuple
+    ✓ for f in chain.to_values("file"): f.read_text()    ← flat list of File objects
 ✗ DEPRECATED APIs — never use these:
     DataChain.from_storage()  → dc.read_storage()
     DataChain.from_dataset()  → dc.read_dataset()
