@@ -48,7 +48,21 @@ If `datachain/graph/index.md` exists, read it at conversation start for dataset 
    ✓ chain.settings(parallel=True).map(emb=model_fn)  # ML inference → parallel
    ✓ chain.map(label=classify)                         # lightweight → sequential OK
 
-7. CACHE ONLY WHEN NEEDED: Do not add cache=True by default. Only use it when:
+7. PREFETCH FOR FILE-READING UDFs: When generating UDF that reads file content,
+   estimate the average file size from context (file type, domain knowledge —
+   e.g. small XMLs ~2KB, JPEGs ~200KB, PDFs ~2MB) and compute:
+     prefetch = clamp(4MB / estimated_avg_size, 2, 128)
+   Only add .settings(prefetch=N) to the generated code if N > 4 (default is 2).
+   Skip for UDFs that don't read file content (metadata-only operations).
+   Skip if the user explicitly sets prefetch.
+   ✓ # small XML files ~2KB → prefetch = 4MB/2KB = 2048 → clamped to 128
+     chain.settings(prefetch=128).map(bbox=parse_xml)
+   ✓ # JPEGs ~200KB → prefetch = 4MB/200KB = 20
+     chain.settings(prefetch=20).map(emb=encode_image)
+   ✓ # large PDFs ~5MB → prefetch = 4MB/5MB ≈ 1 → clamped to 2, skip (≤ 4)
+     chain.map(result=process_pdf)
+
+8. CACHE ONLY WHEN NEEDED: Do not add cache=True by default. Only use it when:
    - The user explicitly asks for caching, OR
    - The same files are read multiple times in the pipeline (e.g., multi-stage
      pipelines where stage 2 re-reads files processed in stage 1).
@@ -56,18 +70,18 @@ If `datachain/graph/index.md` exists, read it at conversation start for dataset 
    ✓ chain.settings(cache=True).map(emb=fn)            # multi-pass → cache
    ✗ dc.read_storage("s3://b/").settings(cache=True).map(fn).save("out")  # single pass
 
-8. COLUMN-COLUMN ARITHMETIC: Use chain.column() instead of C() when combining two columns.
+9. COLUMN-COLUMN ARITHMETIC: Use chain.column() instead of C() when combining two columns.
    C() does not carry type info → engine can't infer the result type.
    chain.column("name") returns a typed column derived from the chain's schema.
    ✓ chain.mutate(total=chain.column("price") * chain.column("qty"))
    ✓ chain.mutate(discounted=C("price") * 0.9)          # scalar literal → type inferred
    ✗ chain.mutate(total=C("price") * C("qty"))           # no type → error
 
-9. READ NOT FROM: Use dc.read_* module functions, not deprecated DataChain.from_* methods.
+10. READ NOT FROM: Use dc.read_* module functions, not deprecated DataChain.from_* methods.
    ✓ dc.read_csv("s3://data.csv")
    ✗ DataChain.from_csv("s3://data.csv")  ← deprecated
 
-10. GLOB IN PATH: When filtering by file extension or name pattern, put the glob
+11. GLOB IN PATH: When filtering by file extension or name pattern, put the glob
    directly in the read_storage() path instead of a separate .filter() call.
    This preserves per-file lineage (not just directory-level).
    ✓ dc.read_storage("s3://bucket/images/**/*.{jpg,jpeg,png}", type="image")
@@ -75,7 +89,7 @@ If `datachain/graph/index.md` exists, read it at conversation start for dataset 
    ✗ dc.read_storage("s3://bucket/images/", type="image")
      .filter(dc.C("file.path").glob("*.jpg") | dc.C("file.path").glob("*.png"))
 
-11. SINGLE FILE vs MULTI FILE: Use the right API for the job.
+12. SINGLE FILE vs MULTI FILE: Use the right API for the job.
     - For one known file: use dc.File.at() (or dc.TextFile.at(), dc.ImageFile.at()).
     - For one known CSV/JSON/Parquet: use dc.read_csv(), dc.read_json(), dc.read_parquet().
     - For a small fixed set of known files: use one read_storage() with a glob pattern.
@@ -95,19 +109,19 @@ If `datachain/graph/index.md` exists, read it at conversation start for dataset 
     ✓ img = dc.ImageFile.at("s3://b/photo.jpg").read()       # PIL Image in memory
     ✓ text = dc.TextFile.at("s3://b/readme.txt").read()      # string in memory
 
-12. ONE SIGNAL PER MAP/GEN/AGG: Each call accepts exactly one signal (keyword).
+13. ONE SIGNAL PER MAP/GEN/AGG: Each call accepts exactly one signal (keyword).
    For multiple columns, chain calls or return a Pydantic BaseModel.
    ✓ chain.map(a=fn1).map(b=fn2)          # chained — two columns
    ✓ chain.map(info=fn)                    # BaseModel with named fields
    ✗ chain.map(a=fn1, b=fn2)              # ERROR: multiple signals
 
-13. NO TUPLE RETURNS: Always prefer Pydantic BaseModel classes to tuple in map/gen/agg
+14. NO TUPLE RETURNS: Always prefer Pydantic BaseModel classes to tuple in map/gen/agg
     functions until user directly asks for tuple.
     ✓ def fn(file: dc.File) -> MyModel: ...   # named fields via BaseModel
     ✓ def fn(file: dc.File) -> int: ...       # single scalar
     ✗ def fn(file: dc.File) -> tuple[int, int]: ...  # → col_0, col_1
 
-14. MERGE NOT DICTS: When combining multiple data sources, read each as its own
+15. MERGE NOT DICTS: When combining multiple data sources, read each as its own
     chain, parse inside map()/gen(), then merge(). Never build Python dicts outside
     the chain and close over them in map()/gen() — even via dc.TextFile.at().read().
     ✓ annotations = dc.read_storage("./**/list.txt", type="text").gen(ann=parse_list)
@@ -118,7 +132,7 @@ If `datachain/graph/index.md` exists, read it at conversation start for dataset 
       lookup = {name: label for name, label in parse(text)}  ← dict outside chain
       dc.read_storage("./images/").map(ann=lambda f: lookup[f.path])  ← closure
 
-15. SHARED LISTING PREFIX: When multiple read_storage() calls target the same
+16. SHARED LISTING PREFIX: When multiple read_storage() calls target the same
     bucket or directory tree, use the common parent prefix and glob from there.
     DataChain caches listings by prefix — shared prefix = one listing + cache hits.
     ✓ dc.read_storage("s3://bucket/data/**/*.txt", type="text")
@@ -128,7 +142,7 @@ If `datachain/graph/index.md` exists, read it at conversation start for dataset 
       dc.read_storage("s3://bucket/data/annotations/xmls/**/*.xml")
       dc.read_storage("s3://bucket/data/images/**/*.jpg", type="image")
 
-16. LAZY CHAINS — NO DOUBLE EXECUTION: Chains are lazy — each terminal operation
+17. LAZY CHAINS — NO DOUBLE EXECUTION: Chains are lazy — each terminal operation
     (save, show, to_list, …) re-executes the entire pipeline. Never call two
     terminal operations on the same unmaterialized chain.
     - After save(): use the returned chain (save() returns the saved dataset).
@@ -203,7 +217,7 @@ Always use `dc.` prefix for DataChain types: `dc.File`, `dc.ImageFile`, `dc.C`, 
 `read_storage()` creates a **listing** — a cached snapshot of the bucket or directory.
 The listing prefix is the path before the first glob (`**`). Subsequent `read_storage()`
 calls with the same prefix reuse the cached listing. Use a shared parent prefix when
-reading multiple file types from the same tree (see rule 15).
+reading multiple file types from the same tree (see rule 16).
 
 ```python
 dc.read_storage("s3://bucket/prefix/", type="image")   # File / ImageFile etc.
