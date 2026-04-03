@@ -1031,13 +1031,14 @@ class AbstractWarehouse(ABC, Serializable):
         table: sa.Table,
         query: sa.Select,
         progress_cb: Callable[[int], None] | None = None,
+        preserve_sys_ids: bool = False,
     ) -> None:
         """
         Insert the results of a query into an existing table.
 
-        If the query includes sys__id, it is preserved. If not, fresh
-        sequential IDs are generated. The caller is responsible for
-        stripping sys__id from the query when fresh IDs are needed.
+        By default, sys__id is stripped and fresh sequential IDs are generated.
+        When preserve_sys_ids=True, existing sys__id values from the query
+        are kept (used for checkpoint continuation).
         """
 
     def create_table_from_query(
@@ -1046,6 +1047,7 @@ class AbstractWarehouse(ABC, Serializable):
         query: sa.Select,
         create_fn: Callable[[str], sa.Table],
         progress_cb: Callable[[int], None] | None = None,
+        preserve_sys_ids: bool = False,
     ) -> sa.Table:
         """
         Atomically create and populate a table from a query.
@@ -1072,6 +1074,7 @@ class AbstractWarehouse(ABC, Serializable):
             staging_table,
             query,
             progress_cb=progress_cb,
+            preserve_sys_ids=preserve_sys_ids,
         )
 
         try:
