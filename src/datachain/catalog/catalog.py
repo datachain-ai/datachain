@@ -2181,6 +2181,24 @@ class Catalog:
             )
             self.warehouse.cleanup_tables(output_tables)
 
+        # Partition tables — job-scoped, filter by expired job IDs
+        expired_job_ids = {ch.job_id for ch in checkpoints}
+        all_partition_tables = self.warehouse.db.list_tables(
+            pattern=Checkpoint.partition_table_pattern()
+        )
+        partition_tables = [
+            t
+            for t in all_partition_tables
+            if any(job_id in t for job_id in expired_job_ids)
+        ]
+        if partition_tables:
+            logger.info(
+                "Removing %d partition tables: %s",
+                len(partition_tables),
+                partition_tables,
+            )
+            self.warehouse.cleanup_tables(partition_tables)
+
         # Shared input tables — only when entire run group is inactive
         for group_id in inactive_group_ids:
             input_tables = self.warehouse.db.list_tables(

@@ -49,9 +49,20 @@ class Checkpoint:
         return f"udf_{group_id}_{_hash}_input"
 
     @staticmethod
+    def partition_table_name(job_id: str, _hash: str) -> str:
+        """Partition mapping table. Job-specific, maps sys__id to partition_id."""
+        return f"udf_{job_id}_{_hash}_partition"
+
+    @staticmethod
     def input_table_pattern(group_id: str) -> str:
         """LIKE pattern for finding all input tables in a run group."""
         return f"udf_{group_id}_%_input"
+
+    @staticmethod
+    def partition_table_pattern(job_id: str = "") -> str:
+        """LIKE pattern for finding partition tables. If job_id given, scoped to job."""
+        prefix = f"udf_{job_id}" if job_id else "udf_"
+        return f"{prefix}%_partition"
 
     @property
     def table_name(self) -> str:
