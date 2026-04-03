@@ -59,6 +59,10 @@ If `datachain/graph/index.md` exists, read it at conversation start for dataset 
    Only add .settings(prefetch=N) to the generated code if N > 4 (default is 2).
    Skip for UDFs that don't read file content (metadata-only operations).
    Skip if the user explicitly sets prefetch.
+   Special case: get_info() reads only the file header, not the whole file.
+   Estimate ~500B per file for get_info() → prefetch = 4MB/500B = 8192 → clamped to 128.
+   ✓ # get_info() reads header only ~500B → prefetch = 128
+     chain.settings(prefetch=128).map(info=lambda file: file.get_info())
    ✓ # small XML files ~2KB → prefetch = 4MB/2KB = 2048 → clamped to 128
      chain.settings(prefetch=128).map(bbox=parse_xml)
    ✓ # JPEGs ~200KB → prefetch = 4MB/200KB = 20
