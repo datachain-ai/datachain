@@ -356,7 +356,7 @@ class AbstractMetastore(ABC, Serializable):
         self, job_id: str | None = None, version_ids: list[int] | None = None
     ) -> list[tuple[DatasetRecord, str]]:
         """
-        Get dataset versions by job ID  and/or version IDs.
+        Get dataset versions by job ID and/or version IDs.
 
         Returns dataset versions filtered by job_id and/or version_ids:
         - If job_id is provided, returns versions for that job.
