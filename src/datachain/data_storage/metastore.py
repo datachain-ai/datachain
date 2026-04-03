@@ -331,21 +331,15 @@ class AbstractMetastore(ABC, Serializable):
 
     @abstractmethod
     def get_dataset_versions_to_clean(
-        self, job_id: str | None = None, *, include_complete: bool = False
+        self, job_id: str | None = None
     ) -> list[tuple[DatasetRecord, str]]:
         """
         Get incomplete, stale, or removed dataset versions to clean up.
 
-        When job_id is provided and include_complete is False, returns versions
-        for that job that match the garbage-collection rules (same as when
-        job_id is None, but restricted to that job).
+        When job_id is provided, returns versions belonging to that specific
+        job (used during job failure cleanup).
 
-        When job_id is provided and include_complete is True, returns every
-        dataset version row with that job_id, including COMPLETE. Requires
-        job_id; raises ValueError if include_complete is True without job_id.
-
-        When job_id is None, include_complete must be False. Returns all versions
-        that are safe to delete:
+        When job_id is None, returns all versions that are safe to delete:
         - Status CREATED, FAILED, STALE where either:
           - the associated job has finished, or
           - there is no associated job (job_id is NULL) and the version is
@@ -358,23 +352,21 @@ class AbstractMetastore(ABC, Serializable):
         """
 
     @abstractmethod
-    def list_dataset_versions_by_ids(
-        self,
-        version_ids: Sequence[int],
-        *,
-        job_id: str | None = None,
+    def get_dataset_versions(
+        self, job_id: str | None = None, version_ids: list[int] | None = None
     ) -> list[tuple[DatasetRecord, str]]:
         """
-        Load dataset versions by metastore row id (datasets_versions.id).
+        Get dataset versions by job ID  and/or version IDs.
 
-        When job_id is set, only rows with that job_id are returned.
+        Returns dataset versions filtered by job_id and/or version_ids:
+        - If job_id is provided, returns versions for that job.
+        - If version_ids are provided, returns versions matching those IDs.
+        - If both are provided, returns versions matching both filters.
+        At least one of job_id or version_ids must be provided.
 
         Returns:
-            List of (DatasetRecord, version_string) tuples, same shape as
-            get_dataset_versions_to_clean. Each record contains only one version;
-            its row id is dataset.versions[0].id. Order is undefined; duplicate
-            ids in version_ids still yield at most one row per id. Missing ids are
-            omitted.
+            List of (DatasetRecord, version_string) tuples.
+            Each DatasetRecord contains only one version.
         """
 
     @abstractmethod
@@ -1762,7 +1754,7 @@ class AbstractDBMetastore(AbstractMetastore):
         dataset.remove_version(version)
         return dataset
 
-    def _dataset_versions_select_cols_and_base_join(self) -> tuple:
+    def _dataset_version_query_base(self) -> tuple:
         n = self._namespaces
         p = self._projects
         d = self._datasets
@@ -1784,35 +1776,20 @@ class AbstractDBMetastore(AbstractMetastore):
         )
         return select_cols, base_from
 
-    def _dataset_query_rows_to_version_pairs(
-        self, query
-    ) -> list[tuple[DatasetRecord, str]]:
+    def _fetch_version_pairs(self, query) -> list[tuple[DatasetRecord, str]]:
         results: list[tuple[DatasetRecord, str]] = []
         for row in self.db.execute(query):
             dataset = self.dataset_class.parse(*row, preview_loaded=False)
             if dataset.versions:
-                version = dataset.versions[0].version
-                results.append((dataset, version))
+                results.append((dataset, dataset.versions[0].version))
         return results
 
     def get_dataset_versions_to_clean(
-        self, job_id: str | None = None, *, include_complete: bool = False
+        self, job_id: str | None = None
     ) -> list[tuple[DatasetRecord, str]]:
-        if include_complete and job_id is None:
-            raise ValueError("include_complete=True requires job_id to be set")
-
-        select_cols, base_from = self._dataset_versions_select_cols_and_base_join()
+        select_cols, base_from = self._dataset_version_query_base()
         d = self._datasets
         dv = self._datasets_versions
-
-        if job_id is not None and include_complete:
-            query = (
-                self._datasets_select(*select_cols)
-                .select_from(base_from)
-                .where(dv.c.job_id == job_id)
-            )
-            return self._dataset_query_rows_to_version_pairs(query)
-
         j = self._jobs
 
         # LEFT JOIN on jobs so versions with job_id=NULL are included.
@@ -1874,29 +1851,26 @@ class AbstractDBMetastore(AbstractMetastore):
         if job_id:
             query = query.where(dv.c.job_id == job_id)
 
-        return self._dataset_query_rows_to_version_pairs(query)
+        return self._fetch_version_pairs(query)
 
-    def list_dataset_versions_by_ids(
-        self,
-        version_ids: Sequence[int],
-        *,
-        job_id: str | None = None,
+    def get_dataset_versions(
+        self, job_id: str | None = None, version_ids: list[int] | None = None
     ) -> list[tuple[DatasetRecord, str]]:
-        if not version_ids:
-            return []
+        if not job_id and not version_ids:
+            raise ValueError("Either job_id or version_ids must be provided")
 
-        select_cols, base_from = self._dataset_versions_select_cols_and_base_join()
+        select_cols, base_from = self._dataset_version_query_base()
         dv = self._datasets_versions
 
-        query = (
-            self._datasets_select(*select_cols)
-            .select_from(base_from)
-            .where(dv.c.id.in_(list(version_ids)))
-        )
-        if job_id is not None:
+        query = self._datasets_select(*select_cols).select_from(base_from)
+
+        if job_id:
             query = query.where(dv.c.job_id == job_id)
 
-        return self._dataset_query_rows_to_version_pairs(query)
+        if version_ids:
+            query = query.where(dv.c.id.in_(version_ids))
+
+        return self._fetch_version_pairs(query)
 
     def update_dataset_status(
         self,

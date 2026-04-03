@@ -192,60 +192,16 @@ def test_get_dataset_versions_to_clean_scoped_to_job(
     assert len(to_clean) == 0
 
 
-def test_get_dataset_versions_to_clean_include_complete_requires_job_id(test_session):
-    with pytest.raises(ValueError, match="include_complete=True requires job_id"):
-        test_session.catalog.metastore.get_dataset_versions_to_clean(
-            include_complete=True
-        )
-    with pytest.raises(ValueError, match="include_complete=True requires job_id"):
-        test_session.catalog.cleanup_dataset_versions(include_complete=True)
-
-
-def test_get_dataset_versions_to_clean_include_complete_includes_all_statuses(
-    test_session, job, dataset_created, dataset_failed, dataset_complete
+def test_remove_dataset_versions_bulk(
+    test_session, job, dataset_created, dataset_failed
 ):
-    test_session.catalog.metastore.set_job_status(job.id, JobStatus.COMPLETE)
-    to_clean = test_session.catalog.metastore.get_dataset_versions_to_clean(
-        job_id=job.id
-    )
-    names = {ds.name for ds, _ in to_clean}
-    assert dataset_created.name in names
-    assert dataset_failed.name in names
-    assert dataset_complete.name not in names
-
-    to_clean_all = test_session.catalog.metastore.get_dataset_versions_to_clean(
-        job_id=job.id, include_complete=True
-    )
-    names_all = {ds.name for ds, _ in to_clean_all}
-    assert dataset_complete.name in names_all
-    assert dataset_created.name in names_all
-    assert dataset_failed.name in names_all
-
-
-def test_cleanup_dataset_versions_include_complete_removes_complete(
-    test_session, job, dataset_complete
-):
-    test_session.catalog.metastore.set_job_status(job.id, JobStatus.COMPLETE)
-    num = test_session.catalog.cleanup_dataset_versions(
-        job_id=job.id, include_complete=True
-    )
-    assert num >= 1
-    with pytest.raises(DatasetNotFoundError):
-        test_session.catalog.get_dataset(dataset_complete.name)
-
-
-def test_remove_by_version_ids_empty(test_session):
-    assert test_session.catalog.remove_by_version_ids([]) == 0
-
-
-def test_remove_by_version_ids_bulk(test_session, job, dataset_created, dataset_failed):
     test_session.catalog.metastore.set_job_status(job.id, JobStatus.FAILED)
     ds_c = test_session.catalog.get_dataset(dataset_created.name, versions=None)
     ds_f = test_session.catalog.get_dataset(dataset_failed.name, versions=None)
     id_c = ds_c.get_version(ds_c.latest_version).id
     id_f = ds_f.get_version(ds_f.latest_version).id
 
-    n = test_session.catalog.remove_by_version_ids([id_c, id_f])
+    n = test_session.catalog.remove_dataset_versions(version_ids=[id_c, id_f])
     assert n == 2
     with pytest.raises(DatasetNotFoundError):
         test_session.catalog.get_dataset(dataset_created.name)
@@ -253,15 +209,23 @@ def test_remove_by_version_ids_bulk(test_session, job, dataset_created, dataset_
         test_session.catalog.get_dataset(dataset_failed.name)
 
 
-def test_remove_by_version_ids_job_id_filter(test_session, job, dataset_created):
+def test_remove_dataset_versions_job_id_filter(test_session, job, dataset_created):
     test_session.catalog.metastore.set_job_status(job.id, JobStatus.FAILED)
     ds = test_session.catalog.get_dataset(dataset_created.name, versions=None)
     vid = ds.get_version(ds.latest_version).id
 
-    assert test_session.catalog.remove_by_version_ids([vid], job_id="wrong-job-id") == 0
+    assert (
+        test_session.catalog.remove_dataset_versions(
+            version_ids=[vid], job_id="wrong-job-id"
+        )
+        == 0
+    )
     test_session.catalog.get_dataset(dataset_created.name)
 
-    assert test_session.catalog.remove_by_version_ids([vid], job_id=job.id) == 1
+    assert (
+        test_session.catalog.remove_dataset_versions(version_ids=[vid], job_id=job.id)
+        == 1
+    )
     with pytest.raises(DatasetNotFoundError):
         test_session.catalog.get_dataset(dataset_created.name)
 
