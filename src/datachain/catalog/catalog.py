@@ -1102,6 +1102,30 @@ class Catalog:
             self.warehouse.drop_dataset_rows_table(dataset, version)
         dataset = self.metastore.remove_dataset_version(dataset, version)
 
+    def _remove_versions(self, pairs: Iterable[tuple[DatasetRecord, str]]) -> int:
+        num_removed = 0
+        for dataset, version in pairs:
+            try:
+                self.remove_dataset_version(dataset, version)
+                num_removed += 1
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "Failed to remove dataset %s version %s: %s",
+                    dataset.name,
+                    version,
+                    e,
+                )
+        return num_removed
+
+    def remove_dataset_versions(
+        self, job_id: str | None = None, version_ids: list[int] | None = None
+    ) -> int:
+        versions_to_remove = self.metastore.get_dataset_versions(
+            job_id=job_id,
+            version_ids=version_ids,
+        )
+        return self._remove_versions(versions_to_remove)
+
     def get_temp_table_names(self) -> list[str]:
         return self.warehouse.get_temp_table_names()
 
@@ -1127,22 +1151,7 @@ class Catalog:
             Number of removed versions
         """
         versions_to_clean = self.metastore.get_dataset_versions_to_clean(job_id=job_id)
-
-        num_removed = 0
-        for dataset, version in versions_to_clean:
-            try:
-                # Remove dataset version (drops warehouse table and metastore record)
-                self.remove_dataset_version(dataset, version)
-                num_removed += 1
-            except Exception as e:  # noqa: BLE001
-                logger.warning(
-                    "Failed to clean dataset %s version %s: %s",
-                    dataset.name,
-                    version,
-                    e,
-                )
-
-        return num_removed
+        return self._remove_versions(versions_to_clean)
 
     def create_dataset_from_sources(
         self,
