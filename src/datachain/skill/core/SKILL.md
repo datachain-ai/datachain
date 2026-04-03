@@ -157,6 +157,18 @@ If `datachain/graph/index.md` exists, read it at conversation start for dataset 
       chain.show(5)               ← runs the whole pipeline a second time
     ✗ chain.show(5)
       chain.to_csv("out.csv")    ← also double execution
+
+18. INLINE FUNC EXPRESSIONS: Pass func/C expressions directly to on=,
+    right_on=, partition_by=, order_by=. Do not mutate() a throwaway column.
+    ✓ chain.merge(other, on=dc.func.path.file_stem(dc.C("file.path")), ...)
+    ✓ chain.group_by(..., partition_by=dc.func.path.parent(dc.C("file.path")))
+    ✗ chain.mutate(stem=dc.func.path.file_stem(dc.C("file.path")))
+            .merge(other, on="stem", ...)  ← unnecessary column
+
+19. SELECT_EXCEPT AFTER MERGE: After merge(), use select_except() to drop
+    duplicated/unwanted columns. Never write a long select() list (>4 columns).
+    ✓ chain.merge(other, ...).select_except("right_file", "ann.name")
+    ✗ chain.merge(other, ...).select("file", "col1", "col2", ..., "col18")
 ```
 
 ---
@@ -529,13 +541,12 @@ annotated = images.merge(meta, on="file.path", right_on="images.file_name")
 
 **Multi-source dataset (images + annotations + XMLs → merge):**
 ```python
-# Each data source is its own chain; shared prefix = one listing + cache hits
+# Shared prefix (rule 16), inline func (rule 18), select_except (rule 19)
 annotations = dc.read_storage("gs://b/**/*.txt", type="text").gen(ann=parse_list)
-xmls = dc.read_storage("gs://b/**/*.xml").map(bbox=parse_xml)
+xmls = dc.read_storage("gs://b/**/*.xml").settings(prefetch=128).map(xml=parse_xml)
 images = dc.read_storage("gs://b/**/*.jpg", type="image")
 
-# Merge on file stem — engine-side join, no Python dicts
-# After merge, drop duplicated columns (right_ prefix) and source file columns
+# func in on= (rule 18), select_except after merge (rule 19)
 (
     images
     .merge(annotations,
@@ -690,11 +701,10 @@ combined = images.merge(labels, on="file.name", right_on="labels.name")
    Only use parallel for expensive per-row work (ML, LLM, heavy file I/O)
 ✗ Using cache=True by default in single-pass pipelines → wastes disk, no benefit
    Only cache when files are read multiple times or the user explicitly requests it
-✗ Using select() with a long column list to drop one or two columns:
-    chain.select("file", "col1", "col2", "col3", "col4")  ← fragile, verbose
-    Use select_except() to drop the few you don't need:
-    ✓ chain.select_except("tmp_col")                       # drop 1-2 columns
-    ✓ chain.select("file", "score")                        # pick 2-3 specific columns
+✗ Long select() list after merge — use select_except() instead (rule 19)
+✗ select() right after map/gen to "pick" the new column:
+    chain.map(ann=parse_xml).select("ann")  ← redundant, map already created "ann"
+    The keyword in map/gen IS the column name (rule 4) — no select needed
 ✗ Using C() for column-column arithmetic:
     C("price") * C("qty")  ← no type info → engine error
     Use chain.column("price") * chain.column("qty") instead
