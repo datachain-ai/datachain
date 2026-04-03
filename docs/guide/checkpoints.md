@@ -201,5 +201,4 @@ dc.read_storage("gs://datachain-demo/dogs-and-cats/", anon=True).map(
 
 - **Script path matters:** DataChain links runs by the script's absolute path. Moving the script breaks checkpoint linking.
 - **Threading/multiprocessing:** Checkpoints are automatically disabled when Python threading or multiprocessing is detected. DataChain's built-in `parallel` setting for UDFs is not affected.
-- **Aggregations:** Unlike `.map()` and `.gen()`, aggregations (`.agg()`) do not save progress incrementally. If an aggregation fails partway through, the entire aggregation restarts from the beginning on the next run.
 - **Unhashable callables:** Built-in functions (`len`, `str`), C extensions, and `Mock` objects produce a different hash on each run, so checkpoints using these as UDFs will always recompute. Use regular `def` functions or lambdas instead.
