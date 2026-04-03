@@ -364,9 +364,12 @@ class Detection(BaseModel):
 |---|---|---|---|
 | `dc.File` | (default) | `bytes` | `.read_text()`, `.open()`, `.ensure_cached()` |
 | `dc.TextFile` | `"text"` | `str` | `.read_text()` |
-| `dc.ImageFile` | `"image"` | `PIL.Image` | `.get_info()` → `Image(width,height,format)` |
-| `dc.VideoFile` | `"video"` | -- | `.get_frames(step=N)` → `VideoFrame[]`, `.get_fragments(duration)` → `VideoFragment[]`, `.get_info()` → `Video(fps,duration,codec,...)` |
-| `dc.AudioFile` | `"audio"` | -- | `.get_fragments(duration)` → `AudioFragment[]`, `.get_info()` → `Audio(sample_rate,channels,duration,...)` |
+| `dc.ImageFile` | `"image"` | `PIL.Image` | `.get_info()` → `dc.Image(width,height,format)` |
+| `dc.VideoFile` | `"video"` | -- | `.get_frames(step=N)` → `VideoFrame[]`, `.get_fragments(duration)` → `VideoFragment[]`, `.get_info()` → `dc.Video(fps,duration,codec,...)` |
+| `dc.AudioFile` | `"audio"` | -- | `.get_fragments(duration)` → `AudioFragment[]`, `.get_info()` → `dc.Audio(sample_rate,channels,duration,...)` |
+
+`dc.Image`, `dc.Video`, `dc.Audio` are media metadata models in the `dc` namespace — NOT in `datachain.model`.
+✓ `def get_size(file: dc.ImageFile) -> dc.Image:`
 
 Sub-file units:
 - `VideoFrame` -- `.get_np()` → ndarray, `.save(path)`
