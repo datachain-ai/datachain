@@ -149,9 +149,7 @@ def _render_dataset_table(
         deps_str = ", ".join(info["deps"]) if info["deps"] else ""
         summary = info["description"]
 
-        lines.append(
-            f"| {link} | {updated_at} | {deps_str} | {summary} |"
-        )
+        lines.append(f"| {link} | {updated_at} | {deps_str} | {summary} |")
 
     return lines
 
@@ -209,9 +207,7 @@ def render_index(plan: dict) -> str:
             else:
                 lines.append("### (default)")
             lines.append("")
-            lines.extend(
-                _render_dataset_table(by_ns[ns], strip_namespace=bool(ns))
-            )
+            lines.extend(_render_dataset_table(by_ns[ns], strip_namespace=bool(ns)))
             lines.append("")
 
     # Buckets table

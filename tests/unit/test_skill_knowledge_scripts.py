@@ -14,7 +14,6 @@ if SCRIPTS_DIR not in sys.path:
 
 from changes import build_changes, compute_dep_changes  # noqa: E402
 from render_index import render_index  # noqa: E402
-from utils import source_to_https  # noqa: E402
 from schema import parse_dataset_name, type_name  # noqa: E402
 from utils import (  # noqa: E402
     bucket_file_path,
@@ -27,6 +26,7 @@ from utils import (  # noqa: E402
     read_json_metadata,
     read_json_versions,
     serialize,
+    source_to_https,
 )
 
 # ---------------------------------------------------------------------------
@@ -168,11 +168,7 @@ def test_serialize_object():
 
 def test_read_json_versions_valid(tmp_path):
     p = tmp_path / "ds.json"
-    p.write_text(
-        json.dumps(
-            {"versions": [{"version": "1.0.0"}, {"version": "2.0.0"}]}
-        )
-    )
+    p.write_text(json.dumps({"versions": [{"version": "1.0.0"}, {"version": "2.0.0"}]}))
     assert read_json_versions(str(p)) == ["1.0.0", "2.0.0"]
 
 
@@ -188,9 +184,7 @@ def test_read_json_versions_missing_file():
 
 def test_read_json_metadata_valid(tmp_path):
     p = tmp_path / "ds.json"
-    p.write_text(
-        json.dumps({"versions": [{"version": "1.0.0", "num_objects": 42}]})
-    )
+    p.write_text(json.dumps({"versions": [{"version": "1.0.0", "num_objects": 42}]}))
     result = read_json_metadata(str(p))
     assert result["latest_version"] == "1.0.0"
     assert result["num_objects"] == "42"
