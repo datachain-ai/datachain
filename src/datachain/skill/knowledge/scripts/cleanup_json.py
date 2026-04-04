@@ -4,7 +4,7 @@ Reads the plan JSON to find which datasets and buckets were processed,
 then removes their .json data files. Keeps .plan.json intact.
 
 Usage:
-    python3 cleanup_json.py --plan datachain/graph/.plan.json
+    python3 cleanup_json.py --plan dc-knowledge/.plan.json
 """
 
 import argparse
@@ -18,7 +18,7 @@ def cleanup(plan_path: str, dry_run: bool = False) -> int:
     with open(plan_path) as f:
         plan = json.load(f)
 
-    graph_dir = os.path.dirname(plan_path) or "datachain/graph"
+    graph_dir = os.path.dirname(plan_path) or "dc-knowledge"
     deleted = 0
 
     for section in ("datasets", "buckets"):

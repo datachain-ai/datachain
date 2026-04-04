@@ -1,4 +1,4 @@
-"""Shared pure helpers for the dc-graph skill scripts."""
+"""Shared pure helpers for the dc-knowledge skill scripts."""
 
 import json
 import re
@@ -106,7 +106,7 @@ def read_md_scanned_at(path):
 
 
 def dataset_file_path(name, source):
-    """Derive the relative file path (from datachain/graph/) for a dataset.
+    """Derive the relative file path (from dc-knowledge/) for a dataset.
 
     Returns the path without extension.
     """
@@ -175,7 +175,7 @@ def collect_datasets(dc, studio: bool) -> list[dict]:
             )
     except Exception as e:  # noqa: BLE001
         print(
-            f"[dc-graph warning] collect_datasets(studio={studio}): {e}",
+            f"[dc-knowledge warning] collect_datasets(studio={studio}): {e}",
             file=sys.stderr,
         )
     return results

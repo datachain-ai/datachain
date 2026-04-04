@@ -10,7 +10,7 @@ from utils import dc_import
 
 
 def _warn(msg: str) -> None:
-    print(f"[dc-graph warning] {msg}", file=sys.stderr)
+    print(f"[dc-knowledge warning] {msg}", file=sys.stderr)
 
 
 def fetch_version_data(name_version: str) -> dict:  # noqa: C901, PLR0912, PLR0915

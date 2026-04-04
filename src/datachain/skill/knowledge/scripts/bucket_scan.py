@@ -58,7 +58,7 @@ def get_listing_info(uri: str) -> dict:
                     "listing_expired": listing.is_expired,
                 }
     except Exception as e:  # noqa: BLE001
-        print(f"[dc-graph warning] listing info: {e}", file=sys.stderr)
+        print(f"[dc-knowledge warning] listing info: {e}", file=sys.stderr)
 
     return {
         "listing_uuid": None,
@@ -314,7 +314,7 @@ def sample_files(chain, extensions: list[dict]) -> dict:
             if files_info:
                 samples[ext] = {"type_detected": type_detected, "files": files_info}
         except Exception as e:  # noqa: BLE001
-            print(f"[dc-graph warning] sampling {ext}: {e}", file=sys.stderr)
+            print(f"[dc-knowledge warning] sampling {ext}: {e}", file=sys.stderr)
 
     return samples
 
@@ -448,7 +448,7 @@ def scan_bucket(uri: str, output: str | None = None):
         total_files = int(totals["total_files"].iloc[0]) if len(totals) > 0 else 0
         total_size_bytes = int(totals["total_bytes"].iloc[0]) if len(totals) > 0 else 0
     except Exception as e:  # noqa: BLE001
-        print(f"[dc-graph error] totals: {e}", file=sys.stderr)
+        print(f"[dc-knowledge error] totals: {e}", file=sys.stderr)
         total_files = 0
         total_size_bytes = 0
 

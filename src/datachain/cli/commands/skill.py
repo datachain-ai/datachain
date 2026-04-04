@@ -5,7 +5,7 @@ from importlib.resources import files
 from pathlib import Path
 from typing import TypedDict
 
-SKILLS = ("core", "graph", "jobs")
+SKILLS = ("core", "knowledge", "jobs")
 
 
 class _TargetLayout(TypedDict):

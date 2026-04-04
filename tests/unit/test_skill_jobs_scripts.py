@@ -20,7 +20,7 @@ from jobs import (  # noqa: E402
 
 # Also test the duplicated frontmatter parser
 GRAPH_SCRIPTS_DIR = str(
-    Path(__file__).resolve().parents[2] / "src/datachain/skill/graph/scripts"
+    Path(__file__).resolve().parents[2] / "src/datachain/skill/knowledge/scripts"
 )
 if GRAPH_SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, GRAPH_SCRIPTS_DIR)

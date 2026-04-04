@@ -24,8 +24,8 @@ def test_skill_install_defaults():
 
 def test_skill_install_one_skill():
     parser = get_parser()
-    args = parser.parse_args(["skill", "install", "graph"])
-    assert args.skills == "graph"
+    args = parser.parse_args(["skill", "install", "knowledge"])
+    assert args.skills == "knowledge"
 
 
 def test_skill_install_multiple_skills():
@@ -81,7 +81,7 @@ def test_install_invalid_skill_raises(tmp_path, fake_skills_src, fake_home):
         install_skills(skills="nope", target="claude", local=False)
 
 
-ALL_SKILLS = ("core", "graph", "jobs")
+ALL_SKILLS = ("core", "knowledge", "jobs")
 
 
 def _make_fake_skills_src(tmp_path: Path) -> Path:
@@ -148,14 +148,14 @@ def test_install_all_claude_global(tmp_path, fake_skills_src, fake_home):
         assert (skills_base / skill / "SKILL.md").exists()
 
     # graph should have its scripts directory too
-    assert (skills_base / "graph" / "scripts" / "plan.py").exists()
+    assert (skills_base / "knowledge" / "scripts" / "plan.py").exists()
 
     # Claude global installs should NOT create commands
     # (~/.claude/commands/ is not a real Claude Code path)
     assert not (fake_home / ".claude" / "commands").exists()
 
     # {skill_dir} should be resolved to absolute path in installed SKILL.md
-    content = (skills_base / "graph" / "SKILL.md").read_text()
+    content = (skills_base / "knowledge" / "SKILL.md").read_text()
     assert "{skill_dir}" not in content
     assert "scripts/plan.py" in content
 
@@ -167,16 +167,16 @@ def test_install_only_core_claude_global(tmp_path, fake_skills_src, fake_home):
 
     skills_base = fake_home / ".claude" / "skills"
     assert (skills_base / "core" / "SKILL.md").exists()
-    assert not (skills_base / "graph").exists()
+    assert not (skills_base / "knowledge").exists()
 
 
 def test_install_only_graph_claude_global(tmp_path, fake_skills_src, fake_home):
     _run_install(
-        fake_skills_src, fake_home, skills="graph", target="claude", local=False
+        fake_skills_src, fake_home, skills="knowledge", target="claude", local=False
     )
 
     skills_base = fake_home / ".claude" / "skills"
-    assert (skills_base / "graph" / "SKILL.md").exists()
+    assert (skills_base / "knowledge" / "SKILL.md").exists()
     assert not (skills_base / "core").exists()
 
 
@@ -251,9 +251,9 @@ def test_pycache_not_copied(tmp_path, fake_skills_src, fake_home):
 
     skills_base = fake_home / ".claude" / "skills"
     # Scripts should exist
-    assert (skills_base / "graph" / "scripts" / "plan.py").exists()
+    assert (skills_base / "knowledge" / "scripts" / "plan.py").exists()
     # But __pycache__ should NOT
-    assert not (skills_base / "graph" / "scripts" / "__pycache__").exists()
+    assert not (skills_base / "knowledge" / "scripts" / "__pycache__").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -267,7 +267,7 @@ def test_list_skills_output(capsys):
     list_skills()
     out = capsys.readouterr().out
     assert "core" in out
-    assert "graph" in out
+    assert "knowledge" in out
     assert "jobs" in out
     assert "claude" in out
     assert "cursor" in out

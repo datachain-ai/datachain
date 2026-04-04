@@ -1,4 +1,4 @@
-"""Tests for graph skill scripts (pure utility functions)."""
+"""Tests for knowledge skill scripts (pure utility functions)."""
 
 import json
 import sys
@@ -7,7 +7,7 @@ from pathlib import Path
 
 # Insert the scripts directory so bare imports work (matches runtime behavior).
 SCRIPTS_DIR = str(
-    Path(__file__).resolve().parents[2] / "src/datachain/skill/graph/scripts"
+    Path(__file__).resolve().parents[2] / "src/datachain/skill/knowledge/scripts"
 )
 if SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, SCRIPTS_DIR)

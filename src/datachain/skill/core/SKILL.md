@@ -1,6 +1,6 @@
 ---
 name: datachain-core
-description: Use ONLY for abstract DataChain SDK questions — API usage, method signatures, or code patterns — when no specific dataset or bucket is referenced. If the request mentions creating, saving, listing, exploring datasets or buckets, use datachain-graph instead.
+description: Use ONLY for abstract DataChain SDK questions — API usage, method signatures, or code patterns — when no specific dataset or bucket is referenced. If the request mentions creating, saving, listing, exploring datasets or buckets, use datachain-knowledge instead.
 ---
 
 You are now loaded with expert-level DataChain SDK context. Apply every rule below when generating DataChain Python code. Do not deviate.
@@ -15,8 +15,8 @@ Write self-explanatory code. Use clear variable names, function names, and type 
 
 **Before writing any pipeline code, check what already exists.**
 
-1. If `datachain/graph/index.md` exists, read it **first** — before generating any code.
-2. When the user's task overlaps with an existing dataset, read its `.md` file under `datachain/graph/datasets/` for schema, code patterns, and lineage.
+1. If `dc-knowledge/index.md` exists, read it **first** — before generating any code.
+2. When the user's task overlaps with an existing dataset, read its `.md` file under `dc-knowledge/datasets/` for schema, code patterns, and lineage.
 3. **Reuse over rebuild.** Start from an existing dataset (`dc.read_dataset("name")`) whenever it covers the data the user needs — even partially. Filter, merge, or extend it instead of re-reading raw storage.
 
 Why this matters:
@@ -64,7 +64,7 @@ annotations = (
 images.merge(annotations, on=...).save("labeled_images")
 ```
 
-Never create or modify files under `datachain/graph/` — that directory is owned by the datachain-graph skill.
+Never create or modify files under `dc-knowledge/` — that directory is owned by the datachain-knowledge skill.
 
 ---
 
@@ -385,7 +385,7 @@ chain.agg(col_name=fn, partition_by="key")  # group → aggregate
 
 **Setup and execution settings:**
 ```python
-chain.setup(model=lambda: load_model())   # initialize once per worker
+chain.setup(model=lambda: load_model()).map(fn)   # initialize once per worker and use in fn
 chain.settings(parallel=True, cache=True, prefetch=10, workers=50)  # cache only if needed
 ```
 
