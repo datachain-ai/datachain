@@ -36,7 +36,6 @@ class GCSClient(Client):
         if kwargs.pop("anon", False):
             kwargs["token"] = "anon"  # noqa: S105
 
-        kwargs.setdefault("token", "google_default")
         return cast("GCSFileSystem", super().create_fs(**kwargs))
 
     def url(
