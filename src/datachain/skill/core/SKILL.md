@@ -235,7 +235,7 @@ Never create or modify files under `dc-knowledge/` — that directory is owned b
 
 20. INLINE SETUP OVER UDF CLASS: Prefer chain.setup() over dc.Mapper/Generator/Aggregator
     classes. A plain function + .setup() achieves model/client initialization in a
-    few lines without introducing a class. 
+    few lines without introducing a class.
     ✓ def encode(file: dc.ImageFile, model, preprocess) -> list[float]:
           return model.encode_image(preprocess(file.read()).unsqueeze(0))[0].tolist()
       m, _, p = open_clip.create_model_and_transforms("ViT-B-32", "laion2b_s34b_b79k")
