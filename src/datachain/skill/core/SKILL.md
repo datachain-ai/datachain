@@ -232,6 +232,19 @@ Never create or modify files under `datachain/graph/` — that directory is owne
     duplicated/unwanted columns. Never write a long select() list (>4 columns).
     ✓ chain.merge(other, ...).select_except("right_file", "ann.name")
     ✗ chain.merge(other, ...).select("file", "col1", "col2", ..., "col18")
+
+20. INLINE SETUP OVER UDF CLASS: Prefer chain.setup() over dc.Mapper/Generator/Aggregator
+    classes. A plain function + .setup() achieves model/client initialization in a
+    few lines without introducing a class. 
+    ✓ def encode(file: dc.ImageFile, model, preprocess) -> list[float]:
+          return model.encode_image(preprocess(file.read()).unsqueeze(0))[0].tolist()
+      m, _, p = open_clip.create_model_and_transforms("ViT-B-32", "laion2b_s34b_b79k")
+      chain.setup(model=lambda: m, preprocess=lambda: p).map(emb=encode)
+    ✗ class ImageEncoder(dc.Mapper):
+          def setup(self):
+              self.model, _, self.preprocess = open_clip.create_model_and_transforms(...)
+          def process(self, file: dc.ImageFile) -> list[float]: ...
+      chain.map(emb=ImageEncoder())
 ```
 
 ---
@@ -534,30 +547,26 @@ def compute_embedding(file: dc.ImageFile) -> list[float]:
 )
 ```
 
-**Stateful class (model loaded once per worker):**
+**Model/client initialization with .setup() (preferred):**
 ```python
 import datachain as dc
 import open_clip
 
-class ImageEncoder(dc.Mapper):
-    def setup(self):
-        self.model, _, self.preprocess = open_clip.create_model_and_transforms(
-            "ViT-B-32", "laion2b_s34b_b79k"
-        )
+def encode(file: dc.ImageFile, model, preprocess) -> list[float]:
+    img = preprocess(file.read()).unsqueeze(0)
+    return model.encode_image(img)[0].tolist()
 
-    def process(self, file: dc.ImageFile) -> list[float]:
-        img = self.preprocess(file.read()).unsqueeze(0)
-        return self.model.encode_image(img)[0].tolist()
+m, _, p = open_clip.create_model_and_transforms("ViT-B-32", "laion2b_s34b_b79k")
 
 (
     dc.read_storage("s3://bucket/images/", type="image")
     .settings(parallel=True)
-    .map(emb=ImageEncoder("ViT-B-32", "laion2b_s34b_b79k"))
+    .setup(model=lambda: m, preprocess=lambda: p)
+    .map(emb=encode)
     .save("image_embeddings")
 )
 ```
 
-**Inline setup() for model/client initialization:**
 ```python
 def caption(file: dc.File, pipeline) -> str:
     return pipeline(file.read().convert("RGB"))[0]["generated_text"]
