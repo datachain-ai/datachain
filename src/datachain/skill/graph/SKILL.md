@@ -66,6 +66,7 @@ When loaded, determine the user's intent:
 → Run Steps 1–4 as normal.
 
 **Mode B — Dataset Creation/Pipeline** (e.g., "create dataset X from ...", "process images and save"):
+→ **Before building anything**, read `datachain/graph/index.md` and check whether an existing dataset already covers the data the user needs. If one does, start from `dc.read_dataset("name")` — filter, merge, or extend it instead of re-reading raw storage. This avoids recomputing expensive operations (LLM calls, model inference) and reuses proven code patterns.
 → Read `{skill_dir}/../core/SKILL.md` for DataChain SDK rules and patterns.
 → Build and execute the pipeline the user requested, following core skill rules.
 → After the pipeline completes, **always** run Steps 1–4 to update the knowledge base.

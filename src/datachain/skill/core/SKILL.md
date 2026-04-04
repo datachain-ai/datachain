@@ -9,9 +9,62 @@ You are now loaded with expert-level DataChain SDK context. Apply every rule bel
 
 Write self-explanatory code. Use clear variable names, function names, and type hints instead of comments. Add a comment only when the code alone cannot convey *why* something is done (non-obvious workarounds, surprising constraints). Never add comments that restate what the code does.
 
-### Graph context (read-only)
+---
 
-If `datachain/graph/index.md` exists, read it at conversation start for dataset and bucket awareness. When the user mentions a specific dataset or bucket by name, read the matching `.md` file under `datachain/graph/datasets/` or `datachain/graph/buckets/`. Never create or modify files under `datachain/graph/` — that directory is owned by the datachain-graph skill.
+## Section 0 — Dataset Reuse (Highest Priority)
+
+**Before writing any pipeline code, check what already exists.**
+
+1. If `datachain/graph/index.md` exists, read it **first** — before generating any code.
+2. When the user's task overlaps with an existing dataset, read its `.md` file under `datachain/graph/datasets/` for schema, code patterns, and lineage.
+3. **Reuse over rebuild.** Start from an existing dataset (`dc.read_dataset("name")`) whenever it covers the data the user needs — even partially. Filter, merge, or extend it instead of re-reading raw storage.
+
+Why this matters:
+- **Compute optimization.** Datasets may embed expensive operations (LLM calls, model inference). Re-running them wastes time and money.
+- **Shared code patterns.** Dataset `.md` files contain the processing code that produced them — use these patterns instead of guessing from scratch.
+- **Standardization.** Building on existing datasets keeps schemas, naming, and processing conventions consistent across the project.
+
+Only go to raw storage (`read_storage`, `read_csv`, etc.) when no existing dataset covers the needed data, or the user explicitly asks to start fresh.
+
+### Preserve expensive compute as dataset
+
+When a pipeline runs an expensive UDF (ML inference, LLM calls, heavy per-row processing), save the **full** result as its own dataset before any filtering or subsetting. A downstream `.save()` after filtering only preserves a fraction of the rows — the rest of the compute is lost.
+
+Two criteria — **both** must be true to require a separate `.save()`:
+1. **Expensive compute.** The UDF involves model inference, LLM calls, or other heavy per-row work. Lightweight transforms (text parsing, string ops, metadata extraction) are cheap to redo and do not need saving.
+2. **Rows or columns would be lost.** The pipeline filters, aggregates, or drops the expensive result downstream. Even if the final dataset contains the same columns, saving only the top-N rows discards the compute for all other rows. If the expensive result flows **unfiltered** into a final saved dataset, it is already fully preserved — saving separately is duplication.
+
+Choose dataset names that describe the content, not the task (e.g., `"product_images_embeddings"` not `"step1"`).
+
+```python
+# ✓ Expensive result would be lost — save it
+embeddings = (
+    dc.read_dataset("product_images")
+    .settings(parallel=True)
+    .map(emb=compute_embedding)
+    .save("product_images_embeddings")      # ← embeddings preserved for reuse
+)
+similar = embeddings.filter(...)
+similar.save("similar_products")            # final output (may or may not keep emb column)
+
+# ✓ Expensive result flows into final dataset — no separate save needed
+enriched = (
+    dc.read_dataset("product_images")
+    .settings(parallel=True)
+    .map(emb=compute_embedding)
+    .merge(labels, on="file.path")
+    .save("product_images_enriched")        # ← emb column is in the final dataset
+)
+
+# ✓ Lightweight transform — no save needed, cheap to redo
+annotations = (
+    dc.read_storage("s3://bucket/labels/**/*.txt", type="text")
+    .gen(ann=parse_label_file)              # simple text parsing
+)
+images.merge(annotations, on=...).save("labeled_images")
+```
+
+Never create or modify files under `datachain/graph/` — that directory is owned by the datachain-graph skill.
 
 ---
 
