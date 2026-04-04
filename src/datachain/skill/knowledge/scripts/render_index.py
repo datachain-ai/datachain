@@ -15,24 +15,68 @@ from utils import bucket_file_path, dataset_file_path, human_size, read_json_dat
 BASE_DIR = "dc-knowledge"
 
 
-def _read_md_info(md_path: str) -> tuple[str, list[str]]:
-    """Read description and dependency names from an enriched dataset .md file.
-
-    Returns (description, dep_names).
-    """
+def _read_md_frontmatter(md_path: str) -> dict:
+    """Read YAML frontmatter from a markdown file. Returns dict or {}."""
     try:
         with open(md_path) as f:
             content = f.read()
     except Exception:  # noqa: BLE001
-        return "", []
+        return {}
+    if not content.startswith("---"):
+        return {}
+    try:
+        end = content.index("\n---", 3)
+    except ValueError:
+        return {}
+    result = {}
+    for line in content[4:end].splitlines():
+        if ":" in line:
+            key, _, val = line.partition(":")
+            result[key.strip()] = val.strip().strip('"').strip("'")
+    return result
 
-    # Skip frontmatter
+
+def _read_md_info(md_path: str) -> dict:
+    """Read metadata, description, and dependencies from an enriched dataset .md.
+
+    Returns dict with keys: description, deps, latest_version, num_objects, updated_at.
+    """
+    info: dict = {
+        "description": "",
+        "deps": [],
+        "latest_version": "",
+        "num_objects": "",
+        "num_versions": "",
+        "updated_at": "",
+    }
+
+    try:
+        with open(md_path) as f:
+            content = f.read()
+    except Exception:  # noqa: BLE001
+        return info
+
+    # Parse frontmatter
+    fm = _read_md_frontmatter(md_path)
+    info["latest_version"] = fm.get("latest_version", "")
+    info["num_objects"] = fm.get("num_objects", "")
+    known = fm.get("known_versions", "")
+    if known.startswith("[") and known.endswith("]"):
+        known = known[1:-1]
+    versions_list = [v.strip() for v in known.split(",") if v.strip()]
+    info["num_versions"] = str(len(versions_list)) if versions_list else ""
+    updated = fm.get("updated_at", "")
+    if updated and "T" in updated:
+        updated = updated.split("T")[0]
+    info["updated_at"] = updated
+
+    # Strip frontmatter for body parsing
     if content.startswith("---"):
         try:
             end = content.index("\n---", 3)
             content = content[end + 4 :].strip()
         except ValueError:
-            return "", []
+            return info
 
     lines = content.split("\n")
 
@@ -51,10 +95,10 @@ def _read_md_info(md_path: str) -> tuple[str, list[str]]:
             break
         if stripped:
             desc_lines.append(stripped)
-    description = " ".join(desc_lines)
+    info["description"] = " ".join(desc_lines)
 
-    # Extract dependencies: lines between ## Dependencies and next ## heading
-    dep_names: list[str] = []
+    # Extract dependencies: preserve markdown links for clickability
+    deps: list[str] = []
     in_deps = False
     for line in lines:
         if line.startswith("## Dependencies"):
@@ -63,16 +107,17 @@ def _read_md_info(md_path: str) -> tuple[str, list[str]]:
         if in_deps:
             if line.startswith("##"):
                 break
-            # Match markdown links [name](path) or bare names in list items
-            link_match = re.findall(r"\[([^\]]+)\]", line)
-            if link_match:
-                dep_names.extend(link_match)
+            # Preserve full markdown link syntax [name](path)
+            link_matches = re.findall(r"\[[^\]]+\]\([^)]+\)", line)
+            if link_matches:
+                deps.extend(link_matches)
             elif line.strip().startswith("- "):
                 name = line.strip().removeprefix("- ").strip()
                 if name:
-                    dep_names.append(name)
+                    deps.append(name)
+    info["deps"] = deps
 
-    return description, dep_names
+    return info
 
 
 def _render_dataset_table(
@@ -80,18 +125,12 @@ def _render_dataset_table(
 ) -> list[str]:
     """Render a markdown table for a list of dataset entries."""
     lines = []
-    lines.append("| Name | Version | Objects | Updated | Dependencies | Summary |")
-    lines.append("|------|---------|---------|---------|--------------|---------|")
+    lines.append("| Name | Updated | Dependencies | Summary |")
+    lines.append("|------|---------|--------------|---------|")
 
     for ds in sorted(datasets, key=lambda d: d["name"]):
         name = ds["name"]
         source = ds["source"]
-        version = ds.get("latest_version", "")
-        num_objects = ds.get("num_objects") or ""
-        updated_at = ds.get("updated_at") or ""
-        if updated_at and "T" in updated_at:
-            updated_at = updated_at.split("T")[0]
-
         file_path = ds.get("file_path", dataset_file_path(name, source))
 
         # Display name: strip namespace prefix if inside a namespace subsection
@@ -103,14 +142,15 @@ def _render_dataset_table(
 
         link = f"[{display_name}]({file_path}.md)"
 
-        # Summary and dependencies from enriched .md
+        # All metadata from enriched .md
         md_path = os.path.join(BASE_DIR, file_path + ".md")
-        summary, deps = _read_md_info(md_path)
-        deps_str = ", ".join(deps) if deps else ""
+        info = _read_md_info(md_path)
+        updated_at = info["updated_at"]
+        deps_str = ", ".join(info["deps"]) if info["deps"] else ""
+        summary = info["description"]
 
         lines.append(
-            f"| {link} | {version} | {num_objects} | {updated_at}"
-            f" | {deps_str} | {summary} |"
+            f"| {link} | {updated_at} | {deps_str} | {summary} |"
         )
 
     return lines

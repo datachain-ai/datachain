@@ -4,7 +4,7 @@ import inspect
 import types
 import typing
 
-from utils import serialize
+from utils import serialize, source_to_https
 
 
 def get_catalog():
@@ -73,13 +73,38 @@ def extract_schema(chain) -> dict:
     }
 
 
+def _file_url_prefix(chain) -> str | None:
+    """Return an HTTPS URL prefix for file paths, if the chain has a File column."""
+    from datachain.lib.file import File
+
+    for typ in chain.schema.values():
+        if inspect.isclass(typ) and issubclass(typ, File):
+            break
+    else:
+        return None
+    try:
+        df = chain.limit(1).to_pandas(flatten=True, include_hidden=True)
+        for col in df.columns:
+            if col.endswith(".source") or col == "source":
+                val = df[col].iloc[0]
+                if val:
+                    return source_to_https(str(val))
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
 def extract_preview(chain) -> dict | None:
     """Extract preview (columns + rows) from a DataChain. Returns None on failure."""
     try:
         df = chain.limit(10).to_pandas(flatten=True, include_hidden=False)
-        return {
+        result = {
             "columns": list(df.columns),
             "rows": [[serialize(v) for v in row] for row in df.itertuples(index=False)],
         }
+        url_prefix = _file_url_prefix(chain)
+        if url_prefix:
+            result["file_url_prefix"] = url_prefix
+        return result
     except Exception:  # noqa: BLE001
         return None

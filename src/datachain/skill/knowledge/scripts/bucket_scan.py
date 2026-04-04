@@ -14,7 +14,7 @@ import sys
 from datetime import datetime, timezone
 from typing import Any
 
-from utils import dc_import, parse_uri
+from utils import dc_import, parse_uri, source_to_https
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -463,6 +463,8 @@ def scan_bucket(uri: str, output: str | None = None):
 
     samples = sample_files(chain, extensions)
 
+    url_prefix = source_to_https(uri)
+
     result = {
         "uri": uri,
         "scheme": parts["scheme"],
@@ -479,6 +481,8 @@ def scan_bucket(uri: str, output: str | None = None):
         "time_range": time_range,
         "samples": samples,
     }
+    if url_prefix:
+        result["file_url_prefix"] = url_prefix
 
     json_str = json.dumps(result, indent=2, default=str)
 

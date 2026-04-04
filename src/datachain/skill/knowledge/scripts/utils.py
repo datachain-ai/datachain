@@ -266,3 +266,23 @@ def get_listing_finished_at(uri: str) -> str | None:
         return None
     except Exception:  # noqa: BLE001
         return None
+
+
+def source_to_https(source: str) -> str | None:
+    """Convert a storage URI prefix to an HTTPS URL prefix.
+
+    Returns None for local paths or unrecognized schemes.
+    """
+    source = source.rstrip("/")
+    if source.startswith("s3://"):
+        bucket = source[5:]
+        return f"https://{bucket}.s3.amazonaws.com"
+    if source.startswith("gs://"):
+        bucket = source[5:]
+        return f"https://storage.googleapis.com/{bucket}"
+    if source.startswith("az://"):
+        parts = source[5:].split("/", 1)
+        if len(parts) == 2:
+            account, container = parts
+            return f"https://{account}.blob.core.windows.net/{container}"
+    return None

@@ -20,6 +20,7 @@ Read the JSON file at the path provided. It contains:
 - `size_distribution`: min, max, median, p10, p90, empty_count
 - `time_range`: oldest and newest file timestamps
 - `samples{}`: per-extension content samples with type-specific metadata
+- `file_url_prefix` (optional): HTTPS URL prefix for building clickable file links
 
 ## Output Format
 
@@ -97,6 +98,7 @@ E.g., ".parquet" with columns → "Parquet files with columns: id, embedding, la
 {For structured: show column names. If snippet available, show a formatted code block.}
 {For text: show first few lines in a code block.}
 {For audio/video: show duration, codec, sample rate, etc.}
+{If `file_url_prefix` is present, make path cells clickable: `[path/to/file]({file_url_prefix}/{path/to/file})`.}
 
 ## Data Quality
 
@@ -115,5 +117,6 @@ E.g., ".parquet" with columns → "Parquet files with columns: id, embedding, la
 - **Human-readable numbers.** Use comma separators (10,000) and human-readable sizes (3.2 GB).
 - **Omit empty sections.** If time_range is empty, skip date info. If no quality issues, skip Data Quality.
 - **No raw JSON dumps.** The markdown is a summary, not a data dump.
+- **Do not make `uri` values clickable.** Storage URIs like `s3://`, `gs://`, `az://` are not browsable URLs — show them as plain text.
 - **Listing freshness is critical.** Users need to know if they're looking at stale data. Always show the listing timestamp.
 - **Human-readable timestamps.** Format all timestamps as `YYYY-MM-DD HH:MM:SS` (no `T`, no `Z`).

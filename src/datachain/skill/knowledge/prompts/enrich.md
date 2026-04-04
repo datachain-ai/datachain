@@ -1,6 +1,6 @@
 # Dataset Enrichment Prompt
 
-Generate a human-readable markdown summary for a DataChain dataset from its JSON data file.
+Generate a human-readable one short paragraph summary for a DataChain dataset from its JSON data file.
 
 ## Input
 
@@ -11,7 +11,7 @@ Read the JSON file at the path provided. It contains:
 - `versions[]`: array ordered oldest-first, each with:
   - `version`, `uuid`, `num_objects`, `updated_at`
   - `schema`: column definitions (latest version has full schema; older versions may have `{}`)
-  - `preview`: `{columns, rows}` sample data (latest version only)
+  - `preview`: `{columns, rows}` sample data (latest version only). May include `file_url_prefix` — an HTTPS URL prefix (e.g., `https://bucket.s3.amazonaws.com`) for building clickable file links.
   - `query_script`: Python code that produced this version (may be `null`)
   - `changes`: diff vs previous version (`null` for first version)
     - `script_changed`: boolean
@@ -36,14 +36,15 @@ known_versions: [{comma-separated list of all version strings, e.g. 1.0.0, 1.0.1
 
 # {dataset_name}
 
-{AI-generated description: 1-3 sentences explaining what this dataset contains
-and how it is produced. Infer purpose from schema fields, query_script logic,
-and dependency names. Be specific — mention data types and transformations.}
+{AI-generated description: one short paragraph explaining what this dataset contains
+and how it is produced. Be specific — mention data types and transformations.
+It should be optimized for dataset reusage - how this dataset is helpful.
+Dependency names are not necessary here since they are presented in another section.}
 
 ## Stats
 
 - **Latest version:** {version}
-- **Objects:** {num_objects}
+- **Records:** {num_objects}
 - **Updated:** {updated_at or "N/A"}
 - **Source:** {source}
 
@@ -65,13 +66,15 @@ Provide meaning of the columns as a comment.
 ## Preview
 
 {Markdown table from preview.columns and preview.rows. Show all rows provided.
-If preview is null, omit this section entirely.}
+If preview is null, omit this section entirely.
+If `preview.file_url_prefix` is present and a column ends with `.path` or is named `path`,
+make those cells clickable: `[value]({file_url_prefix}/{value})`.}
 
 # Versions
 
 {One subsection per version, newest first.}
 
-### {version} — {date} ({num_objects} objects)
+### {version} — {date} ({num_objects} records)
 
 {For the latest version: 1-2 sentences describing the current state — what the
 dataset produces and its key characteristics.}
