@@ -184,13 +184,9 @@ def test_read_json_versions_missing_file():
 
 def test_read_json_metadata_valid(tmp_path):
     p = tmp_path / "ds.json"
-<<<<<<< HEAD
-    p.write_text(json.dumps({"versions": [{"version": "1.0.0", "num_objects": 42}]}))
-=======
     p.write_text(
         json.dumps({"versions": [{"version": "1.0.0", "records": 42}]})
     )
->>>>>>> c646881e (ordering and renaming)
     result = read_json_metadata(str(p))
     assert result["last_version"] == "1.0.0"
     assert result["records"] == "42"
