@@ -128,11 +128,6 @@ python3 {skill_dir}/scripts/bucket_scan.py <uri> \
 
 Run independent `dataset_all.py` and `bucket_scan.py` calls concurrently when multiple items need processing.
 
-Then update the index (must run after data scripts so it can read their JSON output):
-```bash
-python3 {skill_dir}/scripts/render_index.py --plan dc-knowledge/.plan.json --output dc-knowledge/index.md
-```
-
 ---
 
 ## Step 3 — Enrich
@@ -155,7 +150,16 @@ Skip this step only if the user requests raw output only.
 
 ---
 
-## Step 3.5 — Cleanup
+## Step 3.5 — Build Index
+
+Update the index (must run after enrichment so it can read dataset `.md` summaries and `.json` dependencies):
+```bash
+python3 {skill_dir}/scripts/render_index.py --plan dc-knowledge/.plan.json --output dc-knowledge/index.md
+```
+
+---
+
+## Step 3.6 — Cleanup
 
 Delete intermediate `.json` files for all datasets and buckets processed in Step 2. Keep `.plan.json` (needed for Step 4 report).
 

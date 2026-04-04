@@ -327,7 +327,7 @@ class TestParseDatasetName:
 
 
 class TestRenderIndex:
-    def test_datasets_only(self):
+    def test_local_datasets(self):
         plan = {
             "db_last_updated": "2024-01-01T00:00:00Z",
             "datasets": [
@@ -346,6 +346,10 @@ class TestRenderIndex:
         assert "db_last_updated: 2024-01-01T00:00:00Z" in result
         assert "## Datasets" in result
         assert "test_ds" in result
+        assert "Dependencies" in result
+        assert "Summary" in result
+        # No Source column
+        assert "| Source |" not in result
         assert "## Buckets" not in result
 
     def test_empty_plan(self):
@@ -358,10 +362,110 @@ class TestRenderIndex:
         plan = {
             "datasets": [
                 {"name": "a", "source": "local", "file_path": "datasets/a"},
-                {"name": "b", "source": "studio", "file_path": "datasets/b"},
+                {"name": "b.ns.proj", "source": "studio", "file_path": "datasets/b"},
             ],
             "buckets": [],
         }
         result = render_index(plan)
         assert "local_dataset_count: 1" in result
         assert "studio_dataset_count: 1" in result
+
+    def test_studio_namespace_subsections(self):
+        plan = {
+            "datasets": [
+                {
+                    "name": "ns.proj.ds_a",
+                    "source": "studio",
+                    "latest_version": "1.0.0",
+                    "num_objects": 50,
+                    "updated_at": None,
+                    "file_path": "datasets/ns/proj/ds_a",
+                },
+                {
+                    "name": "ns.proj.ds_b",
+                    "source": "studio",
+                    "latest_version": "2.0.0",
+                    "num_objects": 200,
+                    "updated_at": None,
+                    "file_path": "datasets/ns/proj/ds_b",
+                },
+                {
+                    "name": "other.team.ds_c",
+                    "source": "studio",
+                    "latest_version": "1.0.0",
+                    "num_objects": 10,
+                    "updated_at": None,
+                    "file_path": "datasets/other/team/ds_c",
+                },
+            ],
+            "buckets": [],
+        }
+        result = render_index(plan)
+        assert "## Studio" in result
+        assert "### ns.proj" in result
+        assert "### other.team" in result
+        # Namespace stripped from name column
+        assert "| [ds_a](" in result
+        assert "| [ds_b](" in result
+        assert "| [ds_c](" in result
+        # Full qualified name should NOT appear in table cells
+        assert "ns.proj.ds_a" not in result.split("### ns.proj")[1].split("###")[0]
+        # Namespaces ordered alphabetically
+        ns_proj_pos = result.index("### ns.proj")
+        other_team_pos = result.index("### other.team")
+        assert ns_proj_pos < other_team_pos
+
+    def test_mixed_local_and_studio(self):
+        plan = {
+            "datasets": [
+                {
+                    "name": "local_ds",
+                    "source": "local",
+                    "latest_version": "1.0.0",
+                    "file_path": "datasets/local_ds",
+                },
+                {
+                    "name": "ns.proj.studio_ds",
+                    "source": "studio",
+                    "latest_version": "2.0.0",
+                    "file_path": "datasets/ns/proj/studio_ds",
+                },
+            ],
+            "buckets": [],
+        }
+        result = render_index(plan)
+        # Local section uses ## Datasets (no "Local" header)
+        assert "## Datasets" in result
+        assert "## Local" not in result
+        # Studio section separate
+        assert "## Studio" in result
+        assert "### ns.proj" in result
+
+    def test_deps_and_summary_from_md(self, tmp_path, monkeypatch):
+        import render_index as ri
+
+        monkeypatch.setattr(ri, "BASE_DIR", str(tmp_path))
+        ds_dir = tmp_path / "datasets"
+        ds_dir.mkdir()
+        (ds_dir / "my_ds.md").write_text(
+            "---\nname: my_ds\n---\n\n# my_ds\n\n"
+            "Image metadata with EXIF and GPS for 12k photos.\n\n"
+            "## Dependencies\n\n"
+            "- [raw_images](datasets/raw_images.md)\n"
+            "- [labels](datasets/labels.md)\n\n"
+            "## Schema\n"
+        )
+        plan = {
+            "datasets": [
+                {
+                    "name": "my_ds",
+                    "source": "local",
+                    "latest_version": "1.0.0",
+                    "file_path": "datasets/my_ds",
+                },
+            ],
+            "buckets": [],
+        }
+        result = ri.render_index(plan)
+        assert "Image metadata with EXIF and GPS for 12k photos." in result
+        assert "raw_images, labels" in result

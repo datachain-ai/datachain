@@ -1,14 +1,119 @@
 """Render index.md from a plan JSON file.
 
 Supports both datasets and buckets sections in a single index.
+Reads enriched .md files for summaries and dependencies.
 """
 
 import argparse
 import json
 import os
+import re
 from datetime import datetime, timezone
 
 from utils import bucket_file_path, dataset_file_path, human_size, read_json_data
+
+BASE_DIR = "dc-knowledge"
+
+
+def _read_md_info(md_path: str) -> tuple[str, list[str]]:
+    """Read description and dependency names from an enriched dataset .md file.
+
+    Returns (description, dep_names).
+    """
+    try:
+        with open(md_path) as f:
+            content = f.read()
+    except Exception:  # noqa: BLE001
+        return "", []
+
+    # Skip frontmatter
+    if content.startswith("---"):
+        try:
+            end = content.index("\n---", 3)
+            content = content[end + 4 :].strip()
+        except ValueError:
+            return "", []
+
+    lines = content.split("\n")
+
+    # Extract description: paragraph between # heading and first ## heading
+    desc_lines: list[str] = []
+    past_heading = False
+    for line in lines:
+        if not past_heading:
+            if line.startswith("# "):
+                past_heading = True
+            continue
+        if line.startswith("##"):
+            break
+        stripped = line.strip()
+        if not stripped and desc_lines:
+            break
+        if stripped:
+            desc_lines.append(stripped)
+    description = " ".join(desc_lines)
+
+    # Extract dependencies: lines between ## Dependencies and next ## heading
+    dep_names: list[str] = []
+    in_deps = False
+    for line in lines:
+        if line.startswith("## Dependencies"):
+            in_deps = True
+            continue
+        if in_deps:
+            if line.startswith("##"):
+                break
+            # Match markdown links [name](path) or bare names in list items
+            link_match = re.findall(r"\[([^\]]+)\]", line)
+            if link_match:
+                dep_names.extend(link_match)
+            elif line.strip().startswith("- "):
+                name = line.strip().removeprefix("- ").strip()
+                if name:
+                    dep_names.append(name)
+
+    return description, dep_names
+
+
+def _render_dataset_table(
+    datasets: list[dict], strip_namespace: bool = False
+) -> list[str]:
+    """Render a markdown table for a list of dataset entries."""
+    lines = []
+    lines.append("| Name | Version | Objects | Updated | Dependencies | Summary |")
+    lines.append("|------|---------|---------|---------|--------------|---------|")
+
+    for ds in sorted(datasets, key=lambda d: d["name"]):
+        name = ds["name"]
+        source = ds["source"]
+        version = ds.get("latest_version", "")
+        num_objects = ds.get("num_objects") or ""
+        updated_at = ds.get("updated_at") or ""
+        if updated_at and "T" in updated_at:
+            updated_at = updated_at.split("T")[0]
+
+        file_path = ds.get("file_path", dataset_file_path(name, source))
+
+        # Display name: strip namespace prefix if inside a namespace subsection
+        display_name = name
+        if strip_namespace:
+            parts = name.split(".", 2)
+            if len(parts) == 3:
+                display_name = parts[2]
+
+        link = f"[{display_name}]({file_path}.md)"
+
+        # Summary and dependencies from enriched .md
+        md_path = os.path.join(BASE_DIR, file_path + ".md")
+        summary, deps = _read_md_info(md_path)
+        deps_str = ", ".join(deps) if deps else ""
+
+        lines.append(
+            f"| {link} | {version} | {num_objects} | {updated_at}"
+            f" | {deps_str} | {summary} |"
+        )
+
+    return lines
 
 
 def render_index(plan: dict) -> str:
@@ -16,8 +121,11 @@ def render_index(plan: dict) -> str:
     datasets = plan.get("datasets", [])
     buckets = plan.get("buckets", [])
 
-    local_count = sum(1 for d in datasets if d["source"] == "local")
-    studio_count = sum(1 for d in datasets if d["source"] == "studio")
+    local_ds = [d for d in datasets if d["source"] == "local"]
+    studio_ds = [d for d in datasets if d["source"] == "studio"]
+
+    local_count = len(local_ds)
+    studio_count = len(studio_ds)
 
     # Frontmatter
     now = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
@@ -33,30 +141,38 @@ def render_index(plan: dict) -> str:
     lines.append("---")
     lines.append("")
 
-    # Datasets table
-    if datasets:
+    # Local datasets (default section — no "Local" header)
+    if local_ds:
         lines.append("## Datasets")
         lines.append("")
-        lines.append("| Name | Source | Version | Objects | Updated |")
-        lines.append("|------|--------|---------|---------|---------|")
-
-        for ds in sorted(datasets, key=lambda d: d["name"]):
-            name = ds["name"]
-            source = ds["source"]
-            version = ds.get("latest_version", "")
-            num_objects = ds.get("num_objects") or ""
-            updated_at = ds.get("updated_at") or ""
-            if updated_at and "T" in updated_at:
-                updated_at = updated_at.split("T")[0]
-
-            file_path = ds.get("file_path", dataset_file_path(name, source))
-            link = f"[{name}]({file_path}.md)"
-
-            lines.append(
-                f"| {link} | {source} | {version} | {num_objects} | {updated_at} |"
-            )
-
+        lines.extend(_render_dataset_table(local_ds))
         lines.append("")
+
+    # Studio datasets grouped by namespace
+    if studio_ds:
+        # Group by namespace (namespace.project)
+        by_ns: dict[str, list[dict]] = {}
+        for ds in studio_ds:
+            parts = ds["name"].split(".", 2)
+            if len(parts) == 3:
+                ns = f"{parts[0]}.{parts[1]}"
+            else:
+                ns = ""
+            by_ns.setdefault(ns, []).append(ds)
+
+        lines.append("## Studio")
+        lines.append("")
+
+        for ns in sorted(by_ns):
+            if ns:
+                lines.append(f"### {ns}")
+            else:
+                lines.append("### (default)")
+            lines.append("")
+            lines.extend(
+                _render_dataset_table(by_ns[ns], strip_namespace=bool(ns))
+            )
+            lines.append("")
 
     # Buckets table
     if buckets:
@@ -70,7 +186,7 @@ def render_index(plan: dict) -> str:
             file_path = b.get("file_path", bucket_file_path(uri))
 
             # Read JSON for rich stats
-            abs_json_path = os.path.join("dc-knowledge", file_path + ".json")
+            abs_json_path = os.path.join(BASE_DIR, file_path + ".json")
             data = read_json_data(abs_json_path)
 
             total_files = ""
