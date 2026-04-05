@@ -149,9 +149,7 @@ def _render_dataset_table(
         deps_str = ", ".join(info["deps"]) if info["deps"] else ""
         summary = info["description"]
 
-        lines.append(
-            f"| {link} | {updated} | {deps_str} | {summary} |"
-        )
+        lines.append(f"| {link} | {updated} | {deps_str} | {summary} |")
 
     return lines
 
