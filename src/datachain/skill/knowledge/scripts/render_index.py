@@ -149,13 +149,9 @@ def _render_dataset_table(
         deps_str = ", ".join(info["deps"]) if info["deps"] else ""
         summary = info["description"]
 
-<<<<<<< HEAD
-        lines.append(f"| {link} | {updated_at} | {deps_str} | {summary} |")
-=======
         lines.append(
             f"| {link} | {updated} | {deps_str} | {summary} |"
         )
->>>>>>> c646881e (ordering and renaming)
 
     return lines
 
