@@ -12,6 +12,11 @@ Read the JSON file at the path provided. It contains:
   - `version`, `uuid`, `records`, `updated`
   - `schema`: column definitions (latest version has full schema; older versions may have `{}`)
   - `preview`: `{columns, rows}` sample data (latest version only). May include `file_url_prefix` — an HTTPS URL prefix (e.g., `https://bucket.s3.amazonaws.com`) for building clickable file links.
+  - `summary`: statistical summary (latest version only, may be `null`). Contains:
+    - `overview`: one-line dataset summary (e.g., `"10.2K items · 5 cols · 2.3 GB · JPEG · ~480×400"`)
+    - `sampled`: boolean — whether stats are based on a random sample
+    - `sample_size`: number of sampled rows (only present if `sampled` is true)
+    - `columns`: dict of `{col_path: {type, category, line, stats}}` where `line` is a pre-formatted one-line statistical summary
   - `query_script`: Python code that produced this version (may be `null`)
   - `changes`: diff vs previous version (`null` for first version)
     - `script_changed`: boolean
@@ -46,6 +51,13 @@ Dependency names are not necessary here since they are presented in another sect
 List dependencies as clickable links when `file_path` is present:
 `[{name}]({file_path}.md)`. Otherwise, just the name.
 
+## Preview
+
+{Markdown table from preview.columns and preview.rows. Show all rows provided.
+If preview is null, omit this section entirely.
+If `preview.file_url_prefix` is present and a column ends with `.path` or is named `path`,
+make those cells clickable: `[value]({file_url_prefix}/{value})`.}
+
 ## Schema
 
 ```
@@ -56,12 +68,34 @@ List dependencies as clickable links when `file_path` is present:
 Use the latest version's schema. Show nested fields indented under their parent.
 Provide meaning of the columns as a comment.
 
-## Preview
+## Stats
 
-{Markdown table from preview.columns and preview.rows. Show all rows provided.
-If preview is null, omit this section entirely.
-If `preview.file_url_prefix` is present and a column ends with `.path` or is named `path`,
-make those cells clickable: `[value]({file_url_prefix}/{value})`.}
+If the latest version has a `summary` field, render per-field statistical summaries.
+If `summary` is null, omit this section entirely.
+
+```
+{column}                # {summary.columns[col_path].line}
+  {nested_field}        # {summary.columns[col_path].line}
+```
+
+- Mirror the same nesting as the Schema section (same grouping, same order).
+- Do NOT repeat types — they are already shown in Schema.
+- Show parent signal names as group headers (no comment needed for parents).
+- For each leaf field, use the pre-formatted `line` from `summary.columns[col_path]` as the comment after `#`.
+- If a field has no stats (empty `line`), omit it from Stats.
+- If `summary.sampled` is true, add a note after the block: `_Stats based on a random sample of {sample_size}._`
+
+Example:
+
+```
+file
+  size                  # 32KB - 165KB, p50=90KB
+info
+  width                 # 375 - 600, p50=480, p95=590
+  height                # 313 - 500, p50=420, p95=490
+  format                # JPEG 100%
+label                   # cat 55%, dog 40%, bird 5%
+```
 
 # Versions
 

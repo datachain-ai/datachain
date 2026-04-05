@@ -34,11 +34,21 @@ def _fetch_all_versions(name: str) -> dict:  # noqa: C901, PLR0912, PLR0915
             key=parse_semver,
         )
         versions_out = []
-        for version in versions_sorted:
+        for idx, version in enumerate(versions_sorted):
             version_entry = next(
                 (e for e in version_entries if e["version"] == version), None
             )
             data = fetch_version_data(f"{name}@{version}")
+            is_latest = idx == len(versions_sorted) - 1
+            ver_summary = None
+            if is_latest:
+                try:
+                    studio_chain = dc.read_dataset(f"{name}@{version}")
+                    from summary import dataset_summary_from_chain
+
+                    ver_summary = dataset_summary_from_chain(studio_chain)
+                except Exception as e:  # noqa: BLE001
+                    warnings_list.append(f"summary: {e}")
             versions_out.append(
                 {
                     "version": version,
@@ -51,6 +61,7 @@ def _fetch_all_versions(name: str) -> dict:  # noqa: C901, PLR0912, PLR0915
                     else None,
                     "schema": data.get("schema"),
                     "preview": data.get("preview"),
+                    "summary": ver_summary,
                     "query_script": data.get("query_script"),
                     "changes": data.get("changes"),
                     "dependencies": data.get("dependencies", []),
@@ -97,11 +108,21 @@ def _fetch_all_versions(name: str) -> dict:  # noqa: C901, PLR0912, PLR0915
             key=parse_semver,
         )
         versions_out = []
-        for version in versions_sorted_str:
+        for idx, version in enumerate(versions_sorted_str):
             version_entry = next(
                 (e for e in version_entries if e["version"] == version), None
             )
             data = fetch_version_data(f"{name}@{version}")
+            is_latest = idx == len(versions_sorted_str) - 1
+            fb_summary = None
+            if is_latest:
+                try:
+                    fb_chain = dc.read_dataset(f"{name}@{version}")
+                    from summary import dataset_summary_from_chain
+
+                    fb_summary = dataset_summary_from_chain(fb_chain)
+                except Exception as e:  # noqa: BLE001
+                    warnings_list.append(f"summary: {e}")
             versions_out.append(
                 {
                     "version": version,
@@ -114,6 +135,7 @@ def _fetch_all_versions(name: str) -> dict:  # noqa: C901, PLR0912, PLR0915
                     else None,
                     "schema": data.get("schema"),
                     "preview": data.get("preview"),
+                    "summary": fb_summary,
                     "query_script": data.get("query_script"),
                     "changes": data.get("changes"),
                     "dependencies": data.get("dependencies", []),
@@ -143,6 +165,15 @@ def _fetch_all_versions(name: str) -> dict:  # noqa: C901, PLR0912, PLR0915
         preview = extract_preview(chain)
         if preview is None:
             warnings_list.append("preview: extraction failed")
+
+    summary = None
+    if chain is not None:
+        try:
+            from summary import dataset_summary_from_chain
+
+            summary = dataset_summary_from_chain(chain)
+        except Exception as e:  # noqa: BLE001
+            warnings_list.append(f"summary: {e}")
 
     # 4. Fetch deps once per version — cache to avoid fetching prev-version deps twice.
     deps_by_version: dict[str, list[dict]] = {}
@@ -193,6 +224,7 @@ def _fetch_all_versions(name: str) -> dict:  # noqa: C901, PLR0912, PLR0915
                 "updated": (ver_obj.finished_at or ver_obj.created_at).isoformat(),
                 "schema": schema if is_latest else {},
                 "preview": preview if is_latest else None,
+                "summary": summary if is_latest else None,
                 "query_script": query_script,
                 "changes": changes,
                 "dependencies": ver_deps,

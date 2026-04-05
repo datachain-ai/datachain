@@ -75,11 +75,13 @@ Never create or modify files under `dc-knowledge/` — that directory is owned b
    ✓ dc.read_storage("s3://bucket/images/")
    ✗ dc.read_storage("s3://bucket/images")  ← permission error on anon access
 
-1a. ANON FOR GCS: Always add anon=True for gs:// buckets. Without it, the GCS
-    client tries credential discovery first, adding ~1 min delay. Remove anon=True
-    only if the user says they need authenticated access to a private bucket.
+1a. ANON FOR GCS: Always add anon=True for gs:// buckets in read_storage().
+    Without it, the GCS client tries credential discovery first, adding ~1 min delay.
+    Remove anon=True only if the user says they need authenticated access to a private bucket.
+    This applies ONLY to dc.read_storage() — NOT to File.at() or other APIs.
     ✓ dc.read_storage("gs://bucket/data/", anon=True)
     ✗ dc.read_storage("gs://bucket/data/")  ← 1 min credential timeout
+    ✗ dc.File.at("gs://bucket/file.txt", anon=True)  ← File.at() has no anon param
 
 2. TYPE HINTS NOT params/output: Never pass params= or output= to map/gen/agg.
    DataChain auto-infers from function signature and return type annotation.
@@ -230,7 +232,15 @@ Never create or modify files under `dc-knowledge/` — that directory is owned b
 
 19. SELECT_EXCEPT AFTER MERGE: After merge(), use select_except() to drop
     duplicated/unwanted columns. Never write a long select() list (>4 columns).
-    ✓ chain.merge(other, ...).select_except("right_file", "ann.name")
+    When chaining multiple merges, do ALL merges first, then ONE select_except()
+    at the end to drop all unwanted columns at once — not after each merge.
+    ✓ chain.merge(a, on="key", right_on="a.name")
+            .merge(b, on="key", right_on="b.name")
+            .merge(c, on="key", right_on="c.name")
+            .select_except("a.name", "b.name", "c.name", "key")
+    ✗ chain.merge(a, ...).select_except("a.name")
+            .merge(b, ...).select_except("b.name")
+            .merge(c, ...).select_except("c.name")  ← one select_except per merge
     ✗ chain.merge(other, ...).select("file", "col1", "col2", ..., "col18")
 
 20. INLINE SETUP OVER UDF CLASS: Prefer chain.setup() over dc.Mapper/Generator/Aggregator
@@ -368,7 +378,10 @@ chain.distinct("response.text")
 chain.limit(100)
 chain.select("file", "score", "label")
 chain.select_except("internal_id")
-chain.merge(other, on="id", right_on="meta.id")  # duped cols get right_ prefix
+chain.merge(other, on="id", right_on="meta.id")  # left join (default)
+chain.merge(other, on="id", inner=True)          # inner join
+chain.merge(other, on="id", full=True)           # full outer join
+# NOTE: merge() has NO how= parameter. Use inner=True or full=True instead.
 chain.merge(...).select_except("right_file")     # drop duped columns after merge
 chain.union(other)
 chain.subtract(other)
@@ -784,6 +797,9 @@ combined = images.merge(labels, on="file.name", right_on="labels.name")
    Only use parallel for expensive per-row work (ML, LLM, heavy file I/O)
 ✗ Using cache=True by default in single-pass pipelines → wastes disk, no benefit
    Only cache when files are read multiple times or the user explicitly requests it
+✗ merge(how="left") or merge(how="inner") — merge() has no how= parameter.
+    Use inner=True for inner join, full=True for full outer join.
+    Default (no flags) is left join.
 ✗ Long select() list after merge — use select_except() instead (rule 19)
 ✗ select() right after map/gen to "pick" the new column:
     chain.map(ann=parse_xml).select("ann")  ← redundant, map already created "ann"
