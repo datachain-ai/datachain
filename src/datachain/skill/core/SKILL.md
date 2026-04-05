@@ -94,6 +94,29 @@ Never create or modify files under `dc-knowledge/` — that directory is owned b
    ✓ chain.map(name=lambda file: file.path.split("/")[-1])   # str is fine
    ✗ chain.map(size=lambda file: file.size)                  # int → treated as str → broken
 
+3a. AVOID FILE OBJECT WHEN CONTENT NOT NEEDED: Passing a File/ImageFile object
+    to a UDF (map/gen) downloads the full file content, even if the UDF only reads
+    metadata like .path or .size. This can download gigabytes of data unnecessarily.
+    - For path manipulation: use mutate() with func.path.* (vectorized SQL, no download).
+    - For other metadata-only logic: first mutate() the needed fields into
+      top-level columns, then write a named function that takes primitives.
+    - Pass the File object ONLY when you need file content (.read(), .open(), etc.).
+    ✓ chain.mutate(stem=dc.func.path.file_stem(dc.C("file.path")))   # SQL → no download
+    ✓ chain.mutate(ext=dc.func.path.file_ext(dc.C("file.path")))     # SQL → no download
+    ✓ def classify(path: str) -> str:
+          return path.split("/")[-2]
+      chain.mutate(path=dc.C("file.path")).map(category=classify)     # no download
+    ✗ def classify(file: dc.ImageFile) -> str:
+          return file.path.split("/")[-2]
+      chain.map(category=classify)
+      # passes File object → downloads full content just to read .path string
+    This applies to File and ALL its subclasses (ImageFile, TextFile, VideoFile,
+    AudioFile). map() and gen() prefetch file content by default (prefetch=2) for
+    every File object in the row — even if the UDF never calls .read() or .open().
+    When the UDF does need file content, use settings(prefetch=0) to disable
+    automatic prefetch — files are then downloaded lazily only when the UDF
+    calls .read(), .open(), etc.
+
 4. COLUMN NAMING: keyword in map/gen/agg = new column name.
    chain.map(embedding=fn)  → column is named "embedding"
    chain.gen(frame=fn)      → column is named "frame"
