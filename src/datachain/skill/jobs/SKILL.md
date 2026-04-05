@@ -44,7 +44,7 @@ Write `dc-knowledge/jobs/index.md` using EXACTLY this format:
 
 ```markdown
 ---
-generated_at: <generated_at from script output>
+generated: <generated from script output>
 days_covered: <days_covered>
 total_jobs: <filtered_count>
 failed_count: <failed_count>
@@ -66,7 +66,7 @@ truncated: <true|false>
 
 | Date | ID | Name | Status | User | Workers | Duration | Cluster | Python |
 |------|----|------|--------|------|---------|----------|---------|--------|
-| <created_at_display> | <id> | <name> | <status> | <created_by> | <workers> | <duration_str or —> | <cluster_name or —> | <python_version or —> |
+| <created_display> | <id> | <name> | <status> | <created_by> | <workers> | <duration_str or —> | <cluster_name or —> | <python_version or —> |
 ```
 
 **Section rules:**
@@ -74,7 +74,7 @@ truncated: <true|false>
 - Duration cell: `duration_str` value (e.g. `"9000s"`) when known, `—` when null.
 - Workers: always a number (`workers` field, defaults to 1).
 - Cluster, Python: use `—` when null.
-- Date column: `created_at_display` (`YYYY-MM-DD HH:MM` UTC).
+- Date column: `created_display` (`YYYY-MM-DD HH:MM` UTC).
 - Rows: newest-first (already sorted by script).
 - If `truncated: true`, add after the table: `_(Results truncated at <limit> jobs. Use --limit N for more.)_`
 

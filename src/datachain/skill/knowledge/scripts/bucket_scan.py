@@ -46,13 +46,13 @@ def get_listing_info(uri: str) -> dict:
             ):
                 return {
                     "listing_uuid": getattr(listing, "uuid", None),
-                    "listing_created_at": (
+                    "listing_created": (
                         listing.created_at.isoformat() if listing.created_at else None
                     ),
-                    "listing_finished_at": (
+                    "listing_finished": (
                         listing.finished_at.isoformat() if listing.finished_at else None
                     ),
-                    "listing_expires_at": (
+                    "listing_expires": (
                         listing.expires.isoformat() if listing.expires else None
                     ),
                     "listing_expired": listing.is_expired,
@@ -62,9 +62,9 @@ def get_listing_info(uri: str) -> dict:
 
     return {
         "listing_uuid": None,
-        "listing_created_at": None,
-        "listing_finished_at": None,
-        "listing_expires_at": None,
+        "listing_created": None,
+        "listing_finished": None,
+        "listing_expires": None,
         "listing_expired": None,
     }
 
@@ -470,7 +470,7 @@ def scan_bucket(uri: str, output: str | None = None):
         "scheme": parts["scheme"],
         "bucket": parts["bucket"],
         "prefix": parts["prefix"],
-        "scanned_at": now,
+        "scanned": now,
         **listing_info,
         "total_files": total_files,
         "total_size_bytes": total_size_bytes,

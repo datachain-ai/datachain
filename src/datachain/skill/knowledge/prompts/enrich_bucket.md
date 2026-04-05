@@ -10,9 +10,9 @@ Read the JSON file at the path provided. It contains:
 - `scheme`: storage scheme (s3, gs, az)
 - `bucket`: bucket name
 - `prefix`: subdirectory prefix (empty string if whole bucket)
-- `scanned_at`: when this scan was performed
+- `scanned`: when this scan was performed
 - `listing_uuid`: unique identifier for the listing
-- `listing_created_at`, `listing_expires_at`, `listing_expired`: listing freshness
+- `listing_created`, `listing_expires`, `listing_expired`: listing freshness
 - `total_files`, `total_size_bytes`: aggregate counts
 - `max_depth`: deepest directory nesting level
 - `extensions[]`: file type breakdown with counts, bytes, percentages
@@ -31,10 +31,10 @@ Write a markdown file with this structure:
 uri: {uri}
 bucket: {bucket}
 prefix: {prefix}
-total_files: {total_files}
-total_size: {human-readable size}
-scanned_at: {scanned_at}
-listing_uuid: {listing_uuid}
+uuid: {listing_uuid}
+scanned: {scanned}
+files: {total_files}
+size: {human-readable size}
 ---
 
 # {bucket}{" / " + prefix if prefix else ""}
@@ -56,9 +56,9 @@ the `{bucket}` bucket."}
 - **Listing:** {freshness message — see below}
 
 {Listing freshness message:
-- If listing_expired is false: "Bucket listing from {listing_created_at} (valid until {listing_expires_at})"
-- If listing_expired is true: "Bucket listing from {listing_created_at} (**expired** — refresh with `dc.read_storage(\"{uri}\", update=True)`)"
-- If listing_created_at is null: "Listing timestamp unavailable"}
+- If listing_expired is false: "Bucket listing from {listing_created} (valid until {listing_expires})"
+- If listing_expired is true: "Bucket listing from {listing_created} (**expired** — refresh with `dc.read_storage(\"{uri}\", update=True)`)"
+- If listing_created is null: "Listing timestamp unavailable"}
 
 ## Directory Structure
 

@@ -184,10 +184,16 @@ def test_read_json_versions_missing_file():
 
 def test_read_json_metadata_valid(tmp_path):
     p = tmp_path / "ds.json"
+<<<<<<< HEAD
     p.write_text(json.dumps({"versions": [{"version": "1.0.0", "num_objects": 42}]}))
+=======
+    p.write_text(
+        json.dumps({"versions": [{"version": "1.0.0", "records": 42}]})
+    )
+>>>>>>> c646881e (ordering and renaming)
     result = read_json_metadata(str(p))
-    assert result["latest_version"] == "1.0.0"
-    assert result["num_objects"] == "42"
+    assert result["last_version"] == "1.0.0"
+    assert result["records"] == "42"
 
 
 def test_read_json_metadata_empty(tmp_path):
@@ -391,7 +397,7 @@ def test_render_index_local_datasets():
 
 def test_render_index_empty_plan():
     result = render_index({"datasets": [], "buckets": []})
-    assert "generated_at:" in result
+    assert "generated:" in result
     assert "## Datasets" not in result
     assert "## Buckets" not in result
 
@@ -405,8 +411,7 @@ def test_render_index_frontmatter_counts():
         "buckets": [],
     }
     result = render_index(plan)
-    assert "local_dataset_count: 1" in result
-    assert "studio_dataset_count: 1" in result
+    assert "datasets: 2" in result
 
 
 def test_render_index_studio_namespace_subsections():
@@ -476,8 +481,8 @@ def test_render_index_all_metadata_from_md(tmp_path, monkeypatch):
     ds_dir = tmp_path / "datasets"
     ds_dir.mkdir()
     (ds_dir / "my_ds.md").write_text(
-        "---\nname: my_ds\nlatest_version: 3.0.0\n"
-        "num_objects: 12000\nupdated_at: 2025-04-01T10:00:00Z\n"
+        "---\nname: my_ds\nlast_version: 3.0.0\n"
+        "records: 12000\nupdated: 2025-04-01T10:00:00Z\n"
         "known_versions: [1.0.0, 2.0.0, 3.0.0]\n---\n\n"
         "# my_ds\n\n"
         "Image metadata with EXIF and GPS for 12k photos.\n\n"

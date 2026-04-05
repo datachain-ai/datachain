@@ -39,15 +39,15 @@ def _read_md_frontmatter(md_path: str) -> dict:
 def _read_md_info(md_path: str) -> dict:
     """Read metadata, description, and dependencies from an enriched dataset .md.
 
-    Returns dict with keys: description, deps, latest_version, num_objects, updated_at.
+    Returns dict with keys: description, deps, last_version, records, updated.
     """
     info: dict = {
         "description": "",
         "deps": [],
-        "latest_version": "",
-        "num_objects": "",
+        "last_version": "",
+        "records": "",
         "num_versions": "",
-        "updated_at": "",
+        "updated": "",
     }
 
     try:
@@ -58,17 +58,17 @@ def _read_md_info(md_path: str) -> dict:
 
     # Parse frontmatter
     fm = _read_md_frontmatter(md_path)
-    info["latest_version"] = fm.get("latest_version", "")
-    info["num_objects"] = fm.get("num_objects", "")
+    info["last_version"] = fm.get("last_version", "")
+    info["records"] = fm.get("records", "")
     known = fm.get("known_versions", "")
     if known.startswith("[") and known.endswith("]"):
         known = known[1:-1]
     versions_list = [v.strip() for v in known.split(",") if v.strip()]
     info["num_versions"] = str(len(versions_list)) if versions_list else ""
-    updated = fm.get("updated_at", "")
+    updated = fm.get("updated", "")
     if updated and "T" in updated:
         updated = updated.split("T")[0]
-    info["updated_at"] = updated
+    info["updated"] = updated
 
     # Strip frontmatter for body parsing
     if content.startswith("---"):
@@ -145,11 +145,17 @@ def _render_dataset_table(
         # All metadata from enriched .md
         md_path = os.path.join(BASE_DIR, file_path + ".md")
         info = _read_md_info(md_path)
-        updated_at = info["updated_at"]
+        updated = info["updated"]
         deps_str = ", ".join(info["deps"]) if info["deps"] else ""
         summary = info["description"]
 
+<<<<<<< HEAD
         lines.append(f"| {link} | {updated_at} | {deps_str} | {summary} |")
+=======
+        lines.append(
+            f"| {link} | {updated} | {deps_str} | {summary} |"
+        )
+>>>>>>> c646881e (ordering and renaming)
 
     return lines
 
@@ -162,20 +168,15 @@ def render_index(plan: dict) -> str:
     local_ds = [d for d in datasets if d["source"] == "local"]
     studio_ds = [d for d in datasets if d["source"] == "studio"]
 
-    local_count = len(local_ds)
-    studio_count = len(studio_ds)
-
     # Frontmatter
     now = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     lines = ["---"]
+    lines.append(f"generated: {now}")
     if "db_last_updated" in plan:
         lines.append(f"db_last_updated: {plan['db_last_updated']}")
-    lines.append(f"generated_at: {now}")
-    lines.append(f"local_dataset_count: {local_count}")
-    if studio_count > 0:
-        lines.append(f"studio_dataset_count: {studio_count}")
+    lines.append(f"datasets: {len(datasets)}")
     if buckets:
-        lines.append(f"bucket_count: {len(buckets)}")
+        lines.append(f"buckets: {len(buckets)}")
     lines.append("---")
     lines.append("")
 
@@ -227,21 +228,21 @@ def render_index(plan: dict) -> str:
 
             total_files = ""
             total_size = ""
-            scanned_at = b.get("scanned_at") or ""
+            scanned = b.get("scanned") or ""
 
             if data:
                 tf = data.get("total_files")
                 total_files = f"{tf:,}" if tf else ""
                 tb = data.get("total_size_bytes", 0)
                 total_size = human_size(tb) if tb else ""
-                scanned_at = data.get("scanned_at", scanned_at) or ""
+                scanned = data.get("scanned", scanned) or ""
 
-            if scanned_at and "T" in scanned_at:
-                scanned_at = scanned_at.split("T")[0]
+            if scanned and "T" in scanned:
+                scanned = scanned.split("T")[0]
 
             link = f"[{uri}]({file_path}.md)"
 
-            lines.append(f"| {link} | {total_files} | {total_size} | {scanned_at} |")
+            lines.append(f"| {link} | {total_files} | {total_size} | {scanned} |")
 
         lines.append("")
 

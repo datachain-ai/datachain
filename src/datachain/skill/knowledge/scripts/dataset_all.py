@@ -43,10 +43,10 @@ def _fetch_all_versions(name: str) -> dict:  # noqa: C901, PLR0912, PLR0915
                 {
                     "version": version,
                     "uuid": data.get("uuid"),
-                    "num_objects": version_entry.get("num_objects")
+                    "records": version_entry.get("records")
                     if version_entry
                     else None,
-                    "updated_at": version_entry.get("updated_at")
+                    "updated": version_entry.get("updated")
                     if version_entry
                     else None,
                     "schema": data.get("schema"),
@@ -106,10 +106,10 @@ def _fetch_all_versions(name: str) -> dict:  # noqa: C901, PLR0912, PLR0915
                 {
                     "version": version,
                     "uuid": data.get("uuid"),
-                    "num_objects": version_entry.get("num_objects")
+                    "records": version_entry.get("records")
                     if version_entry
                     else None,
-                    "updated_at": version_entry.get("updated_at")
+                    "updated": version_entry.get("updated")
                     if version_entry
                     else None,
                     "schema": data.get("schema"),
@@ -189,8 +189,8 @@ def _fetch_all_versions(name: str) -> dict:  # noqa: C901, PLR0912, PLR0915
             {
                 "version": v_str,
                 "uuid": getattr(ver_obj, "uuid", None),
-                "num_objects": ver_obj.num_objects,
-                "updated_at": (ver_obj.finished_at or ver_obj.created_at).isoformat(),
+                "records": ver_obj.num_objects,
+                "updated": (ver_obj.finished_at or ver_obj.created_at).isoformat(),
                 "schema": schema if is_latest else {},
                 "preview": preview if is_latest else None,
                 "query_script": query_script,

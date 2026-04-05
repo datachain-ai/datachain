@@ -92,7 +92,7 @@ def cmd_plan():
     result = {
         "up_to_date": False,
         "index_path": INDEX_PATH,
-        "index_generated_at": None,
+        "index_generated": None,
         "index_age_hours": None,
         "stale_after_hours": STALE_AFTER_HOURS,
         "studio_available": studio_ok,
@@ -107,12 +107,12 @@ def cmd_plan():
         return
 
     fm = _read_frontmatter(INDEX_PATH)
-    generated_at_str = fm.get("generated_at")
-    generated_at = _parse_dt(generated_at_str)
+    generated_str = fm.get("generated")
+    generated_dt = _parse_dt(generated_str)
 
-    if generated_at:
-        age_hours = (now - generated_at).total_seconds() / 3600
-        result["index_generated_at"] = generated_at_str
+    if generated_dt:
+        age_hours = (now - generated_dt).total_seconds() / 3600
+        result["index_generated"] = generated_str
         result["index_age_hours"] = round(age_hours, 2)
         result["up_to_date"] = age_hours < STALE_AFTER_HOURS
 
@@ -281,8 +281,8 @@ def cmd_fetch(days: int, limit: int, enrich: bool):  # noqa: C901
         raw_id = j.get("id") or ""
         job_id = _strip_ordinal(raw_id) if raw_id else None
 
-        # Format created_at as "YYYY-MM-DD HH:MM" for display
-        created_at_display = (
+        # Format created as "YYYY-MM-DD HH:MM" for display
+        created_display = (
             created_dt.strftime("%Y-%m-%d %H:%M") if created_dt else j.get("created_at")
         )
 
@@ -291,10 +291,10 @@ def cmd_fetch(days: int, limit: int, enrich: bool):  # noqa: C901
                 "id": job_id,
                 "name": j.get("name"),
                 "status": _normalize_status(j.get("status")),
-                "created_at": j.get("created_at"),
-                "created_at_display": created_at_display,
+                "created": j.get("created_at"),
+                "created_display": created_display,
                 "created_by": j.get("created_by"),
-                "finished_at": j.get("finished_at"),
+                "finished": j.get("finished_at"),
                 "duration_seconds": duration_seconds,
                 "duration_str": _duration_str(duration_seconds)
                 if duration_seconds is not None
@@ -306,7 +306,7 @@ def cmd_fetch(days: int, limit: int, enrich: bool):  # noqa: C901
         )
 
     # Sort newest-first
-    jobs_out.sort(key=lambda j: j.get("created_at") or "", reverse=True)
+    jobs_out.sort(key=lambda j: j.get("created") or "", reverse=True)
 
     # Compute status counts
     failed_count = sum(1 for j in jobs_out if j["status"] == "failed")
@@ -316,7 +316,7 @@ def cmd_fetch(days: int, limit: int, enrich: bool):  # noqa: C901
     print(
         json.dumps(
             {
-                "generated_at": now.isoformat().replace("+00:00", "Z"),
+                "generated": now.isoformat().replace("+00:00", "Z"),
                 "days_covered": days,
                 "fetched_count": fetched_count,
                 "filtered_count": len(jobs_out),

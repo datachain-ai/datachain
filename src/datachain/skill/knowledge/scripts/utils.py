@@ -65,7 +65,7 @@ def read_json_versions(path):
 
 
 def read_json_metadata(path):
-    """Read latest_version and num_objects from a dataset JSON file."""
+    """Read last_version and records from a dataset JSON file."""
     try:
         with open(path) as f:
             data = json.load(f)
@@ -74,8 +74,8 @@ def read_json_metadata(path):
             return {}
         latest = versions[-1]
         return {
-            "latest_version": latest.get("version", ""),
-            "num_objects": str(latest.get("num_objects", "")),
+            "last_version": latest.get("version", ""),
+            "records": str(latest.get("records", "")),
         }
     except Exception:  # noqa: BLE001
         return {}
@@ -91,18 +91,18 @@ def read_md_versions(path):
 
 
 def read_md_metadata(path):
-    """Read latest_version and num_objects from .md frontmatter."""
+    """Read last_version and records from .md frontmatter."""
     fm = read_frontmatter(path)
     return {
-        "latest_version": fm.get("latest_version", ""),
-        "num_objects": fm.get("num_objects", ""),
+        "last_version": fm.get("last_version", ""),
+        "records": fm.get("records", ""),
     }
 
 
-def read_md_scanned_at(path):
-    """Read scanned_at from bucket .md frontmatter."""
+def read_md_scanned(path):
+    """Read scanned from bucket .md frontmatter."""
     fm = read_frontmatter(path)
-    return fm.get("scanned_at")
+    return fm.get("scanned")
 
 
 def dataset_file_path(name, source):
@@ -156,17 +156,17 @@ def collect_datasets(dc, studio: bool) -> list[dict]:
                     "version": (
                         str(info.version) if info.version is not None else None
                     ),
-                    "num_objects": getattr(info, "num_objects", None),
+                    "records": getattr(info, "num_objects", None),
                     "status": getattr(info, "status", None),
                     "namespace": namespace,
                     "project": project,
                     "source": "studio" if studio else "local",
-                    "created_at": (
+                    "created": (
                         info.created_at.isoformat()
                         if getattr(info, "created_at", None) is not None
                         else None
                     ),
-                    "updated_at": (
+                    "updated": (
                         info.updated_at.isoformat()
                         if getattr(info, "updated_at", None) is not None
                         else None

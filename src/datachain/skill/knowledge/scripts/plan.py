@@ -18,7 +18,7 @@ from utils import (
     read_json_metadata,
     read_json_versions,
     read_md_metadata,
-    read_md_scanned_at,
+    read_md_scanned,
     read_md_versions,
     studio_available,
 )
@@ -89,10 +89,10 @@ def plan_datasets(
         versions_to_fetch = [v for v in versions_sorted if v not in file_versions_set]
 
         if latest_version not in versions_to_fetch:
-            file_latest = file_fm.get("latest_version", "")
-            file_num_obj = file_fm.get("num_objects", "")
-            latest_num_obj = str(latest_entry.get("num_objects") or "")
-            if file_latest != latest_version or file_num_obj != latest_num_obj:
+            file_latest = file_fm.get("last_version", "")
+            file_records = file_fm.get("records", "")
+            latest_records = str(latest_entry.get("records") or "")
+            if file_latest != latest_version or file_records != latest_records:
                 versions_to_fetch.append(latest_version)
 
         if not file_exists:
@@ -110,9 +110,9 @@ def plan_datasets(
                 "source": source,
                 "file_path": file_path,
                 "status": status,
-                "latest_version": latest_version,
-                "num_objects": latest_entry.get("num_objects"),
-                "updated_at": latest_entry.get("updated_at"),
+                "last_version": latest_version,
+                "records": latest_entry.get("records"),
+                "updated": latest_entry.get("updated"),
                 "known_versions": versions_sorted,
                 "file_versions": file_versions,
                 "versions_to_fetch": versions_to_fetch,
@@ -138,7 +138,7 @@ def plan_buckets() -> list[dict]:
     buckets_out = []
     for listing in listings:
         uri = listing.uri.rstrip("/") + "/"
-        finished_at = listing.finished_at.isoformat() if listing.finished_at else None
+        finished = listing.finished_at.isoformat() if listing.finished_at else None
 
         parts = parse_uri(uri)
         file_path = bucket_file_path(uri)
@@ -147,17 +147,17 @@ def plan_buckets() -> list[dict]:
 
         existing = read_json_data(abs_json_path)
         if existing is None:
-            md_scanned = read_md_scanned_at(abs_md_path)
+            md_scanned = read_md_scanned(abs_md_path)
             if md_scanned:
-                existing = {"scanned_at": md_scanned}
+                existing = {"scanned": md_scanned}
 
         if existing is None:
             status = "new"
-            scanned_at = None
+            scanned = None
         else:
-            scanned_at = existing.get("scanned_at")
-            if (scanned_at and finished_at and scanned_at >= finished_at) or (
-                scanned_at and not finished_at
+            scanned = existing.get("scanned")
+            if (scanned and finished and scanned >= finished) or (
+                scanned and not finished
             ):
                 status = "ok"
             else:
@@ -171,8 +171,8 @@ def plan_buckets() -> list[dict]:
                 "prefix": parts["prefix"],
                 "file_path": file_path,
                 "status": status,
-                "scanned_at": scanned_at,
-                "listing_finished_at": finished_at,
+                "scanned": scanned,
+                "listing_finished": finished,
                 "listing_expired": listing.is_expired,
             }
         )

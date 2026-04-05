@@ -9,7 +9,7 @@ Read the JSON file at the path provided. It contains:
 - `name`: dataset name
 - `source`: `"local"` or `"studio"`
 - `versions[]`: array ordered oldest-first, each with:
-  - `version`, `uuid`, `num_objects`, `updated_at`
+  - `version`, `uuid`, `records`, `updated`
   - `schema`: column definitions (latest version has full schema; older versions may have `{}`)
   - `preview`: `{columns, rows}` sample data (latest version only). May include `file_url_prefix` — an HTTPS URL prefix (e.g., `https://bucket.s3.amazonaws.com`) for building clickable file links.
   - `query_script`: Python code that produced this version (may be `null`)
@@ -26,11 +26,11 @@ Write a markdown file with this structure:
 ```
 ---
 name: {name}
-uuid: {uuid from the latest version}
-source: {source}
-latest_version: {version}
-num_objects: {num_objects}
-updated_at: {updated_at}
+last_version: {version}
+last_version_uuid: {uuid from the latest version}
+updated: {updated}
+records: {records}
+is_local: {true if source is "local", false if "studio"}
 known_versions: [{comma-separated list of all version strings, e.g. 1.0.0, 1.0.1}]
 ---
 
@@ -40,13 +40,6 @@ known_versions: [{comma-separated list of all version strings, e.g. 1.0.0, 1.0.1
 and how it is produced. Be specific — mention data types and transformations.
 It should be optimized for dataset reusage - how this dataset is helpful.
 Dependency names are not necessary here since they are presented in another section.}
-
-## Stats
-
-- **Latest version:** {version}
-- **Records:** {num_objects}
-- **Updated:** {updated_at or "N/A"}
-- **Source:** {source}
 
 ## Dependencies
 
@@ -74,7 +67,7 @@ make those cells clickable: `[value]({file_url_prefix}/{value})`.}
 
 {One subsection per version, newest first.}
 
-### {version} — {date} ({num_objects} records)
+### {version} — {date} ({records} records)
 
 {For the latest version: 1-2 sentences describing the current state — what the
 dataset produces and its key characteristics.}
