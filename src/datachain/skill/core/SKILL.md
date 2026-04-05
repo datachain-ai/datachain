@@ -83,36 +83,41 @@ Never create or modify files under `dc-knowledge/` — that directory is owned b
     ✗ dc.read_storage("gs://bucket/data/")  ← 1 min credential timeout
     ✗ dc.File.at("gs://bucket/file.txt", anon=True)  ← File.at() has no anon param
 
-2. TYPE HINTS NOT params/output: Never pass params= or output= to map/gen/agg.
-   DataChain auto-infers from function signature and return type annotation.
+2. TYPE HINTS NOT output: Never pass output= to map/gen/agg — DataChain infers from
+   return type annotation. params= is allowed as an override to bind function parameters
+   to specific columns (e.g., nested fields like "file.path"), but prefer matching
+   function parameter names to column names when possible.
    ✓ def fn(file: dc.ImageFile) -> list[float]: ...
      chain.map(emb=fn)
-   ✗ chain.map(fn, params=["file"], output={"emb": list[float]})
+   ✓ def fn(path: str) -> str: ...
+     chain.map(label=fn, params=["file.path"])       # binds path → file.path column
+   ✗ chain.map(fn, output={"emb": list[float]})      # output= breaks auto-inference
 
 3. LAMBDA ONLY FOR STR: Lambdas have no type annotation → DataChain defaults to str.
    Use lambdas only when return type is str. For everything else, write a named function.
-   ✓ chain.map(name=lambda file: file.path.split("/")[-1])   # str is fine
+   Use params= to bind lambda args to nested columns (avoids file downloads).
+   ✓ chain.map(name=lambda path: path.split("/")[-1], params=["file.path"])
+   ✓ chain.map(label=lambda path: path.split("/")[-2], params=["file.path"])
+   ✗ chain.map(name=lambda file: file.path.split("/")[-1])  # downloads file for path
    ✗ chain.map(size=lambda file: file.size)                  # int → treated as str → broken
 
 3a. AVOID FILE OBJECT WHEN CONTENT NOT NEEDED: Passing a File/ImageFile object
     to a UDF (map/gen) downloads the full file content, even if the UDF only reads
-    metadata like .path or .size. This can download gigabytes of data unnecessarily.
-    - For path manipulation: use mutate() with func.path.* (vectorized SQL, no download).
-    - For other metadata-only logic: first mutate() the needed fields into
-      top-level columns, then write a named function that takes primitives.
-    - Pass the File object ONLY when you need file content (.read(), .open(), etc.).
-    ✓ chain.mutate(stem=dc.func.path.file_stem(dc.C("file.path")))   # SQL → no download
-    ✓ chain.mutate(ext=dc.func.path.file_ext(dc.C("file.path")))     # SQL → no download
+    metadata like .path or .size. This applies to File and ALL its subclasses
+    (ImageFile, TextFile, VideoFile, AudioFile).
+    - Use params= to bind UDF args to nested columns like "file.path", "file.size".
+    - For pure SQL path ops: use mutate() with func.path.* (no Python needed).
+    - Pass File object ONLY when you need file content (.read(), .open(), etc.).
     ✓ def classify(path: str) -> str:
           return path.split("/")[-2]
-      chain.mutate(path=dc.C("file.path")).map(category=classify)     # no download
+      chain.map(category=classify, params=["file.path"])     # no download
+    ✓ def meta(path: str, size: int) -> str:
+          return f"{path}: {size}"
+      chain.map(desc=meta, params=["file.path", "file.size"])  # multiple fields
+    ✓ chain.mutate(stem=dc.func.path.file_stem(dc.C("file.path")))   # pure SQL
     ✗ def classify(file: dc.ImageFile) -> str:
           return file.path.split("/")[-2]
-      chain.map(category=classify)
-      # passes File object → downloads full content just to read .path string
-    This applies to File and ALL its subclasses (ImageFile, TextFile, VideoFile,
-    AudioFile). map() and gen() prefetch file content by default (prefetch=2) for
-    every File object in the row — even if the UDF never calls .read() or .open().
+      chain.map(category=classify)                           # downloads entire file
     When the UDF does need file content, use settings(prefetch=0) to disable
     automatic prefetch — files are then downloaded lazily only when the UDF
     calls .read(), .open(), etc.
@@ -123,6 +128,9 @@ Never create or modify files under `dc-knowledge/` — that directory is owned b
 
 5. INPUT PARAM: The file column is always named "file" regardless of modality.
    def process(file: dc.ImageFile) -> ...  ← always "file", not "image"
+   When using params=, function arg names don't need to match column names:
+   def process(path: str) -> str: ...
+   chain.map(label=process, params=["file.path"])  # "path" arg ← "file.path" column
 
 6. PARALLEL WHEN NEEDED: Only use .settings(parallel=True) when files are large
    or per-row processing is expensive (ML inference, LLM calls, heavy file I/O).
@@ -248,10 +256,13 @@ Never create or modify files under `dc-knowledge/` — that directory is owned b
 
 18. INLINE FUNC EXPRESSIONS: Pass func/C expressions directly to on=,
     right_on=, partition_by=, order_by=. Do not mutate() a throwaway column.
+    For UDFs that need nested fields, use params= instead of mutate() (rule 3a).
     ✓ chain.merge(other, on=dc.func.path.file_stem(dc.C("file.path")), ...)
     ✓ chain.group_by(..., partition_by=dc.func.path.parent(dc.C("file.path")))
+    ✓ chain.map(label=classify, params=["file.path"])  # direct binding, no mutate
     ✗ chain.mutate(stem=dc.func.path.file_stem(dc.C("file.path")))
             .merge(other, on="stem", ...)  ← unnecessary column
+    ✗ chain.mutate(path=dc.C("file.path")).map(label=classify)  ← unnecessary column
 
 19. SELECT_EXCEPT AFTER MERGE: After merge(), use select_except() to drop
     duplicated/unwanted columns. Never write a long select() list (>4 columns).
@@ -827,7 +838,7 @@ combined = images.merge(labels, on="file.name", right_on="labels.name")
     from datachain import File, C, func  ← clutters namespace
     Use dc.File, dc.C, dc.func after `import datachain as dc`
 ✗ Omitting trailing slash → permission error on anonymous/restricted storage
-✗ Using params= or output= with map/gen/agg → breaks auto-inference
+✗ Using output= with map/gen/agg → breaks auto-inference
 ✗ Lambda for non-str return types → DataChain defaults to str → wrong schema
 ✗ Pulling all data to Python for filtering:
     chain.to_list() then iterating in Python  ← never do this for metadata ops
