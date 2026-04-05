@@ -53,12 +53,8 @@ def _fetch_all_versions(name: str) -> dict:  # noqa: C901, PLR0912, PLR0915
                 {
                     "version": version,
                     "uuid": data.get("uuid"),
-                    "records": version_entry.get("records")
-                    if version_entry
-                    else None,
-                    "updated": version_entry.get("updated")
-                    if version_entry
-                    else None,
+                    "records": version_entry.get("records") if version_entry else None,
+                    "updated": version_entry.get("updated") if version_entry else None,
                     "schema": data.get("schema"),
                     "preview": data.get("preview"),
                     "summary": ver_summary,
@@ -127,12 +123,8 @@ def _fetch_all_versions(name: str) -> dict:  # noqa: C901, PLR0912, PLR0915
                 {
                     "version": version,
                     "uuid": data.get("uuid"),
-                    "records": version_entry.get("records")
-                    if version_entry
-                    else None,
-                    "updated": version_entry.get("updated")
-                    if version_entry
-                    else None,
+                    "records": version_entry.get("records") if version_entry else None,
+                    "updated": version_entry.get("updated") if version_entry else None,
                     "schema": data.get("schema"),
                     "preview": data.get("preview"),
                     "summary": fb_summary,

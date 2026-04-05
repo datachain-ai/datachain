@@ -21,6 +21,7 @@ def _hs(nbytes):
     """Human-readable size without space: 3.3KB, 1.1MB."""
     return human_size(nbytes).replace(" ", "")
 
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -281,11 +282,18 @@ def _summarize_string(col_path, values):
 
     if unique_count <= 20 or ratio < 0.05:
         return _summarize_string_low_card(
-            non_null, total, unique_count, null_rate,
+            non_null,
+            total,
+            unique_count,
+            null_rate,
         )
 
     return _summarize_string_high_card(
-        non_null, total, unique_count, ratio, null_rate,
+        non_null,
+        total,
+        unique_count,
+        ratio,
+        null_rate,
     )
 
 
@@ -303,8 +311,7 @@ def _summarize_string_low_card(non_null, total, unique_count, null_rate):
         "line": SEP.join(parts),
         "stats": {
             "top_values": [
-                {"value": v, "pct": round(c / total * 100, 1)}
-                for v, c in counts
+                {"value": v, "pct": round(c / total * 100, 1)} for v, c in counts
             ],
             "unique_count": unique_count,
             "null_pct": null_rate,
@@ -314,7 +321,11 @@ def _summarize_string_low_card(non_null, total, unique_count, null_rate):
 
 
 def _summarize_string_high_card(
-    non_null, total, unique_count, ratio, null_rate,
+    non_null,
+    total,
+    unique_count,
+    ratio,
+    null_rate,
 ):
     """Format high-cardinality string: uniqueness + avg length."""
     avg_len = sum(len(str(v)) for v in non_null) / total if total > 0 else 0
@@ -405,9 +416,7 @@ def _summarize_list(values):
     if not non_null:
         return {"line": "", "stats": {"null_pct": null_rate}}
 
-    lengths = sorted(
-        len(v) if isinstance(v, (list, tuple)) else 0 for v in non_null
-    )
+    lengths = sorted(len(v) if isinstance(v, (list, tuple)) else 0 for v in non_null)
     mn = lengths[0]
     mx = lengths[-1]
     (p50,) = _percentiles(lengths, 0.5)
@@ -520,7 +529,8 @@ def dataset_summary_from_chain(chain) -> dict:
     schema = extract_schema(chain)
     flat_tree = list(
         chain.signals_schema.get_flat_tree(
-            include_hidden=False, include_sys=False,
+            include_hidden=False,
+            include_sys=False,
         )
     )
     columns_info = _classify_columns(flat_tree)
@@ -567,35 +577,29 @@ def dataset_summary_from_chain(chain) -> dict:
 
     # Phase 2 -- Fetch all column values in one to_list call
     numeric_cols = [
-        c
-        for c, i in columns_info.items()
-        if i["category"] in ("numeric", "file_size")
+        c for c, i in columns_info.items() if i["category"] in ("numeric", "file_size")
     ]
-    string_cols = [
-        c for c, i in columns_info.items() if i["category"] == "string"
-    ]
-    bool_cols = [
-        c for c, i in columns_info.items() if i["category"] == "bool"
-    ]
-    list_cols = [
-        c for c, i in columns_info.items() if i["category"] == "list"
-    ]
+    string_cols = [c for c, i in columns_info.items() if i["category"] == "string"]
+    bool_cols = [c for c, i in columns_info.items() if i["category"] == "bool"]
+    list_cols = [c for c, i in columns_info.items() if i["category"] == "list"]
 
     all_fetch_cols = numeric_cols + string_cols + bool_cols + list_cols
-    all_values = (
-        _fetch_column_values(working, all_fetch_cols)
-        if all_fetch_cols
-        else {}
-    )
+    all_values = _fetch_column_values(working, all_fetch_cols) if all_fetch_cols else {}
 
     # Phase 3 -- Per-column summaries
     col_results = _build_column_results(
-        columns_info, agg_data, all_values, warnings_list,
+        columns_info,
+        agg_data,
+        all_values,
+        warnings_list,
     )
 
     # Phase 4 -- Overview
     overview = _build_overview(
-        total_rows, columns_info, col_results, schema,
+        total_rows,
+        columns_info,
+        col_results,
+        schema,
     )
 
     result = {
@@ -679,7 +683,8 @@ def main():
         help="Dataset name with optional @version (e.g. my_dataset@1.0.3)",
     )
     parser.add_argument(
-        "--output", help="Output JSON file path (default: stdout)",
+        "--output",
+        help="Output JSON file path (default: stdout)",
     )
     args = parser.parse_args()
 
