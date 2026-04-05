@@ -255,6 +255,24 @@ Never create or modify files under `dc-knowledge/` — that directory is owned b
               self.model, _, self.preprocess = open_clip.create_model_and_transforms(...)
           def process(self, file: dc.ImageFile) -> list[float]: ...
       chain.map(emb=ImageEncoder())
+
+21. PERSIST BEFORE MULTI-MERGE AND AFTER GROUP_BY: When merging 2+ right-side
+    chains that contain UDFs (map/gen/agg), persist() each before the merge. Without
+    persist(), the final terminal op (save/show) may re-execute UDF pipelines
+    multiple times during merge evaluation.
+    Skip persist() when the right side has no UDFs (pure metadata/filter chains).
+    Also persist() after group_by() when the result feeds into further operations
+    (merge, filter, mutate) rather than directly into save().
+    ✓ a = chain_a.map(x=fn1).filer(...).persist()
+      b = chain_b.gen(y=fn2).persist()
+      images.merge(a, ...).merge(b, ...).save("out")
+    ✓ counts = chain.group_by(n=func.count(), partition_by="cat").persist()
+      counts.filter(C("n") > 5).save("popular")
+    ✗ a = chain_a.map(x=fn1)       # lazy
+      b = chain_b.gen(y=fn2)       # lazy
+      images.merge(a, ...).merge(b, ...).save("out")  ← UDFs re-execute
+    ✗ counts = chain.group_by(n=func.count(), partition_by="cat")
+      counts.filter(C("n") > 5).save("popular")  ← group_by re-executes
 ```
 
 ---
