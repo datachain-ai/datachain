@@ -5,6 +5,15 @@ description: Use ONLY for abstract DataChain SDK questions — API usage, method
 
 You are now loaded with expert-level DataChain SDK context. Apply every rule below when generating DataChain Python code. Do not deviate.
 
+## Pre-Generation Checklist (verify BEFORE writing any code)
+
+Every time you are about to write DataChain code, stop and check these items. These are the most commonly violated rules — failing any one of them produces a runtime error.
+
+- [ ] **Bucket access: anonymous or authenticated?** Before generating `read_storage()` for a bucket, check `dc-knowledge/buckets/` for a `.md` file — its frontmatter has `anon: true/false`. If no `.md` exists, probe access: run `python3 -c "import datachain as dc; dc.read_storage('<uri>', anon=True).limit(1).show()"` with and without `anon=True`. Public/demo buckets (s3:// or gs://) require `anon=True` — without it: GCS hangs ~1 min; S3 returns 403 Forbidden. (Rule 1a)
+- [ ] **Lambda return type is str?** If you use a lambda in `map()`/`gen()`, the return type defaults to `str`. If the actual return is int, float, BaseModel, or anything else → use a named function with a type annotation instead. (Rule 3)
+
+---
+
 ### Code style
 
 Write self-explanatory code. Use clear variable names, function names, and type hints instead of comments. Add a comment only when the code alone cannot convey *why* something is done (non-obvious workarounds, surprising constraints). Never add comments that restate what the code does.
@@ -75,12 +84,18 @@ Never create or modify files under `dc-knowledge/` — that directory is owned b
    ✓ dc.read_storage("s3://bucket/images/")
    ✗ dc.read_storage("s3://bucket/images")  ← permission error on anon access
 
-1a. ANON FOR GCS: Always add anon=True for gs:// buckets in read_storage().
-    Without it, the GCS client tries credential discovery first, adding ~1 min delay.
+1a. ANON FOR PUBLIC BUCKETS: Always add anon=True for public/anonymous-access
+    buckets in read_storage() — both gs:// and s3://.
+    - GCS (gs://): without anon=True, the client tries credential discovery first,
+      adding ~1 min delay.
+    - S3 (s3://): without anon=True, the client attempts authenticated access and
+      gets 403 Forbidden on public buckets that don't allow authenticated requests.
     Remove anon=True only if the user says they need authenticated access to a private bucket.
     This applies ONLY to dc.read_storage() — NOT to File.at() or other APIs.
     ✓ dc.read_storage("gs://bucket/data/", anon=True)
+    ✓ dc.read_storage("s3://public-bucket/data/", anon=True)
     ✗ dc.read_storage("gs://bucket/data/")  ← 1 min credential timeout
+    ✗ dc.read_storage("s3://public-bucket/data/")  ← 403 Forbidden
     ✗ dc.File.at("gs://bucket/file.txt", anon=True)  ← File.at() has no anon param
 
 2. TYPE HINTS NOT output: Never pass output= to map/gen/agg — DataChain infers from
@@ -178,10 +193,14 @@ Never create or modify files under `dc-knowledge/` — that directory is owned b
 11. GLOB IN PATH: When filtering by file extension or name pattern, put the glob
    directly in the read_storage() path instead of a separate .filter() call.
    This preserves per-file lineage (not just directory-level).
+   IMPORTANT: The type= parameter (e.g., type="image") only sets the File subclass
+   (ImageFile vs File) — it does NOT filter out non-matching files from the listing.
+   A directory with mixed file types (JPEGs, XMLs, TXTs) will list ALL files.
+   Prefer using a glob pattern to restrict to the desired file types.
    ✓ dc.read_storage("s3://bucket/images/**/*.{jpg,jpeg,png}", type="image")
    ✓ dc.read_storage("s3://data/**/*.csv")
-   ✗ dc.read_storage("s3://bucket/images/", type="image")
-     .filter(dc.C("file.path").glob("*.jpg") | dc.C("file.path").glob("*.png"))
+   ✗ dc.read_storage("s3://bucket/", type="image")  ← lists ALL files, not just images
+   ✓ dc.read_storage("s3://bucket/**/*.{jpg,png, jpeg}", type="image")
 
 12. SINGLE FILE vs MULTI FILE: Use the right API for the job.
     - For one known file: use dc.File.at() (or dc.TextFile.at(), dc.ImageFile.at()).
@@ -505,6 +524,8 @@ class Detection(BaseModel):
 
 `dc.Image`, `dc.Video`, `dc.Audio` are media metadata models in the `dc` namespace — NOT in `datachain.model`.
 ✓ `def get_size(file: dc.ImageFile) -> dc.Image:`
+✗ `from datachain import model; model.Image`  ← AttributeError, Image is not on model
+✗ `from datachain.lib.file import Image`       ← works but violates import convention
 
 Sub-file units:
 - `VideoFrame` -- `.get_np()` → ndarray, `.save(path)`
@@ -926,4 +947,8 @@ combined = images.merge(labels, on="file.name", right_on="labels.name")
     Use built-in model.BBox / model.Pose / model.Segment instead of custom classes.
     ✗ class HeadBBox(BaseModel): xmin: int; ymin: int; xmax: int; ymax: int
     ✓ model.BBox(title="head", coords=[xmin, ymin, xmax, ymax])  # PASCAL VOC
+✗ Using model.Image / model.Video / model.Audio for media metadata:
+    These are NOT in the model module — they live directly on dc.
+    ✗ from datachain import model; model.Image  ← AttributeError
+    ✓ dc.Image, dc.Video, dc.Audio              ← correct namespace
 ```

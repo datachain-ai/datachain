@@ -10,6 +10,7 @@ Read the JSON file at the path provided. It contains:
 - `scheme`: storage scheme (s3, gs, az)
 - `bucket`: bucket name
 - `prefix`: subdirectory prefix (empty string if whole bucket)
+- `anon`: whether the bucket requires anonymous access (`true`, `false`, or `null` if unknown)
 - `scanned`: when this scan was performed
 - `listing_uuid`: unique identifier for the listing
 - `listing_created`, `listing_expires`, `listing_expired`: listing freshness
@@ -31,6 +32,7 @@ Write a markdown file with this structure:
 uri: {uri}
 bucket: {bucket}
 prefix: {prefix}
+anon: {anon — true, false, or omit if null}
 uuid: {listing_uuid}
 scanned: {scanned}
 files: {total_files}
@@ -53,6 +55,7 @@ the `{bucket}` bucket."}
 - **Total size:** {human-readable}
 - **File types:** {top 3 extensions with counts}
 - **Date range:** {oldest} to {newest}
+- **Access:** {if anon is true: "Public (use `anon=True` in `read_storage()`)", if false: "Authenticated", if null: omit this line}
 - **Listing:** {freshness message — see below}
 
 {Listing freshness message:

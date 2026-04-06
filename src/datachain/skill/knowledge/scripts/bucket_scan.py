@@ -426,6 +426,29 @@ def _enrich_text(file_obj, info):
 # ---------------------------------------------------------------------------
 
 
+def detect_anon(dc, uri: str) -> bool | None:
+    """Detect whether a bucket requires anonymous access.
+
+    Returns True if anon=True is needed, False if authenticated access works,
+    None if detection failed.
+    """
+    scheme = uri.split("://")[0] if "://" in uri else ""
+    if scheme not in ("s3", "gs"):
+        return None
+    # Try without anon first (authenticated)
+    try:
+        dc.read_storage(uri).limit(1).to_list("file")
+        return False
+    except Exception:  # noqa: BLE001
+        pass
+    # Try with anon
+    try:
+        dc.read_storage(uri, anon=True).limit(1).to_list("file")
+        return True
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def scan_bucket(uri: str, output: str | None = None):
     """Aggregate metadata + sample files for one bucket URI."""
     dc = dc_import()
@@ -434,8 +457,10 @@ def scan_bucket(uri: str, output: str | None = None):
     parts = parse_uri(uri)
     now = datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
+    anon = detect_anon(dc, uri)
+
     # Never pass update=True
-    chain = dc.read_storage(uri)
+    chain = dc.read_storage(uri, **({"anon": True} if anon else {}))
 
     listing_info = get_listing_info(uri)
 
@@ -470,6 +495,7 @@ def scan_bucket(uri: str, output: str | None = None):
         "scheme": parts["scheme"],
         "bucket": parts["bucket"],
         "prefix": parts["prefix"],
+        "anon": anon,
         "scanned": now,
         **listing_info,
         "total_files": total_files,
