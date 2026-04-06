@@ -269,20 +269,32 @@ def get_listing_finished_at(uri: str) -> str | None:
 
 
 def source_to_https(source: str) -> str | None:
-    """Convert a storage URI prefix to an HTTPS URL prefix.
+    """Convert a storage URI to an HTTPS URL prefix for the bucket root.
+
+    File paths in listings are relative to the bucket root, so the prefix
+    must point to the bucket root — not the subdirectory being listed.
 
     Returns None for local paths or unrecognized schemes.
+
+    Examples:
+        s3://my-bucket/prefix/  -> https://my-bucket.s3.amazonaws.com
+        gs://demo/data/         -> https://storage.googleapis.com/demo
+        az://acct/container/    -> https://acct.blob.core.windows.net/container
     """
-    source = source.rstrip("/")
-    if source.startswith("s3://"):
-        bucket = source[5:]
+    parts = parse_uri(source)
+    scheme = parts["scheme"]
+    bucket = parts["bucket"]
+
+    if scheme == "s3":
         return f"https://{bucket}.s3.amazonaws.com"
-    if source.startswith("gs://"):
-        bucket = source[5:]
+    if scheme == "gs":
         return f"https://storage.googleapis.com/{bucket}"
-    if source.startswith("az://"):
-        parts = source[5:].split("/", 1)
-        if len(parts) == 2:
-            account, container = parts
-            return f"https://{account}.blob.core.windows.net/{container}"
+    if scheme == "az":
+        # az://account/container/... → bucket=account, prefix=container/...
+        # Azure needs account + container in the URL
+        prefix = parts["prefix"].rstrip("/")
+        container = prefix.split("/", 1)[0] if prefix else None
+        if container:
+            return f"https://{bucket}.blob.core.windows.net/{container}"
+        return None
     return None
