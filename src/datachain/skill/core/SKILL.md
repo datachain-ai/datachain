@@ -160,10 +160,6 @@ Never create or modify files under `dc-knowledge/` — that directory is owned b
    Only add .settings(prefetch=N) to the generated code if N > 4 (default is 2).
    Skip for UDFs that don't read file content (metadata-only operations).
    Skip if the user explicitly sets prefetch.
-   Special case: get_info() reads only the file header, not the whole file.
-   Estimate ~500B per file for get_info() → prefetch = 4MB/500B = 8192 → clamped to 128.
-   ✓ # get_info() reads header only ~500B → prefetch = 128
-     chain.settings(prefetch=128).map(info=lambda file: file.get_info())
    ✓ # small XML files ~2KB → prefetch = 4MB/2KB = 2048 → clamped to 128
      chain.settings(prefetch=128).map(bbox=parse_xml)
    ✓ # JPEGs ~200KB → prefetch = 4MB/200KB = 20
@@ -523,9 +519,8 @@ class Detection(BaseModel):
 | `dc.AudioFile` | `"audio"` | -- | `.get_fragments(duration)` → `AudioFragment[]`, `.get_info()` → `dc.Audio(sample_rate,channels,duration,...)` |
 
 `dc.Image`, `dc.Video`, `dc.Audio` are media metadata models in the `dc` namespace — NOT in `datachain.model`.
-✓ `def get_size(file: dc.ImageFile) -> dc.Image:`
-✗ `from datachain import model; model.Image`  ← AttributeError, Image is not on model
-✗ `from datachain.lib.file import Image`       ← works but violates import convention
+✓ `def get_meta(file: dc.ImageFile) -> dc.Image:`
+✓ `def get_video_meta(file: dc.VideoFile) -> dc.Video:`
 
 Sub-file units:
 - `VideoFrame` -- `.get_np()` → ndarray, `.save(path)`
