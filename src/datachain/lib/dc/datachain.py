@@ -1102,6 +1102,7 @@ class DataChain:
             query=self._query.generate(
                 udf_obj.to_udf_wrapper(self._settings.batch_size),
                 partition_by=processed_partition_by,
+                is_aggregator=True,
                 **self._settings.to_dict(),
             ),
             signal_schema=SignalSchema({"sys": Sys}) | udf_obj.output,

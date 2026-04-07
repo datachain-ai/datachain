@@ -531,3 +531,40 @@ def test_ephemeral_mode_no_jobs_on_collect(test_session, nums_dataset):
 
     assert _count_rows(metastore, metastore._jobs) == jobs_before
     assert _count_rows(metastore, metastore._checkpoints) == checkpoints_before
+
+
+def test_ephemeral_mode_aggregator_with_partition_by(test_session):
+    metastore = test_session.catalog.metastore
+
+    dc.read_values(
+        num=[1, 2, 3, 4, 5, 6],
+        letter=["A", "A", "B", "B", "C", "C"],
+        session=test_session,
+    ).save("nums_letters_eph")
+
+    jobs_before = _count_rows(metastore, metastore._jobs)
+    checkpoints_before = _count_rows(metastore, metastore._checkpoints)
+
+    result = sorted(
+        dc.read_dataset("nums_letters_eph", session=test_session)
+        .settings(ephemeral=True)
+        .agg(
+            total=lambda num: [sum(num)],
+            output=int,
+            partition_by="letter",
+        )
+        .to_values("total")
+    )
+    assert result == [3, 7, 11]
+
+    assert _count_rows(metastore, metastore._jobs) == jobs_before
+    assert _count_rows(metastore, metastore._checkpoints) == checkpoints_before
+
+    with pytest.raises(RuntimeError, match="Cannot save datasets in ephemeral mode"):
+        dc.read_dataset("nums_letters_eph", session=test_session).settings(
+            ephemeral=True
+        ).agg(
+            total=lambda num: [sum(num)],
+            output=int,
+            partition_by="letter",
+        ).save("should_fail")
