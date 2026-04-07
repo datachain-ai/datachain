@@ -63,6 +63,7 @@ Dataset is a new abstraction that your data context and your team is operating w
 
 <details>
   <summary>Generated: `build_pets_dataset.py`</summary>
+
 ```python
 import datachain as dc
 
@@ -87,6 +88,7 @@ ds = (
 ds.show(5)
 print(f"\nTotal images: {ds.count()}")
 ```
+
 </details>
 
 ### 1.2 Datasets knowledge base
