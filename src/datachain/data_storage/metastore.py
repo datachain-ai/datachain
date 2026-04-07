@@ -1864,10 +1864,10 @@ class AbstractDBMetastore(AbstractMetastore):
 
         query = self._datasets_select(*select_cols).select_from(base_from)
 
-        if job_id:
+        if job_id is not None:
             query = query.where(dv.c.job_id == job_id)
 
-        if version_ids:
+        if version_ids is not None:
             query = query.where(dv.c.id.in_(version_ids))
 
         return self._fetch_version_pairs(query)
