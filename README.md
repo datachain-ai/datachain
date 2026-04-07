@@ -37,11 +37,12 @@ DataChain extends that harness to data. The agent that understands your codebase
      (git + files)                    (S3, GCS, AZ, local FS)
 ```
 
-## 1. Simple flow
+## 1. Examples
 
 Three prompts to the agent. Each one builds on the last - without you thinking about it.
 
-use your favorite coding agent:
+Use your favorite coding agent:
+
 ```bash
 claude # --dangerously-skip-permissions
 ```
@@ -49,68 +50,143 @@ claude # --dangerously-skip-permissions
 ### 1.1 Create dataset
 
 Type prompt:
+
 ```prompt
-Create a dataset of images from s3://datachain-usw2-main-dev/oxford-pets-small. Include all possible metadata from annotation dir as well as image filenames.
+Build a dataset from s3://dc-readme/oxford-pets-micro/images, including image width and height (in pixels), and cache the images locally for future processing
+```
+
+This generates a small script with efficient code that can scalle to millions of images.
+It creats a dataset in the in internal DB with pointers to files in storage but wihout duplicating data.
+
+Now you can point to it as dataset `oxford_pets_micro_images@1.0.0`.
+Dataset is a new abstraction that your data context and your team is operating with.
+
+<details>
+  <summary>Generated: `build_pets_dataset.py`</summary>
+```python
+import datachain as dc
+
+
+def get_info(file: dc.ImageFile) -> dc.Image:
+    return file.get_info()
+
+
+# Read images, extract dimensions, cache locally, and save
+# JPEGs ~100KB avg → prefetch = 4MB/100KB = 40
+ds = (
+    dc.read_storage(
+        "s3://dc-readme/oxford-pets-micro/images/**/*.jpg",
+        type="image",
+        anon=True,
+    )
+    .settings(prefetch=40, cache=True)
+    .map(info=get_info)
+    .save("oxford_pets_micro_images")
+)
+
+ds.show(5)
+print(f"\nTotal images: {ds.count()}")
+```
+</details>
+
+### 1.2 Datasets knowledge base
+
+Now, the dataset as well as the bucket in your knowledge base and you'r agent is using agentic search to get all the context about it:
+```bash
+$ tree dc-knowledge
+dc-knowledge
+├── buckets
+│   └── s3
+│       └── dc_readme.md
+├── datasets
+│   └── oxford_pets_micro_images.md
+└── index.md
+```
+
+You can browse all the datasets and buckets. `index.md` is an entry point. It's human readbale MD format with dataset summary.
+The direcotry structure is optimize for agentic search, so your agent doesn't need any extra instruction to navigate on it.
+
+You can open it in any text editor or Obsidian (it slightly optimized for it including wikilinks):
+
+![Visualize data knowledge base](docs/assets/obsidian_single.gif)
+
+This become more and more useful with many datasets that you work on. Agents start bringing insides that you didn't expect and they also generate much better code based on the coding paterns they see in your datasets (since code is also part of this lineage in the knowledge base).
+
+### 1.3 Efficient data quirying
+
+```prompt
+How many images in the pets dataset wider than 500 pixels
+```
+
+Agent finds context about "the pet" dataset from the knowledge base and answer the question.
+
+```
+⏺ Skill(/datachain-knowledge)
+  ⎿  Successfully loaded skill
+
+⏺ Let me first check the existing graph knowledge base and then query the dataset.
+...
+
+⏺ 3 images are wider than 500px.
+```
+
+But the answer is not based on the knowledge base - it does not have it - it's based on operational DB that contains the dataset.
+Technicaly in `.datachain/db` file.
+
+It generates super efficient, vectorized code that can run against 100s millions files size dataset:
+
+```prompt
+what code did you use to answer the question? save it as a file query_size.py
+```
+
+```python
+import datachain as dc
+
+count = dc.read_dataset("oxford_pets_micro_images").filter(dc.C("info.width") > 500).count()
+print(count)
+```
+
+### 1.4 Make it more realistic
+
+Type prompt:
+
+```prompt
+Extend the pets dataset by including all possible metadata from annotation/ dir in the bucket and extract breeds from filename suffix
 ```
 
 Ouptut:
-```
-⏺ Skill(graph)
-  ⎿  Successfully loaded skill
 
+```
 ⏺ Bash(python3 -c "
       import datachain as dc…)
 ...
 ```
 
-<details>
-<summary>Generated: <code>ingest.py</code></summary>
+Generated: `ingest.py`
 
 ```python
 
 ```
 
-</details>
 
-
-### 1.2 Chat with agent
-
-Prompt:
-```copy
-What dogs breed are in the dataset?
-```
-
-Output:
-```
-⏺ The dataset in this project is the Oxford-IIIT Pet Dataset, containing 25 dog breeds
-  (346 images total):
-
-  1. American Bulldog (11)
-  2. American Pit Bull Terrier (16)
-  3. Basset Hound (15)
-  4. Beagle (15)
-  ...
-```
-
-This run agains internal context layer runs efficiently. Works even in 100s million file scale within seconds.
-No westing time on parsing thousands of jsons from S3.
-
-
-### 1.3 Find similar images
+### 1.4 Similarity search and beyond
 
 Prepare data. Get an image (or use your own):
+
 ```copy
 datachain cp s3://datachain-usw2-main-dev/oxford-pets/images/Abyssinian_113.jpg my_cat.jpg
 ```
 
 Prompt:
+
 ```
-Find the 3 images most similar to my_cat.jpg but not Abyssinian breed
+Find the 3 dogs most similar to my_cat.jpg but not Abyssinian breed
 ```
 
-No embeddings exist yet. The agent notices, generates the embedding pipeline, runs it, registers the result, then does the search.
+No embeddings exist yet. The agent notices, generates the embedding pipeline (you can specify what embedding to use), runs it, registers the result, then does the search.
 
 Output:
+
 ```
 ⏺ Results — Similarity Search:
 
@@ -133,9 +209,7 @@ Output:
   Graph updated: 1 dataset (1 updated, 0 unchanged), 1 bucket (1 scanned, 0 unchanged).
 ```
 
-
-<details>
-<summary>Generated: <code>find_similar.py</code></summary>
+Generated: `find_similar.py`
 
 ```python
 import datachain as dc
@@ -182,10 +256,9 @@ ref = list(ref_emb)[0]
 )
 ```
 
-</details>
 
 
-### 1.4 Find similar dogs but not the same
+### 1.4 Datasets and embedding reusage
 
 This is when magic starts. All knowledge is accomulated and now agent can efficiently use it the existing precomputed embeddings as well as metadata - without even touching slow storage - all in from context.
 
@@ -215,34 +288,31 @@ Find top 5 similar dogs to scottish_terrier_132.jpg but not Scottish Terrier tha
   inference ran.
 ```
 
-<details>
-<summary>Generated: <code>search_filtered.py</code></summary>
+Generated: `search_filtered.py`
 
 No scripts were generated - agent just found the answer in second.
 
-</details>
+
 
 **2 seconds, not 4 minutes.** The agent found existing embeddings in the knowledge graph and reused them — no model loading, no reprocessing. Every `.save()` compounds. The agent gets smarter about your data with every run.
-
 
 ## 2. Incremental updates and checkpoints
 
 ### 2.000.
 
 Prompt:
+
 ```prompt
 Make a dataset from dir gs://datachain-demo/dogs-and-cats/ and include image sizes.
 ```
 
 In the session:
-```
+
 ```
 
-<details>
-<summary>Generated: <code>create_dogs_cats.py</code></summary>
-```python
 ```
-</details>
+
+Generated: `create_dogs_cats.py` ```python ```
 
 ### 2.1 New images arrive
 
@@ -277,8 +347,7 @@ LLM calls are expensive. A crash without checkpoints means paying twice.
 Generate a one-sentence caption for every image using Claude. Store as a dataset.
 ```
 
-<details>
-<summary>Generated: <code>caption.py</code></summary>
+Generated: `caption.py`
 
 ```python
 import anthropic, base64
@@ -311,7 +380,7 @@ def caption(file: dc.ImageFile) -> str:
 )
 ```
 
-</details>
+
 
 Simulate a corrupted image and run:
 
@@ -339,7 +408,6 @@ Saved oxford-pets-caps@0.0.1  (3,182 processed, 4,218 from checkpoint)
 
 Same script, same command. 3,182 LLM calls — not 7,400.
 
-
 ## 3. Physical AI: multi-sensor data
 
 Same pattern, real-world complexity. An AV team has three sources on S3: camera frames (JPEG, Unix timestamp in filename), LiDAR scans (PCD with metadata headers), annotations (COCO JSON).
@@ -350,8 +418,7 @@ Then build a fine-tuning dataset: match each LiDAR scan to its nearest
 camera frame within 50ms, join with annotations.
 ```
 
-<details>
-<summary>Generated: <code>av_ingest.py</code></summary>
+Generated: `av_ingest.py`
 
 ```python
 import datachain as dc
@@ -405,7 +472,7 @@ def parse_pcd_header(file: dc.File) -> LidarMeta:
 )
 ```
 
-</details>
+
 
 After ingest, the knowledge graph has:
 
@@ -417,8 +484,7 @@ av-annotations  v0.0.1   12K labels   {frame_path: str, label: str, bbox: ...}
 
 The agent sees `timestamp_ms` in both `av-camera` and `av-lidar`. It writes the join. Without the knowledge graph, it couldn't — the field names are only visible in the registered schemas.
 
-<details>
-<summary>Generated: <code>av_align.py</code></summary>
+Generated: `av_align.py`
 
 ```python
 import datachain as dc
@@ -449,7 +515,7 @@ aligned = (
 )
 ```
 
-</details>
+
 
 ```
 Saved av-finetune@0.0.1
@@ -459,7 +525,6 @@ Saved av-finetune@0.0.1
 ```
 
 New data in any source bucket? Re-run ingest (delta-aware), re-run alignment. The context layer tracks what changed across all three sources.
-
 
 ## How it works
 
@@ -488,7 +553,7 @@ New data in any source bucket? Re-run ingest (delta-aware), re-run alignment. Th
 
 **Operational layer** — the ground truth. Every `.save()` records schema, processing state, and lineage. This is what makes incremental updates and crash recovery work.
 
-**Knowledge graph** — derived from the operational layer, stored as structured markdown in `datachain/graph/`. This is what `dc-graph` reads. Instead of guessing at folder structure, the agent reads the graph: what exists, what schema it has, what's already been computed.
+**Knowledge graph** — derived from the operational layer, stored as structured markdown in `datachain/graph/`. This is what `datachain-graph` skill reads. Instead of guessing at folder structure, the agent reads the graph: what exists, what schema it has, what's already been computed.
 
 ```markdown
 ## oxford-pets
@@ -510,12 +575,9 @@ New data in any source bucket? Re-run ingest (delta-aware), re-run alignment. Th
 
 Plain text. Agents read it. Humans can audit it. Lives in your repo alongside your code.
 
-
 ## Team and cloud: Studio
 
 Context built locally stays local. DataChain Studio makes it shared.
-
-![DataChain Studio architecture](docs/assets/studio_architecture.svg)
 
 ```bash
 datachain auth login
@@ -525,12 +587,13 @@ datachain job run --workers 20 --cluster gpu-pool caption.py
 # Saved oxford-pets-caps@0.0.1  (3,182 processed)
 ```
 
+![DataChain Studio architecture](docs/assets/studio_architecture.svg)
+
 Studio adds: shared dataset registry, access control, UI for video/DICOM/NIfTI/point clouds, lineage graphs, reproducible runs.
 
 Bring Your Own Cloud — all data and compute stay in your infrastructure. AWS, GCP, Azure, on-prem Kubernetes.
 
 → [studio.datachain.ai](https://studio.datachain.ai)
-
 
 ## Contributing
 
