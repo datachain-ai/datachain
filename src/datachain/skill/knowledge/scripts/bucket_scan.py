@@ -26,6 +26,7 @@ class ScanTimeout(Exception):
 def _alarm_handler(signum, frame):
     raise ScanTimeout
 
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -434,6 +435,7 @@ def _enrich_text(file_obj, info):
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
 
 def scan_bucket(uri: str, output: str | None = None, timeout: int = 0):
     """Aggregate metadata + sample files for one bucket URI."""
