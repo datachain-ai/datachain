@@ -36,7 +36,6 @@ from sqlalchemy import (
     select,
 )
 from sqlalchemy.sql import func as f
-from sqlalchemy.sql.elements import ColumnElement
 from sqlalchemy.sql.selectable import Join
 
 from datachain import json
@@ -80,6 +79,7 @@ STALE_CREATED_THRESHOLD_HOURS = 1
 if TYPE_CHECKING:
     from sqlalchemy import CTE, Delete, Insert, Select, Subquery, Update
     from sqlalchemy.schema import SchemaItem
+    from sqlalchemy.sql.elements import ColumnElement
 
     from datachain.data_storage import schema
     from datachain.data_storage.db_engine import DatabaseEngine
@@ -1757,7 +1757,7 @@ class AbstractDBMetastore(AbstractMetastore):
 
     def _dataset_version_query_base(
         self,
-    ) -> tuple[tuple[ColumnElement[Any], ...], Join]:
+    ) -> tuple[tuple["ColumnElement[Any]", ...], Join]:
         n = self._namespaces
         p = self._projects
         d = self._datasets
