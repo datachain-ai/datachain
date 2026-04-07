@@ -426,6 +426,7 @@ def _enrich_text(file_obj, info):
 # Main
 # ---------------------------------------------------------------------------
 
+
 def scan_bucket(uri: str, output: str | None = None):
     """Aggregate metadata + sample files for one bucket URI."""
 

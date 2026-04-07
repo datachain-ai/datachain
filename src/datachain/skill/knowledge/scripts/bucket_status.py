@@ -18,7 +18,7 @@ from urllib.parse import urlparse
 class BucketStatus:
     """Result of a fast bucket access check."""
 
-    __slots__ = ("exists", "access", "error")
+    __slots__ = ("access", "error", "exists")
 
     def __init__(self, exists: bool, access: str, error: str | None = None):
         self.exists = exists
@@ -139,8 +139,7 @@ def _check_gcs(bucket: str) -> BucketStatus:
         return BucketStatus(
             True,
             "denied",
-            f"Access denied to GCS bucket '{bucket}'"
-            " — check credentials/permissions",
+            f"Access denied to GCS bucket '{bucket}' — check credentials/permissions",
         )
     except Exception as e:  # noqa: BLE001
         return BucketStatus(False, "denied", str(e))
@@ -168,9 +167,7 @@ def _check_azure(container: str) -> BucketStatus:
         fs.ls(container, detail=False)[:1]
         return BucketStatus(True, "authenticated")
     except FileNotFoundError:
-        return BucketStatus(
-            False, "denied", f"Azure container '{container}' not found"
-        )
+        return BucketStatus(False, "denied", f"Azure container '{container}' not found")
     except Exception as e:  # noqa: BLE001
         err = str(e)
         if "AuthenticationError" in err or "credential" in err.lower():

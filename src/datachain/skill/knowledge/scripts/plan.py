@@ -156,9 +156,11 @@ def plan_buckets() -> list[dict]:
             scanned = None
         else:
             scanned = existing.get("scanned")
-            if (scanned and finished and scanned.replace("T", " ")[:19] >= finished.replace("T", " ")[:19]) or (
-                scanned and not finished
-            ):
+            if (
+                scanned
+                and finished
+                and scanned.replace("T", " ")[:19] >= finished.replace("T", " ")[:19]
+            ) or (scanned and not finished):
                 status = "ok"
             else:
                 status = "stale"
