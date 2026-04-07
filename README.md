@@ -61,7 +61,7 @@ This generates a small script with efficient code that can scales to millions of
 It creates a dataset in the in internal DB with pointers to files in storage but without duplicating data.
 
 Now you can point to it as dataset `oxford_pets_micro_images@1.0.0`.
-Dataset is a new abstraction that your data context and your team is operating with.
+Datasets are the core abstraction that your pipelines and your team operate on.
 
 <details>
   <summary>Generated: build_pets_dataset.py</summary>
@@ -74,8 +74,6 @@ def get_info(file: dc.ImageFile) -> dc.Image:
     return file.get_info()
 
 
-# Read images, extract dimensions, cache locally, and save
-# JPEGs ~100KB avg → prefetch = 4MB/100KB = 40
 ds = (
     dc.read_storage(
         "s3://dc-readme/oxford-pets-micro/images/**/*.jpg",
