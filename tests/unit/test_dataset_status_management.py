@@ -192,6 +192,44 @@ def test_get_dataset_versions_to_clean_scoped_to_job(
     assert len(to_clean) == 0
 
 
+def test_remove_dataset_versions_bulk(
+    test_session, job, dataset_created, dataset_failed
+):
+    test_session.catalog.metastore.set_job_status(job.id, JobStatus.FAILED)
+    ds_c = test_session.catalog.get_dataset(dataset_created.name, versions=None)
+    ds_f = test_session.catalog.get_dataset(dataset_failed.name, versions=None)
+    id_c = ds_c.get_version(ds_c.latest_version).id
+    id_f = ds_f.get_version(ds_f.latest_version).id
+
+    n = test_session.catalog.remove_dataset_versions(version_ids=[id_c, id_f])
+    assert n == 2
+    with pytest.raises(DatasetNotFoundError):
+        test_session.catalog.get_dataset(dataset_created.name)
+    with pytest.raises(DatasetNotFoundError):
+        test_session.catalog.get_dataset(dataset_failed.name)
+
+
+def test_remove_dataset_versions_job_id_filter(test_session, job, dataset_created):
+    test_session.catalog.metastore.set_job_status(job.id, JobStatus.FAILED)
+    ds = test_session.catalog.get_dataset(dataset_created.name, versions=None)
+    vid = ds.get_version(ds.latest_version).id
+
+    assert (
+        test_session.catalog.remove_dataset_versions(
+            version_ids=[vid], job_id="wrong-job-id"
+        )
+        == 0
+    )
+    test_session.catalog.get_dataset(dataset_created.name)
+
+    assert (
+        test_session.catalog.remove_dataset_versions(version_ids=[vid], job_id=job.id)
+        == 1
+    )
+    with pytest.raises(DatasetNotFoundError):
+        test_session.catalog.get_dataset(dataset_created.name)
+
+
 def test_get_dataset_versions_to_clean_finds_no_job_id(test_session):
     """Test that gc finds stale versions with no job_id (e.g. from pull_dataset)."""
 

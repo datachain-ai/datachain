@@ -1240,8 +1240,15 @@ class UDFStep(Step, ABC):
         existing_output_table = self.warehouse.get_table(
             Checkpoint.output_table_name(checkpoint.job_id, checkpoint.hash)
         )
+        output_table_name = Checkpoint.output_table_name(job.id, checkpoint.hash)
+        # Drop stale output table from earlier chain with same hash in this job
+        try:
+            existing = self.warehouse.get_table(output_table_name)
+            self.warehouse.db.drop_table(existing)
+        except TableMissingError:
+            pass
         output_table = self.warehouse.create_table_from_query(
-            Checkpoint.output_table_name(job.id, checkpoint.hash),
+            output_table_name,
             sa.select(existing_output_table),
             create_fn=self.create_output_table,
         )
