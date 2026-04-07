@@ -362,7 +362,7 @@ class AbstractMetastore(ABC, Serializable):
         - If job_id is provided, returns versions for that job.
         - If version_ids are provided, returns versions matching those IDs.
         - If both are provided, returns versions matching both filters.
-        At least one of job_id or version_ids must be provided.
+        - If neither is provided, returns all dataset versions.
 
         Returns:
             List of (DatasetRecord, version_string) tuples.
@@ -1856,9 +1856,6 @@ class AbstractDBMetastore(AbstractMetastore):
     def get_dataset_versions(
         self, job_id: str | None = None, version_ids: list[int] | None = None
     ) -> list[tuple[DatasetRecord, str]]:
-        if not job_id and not version_ids:
-            raise ValueError("Either job_id or version_ids must be provided")
-
         select_cols, base_from = self._dataset_version_query_base()
         dv = self._datasets_versions
 
