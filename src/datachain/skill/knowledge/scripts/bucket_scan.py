@@ -432,7 +432,7 @@ def detect_anon(dc, uri: str) -> bool | None:
     Returns True if anon=True is needed, False if authenticated access works,
     None if detection failed.
     """
-    scheme = uri.split("://")[0] if "://" in uri else ""
+    scheme = uri.split("://", maxsplit=1)[0] if "://" in uri else ""
     if scheme not in ("s3", "gs"):
         return None
     # Try without anon first (authenticated)
