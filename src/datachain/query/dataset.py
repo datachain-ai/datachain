@@ -880,6 +880,12 @@ class UDFStep(Step, ABC):
             p.get_column() if isinstance(p, Function) else p for p in list_partition_by
         ]
 
+        # Drop stale partition table from earlier chain with same hash in this job
+        if table_name:
+            catalog.warehouse.db.drop_table(
+                sa.Table(table_name, sa.MetaData()), if_exists=True
+            )
+
         # create table with partitions
         tbl = catalog.warehouse.create_udf_table(partition_columns(), name=table_name)
 
