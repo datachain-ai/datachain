@@ -102,7 +102,8 @@ Never create or modify files under `dc-knowledge/` — that directory is owned b
     ✓ dc.read_storage("s3://public-bucket/data/", anon=True)
     ✗ dc.read_storage("gs://bucket/data/")  ← 1 min credential timeout
     ✗ dc.read_storage("s3://public-bucket/data/")  ← 403 Forbidden
-    ✗ dc.File.at("gs://bucket/file.txt", anon=True)  ← File.at() has no anon param
+    Note: File.at() works on public buckets without any anon flag.
+    ✗ dc.File.at("gs://bucket/file.txt", anon=True)  ← File.at() has no anon param (and doesn't need one)
 
 2. EVERY UDF MUST HAVE A KNOWN OUTPUT TYPE. A UDF passed to map/gen/agg without
    a resolved return type defaults to str and crashes at runtime for any non-str

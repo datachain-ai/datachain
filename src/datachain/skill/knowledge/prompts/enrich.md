@@ -55,6 +55,9 @@ List dependencies as clickable links when `file_path` is present:
 
 {Markdown table from preview.columns and preview.rows. Show all rows provided.
 If preview is null, omit this section entirely.
+NEVER omit the preview table because values are large. Truncate instead.
+
+**Long list/vector columns (e.g., embeddings):** Show the first 2-3 elements followed by `…` and the length. Example: `[0.0132, -3.34e-3, …] (768)`. This keeps the table readable while confirming the data exists and its dimensionality.
 
 **IMPORTANT: If `preview.file_url_prefix` is present, ALL cells in columns ending with `.path` or named `path` MUST be clickable links: `[value]({file_url_prefix}/{value})`.**
 
