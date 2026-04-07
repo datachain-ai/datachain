@@ -52,7 +52,9 @@ claude # --dangerously-skip-permissions
 Type prompt:
 
 ```prompt
-Build a dataset from s3://dc-readme/oxford-pets-micro/images, including image width and height (in pixels), and cache the images locally for future processing
+Build a dataset from s3://dc-readme/oxford-pets-micro/images
+including image width and height (in pixels),
+and cache the images locally for future processing
 ```
 
 This generates a small script with efficient code that can scalle to millions of images.
@@ -62,7 +64,7 @@ Now you can point to it as dataset `oxford_pets_micro_images@1.0.0`.
 Dataset is a new abstraction that your data context and your team is operating with.
 
 <details>
-  <summary>Generated: `build_pets_dataset.py`</summary>
+  <summary>Generated: build_pets_dataset.py</summary>
 
 ```python
 import datachain as dc
@@ -153,7 +155,8 @@ print(count)
 Type prompt:
 
 ```prompt
-Extend the pets dataset by including all possible metadata from annotation/ dir in the bucket and extract breeds from filename suffix
+Extend the pets dataset by including all possible metadata from annotation/
+dir in the bucket and extract breeds from filename suffix
 ```
 
 Ouptut:
@@ -164,11 +167,182 @@ Ouptut:
 ...
 ```
 
-Generated: `ingest.py`
+<details>
+  <summary>Generated: build_pets_extended.py</summary>
 
 ```python
+import re
+import xml.etree.ElementTree as ET
+from collections.abc import Iterator
 
+import datachain as dc
+from pydantic import BaseModel
+
+
+class BBox(BaseModel):
+    xmin: int
+    ymin: int
+    xmax: int
+    ymax: int
+
+
+class Annotation(BaseModel):
+    species: str
+    pose: str
+    truncated: bool
+    occluded: bool
+    difficult: bool
+    bbox: BBox
+
+class ClassInfo(BaseModel):
+    name: str
+    class_id: int
+    species_id: int
+    breed_id: int
+
+
+class SplitInfo(BaseModel):
+    name: str
+    split: str
+
+
+class Breed(BaseModel):
+    breed: str
+    species: str
+
+
+def parse_xml(file: dc.TextFile) -> Annotation:
+    root = ET.fromstring(file.read_text())
+    obj = root.find("object")
+    bb = obj.find("bndbox")
+    return Annotation(
+        species=obj.findtext("name"),
+        pose=obj.findtext("pose"),
+        truncated=obj.findtext("truncated") == "1",
+        occluded=obj.findtext("occluded") == "1",
+        difficult=obj.findtext("difficult") == "1",
+        bbox=BBox(
+            xmin=int(bb.findtext("xmin")),
+            ymin=int(bb.findtext("ymin")),
+            xmax=int(bb.findtext("xmax")),
+            ymax=int(bb.findtext("ymax")),
+        ),
+    )
+
+
+def parse_list(file: dc.TextFile) -> Iterator[ClassInfo]:
+    for line in file.read_text().strip().split("\n"):
+        if line.startswith("#"):
+            continue
+        parts = line.split()
+        yield ClassInfo(
+            name=parts[0],
+            class_id=int(parts[1]),
+            species_id=int(parts[2]),
+            breed_id=int(parts[3]),
+        )
+
+
+def parse_splits(file: dc.TextFile) -> Iterator[SplitInfo]:
+    split_tag = file.path.rsplit("/", 1)[-1].replace(".txt", "")
+    for line in file.read_text().strip().split("\n"):
+        if line.startswith("#"):
+            continue
+        yield SplitInfo(name=line.split()[0], split=split_tag)
+
+
+def extract_breed(path: str) -> Breed:
+    filename = path.rsplit("/", 1)[-1].rsplit(".", 1)[0]
+    breed = re.sub(r"_\d+$", "", filename)
+    species = "cat" if breed[0].isupper() else "dog"
+    return Breed(breed=breed, species=species)
+
+
+images = dc.read_dataset("oxford_pets_micro_images")
+
+# Extract breed from filename (no file download)
+images = images.map(breed_info=extract_breed, params=["file.path"])
+
+# Parse list.txt for class_id, species_id, breed_id
+class_info = (
+    dc.read_storage(
+        "s3://dc-readme/oxford-pets-micro/annotations/**/list.txt",
+        type="text",
+        anon=True,
+    )
+    .gen(class_info=parse_list)
+    .select("class_info")
+    .persist()
+)
+
+# Parse test.txt and trainval.txt for split assignment
+splits = (
+    dc.read_storage(
+        "s3://dc-readme/oxford-pets-micro/annotations/**/{test,trainval}.txt",
+        type="text",
+        anon=True,
+    )
+    .gen(split_info=parse_splits)
+    .select("split_info")
+    .persist()
+)
+
+# Parse XML bounding box annotations (only 156 images have these)
+xml_ann = (
+    dc.read_storage(
+        "s3://dc-readme/oxford-pets-micro/annotations/xmls/**/*.xml",
+        type="text",
+        anon=True,
+    )
+    .settings(prefetch=128)
+    .map(ann=parse_xml)
+    .persist()
+)
+
+# Link trimap segmentation masks
+trimaps = dc.read_storage(
+    "s3://dc-readme/oxford-pets-micro/annotations/trimaps/**/*.png",
+    type="image",
+    anon=True,
+)
+
+# Merge all sources
+ds = (
+    images
+    .merge(
+        class_info,
+        on=dc.func.path.file_stem(dc.C("file.path")),
+        right_on="class_info.name",
+    )
+    .merge(
+        splits,
+        on=dc.func.path.file_stem(dc.C("file.path")),
+        right_on="split_info.name",
+    )
+    .merge(
+        xml_ann,
+        on=dc.func.path.file_stem(dc.C("file.path")),
+        right_on=dc.func.path.file_stem(dc.C("file.path")),
+    )
+    .merge(
+        trimaps,
+        on=dc.func.path.file_stem(dc.C("file.path")),
+        right_on=dc.func.path.file_stem(dc.C("file.path")),
+        rname="trimap_",
+    )
+    .select_except(
+        "class_info.name",   # duplicate of file stem
+        "split_info.name",   # duplicate of file stem
+        "right_file",        # XML source TextFile ref (not needed)
+    )
+    .save("oxford_pets_micro_extended")
+)
+
+ds.show(3)
+print(f"\nTotal: {ds.count()} images")
 ```
+
+</details>
 
 
 ### 1.4 Similarity search and beyond
@@ -176,13 +350,13 @@ Generated: `ingest.py`
 Prepare data. Get an image (or use your own):
 
 ```copy
-datachain cp s3://datachain-usw2-main-dev/oxford-pets/images/Abyssinian_113.jpg my_cat.jpg
+datachain cp s3://datachain-usw2-main-dev/oxford-pets/images/beagle_3.jpg my_dog.jpg
 ```
 
 Prompt:
 
 ```
-Find the 3 dogs most similar to my_cat.jpg but not Abyssinian breed
+Find the 3 dogs most similar to my_dog.jpg
 ```
 
 No embeddings exist yet. The agent notices, generates the embedding pipeline (you can specify what embedding to use), runs it, registers the result, then does the search.
@@ -211,61 +385,74 @@ Output:
   Graph updated: 1 dataset (1 updated, 0 unchanged), 1 bucket (1 scanned, 0 unchanged).
 ```
 
-Generated: `find_similar.py`
+<details>
+  <summary>Generated: find_similar_dogs.py</summary>
 
 ```python
-import datachain as dc
 import open_clip
 import torch
 from PIL import Image
 
-# Step 1: Compute embeddings for all images
-model, _, preprocess = open_clip.create_model_and_transforms("ViT-B-32", "laion2b_s34b_b79k")
+import datachain as dc
+
+
+# Load CLIP model
+model, _, preprocess = open_clip.create_model_and_transforms(
+    "ViT-B-32", "laion2b_s34b_b79k"
+)
 model.eval()
 
 
-def embed(file: dc.ImageFile) -> list[float]:
-    img = preprocess(file.read().convert("RGB")).unsqueeze(0)
+# Compute reference embedding from my_dog.jpg
+with torch.no_grad():
+    ref_img = preprocess(Image.open("my_dog.jpg")).unsqueeze(0)
+    ref_emb = model.encode_image(ref_img)[0].tolist()
+
+def encode_image(file: dc.ImageFile, model, preprocess) -> list[float]:
     with torch.no_grad():
-        emb = model.encode_image(img)
-        emb = emb / emb.norm(dim=-1, keepdim=True)
-    return emb[0].tolist()
+        img = preprocess(file.read()).unsqueeze(0)
+        return model.encode_image(img)[0].tolist()
 
-ds = (
-    dc.read_dataset("pet_images_annotated")
-    .settings(cache=True)
-    .map(emb=embed)
-    .save("pet_embeddings")
+
+# Step 1: Save ALL embeddings (expensive compute preserved for reuse)
+embeddings = (
+    dc.read_dataset("oxford_pets_micro_extended")
+    .settings(prefetch=20, cache=True)
+    .setup(
+        model=lambda: model,
+        preprocess=lambda: preprocess,
+    )
+    .map(emb=encode_image)
+    .save("oxford_pets_micro_embeddings")
 )
 
-# Step 2: Get reference embedding
-ref_emb = (
-    dc.read_dataset("pet_embeddings")
-    .filter(dc.C("file.path").glob("*Abyssinian_113*"))
-    .collect("emb")
-)
-ref = list(ref_emb)[0]
+print(f"Saved {embeddings.count()} embeddings")
 
-# Step 3: Find top 20 similar, excluding Abyssinian
-(
-    dc.read_dataset("pet_embeddings")
-    .filter(~dc.C("ann.breed_name").glob("Abyssinian*"))
-    .mutate(dist=dc.func.cosine_distance(dc.C("emb"), ref))
+# Step 2: Query from saved embeddings (cheap, reusable)
+similar = (
+    embeddings
+    .filter(dc.C("breed_info.species") == "dog")
+    .filter(~dc.C("breed_info.breed").ilike("beagle"))
+    .mutate(dist=dc.func.cosine_distance(dc.C("emb"), ref_emb))
     .order_by("dist")
-    .limit(20)
-    .select("file", "ann.breed_name", "ann.species", "dist")
-    .show()
+    .limit(3)
+    .save("similar_dogs_to_my_dog")
 )
+
+similar.select("file", "breed_info", "dist").show()
 ```
 
+</details>
 
+
+![Visualize data knowledge base](docs/assets/obsidian_multi.gif)
 
 ### 1.4 Datasets and embedding reusage
 
-This is when magic starts. All knowledge is accomulated and now agent can efficiently use it the existing precomputed embeddings as well as metadata - without even touching slow storage - all in from context.
+All knowledge is accomulated and now agent can efficiently use it the existing precomputed embeddings as well as metadata - without even touching slow storage - all in from context.
 
 ```prompt
-Find top 5 similar dogs to scottish_terrier_132.jpg but not Scottish Terrier that has bounding box
+Find top 3 similar my to my_dog.jpg but not Beagle that has bounding box
 ```
 
 ```
@@ -273,28 +460,53 @@ Find top 5 similar dogs to scottish_terrier_132.jpg but not Scottish Terrier tha
       import datachain as dc…)
 ⏺ Results:
 
-  ┌─────┬──────────────────────────┬────────────┬───────┬────────────────┬────────┐
-  │ Ran │          Image           │   Breed    │ Pose  │      BBox      │ Distan │
-  │  k  │                          │            │       │                │   ce   │
-  ├─────┼──────────────────────────┼────────────┼───────┼────────────────┼────────┤
-  │   1 │ wheaten_terrier_114.jpg  │ Wheaten    │ Front │ (272,93,347,16 │  0.237 │
-  │     │                          │ Terrier    │ al    │ 6)             │        │
-  ├─────┼──────────────────────────┼────────────┼───────┼────────────────┼────────┤
-  │   2 │ wheaten_terrier_106.jpg  │ Wheaten    │ Front │ (84,40,313,262 │  0.238 │
-  │     │                          │ Terrier    │ al    │ )              │        │
+⏺ Top 3 non-beagle dogs with bounding boxes, ranked by CLIP similarity to your beagle:
+  ┌──────┬──────────────────────────────┬────────────────────────┬──────────┬────────────────────┐
+  │ Rank │            Image             │         Breed          │ Distance │        BBox        │
+  ├──────┼──────────────────────────────┼────────────────────────┼──────────┼────────────────────┤
+  │ 1    │ basset_hound_117.jpg         │ basset_hound           │    0.221 │ (237,31)→(479,294) │
+  ├──────┼──────────────────────────────┼────────────────────────┼──────────┼────────────────────┤
+  │ 2    │ basset_hound_129.jpg         │ basset_hound           │    0.223 │ (12,6)→(332,469)   │
+  ├──────┼──────────────────────────────┼────────────────────────┼──────────┼────────────────────┤
+  │ 3    │ english_cocker_spaniel_*.jpg │ english_cocker_spaniel │    0.279 │ (2,13)→(343,386)   │
+  └──────┴──────────────────────────────┴────────────────────────┴──────────┴────────────────────┘```
 
-❯ how long did it take
+It's done efficiently:
 
-⏺ Under 1 second — the embeddings were already saved in pet_embeddings, so it was just a
-   metadata query (filter + cosine distance in SQLite). No images were read, no model
-  inference ran.
+```prompt
+how long did it take
 ```
 
-Generated: `search_filtered.py`
+Output:
+```
+⏺ Under 1 second — the embeddings were already precomputed and saved in oxford_pets_micro_embeddings,
+  so the query was just a metadata filter + cosine distance calculation in the engine. No model
+  inference, no file downloads.
 
-No scripts were generated - agent just found the answer in second.
+  That's exactly why saving the embeddings dataset separately paid off.
+```
 
+```prompt
+how did you do that
+```
 
+Output:
+```
+⏺ The approach built up in layers across our conversation: oxford_pets_micro_images, oxford_pets_micro_extended, oxford_pets_micro_embeddings.
+
+The final similarity query was then just:
+
+  dc.read_dataset("oxford_pets_micro_embeddings")
+      .filter(dc.C("breed_info.species") == "dog")
+      .filter(~dc.C("breed_info.breed").ilike("beagle"))
+      .filter(dc.C("ann.species").isnot(None))  # has bounding box
+      .mutate(dist=dc.func.cosine_distance(dc.C("emb"), ref_emb))
+      .order_by("dist")
+      .limit(3)
+
+  No model loading, no file downloads, no Python UDFs — everything runs in the metadata engine (SQL).
+  The only Python needed was computing the reference embedding for my_dog.jpg once.
+```
 
 **2 seconds, not 4 minutes.** The agent found existing embeddings in the knowledge graph and reused them — no model loading, no reprocessing. Every `.save()` compounds. The agent gets smarter about your data with every run.
 
@@ -311,35 +523,8 @@ Make a dataset from dir gs://datachain-demo/dogs-and-cats/ and include image siz
 In the session:
 
 ```
-
 ```
 
-Generated: `create_dogs_cats.py` ```python ```
-
-### 2.1 New images arrive
-
-Copy some images to simulate new data arriving:
-
-```bash
-cp data/images/Abyssinian_{1..100}.jpg data/images/new_{1..100}.jpg
-python ingest.py
-```
-
-```
-Saved oxford-pets@0.0.2  (100 new, 7,400 unchanged — skipped)  2s
-```
-
-No code change. DataChain tracked which files were already processed.
-
-Update the embeddings:
-
-```bash
-python embed.py
-```
-
-```
-Saved oxford-pets-emb@0.0.2  (100 new embeddings, 7,400 from cache)  5s
-```
 
 ### 2.2 Crash recovery — LLM enrichment
 
@@ -349,7 +534,9 @@ LLM calls are expensive. A crash without checkpoints means paying twice.
 Generate a one-sentence caption for every image using Claude. Store as a dataset.
 ```
 
-Generated: `caption.py`
+<details>
+  <summary>Generated: caption.py</summary>
+
 
 ```python
 import anthropic, base64
@@ -382,33 +569,9 @@ def caption(file: dc.ImageFile) -> str:
 )
 ```
 
+</details>
 
 
-Simulate a corrupted image and run:
-
-```bash
-touch data/images/Abyssinian_1.jpg   # empty file
-python caption.py
-```
-
-```
-Processing... [======>        ]  4,218/7,400
-ERROR: Abyssinian_1.jpg — cannot identify image file
-```
-
-Fix it and re-run:
-
-```bash
-cp batch1/Abyssinian_2.jpg batch1/Abyssinian_1.jpg
-python caption.py
-```
-
-```
-Resuming from checkpoint  (4,218 already done)
-Saved oxford-pets-caps@0.0.1  (3,182 processed, 4,218 from checkpoint)
-```
-
-Same script, same command. 3,182 LLM calls — not 7,400.
 
 ## 3. Physical AI: multi-sensor data
 
