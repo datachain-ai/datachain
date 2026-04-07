@@ -15,11 +15,11 @@ datachain skill install --target claude   # or --target cursor, --target codex
 
 Built for large-scale unstructured data - millions of images, video, audio, sensor streams, documents - stored in S3, GCS, or local filesystem.
 
-## Extend coding agents with data
+## 1. Extend coding agents with data
 
 Claude Code (Codex, Cursor, etc) isn't just a chat interface with a shell - it's a harness that gives the LLM repo context, dedicated tools, and persistent memory. That's what makes it good.
 
-DataChain extends that harness to data. The agent that understands your codebase now also understands your storages and datasets: schemas, dependencies, what's already computed, what's mid-run, and what changed since last time.
+DataChain extends that harness to data. The agent that understands your codebase now also understands your storage and datasets: schemas, dependencies, what's already computed, what's mid-run, and what changed since last time.
 
 ```
 ┌──────────────────────┐             ┌──────────────────────┐
@@ -37,7 +37,7 @@ DataChain extends that harness to data. The agent that understands your codebase
      (git + files)                    (S3, GCS, AZ, local FS)
 ```
 
-## 1. Examples
+## 2. Examples
 
 Three prompts to the agent. Each one builds on the last - without you thinking about it.
 
@@ -47,7 +47,7 @@ Use your favorite coding agent:
 claude # --dangerously-skip-permissions
 ```
 
-### 1.1 Create dataset
+### 2.1. Create dataset
 
 Type prompt:
 
@@ -57,8 +57,8 @@ including image width and height (in pixels),
 and cache the images locally for future processing
 ```
 
-This generates a small script with efficient code that can scalle to millions of images.
-It creats a dataset in the in internal DB with pointers to files in storage but wihout duplicating data.
+This generates a small script with efficient code that can scales to millions of images.
+It creates a dataset in the in internal DB with pointers to files in storage but without duplicating data.
 
 Now you can point to it as dataset `oxford_pets_micro_images@1.0.0`.
 Dataset is a new abstraction that your data context and your team is operating with.
@@ -93,9 +93,9 @@ print(f"\nTotal images: {ds.count()}")
 
 </details>
 
-### 1.2 Datasets knowledge base
+### 2.2. Datasets knowledge base
 
-Now, the dataset as well as the bucket in your knowledge base and you'r agent is using agentic search to get all the context about it:
+Now, the dataset as well as the bucket in your knowledge base and your agent is using agentic search to get all the context about it:
 ```bash
 $ tree dc-knowledge
 dc-knowledge
@@ -107,16 +107,16 @@ dc-knowledge
 └── index.md
 ```
 
-You can browse all the datasets and buckets. `index.md` is an entry point. It's human readbale MD format with dataset summary.
-The direcotry structure is optimize for agentic search, so your agent doesn't need any extra instruction to navigate on it.
+You can browse all the datasets and buckets. `index.md` is an entry point. It's human readable MD format with dataset summary.
+The directory optimized for agentic search, so your agent doesn't need any extra instruction to navigate on it.
 
 You can open it in any text editor or Obsidian (it slightly optimized for it including wikilinks):
 
 ![Visualize data knowledge base](docs/assets/obsidian_single.gif)
 
-This become more and more useful with many datasets that you work on. Agents start bringing insides that you didn't expect and they also generate much better code based on the coding paterns they see in your datasets (since code is also part of this lineage in the knowledge base).
+This become more and more useful with many datasets that you work on. Agents start bringing insights that you didn't expect and they also generate much better code based on the coding paterns they see in your datasets (since code is also part of this lineage in the knowledge base).
 
-### 1.3 Efficient data quirying
+### 2.3. Efficient data quirying
 
 ```prompt
 How many images in the pets dataset wider than 500 pixels
@@ -150,7 +150,7 @@ count = dc.read_dataset("oxford_pets_micro_images").filter(dc.C("info.width") > 
 print(count)
 ```
 
-### 1.4 Make it more realistic
+### 2.4. Make it more realistic
 
 Type prompt:
 
@@ -159,7 +159,7 @@ Extend the pets dataset by including all possible metadata from annotation/
 dir in the bucket and extract breeds from filename suffix
 ```
 
-Ouptut:
+Output:
 
 ```
 ⏺ Bash(python3 -c "
@@ -345,7 +345,7 @@ print(f"\nTotal: {ds.count()} images")
 </details>
 
 
-### 1.4 Similarity search and beyond
+### 2.5. Similarity search and beyond
 
 Prepare data. Get an image (or use your own):
 
@@ -447,9 +447,9 @@ similar.select("file", "breed_info", "dist").show()
 
 ![Visualize data knowledge base](docs/assets/obsidian_multi.gif)
 
-### 1.4 Datasets and embedding reusage
+### 2.6. Datasets and embedding reusage
 
-All knowledge is accomulated and now agent can efficiently use it the existing precomputed embeddings as well as metadata - without even touching slow storage - all in from context.
+All knowledge is accumulated and now agent can efficiently use it the existing precomputed embeddings as well as metadata - without even touching slow storage - all in from context.
 
 ```prompt
 Find top 3 similar my to my_dog.jpg but not Beagle that has bounding box
@@ -510,9 +510,9 @@ The final similarity query was then just:
 
 **2 seconds, not 4 minutes.** The agent found existing embeddings in the knowledge graph and reused them — no model loading, no reprocessing. Every `.save()` compounds. The agent gets smarter about your data with every run.
 
-## 2. Incremental updates and checkpoints
+## 3. Incremental updates and checkpoints
 
-### 2.000.
+### 3.1. 
 
 Prompt:
 
@@ -525,8 +525,7 @@ In the session:
 ```
 ```
 
-
-### 2.2 Crash recovery — LLM enrichment
+### 3.2. Crash recovery — LLM enrichment
 
 LLM calls are expensive. A crash without checkpoints means paying twice.
 
@@ -573,7 +572,7 @@ def caption(file: dc.ImageFile) -> str:
 
 
 
-## 3. Physical AI: multi-sensor data
+## 4. Physical AI: multi-sensor data
 
 Same pattern, real-world complexity. An AV team has three sources on S3: camera frames (JPEG, Unix timestamp in filename), LiDAR scans (PCD with metadata headers), annotations (COCO JSON).
 
@@ -691,7 +690,7 @@ Saved av-finetune@0.0.1
 
 New data in any source bucket? Re-run ingest (delta-aware), re-run alignment. The context layer tracks what changed across all three sources.
 
-## How it works
+## 5. How it works
 
 ```
 ┌─────────────────────────────────────────┐
@@ -740,7 +739,7 @@ New data in any source bucket? Re-run ingest (delta-aware), re-run alignment. Th
 
 Plain text. Agents read it. Humans can audit it. Lives in your repo alongside your code.
 
-## Team and cloud: Studio
+## 6. Team and cloud: Studio
 
 Context built locally stays local. DataChain Studio makes it shared.
 
@@ -760,11 +759,11 @@ Bring Your Own Cloud — all data and compute stay in your infrastructure. AWS, 
 
 → [studio.datachain.ai](https://studio.datachain.ai)
 
-## Contributing
+## 7. Contributing
 
 Contributions are very welcome. To learn more, see the [Contributor Guide](https://docs.datachain.ai/contributing).
 
-## Community and Support
+## 8. Community and Support
 
 - [Report an issue](https://github.com/datachain-ai/datachain/issues) if you encounter any problems
 - [Docs](https://docs.datachain.ai/)
