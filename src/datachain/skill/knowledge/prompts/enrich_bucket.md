@@ -95,13 +95,17 @@ E.g., ".parquet" with columns → "Parquet files with columns: id, embedding, la
 
 {For each extension that has samples, show representative examples.}
 
+**IMPORTANT: If `file_url_prefix` is present in the JSON, ALL file paths in sample tables MUST be clickable links using the format `[path/to/file]({file_url_prefix}/{path/to/file})`.**
+
+Example with `file_url_prefix = "https://my-bucket.s3.amazonaws.com"`:
+`| [images/cat.jpg](https://my-bucket.s3.amazonaws.com/images/cat.jpg) | 102.4 KB |`
+
 ### {ext} — {type_detected}
 
 {For images: show a table with path, size, dimensions, format.}
 {For structured: show column names. If snippet available, show a formatted code block.}
 {For text: show first few lines in a code block.}
 {For audio/video: show duration, codec, sample rate, etc.}
-{If `file_url_prefix` is present, make path cells clickable: `[path/to/file]({file_url_prefix}/{path/to/file})`.}
 
 ## Data Quality
 

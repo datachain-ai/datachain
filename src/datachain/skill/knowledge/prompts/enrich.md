@@ -55,8 +55,11 @@ List dependencies as clickable links when `file_path` is present:
 
 {Markdown table from preview.columns and preview.rows. Show all rows provided.
 If preview is null, omit this section entirely.
-If `preview.file_url_prefix` is present and a column ends with `.path` or is named `path`,
-make those cells clickable: `[value]({file_url_prefix}/{value})`.}
+
+**IMPORTANT: If `preview.file_url_prefix` is present, ALL cells in columns ending with `.path` or named `path` MUST be clickable links: `[value]({file_url_prefix}/{value})`.**
+
+Example with `file_url_prefix = "https://my-bucket.s3.amazonaws.com"`:
+`| [images/cat.jpg](https://my-bucket.s3.amazonaws.com/images/cat.jpg) | 32,362 |`}
 
 ## Schema
 

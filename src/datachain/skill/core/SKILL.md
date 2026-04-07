@@ -7,10 +7,8 @@ You are now loaded with expert-level DataChain SDK context. Apply every rule bel
 
 ## Pre-Generation Checklist (verify BEFORE writing any code)
 
-Every time you are about to write DataChain code, stop and check these items. These are the most commonly violated rules — failing any one of them produces a runtime error.
-
+- [ ] **Every UDF has a known output type?** Every function passed to `.map()`, `.gen()`, or `.agg()` must have its return type resolved. See Rule 2 — this is the #1 source of runtime errors.
 - [ ] **Bucket access: anonymous or authenticated?** Before generating `read_storage()` for a bucket, check `dc-knowledge/buckets/` for a `.md` file — its frontmatter has `anon: true/false`. If no `.md` exists, probe access: run `python3 -c "import datachain as dc; dc.read_storage('<uri>', anon=True).limit(1).show()"` with and without `anon=True`. Public/demo buckets (s3:// or gs://) require `anon=True` — without it: GCS hangs ~1 min; S3 returns 403 Forbidden. (Rule 1a)
-- [ ] **Lambda return type is str?** If you use a lambda in `map()`/`gen()`, the return type defaults to `str`. If the actual return is int, float, BaseModel, or anything else → use a named function with a type annotation instead. (Rule 3)
 
 ---
 
@@ -20,7 +18,7 @@ Write self-explanatory code. Use clear variable names, function names, and type 
 
 ---
 
-## Section 0 — Dataset Reuse (Highest Priority)
+## Section 1 — Dataset Reuse (Highest Priority)
 
 **Before writing any pipeline code, check what already exists.**
 
@@ -77,14 +75,14 @@ Never create or modify files under `dc-knowledge/` — that directory is owned b
 
 ---
 
-## Section 1 — Critical Rules (Must-Never-Break)
+## Section 2 — Critical Rules (Must-Never-Break)
 
 ```
-1. TRAILING SLASH: Always add / to bucket/prefix paths.
+0. TRAILING SLASH: Always add / to bucket/prefix paths.
    ✓ dc.read_storage("s3://bucket/images/")
    ✗ dc.read_storage("s3://bucket/images")  ← permission error on anon access
 
-1a. ANON FOR PUBLIC BUCKETS: Always add anon=True for public/anonymous-access
+1. ANON FOR PUBLIC BUCKETS: Always add anon=True for public/anonymous-access
     buckets in read_storage() — both gs:// and s3://.
     - GCS (gs://): without anon=True, the client tries credential discovery first,
       adding ~1 min delay.
@@ -98,25 +96,36 @@ Never create or modify files under `dc-knowledge/` — that directory is owned b
     ✗ dc.read_storage("s3://public-bucket/data/")  ← 403 Forbidden
     ✗ dc.File.at("gs://bucket/file.txt", anon=True)  ← File.at() has no anon param
 
-2. TYPE HINTS NOT output: Never pass output= to map/gen/agg — DataChain infers from
-   return type annotation. params= is allowed as an override to bind function parameters
-   to specific columns (e.g., nested fields like "file.path"), but prefer matching
-   function parameter names to column names when possible.
-   ✓ def fn(file: dc.ImageFile) -> list[float]: ...
-     chain.map(emb=fn)
-   ✓ def fn(path: str) -> str: ...
-     chain.map(label=fn, params=["file.path"])       # binds path → file.path column
-   ✗ chain.map(fn, output={"emb": list[float]})      # output= breaks auto-inference
+2. EVERY UDF MUST HAVE A KNOWN OUTPUT TYPE. A UDF passed to map/gen/agg without
+   a resolved return type defaults to str and crashes at runtime for any non-str
+   value. This is the #1 source of production errors — enforce strictly.
 
-3. LAMBDA ONLY FOR STR: Lambdas have no type annotation → DataChain defaults to str.
-   Use lambdas only when return type is str. For everything else, write a named function.
-   Use params= to bind lambda args to nested columns (avoids file downloads).
-   ✓ chain.map(name=lambda path: path.split("/")[-1], params=["file.path"])
-   ✓ chain.map(label=lambda path: path.split("/")[-2], params=["file.path"])
-   ✗ chain.map(name=lambda file: file.path.split("/")[-1])  # downloads file for path
-   ✗ chain.map(size=lambda file: file.size)                  # int → treated as str → broken
+   Three ways to specify the output type, in priority order:
 
-3a. AVOID FILE OBJECT WHEN CONTENT NOT NEEDED: Passing a File/ImageFile object
+   (a) Named function with return type annotation — PREFERRED, use by default.
+       ✓ def get_info(file: dc.ImageFile) -> dc.Image:
+             return file.get_info()
+         chain.map(info=get_info)
+       ✓ def get_name(path: str) -> str:
+             return path.split("/")[-1]
+         chain.map(name=get_name, params=["file.path"])
+
+   (b) Lambda — ONLY when return type is str (the default). If the return type
+       is anything other than str, you MUST pair the lambda with output=.
+       ✓ chain.map(name=lambda path: path.split("/")[-1], params=["file.path"])
+       ✓ chain.map(sz=lambda size: size // 1024, params=["file.size"], output={"sz": int})
+       ✗ chain.map(info=lambda file: file.get_info())  # no output= → crash; also downloads file
+       ✗ chain.map(size=lambda file: file.size)         # no output= → crash; also downloads file
+
+   (c) output= parameter — LAST RESORT for named functions, only when you cannot
+       annotate the function (e.g., third-party callable you cannot modify).
+       ✓ chain.map(emb=third_party_fn, output={"emb": list[float]})
+
+   params= is allowed with any of the above to bind function parameters to specific
+   columns (e.g., nested fields like "file.path"). Prefer matching function parameter
+   names to column names when possible.
+
+3. AVOID FILE OBJECT WHEN CONTENT NOT NEEDED: Passing a File/ImageFile object
     to a UDF (map/gen) downloads the full file content, even if the UDF only reads
     metadata like .path or .size. This applies to File and ALL its subclasses
     (ImageFile, TextFile, VideoFile, AudioFile).
@@ -326,7 +335,7 @@ Never create or modify files under `dc-knowledge/` — that directory is owned b
 
 ---
 
-## Section 2 — Golden Rule
+## Section 3 — Golden Rule
 
 ```
 1. ALWAYS use DataChain to access files in storage (local, S3, GCS, Azure).
@@ -370,7 +379,7 @@ Never create or modify files under `dc-knowledge/` — that directory is owned b
 
 ---
 
-## Section 3 — Import Cheat Sheet
+## Section 4 — Import Cheat Sheet
 
 ```python
 import datachain as dc
@@ -383,7 +392,7 @@ Always use `dc.` prefix for DataChain types: `dc.File`, `dc.ImageFile`, `dc.C`, 
 
 ---
 
-## Section 4 — Core API Reference
+## Section 5 — Core API Reference
 
 **Entry points:**
 
@@ -496,7 +505,7 @@ dc.read_storage("s3://bucket/", update=True, delta=True,
 
 ---
 
-## Section 5 — Type System
+## Section 6 — Type System
 
 **Structured types — use Pydantic BaseModel:**
 ```python
@@ -557,7 +566,7 @@ chain.column("price")           # typed column for arithmetic between columns
 
 ---
 
-## Section 6 — func Module
+## Section 7 — func Module
 
 All run natively in the metadata engine (no Python, no deserialization).
 In examples below, `C` = `dc.C`, `func` = `dc.func`.
@@ -609,7 +618,7 @@ func.int_hash_64(C("file.path"))
 
 ---
 
-## Section 7 — Common Pipeline Templates
+## Section 8 — Common Pipeline Templates
 
 **Basic: read → filter → map → save**
 ```python
@@ -818,7 +827,7 @@ combined = images.merge(labels, on="file.name", right_on="labels.name")
 
 ---
 
-## Section 8 — Anti-Patterns
+## Section 9 — Anti-Patterns
 
 ```
 ✗ Using os.walk / os.listdir / glob.glob / pathlib to discover or read data files:
@@ -854,8 +863,11 @@ combined = images.merge(labels, on="file.name", right_on="labels.name")
     from datachain import File, C, func  ← clutters namespace
     Use dc.File, dc.C, dc.func after `import datachain as dc`
 ✗ Omitting trailing slash → permission error on anonymous/restricted storage
-✗ Using output= with map/gen/agg → breaks auto-inference
-✗ Lambda for non-str return types → DataChain defaults to str → wrong schema
+✗ UDF without a known output type — the #1 production error:
+    chain.map(info=lambda file: file.get_info())  ← lambda returns dc.Image, not str → crash
+    chain.map(size=lambda file: file.size)        ← lambda returns int, not str → crash
+    Always use a named function with a return type annotation (Rule 2a).
+    Lambda is acceptable ONLY when the return type is str (Rule 2b).
 ✗ Pulling all data to Python for filtering:
     chain.to_list() then iterating in Python  ← never do this for metadata ops
     Use chain.filter(C("x") > 0) instead
