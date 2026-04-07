@@ -512,7 +512,7 @@ The final similarity query was then just:
 
 ## 3. Incremental updates and checkpoints
 
-### 3.1. 
+### 3.1.
 
 Prompt:
 
