@@ -55,6 +55,7 @@ You are now loaded with the datachain-knowledge skill. Maintain a knowledge base
 2. **Never pass `update=True`** to `dc.read_storage()` unless the user explicitly asks to refresh the listing.
 3. **Prefer DataChain operations** over plain Python for all metadata analysis.
 4. **Bounded output** — JSON and markdown files stay small regardless of data size.
+5. **Stop on auth/connection errors** — `bucket_scan.py` runs a fast access check before scanning (uses cloud SDKs, no DC listing). If it exits with an error JSON on stderr, **stop immediately** and show the error to the user. Do not retry with different regions, credential profiles, or endpoint variations — ask the user for the missing credentials or configuration.
 
 ---
 
@@ -67,6 +68,11 @@ When loaded, determine the user's intent:
 
 **Mode B — Dataset Creation/Pipeline** (e.g., "create dataset X from ...", "process images and save"):
 → **Before building anything**, read `dc-knowledge/index.md` and check whether an existing dataset already covers the data the user needs. If one does, start from `dc.read_dataset("name")` — filter, merge, or extend it instead of re-reading raw storage. This avoids recomputing expensive operations (LLM calls, model inference) and reuses proven code patterns.
+→ **If the pipeline reads from a bucket** (`read_storage`), run the access check first:
+  ```bash
+  python3 {skill_dir}/scripts/bucket_status.py <uri>
+  ```
+  Prints `Status: exists|not found` and `Access: anonymous|authenticated|denied`. Exit code 0 = exists, 1 = not found. If status is `not found` or access is `denied` → stop and ask the user for credentials. If access is `anonymous` → pass `anon=True` to `read_storage()`.
 → Read `{skill_dir}/../core/SKILL.md` for DataChain SDK rules and patterns.
 → Build and execute the pipeline the user requested, following core skill rules.
 → After the pipeline completes, **always** run Steps 1–4 to update the knowledge base.

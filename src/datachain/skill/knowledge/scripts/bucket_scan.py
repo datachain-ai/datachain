@@ -14,6 +14,7 @@ import sys
 from datetime import datetime, timezone
 from typing import Any
 
+from bucket_status import bucket_status
 from utils import dc_import, parse_uri, source_to_https
 
 # ---------------------------------------------------------------------------
@@ -425,42 +426,28 @@ def _enrich_text(file_obj, info):
 # Main
 # ---------------------------------------------------------------------------
 
-
-def detect_anon(dc, uri: str) -> bool | None:
-    """Detect whether a bucket requires anonymous access.
-
-    Returns True if anon=True is needed, False if authenticated access works,
-    None if detection failed.
-    """
-    scheme = uri.split("://", maxsplit=1)[0] if "://" in uri else ""
-    if scheme not in ("s3", "gs"):
-        return None
-    # Try without anon first (authenticated)
-    try:
-        dc.read_storage(uri).limit(1).to_list("file")
-        return False
-    except Exception:  # noqa: BLE001
-        pass
-    # Try with anon
-    try:
-        dc.read_storage(uri, anon=True).limit(1).to_list("file")
-        return True
-    except Exception:  # noqa: BLE001
-        return None
-
-
 def scan_bucket(uri: str, output: str | None = None):
     """Aggregate metadata + sample files for one bucket URI."""
+
+    # Fast pre-check: verify the bucket exists and detect anon access.
+    # Uses cloud SDKs directly — no DC listing.
+    status = bucket_status(uri)
+    if not status.exists or status.access == "denied":
+        print(
+            json.dumps({"error": status.error, "uri": uri}),
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    is_anon = status.anon
+
     dc = dc_import()
     from datachain import C, func
 
     parts = parse_uri(uri)
     now = datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    anon = detect_anon(dc, uri)
-
-    # Never pass update=True
-    chain = dc.read_storage(uri, **({"anon": True} if anon else {}))
+    # Never pass update=True. Listing is already cached from a prior read_storage() call.
+    chain = dc.read_storage(uri)
 
     listing_info = get_listing_info(uri)
 
@@ -495,7 +482,7 @@ def scan_bucket(uri: str, output: str | None = None):
         "scheme": parts["scheme"],
         "bucket": parts["bucket"],
         "prefix": parts["prefix"],
-        "anon": anon,
+        "anon": is_anon,
         "scanned": now,
         **listing_info,
         "total_files": total_files,
@@ -507,7 +494,7 @@ def scan_bucket(uri: str, output: str | None = None):
         "time_range": time_range,
         "samples": samples,
     }
-    if url_prefix:
+    if url_prefix and is_anon:
         result["file_url_prefix"] = url_prefix
 
     json_str = json.dumps(result, indent=2, default=str)

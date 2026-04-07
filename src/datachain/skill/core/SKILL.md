@@ -8,7 +8,15 @@ You are now loaded with expert-level DataChain SDK context. Apply every rule bel
 ## Pre-Generation Checklist (verify BEFORE writing any code)
 
 - [ ] **Every UDF has a known output type?** Every function passed to `.map()`, `.gen()`, or `.agg()` must have its return type resolved. See Rule 2 — this is the #1 source of runtime errors.
-- [ ] **Bucket access: anonymous or authenticated?** Before generating `read_storage()` for a bucket, check `dc-knowledge/buckets/` for a `.md` file — its frontmatter has `anon: true/false`. If no `.md` exists, probe access: run `python3 -c "import datachain as dc; dc.read_storage('<uri>', anon=True).limit(1).show()"` with and without `anon=True`. Public/demo buckets (s3:// or gs://) require `anon=True` — without it: GCS hangs ~1 min; S3 returns 403 Forbidden. (Rule 1a)
+- [ ] **Bucket access: anonymous or authenticated?** Before generating any `read_storage()` call for a bucket:
+  1. Check `dc-knowledge/buckets/` for a `.md` file — its frontmatter has `anon: true/false`. If found, use that value.
+  2. If no `.md` exists, run the access check:
+     ```bash
+     python3 {skill_dir}/../knowledge/scripts/bucket_status.py <uri>
+     ```
+     Prints `Status: exists|not found` and `Access: anonymous|authenticated|denied`. Exit code 0 = exists, 1 = not found.
+  3. If status is `not found` or access is `denied` → **stop and ask the user** for credentials or configuration. Do not retry with variations.
+  4. If access is `anonymous` → add `anon=True` to `read_storage()`. If `authenticated` → omit it. (Rule 1a)
 
 ---
 
