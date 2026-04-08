@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "datachain"
 description = "Wrangle unstructured AI data at scale"
-readme = "README.rst"
+readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 authors = [{name = "Dmitry Petrov", email = "support@dvc.org"}]
@@ -153,6 +153,9 @@ datachain = "datachain.cli:main"
 exclude = ["tests", "tests.*"]
 where = ["src"]
 namespaces = false
+
+[tool.setuptools.package-data]
+"datachain.skill" = ["**/*.md", "**/*.py"]
 
 [tool.setuptools_scm]
 
