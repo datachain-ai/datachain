@@ -849,6 +849,7 @@ class SQLiteWarehouse(AbstractWarehouse):
         table: Table,
         query: Select,
         progress_cb: Callable[[int], None] | None = None,
+        preserve_sys_ids: bool = False,
     ) -> None:
         col_id = (
             query.selected_columns.sys__id
@@ -869,13 +870,16 @@ class SQLiteWarehouse(AbstractWarehouse):
         select_ids = query.with_only_columns(col_id)
         ids = self.db.execute(select_ids).fetchall()
 
-        select_q = (
-            query.with_only_columns(
-                *[c for c in query.selected_columns if c.name != "sys__id"]
+        if preserve_sys_ids:
+            select_q = query.offset(None).limit(None)
+        else:
+            select_q = (
+                query.with_only_columns(
+                    *[c for c in query.selected_columns if c.name != "sys__id"]
+                )
+                .offset(None)
+                .limit(None)
             )
-            .offset(None)
-            .limit(None)
-        )
 
         for batch in batched_it(ids, self.INSERT_BATCH_SIZE):
             batch_ids = [row[0] for row in batch]
