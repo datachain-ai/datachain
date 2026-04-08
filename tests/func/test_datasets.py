@@ -18,6 +18,14 @@ from datachain.query.dataset import DatasetQuery
 from datachain.sql.types import Float32, Int, Int64
 from tests.utils import assert_row_names, dataset_dependency_asdict, table_row_count
 
+
+@pytest.fixture
+def old_new_projects(test_session):
+    metastore = test_session.catalog.metastore
+    metastore.create_project("old", "old")
+    metastore.create_project("new", "new")
+
+
 FILE_SCHEMA = {
     f"file__{name}": _type if _type != Int else Int64
     for name, _type in File._datachain_column_types.items()
@@ -431,6 +439,7 @@ def test_edit_dataset(test_session, saved_dataset):
     assert dataset.get_version("1.0.0").num_objects == expected_table_row_count
 
 
+@pytest.mark.parametrize("is_studio", [True])
 @pytest.mark.parametrize(
     "old_name,new_name",
     [
@@ -444,6 +453,8 @@ def test_edit_dataset(test_session, saved_dataset):
 )
 def test_move_dataset(
     test_session,
+    is_studio,
+    studio_job,
     old_name,
     new_name,
 ):
@@ -476,7 +487,7 @@ def test_move_dataset(
         assert table_row_count(catalog.warehouse.db, new_table_name) == 3
 
 
-def test_move_dataset_then_save_into(test_session):
+def test_move_dataset_then_save_into(test_session, old_new_projects):
     old_name = "old.old.numbers"
     new_name = "new.new.numbers"
 
@@ -497,26 +508,29 @@ def test_move_dataset_then_save_into(test_session):
     assert len(datasets) == 3
 
 
-def test_move_dataset_wrong_old_project(test_session, project):
+def test_move_dataset_wrong_old_project(test_session, old_new_projects):
     dc.read_values(num=[1, 2, 3], session=test_session).save("old.old.numbers")
 
     with pytest.raises(DatasetNotFoundError):
         dc.move_dataset("wrong.wrong.numbers", "new.new.numbers", session=test_session)
 
 
-def test_move_dataset_error_in_session_moved_dataset_persisted(catalog):
+def test_move_dataset_error_in_session_moved_dataset_persisted(
+    test_session, old_new_projects
+):
     from datachain.query.session import Session
 
+    catalog = test_session.catalog
     old_name = "old.old.numbers"
     new_name = "new.new.numbers"
 
     with pytest.raises(DatasetNotFoundError):
-        with Session("new", catalog=catalog) as test_session:
-            dc.read_values(num=[1, 2, 3], session=test_session).save(old_name)
-            dc.move_dataset(old_name, new_name, session=test_session)
+        with Session("new", catalog=catalog) as session:
+            dc.read_values(num=[1, 2, 3], session=session).save(old_name)
+            dc.move_dataset(old_name, new_name, session=session)
 
             # throws DatasetNotFoundError
-            dc.read_dataset("wrong", session=test_session)
+            dc.read_dataset("wrong", session=session)
 
     ds = dc.datasets(column="dataset", session=Session.get(catalog=catalog))
     datasets = [d for d in ds.to_values("dataset")]  # noqa: C416

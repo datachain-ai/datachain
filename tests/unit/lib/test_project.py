@@ -15,6 +15,12 @@ from datachain.lib.projects import ls as ls_projects
 from tests.utils import skip_if_not_sqlite
 
 
+# All tests in this module need is_studio=True for namespace/project CRUD
+@pytest.fixture
+def is_studio():
+    return True
+
+
 @pytest.fixture
 def dev_namespace(test_session):
     return create_namespace("dev", "Dev namespace")
@@ -199,7 +205,9 @@ def test_delete_project_default(test_session):
     )
 
 
-def test_delete_project_non_empty(test_session, chatbot_project, dev_namespace):
+def test_delete_project_non_empty(
+    test_session, studio_job, chatbot_project, dev_namespace
+):
     (
         dc.read_values(num=[1, 2, 3])
         .settings(namespace=dev_namespace.name, project=chatbot_project.name)

@@ -615,7 +615,7 @@ def cloud_test_catalog_tmpfile(
 
 @pytest.fixture
 def is_studio():
-    return True
+    return False
 
 
 @pytest.fixture(autouse=True)
@@ -626,8 +626,20 @@ def mock_is_studio(monkeypatch, is_studio):
 
 
 @pytest.fixture
+def studio_job(test_session, is_studio, monkeypatch):
+    """Pre-create a job for tests that need is_studio=True with job creation."""
+    if is_studio:
+        job_id = _create_job(test_session.catalog.metastore)
+        monkeypatch.setenv("DATACHAIN_JOB_ID", job_id)
+        return job_id
+    return None
+
+
+@pytest.fixture
 def project(test_session):
-    return dc.create_project("dev", "animals", "Animals project")
+    return test_session.catalog.metastore.create_project(
+        "dev", "animals", description="Animals project"
+    )
 
 
 @pytest.fixture

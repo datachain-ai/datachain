@@ -11,7 +11,7 @@ from weakref import WeakSet
 
 from datachain.catalog import get_catalog
 from datachain.data_storage import JobQueryType, JobStatus
-from datachain.error import JobNotFoundError, TableMissingError
+from datachain.error import DataChainError, JobNotFoundError, TableMissingError
 
 if TYPE_CHECKING:
     from datachain.catalog import Catalog
@@ -122,6 +122,7 @@ class Session:
 
         Behavior:
             - If a job already exists, it is returned.
+            - If in Studio without DATACHAIN_JOB_ID, raises an error.
             - If ``DATACHAIN_JOB_ID`` is set, the corresponding job is fetched.
             - Otherwise, a new job is created:
                 * Name = absolute path to the Python script.
@@ -136,6 +137,8 @@ class Session:
         if Session._CURRENT_JOB:
             return Session._CURRENT_JOB
 
+        from datachain.lib.dc.utils import is_studio
+
         if env_job_id := os.getenv("DATACHAIN_JOB_ID"):
             # SaaS run: just fetch existing job
             Session._CURRENT_JOB = self.catalog.metastore.get_job(env_job_id)
@@ -144,6 +147,12 @@ class Session:
                     f"Job {env_job_id} from DATACHAIN_JOB_ID env not found"
                 )
             Session._OWNS_JOB = False
+        elif is_studio():
+            raise DataChainError(
+                "Cannot create job in Studio without DATACHAIN_JOB_ID. "
+                "This usually means an internal operation is missing "
+                "ephemeral mode."
+            )
         else:
             # Local run: create new job
             query = ""

@@ -588,7 +588,9 @@ class Catalog:
         from datachain import read_storage
         from datachain.listing import Listing
 
-        read_storage(source, session=self.session, update=update, column=column).exec()
+        read_storage(
+            source, session=self.session, update=update, column=column
+        ).settings(ephemeral=True).exec()
 
         list_ds_name, list_uri, list_path, _ = get_listing(
             source, self.session, update=update
