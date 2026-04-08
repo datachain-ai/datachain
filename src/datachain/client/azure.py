@@ -42,12 +42,28 @@ class AzureClient(Client):
             pass  # No credentials configured; fall through to anonymous probe.
 
         # Step 2: Anonymous probe — only reached when no credentials are configured.
-        # AzureBlobFileSystem(anon=True) uses a true anonymous credential.
+        # Forward connection kwargs (e.g. account_name) but strip credential fields.
+        az_credential_keys = {
+            "credential",
+            "connection_string",
+            "sas_token",
+            "client_secret",
+            "client_id",
+            "tenant_id",
+        }
+        anon_kwargs = {k: v for k, v in kwargs.items() if k not in az_credential_keys}
+        anon_kwargs["anon"] = True
         try:
-            anon_fs = AzureBlobFileSystem(anon=True)
+            anon_fs = AzureBlobFileSystem(**anon_kwargs)
             sync(get_loop(), anon_fs._info, name)
             return BucketStatus(exists=True, access="anonymous")
-        except (PermissionError, FileNotFoundError, ValueError) as e:
+        except PermissionError as e:
+            return BucketStatus(
+                exists=True,
+                access="denied",
+                error=f"Access denied to Azure container '{name}' — {e}",
+            )
+        except (FileNotFoundError, ValueError) as e:
             return BucketStatus(exists=False, access="denied", error=str(e))
 
     def info_to_file(self, v: dict[str, Any], path: str) -> File:

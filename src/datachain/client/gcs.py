@@ -11,6 +11,7 @@ from fsspec.asyn import get_loop, sync
 from fsspec.callbacks import DEFAULT_CALLBACK, Callback
 from gcsfs import GCSFileSystem
 from gcsfs.retry import HttpError
+from google.api_core import exceptions as google_exceptions
 
 from datachain.client.fileslice import FileWrapper
 from datachain.lib.file import File
@@ -44,7 +45,9 @@ class GCSClient(Client):
         # Step 1: Try anonymous.
         # Use _ls (objects.list API) not _info (buckets.get API): GCS does not
         # grant storage.buckets.get anonymously even for public buckets.
-        anon_fs = GCSFileSystem(token="anon")  # noqa: S106
+        anon_kwargs = {k: v for k, v in kwargs.items() if k != "anon"}
+        anon_kwargs["anon"] = True
+        anon_fs = cls.create_fs(**anon_kwargs)
         try:
             sync(get_loop(), anon_fs._ls, name)
             return BucketStatus(exists=True, access="anonymous")
@@ -91,9 +94,7 @@ class GCSClient(Client):
             return BucketStatus(
                 exists=False, access="denied", error=f"GCS bucket '{name}' not found"
             )
-        except Exception as e:  # noqa: BLE001
-            # Catch other cloud API errors not mapped to standard Python exceptions
-            # (e.g. google.api_core.exceptions.Forbidden raised for 403 responses).
+        except (google_exceptions.Forbidden, google_exceptions.PermissionDenied) as e:
             return BucketStatus(exists=True, access="denied", error=str(e))
 
     def url(

@@ -134,12 +134,12 @@ def test_s3_anon_only_kwarg_denied(mock_sync, mock_s3fs_cls):
 # ---------------------------------------------------------------------------
 
 
-@patch("datachain.client.gcs.GCSFileSystem")
+@patch.object(GCSClient, "create_fs")
 @patch("datachain.client.gcs.sync")
-def test_gcs_anonymous(mock_sync, mock_gcsfs_cls):
+def test_gcs_anonymous(mock_sync, mock_create_fs):
     anon_fs = MagicMock()
     anon_fs._ls.return_value = []
-    mock_gcsfs_cls.return_value = anon_fs
+    mock_create_fs.return_value = anon_fs
     mock_sync.side_effect = lambda _loop, fn, *args, **kwargs: fn(*args, **kwargs)
 
     result = GCSClient.bucket_status("my-bucket")
@@ -148,19 +148,20 @@ def test_gcs_anonymous(mock_sync, mock_gcsfs_cls):
 
 
 @patch.object(GCSClient, "create_fs")
-@patch("datachain.client.gcs.GCSFileSystem")
 @patch("datachain.client.gcs.sync")
-def test_gcs_authenticated_via_http_error(mock_sync, mock_gcsfs_cls, mock_create_fs):
+def test_gcs_authenticated_via_http_error(mock_sync, mock_create_fs):
     from gcsfs.retry import HttpError
 
     anon_fs = MagicMock()
     anon_fs._ls.side_effect = HttpError({"code": 401, "message": "Permission denied"})
-    mock_gcsfs_cls.return_value = anon_fs
 
     auth_fs = MagicMock()
     auth_fs._info.return_value = {"name": "my-bucket", "type": "directory"}
-    mock_create_fs.return_value = auth_fs
 
+    def make_fs(**kwargs):
+        return anon_fs if kwargs.get("anon") else auth_fs
+
+    mock_create_fs.side_effect = make_fs
     mock_sync.side_effect = lambda _loop, fn, *args, **kwargs: fn(*args, **kwargs)
 
     result = GCSClient.bucket_status("my-bucket")
@@ -169,17 +170,18 @@ def test_gcs_authenticated_via_http_error(mock_sync, mock_gcsfs_cls, mock_create
 
 
 @patch.object(GCSClient, "create_fs")
-@patch("datachain.client.gcs.GCSFileSystem")
 @patch("datachain.client.gcs.sync")
-def test_gcs_authenticated(mock_sync, mock_gcsfs_cls, mock_create_fs):
+def test_gcs_authenticated(mock_sync, mock_create_fs):
     anon_fs = MagicMock()
     anon_fs._ls.side_effect = PermissionError("403")
-    mock_gcsfs_cls.return_value = anon_fs
 
     auth_fs = MagicMock()
     auth_fs._info.return_value = {"name": "my-bucket", "type": "directory"}
-    mock_create_fs.return_value = auth_fs
 
+    def make_fs(**kwargs):
+        return anon_fs if kwargs.get("anon") else auth_fs
+
+    mock_create_fs.side_effect = make_fs
     mock_sync.side_effect = lambda _loop, fn, *args, **kwargs: fn(*args, **kwargs)
 
     result = GCSClient.bucket_status("my-bucket")
@@ -188,17 +190,18 @@ def test_gcs_authenticated(mock_sync, mock_gcsfs_cls, mock_create_fs):
 
 
 @patch.object(GCSClient, "create_fs")
-@patch("datachain.client.gcs.GCSFileSystem")
 @patch("datachain.client.gcs.sync")
-def test_gcs_denied(mock_sync, mock_gcsfs_cls, mock_create_fs):
+def test_gcs_denied(mock_sync, mock_create_fs):
     anon_fs = MagicMock()
     anon_fs._ls.side_effect = PermissionError("403")
-    mock_gcsfs_cls.return_value = anon_fs
 
     auth_fs = MagicMock()
     auth_fs._info.side_effect = PermissionError("403")
-    mock_create_fs.return_value = auth_fs
 
+    def make_fs(**kwargs):
+        return anon_fs if kwargs.get("anon") else auth_fs
+
+    mock_create_fs.side_effect = make_fs
     mock_sync.side_effect = lambda _loop, fn, *args, **kwargs: fn(*args, **kwargs)
 
     result = GCSClient.bucket_status("my-bucket")
@@ -208,12 +211,12 @@ def test_gcs_denied(mock_sync, mock_gcsfs_cls, mock_create_fs):
     assert result.error is not None
 
 
-@patch("datachain.client.gcs.GCSFileSystem")
+@patch.object(GCSClient, "create_fs")
 @patch("datachain.client.gcs.sync")
-def test_gcs_not_found(mock_sync, mock_gcsfs_cls):
+def test_gcs_not_found(mock_sync, mock_create_fs):
     anon_fs = MagicMock()
     anon_fs._ls.side_effect = FileNotFoundError("bucket not found")
-    mock_gcsfs_cls.return_value = anon_fs
+    mock_create_fs.return_value = anon_fs
     mock_sync.side_effect = lambda _loop, fn, *args, **kwargs: fn(*args, **kwargs)
 
     result = GCSClient.bucket_status("my-bucket")
@@ -312,6 +315,6 @@ def test_azure_no_account_name_no_public_access(
 
     result = AzureClient.bucket_status("my-container")
 
-    assert result.exists is False
+    assert result.exists is True
     assert result.access == "denied"
     assert result.error is not None

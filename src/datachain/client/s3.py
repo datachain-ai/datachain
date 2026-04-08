@@ -68,7 +68,22 @@ class ClientS3(Client):
 
         # Step 1: Try anonymous. cache_regions=True handles PermanentRedirect
         # (bucket-in-wrong-region) transparently so the bucket is found → exists=True.
-        anon_fs = S3FileSystem(anon=True, cache_regions=True)
+        # Preserve endpoint/region settings from caller kwargs; strip credentials.
+        credential_keys = {
+            "anon",
+            "key",
+            "secret",
+            "token",
+            "aws_key",
+            "aws_secret",
+            "aws_token",
+        }
+        anon_kwargs = cls._normalize_s3_kwargs(
+            {k: v for k, v in kwargs.items() if k not in credential_keys}
+        )
+        anon_kwargs["anon"] = True
+        anon_kwargs.setdefault("cache_regions", True)
+        anon_fs = S3FileSystem(**anon_kwargs)
         try:
             sync(get_loop(), anon_fs._info, name)
             return BucketStatus(exists=True, access="anonymous")
