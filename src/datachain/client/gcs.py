@@ -10,12 +10,13 @@ from dateutil.parser import isoparse
 from fsspec.asyn import get_loop, sync
 from fsspec.callbacks import DEFAULT_CALLBACK, Callback
 from gcsfs import GCSFileSystem
+from gcsfs.retry import HttpError
 
 from datachain.client.fileslice import FileWrapper
 from datachain.lib.file import File
 from datachain.progress import tqdm
 
-from .fsspec import DELIMITER, Client, ResultQueue
+from .fsspec import DELIMITER, BucketStatus, Client, ResultQueue
 
 # Patch gcsfs for consistency with s3fs
 GCSFileSystem.set_session = GCSFileSystem._set_session
@@ -35,6 +36,65 @@ class GCSClient(Client):
             kwargs["token"] = "anon"  # noqa: S105
 
         return cast("GCSFileSystem", super().create_fs(**kwargs))
+
+    @classmethod
+    def bucket_status(cls, name: str, **kwargs) -> BucketStatus:  # noqa: PLR0911
+        anon_only = bool(kwargs.get("anon"))
+
+        # Step 1: Try anonymous.
+        # Use _ls (objects.list API) not _info (buckets.get API): GCS does not
+        # grant storage.buckets.get anonymously even for public buckets.
+        anon_fs = GCSFileSystem(token="anon")  # noqa: S106
+        try:
+            sync(get_loop(), anon_fs._ls, name)
+            return BucketStatus(exists=True, access="anonymous")
+        except (PermissionError, HttpError) as e:
+            # HttpError is raised by gcsfs for HTTP-level 401/403 responses;
+            # treat 404 as not-found, anything else as access-denied.
+            if isinstance(e, HttpError) and e.code == 404:
+                return BucketStatus(
+                    exists=False,
+                    access="denied",
+                    error=f"GCS bucket '{name}' not found",
+                )
+            if anon_only:
+                return BucketStatus(
+                    exists=True,
+                    access="denied",
+                    error=f"Access denied to GCS bucket '{name}'"
+                    " — check credentials/permissions",
+                )
+        except FileNotFoundError:
+            return BucketStatus(
+                exists=False, access="denied", error=f"GCS bucket '{name}' not found"
+            )
+
+        # Step 2: Try with configured credentials
+        auth_fs = cls.create_fs(**kwargs)
+        try:
+            sync(get_loop(), auth_fs._info, name)
+            return BucketStatus(exists=True, access="authenticated")
+        except (PermissionError, HttpError) as e:
+            if isinstance(e, HttpError) and e.code == 404:
+                return BucketStatus(
+                    exists=False,
+                    access="denied",
+                    error=f"GCS bucket '{name}' not found",
+                )
+            return BucketStatus(
+                exists=True,
+                access="denied",
+                error=f"Access denied to GCS bucket '{name}'"
+                " — check credentials/permissions",
+            )
+        except FileNotFoundError:
+            return BucketStatus(
+                exists=False, access="denied", error=f"GCS bucket '{name}' not found"
+            )
+        except Exception as e:  # noqa: BLE001
+            # Catch other cloud API errors not mapped to standard Python exceptions
+            # (e.g. google.api_core.exceptions.Forbidden raised for 403 responses).
+            return BucketStatus(exists=True, access="denied", error=str(e))
 
     def url(
         self,

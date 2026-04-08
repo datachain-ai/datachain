@@ -71,3 +71,25 @@ def test_comma_separated_args_error(param):
         cmd.append(param)
     with pytest.raises(SystemExit):
         parser.parse_args(cmd)
+
+
+def test_bucket_status_parser():
+    parser = get_parser()
+    args = parser.parse_args(("bucket", "status", "s3://my-bucket/"))
+    assert args.command == "bucket"
+    assert args.bucket_cmd == "status"
+    assert args.uri == "s3://my-bucket/"
+
+
+def test_bucket_status_anon_flag():
+    parser = get_parser()
+    args = parser.parse_args(("bucket", "status", "--anon", "s3://my-bucket/"))
+    assert args.anon is True
+    assert args.uri == "s3://my-bucket/"
+
+
+def test_bucket_no_subcommand():
+    parser = get_parser()
+    args = parser.parse_args(("bucket",))
+    assert args.command == "bucket"
+    assert args.bucket_cmd is None

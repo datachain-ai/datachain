@@ -1,17 +1,54 @@
 from typing import Any
 
 from adlfs import AzureBlobFileSystem
+from fsspec.asyn import get_loop, sync
 
 from datachain.lib.file import File
 from datachain.progress import tqdm
 
-from .fsspec import DELIMITER, Client, ResultQueue
+from .fsspec import DELIMITER, BucketStatus, Client, ResultQueue
 
 
 class AzureClient(Client):
     FS_CLASS = AzureBlobFileSystem
     PREFIX = "az://"
     protocol = "az"
+
+    @classmethod
+    def bucket_status(cls, name: str, **kwargs) -> BucketStatus:
+        # Step 1: Authenticated probe (uses env vars / DefaultAzureCredential).
+        # Try this first so that authenticated access is preferred over anonymous
+        # when credentials are available in the environment.
+        # create_fs() may raise ValueError if account_name/connection_string
+        # is not available (az:// URIs don't carry the account name).
+        try:
+            auth_fs = cls.create_fs(**kwargs)
+            sync(get_loop(), auth_fs._info, name)
+            return BucketStatus(exists=True, access="authenticated")
+        except PermissionError:
+            return BucketStatus(
+                exists=True,
+                access="denied",
+                error=f"Access denied to Azure container '{name}'"
+                " — check credentials/configuration",
+            )
+        except FileNotFoundError:
+            return BucketStatus(
+                exists=False,
+                access="denied",
+                error=f"Azure container '{name}' not found",
+            )
+        except ValueError:
+            pass  # No credentials configured; fall through to anonymous probe.
+
+        # Step 2: Anonymous probe — only reached when no credentials are configured.
+        # AzureBlobFileSystem(anon=True) uses a true anonymous credential.
+        try:
+            anon_fs = AzureBlobFileSystem(anon=True)
+            sync(get_loop(), anon_fs._info, name)
+            return BucketStatus(exists=True, access="anonymous")
+        except (PermissionError, FileNotFoundError, ValueError) as e:
+            return BucketStatus(exists=False, access="denied", error=str(e))
 
     def info_to_file(self, v: dict[str, Any], path: str) -> File:
         version_id = v.get("version_id") if self._is_version_aware() else None
