@@ -610,8 +610,13 @@ class UDFStep(Step, ABC):
           input was not fully processed and needs to be re-run. Nullable because
           mappers (1:1) don't use this field.
         """
+        sys_id_type = next(
+            c.type
+            for c in self.warehouse.dataset_row_cls.sys_columns()
+            if c.name == "sys__id"
+        )
         return [
-            sa.Column("sys__input_id", sa.Integer, nullable=True),
+            sa.Column("sys__input_id", type(sys_id_type), nullable=True),
             sa.Column("sys__partial", sa.Boolean, nullable=True),
             sa.Column("sys__empty", sa.Boolean, nullable=True),
         ]
@@ -1439,12 +1444,14 @@ class UDFStep(Step, ABC):
                 partial_table_name,
                 filtered_query,
                 create_fn=self.create_output_table,
+                preserve_sys_ids=True,
             )
         else:
             partial_table = self.warehouse.create_table_from_query(
                 partial_table_name,
                 sa.select(parent_partial_table),
                 create_fn=self.create_output_table,
+                preserve_sys_ids=True,
             )
 
         input_query = self.get_input_query(input_table.name, query)
