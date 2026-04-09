@@ -301,17 +301,26 @@ def test_public_api_datasets_filters_non_complete(
     assert dataset_failed.name not in dataset_names, "FAILED dataset should be hidden"
 
 
-def test_public_api_read_dataset_rejects_non_complete(
-    test_session, dataset_created, dataset_failed
-):
+@pytest.mark.parametrize("is_studio", [True])
+def test_public_api_read_dataset_rejects_non_complete(test_session, studio_job):
     """Test that dc.read_dataset() rejects non-COMPLETE datasets."""
+    ds_created = test_session.catalog.create_dataset(
+        "ds_created_read", columns=(sa.Column("name", String),), job_id=studio_job
+    )
+    ds_failed = test_session.catalog.create_dataset(
+        "ds_failed_read", columns=(sa.Column("name", String),), job_id=studio_job
+    )
+    test_session.catalog.metastore.update_dataset_status(
+        ds_failed, DatasetStatus.FAILED, version=ds_failed.latest_version
+    )
+
     # Should raise error for CREATED dataset
     with pytest.raises(DatasetNotFoundError):
-        read_dataset(dataset_created.name, session=test_session)
+        read_dataset(ds_created.name, session=test_session)
 
     # Should raise error for FAILED dataset
     with pytest.raises(DatasetNotFoundError):
-        read_dataset(dataset_failed.name, session=test_session)
+        read_dataset(ds_failed.name, session=test_session)
 
 
 def test_public_api_delete_dataset_rejects_non_complete(
