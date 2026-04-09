@@ -2,7 +2,8 @@ import inspect
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any, Union, get_args, get_origin
 
-from sqlalchemy import BindParameter, Case, Integer, cast, desc
+from sqlalchemy import BindParameter, Case, Integer, desc
+from sqlalchemy import cast as sa_cast
 from sqlalchemy.sql import func as sa_func
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -502,4 +503,36 @@ def _truediv(a, b):
 
 
 def _floordiv(a, b):
-    return cast(_truediv(a, b), Integer)
+    return sa_cast(_truediv(a, b), Integer)
+
+
+def cast(col: ColT, type_: Any) -> Func:
+    """
+    Cast a column or expression to a target DataChain type.
+
+    Args:
+        col (str | Column | Func | ColumnExpr): Column or expression to cast.
+            If a string is provided, it is treated as a column name.
+        type_ (type): Target Python/DataChain type such as int, str, float,
+            bool, bytes, or datetime.
+
+    Returns:
+        Func: A `Func` object representing the cast expression.
+
+    Example:
+        ```py
+        from datachain import func
+
+        chain = dc.read_values(id_str=["1", "2", "3"])
+        chain = chain.mutate(id_int=func.cast("id_str", int))
+        ```
+
+    Notes:
+        - This is a regular DataChain expression and can be used anywhere other
+          functions are accepted, including `mutate()`, `filter()`, `order_by()`,
+          and `merge()`.
+        - Strings are interpreted as column names. To cast a string literal,
+          wrap it with `func.literal(...)` first.
+    """
+    sql_type = python_to_sql(type_)
+    return Func("cast", inner=sa_cast, cols=[col], args=[sql_type], result_type=type_)

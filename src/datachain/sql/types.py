@@ -501,6 +501,13 @@ class TypeReadConverter:
         return value
 
     def datetime(self, value):
+        if isinstance(value, str):
+            normalized = value.replace("Z", "+00:00") if value.endswith("Z") else value
+            try:
+                return datetime.fromisoformat(normalized)
+            except ValueError:
+                return value
+
         return value
 
     def binary(self, value):

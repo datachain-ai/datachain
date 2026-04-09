@@ -24,12 +24,17 @@ from datachain.sql.functions import (
     random,
     string,
 )
-from datachain.sql.functions import path as sql_path
+from datachain.sql.functions import (
+    path as sql_path,
+)
 from datachain.sql.selectable import Values, base_values_compiler
 from datachain.sql.sqlite.types import (
     SQLiteTypeConverter,
     SQLiteTypeReadConverter,
     register_type_converters,
+)
+from datachain.sql.types import (
+    DateTime as DCDateTime,
 )
 from datachain.sql.types import (
     DBDefaults,
@@ -104,6 +109,7 @@ def setup():
     compiles(aggregate.group_concat, "sqlite")(compile_group_concat)
     compiles(aggregate.any_value, "sqlite")(compile_any_value)
     compiles(aggregate.collect, "sqlite")(compile_collect)
+    compiles(sa.Cast, "sqlite")(compile_cast)
     compiles(numeric.bit_and, "sqlite")(compile_bitwise_and)
     compiles(numeric.bit_or, "sqlite")(compile_bitwise_or)
     compiles(numeric.bit_xor, "sqlite")(compile_bitwise_xor)
@@ -404,6 +410,16 @@ def compile_path_file_stem(element, compiler, **kwargs):
 
 def compile_path_file_ext(element, compiler, **kwargs):
     return compiler.process(path_file_ext(*element.clauses.clauses), **kwargs)
+
+
+def compile_cast(element, compiler, **kwargs):
+    if isinstance(element.type, DCDateTime):
+        return compiler.process(
+            func.datetime(element.clause, type_=element.type),
+            **kwargs,
+        )
+
+    return compiler.visit_cast(element, **kwargs)
 
 
 def compile_cosine_distance_ext(element, compiler, **kwargs):
