@@ -1,9 +1,30 @@
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+from datachain.client import bucket_status
 from datachain.client.azure import AzureClient
 from datachain.client.fsspec import BucketStatus
 from datachain.client.gcs import GCSClient
 from datachain.client.s3 import ClientS3
+
+# ---------------------------------------------------------------------------
+# bucket_status() path validation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "s3://my-bucket/some/path",
+        "gs://my-bucket/dir",
+        "az://my-container/blob",
+    ],
+)
+def test_bucket_status_rejects_path_component(uri):
+    with pytest.raises(ValueError, match="must not contain a path component"):
+        bucket_status(uri)
+
 
 # ---------------------------------------------------------------------------
 # S3
