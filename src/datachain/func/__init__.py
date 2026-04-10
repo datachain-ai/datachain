@@ -14,13 +14,14 @@ from .aggregate import (
     rank,
     row_number,
     sum,
+    xor_agg,
 )
 from .array import contains, cosine_distance, euclidean_distance, length, sip_hash_64
 from .conditional import and_, case, greatest, ifelse, isnone, least, not_, or_
 from .numeric import bit_and, bit_hamming_distance, bit_or, bit_xor, int_hash_64
 from .path import file_ext, file_stem, name, parent
 from .random import rand
-from .string import byte_hamming_distance
+from .string import byte_hamming_distance, string_hash
 from .window import window
 
 __all__ = [
@@ -64,6 +65,8 @@ __all__ = [
     "row_number",
     "sip_hash_64",
     "string",
+    "string_hash",
     "sum",
     "window",
+    "xor_agg",
 ]

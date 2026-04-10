@@ -1,3 +1,4 @@
+import hashlib
 import logging
 import re
 import sqlite3
@@ -111,6 +112,8 @@ def setup():
     compiles(numeric.bit_lshift, "sqlite")(compile_bitwise_lshift)
     compiles(numeric.int_hash_64, "sqlite")(compile_int_hash_64)
     compiles(numeric.bit_hamming_distance, "sqlite")(compile_bit_hamming_distance)
+    compiles(string.string_hash, "sqlite")(compile_string_hash)
+    compiles(aggregate.xor_agg, "sqlite")(compile_xor_agg)
 
     with closing(sqlite3.connect(":memory:")) as _usearch_conn:
         usearch_available = load_usearch_extension(_usearch_conn)
@@ -212,6 +215,27 @@ def sqlite_int_hash_64(x: int) -> int:
     return x if x < 1 << 63 else (x & MAX_INT64) - (1 << 64)
 
 
+def sqlite_string_hash(*args) -> int:
+    """Hash one or more values into a signed 64-bit integer."""
+    s = "|".join(str(a) if a is not None else "" for a in args)
+    h = int.from_bytes(hashlib.sha256(s.encode()).digest()[:8], "big")
+    return h if h < 1 << 63 else h - (1 << 64)
+
+
+class SqliteXorAggregate:
+    """SQLite custom aggregate that XORs all values."""
+
+    def __init__(self):
+        self.result = 0
+
+    def step(self, value):
+        if value is not None:
+            self.result ^= value
+
+    def finalize(self):
+        return self.result
+
+
 def sqlite_bit_hamming_distance(a: int, b: int) -> int:
     """Calculate the Hamming distance between two integers."""
     diff = (a & MAX_INT64) ^ (b & MAX_INT64)
@@ -284,6 +308,12 @@ def register_user_defined_sql_functions() -> None:
         )
 
     _registered_function_creators["string_functions"] = create_string_functions
+
+    def create_hash_functions(conn):
+        conn.create_function("string_hash", -1, sqlite_string_hash, deterministic=True)
+        conn.create_aggregate("xor_agg", 1, SqliteXorAggregate)
+
+    _registered_function_creators["hash_functions"] = create_hash_functions
 
     def create_array_functions(conn):
         conn.create_function(
@@ -462,6 +492,14 @@ def compile_byte_hamming_distance(element, compiler, **kwargs):
     return compiler.process(
         func.byte_hamming_distance(*element.clauses.clauses), **kwargs
     )
+
+
+def compile_string_hash(element, compiler, **kwargs):
+    return compiler.process(func.string_hash(*element.clauses.clauses), **kwargs)
+
+
+def compile_xor_agg(element, compiler, **kwargs):
+    return compiler.process(func.xor_agg(*element.clauses.clauses), **kwargs)
 
 
 def py_json_array_length(arr):
