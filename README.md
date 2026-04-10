@@ -6,61 +6,30 @@
 [![Tests](https://github.com/datachain-ai/datachain/actions/workflows/tests.yml/badge.svg)](https://github.com/datachain-ai/datachain/actions/workflows/tests.yml)
 [![DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/datachain-ai/datachain)
 
-DataChain is a Python library for building datasets from large, slow, and expensive data sources - and making them reusable.
+Teams and data agents fail without data context - schemas alone don't capture what data means, how it was produced, or what's already been computed. The solution is a context layer: multiple layers of metadata, lineage, and code-derived knowledge that ground both humans and agents in what actually exists.
 
-It's designed for workloads where:
-- files are large: images, video, documents, LiDAR
-- storage is remote: S3, GCS, Azure, NFS
-- computation is expensive: ML scoring, LLMs, embeddings
+DataChain brings this to unstructured files - images, video, documents, sensor data - stored in S3, GCS, Azure, or local filesystems.
 
-Without DataChain, these pipelines are fragile and wasteful:
+File pipelines are expensive to run and fragile to maintain without it:
 - crash → start over
-- new data in dir → recompute everything
+- new data → recompute everything
 - expensive calls → pay twice (tokens, GPU, time)
-- no visibility into what exist → duplicate work
-- no reuse → everything is recomputed again and again
+- no shared understanding of what exists → duplicate work
 
-**DataChain turns data pipelines into reusable, incremental systems instead of scripts.**
-
-```bash
-pip install datachain
-```
-
-## 1. Core capabilities
-
-- **Dataset registry** — versioned, queryable datasets instead of scripts
-- **Efficient processing** — async download of large files and parallelization and vectorized small/meta data processing
-- **Checkpoints & crash recovery** — never recompute expensive steps (LLMs, embeddings)
-- **Incremental / delta updates** — process only new or changed data
-- **No data copy** - using pointers to files and checksums
-
-Works with S3, GCS, Azure, and local filesystems.
-
-### Optional: Knowledge Base for Coding Agents
-
-```bash
-datachain skill install --target claude   # or --target cursor, --target codex
-```
-
-Every dataset updates a knowledge base your agent reads. You and your agents have better visibility on data, their dependencies and code. First similarity search: 1 hours to compute embeddings. Second: under 1 second to find right embeddings and get result.
-
-Readable md files, right in your file directory:
+DataChain adds two layers:
+1. **Operational layer** that persists schemas, versions, lineage, and processing state.
+2. **Knowledge layer** derived from it - readable by your team and your agents - that captures what your data is, what produced it, and what's already been computed.
 
 ![Visualize data knowledge base](docs/assets/obsidian_multi.gif)
 
-
-## 2. Install
-
-The library for efficient, fault tollerant data processing:
-
 ```bash
-pip install datachain
+pip install datachain                                      # core
+datachain skill install --target claude                    # knowledge layer + code generation
+# also: --target cursor, --target codex
 ```
 
-The optional skill is needed only for building knowledge base and datachain code genration:
-```bash
-datachain skill install --target claude   # or --target cursor, --target codex
-```
+Works with S3, GCS, Azure, and local filesystems.
+
 
 ## 3. Datasets
 
