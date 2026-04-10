@@ -118,7 +118,7 @@ def test_delete_dataset_version_in_name(test_session):
     dc.delete_dataset(f"{dataset_name}@1.0.0", session=test_session)
 
     with pytest.raises(DatasetNotFoundError):
-        dc.read_dataset(f"{dataset_name}@1.0.0", session=test_session).collect()
+        list(dc.read_dataset(f"{dataset_name}@1.0.0", session=test_session).to_iter())
 
     assert (
         dc.read_dataset(f"{dataset_name}@2.0.0", session=test_session).version
