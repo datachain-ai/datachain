@@ -12,6 +12,35 @@ from datachain.data_storage.sqlite import SCHEMA_VERSION, SQLiteMetastore
 from datachain.error import DatasetStateNotLoadedError, OutdatedDatabaseSchemaError
 from tests.conftest import cleanup_sqlite_db
 
+_DT = datetime(2024, 1, 1, tzinfo=timezone.utc)
+
+
+def _make_list_dataset_row(
+    dataset_id: int = 1,
+    dataset_name: str = "ds",
+    version: str = "1.0.0",
+    version_id: int = 1,
+) -> tuple:
+    namespace = (1, "ns-uuid", "default", None, _DT)
+    project = (1, "proj-uuid", "proj", None, _DT, 1)
+    dataset = (dataset_id, dataset_name, None, "[]", _DT)
+    ver = (
+        version_id,
+        f"ver-uuid-{version_id}",
+        dataset_id,
+        version,
+        0,
+        _DT,
+        None,
+        "",
+        "",
+        None,
+        None,
+        "",
+        None,
+    )
+    return namespace + project + dataset + ver
+
 
 def test_sqlite_metastore(sqlite_db):
     obj = SQLiteMetastore(db=sqlite_db)
@@ -192,3 +221,42 @@ def test_dataset_record_versions_setter_marks_loaded(test_session):
     record.versions = loaded.versions
 
     assert record.versions == loaded.versions
+
+
+def test_parse_list_dataset_single_row():
+    metastore = SQLiteMetastore(db_file=":memory:")
+    try:
+        row = _make_list_dataset_row(dataset_id=1, version="1.0.0", version_id=10)
+        result = metastore._parse_list_dataset([row])
+        assert result is not None
+        assert result.id == 1
+        assert result.name == "ds"
+        assert len(result.versions) == 1
+        assert result.versions[0].version == "1.0.0"
+        assert result.versions[0].id == 10
+    finally:
+        metastore.close_on_exit()
+
+
+def test_parse_list_dataset_multiple_rows_accumulates_and_sorts():
+    metastore = SQLiteMetastore(db_file=":memory:")
+    try:
+        rows = [
+            _make_list_dataset_row(dataset_id=1, version="2.0.0", version_id=2),
+            _make_list_dataset_row(dataset_id=1, version="1.0.0", version_id=1),
+            _make_list_dataset_row(dataset_id=1, version="3.0.0", version_id=3),
+        ]
+        result = metastore._parse_list_dataset(rows)
+        assert result is not None
+        assert len(result.versions) == 3
+        assert [v.version for v in result.versions] == ["1.0.0", "2.0.0", "3.0.0"]
+    finally:
+        metastore.close_on_exit()
+
+
+def test_parse_list_dataset_empty_rows_returns_none():
+    metastore = SQLiteMetastore(db_file=":memory:")
+    try:
+        assert metastore._parse_list_dataset([]) is None
+    finally:
+        metastore.close_on_exit()
