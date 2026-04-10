@@ -515,8 +515,9 @@ def test_move_dataset_wrong_old_project(test_session, old_new_projects):
         dc.move_dataset("wrong.wrong.numbers", "new.new.numbers", session=test_session)
 
 
+@pytest.mark.parametrize("is_studio", [True])
 def test_move_dataset_error_in_session_moved_dataset_persisted(
-    test_session, old_new_projects
+    test_session, is_studio, studio_job, old_new_projects
 ):
     from datachain.query.session import Session
 
