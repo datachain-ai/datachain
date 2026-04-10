@@ -1494,19 +1494,14 @@ class AbstractDBMetastore(AbstractMetastore):
         if not all_rows:
             return None
 
-        version_offset = (
-            len(self._namespaces_fields)
-            + len(self._projects_fields)
-            + len(self._dataset_fields)
-        )
         dataset = self.dataset_class.parse(
             *all_rows[0], versions_loaded=versions_loaded, preview_loaded=preview_loaded
         )
         for row in all_rows[1:]:
-            version = self.dataset_version_class.parse(
-                *row[version_offset:], preview_loaded=preview_loaded
+            tmp = self.dataset_class.parse(
+                *row, versions_loaded=True, preview_loaded=preview_loaded
             )
-            dataset._versions.append(version)
+            dataset._versions.extend(tmp._versions)
         dataset._versions.sort(key=lambda v: v.version_value)
         return dataset
 
@@ -1514,15 +1509,10 @@ class AbstractDBMetastore(AbstractMetastore):
         if not rows:
             return None
 
-        version_offset = (
-            len(self._namespaces_fields)
-            + len(self._projects_fields)
-            + len(self._dataset_list_fields)
-        )
         dataset = self.dataset_list_class.parse(*rows[0])
         for row in rows[1:]:
-            version = self.dataset_list_version_class.parse(*row[version_offset:])
-            dataset.versions.append(version)
+            tmp = self.dataset_list_class.parse(*row)
+            dataset.versions.extend(tmp.versions)
         dataset.versions.sort(key=lambda v: v.version_value)
         return dataset
 
