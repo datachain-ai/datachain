@@ -220,13 +220,13 @@ import datachain as dc
 chain = dc.read_dataset("response")
 
 # Iterating one-by-one: support out-of-memory workflow
-for file, response in chain.limit(5).collect("file", "response"):
+for file, response in chain.limit(5).to_iter("file", "response"):
     # verify the collected Python objects
     assert isinstance(response, ChatCompletionResponse)
 
     status = response.choices[0].message.content[:7]
     tokens = response.usage.total_tokens
-    print(f"{file.get_uri()}: {status}, file size: {file.size}, tokens: {tokens}")
+    print(f"{file.get_fs_path()}: {status}, file size: {file.size}, tokens: {tokens}")
 ```
 
 Output:

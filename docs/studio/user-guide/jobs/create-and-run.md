@@ -28,11 +28,11 @@ dc.read_storage("gs://datachain-demo").save("datachain-demo")
 ### Basic Operations Example
 
 ```python
-from datachain import DataChain
+from datachain import read_storage
 
 # Read from storage and process
 dc = (
-    DataChain.from_storage("s3://my-bucket/images/")
+    read_storage("s3://my-bucket/images/")
     .filter(lambda file: file.size > 1000)
     .map(lambda file: {"path": file.path, "size": file.size})
     .save("processed_images")
@@ -44,11 +44,11 @@ print(f"Processed {len(dc)} files")
 ### Working with Multiple Storages
 
 ```python
-from datachain import DataChain
+from datachain import read_storage
 
 # Access different connected storages
-source_data = DataChain.from_storage("s3://source-bucket/data/")
-reference_data = DataChain.from_storage("gs://reference-bucket/metadata/")
+source_data = read_storage("s3://source-bucket/data/")
+reference_data = read_storage("gs://reference-bucket/metadata/")
 
 # Process and combine
 result = source_data.join(reference_data, on="id").save("combined_data")
@@ -147,8 +147,10 @@ Results appear in the data table below your script:
 
 Access saved datasets by name:
 ```python
+from datachain import read_dataset
+
 # Later access to saved results
-saved_dc = DataChain.from_dataset("processed_images")
+saved_dc = read_dataset("processed_images")
 ```
 
 ## Common Patterns
@@ -156,10 +158,10 @@ saved_dc = DataChain.from_dataset("processed_images")
 ### Processing Images
 
 ```python
-from datachain import DataChain
+from datachain import read_storage
 
 dc = (
-    DataChain.from_storage("s3://images/")
+    read_storage("s3://images/")
     .filter(lambda file: file.path.endswith(('.jpg', '.png')))
     .map(lambda file: {
         "path": file.path,
@@ -173,10 +175,10 @@ dc = (
 ### Data Quality Checks
 
 ```python
-from datachain import DataChain
+from datachain import read_storage
 
 dc = (
-    DataChain.from_storage("gs://data-lake/")
+    read_storage("gs://data-lake/")
     .filter(lambda file: file.size > 0)  # Non-empty files
     .filter(lambda file: file.modified_at > "2024-01-01")  # Recent files
     .save("validated_data")
@@ -186,10 +188,10 @@ dc = (
 ### Batch Processing
 
 ```python
-from datachain import DataChain
+from datachain import read_storage
 
 # Process data in batches
-for batch in DataChain.from_storage("s3://large-dataset/").batch(1000):
+for batch in read_storage("s3://large-dataset/").batch(1000):
     processed = batch.map(transform_function)
     print(f"Processed batch of {len(processed)} files")
 ```
