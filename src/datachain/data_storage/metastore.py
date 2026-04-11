@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager, suppress
 from datetime import datetime, timedelta, timezone
-from functools import cached_property, reduce
+from functools import cached_property
 from itertools import groupby
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -1490,24 +1490,42 @@ class AbstractDBMetastore(AbstractMetastore):
         versions_loaded: bool,
         preview_loaded: bool,
     ) -> DatasetRecord | None:
-        parse_dataset: Any = self.dataset_class.parse
-        versions = [
-            parse_dataset(
-                *r,
-                versions_loaded=versions_loaded,
-                preview_loaded=preview_loaded,
-            )
-            for r in rows
-        ]
-        if not versions:
+        all_rows = list(rows)
+        if not all_rows:
             return None
-        return reduce(lambda ds, version: ds.merge_versions(version), versions)
+
+        dataset = self.dataset_class.parse(
+            *all_rows[0], versions_loaded=versions_loaded, preview_loaded=preview_loaded
+        )
+        if not versions_loaded:
+            return dataset
+
+        dataset_versions = dataset.versions
+        for row in all_rows[1:]:
+            tmp = self.dataset_class.parse(
+                *row, versions_loaded=True, preview_loaded=preview_loaded
+            )
+            dataset_versions.extend(tmp.versions)
+
+        if len(dataset_versions) > 1:
+            dataset_versions.sort(key=lambda v: v.version_value)
+        dataset.versions = dataset_versions
+        return dataset
 
     def _parse_list_dataset(self, rows) -> DatasetListRecord | None:
-        versions = [self.dataset_list_class.parse(*r) for r in rows]
-        if not versions:
+        if not rows:
             return None
-        return reduce(lambda ds, version: ds.merge_versions(version), versions)
+
+        dataset = self.dataset_list_class.parse(*rows[0])
+        dataset_versions = dataset.versions
+        for row in rows[1:]:
+            tmp = self.dataset_list_class.parse(*row)
+            dataset_versions.extend(tmp.versions)
+
+        if len(dataset_versions) > 1:
+            dataset_versions.sort(key=lambda v: v.version_value)
+        dataset.versions = dataset_versions
+        return dataset
 
     def _parse_dataset_list(self, rows) -> Iterator["DatasetListRecord"]:
         # grouping rows by dataset id
