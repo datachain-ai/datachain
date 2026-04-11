@@ -8,6 +8,7 @@ from datachain.cli.utils import get_logging_level
 from datachain.studio import process_pipeline_args
 
 from .commands import (
+    bucket_status_cmd,
     clear_cache,
     completion,
     du,
@@ -86,6 +87,7 @@ def handle_command(args, catalog, client_config) -> int:
     from datachain.studio import process_auth_cli_args, process_jobs_args
 
     command_handlers = {
+        "bucket": lambda: handle_bucket_command(args, client_config),
         "cp": lambda: handle_cp_command(args, catalog),
         "clone": lambda: handle_clone_command(args, catalog),
         "dataset": lambda: handle_dataset_command(args, catalog),
@@ -111,6 +113,18 @@ def handle_command(args, catalog, client_config) -> int:
         return return_code
     print(f"invalid command: {args.command}", file=sys.stderr)
     return 1
+
+
+def handle_bucket_command(args, client_config) -> int:
+    if args.bucket_cmd is None:
+        print(
+            f"Use 'datachain {args.command} --help' to see available options",
+            file=sys.stderr,
+        )
+        return 1
+    if args.bucket_cmd == "status":
+        return bucket_status_cmd(args.uri, client_config=client_config)
+    raise NotImplementedError(f"Unexpected bucket subcommand: {args.bucket_cmd}")
 
 
 def handle_cp_command(args, catalog):
