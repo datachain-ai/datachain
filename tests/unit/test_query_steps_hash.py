@@ -434,6 +434,7 @@ def test_query_step_hash_uses_version_uuid():
                 script_output="",
                 schema=None,
                 _preview_data=[],
+                _preview_loaded=True,
             ),
         ],
         _versions_loaded=True,

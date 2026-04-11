@@ -177,7 +177,7 @@ def test_update_dataset_version_marks_preview_loaded_after_explicit_preview_upda
 
     assert updated._preview_loaded is True
     assert updated.preview == [{"sys__id": 1, "value": "updated"}]
-    assert "_preview_loaded" not in updated.to_dict()
+    assert updated.to_dict()["_preview_loaded"] is True
 
 
 def test_dataset_record_versions_setter_marks_loaded(test_session):

@@ -290,7 +290,7 @@ class DatasetVersion:
     _preview_data: str | list[dict] | None = field(
         default=None, metadata={"alias": "preview"}
     )
-    _preview_loaded: bool = False
+    _preview_loaded: bool = field(kw_only=True)
     sources: str = ""
     query_script: str = ""
     job_id: str | None = None
@@ -391,12 +391,6 @@ class DatasetVersion:
         result = {}
         for f in fields(self):
             value = object.__getattribute__(self, f.name)
-            # Exclude True to avoid crashing old clients that don't know
-            # about this field.  Receivers infer True (loaded) when the
-            # key is missing.  (Can be removed once all clients
-            # are upgraded.)
-            if f.name == "_preview_loaded" and value is True:
-                continue
             result[f.metadata.get("alias", f.name)] = value
         return result
 
@@ -412,9 +406,6 @@ class DatasetVersion:
             if f.name in d and f.name != "_preview_data"
         }
         kwargs["_preview_data"] = d["preview"]
-        # Infer loaded=True when the key is absent (same rationale as
-        # DatasetRecord.from_dict — see comment there).
-        kwargs.setdefault("_preview_loaded", True)
         return cls(**kwargs)
 
 
@@ -504,7 +495,7 @@ class DatasetRecord:
     script_output: str = ""
     sources: str = ""
     query_script: str = ""
-    _versions_loaded: bool = False
+    _versions_loaded: bool = field(kw_only=True)
 
     @property
     def versions(self) -> list[DatasetVersion]:
@@ -836,12 +827,6 @@ class DatasetRecord:
         result = {}
         for f in fields(self):
             value = object.__getattribute__(self, f.name)
-            # Exclude True to avoid crashing old clients that don't know
-            # about this field.  Receivers infer True (loaded) when the
-            # key is missing.  (Can be removed once all clients
-            # are upgraded.)
-            if f.name == "_versions_loaded" and value is True:
-                continue
             key = f.metadata.get("alias", f.name)
             if hasattr(value, "to_dict"):
                 value = value.to_dict()
@@ -863,11 +848,6 @@ class DatasetRecord:
             for f in fields(cls)
             if f.name in d and f.name not in {"_versions", "project"}
         }
-        # Infer loaded=True when the key is absent: either the server
-        # excluded it (True is omitted for backward compat) or an old
-        # server never sent it.  In both cases the versions were
-        # deserialized from the dict, so they are loaded.
-        kwargs.setdefault("_versions_loaded", True)
         return cls(**kwargs, _versions=versions, project=project)
 
 
