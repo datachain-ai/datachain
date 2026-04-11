@@ -1497,12 +1497,14 @@ class AbstractDBMetastore(AbstractMetastore):
         dataset = self.dataset_class.parse(
             *all_rows[0], versions_loaded=versions_loaded, preview_loaded=preview_loaded
         )
+        if not versions_loaded:
+            return dataset
         for row in all_rows[1:]:
             tmp = self.dataset_class.parse(
                 *row, versions_loaded=True, preview_loaded=preview_loaded
             )
-            dataset._versions.extend(tmp._versions)
-        dataset._versions.sort(key=lambda v: v.version_value)
+            dataset.versions.extend(tmp.versions)
+        dataset.versions = sorted(dataset.versions, key=lambda v: v.version_value)
         return dataset
 
     def _parse_list_dataset(self, rows) -> DatasetListRecord | None:
@@ -1513,7 +1515,7 @@ class AbstractDBMetastore(AbstractMetastore):
         for row in rows[1:]:
             tmp = self.dataset_list_class.parse(*row)
             dataset.versions.extend(tmp.versions)
-        dataset.versions.sort(key=lambda v: v.version_value)
+        dataset.versions = sorted(dataset.versions, key=lambda v: v.version_value)
         return dataset
 
     def _parse_dataset_list(self, rows) -> Iterator["DatasetListRecord"]:
