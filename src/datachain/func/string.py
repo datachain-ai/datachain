@@ -12,6 +12,7 @@ __all__ = [
     "regexp_replace",
     "replace",
     "split",
+    "string_hash",
 ]
 
 
@@ -227,4 +228,30 @@ def byte_hamming_distance(*args: ColT) -> Func:
         cols=cols,
         args=func_args,
         result_type=int,
+    )
+
+
+def string_hash(*cols: ColT) -> Func:
+    """
+    Computes a 64-bit hash of one or more column values.
+
+    Values are coerced to strings and concatenated with '|' separator
+    before hashing. Useful as input to ``func.xor_agg`` for computing
+    order-independent content fingerprints.
+
+    Args:
+        *cols: One or more columns to hash.
+
+    Returns:
+        Func: A ``Func`` object that represents the string_hash function.
+
+    Example:
+        ```py
+        dc.mutate(
+            h=func.string.string_hash("file.path", "file.etag"),
+        )
+        ```
+    """
+    return Func(
+        "string_hash", inner=string.string_hash, cols=list(cols), result_type=int
     )
