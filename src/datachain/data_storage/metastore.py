@@ -2561,10 +2561,18 @@ class AbstractDBMetastore(AbstractMetastore):
                 status=CheckpointStatus.ACTIVE,
             )
 
-            # Use on_conflict_do_nothing to handle race conditions
-            if not hasattr(query, "on_conflict_do_nothing"):
-                raise RuntimeError("Database must support on_conflict_do_nothing")
-            query = query.on_conflict_do_nothing(index_elements=["job_id", "hash"])
+            # Use upsert to handle re-activation of deleted checkpoints
+            # (e.g. same hash in same job after previous run)
+            if not hasattr(query, "on_conflict_do_update"):
+                raise RuntimeError("Database must support on_conflict_do_update")
+            query = query.on_conflict_do_update(
+                index_elements=["job_id", "hash"],
+                set_={
+                    "partial": partial,
+                    "status": CheckpointStatus.ACTIVE,
+                    "created_at": datetime.now(timezone.utc),
+                },
+            )
 
             self.db.execute(query)
 

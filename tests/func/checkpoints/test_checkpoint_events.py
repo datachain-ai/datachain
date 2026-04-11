@@ -184,17 +184,17 @@ def test_map_continued_event(test_session, nums_dataset):
     reset_session_job_state()
     processed.clear()
 
-    def fixed_double(num) -> int:
+    def buggy_double(num) -> int:
         processed.append(num)
         return num * 2
 
     dc.read_dataset("nums", session=test_session).map(
-        doubled=fixed_double, output=int
+        doubled=buggy_double, output=int
     ).save("doubled")
     second_job_id = test_session.get_or_create_job().id
 
     events = get_udf_events(metastore, second_job_id)
-    map_event = next(e for e in events if e.udf_name == "fixed_double")
+    map_event = next(e for e in events if e.udf_name == "buggy_double")
 
     assert map_event.event_type == CheckpointEventType.UDF_CONTINUED
     assert map_event.rows_input == 6
@@ -229,18 +229,18 @@ def test_gen_continued_event(test_session, nums_dataset):
     reset_session_job_state()
     processed.clear()
 
-    def fixed_gen(num) -> Iterator[int]:
+    def buggy_gen(num) -> Iterator[int]:
         processed.append(num)
         yield num
         yield num * 10
 
     dc.read_dataset("nums", session=test_session).gen(
-        result=fixed_gen, output=int
+        result=buggy_gen, output=int
     ).save("results")
     second_job_id = test_session.get_or_create_job().id
 
     events = get_udf_events(metastore, second_job_id)
-    gen_event = next(e for e in events if e.udf_name == "fixed_gen")
+    gen_event = next(e for e in events if e.udf_name == "buggy_gen")
 
     assert gen_event.event_type == CheckpointEventType.UDF_CONTINUED
     assert gen_event.rows_input == 6
