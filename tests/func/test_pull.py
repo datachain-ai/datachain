@@ -49,6 +49,7 @@ def remote_dataset_version(
             'from datachain.query.dataset import DatasetQuery\nDatasetQuery(path="s3://ldb-public")',
         ),
         "created_by_id": 1,
+        "_preview_loaded": True,
     }
 
 
@@ -80,6 +81,7 @@ def remote_dataset(
         "warehouse_id": None,
         "created_by_id": 1,
         "versions": [remote_dataset_version],
+        "_versions_loaded": True,
     }
 
 
