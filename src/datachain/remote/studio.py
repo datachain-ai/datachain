@@ -33,23 +33,7 @@ DATASET_ROWS_CHUNK_SIZE = 8192
 
 
 def get_studio_env_variable(name: str) -> Any:
-    """
-    Get the value of a DataChain Studio environment variable.
-    It first checks for the variable prefixed with 'DATACHAIN_STUDIO_',
-    then checks for the deprecated 'DVC_STUDIO_' prefix.
-    If neither is set, it returns the provided default value.
-    """
-    if (value := os.environ.get(f"DATACHAIN_STUDIO_{name}")) is not None:
-        return value
-    if (value := os.environ.get(f"DVC_STUDIO_{name}")) is not None:  # deprecated
-        logger.warning(
-            "Environment variable 'DVC_STUDIO_%s' is deprecated, "
-            "use 'DATACHAIN_STUDIO_%s' instead.",
-            name,
-            name,
-        )
-        return value
-    return None
+    return os.environ.get(f"DATACHAIN_STUDIO_{name}")
 
 
 def _is_server_error(status_code: int) -> bool:

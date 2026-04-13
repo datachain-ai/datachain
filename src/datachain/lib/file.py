@@ -5,7 +5,6 @@ import logging
 import os
 import posixpath
 import re
-import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -824,24 +823,6 @@ class File(DataModel):
     def get_file_stem(self):
         return PurePosixPath(self.path).stem
 
-    def get_uri(self) -> str:
-        """Deprecated: Return a URI-like string for this file."""
-        warnings.warn(
-            (
-                "File.get_uri() is deprecated and will be removed in a future version. "
-                "Use file.get_fs_path() for I/O locators."
-            ),
-            DeprecationWarning,
-            stacklevel=2,
-        )
-
-        if not self.source:
-            return self.get_fs_path()
-
-        # For cloud, get_fs_path returns a full URI; for local, a bare path.
-        # Wrap in path_to_fsspec_uri so we always return a URI.
-        return path_to_fsspec_uri(self.get_fs_path())
-
     def get_fs_path(self) -> str:
         """Combine ``source`` and ``path`` into the full location string.
 
@@ -1019,34 +1000,6 @@ class File(DataModel):
             ```
         """
         return rebase_path(self.get_fs_path(), old_base, new_base, suffix, extension)
-
-
-def resolve(file: File) -> File:
-    """
-    [DEPRECATED] Use `file.resolve()` directly instead.
-
-    Resolve a File object by checking its existence and updating its metadata.
-
-    This function is a wrapper around the File.resolve() method, designed to be
-    used as a mapper in DataChain operations.
-
-    Args:
-        file (File): The File object to resolve.
-
-    Returns:
-        File: The resolved File object with updated metadata.
-
-    Raises:
-        RuntimeError: If the file's catalog is not set or if
-        the file source protocol is unsupported.
-    """
-    warnings.warn(
-        "resolve() is deprecated and will be removed "
-        "in a future version. Use file.resolve() directly.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    return file.resolve()
 
 
 class TextFile(File):

@@ -1,8 +1,6 @@
 import math
 from typing import Any, cast
 
-import pytest
-
 import datachain as dc
 from datachain.lib.data_model import DataModel
 from datachain.lib.file import File
@@ -96,15 +94,6 @@ def test_to_list_nested_feature(test_session):
 
         assert isinstance(nested, MyNested)
         assert nested == features_nested[n]
-
-
-def test_collect_deprecated(test_session):
-    """Test deprecated collect() method (should use to_iter instead)."""
-    chain = dc.read_values(fib=[1, 1, 2, 3, 5], session=test_session)
-
-    with pytest.warns(DeprecationWarning, match="Method `collect` is deprecated"):
-        vals = list(chain.collect("fib"))
-        assert set(vals) == {1, 2, 3, 5}
 
 
 def test_to_values_and_to_list(test_session):
