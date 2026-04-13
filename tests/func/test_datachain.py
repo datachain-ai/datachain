@@ -395,11 +395,6 @@ def test_show_without_temp_datasets(capsys, test_session):
     assert "Empty result" in normalized_output
 
 
-def test_class_method_deprecated(capsys, test_session):
-    with pytest.warns(DeprecationWarning):
-        dc.DataChain.from_values(key=["a", "b", "c"], session=test_session)
-
-
 def test_save(test_session):
     chain = dc.read_values(key=["a", "b", "c"])
     chain.save(

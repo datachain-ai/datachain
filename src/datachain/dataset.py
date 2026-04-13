@@ -672,20 +672,6 @@ class DatasetRecord:
             if hasattr(self, key):
                 setattr(self, key, value)
 
-    def merge_versions(self, other: "DatasetRecord") -> "DatasetRecord":
-        """Merge versions from another dataset"""
-        if other.id != self.id:
-            raise RuntimeError("Cannot merge versions of datasets with different ids")
-        if not self._versions_loaded or not other._versions_loaded:
-            raise RuntimeError("Cannot merge versions when versions are not loaded")
-        if not other._versions:
-            # nothing to merge
-            return self
-
-        self._versions = list(set(self._versions + other._versions))
-        self._versions.sort(key=lambda v: v.version_value)
-        return self
-
     def has_version(self, version: str) -> bool:
         return version in [v.version for v in self.versions]
 
@@ -970,18 +956,6 @@ class DatasetListRecord:
     @property
     def full_name(self) -> str:
         return f"{self.project.namespace.name}.{self.project.name}.{self.name}"
-
-    def merge_versions(self, other: "DatasetListRecord") -> "DatasetListRecord":
-        """Merge versions from another dataset"""
-        if other.id != self.id:
-            raise RuntimeError("Cannot merge versions of datasets with different ids")
-        if not other.versions:
-            # nothing to merge
-            return self
-
-        self.versions = list(set(self.versions + other.versions))
-        self.versions.sort(key=lambda v: v.version_value)
-        return self
 
     def latest_version(self) -> DatasetListVersion:
         return max(self.versions, key=lambda v: v.version_value)
