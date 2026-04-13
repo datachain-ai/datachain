@@ -3,6 +3,8 @@ from functools import wraps
 from typing import TYPE_CHECKING, TypeVar, cast
 
 import sqlalchemy
+from sqlalchemy.sql.elements import BindParameter
+from sqlalchemy.sql.visitors import replacement_traverse
 
 from datachain.func.base import Function
 from datachain.lib.data_model import DataModel, DataType
@@ -48,11 +50,23 @@ def resolve_columns(
     @wraps(method)
     def _inner(self: D, *args: "P.args", **kwargs: "P.kwargs") -> D:
         resolved_args: list[object] = []
+
+        def resolve_expr(expr: ColumnExpr) -> ColumnExpr:
+            def replace(element, **_kwargs):
+                if isinstance(element, BindParameter) and isinstance(
+                    element.value, Function
+                ):
+                    return element.value.get_column(self.signals_schema)
+                return None
+
+            resolved = replacement_traverse(expr, {}, replace)
+            return self.signals_schema.enrich_expr_types(cast("ColumnExpr", resolved))
+
         for arg in args:
             if isinstance(arg, Function):
                 resolved_args.append(arg.get_column(self.signals_schema))
             elif isinstance(arg, ColumnExpr):
-                resolved_args.append(arg)
+                resolved_args.append(resolve_expr(arg))
             else:
                 resolved_args.extend(
                     cast(
@@ -89,10 +103,12 @@ def _validate_merge_on(
     if isinstance(on, (str, ColumnExpr)):
         return [on]
     if isinstance(on, Function):
-        return [on.get_column(table=ds._query.table)]
+        return [on.get_column(ds.signals_schema, table=ds._query.table)]
     if isinstance(on, Sequence):
         return [
-            c.get_column(table=ds._query.table) if isinstance(c, Function) else c
+            c.get_column(ds.signals_schema, table=ds._query.table)
+            if isinstance(c, Function)
+            else c
             for c in on
         ]
 

@@ -1,10 +1,11 @@
 from datetime import datetime
+from enum import Enum
 
 import pytest
 from sqlalchemy import Label
 
 import datachain as dc
-from datachain import func
+from datachain import C, func
 from datachain.func import (
     and_,
     bit_hamming_distance,
@@ -20,8 +21,8 @@ from datachain.func import (
 from datachain.func.array import contains
 from datachain.func.random import rand
 from datachain.func.string import length as strlen
-from datachain.lib.signal_schema import SignalSchema
-from datachain.lib.utils import DataChainParamsError
+from datachain.lib.signal_schema import SignalResolvingError, SignalSchema
+from datachain.lib.utils import DataChainColumnError, DataChainParamsError
 from datachain.sql.sqlite.base import (
     sqlite_bit_hamming_distance,
     sqlite_byte_hamming_distance,
@@ -41,7 +42,25 @@ def chain():
 def test_db_cols():
     rnd = rand()
     assert rnd._db_cols == []
-    assert rnd._db_col_type(SignalSchema({})) is None
+    assert rnd._result_type_from_db_cols(SignalSchema({})) is None
+
+
+def test_group_by_accepts_expression_operands(test_session):
+    chain = dc.read_values(
+        num=[1, 2, 3],
+        num2=[10, 20, 30],
+        session=test_session,
+    )
+
+    cases = [
+        (C("num") + 1, 9),
+        ((C("num") + 1).label("x"), 9),
+        (C("num") + C("num2"), 66),
+    ]
+
+    for expr, expected in cases:
+        result = chain.group_by(total=func.sum(expr)).to_records()
+        assert result == [{"total": expected}]
 
 
 def test_label():
@@ -63,12 +82,13 @@ def test_col_name():
 
 def test_result_type():
     rnd = rand()
+    assert rnd.get_result_type() is int
     assert rnd.get_result_type(SignalSchema({})) is int
 
 
 @pytest.mark.parametrize(
     "target_type",
-    [int, float, str, bool, bytes, datetime, list[int], dict[str, int]],
+    [int, float, str, bool, bytes, datetime],
 )
 def test_cast_result_type(target_type):
     result = func.cast("num", target_type)
@@ -79,8 +99,33 @@ def test_cast_invalid_target_type():
     class Unsupported:
         pass
 
-    with pytest.raises(TypeError, match="Cannot recognize type"):
+    with pytest.raises(TypeError, match="supports target types"):
         func.cast("num", Unsupported)
+
+
+def test_cast_invalid_target_enum_type():
+    class UnsupportedEnum(Enum):
+        ONE = "one"
+
+    with pytest.raises(TypeError, match="supports target types"):
+        func.cast("num", UnsupportedEnum)
+
+
+@pytest.mark.parametrize("target_type", [list, dict, list[int], dict[str, int]])
+def test_cast_invalid_container_target_type(target_type):
+    with pytest.raises(TypeError, match="supports target types"):
+        func.cast("num", target_type)
+
+
+def test_cast_invalid_source_value():
+    with pytest.raises(
+        DataChainParamsError,
+        match=(
+            "expects a column name, dataset column, column expression, or "
+            "DataChain expression"
+        ),
+    ):
+        func.cast({"num": 1}, str)  # type: ignore[arg-type]
 
 
 def test_get_column():
@@ -88,6 +133,30 @@ def test_get_column():
     col = rnd.get_column(SignalSchema({}))
     assert isinstance(col, Label)
     assert col.name == "rand"
+
+
+def test_cast_get_column_raises_without_schema_for_string_source():
+    with pytest.raises(
+        DataChainColumnError,
+        match="Error for column ts: A dataset context is required to infer column type",
+    ):
+        func.cast("ts", str).get_column()
+
+
+def test_get_result_type_raises_without_schema_for_column_func():
+    with pytest.raises(
+        DataChainColumnError,
+        match=(
+            r"Error for column sum\(\): "
+            r"A dataset context is required to infer result type"
+        ),
+    ):
+        func.sum("num").get_result_type()
+
+
+def test_get_result_type_raises_with_empty_schema_for_column_func():
+    with pytest.raises(SignalResolvingError, match=r"'num'.*is not found"):
+        func.sum("num").get_result_type(SignalSchema({}))
 
 
 def test_get_column_disallow_complex_object_in_sql_funcs():
@@ -1088,19 +1157,41 @@ def test_path_funcs_work_on_locally_listed_paths(tmp_dir, test_session):
     assert exts == ["txt"]
 
 
-def test_get_db_col_type_int_expression():
+def test_infer_col_type_int_expression():
     from datachain import Column
-    from datachain.func.func import get_db_col_type
+    from datachain.func.func import infer_col_type
     from datachain.lib.signal_schema import SignalSchema
 
     schema = SignalSchema({"a": int, "b": int})
-    assert get_db_col_type(schema, Column("a") + 1) is int
+    assert infer_col_type(schema, Column("a") + 1) is int
 
 
-def test_get_db_col_type_mixed_type_expression():
+def test_infer_col_type_mixed_type_expression():
     from datachain import Column
-    from datachain.func.func import get_db_col_type
+    from datachain.func.func import infer_col_type
     from datachain.lib.signal_schema import SignalSchema
 
     schema = SignalSchema({"a": int, "b": float})
-    assert get_db_col_type(schema, Column("a") + Column("b")) is float
+    assert infer_col_type(schema, Column("a") + Column("b")) is float
+
+
+def test_infer_col_type_labeled_expression():
+    from datachain import Column
+    from datachain.func.func import infer_col_type
+    from datachain.lib.signal_schema import SignalSchema
+
+    schema = SignalSchema({"a": int})
+    assert infer_col_type(schema, (Column("a") + 1).label("x")) is int
+
+
+def test_get_result_type_with_expression_operand():
+    from sqlalchemy.sql import func as sa_func
+
+    from datachain import Column
+    from datachain.func.func import Func
+    from datachain.lib.signal_schema import SignalSchema
+
+    schema = SignalSchema({"a": int})
+    expr_func = Func("sum", inner=sa_func.sum, cols=[Column("a") + 1])
+
+    assert expr_func.get_result_type(schema) is int

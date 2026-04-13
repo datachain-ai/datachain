@@ -1,5 +1,5 @@
 import math
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 
 import pytest
@@ -48,7 +48,7 @@ COMPLEX_TREE: dict[str, Any] = {
         [Float64(), lambda val: math.isnan(val)],  # noqa: PLW0108
         [Array(Int), []],
         [JSON(), {}],
-        [DateTime(), datetime(1970, 1, 1, 0, 0, tzinfo=timezone.utc)],
+        [DateTime(), datetime(1970, 1, 1, 0, 0)],
         [Binary(), b""],
     ],
 )

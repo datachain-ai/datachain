@@ -236,6 +236,25 @@ def sqlite_byte_hamming_distance(a: str, b: str) -> int:
     return diff + sum(c1 != c2 for c1, c2 in zip(a, b, strict=False))
 
 
+def sqlite_datetime_cast(value):
+    if value is None:
+        return None
+
+    if isinstance(value, bytes):
+        value = value.decode()
+
+    if isinstance(value, datetime):
+        value = value.isoformat(" ")
+    elif not isinstance(value, str):
+        return value
+
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is not None:
+        raise ValueError("SQLite datetime cast only accepts naive datetime strings")
+
+    return parsed.isoformat(" ")
+
+
 def register_user_defined_sql_functions() -> None:
     # Register optional functions if we have the necessary dependencies
     # and otherwise register functions that will raise an exception with
@@ -288,6 +307,7 @@ def register_user_defined_sql_functions() -> None:
         conn.create_function(
             "byte_hamming_distance", 2, sqlite_byte_hamming_distance, deterministic=True
         )
+        conn.create_function("dt_cast", 1, sqlite_datetime_cast, deterministic=True)
 
     _registered_function_creators["string_functions"] = create_string_functions
 
@@ -322,6 +342,9 @@ def register_user_defined_sql_functions() -> None:
 
 
 def adapt_datetime(val: datetime) -> str:
+    if val.tzinfo is None:
+        return val.isoformat(" ")
+
     is_utc_check = val.tzinfo is timezone.utc
     tzname_check = val.tzname() == "UTC"
     combined_check = is_utc_check or tzname_check
@@ -415,7 +438,7 @@ def compile_path_file_ext(element, compiler, **kwargs):
 def compile_cast(element, compiler, **kwargs):
     if isinstance(element.type, DCDateTime):
         return compiler.process(
-            func.datetime(element.clause, type_=element.type),
+            func.dt_cast(element.clause, type_=element.type),
             **kwargs,
         )
 

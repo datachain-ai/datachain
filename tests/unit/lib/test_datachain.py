@@ -27,6 +27,7 @@ from datachain.error import (
     InvalidProjectNameError,
     ProjectCreateNotAllowedError,
 )
+from datachain.func import string
 from datachain.lib.data_model import DataModel
 from datachain.lib.dc import C, DatasetPrepareError, Sys
 from datachain.lib.dc.listings import read_listing_dataset
@@ -3162,8 +3163,6 @@ def test_filter_chaining(test_session):
 
 def test_filter_with_func_operations(test_session):
     """Test filter with datachain.func operations."""
-    from datachain.func import string
-
     chain = dc.read_values(
         names=["Alice", "Bob", "Charlie", "David", "Eva"],
         ages=[25, 30, 35, 40, 45],
@@ -3174,6 +3173,32 @@ def test_filter_with_func_operations(test_session):
     filtered_chain = chain.filter(string.length(C("names")) > 4)
     assert filtered_chain.count() == 3
     assert sorted(filtered_chain.to_values("names")) == ["Alice", "Charlie", "David"]
+
+
+def test_filter_resolves_func_with_string_column_operand(test_session):
+    chain = dc.read_values(
+        names=["Al", "Bob", "Charlie", "Dora"],
+        session=test_session,
+    )
+
+    filtered_chain = chain.filter(string.length("names") > 3)
+
+    assert sorted(filtered_chain.to_values("names")) == ["Charlie", "Dora"]
+
+
+def test_filter_resolves_column_expr_with_embedded_func(test_session):
+    chain = dc.read_values(
+        path=["a/x.txt", "a/y.txt", "b/z.txt"],
+        parent=["a", "wrong", "b"],
+        session=test_session,
+    )
+
+    filtered_chain = chain.filter(C("parent") == func.path.parent("path"))
+
+    assert filtered_chain.order_by("path").to_values("path") == [
+        "a/x.txt",
+        "b/z.txt",
+    ]
 
 
 def test_filter_with_boolean_nested_model(test_session):

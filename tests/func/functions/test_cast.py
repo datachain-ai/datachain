@@ -3,7 +3,7 @@ from datetime import datetime
 import pytest
 
 import datachain as dc
-from datachain import func
+from datachain import C, func
 
 
 def test_cast_in_mutate_filter_and_order_by(test_session):
@@ -19,6 +19,20 @@ def test_cast_in_mutate_filter_and_order_by(test_session):
     )
 
     assert rows == [("2", 2), ("10", 10)]
+
+
+def test_cast_column_expression_in_mutate(test_session):
+    rows = (
+        dc.read_values(
+            num=[1, 2, 3],
+            session=test_session,
+        )
+        .mutate(num_str=func.cast(C("num") + 1, str))
+        .order_by("num")
+        .to_values("num_str")
+    )
+
+    assert rows == ["2", "3", "4"]
 
 
 def test_cast_in_merge(test_session):
@@ -91,6 +105,178 @@ def test_cast_datetime_in_mutate_and_order_by(test_session):
         ("2024-01-01 00:00:00", datetime(2024, 1, 1, 0, 0, 0)),
         ("2024-01-02 03:04:05", datetime(2024, 1, 2, 3, 4, 5)),
     ]
+
+
+def test_cast_datetime_to_string_and_round_trip(test_session):
+    rows = (
+        dc.read_values(
+            row_id=[1, 2, 3],
+            ts=[
+                datetime(2024, 1, 1, 0, 0, 0),
+                datetime(2024, 1, 2, 3, 4, 5, 123000),
+                datetime(2024, 1, 2, 3, 4, 5, 123456),
+            ],
+            session=test_session,
+        )
+        .mutate(
+            ts_str=func.cast("ts", str),
+            ts_round_trip=func.cast(func.cast("ts", str), datetime),
+        )
+        .order_by("row_id")
+        .to_list("ts", "ts_str", "ts_round_trip")
+    )
+
+    assert rows == [
+        (
+            datetime(2024, 1, 1, 0, 0, 0),
+            "2024-01-01 00:00:00",
+            datetime(2024, 1, 1, 0, 0, 0),
+        ),
+        (
+            datetime(2024, 1, 2, 3, 4, 5, 123000),
+            "2024-01-02 03:04:05.123000",
+            datetime(2024, 1, 2, 3, 4, 5, 123000),
+        ),
+        (
+            datetime(2024, 1, 2, 3, 4, 5, 123456),
+            "2024-01-02 03:04:05.123456",
+            datetime(2024, 1, 2, 3, 4, 5, 123456),
+        ),
+    ]
+
+
+def test_regular_datetime_values_materialize_without_backend_shift(test_session):
+    rows = (
+        dc.read_values(
+            row_id=[1, 2],
+            ts=[
+                datetime(2024, 1, 1, 0, 0, 0),
+                datetime(2024, 1, 2, 3, 4, 5, 123456),
+            ],
+            session=test_session,
+        )
+        .order_by("row_id")
+        .to_list("ts")
+    )
+
+    assert rows == [
+        (datetime(2024, 1, 1, 0, 0, 0),),
+        (datetime(2024, 1, 2, 3, 4, 5, 123456),),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("2024-01-02 03:04:05.123000", datetime(2024, 1, 2, 3, 4, 5, 123000)),
+        ("2024-01-02 03:04:05.123456", datetime(2024, 1, 2, 3, 4, 5, 123456)),
+        ("2024-01-02 03:04:05.123456789", datetime(2024, 1, 2, 3, 4, 5, 123456)),
+    ],
+)
+def test_cast_datetime_from_fractional_string(test_session, source, expected):
+    rows = (
+        dc.read_values(row_id=[1], ts_str=[source], session=test_session)
+        .mutate(ts=func.cast("ts_str", datetime))
+        .to_values("ts")
+    )
+
+    assert rows == [expected]
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("2024-01-02T03:04:05", datetime(2024, 1, 2, 3, 4, 5)),
+        ("2024-01-02", datetime(2024, 1, 2, 0, 0, 0)),
+    ],
+)
+def test_cast_datetime_from_simple_iso_string(test_session, source, expected):
+    rows = (
+        dc.read_values(row_id=[1], ts_str=[source], session=test_session)
+        .mutate(ts=func.cast("ts_str", datetime))
+        .to_values("ts")
+    )
+
+    assert rows == [expected]
+
+
+def test_filter_cast_datetime_against_python_datetime_literal(test_session):
+    predicate = func.cast("ts_str", datetime) >= datetime(2024, 1, 2, 0, 0, 0)  # type: ignore[operator]
+
+    rows = (
+        dc.read_values(
+            row_id=[1, 2, 3],
+            ts_str=[
+                "2024-01-01 00:00:00",
+                "2024-01-02 03:04:05.123456",
+                "2024-01-03 00:00:00",
+            ],
+            session=test_session,
+        )
+        .filter(predicate)
+        .order_by("row_id")
+        .to_values("row_id")
+    )
+
+    assert rows == [2, 3]
+
+
+def test_filter_regular_datetime_equals_casted_datetime(test_session):
+    rows = (
+        dc.read_values(
+            row_id=[1, 2, 3],
+            ts=[
+                datetime(2024, 1, 2, 3, 4, 5, 123456),
+                datetime(2024, 1, 1, 0, 0, 0),
+                datetime(2024, 1, 5, 0, 0, 0),
+            ],
+            ts_str=[
+                "2024-01-02 03:04:05.123456",
+                "2024-01-03 00:00:00",
+                "2024-01-05 00:00:00",
+            ],
+            session=test_session,
+        )
+        .filter(C("ts") == func.cast("ts_str", datetime))
+        .order_by("row_id")
+        .to_values("row_id")
+    )
+
+    assert rows == [1, 3]
+
+
+def test_merge_regular_datetime_with_casted_datetime(test_session):
+    left = dc.read_values(
+        left_id=[1, 2, 3],
+        ts=[
+            datetime(2024, 1, 1, 0, 0, 0),
+            datetime(2024, 1, 2, 3, 4, 5, 123456),
+            datetime(2024, 1, 4, 0, 0, 0),
+        ],
+        session=test_session,
+    )
+    right = dc.read_values(
+        rid=[10, 20, 30],
+        ts_str=[
+            "2024-01-02 03:04:05.123456",
+            "2024-01-01 00:00:00",
+            "2024-01-03 00:00:00",
+        ],
+        session=test_session,
+    )
+
+    rows = (
+        left.merge(
+            right,
+            on=left.c("ts"),
+            right_on=func.cast(right.c("ts_str"), datetime),
+            inner=True,
+        )
+        .order_by("left_id")
+        .to_list("left_id", "rid")
+    )
+
+    assert rows == [(1, 20), (2, 10)]
 
 
 @pytest.mark.parametrize(
