@@ -613,7 +613,6 @@ def test_listings_reindex(test_session, tmp_dir):
     dc.read_storage(uri, session=test_session).exec()
     assert len(list(dc.listings(session=test_session).to_values("listing"))) == 1
 
-    # update=True with unchanged content should reuse the existing version
     dc.read_storage(uri, session=test_session, update=True).exec()
     listings = list(dc.listings(session=test_session).to_values("listing"))
     assert len(listings) == 1
