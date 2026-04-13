@@ -4,7 +4,13 @@ import pytest
 
 import datachain as dc
 from datachain.lib.file import File
-from datachain.lib.listing import _sanitize_ds_name, list_bucket, parse_listing_uri
+from datachain.lib.listing import (
+    _sanitize_ds_name,
+    calc_fingerprint,
+    get_listing,
+    list_bucket,
+    parse_listing_uri,
+)
 from tests.data import ENTRIES
 
 
@@ -109,3 +115,88 @@ def test_parse_listing_uri_with_glob(cloud_test_catalog):
     assert dataset_name == _sanitize_ds_name(f"lst__{ctc.src_uri}/dogs/")
     assert listing_uri == f"{ctc.src_uri}/dogs"
     assert listing_path == "dogs/*"
+
+
+def test_listing_update_unchanged_keeps_old_version(test_session, tmp_dir):
+    """update=True with unchanged files should keep old listing version and UUID."""
+    (tmp_dir / "a.txt").write_text("hello")
+    (tmp_dir / "b.txt").write_text("world")
+    uri = tmp_dir.as_uri()
+
+    dc.read_storage(uri, session=test_session).exec()
+
+    ds_name, _, _, _ = get_listing(uri, test_session)
+    catalog = test_session.catalog
+    ds = catalog.get_dataset(ds_name, versions=None)
+    assert ds.latest_version == "1.0.0"
+    original_uuid = ds.get_version("1.0.0").uuid
+
+    # Re-list with update=True — same files
+    dc.read_storage(uri, session=test_session, update=True).exec()
+
+    ds = catalog.get_dataset(ds_name, versions=None)
+    assert ds.latest_version == "1.0.0"
+    assert ds.get_version("1.0.0").uuid == original_uuid
+    assert len(ds.versions) == 1
+
+
+def test_listing_update_changed_creates_new_version(test_session, tmp_dir):
+    """update=True with changed files should create a new listing version."""
+    (tmp_dir / "a.txt").write_text("hello")
+    uri = tmp_dir.as_uri()
+
+    dc.read_storage(uri, session=test_session).exec()
+
+    ds_name, _, _, _ = get_listing(uri, test_session)
+    catalog = test_session.catalog
+    ds = catalog.get_dataset(ds_name, versions=None)
+    original_uuid = ds.get_version("1.0.0").uuid
+
+    # Add a file and re-list
+    (tmp_dir / "b.txt").write_text("world")
+    dc.read_storage(uri, session=test_session, update=True).exec()
+
+    ds = catalog.get_dataset(ds_name, versions=None)
+    assert ds.latest_version == "2.0.0"
+    assert ds.get_version("2.0.0").uuid != original_uuid
+
+
+def test_listing_update_unchanged_preserves_chain_hash(test_session, tmp_dir):
+    """Chain hash should stay stable when listing content hasn't changed."""
+    (tmp_dir / "a.txt").write_text("hello")
+    uri = tmp_dir.as_uri()
+
+    chain1 = dc.read_storage(uri, session=test_session)
+    chain1._query.resolve_listing()
+    hash1 = chain1._query.hash()
+
+    # Re-list with update=True — same content
+    chain2 = dc.read_storage(uri, session=test_session, update=True)
+    chain2._query.resolve_listing()
+    hash2 = chain2._query.hash()
+
+    assert hash1 == hash2
+
+
+def test_calc_fingerprint_order_independent(test_session):
+    """Fingerprint should be the same regardless of row insertion order."""
+    catalog = test_session.catalog
+    ns = catalog.metastore.system_namespace_name
+    proj = catalog.metastore.listing_project_name
+
+    files1 = [File(path="a.jpg", etag="e1"), File(path="b.jpg", etag="e2")]
+    files2 = [File(path="b.jpg", etag="e2"), File(path="a.jpg", etag="e1")]
+
+    dc.read_values(file=files1, session=test_session).settings(
+        namespace=ns, project=proj
+    ).save("lst__fp-order1", listing=True)
+    dc.read_values(file=files2, session=test_session).settings(
+        namespace=ns, project=proj
+    ).save("lst__fp-order2", listing=True)
+
+    ds1 = catalog.get_dataset("lst__fp-order1", versions=None)
+    ds2 = catalog.get_dataset("lst__fp-order2", versions=None)
+
+    fp1 = calc_fingerprint(catalog, ds1, ds1.latest_version)
+    fp2 = calc_fingerprint(catalog, ds2, ds2.latest_version)
+    assert fp1 == fp2

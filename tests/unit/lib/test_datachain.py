@@ -613,14 +613,12 @@ def test_listings_reindex(test_session, tmp_dir):
     dc.read_storage(uri, session=test_session).exec()
     assert len(list(dc.listings(session=test_session).to_values("listing"))) == 1
 
+    # update=True with unchanged content should reuse the existing version
     dc.read_storage(uri, session=test_session, update=True).exec()
     listings = list(dc.listings(session=test_session).to_values("listing"))
-    assert len(listings) == 2
-    listings.sort(key=lambda lst: lst.version)
+    assert len(listings) == 1
     assert listings[0].uri.rstrip("/") == uri
     assert listings[0].version == "1.0.0"
-    assert listings[1].uri.rstrip("/") == uri
-    assert listings[1].version == "2.0.0"
 
 
 def test_listings_reindex_subpath_local_file_system(test_session, tmp_dir):

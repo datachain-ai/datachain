@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, TypeVar
 
+import sqlalchemy as sa
 from fsspec.asyn import get_loop
 from sqlalchemy.sql.expression import true
 
@@ -18,9 +19,13 @@ from datachain.error import ClientError
 from datachain.lib.file import File
 from datachain.query.schema import Column
 from datachain.sql.functions import path as pathfunc
+from datachain.sql.functions.aggregate import xor_agg
+from datachain.sql.functions.string import string_hash
 from datachain.utils import uses_glob
 
 if TYPE_CHECKING:
+    from datachain.catalog import Catalog
+    from datachain.dataset import DatasetRecord
     from datachain.lib.dc import DataChain
     from datachain.query.session import Session
 
@@ -32,6 +37,17 @@ D = TypeVar("D", bound="DataChain")
 # Disable warnings for remote errors in clients
 logging.getLogger("aiobotocore.credentials").setLevel(logging.CRITICAL)
 logging.getLogger("gcsfs").setLevel(logging.CRITICAL)
+
+
+def calc_fingerprint(catalog: "Catalog", dataset: "DatasetRecord", version: str) -> int:
+    """Compute an order-independent content fingerprint for a listing version.
+
+    Returns XOR of string_hash(file__path, file__etag) over all rows.
+    """
+    table_name = catalog.warehouse.dataset_table_name(dataset, version)
+    table = catalog.warehouse.get_table(table_name)
+    query = sa.select(xor_agg(string_hash(table.c.file__path, table.c.file__etag)))
+    return next(catalog.warehouse.db.execute(query))[0]
 
 
 def listing_dataset_expired(lst_ds) -> bool:

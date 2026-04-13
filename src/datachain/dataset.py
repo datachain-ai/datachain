@@ -783,6 +783,14 @@ class DatasetRecord:
             raise DatasetVersionNotFoundError("Dataset has no versions")
         return max(self.versions).version
 
+    @property
+    def latest_complete_version(self) -> str | None:
+        """Returns latest COMPLETE version, or None if there isn't one."""
+        complete = [v for v in self.versions if v.status == DatasetStatus.COMPLETE]
+        if not complete:
+            return None
+        return max(complete).version
+
     def latest_major_version(self, major: int) -> str | None:
         """
         Returns latest specific major version, e.g if dataset has versions:

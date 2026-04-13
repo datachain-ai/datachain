@@ -3233,6 +3233,27 @@ class DatasetQuery:
 
             self._add_dependencies(dataset, version)  # type: ignore [arg-type]
 
+            # For listing datasets, check if content is unchanged from
+            # the previous version. If so, discard the new version to
+            # preserve the old UUID and avoid checkpoint invalidation.
+            # The new version is still CREATED (invisible to other queries).
+            if kwargs.get("listing"):
+                prev_version = dataset.latest_complete_version
+                if prev_version:
+                    from datachain.lib.listing import calc_fingerprint
+
+                    old_fp = calc_fingerprint(self.catalog, dataset, prev_version)
+                    new_fp = calc_fingerprint(self.catalog, dataset, version)
+                    if old_fp == new_fp:
+                        self.catalog.remove_dataset_version(dataset, version)
+                        return self.__class__(
+                            name=name,
+                            namespace_name=project.namespace.name,
+                            project_name=project.name,
+                            version=prev_version,
+                            catalog=self.catalog,
+                        )
+
             # Mark as COMPLETE only after all operations succeed.
             self.catalog.complete_dataset_version(dataset, version)
         finally:
