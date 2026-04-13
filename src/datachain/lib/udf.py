@@ -486,67 +486,6 @@ class Mapper(UDFBase):
         self.teardown()
 
 
-class BatchMapper(UDFBase):
-    """Inherit from this class to pass to `DataChain.batch_map()`.
-
-    .. deprecated:: 0.29.0
-        This class is deprecated and will be removed in a future version.
-        Use `Aggregator` instead, which provides the similar functionality.
-    """
-
-    is_input_batched = True
-    is_output_batched = True
-
-    def __init__(self):
-        import warnings
-
-        warnings.warn(
-            "BatchMapper is deprecated and will be removed in a future version. "
-            "Use Aggregator instead, which provides the similar functionality.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        super().__init__()
-
-    def run(
-        self,
-        udf_fields: Sequence[str],
-        udf_inputs: Iterable[RowsOutputBatch],
-        catalog: "Catalog",
-        cache: bool,
-        download_cb: Callback = DEFAULT_CALLBACK,
-        processed_cb: Callback = DEFAULT_CALLBACK,
-    ) -> Iterator[Iterable[UDFResult]]:
-        self.setup()
-
-        for batch in udf_inputs:
-            n_rows = len(batch)
-            row_ids, *udf_args = zip(
-                *[
-                    self._prepare_row(
-                        row, udf_fields, catalog, cache, download_cb, include_id=True
-                    )
-                    for row in batch
-                ],
-                strict=False,
-            )
-            result_objs = list(self.process(*udf_args))
-            n_objs = len(result_objs)
-            assert n_objs == n_rows, (
-                f"{self.name} returns {n_objs} rows, but {n_rows} were expected"
-            )
-            udf_outputs = (self._flatten_row(row) for row in result_objs)
-            output = [
-                {"sys__id": row_id}
-                | dict(zip(self.signal_names, signals, strict=False))
-                for row_id, signals in zip(row_ids, udf_outputs, strict=False)
-            ]
-            processed_cb.relative_update(n_rows)
-            yield output
-
-        self.teardown()
-
-
 class Generator(UDFBase):
     """Inherit from this class to pass to `DataChain.gen()`."""
 
@@ -622,9 +561,22 @@ class Aggregator(UDFBase):
         download_cb: Callback = DEFAULT_CALLBACK,
         processed_cb: Callback = DEFAULT_CALLBACK,
     ) -> Iterator[Iterable[UDFResult]]:
+        from datachain.data_storage.schema import PARTITION_COLUMN_ID
+
         self.setup()
 
+        # Check if partition_id is available (when partition_by is used)
+        partition_id_idx = None
+        if PARTITION_COLUMN_ID in udf_fields:
+            partition_id_idx = list(udf_fields).index(PARTITION_COLUMN_ID)
+
         for batch in udf_inputs:
+            # Get partition_id from first row if available (all rows in batch share it)
+            # This is used to track which partition produced each output for checkpoints
+            input_id = None
+            if partition_id_idx is not None:
+                input_id = batch[0][partition_id_idx]
+
             prepared_rows = [
                 self._prepare_row(row, udf_fields, catalog, cache, download_cb)
                 for row in batch
@@ -637,9 +589,24 @@ class Aggregator(UDFBase):
             ]
             result_objs = self.process(*udf_args)
             udf_outputs = (self._flatten_row(row) for row in result_objs)
-            output = (
-                dict(zip(self.signal_names, row, strict=False)) for row in udf_outputs
-            )
+
+            def _process_partition(udf_outputs, input_id):
+                has_output = False
+                for row, is_last in with_last_flag(udf_outputs):
+                    has_output = True
+                    udf_output = dict(zip(self.signal_names, row, strict=False))
+                    udf_output["sys__input_id"] = input_id
+                    udf_output["sys__partial"] = not is_last
+                    udf_output["sys__empty"] = None
+                    yield udf_output
+                if not has_output:
+                    yield {
+                        "sys__input_id": input_id,
+                        "sys__partial": False,
+                        "sys__empty": True,
+                    }
+
+            output = _process_partition(udf_outputs, input_id)
             processed_cb.relative_update(len(batch))
             yield output
 

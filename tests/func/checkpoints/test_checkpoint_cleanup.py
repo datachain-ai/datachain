@@ -47,6 +47,39 @@ def test_cleanup_checkpoints_with_ttl(test_session, nums_dataset):
     assert len(warehouse.db.list_tables(pattern=f"udf_{job_id}_%")) == 0
 
 
+def test_cleanup_partition_tables(test_session):
+    catalog = test_session.catalog
+    metastore = catalog.metastore
+    warehouse = catalog.warehouse
+
+    dc.read_values(
+        num=[1, 2, 3, 4, 5, 6],
+        letter=["A", "A", "B", "B", "C", "C"],
+        session=test_session,
+    ).save("nums_letters")
+    finish_job(metastore, test_session.get_or_create_job().id)
+    reset_session_job_state()
+
+    dc.read_dataset("nums_letters", session=test_session).agg(
+        total=lambda num: [sum(num)],
+        output=int,
+        partition_by="letter",
+    ).save("agg_results")
+    job_id = test_session.get_or_create_job().id
+    finish_job(metastore, job_id)
+
+    partition_tables = warehouse.db.list_tables(pattern="udf_%_partition")
+    assert len(partition_tables) > 0
+
+    old_time = datetime.now(timezone.utc) - timedelta(hours=5)
+    metastore.db.execute(metastore._checkpoints.update().values(created_at=old_time))
+
+    catalog.cleanup_checkpoints()
+
+    partition_tables_after = warehouse.db.list_tables(pattern="udf_%_partition")
+    assert len(partition_tables_after) == 0
+
+
 def test_cleanup_checkpoints_with_custom_ttl(test_session, nums_dataset):
     catalog = test_session.catalog
     metastore = catalog.metastore

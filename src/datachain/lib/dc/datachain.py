@@ -4,7 +4,6 @@ import logging
 import os
 import os.path
 import sys
-import warnings
 from collections.abc import Callable, Iterator, Sequence
 from collections.abc import Generator as IteratorGenerator
 from contextlib import closing
@@ -52,7 +51,7 @@ from datachain.lib.signal_schema import (
     SignalResolvingError,
     SignalSchema,
 )
-from datachain.lib.udf import Aggregator, BatchMapper, Generator, Mapper, UDFBase
+from datachain.lib.udf import Aggregator, Generator, Mapper, UDFBase
 from datachain.lib.udf_signature import UdfSignature
 from datachain.lib.utils import DataChainColumnError, DataChainParamsError
 from datachain.progress import tqdm
@@ -418,50 +417,6 @@ class DataChain:
         self._settings = settings or Settings()
         return self
 
-    @classmethod
-    def from_storage(
-        cls,
-        *args,
-        **kwargs,
-    ) -> "DataChain":
-        from .storage import read_storage
-
-        warnings.warn(
-            "Class method `from_storage` is deprecated. "
-            "Use `read_storage` function instead from top_module.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return read_storage(*args, **kwargs)
-
-    @classmethod
-    def from_dataset(cls, *args, **kwargs) -> "DataChain":
-        from .datasets import read_dataset
-
-        warnings.warn(
-            "Class method `from_dataset` is deprecated. "
-            "Use `read_dataset` function instead from top_module.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return read_dataset(*args, **kwargs)
-
-    @classmethod
-    def from_json(
-        cls,
-        *args,
-        **kwargs,
-    ) -> "DataChain":
-        from .json import read_json
-
-        warnings.warn(
-            "Class method `from_json` is deprecated. "
-            "Use `read_json` function instead from top_module.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return read_json(*args, **kwargs)
-
     def explode(
         self,
         col: str,
@@ -517,38 +472,6 @@ class DataChain:
             column = f"{col}_expl"
 
         return self.map(json_to_model, params=col, output={column: model})
-
-    @classmethod
-    def datasets(
-        cls,
-        *args,
-        **kwargs,
-    ) -> "DataChain":
-        from .datasets import datasets
-
-        warnings.warn(
-            "Class method `datasets` is deprecated. "
-            "Use `datasets` function instead from top_module.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return datasets(*args, **kwargs)
-
-    @classmethod
-    def listings(
-        cls,
-        *args,
-        **kwargs,
-    ) -> "DataChain":
-        from .listings import listings
-
-        warnings.warn(
-            "Class method `listings` is deprecated. "
-            "Use `listings` function instead from top_module.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return listings(*args, **kwargs)
 
     @property
     def namespace_name(self) -> str:
@@ -1102,57 +1025,10 @@ class DataChain:
             query=self._query.generate(
                 udf_obj.to_udf_wrapper(self._settings.batch_size),
                 partition_by=processed_partition_by,
+                is_aggregator=True,
                 **self._settings.to_dict(),
             ),
             signal_schema=SignalSchema({"sys": Sys}) | udf_obj.output,
-        )
-
-    def batch_map(
-        self,
-        func: Callable | None = None,
-        params: str | Sequence[str] | None = None,
-        output: OutputType = None,
-        batch: int = 1000,
-        **signal_map,
-    ) -> "Self":
-        """This is a batch version of `map()`.
-
-        Input-output relationship: N:N
-
-        It accepts the same parameters plus an
-        additional parameter:
-
-            batch: Size of each batch passed to `func`. Defaults to 1000.
-
-        Example:
-            ```py
-            chain = chain.batch_map(
-                sqrt=lambda size: np.sqrt(size),
-                output=float
-            )
-            chain.save("new_dataset")
-            ```
-
-        .. deprecated:: 0.29.0
-            This method is deprecated and will be removed in a future version.
-            Use `agg()` instead, which provides the similar functionality.
-        """
-        import warnings
-
-        warnings.warn(
-            "batch_map() is deprecated and will be removed in a future version. "
-            "Use agg() instead, which provides the similar functionality.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        udf_obj = self._udf_to_obj(BatchMapper, func, params, output, signal_map)
-
-        return self._evolve(
-            query=self._query.add_signals(
-                udf_obj.to_udf_wrapper(self._settings.batch_size, batch=batch),
-                **self._settings.to_dict(),
-            ),
-            signal_schema=self.signals_schema | udf_obj.output,
         )
 
     def _udf_to_obj(
@@ -1661,30 +1537,6 @@ class DataChain:
                 )
                 yield tuple(ret)
 
-    @overload
-    def collect(self) -> Iterator[tuple[DataValue, ...]]: ...
-
-    @overload
-    def collect(self, col: str) -> Iterator[DataValue]: ...
-
-    @overload
-    def collect(self, *cols: str) -> Iterator[tuple[DataValue, ...]]: ...
-
-    def collect(self, *cols: str) -> Iterator[DataValue | tuple[DataValue, ...]]:  # type: ignore[overload-overlap,misc]
-        """
-        Deprecated. Use `to_iter` method instead.
-        """
-        warnings.warn(
-            "Method `collect` is deprecated. Use `to_iter` method instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-
-        if len(cols) == 1:
-            yield from [item[0] for item in self.to_iter(*cols)]
-        else:
-            yield from self.to_iter(*cols)
-
     def to_pytorch(
         self,
         transform=None,
@@ -2070,38 +1922,6 @@ class DataChain:
             status_col=status_col,
         )
 
-    @classmethod
-    def from_values(
-        cls,
-        *args,
-        **kwargs,
-    ) -> "DataChain":
-        from .values import read_values
-
-        warnings.warn(
-            "Class method `from_values` is deprecated. "
-            "Use `read_values` function instead from top_module.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return read_values(*args, **kwargs)
-
-    @classmethod
-    def from_pandas(
-        cls,
-        *args,
-        **kwargs,
-    ) -> "DataChain":
-        from .pandas import read_pandas
-
-        warnings.warn(
-            "Class method `from_pandas` is deprecated. "
-            "Use `read_pandas` function instead from top_module.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return read_pandas(*args, **kwargs)
-
     def to_pandas(
         self,
         flatten: bool = False,
@@ -2198,22 +2018,6 @@ class DataChain:
 
         if len(df) == limit:
             print(f"\n[Limited by {len(df)} rows]")
-
-    @classmethod
-    def from_hf(
-        cls,
-        *args,
-        **kwargs,
-    ) -> "DataChain":
-        from .hf import read_hf
-
-        warnings.warn(
-            "Class method `from_hf` is deprecated. "
-            "Use `read_hf` function instead from top_module.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return read_hf(*args, **kwargs)
 
     def parse_tabular(
         self,
@@ -2320,38 +2124,6 @@ class DataChain:
             ),
             output=output,
         )
-
-    @classmethod
-    def from_csv(
-        cls,
-        *args,
-        **kwargs,
-    ) -> "DataChain":
-        from .csv import read_csv
-
-        warnings.warn(
-            "Class method `from_csv` is deprecated. "
-            "Use `read_csv` function instead from top_module.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return read_csv(*args, **kwargs)
-
-    @classmethod
-    def from_parquet(
-        cls,
-        *args,
-        **kwargs,
-    ) -> "DataChain":
-        from .parquet import read_parquet
-
-        warnings.warn(
-            "Class method `from_parquet` is deprecated. "
-            "Use `read_parquet` function instead from top_module.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return read_parquet(*args, **kwargs)
 
     def to_parquet(
         self,
@@ -2667,22 +2439,6 @@ class DataChain:
             conflict_columns=conflict_columns,
             column_mapping=column_mapping,
         )
-
-    @classmethod
-    def from_records(
-        cls,
-        *args,
-        **kwargs,
-    ) -> "DataChain":
-        from .records import read_records
-
-        warnings.warn(
-            "Class method `from_records` is deprecated. "
-            "Use `read_records` function instead from top_module.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return read_records(*args, **kwargs)
 
     def sum(self, col: str) -> StandardType:  # type: ignore[override]
         """Compute the sum of a column.

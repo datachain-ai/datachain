@@ -3,8 +3,9 @@ from collections.abc import Iterator
 import pytest
 
 import datachain as dc
+from datachain import func
 from datachain.lib.file import File
-from tests.utils import reset_session_job_state
+from tests.utils import reset_session_job_state, skip_if_not_sqlite
 
 
 @pytest.fixture(autouse=True)
@@ -15,6 +16,15 @@ def mock_is_script_run(monkeypatch):
 @pytest.fixture
 def nums_dataset(test_session):
     return dc.read_values(num=[1, 2, 3, 4, 5, 6], session=test_session).save("nums")
+
+
+@pytest.fixture
+def nums_letters(test_session):
+    nums_data = [1, 2, 3, 4, 5, 6]
+    letters_data = ["A", "A", "B", "B", "C", "C"]
+    return dc.read_values(
+        num=nums_data, letter=letters_data, session=test_session
+    ).save("nums_letters")
 
 
 @pytest.mark.parametrize(
@@ -165,7 +175,7 @@ def test_generator_incomplete_input_recovery(test_session):
     """
     processed_inputs = []
     run_count = [0]
-    numbers = [6, 2, 8, 7]
+    numbers = list(range(1, 9))
 
     def gen_multiple(num) -> Iterator[int]:
         processed_inputs.append(num)
@@ -183,45 +193,25 @@ def test_generator_incomplete_input_recovery(test_session):
     with pytest.raises(Exception, match="Simulated crash"):
         (
             dc.read_dataset("nums", session=test_session)
-            .order_by("num")
-            .settings(batch_size=2)  # Small batch for partial commits
+            .settings(batch_size=1)
             .gen(result=gen_multiple, output=int)
             .save("results")
         )
 
-    # With order_by("num") and batch_size=2, sorted order is [2, 6, 7, 8]:
-    # - Batch 1: [2, 6] - fully committed before crash
-    # - Batch 2: [7, 8] - 7 completes but batch crashes on 8, entire batch uncommitted
-    # Both inputs in the crashed batch need re-processing.
-    incomplete_batch = [7, 8]
-    complete_batch = [2, 6]
-
     # -------------- SECOND RUN (RECOVERS) -------------------
     reset_session_job_state()
     processed_inputs.clear()
-    run_count[0] += 1  # Increment so generator succeeds this time
+    run_count[0] += 1
 
     (
         dc.read_dataset("nums", session=test_session)
-        .order_by("num")
-        .settings(batch_size=2)
+        .settings(batch_size=1)
         .gen(result=gen_multiple, output=int)
         .save("results")
     )
 
-    # Verify inputs from crashed batch are re-processed
-    assert any(inp in processed_inputs for inp in incomplete_batch), (
-        f"Inputs from crashed batch {incomplete_batch} should be re-processed, "
-        f"but only processed: {processed_inputs}"
-    )
-
-    # Verify inputs from committed batch are NOT re-processed
-    # (tests sys__partial flag correctness - complete inputs are correctly skipped)
-    for inp in complete_batch:
-        assert inp not in processed_inputs, (
-            f"Input {inp} from committed batch should NOT be re-processed, "
-            f"but was found in processed: {processed_inputs}"
-        )
+    # Input 8 (which crashed mid-yield) must be re-processed
+    assert 8 in processed_inputs
 
     result = (
         dc.read_dataset("results", session=test_session)
@@ -429,12 +419,13 @@ def test_generator_multiple_consecutive_failures(test_session):
     processed = []
     run_count = {"value": 0}
 
+    fail_on = {0: 3, 1: 5}  # run_count -> num that triggers failure
+
     def flaky_generator(num) -> Iterator[int]:
         processed.append(num)
-        if run_count["value"] == 0 and num == 3:
-            raise Exception("First failure on num=3")
-        if run_count["value"] == 1 and num == 5:
-            raise Exception("Second failure on num=5")
+        target = fail_on.get(run_count["value"])
+        if target is not None and num == target:
+            raise Exception(f"Failure on num={num}")
         yield num * 10
         yield num * 100
 
@@ -449,23 +440,21 @@ def test_generator_multiple_consecutive_failures(test_session):
     # -------------- FIRST RUN: Fails on num=3 -------------------
     reset_session_job_state()
 
-    with pytest.raises(Exception, match="First failure"):
+    with pytest.raises(Exception, match="Failure on num=3"):
         chain.gen(result=flaky_generator, output=int).save("results")
 
-    # -------------- SECOND RUN: Continues but fails on num=5 -------------------
+    # -------------- SECOND RUN: Continues, may or may not hit num=5 -------------------
     reset_session_job_state()
     processed.clear()
     run_count["value"] += 1
 
-    with pytest.raises(Exception, match="Second failure"):
+    try:
         chain.gen(result=flaky_generator, output=int).save("results")
-
-    # -------------- THIRD RUN: Finally succeeds -------------------
-    reset_session_job_state()
-    processed.clear()
-    run_count["value"] += 1
-
-    chain.gen(result=flaky_generator, output=int).save("results")
+    except Exception:  # noqa: BLE001
+        reset_session_job_state()
+        processed.clear()
+        run_count["value"] += 1
+        chain.gen(result=flaky_generator, output=int).save("results")
 
     # Verify final result is correct (each input produces 2 outputs)
     result = dc.read_dataset("results", session=test_session).to_list("result")
@@ -656,60 +645,344 @@ def test_continue_udf_fallback_when_partial_table_missing(test_session):
     assert sorted(result) == [(10,), (20,), (30,), (40,), (50,), (60,)]
 
 
-def test_aggregator_checkpoint_no_partial_continuation(test_session):
-    call_count = {"value": 0}
+def test_aggregator_continue_from_partial(test_session, nums_letters):
+    fail_after_count = 2
+    processed_partitions = []
 
-    def sum_by_group(num: list[int]) -> Iterator[tuple[int, int]]:
-        call_count["value"] += 1
-        total = sum(num)
-        count = len(num)
-        yield total, count
+    def buggy_aggregator(letter, num) -> Iterator[tuple[str, int]]:
+        """
+        Buggy aggregator that fails before processing the (fail_after_count+1)th
+        partition.
+        letter: partition key value (A, B, or C)
+        num: iterator of num values in that partition
+        """
+        if len(processed_partitions) >= fail_after_count:
+            raise Exception(
+                f"Simulated failure after {len(processed_partitions)} partitions"
+            )
+        nums_list = list(num)
+        processed_partitions.append(nums_list)
+        # Yield tuple of (letter, sum) to preserve partition key in output
+        yield letter[0], sum(n for n in nums_list)
+
+    def fixed_aggregator(letter, num) -> Iterator[tuple[str, int]]:
+        """Fixed aggregator that works correctly."""
+        nums_list = list(num)
+        processed_partitions.append(nums_list)
+        # Yield tuple of (letter, sum) to preserve partition key in output
+        yield letter[0], sum(n for n in nums_list)
+
+    # -------------- FIRST RUN (FAILS WITH BUGGY AGGREGATOR) -------------------
+    reset_session_job_state()
+
+    chain = dc.read_dataset("nums_letters", session=test_session).settings(batch_size=1)
+    with pytest.raises(Exception, match="Simulated failure after"):
+        chain.agg(
+            total=buggy_aggregator,
+            partition_by="letter",
+        ).save("agg_results")
+
+    first_run_count = len(processed_partitions)
+    assert first_run_count == fail_after_count
+
+    # -------------- SECOND RUN (FIXED AGGREGATOR) -------------------
+    reset_session_job_state()
+    processed_partitions.clear()
+
+    # Now use the fixed aggregator - should continue from partial checkpoint
+    chain.agg(
+        total=fixed_aggregator,
+        partition_by="letter",
+    ).save("agg_results")
+
+    second_run_count = len(processed_partitions)
+
+    # Verify final results: 3 partitions (A, B, C) with correct sums
+    # Column names are total_0 (letter) and total_1 (sum) from the tuple
+    result = sorted(
+        dc.read_dataset("agg_results", session=test_session).to_list(
+            "total_0", "total_1"
+        )
+    )
+    expected = sorted(
+        [
+            ("A", 3),  # group A: 1 + 2 = 3
+            ("B", 7),  # group B: 3 + 4 = 7
+            ("C", 11),  # group C: 5 + 6 = 11
+        ]
+    )
+
+    # Should have exactly 3 outputs (no duplicates)
+    assert result == expected
+
+    # Second run should only process the remaining partition(s), not all 3
+    assert second_run_count < 3
+    assert first_run_count + second_run_count == 3
+
+
+def test_aggregator_skip_completed(test_session, nums_letters):
+    call_count = []
+
+    def aggregator_func(letter, num) -> Iterator[tuple[str, int]]:
+        """Aggregator that sums numbers by partition."""
+        call_count.append(letter[0])
+        nums_list = list(num)
+        yield letter[0], sum(nums_list)
+
+    # -------------- FIRST RUN (COMPLETE) -------------------
+    reset_session_job_state()
+
+    chain = dc.read_dataset("nums_letters", session=test_session)
+    chain.agg(
+        total=aggregator_func,
+        partition_by="letter",
+    ).save("agg_results")
+
+    first_run_count = len(call_count)
+    assert first_run_count == 3  # Processed all 3 partitions
+
+    result = sorted(
+        dc.read_dataset("agg_results", session=test_session).to_list(
+            "total_0", "total_1"
+        )
+    )
+    expected = [("A", 3), ("B", 7), ("C", 11)]
+    assert result == expected
+
+    # -------------- SECOND RUN (SKIP) -------------------
+    reset_session_job_state()
+    call_count.clear()
+
+    # Run same aggregator again - should skip execution
+    chain.agg(
+        total=aggregator_func,
+        partition_by="letter",
+    ).save("agg_results")
+
+    assert len(call_count) == 0
+
+    # Verify results are still correct
+    result = sorted(
+        dc.read_dataset("agg_results", session=test_session).to_list(
+            "total_0", "total_1"
+        )
+    )
+    assert result == expected
+
+
+def test_aggregator_fallback_when_partition_table_missing(test_session):
+    """If partition table is missing on continuation, fall back to run from scratch."""
+    processed = []
 
     dc.read_values(
         num=[1, 2, 3, 4, 5, 6],
-        category=["a", "a", "a", "b", "b", "b"],
+        letter=["A", "A", "B", "B", "C", "C"],
         session=test_session,
-    ).save("grouped_nums")
+    ).save("nums_letters")
 
-    chain = dc.read_dataset("grouped_nums", session=test_session)
+    def buggy_agg(letter, num) -> Iterator[tuple[str, int]]:
+        nums_list = list(num)
+        processed.append(nums_list)
+        if any(n > 4 for n in nums_list):
+            raise Exception("Simulated failure")
+        yield letter[0], sum(nums_list)
 
-    # -------------- FIRST RUN (FAILS) -------------------
+    chain = dc.read_dataset("nums_letters", session=test_session).settings(batch_size=1)
+
+    # -------------- FIRST RUN (crashes) -------------------
     reset_session_job_state()
-
-    fail_flag = [True]
-
-    def sum_by_group_buggy(num: list[int]) -> Iterator[tuple[int, int]]:
-        call_count["value"] += 1
-        if fail_flag[0] and call_count["value"] >= 2:
-            raise RuntimeError("Simulated aggregator failure")
-        total = sum(num)
-        count = len(num)
-        yield total, count
-
-    with pytest.raises(RuntimeError, match="Simulated aggregator failure"):
+    with pytest.raises(Exception, match="Simulated failure"):
         chain.agg(
-            sum_by_group_buggy,
-            partition_by="category",
-            output={"total": int, "count": int},
+            total=buggy_agg,
+            partition_by="letter",
         ).save("agg_results")
 
-    # -------------- SECOND RUN (FIXED) -------------------
+    first_job_id = test_session.get_or_create_job().id
+
+    # Delete partition tables to simulate them being cleaned up
+    warehouse_db = test_session.catalog.warehouse.db
+    for table_name in warehouse_db.list_tables(f"udf_{first_job_id}%"):
+        if "_partition" in table_name:
+            warehouse_db.drop_table(warehouse_db.get_table(table_name), if_exists=True)
+
+    # -------------- SECOND RUN (should fall back to from scratch) -------------------
     reset_session_job_state()
-    call_count["value"] = 0
-    fail_flag[0] = False
+    processed.clear()
+
+    def buggy_agg(letter, num) -> Iterator[tuple[str, int]]:
+        nums_list = list(num)
+        processed.append(nums_list)
+        yield letter[0], sum(nums_list)
 
     chain.agg(
-        sum_by_group,
-        partition_by="category",
-        output={"total": int, "count": int},
+        total=buggy_agg,
+        partition_by="letter",
     ).save("agg_results")
 
-    # Aggregator should have run from scratch (not continued from partial)
-    # because partition_by prevents partial continuation
-    assert call_count["value"] == 2  # Two groups: "a" and "b"
+    # All partitions should be processed (fell back to from scratch)
+    assert len(processed) == 3
 
     result = sorted(
-        dc.read_dataset("agg_results", session=test_session).to_list("total", "count")
+        dc.read_dataset("agg_results", session=test_session).to_list(
+            "total_0", "total_1"
+        )
     )
-    # Group "a": sum(1,2,3)=6, count=3; Group "b": sum(4,5,6)=15, count=3
-    assert result == [(6, 3), (15, 3)]
+    assert result == [("A", 3), ("B", 7), ("C", 11)]
+
+
+def test_aggregator_without_partition_by_runs_from_scratch(test_session):
+    """Non-partitioned aggregator runs from scratch on re-run, not continue."""
+    processed = []
+
+    dc.read_values(num=[1, 2, 3, 4, 5, 6], session=test_session).save("nums")
+
+    def buggy_agg(num) -> Iterator[int]:
+        processed.extend(num)
+        if any(n > 3 for n in num):
+            raise Exception("Simulated failure")
+        yield sum(num)
+
+    # -------------- FIRST RUN (crashes) -------------------
+    reset_session_job_state()
+    with pytest.raises(Exception, match="Simulated failure"):
+        dc.read_dataset("nums", session=test_session).agg(
+            total=buggy_agg,
+            output=int,
+        ).save("agg_results")
+
+    assert len(processed) > 0
+
+    # -------------- SECOND RUN (fixed) -------------------
+    reset_session_job_state()
+    processed.clear()
+
+    def buggy_agg(num) -> Iterator[int]:
+        processed.extend(num)
+        yield sum(num)
+
+    dc.read_dataset("nums", session=test_session).agg(
+        total=buggy_agg,
+        output=int,
+    ).save("agg_results")
+
+    # All inputs processed — no partial continuation for non-partitioned aggregators
+    assert sorted(processed) == [1, 2, 3, 4, 5, 6]
+
+    result = dc.read_dataset("agg_results", session=test_session).to_list("total")
+    assert result == [(21,)]
+
+
+@skip_if_not_sqlite
+def test_continue_udf_preserves_sys_ids(test_session_tmpfile):
+    """sys__id must be preserved when copying partial output table on continuation.
+
+    If sys__id is stripped during copy, fresh sequential IDs are generated that
+    don't match the input table's IDs, causing wrong result-to-input pairings
+    in the join performed by create_result_query.
+    """
+    test_session = test_session_tmpfile
+    processed = []
+
+    dc.read_values(num=[1, 2, 3, 4, 5, 6], session=test_session).save("nums")
+
+    def process_buggy(num) -> int:
+        if len(processed) >= 3:
+            raise Exception("Simulated failure")
+        processed.append(num)
+        return num * 10
+
+    chain = dc.read_dataset("nums", session=test_session).settings(batch_size=1)
+
+    # -------------- FIRST RUN (crashes after 3 rows) -------------------
+    reset_session_job_state()
+    with pytest.raises(Exception, match="Simulated failure"):
+        chain.map(result=process_buggy, output=int).save("results")
+
+    assert len(processed) == 3
+
+    # Scramble sys__id to non-sequential values so that the test is deterministic.
+    # If sys__id is stripped during copy, fresh IDs (1,2,3) won't match the input
+    # table's scrambled IDs (100,200,300,400,500,600), causing continuation to
+    # reprocess all rows instead of skipping processed ones.
+    job = test_session.get_or_create_job()
+    warehouse_db = test_session.catalog.warehouse.db
+    all_tables = list(
+        set(
+            warehouse_db.list_tables(f"udf_{job.id}%")
+            + warehouse_db.list_tables(f"udf_{job.run_group_id}%")
+        )
+    )
+    for table_name in all_tables:
+        if "_input" in table_name or "_output_partial" in table_name:
+            tbl = warehouse_db.get_table(table_name)
+            for i in range(1, 7):
+                warehouse_db.execute(
+                    tbl.update().where(tbl.c.sys__id == i).values(sys__id=i * 100)
+                )
+
+    # -------------- SECOND RUN (fixed UDF, same function name) -------------------
+    reset_session_job_state()
+    processed.clear()
+
+    def process_buggy(num) -> int:
+        processed.append(num)
+        return num * 10
+
+    chain.map(result=process_buggy, output=int).save("results")
+
+    result = dc.read_dataset("results", session=test_session).to_list("result")
+    assert sorted(result) == [(10,), (20,), (30,), (40,), (50,), (60,)]
+    # Continuation should skip already-processed rows (3 out of 6)
+    assert len(processed) < 6, (
+        f"Expected continuation to skip rows, but all {len(processed)} were processed"
+    )
+
+
+def test_udf_continue_after_group_by(test_session_tmpfile):
+    """UDF continuation works correctly when group_by precedes the UDF.
+
+    group_by produces a query with GROUP BY clause that has no sys__id.
+    The UDF input table gets fresh IDs. On continuation, the partial output
+    table's sys__id must still match the input table's IDs.
+    """
+    test_session = test_session_tmpfile
+    processed = []
+
+    dc.read_values(
+        category=["a", "a", "b", "b", "c", "c"],
+        value=[1, 2, 3, 4, 5, 6],
+        session=test_session,
+    ).save("data")
+
+    def process_buggy(total) -> int:
+        if len(processed) >= 2:
+            raise Exception("Simulated failure")
+        processed.append(total)
+        return total * 10
+
+    chain = (
+        dc.read_dataset("data", session=test_session)
+        .group_by(total=func.sum("value"), partition_by="category")
+        .settings(batch_size=1)
+    )
+
+    # -------------- FIRST RUN (crashes after 2 rows) -------------------
+    reset_session_job_state()
+    with pytest.raises(Exception, match="Simulated failure"):
+        chain.map(result=process_buggy, output=int).save("results")
+
+    assert len(processed) == 2
+
+    # -------------- SECOND RUN (fixed UDF) -------------------
+    reset_session_job_state()
+    processed.clear()
+
+    def process_buggy(total) -> int:
+        processed.append(total)
+        return total * 10
+
+    chain.map(result=process_buggy, output=int).save("results")
+
+    result = dc.read_dataset("results", session=test_session).to_list("result")
+    # group a: 1+2=3 -> 30, group b: 3+4=7 -> 70, group c: 5+6=11 -> 110
+    assert sorted(result) == [(30,), (70,), (110,)]

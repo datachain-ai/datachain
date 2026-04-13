@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager, suppress
 from datetime import datetime, timedelta, timezone
-from functools import cached_property, reduce
+from functools import cached_property
 from itertools import groupby
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -36,6 +36,7 @@ from sqlalchemy import (
     select,
 )
 from sqlalchemy.sql import func as f
+from sqlalchemy.sql.selectable import Join
 
 from datachain import json
 from datachain.catalog.dependency import DatasetDependencyNode
@@ -349,6 +350,24 @@ class AbstractMetastore(ABC, Serializable):
         Returns:
             List of (DatasetRecord, version_string) tuples. Each DatasetRecord
             contains only one version (the incomplete version to clean).
+        """
+
+    @abstractmethod
+    def get_dataset_versions(
+        self, job_id: str | None = None, version_ids: list[int] | None = None
+    ) -> list[tuple[DatasetRecord, str]]:
+        """
+        Get dataset versions by job ID and/or version IDs.
+
+        Returns dataset versions filtered by job_id and/or version_ids:
+        - If job_id is provided, returns versions for that job.
+        - If version_ids are provided, returns versions matching those IDs.
+        - If both are provided, returns versions matching both filters.
+        - If neither is provided, returns all dataset versions.
+
+        Returns:
+            List of (DatasetRecord, version_string) tuples.
+            Each DatasetRecord contains only one version.
         """
 
     @abstractmethod
@@ -1471,24 +1490,42 @@ class AbstractDBMetastore(AbstractMetastore):
         versions_loaded: bool,
         preview_loaded: bool,
     ) -> DatasetRecord | None:
-        parse_dataset: Any = self.dataset_class.parse
-        versions = [
-            parse_dataset(
-                *r,
-                versions_loaded=versions_loaded,
-                preview_loaded=preview_loaded,
-            )
-            for r in rows
-        ]
-        if not versions:
+        all_rows = list(rows)
+        if not all_rows:
             return None
-        return reduce(lambda ds, version: ds.merge_versions(version), versions)
+
+        dataset = self.dataset_class.parse(
+            *all_rows[0], versions_loaded=versions_loaded, preview_loaded=preview_loaded
+        )
+        if not versions_loaded:
+            return dataset
+
+        dataset_versions = dataset.versions
+        for row in all_rows[1:]:
+            tmp = self.dataset_class.parse(
+                *row, versions_loaded=True, preview_loaded=preview_loaded
+            )
+            dataset_versions.extend(tmp.versions)
+
+        if len(dataset_versions) > 1:
+            dataset_versions.sort(key=lambda v: v.version_value)
+        dataset.versions = dataset_versions
+        return dataset
 
     def _parse_list_dataset(self, rows) -> DatasetListRecord | None:
-        versions = [self.dataset_list_class.parse(*r) for r in rows]
-        if not versions:
+        if not rows:
             return None
-        return reduce(lambda ds, version: ds.merge_versions(version), versions)
+
+        dataset = self.dataset_list_class.parse(*rows[0])
+        dataset_versions = dataset.versions
+        for row in rows[1:]:
+            tmp = self.dataset_list_class.parse(*row)
+            dataset_versions.extend(tmp.versions)
+
+        if len(dataset_versions) > 1:
+            dataset_versions.sort(key=lambda v: v.version_value)
+        dataset.versions = dataset_versions
+        return dataset
 
     def _parse_dataset_list(self, rows) -> Iterator["DatasetListRecord"]:
         # grouping rows by dataset id
@@ -1736,14 +1773,13 @@ class AbstractDBMetastore(AbstractMetastore):
         dataset.remove_version(version)
         return dataset
 
-    def get_dataset_versions_to_clean(
-        self, job_id: str | None = None
-    ) -> list[tuple[DatasetRecord, str]]:
+    def _dataset_version_query_base(
+        self,
+    ) -> tuple[tuple["ColumnElement[Any]", ...], Join]:
         n = self._namespaces
         p = self._projects
         d = self._datasets
         dv = self._datasets_versions
-        j = self._jobs
 
         select_cols = (
             *(getattr(n.c, f) for f in self._namespaces_fields),
@@ -1759,6 +1795,23 @@ class AbstractDBMetastore(AbstractMetastore):
             .join(d, p.c.id == d.c.project_id)
             .join(dv, d.c.id == dv.c.dataset_id)
         )
+        return select_cols, base_from
+
+    def _fetch_version_pairs(self, query) -> list[tuple[DatasetRecord, str]]:
+        results: list[tuple[DatasetRecord, str]] = []
+        for row in self.db.execute(query):
+            dataset = self.dataset_class.parse(*row, preview_loaded=False)
+            if dataset.versions:
+                results.append((dataset, dataset.versions[0].version))
+        return results
+
+    def get_dataset_versions_to_clean(
+        self, job_id: str | None = None
+    ) -> list[tuple[DatasetRecord, str]]:
+        select_cols, base_from = self._dataset_version_query_base()
+        d = self._datasets
+        dv = self._datasets_versions
+        j = self._jobs
 
         # LEFT JOIN on jobs so versions with job_id=NULL are included.
         # Only skip versions whose job is still running.
@@ -1819,16 +1872,23 @@ class AbstractDBMetastore(AbstractMetastore):
         if job_id:
             query = query.where(dv.c.job_id == job_id)
 
-        # Parse results and return (dataset, version) tuples
-        results = []
-        for row in self.db.execute(query):
-            dataset = self.dataset_class.parse(*row, preview_loaded=False)
-            # Each DatasetRecord has one version (the failed one from this row)
-            if dataset.versions:
-                version = dataset.versions[0].version
-                results.append((dataset, version))
+        return self._fetch_version_pairs(query)
 
-        return results
+    def get_dataset_versions(
+        self, job_id: str | None = None, version_ids: list[int] | None = None
+    ) -> list[tuple[DatasetRecord, str]]:
+        select_cols, base_from = self._dataset_version_query_base()
+        dv = self._datasets_versions
+
+        query = self._datasets_select(*select_cols).select_from(base_from)
+
+        if job_id is not None:
+            query = query.where(dv.c.job_id == job_id)
+
+        if version_ids is not None:
+            query = query.where(dv.c.id.in_(version_ids))
+
+        return self._fetch_version_pairs(query)
 
     def update_dataset_status(
         self,
