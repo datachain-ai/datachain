@@ -42,11 +42,17 @@ logging.getLogger("gcsfs").setLevel(logging.CRITICAL)
 def calc_fingerprint(catalog: "Catalog", dataset: "DatasetRecord", version: str) -> int:
     """Compute an order-independent content fingerprint for a listing version.
 
-    Returns XOR of string_hash(file__path, file__etag) over all rows.
+    Uses file path + version (if available) or etag as the content identifier.
+    Version is preferred over etag because etags can be unstable on some cloud
+    providers (GCS, Azure) due to internal operations like storage class changes.
     """
     table_name = catalog.warehouse.dataset_table_name(dataset, version)
     table = catalog.warehouse.get_table(table_name)
-    query = sa.select(xor_agg(string_hash(table.c.file__path, table.c.file__etag)))
+    identifier = sa.case(
+        (table.c.file__version != "", table.c.file__version),
+        else_=table.c.file__etag,
+    )
+    query = sa.select(xor_agg(string_hash(table.c.file__path, identifier)))
     return next(catalog.warehouse.db.execute(query))[0]
 
 
