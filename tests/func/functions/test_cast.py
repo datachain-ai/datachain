@@ -102,8 +102,14 @@ def test_cast_datetime_in_mutate_and_order_by(test_session):
     )
 
     assert rows == [
-        ("2024-01-01 00:00:00", datetime(2024, 1, 1, 0, 0, 0, tzinfo=timezone.utc)),
-        ("2024-01-02 03:04:05", datetime(2024, 1, 2, 3, 4, 5, tzinfo=timezone.utc)),
+        (
+            "2024-01-01 00:00:00",
+            datetime(2024, 1, 1, 0, 0, 0, tzinfo=timezone.utc),
+        ),
+        (
+            "2024-01-02 03:04:05",
+            datetime(2024, 1, 2, 3, 4, 5, tzinfo=timezone.utc),
+        ),
     ]
 
 
@@ -145,7 +151,9 @@ def test_cast_datetime_to_string_and_round_trip(test_session):
     ]
 
 
-def test_regular_datetime_values_materialize_without_backend_shift(test_session):
+def test_regular_datetime_values_materialize_without_backend_shift(
+    test_session,
+):
     rows = (
         dc.read_values(
             row_id=[1, 2],
@@ -170,15 +178,15 @@ def test_regular_datetime_values_materialize_without_backend_shift(test_session)
     [
         (
             "2024-01-02 03:04:05.123000",
-            datetime(2024, 1, 2, 3, 4, 5, 123000, tzinfo=timezone.utc),
+            datetime(2024, 1, 2, 3, 4, 5, 123000),
         ),
         (
             "2024-01-02 03:04:05.123456",
-            datetime(2024, 1, 2, 3, 4, 5, 123456, tzinfo=timezone.utc),
+            datetime(2024, 1, 2, 3, 4, 5, 123456),
         ),
         (
             "2024-01-02 03:04:05.123456789",
-            datetime(2024, 1, 2, 3, 4, 5, 123456, tzinfo=timezone.utc),
+            datetime(2024, 1, 2, 3, 4, 5, 123456),
         ),
     ],
 )
@@ -189,7 +197,7 @@ def test_cast_datetime_from_fractional_string(test_session, source, expected):
         .to_values("ts")
     )
 
-    assert rows == [expected]
+    assert rows == [expected.replace(tzinfo=timezone.utc)]
 
 
 @pytest.mark.parametrize(
@@ -197,9 +205,9 @@ def test_cast_datetime_from_fractional_string(test_session, source, expected):
     [
         (
             "2024-01-02T03:04:05",
-            datetime(2024, 1, 2, 3, 4, 5, tzinfo=timezone.utc),
+            datetime(2024, 1, 2, 3, 4, 5),
         ),
-        ("2024-01-02", datetime(2024, 1, 2, 0, 0, 0, tzinfo=timezone.utc)),
+        ("2024-01-02", datetime(2024, 1, 2, 0, 0, 0)),
     ],
 )
 def test_cast_datetime_from_simple_iso_string(test_session, source, expected):
@@ -209,7 +217,7 @@ def test_cast_datetime_from_simple_iso_string(test_session, source, expected):
         .to_values("ts")
     )
 
-    assert rows == [expected]
+    assert rows == [expected.replace(tzinfo=timezone.utc)]
 
 
 def test_filter_cast_datetime_against_python_datetime_literal(test_session):

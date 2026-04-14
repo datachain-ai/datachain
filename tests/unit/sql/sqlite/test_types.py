@@ -50,24 +50,23 @@ def test_adapt_np_array_nan_inf():
 def test_adapt_datetime_serializes_naive_as_utc():
     value = datetime(2024, 1, 2, 3, 4, 5, 123456)
 
-    assert adapt_datetime(value) == "2024-01-02 03:04:05.123456+00:00"
+    assert adapt_datetime(value) == "2024-01-02 03:04:05.123456"
 
 
 def test_adapt_datetime_normalizes_aware_to_utc():
     eastern = timezone(timedelta(hours=-5))
     value = datetime(2024, 1, 2, 3, 4, 5, 123456, tzinfo=eastern)
 
-    assert adapt_datetime(value) == "2024-01-02 08:04:05.123456+00:00"
+    assert adapt_datetime(value) == "2024-01-02 08:04:05.123456"
 
 
-def test_convert_datetime_keeps_legacy_naive_rows_naive():
+def test_convert_datetime_returns_utc_aware_for_naive_rows():
     value = convert_datetime(b"2024-01-02 03:04:05.123456")
 
-    assert value == datetime(2024, 1, 2, 3, 4, 5, 123456)
-    assert value.tzinfo is None
+    assert value == datetime(2024, 1, 2, 3, 4, 5, 123456, tzinfo=timezone.utc)
 
 
-def test_convert_datetime_returns_utc_aware_for_new_rows():
+def test_convert_datetime_normalizes_offset_rows_to_utc():
     value = convert_datetime(b"2024-01-02 03:04:05.123456+00:00")
 
     assert value == datetime(2024, 1, 2, 3, 4, 5, 123456, tzinfo=timezone.utc)
@@ -75,11 +74,9 @@ def test_convert_datetime_returns_utc_aware_for_new_rows():
 
 def test_sqlite_datetime_cast_serializes_naive_strings_as_utc():
     assert sqlite_datetime_cast("2024-01-02 03:04:05.123456") == (
-        "2024-01-02 03:04:05.123456+00:00"
+        "2024-01-02 03:04:05.123456"
     )
 
 
 def test_sqlite_datetime_cast_normalizes_aware_strings_to_utc():
-    assert sqlite_datetime_cast("2024-01-02T03:04:05-05:00") == (
-        "2024-01-02 08:04:05+00:00"
-    )
+    assert sqlite_datetime_cast("2024-01-02T03:04:05-05:00") == "2024-01-02 08:04:05"

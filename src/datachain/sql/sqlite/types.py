@@ -1,4 +1,5 @@
 import sqlite3
+from datetime import datetime, timezone
 
 from sqlalchemy import types
 
@@ -71,3 +72,14 @@ class SQLiteTypeReadConverter(TypeReadConverter):
         if isinstance(value, str):
             value = json.loads(value)
         return super().array(value, item_type, dialect)
+
+    def datetime(self, value):
+        if isinstance(value, str):
+            value = super().datetime(value)
+
+        if isinstance(value, datetime):
+            if value.tzinfo is None:
+                return value.replace(tzinfo=timezone.utc)
+            return value.astimezone(timezone.utc)
+
+        return value

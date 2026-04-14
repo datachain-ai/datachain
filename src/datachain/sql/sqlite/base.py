@@ -259,6 +259,20 @@ def _parse_datetime_text(value: str) -> datetime:
 
 def _normalize_datetime_for_storage(value: datetime) -> datetime:
     if value.tzinfo is None:
+        return value
+
+    try:
+        return value.astimezone(timezone.utc).replace(tzinfo=None)
+    except (OverflowError, ValueError, OSError):
+        if value.year == MAXYEAR:
+            return datetime.max.replace(tzinfo=timezone.utc).replace(tzinfo=None)
+        if value.year == MINYEAR:
+            return datetime.min.replace(tzinfo=timezone.utc).replace(tzinfo=None)
+        raise
+
+
+def _normalize_datetime_for_read(value: datetime) -> datetime:
+    if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
 
     try:
@@ -367,9 +381,7 @@ def adapt_datetime(val: datetime) -> str:
 
 def convert_datetime(val: bytes) -> datetime:
     parsed = _parse_datetime_text(val.decode())
-    if parsed.tzinfo is None:
-        return parsed
-    return _normalize_datetime_for_storage(parsed)
+    return _normalize_datetime_for_read(parsed)
 
 
 def path_parent(path):
