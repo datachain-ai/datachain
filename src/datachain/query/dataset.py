@@ -3132,12 +3132,15 @@ class DatasetQuery:
         **kwargs,
     ) -> "Self":
         """Save the query as a dataset."""
-        # Get job from session to link dataset version to job
-        job = self.session.get_or_create_job()
-        job_id = job.id
-        # Use job.query as the script source unless explicitly overridden
+        if kwargs.get("listing"):
+            # Listing saves are internal — use existing job if present,
+            # but don't create one (e.g. Studio backend `datachain ls`).
+            job = self.session.get_job()
+        else:
+            job = self.session.get_or_create_job()
+        job_id = job.id if job else None
         if query_script is None:
-            query_script = job.query
+            query_script = job.query if job else ""
 
         project = project or self.catalog.metastore.default_project
         try:
@@ -3210,9 +3213,10 @@ class DatasetQuery:
             self.temp_table_names.remove(temp_table_name)
 
             # Link this dataset version to the job that created it
-            self.catalog.metastore.link_dataset_version_to_job(
-                dataset.get_version(version).id, job_id, is_creator=True
-            )
+            if job_id:
+                self.catalog.metastore.link_dataset_version_to_job(
+                    dataset.get_version(version).id, job_id, is_creator=True
+                )
 
             if dependencies:
                 # overriding dependencies

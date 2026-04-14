@@ -113,6 +113,24 @@ class Session:
             Session.SESSION_CONTEXTS.pop()
         Session._ALL_SESSIONS.discard(self)
 
+    def get_job(self) -> "Job | None":
+        """
+        Return the current job if one exists, without creating a new one.
+
+        Checks the cached ``_CURRENT_JOB`` and ``DATACHAIN_JOB_ID`` env var.
+        Returns None if no job is found.
+        """
+        if Session._CURRENT_JOB:
+            return Session._CURRENT_JOB
+
+        if env_job_id := os.getenv("DATACHAIN_JOB_ID"):
+            Session._CURRENT_JOB = self.catalog.metastore.get_job(env_job_id)
+            if Session._CURRENT_JOB:
+                Session._OWNS_JOB = False
+            return Session._CURRENT_JOB
+
+        return None
+
     def get_or_create_job(self) -> "Job":
         """
         Get or create a Job for this process.
