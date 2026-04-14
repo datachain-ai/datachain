@@ -2157,6 +2157,8 @@ class SQLJoin(Step):
         left_name = self.query1.table.name
         right_name = self.query2.table.name
 
+        self.validate_expression(exp, q1, q2)
+
         def replace(element, **_kwargs):
             if not isinstance(element, ColumnClause):
                 return None
