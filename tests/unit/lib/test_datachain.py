@@ -14,6 +14,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 from pydantic import BaseModel
+from sqlalchemy.sql.elements import BindParameter
 
 import datachain as dc
 import datachain.lib.dc.utils as dc_utils
@@ -29,6 +30,7 @@ from datachain.error import (
     ProjectCreateNotAllowedError,
 )
 from datachain.func import string
+from datachain.func.base import Function
 from datachain.lib.data_model import DataModel
 from datachain.lib.dc import C, DatasetPrepareError, Sys
 from datachain.lib.dc.listings import read_listing_dataset
@@ -3092,7 +3094,10 @@ def test_filter_does_not_traverse_plain_column_expr(test_session, monkeypatch):
 
     monkeypatch.setattr(dc_utils, "replacement_traverse", fail)
 
-    assert chain.filter(C("numbers") > 1).to_values("numbers") == [2, 3]
+    assert chain.filter(C("numbers") > 1).order_by("numbers").to_values("numbers") == [
+        2,
+        3,
+    ]
 
 
 def test_filter_resolves_column_expr_with_embedded_func(test_session):
@@ -3108,6 +3113,33 @@ def test_filter_resolves_column_expr_with_embedded_func(test_session):
         "a/x.txt",
         "b/z.txt",
     ]
+
+
+def test_filter_traversal_stops_on_plain_bind_params(test_session, monkeypatch):
+    chain = dc.read_values(
+        numbers=[1, 2, 3],
+        path=["a/x.txt", "a/y.txt", "b/z.txt"],
+        parent=["a", "wrong", "b"],
+        session=test_session,
+    )
+    captured_stop_on = []
+    original_replacement_traverse = dc_utils.replacement_traverse
+
+    def inspect(expr, opts, replace):
+        captured_stop_on.extend(opts.get("stop_on", []))
+        return original_replacement_traverse(expr, opts, replace)
+
+    monkeypatch.setattr(dc_utils, "replacement_traverse", inspect)
+
+    filtered_chain = chain.filter(
+        (C("numbers") > 1) & (C("parent") == func.path.parent("path"))
+    )
+
+    assert filtered_chain.order_by("path").to_values("path") == ["b/z.txt"]
+    assert captured_stop_on
+    assert all(isinstance(bind, BindParameter) for bind in captured_stop_on)
+    assert all(not isinstance(bind.value, Function) for bind in captured_stop_on)
+    assert any(bind.value == 1 for bind in captured_stop_on)
 
 
 def test_filter_with_boolean_nested_model(test_session):

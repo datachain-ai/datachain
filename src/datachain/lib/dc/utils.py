@@ -38,13 +38,19 @@ def is_local() -> bool:
 def resolve_columns(
     method: "Callable[Concatenate[D, P], D]",
 ) -> "Callable[Concatenate[D, P], D]":
-    """Decorator that resolves input column names to their actual DB names. This is
-    specially important for nested columns as user works with them by using dot
-    notation e.g (file.path) but are actually defined with default delimiter
-    in DB, e.g file__path.
-    String column names are resolved to DB column names.
-    DataChain function expressions are converted to SQL using the current schema.
-    Existing SQL expressions are passed through unchanged.
+    """Normalize positional column inputs against the current schema.
+
+    This is mainly used by APIs like filter() and order_by() that accept a mix of
+    string column names, DataChain Function objects, and already-built SQLAlchemy
+    expressions.
+
+    In particular:
+    - string names are resolved to DB column names, including nested signals like
+      file.path -> file__path
+    - DataChain Function objects are converted to SQL expressions with the current
+      schema
+    - existing SQL expressions are type-enriched, and are only traversed when they
+      still contain Function-valued bind parameters that must be converted to SQL
     """
 
     @wraps(method)
@@ -52,22 +58,30 @@ def resolve_columns(
         resolved_args: list[object] = []
 
         def resolve_expr(expr: ColumnExpr) -> ColumnExpr:
-            if not any(
-                isinstance(element, BindParameter)
-                and isinstance(element.value, Function)
-                for element in iterate(expr)
-            ):
-                return self.signals_schema.enrich_expr_types(expr)
+            plain_bind_params: list[BindParameter] = []
+            func_bind_replacements: dict[int, ColumnExpr] = {}
 
-            def replace(element, **_kwargs):
-                if isinstance(element, BindParameter) and isinstance(
-                    element.value, Function
-                ):
-                    return element.value.get_column(self.signals_schema)
-                return None
+            for element in iterate(expr):
+                if not isinstance(element, BindParameter):
+                    continue
+                if isinstance(element.value, Function):
+                    func_bind_replacements[id(element)] = element.value.get_column(
+                        self.signals_schema
+                    )
+                else:
+                    plain_bind_params.append(element)
 
-            resolved = replacement_traverse(expr, {}, replace)
-            return self.signals_schema.enrich_expr_types(cast("ColumnExpr", resolved))
+            if func_bind_replacements:
+                # replacement_traverse clones visited bind params by default.
+                # Preserve ordinary binds and only replace the Function-valued ones
+                # we collected from the original expression tree.
+                expr = replacement_traverse(
+                    expr,
+                    {"stop_on": plain_bind_params},
+                    lambda element, **_kwargs: func_bind_replacements.get(id(element)),
+                )
+
+            return self.signals_schema.enrich_expr_types(expr)
 
         for arg in args:
             if isinstance(arg, Function):
@@ -142,15 +156,15 @@ class DatasetMergeError(DataChainParamsError):
         def _get_str(
             on: MergeColType | Sequence[MergeColType],
         ) -> str:
-            if not isinstance(on, Sequence):
-                return str(on)  # type: ignore[unreachable]
+            if isinstance(on, (str, Function, ColumnExpr)) or not isinstance(
+                on, Sequence
+            ):
+                return _get_merge_error_str(on)
             return ", ".join([_get_merge_error_str(col) for col in on])
 
         on_str = _get_str(on)
         right_on_str = (
-            ", right_on='" + _get_str(right_on) + "'"
-            if right_on and isinstance(right_on, Sequence)
-            else ""
+            ", right_on='" + _get_str(right_on) + "'" if right_on is not None else ""
         )
         super().__init__(f"Merge error on='{on_str}'{right_on_str}: {msg}")
 
