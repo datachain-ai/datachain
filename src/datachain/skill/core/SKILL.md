@@ -41,28 +41,58 @@ Why this matters:
 
 Only go to raw storage (`read_storage`, `read_csv`, etc.) when no existing dataset covers the needed data, or the user explicitly asks to start fresh.
 
-### Preserve expensive compute as dataset
+### Dataset-first reasoning
 
-When a pipeline runs an expensive UDF (ML inference, LLM calls, heavy per-row processing), save the **full** result as its own dataset before any filtering or subsetting. A downstream `.save()` after filtering only preserves a fraction of the rows — the rest of the compute is lost.
+Datasets are the unit of reasoning. Every distinct data step — metadata extraction, enrichment, filtering, query results — should produce a named, saved dataset. This creates a lineage graph where each node is reusable, inspectable, and referenceable by future pipelines and users.
 
-Two criteria — **both** must be true to require a separate `.save()`:
-1. **Expensive compute.** The UDF involves model inference, LLM calls, or other heavy per-row work. Lightweight transforms (text parsing, string ops, metadata extraction) are cheap to redo and do not need saving.
-2. **Rows or columns would be lost.** The pipeline filters, aggregates, or drops the expensive result downstream. Even if the final dataset contains the same columns, saving only the top-N rows discards the compute for all other rows. If the expensive result flows **unfiltered** into a final saved dataset, it is already fully preserved — saving separately is duplication.
-
-Choose dataset names that describe the content, not the task (e.g., `"product_images_embeddings"` not `"step1"`).
+**Core rule: always `.save()`, never just `.show()`.** A pipeline's terminal operation should be `.save("descriptive_name")`, followed by `.show()` on the saved result for display. The only exception is one-off exploratory queries where the user explicitly asks to just "show me" or "print" without saving.
 
 ```python
-# ✓ Expensive result would be lost — save it
+# ✓ Save then show — result is preserved AND displayed
+result = pipeline.save("top_products_by_score")
+result.show()
+
+# ✗ Show only — result vanishes, no one can reference it
+pipeline.show()
+```
+
+**What to save:**
+
+- **Metadata from raw storage.** When a chain reads from `read_storage` and produces structured metadata via UDF (annotations, labels, parsed configs), save it as its own dataset — even if parsing is trivial. The value is in the structured result, not the compute cost.
+- **Intermediate reasoning steps.** When a pipeline has logically distinct stages (e.g., "extract metadata" then "filter + rank"), each stage with standalone reuse value should be a saved dataset.
+- **Final pipeline results.** Rankings, filtered cohorts, evaluation outputs, aggregations — these are facts. Save them so they're referenceable.
+
+```python
+# ✓ Metadata extraction saved as its own dataset — reusable by any future pipeline
+annotations = (
+    dc.read_storage("s3://bucket/labels/**/*.txt", type="text")
+    .gen(ann=parse_label_file)              # even simple text parsing gets saved
+    .save("product_annotations")            # ← structured metadata preserved
+)
+
+# ✓ Final result also saved
+labeled = (
+    dc.read_dataset("product_images")
+    .merge(annotations, on="file.path")
+    .save("labeled_images")                 # ← merged result preserved
+)
+labeled.show()
+```
+
+**Special case — expensive compute.** When a UDF is expensive (ML inference, LLM calls, heavy per-row processing), save the **full, unfiltered** result before any filtering or subsetting. This is an additional constraint on top of the general "save every step" principle: a downstream `.save()` after filtering only preserves a fraction of the rows — the rest of the compute is lost.
+
+```python
+# ✓ Expensive result saved unfiltered, then filtered result saved separately
 embeddings = (
     dc.read_dataset("product_images")
     .settings(parallel=True)
     .map(emb=compute_embedding)
-    .save("product_images_embeddings")      # ← embeddings preserved for reuse
+    .save("product_images_embeddings")      # ← all rows preserved
 )
 similar = embeddings.filter(...)
-similar.save("similar_products")            # final output (may or may not keep emb column)
+similar.save("similar_products")            # ← filtered view also saved
 
-# ✓ Expensive result flows into final dataset — no separate save needed
+# ✓ Expensive result flows unfiltered into final dataset — no separate save needed
 enriched = (
     dc.read_dataset("product_images")
     .settings(parallel=True)
@@ -70,14 +100,9 @@ enriched = (
     .merge(labels, on="file.path")
     .save("product_images_enriched")        # ← emb column is in the final dataset
 )
-
-# ✓ Lightweight transform — no save needed, cheap to redo
-annotations = (
-    dc.read_storage("s3://bucket/labels/**/*.txt", type="text")
-    .gen(ann=parse_label_file)              # simple text parsing
-)
-images.merge(annotations, on=...).save("labeled_images")
 ```
+
+**Naming convention.** Dataset names should describe the data content (e.g., `"product_annotations"`, `"similar_products"`, `"labeled_images"`), not the pipeline step (`"step1"`, `"intermediate"`, `"temp"`).
 
 Never create or modify files under `dc-knowledge/` — that directory is owned by the datachain-knowledge skill.
 
