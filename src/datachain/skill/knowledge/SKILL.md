@@ -79,6 +79,7 @@ When loaded, determine the user's intent:
 → Build and execute the pipeline the user requested, following core skill rules.
 → **While the pipeline is running**, enrich any Step 1 bucket JSON that does not yet have a `.md` — read `{skill_dir}/prompts/enrich_bucket.md` and generate the markdown in parallel with the running script.
 → After the pipeline completes, **always** run Steps 2–5 to update the knowledge base.
+→ **During Step 4 (Enrich)**, when writing the `.md` for a dataset created in this session: add a `## Session Context` section with 1-3 sentences summarizing why the dataset was created — the user's goal, the analytical question, or the discussion that led to it. Only add this if the session provides meaningful context. If the dataset is a routine output with no notable motivation, omit it.
 → Report both: pipeline result AND knowledge base update status.
 
 **Mode C — Script Execution** (e.g., user runs an existing script, or agent runs a .py file that touches data):
@@ -87,9 +88,11 @@ When loaded, determine the user's intent:
 → **While the script is running**, enrich any Step 1 bucket JSON that does not yet have a `.md` — read `{skill_dir}/prompts/enrich_bucket.md` and generate the markdown in parallel with the running script.
 → After ANY data-related script finishes, run Steps 2–5 to detect and record new/changed datasets.
 → This applies even if the script was not written by the agent — always check the DB afterward.
+→ Do not add `## Session Context` for script-executed datasets unless the there is a specific context in a session about why the dataset was created or why script is being run.
 
 **Mode D — Knowledge Base Maintenance** (e.g., "update the knowledge base", "refresh dataset docs"):
 → Run Steps 2–5 as normal.
+→ Do not add new `## Session Context` sections during maintenance refreshes. Existing session context in `.md` files is preserved automatically during re-enrichment.
 
 ---
 

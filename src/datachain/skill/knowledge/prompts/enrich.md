@@ -8,6 +8,7 @@ Read the JSON file at the path provided. It contains:
 
 - `name`: dataset name
 - `source`: `"local"` or `"studio"`
+- `session_context` (optional): not present in the JSON. If the dataset already has an enriched `.md` file, check it for a `## Session Context` section — this is session-level context about why the dataset was created, preserved across re-enrichments.
 - `versions[]`: array ordered oldest-first, each with:
   - `version`, `uuid`, `records`, `updated`
   - `schema`: column definitions (latest version has full schema; older versions may have `{}`)
@@ -45,6 +46,23 @@ known_versions: [{comma-separated list of all version strings, e.g. 1.0.0, 1.0.1
 and how it is produced. Be specific — mention data types and transformations.
 It should be optimized for dataset reusage - how this dataset is helpful.
 Dependency names are not necessary here since they are presented in another section.}
+
+## Session Context
+
+{Include this section ONLY when session context exists. Two cases:
+
+1. **Re-enrichment**: If the existing `.md` file has a `## Session Context` section,
+   preserve it here verbatim. Do not paraphrase or rewrite.
+
+2. **New dataset created during an agentic session**: If you are enriching a dataset
+   that was just created in this session and the session provides meaningful context
+   about WHY this dataset was created — the analytical goal, the investigation that
+   led to it, the user's motivation — write 1-3 sentences here.
+
+Omit this section entirely if:
+- There is no existing session context AND no meaningful session to describe
+- The dataset was recovered from the operational DB without a conversation
+- The "why" is already obvious from the description above}
 
 ## Dependencies
 
@@ -132,7 +150,10 @@ query_script in a python block if available.}
 - **Be concise.** Each version summary is 1-2 sentences maximum.
 - **Infer purpose.** Read the query_script to understand what the dataset does. Name transformations, filters, and computations — not implementation details.
 - **Compress old versions.** The reader wants to understand evolution at a glance. Do not reproduce raw diffs, full dependency tables, or scripts.
-- **Omit empty sections.** If preview is null, skip ## Preview. If schema is empty, skip ## Schema.
+- **Omit empty sections.** If preview is null, skip ## Preview. If schema is empty, skip ## Schema. If no session context exists, skip ## Session Context.
+- **Session context is verbatim on re-enrichment.** If the existing `.md` has a `## Session Context` section, preserve it unchanged — do not paraphrase, merge with description, or rewrite.
+- **Session context is optional.** Only add it for datasets created during an agentic session when the session provides meaningful "why/how" context. Do not fabricate context. Do not add it during routine knowledge-base refreshes.
+- **No duplication with description.** Description = what the dataset contains. Session context = why it was created, what session/investigation led to it.
 - **No dependency tables in version summaries.** Only mention a dependency if it was added, removed, or significantly changed.
 - **Code inclusion rules:**
   - **Latest version:** ALWAYS include the full `query_script` in a ```python block. This is mandatory when query_script is not null.

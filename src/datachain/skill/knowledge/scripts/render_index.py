@@ -43,6 +43,7 @@ def _read_md_info(md_path: str) -> dict:
     """
     info: dict = {
         "description": "",
+        "session_context": "",
         "deps": [],
         "last_version": "",
         "records": "",
@@ -96,6 +97,23 @@ def _read_md_info(md_path: str) -> dict:
         if stripped:
             desc_lines.append(stripped)
     info["description"] = " ".join(desc_lines)
+
+    # Extract session context: paragraph under ## Session Context
+    sc_lines: list[str] = []
+    in_sc = False
+    for line in lines:
+        if line.startswith("## Session Context"):
+            in_sc = True
+            continue
+        if in_sc:
+            if line.startswith("##"):
+                break
+            stripped = line.strip()
+            if not stripped and sc_lines:
+                break
+            if stripped:
+                sc_lines.append(stripped)
+    info["session_context"] = " ".join(sc_lines)
 
     # Extract dependencies: preserve markdown links for clickability
     deps: list[str] = []
