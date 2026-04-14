@@ -37,6 +37,7 @@ Works with S3, GCS, Azure, and local filesystems.
 
 DataChain indexes your storage and metadata into a **versioned, queryable dataset** - no data copied, just typed metadata and file pointers. Re-runs only process new or changed files.
 
+`create_dataset.py`:
 ```python
 from PIL import Image
 import io
@@ -53,12 +54,12 @@ def get_info(file: dc.File) -> ImageInfo:
 
 ds = (
     dc.read_storage(
-        "s3://my-bucket/pets/images/**/*.jpg",
+        "s3://dc-readme/oxford-pets-micro/images/**/*.jpg",
         anon=True,
         update=True,
         delta=True,         # re-runs skip unchanged files
     )
-    .settings(prefetch=20, cache=True)   # files cached locally for downstream pipelines
+    .settings(prefetch=64)
     .map(info=get_info)
     .save("pets_images")
 )
@@ -78,17 +79,31 @@ DataChain uses Pydantic to define the shape of every column. The return type of 
 `show()` in the previos script renders nested fields as dotted columns:
 
 ```bash
-file                            breed         info.width  info.height
- pets/images/beagle_1.jpg        beagle               640          480
- pets/images/beagle_2.jpg        beagle               512          384
- pets/images/Abyssinian_1.jpg    Abyssinian           800          600
- pets/images/boxer_5.jpg         boxer                720          540
- pets/images/Russian_Blue_3.jpg  Russian_Blue        1024          768
+                                          file    file  info   info
+                                          path    size width height
+0  oxford-pets-micro/images/Abyssinian_141.jpg  111270   461    500
+1  oxford-pets-micro/images/Abyssinian_157.jpg  139948   500    375
+2  oxford-pets-micro/images/Abyssinian_175.jpg   31265   600    234
+3  oxford-pets-micro/images/Abyssinian_220.jpg   10687   300    225
+4    oxford-pets-micro/images/Abyssinian_3.jpg   61533   600    869
+
+[Limited by 5 rows]
 ```
 
-`.schema()` renders it's schema:
+`.print_schema()` renders it's schema:
 ```bash
-...
+file: File@v1
+  source: str
+  path: str
+  size: int
+  version: str
+  etag: str
+  is_latest: bool
+  last_modified: datetime
+  location: Union[dict, list[dict], NoneType]
+info: ImageInfo
+  width: int
+  height: int
 ```
 
 Models can be arbitrarily nested - a `BBox` inside an `Annotation`, a `List[Citation]` inside an LLM Response - every leaf field stays queryable the same way. The schema lives in the operational layer and is enforced at dataset creation time.
@@ -96,7 +111,10 @@ Models can be arbitrarily nested - a `BBox` inside an `Annotation`, a `List[Cita
 The operational layer handles datasets of any size - 100 millions of files, hundreds of metadata rows - without loading anything into memory. **Pandas is limited by RAM; DataChain is not.** Export to pandas when you need it, on a filtered subset:
 
 ```python
+import datachain as dc
+
 df = dc.read_dataset("pets_images").filter(dc.C("info.width") > 500).to_pandas()
+print(df)
 ```
 
 ### 3.3. Fast queries
@@ -106,15 +124,20 @@ Filters, aggregations, and joins run as vectorized operations directly against t
 ```python
 import datachain as dc
 
-count = (
+cnt = (
     dc.read_dataset("pets_images")
     .filter(
-        (dc.C("info.width") > 500) &
-        ~dc.C("file.path").like("%cocker_spaniel%")   # case-sensitive
+        (dc.C("info.width") > 400) &
+        ~dc.C("file.path").ilike("%cocker_spaniel%")   # case-insensitive
     )
     .count()
 )
-# Milliseconds, even at 100M-file scale
+print(f"Large images with Cocker Spaniel: {cnt}")
+```
+
+Milliseconds, even at 100M-file scale.
+```
+Large images with Cocker Spaniel: 6
 ```
 
 ## 4. Resilient Pipelines
@@ -123,8 +146,8 @@ When computation is expensive, bugs and new data are both inevitable. DataChain 
 
 ### 4.1. Data checkpoints
 
+Save to `embed.py`:
 ```python
-# embed.py
 import open_clip, torch, io
 from PIL import Image
 import datachain as dc
@@ -154,17 +177,14 @@ def encode(file: dc.File, model, preprocess) -> list[float]:
 
 It fails due to a bug in the code:
 ```
-$ python embed.py
-████░░░░░░░░░░░░░░░░░░░░  231 / 10,000   ✗ Exception: some bug
+Exception: some bug
 ```
 
 Remove the two marked lines and re-run - DataChain resumes from image 201, the start of the last uncommitted batch:
 
 ```
 $ python embed.py
-Resuming from checkpoint (200 / 10,000)...
-████████████████████████ 10,000 / 10,000  ✓
-Saved pets_embeddings@1
+UDF 'encode': Continuing from checkpoint
 ```
 
 ### 4.2. Similarity search
@@ -176,8 +196,15 @@ Prepare data:
 datachain cp s3://dc-readme/fiona.jpg .
 ```
 
-
+`similar.py`:
 ```python
+import open_clip, torch, io
+from PIL import Image
+import datachain as dc
+
+model, _, preprocess = open_clip.create_model_and_transforms("ViT-B-32", "laion2b_s34b_b79k")
+model.eval()
+
 ref_emb = model.encode_image(
     preprocess(Image.open("fiona.jpg")).unsqueeze(0)
 )[0].tolist()
@@ -200,15 +227,15 @@ Under a second - everything runs against the operational layer.
 The bucket in this walkthrough is static, so there's nothing new to process. But in production - when new images land in your bucket - re-run the same scripts unchanged. `delta=True` in the original dataset ensures only new files are processed end to end while the whole dataset will be updated to `pets_images@1.0.1`:
 
 ```python
-$ python index.py   # 500 new images arrived
+$ python create_dataset.py   # 500 new images arrived
 Skipping 10,000 unchanged  ·  indexing 500 new
 Saved pets_images@1.0.1  (+500 records)
 
 # Next day:
 
-$ python embed.py
+$ python create_dataset.py
 Skipping 10,000 unchanged  ·  processing 500 new
-Saved pets_embeddings@2  (+500 records)
+Saved pets_images@1.0.2  (+500 records)
 ```
 
 ## 5. Knowledge Base
@@ -229,17 +256,24 @@ Build a knowledge base for my current datasets
 The skill generates `dc-knowledge/` directory from the operational layer - one file per dataset and bucket:
 
 ```bash
-$ tree dc-knowledge/
-├── index.md
-├── buckets/s3/my_bucket.md
-└── datasets/
-    ├── pets_images.md        # schema, source, record count, version
-    └── pets_embeddings.md    # schema, depends_on: pets_images
+tree dc-knowledge
+```
+Output:
+```
+dc-knowledge
+├── buckets
+│   └── s3
+│       └── dc_readme
+│           └── oxford_pets_micro__images.md
+├── datasets
+│   ├── pets_embeddings.md
+│   └── pets_images.md
+└── index.md
 ```
 
 Every DataChain run keeps it current - bucket scans update the bucket files, `.save()` registers new dataset versions. Browse it in any text editor or Obsidian:
 
-GIF_IS_HERE
+![Visualize data knowledge base](docs/assets/obsidian_multi.gif)
 
 Useful for people, not just agents. When your team shares a registry, `dc-knowledge/` becomes a living data catalog — what exists, what schema it has, what depends on what, and what has already been computed. It could be commited to Git repository.
 
@@ -254,24 +288,43 @@ Find dogs similar to fiona.jpg.
 - Pull breed metadata and mask files from annotations/
 - Exclude images without mask
 - Exclude Cocker Spaniels
-- Only include images wider than 500px
+- Only include images wider than 400px
 ```
 
-The agent parses the annotations directory, identifies pets_embeddings in the knowledge base as the right starting point, and writes a single pipeline joining all three sources with similarity search and structured filters. Without the knowledge base, writing the pipeline alone could take hours - finding the right dataset, days.
-
+The agent parses the annotations directory, identifies `pets_embeddings` in the knowledge base as the right starting point, and writes a single pipeline joining all three sources with similarity search and structured filters. Without the knowledge base, writing the pipeline alone could take hours - finding the right dataset, days.
 
 Output:
 ```
-┌──────┬──────────────────────┬──────────────┬────────┬──────────┐
-│ Rank │        Image         │    Breed     │ Width  │ Distance │
-├──────┼──────────────────────┼──────────────┼────────┼──────────┤
-│ 1    │ basset_hound_117.jpg │ basset_hound │  512px │  0.221   │
-│ 2    │ basset_hound_129.jpg │ basset_hound │  640px │  0.223   │
-│ 3    │ beagle_44.jpg        │ beagle       │  580px │  0.251   │
-└──────┴──────────────────────┴──────────────┴────────┴──────────┘
+...
+⏺ Done. The similar_dogs dataset has 124 dogs ranked by CLIP similarity to fiona.jpg. Here are the
+  top matches:
+  ┌──────┬────────────────┬──────────┬───────────────────────┐
+  │ Rank │     Breed      │ Distance │         Image         │
+  ├──────┼────────────────┼──────────┼───────────────────────┤
+  │    1 │ shiba_inu      │ 0.244    │ shiba_inu_52.jpg      │
+  ├──────┼────────────────┼──────────┼───────────────────────┤
+  │    2 │ shiba_inu      │ 0.323    │ shiba_inu_53.jpg      │
+  ├──────┼────────────────┼──────────┼───────────────────────┤
+  │    3 │ great_pyrenees │ 0.325    │ great_pyrenees_17.jpg │
+  ├──────┼────────────────┼──────────┼───────────────────────┤
+  │    4 │ leonberger     │ 0.327    │ leonberger_12.jpg     │
+  ├──────┼────────────────┼──────────┼───────────────────────┤
+  │    5 │ newfoundland   │ 0.330    │ newfoundland_170.jpg  │
+  └──────┴────────────────┴──────────┴───────────────────────┘
+
+  Fiona looks most like a Shiba Inu according to CLIP. The pipeline:
+
+  - Reused pets_embeddings (no recomputation of 300 CLIP vectors)
+  - Created pets_breeds (parsed breed/species from annotations/list.txt)
+  - Merged trimap masks via inner join (all 300 images had masks, so none excluded)
+  - Filtered 300 → 124: width > 400px, dogs only, no Cocker Spaniels
+  - Saved as similar_dogs, ordered by cosine distance ascending
+
+  Knowledge base updated: 4 datasets (2 new, 2 unchanged), 2 buckets (1 new, 1 unchanged).
 ```
 
 30 seconds to parse annotations - everything else quieried from the operational layer.
+
 
 ## 7. Architecture
 
@@ -284,7 +337,7 @@ DataChain extends that harness to data. The agent that understands your codebase
 │     Claude Code      │─── skill ──▶│      DataChain       │
 ├──────────────────────┤             ├──────────────────────┤
 │  git + commits       │             │  datasets + versions │
-│  Prompt caching      │             │  data lineage graph  │
+│  prompt caching      │             │  data lineage graph  │
 │  file tree           │             │  schemas + types     │
 ├──────────────────────┤             ├──────────────────────┤
 │  Grep / Glob / LSP   │             │  async · parallel    │
@@ -311,9 +364,9 @@ DataChain extends that harness to data. The agent that understands your codebase
         │  • checkpoints       │
         │  • lineage graph     │
         └───────────┬──────────┘
-                    │ derived
+                    │ derived by agent
         ┌───────────▼──────────┐
-        │   knowledge graph    │  datachain/graph/
+        │   knowledge graph    │  dc-knowledge/
         │  • agent-readable    │
         │  • dataset summaries │
         │  • schema + versions │
