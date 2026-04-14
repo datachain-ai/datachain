@@ -43,7 +43,7 @@ Only go to raw storage (`read_storage`, `read_csv`, etc.) when no existing datas
 
 ### Dataset-first reasoning
 
-Datasets are the unit of reasoning. Every distinct data step — metadata extraction, enrichment, filtering, query results — should produce a named, saved dataset. This creates a lineage graph where each node is reusable, inspectable, and referenceable by future pipelines and users.
+Datasets are the unit of reasoning. Chains that transform data through UDFs — or that produce a pipeline's final result — should be saved as named datasets. This creates a lineage graph where each node is reusable, inspectable, and referenceable by future pipelines and users.
 
 **Core rule: always `.save()`, never just `.show()`.** A pipeline's terminal operation should be `.save("descriptive_name")`, followed by `.show()` on the saved result for display. The only exception is one-off exploratory queries where the user explicitly asks to just "show me" or "print" without saving.
 
@@ -56,30 +56,46 @@ result.show()
 pipeline.show()
 ```
 
-**What to save:**
+**What to save — the UDF rule:**
 
-- **Metadata from raw storage.** When a chain reads from `read_storage` and produces structured metadata via UDF (annotations, labels, parsed configs), save it as its own dataset — even if parsing is trivial. The value is in the structured result, not the compute cost.
-- **Intermediate reasoning steps.** When a pipeline has logically distinct stages (e.g., "extract metadata" then "filter + rank"), each stage with standalone reuse value should be a saved dataset.
-- **Final pipeline results.** Rankings, filtered cohorts, evaluation outputs, aggregations — these are facts. Save them so they're referenceable.
+- **Any chain that runs a UDF (`.map()`, `.gen()`, `.agg()`)** must be saved with `.save("name")`. UDFs embody domain logic and produce structured output that is worth preserving as a named dataset — even when the parsing is trivial. The value is in the structured result, not the compute cost.
+- **Final pipeline results.** Rankings, filtered cohorts, evaluation outputs, aggregations — always `.save("name")`.
+- **Chains with no UDFs** (`read_storage` + `filter`/`mutate`/`select` only) may remain transient if transformations are streight forward. They read or reshape existing data without transforming it, so they are cheap to recompute and easy to understand from the code alone.
+
+**`.persist()` is not `.save()`.** `.persist()` materializes a chain into an anonymous cache for performance — it prevents re-execution but does NOT create a named dataset. When a chain should be saved per the rules above, always use `.save("name")`. Using `.persist()` where `.save()` is required is an anti-pattern: the computed result becomes unreferenceable and invisible to future pipelines.
 
 ```python
-# ✓ Metadata extraction saved as its own dataset — reusable by any future pipeline
+# ✓ UDF chain saved as named dataset — reusable by any future pipeline
 annotations = (
     dc.read_storage("s3://bucket/labels/**/*.txt", type="text")
-    .gen(ann=parse_label_file)              # even simple text parsing gets saved
-    .save("product_annotations")            # ← structured metadata preserved
+    .gen(ann=parse_label_file)
+    .save("product_annotations")            # ← named, reusable dataset
 )
 
-# ✓ Final result also saved
+# ✗ ANTI-PATTERN: UDF chain only persisted — result is anonymous, not reusable
+annotations = (
+    dc.read_storage("s3://bucket/labels/**/*.txt", type="text")
+    .gen(ann=parse_label_file)
+    .persist()                              # ← anonymous cache, no name
+)
+
+# ✓ No-UDF chain left transient — cheap to recompute, easy to read
+masks = (
+    dc.read_storage("s3://bucket/masks/**/*.png")
+    .mutate(mask_stem=dc.func.path.file_stem(dc.C("file.path")))
+)
+
+# ✓ Final result saved
 labeled = (
     dc.read_dataset("product_images")
     .merge(annotations, on="file.path")
-    .save("labeled_images")                 # ← merged result preserved
+    .merge(masks, on="mask_stem")
+    .save("labeled_images")                 # ← final result preserved
 )
 labeled.show()
 ```
 
-**Special case — expensive compute.** When a UDF is expensive (ML inference, LLM calls, heavy per-row processing), save the **full, unfiltered** result before any filtering or subsetting. This is an additional constraint on top of the general "save every step" principle: a downstream `.save()` after filtering only preserves a fraction of the rows — the rest of the compute is lost.
+**Special case — expensive compute.** When a UDF is expensive (ML inference, LLM calls, heavy per-row processing), save the **full, unfiltered** result before any filtering or subsetting. A downstream `.save()` after filtering only preserves a fraction of the rows — the rest of the compute is lost.
 
 ```python
 # ✓ Expensive result saved unfiltered, then filtered result saved separately
@@ -348,15 +364,20 @@ Never create or modify files under `dc-knowledge/` — that directory is owned b
           def process(self, file: dc.ImageFile) -> list[float]: ...
       chain.map(emb=ImageEncoder())
 
-21. PERSIST BEFORE MULTI-MERGE AND AFTER GROUP_BY: When merging 2+ right-side
-    chains that contain UDFs (map/gen/agg), persist() each before the merge. Without
-    persist(), the final terminal op (save/show) may re-execute UDF pipelines
-    multiple times during merge evaluation.
-    Skip persist() when the right side has no UDFs (pure metadata/filter chains).
+21. MATERIALIZE BEFORE MULTI-MERGE AND AFTER GROUP_BY: When merging 2+ right-side
+    chains that contain UDFs (map/gen/agg), materialize each before the merge.
+    Without materialization, the final terminal op (save/show) may re-execute UDF
+    pipelines multiple times during merge evaluation.
+    Use .save("name") when the chain should be a named dataset per Section 1
+    (has a UDF with reuse value) — .save() materializes AND names, satisfying
+    both this rule and Section 1. Use .persist() only when the chain does not
+    warrant a named dataset (e.g., group_by intermediates).
+    Skip materialization when the right side has no UDFs (pure metadata/filter
+    chains).
     Also persist() after group_by() when the result feeds into further operations
     (merge, filter, mutate) rather than directly into save().
-    ✓ a = chain_a.map(x=fn1).filer(...).persist()
-      b = chain_b.gen(y=fn2).persist()
+    ✓ a = chain_a.map(x=fn1).filter(...).save("feature_a")   # UDF → named
+      b = chain_b.gen(y=fn2).save("feature_b")               # UDF → named
       images.merge(a, ...).merge(b, ...).save("out")
     ✓ counts = chain.group_by(n=func.count(), partition_by="cat").persist()
       counts.filter(C("n") > 5).save("popular")
@@ -516,7 +537,7 @@ chain.settings(parallel=True, cache=True, prefetch=10, workers=50)  # cache only
 ```python
 chain.save("dataset_name")                     # versioned named dataset
 chain.save("ns.proj.name", update_version="minor")
-chain.persist()                                # anonymous cache
+chain.persist()                                # anonymous cache (not a named dataset)
 chain.show(limit=10)
 chain.to_values("col")                         # → flat list: [val1, val2, ...]
 chain.to_list("col1", "col2")                  # → list of tuples: [(v1,v2), ...]
