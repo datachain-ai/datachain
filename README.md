@@ -6,38 +6,137 @@
 [![Tests](https://github.com/datachain-ai/datachain/actions/workflows/tests.yml/badge.svg)](https://github.com/datachain-ai/datachain/actions/workflows/tests.yml)
 [![DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/datachain-ai/datachain)
 
-Teams and data agents fail without data context - schemas alone don't capture what data means, how it was produced, or what's already been computed. The solution is a context layer: multiple layers of metadata, lineage, and code-derived knowledge that ground both humans and agents in what actually exists.
+DataChain is a data context layer for object storage. It gives AI agents and pipelines a typed, versioned, queryable view of your files - what exists, what schema it has, what's already been computed - without copying data or loading it into memory.
 
-DataChain brings this to unstructured files - images, video, documents, sensor data - stored in S3, GCS, Azure, or local filesystems.
+- Metadata queries across 100M+ files execute in milliseconds against a backend database
+- Pipelines checkpoint - re-running the same script resumes compute without duplicating expensive LLM-call or ML scoring
+- `delta=True` makes re-runs incremental — only new or changed files are processed
+- Every `.save()` registers a named, versioned dataset with schema and lineage
+- A generated knowledge base (`dc-knowledge/`) reflects the operational layer as markdown for agents to read before writing code
 
-File pipelines are expensive to run and fragile to maintain without it:
-- crash → start over
-- new data → recompute everything
-- expensive calls → pay twice (tokens, GPU, time)
-- no shared understanding of what exists → duplicate work
-
-DataChain adds two layers:
-1. **Operational layer** that persists schemas, versions, lineage, and processing state.
-2. **Knowledge layer** derived from it - readable by your team and your agents - that captures what your data is, what produced it, and what's already been computed.
-
-![Visualize data knowledge base](docs/assets/obsidian_multi.gif)
-
-```bash
-pip install datachain                                      # core
-datachain skill install --target claude                    # knowledge layer + code generation
-# also: --target cursor, --target codex
-```
 
 Works with S3, GCS, Azure, and local filesystems.
 
+```bash
+pip install datachain
+```
 
-## 3. Datasets
+To add the agent knowledge layer and code generation skill:
+```bash
+datachain skill install --target claude     # also: --target cursor, --target codex
+```
 
-### 3.1. Create a dataset
+## 1. Quickstart: agent-driven pipeline
 
-DataChain indexes your storage and metadata into a **versioned, queryable dataset** - no data copied, just typed metadata and file pointers. Re-runs only process new or changed files.
+Task: find dogs in S3 similar to a reference image, filtered by breed, mask availability, and image dimensions.
 
-`create_dataset.py`:
+Grab a reference image and run Claude Code (or other agent):
+```bash
+datachain cp --anon s3://dc-readme/fiona.jpg .
+
+claude
+```
+
+Prompt:
+```prompt
+Find dogs in s3://dc-readme/oxford-pets-micro/ similar to fiona.jpg:
+  - Pull breed metadata and mask files from annotations/
+  - Exclude images without mask
+  - Exclude Cocker Spaniels
+  - Only include images wider than 400px
+```
+
+Result:
+```
+  ┌──────┬───────────────────────────────────┬────────────────────────────┬──────────┐
+  │ Rank │               Image               │           Breed            │ Distance │
+  ├──────┼───────────────────────────────────┼────────────────────────────┼──────────┤
+  │    1 │ shiba_inu_52.jpg                  │ shiba_inu                  │    0.244 │
+  ├──────┼───────────────────────────────────┼────────────────────────────┼──────────┤
+  │    2 │ shiba_inu_53.jpg                  │ shiba_inu                  │    0.323 │
+  ├──────┼───────────────────────────────────┼────────────────────────────┼──────────┤
+  │    3 │ great_pyrenees_17.jpg             │ great_pyrenees             │    0.325 │
+  └──────┴───────────────────────────────────┴────────────────────────────┴──────────┘
+
+  Fiona's closest matches are shiba inus (both top spots), which makes sense given her
+  tan coloring and pointed ears.
+```
+
+The agent decomposed the task into steps - embeddings, breed metadata, mask join, quality filter - and saved each as a named, versioned dataset. Next time you ask a related question, it starts from what's already built.
+
+The datasets are registered in a knowledge base optimized for both agents and humans:
+
+```bash
+dc-knowledge
+├── buckets
+│   └── s3
+│       └── dc_readme.md
+├── datasets
+│   ├── oxford_micro_dog_breeds.md
+│   ├── oxford_micro_dog_embeddings.md
+│   └── similar_to_fiona.md
+└── index.md
+```
+
+Browse it as markdown files, navigate with wikilinks, or open in Obsidian:
+
+![Visualize data knowledge base](docs/assets/obsidian_multi.gif)
+
+
+## 2. How it works
+
+Claude Code (Codex, Cursor, etc) isn't just a chat interface with a shell - it's a harness that gives the LLM repo context, dedicated tools, and persistent memory. That's what makes it good.
+
+**DataChain extends that harness to data.** The agent now also understands your storage and datasets: schemas, dependencies, code, what's already computed, what's mid-run, and what changed since last time.
+
+```
+┌──────────────────────┐             ┌──────────────────────┐
+│     Claude Code      │─── skill ──▶│      DataChain       │
+├──────────────────────┤             ├──────────────────────┤
+│  git + commits       │             │  datasets + versions │
+│  prompt caching      │             │  data lineage graph  │
+│  file tree           │             │  schemas + types     │
+├──────────────────────┤             ├──────────────────────┤
+│  Grep / Glob / LSP   │             │  async · parallel    │
+│  session memory      │             │  execution state     │
+└──────────────────────┘             └──────────────────────┘
+          │                                     │
+       codebase                           object storage
+     (git + files)                    (S3, GCS, AZ, local FS)
+```
+
+A **dataset** is the unit of work - a named, versioned result of a pipeline step like `pets_embeddings@1.0.0`. Every `.save()` registers one.
+
+Inside DataChain, datasets live in two layers:
+```
+┌───────────────────────┐
+│   operational layer   │  In file: .datachain/db
+│  • dataset registry   │
+│  • typed schemas      │  ← .save() writes here
+│  • vectors + metadata │  ← 100M+ files, nothing in memory
+│  • processing state   │
+│  • code/lineage graph │
+└───────────┬───────────┘
+            │ derived
+┌───────────▼───────────┐
+│   knowledge layer     │  In directory: dc-knowledge/
+│  • index.md           │  ← agent reads before acting
+│  • one file/dataset   │  ← schema, lineage, what's computed
+└───────────────────────┘
+```
+
+The **operational layer** is the engine - the ground truth that makes crash recovery, incremental updates, and vector search work at scale. 
+
+The **knowledge layer** is a structured reflection of it enriched by LLMs: markdown files the agent reads to understand what exists before writing a single line of code.
+
+
+## 3. Core concepts
+
+### 3.1. Dataset
+
+A dataset is a versioned data reasoning step - what was computed, from what input, producing what schema. DataChain indexes your storage into one: no data copied, just typed metadata and file pointers. Re-runs only process new or changed files.
+
+Create a dataset manually `create_dataset.py`:
 ```python
 from PIL import Image
 import io
@@ -76,7 +175,7 @@ This is what makes a **dataset a management unit:** owned, versioned, and querya
 
 DataChain uses Pydantic to define the shape of every column. The return type of your UDF becomes the dataset schema — each field a queryable column in the operational layer.
 
-`show()` in the previos script renders nested fields as dotted columns:
+`show()` in the previous script renders nested fields as dotted columns:
 
 ```bash
                                           file    file  info   info
@@ -180,7 +279,7 @@ It fails due to a bug in the code:
 Exception: some bug
 ```
 
-Remove the two marked lines and re-run - DataChain resumes from image 201, the start of the last uncommitted batch:
+Remove the two marked lines and re-run - DataChain resumes from image 201 (two 100 size batches are completed), the start of the last uncommitted batch:
 
 ```
 $ python embed.py
@@ -255,131 +354,17 @@ Build a knowledge base for my current datasets
 
 The skill generates `dc-knowledge/` directory from the operational layer - one file per dataset and bucket:
 
-```bash
-tree dc-knowledge
-```
-Output:
-```
-dc-knowledge
-├── buckets
-│   └── s3
-│       └── dc_readme
-│           └── oxford_pets_micro__images.md
-├── datasets
-│   ├── pets_embeddings.md
-│   └── pets_images.md
-└── index.md
-```
-
-Every DataChain run keeps it current - bucket scans update the bucket files, `.save()` registers new dataset versions. Browse it in any text editor or Obsidian:
-
 ![Visualize data knowledge base](docs/assets/obsidian_multi.gif)
 
-Useful for people, not just agents. When your team shares a registry, `dc-knowledge/` becomes a living data catalog — what exists, what schema it has, what depends on what, and what has already been computed. It could be commited to Git repository.
 
 ## 6. AI-Generated Pipelines
 
 The skill gives the agent data awareness: it reads `dc-knowledge/` to understand what datasets exist, their schemas, which fields can be joined - and the meaning of columns inferred from the code that produced them.
 
-Prompt:
-
-```prompt
-Find dogs similar to fiona.jpg.
-- Pull breed metadata and mask files from annotations/
-- Exclude images without mask
-- Exclude Cocker Spaniels
-- Only include images wider than 400px
-```
-
-The agent parses the annotations directory, identifies `pets_embeddings` in the knowledge base as the right starting point, and writes a single pipeline joining all three sources with similarity search and structured filters. Without the knowledge base, writing the pipeline alone could take hours - finding the right dataset, days.
-
-Output:
-```
-...
-⏺ Done. The similar_dogs dataset has 124 dogs ranked by CLIP similarity to fiona.jpg. Here are the
-  top matches:
-  ┌──────┬────────────────┬──────────┬───────────────────────┐
-  │ Rank │     Breed      │ Distance │         Image         │
-  ├──────┼────────────────┼──────────┼───────────────────────┤
-  │    1 │ shiba_inu      │ 0.244    │ shiba_inu_52.jpg      │
-  ├──────┼────────────────┼──────────┼───────────────────────┤
-  │    2 │ shiba_inu      │ 0.323    │ shiba_inu_53.jpg      │
-  ├──────┼────────────────┼──────────┼───────────────────────┤
-  │    3 │ great_pyrenees │ 0.325    │ great_pyrenees_17.jpg │
-  ├──────┼────────────────┼──────────┼───────────────────────┤
-  │    4 │ leonberger     │ 0.327    │ leonberger_12.jpg     │
-  ├──────┼────────────────┼──────────┼───────────────────────┤
-  │    5 │ newfoundland   │ 0.330    │ newfoundland_170.jpg  │
-  └──────┴────────────────┴──────────┴───────────────────────┘
-
-  Fiona looks most like a Shiba Inu according to CLIP. The pipeline:
-
-  - Reused pets_embeddings (no recomputation of 300 CLIP vectors)
-  - Created pets_breeds (parsed breed/species from annotations/list.txt)
-  - Merged trimap masks via inner join (all 300 images had masks, so none excluded)
-  - Filtered 300 → 124: width > 400px, dogs only, no Cocker Spaniels
-  - Saved as similar_dogs, ordered by cosine distance ascending
-
-  Knowledge base updated: 4 datasets (2 new, 2 unchanged), 2 buckets (1 new, 1 unchanged).
-```
-
-30 seconds to parse annotations - everything else quieried from the operational layer.
+See section `1. See it in action`. All the steps that were manually created could be just generated.
 
 
-## 7. Architecture
-
-Claude Code (Codex, Cursor, etc) isn't just a chat interface with a shell - it's a harness that gives the LLM repo context, dedicated tools, and persistent memory. That's what makes it good.
-
-DataChain extends that harness to data. The agent that understands your codebase now also understands your storage and datasets: schemas, dependencies, what's already computed, what's mid-run, and what changed since last time.
-
-```
-┌──────────────────────┐             ┌──────────────────────┐
-│     Claude Code      │─── skill ──▶│      DataChain       │
-├──────────────────────┤             ├──────────────────────┤
-│  git + commits       │             │  datasets + versions │
-│  prompt caching      │             │  data lineage graph  │
-│  file tree           │             │  schemas + types     │
-├──────────────────────┤             ├──────────────────────┤
-│  Grep / Glob / LSP   │             │  async · parallel    │
-│  session memory      │             │  execution state     │
-└──────────────────────┘             └──────────────────────┘
-          │                                     │
-       codebase                           object storage
-     (git + files)                    (S3, GCS, AZ, local FS)
-```
-
-...
-
-
-```
-┌─────────────────────────────────────────┐
-│             your pipelines              │
-└───────────────────┬─────────────────────┘
-                    │ .save()
-        ┌───────────▼──────────┐
-        │   operational layer  │  .datachain/db
-        │  • dataset registry  │
-        │  • typed schemas     │
-        │  • processing state  │
-        │  • checkpoints       │
-        │  • lineage graph     │
-        └───────────┬──────────┘
-                    │ derived by agent
-        ┌───────────▼──────────┐
-        │   knowledge graph    │  dc-knowledge/
-        │  • agent-readable    │
-        │  • dataset summaries │
-        │  • schema + versions │
-        │  • dependency map    │
-        └──────────────────────┘
-```
-
-**Operational layer** — the ground truth. Every `.save()` records schema, processing state, and lineage. This is what makes incremental updates and crash recovery work.
-
-**Knowledge graph** — derived from the operational layer, stored as structured markdown in `datachain/graph/`. This is what `datachain-graph` skill reads. Instead of guessing at folder structure, the agent reads the graph: what exists, what schema it has, what's already been computed.
-
-
-## 8. Team and cloud: Studio
+## 7. Team and cloud: Studio
 
 Data context built locally stays local. DataChain Studio makes it shared.
 
@@ -399,11 +384,11 @@ Bring Your Own Cloud — all data and compute stay in your infrastructure. AWS, 
 
 → [studio.datachain.ai](https://studio.datachain.ai)
 
-## 9. Contributing
+## 8. Contributing
 
 Contributions are very welcome. To learn more, see the [Contributor Guide](https://docs.datachain.ai/contributing).
 
-## 10. Community and Support
+## 9. Community and Support
 
 - [Report an issue](https://github.com/datachain-ai/datachain/issues) if you encounter any problems
 - [Docs](https://docs.datachain.ai/)
