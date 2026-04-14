@@ -9,6 +9,7 @@ from datachain.checkpoint import CheckpointStatus
 from datachain.data_storage.job import JobQueryType, JobStatus
 from datachain.data_storage.serializer import deserialize
 from datachain.data_storage.sqlite import SCHEMA_VERSION, SQLiteMetastore
+from datachain.dataset import DatasetStatus
 from datachain.error import DatasetStateNotLoadedError, OutdatedDatabaseSchemaError
 from tests.conftest import cleanup_sqlite_db
 
@@ -192,3 +193,30 @@ def test_dataset_record_versions_setter_marks_loaded(test_session):
     record.versions = loaded.versions
 
     assert record.versions == loaded.versions
+
+
+def test_list_datasets_single_version(metastore):
+    ds = metastore.create_dataset("list-single")
+    metastore.create_dataset_version(ds, "1.0.0", DatasetStatus.COMPLETE)
+
+    results = {d.name: d for d in metastore.list_datasets()}
+    assert "list-single" in results
+    assert len(results["list-single"].versions) == 1
+    assert results["list-single"].versions[0].version == "1.0.0"
+
+
+def test_list_datasets_multiple_versions_sorted(metastore):
+    ds = metastore.create_dataset("list-multi")
+    for v in ("2.0.0", "1.0.0", "3.0.0"):
+        metastore.create_dataset_version(ds, v, DatasetStatus.COMPLETE)
+
+    results = {d.name: d for d in metastore.list_datasets()}
+    assert [v.version for v in results["list-multi"].versions] == [
+        "1.0.0",
+        "2.0.0",
+        "3.0.0",
+    ]
+
+
+def test_list_datasets_empty(metastore):
+    assert list(metastore.list_datasets()) == []

@@ -101,8 +101,8 @@ chain = (
     .save("dialog-rating")
 )
 
-**iter = chain.collect("mistral")
-**print(*map(lambda chat_response: chat_response.choices[0].message.content, iter))
+**iter = chain.to_iter("mistral")
+**print(*map(lambda row: row[0].choices[0].message.content, iter))
 ```
 
 ```
@@ -142,7 +142,7 @@ Persistent datasets are immutable and automatically versioned. Here is how to ac
 
 ```python
 mydatasets = dc.datasets()
-for ds in mydatasets.collect("dataset"):
+for (ds,) in mydatasets.to_iter("dataset"):
     print(f"{ds.name}@v{ds.version}")
 
 ```
