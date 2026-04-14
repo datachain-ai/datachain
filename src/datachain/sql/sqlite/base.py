@@ -244,15 +244,35 @@ def sqlite_datetime_cast(value):
         value = value.decode()
 
     if isinstance(value, datetime):
-        value = value.isoformat(" ")
-    elif not isinstance(value, str):
+        return _serialize_datetime(value)
+    if not isinstance(value, str):
         return value
 
-    parsed = datetime.fromisoformat(value)
-    if parsed.tzinfo is not None:
-        raise ValueError("SQLite datetime cast only accepts naive datetime strings")
+    parsed = _parse_datetime_text(value)
+    return _serialize_datetime(parsed)
 
-    return parsed.isoformat(" ")
+
+def _parse_datetime_text(value: str) -> datetime:
+    normalized = value.replace("Z", "+00:00") if value.endswith("Z") else value
+    return datetime.fromisoformat(normalized)
+
+
+def _normalize_datetime_for_storage(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+
+    try:
+        return value.astimezone(timezone.utc)
+    except (OverflowError, ValueError, OSError):
+        if value.year == MAXYEAR:
+            return datetime.max.replace(tzinfo=timezone.utc)
+        if value.year == MINYEAR:
+            return datetime.min.replace(tzinfo=timezone.utc)
+        raise
+
+
+def _serialize_datetime(value: datetime) -> str:
+    return _normalize_datetime_for_storage(value).isoformat(" ")
 
 
 def register_user_defined_sql_functions() -> None:
@@ -342,29 +362,14 @@ def register_user_defined_sql_functions() -> None:
 
 
 def adapt_datetime(val: datetime) -> str:
-    if val.tzinfo is None:
-        return val.isoformat(" ")
-
-    is_utc_check = val.tzinfo is timezone.utc
-    tzname_check = val.tzname() == "UTC"
-    combined_check = is_utc_check or tzname_check
-
-    if not combined_check:
-        try:
-            val = val.astimezone(timezone.utc)
-        except (OverflowError, ValueError, OSError):
-            if val.year == MAXYEAR:
-                val = datetime.max.replace(tzinfo=timezone.utc)
-            elif val.year == MINYEAR:
-                val = datetime.min.replace(tzinfo=timezone.utc)
-            else:
-                raise
-
-    return val.replace(tzinfo=None).isoformat(" ")
+    return _serialize_datetime(val)
 
 
 def convert_datetime(val: bytes) -> datetime:
-    return datetime.fromisoformat(val.decode()).replace(tzinfo=timezone.utc)
+    parsed = _parse_datetime_text(val.decode())
+    if parsed.tzinfo is None:
+        return parsed
+    return _normalize_datetime_for_storage(parsed)
 
 
 def path_parent(path):

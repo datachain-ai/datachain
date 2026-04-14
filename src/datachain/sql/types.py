@@ -13,7 +13,7 @@ for sqlite we can use `sqlite.register_converter`
 """
 
 import numbers
-from datetime import datetime, timezone
+from datetime import datetime
 from types import MappingProxyType
 from typing import Any, Union
 
@@ -416,18 +416,7 @@ class DateTime(SQLType):
         return db_defaults(dialect).datetime()
 
     def on_read_convert(self, value, dialect):
-        converted = read_converter(dialect).datetime(value)
-        impl = self.impl
-        assert isinstance(impl, types.DateTime)
-
-        if (
-            not impl.timezone
-            and isinstance(converted, datetime)
-            and converted.tzinfo is not None
-        ):
-            return converted.astimezone(timezone.utc).replace(tzinfo=None)
-
-        return converted
+        return read_converter(dialect).datetime(value)
 
 
 class Binary(SQLType):

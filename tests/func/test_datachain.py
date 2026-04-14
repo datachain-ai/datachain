@@ -384,6 +384,24 @@ def test_show_preserves_none(capsys, test_session):
     assert captured.count("None") >= 2
 
 
+def test_read_values_keeps_aware_utc_datetime(test_session):
+    timestamp = datetime(2024, 1, 2, 3, 4, 5, 123456, tzinfo=timezone.utc)
+
+    rows = dc.read_values(ts=[timestamp], session=test_session).to_values("ts")
+
+    assert rows == [timestamp]
+
+
+@skip_if_not_sqlite
+def test_read_values_normalizes_non_utc_aware_datetime_to_utc_in_sqlite(test_session):
+    eastern = timezone(timedelta(hours=-5))
+    timestamp = datetime(2024, 1, 2, 3, 4, 5, 123456, tzinfo=eastern)
+
+    rows = dc.read_values(ts=[timestamp], session=test_session).to_values("ts")
+
+    assert rows == [timestamp.astimezone(timezone.utc)]
+
+
 def test_show_without_temp_datasets(capsys, test_session):
     dc.read_values(
         key=[1, 2, 3, 4], session=test_session

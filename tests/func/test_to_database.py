@@ -125,10 +125,10 @@ def _parse_datetime_if_needed(connection, value, expected_timezone=None):
     if engine.name == "sqlite" and isinstance(value, str):
         # SQLite stores naive datetime strings that represent UTC time
         parsed = datetime.fromisoformat(value)
-        parsed_utc = parsed.replace(tzinfo=timezone.utc)
+        parsed = parsed.replace(tzinfo=timezone.utc)
         if expected_timezone is not None:
-            return parsed_utc.astimezone(expected_timezone)
-        return parsed_utc
+            return parsed.astimezone(expected_timezone)
+        return parsed
 
     return value
 
