@@ -14,7 +14,7 @@ from datachain.lib.projects import create as create_project
 from tests.utils import skip_if_not_sqlite
 
 
-# All tests in this module need is_studio=True for namespace/project CRUD
+# Default to is_studio=True for namespace/project CRUD; individual tests may override
 @pytest.fixture
 def is_studio():
     return True
