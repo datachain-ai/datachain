@@ -16,6 +16,7 @@ import pytest
 from pydantic import BaseModel
 
 import datachain as dc
+import datachain.lib.dc.utils as dc_utils
 from datachain import Column, func
 from datachain.dataset import DatasetStatus
 from datachain.error import (
@@ -3081,6 +3082,17 @@ def test_filter_resolves_func_with_string_column_operand(test_session):
     filtered_chain = chain.filter(string.length("names") > 3)
 
     assert sorted(filtered_chain.to_values("names")) == ["Charlie", "Dora"]
+
+
+def test_filter_does_not_traverse_plain_column_expr(test_session, monkeypatch):
+    chain = dc.read_values(numbers=[1, 2, 3], session=test_session)
+
+    def fail(*_args, **_kwargs):
+        raise AssertionError("replacement_traverse should not run")
+
+    monkeypatch.setattr(dc_utils, "replacement_traverse", fail)
+
+    assert chain.filter(C("numbers") > 1).to_values("numbers") == [2, 3]
 
 
 def test_filter_resolves_column_expr_with_embedded_func(test_session):

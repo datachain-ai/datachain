@@ -13,6 +13,7 @@ for sqlite we can use `sqlite.register_converter`
 """
 
 import numbers
+import re
 from datetime import datetime
 from types import MappingProxyType
 from typing import Any, Union
@@ -36,6 +37,13 @@ _db_defaults_registry: dict[str, "DBDefaults"] = {}
 db_defaults_registry = MappingProxyType(_db_defaults_registry)
 
 NullType = types.NullType
+
+_DATETIME_EXTRA_FRACTION_RE = re.compile(r"(\.\d{6})\d+")
+
+
+def parse_datetime_text(value: str) -> datetime:
+    normalized = value.replace("Z", "+00:00") if value.endswith("Z") else value
+    return datetime.fromisoformat(_DATETIME_EXTRA_FRACTION_RE.sub(r"\1", normalized))
 
 
 def register_backend_types(dialect_name: str, type_cls):
@@ -502,9 +510,8 @@ class TypeReadConverter:
 
     def datetime(self, value):
         if isinstance(value, str):
-            normalized = value.replace("Z", "+00:00") if value.endswith("Z") else value
             try:
-                return datetime.fromisoformat(normalized)
+                return parse_datetime_text(value)
             except ValueError:
                 return value
 

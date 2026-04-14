@@ -24,21 +24,18 @@ from datachain.sql.functions import (
     random,
     string,
 )
-from datachain.sql.functions import (
-    path as sql_path,
-)
+from datachain.sql.functions import path as sql_path
 from datachain.sql.selectable import Values, base_values_compiler
 from datachain.sql.sqlite.types import (
     SQLiteTypeConverter,
     SQLiteTypeReadConverter,
     register_type_converters,
 )
-from datachain.sql.types import (
-    DateTime as DCDateTime,
-)
+from datachain.sql.types import DateTime as DCDateTime
 from datachain.sql.types import (
     DBDefaults,
     TypeDefaults,
+    parse_datetime_text,
     register_backend_types,
     register_db_defaults,
     register_type_defaults,
@@ -248,13 +245,8 @@ def sqlite_datetime_cast(value):
     if not isinstance(value, str):
         return value
 
-    parsed = _parse_datetime_text(value)
+    parsed = parse_datetime_text(value)
     return _serialize_datetime(parsed)
-
-
-def _parse_datetime_text(value: str) -> datetime:
-    normalized = value.replace("Z", "+00:00") if value.endswith("Z") else value
-    return datetime.fromisoformat(normalized)
 
 
 def _normalize_datetime_for_storage(value: datetime) -> datetime:
@@ -380,7 +372,7 @@ def adapt_datetime(val: datetime) -> str:
 
 
 def convert_datetime(val: bytes) -> datetime:
-    parsed = _parse_datetime_text(val.decode())
+    parsed = parse_datetime_text(val.decode())
     return _normalize_datetime_for_read(parsed)
 
 

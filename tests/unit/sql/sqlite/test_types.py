@@ -80,3 +80,9 @@ def test_sqlite_datetime_cast_serializes_naive_strings_as_utc():
 
 def test_sqlite_datetime_cast_normalizes_aware_strings_to_utc():
     assert sqlite_datetime_cast("2024-01-02T03:04:05-05:00") == "2024-01-02 08:04:05"
+
+
+def test_sqlite_datetime_cast_truncates_extra_fractional_precision():
+    assert sqlite_datetime_cast("2024-01-02 03:04:05.123456789") == (
+        "2024-01-02 03:04:05.123456"
+    )

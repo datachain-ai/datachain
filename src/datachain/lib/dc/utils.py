@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING, TypeVar, cast
 
 import sqlalchemy
 from sqlalchemy.sql.elements import BindParameter
-from sqlalchemy.sql.visitors import replacement_traverse
+from sqlalchemy.sql.visitors import iterate, replacement_traverse
 
 from datachain.func.base import Function
 from datachain.lib.data_model import DataModel, DataType
@@ -52,6 +52,13 @@ def resolve_columns(
         resolved_args: list[object] = []
 
         def resolve_expr(expr: ColumnExpr) -> ColumnExpr:
+            if not any(
+                isinstance(element, BindParameter)
+                and isinstance(element.value, Function)
+                for element in iterate(expr)
+            ):
+                return self.signals_schema.enrich_expr_types(expr)
+
             def replace(element, **_kwargs):
                 if isinstance(element, BindParameter) and isinstance(
                     element.value, Function
