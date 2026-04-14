@@ -125,7 +125,7 @@ Inside DataChain, datasets live in two layers:
 └───────────────────────┘
 ```
 
-The **operational layer** is the engine - the ground truth that makes crash recovery, incremental updates, and vector search work at scale. 
+The **operational layer** is the engine - the ground truth that makes crash recovery, incremental updates, and vector search work at scale.
 
 The **knowledge layer** is a structured reflection of it enriched by LLMs: markdown files the agent reads to understand what exists before writing a single line of code.
 
