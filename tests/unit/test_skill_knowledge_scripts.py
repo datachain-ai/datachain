@@ -111,7 +111,12 @@ def test_bucket_file_path_basic():
 
 def test_bucket_file_path_with_prefix():
     result = bucket_file_path("gs://demo/dogs-cats/")
-    assert result == "buckets/gs/demo__dogs_cats"
+    assert result == "buckets/gs/demo/dogs_cats"
+
+
+def test_bucket_file_path_nested_prefix():
+    result = bucket_file_path("gs://demo/dogs-cats/annotations/")
+    assert result == "buckets/gs/demo/dogs_cats__annotations"
 
 
 def test_bucket_file_path_special_chars():
