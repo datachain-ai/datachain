@@ -14,7 +14,6 @@ DataChain is a data context layer for object storage. It gives AI agents and pip
 - Every `.save()` registers a named, versioned dataset with schema and lineage
 - A generated knowledge base (`dc-knowledge/`) reflects the operational layer as markdown for agents to read before writing code
 
-
 Works with S3, GCS, Azure, and local filesystems.
 
 ```bash
@@ -78,9 +77,9 @@ dc-knowledge
 └── index.md
 ```
 
-Browse it as markdown files, navigate with wikilinks, or open in Obsidian:
+Browse it as markdown files, navigate with wikilinks, or open in [Obsidian](https://obsidian.md/):
 
-![Visualize data knowledge base](docs/assets/obsidian_multi.gif)
+![Visualize data knowledge base](docs/assets/readme_obsidian.gif)
 
 
 ## 2. How it works
@@ -131,6 +130,23 @@ The **knowledge layer** is a structured reflection of it enriched by LLMs: markd
 
 
 ## 3. Core concepts
+
+```
+                 ╔══════════════════════════════════════════════════╗
+┌─────────────┐  ║                D A T A C H A I N                 ║  ┌────────────────┐
+│ Claude Code │  ╠════════════════╦════════════════╦════════════════╣  │ Object Storage │
+│ Cursor      │◀─╣ KNOWLEDGE BASE ║     LIBRARY    ║   DATABASE     ╠─▶│                │
+│ Codex       │  ╠════════════════╬════════════════╬════════════════╣  │ S3  GCS  Azure │
+└─────────────┘  ║ dc-knowledge/  ║  Python API    ║ .datachain/db  ║  │                │
+                 ║ ────────────── ║ ────────────── ║ ─────────────  ║  │ images/        │
+reads schema,    ║ index.md       ║ .map()         ║ schemas        ║  │ videos/        │
+lineage, and     ║ datasets/*.md  ║ .filter()      ║ versions       ║  │ docs/          │
+computed state   ║ buckets/*.md   ║ .save()        ║ vectors        ║  │ sensors/       │
+                 ║                ║ delta=True     ║ lineage        ║  └────────────────┘
+                 ║                ║ parallel exec  ║ checkpoints    ║
+                 ║                ║ crash recovery ║ 100M+ files    ║  no data copied
+                 ╚════════════════╩════════════════╩════════════════╝  metadata only
+```
 
 ### 3.1. Dataset
 
@@ -353,8 +369,6 @@ Build a knowledge base for my current datasets
 ```
 
 The skill generates `dc-knowledge/` directory from the operational layer - one file per dataset and bucket:
-
-![Visualize data knowledge base](docs/assets/obsidian_multi.gif)
 
 
 ## 6. AI-Generated Pipelines
