@@ -345,7 +345,7 @@ datachain job run --workers 20 --cluster gpu-pool caption.py
 ```
 
 <p align="center">
-  <img src="docs/assets/studio_architecture.svg" alt="DataChain Studio Architecture" width="700" />
+  <img src="docs/assets/studio_architecture.svg" alt="DataChain Studio Architecture" width="600" />
 </p>
 
 Studio adds: shared dataset registry, access control, UI for video/DICOM/NIfTI/point clouds, lineage graphs, reproducible runs.
