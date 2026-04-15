@@ -88,65 +88,16 @@ Claude Code (Codex, Cursor, etc) isn't just a chat interface with a shell - it's
 
 **DataChain extends that harness to data.** The agent now also understands your storage and datasets: schemas, dependencies, code, what's already computed, what's mid-run, and what changed since last time.
 
-```
-┌──────────────────────┐             ┌──────────────────────┐
-│     Claude Code      │─── skill ──▶│      DataChain       │
-├──────────────────────┤             ├──────────────────────┤
-│  git + commits       │             │  datasets + versions │
-│  prompt caching      │             │  data lineage graph  │
-│  file tree           │             │  schemas + types     │
-├──────────────────────┤             ├──────────────────────┤
-│  Grep / Glob / LSP   │             │  async · parallel    │
-│  session memory      │             │  execution state     │
-└──────────────────────┘             └──────────────────────┘
-          │                                     │
-       codebase                           object storage
-     (git + files)                    (S3, GCS, AZ, local FS)
-```
+![Data Context Architecture](docs/assets/studio_architecture.svg)
 
 A **dataset** is the unit of work - a named, versioned result of a pipeline step like `pets_embeddings@1.0.0`. Every `.save()` registers one.
 
 Inside DataChain, datasets live in two layers:
-```
-┌───────────────────────┐
-│   operational layer   │  In file: .datachain/db
-│  • dataset registry   │
-│  • typed schemas      │  ← .save() writes here
-│  • vectors + metadata │  ← 100M+ files, nothing in memory
-│  • processing state   │
-│  • code/lineage graph │
-└───────────┬───────────┘
-            │ derived
-┌───────────▼───────────┐
-│   knowledge layer     │  In directory: dc-knowledge/
-│  • index.md           │  ← agent reads before acting
-│  • one file/dataset   │  ← schema, lineage, what's computed
-└───────────────────────┘
-```
-
-The **operational layer** is the engine - the ground truth that makes crash recovery, incremental updates, and vector search work at scale.
-
-The **knowledge layer** is a structured reflection of it enriched by LLMs: markdown files the agent reads to understand what exists before writing a single line of code.
+1. The **operational layer** is the engine - the ground truth that makes crash recovery, incremental updates, and vector search work at scale.
+2. The **knowledge layer** is a structured reflection of it enriched by LLMs: markdown files the agent reads to understand what exists before writing a single line of code.
 
 
 ## 3. Core concepts
-
-```
-                 ╔══════════════════════════════════════════════════╗
-┌─────────────┐  ║                D A T A C H A I N                 ║  ┌────────────────┐
-│ Claude Code │  ╠════════════════╦════════════════╦════════════════╣  │ Object Storage │
-│ Cursor      │◀─╣ KNOWLEDGE BASE ║     LIBRARY    ║   DATABASE     ╠─▶│                │
-│ Codex       │  ╠════════════════╬════════════════╬════════════════╣  │ S3  GCS  Azure │
-└─────────────┘  ║ dc-knowledge/  ║  Python API    ║ .datachain/db  ║  │                │
-                 ║ ────────────── ║ ────────────── ║ ─────────────  ║  │ images/        │
-reads schema,    ║ index.md       ║ .map()         ║ schemas        ║  │ videos/        │
-lineage, and     ║ datasets/*.md  ║ .filter()      ║ versions       ║  │ docs/          │
-computed state   ║ buckets/*.md   ║ .save()        ║ vectors        ║  │ sensors/       │
-                 ║                ║ delta=True     ║ lineage        ║  └────────────────┘
-                 ║                ║ parallel exec  ║ checkpoints    ║
-                 ║                ║ crash recovery ║ 100M+ files    ║  no data copied
-                 ╚════════════════╩════════════════╩════════════════╝  metadata only
-```
 
 ### 3.1. Dataset
 
