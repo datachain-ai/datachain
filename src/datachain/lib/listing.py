@@ -48,11 +48,11 @@ def calc_fingerprint(catalog: "Catalog", dataset: "DatasetRecord", version: str)
     """
     table_name = catalog.warehouse.dataset_table_name(dataset, version)
     table = catalog.warehouse.get_table(table_name)
-    identifier = sa.case(
-        (table.c.file__version != "", table.c.file__version),
-        else_=table.c.file__etag,
-    )
-    query = sa.select(xor_agg(string_hash(table.c.file__path, identifier)))
+    file_version = Column("file.version")
+    file_etag = Column("file.etag")
+    file_path = Column("file.path")
+    identifier = sa.case((file_version != "", file_version), else_=file_etag)
+    query = sa.select(xor_agg(string_hash(file_path, identifier))).select_from(table)
     return next(catalog.warehouse.db.execute(query))[0]
 
 
