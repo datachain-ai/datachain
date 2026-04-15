@@ -180,7 +180,8 @@ def test_retry_with_missing_and_new_records(test_session):
     assert final_first_attempts_count == 2
 
 
-def test_retry_no_records_to_retry(test_session):
+@pytest.mark.parametrize("is_studio", [True])
+def test_retry_no_records_to_retry(test_session, is_studio, studio_job):
     """Test retry when no records need to be retried."""
     _create_sample_data(test_session, ids=[1, 2], contents=["first", "second"])
 

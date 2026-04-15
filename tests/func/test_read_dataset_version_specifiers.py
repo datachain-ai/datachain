@@ -106,7 +106,8 @@ def test_read_dataset_version_in_name(test_session):
     )
 
 
-def test_delete_dataset_version_in_name(test_session):
+@pytest.mark.parametrize("is_studio", [True])
+def test_delete_dataset_version_in_name(test_session, is_studio, studio_job):
     """Test delete_dataset with version embedded in name using the @ syntax."""
     dataset_name = "test_delete_version_in_name"
 
