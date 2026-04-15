@@ -60,7 +60,7 @@ pipeline.show()
 
 - **Any chain that runs a UDF (`.map()`, `.gen()`, `.agg()`)** must be saved with `.save("name")`. UDFs embody domain logic and produce structured output that is worth preserving as a named dataset — even when the parsing is trivial. The value is in the structured result, not the compute cost.
 - **Final pipeline results.** Rankings, filtered cohorts, evaluation outputs, aggregations — always `.save("name")`.
-- **Chains with no UDFs** (`read_storage` + `filter`/`mutate`/`select` only) may remain transient if transformations are streight forward. They read or reshape existing data without transforming it, so they are cheap to recompute and easy to understand from the code alone.
+- **Chains with no UDFs** (`read_storage` + `filter`/`mutate`/`select` only) may remain transient if transformations are straight forward. They read or reshape existing data without transforming it, so they are cheap to recompute and easy to understand from the code alone.
 
 **`.persist()` is not `.save()`.** `.persist()` materializes a chain into an anonymous cache for performance — it prevents re-execution but does NOT create a named dataset. When a chain should be saved per the rules above, always use `.save("name")`. Using `.persist()` where `.save()` is required is an anti-pattern: the computed result becomes unreferenceable and invisible to future pipelines.
 
