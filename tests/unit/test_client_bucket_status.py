@@ -129,6 +129,29 @@ def test_gcs_denied(mock_sync, mock_create_fs):
 
 @patch.object(GCSClient, "create_fs")
 @patch("datachain.client.gcs.sync")
+def test_gcs_denied_via_oserror(mock_sync, mock_create_fs):
+    """gcsfs raises OSError('Forbidden: ...') from _info/_ls for permission errors."""
+    anon_fs = MagicMock()
+    anon_fs._ls.side_effect = PermissionError("403")
+
+    auth_fs = MagicMock()
+    auth_fs._info.side_effect = OSError("Forbidden: b/my-bucket\nPermission denied")
+
+    def make_fs(**kwargs):
+        return anon_fs if kwargs.get("anon") else auth_fs
+
+    mock_create_fs.side_effect = make_fs
+    mock_sync.side_effect = lambda _loop, fn, *args, **kwargs: fn(*args, **kwargs)
+
+    result = GCSClient.bucket_status("my-bucket")
+
+    assert result.exists is True
+    assert result.access == "denied"
+    assert result.error is not None
+
+
+@patch.object(GCSClient, "create_fs")
+@patch("datachain.client.gcs.sync")
 def test_gcs_not_found(mock_sync, mock_create_fs):
     anon_fs = MagicMock()
     anon_fs._ls.side_effect = FileNotFoundError("bucket not found")

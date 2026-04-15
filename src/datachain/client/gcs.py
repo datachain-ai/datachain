@@ -51,9 +51,13 @@ class GCSClient(Client):
         try:
             sync(get_loop(), anon_fs._ls, name)
             return BucketStatus(exists=True, access="anonymous")
-        except (PermissionError, HttpError) as e:
-            # HttpError is raised by gcsfs for HTTP-level 401/403 responses;
-            # treat 404 as not-found, anything else as access-denied.
+        except FileNotFoundError:
+            return BucketStatus(
+                exists=False, access="denied", error=f"GCS bucket '{name}' not found"
+            )
+        except (PermissionError, HttpError, OSError) as e:
+            # HttpError for HTTP-level 401/403 responses; gcsfs also raises
+            # OSError("Forbidden: ...") from _ls for permission errors.
             if isinstance(e, HttpError) and e.code == 404:
                 return BucketStatus(
                     exists=False,
@@ -67,17 +71,21 @@ class GCSClient(Client):
                     error=f"Access denied to GCS bucket '{name}'"
                     " — check credentials/permissions",
                 )
-        except FileNotFoundError:
-            return BucketStatus(
-                exists=False, access="denied", error=f"GCS bucket '{name}' not found"
-            )
 
         # Step 2: Try with configured credentials
         auth_fs = cls.create_fs(**kwargs)
         try:
             sync(get_loop(), auth_fs._info, name)
             return BucketStatus(exists=True, access="authenticated")
-        except (PermissionError, HttpError) as e:
+        except FileNotFoundError:
+            return BucketStatus(
+                exists=False, access="denied", error=f"GCS bucket '{name}' not found"
+            )
+        except (google_exceptions.Forbidden, google_exceptions.PermissionDenied) as e:
+            return BucketStatus(exists=True, access="denied", error=str(e))
+        except (PermissionError, HttpError, OSError) as e:
+            # gcsfs raises OSError("Forbidden: ...") for permission errors
+            # from _info/_ls; HttpError for HTTP-level 401/403/404.
             if isinstance(e, HttpError) and e.code == 404:
                 return BucketStatus(
                     exists=False,
@@ -90,12 +98,6 @@ class GCSClient(Client):
                 error=f"Access denied to GCS bucket '{name}'"
                 " — check credentials/permissions",
             )
-        except FileNotFoundError:
-            return BucketStatus(
-                exists=False, access="denied", error=f"GCS bucket '{name}' not found"
-            )
-        except (google_exceptions.Forbidden, google_exceptions.PermissionDenied) as e:
-            return BucketStatus(exists=True, access="denied", error=str(e))
 
     def url(
         self,
