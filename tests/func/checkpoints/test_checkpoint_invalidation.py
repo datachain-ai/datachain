@@ -191,91 +191,51 @@ def test_mapper_output_schema_change_triggers_rerun(test_session, monkeypatch):
     assert result == expected
 
 
-@pytest.mark.parametrize(
-    "batch_size,fail_after_count",
-    [
-        (2, 2),  # batch_size=2: Fail after processing 2 partitions
-        (3, 2),  # batch_size=3: Fail after processing 2 partitions
-        (10, 2),  # batch_size=10: Fail after processing 2 partitions
-    ],
-)
-def test_aggregator_always_runs_from_scratch(
-    test_session,
-    monkeypatch,
-    nums_dataset,
-    batch_size,
-    fail_after_count,
-):
-    processed_partitions = []
+def test_partition_by_change_triggers_rerun(test_session):
+    """Changing partition_by should invalidate partial checkpoint."""
+    processed_v1 = []
+    processed_v2 = []
 
-    def buggy_aggregator(letter, num) -> Iterator[tuple[str, int]]:
-        """
-        Buggy aggregator that fails before processing the (fail_after_count+1)th
-        partition.
-        letter: partition key value (A, B, or C)
-        num: iterator of num values in that partition
-        """
-        if len(processed_partitions) >= fail_after_count:
-            raise Exception(
-                f"Simulated failure after {len(processed_partitions)} partitions"
-            )
-        nums_list = list(num)
-        processed_partitions.append(nums_list)
-        # Yield tuple of (letter, sum) to preserve partition key in output
-        yield letter[0], sum(n for n in nums_list)
+    dc.read_values(
+        num=[1, 2, 3, 4, 5, 6],
+        letter=["A", "A", "B", "B", "C", "C"],
+        category=["x", "x", "x", "y", "y", "y"],
+        session=test_session,
+    ).save("data")
 
-    def fixed_aggregator(letter, num) -> Iterator[tuple[str, int]]:
-        nums_list = list(num)
-        processed_partitions.append(nums_list)
-        # Yield tuple of (letter, sum) to preserve partition key in output
-        yield letter[0], sum(n for n in nums_list)
+    # -------------- FIRST RUN (partition_by="letter", crashes) -------------------
+    def agg_v1(num) -> Iterator[int]:
+        processed_v1.extend(num)
+        if 4 in num:
+            raise Exception("Simulated failure")
+        yield sum(num)
 
-    nums_data = [1, 2, 3, 4, 5, 6]
-    leters_data = ["A", "A", "B", "B", "C", "C"]
-    dc.read_values(num=nums_data, letter=leters_data, session=test_session).save(
-        "nums_letters"
-    )
-
-    # -------------- FIRST RUN (FAILS WITH BUGGY AGGREGATOR) -------------------
     reset_session_job_state()
-
-    chain = dc.read_dataset("nums_letters", session=test_session).settings(
-        batch_size=batch_size
-    )
-
-    with pytest.raises(Exception, match="Simulated failure after"):
-        chain.agg(
-            total=buggy_aggregator,
+    with pytest.raises(Exception, match="Simulated failure"):
+        dc.read_dataset("data", session=test_session).agg(
+            total=agg_v1,
             partition_by="letter",
+            output=int,
         ).save("agg_results")
 
-    first_run_count = len(processed_partitions)
+    assert len(processed_v1) > 0
 
-    assert first_run_count == fail_after_count
+    # -------------- SECOND RUN (partition_by="category") -------------------
+    def agg_v1(num) -> Iterator[int]:
+        processed_v2.extend(num)
+        yield sum(num)
 
-    # -------------- SECOND RUN (FIXED AGGREGATOR) -------------------
     reset_session_job_state()
-
-    processed_partitions.clear()
-
-    chain.agg(
-        total=fixed_aggregator,
-        partition_by="letter",
+    dc.read_dataset("data", session=test_session).agg(
+        total=agg_v1,
+        partition_by="category",
+        output=int,
     ).save("agg_results")
 
-    second_run_count = len(processed_partitions)
+    # All inputs should be processed
+    assert sorted(processed_v2) == [1, 2, 3, 4, 5, 6]
 
-    assert sorted(
-        dc.read_dataset("agg_results", session=test_session).to_list(
-            "total_0", "total_1"
-        )
-    ) == sorted(
-        [
-            ("A", 3),  # group A: 1 + 2 = 3
-            ("B", 7),  # group B: 3 + 4 = 7
-            ("C", 11),  # group C: 5 + 6 = 11
-        ]
+    result = sorted(
+        dc.read_dataset("agg_results", session=test_session).to_list("total")
     )
-
-    # should re-process everything
-    assert second_run_count == 3
+    assert result == [(6,), (15,)]

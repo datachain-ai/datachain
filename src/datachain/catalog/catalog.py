@@ -1102,6 +1102,30 @@ class Catalog:
             self.warehouse.drop_dataset_rows_table(dataset, version)
         dataset = self.metastore.remove_dataset_version(dataset, version)
 
+    def _remove_versions(self, pairs: Iterable[tuple[DatasetRecord, str]]) -> int:
+        num_removed = 0
+        for dataset, version in pairs:
+            try:
+                self.remove_dataset_version(dataset, version)
+                num_removed += 1
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "Failed to remove dataset %s version %s: %s",
+                    dataset.name,
+                    version,
+                    e,
+                )
+        return num_removed
+
+    def remove_dataset_versions(
+        self, job_id: str | None = None, version_ids: list[int] | None = None
+    ) -> int:
+        versions_to_remove = self.metastore.get_dataset_versions(
+            job_id=job_id,
+            version_ids=version_ids,
+        )
+        return self._remove_versions(versions_to_remove)
+
     def get_temp_table_names(self) -> list[str]:
         return self.warehouse.get_temp_table_names()
 
@@ -1127,22 +1151,7 @@ class Catalog:
             Number of removed versions
         """
         versions_to_clean = self.metastore.get_dataset_versions_to_clean(job_id=job_id)
-
-        num_removed = 0
-        for dataset, version in versions_to_clean:
-            try:
-                # Remove dataset version (drops warehouse table and metastore record)
-                self.remove_dataset_version(dataset, version)
-                num_removed += 1
-            except Exception as e:  # noqa: BLE001
-                logger.warning(
-                    "Failed to clean dataset %s version %s: %s",
-                    dataset.name,
-                    version,
-                    e,
-                )
-
-        return num_removed
+        return self._remove_versions(versions_to_clean)
 
     def create_dataset_from_sources(
         self,
@@ -1604,8 +1613,8 @@ class Catalog:
             self.remove_dataset_version(dataset, version)
             return
 
-        while dataset.versions:
-            version = dataset.versions[0].version
+        for v in dataset.versions:
+            version = v.version
             self.remove_dataset_version(
                 dataset,
                 version,
@@ -2180,6 +2189,24 @@ class Catalog:
                 "Removing %d UDF output tables: %s", len(output_tables), output_tables
             )
             self.warehouse.cleanup_tables(output_tables)
+
+        # Partition tables — job-scoped, filter by expired job IDs
+        expired_job_ids = {ch.job_id for ch in checkpoints}
+        all_partition_tables = self.warehouse.db.list_tables(
+            pattern=Checkpoint.partition_table_pattern()
+        )
+        partition_tables = [
+            t
+            for t in all_partition_tables
+            if any(job_id in t for job_id in expired_job_ids)
+        ]
+        if partition_tables:
+            logger.info(
+                "Removing %d partition tables: %s",
+                len(partition_tables),
+                partition_tables,
+            )
+            self.warehouse.cleanup_tables(partition_tables)
 
         # Shared input tables — only when entire run group is inactive
         for group_id in inactive_group_ids:

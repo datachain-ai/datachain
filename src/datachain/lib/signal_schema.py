@@ -451,7 +451,9 @@ class SignalSchema:
         return ModelStore.get(model_name, target_version)
 
     @staticmethod
-    def _resolve_type(type_name: str, custom_types: dict[str, Any]) -> type | None:  # noqa: PLR0911
+    def _resolve_type(  # noqa: PLR0911
+        type_name: str, custom_types: dict[str, Any]
+    ) -> object | None:
         """Convert a string-based type back into a python type."""
         type_name = type_name.strip()
         if not type_name:
@@ -460,7 +462,7 @@ class SignalSchema:
             return None
 
         bracket_idx = type_name.find("[")
-        subtypes: tuple[type | None | types.EllipsisType, ...] | None = None
+        subtypes: tuple[object | None | types.EllipsisType, ...] | None = None
         if bracket_idx > -1:
             if bracket_idx == 0:
                 raise ValueError("Type cannot start with '['")

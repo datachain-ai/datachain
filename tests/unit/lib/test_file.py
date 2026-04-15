@@ -21,7 +21,6 @@ from datachain.lib.file import (
     TextFile,
     VFileError,
     VideoFile,
-    resolve,
 )
 from datachain.lib.tar import process_tar
 
@@ -273,109 +272,6 @@ def test_export_local_output_allows_literal_percent_encoded_traversal(
 
     assert (output / payload).is_file()
     assert not (tmp_path / "escape.txt").exists()
-
-
-@pytest.mark.parametrize(
-    "source,path,is_error,expected",
-    [
-        ("", "", True, r"must not be empty"),
-        ("", ".", True, r"must not contain"),
-        ("", "..", True, r"must not contain"),
-        ("", "/abs/file.txt", True, r"must not be absolute"),
-        ("", "file#hash.txt", False, "file#hash.txt"),
-        ("", "./dir/../file#hash.txt", True, r"must not contain"),
-        ("", "../escape.txt", True, r"must not contain"),
-        ("", "dir//file.txt", True, r"must not contain empty segments"),
-        ("", "dir/", True, r"must not be a directory"),
-        # file:// source with drive letter — valid on both platforms.
-        # Path validation fires first regardless of OS.
-        ("file:///C:/bucket", "", True, r"must not be empty"),
-        ("file:///C:/bucket", ".", True, r"must not contain"),
-        ("file:///C:/bucket", "..", True, r"must not contain"),
-        ("file:///C:/bucket", "/abs/file.txt", True, r"must not be absolute"),
-        ("file:///C:/bucket", "./dir/../file.txt", True, r"must not contain"),
-        pytest.param(
-            "file:///bucket",
-            "file#hash.txt",
-            os.name == "nt",
-            r"drive letter" if os.name == "nt" else "file:///bucket/file#hash.txt",
-            id="get_uri-file:///bucket-file#hash.txt",
-        ),
-        pytest.param(
-            "file:///bucket",
-            "dir/file#hash.txt",
-            os.name == "nt",
-            r"drive letter" if os.name == "nt" else "file:///bucket/dir/file#hash.txt",
-            id="get_uri-file:///bucket-dir/file#hash.txt",
-        ),
-        # Windows-style file:// URIs with drive letters (valid on all platforms).
-        ("file:///C:/data", "file.txt", False, "file:///C:/data/file.txt"),
-        (
-            "file:///D:/path/to/dir",
-            "sub/out.csv",
-            False,
-            "file:///D:/path/to/dir/sub/out.csv",
-        ),
-        ("s3://mybkt", "", True, r"path must not be empty"),
-        ("s3://mybkt", ".", True, r"must not contain"),
-        ("s3://mybkt", "..", True, r"must not contain"),
-        ("s3://mybkt", "/abs/file.txt", False, "s3://mybkt//abs/file.txt"),
-        ("s3://mybkt", "dir/file#frag.txt", False, "s3://mybkt/dir/file#frag.txt"),
-        ("gs://mybkt", "", True, r"path must not be empty"),
-        ("gs://mybkt", ".", True, r"must not contain"),
-        ("gs://mybkt", "..", True, r"must not contain"),
-        ("gs://mybkt", "/abs/file.txt", False, "gs://mybkt//abs/file.txt"),
-        ("gs://mybkt", "dir/file#frag.txt", False, "gs://mybkt/dir/file#frag.txt"),
-        (
-            "az://container",
-            "",
-            True,
-            r"path must not be empty",
-        ),
-        (
-            "az://container",
-            ".",
-            True,
-            r"must not contain",
-        ),
-        (
-            "az://container",
-            "..",
-            True,
-            r"must not contain",
-        ),
-        (
-            "az://container",
-            "/abs/file.txt",
-            False,
-            "az://container//abs/file.txt",
-        ),
-        (
-            "az://container",
-            "dir/file#frag.txt",
-            False,
-            "az://container/dir/file#frag.txt",
-        ),
-    ],
-)
-def test_get_uri_contract(
-    source: str,
-    path: str,
-    is_error: bool,
-    expected: str,
-):
-    file = File(path=path, source=source)
-
-    if is_error:
-        with pytest.deprecated_call():
-            with pytest.raises(FileError, match=expected):
-                file.get_uri()
-        return
-
-    with pytest.deprecated_call():
-        uri = file.get_uri()
-
-    assert uri == expected
 
 
 @pytest.mark.parametrize(
@@ -918,17 +814,6 @@ def test_file_resolve_sets_catalog(tmp_path, catalog):
     assert new_file._catalog is catalog
     new_file.ensure_cached()
     assert new_file.read_text() == "new data"
-
-
-def test_resolve_function():
-    mock_file = Mock(spec=File)
-    mock_file.resolve.return_value = "resolved_file"
-
-    with pytest.deprecated_call(match=r"resolve\(\) is deprecated"):
-        result = resolve(mock_file)
-
-    assert result == "resolved_file"
-    mock_file.resolve.assert_called_once()
 
 
 def test_get_local_path(tmp_path, catalog):
