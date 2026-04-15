@@ -88,7 +88,10 @@ Claude Code (Codex, Cursor, etc) isn't just a chat interface with a shell - it's
 
 **DataChain extends that harness to data.** The agent now also understands your storage and datasets: schemas, dependencies, code, what's already computed, what's mid-run, and what changed since last time.
 
-![Data Context Architecture](docs/assets/architecture.svg)
+<p align="center">
+  <img src="docs/assets/architecture.svg" alt="Data Context Architecture" width="700" />
+</p>
+
 
 A **dataset** is the unit of work - a named, versioned result of a pipeline step like `pets_embeddings@1.0.0`. Every `.save()` registers one.
 
@@ -341,7 +344,9 @@ datachain job run --workers 20 --cluster gpu-pool caption.py
 # Saved oxford-pets-caps@0.0.1  (3,182 processed)
 ```
 
-![DataChain Studio architecture](docs/assets/studio_architecture.svg)
+<p align="center">
+  <img src="docs/assets/studio_architecture.svg" alt="DataChain Studio Architecture" width="700" />
+</p>
 
 Studio adds: shared dataset registry, access control, UI for video/DICOM/NIfTI/point clouds, lineage graphs, reproducible runs.
 
