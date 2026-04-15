@@ -310,7 +310,7 @@ Saved pets_images@1.0.2  (+500 records)
 ## 5. Knowledge Base
 
 DataChain maintains two layers. The operational layer is the ground truth - schemas, processing state, lineage, the vectors themselves.
-**The knowledge base layer** is derived from it: structured markdown for humans and agents to read. Because it's derived, it's always accurate. The knowledge base is stored in `dc-knowledge/` directoty.
+**The knowledge base layer** is derived from it: structured markdown for humans and agents to read. Because it's derived, it's always accurate. The knowledge base is stored in `dc-knowledge/` directory.
 
 Ask the agent to build it (from Calude Code, Codex or Cursor):
 ```bash
