@@ -88,7 +88,7 @@ Claude Code (Codex, Cursor, etc) isn't just a chat interface with a shell - it's
 
 **DataChain extends that harness to data.** The agent now also understands your storage and datasets: schemas, dependencies, code, what's already computed, what's mid-run, and what changed since last time.
 
-![Data Context Architecture](docs/assets/studio_architecture.svg)
+![Data Context Architecture](docs/assets/architecture.svg)
 
 A **dataset** is the unit of work - a named, versioned result of a pipeline step like `pets_embeddings@1.0.0`. Every `.save()` registers one.
 
