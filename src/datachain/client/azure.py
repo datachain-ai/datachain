@@ -1,6 +1,12 @@
 from typing import Any
 
 from adlfs import AzureBlobFileSystem
+from azure.core.exceptions import (
+    ClientAuthenticationError,
+    HttpResponseError,
+    ResourceNotFoundError,
+)
+from azure.storage.blob import BlobServiceClient
 from fsspec.asyn import get_loop, sync
 
 from datachain.lib.file import File
@@ -15,17 +21,55 @@ class AzureClient(Client):
     protocol = "az"
 
     @classmethod
-    def bucket_status(cls, name: str, **kwargs) -> BucketStatus:
-        # Step 1: Authenticated probe (uses env vars / DefaultAzureCredential).
-        # Try this first so that authenticated access is preferred over anonymous
-        # when credentials are available in the environment.
-        # create_fs() may raise ValueError if account_name/connection_string
-        # is not available (az:// URIs don't carry the account name).
+    def bucket_status(cls, name: str, **kwargs) -> BucketStatus:  # noqa: PLR0911
+        anon_only = bool(kwargs.get("anon"))
+
+        # Step 1: Anonymous probe — uses BlobServiceClient directly (not adlfs)
+        # to avoid picking up credentials from environment variables like
+        # AZURE_STORAGE_CONNECTION_STRING.
+        account_name = kwargs.get("account_name")
+        if account_name:
+            try:
+                url = f"https://{account_name}.blob.core.windows.net"
+                anon_client = BlobServiceClient(account_url=url)
+                anon_client.get_container_client(name).get_container_properties()
+                return BucketStatus(exists=True, access="anonymous")
+            except ClientAuthenticationError as e:
+                if anon_only:
+                    return BucketStatus(
+                        exists=True,
+                        access="denied",
+                        error=f"Access denied to Azure container '{name}' — {e}",
+                    )
+            except ResourceNotFoundError:
+                return BucketStatus(
+                    exists=False,
+                    access="denied",
+                    error=f"Azure container '{name}' not found",
+                )
+            except HttpResponseError as e:
+                if e.status_code in (401, 403):
+                    if anon_only:
+                        return BucketStatus(
+                            exists=True,
+                            access="denied",
+                            error=f"Access denied to Azure container '{name}' — {e}",
+                        )
+                else:
+                    raise
+        elif anon_only:
+            return BucketStatus(
+                exists=False,
+                access="denied",
+                error=f"Cannot probe Azure container '{name}' without account_name",
+            )
+
+        # Step 2: Authenticated probe.
         try:
             auth_fs = cls.create_fs(**kwargs)
             sync(get_loop(), auth_fs._info, name)
             return BucketStatus(exists=True, access="authenticated")
-        except PermissionError:
+        except (PermissionError, ClientAuthenticationError):
             return BucketStatus(
                 exists=True,
                 access="denied",
@@ -38,32 +82,7 @@ class AzureClient(Client):
                 access="denied",
                 error=f"Azure container '{name}' not found",
             )
-        except ValueError:
-            pass  # No credentials configured; fall through to anonymous probe.
-
-        # Step 2: Anonymous probe — only reached when no credentials are configured.
-        # Forward connection kwargs (e.g. account_name) but strip credential fields.
-        az_credential_keys = {
-            "credential",
-            "connection_string",
-            "sas_token",
-            "client_secret",
-            "client_id",
-            "tenant_id",
-        }
-        anon_kwargs = {k: v for k, v in kwargs.items() if k not in az_credential_keys}
-        anon_kwargs["anon"] = True
-        try:
-            anon_fs = AzureBlobFileSystem(**anon_kwargs)
-            sync(get_loop(), anon_fs._info, name)
-            return BucketStatus(exists=True, access="anonymous")
-        except PermissionError as e:
-            return BucketStatus(
-                exists=True,
-                access="denied",
-                error=f"Access denied to Azure container '{name}' — {e}",
-            )
-        except (FileNotFoundError, ValueError) as e:
+        except ValueError as e:
             return BucketStatus(exists=False, access="denied", error=str(e))
 
     def info_to_file(self, v: dict[str, Any], path: str) -> File:

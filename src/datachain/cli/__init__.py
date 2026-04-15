@@ -123,7 +123,10 @@ def handle_bucket_command(args, client_config) -> int:
         )
         return 1
     if args.bucket_cmd == "status":
-        return bucket_status_cmd(args.uri, client_config=client_config)
+        cfg = dict(client_config)
+        if getattr(args, "account_name", None):
+            cfg["account_name"] = args.account_name
+        return bucket_status_cmd(args.uri, client_config=cfg)
     raise NotImplementedError(f"Unexpected bucket subcommand: {args.bucket_cmd}")
 
 

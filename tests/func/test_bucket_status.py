@@ -3,7 +3,7 @@ import pytest
 from datachain.client import BucketStatus, bucket_status
 
 
-@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
 def test_bucket_status_exists(cloud_server, cloud_server_credentials):
     uri = cloud_server.src_uri
     status = bucket_status(uri, **cloud_server.client_config)
@@ -12,7 +12,7 @@ def test_bucket_status_exists(cloud_server, cloud_server_credentials):
     assert status.access in ("anonymous", "authenticated")
 
 
-@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+@pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
 def test_bucket_status_not_found(cloud_server, cloud_server_credentials):
     # Derive a URI that points to a non-existent bucket by appending a suffix
     base_uri = cloud_server.src_uri.rstrip("/")

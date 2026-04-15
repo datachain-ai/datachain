@@ -8,10 +8,6 @@ from datachain.client.fsspec import BucketStatus
 from datachain.client.gcs import GCSClient
 from datachain.client.s3 import ClientS3
 
-# ---------------------------------------------------------------------------
-# bucket_status() path validation
-# ---------------------------------------------------------------------------
-
 
 @pytest.mark.parametrize(
     "uri",
@@ -22,104 +18,8 @@ from datachain.client.s3 import ClientS3
     ],
 )
 def test_bucket_status_rejects_path_component(uri):
-    with pytest.raises(ValueError, match="must not contain a path component"):
+    with pytest.raises(ValueError, match="path in a bucket is not allowed"):
         bucket_status(uri)
-
-
-# ---------------------------------------------------------------------------
-# S3
-# ---------------------------------------------------------------------------
-
-
-@patch("datachain.client.s3.S3FileSystem")
-@patch("datachain.client.s3.sync")
-def test_s3_anonymous(mock_sync, mock_s3fs_cls):
-    anon_fs = MagicMock()
-    anon_fs._info.return_value = {"name": "my-bucket", "type": "directory"}
-    mock_s3fs_cls.return_value = anon_fs
-    mock_sync.side_effect = lambda _loop, fn, *args, **kwargs: fn(*args, **kwargs)
-
-    result = ClientS3.bucket_status("my-bucket")
-
-    assert result == BucketStatus(exists=True, access="anonymous")
-
-
-@patch("datachain.client.s3.S3FileSystem")
-@patch("datachain.client.s3.sync")
-def test_s3_authenticated(mock_sync, mock_s3fs_cls):
-    anon_fs = MagicMock()
-    anon_fs._info.side_effect = PermissionError("AccessDenied")
-    auth_fs = MagicMock()
-    auth_fs._info.return_value = {"name": "my-bucket", "type": "directory"}
-
-    def make_fs(**kwargs):
-        return anon_fs if kwargs.get("anon") else auth_fs
-
-    mock_s3fs_cls.side_effect = make_fs
-    mock_sync.side_effect = lambda _loop, fn, *args, **kwargs: fn(*args, **kwargs)
-
-    result = ClientS3.bucket_status("my-bucket")
-
-    assert result == BucketStatus(exists=True, access="authenticated")
-
-
-@patch("datachain.client.s3.S3FileSystem")
-@patch("datachain.client.s3.sync")
-def test_s3_denied_no_credentials(mock_sync, mock_s3fs_cls):
-    from botocore.exceptions import NoCredentialsError
-
-    anon_fs = MagicMock()
-    anon_fs._info.side_effect = PermissionError("AccessDenied")
-    auth_fs = MagicMock()
-    auth_fs._info.side_effect = NoCredentialsError()
-
-    def make_fs(**kwargs):
-        return anon_fs if kwargs.get("anon") else auth_fs
-
-    mock_s3fs_cls.side_effect = make_fs
-    mock_sync.side_effect = lambda _loop, fn, *args, **kwargs: fn(*args, **kwargs)
-
-    result = ClientS3.bucket_status("my-bucket")
-
-    assert result.exists is True
-    assert result.access == "denied"
-    assert result.error is not None
-
-
-@patch("datachain.client.s3.S3FileSystem")
-@patch("datachain.client.s3.sync")
-def test_s3_denied_permission_error(mock_sync, mock_s3fs_cls):
-    anon_fs = MagicMock()
-    anon_fs._info.side_effect = PermissionError("AccessDenied")
-    auth_fs = MagicMock()
-    auth_fs._info.side_effect = PermissionError("AccessDenied")
-
-    def make_fs(**kwargs):
-        return anon_fs if kwargs.get("anon") else auth_fs
-
-    mock_s3fs_cls.side_effect = make_fs
-    mock_sync.side_effect = lambda _loop, fn, *args, **kwargs: fn(*args, **kwargs)
-
-    result = ClientS3.bucket_status("my-bucket")
-
-    assert result.exists is True
-    assert result.access == "denied"
-    assert result.error is not None
-
-
-@patch("datachain.client.s3.S3FileSystem")
-@patch("datachain.client.s3.sync")
-def test_s3_not_found(mock_sync, mock_s3fs_cls):
-    anon_fs = MagicMock()
-    anon_fs._info.side_effect = FileNotFoundError("NoSuchBucket")
-    mock_s3fs_cls.return_value = anon_fs
-    mock_sync.side_effect = lambda _loop, fn, *args, **kwargs: fn(*args, **kwargs)
-
-    result = ClientS3.bucket_status("my-bucket")
-
-    assert result.exists is False
-    assert result.access == "denied"
-    assert result.error is not None
 
 
 @patch("datachain.client.s3.S3FileSystem")
@@ -148,11 +48,6 @@ def test_s3_anon_only_kwarg_denied(mock_sync, mock_s3fs_cls):
     assert result.exists is True
     assert result.access == "denied"
     assert result.error is not None
-
-
-# ---------------------------------------------------------------------------
-# GCS
-# ---------------------------------------------------------------------------
 
 
 @patch.object(GCSClient, "create_fs")
@@ -247,36 +142,56 @@ def test_gcs_not_found(mock_sync, mock_create_fs):
     assert result.error is not None
 
 
-# ---------------------------------------------------------------------------
-# Azure
-# ---------------------------------------------------------------------------
+@patch("datachain.client.azure.BlobServiceClient")
+def test_azure_anonymous(mock_blob_svc_cls):
+    mock_container = MagicMock()
+    mock_container.get_container_properties.return_value = {"name": "my-container"}
+    mock_client = MagicMock()
+    mock_client.get_container_client.return_value = mock_container
+    mock_blob_svc_cls.return_value = mock_client
 
-
-@patch.object(AzureClient, "create_fs")
-@patch("datachain.client.azure.AzureBlobFileSystem")
-@patch("datachain.client.azure.sync")
-def test_azure_anonymous(mock_sync, mock_adlfs_cls, mock_create_fs):
-    # Auth probe fails (no account_name), falls through to anonymous probe.
-    mock_create_fs.side_effect = ValueError("Must provide account_name")
-
-    anon_fs = MagicMock()
-    anon_fs._info.return_value = {"name": "my-container", "type": "directory"}
-    mock_adlfs_cls.return_value = anon_fs
-    mock_sync.side_effect = lambda _loop, fn, *args, **kwargs: fn(*args, **kwargs)
-
-    result = AzureClient.bucket_status("my-container")
+    result = AzureClient.bucket_status("my-container", account_name="my-account")
 
     assert result == BucketStatus(exists=True, access="anonymous")
+    mock_blob_svc_cls.assert_called_once_with(
+        account_url="https://my-account.blob.core.windows.net"
+    )
 
 
 @patch.object(AzureClient, "create_fs")
-@patch("datachain.client.azure.AzureBlobFileSystem")
 @patch("datachain.client.azure.sync")
-def test_azure_authenticated(mock_sync, mock_adlfs_cls, mock_create_fs):
+@patch("datachain.client.azure.BlobServiceClient")
+def test_azure_authenticated_via_client_auth_error(
+    mock_blob_svc_cls, mock_sync, mock_create_fs
+):
+    """Anon probe gets HTTP 401 (ClientAuthenticationError), falls through to auth."""
+    from azure.core.exceptions import ClientAuthenticationError
+
+    mock_container = MagicMock()
+    mock_container.get_container_properties.side_effect = ClientAuthenticationError(
+        "NoAuthenticationInformation"
+    )
+    mock_client = MagicMock()
+    mock_client.get_container_client.return_value = mock_container
+    mock_blob_svc_cls.return_value = mock_client
+
     auth_fs = MagicMock()
     auth_fs._info.return_value = {"name": "my-container", "type": "directory"}
     mock_create_fs.return_value = auth_fs
+    mock_sync.side_effect = lambda _loop, fn, *args, **kwargs: fn(*args, **kwargs)
 
+    result = AzureClient.bucket_status("my-container", account_name="my-account")
+
+    assert result == BucketStatus(exists=True, access="authenticated")
+
+
+@patch.object(AzureClient, "create_fs")
+@patch("datachain.client.azure.sync")
+def test_azure_authenticated_no_account_name(mock_sync, mock_create_fs):
+    """No account_name: anon probe skipped, auth probe succeeds."""
+    auth_fs = MagicMock()
+    auth_fs._info.return_value = {"name": "my-container", "type": "directory"}
+    mock_create_fs.return_value = auth_fs
     mock_sync.side_effect = lambda _loop, fn, *args, **kwargs: fn(*args, **kwargs)
 
     result = AzureClient.bucket_status("my-container")
@@ -285,30 +200,57 @@ def test_azure_authenticated(mock_sync, mock_adlfs_cls, mock_create_fs):
 
 
 @patch.object(AzureClient, "create_fs")
-@patch("datachain.client.azure.AzureBlobFileSystem")
 @patch("datachain.client.azure.sync")
-def test_azure_denied(mock_sync, mock_adlfs_cls, mock_create_fs):
+@patch("datachain.client.azure.BlobServiceClient")
+def test_azure_denied(mock_blob_svc_cls, mock_sync, mock_create_fs):
+    from azure.core.exceptions import ClientAuthenticationError
+
+    mock_container = MagicMock()
+    mock_container.get_container_properties.side_effect = ClientAuthenticationError(
+        "NoAuth"
+    )
+    mock_client = MagicMock()
+    mock_client.get_container_client.return_value = mock_container
+    mock_blob_svc_cls.return_value = mock_client
+
     auth_fs = MagicMock()
     auth_fs._info.side_effect = PermissionError("403")
     mock_create_fs.return_value = auth_fs
-
     mock_sync.side_effect = lambda _loop, fn, *args, **kwargs: fn(*args, **kwargs)
 
-    result = AzureClient.bucket_status("my-container")
+    result = AzureClient.bucket_status("my-container", account_name="my-account")
 
     assert result.exists is True
     assert result.access == "denied"
     assert result.error is not None
 
 
-@patch.object(AzureClient, "create_fs")
-@patch("datachain.client.azure.AzureBlobFileSystem")
-@patch("datachain.client.azure.sync")
-def test_azure_not_found(mock_sync, mock_adlfs_cls, mock_create_fs):
-    auth_fs = MagicMock()
-    auth_fs._info.side_effect = FileNotFoundError("container not found")
-    mock_create_fs.return_value = auth_fs
+@patch("datachain.client.azure.BlobServiceClient")
+def test_azure_not_found(mock_blob_svc_cls):
+    from azure.core.exceptions import ResourceNotFoundError
 
+    mock_container = MagicMock()
+    mock_container.get_container_properties.side_effect = ResourceNotFoundError(
+        "container not found"
+    )
+    mock_client = MagicMock()
+    mock_client.get_container_client.return_value = mock_container
+    mock_blob_svc_cls.return_value = mock_client
+
+    result = AzureClient.bucket_status("my-container", account_name="my-account")
+
+    assert result.exists is False
+    assert result.access == "denied"
+    assert result.error is not None
+
+
+@patch.object(AzureClient, "create_fs")
+@patch("datachain.client.azure.sync")
+def test_azure_no_account_name_no_creds(mock_sync, mock_create_fs):
+    """No account_name: anon skipped, auth raises ValueError."""
+    mock_create_fs.side_effect = ValueError(
+        "Must provide either a connection_string or account_name with credentials!!"
+    )
     mock_sync.side_effect = lambda _loop, fn, *args, **kwargs: fn(*args, **kwargs)
 
     result = AzureClient.bucket_status("my-container")
@@ -319,23 +261,22 @@ def test_azure_not_found(mock_sync, mock_adlfs_cls, mock_create_fs):
 
 
 @patch.object(AzureClient, "create_fs")
-@patch("datachain.client.azure.AzureBlobFileSystem")
 @patch("datachain.client.azure.sync")
-def test_azure_no_account_name_no_public_access(
-    mock_sync, mock_adlfs_cls, mock_create_fs
+@patch("datachain.client.azure.BlobServiceClient")
+def test_azure_public_with_incompatible_creds(
+    mock_blob_svc_cls, mock_sync, mock_create_fs
 ):
-    """create_fs() raises ValueError (no credentials); anon probe also denied."""
-    mock_create_fs.side_effect = ValueError(
-        "Must provide either a connection_string or account_name with credentials!!"
-    )
+    """Public container: anon succeeds even when env creds are incompatible."""
+    mock_container = MagicMock()
+    mock_container.get_container_properties.return_value = {"name": "my-container"}
+    mock_client = MagicMock()
+    mock_client.get_container_client.return_value = mock_container
+    mock_blob_svc_cls.return_value = mock_client
 
-    anon_fs = MagicMock()
-    anon_fs._info.side_effect = PermissionError("anonymous access denied")
-    mock_adlfs_cls.return_value = anon_fs
+    # Auth probe would fail, but anon probe succeeds first.
+    mock_create_fs.side_effect = PermissionError("Wrong account credentials")
     mock_sync.side_effect = lambda _loop, fn, *args, **kwargs: fn(*args, **kwargs)
 
-    result = AzureClient.bucket_status("my-container")
+    result = AzureClient.bucket_status("my-container", account_name="my-account")
 
-    assert result.exists is True
-    assert result.access == "denied"
-    assert result.error is not None
+    assert result == BucketStatus(exists=True, access="anonymous")

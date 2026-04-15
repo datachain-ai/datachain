@@ -18,10 +18,7 @@ def bucket_status(uri: str, **client_config) -> BucketStatus:
     client_cls = Client.get_implementation(uri)
     name, path = client_cls.split_url(uri)
     if path:
-        raise ValueError(
-            f"URI must not contain a path component, got: {uri!r}. "
-            "Use just the bucket/container URI, e.g. s3://my-bucket/"
-        )
+        raise ValueError(f"path in a bucket is not allowed, only bucket name: {uri!r}")
     return client_cls.bucket_status(name, **client_config)
 
 

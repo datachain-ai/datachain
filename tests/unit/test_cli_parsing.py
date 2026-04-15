@@ -88,6 +88,15 @@ def test_bucket_status_anon_flag():
     assert args.uri == "s3://my-bucket/"
 
 
+def test_bucket_status_account_name():
+    parser = get_parser()
+    args = parser.parse_args(
+        ("bucket", "status", "--account-name", "myaccount", "az://my-container/")
+    )
+    assert args.account_name == "myaccount"
+    assert args.uri == "az://my-container/"
+
+
 def test_bucket_no_subcommand():
     parser = get_parser()
     args = parser.parse_args(("bucket",))

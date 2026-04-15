@@ -532,6 +532,13 @@ def get_parser() -> ArgumentParser:  # noqa: PLR0915
             "az://my-container/. Any path beyond the bucket name is ignored."
         ),
     )
+    parse_bucket_status.add_argument(
+        "--account-name",
+        dest="account_name",
+        type=str,
+        default=None,
+        help="Azure storage account name (required for anonymous access detection).",
+    )
 
     add_completion_parser(subp, [parent_parser])
     return parser
