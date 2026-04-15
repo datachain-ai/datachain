@@ -98,7 +98,7 @@ def extract_preview(chain) -> dict | None:
     """Extract preview (columns + rows) from a DataChain. Returns None on failure."""
     try:
         df = chain.limit(10).to_pandas(flatten=True, include_hidden=False)
-        result = {
+        result: dict[str, typing.Any] = {
             "columns": list(df.columns),
             "rows": [[serialize(v) for v in row] for row in df.itertuples(index=False)],
         }
