@@ -509,13 +509,19 @@ class TypeReadConverter:
         return value
 
     def datetime(self, value):
-        if isinstance(value, str):
-            try:
-                return parse_datetime_text(value)
-            except ValueError:
-                return value
+        if value is None:
+            return value
 
-        return value
+        if isinstance(value, datetime):
+            return value
+
+        if isinstance(value, str):
+            return parse_datetime_text(value)
+
+        raise TypeError(
+            "datetime read converter expected str, datetime, or None; "
+            f"got {type(value).__name__}"
+        )
 
     def binary(self, value):
         if isinstance(value, str):
