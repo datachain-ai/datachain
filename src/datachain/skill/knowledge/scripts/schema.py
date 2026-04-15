@@ -89,7 +89,7 @@ def _file_url_prefix(chain) -> str | None:
                 val = df[col].iloc[0]
                 if val:
                     return source_to_https(str(val))
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001, S110
         pass
     return None
 

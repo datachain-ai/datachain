@@ -640,8 +640,8 @@ def _build_column_results(columns_info, agg_data, all_values, warnings_list):
 
 
 _SUMMARIZERS = {
-    "numeric": lambda cp, agg, vals: _summarize_numeric(cp, agg, vals),
-    "file_size": lambda cp, agg, vals: _summarize_file_size(cp, agg, vals),
+    "numeric": _summarize_numeric,
+    "file_size": _summarize_file_size,
     "string": lambda cp, _agg, vals: _summarize_string(cp, vals),
     "bool": lambda _cp, _agg, vals: _summarize_bool(vals),
     "datetime": lambda cp, agg, _vals: _summarize_datetime(cp, agg),

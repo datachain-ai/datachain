@@ -60,7 +60,7 @@ def bucket_status(uri: str) -> BucketStatus:
 # ---------------------------------------------------------------------------
 
 
-def _check_s3(bucket: str) -> BucketStatus:
+def _check_s3(bucket: str) -> BucketStatus:  # noqa: PLR0911
     try:
         import boto3
         from botocore import UNSIGNED
@@ -78,7 +78,7 @@ def _check_s3(bucket: str) -> BucketStatus:
         code = e.response["Error"]["Code"]
         if code == "404":
             return BucketStatus(False, "denied", f"S3 bucket '{bucket}' not found")
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001, S110
         pass
 
     # Authenticated probe
@@ -108,7 +108,7 @@ def _check_s3(bucket: str) -> BucketStatus:
         return BucketStatus(False, "denied", str(e))
 
 
-def _check_gcs(bucket: str) -> BucketStatus:
+def _check_gcs(bucket: str) -> BucketStatus:  # noqa: PLR0911
     try:
         from google.api_core.exceptions import Forbidden, NotFound
         from google.cloud import storage as gcs_storage
@@ -125,7 +125,7 @@ def _check_gcs(bucket: str) -> BucketStatus:
         return BucketStatus(False, "denied", f"GCS bucket '{bucket}' not found")
     except Forbidden:
         pass
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001, S110
         pass
 
     # Authenticated probe
@@ -158,7 +158,7 @@ def _check_azure(container: str) -> BucketStatus:
         fs = AzureBlobFileSystem(anon=True)
         fs.ls(container, detail=False)[:1]
         return BucketStatus(True, "anonymous")
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001, S110
         pass
 
     # Authenticated probe (uses env vars / DefaultAzureCredential)

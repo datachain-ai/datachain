@@ -19,12 +19,12 @@ from bucket_status import bucket_status
 from utils import dc_import, parse_uri, source_to_https
 
 
-class ScanTimeout(Exception):
+class ScanTimeoutError(Exception):
     pass
 
 
 def _alarm_handler(signum, frame):
-    raise ScanTimeout
+    raise ScanTimeoutError
 
 
 # ---------------------------------------------------------------------------
@@ -462,8 +462,9 @@ def scan_bucket(uri: str, output: str | None = None, timeout: int = 0):
         parts = parse_uri(uri)
         now = datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-        # Never pass update=True. Listing is already cached from a prior read_storage() call.
-        # Pass anon=True for public buckets so listing doesn't hang on credential lookup.
+        # Never pass update=True. Listing is already cached from a prior
+        # read_storage() call. Pass anon=True for public buckets so listing
+        # doesn't hang on credential lookup.
         chain = dc.read_storage(uri, anon=True) if is_anon else dc.read_storage(uri)
 
         listing_info = get_listing_info(uri)
@@ -527,7 +528,7 @@ def scan_bucket(uri: str, output: str | None = None, timeout: int = 0):
                 f.write(json_str)
         else:
             print(json_str)
-    except ScanTimeout:
+    except ScanTimeoutError:
         print(
             json.dumps({"error": "timeout", "uri": uri, "timeout": timeout}),
             file=sys.stderr,

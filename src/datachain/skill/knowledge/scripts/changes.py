@@ -10,7 +10,7 @@ def _clean_dep_name(name: str) -> str:
 
         if is_listing_dataset(name):
             return listing_uri_from_name(name)
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001, S110
         pass
     return name
 

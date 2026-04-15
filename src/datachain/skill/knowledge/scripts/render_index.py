@@ -36,6 +36,95 @@ def _read_md_frontmatter(md_path: str) -> dict:
     return result
 
 
+def _parse_frontmatter_info(fm: dict) -> dict:
+    """Extract normalized frontmatter fields for the info dict."""
+    known = fm.get("known_versions", "")
+    if known.startswith("[") and known.endswith("]"):
+        known = known[1:-1]
+    versions_list = [v.strip() for v in known.split(",") if v.strip()]
+    updated = fm.get("updated", "")
+    if updated and "T" in updated:
+        updated = updated.split("T")[0]
+    return {
+        "last_version": fm.get("last_version", ""),
+        "records": fm.get("records", ""),
+        "num_versions": str(len(versions_list)) if versions_list else "",
+        "updated": updated,
+    }
+
+
+def _strip_frontmatter(content: str) -> str | None:
+    """Strip YAML frontmatter from markdown content. Returns None if malformed."""
+    if not content.startswith("---"):
+        return content
+    try:
+        end = content.index("\n---", 3)
+    except ValueError:
+        return None
+    return content[end + 4 :].strip()
+
+
+def _extract_description(lines: list[str]) -> str:
+    """Paragraph between `# heading` and the first `##` heading."""
+    desc_lines: list[str] = []
+    past_heading = False
+    for line in lines:
+        if not past_heading:
+            if line.startswith("# "):
+                past_heading = True
+            continue
+        if line.startswith("##"):
+            break
+        stripped = line.strip()
+        if not stripped and desc_lines:
+            break
+        if stripped:
+            desc_lines.append(stripped)
+    return " ".join(desc_lines)
+
+
+def _extract_section_paragraph(lines: list[str], heading: str) -> str:
+    """Paragraph under a specific `## heading`."""
+    out: list[str] = []
+    in_section = False
+    for line in lines:
+        if line.startswith(heading):
+            in_section = True
+            continue
+        if not in_section:
+            continue
+        if line.startswith("##"):
+            break
+        stripped = line.strip()
+        if not stripped and out:
+            break
+        if stripped:
+            out.append(stripped)
+    return " ".join(out)
+
+
+def _extract_deps(lines: list[str]) -> list[str]:
+    """Dependencies under `## Dependencies`, preserving markdown links."""
+    deps: list[str] = []
+    in_deps = False
+    for line in lines:
+        if line.startswith("## Dependencies"):
+            in_deps = True
+            continue
+        if not in_deps:
+            continue
+        if line.startswith("##"):
+            break
+        link_matches = re.findall(r"\[[^\]]+\]\([^)]+\)", line)
+        if link_matches:
+            deps.extend(link_matches)
+        elif line.strip().startswith("- "):
+            name = line.strip().removeprefix("- ").strip()
+            if name:
+                deps.append(name)
+    return deps
+
+
 def _read_md_info(md_path: str) -> dict:
     """Read metadata, description, and dependencies from an enriched dataset .md.
 
@@ -57,83 +146,16 @@ def _read_md_info(md_path: str) -> dict:
     except Exception:  # noqa: BLE001
         return info
 
-    # Parse frontmatter
-    fm = _read_md_frontmatter(md_path)
-    info["last_version"] = fm.get("last_version", "")
-    info["records"] = fm.get("records", "")
-    known = fm.get("known_versions", "")
-    if known.startswith("[") and known.endswith("]"):
-        known = known[1:-1]
-    versions_list = [v.strip() for v in known.split(",") if v.strip()]
-    info["num_versions"] = str(len(versions_list)) if versions_list else ""
-    updated = fm.get("updated", "")
-    if updated and "T" in updated:
-        updated = updated.split("T")[0]
-    info["updated"] = updated
+    info.update(_parse_frontmatter_info(_read_md_frontmatter(md_path)))
 
-    # Strip frontmatter for body parsing
-    if content.startswith("---"):
-        try:
-            end = content.index("\n---", 3)
-            content = content[end + 4 :].strip()
-        except ValueError:
-            return info
+    body = _strip_frontmatter(content)
+    if body is None:
+        return info
 
-    lines = content.split("\n")
-
-    # Extract description: paragraph between # heading and first ## heading
-    desc_lines: list[str] = []
-    past_heading = False
-    for line in lines:
-        if not past_heading:
-            if line.startswith("# "):
-                past_heading = True
-            continue
-        if line.startswith("##"):
-            break
-        stripped = line.strip()
-        if not stripped and desc_lines:
-            break
-        if stripped:
-            desc_lines.append(stripped)
-    info["description"] = " ".join(desc_lines)
-
-    # Extract session context: paragraph under ## Session Context
-    sc_lines: list[str] = []
-    in_sc = False
-    for line in lines:
-        if line.startswith("## Session Context"):
-            in_sc = True
-            continue
-        if in_sc:
-            if line.startswith("##"):
-                break
-            stripped = line.strip()
-            if not stripped and sc_lines:
-                break
-            if stripped:
-                sc_lines.append(stripped)
-    info["session_context"] = " ".join(sc_lines)
-
-    # Extract dependencies: preserve markdown links for clickability
-    deps: list[str] = []
-    in_deps = False
-    for line in lines:
-        if line.startswith("## Dependencies"):
-            in_deps = True
-            continue
-        if in_deps:
-            if line.startswith("##"):
-                break
-            # Preserve full markdown link syntax [name](path)
-            link_matches = re.findall(r"\[[^\]]+\]\([^)]+\)", line)
-            if link_matches:
-                deps.extend(link_matches)
-            elif line.strip().startswith("- "):
-                name = line.strip().removeprefix("- ").strip()
-                if name:
-                    deps.append(name)
-    info["deps"] = deps
+    lines = body.split("\n")
+    info["description"] = _extract_description(lines)
+    info["session_context"] = _extract_section_paragraph(lines, "## Session Context")
+    info["deps"] = _extract_deps(lines)
 
     return info
 
