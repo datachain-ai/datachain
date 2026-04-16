@@ -58,10 +58,7 @@ def test_save_dataset_version_already_exists(cloud_test_catalog, cats_dataset):
     [("s3", True)],
     indirect=True,
 )
-@pytest.mark.parametrize("is_studio", [True])
-def test_save_multiple_versions(
-    cloud_test_catalog, animal_dataset, is_studio, studio_job
-):
+def test_save_multiple_versions(cloud_test_catalog, animal_dataset, no_studio_dataset):
     catalog = cloud_test_catalog.catalog
     # ensure we can select a subset of a bucket properly
     ds = DatasetQuery(animal_dataset.name, catalog=catalog)

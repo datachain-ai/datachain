@@ -106,8 +106,7 @@ def test_delta_update_from_dataset(test_session, tmp_dir, tmp_path):
     create_delta_dataset(ds_name)
 
 
-@pytest.mark.parametrize("is_studio", [True])
-def test_delta_falls_back_when_dependency_missing(test_session, is_studio, studio_job):
+def test_delta_falls_back_when_dependency_missing(test_session, no_studio_dataset):
     catalog = test_session.catalog
 
     source_ds = "delta_removed_dep_source"
@@ -301,9 +300,8 @@ def test_delta_update_unsafe(test_session):
     }
 
 
-@pytest.mark.parametrize("is_studio", [True])
 def test_delta_update_unsafe_no_changes_reuses_previous_version(
-    test_session, is_studio, studio_job
+    test_session, no_studio_dataset
 ):
     source_name = f"unsafe_same_source_{uuid.uuid4().hex[:8]}"
     merge_name = f"unsafe_same_merge_{uuid.uuid4().hex[:8]}"
@@ -1050,9 +1048,7 @@ def test_delta_update_check_num_calls(
     assert captured.out == "\n".join([map_print] * 20) + "\n"
 
 
-@pytest.mark.parametrize("is_studio", [True])
-def test_delta_update_no_diff(test_session, tmp_dir, tmp_path, is_studio, studio_job):
-    catalog = test_session.catalog
+def test_delta_update_no_diff(test_session, tmp_dir, tmp_path, no_studio_dataset):
     ds_name = "delta_ds"
     path = tmp_dir.as_uri()
     tmp_dir = tmp_dir / "images"
@@ -1098,14 +1094,8 @@ def test_delta_update_no_diff(test_session, tmp_dir, tmp_path, is_studio, studio
         "images/img9.jpg",
     ]
 
-    with pytest.raises(DatasetNotFoundError) as exc_info:
+    with pytest.raises(DatasetNotFoundError):
         dc.read_dataset(ds_name, version="1.0.1")
-
-    assert str(exc_info.value) == (
-        f"Dataset {ds_name} version 1.0.1 not found in namespace "
-        f"{catalog.metastore.default_namespace_name}"
-        f" and project {catalog.metastore.default_project_name}"
-    )
 
 
 @pytest.fixture

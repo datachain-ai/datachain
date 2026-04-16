@@ -32,6 +32,7 @@ from datachain.dataset import (
     DatasetRecord,
     DatasetVersion,
 )
+from datachain.error import DatasetNotFoundError
 from datachain.lib.dc import Sys
 from datachain.namespace import Namespace
 from datachain.project import Project
@@ -635,6 +636,22 @@ def studio_job(test_session, is_studio, monkeypatch):
         monkeypatch.setenv("DATACHAIN_JOB_ID", job_id)
         return job_id
     return None
+
+
+@pytest.fixture
+def no_studio_dataset(monkeypatch):
+    """Stub remote Studio dataset lookup to behave as "not found".
+
+    Useful for tests that assert DatasetNotFoundError on a missing local
+    dataset/version, where the catalog would otherwise fall back to the Studio
+    API — which, without Studio credentials, crashes with DataChainError.
+    Opt-in so tests that actually exercise Studio communication stay untouched.
+    """
+
+    def _not_found(self, namespace, project, name):
+        raise DatasetNotFoundError(f"Dataset {namespace}.{project}.{name} not found")
+
+    monkeypatch.setattr(Catalog, "get_remote_dataset", _not_found)
 
 
 @pytest.fixture
