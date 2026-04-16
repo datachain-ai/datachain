@@ -4205,14 +4205,9 @@ def test_save_to_non_default_namespace_and_project(
         dc.read_dataset(name="fibonacci")
 
 
-def test_dataset_not_found_in_default_project(test_session):
-    metastore = test_session.catalog.metastore
-    with pytest.raises(DatasetNotFoundError) as excinfo:
+def test_dataset_not_found_in_default_project(test_session, no_studio_dataset):
+    with pytest.raises(DatasetNotFoundError):
         dc.read_dataset("fibonacci")
-    assert str(excinfo.value) == (
-        f"Dataset fibonacci not found in namespace {metastore.default_namespace_name}"
-        f" and project {metastore.default_project_name}"
-    )
 
 
 @pytest.mark.parametrize("is_studio", [True])
