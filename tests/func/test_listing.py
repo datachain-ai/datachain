@@ -130,6 +130,7 @@ def test_listing_update_unchanged_keeps_old_version(test_session, tmp_dir):
     ds = catalog.get_dataset(ds_name, versions=None)
     assert ds.latest_version == "1.0.0"
     original_uuid = ds.get_version("1.0.0").uuid
+    original_finished_at = ds.get_version("1.0.0").finished_at
 
     # Re-list with update=True — same files
     dc.read_storage(uri, session=test_session, update=True).exec()
@@ -138,6 +139,8 @@ def test_listing_update_unchanged_keeps_old_version(test_session, tmp_dir):
     assert ds.latest_version == "1.0.0"
     assert ds.get_version("1.0.0").uuid == original_uuid
     assert len(ds.versions) == 1
+    # finished_at is bumped so the TTL window is refreshed on no-op re-save
+    assert ds.get_version("1.0.0").finished_at > original_finished_at
 
 
 def test_listing_update_changed_creates_new_version(test_session, tmp_dir):

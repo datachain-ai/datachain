@@ -10,6 +10,7 @@ import sys
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
 from copy import copy
+from datetime import datetime, timezone
 from functools import wraps
 from types import GeneratorType
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar, cast
@@ -3276,6 +3277,10 @@ class DatasetQuery:
             return None
 
         self.catalog.remove_dataset_version(dataset, version)
+        # updating TTL of a bucket listing
+        self.catalog.metastore.update_dataset_version(
+            dataset, prev_version, finished_at=datetime.now(timezone.utc)
+        )
         return self.__class__(
             name=name,
             namespace_name=project.namespace.name,
