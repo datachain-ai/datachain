@@ -4,7 +4,7 @@ import pytest
 
 import datachain as dc
 from datachain.dataset import DatasetStatus
-from datachain.error import DatasetNotFoundError
+from datachain.error import DataChainError, DatasetNotFoundError
 from datachain.query.session import Session
 
 
@@ -149,3 +149,45 @@ def test_cleanup_temp_datasets_all_states(catalog, project):
     for temp_name in [ds_created.name, ds_complete.name, ds_failed.name]:
         with pytest.raises(DatasetNotFoundError):
             catalog.get_dataset(temp_name, include_incomplete=True)
+
+
+def test_get_job_returns_none_without_env_or_cached_job(catalog, monkeypatch):
+    monkeypatch.delenv("DATACHAIN_JOB_ID", raising=False)
+    with Session("testjob", catalog=catalog) as session:
+        assert session.get_job() is None
+
+
+def test_get_job_fetches_from_env_var(catalog, monkeypatch):
+    from datachain.data_storage import JobQueryType, JobStatus
+
+    job_id = catalog.metastore.create_job(
+        "env-job", "", query_type=JobQueryType.PYTHON, status=JobStatus.RUNNING
+    )
+    monkeypatch.setenv("DATACHAIN_JOB_ID", job_id)
+    with Session("testjob", catalog=catalog) as session:
+        job = session.get_job()
+        assert job is not None
+        assert job.id == job_id
+        assert Session._OWNS_JOB is False
+
+
+def test_get_job_returns_cached_job(catalog, monkeypatch):
+    monkeypatch.delenv("DATACHAIN_JOB_ID", raising=False)
+    with Session("testjob", catalog=catalog) as session:
+        first = session.get_or_create_job()
+        second = session.get_job()
+        assert second is first
+
+
+def test_get_job_returns_none_for_missing_env_job(catalog, monkeypatch):
+    monkeypatch.setenv("DATACHAIN_JOB_ID", "00000000-0000-0000-0000-000000000000")
+    with Session("testjob", catalog=catalog) as session:
+        assert session.get_job() is None
+
+
+def test_get_or_create_job_raises_in_studio_without_env(catalog, monkeypatch):
+    monkeypatch.delenv("DATACHAIN_JOB_ID", raising=False)
+    monkeypatch.setenv("DATACHAIN_IS_STUDIO", "True")
+    with Session("testjob", catalog=catalog) as session:
+        with pytest.raises(DataChainError, match="Cannot create job in Studio"):
+            session.get_or_create_job()

@@ -160,7 +160,7 @@ def test_read_storage_update_changes_hash(test_session, tmp_dir):
     assert hash1 != hash2
 
 
-def test_read_dataset(test_session):
+def test_read_dataset(test_session, project):
     dc.read_values(num=[1, 2, 3], session=test_session).save("dev.animals.cats")
     _set_stable_uuid(
         test_session, "dev.animals.cats", "b1c2d3e4-f5a6-4b1c-8d3e-4f5a6b1c2d3e"
@@ -172,7 +172,7 @@ def test_read_dataset(test_session):
     )
 
 
-def test_read_dataset_delta_hash_changes_with_delta_spec(test_session):
+def test_read_dataset_delta_hash_changes_with_delta_spec(test_session, project):
     dataset_name = "dev.animals.delta_hash"
     dc.read_values(id=[1, 2, 3], value=[10, 20, 30], session=test_session).save(
         dataset_name
@@ -233,9 +233,9 @@ def test_order_of_steps(test_session, tmp_dir):
     assert hash1 != hash2
 
 
-def test_all_possible_steps(test_session):
-    persons_ds_name = "dev.my_pr.persons"
-    players_ds_name = "dev.my_pr.players"
+def test_all_possible_steps(test_session, project):
+    persons_ds_name = "dev.animals.persons"
+    players_ds_name = "dev.animals.players"
 
     def map_worker(person: Person) -> Worker:
         return Worker(
@@ -307,9 +307,9 @@ def test_all_possible_steps(test_session):
     assert is_sha256_hex(h1)
 
 
-def test_diff(test_session):
-    persons_ds_name = "dev.my_pr.persons"
-    players_ds_name = "dev.my_pr.players"
+def test_diff(test_session, project):
+    persons_ds_name = "dev.animals.persons"
+    players_ds_name = "dev.animals.players"
 
     dc.read_values(person=persons, session=test_session).save(persons_ds_name)
     dc.read_values(player=players, session=test_session).save(players_ds_name)
