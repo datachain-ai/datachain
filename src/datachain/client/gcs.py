@@ -11,7 +11,6 @@ from fsspec.asyn import get_loop, sync
 from fsspec.callbacks import DEFAULT_CALLBACK, Callback
 from gcsfs import GCSFileSystem
 from gcsfs.retry import HttpError
-from google.api_core import exceptions as google_exceptions
 
 from datachain.client.fileslice import FileWrapper
 from datachain.lib.file import File
@@ -40,6 +39,8 @@ class GCSClient(Client):
 
     @classmethod
     def bucket_status(cls, name: str, **kwargs) -> BucketStatus:  # noqa: PLR0911
+        from google.api_core import exceptions as google_exceptions
+
         anon_only = bool(kwargs.get("anon"))
 
         # Step 1: Try anonymous.
