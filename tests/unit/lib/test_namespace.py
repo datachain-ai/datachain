@@ -14,6 +14,12 @@ from datachain.lib.projects import create as create_project
 from tests.utils import skip_if_not_sqlite
 
 
+# Default to is_studio=True for namespace/project CRUD; individual tests may override
+@pytest.fixture
+def is_studio():
+    return True
+
+
 @pytest.fixture
 def dev_namespace(test_session):
     return create_namespace("dev", "Dev namespace")

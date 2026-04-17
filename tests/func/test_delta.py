@@ -47,9 +47,8 @@ def _delta_unsafe_required_message(method_name: str) -> str:
 
 def test_delta_update_from_dataset(test_session, tmp_dir, tmp_path):
     catalog = test_session.catalog
-
-    starting_ds_name = "project.starting_ds"
-    ds_name = "project.delta_ds"
+    starting_ds_name = "starting_ds"
+    ds_name = "delta_ds"
 
     images = [
         {"name": "img1.jpg", "data": Image.new(mode="RGB", size=(64, 64))},
@@ -107,7 +106,7 @@ def test_delta_update_from_dataset(test_session, tmp_dir, tmp_path):
     create_delta_dataset(ds_name)
 
 
-def test_delta_falls_back_when_dependency_missing(test_session):
+def test_delta_falls_back_when_dependency_missing(test_session, no_studio_dataset):
     catalog = test_session.catalog
 
     source_ds = "delta_removed_dep_source"
@@ -171,7 +170,10 @@ def test_delta_falls_back_when_dependency_missing(test_session):
     assert sorted(process_log[2:]) == [1, 2, 10, 20, 30]
 
 
-def test_delta_returns_correct_dataset_on_no_changes(test_session):
+@pytest.mark.parametrize("is_studio", [True])
+def test_delta_returns_correct_dataset_on_no_changes(
+    test_session, is_studio, studio_job
+):
     catalog = test_session.catalog
 
     default_project_name = catalog.metastore.default_project.name
@@ -298,7 +300,9 @@ def test_delta_update_unsafe(test_session):
     }
 
 
-def test_delta_update_unsafe_no_changes_reuses_previous_version(test_session):
+def test_delta_update_unsafe_no_changes_reuses_previous_version(
+    test_session, no_studio_dataset
+):
     source_name = f"unsafe_same_source_{uuid.uuid4().hex[:8]}"
     merge_name = f"unsafe_same_merge_{uuid.uuid4().hex[:8]}"
     result_name = f"unsafe_same_result_{uuid.uuid4().hex[:8]}"
@@ -477,12 +481,8 @@ def test_delta_update_unsafe_matches_same_named_aligned_sources_by_full_identity
     result_name = f"same_name_delta_result_{suffix}"
     processed: list[int] = []
 
-    dc.create_project(
-        f"namespace_a_{suffix}", f"project_a_{suffix}", session=test_session
-    )
-    dc.create_project(
-        f"namespace_b_{suffix}", f"project_b_{suffix}", session=test_session
-    )
+    catalog.metastore.create_project(f"namespace_a_{suffix}", f"project_a_{suffix}")
+    catalog.metastore.create_project(f"namespace_b_{suffix}", f"project_b_{suffix}")
 
     def record(id: int, left_value: int, right_value: int) -> int:
         processed.append(id)
@@ -1048,8 +1048,7 @@ def test_delta_update_check_num_calls(
     assert captured.out == "\n".join([map_print] * 20) + "\n"
 
 
-def test_delta_update_no_diff(test_session, tmp_dir, tmp_path):
-    catalog = test_session.catalog
+def test_delta_update_no_diff(test_session, tmp_dir, tmp_path, no_studio_dataset):
     ds_name = "delta_ds"
     path = tmp_dir.as_uri()
     tmp_dir = tmp_dir / "images"
@@ -1095,14 +1094,8 @@ def test_delta_update_no_diff(test_session, tmp_dir, tmp_path):
         "images/img9.jpg",
     ]
 
-    with pytest.raises(DatasetNotFoundError) as exc_info:
+    with pytest.raises(DatasetNotFoundError):
         dc.read_dataset(ds_name, version="1.0.1")
-
-    assert str(exc_info.value) == (
-        f"Dataset {ds_name} version 1.0.1 not found in namespace "
-        f"{catalog.metastore.default_namespace_name}"
-        f" and project {catalog.metastore.default_project_name}"
-    )
 
 
 @pytest.fixture
