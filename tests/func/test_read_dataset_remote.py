@@ -58,6 +58,7 @@ def remote_dataset_version_v1(
             'DatasetQuery(path="s3://test-bucket")',
         ),
         "created_by_id": 1,
+        "_preview_loaded": True,
     }
 
 
@@ -87,6 +88,7 @@ def remote_dataset_version_v2(
             'DatasetQuery(path="s3://test-bucket")',
         ),
         "created_by_id": 1,
+        "_preview_loaded": True,
     }
 
 
@@ -118,6 +120,7 @@ def remote_dataset_single_version(
         "warehouse_id": None,
         "created_by_id": 1,
         "versions": [remote_dataset_version_v1],
+        "_versions_loaded": True,
     }
 
 
@@ -150,6 +153,7 @@ def remote_dataset_multi_version(
         "warehouse_id": None,
         "created_by_id": 1,
         "versions": [remote_dataset_version_v1, remote_dataset_version_v2],
+        "_versions_loaded": True,
     }
 
 
