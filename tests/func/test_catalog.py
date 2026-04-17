@@ -529,7 +529,11 @@ def test_dataset_stats(test_session):
     assert dataset_version2.size == 18
 
 
-def test_ls_datasets_ordered(test_session):
+def test_ls_datasets_ordered(test_session, monkeypatch):
+    # Disable checkpoint cache — this test verifies listing order across
+    # multiple versions, so each save must create a new version.
+    monkeypatch.setenv("DATACHAIN_IGNORE_CHECKPOINTS", "true")
+
     ids = [1, 2, 3]
     values = tuple(zip(["a", "b", "c"], ids, strict=False))
 
