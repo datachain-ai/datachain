@@ -98,6 +98,7 @@ def numbers_dataset(test_session):
     Fixture to create dataset with stable / constant UUID to have consistent
     hash values in tests as it goes into chain hash calculation
     """
+    test_session.catalog.metastore.create_project("dev", "num")
     dc.read_values(num=list(range(100)), session=test_session).save("dev.num.numbers")
     test_session.catalog.metastore.update_dataset_version(
         test_session.catalog.get_dataset(
@@ -434,6 +435,7 @@ def test_query_step_hash_uses_version_uuid():
                 script_output="",
                 schema=None,
                 _preview_data=[],
+                _preview_loaded=True,
             ),
         ],
         _versions_loaded=True,

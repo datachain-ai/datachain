@@ -129,6 +129,7 @@ def test_dataset_version_from_dict(use_string):
         "num_objects": 100,
         "size": 1000000,
         "preview": preview_data,
+        "_preview_loaded": True,
     }
 
     dataset_version = DatasetVersion.from_dict(data)
@@ -325,9 +326,8 @@ def test_parse_invalid_dataset_schema(schema_dict, exc, match_error):
 
 
 def test_dataset_record_roundtrip_versions_loaded_true(dataset_record):
-    # True is omitted from the dict to avoid crashing old clients
     d = dataset_record.to_dict()
-    assert "_versions_loaded" not in d
+    assert d["_versions_loaded"] is True
     restored = DatasetRecord.from_dict(d)
     assert restored._versions_loaded is True
     assert restored.versions[0].version == "1.0.0"
@@ -342,12 +342,11 @@ def test_dataset_record_roundtrip_versions_loaded_false(dataset_record):
 
 
 def test_dataset_version_roundtrip_preview_loaded_true(dataset_record):
-    # True is omitted from the dict to avoid crashing old clients
     version = replace(
         dataset_record.versions[0], _preview_data=[{"a": 1}], _preview_loaded=True
     )
     d = version.to_dict()
-    assert "_preview_loaded" not in d
+    assert d["_preview_loaded"] is True
     restored = DatasetVersion.from_dict(d)
     assert restored._preview_loaded is True
     assert restored.preview == [{"a": 1}]
@@ -359,6 +358,25 @@ def test_dataset_version_roundtrip_preview_loaded_false(dataset_record):
     assert d["_preview_loaded"] is False
     restored = DatasetVersion.from_dict(d)
     assert restored._preview_loaded is False
+
+
+def test_dataset_version_from_dict_requires_preview_loaded(dataset_record):
+    version = replace(
+        dataset_record.versions[0], _preview_data=[{"a": 1}], _preview_loaded=True
+    )
+    d = version.to_dict()
+    d.pop("_preview_loaded")
+
+    with pytest.raises(TypeError, match="_preview_loaded"):
+        DatasetVersion.from_dict(d)
+
+
+def test_dataset_record_from_dict_requires_versions_loaded(dataset_record):
+    d = dataset_record.to_dict()
+    d.pop("_versions_loaded")
+
+    with pytest.raises(TypeError, match="_versions_loaded"):
+        DatasetRecord.from_dict(d)
 
 
 def test_dataset_version_from_dict_rejects_internal_preview_key(dataset_record):
