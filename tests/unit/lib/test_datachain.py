@@ -3982,6 +3982,35 @@ def test_group_by_accepts_labeled_expression_operand(test_session):
     assert result == [{"total": 9}]
 
 
+def test_group_by_infers_type_for_labeled_multi_column_expression(test_session):
+    chain = dc.read_values(
+        a=[1, 2],
+        b=[3, 4],
+        session=test_session,
+    )
+
+    grouped = chain.group_by(total=func.sum((C("a") + C("b")).label("x")))
+
+    assert grouped.signals_schema.serialize() == {"total": "int"}
+    assert grouped.to_records() == [{"total": 10}]
+
+
+def test_mutate_accepts_labeled_multi_column_expression(test_session):
+    chain = dc.read_values(
+        a=[1, 2],
+        b=[3, 4],
+        session=test_session,
+    )
+
+    mutated = chain.mutate(total=(C("a") + C("b")).label("x"))
+
+    assert mutated.schema == {"a": int, "b": int, "total": int}
+    assert sorted_dicts(mutated.to_records(), "a") == [
+        {"a": 1, "b": 3, "total": 4},
+        {"a": 2, "b": 4, "total": 6},
+    ]
+
+
 @pytest.mark.parametrize("desc", [True, False])
 def test_window_functions(test_session, desc):
     from datachain import func

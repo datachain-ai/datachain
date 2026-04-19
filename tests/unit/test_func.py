@@ -1180,6 +1180,16 @@ def test_get_result_type_with_labeled_expression_operand():
     assert expr_func.get_result_type(schema) is int
 
 
+def test_get_result_type_with_labeled_multi_column_expression_operand():
+    from datachain import Column
+    from datachain.lib.signal_schema import SignalSchema
+
+    schema = SignalSchema({"a": int, "b": float})
+    expr_func = func.sum((Column("a") + Column("b")).label("x"))
+
+    assert expr_func.get_result_type(schema) is float
+
+
 def test_get_result_type_with_same_type_func_operands():
     schema = SignalSchema({"a": int, "b": int})
     expr = func.min("a") + func.min("b")
