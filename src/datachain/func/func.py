@@ -652,8 +652,10 @@ def cast(col: str | ColumnExpr | Func, type_: Any) -> Func:
     """
     if not isinstance(col, (str, ColumnElement, Func)):
         raise DataChainParamsError(
-            "func.cast() expects a column name, dataset column, column "
-            "expression, or DataChain expression."
+            "func.cast() expects its first argument to be a dataset column "
+            "or expression, for example 'file.path', C('file.path'), or "
+            "another DataChain expression. To cast a literal value, wrap "
+            "it with func.literal(...)."
         )
 
     supported_scalar_types = {int, float, str, bool, bytes, datetime}

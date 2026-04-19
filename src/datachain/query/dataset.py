@@ -2157,9 +2157,7 @@ class SQLJoin(Step):
                 return bound_col
 
             raise ValueError(
-                "Join predicate contains a column from an unexpected table: "
-                f"{table_name} (column: {element.name}). "
-                f"Expected one of: {[left_name, right_name]}"
+                f"Column {element.name} was not found in left or right part of the join"
             )
 
         bound = replacement_traverse(exp, {}, replace)

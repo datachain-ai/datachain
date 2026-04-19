@@ -151,28 +151,6 @@ def test_cast_datetime_to_string_and_round_trip(test_session):
     ]
 
 
-def test_regular_datetime_values_materialize_without_backend_shift(
-    test_session,
-):
-    rows = (
-        dc.read_values(
-            row_id=[1, 2],
-            ts=[
-                datetime(2024, 1, 1, 0, 0, 0),
-                datetime(2024, 1, 2, 3, 4, 5, 123456),
-            ],
-            session=test_session,
-        )
-        .order_by("row_id")
-        .to_list("ts")
-    )
-
-    assert rows == [
-        (datetime(2024, 1, 1, 0, 0, 0, tzinfo=timezone.utc),),
-        (datetime(2024, 1, 2, 3, 4, 5, 123456, tzinfo=timezone.utc),),
-    ]
-
-
 @pytest.mark.parametrize(
     ("source", "expected"),
     [

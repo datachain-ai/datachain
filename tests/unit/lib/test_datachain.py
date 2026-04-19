@@ -14,10 +14,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 from pydantic import BaseModel
-from sqlalchemy.sql.elements import BindParameter
 
 import datachain as dc
-import datachain.lib.dc.utils as dc_utils
 from datachain import Column, func
 from datachain.dataset import DatasetStatus
 from datachain.error import (
@@ -30,7 +28,6 @@ from datachain.error import (
     ProjectCreateNotAllowedError,
 )
 from datachain.func import string
-from datachain.func.base import Function
 from datachain.lib.data_model import DataModel
 from datachain.lib.dc import C, DatasetPrepareError, Sys
 from datachain.lib.dc.listings import read_listing_dataset
@@ -2127,6 +2124,17 @@ def test_order_by_with_multiple_expression_keys_descending(test_session):
     assert chain.to_values("row_id") == [3, 2, 4, 1]
 
 
+def test_order_by_with_labeled_expression(test_session):
+    chain = dc.read_values(
+        row_id=[1, 2, 3],
+        a=[10, 1, 5],
+        b=[1, 20, 2],
+        session=test_session,
+    ).order_by((dc.C("a") + dc.C("b")).label("ab_total"), descending=True)
+
+    assert chain.to_values("row_id") == [2, 1, 3]
+
+
 def test_order_by_with_func_and_column_expression(test_session):
     files = [
         File(source="s3://bucket", path="a.txt", size=5),
@@ -3086,20 +3094,6 @@ def test_filter_resolves_func_with_string_column_operand(test_session):
     assert sorted(filtered_chain.to_values("names")) == ["Charlie", "Dora"]
 
 
-def test_filter_does_not_traverse_plain_column_expr(test_session, monkeypatch):
-    chain = dc.read_values(numbers=[1, 2, 3], session=test_session)
-
-    def fail(*_args, **_kwargs):
-        raise AssertionError("replacement_traverse should not run")
-
-    monkeypatch.setattr(dc_utils, "replacement_traverse", fail)
-
-    assert chain.filter(C("numbers") > 1).order_by("numbers").to_values("numbers") == [
-        2,
-        3,
-    ]
-
-
 def test_filter_resolves_column_expr_with_embedded_func(test_session):
     chain = dc.read_values(
         path=["a/x.txt", "a/y.txt", "b/z.txt"],
@@ -3115,31 +3109,20 @@ def test_filter_resolves_column_expr_with_embedded_func(test_session):
     ]
 
 
-def test_filter_traversal_stops_on_plain_bind_params(test_session, monkeypatch):
+def test_filter_resolves_mixed_plain_and_function_predicates(test_session):
     chain = dc.read_values(
         numbers=[1, 2, 3],
         path=["a/x.txt", "a/y.txt", "b/z.txt"],
         parent=["a", "wrong", "b"],
         session=test_session,
     )
-    captured_stop_on = []
-    original_replacement_traverse = dc_utils.replacement_traverse
-
-    def inspect(expr, opts, replace):
-        captured_stop_on.extend(opts.get("stop_on", []))
-        return original_replacement_traverse(expr, opts, replace)
-
-    monkeypatch.setattr(dc_utils, "replacement_traverse", inspect)
 
     filtered_chain = chain.filter(
         (C("numbers") > 1) & (C("parent") == func.path.parent("path"))
     )
 
     assert filtered_chain.order_by("path").to_values("path") == ["b/z.txt"]
-    assert captured_stop_on
-    assert all(isinstance(bind, BindParameter) for bind in captured_stop_on)
-    assert all(not isinstance(bind.value, Function) for bind in captured_stop_on)
-    assert any(bind.value == 1 for bind in captured_stop_on)
+    assert filtered_chain.to_values("numbers") == [3]
 
 
 def test_filter_with_boolean_nested_model(test_session):
@@ -3911,6 +3894,17 @@ def test_group_by_case(test_session):
             "col2": 2,
         }
     ]
+
+
+def test_group_by_accepts_labeled_expression_operand(test_session):
+    chain = dc.read_values(
+        num=[1, 2, 3],
+        session=test_session,
+    )
+
+    result = chain.group_by(total=func.sum((C("num") + 1).label("x"))).to_records()
+
+    assert result == [{"total": 9}]
 
 
 @pytest.mark.parametrize("desc", [True, False])

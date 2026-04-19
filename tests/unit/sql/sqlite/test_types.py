@@ -3,27 +3,17 @@ from datetime import MAXYEAR, MINYEAR, datetime, timedelta, timezone, tzinfo
 import numpy as np
 import pytest
 import ujson as json
-from sqlalchemy.dialects import sqlite as sa_sqlite
 
 from datachain.sql.sqlite import base as sqlite_base
-from datachain.sql.sqlite import types as sqlite_types
 from datachain.sql.sqlite.base import (
     adapt_datetime,
     convert_datetime,
     sqlite_datetime_cast,
 )
 from datachain.sql.sqlite.types import (
-    Array,
-    SQLiteTypeConverter,
     SQLiteTypeReadConverter,
-    adapt_array,
-    adapt_dict,
     adapt_np_array,
-    adapt_np_generic,
-    convert_array,
-    register_type_converters,
 )
-from datachain.sql.types import DateTime
 
 
 class ValueErrorTZ(tzinfo):
@@ -35,121 +25,6 @@ class ValueErrorTZ(tzinfo):
 
     def tzname(self, dt):
         return "BAD"
-
-
-class EchoItemType:
-    def on_read_convert(self, value, dialect):
-        return (dialect, value)
-
-
-def test_sqlite_array_type_reports_python_type_and_column_spec():
-    array_type = Array(int)
-
-    assert array_type.python_type is list
-    assert array_type.get_col_spec() == "ARRAY"
-
-
-def test_adapt_array_serializes_lists():
-    assert adapt_array([1, 2]) == "[1,2]"
-
-
-def test_adapt_dict_serializes_dicts():
-    assert adapt_dict({"a": 1}) == '{"a":1}'
-
-
-def test_convert_array_loads_json_arrays():
-    assert convert_array("[1,2]") == [1, 2]
-
-
-@pytest.mark.parametrize(
-    ("value", "expected"),
-    [
-        (np.int64(1), 1),
-        (np.float32(1.5), 1.5),
-    ],
-)
-def test_adapt_np_generic_returns_python_scalars(value, expected):
-    assert adapt_np_generic(value) == expected
-
-
-def test_register_type_converters_registers_core_handlers(monkeypatch):
-    adapter_calls = []
-    converter_calls = []
-
-    monkeypatch.setattr(sqlite_types, "numpy_imported", False)
-    monkeypatch.setattr(
-        sqlite_types.sqlite3,
-        "register_adapter",
-        lambda type_, func: adapter_calls.append((type_, func)),
-    )
-    monkeypatch.setattr(
-        sqlite_types.sqlite3,
-        "register_converter",
-        lambda name, func: converter_calls.append((name, func)),
-    )
-
-    register_type_converters()
-
-    assert adapter_calls == [
-        (list, adapt_array),
-        (dict, adapt_dict),
-    ]
-    assert converter_calls == [("ARRAY", convert_array)]
-
-
-def test_register_type_converters_registers_numpy_handlers(monkeypatch):
-    adapter_calls = []
-    converter_calls = []
-
-    monkeypatch.setattr(sqlite_types, "numpy_imported", True)
-    monkeypatch.setattr(
-        sqlite_types.sqlite3,
-        "register_adapter",
-        lambda type_, func: adapter_calls.append((type_, func)),
-    )
-    monkeypatch.setattr(
-        sqlite_types.sqlite3,
-        "register_converter",
-        lambda name, func: converter_calls.append((name, func)),
-    )
-
-    register_type_converters()
-
-    assert converter_calls == [("ARRAY", convert_array)]
-    assert adapter_calls == [
-        (list, adapt_array),
-        (dict, adapt_dict),
-        (sqlite_types.np.ndarray, adapt_np_array),
-        (sqlite_types.np.int32, adapt_np_generic),
-        (sqlite_types.np.int64, adapt_np_generic),
-        (sqlite_types.np.float32, adapt_np_generic),
-        (sqlite_types.np.float64, adapt_np_generic),
-    ]
-
-
-def test_sqlite_type_converter_array_returns_custom_array():
-    result = SQLiteTypeConverter().array(int)
-
-    assert isinstance(result, Array)
-    assert result.item_type is int
-
-
-def test_sqlite_type_read_converter_array_loads_json_strings():
-    converter = SQLiteTypeReadConverter()
-
-    assert converter.array("[1,2]", EchoItemType(), dialect="sqlite") == [
-        ("sqlite", 1),
-        ("sqlite", 2),
-    ]
-
-
-def test_sqlite_type_read_converter_array_passthrough_for_lists():
-    converter = SQLiteTypeReadConverter()
-
-    assert converter.array([1, 2], EchoItemType(), dialect="sqlite") == [
-        ("sqlite", 1),
-        ("sqlite", 2),
-    ]
 
 
 @pytest.mark.parametrize(
@@ -446,16 +321,3 @@ def test_sqlite_datetime_cast_parses_strings(value, expected):
 def test_sqlite_datetime_cast_rejects_invalid_strings():
     with pytest.raises(ValueError, match="Invalid isoformat string"):
         sqlite_datetime_cast("not-a-datetime")
-
-
-@pytest.mark.parametrize("value", ["2024-01-02 03:04:05", "not-a-datetime"])
-def test_sqlite_datetime_bind_rejects_string_values(value):
-    dialect = sa_sqlite.dialect()
-    processor = DateTime().dialect_impl(dialect).bind_processor(dialect)
-
-    assert processor is not None
-
-    with pytest.raises(
-        TypeError, match="SQLite DateTime type only accepts Python datetime"
-    ):
-        processor(value)

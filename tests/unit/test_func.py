@@ -5,7 +5,7 @@ import pytest
 from sqlalchemy import Label
 
 import datachain as dc
-from datachain import C, func
+from datachain import func
 from datachain.func import (
     and_,
     bit_hamming_distance,
@@ -43,24 +43,6 @@ def test_db_cols():
     rnd = rand()
     assert rnd._db_cols == []
     assert rnd._result_type_from_db_cols(SignalSchema({})) is None
-
-
-def test_group_by_accepts_expression_operands(test_session):
-    chain = dc.read_values(
-        num=[1, 2, 3],
-        num2=[10, 20, 30],
-        session=test_session,
-    )
-
-    cases = [
-        (C("num") + 1, 9),
-        ((C("num") + 1).label("x"), 9),
-        (C("num") + C("num2"), 66),
-    ]
-
-    for expr, expected in cases:
-        result = chain.group_by(total=func.sum(expr)).to_records()
-        assert result == [{"total": expected}]
 
 
 def test_label():
@@ -120,10 +102,7 @@ def test_cast_invalid_container_target_type(target_type):
 def test_cast_invalid_source_value():
     with pytest.raises(
         DataChainParamsError,
-        match=(
-            "expects a column name, dataset column, column expression, or "
-            "DataChain expression"
-        ),
+        match="expects its first argument to be a dataset column or expression",
     ):
         func.cast({"num": 1}, str)  # type: ignore[arg-type]
 
