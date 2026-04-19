@@ -603,7 +603,10 @@ def infer_col_type(
     elif isinstance(col, ColumnElement):
         result_type = sql_to_python(signals_schema.enrich_expr_types(col))
     else:
-        result_type = signals_schema.get_column_type(col)  # type: ignore[arg-type]
+        raise DataChainColumnError(
+            str(col),
+            "Unsupported value type to infer column type",
+        )
 
     return result_type
 

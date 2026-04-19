@@ -114,6 +114,20 @@ def test_get_column():
     assert col.name == "rand"
 
 
+def test_get_column_preserves_label_for_window_function():
+    window = func.window(partition_by=dc.Column("grp"), order_by=dc.Column("num"))
+
+    col = (
+        func.row_number()
+        .over(window)
+        .label("row_num")
+        .get_column(SignalSchema({"grp": int, "num": int}))
+    )
+
+    assert isinstance(col, Label)
+    assert col.name == "row_num"
+
+
 def test_cast_get_column_raises_without_schema_for_string_source():
     with pytest.raises(
         DataChainColumnError,
@@ -1136,41 +1150,76 @@ def test_path_funcs_work_on_locally_listed_paths(tmp_dir, test_session):
     assert exts == ["txt"]
 
 
-def test_infer_col_type_int_expression():
+def test_get_result_type_with_expression_operand():
     from datachain import Column
-    from datachain.func.func import infer_col_type
     from datachain.lib.signal_schema import SignalSchema
 
-    schema = SignalSchema({"a": int, "b": int})
-    assert infer_col_type(schema, Column("a") + 1) is int
+    schema = SignalSchema({"a": int})
+    expr_func = func.sum(Column("a") + 1)
+
+    assert expr_func.get_result_type(schema) is int
 
 
-def test_infer_col_type_mixed_type_expression():
+def test_get_result_type_with_mixed_type_expression_operand():
     from datachain import Column
-    from datachain.func.func import infer_col_type
     from datachain.lib.signal_schema import SignalSchema
 
     schema = SignalSchema({"a": int, "b": float})
-    assert infer_col_type(schema, Column("a") + Column("b")) is float
+    expr_func = func.sum(Column("a") + Column("b"))
+
+    assert expr_func.get_result_type(schema) is float
 
 
-def test_infer_col_type_labeled_expression():
+def test_get_result_type_with_labeled_expression_operand():
     from datachain import Column
-    from datachain.func.func import infer_col_type
     from datachain.lib.signal_schema import SignalSchema
 
     schema = SignalSchema({"a": int})
-    assert infer_col_type(schema, (Column("a") + 1).label("x")) is int
-
-
-def test_get_result_type_with_expression_operand():
-    from sqlalchemy.sql import func as sa_func
-
-    from datachain import Column
-    from datachain.func.func import Func
-    from datachain.lib.signal_schema import SignalSchema
-
-    schema = SignalSchema({"a": int})
-    expr_func = Func("sum", inner=sa_func.sum, cols=[Column("a") + 1])
+    expr_func = func.sum((Column("a") + 1).label("x"))
 
     assert expr_func.get_result_type(schema) is int
+
+
+def test_get_result_type_with_same_type_func_operands():
+    schema = SignalSchema({"a": int, "b": int})
+    expr = func.min("a") + func.min("b")
+
+    assert expr.get_result_type(schema) is int
+
+
+def test_get_result_type_raises_for_mixed_type_func_operands():
+    schema = SignalSchema({"a": int, "b": str})
+    expr = func.min("a") + func.min("b")
+
+    with pytest.raises(
+        DataChainColumnError,
+        match=(
+            r"Error for column add\(\): "
+            r"Columns must have the same type to infer result type"
+        ),
+    ):
+        expr.get_result_type(schema)
+
+
+def test_get_result_type_from_literal_array_args_without_schema():
+    assert func.array.get_element([1, 2, 3], 0).get_result_type() is int
+    assert func.array.slice([1, 2, 3], 1).get_result_type() == list[int]
+
+
+def test_get_result_type_from_empty_literal_array_args_uses_defaults():
+    assert func.array.get_element([], 0).get_result_type() is str
+    assert func.array.slice([], 0).get_result_type() == list[str]
+
+
+def test_get_result_type_raises_for_unsupported_operand_value():
+    from typing import Any
+
+    schema = SignalSchema({"a": int})
+    bad_operand: Any = ["bad"]
+    expr = func.min("a") + bad_operand
+
+    with pytest.raises(
+        DataChainColumnError,
+        match=r"Unsupported value type to infer column type",
+    ):
+        expr.get_result_type(schema)

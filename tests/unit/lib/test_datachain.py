@@ -3634,6 +3634,81 @@ def test_group_by_str(test_session):
     )
 
 
+def test_group_by_accepts_expression_operands_in_aggregates(test_session):
+    from datachain import func
+
+    files = [
+        File(source="s3://bucket", path="ant.txt", size=10),
+        File(source="s3://bucket", path="bee.txt", size=20),
+        File(source="s3://bucket", path="cat.csv", size=30),
+        File(source="s3://bucket", path="dog.csv", size=40),
+    ]
+
+    ds = (
+        dc.read_values(
+            grp=["x", "x", "y", "y"],
+            file=files,
+            left=[1, 2, 3, 4],
+            right=[4, 5, 6, 7],
+            session=test_session,
+        )
+        .order_by("grp", "file.path")
+        .group_by(
+            stem_count=func.count(func.path.file_stem("file.path")),
+            sum_total=func.sum(dc.C("left") + dc.C("right")),
+            avg_total=func.avg(dc.C("left") + dc.C("right")),
+            min_stem=func.min(func.path.file_stem("file.path")),
+            max_total=func.max(dc.C("left") + dc.C("right")),
+            any_stem=func.any_value(func.path.file_stem("file.path")),
+            stems=func.collect(func.path.file_stem("file.path")),
+            stem_concat=func.concat(
+                func.path.file_stem("file.path"),
+                separator=",",
+            ),
+            partition_by="grp",
+        )
+    )
+
+    assert ds.signals_schema.serialize() == {
+        "grp": "str",
+        "stem_count": "int",
+        "sum_total": "int",
+        "avg_total": "float",
+        "min_stem": "str",
+        "max_total": "int",
+        "any_stem": "str",
+        "stems": "list[str]",
+        "stem_concat": "str",
+    }
+    assert sorted_dicts(ds.to_records(), "grp") == sorted_dicts(
+        [
+            {
+                "grp": "x",
+                "stem_count": 2,
+                "sum_total": 12,
+                "avg_total": 6.0,
+                "min_stem": "ant",
+                "max_total": 7,
+                "any_stem": ANY_VALUE("ant", "bee"),
+                "stems": ["ant", "bee"],
+                "stem_concat": "ant,bee",
+            },
+            {
+                "grp": "y",
+                "stem_count": 2,
+                "sum_total": 20,
+                "avg_total": 10.0,
+                "min_stem": "cat",
+                "max_total": 11,
+                "any_stem": ANY_VALUE("cat", "dog"),
+                "stems": ["cat", "dog"],
+                "stem_concat": "cat,dog",
+            },
+        ],
+        "grp",
+    )
+
+
 def test_group_by_multiple_partition_by(test_session):
     from datachain import func
 
@@ -3987,6 +4062,42 @@ def test_window_functions(test_session, desc):
         "col1",
         "col2",
     )
+
+
+def test_window_first_accepts_nested_func_operand(test_session):
+    from datachain import func
+
+    files = [
+        File(source="s3://bucket", path="bee.txt", size=20),
+        File(source="s3://bucket", path="ant.txt", size=10),
+        File(source="s3://bucket", path="dog.csv", size=40),
+        File(source="s3://bucket", path="cat.csv", size=30),
+    ]
+    window = func.window(partition_by="grp", order_by="file.size")
+
+    ds = dc.read_values(
+        grp=["x", "x", "y", "y"],
+        file=files,
+        session=test_session,
+    ).mutate(
+        first_stem=func.first(func.path.file_stem("file.path")).over(window),
+    )
+
+    assert ds.schema == {
+        "grp": str,
+        "file": File,
+        "first_stem": str,
+    }
+
+    assert sorted(
+        (grp, file.path, first_stem)
+        for grp, file, first_stem in ds.to_list("grp", "file", "first_stem")
+    ) == [
+        ("x", "ant.txt", "ant"),
+        ("x", "bee.txt", "ant"),
+        ("y", "cat.csv", "cat"),
+        ("y", "dog.csv", "cat"),
+    ]
 
 
 def test_window_error(test_session):
