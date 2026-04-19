@@ -4,7 +4,7 @@ import sqlite3
 import warnings
 from collections.abc import Callable, Iterable
 from contextlib import closing
-from datetime import MAXYEAR, MINYEAR, datetime, timezone
+from datetime import MAXYEAR, MINYEAR, date, datetime, timezone
 from functools import cache
 from types import MappingProxyType
 
@@ -35,11 +35,13 @@ from datachain.sql.types import DateTime as DCDateTime
 from datachain.sql.types import (
     DBDefaults,
     TypeDefaults,
+    datetime_cast_input_error_message,
     parse_datetime_text,
     register_backend_types,
     register_db_defaults,
     register_type_defaults,
     register_type_read_converters,
+    validate_datetime_cast_input_type,
 )
 
 logger = logging.getLogger("datachain")
@@ -242,8 +244,10 @@ def sqlite_datetime_cast(value):
 
     if isinstance(value, datetime):
         return _serialize_datetime(value)
+    if isinstance(value, date):
+        return _serialize_datetime(datetime.combine(value, datetime.min.time()))
     if not isinstance(value, str):
-        return value
+        raise TypeError(datetime_cast_input_error_message(type(value).__name__))
 
     parsed = parse_datetime_text(value)
     return _serialize_datetime(parsed)
@@ -446,6 +450,7 @@ def compile_path_file_ext(element, compiler, **kwargs):
 
 def compile_cast(element, compiler, **kwargs):
     if isinstance(element.type, DCDateTime):
+        validate_datetime_cast_input_type(element.clause.type)
         return compiler.process(
             func.dt_cast(element.clause, type_=element.type),
             **kwargs,

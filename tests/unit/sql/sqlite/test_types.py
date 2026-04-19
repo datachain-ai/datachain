@@ -1,8 +1,10 @@
-from datetime import MAXYEAR, MINYEAR, datetime, timedelta, timezone, tzinfo
+from datetime import MAXYEAR, MINYEAR, date, datetime, timedelta, timezone, tzinfo
 
 import numpy as np
 import pytest
+import sqlalchemy as sa
 import ujson as json
+from sqlalchemy.exc import CompileError
 
 from datachain.sql.sqlite import base as sqlite_base
 from datachain.sql.sqlite.base import (
@@ -14,6 +16,7 @@ from datachain.sql.sqlite.types import (
     SQLiteTypeReadConverter,
     adapt_np_array,
 )
+from datachain.sql.types import DateTime as DCDateTime
 
 
 class ValueErrorTZ(tzinfo):
@@ -261,6 +264,7 @@ def test_sqlite_datetime_cast_decodes_bytes():
 @pytest.mark.parametrize(
     ("value", "expected"),
     [
+        pytest.param(date(2024, 1, 2), "2024-01-02 00:00:00", id="date"),
         pytest.param(
             datetime(2024, 1, 2, 3, 4, 5, 123456),
             "2024-01-02 03:04:05.123456",
@@ -273,14 +277,38 @@ def test_sqlite_datetime_cast_decodes_bytes():
         ),
     ],
 )
-def test_sqlite_datetime_cast_serializes_datetime_inputs(value, expected):
+def test_sqlite_datetime_cast_serializes_temporal_inputs(value, expected):
     assert sqlite_datetime_cast(value) == expected
 
 
-def test_sqlite_datetime_cast_passthrough_non_string_values():
-    value = 123
+@pytest.mark.parametrize("value", [123, 1.5, True])
+def test_sqlite_datetime_cast_rejects_unsupported_values(value):
+    with pytest.raises(
+        TypeError,
+        match=(
+            r"func\.cast\(\.\.\., datetime\) only supports string, bytes, "
+            r"date, or datetime inputs; got"
+        ),
+    ):
+        sqlite_datetime_cast(value)
 
-    assert sqlite_datetime_cast(value) == value
+
+def test_sqlite_datetime_cast_compile_rejects_unsupported_literal_types():
+    sqlite_base.setup()
+
+    statement = sa.select(sa.cast(sa.literal(123), DCDateTime()))
+
+    with pytest.raises(
+        CompileError,
+        match=(
+            r"func\.cast\(\.\.\., datetime\) only supports string, "
+            "bytes, date, or datetime inputs; got int"
+        ),
+    ):
+        statement.compile(
+            dialect=sqlite_base.sqlite_dialect,
+            compile_kwargs={"literal_binds": True},
+        )
 
 
 @pytest.mark.parametrize(

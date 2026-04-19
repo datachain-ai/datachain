@@ -14,12 +14,13 @@ for sqlite we can use `sqlite.register_converter`
 
 import numbers
 import re
-from datetime import datetime
+from datetime import date, datetime
 from types import MappingProxyType
 from typing import Any, Union
 
 import sqlalchemy as sa
 from sqlalchemy import TypeDecorator, types
+from sqlalchemy.exc import CompileError
 
 from datachain import json as jsonlib
 from datachain.lib.data_model import StandardType
@@ -39,11 +40,32 @@ db_defaults_registry = MappingProxyType(_db_defaults_registry)
 NullType = types.NullType
 
 _DATETIME_EXTRA_FRACTION_RE = re.compile(r"(\.\d{6})\d+")
+_DATETIME_CAST_INPUT_TYPES = frozenset({str, bytes, date, datetime})
 
 
 def parse_datetime_text(value: str) -> datetime:
     normalized = value.replace("Z", "+00:00") if value.endswith("Z") else value
     return datetime.fromisoformat(_DATETIME_EXTRA_FRACTION_RE.sub(r"\1", normalized))
+
+
+def datetime_cast_input_error_message(type_name: str) -> str:
+    return (
+        "func.cast(..., datetime) only supports string, bytes, date, or "
+        f"datetime inputs; got {type_name}"
+    )
+
+
+def validate_datetime_cast_input_type(type_) -> None:
+    try:
+        python_type = type_.python_type
+    except (AttributeError, NotImplementedError):
+        return
+
+    if python_type in _DATETIME_CAST_INPUT_TYPES:
+        return
+
+    python_type_name = getattr(python_type, "__name__", repr(python_type))
+    raise CompileError(datetime_cast_input_error_message(python_type_name))
 
 
 def register_backend_types(dialect_name: str, type_cls):

@@ -1,8 +1,10 @@
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
+import sqlalchemy as sa
+from sqlalchemy.exc import CompileError
 
-from datachain.sql.types import TypeReadConverter
+from datachain.sql.types import TypeReadConverter, validate_datetime_cast_input_type
 
 
 @pytest.mark.parametrize(
@@ -96,3 +98,30 @@ def test_type_read_converter_datetime_raises_for_unexpected_values():
 
     with pytest.raises(TypeError, match="expected str, datetime, or None"):
         converter.datetime(123)
+
+
+@pytest.mark.parametrize(
+    ("value", "type_name"),
+    [
+        pytest.param(123, "int", id="int"),
+        pytest.param(1.5, "float", id="float"),
+        pytest.param(True, "bool", id="bool"),
+    ],
+)
+def test_validate_datetime_cast_input_type_rejects_unsupported_types(value, type_name):
+    with pytest.raises(
+        CompileError,
+        match=(
+            r"func\.cast\(\.\.\., datetime\) only supports string, bytes, "
+            f"date, or datetime inputs; got {type_name}"
+        ),
+    ):
+        validate_datetime_cast_input_type(sa.literal(value).type)
+
+
+def test_validate_datetime_cast_input_type_allows_date():
+    validate_datetime_cast_input_type(sa.literal(date(2024, 1, 2)).type)
+
+
+def test_validate_datetime_cast_input_type_allows_unknown_types():
+    validate_datetime_cast_input_type(sa.null().type)

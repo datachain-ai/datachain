@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 
 import pytest
+from sqlalchemy.exc import CompileError
 
 import datachain as dc
 from datachain import C, func
@@ -113,6 +114,31 @@ def test_cast_datetime_in_mutate_and_order_by(test_session):
     ]
 
 
+@pytest.mark.parametrize(
+    ("value", "type_name"),
+    [
+        pytest.param(123, "int", id="int"),
+        pytest.param(1.5, "float", id="float"),
+        pytest.param(True, "bool", id="bool"),
+    ],
+)
+def test_cast_datetime_from_unsupported_scalar_raises_clear_compile_error(
+    test_session, value, type_name
+):
+    with pytest.raises(
+        CompileError,
+        match=(
+            r"func\.cast\(\.\.\., datetime\) only supports string, bytes, "
+            f"date, or datetime inputs; got {type_name}"
+        ),
+    ):
+        (
+            dc.read_values(row_id=[1], raw=[value], session=test_session)
+            .mutate(ts=func.cast("raw", datetime))
+            .to_list("ts")
+        )
+
+
 def test_cast_datetime_to_string_and_round_trip(test_session):
     rows = (
         dc.read_values(
@@ -196,6 +222,29 @@ def test_cast_datetime_from_simple_iso_string(test_session, source, expected):
     )
 
     assert rows == [expected.replace(tzinfo=timezone.utc)]
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        (
+            "2024-01-02T03:04:05Z",
+            datetime(2024, 1, 2, 3, 4, 5, tzinfo=timezone.utc),
+        ),
+        (
+            "2024-01-02T03:04:05-05:00",
+            datetime(2024, 1, 2, 8, 4, 5, tzinfo=timezone.utc),
+        ),
+    ],
+)
+def test_cast_datetime_from_timezone_bearing_string(test_session, source, expected):
+    rows = (
+        dc.read_values(row_id=[1], ts_str=[source], session=test_session)
+        .mutate(ts=func.cast("ts_str", datetime))
+        .to_values("ts")
+    )
+
+    assert rows == [expected]
 
 
 def test_filter_cast_datetime_against_python_datetime_literal(test_session):

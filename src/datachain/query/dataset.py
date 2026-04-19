@@ -2215,12 +2215,32 @@ class SQLJoin(Step):
             else self.predicates
         )
 
+        def bind_same_name_predicate(column_name: str) -> ColumnElement:
+            left_col = q1.c.get(column_name)
+            right_col = q2.c.get(column_name)
+
+            if left_col is None and right_col is None:
+                raise ValueError(
+                    f"Column {column_name} was not found in left or right part "
+                    "of the join"
+                )
+            if left_col is None:
+                raise ValueError(
+                    f"Column {column_name} was not found in left part of the join"
+                )
+            if right_col is None:
+                raise ValueError(
+                    f"Column {column_name} was not found in right part of the join"
+                )
+
+            return left_col == right_col
+
         expressions = []
         for p in predicates:
             if isinstance(p, ColumnClause):
-                expressions.append(q1.c[p.name] == q2.c[p.name])
+                expressions.append(bind_same_name_predicate(p.name))
             elif isinstance(p, str):
-                expressions.append(q1.c[p] == q2.c[p])
+                expressions.append(bind_same_name_predicate(p))
             elif isinstance(p, ColumnElement):
                 expressions.append(self.bind_and_validate_expression(p, q1, q2))
             else:
