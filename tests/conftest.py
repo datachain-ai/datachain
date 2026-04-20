@@ -742,6 +742,7 @@ def dataset_record():
                 script_output="",
                 schema=None,
                 _preview_data=[],
+                _preview_loaded=True,
             )
         ],
         _versions_loaded=True,
