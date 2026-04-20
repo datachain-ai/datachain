@@ -1,9 +1,10 @@
 from collections.abc import Sequence
 from functools import wraps
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING, TypeVar, cast
 
 import sqlalchemy
-from sqlalchemy.sql.functions import GenericFunction
+from sqlalchemy.sql.elements import BindParameter
+from sqlalchemy.sql.visitors import iterate, replacement_traverse
 
 from datachain.func.base import Function
 from datachain.lib.data_model import DataModel, DataType
@@ -37,25 +38,65 @@ def is_local() -> bool:
 def resolve_columns(
     method: "Callable[Concatenate[D, P], D]",
 ) -> "Callable[Concatenate[D, P], D]":
-    """Decorator that resolvs input column names to their actual DB names. This is
-    specially important for nested columns as user works with them by using dot
-    notation e.g (file.path) but are actually defined with default delimiter
-    in DB, e.g file__path.
-    If there are any sql functions in arguments, they will just be transferred as is
-    to a method.
+    """Normalize positional column inputs against the current schema.
+
+    This is mainly used by APIs like filter() and order_by() that accept a mix of
+    string column names, DataChain Function objects, and already-built SQLAlchemy
+    expressions.
+
+    In particular:
+    - string names are resolved to DB column names, including nested signals like
+      file.path -> file__path
+    - DataChain Function objects are converted to SQL expressions with the current
+      schema
+    - existing SQL expressions are type-enriched, and are only traversed when they
+      still contain Function-valued bind parameters that must be converted to SQL
     """
 
     @wraps(method)
     def _inner(self: D, *args: "P.args", **kwargs: "P.kwargs") -> D:
-        resolved_args = self.signals_schema.resolve(
-            *[arg for arg in args if not isinstance(arg, GenericFunction)]  # type: ignore[arg-type]
-        ).db_signals()
+        resolved_args: list[object] = []
 
-        for idx, arg in enumerate(args):
-            if isinstance(arg, GenericFunction):
-                resolved_args.insert(idx, arg)  # type: ignore[arg-type]
+        def resolve_expr(expr: ColumnExpr) -> ColumnExpr:
+            plain_bind_params: list[BindParameter] = []
+            func_bind_replacements: dict[int, ColumnExpr] = {}
 
-        return method(self, *resolved_args, **kwargs)
+            for element in iterate(expr):
+                if not isinstance(element, BindParameter):
+                    continue
+                if isinstance(element.value, Function):
+                    func_bind_replacements[id(element)] = element.value.get_column(
+                        self.signals_schema
+                    )
+                else:
+                    plain_bind_params.append(element)
+
+            if func_bind_replacements:
+                # replacement_traverse clones visited bind params by default.
+                # Preserve ordinary binds and only replace the Function-valued ones
+                # we collected from the original expression tree.
+                expr = replacement_traverse(
+                    expr,
+                    {"stop_on": plain_bind_params},
+                    lambda element, **_kwargs: func_bind_replacements.get(id(element)),
+                )
+
+            return self.signals_schema.enrich_expr_types(expr)
+
+        for arg in args:
+            if isinstance(arg, Function):
+                resolved_args.append(arg.get_column(self.signals_schema))
+            elif isinstance(arg, ColumnExpr):
+                resolved_args.append(resolve_expr(arg))
+            else:
+                resolved_args.extend(
+                    cast(
+                        "list[str]",
+                        self.signals_schema.resolve(cast("str", arg)).db_signals(),
+                    )
+                )
+
+        return method(self, *resolved_args, **kwargs)  # type: ignore[arg-type,misc]
 
     return _inner
 
@@ -83,10 +124,12 @@ def _validate_merge_on(
     if isinstance(on, (str, ColumnExpr)):
         return [on]
     if isinstance(on, Function):
-        return [on.get_column(table=ds._query.table)]
+        return [on.get_column(ds.signals_schema, table=ds._query.table)]
     if isinstance(on, Sequence):
         return [
-            c.get_column(table=ds._query.table) if isinstance(c, Function) else c
+            c.get_column(ds.signals_schema, table=ds._query.table)
+            if isinstance(c, Function)
+            else c
             for c in on
         ]
 
@@ -113,15 +156,15 @@ class DatasetMergeError(DataChainParamsError):
         def _get_str(
             on: MergeColType | Sequence[MergeColType],
         ) -> str:
-            if not isinstance(on, Sequence):
-                return str(on)  # type: ignore[unreachable]
+            if isinstance(on, (str, Function, ColumnExpr)) or not isinstance(
+                on, Sequence
+            ):
+                return _get_merge_error_str(on)
             return ", ".join([_get_merge_error_str(col) for col in on])
 
         on_str = _get_str(on)
         right_on_str = (
-            ", right_on='" + _get_str(right_on) + "'"
-            if right_on and isinstance(right_on, Sequence)
-            else ""
+            ", right_on='" + _get_str(right_on) + "'" if right_on is not None else ""
         )
         super().__init__(f"Merge error on='{on_str}'{right_on_str}: {msg}")
 

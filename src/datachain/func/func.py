@@ -1,8 +1,10 @@
 import inspect
 from collections.abc import Callable, Sequence
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, Union, get_args, get_origin
 
-from sqlalchemy import BindParameter, Case, Integer, cast, desc
+from sqlalchemy import Integer, desc
+from sqlalchemy import cast as sa_cast
 from sqlalchemy.sql import func as sa_func
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -12,6 +14,7 @@ from datachain.lib.model_store import ModelStore
 from datachain.lib.utils import DataChainColumnError, DataChainParamsError
 from datachain.query.schema import Column, ColumnExpr, ColumnMeta
 from datachain.sql.functions import numeric
+from datachain.sql.functions.conversion import datetime_to_string
 
 from .base import Function
 
@@ -100,28 +103,25 @@ class Func(Function):  # noqa: PLW1641
 
     @property
     def _db_cols(self) -> Sequence[ColT]:
-        from sqlalchemy.ext.hybrid import Comparator
+        db_cols: list[ColT] = []
+        for col in self.cols:
+            if isinstance(col, Column):
+                db_cols.append(col.name)
+            elif isinstance(col, str):
+                db_cols.append(ColumnMeta.to_db_name(col))
+            else:
+                db_cols.append(col)
+        return db_cols
 
-        return (
-            [
-                col
-                if isinstance(col, (Func, BindParameter, Case, Comparator, tuple))
-                else ColumnMeta.to_db_name(
-                    col.name if isinstance(col, ColumnElement) else col
-                )
-                for col in self.cols
-            ]
-            if self.cols
-            else []
-        )
-
-    def _db_col_type(self, signals_schema: "SignalSchema") -> "DataType | None":
+    def _result_type_from_db_cols(
+        self, signals_schema: "SignalSchema"
+    ) -> "DataType | None":
         if not self._db_cols:
             return None
 
-        col_type: type = get_db_col_type(signals_schema, self._db_cols[0])
+        col_type = infer_col_type(signals_schema, self._db_cols[0])
         for col in self._db_cols[1:]:
-            if get_db_col_type(signals_schema, col) != col_type:
+            if infer_col_type(signals_schema, col) != col_type:
                 raise DataChainColumnError(
                     str(self),
                     "Columns must have the same type to infer result type",
@@ -383,12 +383,11 @@ class Func(Function):  # noqa: PLW1641
         if self.col_label:
             return self.col_label
         if (db_cols := self._db_cols) and len(db_cols) == 1:
-            if isinstance(db_cols[0], str):
-                return db_cols[0]
-            if isinstance(db_cols[0], Column):
-                return db_cols[0].name
-            if isinstance(db_cols[0], Func):
-                return db_cols[0].get_col_name()
+            first_col = db_cols[0]
+            if isinstance(first_col, str):
+                return first_col
+            if isinstance(first_col, Func):
+                return first_col.get_col_name()
         return self.name
 
     def get_result_type(
@@ -397,72 +396,103 @@ class Func(Function):  # noqa: PLW1641
         if self.result_type:
             return self.result_type
 
-        if signals_schema and (col_type := self._db_col_type(signals_schema)):
-            return col_type
-
         if (
-            self.type_from_args
-            and (self.cols is None or self.cols == [])
-            and self.args is not None
-            and len(self.args) > 0
-            and (result_type := self.type_from_args(*self.args)) is not None
+            signals_schema is not None
+            and (result_type := self._result_type_from_db_cols(signals_schema))
+            is not None
         ):
             return result_type
+
+        if self._db_cols:
+            raise DataChainColumnError(
+                str(self),
+                "A dataset context is required to infer result type",
+            )
+
+        if self.type_from_args and not self.cols and self.args:
+            inferred_result_type = self.type_from_args(*self.args)
+            if inferred_result_type is not None:
+                return inferred_result_type
 
         raise DataChainColumnError(
             str(self),
             "Column name is required to infer result type",
         )
 
-    def get_column(
+    def _validate_sql_func_columns(
         self,
-        signals_schema: "SignalSchema | None" = None,
-        label: str | None = None,
-        table: "TableClause | None" = None,
-    ) -> Column:
-        # Guard against using complex (pydantic) object columns in SQL funcs
-        if signals_schema and self._db_cols:
-            for arg in self._db_cols:
-                # _db_cols normalizes known columns to strings; skip non-string args
-                if not isinstance(arg, str):
-                    continue
-                t_with_sub = signals_schema.get_column_type(arg, with_subtree=True)
-                if ModelStore.is_pydantic(t_with_sub):
-                    raise DataChainParamsError(
-                        f"Function {self.name} doesn't support complex object "
-                        f"columns like '{arg}'. Use a leaf field (e.g., "
-                        f"'{arg}.path') or use UDFs to operate on complex objects."
-                    )
+        signals_schema: "SignalSchema | None",
+    ) -> None:
+        if not signals_schema:
+            return
 
-        col_type = self.get_result_type(signals_schema)
-        sql_type = python_to_sql(col_type)
+        for arg in self._db_cols:
+            if not isinstance(arg, str):
+                continue
+            t_with_sub = signals_schema.get_column_type(arg, with_subtree=True)
+            if ModelStore.is_pydantic(t_with_sub):
+                raise DataChainParamsError(
+                    f"Function {self.name} doesn't support complex object "
+                    f"columns like '{arg}'. Use a leaf field (e.g., "
+                    f"'{arg}.path') or use UDFs to operate on complex objects."
+                )
 
-        def get_col(col: ColT, string_as_literal=False) -> ColT:
-            # string_as_literal is used only for conditionals like `case()` where
-            # literals are nested inside ColT as we have tuples of condition - values
-            # and if user wants to set some case value as column, explicit `C("col")`
-            # syntax must be used to distinguish from literals
-            if isinstance(col, tuple):
-                return tuple(get_col(x, string_as_literal=True) for x in col)
-            if isinstance(col, Func):
-                return col.get_column(signals_schema, table=table)
-            if isinstance(col, str) and not string_as_literal:
-                column = Column(col, sql_type)
-                column.table = table
-                return column
-            return col
+    def _resolve_col(
+        self,
+        col: ColT,
+        sql_type: Any,
+        signals_schema: "SignalSchema | None",
+        table: "TableClause | None",
+        *,
+        string_as_literal: bool = False,
+    ) -> ColT:
+        # string_as_literal is used only for conditionals like `case()` where
+        # literals are nested inside ColT as tuples of condition/value pairs.
+        # If a user wants to reference a column in that position, they must use
+        # explicit `C("col")` syntax so it isn't treated as a literal.
+        if isinstance(col, tuple):
+            return tuple(
+                self._resolve_col(
+                    x,
+                    sql_type,
+                    signals_schema,
+                    table,
+                    string_as_literal=True,
+                )
+                for x in col
+            )
 
-        cols = [get_col(col) for col in self._db_cols]
+        if isinstance(col, Func):
+            return col.get_column(signals_schema, table=table)
 
-        kwargs = {k: get_col(v, string_as_literal=True) for k, v in self.kwargs.items()}
-        func_col = self.inner(*cols, *self.args, **kwargs)
+        if isinstance(col, str) and not string_as_literal:
+            column_sql_type = (
+                python_to_sql(signals_schema.get_column_type(col))
+                if signals_schema
+                else sql_type
+            )
+            if inspect.isclass(column_sql_type):
+                column_sql_type = column_sql_type()
+            column = Column(col, column_sql_type)
+            column.table = table
+            return column
+
+        return col
+
+    def _finalize_column(
+        self,
+        func_col: Any,
+        sql_type: Any,
+        label: str | None,
+    ) -> Any:
+        result: Any = func_col
 
         if self.is_window:
             if not self.window:
                 raise DataChainParamsError(
                     f"Window function {self} requires over() clause with a window spec",
                 )
-            func_col = func_col.over(
+            result = result.over(
                 partition_by=self.window.partition_by,
                 order_by=(
                     desc(self.window.order_by)
@@ -471,27 +501,115 @@ class Func(Function):  # noqa: PLW1641
                 ),
             )
 
-        func_col.type = sql_type() if inspect.isclass(sql_type) else sql_type
+        result.type = sql_type() if inspect.isclass(sql_type) else sql_type
 
         if col_name := self.get_col_name(label):
-            func_col = func_col.label(col_name)
+            result = result.label(col_name)
 
-        return func_col
+        return result
+
+    def get_column(
+        self,
+        signals_schema: "SignalSchema | None" = None,
+        label: str | None = None,
+        table: "TableClause | None" = None,
+    ) -> Column:
+        self._validate_sql_func_columns(signals_schema)
+
+        col_type = self.get_result_type(signals_schema)
+        sql_type = python_to_sql(col_type)
+
+        cols = [
+            self._resolve_col(col, sql_type, signals_schema, table)
+            for col in self._db_cols
+        ]
+
+        kwargs = {
+            k: self._resolve_col(
+                v,
+                sql_type,
+                signals_schema,
+                table,
+                string_as_literal=True,
+            )
+            for k, v in self.kwargs.items()
+        }
+        func_col = self.inner(*cols, *self.args, **kwargs)
+        return self._finalize_column(func_col, sql_type, label)
 
 
-def get_db_col_type(signals_schema: "SignalSchema", col: ColT) -> "DataType":
+class CastFunc(Func):
+    def __init__(
+        self,
+        col: str | ColumnExpr | Func,
+        result_type: "DataType",
+        sql_type: Any,
+    ) -> None:
+        self.cast_col: str | ColumnExpr | Func = col
+        super().__init__(
+            "cast",
+            inner=sa_cast,
+            cols=[col],
+            args=[sql_type],
+            result_type=result_type,
+        )
+
+    def get_column(
+        self,
+        signals_schema: "SignalSchema | None" = None,
+        label: str | None = None,
+        table: "TableClause | None" = None,
+    ) -> Column:
+        self._validate_sql_func_columns(signals_schema)
+
+        sql_type = self.args[0]
+        source_col = self._db_cols[0]
+        value = self._resolve_col(
+            source_col,
+            sql_type,
+            signals_schema,
+            table,
+        )
+        source_type = infer_col_type(signals_schema, source_col)
+        func_col: ColumnElement[Any]
+
+        if self.result_type is str and source_type is datetime:
+            func_col = datetime_to_string(value)
+        else:
+            func_col = sa_cast(value, sql_type())
+
+        return self._finalize_column(func_col, sql_type, label)
+
+
+def infer_col_type(
+    signals_schema: "SignalSchema | None",
+    col: ColT | ColumnElement,
+) -> "DataType":
     if isinstance(col, tuple):
         # we can only get tuple from case statement where the first tuple item
         # is condition, and second one is value which type is important
         col = col[1]
+
     if isinstance(col, Func):
-        return col.get_result_type(signals_schema)
+        result_type = col.get_result_type(signals_schema)
+    elif signals_schema is None:
+        raise DataChainColumnError(
+            str(col),
+            "A dataset context is required to infer column type",
+        )
+    elif isinstance(col, str):
+        result_type = signals_schema.get_column_type(col)
+    elif isinstance(col, Column):
+        result_type = signals_schema.get_column_type(col.name)
+    elif isinstance(col, ColumnElement):
+        result_type = sql_to_python(signals_schema.enrich_expr_types(col))
+    else:
+        raise DataChainColumnError(
+            str(col),
+            "Unsupported value type to infer column type",
+        )
 
-    if isinstance(col, ColumnElement) and not hasattr(col, "name"):
-        return sql_to_python(signals_schema.enrich_expr_types(col))
-
-    name = col.name if isinstance(col, ColumnElement) else col  # type: ignore[assignment]
-    return signals_schema.get_column_type(name)  # type: ignore[arg-type]
+    return result_type
 
 
 def _truediv(a, b):
@@ -502,4 +620,53 @@ def _truediv(a, b):
 
 
 def _floordiv(a, b):
-    return cast(_truediv(a, b), Integer)
+    return sa_cast(_truediv(a, b), Integer)
+
+
+def cast(col: str | ColumnExpr | Func, type_: Any) -> Func:
+    """
+    Cast a column or expression to a target DataChain type.
+
+    Args:
+        col (str | ColumnExpr | Func): Column, column expression, or DataChain
+            expression to cast.
+            If a string is provided, it is treated as a column name.
+        type_ (type): Supported target types are int, float, str, bool, bytes,
+            and datetime.
+
+    Returns:
+        Func: A `Func` object representing the cast expression.
+
+    Example:
+        ```py
+        from datachain import func
+
+        chain = dc.read_values(id_str=["1", "2", "3"])
+        chain = chain.mutate(id_int=func.cast("id_str", int))
+        ```
+
+    Notes:
+        - This is a regular DataChain expression and can be used anywhere other
+          functions are accepted, including `mutate()`, `filter()`, `order_by()`,
+          and `merge()`.
+        - Strings are interpreted as column names. To cast a string literal,
+          wrap it with `func.literal(...)` first.
+        - Casting datetimes to strings materializes to a canonical DataChain
+          datetime string in Python: `YYYY-MM-DD HH:MM:SS[.ffffff]`.
+    """
+    if not isinstance(col, (str, ColumnElement, Func)):
+        raise DataChainParamsError(
+            "func.cast() expects its first argument to be a dataset column "
+            "or expression, for example 'file.path', C('file.path'), or "
+            "another DataChain expression. To cast a literal value, wrap "
+            "it with func.literal(...)."
+        )
+
+    supported_scalar_types = {int, float, str, bool, bytes, datetime}
+    if type_ not in supported_scalar_types:
+        raise TypeError(
+            "func.cast() supports target types int, float, str, bool, bytes, "
+            "and datetime."
+        )
+
+    return CastFunc(col, type_, python_to_sql(type_))

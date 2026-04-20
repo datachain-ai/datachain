@@ -18,6 +18,7 @@ from .aggregate import (
 )
 from .array import contains, cosine_distance, euclidean_distance, length, sip_hash_64
 from .conditional import and_, case, greatest, ifelse, isnone, least, not_, or_
+from .func import cast
 from .numeric import bit_and, bit_hamming_distance, bit_or, bit_xor, int_hash_64
 from .path import file_ext, file_stem, name, parent
 from .random import rand
@@ -35,6 +36,7 @@ __all__ = [
     "bit_xor",
     "byte_hamming_distance",
     "case",
+    "cast",
     "collect",
     "concat",
     "contains",
