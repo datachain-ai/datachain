@@ -568,7 +568,10 @@ class DataChain:
         result = self._resolve_checkpoint(name, project, _hash, kwargs)
         if bool(result):
             # Checkpoint was found and reused
-            print(f"Checkpoint found for dataset '{name}', skipping creation")
+            print(
+                f"Checkpoint found for dataset '{name}', skipping creation",
+                file=sys.stderr,
+            )
 
         # Schema preparation
         schema = self.signals_schema.clone_without_sys_signals().serialize()
