@@ -1,3 +1,6 @@
+from datetime import datetime
+from enum import Enum
+
 import pytest
 from sqlalchemy import Label
 
@@ -18,8 +21,8 @@ from datachain.func import (
 from datachain.func.array import contains
 from datachain.func.random import rand
 from datachain.func.string import length as strlen
-from datachain.lib.signal_schema import SignalSchema
-from datachain.lib.utils import DataChainParamsError
+from datachain.lib.signal_schema import SignalResolvingError, SignalSchema
+from datachain.lib.utils import DataChainColumnError, DataChainParamsError
 from datachain.sql.sqlite.base import (
     sqlite_bit_hamming_distance,
     sqlite_byte_hamming_distance,
@@ -39,7 +42,7 @@ def chain():
 def test_db_cols():
     rnd = rand()
     assert rnd._db_cols == []
-    assert rnd._db_col_type(SignalSchema({})) is None
+    assert rnd._result_type_from_db_cols(SignalSchema({})) is None
 
 
 def test_label():
@@ -61,7 +64,47 @@ def test_col_name():
 
 def test_result_type():
     rnd = rand()
+    assert rnd.get_result_type() is int
     assert rnd.get_result_type(SignalSchema({})) is int
+
+
+@pytest.mark.parametrize(
+    "target_type",
+    [int, float, str, bool, bytes, datetime],
+)
+def test_cast_result_type(target_type):
+    result = func.cast("num", target_type)
+    assert result.get_result_type(SignalSchema({"num": str})) == target_type
+
+
+def test_cast_invalid_target_type():
+    class Unsupported:
+        pass
+
+    with pytest.raises(TypeError, match="supports target types"):
+        func.cast("num", Unsupported)
+
+
+def test_cast_invalid_target_enum_type():
+    class UnsupportedEnum(Enum):
+        ONE = "one"
+
+    with pytest.raises(TypeError, match="supports target types"):
+        func.cast("num", UnsupportedEnum)
+
+
+@pytest.mark.parametrize("target_type", [list, dict, list[int], dict[str, int]])
+def test_cast_invalid_container_target_type(target_type):
+    with pytest.raises(TypeError, match="supports target types"):
+        func.cast("num", target_type)
+
+
+def test_cast_invalid_source_value():
+    with pytest.raises(
+        DataChainParamsError,
+        match="expects its first argument to be a dataset column or expression",
+    ):
+        func.cast({"num": 1}, str)  # type: ignore[arg-type]
 
 
 def test_get_column():
@@ -69,6 +112,44 @@ def test_get_column():
     col = rnd.get_column(SignalSchema({}))
     assert isinstance(col, Label)
     assert col.name == "rand"
+
+
+def test_get_column_preserves_label_for_window_function():
+    window = func.window(partition_by=dc.Column("grp"), order_by=dc.Column("num"))
+
+    col = (
+        func.row_number()
+        .over(window)
+        .label("row_num")
+        .get_column(SignalSchema({"grp": int, "num": int}))
+    )
+
+    assert isinstance(col, Label)
+    assert col.name == "row_num"
+
+
+def test_cast_get_column_raises_without_schema_for_string_source():
+    with pytest.raises(
+        DataChainColumnError,
+        match="Error for column ts: A dataset context is required to infer column type",
+    ):
+        func.cast("ts", str).get_column()
+
+
+def test_get_result_type_raises_without_schema_for_column_func():
+    with pytest.raises(
+        DataChainColumnError,
+        match=(
+            r"Error for column sum\(\): "
+            r"A dataset context is required to infer result type"
+        ),
+    ):
+        func.sum("num").get_result_type()
+
+
+def test_get_result_type_raises_with_empty_schema_for_column_func():
+    with pytest.raises(SignalResolvingError, match=r"'num'.*is not found"):
+        func.sum("num").get_result_type(SignalSchema({}))
 
 
 def test_get_column_disallow_complex_object_in_sql_funcs():
@@ -1069,19 +1150,86 @@ def test_path_funcs_work_on_locally_listed_paths(tmp_dir, test_session):
     assert exts == ["txt"]
 
 
-def test_get_db_col_type_int_expression():
+def test_get_result_type_with_expression_operand():
     from datachain import Column
-    from datachain.func.func import get_db_col_type
     from datachain.lib.signal_schema import SignalSchema
 
-    schema = SignalSchema({"a": int, "b": int})
-    assert get_db_col_type(schema, Column("a") + 1) is int
+    schema = SignalSchema({"a": int})
+    expr_func = func.sum(Column("a") + 1)
+
+    assert expr_func.get_result_type(schema) is int
 
 
-def test_get_db_col_type_mixed_type_expression():
+def test_get_result_type_with_mixed_type_expression_operand():
     from datachain import Column
-    from datachain.func.func import get_db_col_type
     from datachain.lib.signal_schema import SignalSchema
 
     schema = SignalSchema({"a": int, "b": float})
-    assert get_db_col_type(schema, Column("a") + Column("b")) is float
+    expr_func = func.sum(Column("a") + Column("b"))
+
+    assert expr_func.get_result_type(schema) is float
+
+
+def test_get_result_type_with_labeled_expression_operand():
+    from datachain import Column
+    from datachain.lib.signal_schema import SignalSchema
+
+    schema = SignalSchema({"a": int})
+    expr_func = func.sum((Column("a") + 1).label("x"))
+
+    assert expr_func.get_result_type(schema) is int
+
+
+def test_get_result_type_with_labeled_multi_column_expression_operand():
+    from datachain import Column
+    from datachain.lib.signal_schema import SignalSchema
+
+    schema = SignalSchema({"a": int, "b": float})
+    expr_func = func.sum((Column("a") + Column("b")).label("x"))
+
+    assert expr_func.get_result_type(schema) is float
+
+
+def test_get_result_type_with_same_type_func_operands():
+    schema = SignalSchema({"a": int, "b": int})
+    expr = func.min("a") + func.min("b")
+
+    assert expr.get_result_type(schema) is int
+
+
+def test_get_result_type_raises_for_mixed_type_func_operands():
+    schema = SignalSchema({"a": int, "b": str})
+    expr = func.min("a") + func.min("b")
+
+    with pytest.raises(
+        DataChainColumnError,
+        match=(
+            r"Error for column add\(\): "
+            r"Columns must have the same type to infer result type"
+        ),
+    ):
+        expr.get_result_type(schema)
+
+
+def test_get_result_type_from_literal_array_args_without_schema():
+    assert func.array.get_element([1, 2, 3], 0).get_result_type() is int
+    assert func.array.slice([1, 2, 3], 1).get_result_type() == list[int]
+
+
+def test_get_result_type_from_empty_literal_array_args_uses_defaults():
+    assert func.array.get_element([], 0).get_result_type() is str
+    assert func.array.slice([], 0).get_result_type() == list[str]
+
+
+def test_get_result_type_raises_for_unsupported_operand_value():
+    from typing import Any
+
+    schema = SignalSchema({"a": int})
+    bad_operand: Any = ["bad"]
+    expr = func.min("a") + bad_operand
+
+    with pytest.raises(
+        DataChainColumnError,
+        match=r"Unsupported value type to infer column type",
+    ):
+        expr.get_result_type(schema)

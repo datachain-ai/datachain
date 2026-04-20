@@ -4,7 +4,7 @@ import sqlite3
 import warnings
 from collections.abc import Callable, Iterable
 from contextlib import closing
-from datetime import MAXYEAR, MINYEAR, datetime, timezone
+from datetime import MAXYEAR, MINYEAR, date, datetime, timezone
 from functools import cache
 from types import MappingProxyType
 
@@ -31,13 +31,17 @@ from datachain.sql.sqlite.types import (
     SQLiteTypeReadConverter,
     register_type_converters,
 )
+from datachain.sql.types import DateTime as DCDateTime
 from datachain.sql.types import (
     DBDefaults,
     TypeDefaults,
+    datetime_cast_input_error_message,
+    parse_datetime_text,
     register_backend_types,
     register_db_defaults,
     register_type_defaults,
     register_type_read_converters,
+    validate_datetime_cast_input_type,
 )
 
 logger = logging.getLogger("datachain")
@@ -104,6 +108,7 @@ def setup():
     compiles(aggregate.group_concat, "sqlite")(compile_group_concat)
     compiles(aggregate.any_value, "sqlite")(compile_any_value)
     compiles(aggregate.collect, "sqlite")(compile_collect)
+    compiles(sa.Cast, "sqlite")(compile_cast)
     compiles(numeric.bit_and, "sqlite")(compile_bitwise_and)
     compiles(numeric.bit_or, "sqlite")(compile_bitwise_or)
     compiles(numeric.bit_xor, "sqlite")(compile_bitwise_xor)
@@ -230,6 +235,56 @@ def sqlite_byte_hamming_distance(a: str, b: str) -> int:
     return diff + sum(c1 != c2 for c1, c2 in zip(a, b, strict=False))
 
 
+def sqlite_datetime_cast(value):
+    if value is None:
+        return None
+
+    if isinstance(value, bytes):
+        value = value.decode()
+
+    if isinstance(value, datetime):
+        return _serialize_datetime(value)
+    if isinstance(value, date):
+        return _serialize_datetime(datetime.combine(value, datetime.min.time()))
+    if not isinstance(value, str):
+        raise TypeError(datetime_cast_input_error_message(type(value).__name__))
+
+    parsed = parse_datetime_text(value)
+    return _serialize_datetime(parsed)
+
+
+def _normalize_datetime_for_storage(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value
+
+    try:
+        return value.astimezone(timezone.utc).replace(tzinfo=None)
+    except (OverflowError, ValueError, OSError):
+        if value.year == MAXYEAR:
+            return datetime.max.replace(tzinfo=timezone.utc).replace(tzinfo=None)
+        if value.year == MINYEAR:
+            return datetime.min.replace(tzinfo=timezone.utc).replace(tzinfo=None)
+        raise
+
+
+def _normalize_datetime_for_read(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+
+    try:
+        return value.astimezone(timezone.utc)
+    except (OverflowError, ValueError, OSError):
+        if value.year == MAXYEAR:
+            return datetime.max.replace(tzinfo=timezone.utc)
+        if value.year == MINYEAR:
+            return datetime.min.replace(tzinfo=timezone.utc)
+        raise
+
+
+def _serialize_datetime(value: datetime) -> str:
+    return _normalize_datetime_for_storage(value).isoformat(" ")
+
+
 def register_user_defined_sql_functions() -> None:
     # Register optional functions if we have the necessary dependencies
     # and otherwise register functions that will raise an exception with
@@ -282,6 +337,7 @@ def register_user_defined_sql_functions() -> None:
         conn.create_function(
             "byte_hamming_distance", 2, sqlite_byte_hamming_distance, deterministic=True
         )
+        conn.create_function("dt_cast", 1, sqlite_datetime_cast, deterministic=True)
 
     _registered_function_creators["string_functions"] = create_string_functions
 
@@ -316,26 +372,12 @@ def register_user_defined_sql_functions() -> None:
 
 
 def adapt_datetime(val: datetime) -> str:
-    is_utc_check = val.tzinfo is timezone.utc
-    tzname_check = val.tzname() == "UTC"
-    combined_check = is_utc_check or tzname_check
-
-    if not combined_check:
-        try:
-            val = val.astimezone(timezone.utc)
-        except (OverflowError, ValueError, OSError):
-            if val.year == MAXYEAR:
-                val = datetime.max.replace(tzinfo=timezone.utc)
-            elif val.year == MINYEAR:
-                val = datetime.min.replace(tzinfo=timezone.utc)
-            else:
-                raise
-
-    return val.replace(tzinfo=None).isoformat(" ")
+    return _serialize_datetime(val)
 
 
 def convert_datetime(val: bytes) -> datetime:
-    return datetime.fromisoformat(val.decode()).replace(tzinfo=timezone.utc)
+    parsed = parse_datetime_text(val.decode())
+    return _normalize_datetime_for_read(parsed)
 
 
 def path_parent(path):
@@ -404,6 +446,17 @@ def compile_path_file_stem(element, compiler, **kwargs):
 
 def compile_path_file_ext(element, compiler, **kwargs):
     return compiler.process(path_file_ext(*element.clauses.clauses), **kwargs)
+
+
+def compile_cast(element, compiler, **kwargs):
+    if isinstance(element.type, DCDateTime):
+        validate_datetime_cast_input_type(element.clause.type)
+        return compiler.process(
+            func.dt_cast(element.clause, type_=element.type),
+            **kwargs,
+        )
+
+    return compiler.visit_cast(element, **kwargs)
 
 
 def compile_cosine_distance_ext(element, compiler, **kwargs):

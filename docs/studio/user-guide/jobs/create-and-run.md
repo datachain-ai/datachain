@@ -51,7 +51,7 @@ source_data = read_storage("s3://source-bucket/data/")
 reference_data = read_storage("gs://reference-bucket/metadata/")
 
 # Process and combine
-result = source_data.join(reference_data, on="id").save("combined_data")
+result = source_data.merge(reference_data, on="id").save("combined_data")
 ```
 
 ## Configuring Run Settings
