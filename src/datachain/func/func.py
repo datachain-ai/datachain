@@ -106,7 +106,7 @@ class Func(Function):  # noqa: PLW1641
         db_cols: list[ColT] = []
         for col in self.cols:
             if isinstance(col, Column):
-                db_cols.append(ColumnMeta.to_db_name(col.name))
+                db_cols.append(col.name)
             elif isinstance(col, str):
                 db_cols.append(ColumnMeta.to_db_name(col))
             else:
@@ -563,13 +563,14 @@ class CastFunc(Func):
         self._validate_sql_func_columns(signals_schema)
 
         sql_type = self.args[0]
+        source_col = self._db_cols[0]
         value = self._resolve_col(
-            self._db_cols[0],
+            source_col,
             sql_type,
             signals_schema,
             table,
         )
-        source_type = infer_col_type(signals_schema, self.cast_col)
+        source_type = infer_col_type(signals_schema, source_col)
         func_col: ColumnElement[Any]
 
         if self.result_type is str and source_type is datetime:

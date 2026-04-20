@@ -5,6 +5,7 @@ from sqlalchemy.exc import CompileError
 
 import datachain as dc
 from datachain import C, func
+from datachain.lib.file import File
 
 
 def test_cast_in_mutate_filter_and_order_by(test_session):
@@ -89,6 +90,24 @@ def test_cast_multiple_scalar_types_in_mutate(test_session):
         (2, 2.25, "10", False),
         (10, 1.5, "2", True),
     ]
+
+
+def test_cast_nested_string_column_in_mutate(test_session):
+    rows = (
+        dc.read_values(
+            file=[
+                File(path="a.txt", size=2),
+                File(path="b.txt", size=10),
+                File(path="c.txt", size=1),
+            ],
+            session=test_session,
+        )
+        .mutate(size_str=func.cast("file.size", str))
+        .order_by("file.path")
+        .to_list("file.path", "size_str")
+    )
+
+    assert rows == [("a.txt", "2"), ("b.txt", "10"), ("c.txt", "1")]
 
 
 def test_cast_datetime_in_mutate_and_order_by(test_session):
