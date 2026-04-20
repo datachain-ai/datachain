@@ -12,8 +12,8 @@ def count(col: AggColT | None = None) -> Func:
     """
     Returns a COUNT aggregate SQL function for the specified column.
 
-    The COUNT function returns the number of rows, optionally filtered
-    by a specific column or expression.
+    The COUNT function returns the number of rows. If a column or expression is
+    provided, it counts the rows where that input evaluates to a non-NULL value.
 
     Args:
         col (str | Column | ColumnExpr | Func, optional): The column,
@@ -26,10 +26,11 @@ def count(col: AggColT | None = None) -> Func:
     Example:
         ```py
         dc.group_by(
-            count1=func.count(),
-            count2=func.count("signal.id"),
-            count3=func.count(dc.C("signal.category")),
-            count4=func.count(dc.C("signal.id") + 1),
+            total_signals=func.count(),
+            signals_with_id=func.count("signal.id"),
+            rows_with_both_scores=func.count(
+                dc.C("signal.left") + dc.C("signal.right")
+            ),
             partition_by="signal.category",
         )
         ```
@@ -262,8 +263,8 @@ def concat(col: AggColT, separator="") -> Func:
         ```py
         dc.group_by(
             files=func.concat("file.path", separator=", "),
-            signals=func.concat(dc.C("signal.name"), separator=" | "),
-            stems=func.concat(func.path.file_stem("file.path"), separator=", "),
+            For example, `func.count(dc.C("signal.left") + dc.C("signal.right"))`
+            counts rows where both values are present.
             partition_by="signal.category",
         )
         ```

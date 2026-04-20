@@ -65,6 +65,11 @@ def test_type_read_converter_boolean_passthrough_for_unknown_strings():
             datetime(2024, 1, 2, 3, 4, 5, 123456),
             id="extra_fraction",
         ),
+        pytest.param(
+            "2024-01-02 03:04:05.123456789+00:00",
+            datetime(2024, 1, 2, 3, 4, 5, 123456, tzinfo=timezone.utc),
+            id="extra_fraction_with_offset",
+        ),
     ],
 )
 def test_type_read_converter_datetime_parses_valid_strings(value, expected):

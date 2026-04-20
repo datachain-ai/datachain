@@ -45,7 +45,16 @@ _DATETIME_CAST_INPUT_TYPES = frozenset({str, bytes, date, datetime})
 
 def parse_datetime_text(value: str) -> datetime:
     normalized = value.replace("Z", "+00:00") if value.endswith("Z") else value
-    return datetime.fromisoformat(_DATETIME_EXTRA_FRACTION_RE.sub(r"\1", normalized))
+    try:
+        return datetime.fromisoformat(normalized)
+    except ValueError:
+        # Python 3.10 rejects ISO timestamps with more than 6 fractional digits,
+        # while newer versions truncate them to microseconds. Trim and retry so
+        # parsing stays compatible across our supported Python versions.
+        truncated = _DATETIME_EXTRA_FRACTION_RE.sub(r"\1", normalized)
+        if truncated == normalized:
+            raise
+        return datetime.fromisoformat(truncated)
 
 
 def datetime_cast_input_error_message(type_name: str) -> str:
