@@ -1251,6 +1251,19 @@ class UDFStep(Step, ABC):
         output_table = self.warehouse.get_table(
             Checkpoint.output_table_name(checkpoint.job_id, checkpoint.hash)
         )
+        # Reflection returns generic backend types (e.g. ClickHouse String gives
+        # bytes instead of str, DateTime defaults break CREATE TABLE downstream).
+        # Restore SQLTypes from our known schema so downstream query generation
+        # decodes values correctly. Same pattern as DataTable.get_table.
+        known_types = {
+            **dict(self.udf.output.items()),
+            **{c.name: c.type for c in self.warehouse.dataset_row_cls.sys_columns()},
+            **{c.name: c.type for c in self._checkpoint_tracking_columns()},
+        }
+        for col in output_table.columns:
+            if col.name in known_types:
+                t = known_types[col.name]
+                col.type = t() if inspect.isclass(t) else t
 
         input_table = self.get_or_create_input_table(query, hash_input, job)
 
