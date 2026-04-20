@@ -513,7 +513,10 @@ class Generator(UDFBase):
         def _process_row(row):
             row_id, *row = row
             has_output = False
-            with safe_closing(self.process(*row)) as result_objs:
+            result = self.process(*row)
+            if result is None:
+                result = iter(())
+            with safe_closing(result) as result_objs:
                 for result_obj, is_last in with_last_flag(result_objs):
                     has_output = True
                     udf_output = self._flatten_row(result_obj)
@@ -588,6 +591,8 @@ class Aggregator(UDFBase):
                 list(arg) if isinstance(arg, tuple) else arg for arg in batched_args
             ]
             result_objs = self.process(*udf_args)
+            if result_objs is None:
+                result_objs = iter(())
             udf_outputs = (self._flatten_row(row) for row in result_objs)
 
             def _process_partition(udf_outputs, input_id):

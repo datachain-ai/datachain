@@ -2351,6 +2351,39 @@ def test_gen_limit(test_session):
     assert ds.limit(3).gen(res=func).limit(10).count() == 9
 
 
+def test_gen_returns_none(test_session):
+    def gen_none(val: int) -> Iterator[str]:
+        return None  # type: ignore[return-value]
+
+    chain = dc.read_values(val=[1, 2, 3], session=test_session).gen(
+        out=gen_none, output=str
+    )
+    assert chain.to_list("out") == []
+
+
+def test_gen_some_inputs_return_none(test_session):
+    def gen_mixed(val: int) -> Iterator[int]:
+        if val % 2 == 0:
+            yield val * 10
+        else:
+            return
+
+    chain = dc.read_values(val=[1, 2, 3, 4], session=test_session).gen(
+        out=gen_mixed, output=int
+    )
+    assert sorted(chain.to_values("out")) == [20, 40]
+
+
+def test_agg_returns_none(test_session):
+    def agg_none(val: list[int]) -> Iterator[int]:
+        return None  # type: ignore[return-value]
+
+    chain = dc.read_values(val=[1, 2, 3], session=test_session).agg(
+        out=agg_none, partition_by="val", output=int
+    )
+    assert chain.to_list("out") == []
+
+
 def test_gen_filter(test_session):
     def func(key, val) -> Iterator[tuple[File, str]]:
         for i in range(val):
