@@ -19,6 +19,8 @@ from .fsspec import DELIMITER, Client, ResultQueue
 
 # Patch gcsfs for consistency with s3fs
 GCSFileSystem.set_session = GCSFileSystem._set_session
+# Skip the GCE metadata check — it adds latency and hangs outside GCE.
+os.environ.setdefault("NO_GCE_CHECK", "true")
 PageQueue = asyncio.Queue[Iterable[dict[str, Any]] | None]
 
 
