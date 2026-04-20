@@ -24,8 +24,8 @@ from sqlalchemy import Column
 from sqlalchemy.sql import func as f
 from sqlalchemy.sql.elements import ColumnClause, ColumnElement, Label
 from sqlalchemy.sql.expression import label
-from sqlalchemy.sql.schema import TableClause
-from sqlalchemy.sql.selectable import Select
+from sqlalchemy.sql.selectable import Select, TableClause
+from sqlalchemy.sql.visitors import replacement_traverse
 
 from datachain.asyn import ASYNC_WORKERS, AsyncMapper, OrderedMapper
 from datachain.catalog.catalog import clone_catalog_with_cache
@@ -84,7 +84,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
     from typing import Concatenate
 
-    from sqlalchemy.sql.elements import ClauseElement, KeyedColumnElement
+    from sqlalchemy.sql.elements import KeyedColumnElement
     from sqlalchemy.sql.schema import Table
     from sqlalchemy.sql.selectable import GenerativeSelect
     from typing_extensions import ParamSpec, Self
@@ -2123,34 +2123,46 @@ class SQLJoin(Step):
 
         return temp_table.select().subquery(dq.table.name)
 
-    def validate_expression(self, exp: "ClauseElement", q1, q2):
-        """
-        Checking if columns used in expression actually exist in left / right
-        part of the join.
-        """
-        for c in exp.get_children():
-            if isinstance(c, ColumnClause):
-                assert isinstance(c.table, TableClause)
+    def bind_and_validate_expression(self, exp: ColumnElement, q1, q2) -> ColumnElement:
+        left_name = self.query1.table.name
+        right_name = self.query2.table.name
 
-                q1_c = q1.c.get(c.name)
-                q2_c = q2.c.get(c.name)
+        def replace(element, **_kwargs):
+            if not isinstance(element, ColumnClause):
+                return None
 
-                if c.table.name == q1.name and q1_c is None:
-                    raise ValueError(
-                        f"Column {c.name} was not found in left part of the join"
-                    )
+            table = element.table
+            if not isinstance(table, TableClause):
+                raise TypeError(
+                    "Join predicate contains a column without a supported table "
+                    f"binding: {element.name}"
+                )
 
-                if c.table.name == q2.name and q2_c is None:
+            table_name = table.name
+
+            if table_name == left_name:
+                bound_col = q1.c.get(element.name)
+                if bound_col is None:
                     raise ValueError(
-                        f"Column {c.name} was not found in right part of the join"
+                        f"Column {element.name} was not found in left part of the join"
                     )
-                if c.table.name not in [q1.name, q2.name]:
+                return bound_col
+
+            if table_name == right_name:
+                bound_col = q2.c.get(element.name)
+                if bound_col is None:
                     raise ValueError(
-                        f"Column {c.name} was not found in left or right"
-                        " part of the join"
+                        f"Column {element.name} was not found in right part of the join"
                     )
-                continue
-            self.validate_expression(c, q1, q2)
+                return bound_col
+
+            raise ValueError(
+                f"Column {element.name} was not found in left or right part of the join"
+            )
+
+        bound = replacement_traverse(exp, {}, replace)
+        assert isinstance(bound, ColumnElement)
+        return bound
 
     def apply(
         self,
@@ -2203,14 +2215,34 @@ class SQLJoin(Step):
             else self.predicates
         )
 
+        def bind_same_name_predicate(column_name: str) -> ColumnElement:
+            left_col = q1.c.get(column_name)
+            right_col = q2.c.get(column_name)
+
+            if left_col is None and right_col is None:
+                raise ValueError(
+                    f"Column {column_name} was not found in left or right part "
+                    "of the join"
+                )
+            if left_col is None:
+                raise ValueError(
+                    f"Column {column_name} was not found in left part of the join"
+                )
+            if right_col is None:
+                raise ValueError(
+                    f"Column {column_name} was not found in right part of the join"
+                )
+
+            return left_col == right_col
+
         expressions = []
         for p in predicates:
             if isinstance(p, ColumnClause):
-                expressions.append(self.query1.c(p.name) == self.query2.c(p.name))
+                expressions.append(bind_same_name_predicate(p.name))
             elif isinstance(p, str):
-                expressions.append(self.query1.c(p) == self.query2.c(p))
+                expressions.append(bind_same_name_predicate(p))
             elif isinstance(p, ColumnElement):
-                expressions.append(p)
+                expressions.append(self.bind_and_validate_expression(p, q1, q2))
             else:
                 raise TypeError(f"Unsupported predicate {p} for join expression")
 
@@ -2218,7 +2250,6 @@ class SQLJoin(Step):
             raise ValueError("Missing predicates")
 
         join_expression = sqlalchemy.and_(*expressions)
-        self.validate_expression(join_expression, q1, q2)
 
         def q(*columns):
             return self.catalog.warehouse.join(

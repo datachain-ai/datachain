@@ -1,10 +1,13 @@
 from collections.abc import Iterator
+from datetime import datetime, timedelta, timezone
 from types import GeneratorType
 from unittest.mock import patch
 
 import sqlalchemy as sa
 
 import datachain as dc
+from datachain import func
+from tests.utils import skip_if_not_sqlite
 
 
 def test_dataset_stats_no_table(cloud_test_catalog, dogs_dataset):
@@ -89,3 +92,78 @@ def test_dataset_insert_batch_size(test_session, warehouse):
         assert mock_executemany.call_count == 20
         mock_executemany.reset_mock()
         assert set(chain.to_values("x2")) == set(range(200))
+
+
+def test_warehouse_keeps_utc_datetime_unchanged(test_session):
+    timestamp = datetime(2024, 1, 2, 3, 4, 5, 123456, tzinfo=timezone.utc)
+
+    dc.read_values(ts=[timestamp], session=test_session).save(
+        "warehouse_utc_datetime_round_trip"
+    )
+
+    rows = dc.read_dataset(
+        "warehouse_utc_datetime_round_trip", session=test_session
+    ).to_values("ts")
+
+    assert rows == [timestamp]
+
+
+def test_warehouse_round_trips_datetime_cast_from_string(test_session):
+    dc.read_values(
+        row_id=[1, 2],
+        ts_str=["2024-01-01 00:00:00", "2024-01-02 03:04:05.123456"],
+        session=test_session,
+    ).mutate(ts=func.cast("ts_str", datetime)).save(
+        "warehouse_cast_datetime_from_string"
+    )
+
+    rows = (
+        dc.read_dataset("warehouse_cast_datetime_from_string", session=test_session)
+        .order_by("row_id")
+        .to_list("row_id", "ts")
+    )
+
+    assert rows == [
+        (1, datetime(2024, 1, 1, 0, 0, 0, tzinfo=timezone.utc)),
+        (2, datetime(2024, 1, 2, 3, 4, 5, 123456, tzinfo=timezone.utc)),
+    ]
+
+
+def test_warehouse_round_trips_datetime_to_string_cast(test_session):
+    dc.read_values(
+        row_id=[1, 2, 3],
+        ts=[
+            datetime(2024, 1, 1, 0, 0, 0),
+            datetime(2024, 1, 2, 3, 4, 5, 123000),
+            datetime(2024, 1, 2, 3, 4, 5, 123456),
+        ],
+        session=test_session,
+    ).mutate(ts_str=func.cast("ts", str)).save("warehouse_cast_datetime_to_string")
+
+    rows = (
+        dc.read_dataset("warehouse_cast_datetime_to_string", session=test_session)
+        .order_by("row_id")
+        .to_list("row_id", "ts_str")
+    )
+
+    assert rows == [
+        (1, "2024-01-01 00:00:00"),
+        (2, "2024-01-02 03:04:05.123000"),
+        (3, "2024-01-02 03:04:05.123456"),
+    ]
+
+
+@skip_if_not_sqlite
+def test_sqlite_warehouse_converts_other_timezones_to_utc(test_session):
+    eastern = timezone(timedelta(hours=-5))
+    timestamp = datetime(2024, 1, 2, 3, 4, 5, 123456, tzinfo=eastern)
+
+    dc.read_values(ts=[timestamp], session=test_session).save(
+        "sqlite_warehouse_timezone_to_utc"
+    )
+
+    rows = dc.read_dataset(
+        "sqlite_warehouse_timezone_to_utc", session=test_session
+    ).to_values("ts")
+
+    assert rows == [timestamp.astimezone(timezone.utc)]

@@ -21,7 +21,7 @@ from typing import (
 
 from pydantic import BaseModel, Field, ValidationError, create_model
 from sqlalchemy import Cast, cast
-from sqlalchemy.sql.elements import BinaryExpression, Grouping
+from sqlalchemy.sql.elements import BinaryExpression, Grouping, Label
 
 from datachain import json
 from datachain.func import literal
@@ -921,6 +921,8 @@ class SignalSchema:
         def rebuild(node):
             if isinstance(node, Column):
                 return typed_cols.get(node.name, node)
+            if isinstance(node, Label):
+                return rebuild(node.element).label(node.name)
             if isinstance(node, Grouping):
                 return Grouping(rebuild(node.element))
             if isinstance(node, BinaryExpression):
