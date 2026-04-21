@@ -2562,7 +2562,6 @@ class AbstractDBMetastore(AbstractMetastore):
             query = query.on_conflict_do_update(  # type: ignore[attr-defined]
                 index_elements=["job_id", "hash"],
                 set_={
-                    "partial": partial,
                     "status": CheckpointStatus.ACTIVE,
                     "created_at": datetime.now(timezone.utc),
                 },
