@@ -1031,10 +1031,10 @@ class AbstractDBMetastore(AbstractMetastore):
             created_at=datetime.now(timezone.utc),
             description=description,
         )
-        if ignore_if_exists and hasattr(query, "on_conflict_do_nothing"):
-            # SQLite and PostgreSQL both support 'on_conflict_do_nothing',
-            # but generic SQL does not
-            query = query.on_conflict_do_nothing(index_elements=["name"])
+        if ignore_if_exists:
+            query = query.on_conflict_do_nothing(  # type: ignore[attr-defined]
+                index_elements=["name"]
+            )
         self.db.execute(query)
 
         return self.get_namespace(name)
@@ -1102,10 +1102,8 @@ class AbstractDBMetastore(AbstractMetastore):
             created_at=datetime.now(timezone.utc),
             description=description,
         )
-        if ignore_if_exists and hasattr(query, "on_conflict_do_nothing"):
-            # SQLite and PostgreSQL both support 'on_conflict_do_nothing',
-            # but generic SQL does not
-            query = query.on_conflict_do_nothing(
+        if ignore_if_exists:
+            query = query.on_conflict_do_nothing(  # type: ignore[attr-defined]
                 index_elements=["namespace_id", "name"]
             )
         self.db.execute(query)
@@ -1238,10 +1236,10 @@ class AbstractDBMetastore(AbstractMetastore):
             description=description,
             attrs=json.dumps(attrs or []),
         )
-        if ignore_if_exists and hasattr(query, "on_conflict_do_nothing"):
-            # SQLite and PostgreSQL both support 'on_conflict_do_nothing',
-            # but generic SQL does not
-            query = query.on_conflict_do_nothing(index_elements=["project_id", "name"])
+        if ignore_if_exists:
+            query = query.on_conflict_do_nothing(  # type: ignore[attr-defined]
+                index_elements=["project_id", "name"]
+            )
         self.db.execute(query)
 
         return self.get_dataset(
@@ -1306,10 +1304,8 @@ class AbstractDBMetastore(AbstractMetastore):
             preview=json.dumps(preview or []),
             job_id=job_id or os.getenv("DATACHAIN_JOB_ID"),
         )
-        if ignore_if_exists and hasattr(query, "on_conflict_do_nothing"):
-            # SQLite and PostgreSQL both support 'on_conflict_do_nothing',
-            # but generic SQL does not
-            query = query.on_conflict_do_nothing(
+        if ignore_if_exists:
+            query = query.on_conflict_do_nothing(  # type: ignore[attr-defined]
                 index_elements=["dataset_id", "version"]
             )
         self.db.execute(query)
@@ -2563,9 +2559,7 @@ class AbstractDBMetastore(AbstractMetastore):
 
             # Use upsert to handle re-activation of deleted checkpoints
             # (e.g. same hash in same job after previous run)
-            if not hasattr(query, "on_conflict_do_update"):
-                raise RuntimeError("Database must support on_conflict_do_update")
-            query = query.on_conflict_do_update(
+            query = query.on_conflict_do_update(  # type: ignore[attr-defined]
                 index_elements=["job_id", "hash"],
                 set_={
                     "partial": partial,
@@ -2740,10 +2734,9 @@ class AbstractDBMetastore(AbstractMetastore):
                 is_creator=is_creator,
                 created_at=datetime.now(timezone.utc),
             )
-            if hasattr(query, "on_conflict_do_nothing"):
-                query = query.on_conflict_do_nothing(
-                    index_elements=["dataset_version_id", "job_id"]
-                )
+            query = query.on_conflict_do_nothing(  # type: ignore[attr-defined]
+                index_elements=["dataset_version_id", "job_id"]
+            )
             self.db.execute(query)
 
             # Also update dataset_version.job_id to point to this job
