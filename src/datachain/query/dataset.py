@@ -1147,7 +1147,7 @@ class UDFStep(Step, ABC):
         partial_hash = hashlib.sha256(
             (
                 hash_input
-                + self.udf.identity_hash()
+                + self.udf.hash(include_body=False)
                 + hash_column_elements(partition_by)
             ).encode()
         ).hexdigest()

@@ -75,7 +75,7 @@ def test_udf_signals_continue_from_partial(
 
     processed_nums.clear()
 
-    # Use same function name so identity_hash matches (simulates fixing the bug)
+    # Use same function name so partial hash matches (simulates fixing the bug)
     def process_buggy(num) -> int:
         processed_nums.append(num)
         return num * 10

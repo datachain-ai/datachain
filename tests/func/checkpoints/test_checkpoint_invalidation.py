@@ -306,5 +306,5 @@ def test_lambda_change_no_partial_continuation(test_session, monkeypatch):
         output=int,
     ).save("results")
 
-    # Different lambda bytecode → different identity_hash → all 6 reprocessed
+    # Different lambda bytecode → different partial hash → all 6 reprocessed
     assert len(processed) == 6

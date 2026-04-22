@@ -109,11 +109,8 @@ class UDFAdapter:
     batch_size: int | None = None
     batch: int = 1
 
-    def hash(self) -> str:
-        return self.inner.hash()
-
-    def identity_hash(self) -> str:
-        return self.inner.identity_hash()
+    def hash(self, include_body: bool = True) -> str:
+        return self.inner.hash(include_body=include_body)
 
     def get_batching(self, use_partitioning: bool = False) -> BatchingStrategy:
         if use_partitioning:
@@ -205,53 +202,23 @@ class UDFBase(AbstractUDF):
         self.output = None
         self._func = None
 
-    def hash(self) -> str:
+    def hash(self, include_body: bool = True) -> str:
         """
         Creates SHA hash of this UDF function. It takes into account function,
         inputs and outputs.
 
         For function-based UDFs, hashes self._func.
         For class-based UDFs, hashes the process method.
+
+        When include_body=False, the function body is excluded (identity-only:
+        __qualname__ + defaults). Lambdas always include their bytecode since
+        they share the name '<lambda>'.
         """
         # Hash user code: either _func (function-based) or process method (class-based)
         func_to_hash = self._func or self.process
 
         parts = [
-            hash_callable(func_to_hash),
-            self.params.hash() if self.params else "",
-            self.output.hash(),
-        ]
-
-        return hashlib.sha256(
-            b"".join([bytes.fromhex(part) for part in parts])
-        ).hexdigest()
-
-    def identity_hash(self) -> str:
-        """Hash of UDF identity: function name, inputs, and output schema.
-
-        Excludes function code body so users can fix bugs and continue from
-        partial checkpoints. Includes function name to distinguish different
-        UDFs with the same signature. For lambdas, includes the full code hash
-        since all lambdas share the name '<lambda>' and can't be meaningfully
-        "fixed" without becoming a different lambda.
-        """
-        func_to_hash = self._func or self.process
-
-        try:
-            is_lambda = func_to_hash.__name__ == "<lambda>"
-        except AttributeError:
-            is_lambda = False
-
-        if is_lambda:
-            # Lambdas all share '<lambda>' name, use full code hash instead
-            name_part = hash_callable(func_to_hash)
-        else:
-            # Named functions/classes: use qualified name for identity
-            qualname = getattr(func_to_hash, "__qualname__", "") or ""
-            name_part = hashlib.sha256(qualname.encode()).hexdigest()
-
-        parts = [
-            name_part,
+            hash_callable(func_to_hash, include_body=include_body),
             self.params.hash() if self.params else "",
             self.output.hash(),
         ]

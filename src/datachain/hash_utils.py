@@ -83,16 +83,23 @@ def hash_column_elements(columns: ColumnLike | Sequence[ColumnLike]) -> str:
     return hashlib.sha256(json_str.encode("utf-8")).hexdigest()
 
 
-def hash_callable(func):
+def hash_callable(func, include_body: bool = True):
     """
     Calculate a deterministic hash from a callable.
 
     Hashing Strategy:
-    - **Named functions** (def): Uses source code via inspect.getsourcelines()
-      → Produces stable hashes across Python versions and sessions
-    - **Lambdas**: Uses bytecode (func.__code__.co_code)
-      → Stable within same Python runtime, may differ across Python versions
-    - **Callable objects** (with __call__): Extracts and hashes the __call__ method
+    - **include_body=True** (default):
+        - **Named functions** (def): Uses source code via inspect.getsourcelines()
+          → Produces stable hashes across Python versions and sessions
+        - **Lambdas**: Uses bytecode (func.__code__.co_code)
+          → Stable within same Python runtime, may differ across Python versions
+        - **Callable objects** (with __call__): Extracts and hashes the __call__ method
+    - **include_body=False**:
+        - **Named functions**: Uses __qualname__ only (identity, body ignored).
+        - **Lambdas**: Still hashed by bytecode — they share the name "<lambda>"
+          and have no meaningful identity without their body.
+
+    __name__ and __defaults__ are always included.
 
     Supported Callables:
     - Regular Python functions defined with 'def'
@@ -113,6 +120,8 @@ def hash_callable(func):
 
     Args:
         func: A callable object (function, lambda, method, or object with __call__)
+        include_body: If False, hash the function identity (__qualname__) instead
+            of its body. Lambdas always hash their bytecode regardless.
 
     Returns:
         str: SHA256 hexdigest of the callable's code and metadata. For unhashable
@@ -126,6 +135,9 @@ def hash_callable(func):
         >>> def my_func(x): return x * 2
         >>> hash_callable(my_func)  # Uses source code
         'abc123...'
+
+        >>> hash_callable(my_func, include_body=False)  # Uses __qualname__
+        'xyz789...'
 
         >>> hash_callable(lambda x: x * 2)  # Uses bytecode
         'def456...'
@@ -151,8 +163,16 @@ def hash_callable(func):
         # Some callables (like Mock objects) may not have __name__
         is_lambda = False
 
-    if not is_lambda:
-        # Try to get exact source of named function
+    if is_lambda:
+        # Lambdas: always use bytecode — no meaningful name-based identity.
+        try:
+            payload = func.__code__.co_code
+        except AttributeError:
+            # Unlikely for lambdas, but handle it just in case
+            logger.warning("Cannot hash lambda %r. Returning random hash.", func)
+            payload = f"unhashable-{uuid4()}"
+    elif include_body:
+        # Named function with body: try source, fall back to bytecode.
         try:
             lines, _ = inspect.getsourcelines(func)
             payload = textwrap.dedent("".join(lines)).strip()
@@ -171,25 +191,13 @@ def hash_callable(func):
                 )
                 payload = f"unhashable-{uuid4()}"
     else:
-        # For lambdas, fall back directly to bytecode
-        try:
-            payload = func.__code__.co_code
-        except AttributeError:
-            # Unlikely for lambdas, but handle it just in case
-            logger.warning("Cannot hash lambda %r. Returning random hash.", func)
-            payload = f"unhashable-{uuid4()}"
-
-    # Normalize annotations (may not exist for built-ins/C extensions)
-    raw_annotations = getattr(func, "__annotations__", {})
-    annotations = {
-        k: getattr(v, "__name__", str(v)) for k, v in raw_annotations.items()
-    }
+        # Named function, identity only: use __qualname__.
+        payload = getattr(func, "__qualname__", "") or ""
 
     # Extras to distinguish functions with same code but different metadata
     extras = {
         "name": getattr(func, "__name__", ""),
         "defaults": getattr(func, "__defaults__", None),
-        "annotations": annotations,
     }
 
     # Compute SHA256

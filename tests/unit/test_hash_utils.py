@@ -238,3 +238,92 @@ def test_hash_column_elements_single_element():
     single_hash = hash_column_elements(C("name"))
     list_hash = hash_column_elements([C("name")])
     assert single_hash == list_hash
+
+
+def test_hash_callable_include_body_false_ignores_body():
+    """Same qualname + different body → same hash when include_body=False."""
+
+    def make(variant):
+        if variant == 1:
+
+            def inner(x):
+                return x + 1
+
+        else:
+
+            def inner(x):
+                return x * 100
+
+        return inner
+
+    f1 = make(1)
+    f2 = make(2)
+    assert f1.__qualname__ == f2.__qualname__
+    # Different source bodies → different body-based hashes.
+    assert hash_callable(f1) != hash_callable(f2)
+    # Identity-only → same hash.
+    assert hash_callable(f1, include_body=False) == hash_callable(
+        f2, include_body=False
+    )
+
+
+def test_hash_callable_include_body_false_different_qualname():
+    """Different qualname → different hash even with include_body=False."""
+    h1 = hash_callable(double, include_body=False)
+    h2 = hash_callable(double_arg_annot, include_body=False)
+    assert h1 != h2
+
+
+def test_hash_callable_lambda_include_body_false_still_uses_body():
+    """Lambdas have no meaningful name — include_body flag doesn't change them."""
+    assert hash_callable(lambda1, include_body=False) == hash_callable(lambda1)
+    assert hash_callable(lambda1, include_body=False) != hash_callable(
+        lambda2, include_body=False
+    )
+
+
+def test_hash_callable_include_body_false_defaults_matter():
+    """Default values are part of identity even when body is excluded."""
+
+    def make(d):
+        def inner(x, y=d):
+            return x + y
+
+        return inner
+
+    f1 = make(1)
+    f2 = make(1)
+    f3 = make(2)
+
+    # Same qualname + same defaults → same hash.
+    assert hash_callable(f1, include_body=False) == hash_callable(
+        f2, include_body=False
+    )
+    # Same qualname but different defaults → different hash.
+    assert hash_callable(f1, include_body=False) != hash_callable(
+        f3, include_body=False
+    )
+
+
+def test_hash_callable_include_body_false_annotations_ignored():
+    """Annotations do not affect the identity-only hash."""
+
+    def make_plain():
+        def inner(x):
+            return x
+
+        return inner
+
+    def make_annotated():
+        def inner(x: int) -> int:
+            return x
+
+        inner.__qualname__ = make_plain().__qualname__
+        return inner
+
+    f_plain = make_plain()
+    f_annot = make_annotated()
+    assert f_plain.__qualname__ == f_annot.__qualname__
+    assert hash_callable(f_plain, include_body=False) == hash_callable(
+        f_annot, include_body=False
+    )
