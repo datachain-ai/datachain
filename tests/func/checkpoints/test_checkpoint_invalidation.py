@@ -241,7 +241,7 @@ def test_partition_by_change_triggers_rerun(test_session):
     assert result == [(6,), (15,)]
 
 
-def test_different_function_name_no_partial_continuation(test_session, monkeypatch):
+def test_different_function_name_no_partial_continuation(test_session):
     processed = []
 
     dc.read_values(num=[1, 2, 3, 4, 5, 6], session=test_session).save("nums")
@@ -277,7 +277,7 @@ def test_different_function_name_no_partial_continuation(test_session, monkeypat
     assert len(processed) == 6
 
 
-def test_lambda_change_no_partial_continuation(test_session, monkeypatch):
+def test_lambda_change_no_partial_continuation(test_session):
     processed = []
 
     dc.read_values(num=[1, 2, 3, 4, 5, 6], session=test_session).save("nums")
