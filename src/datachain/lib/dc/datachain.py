@@ -639,7 +639,7 @@ class DataChain:
         self,
         name: str,
         project: Project,
-        job_hash: str,
+        chain_hash: str,
         kwargs: dict,
     ) -> "DataChain | None":
         """Check if checkpoint exists and return cached dataset if possible."""
@@ -665,7 +665,7 @@ class DataChain:
         # Search current job first, then previous job — "done" save checkpoints
         # act as a cache keyed by hash.
         found = any(
-            metastore.find_checkpoint(j, job_hash)
+            metastore.find_checkpoint(j, chain_hash)
             for j in (self.job.id, self.job.rerun_from_job_id)
             if j
         )
@@ -735,7 +735,7 @@ class DataChain:
                 step_type=CheckpointStepType.DATASET_SAVE,
                 run_group_id=self.job.run_group_id,
                 dataset_name=full_dataset_name,
-                checkpoint_hash=job_hash,
+                checkpoint_hash=chain_hash,
                 rerun_from_job_id=self.job.rerun_from_job_id,
             )
 
