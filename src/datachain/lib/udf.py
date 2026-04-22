@@ -211,8 +211,8 @@ class UDFBase(AbstractUDF):
         For class-based UDFs, hashes the process method.
 
         When include_body=False, the function body is excluded (identity-only:
-        __qualname__ + defaults). Lambdas always include their bytecode since
-        they share the name '<lambda>'.
+        __module__ + __qualname__ + defaults). Lambdas always include their
+        bytecode since they share the name '<lambda>'.
         """
         # Hash user code: either _func (function-based) or process method (class-based)
         func_to_hash = self._func or self.process

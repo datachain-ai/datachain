@@ -95,7 +95,9 @@ def hash_callable(func, include_body: bool = True):
           → Stable within same Python runtime, may differ across Python versions
         - **Callable objects** (with __call__): Extracts and hashes the __call__ method
     - **include_body=False**:
-        - **Named functions**: Uses __qualname__ only (identity, body ignored).
+        - **Named functions**: Uses __module__ + __qualname__ (identity, body
+          ignored). Module is included to distinguish functions with the same
+          qualname defined in different modules.
         - **Lambdas**: Still hashed by bytecode — they share the name "<lambda>"
           and have no meaningful identity without their body.
 
@@ -120,8 +122,9 @@ def hash_callable(func, include_body: bool = True):
 
     Args:
         func: A callable object (function, lambda, method, or object with __call__)
-        include_body: If False, hash the function identity (__qualname__) instead
-            of its body. Lambdas always hash their bytecode regardless.
+        include_body: If False, hash the function identity (__module__ +
+            __qualname__) instead of its body. Lambdas always hash their
+            bytecode regardless.
 
     Returns:
         str: SHA256 hexdigest of the callable's code and metadata. For unhashable
@@ -136,7 +139,7 @@ def hash_callable(func, include_body: bool = True):
         >>> hash_callable(my_func)  # Uses source code
         'abc123...'
 
-        >>> hash_callable(my_func, include_body=False)  # Uses __qualname__
+        >>> hash_callable(my_func, include_body=False)  # Uses __module__ + __qualname__
         'xyz789...'
 
         >>> hash_callable(lambda x: x * 2)  # Uses bytecode
@@ -191,8 +194,12 @@ def hash_callable(func, include_body: bool = True):
                 )
                 payload = f"unhashable-{uuid4()}"
     else:
-        # Named function, identity only: use __qualname__.
-        payload = getattr(func, "__qualname__", "") or ""
+        # Named function, identity only: use __module__ + __qualname__ to
+        # distinguish functions with the same qualname defined in different
+        # modules.
+        module = getattr(func, "__module__", "") or ""
+        qualname = getattr(func, "__qualname__", "") or ""
+        payload = f"{module}.{qualname}"
 
     # Extras to distinguish functions with same code but different metadata
     extras = {

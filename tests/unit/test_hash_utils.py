@@ -305,6 +305,27 @@ def test_hash_callable_include_body_false_defaults_matter():
     )
 
 
+def test_hash_callable_include_body_false_module_distinguishes_qualname():
+    """Two functions with the same qualname but different modules hash differently."""
+
+    def func_a():
+        return 1
+
+    def func_b():
+        return 1
+
+    # Force identical qualname but different module — simulates two functions
+    # with the same name defined in different modules.
+    func_b.__qualname__ = func_a.__qualname__
+    func_a.__module__ = "pkg.module_a"
+    func_b.__module__ = "pkg.module_b"
+
+    assert func_a.__qualname__ == func_b.__qualname__
+    assert hash_callable(func_a, include_body=False) != hash_callable(
+        func_b, include_body=False
+    )
+
+
 def test_hash_callable_include_body_false_annotations_ignored():
     """Annotations do not affect the identity-only hash."""
 
