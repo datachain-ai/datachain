@@ -1417,9 +1417,18 @@ class UDFStep(Step, ABC):
 
         # Locate the source partial table using the checkpoint's job_id
         try:
-            source_partial_table = self.warehouse.get_table(
+            reflected = self.warehouse.get_table(
                 Checkpoint.partial_output_table_name(checkpoint.job_id, checkpoint.hash)
             )
+            # Restore SQLTypes so downstream reads decode values correctly
+            known_types = {
+                **dict(self.udf.output.items()),
+                **{
+                    c.name: c.type for c in self.warehouse.dataset_row_cls.sys_columns()
+                },
+                **{c.name: c.type for c in self._checkpoint_tracking_columns()},
+            }
+            source_partial_table = coerce_table_types(reflected, known_types)
         except TableMissingError:
             logger.warning(
                 "UDF(%s) [job=%s run_group=%s]: Partial table not found for "
