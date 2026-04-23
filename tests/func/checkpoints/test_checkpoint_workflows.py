@@ -242,11 +242,8 @@ def test_checkpoints_invalid_parent_job_id(test_session, monkeypatch, nums_datas
         dc.read_dataset("nums", session=test_session).save("nums1")
 
 
-def test_checkpoint_with_deleted_dataset_version(
-    test_session, monkeypatch, nums_dataset
-):
+def test_checkpoint_with_deleted_dataset_version(test_session, nums_dataset):
     catalog = test_session.catalog
-    monkeypatch.setenv("DATACHAIN_IGNORE_CHECKPOINTS", str(False))
 
     chain = dc.read_dataset("nums", session=test_session)
 

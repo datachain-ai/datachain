@@ -395,12 +395,7 @@ def test_show_without_temp_datasets(capsys, test_session):
     assert "Empty result" in normalized_output
 
 
-def test_save(test_session, monkeypatch):
-    # Disable checkpoint cache — this test verifies metadata updates across
-    # multiple saves, so each save must create a new version rather than
-    # returning the cached first version.
-    monkeypatch.setenv("DATACHAIN_IGNORE_CHECKPOINTS", "true")
-
+def test_save(test_session, ignore_checkpoints):
     chain = dc.read_values(key=["a", "b", "c"])
     chain.save(
         name="new_name",

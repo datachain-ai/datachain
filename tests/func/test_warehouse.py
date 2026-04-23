@@ -40,11 +40,7 @@ def test_dataset_select_paginated_dataset_larger_than_batch_size(test_session):
     assert set(values) == set(db_values)
 
 
-def test_dataset_insert_batch_size(test_session, warehouse, monkeypatch):
-    # Disable checkpoints — identical chains would otherwise hit the cache
-    # and skip the UDF, defeating the batch-insert assertions below.
-    monkeypatch.setenv("DATACHAIN_IGNORE_CHECKPOINTS", "true")
-
+def test_dataset_insert_batch_size(test_session, warehouse, ignore_checkpoints):
     def udf_map(value: int) -> int:
         return value + 100
 
