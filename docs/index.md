@@ -24,84 +24,95 @@ title: Welcome to DataChain
   </a>
 </p>
 
-<p align="center">
-<em>🔨 Wrangle unstructured AI data at scale</em>
-</p>
+DataChain is a Python-native data platform that unifies files, database records, and structured formats into versioned, typed datasets with automatic lineage tracking. Every operation deposits results into persistent memory that the team and AI agents build on.
 
+```python
+import datachain as dc
 
-DataChain is a Python-based AI-data warehouse for transforming and
-analyzing unstructured data like images, audio, videos, text and PDFs.
-It integrates with external storage (e.g. S3, GCP, Azure, HuggingFace) to process data
-efficiently without data duplication and manages metadata in an internal
-database for easy and efficient querying.
+(
+    dc.read_storage("s3://bucket/images/", type="image")
+    .settings(parallel=8, cache=True)
+    .map(emb=compute_embedding)
+    .save("image_embeddings")   # versioned, named, typed
+)
 
-## Use Cases
+# Later: anyone (or any agent) can build on it
+ds = dc.read_dataset("image_embeddings")
+```
 
-1.  **ETL.** Pythonic framework for describing and running unstructured
-    data transformations and enrichments, applying models to data,
-    including LLMs.
-2.  **Analytics.** DataChain dataset is a table that combines all the
-    information about data objects in one place + it provides
-    DataFrame-like API and vectorized engine to do analytics on these
-    tables at scale.
-3.  **Versioning.** DataChain doesn't store, require moving or copying
-    data. Perfect use case is a bucket with thousands or millions of
-    images, videos, audio, PDFs.
+## Why DataChain
 
-## Key Features
+**Data work produces no persistent memory.** Every pipeline, every exploration, every labeling session produces knowledge -- and that knowledge evaporates when the script finishes. DataChain changes this: every `save()` deposits a versioned, typed, lineage-tracked dataset that the next person or agent starts from.
 
-📂 **Multimodal Dataset Versioning.**
+**Python is the center of gravity for AI data work.** DataChain runs Python operations (ML models, LLM calls, file processing) in parallel and distributed, while metadata operations (filter, join, group_by, aggregate) run at warehouse speed in a columnar SQL engine. Pydantic bridges the two -- Python outputs flatten into efficient columnar storage.
 
-:   -   Version unstructured data without moving or creating data
-        copies, by supporting references to S3, GCP, Azure, and local
-        file systems.
-    -   Multimodal data support: images, video, text, PDFs, JSONs, CSVs,
-        parquet, etc.
-    -   Unite files and metadata together into persistent, versioned,
-        columnar datasets.
+**Files stay where they are.** DataChain never copies data from cloud storage. The intelligence layer operates by reference through the File abstraction.
 
-🐍 **Python-friendly.**
+## Key Capabilities
 
-:   -   Operate on Python objects and object fields: float scores,
-        strings, matrixes, LLM response objects.
-    -   Run Python code in a high-scale, terabytes size datasets, with
-        built-in parallelization and memory-efficient computing --- no
-        SQL or Spark required.
-
-🧠 **Data Enrichment and Processing.**
-
-:   -   Generate metadata using local AI models and LLM APIs.
-    -   Filter, join, and group datasets by metadata. Search by vector
-        embeddings.
-    -   High-performance vectorized operations on Python objects: sum,
-        count, avg, etc.
-    -   Pass datasets to PyTorch and TensorFlow, or export them back
-        into storage.
-
+- **Multimodal dataset versioning** -- images, video, audio, text, PDFs as typed, versioned datasets
+- **Dual execution engine** -- warehouse-speed SQL for metadata, parallel Python for AI operations
+- **Automatic lineage** -- every `save()` records code, dependencies, author, and creation time
+- **LLM and model integration** -- parallelize API calls, serialize structured responses, track costs
+- **Vector search** -- built-in cosine/euclidean/L2 distance functions at SQL speed
+- **Delta updates** -- process only new and changed files on each run
+- **Checkpoints** -- resume from failure without reprocessing
 
 ## Documentation Guide
 
-The following pages provide detailed documentation on DataChain's features, architecture, and usage patterns. You'll learn how to effectively use DataChain for managing and processing unstructured data at scale.
+<div class="grid cards" markdown>
 
-- [🏃🏼‍♂️ Quick Start](quick-start.md): Get up and running with DataChain in no time.
-- [🎯 Examples](examples.md): Explore practical examples and use cases.
-- [📚 Tutorials](tutorials.md): Learn how to use DataChain for specific tasks.
-- [📚 User Guide](guide/index.md): Deeper dive into DataChain technical aspects and supported workflows.
-- [🐍 API Reference](references/index.md): Dive into the technical details and API reference.
-- [🤝 Contributing](contributing.md): Learn how to contribute to DataChain.
+-   **Getting Started**
 
+    ---
 
-<!-- Open source and Studio -->
+    Installation, first pipeline, and the mental model.
+
+    [:octicons-arrow-right-24: Quick Start](quick-start.md) · [Core Concepts](getting-started/core-concepts.md)
+
+-   **Concepts**
+
+    ---
+
+    Why DataChain works the way it does.
+
+    [:octicons-arrow-right-24: Data Memory](concepts/data-memory.md) · [Datasets](concepts/datasets.md) · [Chain](concepts/chain.md) · [Execution Model](concepts/execution-model.md)
+
+-   **Guides**
+
+    ---
+
+    In-depth coverage of each capability.
+
+    [:octicons-arrow-right-24: Reading Data](guide/reading-data.md) · [Operations](guide/operations.md) · [UDFs](guide/udfs.md) · [Datasets](guide/datasets.md) · [Scaling](guide/scaling.md) · [Best Practices](guide/best-practices.md)
+
+-   **Use Cases**
+
+    ---
+
+    Complete workflows for common scenarios.
+
+    [:octicons-arrow-right-24: Unstructured ETL](use-cases/unstructured-data-etl.md) · [LLM Pipelines](use-cases/llm-pipelines.md) · [ML Training](use-cases/ml-training-data.md) · [Analytics](use-cases/multimodal-analytics.md)
+
+-   **API Reference**
+
+    ---
+
+    Auto-generated from docstrings.
+
+    [:octicons-arrow-right-24: DataChain](references/datachain.md) · [Data Types](references/data-types/index.md) · [Functions](references/func.md) · [UDF](references/udf.md)
+
+-   **Studio**
+
+    ---
+
+    Enterprise features: centralized registry, distributed compute, UI.
+
+    [:octicons-arrow-right-24: Studio Guide](studio/index.md)
+
+</div>
 
 ## Open Source and Studio
 
-DataChain is available as an open source project and Studio as a proprietary solution for teams.
-
-- [DataChain Studio](https://studio.datachain.ai/):
-    - **Centralized dataset registry** to manage data, code and dependencies in one place.
-    - **Data Lineage** for data sources as well as derivative dataset.
-    - **UI for Multimodal Data** like images, videos, and PDFs.
-    - **Scalable Compute** to handle large datasets (100M+ files) and in-house AI model inference.
-    - **Access control** including SSO and team based collaboration.
-- [DataChain Open Source](https://github.com/datachain-ai/datachain):
-    - Python-based AI-data warehouse for transforming and analyzing unstructured data like images, audio, videos, text and PDFs.
+- **[DataChain Open Source](https://github.com/datachain-ai/datachain)**: Python library for versioned, typed datasets with automatic lineage.
+- **[DataChain Studio](https://studio.datachain.ai/)**: Centralized dataset registry, ClickHouse-powered analytics, distributed Kubernetes compute, team collaboration, and UI for multimodal data.

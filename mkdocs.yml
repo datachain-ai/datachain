@@ -62,11 +62,50 @@ theme:
 
 nav:
   - Home:
-      - 🔗 Welcome to DataChain: index.md
-      - 🏃🏼‍♂️ Quick Start: quick-start.md
-      - 🎯 Examples: examples.md
-      - 📚 Tutorials: tutorials.md
-      - 🐍 API Reference:
+      - Welcome: index.md
+      - Getting Started:
+          - Overview: getting-started/index.md
+          - Quick Start: quick-start.md
+          - Core Concepts: getting-started/core-concepts.md
+      - Concepts:
+          - Overview: concepts/index.md
+          - Data Memory: concepts/data-memory.md
+          - Datasets: concepts/datasets.md
+          - Chain: concepts/chain.md
+          - Files and Types: concepts/files-and-types.md
+          - Execution Model: concepts/execution-model.md
+          - Provenance: concepts/provenance.md
+          - Knowledge Base: concepts/knowledge-base.md
+      - Guides:
+          - Overview: guide/index.md
+          - Reading Data: guide/reading-data.md
+          - Data Engine Operations: guide/operations.md
+          - Python Operations (UDFs): guide/udfs.md
+          - Exporting Data: guide/exporting-data.md
+          - Working with Datasets: guide/datasets.md
+          - Function Library: guide/functions.md
+          - Scaling and Performance: guide/scaling.md
+          - Multi-Stage Pipelines: guide/multi-stage-pipelines.md
+          - Vector Search: guide/vector-search.md
+          - Best Practices: guide/best-practices.md
+          - Interacting with Remote Storage: guide/remotes.md
+          - Data Processing:
+              - Overview: guide/processing.md
+              - Delta Processing: guide/delta.md
+              - Error Handling and Retries: guide/retry.md
+          - Checkpoints: guide/checkpoints.md
+          - Environment Variables: guide/env.md
+          - Namespaces: guide/namespaces.md
+          - Local DB Migrations: guide/db_migrations.md
+      - Use Cases:
+          - Overview: use-cases/index.md
+          - Unstructured Data ETL: use-cases/unstructured-data-etl.md
+          - LLM Pipelines: use-cases/llm-pipelines.md
+          - ML Training Data: use-cases/ml-training-data.md
+          - Multimodal Analytics: use-cases/multimodal-analytics.md
+      - Examples: examples.md
+      - Tutorials: tutorials.md
+      - API Reference:
           - Overview: references/index.md
           - DataChain: references/datachain.md
           - Data Types:
@@ -94,7 +133,7 @@ nav:
               - String: references/functions/string.md
               - Window: references/functions/window.md
           - Toolkit: references/toolkit.md
-      - 📖 CLI Reference:
+      - CLI Reference:
           - Overview: commands/index.md
           - Commands:
               - gc: commands/gc.md
@@ -116,18 +155,7 @@ nav:
                   - pause: commands/pipeline/pause.md
                   - resume: commands/pipeline/resume.md
                   - remove-job: commands/pipeline/remove-job.md
-      - 📚 User Guide:
-          - Overview: guide/index.md
-          - 📡 Interacting with remote storage: guide/remotes.md
-          - Data Processing:
-              - Overview: guide/processing.md
-              - Delta Processing: guide/delta.md
-              - Errors Handling and Retries: guide/retry.md
-          - Checkpoints: guide/checkpoints.md
-          - Environment Variables: guide/env.md
-          - Namespaces: guide/namespaces.md
-          - Local DB Migrations: guide/db_migrations.md
-      - 🔗 Studio:
+      - Studio:
           - Overview: studio/index.md
           - User Guide:
               - Overview: studio/user-guide/index.md
@@ -186,7 +214,7 @@ nav:
                   - Overview: studio/self-hosting/troubleshooting/index.md
                   - 502 Errors: studio/self-hosting/troubleshooting/502-errors.md
                   - Support Bundle: studio/self-hosting/troubleshooting/support-bundle.md
-      - 🤝 Contributing: contributing.md
+      - Contributing: contributing.md
   - DataChain Website ↗: https://datachain.ai" target="_blank"
   - Studio ↗: https://studio.datachain.ai" target="_blank"
 
