@@ -160,11 +160,6 @@ dc.read_storage("s3://bucket/images/", type="image") \
     .save("image_embeddings",
           description="CLIP embeddings for product images",
           attrs=["NLP", "location=US"])
-
-# Edit metadata after creation
-dc.edit_dataset("image_embeddings",
-                new_name="clip_embeddings",
-                description="Updated CLIP embeddings")
 ```
 
 ## Metrics and Parameters
@@ -212,10 +207,8 @@ CLI commands accept `--studio` or `--local` flags.
 
 ## Studio Sync
 
-```python
-import datachain as dc
+`read_dataset()` auto-falls-back to Studio when a dataset is not found locally. Use the CLI to pull datasets explicitly:
 
-dc.pull_dataset("quant.prod.embeddings")
+```bash
+datachain dataset pull quant.prod.embeddings --studio
 ```
-
-`read_dataset()` auto-falls-back to Studio when a dataset is not found locally.

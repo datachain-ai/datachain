@@ -80,7 +80,7 @@ annotated = images.merge(labels, on="id", right_on="meta.id")
 
 ### Filtering and Selecting
 
-- **filter** / **where** -- keep rows matching a condition
+- **filter** -- keep rows matching a condition
 - **select** -- keep only named columns
 - **select_except** -- drop named columns
 - **limit** / **offset** -- pagination
