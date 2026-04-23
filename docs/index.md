@@ -60,57 +60,26 @@ ds = dc.read_dataset("image_embeddings")
 
 ## Documentation Guide
 
-<div class="grid cards" markdown>
+**Getting Started** -- Installation, first pipeline, and the mental model.
 
--   **Getting Started**
+- [Quick Start](quick-start.md) -- practical examples with code
+- [Core Concepts](getting-started/core-concepts.md) -- Data Memory, Datasets, Chain, Engines
 
-    ---
+**Concepts** -- Why DataChain works the way it does.
 
-    Installation, first pipeline, and the mental model.
+- [Data Memory](concepts/data-memory.md) · [Datasets](concepts/datasets.md) · [Chain](concepts/chain.md) · [Files and Types](concepts/files-and-types.md) · [Execution Model](concepts/execution-model.md) · [Provenance](concepts/provenance.md)
 
-    [:octicons-arrow-right-24: Quick Start](quick-start.md) · [Core Concepts](getting-started/core-concepts.md)
+**Guides** -- In-depth coverage of each capability.
 
--   **Concepts**
+- [Reading Data](guide/reading-data.md) · [Operations](guide/operations.md) · [UDFs](guide/udfs.md) · [Exporting Data](guide/exporting-data.md) · [Datasets](guide/datasets.md) · [Functions](guide/functions.md) · [Scaling](guide/scaling.md) · [Best Practices](guide/best-practices.md)
 
-    ---
+**Use Cases** -- Complete workflows for common scenarios.
 
-    Why DataChain works the way it does.
+- [Unstructured Data ETL](use-cases/unstructured-data-etl.md) · [LLM Pipelines](use-cases/llm-pipelines.md) · [ML Training Data](use-cases/ml-training-data.md) · [Multimodal Analytics](use-cases/multimodal-analytics.md)
 
-    [:octicons-arrow-right-24: Data Memory](concepts/data-memory.md) · [Datasets](concepts/datasets.md) · [Chain](concepts/chain.md) · [Execution Model](concepts/execution-model.md)
+**Reference**
 
--   **Guides**
-
-    ---
-
-    In-depth coverage of each capability.
-
-    [:octicons-arrow-right-24: Reading Data](guide/reading-data.md) · [Operations](guide/operations.md) · [UDFs](guide/udfs.md) · [Datasets](guide/datasets.md) · [Scaling](guide/scaling.md) · [Best Practices](guide/best-practices.md)
-
--   **Use Cases**
-
-    ---
-
-    Complete workflows for common scenarios.
-
-    [:octicons-arrow-right-24: Unstructured ETL](use-cases/unstructured-data-etl.md) · [LLM Pipelines](use-cases/llm-pipelines.md) · [ML Training](use-cases/ml-training-data.md) · [Analytics](use-cases/multimodal-analytics.md)
-
--   **API Reference**
-
-    ---
-
-    Auto-generated from docstrings.
-
-    [:octicons-arrow-right-24: DataChain](references/datachain.md) · [Data Types](references/data-types/index.md) · [Functions](references/func.md) · [UDF](references/udf.md)
-
--   **Studio**
-
-    ---
-
-    Enterprise features: centralized registry, distributed compute, UI.
-
-    [:octicons-arrow-right-24: Studio Guide](studio/index.md)
-
-</div>
+- [API Reference](references/index.md) · [CLI Reference](commands/index.md) · [Studio](studio/index.md) · [Contributing](contributing.md)
 
 ## Open Source and Studio
 
