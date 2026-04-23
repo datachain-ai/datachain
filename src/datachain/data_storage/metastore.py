@@ -588,12 +588,8 @@ class AbstractMetastore(ABC, Serializable):
     def get_checkpoint_by_id(self, checkpoint_id: str) -> Checkpoint:
         """Gets single checkpoint by id"""
 
-    def find_checkpoint(
-        self, job_id: str, _hash: str, partial: bool = False
-    ) -> Checkpoint | None:
-        """
-        Tries to find checkpoint for a job with specific hash and optionally partial
-        """
+    def find_checkpoint(self, job_id: str, _hash: str) -> Checkpoint | None:
+        """Tries to find an active checkpoint for a job with specific hash."""
 
     @abstractmethod
     def get_or_create_checkpoint(
@@ -2569,7 +2565,7 @@ class AbstractDBMetastore(AbstractMetastore):
 
             self.db.execute(query)
 
-            checkpoint = self.find_checkpoint(job_id, _hash, partial=partial)
+            checkpoint = self.find_checkpoint(job_id, _hash)
             if checkpoint is None:
                 raise RuntimeError(
                     f"Checkpoint should exist after get_or_create for job_id={job_id}, "
@@ -2601,9 +2597,7 @@ class AbstractDBMetastore(AbstractMetastore):
             raise CheckpointNotFoundError(f"Checkpoint {checkpoint_id} not found")
         return self.checkpoint_class.parse(*rows[0])
 
-    def find_checkpoint(
-        self, job_id: str, _hash: str, partial: bool = False
-    ) -> Checkpoint | None:
+    def find_checkpoint(self, job_id: str, _hash: str) -> Checkpoint | None:
         """
         Tries to find an active checkpoint for a job with specific hash.
         Ignores expired and deleted checkpoints.
@@ -2612,7 +2606,6 @@ class AbstractDBMetastore(AbstractMetastore):
         query = self._checkpoints_select(ch).where(
             ch.c.job_id == job_id,
             ch.c.hash == _hash,
-            ch.c.partial == partial,
             ch.c.status == CheckpointStatus.ACTIVE,
         )
         rows = list(self.db.execute(query))

@@ -714,6 +714,48 @@ def test_aggregator_continue_from_partial(test_session, nums_letters):
     assert first_run_count + second_run_count == 3
 
 
+def test_aggregator_continue_from_partial_same_job(test_session, nums_letters):
+    """Retry a partition_by aggregator inside the same job after a partial failure.
+
+    The partial checkpoint is created in job X; when we retry without
+    resetting the session job, `job.id` still equals the partial's `job_id`,
+    so the partition table is reused directly (no cross-job copy).
+    """
+    processed_partitions = []
+    should_fail = True
+
+    def aggregator(letter, num) -> Iterator[tuple[str, int]]:
+        if should_fail and len(processed_partitions) >= 2:
+            raise Exception("Simulated failure")
+        processed_partitions.append(list(num))
+        yield letter[0], sum(num)
+
+    reset_session_job_state()
+    chain = dc.read_dataset("nums_letters", session=test_session).settings(batch_size=1)
+
+    with pytest.raises(Exception, match="Simulated failure"):
+        chain.agg(total=aggregator, partition_by="letter").save("agg_results")
+
+    first_run_count = len(processed_partitions)
+    assert first_run_count == 2
+
+    # Retry in the SAME job — no reset_session_job_state.
+    processed_partitions.clear()
+    should_fail = False
+    chain.agg(total=aggregator, partition_by="letter").save("agg_results")
+
+    second_run_count = len(processed_partitions)
+    assert second_run_count < 3
+    assert first_run_count + second_run_count == 3
+
+    result = sorted(
+        dc.read_dataset("agg_results", session=test_session).to_list(
+            "total_0", "total_1"
+        )
+    )
+    assert result == sorted([("A", 3), ("B", 7), ("C", 11)])
+
+
 def test_aggregator_skip_completed(test_session, nums_letters):
     call_count = []
 

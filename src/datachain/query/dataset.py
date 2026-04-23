@@ -991,9 +991,7 @@ class UDFStep(Step, ABC):
             rows_output_reused,
         )
 
-    def _find_udf_checkpoint(
-        self, job: "Job", _hash: str, partial: bool = False
-    ) -> Checkpoint | None:
+    def _find_udf_checkpoint(self, job: "Job", _hash: str) -> Checkpoint | None:
         """
         Find a reusable UDF checkpoint for the given hash.
         Searches current job first, then previous job.
@@ -1005,18 +1003,14 @@ class UDFStep(Step, ABC):
 
         # Search current job first, then previous job
         for job_id in [job.id, job.rerun_from_job_id]:
-            if job_id and (
-                checkpoint := self.metastore.find_checkpoint(
-                    job_id, _hash, partial=partial
-                )
-            ):
+            if job_id and (checkpoint := self.metastore.find_checkpoint(job_id, _hash)):
                 logger.debug(
                     "UDF(%s) [job=%s run_group=%s]: Found %scheckpoint "
                     "hash=%s from job_id=%s",
                     self._udf_name,
                     self._job_id_short(job),
                     self._run_group_id_short(job),
-                    "partial " if partial else "",
+                    "partial " if checkpoint.partial else "",
                     _hash[:8],
                     checkpoint.job_id,
                 )
@@ -1175,9 +1169,7 @@ class UDFStep(Step, ABC):
 
             ch = self._find_udf_checkpoint(job, hash_output)
             ch_partial = (
-                self._find_udf_checkpoint(job, partial_hash, partial=True)
-                if not ch
-                else None
+                self._find_udf_checkpoint(job, partial_hash) if not ch else None
             )
 
             _skip = bool(ch)
