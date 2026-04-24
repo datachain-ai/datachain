@@ -24,9 +24,9 @@ In-depth coverage of DataChain capabilities. Start with **Get Data In** and **Tr
 
 ## Datasets
 
-- [Working with Datasets](datasets.md) -- creating, versioning, namespaces, comparing, management, metrics
+- [Datasets](datasets.md) -- creating, versioning, namespaces, comparing, management, metrics
 
-## Agents
+## Knowledge Base
 
 - [Knowledge Base](knowledge-base.md) -- skill installation, `dc-knowledge/` generation, agent workflow, browsing
 

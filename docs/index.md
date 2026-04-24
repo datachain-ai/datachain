@@ -30,10 +30,12 @@ DataChain is the data memory layer for AI. Every pipeline, every exploration, ev
 
 Task: find dogs in S3 similar to a reference image, filtered by breed, mask availability, and image dimensions.
 
+Copy file for the example:
 ```bash
 datachain cp --anon s3://dc-readme/fiona.jpg .
 ```
 
+Enter prompt in Claude Code / Codex or Cursor:
 ```prompt
 Find dogs in s3://dc-readme/oxford-pets-micro/ similar to fiona.jpg:
   - Pull breed metadata and mask files from annotations/
@@ -42,6 +44,7 @@ Find dogs in s3://dc-readme/oxford-pets-micro/ similar to fiona.jpg:
   - Only include images wider than 400px
 ```
 
+Result:
 ```
 ┌──────┬───────────────────────────────────┬────────────────────────────┬──────────┐
 │ Rank │               Image               │           Breed            │ Distance │
@@ -54,19 +57,9 @@ Find dogs in s3://dc-readme/oxford-pets-micro/ similar to fiona.jpg:
 └──────┴───────────────────────────────────┴────────────────────────────┴──────────┘
 ```
 
-The agent decomposed this into embedding, metadata, and filtering steps -- each saved as a named dataset. Next time, it starts from what's already built.
+The agent decomposed this into embedding, metadata, and filtering steps -- each saved as a named **dataset**. Next time, it starts from what's already built.
 
-```
-dc-knowledge
-├── buckets
-│   └── s3
-│       └── dc_readme.md
-├── datasets
-│   ├── oxford_micro_dog_breeds.md
-│   ├── oxford_micro_dog_embeddings.md
-│   └── similar_to_fiona.md
-└── index.md
-```
+The datasets are registered in a knowledge base in directory `dc-knowledge` optimized for both agents and humans. Browse it as markdown files, or open in Obsidian:
 
 ![Visualize data knowledge base](assets/readme_obsidian.gif)
 

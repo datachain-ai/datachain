@@ -88,10 +88,8 @@ nav:
               - Vector Search: guide/vector-search.md
           - Get Data Out:
               - Exporting Data: guide/exporting-data.md
-          - Datasets:
-              - Working with Datasets: guide/datasets.md
-          - Agents:
-              - Knowledge Base: guide/knowledge-base.md
+          - Datasets: guide/datasets.md
+          - Knowledge Base: guide/knowledge-base.md
           - Scale and Recover:
               - Scaling and Performance: guide/scaling.md
               - Delta Processing: guide/delta.md
