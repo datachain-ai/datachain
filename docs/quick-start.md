@@ -1,8 +1,8 @@
 ---
-title: Quick Start
+title: "Quick Start: Python"
 ---
 
-# Quick Start
+# Quick Start: Python
 
 ## Installation
 
@@ -18,6 +18,22 @@ title: Quick Start
     uv add datachain
     ```
 
+## Import Convention
+
+Always import DataChain as a module:
+
+```python
+import datachain as dc
+```
+
+Access everything through the `dc.*` prefix: `dc.read_storage()`, `dc.Column()`, `dc.func.*`, `dc.File`, `dc.ImageFile`, etc.
+
+For annotation types and custom models:
+
+```python
+from datachain import model      # BBox, Pose, Segment, etc.
+from pydantic import BaseModel   # for custom types
+```
 
 ## Selecting files using JSON metadata
 

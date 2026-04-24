@@ -24,64 +24,13 @@ title: Welcome to DataChain
   </a>
 </p>
 
-DataChain is the data memory layer for AI. Every pipeline, every exploration, every labeling session produces knowledge -- and that knowledge evaporates when the script finishes. DataChain changes this: every `.save()` deposits a versioned, typed, lineage-tracked dataset that the next person or agent starts from.
+DataChain is data memory for AI.
 
-## See it in action
-
-Task: find dogs in S3 similar to a reference image, filtered by breed, mask availability, and image dimensions.
-
-Copy file for the example:
-```bash
-datachain cp --anon s3://dc-readme/fiona.jpg .
-```
-
-Enter prompt in Claude Code / Codex or Cursor:
-```prompt
-Find dogs in s3://dc-readme/oxford-pets-micro/ similar to fiona.jpg:
-  - Pull breed metadata and mask files from annotations/
-  - Exclude images without mask
-  - Exclude Cocker Spaniels
-  - Only include images wider than 400px
-```
-
-Result:
-```
-┌──────┬───────────────────────────────────┬────────────────────────────┬──────────┐
-│ Rank │               Image               │           Breed            │ Distance │
-├──────┼───────────────────────────────────┼────────────────────────────┼──────────┤
-│    1 │ shiba_inu_52.jpg                  │ shiba_inu                  │    0.244 │
-├──────┼───────────────────────────────────┼────────────────────────────┼──────────┤
-│    2 │ shiba_inu_53.jpg                  │ shiba_inu                  │    0.323 │
-├──────┼───────────────────────────────────┼────────────────────────────┼──────────┤
-│    3 │ great_pyrenees_17.jpg             │ great_pyrenees             │    0.325 │
-└──────┴───────────────────────────────────┴────────────────────────────┴──────────┘
-```
-
-The agent decomposed this into embedding, metadata, and filtering steps -- each saved as a named **dataset**. Next time, it starts from what's already built.
-
-The datasets are registered in a knowledge base in directory `dc-knowledge` optimized for both agents and humans. Browse it as markdown files, or open in Obsidian:
-
-![Visualize data knowledge base](assets/readme_obsidian.gif)
-
-## Or write pipelines directly
-
-```python
-import datachain as dc
-
-(
-    dc.read_storage("s3://bucket/images/", type="image")
-    .settings(parallel=8, cache=True)
-    .map(emb=compute_embedding)
-    .save("image_embeddings")   # versioned, named, typed
-)
-
-# Later: anyone (or any agent) can build on it
-ds = dc.read_dataset("image_embeddings")
-```
+AI pipelines are amnesiac. Every team re-computes embeddings, re-parses annotations, re-filters datasets -- because nothing remembers that the work was already done. DataChain makes every operation deposit a versioned, typed dataset. Knowledge accumulates instead of evaporating.
 
 ## Next Steps
 
-- **[Quick Start](quick-start.md)** -- install DataChain and run your first pipeline
+- **[Quick Start: Agents](getting-started/agents.md)** -- use DataChain from Claude Code, Cursor, or Codex
+- **[Quick Start: Python](quick-start.md)** -- write pipelines with the DataChain SDK
 - **[Core Concepts](getting-started/core-concepts.md)** -- understand Data Memory, Datasets, and the dual engine
 - **[Guides](guide/index.md)** -- in-depth coverage of every capability
-- **[Best Practices](guide/best-practices.md)** -- rules for writing correct DataChain code
