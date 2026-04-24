@@ -13,12 +13,14 @@ for sqlite we can use `sqlite.register_converter`
 """
 
 import numbers
-from datetime import datetime
+import re
+from datetime import date, datetime
 from types import MappingProxyType
 from typing import Any, Union
 
 import sqlalchemy as sa
 from sqlalchemy import TypeDecorator, types
+from sqlalchemy.exc import CompileError
 
 from datachain import json as jsonlib
 from datachain.lib.data_model import StandardType
@@ -36,6 +38,43 @@ _db_defaults_registry: dict[str, "DBDefaults"] = {}
 db_defaults_registry = MappingProxyType(_db_defaults_registry)
 
 NullType = types.NullType
+
+_DATETIME_EXTRA_FRACTION_RE = re.compile(r"(\.\d{6})\d+")
+_DATETIME_CAST_INPUT_TYPES = frozenset({str, bytes, date, datetime})
+
+
+def parse_datetime_text(value: str) -> datetime:
+    normalized = value.replace("Z", "+00:00") if value.endswith("Z") else value
+    try:
+        return datetime.fromisoformat(normalized)
+    except ValueError:
+        # Python 3.10 rejects ISO timestamps with more than 6 fractional digits,
+        # while newer versions truncate them to microseconds. Trim and retry so
+        # parsing stays compatible across our supported Python versions.
+        truncated = _DATETIME_EXTRA_FRACTION_RE.sub(r"\1", normalized)
+        if truncated == normalized:
+            raise
+        return datetime.fromisoformat(truncated)
+
+
+def datetime_cast_input_error_message(type_name: str) -> str:
+    return (
+        "func.cast(..., datetime) only supports string, bytes, date, or "
+        f"datetime inputs; got {type_name}"
+    )
+
+
+def validate_datetime_cast_input_type(type_) -> None:
+    try:
+        python_type = type_.python_type
+    except (AttributeError, NotImplementedError):
+        return
+
+    if python_type in _DATETIME_CAST_INPUT_TYPES:
+        return
+
+    python_type_name = getattr(python_type, "__name__", repr(python_type))
+    raise CompileError(datetime_cast_input_error_message(python_type_name))
 
 
 def register_backend_types(dialect_name: str, type_cls):
@@ -501,7 +540,19 @@ class TypeReadConverter:
         return value
 
     def datetime(self, value):
-        return value
+        if value is None:
+            return value
+
+        if isinstance(value, datetime):
+            return value
+
+        if isinstance(value, str):
+            return parse_datetime_text(value)
+
+        raise TypeError(
+            "datetime read converter expected str, datetime, or None; "
+            f"got {type(value).__name__}"
+        )
 
     def binary(self, value):
         if isinstance(value, str):

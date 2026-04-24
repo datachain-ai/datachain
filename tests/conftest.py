@@ -32,6 +32,7 @@ from datachain.dataset import (
     DatasetRecord,
     DatasetVersion,
 )
+from datachain.error import DatasetNotFoundError
 from datachain.lib.dc import Sys
 from datachain.namespace import Namespace
 from datachain.project import Project
@@ -54,6 +55,12 @@ collect_ignore = ["setup.py"]
 @pytest.fixture(scope="session", autouse=True)
 def add_test_env():
     os.environ["DATACHAIN_TEST"] = "true"
+
+
+@pytest.fixture
+def ignore_checkpoints(monkeypatch):
+    """Disable the checkpoint cache for the test (DATACHAIN_IGNORE_CHECKPOINTS=True)."""
+    monkeypatch.setenv("DATACHAIN_IGNORE_CHECKPOINTS", "True")
 
 
 @pytest.fixture(autouse=True)
@@ -615,19 +622,49 @@ def cloud_test_catalog_tmpfile(
 
 @pytest.fixture
 def is_studio():
-    return True
+    return False
 
 
 @pytest.fixture(autouse=True)
 def mock_is_studio(monkeypatch, is_studio):
     if is_studio:
         monkeypatch.setenv("DATACHAIN_IS_STUDIO", "True")
+    else:
+        monkeypatch.delenv("DATACHAIN_IS_STUDIO", raising=False)
     yield
 
 
 @pytest.fixture
+def studio_job(test_session, is_studio, monkeypatch):
+    """Pre-create a job for tests that need is_studio=True with job creation."""
+    if is_studio:
+        job_id = _create_job(test_session.catalog.metastore)
+        monkeypatch.setenv("DATACHAIN_JOB_ID", job_id)
+        return job_id
+    return None
+
+
+@pytest.fixture
+def no_studio_dataset(monkeypatch):
+    """Stub remote Studio dataset lookup to behave as "not found".
+
+    Useful for tests that assert DatasetNotFoundError on a missing local
+    dataset/version, where the catalog would otherwise fall back to the Studio
+    API — which, without Studio credentials, crashes with DataChainError.
+    Opt-in so tests that actually exercise Studio communication stay untouched.
+    """
+
+    def _not_found(self, namespace, project, name):
+        raise DatasetNotFoundError(f"Dataset {namespace}.{project}.{name} not found")
+
+    monkeypatch.setattr(Catalog, "get_remote_dataset", _not_found)
+
+
+@pytest.fixture
 def project(test_session):
-    return dc.create_project("dev", "animals", "Animals project")
+    return test_session.catalog.metastore.create_project(
+        "dev", "animals", description="Animals project"
+    )
 
 
 @pytest.fixture
@@ -711,6 +748,7 @@ def dataset_record():
                 script_output="",
                 schema=None,
                 _preview_data=[],
+                _preview_loaded=True,
             )
         ],
         _versions_loaded=True,

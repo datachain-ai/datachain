@@ -529,7 +529,7 @@ def test_dataset_stats(test_session):
     assert dataset_version2.size == 18
 
 
-def test_ls_datasets_ordered(test_session):
+def test_ls_datasets_ordered(test_session, ignore_checkpoints):
     ids = [1, 2, 3]
     values = tuple(zip(["a", "b", "c"], ids, strict=False))
 

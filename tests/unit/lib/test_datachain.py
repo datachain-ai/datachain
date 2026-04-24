@@ -27,6 +27,7 @@ from datachain.error import (
     InvalidProjectNameError,
     ProjectCreateNotAllowedError,
 )
+from datachain.func import string
 from datachain.lib.data_model import DataModel
 from datachain.lib.dc import C, DatasetPrepareError, Sys
 from datachain.lib.dc.listings import read_listing_dataset
@@ -2092,6 +2093,62 @@ def test_order_by_with_nested_columns(test_session, with_function):
     ]
 
 
+def test_order_by_with_column_expression(test_session):
+    chain = dc.read_values(id=[2, 1, 3], session=test_session).order_by(
+        dc.C("id"), descending=True
+    )
+
+    assert chain.to_values("id") == [3, 2, 1]
+
+
+def test_order_by_with_multi_column_expression(test_session):
+    chain = dc.read_values(
+        row_id=[1, 2, 3],
+        a=[10, 1, 5],
+        b=[1, 20, 2],
+        session=test_session,
+    ).order_by(dc.C("a") + dc.C("b"), descending=True)
+
+    assert chain.to_values("row_id") == [2, 1, 3]
+
+
+def test_order_by_with_multiple_expression_keys_descending(test_session):
+    chain = dc.read_values(
+        row_id=[1, 2, 3, 4],
+        a=[1, 1, 1, 2],
+        b=[1, 1, 2, 0],
+        c=[1, 3, 0, 2],
+        session=test_session,
+    ).order_by(dc.C("a") + dc.C("b"), dc.C("c") * 2, descending=True)
+
+    assert chain.to_values("row_id") == [3, 2, 4, 1]
+
+
+def test_order_by_with_labeled_expression(test_session):
+    chain = dc.read_values(
+        row_id=[1, 2, 3],
+        a=[10, 1, 5],
+        b=[1, 20, 2],
+        session=test_session,
+    ).order_by((dc.C("a") + dc.C("b")).label("ab_total"), descending=True)
+
+    assert chain.to_values("row_id") == [2, 1, 3]
+
+
+def test_order_by_with_func_and_column_expression(test_session):
+    files = [
+        File(source="s3://bucket", path="a.txt", size=5),
+        File(source="s3://bucket", path="ccc.txt", size=4),
+        File(source="s3://bucket", path="bb.txt", size=6),
+    ]
+
+    chain = dc.read_values(file=files, session=test_session).order_by(
+        func.string.length(dc.C("file.path")) + dc.C("file.size")
+    )
+
+    assert chain.to_values("file.path") == ["a.txt", "ccc.txt", "bb.txt"]
+
+
 def test_order_by_to_list(test_session):
     numbers = [6, 2, 3, 1, 5, 7, 4]
     letters = ["u", "y", "x", "z", "v", "t", "w"]
@@ -2292,6 +2349,39 @@ def test_gen_limit(test_session):
     assert ds.limit(3).gen(res=func).limit(2).count() == 2
     assert ds.limit(2).gen(res=func).limit(3).count() == 3
     assert ds.limit(3).gen(res=func).limit(10).count() == 9
+
+
+def test_gen_returns_none(test_session):
+    def gen_none(val: int) -> Iterator[str]:
+        return None  # type: ignore[return-value]
+
+    chain = dc.read_values(val=[1, 2, 3], session=test_session).gen(
+        out=gen_none, output=str
+    )
+    assert chain.to_list("out") == []
+
+
+def test_gen_some_inputs_return_none(test_session):
+    def gen_mixed(val: int) -> Iterator[int]:
+        if val % 2 == 0:
+            yield val * 10
+        else:
+            return
+
+    chain = dc.read_values(val=[1, 2, 3, 4], session=test_session).gen(
+        out=gen_mixed, output=int
+    )
+    assert sorted(chain.to_values("out")) == [20, 40]
+
+
+def test_agg_returns_none(test_session):
+    def agg_none(val: list[int]) -> Iterator[int]:
+        return None  # type: ignore[return-value]
+
+    chain = dc.read_values(val=[1, 2, 3], session=test_session).agg(
+        out=agg_none, partition_by="val", output=int
+    )
+    assert chain.to_list("out") == []
 
 
 def test_gen_filter(test_session):
@@ -3014,8 +3104,6 @@ def test_filter_chaining(test_session):
 
 def test_filter_with_func_operations(test_session):
     """Test filter with datachain.func operations."""
-    from datachain.func import string
-
     chain = dc.read_values(
         names=["Alice", "Bob", "Charlie", "David", "Eva"],
         ages=[25, 30, 35, 40, 45],
@@ -3026,6 +3114,48 @@ def test_filter_with_func_operations(test_session):
     filtered_chain = chain.filter(string.length(C("names")) > 4)
     assert filtered_chain.count() == 3
     assert sorted(filtered_chain.to_values("names")) == ["Alice", "Charlie", "David"]
+
+
+def test_filter_resolves_func_with_string_column_operand(test_session):
+    chain = dc.read_values(
+        names=["Al", "Bob", "Charlie", "Dora"],
+        session=test_session,
+    )
+
+    filtered_chain = chain.filter(string.length("names") > 3)
+
+    assert sorted(filtered_chain.to_values("names")) == ["Charlie", "Dora"]
+
+
+def test_filter_resolves_column_expr_with_embedded_func(test_session):
+    chain = dc.read_values(
+        path=["a/x.txt", "a/y.txt", "b/z.txt"],
+        parent=["a", "wrong", "b"],
+        session=test_session,
+    )
+
+    filtered_chain = chain.filter(C("parent") == func.path.parent("path"))
+
+    assert filtered_chain.order_by("path").to_values("path") == [
+        "a/x.txt",
+        "b/z.txt",
+    ]
+
+
+def test_filter_resolves_mixed_plain_and_function_predicates(test_session):
+    chain = dc.read_values(
+        numbers=[1, 2, 3],
+        path=["a/x.txt", "a/y.txt", "b/z.txt"],
+        parent=["a", "wrong", "b"],
+        session=test_session,
+    )
+
+    filtered_chain = chain.filter(
+        (C("numbers") > 1) & (C("parent") == func.path.parent("path"))
+    )
+
+    assert filtered_chain.order_by("path").to_values("path") == ["b/z.txt"]
+    assert filtered_chain.to_values("numbers") == [3]
 
 
 def test_filter_with_boolean_nested_model(test_session):
@@ -3537,6 +3667,81 @@ def test_group_by_str(test_session):
     )
 
 
+def test_group_by_accepts_expression_operands_in_aggregates(test_session):
+    from datachain import func
+
+    files = [
+        File(source="s3://bucket", path="ant.txt", size=10),
+        File(source="s3://bucket", path="bee.txt", size=20),
+        File(source="s3://bucket", path="cat.csv", size=30),
+        File(source="s3://bucket", path="dog.csv", size=40),
+    ]
+
+    ds = (
+        dc.read_values(
+            grp=["x", "x", "y", "y"],
+            file=files,
+            left=[1, 2, 3, 4],
+            right=[4, 5, 6, 7],
+            session=test_session,
+        )
+        .order_by("grp", "file.path")
+        .group_by(
+            stem_count=func.count(func.path.file_stem("file.path")),
+            sum_total=func.sum(dc.C("left") + dc.C("right")),
+            avg_total=func.avg(dc.C("left") + dc.C("right")),
+            min_stem=func.min(func.path.file_stem("file.path")),
+            max_total=func.max(dc.C("left") + dc.C("right")),
+            any_stem=func.any_value(func.path.file_stem("file.path")),
+            stems=func.collect(func.path.file_stem("file.path")),
+            stem_concat=func.concat(
+                func.path.file_stem("file.path"),
+                separator=",",
+            ),
+            partition_by="grp",
+        )
+    )
+
+    assert ds.signals_schema.serialize() == {
+        "grp": "str",
+        "stem_count": "int",
+        "sum_total": "int",
+        "avg_total": "float",
+        "min_stem": "str",
+        "max_total": "int",
+        "any_stem": "str",
+        "stems": "list[str]",
+        "stem_concat": "str",
+    }
+    assert sorted_dicts(ds.to_records(), "grp") == sorted_dicts(
+        [
+            {
+                "grp": "x",
+                "stem_count": 2,
+                "sum_total": 12,
+                "avg_total": 6.0,
+                "min_stem": "ant",
+                "max_total": 7,
+                "any_stem": ANY_VALUE("ant", "bee"),
+                "stems": ["ant", "bee"],
+                "stem_concat": "ant,bee",
+            },
+            {
+                "grp": "y",
+                "stem_count": 2,
+                "sum_total": 20,
+                "avg_total": 10.0,
+                "min_stem": "cat",
+                "max_total": 11,
+                "any_stem": ANY_VALUE("cat", "dog"),
+                "stems": ["cat", "dog"],
+                "stem_concat": "cat,dog",
+            },
+        ],
+        "grp",
+    )
+
+
 def test_group_by_multiple_partition_by(test_session):
     from datachain import func
 
@@ -3799,6 +4004,46 @@ def test_group_by_case(test_session):
     ]
 
 
+def test_group_by_accepts_labeled_expression_operand(test_session):
+    chain = dc.read_values(
+        num=[1, 2, 3],
+        session=test_session,
+    )
+
+    result = chain.group_by(total=func.sum((C("num") + 1).label("x"))).to_records()
+
+    assert result == [{"total": 9}]
+
+
+def test_group_by_infers_type_for_labeled_multi_column_expression(test_session):
+    chain = dc.read_values(
+        a=[1, 2],
+        b=[3, 4],
+        session=test_session,
+    )
+
+    grouped = chain.group_by(total=func.sum((C("a") + C("b")).label("x")))
+
+    assert grouped.signals_schema.serialize() == {"total": "int"}
+    assert grouped.to_records() == [{"total": 10}]
+
+
+def test_mutate_accepts_labeled_multi_column_expression(test_session):
+    chain = dc.read_values(
+        a=[1, 2],
+        b=[3, 4],
+        session=test_session,
+    )
+
+    mutated = chain.mutate(total=(C("a") + C("b")).label("x"))
+
+    assert mutated.schema == {"a": int, "b": int, "total": int}
+    assert sorted_dicts(mutated.to_records(), "a") == [
+        {"a": 1, "b": 3, "total": 4},
+        {"a": 2, "b": 4, "total": 6},
+    ]
+
+
 @pytest.mark.parametrize("desc", [True, False])
 def test_window_functions(test_session, desc):
     from datachain import func
@@ -3879,6 +4124,42 @@ def test_window_functions(test_session, desc):
         "col1",
         "col2",
     )
+
+
+def test_window_first_accepts_nested_func_operand(test_session):
+    from datachain import func
+
+    files = [
+        File(source="s3://bucket", path="bee.txt", size=20),
+        File(source="s3://bucket", path="ant.txt", size=10),
+        File(source="s3://bucket", path="dog.csv", size=40),
+        File(source="s3://bucket", path="cat.csv", size=30),
+    ]
+    window = func.window(partition_by="grp", order_by="file.size")
+
+    ds = dc.read_values(
+        grp=["x", "x", "y", "y"],
+        file=files,
+        session=test_session,
+    ).mutate(
+        first_stem=func.first(func.path.file_stem("file.path")).over(window),
+    )
+
+    assert ds.schema == {
+        "grp": str,
+        "file": File,
+        "first_stem": str,
+    }
+
+    assert sorted(
+        (grp, file.path, first_stem)
+        for grp, file, first_stem in ds.to_list("grp", "file", "first_stem")
+    ) == [
+        ("x", "ant.txt", "ant"),
+        ("x", "bee.txt", "ant"),
+        ("y", "cat.csv", "cat"),
+        ("y", "dog.csv", "cat"),
+    ]
 
 
 def test_window_error(test_session):
@@ -4052,7 +4333,7 @@ def test_delete_dataset_cached_from_studio(
         ("major", ["1.0.0", "2.0.0", "3.0.0"]),
     ],
 )
-def test_update_versions(test_session, update_version, versions):
+def test_update_versions(test_session, update_version, versions, ignore_checkpoints):
     ds_name = "fibonacci"
     chain = dc.read_values(fib=[1, 1, 2, 3, 5, 8], session=test_session)
     chain.save(ds_name, update_version=update_version)
@@ -4068,7 +4349,7 @@ def test_update_versions(test_session, update_version, versions):
     ) == sorted(versions)
 
 
-def test_update_versions_mix_major_minor_patch(test_session):
+def test_update_versions_mix_major_minor_patch(test_session, ignore_checkpoints):
     ds_name = "fibonacci"
     chain = dc.read_values(fib=[1, 1, 2, 3, 5, 8], session=test_session)
     chain.save(ds_name)
@@ -4154,7 +4435,7 @@ def test_semver_preview_ok(test_session):
 
 
 @pytest.mark.parametrize("is_studio", [True, False])
-def test_save_to_default_project(test_session, is_studio):
+def test_save_to_default_project(test_session, is_studio, studio_job):
     catalog = test_session.catalog
     ds_name = "fibonacci"
     dc.read_values(fib=[1, 1, 2, 3, 5, 8], session=test_session).save(ds_name)
@@ -4163,7 +4444,9 @@ def test_save_to_default_project(test_session, is_studio):
 
 
 @pytest.mark.parametrize("is_studio", [True, False])
-def test_save_to_default_project_with_read_storage(tmp_dir, test_session, is_studio):
+def test_save_to_default_project_with_read_storage(
+    tmp_dir, test_session, is_studio, studio_job
+):
     catalog = test_session.catalog
     ds_name = "parquet_ds"
 
@@ -4177,10 +4460,11 @@ def test_save_to_default_project_with_read_storage(tmp_dir, test_session, is_stu
     assert ds.dataset.project == catalog.metastore.default_project
 
 
+@pytest.mark.parametrize("is_studio", [True])
 @pytest.mark.parametrize("use_settings", (False,))
 @pytest.mark.parametrize("project_created_upfront", (False,))
 def test_save_to_non_default_namespace_and_project(
-    test_session, use_settings, project_created_upfront
+    test_session, is_studio, studio_job, use_settings, project_created_upfront
 ):
     catalog = test_session.catalog
     if project_created_upfront:
@@ -4202,20 +4486,18 @@ def test_save_to_non_default_namespace_and_project(
         dc.read_dataset(name="fibonacci")
 
 
-def test_dataset_not_found_in_default_project(test_session):
-    metastore = test_session.catalog.metastore
-    with pytest.raises(DatasetNotFoundError) as excinfo:
+def test_dataset_not_found_in_default_project(test_session, no_studio_dataset):
+    with pytest.raises(DatasetNotFoundError):
         dc.read_dataset("fibonacci")
-    assert str(excinfo.value) == (
-        f"Dataset fibonacci not found in namespace {metastore.default_namespace_name}"
-        f" and project {metastore.default_project_name}"
-    )
 
 
+@pytest.mark.parametrize("is_studio", [True])
 @pytest.mark.parametrize("project_created", (True, False))
-def test_dataset_not_found_in_non_default_project(test_session, project_created):
+def test_dataset_not_found_in_non_default_project(
+    test_session, is_studio, studio_job, project_created
+):
     if project_created:
-        dc.create_project("dev", "numbers")
+        test_session.catalog.metastore.create_project("dev", "numbers")
     with pytest.raises(DatasetNotFoundError) as excinfo:
         dc.read_dataset("dev.numbers.fibonacci")
     assert str(excinfo.value) == (
@@ -4223,10 +4505,11 @@ def test_dataset_not_found_in_non_default_project(test_session, project_created)
     )
 
 
+@pytest.mark.parametrize("is_studio", [True])
 @pytest.mark.parametrize("use_settings", (True, False))
 @pytest.mark.parametrize("project_created_upfront", (True, False))
 def test_save_specify_only_non_default_project(
-    test_session, use_settings, project_created_upfront
+    test_session, is_studio, studio_job, use_settings, project_created_upfront
 ):
     catalog = test_session.catalog
     default_namespace_name = catalog.metastore.default_namespace_name
@@ -4254,6 +4537,7 @@ def test_save_specify_only_non_default_project(
         dc.read_dataset(name="fibonacci")
 
 
+@pytest.mark.parametrize("is_studio", [True])
 @pytest.mark.parametrize(
     (
         "ds_name_namespace,ds_name_project,"
@@ -4276,6 +4560,8 @@ def test_save_specify_only_non_default_project(
 )
 def test_save_all_ways_to_set_project(
     test_session,
+    is_studio,
+    studio_job,
     monkeypatch,
     ds_name_namespace,
     ds_name_project,
@@ -4314,6 +4600,7 @@ def test_save_all_ways_to_set_project(
     dc.read_dataset(_full_name(result_ds_namespace, result_ds_project, ds_name))
 
 
+@pytest.mark.parametrize("is_studio", [True])
 @pytest.mark.parametrize(
     (
         "ds_name_namespace,ds_name_project,"
@@ -4332,6 +4619,7 @@ def test_save_all_ways_to_set_project(
 )
 def test_save_all_ways_to_set_project_invalid_name(
     test_session,
+    studio_job,
     monkeypatch,
     ds_name_namespace,
     ds_name_project,

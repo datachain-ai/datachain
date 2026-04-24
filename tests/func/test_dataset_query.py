@@ -6,6 +6,7 @@ from unittest.mock import ANY
 import pytest
 import sqlalchemy
 
+import datachain as dc
 from datachain.dataset import DatasetDependencyType, DatasetStatus
 from datachain.error import DatasetNotFoundError
 from datachain.lib.file import File
@@ -58,7 +59,7 @@ def test_save_dataset_version_already_exists(cloud_test_catalog, cats_dataset):
     [("s3", True)],
     indirect=True,
 )
-def test_save_multiple_versions(cloud_test_catalog, animal_dataset):
+def test_save_multiple_versions(cloud_test_catalog, animal_dataset, no_studio_dataset):
     catalog = cloud_test_catalog.catalog
     # ensure we can select a subset of a bucket properly
     ds = DatasetQuery(animal_dataset.name, catalog=catalog)
@@ -865,6 +866,48 @@ def test_join_with_missing_columns_in_expression(
         dogs1.join(dogs2, dogs1.c("file__path") == cats.c("file__path")).to_db_records()
     assert str(excinfo.value) == (
         "Column file__path was not found in left or right part of the join"
+    )
+
+
+@pytest.mark.parametrize(
+    "predicate_factory",
+    [
+        lambda query, column_name: column_name,
+        lambda query, column_name: query.c(column_name),
+    ],
+    ids=["str", "column_clause"],
+)
+def test_join_with_missing_columns_in_same_name_predicate(
+    test_session,
+    predicate_factory,
+):
+    session = test_session
+    catalog = test_session.catalog
+    left_name = uuid.uuid4().hex
+    right_name = uuid.uuid4().hex
+
+    dc.read_values(left_only=[1], shared=[1], session=session).save(left_name)
+    dc.read_values(right_only=[1], shared=[1], session=session).save(right_name)
+
+    left = DatasetQuery(name=left_name, version="1.0.0", catalog=catalog)
+    right = DatasetQuery(name=right_name, version="1.0.0", catalog=catalog)
+
+    with pytest.raises(ValueError) as excinfo:
+        left.join(right, predicate_factory(left, "left_only")).to_db_records()
+    assert str(excinfo.value) == (
+        "Column left_only was not found in right part of the join"
+    )
+
+    with pytest.raises(ValueError) as excinfo:
+        left.join(right, predicate_factory(left, "right_only")).to_db_records()
+    assert str(excinfo.value) == (
+        "Column right_only was not found in left part of the join"
+    )
+
+    with pytest.raises(ValueError) as excinfo:
+        left.join(right, predicate_factory(left, "missing")).to_db_records()
+    assert str(excinfo.value) == (
+        "Column missing was not found in left or right part of the join"
     )
 
 
