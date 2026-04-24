@@ -57,7 +57,6 @@ Never use: `from datachain import File, C, func`
 - Getting Started: /getting-started/
 - Core Concepts: /concepts/ (data memory, datasets, chain, execution model, files and types)
 - Guides: /guide/ (reading data, operations, UDFs, exporting, datasets, functions, scaling, best practices)
-- Use Cases: /use-cases/ (unstructured ETL, LLM pipelines, ML training, multimodal analytics)
 - API Reference: /references/ (auto-generated from docstrings)
 - CLI Reference: /commands/
 - Best Practices: /guide/best-practices/

@@ -165,3 +165,41 @@ Mutate does NOT accept lambdas or Python callables -- use `map()` for those. See
 | File access | No                                          | Yes (can read file content)                  |
 | Parallelism | Automatic (engine-level)                    | Requires `.settings(parallel=True)`          |
 | Use when    | Deriving columns from existing metadata     | Processing file content, calling models/LLMs |
+
+## Complete Examples
+
+### Merging Files with Metadata
+
+The most common pattern: files in storage, annotations in a sidecar format. Read both, derive a join key, merge, filter, and export:
+
+```python
+import datachain as dc
+
+images = dc.read_storage("gs://bucket/images/*jpg", anon=True)
+meta = dc.read_json("gs://bucket/images/*json", column="meta", anon=True)
+
+images_id = images.map(id=lambda file: file.path.split(".")[-2])
+annotated = images_id.merge(meta, on="id", right_on="meta.id")
+
+high_conf = annotated.filter(
+    (dc.C("meta.inference.confidence") > 0.93)
+    & (dc.C("meta.inference.class_") == "cat")
+)
+high_conf.to_storage("high-confidence-cats/", signal="file")
+```
+
+### LLM Cost Tracking
+
+Compute API costs across thousands of calls using aggregate analytics on nested Pydantic fields -- no deserialization, no Python runtime:
+
+```python
+import datachain as dc
+
+chain = dc.read_dataset("llm_responses")
+
+cost = (
+    chain.sum("response.usage.prompt_tokens") * 0.000002
+    + chain.sum("response.usage.completion_tokens") * 0.000006
+)
+print(f"Spent ${cost:.2f} on {chain.count()} calls")
+```

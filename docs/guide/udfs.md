@@ -187,3 +187,103 @@ chain.map(result=classify)
 # BAD: multiple outputs per call
 # chain.map(label=..., confidence=..., tokens=...)  # not supported
 ```
+
+## Complete Examples
+
+### Image Captioning Pipeline
+
+Read images from storage, load a HuggingFace model once per worker, caption each image, save as a versioned dataset:
+
+```python
+from transformers import pipeline
+import datachain as dc
+
+chain = (
+    dc.read_storage("s3://bucket/images/", type="image")
+    .settings(parallel=8, cache=True)
+    .setup(pipe=lambda: pipeline("image-to-text", model="Salesforce/blip-image-captioning-large"))
+    .map(caption=lambda file, pipe: pipe(file.read().convert("RGB"))[0]["generated_text"])
+    .save("image_captions")
+)
+```
+
+### LLM Classification
+
+Classify dialog transcripts using an LLM API with parallel workers:
+
+```python
+import os
+from mistralai import Mistral
+import datachain as dc
+
+PROMPT = "Was this dialog successful? Answer in a single word: Success or Failure."
+
+def eval_dialogue(file: dc.File) -> bool:
+    client = Mistral(api_key=os.environ["MISTRAL_API_KEY"])
+    response = client.chat.complete(
+        model="open-mixtral-8x22b",
+        messages=[{"role": "system", "content": PROMPT},
+                  {"role": "user", "content": file.read()}])
+    result = response.choices[0].message.content
+    return result.lower().startswith("success")
+
+chain = (
+    dc.read_storage("gs://datachain-demo/chatbot-KiT/", column="file", anon=True)
+    .settings(parallel=4)
+    .map(is_success=eval_dialogue)
+    .save("mistral_evaluations")
+)
+```
+
+### Serializing Full LLM Responses
+
+Save the entire LLM response object as a typed column. Nested fields become queryable at warehouse speed:
+
+```python
+from mistralai.models import ChatCompletionResponse
+import datachain as dc
+
+def eval_dialog(file: dc.File) -> ChatCompletionResponse:
+    client = Mistral(api_key=os.environ["MISTRAL_API_KEY"])
+    return client.chat.complete(
+        model="open-mixtral-8x22b",
+        messages=[{"role": "system", "content": PROMPT},
+                  {"role": "user", "content": file.read()}])
+
+chain = (
+    dc.read_storage("gs://datachain-demo/chatbot-KiT/", column="file", anon=True)
+    .settings(parallel=4, cache=True)
+    .map(response=eval_dialog)
+    .map(status=lambda response: response.choices[0].message.content.lower()[:7])
+    .save("llm_responses")
+)
+
+# Query nested fields without deserialization
+dc.read_dataset("llm_responses").select("file.path", "status", "response.usage").show(5)
+```
+
+### Structured Output Validation
+
+Use Pydantic to validate LLM outputs before they enter the dataset:
+
+```python
+import datachain as dc
+from pydantic import BaseModel
+
+class Analysis(BaseModel):
+    sentiment: str
+    confidence: float
+    topics: list[str]
+
+def analyze(file: dc.File, client) -> Analysis:
+    resp = client.messages.create(model="claude-sonnet-4-20250514", ...)
+    return Analysis.model_validate_json(resp.content[0].text)
+
+chain = (
+    dc.read_storage("s3://docs/")
+    .setup(client=lambda: create_anthropic_client())
+    .settings(parallel=4)
+    .map(analysis=analyze)
+    .save("document_analyses")
+)
+```

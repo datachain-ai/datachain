@@ -78,31 +78,30 @@ nav:
           - Knowledge Base: concepts/knowledge-base.md
       - Guides:
           - Overview: guide/index.md
-          - Reading Data: guide/reading-data.md
-          - Data Engine Operations: guide/operations.md
-          - Python Operations (UDFs): guide/udfs.md
-          - Exporting Data: guide/exporting-data.md
-          - Working with Datasets: guide/datasets.md
-          - Function Library: guide/functions.md
-          - Scaling and Performance: guide/scaling.md
-          - Multi-Stage Pipelines: guide/multi-stage-pipelines.md
-          - Vector Search: guide/vector-search.md
-          - Best Practices: guide/best-practices.md
-          - Interacting with Remote Storage: guide/remotes.md
-          - Data Processing:
-              - Overview: guide/processing.md
+          - Get Data In:
+              - Reading Data: guide/reading-data.md
+              - Remote Storage: guide/remotes.md
+          - Transform:
+              - Data Engine Operations: guide/operations.md
+              - Python Operations (UDFs): guide/udfs.md
+              - Function Library: guide/functions.md
+              - Vector Search: guide/vector-search.md
+          - Get Data Out:
+              - Exporting Data: guide/exporting-data.md
+          - Datasets:
+              - Working with Datasets: guide/datasets.md
+          - Scale and Recover:
+              - Scaling and Performance: guide/scaling.md
               - Delta Processing: guide/delta.md
+              - Checkpoints: guide/checkpoints.md
+              - Multi-Stage Pipelines: guide/multi-stage-pipelines.md
+          - Reference:
+              - Best Practices: guide/best-practices.md
               - Error Handling and Retries: guide/retry.md
-          - Checkpoints: guide/checkpoints.md
-          - Environment Variables: guide/env.md
-          - Namespaces: guide/namespaces.md
-          - Local DB Migrations: guide/db_migrations.md
-      - Use Cases:
-          - Overview: use-cases/index.md
-          - Unstructured Data ETL: use-cases/unstructured-data-etl.md
-          - LLM Pipelines: use-cases/llm-pipelines.md
-          - ML Training Data: use-cases/ml-training-data.md
-          - Multimodal Analytics: use-cases/multimodal-analytics.md
+              - Data Processing Overview: guide/processing.md
+              - Environment Variables: guide/env.md
+              - Namespaces: guide/namespaces.md
+              - Local DB Migrations: guide/db_migrations.md
       - Examples: examples.md
       - Tutorials: tutorials.md
       - API Reference:

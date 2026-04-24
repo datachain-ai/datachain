@@ -156,3 +156,25 @@ The most powerful optimization: starting from previously computed results. When 
 | Distributed compute | Single-machine ceiling | `settings(workers=K)` (Studio) |
 | Vectorized ops | Python overhead for SQL-expressible work | Use data-engine operations |
 | Dataset reuse | Recomputing upstream work | `save()` + `read_dataset()` |
+
+## Complete Example: Delta Processing for Growing Datasets
+
+Process only new and changed files on each run. The resulting dataset is always complete:
+
+```python
+import datachain as dc
+
+chain = (
+    dc.read_storage(
+        "s3://bucket/incoming/",
+        update=True,
+        delta=True,
+        delta_on="file.path",
+    )
+    .settings(parallel=8)
+    .map(result=process_file)
+    .save("processed_incoming")
+)
+```
+
+Each run adds new files to the dataset while preserving all previously processed results. Combined with checkpoints, this means a pipeline can handle both growing data and mid-run failures without any special logic.

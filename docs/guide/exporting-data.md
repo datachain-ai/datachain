@@ -122,3 +122,31 @@ chain.to_database(
 ```
 
 Rows are written in batches (default 10,000). The `on_conflict` parameter controls duplicate handling: `"ignore"` skips, `"update"` overwrites. `column_mapping` renames columns and can exclude columns by mapping them to `None`.
+
+## Complete Example: Data Curation Pipeline
+
+Read files, enrich with a local model, filter, and export the results:
+
+```python
+from transformers import pipeline
+import datachain as dc
+
+classifier = pipeline("sentiment-analysis", device="cpu",
+                model="distilbert/distilbert-base-uncased-finetuned-sst-2-english")
+
+def is_positive_dialogue_ending(file) -> bool:
+    dialogue_ending = file.read()[-512:]
+    return classifier(dialogue_ending)[0]["label"] == "POSITIVE"
+
+chain = (
+    dc.read_storage("gs://datachain-demo/chatbot-KiT/",
+                     column="file", type="text", anon=True)
+    .settings(parallel=8, cache=True)
+    .map(is_positive=is_positive_dialogue_ending)
+    .save("file_response")
+)
+
+positive_chain = chain.filter(dc.C("is_positive") == True)
+positive_chain.to_storage("./output")
+print(f"{positive_chain.count()} files were exported")
+```
