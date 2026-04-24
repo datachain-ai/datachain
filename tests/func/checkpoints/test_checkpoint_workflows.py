@@ -1,3 +1,4 @@
+from collections.abc import Iterator
 from uuid import uuid4
 
 import pytest
@@ -136,8 +137,11 @@ def test_checkpoints_modified_chains(
         else 1
     )
     assert len(catalog.get_dataset("nums2", versions=None).versions) == 2
-    assert len(catalog.get_dataset("nums3", versions=None).versions) == 2
-
+    assert (
+        len(catalog.get_dataset("nums3", versions=None).versions) == 2
+        if reset_checkpoints
+        else 1
+    )
     assert len(list(catalog.metastore.list_checkpoints([first_job_id]))) == 3
     assert len(list(catalog.metastore.list_checkpoints([second_job_id]))) == 3
 
@@ -238,11 +242,8 @@ def test_checkpoints_invalid_parent_job_id(test_session, monkeypatch, nums_datas
         dc.read_dataset("nums", session=test_session).save("nums1")
 
 
-def test_checkpoint_with_deleted_dataset_version(
-    test_session, monkeypatch, nums_dataset
-):
+def test_checkpoint_with_deleted_dataset_version(test_session, nums_dataset):
     catalog = test_session.catalog
-    monkeypatch.setenv("DATACHAIN_IGNORE_CHECKPOINTS", str(False))
 
     chain = dc.read_dataset("nums", session=test_session)
 
@@ -278,9 +279,8 @@ def test_udf_checkpoints_multiple_calls_same_job(
     test_session, monkeypatch, nums_dataset
 ):
     """
-    Test that UDF execution creates checkpoints, but subsequent calls in the same
-    job will re-execute because the hash changes (includes previous checkpoint hash).
-    Checkpoint reuse is designed for cross-job execution, not within-job execution.
+    Test that UDF execution creates checkpoints and subsequent calls in the
+    same job reuse the cached result ("done" checkpoints act as a cache).
     """
     call_count = {"count": 0}
 
@@ -299,21 +299,21 @@ def test_udf_checkpoints_multiple_calls_same_job(
     first_calls = call_count["count"]
     assert first_calls == 6, "Mapper should be called 6 times on first count()"
 
-    # Second count() - will re-execute because hash includes previous checkpoint
+    # Second count() - skips UDF, reuses cached result
     call_count["count"] = 0
     assert chain.count() == 6
-    assert call_count["count"] == 6, "Mapper re-executes in same job"
+    assert call_count["count"] == 0, "Mapper skipped — cached in same job"
 
-    # Third count() - will also re-execute
+    # Third count() - also skips
     call_count["count"] = 0
     assert chain.count() == 6
-    assert call_count["count"] == 6, "Mapper re-executes in same job"
+    assert call_count["count"] == 0, "Mapper skipped — cached in same job"
 
-    # Other operations like to_list() will also re-execute
+    # Other operations like to_list() also reuse cached output
     call_count["count"] = 0
     result = chain.order_by("num").to_list("plus_ten")
     assert result == [(11,), (12,), (13,), (14,), (15,), (16,)]
-    assert call_count["count"] == 6, "Mapper re-executes in same job"
+    assert call_count["count"] == 0, "Mapper skipped — cached in same job"
 
 
 @pytest.mark.parametrize("reset_checkpoints", [True, False])
@@ -357,10 +357,13 @@ def test_udf_checkpoints_cross_job_reuse(
         assert call_count["count"] == 0, "Mapper should NOT be called"
 
     checkpoints_second = list(catalog.metastore.list_checkpoints([second_job_id]))
-    # After successful completion, only final checkpoint remains
-    # (partial checkpoint is deleted after promotion)
-    assert len(checkpoints_second) == 1
-    assert checkpoints_second[0].partial is False
+    if reset_checkpoints:
+        # Ran from scratch — created its own final checkpoint
+        assert len(checkpoints_second) == 1
+        assert checkpoints_second[0].partial is False
+    else:
+        # Skipped — reused first job's checkpoint, no new record created
+        assert len(checkpoints_second) == 0
 
     # Verify the data is correct
     result = chain.order_by("num").to_list("doubled")
@@ -568,3 +571,336 @@ def test_ephemeral_mode_aggregator_with_partition_by(test_session):
             output=int,
             partition_by="letter",
         ).save("should_fail")
+
+
+def test_independent_chains_no_transient_invalidation(test_session, nums_dataset):
+    call_count = {"count": 0}
+
+    def add_ten(num) -> int:
+        call_count["count"] += 1
+        return num + 10
+
+    # -------------- FIRST RUN -------------------
+    reset_session_job_state()
+    dc.read_dataset("nums", session=test_session).filter(dc.C("num") > 3).save("big")
+    dc.read_dataset("nums", session=test_session).map(
+        plus_ten=add_ten, output=int
+    ).save("mapped")
+
+    assert call_count["count"] == 6
+
+    # -------------- SECOND RUN - modify the filter chain -------------------
+    reset_session_job_state()
+    call_count["count"] = 0
+
+    # Change the filter — this should NOT affect the map chain
+    dc.read_dataset("nums", session=test_session).filter(dc.C("num") > 1).save("big")
+    dc.read_dataset("nums", session=test_session).map(
+        plus_ten=add_ten, output=int
+    ).save("mapped")
+
+    assert call_count["count"] == 0, "UDF should be skipped — unrelated chain changed"
+
+
+def test_reordering_chains_no_invalidation(test_session, nums_dataset):
+    call_count_a = {"count": 0}
+    call_count_b = {"count": 0}
+
+    def double(num) -> int:
+        call_count_a["count"] += 1
+        return num * 2
+
+    def triple(num) -> int:
+        call_count_b["count"] += 1
+        return num * 3
+
+    chain = dc.read_dataset("nums", session=test_session)
+
+    # -------------- FIRST RUN: double then triple -------------------
+    reset_session_job_state()
+    chain.map(result=double, output=int).save("doubled")
+    chain.map(result=triple, output=int).save("tripled")
+
+    assert call_count_a["count"] == 6
+    assert call_count_b["count"] == 6
+
+    # -------------- SECOND RUN: triple then double (swapped) -------------------
+    reset_session_job_state()
+    call_count_a["count"] = 0
+    call_count_b["count"] = 0
+
+    chain.map(result=triple, output=int).save("tripled")
+    chain.map(result=double, output=int).save("doubled")
+
+    assert call_count_a["count"] == 0, "double UDF should be skipped"
+    assert call_count_b["count"] == 0, "triple UDF should be skipped"
+
+
+def test_try_except_identical_chains(test_session, nums_dataset):
+
+    def compute(num) -> int:
+        if num > 3:
+            raise CustomMapperError("Simulated failure")
+        return num * 10
+
+    reset_session_job_state()
+
+    # Chain A crashes mid-UDF, leaves partial output table with 3 rows
+    try:
+        dc.read_dataset("nums", session=test_session).settings(batch_size=1).map(
+            result=compute, output=int
+        ).save("ds1")
+    except CustomMapperError:
+        pass
+
+    # Chain B: same function name, same partial_hash, no crash
+    def compute(num) -> int:
+        return num * 10
+
+    dc.read_dataset("nums", session=test_session).settings(batch_size=1).map(
+        result=compute, output=int
+    ).save("ds2")
+
+    # ds2 should have exactly 6 rows, not 9 (6 + chain A's 3 leftover)
+    result = sorted(dc.read_dataset("ds2", session=test_session).to_list("result"))
+    assert result == [(10,), (20,), (30,), (40,), (50,), (60,)]
+
+
+def test_loop_same_chain_creates_one_version(test_session, nums_dataset):
+    """Running the same chain in a loop within one job runs the UDF once and
+    creates exactly one dataset version — "done" checkpoints act as a cache."""
+    catalog = test_session.catalog
+    call_count = {"count": 0}
+
+    def plus_ten(num) -> int:
+        call_count["count"] += 1
+        return num + 10
+
+    reset_session_job_state()
+
+    for _ in range(3):
+        dc.read_dataset("nums", session=test_session).map(
+            plus_ten=plus_ten, output=int
+        ).save("looped")
+
+    # UDF ran exactly once; subsequent iterations hit the cache
+    assert call_count["count"] == 6
+
+    # Only one dataset version was created
+    assert len(catalog.get_dataset("looped", versions=None).versions) == 1
+
+    # Data is correct
+    result = sorted(dc.read_dataset("looped", session=test_session).to_list("plus_ten"))
+    assert result == [(11,), (12,), (13,), (14,), (15,), (16,)]
+
+
+def test_chain_multiple_operations_udf_runs_once(test_session, nums_dataset):
+    """Running multiple operations (e.g. .to_list() then .save()) on the same
+    chain within one job triggers the UDF only once — the second operation
+    reuses the cached output."""
+    call_count = {"count": 0}
+
+    def plus_ten(num) -> int:
+        call_count["count"] += 1
+        return num + 10
+
+    reset_session_job_state()
+
+    chain = dc.read_dataset("nums", session=test_session).map(
+        plus_ten=plus_ten, output=int
+    )
+
+    # First operation: triggers UDF execution
+    first_result = sorted(chain.to_list("plus_ten"))
+    assert call_count["count"] == 6
+    assert first_result == [(11,), (12,), (13,), (14,), (15,), (16,)]
+
+    # Second operation: reuses cached output from first run
+    chain.save("saved")
+    assert call_count["count"] == 6, "UDF should be skipped on second operation"
+
+    # Saved data is correct
+    saved = sorted(dc.read_dataset("saved", session=test_session).to_list("plus_ten"))
+    assert saved == [(11,), (12,), (13,), (14,), (15,), (16,)]
+
+
+def test_retry_loop_accumulates_partial_progress(test_session, nums_dataset):
+    """Retry pattern within one job: each attempt continues from the partial
+    checkpoint left by the previous attempt, accumulating progress until the
+    chain completes."""
+    processed = []
+    fail_after = {"count": 2}  # each attempt fails after this many new rows
+
+    def compute(num) -> int:
+        # Fail after processing `fail_after` NEW rows in current attempt
+        if fail_after["count"] <= 0:
+            raise CustomMapperError("Simulated failure")
+        fail_after["count"] -= 1
+        processed.append(num)
+        return num * 10
+
+    reset_session_job_state()
+
+    attempts = 0
+    max_attempts = 10
+    while attempts < max_attempts:
+        attempts += 1
+        try:
+            dc.read_dataset("nums", session=test_session).settings(batch_size=1).map(
+                result=compute, output=int
+            ).save("retried")
+            break
+        except CustomMapperError:
+            # Reset the fail counter for the next attempt; partial will carry over
+            fail_after["count"] = 2
+
+    # Must have retried several times, then succeeded
+    assert attempts > 1
+    assert attempts < max_attempts, "Retry loop did not converge"
+
+    # Each attempt only processed rows that weren't already in the partial table
+    # Total UDF invocations must equal total rows (6), not rows * attempts
+    assert len(processed) == 6, (
+        f"UDF ran {len(processed)} times — partial progress was not accumulated"
+    )
+
+    # Final data is correct
+    result = sorted(dc.read_dataset("retried", session=test_session).to_list("result"))
+    assert result == [(10,), (20,), (30,), (40,), (50,), (60,)]
+
+
+def test_independent_chains_same_udf_within_job(test_session, nums_dataset):
+    """Two independent chains with the same UDF hash within one job: the UDF
+    runs once (second chain finds the first chain's final checkpoint and skips)
+    and both saves produce their own datasets with the correct data."""
+    catalog = test_session.catalog
+    call_count = {"count": 0}
+
+    def plus_ten(num) -> int:
+        call_count["count"] += 1
+        return num + 10
+
+    reset_session_job_state()
+
+    # Chain A: runs the UDF from scratch, saves to ds_a
+    dc.read_dataset("nums", session=test_session).map(
+        plus_ten=plus_ten, output=int
+    ).save("ds_a")
+    assert call_count["count"] == 6
+
+    # Chain B: same UDF chain, different save target. UDF hash matches → skip.
+    dc.read_dataset("nums", session=test_session).map(
+        plus_ten=plus_ten, output=int
+    ).save("ds_b")
+    assert call_count["count"] == 6, "UDF should be skipped — same hash in same job"
+
+    # Both datasets exist and have the correct data
+    assert len(catalog.get_dataset("ds_a", versions=None).versions) == 1
+    assert len(catalog.get_dataset("ds_b", versions=None).versions) == 1
+
+    expected = [(11,), (12,), (13,), (14,), (15,), (16,)]
+    assert (
+        sorted(dc.read_dataset("ds_a", session=test_session).to_list("plus_ten"))
+        == expected
+    )
+    assert (
+        sorted(dc.read_dataset("ds_b", session=test_session).to_list("plus_ten"))
+        == expected
+    )
+
+
+def test_loop_same_chain_generator_one_version(test_session, nums_dataset):
+    """Generator equivalent of test_loop_same_chain_creates_one_version:
+    a `for` loop running a generator chain creates exactly one dataset version."""
+    catalog = test_session.catalog
+    call_count = {"count": 0}
+
+    def expand(num) -> Iterator[int]:
+        call_count["count"] += 1
+        yield num
+        yield num * 10
+
+    reset_session_job_state()
+
+    for _ in range(3):
+        dc.read_dataset("nums", session=test_session).gen(
+            value=expand, output=int
+        ).save("expanded")
+
+    # Generator ran exactly once per input; subsequent iterations hit the cache
+    assert call_count["count"] == 6
+    assert len(catalog.get_dataset("expanded", versions=None).versions) == 1
+
+    result = sorted(dc.read_dataset("expanded", session=test_session).to_list("value"))
+    assert result == [
+        (1,),
+        (2,),
+        (3,),
+        (4,),
+        (5,),
+        (6,),
+        (10,),
+        (20,),
+        (30,),
+        (40,),
+        (50,),
+        (60,),
+    ]
+
+
+def test_retry_loop_generator_accumulates_partial_progress(test_session, nums_dataset):
+    """Generator retry pattern within one job: each attempt continues from the
+    partial checkpoint left by the previous attempt. Exercises same-job partial
+    continuation for generators — the in-place deletion of incomplete rows and
+    the 1:N input→output tracking via sys__input_id."""
+    processed = []
+    fail_after = {"count": 2}
+
+    def expand(num) -> Iterator[int]:
+        # Fail after producing outputs for `fail_after` NEW inputs
+        if fail_after["count"] <= 0:
+            raise CustomMapperError("Simulated failure")
+        fail_after["count"] -= 1
+        processed.append(num)
+        yield num
+        yield num * 10
+
+    reset_session_job_state()
+
+    attempts = 0
+    max_attempts = 10
+    while attempts < max_attempts:
+        attempts += 1
+        try:
+            dc.read_dataset("nums", session=test_session).settings(batch_size=1).gen(
+                value=expand, output=int
+            ).save("expanded")
+            break
+        except CustomMapperError:
+            fail_after["count"] = 2
+
+    assert attempts > 1
+    assert attempts < max_attempts, "Retry loop did not converge"
+
+    # Each attempt only processed inputs not already in the partial table
+    # Total generator invocations must equal total inputs (6), not 6 * attempts
+    assert len(processed) == 6, (
+        f"Generator ran {len(processed)} times — partial progress was not accumulated"
+    )
+
+    # All 12 output rows are present (2 yields per input x 6 inputs), no duplicates
+    result = sorted(dc.read_dataset("expanded", session=test_session).to_list("value"))
+    assert result == [
+        (1,),
+        (2,),
+        (3,),
+        (4,),
+        (5,),
+        (6,),
+        (10,),
+        (20,),
+        (30,),
+        (40,),
+        (50,),
+        (60,),
+    ]

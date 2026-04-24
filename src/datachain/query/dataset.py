@@ -36,6 +36,7 @@ from datachain.checkpoint_event import (
 )
 from datachain.data_storage.schema import (
     PARTITION_COLUMN_ID,
+    coerce_table_types,
     partition_col_names,
     partition_columns,
 )
@@ -885,6 +886,12 @@ class UDFStep(Step, ABC):
             p.get_column() if isinstance(p, Function) else p for p in list_partition_by
         ]
 
+        # Drop stale partition table from earlier chain with same hash in this job
+        if table_name:
+            catalog.warehouse.db.drop_table(
+                sa.Table(table_name, sa.MetaData()), if_exists=True
+            )
+
         # create table with partitions
         tbl = catalog.warehouse.create_udf_table(partition_columns(), name=table_name)
 
@@ -984,35 +991,30 @@ class UDFStep(Step, ABC):
             rows_output_reused,
         )
 
-    def _find_udf_checkpoint(
-        self, job: "Job", _hash: str, partial: bool = False
-    ) -> Checkpoint | None:
+    def _find_udf_checkpoint(self, job: "Job", _hash: str) -> Checkpoint | None:
         """
         Find a reusable UDF checkpoint for the given hash.
+        Searches current job first, then previous job.
         Returns the Checkpoint object if found, None otherwise.
         """
         ignore_checkpoints = env2bool("DATACHAIN_IGNORE_CHECKPOINTS", undefined=False)
+        if ignore_checkpoints:
+            return None
 
-        if (
-            job.rerun_from_job_id
-            and not ignore_checkpoints
-            and (
-                checkpoint := self.metastore.find_checkpoint(
-                    job.rerun_from_job_id, _hash, partial=partial
+        # Search current job first, then previous job
+        for job_id in [job.id, job.rerun_from_job_id]:
+            if job_id and (checkpoint := self.metastore.find_checkpoint(job_id, _hash)):
+                logger.debug(
+                    "UDF(%s) [job=%s run_group=%s]: Found %scheckpoint "
+                    "hash=%s from job_id=%s",
+                    self._udf_name,
+                    self._job_id_short(job),
+                    self._run_group_id_short(job),
+                    "partial " if checkpoint.partial else "",
+                    _hash[:8],
+                    checkpoint.job_id,
                 )
-            )
-        ):
-            logger.debug(
-                "UDF(%s) [job=%s run_group=%s]: Found %scheckpoint "
-                "hash=%s from job_id=%s",
-                self._udf_name,
-                self._job_id_short(job),
-                self._run_group_id_short(job),
-                "partial " if partial else "",
-                _hash[:8],
-                checkpoint.job_id,
-            )
-            return checkpoint
+                return checkpoint
 
         return None
 
@@ -1049,23 +1051,22 @@ class UDFStep(Step, ABC):
         self, checkpoint: Checkpoint, _hash: str, job: Job
     ) -> "Table":
         """
-        Get partition table from parent for continue flow.
-        Raises DataChainError if parent partition table not found.
+        Get partition table for continue flow.
+        Same job: reuses existing partition table directly.
+        Different job: copies partition table to current job.
+        Raises TableMissingError if source partition table not found.
         """
-        assert job.rerun_from_job_id is not None
-        assert checkpoint.job_id == job.rerun_from_job_id
-
-        parent_partition_table_name = Checkpoint.partition_table_name(
-            checkpoint.job_id, _hash
+        source_table = self.warehouse.get_table(
+            Checkpoint.partition_table_name(checkpoint.job_id, _hash)
         )
 
-        parent_table = self.warehouse.get_table(parent_partition_table_name)
+        if checkpoint.job_id == job.id:
+            return source_table
 
-        current_partition_table_name = Checkpoint.partition_table_name(job.id, _hash)
-
+        # Different job: copy to current job
         return self.warehouse.create_table_from_query(
-            current_partition_table_name,
-            sa.select(parent_table),
+            Checkpoint.partition_table_name(job.id, _hash),
+            sa.select(source_table),
             create_fn=lambda name: self.warehouse.create_udf_table(
                 partition_columns(), name=name
             ),
@@ -1132,14 +1133,15 @@ class UDFStep(Step, ABC):
     ) -> "StepResult":
         query = query_generator.select()
 
-        # Calculate partial hash that includes output schema and partition_by.
-        # This allows continuing from partial when only code changes (bug fix),
-        # but forces re-run when output schema or partitioning changes.
+        # Calculate partial hash using UDF identity (name + params + output schema)
+        # and partition_by columns. This allows continuing from partial when only
+        # code changes (bug fix), but distinguishes different UDFs and forces
+        # re-run when schema or partitioning changes.
         partition_by = ensure_sequence(self.partition_by or [])
         partial_hash = hashlib.sha256(
             (
                 hash_input
-                + self.udf.output_schema_hash()
+                + self.udf.hash(include_body=False)
                 + hash_column_elements(partition_by)
             ).encode()
         ).hexdigest()
@@ -1167,9 +1169,7 @@ class UDFStep(Step, ABC):
 
             ch = self._find_udf_checkpoint(job, hash_output)
             ch_partial = (
-                self._find_udf_checkpoint(job, partial_hash, partial=True)
-                if not ch
-                else None
+                self._find_udf_checkpoint(job, partial_hash) if not ch else None
             )
 
             _skip = bool(ch)
@@ -1224,9 +1224,15 @@ class UDFStep(Step, ABC):
         self, checkpoint: Checkpoint, hash_input: str, query, job: Job
     ) -> tuple["Table", "Table"]:
         """
-        Skip UDF by copying existing output table. Returns (output_table, input_table)
+        Skip UDF by reusing existing output table from checkpoint.
+        The checkpoint's table is used directly — no copy, no new checkpoint
+        record. "Done" checkpoints act as a cache keyed by hash.
+        Returns (output_table, input_table).
         """
-        print(f"UDF '{self._udf_name}': Skipped, reusing output from checkpoint")
+        print(
+            f"UDF '{self._udf_name}': Skipped, reusing output from checkpoint",
+            file=sys.stderr,
+        )
         logger.info(
             "UDF(%s) [job=%s run_group=%s]: Skipping execution, "
             "reusing output from job_id=%s",
@@ -1235,25 +1241,21 @@ class UDFStep(Step, ABC):
             self._run_group_id_short(job),
             checkpoint.job_id,
         )
-        existing_output_table = self.warehouse.get_table(
+        # Reflection returns generic backend types (e.g. ClickHouse String gives
+        # bytes instead of str, DateTime defaults break CREATE TABLE downstream).
+        # Restore SQLTypes from our known schema so downstream query generation
+        # decodes values correctly.
+        reflected = self.warehouse.get_table(
             Checkpoint.output_table_name(checkpoint.job_id, checkpoint.hash)
         )
-        output_table = self.warehouse.create_table_from_query(
-            Checkpoint.output_table_name(job.id, checkpoint.hash),
-            sa.select(existing_output_table),
-            create_fn=self.create_output_table,
-        )
+        known_types = {
+            **dict(self.udf.output.items()),
+            **{c.name: c.type for c in self.warehouse.dataset_row_cls.sys_columns()},
+            **{c.name: c.type for c in self._checkpoint_tracking_columns()},
+        }
+        output_table = coerce_table_types(reflected, known_types)
 
         input_table = self.get_or_create_input_table(query, hash_input, job)
-
-        self.metastore.get_or_create_checkpoint(job.id, checkpoint.hash)
-        logger.debug(
-            "UDF(%s) [job=%s run_group=%s]: Created checkpoint hash=%s",
-            self._udf_name,
-            self._job_id_short(job),
-            self._run_group_id_short(job),
-            checkpoint.hash[:8],
-        )
 
         # Log checkpoint event with row counts
         rows_input = self.warehouse.table_rows_count(input_table)
@@ -1321,9 +1323,12 @@ class UDFStep(Step, ABC):
 
         input_table = self.get_or_create_input_table(query, hash_input, job)
 
-        partial_output_table = self.create_output_table(
-            Checkpoint.partial_output_table_name(run_id, partial_hash),
+        partial_table_name = Checkpoint.partial_output_table_name(run_id, partial_hash)
+        # Drop stale partial table from earlier chain with same hash in this job
+        self.warehouse.db.drop_table(
+            sa.Table(partial_table_name, sa.MetaData()), if_exists=True
         )
+        partial_output_table = self.create_output_table(partial_table_name)
 
         if self.partition_by is not None:
             input_query = query
@@ -1332,8 +1337,15 @@ class UDFStep(Step, ABC):
 
         self.populate_udf_output_table(partial_output_table, input_query)
 
+        final_table_name = Checkpoint.output_table_name(run_id, hash_output)
+        try:
+            # Same hash may already have a final table from earlier in this job
+            existing = self.warehouse.get_table(final_table_name)
+            self.warehouse.db.drop_table(existing)
+        except TableMissingError:
+            pass
         output_table = self.warehouse.rename_table(
-            partial_output_table, Checkpoint.output_table_name(run_id, hash_output)
+            partial_output_table, final_table_name
         )
 
         if checkpoints_enabled and job:
@@ -1372,45 +1384,54 @@ class UDFStep(Step, ABC):
         self, checkpoint: Checkpoint, hash_output: str, hash_input: str, query, job: Job
     ) -> tuple["Table", "Table"]:
         """
-        Continue UDF from parent's partial output. Returns (output_table, input_table)
-        """
-        if job.rerun_from_job_id is None:
-            raise RuntimeError(
-                f"UDF '{self._udf_name}': Cannot continue from checkpoint "
-                f"without a rerun_from_job_id"
-            )
-        if checkpoint.job_id != job.rerun_from_job_id:
-            raise RuntimeError(
-                f"UDF '{self._udf_name}': Checkpoint job_id mismatch — "
-                f"expected {job.rerun_from_job_id}, "
-                f"got {checkpoint.job_id}"
-            )
+        Continue UDF from partial checkpoint. The checkpoint may be from the
+        current job (e.g. try/except retry) or a previous job (rerun).
 
-        print(f"UDF '{self._udf_name}': Continuing from checkpoint")
+        Same job: appends directly to existing partial table, no copy.
+        Different job: copies partial table to current job first.
+
+        Returns (output_table, input_table).
+        """
+        is_same_job = checkpoint.job_id == job.id
+
+        print(f"UDF '{self._udf_name}': Continuing from checkpoint", file=sys.stderr)
         logger.info(
             "UDF(%s) [job=%s run_group=%s]: Continuing from partial checkpoint, "
-            "parent_job_id=%s",
+            "source_job_id=%s%s",
             self._udf_name,
             self._job_id_short(job),
             self._run_group_id_short(job),
-            job.rerun_from_job_id,
+            checkpoint.job_id,
+            " (same job)" if is_same_job else "",
         )
 
-        partial_checkpoint = self.metastore.get_or_create_checkpoint(
-            job.id, checkpoint.hash, partial=True
-        )
+        if is_same_job:
+            # Partial checkpoint already exists for this job — reuse it
+            partial_checkpoint = checkpoint
+        else:
+            partial_checkpoint = self.metastore.get_or_create_checkpoint(
+                job.id, checkpoint.hash, partial=True
+            )
 
         input_table = self.get_or_create_input_table(query, hash_input, job)
 
+        # Locate the source partial table using the checkpoint's job_id
         try:
-            parent_partial_table = self.warehouse.get_table(
-                Checkpoint.partial_output_table_name(
-                    job.rerun_from_job_id, checkpoint.hash
-                )
+            reflected = self.warehouse.get_table(
+                Checkpoint.partial_output_table_name(checkpoint.job_id, checkpoint.hash)
             )
+            # Restore SQLTypes so downstream reads decode values correctly
+            known_types = {
+                **dict(self.udf.output.items()),
+                **{
+                    c.name: c.type for c in self.warehouse.dataset_row_cls.sys_columns()
+                },
+                **{c.name: c.type for c in self._checkpoint_tracking_columns()},
+            }
+            source_partial_table = coerce_table_types(reflected, known_types)
         except TableMissingError:
             logger.warning(
-                "UDF(%s) [job=%s run_group=%s]: Parent partial table not found for "
+                "UDF(%s) [job=%s run_group=%s]: Partial table not found for "
                 "checkpoint %s, falling back to run from scratch",
                 self._udf_name,
                 self._job_id_short(job),
@@ -1421,7 +1442,7 @@ class UDFStep(Step, ABC):
                 checkpoint.hash, hash_output, hash_input, query, job
             )
 
-        incomplete_input_ids = self.find_incomplete_inputs(parent_partial_table)
+        incomplete_input_ids = self.find_incomplete_inputs(source_partial_table)
         if incomplete_input_ids:
             logger.debug(
                 "UDF(%s) [job=%s run_group=%s]: Found %d incomplete inputs "
@@ -1432,27 +1453,38 @@ class UDFStep(Step, ABC):
                 len(incomplete_input_ids),
             )
 
-        partial_table_name = Checkpoint.partial_output_table_name(
-            job.id, checkpoint.hash
-        )
-        if incomplete_input_ids:
-            # Filter out incomplete inputs - they will be re-processed
-            filtered_query = sa.select(parent_partial_table).where(
-                parent_partial_table.c.sys__input_id.not_in(incomplete_input_ids)
-            )
-            partial_table = self.warehouse.create_table_from_query(
-                partial_table_name,
-                filtered_query,
-                create_fn=self.create_output_table,
-                preserve_sys_ids=True,
-            )
+        if is_same_job:
+            # Same job: use existing partial table directly
+            partial_table = source_partial_table
+            if incomplete_input_ids:
+                # Delete incomplete rows in-place — they will be re-processed
+                self.warehouse.db.execute(
+                    partial_table.delete().where(
+                        partial_table.c.sys__input_id.in_(incomplete_input_ids)
+                    )
+                )
         else:
-            partial_table = self.warehouse.create_table_from_query(
-                partial_table_name,
-                sa.select(parent_partial_table),
-                create_fn=self.create_output_table,
-                preserve_sys_ids=True,
+            # Different job: copy to current job (don't mutate another job's table)
+            partial_table_name = Checkpoint.partial_output_table_name(
+                job.id, checkpoint.hash
             )
+            if incomplete_input_ids:
+                filtered_query = sa.select(source_partial_table).where(
+                    source_partial_table.c.sys__input_id.not_in(incomplete_input_ids)
+                )
+                partial_table = self.warehouse.create_table_from_query(
+                    partial_table_name,
+                    filtered_query,
+                    create_fn=self.create_output_table,
+                    preserve_sys_ids=True,
+                )
+            else:
+                partial_table = self.warehouse.create_table_from_query(
+                    partial_table_name,
+                    sa.select(source_partial_table),
+                    create_fn=self.create_output_table,
+                    preserve_sys_ids=True,
+                )
 
         input_query = self.get_input_query(input_table.name, query)
 
@@ -2477,33 +2509,18 @@ class DatasetQuery:
             )
         return ""
 
-    @property
-    def _last_checkpoint_hash(self) -> str | None:
-        if not self.checkpoints_enabled:
-            return None
-        job = self.session.get_or_create_job()
-        last_checkpoint = self.catalog.metastore.get_last_checkpoint(job.id)
-        return last_checkpoint.hash if last_checkpoint else None
-
     def __iter__(self):
         return iter(self.db_results())
 
     def __or__(self, other):
         return self.union(other)
 
-    def hash(self, job_aware: bool = False) -> str:
+    def hash(self) -> str:
         """
         Calculates hash of this class taking into account hash of starting step
         and hashes of each following steps. Ordering is important.
-
-        Args:
-            job_aware: If True, includes the last checkpoint hash from the job context.
         """
         hasher = hashlib.sha256()
-
-        start_hash = self._last_checkpoint_hash if job_aware else None
-        if start_hash:
-            hasher.update(start_hash.encode("utf-8"))
 
         hasher.update(self._starting_step_hash.encode("utf-8"))
         if self.delta_spec is not None:
@@ -2586,10 +2603,6 @@ class DatasetQuery:
         self.resolve_all_listings()
 
         hasher = hashlib.sha256()
-        start_hash = self._last_checkpoint_hash
-        if start_hash:
-            hasher.update(start_hash.encode("utf-8"))
-
         hasher.update(self._starting_step_hash.encode("utf-8"))
         if self.delta_spec is not None:
             hasher.update(self.delta_spec.hash().encode("utf-8"))

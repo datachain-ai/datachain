@@ -57,6 +57,12 @@ def add_test_env():
     os.environ["DATACHAIN_TEST"] = "true"
 
 
+@pytest.fixture
+def ignore_checkpoints(monkeypatch):
+    """Disable the checkpoint cache for the test (DATACHAIN_IGNORE_CHECKPOINTS=True)."""
+    monkeypatch.setenv("DATACHAIN_IGNORE_CHECKPOINTS", "True")
+
+
 @pytest.fixture(autouse=True)
 def global_config_dir(monkeypatch, tmp_path_factory):
     global_dir = str(tmp_path_factory.mktemp("studio-login-global"))

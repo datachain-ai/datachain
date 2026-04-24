@@ -395,7 +395,7 @@ def test_show_without_temp_datasets(capsys, test_session):
     assert "Empty result" in normalized_output
 
 
-def test_save(test_session):
+def test_save(test_session, ignore_checkpoints):
     chain = dc.read_values(key=["a", "b", "c"])
     chain.save(
         name="new_name",

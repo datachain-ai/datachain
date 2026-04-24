@@ -109,12 +109,8 @@ class UDFAdapter:
     batch_size: int | None = None
     batch: int = 1
 
-    def hash(self) -> str:
-        return self.inner.hash()
-
-    def output_schema_hash(self) -> str:
-        """Hash of just the output schema (not including code or inputs)."""
-        return self.inner.output_schema_hash()
+    def hash(self, include_body: bool = True) -> str:
+        return self.inner.hash(include_body=include_body)
 
     def get_batching(self, use_partitioning: bool = False) -> BatchingStrategy:
         if use_partitioning:
@@ -206,19 +202,23 @@ class UDFBase(AbstractUDF):
         self.output = None
         self._func = None
 
-    def hash(self) -> str:
+    def hash(self, include_body: bool = True) -> str:
         """
         Creates SHA hash of this UDF function. It takes into account function,
         inputs and outputs.
 
         For function-based UDFs, hashes self._func.
         For class-based UDFs, hashes the process method.
+
+        When include_body=False, the function body is excluded (identity-only:
+        __module__ + __qualname__ + defaults). Lambdas always include their
+        bytecode since they share the name '<lambda>'.
         """
         # Hash user code: either _func (function-based) or process method (class-based)
         func_to_hash = self._func or self.process
 
         parts = [
-            hash_callable(func_to_hash),
+            hash_callable(func_to_hash, include_body=include_body),
             self.params.hash() if self.params else "",
             self.output.hash(),
         ]
@@ -226,14 +226,6 @@ class UDFBase(AbstractUDF):
         return hashlib.sha256(
             b"".join([bytes.fromhex(part) for part in parts])
         ).hexdigest()
-
-    def output_schema_hash(self) -> str:
-        """Hash of just the output schema (not including code or inputs).
-
-        Used for partial checkpoint hash to detect schema changes while
-        allowing code-only bug fixes to continue from partial results.
-        """
-        return self.output.hash()
 
     def process(self, *args, **kwargs):
         """Processing function that needs to be defined by user"""

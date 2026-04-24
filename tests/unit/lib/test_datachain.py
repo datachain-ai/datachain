@@ -4333,7 +4333,7 @@ def test_delete_dataset_cached_from_studio(
         ("major", ["1.0.0", "2.0.0", "3.0.0"]),
     ],
 )
-def test_update_versions(test_session, update_version, versions):
+def test_update_versions(test_session, update_version, versions, ignore_checkpoints):
     ds_name = "fibonacci"
     chain = dc.read_values(fib=[1, 1, 2, 3, 5, 8], session=test_session)
     chain.save(ds_name, update_version=update_version)
@@ -4349,7 +4349,7 @@ def test_update_versions(test_session, update_version, versions):
     ) == sorted(versions)
 
 
-def test_update_versions_mix_major_minor_patch(test_session):
+def test_update_versions_mix_major_minor_patch(test_session, ignore_checkpoints):
     ds_name = "fibonacci"
     chain = dc.read_values(fib=[1, 1, 2, 3, 5, 8], session=test_session)
     chain.save(ds_name)
