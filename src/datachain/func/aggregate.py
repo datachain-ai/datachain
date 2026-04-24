@@ -3,7 +3,7 @@ from sqlalchemy import func as sa_func
 from datachain.query.schema import Column, ColumnExpr
 from datachain.sql.functions import aggregate
 
-from .func import Func
+from .func import ColT, Func
 
 AggColT = str | Column | ColumnExpr | Func
 
@@ -278,6 +278,30 @@ def concat(col: AggColT, separator="") -> Func:
         return aggregate.group_concat(arg, separator)
 
     return Func("concat", inner=inner, cols=[col], result_type=str)
+
+
+def xor_agg(col: str | Column | ColT) -> Func:
+    """
+    Returns the XOR aggregate SQL function for the specified column.
+
+    Computes the bitwise XOR of all values. Order-independent, so the
+    result is the same regardless of row ordering. Useful for computing
+    content fingerprints when combined with ``func.string.string_hash``.
+
+    Args:
+        col: The column (typically an integer hash) to XOR-aggregate.
+
+    Returns:
+        Func: A ``Func`` object that represents the XOR aggregate function.
+
+    Example:
+        ```py
+        dc.group_by(
+            fingerprint=func.xor_agg(func.string.string_hash("file.path", "file.etag")),
+        )
+        ```
+    """
+    return Func("xor_agg", inner=aggregate.xor_agg, cols=[col], result_type=int)
 
 
 def row_number() -> Func:

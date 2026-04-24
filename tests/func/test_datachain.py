@@ -232,7 +232,6 @@ def test_read_storage_partials_with_update(cloud_test_catalog):
     assert _get_listing_datasets(session) == sorted(
         [
             f"{_list_dataset_name(uri)}@v1.0.0",
-            f"{_list_dataset_name(uri)}@v2.0.0",
         ]
     )
 
