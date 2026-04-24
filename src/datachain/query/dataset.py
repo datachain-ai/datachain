@@ -10,6 +10,7 @@ import sys
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
 from copy import copy
+from datetime import datetime, timezone
 from functools import wraps
 from types import GeneratorType
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar, cast
@@ -3281,6 +3282,13 @@ class DatasetQuery:
 
             self._add_dependencies(dataset, version)  # type: ignore [arg-type]
 
+            if kwargs.get("listing"):
+                reused = self._reuse_listing_if_unchanged(
+                    dataset, version, name, project
+                )
+                if reused is not None:
+                    return reused
+
             # Mark as COMPLETE only after all operations succeed.
             self.catalog.complete_dataset_version(dataset, version)
         finally:
@@ -3290,6 +3298,42 @@ class DatasetQuery:
             namespace_name=project.namespace.name,
             project_name=project.name,
             version=version,
+            catalog=self.catalog,
+        )
+
+    def _reuse_listing_if_unchanged(
+        self,
+        dataset: "DatasetRecord",
+        version: str,
+        name: str,
+        project: Project,
+    ) -> "Self | None":
+        """If the new listing version's content matches the previous COMPLETE
+        version, discard the new (still CREATED) version and return a query
+        pointing at the previous one. Returns None if there's no match (caller
+        continues the normal save flow).
+        """
+        from datachain.lib.listing import calc_fingerprint
+
+        prev_version = dataset.latest_complete_version
+        if not prev_version:
+            return None
+
+        old_fp = calc_fingerprint(self.session, dataset, prev_version)
+        new_fp = calc_fingerprint(self.session, dataset, version)
+        if old_fp != new_fp:
+            return None
+
+        self.catalog.remove_dataset_version(dataset, version)
+        # updating TTL of a bucket listing
+        self.catalog.metastore.update_dataset_version(
+            dataset, prev_version, finished_at=datetime.now(timezone.utc)
+        )
+        return self.__class__(
+            name=name,
+            namespace_name=project.namespace.name,
+            project_name=project.name,
+            version=prev_version,
             catalog=self.catalog,
         )
 
