@@ -30,6 +30,10 @@ DataChain is the data memory layer for AI. Every pipeline, every exploration, ev
 
 Task: find dogs in S3 similar to a reference image, filtered by breed, mask availability, and image dimensions.
 
+```bash
+datachain cp --anon s3://dc-readme/fiona.jpg .
+```
+
 ```prompt
 Find dogs in s3://dc-readme/oxford-pets-micro/ similar to fiona.jpg:
   - Pull breed metadata and mask files from annotations/
@@ -81,3 +85,10 @@ import datachain as dc
 # Later: anyone (or any agent) can build on it
 ds = dc.read_dataset("image_embeddings")
 ```
+
+## Next Steps
+
+- **[Quick Start](quick-start.md)** -- install DataChain and run your first pipeline
+- **[Core Concepts](getting-started/core-concepts.md)** -- understand Data Memory, Datasets, and the dual engine
+- **[Guides](guide/index.md)** -- in-depth coverage of every capability
+- **[Best Practices](guide/best-practices.md)** -- rules for writing correct DataChain code
