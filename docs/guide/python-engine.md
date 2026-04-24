@@ -1,8 +1,8 @@
 ---
-title: Python Operations (UDFs)
+title: Python Operations
 ---
 
-# Python Operations (UDFs)
+# Python Operations
 
 Python operations run arbitrary Python code on each record in a chain. Use them when you need file content, ML models, or LLM calls. For everything else, use [data engine operations](operations.md).
 
@@ -73,7 +73,7 @@ Here, `embedding` becomes the new column name.
 
 DataChain infers parameters from the function signature and output types from return type hints. The input column is always `file` regardless of modality.
 
-**Always type your UDFs.** Missing return type annotations default to `str` and crash at runtime. This is the single most common source of production failures.
+**Always type your Python operations.** Missing return type annotations default to `str` and crash at runtime. This is the single most common source of production failures.
 
 ```python
 # GOOD: explicit return type
@@ -138,7 +138,7 @@ chain = (
 When `.setup()` is not enough -- you need `teardown()`, shared mutable state across records, or multi-resource initialization -- use `Mapper`, `Generator`, and `Aggregator` base classes:
 
 ```python
-from datachain.lib.udf import Mapper
+from datachain.lib.udf import Mapper  # internal module name
 
 class ImageEncoder(Mapper):
     def setup(self):
@@ -151,7 +151,7 @@ class ImageEncoder(Mapper):
         del self.model
 ```
 
-Use class-based UDFs sparingly -- `.setup()` covers most cases.
+Use class-based Python operations sparingly -- `.setup()` covers most cases.
 
 ## Execution and Scale
 

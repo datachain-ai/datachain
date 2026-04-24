@@ -31,7 +31,7 @@ Results go to staging tables during execution. Only `save()` commits them into m
 
 ## Declarative Intent
 
-A chain declares WHAT to do, not HOW. The same fluent API covers SQL-compiled [data-engine operations](../guide/operations.md) and Python-executed [UDFs](../guide/udfs.md). The user never specifies which operations become SQL and which run Python -- the system infers this from the operation type and the Pydantic schema.
+A chain declares WHAT to do, not HOW. The same fluent API covers SQL-compiled [data-engine operations](../guide/operations.md) and Python-executed [operations](../guide/python-engine.md). The user never specifies which operations become SQL and which run Python -- the system infers this from the operation type and the Pydantic schema.
 
 ## Composability
 

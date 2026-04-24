@@ -83,7 +83,7 @@ nav:
               - Remote Storage: guide/remotes.md
           - Transform:
               - Data Engine Operations: guide/operations.md
-              - Python Operations (UDFs): guide/udfs.md
+              - Python Operations: guide/python-engine.md
               - Function Library: guide/functions.md
               - Vector Search: guide/vector-search.md
           - Get Data Out:

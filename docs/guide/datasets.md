@@ -22,7 +22,7 @@ embeddings = (
 )
 ```
 
-**`save()` is the default terminal operation** -- not `show()` or `to_list()`. Any chain that runs a UDF should end in `save("name")`. This makes pipelines reusable instead of producing throwaway output.
+**`save()` is the default terminal operation** -- not `show()` or `to_list()`. Any chain that runs a Python operation should end in `save("name")`. This makes pipelines reusable instead of producing throwaway output.
 
 ### persist() -- Anonymous, Script-Local
 

@@ -20,7 +20,7 @@ from pydantic import BaseModel
 # from datachain import File, C, func
 ```
 
-## Always Type Your UDFs
+## Always Type Your Python Operations
 
 Every function passed to `map()`, `gen()`, or `agg()` must have a return type annotation. Missing annotations default to `str` and crash at runtime.
 
@@ -62,7 +62,7 @@ chain.map(caption=caption, params=["file"], output=str)
 
 ## save() Before filter() on Expensive Operations
 
-Filtering discards work that was never persisted. Save expensive UDF output first, then filter.
+Filtering discards work that was never persisted. Save expensive Python operation output first, then filter.
 
 ```python
 # GOOD
@@ -183,7 +183,7 @@ class MyMapper(Mapper):
     def process(self, file): return self.model(file.read())
 ```
 
-## Avoid File Download for Metadata-Only UDFs
+## Avoid File Download for Metadata-Only Operations
 
 Use `params=["file.path"]` to avoid downloading files when you only need path metadata.
 

@@ -14,7 +14,7 @@ In-depth coverage of DataChain capabilities. Start with **Get Data In** and **Tr
 ## Transform
 
 - [Data Engine Operations](operations.md) -- filter, merge, group_by, mutate, and other SQL-speed operations
-- [Python Operations (UDFs)](udfs.md) -- map, gen, agg, setup, and class-based lifecycle
+- [Python Operations](python-engine.md) -- map, gen, agg, setup, and class-based lifecycle
 - [Function Library](functions.md) -- dc.func.* for distance, aggregate, window, path, string, and conditional functions
 - [Vector Search](vector-search.md) -- embedding computation, similarity search, drift detection
 
