@@ -588,12 +588,8 @@ class AbstractMetastore(ABC, Serializable):
     def get_checkpoint_by_id(self, checkpoint_id: str) -> Checkpoint:
         """Gets single checkpoint by id"""
 
-    def find_checkpoint(
-        self, job_id: str, _hash: str, partial: bool = False
-    ) -> Checkpoint | None:
-        """
-        Tries to find checkpoint for a job with specific hash and optionally partial
-        """
+    def find_checkpoint(self, job_id: str, _hash: str) -> Checkpoint | None:
+        """Tries to find an active checkpoint for a job with specific hash."""
 
     @abstractmethod
     def get_or_create_checkpoint(
@@ -1031,10 +1027,10 @@ class AbstractDBMetastore(AbstractMetastore):
             created_at=datetime.now(timezone.utc),
             description=description,
         )
-        if ignore_if_exists and hasattr(query, "on_conflict_do_nothing"):
-            # SQLite and PostgreSQL both support 'on_conflict_do_nothing',
-            # but generic SQL does not
-            query = query.on_conflict_do_nothing(index_elements=["name"])
+        if ignore_if_exists:
+            query = query.on_conflict_do_nothing(  # type: ignore[attr-defined]
+                index_elements=["name"]
+            )
         self.db.execute(query)
 
         return self.get_namespace(name)
@@ -1102,10 +1098,8 @@ class AbstractDBMetastore(AbstractMetastore):
             created_at=datetime.now(timezone.utc),
             description=description,
         )
-        if ignore_if_exists and hasattr(query, "on_conflict_do_nothing"):
-            # SQLite and PostgreSQL both support 'on_conflict_do_nothing',
-            # but generic SQL does not
-            query = query.on_conflict_do_nothing(
+        if ignore_if_exists:
+            query = query.on_conflict_do_nothing(  # type: ignore[attr-defined]
                 index_elements=["namespace_id", "name"]
             )
         self.db.execute(query)
@@ -1238,10 +1232,10 @@ class AbstractDBMetastore(AbstractMetastore):
             description=description,
             attrs=json.dumps(attrs or []),
         )
-        if ignore_if_exists and hasattr(query, "on_conflict_do_nothing"):
-            # SQLite and PostgreSQL both support 'on_conflict_do_nothing',
-            # but generic SQL does not
-            query = query.on_conflict_do_nothing(index_elements=["project_id", "name"])
+        if ignore_if_exists:
+            query = query.on_conflict_do_nothing(  # type: ignore[attr-defined]
+                index_elements=["project_id", "name"]
+            )
         self.db.execute(query)
 
         return self.get_dataset(
@@ -1306,10 +1300,8 @@ class AbstractDBMetastore(AbstractMetastore):
             preview=json.dumps(preview or []),
             job_id=job_id or os.getenv("DATACHAIN_JOB_ID"),
         )
-        if ignore_if_exists and hasattr(query, "on_conflict_do_nothing"):
-            # SQLite and PostgreSQL both support 'on_conflict_do_nothing',
-            # but generic SQL does not
-            query = query.on_conflict_do_nothing(
+        if ignore_if_exists:
+            query = query.on_conflict_do_nothing(  # type: ignore[attr-defined]
                 index_elements=["dataset_id", "version"]
             )
         self.db.execute(query)
@@ -2561,14 +2553,19 @@ class AbstractDBMetastore(AbstractMetastore):
                 status=CheckpointStatus.ACTIVE,
             )
 
-            # Use on_conflict_do_nothing to handle race conditions
-            if not hasattr(query, "on_conflict_do_nothing"):
-                raise RuntimeError("Database must support on_conflict_do_nothing")
-            query = query.on_conflict_do_nothing(index_elements=["job_id", "hash"])
+            # Use upsert to handle re-activation of deleted checkpoints
+            # (e.g. same hash in same job after previous run)
+            query = query.on_conflict_do_update(  # type: ignore[attr-defined]
+                index_elements=["job_id", "hash"],
+                set_={
+                    "status": CheckpointStatus.ACTIVE,
+                    "created_at": datetime.now(timezone.utc),
+                },
+            )
 
             self.db.execute(query)
 
-            checkpoint = self.find_checkpoint(job_id, _hash, partial=partial)
+            checkpoint = self.find_checkpoint(job_id, _hash)
             if checkpoint is None:
                 raise RuntimeError(
                     f"Checkpoint should exist after get_or_create for job_id={job_id}, "
@@ -2600,9 +2597,7 @@ class AbstractDBMetastore(AbstractMetastore):
             raise CheckpointNotFoundError(f"Checkpoint {checkpoint_id} not found")
         return self.checkpoint_class.parse(*rows[0])
 
-    def find_checkpoint(
-        self, job_id: str, _hash: str, partial: bool = False
-    ) -> Checkpoint | None:
+    def find_checkpoint(self, job_id: str, _hash: str) -> Checkpoint | None:
         """
         Tries to find an active checkpoint for a job with specific hash.
         Ignores expired and deleted checkpoints.
@@ -2611,7 +2606,6 @@ class AbstractDBMetastore(AbstractMetastore):
         query = self._checkpoints_select(ch).where(
             ch.c.job_id == job_id,
             ch.c.hash == _hash,
-            ch.c.partial == partial,
             ch.c.status == CheckpointStatus.ACTIVE,
         )
         rows = list(self.db.execute(query))
@@ -2732,10 +2726,9 @@ class AbstractDBMetastore(AbstractMetastore):
                 is_creator=is_creator,
                 created_at=datetime.now(timezone.utc),
             )
-            if hasattr(query, "on_conflict_do_nothing"):
-                query = query.on_conflict_do_nothing(
-                    index_elements=["dataset_version_id", "job_id"]
-                )
+            query = query.on_conflict_do_nothing(  # type: ignore[attr-defined]
+                index_elements=["dataset_version_id", "job_id"]
+            )
             self.db.execute(query)
 
             # Also update dataset_version.job_id to point to this job
