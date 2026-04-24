@@ -40,7 +40,7 @@ def test_dataset_select_paginated_dataset_larger_than_batch_size(test_session):
     assert set(values) == set(db_values)
 
 
-def test_dataset_insert_batch_size(test_session, warehouse):
+def test_dataset_insert_batch_size(test_session, warehouse, ignore_checkpoints):
     def udf_map(value: int) -> int:
         return value + 100
 
