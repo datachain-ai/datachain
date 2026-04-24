@@ -26,6 +26,10 @@ In-depth coverage of DataChain capabilities. Start with **Get Data In** and **Tr
 
 - [Working with Datasets](datasets.md) -- creating, versioning, namespaces, comparing, management, metrics
 
+## Agents
+
+- [Knowledge Base](knowledge-base.md) -- skill installation, `dc-knowledge/` generation, agent workflow, browsing
+
 ## Scale and Recover
 
 - [Scaling and Performance](scaling.md) -- parallel, distributed, async prefetch, caching

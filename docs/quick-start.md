@@ -291,5 +291,4 @@ loader = DataLoader(chain, batch_size=1)
 **See also:**
 
 - [Examples](examples.md)
-- [Tutorials](tutorials.md)
 - [API Reference](references/index.md)

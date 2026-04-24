@@ -54,7 +54,7 @@ title: Examples
 
     ![Untitled](assets/captioned_cartoons.png)
 
-If interested to see more examples, please check out the [tutorials](tutorials.md).
+If interested to see more examples, check out the [notebooks](#notebooks) below.
 
 ### Handling Python objects
 
@@ -277,3 +277,10 @@ train(loader, model, optimizer)
 See a larger example for CLIP fine-tuning here:
 
 [GitHub](https://github.com/datachain-ai/datachain-examples/blob/main/multimodal/clip_fine_tuning.ipynb) or [Google Colab](https://colab.research.google.com/github/datachain-ai/datachain-examples/blob/main/multimodal/clip_fine_tuning.ipynb)
+
+## Notebooks
+
+- **Multimodal (CLIP fine-tuning)**: [GitHub](https://github.com/datachain-ai/datachain-examples/blob/main/multimodal/clip_fine_tuning.ipynb) or [Google Colab](https://colab.research.google.com/github/datachain-ai/datachain-examples/blob/main/multimodal/clip_fine_tuning.ipynb)
+- **LLM evaluations**: [GitHub](https://github.com/datachain-ai/datachain-examples/blob/main/llm/llm_chatbot_evaluation.ipynb) or [Google Colab](https://colab.research.google.com/github/datachain-ai/datachain-examples/blob/main/llm/llm_chatbot_evaluation.ipynb)
+- **Reading JSON metadata**: [GitHub](https://github.com/datachain-ai/datachain-examples/blob/main/formats/json-metadata-tutorial.ipynb) or [Google Colab](https://colab.research.google.com/github/datachain-ai/datachain-examples/blob/main/formats/json-metadata-tutorial.ipynb)
+- **Processing video data**: [GitHub](https://github.com/datachain-ai/datachain-examples/blob/main/computer_vision/video_pose_detection_yolo/video-pose-detection-yolov11.ipynb) or [Google Colab](https://colab.research.google.com/github/datachain-ai/datachain-examples/blob/main/computer_vision/video_pose_detection_yolo/video-pose-detection-yolov11.ipynb)

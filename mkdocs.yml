@@ -90,6 +90,8 @@ nav:
               - Exporting Data: guide/exporting-data.md
           - Datasets:
               - Working with Datasets: guide/datasets.md
+          - Agents:
+              - Knowledge Base: guide/knowledge-base.md
           - Scale and Recover:
               - Scaling and Performance: guide/scaling.md
               - Delta Processing: guide/delta.md
@@ -103,7 +105,6 @@ nav:
               - Namespaces: guide/namespaces.md
               - Local DB Migrations: guide/db_migrations.md
       - Examples: examples.md
-      - Tutorials: tutorials.md
       - API Reference:
           - Overview: references/index.md
           - DataChain: references/datachain.md
