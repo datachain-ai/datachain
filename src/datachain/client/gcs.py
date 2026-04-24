@@ -41,9 +41,7 @@ class GCSClient(Client):
     def bucket_status(cls, name: str, **kwargs) -> BucketStatus:  # noqa: PLR0911
         from google.api_core import exceptions as google_exceptions
 
-        anon_only = bool(kwargs.get("anon"))
-
-        # Step 1: Try anonymous.
+        # Step 1: Anonymous probe.
         # Use _ls (objects.list API) not _info (buckets.get API): GCS does not
         # grant storage.buckets.get anonymously even for public buckets.
         anon_kwargs = {k: v for k, v in kwargs.items() if k != "anon"}
@@ -57,23 +55,15 @@ class GCSClient(Client):
                 exists=False, access="denied", error=f"GCS bucket '{name}' not found"
             )
         except (PermissionError, HttpError, OSError) as e:
-            # HttpError for HTTP-level 401/403 responses; gcsfs also raises
-            # OSError("Forbidden: ...") from _ls for permission errors.
             if isinstance(e, HttpError) and e.code == 404:
                 return BucketStatus(
                     exists=False,
                     access="denied",
                     error=f"GCS bucket '{name}' not found",
                 )
-            if anon_only:
-                return BucketStatus(
-                    exists=True,
-                    access="denied",
-                    error=f"Access denied to GCS bucket '{name}'"
-                    " — check credentials/permissions",
-                )
 
-        # Step 2: Try with configured credentials
+        # Step 2: Authenticated probe — create_fs resolves credentials from
+        # kwargs, environment, or application-default credentials.
         auth_fs = cls.create_fs(**kwargs)
         try:
             sync(get_loop(), auth_fs._info, name)
@@ -85,8 +75,6 @@ class GCSClient(Client):
         except (google_exceptions.Forbidden, google_exceptions.PermissionDenied) as e:
             return BucketStatus(exists=True, access="denied", error=str(e))
         except (PermissionError, HttpError, OSError) as e:
-            # gcsfs raises OSError("Forbidden: ...") for permission errors
-            # from _info/_ls; HttpError for HTTP-level 401/403/404.
             if isinstance(e, HttpError) and e.code == 404:
                 return BucketStatus(
                     exists=False,

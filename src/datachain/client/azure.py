@@ -21,9 +21,7 @@ class AzureClient(Client):
     protocol = "az"
 
     @classmethod
-    def bucket_status(cls, name: str, **kwargs) -> BucketStatus:  # noqa: PLR0911
-        anon_only = bool(kwargs.get("anon"))
-
+    def bucket_status(cls, name: str, **kwargs) -> BucketStatus:
         # Step 1: Anonymous probe — uses BlobServiceClient directly (not adlfs)
         # to avoid picking up credentials from environment variables like
         # AZURE_STORAGE_CONNECTION_STRING.
@@ -34,13 +32,8 @@ class AzureClient(Client):
                 anon_client = BlobServiceClient(account_url=url)
                 anon_client.get_container_client(name).get_container_properties()
                 return BucketStatus(exists=True, access="anonymous")
-            except ClientAuthenticationError as e:
-                if anon_only:
-                    return BucketStatus(
-                        exists=True,
-                        access="denied",
-                        error=f"Access denied to Azure container '{name}' — {e}",
-                    )
+            except ClientAuthenticationError:
+                pass
             except ResourceNotFoundError:
                 return BucketStatus(
                     exists=False,
@@ -48,21 +41,8 @@ class AzureClient(Client):
                     error=f"Azure container '{name}' not found",
                 )
             except HttpResponseError as e:
-                if e.status_code in (401, 403):
-                    if anon_only:
-                        return BucketStatus(
-                            exists=True,
-                            access="denied",
-                            error=f"Access denied to Azure container '{name}' — {e}",
-                        )
-                else:
+                if e.status_code not in (401, 403):
                     raise
-        elif anon_only:
-            return BucketStatus(
-                exists=False,
-                access="denied",
-                error=f"Cannot probe Azure container '{name}' without account_name",
-            )
 
         # Step 2: Authenticated probe.
         try:

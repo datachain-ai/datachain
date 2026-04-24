@@ -523,13 +523,12 @@ def get_parser() -> ArgumentParser:  # noqa: PLR0915
         ),
         formatter_class=CustomHelpFormatter,
     )
-    add_anon_arg(parse_bucket_status)
     parse_bucket_status.add_argument(
         "uri",
         type=str,
         help=(
             "Bucket URI to check, e.g. s3://my-bucket/, gs://my-bucket/, "
-            "az://my-container/. Any path beyond the bucket name is ignored."
+            "az://my-container/."
         ),
     )
     parse_bucket_status.add_argument(

@@ -64,9 +64,7 @@ class ClientS3(Client):
 
     @classmethod
     def bucket_status(cls, name: str, **kwargs) -> BucketStatus:
-        anon_only = bool(kwargs.get("anon"))
-
-        # Step 1: Try anonymous. cache_regions=True handles PermanentRedirect
+        # Step 1: Anonymous probe. cache_regions=True handles PermanentRedirect
         # (bucket-in-wrong-region) transparently so the bucket is found → exists=True.
         # Preserve endpoint/region settings from caller kwargs; strip credentials.
         credential_keys = {
@@ -88,19 +86,13 @@ class ClientS3(Client):
             sync(get_loop(), anon_fs._info, name)
             return BucketStatus(exists=True, access="anonymous")
         except PermissionError:
-            if anon_only:
-                return BucketStatus(
-                    exists=True,
-                    access="denied",
-                    error=f"Access denied to S3 bucket '{name}'"
-                    " — check AWS credentials/permissions",
-                )
+            pass
         except FileNotFoundError:
             return BucketStatus(
                 exists=False, access="denied", error=f"S3 bucket '{name}' not found"
             )
 
-        # Step 2: Try with configured credentials.
+        # Step 2: Authenticated probe.
         # Use raw S3FileSystem to bypass ClientS3.create_fs()'s auto-anon fallback.
         auth_kwargs = cls._normalize_s3_kwargs(
             {k: v for k, v in kwargs.items() if k != "anon"}

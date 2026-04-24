@@ -14,7 +14,6 @@ def test_bucket_status_exists(cloud_server, cloud_server_credentials):
 
 @pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)
 def test_bucket_status_not_found(cloud_server, cloud_server_credentials):
-    # Derive a URI that points to a non-existent bucket by appending a suffix
     base_uri = cloud_server.src_uri.rstrip("/")
     nonexistent_uri = base_uri + "-does-not-exist-xyz/"
     status = bucket_status(nonexistent_uri, **cloud_server.client_config)
