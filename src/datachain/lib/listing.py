@@ -8,7 +8,6 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, TypeVar
 
-import sqlalchemy as sa
 from fsspec.asyn import get_loop
 from sqlalchemy.sql.expression import true
 
@@ -17,14 +16,11 @@ from datachain.asyn import iter_over_async
 from datachain.client import Client
 from datachain.error import ClientError
 from datachain.lib.file import File
-from datachain.query.schema import Column
+from datachain.query.schema import C, Column
 from datachain.sql.functions import path as pathfunc
-from datachain.sql.functions.aggregate import xor_agg
-from datachain.sql.functions.string import string_hash
 from datachain.utils import uses_glob
 
 if TYPE_CHECKING:
-    from datachain.catalog import Catalog
     from datachain.dataset import DatasetRecord
     from datachain.lib.dc import DataChain
     from datachain.query.session import Session
@@ -39,21 +35,41 @@ logging.getLogger("aiobotocore.credentials").setLevel(logging.CRITICAL)
 logging.getLogger("gcsfs").setLevel(logging.CRITICAL)
 
 
-def calc_fingerprint(catalog: "Catalog", dataset: "DatasetRecord", version: str) -> int:
+def calc_fingerprint(session: "Session", dataset: "DatasetRecord", version: str) -> int:
     """Compute an order-independent content fingerprint for a listing version.
 
     Uses file path + version (if available) or etag as the content identifier.
     Version is preferred over etag because etags can be unstable on some cloud
     providers (GCS, Azure) due to internal operations like storage class changes.
     """
-    table_name = catalog.warehouse.dataset_table_name(dataset, version)
-    table = catalog.warehouse.get_table(table_name)
-    file_version = Column("file.version")
-    file_etag = Column("file.etag")
-    file_path = Column("file.path")
-    identifier = sa.case((file_version != "", file_version), else_=file_etag)
-    query = sa.select(xor_agg(string_hash(file_path, identifier))).select_from(table)
-    return next(catalog.warehouse.db.execute(query))[0]
+    # Inline imports: lib.listing sits below lib.dc / query.dataset / func in the
+    # import graph (catalog.catalog imports this module during init), so hoisting
+    # any of these triggers a circular import.
+    from datachain.func.aggregate import xor_agg
+    from datachain.func.conditional import case
+    from datachain.func.string import string_hash
+    from datachain.lib.dc.datachain import DataChain
+    from datachain.lib.dc.utils import Sys
+    from datachain.lib.settings import Settings
+    from datachain.lib.signal_schema import SignalSchema
+    from datachain.query.dataset import DatasetQuery
+
+    query = DatasetQuery(
+        name=dataset.name,
+        version=version,
+        session=session,
+        include_incomplete=True,
+    )
+    signal_schema = SignalSchema({"sys": Sys, "file": File})
+    chain = DataChain(query, Settings(), signal_schema)
+
+    identifier = case(
+        (C("file.version") != "", C("file.version")),
+        else_=C("file.etag"),
+    )
+    return chain.group_by(  # type: ignore[return-value]
+        fp=xor_agg(string_hash(C("file.path"), identifier)),
+    ).to_values("fp")[0]
 
 
 def listing_dataset_expired(lst_ds) -> bool:

@@ -200,6 +200,6 @@ def test_calc_fingerprint_order_independent(test_session):
     ds1 = catalog.get_dataset("lst__fp-order1", versions=None)
     ds2 = catalog.get_dataset("lst__fp-order2", versions=None)
 
-    fp1 = calc_fingerprint(catalog, ds1, ds1.latest_version)
-    fp2 = calc_fingerprint(catalog, ds2, ds2.latest_version)
+    fp1 = calc_fingerprint(test_session, ds1, ds1.latest_version)
+    fp2 = calc_fingerprint(test_session, ds2, ds2.latest_version)
     assert fp1 == fp2

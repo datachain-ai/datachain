@@ -3319,8 +3319,8 @@ class DatasetQuery:
         if not prev_version:
             return None
 
-        old_fp = calc_fingerprint(self.catalog, dataset, prev_version)
-        new_fp = calc_fingerprint(self.catalog, dataset, version)
+        old_fp = calc_fingerprint(self.session, dataset, prev_version)
+        new_fp = calc_fingerprint(self.session, dataset, version)
         if old_fp != new_fp:
             return None
 
