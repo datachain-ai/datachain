@@ -64,9 +64,8 @@ nav:
   - Home:
       - Welcome: index.md
       - Getting Started:
-          - "Quick Start: Agents": getting-started/agents.md
-          - "Quick Start: Python": getting-started/python.md
-          - Core Concepts: getting-started/core-concepts.md
+          - Agents: getting-started/agents.md
+          - Python: getting-started/python.md
       - Concepts:
           - Overview: concepts/index.md
           - Data Memory: concepts/data-memory.md

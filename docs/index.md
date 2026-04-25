@@ -30,7 +30,6 @@ AI pipelines are amnesiac. Every team re-computes embeddings, re-parses annotati
 
 ## Get Started
 
-- **[Quick Start: Agents](getting-started/agents.md)** -- agents write DataChain pipelines and build a knowledge graph that makes every subsequent task faster
-- **[Quick Start: Python](getting-started/python.md)** -- write DataChain pipelines directly for full control over data processing
-- **[Core Concepts](getting-started/core-concepts.md)** -- understand Data Memory, Datasets, and the dual engine
-- **[Guides](guide/index.md)** -- in-depth coverage of every capability
+- **[Getting Started: Agents](getting-started/agents.md)** -- agents write DataChain pipelines and build a knowledge graph that makes every subsequent task faster
+- **[Getting Started: Python](getting-started/python.md)** -- write DataChain pipelines directly for full control over data processing
+- **[Concepts](concepts/index.md)** -- understand Data Memory, Datasets, and the dual engine
