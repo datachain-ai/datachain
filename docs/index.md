@@ -28,9 +28,9 @@ DataChain is data memory for AI.
 
 AI pipelines are amnesiac. Every team re-computes embeddings, re-parses annotations, re-filters datasets -- because nothing remembers that the work was already done. DataChain makes every operation deposit a versioned, typed dataset. Knowledge accumulates instead of evaporating.
 
-## Next Steps
+## Get Started
 
-- **[Quick Start: Agents](getting-started/agents.md)** -- use DataChain from Claude Code, Cursor, or Codex
-- **[Quick Start: Python](quick-start.md)** -- write pipelines with the DataChain SDK
+- **[Quick Start: Agents](getting-started/agents.md)** -- agents write DataChain pipelines and build a knowledge graph that makes every subsequent task faster
+- **[Quick Start: Python](getting-started/python.md)** -- write DataChain pipelines directly for full control over data processing
 - **[Core Concepts](getting-started/core-concepts.md)** -- understand Data Memory, Datasets, and the dual engine
 - **[Guides](guide/index.md)** -- in-depth coverage of every capability

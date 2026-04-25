@@ -65,7 +65,7 @@ nav:
       - Welcome: index.md
       - Getting Started:
           - "Quick Start: Agents": getting-started/agents.md
-          - "Quick Start: Python": quick-start.md
+          - "Quick Start: Python": getting-started/python.md
           - Core Concepts: getting-started/core-concepts.md
       - Concepts:
           - Overview: concepts/index.md

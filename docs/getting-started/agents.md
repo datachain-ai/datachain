@@ -4,6 +4,8 @@ title: "Quick Start: Agents"
 
 # Quick Start: Agents
 
+Without DataChain, an agent treats every data question as a fresh problem -- re-downloading files, re-computing embeddings, re-filtering results. With the DataChain skill installed, the agent checks what datasets already exist, builds on them, and registers new results. After a week, your project has a knowledge graph that both agents and humans can navigate.
+
 ## Installation
 
 === "pip"

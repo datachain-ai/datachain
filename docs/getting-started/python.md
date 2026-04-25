@@ -18,23 +18,6 @@ title: "Quick Start: Python"
     uv add datachain
     ```
 
-## Import Convention
-
-Always import DataChain as a module:
-
-```python
-import datachain as dc
-```
-
-Access everything through the `dc.*` prefix: `dc.read_storage()`, `dc.Column()`, `dc.func.*`, `dc.File`, `dc.ImageFile`, etc.
-
-For annotation types and custom models:
-
-```python
-from datachain import model      # BBox, Pose, Segment, etc.
-from pydantic import BaseModel   # for custom types
-```
-
 ## Selecting files using JSON metadata
 
 A storage consists of images of cats and dogs
@@ -306,5 +289,5 @@ loader = DataLoader(chain, batch_size=1)
 
 **See also:**
 
-- [Examples](examples.md)
-- [API Reference](references/index.md)
+- [Examples](../examples.md)
+- [API Reference](../references/index.md)
