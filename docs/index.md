@@ -26,7 +26,7 @@ title: Welcome to DataChain
 
 DataChain is data memory for AI.
 
-AI pipelines are amnesiac. Every team re-computes embeddings, re-parses annotations, re-filters datasets -- because nothing remembers that the work was already done. DataChain makes every operation deposit a versioned, typed dataset. Knowledge accumulates instead of evaporating.
+AI data work is amnesiac. Every team re-computes the same results -- embeddings, classifications, parsed metadata, filtered subsets, LLM responses -- across S3, GCS, and databases, because nothing remembers that the work was already done. DataChain stores every result as a versioned, typed, queryable dataset. The next person or agent builds on what exists instead of starting from scratch.
 
 ## Get Started
 
