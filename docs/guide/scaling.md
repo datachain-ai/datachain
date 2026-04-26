@@ -65,7 +65,7 @@ On distributed clusters in Studio, cache can be a shared volume so all machines 
 
 ## Checkpoints
 
-Checkpoints make pipeline failure recoverable without reprocessing from scratch. DataChain tracks execution state and reuses results of previous runs.
+Checkpoints make failure recoverable without reprocessing from scratch. DataChain tracks execution state and reuses results of previous runs.
 
 Two levels of checkpointing operate independently:
 
@@ -103,7 +103,7 @@ The resulting dataset is always complete, containing both previously processed a
 
 ### The Error Field Pattern
 
-Standard approach for production pipelines that auto-retry failures:
+Standard approach for production queries that auto-retry failures:
 
 ```python
 import datachain as dc
@@ -140,7 +140,7 @@ Data-engine operations (filter, group_by, order_by, mutate, aggregate) run as SQ
 
 ## Dataset Reuse
 
-The most powerful optimization: starting from previously computed results. When a pipeline consumes `read_dataset("embeddings")` instead of recomputing from raw files, it skips all upstream work. This is why `save()` is the default terminal operation.
+The most powerful optimization: starting from previously computed results. When a query consumes `read_dataset("embeddings")` instead of recomputing from raw files, it skips all upstream work. This is why `save()` is the default terminal operation.
 
 ## Optimization Summary
 
@@ -177,4 +177,4 @@ chain = (
 )
 ```
 
-Each run adds new files to the dataset while preserving all previously processed results. Combined with checkpoints, this means a pipeline can handle both growing data and mid-run failures without any special logic.
+Each run adds new files to the dataset while preserving all previously processed results. Combined with checkpoints, this means a query can handle both growing data and mid-run failures without any special logic.

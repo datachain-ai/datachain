@@ -79,4 +79,4 @@ print(f"Spent ${cost:.2f}")
 
 ## Why Stages Matter
 
-Single chains work for simple workflows. Multi-stage pipelines build production systems where each step can be independently monitored, rerun, and compared across versions. The pattern: `save()` to checkpoint, `read_dataset()` to continue. Each stage deposits a versioned conclusion that the next stage builds on.
+Single queries work for simple workflows. Multi-stage pipelines build production systems where each step can be independently monitored, rerun, and compared across versions. The pattern: `save()` to checkpoint, `read_dataset()` to continue. Each stage deposits a versioned conclusion that the next stage builds on.

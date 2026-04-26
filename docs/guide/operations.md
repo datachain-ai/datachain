@@ -4,13 +4,13 @@ title: Data Engine Operations
 
 # Data Engine Operations
 
-Data engine operations execute directly in the Memory Engine (SQLite locally, ClickHouse in Studio). They never spin up Python runtimes, never download files, and scale to millions or billions of records.
+Metadata operations execute directly in the Memory Engine (SQLite locally, ClickHouse in Studio). They never spin up Python runtimes, never download files, and scale to millions or billions of records.
 
-**The rule: if it can be expressed as a data engine operation, it should be.** Never materialize a chain with `to_pandas()` or `to_list()` just to run aggregation or grouping in Python; use native operations instead.
+**The rule: if it can be expressed as a metadata operation, it should be.** Never materialize a chain with `to_pandas()` or `to_list()` just to run aggregation or grouping in Python; use native operations instead.
 
 ## Native vs Non-Native
 
-**Non-native** (pulls all data into Python, iterates manually):
+**Non-native** (pulls data into Python, iterates manually):
 
 ```python
 import datachain as dc
@@ -43,7 +43,7 @@ import datachain as dc
 
 ## Aggregate Analytics on Nested Objects
 
-The data engine reaches into Pydantic models serialized in the database, including deeply nested fields:
+The Memory Engine reaches into Pydantic models serialized in the database, including deeply nested fields:
 
 ```python
 import datachain as dc
@@ -159,7 +159,7 @@ Mutate does NOT accept lambdas or Python callables; use `map()` for those. See t
 
 | Aspect      | `mutate`                                    | `map`                                        |
 | ----------- | ------------------------------------------- | -------------------------------------------- |
-| Runs in     | Memory Engine (SQL)                         | Python runtime                               |
+| Runs in     | Memory Engine (SQL, metadata operation)     | Python runtime (Python function)             |
 | Speed       | Warehouse speed, vectorized                 | Per-record Python execution                  |
 | Accepts     | `dc.func.*`, column arithmetic, comparisons | Any Python callable                          |
 | File access | No                                          | Yes (can read file content)                  |

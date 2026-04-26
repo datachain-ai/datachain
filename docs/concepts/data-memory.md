@@ -4,13 +4,13 @@ title: Data Memory
 
 # Data Memory
 
-Data Memory is the accumulated record of everything a team has done with its data, deposited automatically as a structural consequence of the work itself.
+Data Memory is the accumulated record of everything a team has done with its data, deposited automatically as a consequence of the work itself.
 
 ## Why Memory Matters
 
-Every pipeline, exploration, and labeling session produces knowledge. Without persistence infrastructure, that knowledge evaporates when the script finishes. The next person, the next project, the next agent starts from raw data and a blank script. People become the memory, and people do not scale.
+Every query, exploration, and labeling session produces knowledge. Without persistence infrastructure, that knowledge evaporates when the script finishes. The next person, the next project, the next agent starts from raw data and a blank script. People become the memory, and people do not scale.
 
-Memory changes this. Every operation records its results, schemas, lineage, and context as a side effect of running. The hundredth pipeline runs in an environment qualitatively richer than the tenth: more features extracted, more connections traced, more context for the next person or agent.
+Memory changes this. Every query records its results, schemas, lineage, and context as a side effect of running. The hundredth query runs in an environment qualitatively richer than the tenth: more features extracted, more connections traced, more context for the next person or agent.
 
 ## Composed of Datasets
 
@@ -26,7 +26,7 @@ import datachain as dc
     .save("image_embeddings")
 )
 
-# The next pipeline builds on it
+# The next query builds on it
 ds = dc.read_dataset("image_embeddings")
 ```
 
@@ -36,7 +36,7 @@ Memory is not a catalog that someone maintains. It is what happens when every op
 
 ## Compounding Requires Fast Recall
 
-Compounding only works when recall is cheaper than recreation. If retrieval is slower than re-running the pipeline, the team silently re-runs it and memory degrades into archive. The [Memory Engine](execution-model.md), a columnar SQL backend, makes building on prior work always the path of least resistance.
+Compounding only works when recall is cheaper than recreation. If retrieval is slower than re-running the query, the team silently re-runs it and memory degrades into archive. The [Memory Engine](execution-model.md), a columnar SQL backend, makes building on prior work always the path of least resistance.
 
 ## Provenance
 
@@ -47,7 +47,7 @@ Memory that cannot explain how it was produced is memory that gets rebuilt from 
 3. **Author**: the person or service account that ran the script
 4. **Creation time**
 
-None of this requires manual declaration. It is captured from code and execution as a structural consequence of the operation. Each deposit is verifiable without asking the person who created it.
+None of this requires manual declaration. It is captured from code and execution as a consequence of the operation. Each deposit is verifiable without asking the person who created it.
 
 DataChain also supports attaching metrics and parameters alongside provenance:
 

@@ -51,7 +51,7 @@ Agents query the Memory Engine directly. When an agent needs to find existing da
 
 ## Python Data Engine
 
-The Python Data Engine accepts data from two sources: object storage (S3, GCS, Azure) and databases (Postgres, Snowflake). It executes `map()`, `gen()`, and `agg()` operations, anything that needs file content, ML models, or LLM calls. It runs operations in parallel threads with async I/O and distributed across workers.
+The Python Data Engine accepts data from two sources: object storage (S3, GCS, Azure) and databases (Postgres, Snowflake). It executes your Python functions via `map()`, `gen()`, and `agg()` operations: anything that needs file content, ML models, or LLM calls. It runs functions in parallel threads with async I/O and distributed across workers.
 
 ```python
 import datachain as dc
@@ -64,11 +64,11 @@ import datachain as dc
 )
 ```
 
-Every primitive (parallel dispatch, prefetch, batching) is designed for data operations where each row triggers expensive work: an LLM call, a model inference, a file download and parse.
+Every primitive (parallel dispatch, prefetch, batching) is designed for Python functions where each row triggers expensive work: an LLM call, a model inference, a file download and parse.
 
 ## Pydantic as Bridge
 
-Pydantic is the shared type system that connects Python outputs to the Memory Engine. A single `save()` takes a Python result with its full Pydantic schema and makes it warehouse-queryable.
+Pydantic is the shared type system that connects Python function outputs to the Memory Engine. A single `save()` takes a Python result with its full Pydantic schema and makes it warehouse-queryable.
 
 Types enable transpilation: `filter(dc.C("det.confidence") > 0.9)` compiles to a SQL WHERE clause instead of deserializing every row into Python. Without typed schemas, transpilation is impossible; without transpilation, there is no warehouse speed.
 

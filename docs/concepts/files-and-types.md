@@ -139,7 +139,7 @@ For external Pydantic models (like Mistral's `ChatCompletionResponse`), register
 
 ## Core Classes
 
-- **DataChain**: the central pipeline class with 60+ methods
+- **DataChain**: the core class for composing queries with 60+ methods
 - **DataModel**: Pydantic base for structured types
 - **Column** (aliased as `C`): references a column by name for vectorized expressions
 - **File**, **ImageFile**, **VideoFile**, **AudioFile**, **TextFile**: storage-native file types

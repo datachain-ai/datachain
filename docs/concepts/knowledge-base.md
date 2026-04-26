@@ -8,7 +8,7 @@ The Knowledge Base is the data context layer over [Data Memory](data-memory.md):
 
 ## Skill and MCP Layer
 
-The Knowledge Base lives in the DataChain Skill and MCP layer, architecturally separate from the Python Library that holds the Python Data Engine, Data Memory, and Memory Engine. The Python Library runs pipelines and stores results. The Skill and MCP layer serves data context to agents via a different protocol. This separation reflects the two audiences: pipelines need a compute engine, agents need a context surface.
+The Knowledge Base lives in the DataChain Skill and MCP layer, architecturally separate from the Python Library that holds the Python Data Engine, Data Memory, and Memory Engine. The Python Library runs queries and stores results. The Skill and MCP layer serves data context to agents via a different protocol. This separation reflects the two audiences: queries need a compute engine, agents need a context surface.
 
 ## Why Data Context Matters
 

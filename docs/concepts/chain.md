@@ -4,11 +4,11 @@ title: Chain
 
 # Chain
 
-A chain is a lazy, composable pipeline where nothing executes until a terminal operation triggers it. Chains are the primary way to compose work that eventually becomes a dataset.
+A chain is a query that chains Python functions and metadata operations into a single composable sequence. Python functions handle AI work: LLM calls, embeddings, model inference. Metadata operations run as SQL at warehouse speed: filter, join, aggregate. Nothing runs until a terminal operation like `save()`, `show()`, or `to_pandas()`. DataChain is named for this pattern: every query is a chain of operations, and every chain deposits its results into [Data Memory](data-memory.md) as a versioned [dataset](datasets.md).
 
 ## Lazy Evaluation and Optimization
 
-Lazy evaluation lets the system see the full pipeline before executing a single row. The transpiler compiles data-engine operations to SQL; filters push down, operations reorder, unnecessary computation gets skipped.
+Lazy evaluation lets the system see the full chain before executing a single row. The transpiler compiles metadata operations to SQL; filters push down, operations reorder, unnecessary computation gets skipped.
 
 ```python
 import datachain as dc
@@ -23,17 +23,17 @@ chain = (
 )
 ```
 
-The `filter` and `mutate` compile to SQL and run at warehouse speed. The `map` runs in parallel Python. The system decides which engine handles what.
+The `filter` and `mutate` are metadata operations that compile to SQL and run at warehouse speed. The `map` runs your Python function in parallel. The system decides which engine handles what.
 
 ## Atomicity
 
 Results go to staging tables during execution. Only `save()` commits them into memory. If the chain fails at any point, no partial results pollute the shared layer. Deposits are all-or-nothing. Combined with [checkpoints](../guide/scaling.md#checkpoints), failed chains resume from where they stopped on the next run, but nothing is visible to other users until the chain succeeds.
 
-## Declarative Intent
+## Declarative
 
-A chain declares WHAT to do, not HOW. The same fluent API covers SQL-compiled [data-engine operations](../guide/operations.md) and Python-executed [operations](../guide/python-engine.md). The user never specifies which operations become SQL and which run Python; the system infers this from the operation type and the Pydantic schema.
+A chain declares WHAT to do, not HOW. The same fluent API covers SQL-compiled [metadata operations](../guide/operations.md) and [Python functions](../guide/python-engine.md). You never specify which operations become SQL and which run Python; the system infers this from the operation type and the Pydantic schema.
 
-## Composability
+## Composable
 
 Every operation returns a new immutable chain. The original is never modified. This lets you branch from any intermediate point:
 

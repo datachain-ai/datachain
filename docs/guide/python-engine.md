@@ -4,13 +4,13 @@ title: Python Operations
 
 # Python Operations
 
-Python operations run arbitrary Python code on each record in a chain. Use them when you need file content, ML models, or LLM calls. For everything else, use [data engine operations](operations.md).
+Python operations run your Python functions on each record in a chain. Use them when you need file content, ML models, or LLM calls. For everything else, use [metadata operations](operations.md).
 
 ## Three Types
 
 ### Mapper: map()
 
-Runs once per record. Returns metadata added to the same record.
+Runs a Python function once per record. Returns metadata added to the same record.
 
 ```python
 import datachain as dc
@@ -73,7 +73,7 @@ Here, `embedding` becomes the new column name.
 
 DataChain infers parameters from the function signature and output types from return type hints. The input column is always `file` regardless of modality.
 
-**Always type your Python operations.** Missing return type annotations default to `str` and crash at runtime. This is the single most common source of production failures.
+**Always annotate function return types.** Missing return type annotations default to `str` and crash at runtime. This is the single most common source of production failures.
 
 ```python
 # GOOD: explicit return type
@@ -93,7 +93,7 @@ chain.map(ext=lambda path: path.rsplit(".", 1)[-1], params=["file.path"])
 
 ## Setup for Expensive Resources
 
-When a Python operation needs an expensive resource (model, tokenizer, API client), `.setup()` initializes it once per worker:
+When a Python function needs an expensive resource (model, tokenizer, API client), `.setup()` initializes it once per worker:
 
 ```python
 from transformers import Pipeline, pipeline
@@ -135,7 +135,7 @@ chain = (
 
 ## Class-Based Lifecycle
 
-When `.setup()` is not enough (you need `teardown()`, shared mutable state across records, or multi-resource initialization), use `Mapper`, `Generator`, and `Aggregator` base classes:
+When `.setup()` is not enough (you need `teardown()`, shared mutable state across records, or multi-resource initialization), use the `Mapper`, `Generator`, and `Aggregator` base classes:
 
 ```python
 from datachain.lib.udf import Mapper  # internal module name
@@ -151,11 +151,11 @@ class ImageEncoder(Mapper):
         del self.model
 ```
 
-Use class-based Python operations sparingly; `.setup()` covers most cases.
+Use class-based operations sparingly; `.setup()` covers most cases.
 
 ## Execution and Scale
 
-By default, execution is single-threaded. Add `.settings(parallel=True)` for expensive operations:
+By default, execution is single-threaded. Add `.settings(parallel=True)` for expensive Python functions:
 
 ```python
 import datachain as dc
@@ -190,7 +190,7 @@ chain.map(result=classify)
 
 ## Complete Examples
 
-### Image Captioning Pipeline
+### Image Captioning
 
 Read images from storage, load a HuggingFace model once per worker, caption each image, save as a versioned dataset:
 
