@@ -252,7 +252,7 @@ chain = dc.read_storage("s3://bucket/data/")
 
 ## Shared Listing Prefix
 
-Use a common parent prefix for multiple `read_storage()` calls -- you get one listing and cache hits.
+Use a common parent prefix for multiple `read_storage()` calls; you get one listing and cache hits.
 
 ```python
 # GOOD -- shared prefix, one cached listing

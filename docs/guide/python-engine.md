@@ -8,7 +8,7 @@ Python operations run arbitrary Python code on each record in a chain. Use them 
 
 ## Three Types
 
-### Mapper -- map()
+### Mapper: map()
 
 Runs once per record. Returns metadata added to the same record.
 
@@ -26,7 +26,7 @@ def analyze(file: dc.File, client) -> Analysis:
     return Analysis.model_validate_json(resp.content[0].text)
 ```
 
-### Generator -- gen()
+### Generator: gen()
 
 Expands one record into multiple records. One video produces thousands of frames, one PDF yields many chunks.
 
@@ -46,7 +46,7 @@ def split_pdf(file: dc.File) -> Iterator[Chunk]:
 chain = dc.read_storage("s3://docs/*.pdf").gen(chunk=split_pdf).save("chunks")
 ```
 
-### Aggregator -- agg()
+### Aggregator: agg()
 
 Groups records by a key, then produces output records per group.
 
@@ -135,7 +135,7 @@ chain = (
 
 ## Class-Based Lifecycle
 
-When `.setup()` is not enough -- you need `teardown()`, shared mutable state across records, or multi-resource initialization -- use `Mapper`, `Generator`, and `Aggregator` base classes:
+When `.setup()` is not enough (you need `teardown()`, shared mutable state across records, or multi-resource initialization), use `Mapper`, `Generator`, and `Aggregator` base classes:
 
 ```python
 from datachain.lib.udf import Mapper  # internal module name
@@ -151,7 +151,7 @@ class ImageEncoder(Mapper):
         del self.model
 ```
 
-Use class-based Python operations sparingly -- `.setup()` covers most cases.
+Use class-based Python operations sparingly; `.setup()` covers most cases.
 
 ## Execution and Scale
 

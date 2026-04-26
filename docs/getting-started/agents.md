@@ -4,7 +4,7 @@ title: Getting Started with Agents
 
 # Getting Started with Agents
 
-Without DataChain, an agent treats every data question as a fresh problem -- re-downloading files, re-computing embeddings, re-filtering results. With the DataChain skill installed, the agent checks what datasets already exist, builds on them, and registers new results. After a week, your project has a knowledge graph that both agents and humans can navigate.
+Without DataChain, an agent treats every data question as a fresh problem: re-downloading files, re-computing embeddings, re-filtering results. With the DataChain skill installed, the agent checks what datasets already exist, builds on them, and registers new results. After a week, your project has a knowledge graph that both agents and humans can navigate.
 
 ## Installation
 
@@ -60,7 +60,7 @@ Result:
 └──────┴───────────────────────────────────┴────────────────────────────┴──────────┘
 ```
 
-The agent decomposed this into embedding, metadata, and filtering steps -- each saved as a named **dataset**. Next time, it starts from what's already built.
+The agent decomposed this into embedding, metadata, and filtering steps; each saved as a named **dataset**. Next time, it starts from what's already built.
 
 ## Knowledge Base
 
@@ -86,6 +86,6 @@ Run the skill prompt again to update the knowledge base after creating new datas
 
 ## Next Steps
 
-- [Concepts](../concepts/index.md) -- understand Data Memory, Datasets, and the dual engine
-- [Knowledge Base guide](../guide/knowledge-base.md) -- skill installation, generation, browsing
-- [Guides](../guide/index.md) -- in-depth coverage of every capability
+- [Concepts](../concepts/index.md): understand Data Memory, Datasets, and the dual engine
+- [Knowledge Base guide](../guide/knowledge-base.md): skill installation, generation, browsing
+- [Guides](../guide/index.md): in-depth coverage of every capability

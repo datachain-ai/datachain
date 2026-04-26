@@ -10,12 +10,12 @@ The provenance store records how every dataset was produced: what code ran, what
 
 The provenance store records four things for each dataset:
 
-1. **Dependencies** -- parent datasets with versions, storage URIs for every input
-2. **Source code** -- the full script, stored verbatim
-3. **Author** -- the person or service account that ran the script
+1. **Dependencies**: parent datasets with versions, storage URIs for every input
+2. **Source code**: the full script, stored verbatim
+3. **Author**: the person or service account that ran the script
 4. **Creation time**
 
-None of this requires manual declaration -- it is captured from code and execution as a structural consequence of the operation.
+None of this requires manual declaration. It is captured from code and execution as a structural consequence of the operation.
 
 ## Dataset Registry
 
@@ -36,7 +36,7 @@ print(ds.name, ds.version)
 
 ## Why Provenance Matters
 
-[Data Memory](data-memory.md) compounds only when deposits are trustworthy. If the next person cannot see what code made a dataset, what inputs it consumed, or who ran it, they start over -- and compounding breaks. Provenance is the reason those downstream consumers can build forward instead of rebuilding from scratch.
+[Data Memory](data-memory.md) compounds only when deposits are trustworthy. If the next person cannot see what code made a dataset, what inputs it consumed, or who ran it, they start over, and compounding breaks. Provenance is the reason those downstream consumers can build forward instead of rebuilding from scratch.
 
 ## Metrics and Parameters
 

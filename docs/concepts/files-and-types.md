@@ -112,7 +112,7 @@ class YoloPose(BaseModel):
 
 ## DataModel and Custom Types
 
-Use `pydantic.BaseModel` directly for custom types -- DataChain accepts it natively:
+Use `pydantic.BaseModel` directly for custom types; DataChain accepts it natively:
 
 ```python
 from pydantic import BaseModel
@@ -139,8 +139,8 @@ For external Pydantic models (like Mistral's `ChatCompletionResponse`), register
 
 ## Core Classes
 
-- **DataChain** -- the central pipeline class with 60+ methods
-- **DataModel** -- Pydantic base for structured types
-- **Column** (aliased as `C`) -- references a column by name for vectorized expressions
-- **File**, **ImageFile**, **VideoFile**, **AudioFile**, **TextFile** -- storage-native file types
-- **BBox**, **OBBox**, **Pose**, **Pose3D**, **Segment** -- annotation types (in `datachain.model`)
+- **DataChain**: the central pipeline class with 60+ methods
+- **DataModel**: Pydantic base for structured types
+- **Column** (aliased as `C`): references a column by name for vectorized expressions
+- **File**, **ImageFile**, **VideoFile**, **AudioFile**, **TextFile**: storage-native file types
+- **BBox**, **OBBox**, **Pose**, **Pose3D**, **Segment**: annotation types (in `datachain.model`)

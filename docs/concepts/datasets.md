@@ -4,11 +4,11 @@ title: Datasets
 
 # Datasets
 
-The dataset is the atom of [Data Memory](data-memory.md) -- a named, versioned collection of typed records. Everything the system remembers is a dataset. Every pipeline produces one. Every subsequent pipeline starts from one.
+The dataset is the atom of [Data Memory](data-memory.md): a named, versioned collection of typed records. Everything the system remembers is a dataset. Every pipeline produces one. Every subsequent pipeline starts from one.
 
 ## Immutability Is the Foundation of Trust
 
-A dataset version, once saved, never changes. New work produces a new version, never overwrites the old. This is what makes datasets safe to build on -- the next person or agent knows that the thing they read is the same thing the author saved.
+A dataset version, once saved, never changes. New work produces a new version, never overwrites the old. This is what makes datasets safe to build on; the next person or agent knows that the thing they read is the same thing the author saved.
 
 ```python
 import datachain as dc
@@ -22,7 +22,7 @@ ds = dc.read_dataset("experiment")                       # latest
 
 ## Typed by Construction
 
-Schemas are Pydantic models, not SQL DDL. A dataset carries all data types as typed columns -- file references, embeddings, annotations, scores, nested objects, database fields. This is what makes datasets fundamentally different from flat SQL tables -- the type system matches the complexity of the data.
+Schemas are Pydantic models, not SQL DDL. A dataset carries all data types as typed columns: file references, embeddings, annotations, scores, nested objects, database fields. This is what makes datasets fundamentally different from flat SQL tables; the type system matches the complexity of the data.
 
 ```python
 from pydantic import BaseModel
@@ -54,11 +54,11 @@ chain.save("experiment", update_version="minor")      # 1.1.0
 chain.save("experiment", update_version="major")      # 2.0.0
 ```
 
-Lineage references track specific versions, not names -- the registry records exactly which version was consumed.
+Lineage references track specific versions, not names; the registry records exactly which version was consumed.
 
 ## Sharing Through Datasets
 
-The dataset is the collaboration primitive. When one person saves a dataset, the next person starts from it -- not from a re-run, not from a shared folder, not from a Slack message with a path. Provenance makes each dataset self-describing. The knowledge base makes it discoverable.
+The dataset is the collaboration primitive. When one person saves a dataset, the next person starts from it, not from a re-run, not from a shared folder, not from a Slack message with a path. Provenance makes each dataset self-describing. The knowledge base makes it discoverable.
 
 ```python
 import datachain as dc

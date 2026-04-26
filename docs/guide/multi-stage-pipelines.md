@@ -64,7 +64,7 @@ Each model run is a versioned dataset with full provenance. The comparison datas
 
 ## Cost Tracking
 
-Each stage's LLM cost is visible through aggregate analytics on nested token fields -- no deserialization, no Python runtime:
+Each stage's LLM cost is visible through aggregate analytics on nested token fields, with no deserialization and no Python runtime:
 
 ```python
 import datachain as dc

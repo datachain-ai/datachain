@@ -6,7 +6,7 @@ title: Data Engine Operations
 
 Data engine operations execute directly in the Memory Engine (SQLite locally, ClickHouse in Studio). They never spin up Python runtimes, never download files, and scale to millions or billions of records.
 
-**The rule: if it can be expressed as a data engine operation, it should be.** Never materialize a chain with `to_pandas()` or `to_list()` just to run aggregation or grouping in Python -- use native operations instead.
+**The rule: if it can be expressed as a data engine operation, it should be.** Never materialize a chain with `to_pandas()` or `to_list()` just to run aggregation or grouping in Python; use native operations instead.
 
 ## Native vs Non-Native
 
@@ -57,7 +57,7 @@ cost = (
 print(f"Spent ${cost:.2f} on {chain.count()} calls")
 ```
 
-`response.usage.prompt_tokens` traverses two levels of Pydantic nesting. The sum runs entirely in SQL -- no Python runtime, no deserialization.
+`response.usage.prompt_tokens` traverses two levels of Pydantic nesting. The sum runs entirely in SQL: no Python runtime, no deserialization.
 
 ## Operations Catalog
 
@@ -65,10 +65,10 @@ Every operation returns a new chain. Chains are immutable and composable.
 
 ### Reading and Combining
 
-- **merge** -- join two chains on shared keys (like SQL JOIN)
-- **union** -- vertical concatenation (also the `|` operator)
-- **subtract** -- set difference: rows in left chain not in right
-- **distinct** -- deduplicate rows
+- **merge**: join two chains on shared keys (like SQL JOIN)
+- **union**: vertical concatenation (also the `|` operator)
+- **subtract**: set difference, rows in left chain not in right
+- **distinct**: deduplicate rows
 
 ```python
 import datachain as dc
@@ -80,11 +80,11 @@ annotated = images.merge(labels, on="id", right_on="meta.id")
 
 ### Filtering and Selecting
 
-- **filter** -- keep rows matching a condition
-- **select** -- keep only named columns
-- **select_except** -- drop named columns
-- **limit** / **offset** -- pagination
-- **sample** -- random subset
+- **filter**: keep rows matching a condition
+- **select**: keep only named columns
+- **select_except**: drop named columns
+- **limit** / **offset**: pagination
+- **sample**: random subset
 
 ```python
 import datachain as dc
@@ -97,9 +97,9 @@ chain.filter(dc.C("detection.label").contains("person"))
 
 ### Sorting and Grouping
 
-- **order_by** -- sort by columns (ascending or descending)
-- **group_by** -- partition rows and apply aggregate functions
-- **shuffle** -- randomize row order
+- **order_by**: sort by columns (ascending or descending)
+- **group_by**: partition rows and apply aggregate functions
+- **shuffle**: randomize row order
 
 ```python
 import datachain as dc
@@ -136,18 +136,18 @@ chain.mutate(
 )
 ```
 
-Mutate does NOT accept lambdas or Python callables -- use `map()` for those. See the [mutate vs map comparison](#mutate-vs-map) below.
+Mutate does NOT accept lambdas or Python callables; use `map()` for those. See the [mutate vs map comparison](#mutate-vs-map) below.
 
 ### Comparing
 
-- **diff** -- compare two chains and surface differences (A/D/M/S status)
-- **file_diff** -- compare file-level changes between chains
+- **diff**: compare two chains and surface differences (A/D/M/S status)
+- **file_diff**: compare file-level changes between chains
 
 ### Configuring
 
-- **settings** -- set `parallel`, `cache`, `namespace`, `project`, and other execution parameters
-- **setup** -- run initialization code on each worker before processing
-- **chunk** -- split chain into fixed-size chunks for batch processing
+- **settings**: set `parallel`, `cache`, `namespace`, `project`, and other execution parameters
+- **setup**: run initialization code on each worker before processing
+- **chunk**: split chain into fixed-size chunks for batch processing
 
 ### Terminal Operations
 
@@ -190,7 +190,7 @@ high_conf.to_storage("high-confidence-cats/", signal="file")
 
 ### LLM Cost Tracking
 
-Compute API costs across thousands of calls using aggregate analytics on nested Pydantic fields -- no deserialization, no Python runtime:
+Compute API costs across thousands of calls using aggregate analytics on nested Pydantic fields, no deserialization, no Python runtime:
 
 ```python
 import datachain as dc

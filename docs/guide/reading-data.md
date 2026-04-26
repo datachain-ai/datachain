@@ -4,11 +4,11 @@ title: Reading Data
 
 # Reading Data
 
-DataChain reads data from many sources and formats through a family of `read_*` entry points. Each returns a lazy chain -- nothing executes until a terminal operation triggers it.
+DataChain reads data from many sources and formats through a family of `read_*` entry points. Each returns a lazy chain: nothing executes until a terminal operation triggers it.
 
 ## Storage Files
 
-`read_storage()` connects to any supported storage provider and returns a chain of File objects. It is the primary entry point for unstructured data -- images, video, audio, PDFs, text. Always include a trailing slash in bucket and prefix URIs.
+`read_storage()` connects to any supported storage provider and returns a chain of File objects. It is the primary entry point for unstructured data: images, video, audio, PDFs, text. Always include a trailing slash in bucket and prefix URIs.
 
 ```python
 import datachain as dc

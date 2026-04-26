@@ -31,10 +31,10 @@ chain.to_storage("s3://bucket/output/", signal="file")
 
 When exporting to storage, the `placement` parameter controls how file paths are constructed:
 
-- **`filename`** -- retains only the original filename, discards directories
-- **`filepath`** -- preserves the relative directory structure
-- **`fullpath`** -- prefixes paths with the storage host
-- **`etag`** -- uses the file ETag with original extension (guarantees uniqueness)
+- **`filename`**: retains only the original filename, discards directories
+- **`filepath`**: preserves the relative directory structure
+- **`fullpath`**: prefixes paths with the storage host
+- **`etag`**: uses the file ETag with original extension (guarantees uniqueness)
 
 ```python
 chain.to_storage("./local-copy/", signal="file", placement="filepath")
@@ -85,7 +85,7 @@ scores = chain.to_values("score")          # -> [0.9, 0.7, 0.3]
 rows = chain.to_list("file", "label")      # -> [(File, "cat"), (File, "dog")]
 ```
 
-For processing chain results, prefer `map()`/`gen()` over extracting and looping -- they preserve parallelism and lineage.
+For processing chain results, prefer `map()`/`gen()` over extracting and looping; they preserve parallelism and lineage.
 
 ## Writing to Databases
 

@@ -38,7 +38,7 @@ import datachain as dc
 
 ## Data Stays in Storage
 
-DataChain's storage-native architecture means files live in cloud storage and are never copied. The File abstraction operates by reference -- only files needed by Python operations are downloaded, and only when their content is actually accessed.
+DataChain's storage-native architecture means files live in cloud storage and are never copied. The File abstraction operates by reference: only files needed by Python operations are downloaded, and only when their content is actually accessed.
 
 ## Async Prefetch
 
@@ -70,14 +70,14 @@ Checkpoints make pipeline failure recoverable without reprocessing from scratch.
 Two levels of checkpointing operate independently:
 
 - **Dataset checkpoints** skip entire `save()` calls when the chain hash matches
-- **Python-operation checkpoints** save per-row progress inside `map()` and `gen()` -- if an operation fails mid-execution, only unprocessed rows are recomputed
+- **Python-operation checkpoints** save per-row progress inside `map()` and `gen()`; if an operation fails mid-execution, only unprocessed rows are recomputed
 
 ```bash
 # Force full re-run
 export DATACHAIN_IGNORE_CHECKPOINTS=1
 ```
 
-Checkpoints work in script-based execution only -- not in the Python REPL or Jupyter notebooks.
+Checkpoints work in script-based execution only, not in the Python REPL or Jupyter notebooks.
 
 ## Delta Updates
 
@@ -99,7 +99,7 @@ chain = (
 )
 ```
 
-The resulting dataset is always complete -- both previously processed and newly processed records.
+The resulting dataset is always complete, containing both previously processed and newly processed records.
 
 ### The Error Field Pattern
 

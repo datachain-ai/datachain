@@ -21,9 +21,9 @@ chain.mutate(
 )
 ```
 
-- `cosine_distance(column, reference)` -- cosine distance between two vectors
-- `euclidean_distance(column, reference)` -- Euclidean distance
-- `l2_distance(column, reference)` -- L2 (squared Euclidean) distance
+- `cosine_distance(column, reference)`: cosine distance between two vectors
+- `euclidean_distance(column, reference)`: Euclidean distance
+- `l2_distance(column, reference)`: L2 (squared Euclidean) distance
 
 ## Aggregate Functions
 
@@ -40,13 +40,13 @@ chain.group_by(
 )
 ```
 
-- `count()` -- number of rows
-- `sum(col)` -- total of a numeric column
-- `avg(col)` -- arithmetic mean
-- `min(col)`, `max(col)` -- minimum/maximum value
-- `collect(col)` -- gather values into a list
-- `concat(col)` -- concatenate string values
-- `any_value(col)` -- arbitrary value from the group
+- `count()`: number of rows
+- `sum(col)`: total of a numeric column
+- `avg(col)`: arithmetic mean
+- `min(col)`, `max(col)`: minimum/maximum value
+- `collect(col)`: gather values into a list
+- `concat(col)`: concatenate string values
+- `any_value(col)`: arbitrary value from the group
 
 ## Window Functions
 
@@ -63,11 +63,11 @@ chain.mutate(
 )
 ```
 
-- `window(partition_by=, order_by=)` -- creates a window spec (both required)
-- `rank()` -- rank with gaps for ties
-- `dense_rank()` -- rank without gaps
-- `row_number()` -- sequential row number within partition
-- `first(col)` -- first value in the partition
+- `window(partition_by=, order_by=)`: creates a window spec (both required)
+- `rank()`: rank with gaps for ties
+- `dense_rank()`: rank without gaps
+- `row_number()`: sequential row number within partition
+- `first(col)`: first value in the partition
 
 ## Path Functions
 
@@ -101,25 +101,25 @@ chain.mutate(
 )
 ```
 
-- `case((cond, val), ..., else_=)` -- multi-branch conditional
-- `ifelse(cond, true_val, false_val)` -- two-branch conditional
-- `isnone(col)` -- null check
+- `case((cond, val), ..., else_=)`: multi-branch conditional
+- `ifelse(cond, true_val, false_val)`: two-branch conditional
+- `isnone(col)`: null check
 
 ## String Functions
 
 String operations via `dc.func.string.*`:
 
-- `length(col)` -- string length
-- `split(col, sep)` -- split on separator
-- `replace(col, old, new)` -- substring replacement
-- `regexp_replace(col, pattern, replacement)` -- regex-based replacement
+- `length(col)`: string length
+- `split(col, sep)`: split on separator
+- `replace(col, old, new)`: substring replacement
+- `regexp_replace(col, pattern, replacement)`: regex-based replacement
 
 ## Numeric / Bit Functions
 
-- `bit_and(col_a, col_b)`, `bit_or`, `bit_xor` -- bitwise operations
-- `bit_hamming_distance(col_a, col_b)` -- Hamming distance between bit vectors
+- `bit_and(col_a, col_b)`, `bit_or`, `bit_xor`: bitwise operations
+- `bit_hamming_distance(col_a, col_b)`: Hamming distance between bit vectors
 
 ## Hash Functions (ClickHouse only)
 
-- `sip_hash_64(col)` -- SipHash-2-4 producing a 64-bit integer
-- `int_hash_64(col)` -- integer hash producing a 64-bit integer
+- `sip_hash_64(col)`: SipHash-2-4 producing a 64-bit integer
+- `int_hash_64(col)`: integer hash producing a 64-bit integer

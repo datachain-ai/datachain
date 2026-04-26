@@ -23,7 +23,7 @@ From Claude Code (or Cursor, Codex):
 Build a knowledge base for my current datasets
 ```
 
-The skill generates `dc-knowledge/` from the operational layer -- one file per dataset and per bucket:
+The skill generates `dc-knowledge/` from the operational layer, one file per dataset and per bucket:
 
 ```
 dc-knowledge
@@ -39,11 +39,11 @@ dc-knowledge
 
 Each dataset file carries:
 
-- **Schema** -- column names, types, nested structure
-- **Lineage** -- what produced this dataset, what it depends on
-- **Session context** -- when it was last updated, by whom
-- **Previews** -- sample rows and statistics
-- **Links** -- connections to related datasets
+- **Schema**: column names, types, nested structure
+- **Lineage**: what produced this dataset, what it depends on
+- **Session context**: when it was last updated, by whom
+- **Previews**: sample rows and statistics
+- **Links**: connections to related datasets
 
 ## How Agents Use It
 
@@ -57,18 +57,18 @@ Find dogs in s3://dc-readme/oxford-pets-micro/ similar to fiona.jpg:
   - Only include images wider than 400px
 ```
 
-The agent decomposes this into steps -- embeddings, breed metadata, mask join, quality filter -- and saves each as a named, versioned dataset. Next time you ask a related question, it starts from what's already built.
+The agent decomposes this into steps (embeddings, breed metadata, mask join, quality filter) and saves each as a named, versioned dataset. Next time you ask a related question, it starts from what's already built.
 
 ## Browsing
 
 The knowledge base is plain markdown with wikilinks. Open it in:
 
-- **Obsidian** -- full graph view, link navigation, search
-- **Any markdown viewer** -- VS Code, GitHub, plain text
-- **Agent context** -- the skill loads relevant files automatically
+- **Obsidian**: full graph view, link navigation, search
+- **Any markdown viewer**: VS Code, GitHub, plain text
+- **Agent context**: the skill loads relevant files automatically
 
 ![Visualize data knowledge base](../assets/readme_obsidian.gif)
 
 ## Regenerating
 
-Run the skill prompt again to update the knowledge base after creating new datasets. The knowledge base is always re-derived from the operational layer -- it never drifts.
+Run the skill prompt again to update the knowledge base after creating new datasets. The knowledge base is always re-derived from the operational layer; it never drifts.

@@ -8,7 +8,7 @@ Datasets are the primary output and collaboration mechanism in DataChain. This g
 
 ## Creating Datasets
 
-### save() -- Named, Versioned, Shared
+### save(): Named, Versioned, Shared
 
 `save("name")` creates an immutable, versioned dataset in the registry. It records author, dependencies, and code automatically.
 
@@ -22,9 +22,9 @@ embeddings = (
 )
 ```
 
-**`save()` is the default terminal operation** -- not `show()` or `to_list()`. Any chain that runs a Python operation should end in `save("name")`. This makes pipelines reusable instead of producing throwaway output.
+**`save()` is the default terminal operation**, not `show()` or `to_list()`. Any chain that runs a Python operation should end in `save("name")`. This makes pipelines reusable instead of producing throwaway output.
 
-### persist() -- Anonymous, Script-Local
+### persist(): Anonymous, Script-Local
 
 `persist()` creates a hidden dataset for caching within a script. Not in the registry, not versioned, not shared.
 

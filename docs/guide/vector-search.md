@@ -62,4 +62,4 @@ chain.mutate(drift=dc.func.cosine_distance(dc.C("emb_a"), dc.C("emb_b"))) \
     .order_by("drift", descending=True)
 ```
 
-This runs entirely in the Memory Engine -- no Python, no deserialization.
+This runs entirely in the Memory Engine, with no Python and no deserialization.

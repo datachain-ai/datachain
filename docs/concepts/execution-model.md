@@ -8,7 +8,7 @@ DataChain has two execution engines with a total boundary: every operation is ei
 
 ## Memory Engine
 
-The Memory Engine is the columnar SQL backend -- SQLite locally, ClickHouse in Studio -- where filter, merge, join, group_by, order_by, mutate, and vector search run at warehouse speed, scaling to billions of records. If an operation can be expressed without Python, it runs here.
+The Memory Engine is the columnar SQL backend (SQLite locally, ClickHouse in Studio) where filter, merge, join, group_by, order_by, mutate, and vector search run at warehouse speed, scaling to billions of records. If an operation can be expressed without Python, it runs here.
 
 ```python
 import datachain as dc
@@ -30,7 +30,7 @@ No Python runtime spins up. No rows are deserialized. The query runs at warehous
 
 ## Python Data Engine
 
-The Python Data Engine executes `map()`, `gen()`, and `agg()` operations -- anything that needs file content, ML models, or LLM calls. It runs operations in parallel threads and distributed across workers.
+The Python Data Engine executes `map()`, `gen()`, and `agg()` operations, anything that needs file content, ML models, or LLM calls. It runs operations in parallel threads and distributed across workers.
 
 ```python
 import datachain as dc
@@ -43,7 +43,7 @@ import datachain as dc
 )
 ```
 
-Every primitive -- parallel dispatch, prefetch, batching -- is designed for data operations where each row triggers expensive work: an LLM call, a model inference, a file download and parse.
+Every primitive (parallel dispatch, prefetch, batching) is designed for data operations where each row triggers expensive work: an LLM call, a model inference, a file download and parse.
 
 ## Pydantic as Bridge
 
@@ -66,9 +66,9 @@ print(f"Spent ${cost:.2f} on {chain.count()} calls")
 
 ## The Transpiler
 
-Users operate with Pydantic models and Python expressions. The system transpiles those expressions to SQL and runs them inside the Memory Engine. The result: full SQL power -- filter, join, merge, group_by, order_by, windowing functions -- without writing or knowing SQL.
+Users operate with Pydantic models and Python expressions. The system transpiles those expressions to SQL and runs them inside the Memory Engine. The result: full SQL power (filter, join, merge, group_by, order_by, windowing functions) without writing or knowing SQL.
 
-For agents, this is critical. Agents generate Python, not SQL. The transpiler means an agent's Python output runs as fast as hand-written SQL -- the agent never needs to know that a database exists.
+For agents, this is critical. Agents generate Python, not SQL. The transpiler means an agent's Python output runs as fast as hand-written SQL; the agent never needs to know that a database exists.
 
 ## Local vs Studio
 

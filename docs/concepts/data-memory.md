@@ -8,13 +8,13 @@ Data Memory is the accumulated record of everything a team has done with its dat
 
 ## Why Memory Matters
 
-Every pipeline, exploration, and labeling session produces knowledge. Without persistence infrastructure, that knowledge evaporates when the script finishes. The next person, the next project, the next agent starts from raw data and a blank script. People become the memory -- and people do not scale.
+Every pipeline, exploration, and labeling session produces knowledge. Without persistence infrastructure, that knowledge evaporates when the script finishes. The next person, the next project, the next agent starts from raw data and a blank script. People become the memory, and people do not scale.
 
-Memory changes this. Every operation records its results, schemas, lineage, and context as a side effect of running. The hundredth pipeline runs in an environment qualitatively richer than the tenth -- more features extracted, more connections traced, more context for the next person or agent.
+Memory changes this. Every operation records its results, schemas, lineage, and context as a side effect of running. The hundredth pipeline runs in an environment qualitatively richer than the tenth: more features extracted, more connections traced, more context for the next person or agent.
 
 ## Composed of Datasets
 
-Memory is not a formless accumulation -- it is a collection of named, versioned, typed [datasets](datasets.md). Each one is a discrete deposit. The system does not remember raw events or intermediate state; it remembers datasets. This atomic structure is what makes memory queryable, shareable, and compoundable.
+Memory is not a formless accumulation; it is a collection of named, versioned, typed [datasets](datasets.md). Each one is a discrete deposit. The system does not remember raw events or intermediate state; it remembers datasets. This atomic structure is what makes memory queryable, shareable, and compoundable.
 
 ```python
 import datachain as dc
@@ -32,11 +32,11 @@ ds = dc.read_dataset("image_embeddings")
 
 ## Formed Through Doing, Not Curation
 
-Memory is not a catalog that someone maintains. It is what happens when every operation records its results as a side effect. Systems that depend on voluntary human entry collapse within months -- representations drift, adoption falls, teams revert to social workarounds. Memory stays current because it *is* the operational reality.
+Memory is not a catalog that someone maintains. It is what happens when every operation records its results as a side effect. Systems that depend on voluntary human entry collapse within months: representations drift, adoption falls, teams revert to social workarounds. Memory stays current because it *is* the operational reality.
 
 ## Compounding Requires Fast Recall
 
-Compounding only works when recall is cheaper than recreation. If retrieval is slower than re-running the pipeline, the team silently re-runs it and memory degrades into archive. The [Memory Engine](execution-model.md) -- a columnar SQL backend -- makes building on prior work always the path of least resistance.
+Compounding only works when recall is cheaper than recreation. If retrieval is slower than re-running the pipeline, the team silently re-runs it and memory degrades into archive. The [Memory Engine](execution-model.md), a columnar SQL backend, makes building on prior work always the path of least resistance.
 
 ## Trustworthy by Construction
 
