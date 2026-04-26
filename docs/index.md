@@ -24,19 +24,11 @@ title: Welcome to DataChain
   </a>
 </p>
 
-DataChain is data memory for AI.
+Agents and people need context to do useful work with data. DataChain is a Python library that reads files from storage, runs your code over them, and saves every result as a Pydantic-typed dataset. The next pipeline or agent picks up where the last one left off.
 
-You process files with AI -- images, video, sensor data, documents -- and produce embeddings, labels, scores, filtered subsets. DataChain saves every result as a versioned, typed, queryable dataset so the next pipeline or agent builds on what already exists instead of starting over.
+The **Python Data Engine** handles heavy files -- parallel, distributed, async with caching, zero-copy access, and checkpoints. **Data Memory** stores results at SQL speed (SQLite locally, ClickHouse in SaaS). The **Memory Engine** filters, joins, and searches across datasets. The **Knowledge Base** provides data context for Claude Code, Codex, Cursor, custom harnesses, and any LLM they support.
 
-Without it, derived data lives in throwaway scripts and local files. Agents recompute what was already done because they cannot see it. With DataChain, every result has a schema, lineage, and a name -- findable by the next person or agent that needs it.
-
-```mermaid
-flowchart LR
-    A["Source Data\nimages, video, lidar,\naudio, documents"] --> B["Compute\nembeddings, classifications,\nLLM responses, joins"]
-    B --> C["Store\nversioned, typed,\nqueryable datasets"]
-    C --> D["Discover\nschemas, lineage,\nsamples, context"]
-    D -->|"next agent starts here"| B
-```
+![DataChain architecture](assets/data-memory.svg)
 
 ## Get Started
 
