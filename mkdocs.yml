@@ -73,7 +73,6 @@ nav:
           - Chain: concepts/chain.md
           - Files and Types: concepts/files-and-types.md
           - Execution Model: concepts/execution-model.md
-          - Provenance: concepts/provenance.md
           - Knowledge Base: concepts/knowledge-base.md
       - Guides:
           - Overview: guide/index.md

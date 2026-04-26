@@ -38,9 +38,35 @@ Memory is not a catalog that someone maintains. It is what happens when every op
 
 Compounding only works when recall is cheaper than recreation. If retrieval is slower than re-running the pipeline, the team silently re-runs it and memory degrades into archive. The [Memory Engine](execution-model.md), a columnar SQL backend, makes building on prior work always the path of least resistance.
 
-## Trustworthy by Construction
+## Provenance
 
-Memory that cannot explain how it was produced is memory that gets rebuilt from scratch. The [provenance store](provenance.md) automatically records dependencies, source code, author, and creation time alongside every `.save()`. Each deposit is verifiable without asking the person who created it.
+Memory that cannot explain how it was produced is memory that gets rebuilt from scratch. Every `.save()` automatically records four things alongside its results:
+
+1. **Dependencies**: parent datasets with versions, storage URIs for every input
+2. **Source code**: the full script, stored verbatim
+3. **Author**: the person or service account that ran the script
+4. **Creation time**
+
+None of this requires manual declaration. It is captured from code and execution as a structural consequence of the operation. Each deposit is verifiable without asking the person who created it.
+
+DataChain also supports attaching metrics and parameters alongside provenance:
+
+```python
+import datachain as dc
+
+results = (
+    dc.read_dataset("training_data")
+    .map(prediction=run_model)
+    .save("predictions")
+)
+
+dc.metrics.set("accuracy", 0.95)
+dc.metrics.set("f1_score", 0.91)
+
+learning_rate = dc.param("learning_rate", 0.001)
+```
+
+Metrics are recorded in the [dataset registry](execution-model.md#dataset-registry) alongside provenance. Parameters are captured in lineage so the exact configuration that produced a dataset is always recoverable.
 
 ## Discoverable by Humans and Agents
 

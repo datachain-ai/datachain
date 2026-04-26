@@ -105,3 +105,9 @@ changes.show()
 ```
 
 Each row carries a status: **A** (added), **D** (deleted), **M** (modified), or **S** (same). `file_diff()` compares file-level changes between storage scans.
+
+## Reasoning
+
+A dataset is a unit of reasoning, not just a unit of storage. When a team computes embeddings, classifies documents, or aligns sensor data, the resulting dataset is the materialized answer to a question. A dataset of classified documents is not "rows with a label column"; it is the claim "these documents have been classified by this model with this confidence." The next pipeline that consumes it reasons from that claim.
+
+This is what makes [Data Memory](data-memory.md) composable. The next person or agent starts from a conclusion as a settled fact and builds forward. Agents depend on this property structurally: an agent that receives a dataset treats it as an established fact in its reasoning chain. Without this, every agent interaction starts from raw data and re-derives everything.

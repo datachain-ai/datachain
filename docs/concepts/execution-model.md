@@ -28,9 +28,30 @@ import datachain as dc
 
 No Python runtime spins up. No rows are deserialized. The query runs at warehouse speed on millions of records.
 
+## Dataset Registry
+
+The Memory Engine is the home of the dataset registry: the queryable system of record for all datasets and their versions. The registry makes every dataset discoverable, joinable with other metadata, and accessible to agents without file-system traversal.
+
+```python
+import datachain as dc
+
+# Browse all datasets
+for info in dc.datasets().collect("dataset"):
+    print(f"{info.name} v{info.version}")
+
+# Inspect a specific dataset
+ds = dc.read_dataset("image_embeddings")
+ds.print_schema()
+print(ds.name, ds.version)
+```
+
+## Agent Recall
+
+Agents query the Memory Engine directly. When an agent needs to find existing datasets, filter by schema, join metadata across versions, or run similarity search over embeddings, it submits those queries to the Memory Engine. This is the recall side of the feedback loop: agents consume data context from the [Knowledge Base](knowledge-base.md), then reach into the Memory Engine for the precise operations that context cannot precompute.
+
 ## Python Data Engine
 
-The Python Data Engine executes `map()`, `gen()`, and `agg()` operations, anything that needs file content, ML models, or LLM calls. It runs operations in parallel threads and distributed across workers.
+The Python Data Engine accepts data from two sources: object storage (S3, GCS, Azure) and databases (Postgres, Snowflake). It executes `map()`, `gen()`, and `agg()` operations, anything that needs file content, ML models, or LLM calls. It runs operations in parallel threads with async I/O and distributed across workers.
 
 ```python
 import datachain as dc
