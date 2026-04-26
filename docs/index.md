@@ -26,7 +26,17 @@ title: Welcome to DataChain
 
 DataChain is data memory for AI.
 
-AI data work is amnesiac. Every team re-computes the same results -- embeddings, classifications, parsed metadata, filtered subsets, LLM responses -- across S3, GCS, and databases, because nothing remembers that the work was already done. DataChain stores every result as a versioned, typed, queryable dataset. The next person or agent builds on what exists instead of starting from scratch.
+You process files with AI -- images, video, sensor data, documents -- and produce embeddings, labels, scores, filtered subsets. DataChain saves every result as a versioned, typed, queryable dataset so the next pipeline or agent builds on what already exists instead of starting over.
+
+Without it, derived data lives in throwaway scripts and local files. Agents recompute what was already done because they cannot see it. With DataChain, every result has a schema, lineage, and a name -- findable by the next person or agent that needs it.
+
+```mermaid
+flowchart LR
+    A["Source Data\nimages, video, lidar,\naudio, documents"] --> B["Compute\nembeddings, classifications,\nLLM responses, joins"]
+    B --> C["Store\nversioned, typed,\nqueryable datasets"]
+    C --> D["Discover\nschemas, lineage,\nsamples, context"]
+    D -->|"next agent starts here"| B
+```
 
 ## Get Started
 

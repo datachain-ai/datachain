@@ -1,6 +1,6 @@
 site_name: 'DataChain'
 site_url: https://docs.datachain.ai
-site_description: Wrangle unstructured AI data at scale
+site_description: Data memory for AI
 
 repo_url: "https://github.com/datachain-ai/datachain"
 repo_name: "datachain-ai/datachain"
@@ -207,6 +207,10 @@ markdown_extensions:
   - pymdownx.inlinehilite
   - pymdownx.snippets
   - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
   - pymdownx.tabbed:
       alternate_style: true
   - pymdownx.critic
