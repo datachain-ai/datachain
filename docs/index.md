@@ -10,6 +10,7 @@ title: Welcome to DataChain
 .md-content .md-typeset h1 .main-header-link { display: flex; align-items: center; justify-content: center; gap: 8px;
  }
 .md-content .md-typeset .subtitle { font-size: 1.2em; color: var(--md-default-fg-color--light); margin-top: -0.5em; }
+.md-content .grid.cards > ul { grid-template-columns: repeat(3, 1fr); }
 </style>
 
 <p align="center">
@@ -37,7 +38,7 @@ The **Python Data Engine** handles heavy files: parallel, distributed, async wit
 
     ---
 
-    AI-driven pipelines that build a knowledge graph
+    AI-driven with a knowledge base
 
     [Get started →](getting-started/agents.md)
 
@@ -53,7 +54,7 @@ The **Python Data Engine** handles heavy files: parallel, distributed, async wit
 
     ---
 
-    Data Memory, Datasets, and the dual engine
+    Memory, Datasets, and the dual engine
 
     [Learn more →](concepts/index.md)
 
