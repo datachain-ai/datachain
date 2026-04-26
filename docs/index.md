@@ -1,6 +1,3 @@
----
-title: Welcome to DataChain
----
 # <a class="main-header-link" href="/" ><img style="display: inline-block;" src="/assets/datachain.svg" alt="DataChain"> <span style="display: inline-block;"> DataChain</span></a>
 
 <p align="center" class="subtitle">memory for data agents</p>
