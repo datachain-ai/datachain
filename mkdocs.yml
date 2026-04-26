@@ -1,6 +1,6 @@
 site_name: 'DataChain'
 site_url: https://docs.datachain.ai
-site_description: Data memory for AI
+site_description: Wrangle unstructured AI data at scale
 
 repo_url: "https://github.com/datachain-ai/datachain"
 repo_name: "datachain-ai/datachain"
