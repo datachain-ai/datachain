@@ -13,6 +13,7 @@ from datachain.dataset import (
     DatasetDependencyType,
     DatasetListRecord,
     DatasetRecord,
+    DatasetStatus,
     DatasetVersion,
     parse_dataset_name,
     parse_dataset_uri,
@@ -412,6 +413,40 @@ def test_latest_version_empty_raises(dataset_record):
     record = replace(dataset_record, _versions=[], _versions_loaded=True)
     with pytest.raises(DatasetVersionNotFoundError, match="has no versions"):
         _ = record.latest_version
+
+
+@pytest.mark.parametrize(
+    "statuses,expected",
+    [
+        # No versions
+        ([], None),
+        # Single COMPLETE version
+        ([DatasetStatus.COMPLETE], "1.0.0"),
+        # Only CREATED — no complete
+        ([DatasetStatus.CREATED], None),
+        # COMPLETE then CREATED — returns the COMPLETE one
+        ([DatasetStatus.COMPLETE, DatasetStatus.CREATED], "1.0.0"),
+        # Two COMPLETE — returns the latest
+        ([DatasetStatus.COMPLETE, DatasetStatus.COMPLETE], "2.0.0"),
+        # FAILED, COMPLETE, CREATED — returns the COMPLETE one
+        (
+            [DatasetStatus.FAILED, DatasetStatus.COMPLETE, DatasetStatus.CREATED],
+            "2.0.0",
+        ),
+    ],
+)
+def test_latest_complete_version(dataset_record, statuses, expected):
+    versions = [
+        replace(
+            dataset_record.versions[0],
+            id=i + 1,
+            version=f"{i + 1}.0.0",
+            status=status,
+        )
+        for i, status in enumerate(statuses)
+    ]
+    record = replace(dataset_record, _versions=versions, _versions_loaded=True)
+    assert record.latest_complete_version == expected
 
 
 def test_dataset_list_record_to_dict(dataset_list_record):

@@ -239,3 +239,72 @@ def test_partition_by_change_triggers_rerun(test_session):
         dc.read_dataset("agg_results", session=test_session).to_list("total")
     )
     assert result == [(6,), (15,)]
+
+
+def test_different_function_name_no_partial_continuation(test_session):
+    processed = []
+
+    dc.read_values(num=[1, 2, 3, 4, 5, 6], session=test_session).save("nums")
+
+    def score_v1(num) -> int:
+        if len(processed) >= 3:
+            raise Exception("Simulated failure")
+        processed.append(num)
+        return num * 10
+
+    # -------------- FIRST RUN (crashes) -------------------
+    reset_session_job_state()
+    with pytest.raises(Exception, match="Simulated failure"):
+        dc.read_dataset("nums", session=test_session).map(
+            result=score_v1, output=int
+        ).save("results")
+
+    assert len(processed) == 3
+
+    # -------------- SECOND RUN (different function name) -------------------
+    reset_session_job_state()
+    processed.clear()
+
+    def score_v2(num) -> int:
+        processed.append(num)
+        return num * 10
+
+    dc.read_dataset("nums", session=test_session).map(result=score_v2, output=int).save(
+        "results"
+    )
+
+    # Different function name → no partial continuation, all 6 reprocessed
+    assert len(processed) == 6
+
+
+def test_lambda_change_no_partial_continuation(test_session):
+    processed = []
+
+    dc.read_values(num=[1, 2, 3, 4, 5, 6], session=test_session).save("nums")
+
+    # -------------- FIRST RUN (crashes with lambda) -------------------
+    reset_session_job_state()
+
+    with pytest.raises(Exception, match="Simulated failure"):
+        dc.read_dataset("nums", session=test_session).settings(batch_size=1).map(
+            result=lambda num: (
+                processed.append(num) or num * 2
+                if len(processed) < 3
+                else (_ for _ in ()).throw(Exception("Simulated failure"))
+            ),
+            output=int,
+        ).save("results")
+
+    assert len(processed) == 3
+
+    # -------------- SECOND RUN (different lambda) -------------------
+    reset_session_job_state()
+    processed.clear()
+
+    dc.read_dataset("nums", session=test_session).settings(batch_size=1).map(
+        result=lambda num: processed.append(num) or num * 3,
+        output=int,
+    ).save("results")
+
+    # Different lambda bytecode → different partial hash → all 6 reprocessed
+    assert len(processed) == 6

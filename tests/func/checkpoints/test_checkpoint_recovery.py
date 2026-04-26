@@ -75,17 +75,18 @@ def test_udf_signals_continue_from_partial(
 
     processed_nums.clear()
 
-    def process_fixed(num) -> int:
+    # Use same function name so partial hash matches (simulates fixing the bug)
+    def process_buggy(num) -> int:
         processed_nums.append(num)
         return num * 10
 
-    chain.map(result=process_fixed, output=int).save("results")
+    chain.map(result=process_buggy, output=int).save("results")
 
     result = dc.read_dataset("results", session=test_session).to_list("result")
     assert sorted(result) == [(10,), (20,), (30,), (40,), (50,), (60,)]
 
-    # Second run should process remaining rows (checkpoint continuation working)
-    assert 0 < len(processed_nums) <= 6
+    # Continuation must skip already-processed inputs, not reprocess all 6
+    assert 0 < len(processed_nums) < 6
 
 
 @pytest.mark.parametrize(
@@ -130,12 +131,12 @@ def test_udf_generator_continue_from_partial(
 
     processed_nums.clear()
 
-    def fixed_generator(num) -> Iterator[int]:
+    def buggy_generator(num) -> Iterator[int]:
         processed_nums.append(num)
         yield num * 10
         yield num * num
 
-    chain.gen(value=fixed_generator, output=int).save("gen_results")
+    chain.gen(value=buggy_generator, output=int).save("gen_results")
 
     result = sorted(
         dc.read_dataset("gen_results", session=test_session).to_list("value")
@@ -159,8 +160,8 @@ def test_udf_generator_continue_from_partial(
 
     assert result == expected
 
-    # Second run should process remaining inputs (checkpoint continuation working)
-    assert 0 < len(processed_nums) <= 6
+    # Continuation must skip already-processed inputs, not reprocess all 6
+    assert 0 < len(processed_nums) < 6
 
 
 def test_generator_incomplete_input_recovery(test_session):
@@ -648,25 +649,17 @@ def test_continue_udf_fallback_when_partial_table_missing(test_session):
 def test_aggregator_continue_from_partial(test_session, nums_letters):
     fail_after_count = 2
     processed_partitions = []
+    should_fail = True
 
-    def buggy_aggregator(letter, num) -> Iterator[tuple[str, int]]:
+    def aggregator(letter, num) -> Iterator[tuple[str, int]]:
         """
-        Buggy aggregator that fails before processing the (fail_after_count+1)th
-        partition.
-        letter: partition key value (A, B, or C)
-        num: iterator of num values in that partition
+        Aggregator that fails on the (fail_after_count+1)th partition when
+        should_fail is True. Simulates a bug fix by toggling the flag.
         """
-        if len(processed_partitions) >= fail_after_count:
+        if should_fail and len(processed_partitions) >= fail_after_count:
             raise Exception(
                 f"Simulated failure after {len(processed_partitions)} partitions"
             )
-        nums_list = list(num)
-        processed_partitions.append(nums_list)
-        # Yield tuple of (letter, sum) to preserve partition key in output
-        yield letter[0], sum(n for n in nums_list)
-
-    def fixed_aggregator(letter, num) -> Iterator[tuple[str, int]]:
-        """Fixed aggregator that works correctly."""
         nums_list = list(num)
         processed_partitions.append(nums_list)
         # Yield tuple of (letter, sum) to preserve partition key in output
@@ -678,7 +671,7 @@ def test_aggregator_continue_from_partial(test_session, nums_letters):
     chain = dc.read_dataset("nums_letters", session=test_session).settings(batch_size=1)
     with pytest.raises(Exception, match="Simulated failure after"):
         chain.agg(
-            total=buggy_aggregator,
+            total=aggregator,
             partition_by="letter",
         ).save("agg_results")
 
@@ -688,10 +681,11 @@ def test_aggregator_continue_from_partial(test_session, nums_letters):
     # -------------- SECOND RUN (FIXED AGGREGATOR) -------------------
     reset_session_job_state()
     processed_partitions.clear()
+    should_fail = False
 
-    # Now use the fixed aggregator - should continue from partial checkpoint
+    # Now use the same aggregator with bug "fixed" - should continue from partial
     chain.agg(
-        total=fixed_aggregator,
+        total=aggregator,
         partition_by="letter",
     ).save("agg_results")
 
@@ -718,6 +712,48 @@ def test_aggregator_continue_from_partial(test_session, nums_letters):
     # Second run should only process the remaining partition(s), not all 3
     assert second_run_count < 3
     assert first_run_count + second_run_count == 3
+
+
+def test_aggregator_continue_from_partial_same_job(test_session, nums_letters):
+    """Retry a partition_by aggregator inside the same job after a partial failure.
+
+    The partial checkpoint is created in job X; when we retry without
+    resetting the session job, `job.id` still equals the partial's `job_id`,
+    so the partition table is reused directly (no cross-job copy).
+    """
+    processed_partitions = []
+    should_fail = True
+
+    def aggregator(letter, num) -> Iterator[tuple[str, int]]:
+        if should_fail and len(processed_partitions) >= 2:
+            raise Exception("Simulated failure")
+        processed_partitions.append(list(num))
+        yield letter[0], sum(num)
+
+    reset_session_job_state()
+    chain = dc.read_dataset("nums_letters", session=test_session).settings(batch_size=1)
+
+    with pytest.raises(Exception, match="Simulated failure"):
+        chain.agg(total=aggregator, partition_by="letter").save("agg_results")
+
+    first_run_count = len(processed_partitions)
+    assert first_run_count == 2
+
+    # Retry in the SAME job — no reset_session_job_state.
+    processed_partitions.clear()
+    should_fail = False
+    chain.agg(total=aggregator, partition_by="letter").save("agg_results")
+
+    second_run_count = len(processed_partitions)
+    assert second_run_count < 3
+    assert first_run_count + second_run_count == 3
+
+    result = sorted(
+        dc.read_dataset("agg_results", session=test_session).to_list(
+            "total_0", "total_1"
+        )
+    )
+    assert result == sorted([("A", 3), ("B", 7), ("C", 11)])
 
 
 def test_aggregator_skip_completed(test_session, nums_letters):

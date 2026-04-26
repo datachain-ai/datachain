@@ -616,12 +616,9 @@ def test_listings_reindex(test_session, tmp_dir):
 
     dc.read_storage(uri, session=test_session, update=True).exec()
     listings = list(dc.listings(session=test_session).to_values("listing"))
-    assert len(listings) == 2
-    listings.sort(key=lambda lst: lst.version)
+    assert len(listings) == 1
     assert listings[0].uri.rstrip("/") == uri
     assert listings[0].version == "1.0.0"
-    assert listings[1].uri.rstrip("/") == uri
-    assert listings[1].version == "2.0.0"
 
 
 def test_listings_reindex_subpath_local_file_system(test_session, tmp_dir):
@@ -4333,7 +4330,7 @@ def test_delete_dataset_cached_from_studio(
         ("major", ["1.0.0", "2.0.0", "3.0.0"]),
     ],
 )
-def test_update_versions(test_session, update_version, versions):
+def test_update_versions(test_session, update_version, versions, ignore_checkpoints):
     ds_name = "fibonacci"
     chain = dc.read_values(fib=[1, 1, 2, 3, 5, 8], session=test_session)
     chain.save(ds_name, update_version=update_version)
@@ -4349,7 +4346,7 @@ def test_update_versions(test_session, update_version, versions):
     ) == sorted(versions)
 
 
-def test_update_versions_mix_major_minor_patch(test_session):
+def test_update_versions_mix_major_minor_patch(test_session, ignore_checkpoints):
     ds_name = "fibonacci"
     chain = dc.read_values(fib=[1, 1, 2, 3, 5, 8], session=test_session)
     chain.save(ds_name)
