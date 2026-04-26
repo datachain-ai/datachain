@@ -10,9 +10,6 @@ title: Welcome to DataChain
 .md-content .md-typeset h1 .main-header-link { display: flex; align-items: center; justify-content: center; gap: 8px;
  }
 .md-content .md-typeset .subtitle { font-size: 1.2em; color: var(--md-default-fg-color--light); margin-top: -0.5em; }
-.get-started { display: flex; gap: 0.5em; justify-content: center; flex-wrap: wrap; margin: 1em 0; }
-.get-started a { padding: 0.4em 1.2em; border: 1px solid var(--md-default-fg-color--lighter); border-radius: 2em; text-decoration: none; font-weight: 500; white-space: nowrap; }
-.get-started a:hover { border-color: var(--md-accent-fg-color); background: var(--md-accent-fg-color--transparent); }
 </style>
 
 <p align="center">
@@ -34,12 +31,12 @@ Agents and people need context to do useful work with data. DataChain is a Pytho
 
 The **Python Data Engine** handles heavy files: parallel, distributed, async with caching, zero-copy access, and checkpoints. **Data Memory** stores results at SQL speed (SQLite locally, ClickHouse in SaaS). The **Memory Engine** filters, joins, and searches across datasets. The **Knowledge Base** provides data context for Claude Code, Codex, Cursor, custom harnesses, and any LLM they support.
 
-<div class="get-started">
-  <a href="getting-started/agents/">🤖 Agents</a>
-  <a href="getting-started/python/">🐍 Python</a>
-  <a href="concepts/">💡 Concepts</a>
-</div>
+**Get Started**
 
-<div style="max-width: 500px; margin: 2em auto 0;">
+- [🤖 Agents](getting-started/agents.md) — AI-driven with a knowledge base
+- [🐍 Python](getting-started/python.md) — Full control over data processing
+- [💡 Concepts](concepts/index.md) — Memory, Datasets, and the dual engine
+
+<div style="max-width: 680px; margin: 2em auto 0;">
   <img src="assets/data-memory.svg" alt="DataChain architecture">
 </div>
