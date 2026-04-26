@@ -33,29 +33,29 @@ The **Python Data Engine** handles heavy files: parallel, distributed, async wit
 
 <div class="grid cards" markdown>
 
--   :material-robot-outline: __Agents__
+-   🤖 __Agents__
 
     ---
 
     AI-driven pipelines that build a knowledge graph
 
-    [:octicons-arrow-right-24: Get started](getting-started/agents.md)
+    [Get started →](getting-started/agents.md)
 
--   :material-language-python: __Python__
+-   🐍 __Python__
 
     ---
 
     Full control over data processing pipelines
 
-    [:octicons-arrow-right-24: Get started](getting-started/python.md)
+    [Get started →](getting-started/python.md)
 
--   :material-book-open-outline: __Concepts__
+-   💡 __Concepts__
 
     ---
 
     Data Memory, Datasets, and the dual engine
 
-    [:octicons-arrow-right-24: Learn more](concepts/index.md)
+    [Learn more →](concepts/index.md)
 
 </div>
 
