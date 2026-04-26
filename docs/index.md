@@ -28,10 +28,36 @@ Agents and people need context to do useful work with data. DataChain is a Pytho
 
 The **Python Data Engine** handles heavy files: parallel, distributed, async with caching, zero-copy access, and checkpoints. **Data Memory** stores results at SQL speed (SQLite locally, ClickHouse in SaaS). The **Memory Engine** filters, joins, and searches across datasets. The **Knowledge Base** provides data context for Claude Code, Codex, Cursor, custom harnesses, and any LLM they support.
 
+<div class="grid cards" markdown>
+
+-   :material-robot-outline: __Agents__
+
+    ---
+
+    AI-driven pipelines that build a knowledge graph
+
+    [:octicons-arrow-right-24: Get started](getting-started/agents.md)
+
+-   :material-language-python: __Python__
+
+    ---
+
+    Full control over data processing pipelines
+
+    [:octicons-arrow-right-24: Get started](getting-started/python.md)
+
+-   :material-book-open-outline: __Concepts__
+
+    ---
+
+    Data Memory, Datasets, and the dual engine
+
+    [:octicons-arrow-right-24: Learn more](concepts/index.md)
+
+</div>
+
+<div style="max-width: 500px; margin: 2em auto 0;">
+
 ![DataChain architecture](assets/data-memory.svg)
 
-## Get Started
-
-- **[Getting Started: Agents](getting-started/agents.md)**: agents write DataChain pipelines and build a knowledge graph that makes every subsequent task faster
-- **[Getting Started: Python](getting-started/python.md)**: write DataChain pipelines directly for full control over data processing
-- **[Concepts](concepts/index.md)**: understand Data Memory, Datasets, and the dual engine
+</div>
