@@ -4865,3 +4865,184 @@ def test_union_does_not_break_schema_order(test_session):
         "meta__name",
         "meta__count",
     ]
+
+
+# ---------------------------------------------------------------------------
+# Stage-boundary planner tests
+#
+# These exercise the QueryStage logic in apply_steps: when a
+# materializing clause (group_by / limit / offset / distinct) is followed by
+# a clause that would otherwise act on the underlying rows (filter, order_by,
+# limit, offset, distinct, group_by), the planner must emit a subquery
+# boundary so the second clause sees the materialized output.
+# ---------------------------------------------------------------------------
+
+
+def test_filter_after_group_by(test_session):
+    chain = dc.read_values(
+        category=["A", "A", "B", "B", "C"],
+        value=[1, 2, 3, 4, 5],
+        session=test_session,
+    )
+    grouped = chain.group_by(total=func.sum("value"), partition_by="category")
+    # filter must operate on the group-by output, not the underlying rows
+    result = grouped.filter(C("total") > 3).to_records()
+    rows = sorted((r["category"], r["total"]) for r in result)
+    assert rows == [("B", 7), ("C", 5)]
+
+
+def test_filter_after_limit(test_session):
+    chain = dc.read_values(numbers=[1, 2, 3, 4, 5], session=test_session).order_by(
+        "numbers"
+    )
+    # Take first 3, then filter -- filter must apply to the limited 3 rows
+    result = sorted(chain.limit(3).filter(C("numbers") > 1).to_values("numbers"))
+    assert result == [2, 3]
+
+
+def test_filter_after_offset(test_session):
+    chain = dc.read_values(numbers=[1, 2, 3, 4, 5], session=test_session).order_by(
+        "numbers"
+    )
+    # Skip first 2 -> [3, 4, 5], then filter on the materialized rows.
+    result = sorted(chain.offset(2).filter(C("numbers") < 5).to_values("numbers"))
+    assert result == [3, 4]
+
+
+def test_filter_after_distinct(test_session):
+    chain = dc.read_values(
+        numbers=[1, 1, 2, 2, 3, 3, 4],
+        session=test_session,
+    )
+    # distinct -> {1,2,3,4}; filter > 2 -> {3,4}
+    result = sorted(
+        chain.distinct("numbers").filter(C("numbers") > 2).to_values("numbers")
+    )
+    assert result == [3, 4]
+
+
+def test_order_by_after_limit(test_session):
+    chain = dc.read_values(numbers=[5, 4, 3, 2, 1], session=test_session).order_by(
+        "numbers"
+    )
+    # limit takes [1,2,3], reorder desc -> [3,2,1]
+    result = chain.limit(3).order_by(C("numbers").desc()).to_values("numbers")
+    assert list(result) == [3, 2, 1]
+
+
+def test_order_by_after_offset(test_session):
+    chain = dc.read_values(numbers=[1, 2, 3, 4, 5], session=test_session).order_by(
+        "numbers"
+    )
+    # skip 2 -> [3, 4, 5], reorder desc -> [5, 4, 3]
+    result = chain.offset(2).order_by(C("numbers").desc()).to_values("numbers")
+    assert list(result) == [5, 4, 3]
+
+
+def test_limit_after_limit(test_session):
+    chain = dc.read_values(numbers=[1, 2, 3, 4, 5], session=test_session).order_by(
+        "numbers"
+    )
+    # outer limit must apply on top of inner limit
+    result = list(chain.limit(4).limit(2).to_values("numbers"))
+    assert result == [1, 2]
+
+
+def test_offset_after_limit(test_session):
+    chain = dc.read_values(numbers=[1, 2, 3, 4, 5], session=test_session).order_by(
+        "numbers"
+    )
+    # ``.limit(N).offset(M)`` and ``.offset(M).limit(N)`` combine into a
+    # single ``LIMIT N OFFSET M`` -> skip M, take next N. With [1..5],
+    # limit 4 offset 2 -> skip 2, take next 4 -> [3, 4, 5].
+    result = list(chain.limit(4).offset(2).to_values("numbers"))
+    assert result == [3, 4, 5]
+
+
+def test_limit_after_offset(test_session):
+    chain = dc.read_values(numbers=[1, 2, 3, 4, 5], session=test_session).order_by(
+        "numbers"
+    )
+    # ``.offset(1).limit(2)`` combines into ``LIMIT 2 OFFSET 1`` -> [2, 3].
+    result = list(chain.offset(1).limit(2).to_values("numbers"))
+    assert result == [2, 3]
+
+
+def test_distinct_after_limit(test_session):
+    chain = dc.read_values(
+        numbers=[1, 1, 2, 2, 3, 3, 4, 4],
+        session=test_session,
+    ).order_by("numbers")
+    # limit 4 -> [1,1,2,2], distinct -> {1,2}
+    result = sorted(chain.limit(4).distinct("numbers").to_values("numbers"))
+    assert result == [1, 2]
+
+
+def test_distinct_after_offset(test_session):
+    chain = dc.read_values(
+        numbers=[1, 1, 2, 2, 3, 3],
+        session=test_session,
+    ).order_by("numbers")
+    # offset 2 -> [2, 2, 3, 3], distinct -> {2, 3}
+    result = sorted(chain.offset(2).distinct("numbers").to_values("numbers"))
+    assert result == [2, 3]
+
+
+def test_group_by_after_limit(test_session):
+    chain = dc.read_values(
+        category=["A", "A", "B", "B", "C"],
+        value=[1, 2, 3, 4, 5],
+        session=test_session,
+    ).order_by("value")
+    # take first 4 ordered by value -> A=1, A=2, B=3, B=4 -> group: A=3, B=7
+    grouped = chain.limit(4).group_by(total=func.sum("value"), partition_by="category")
+    rows = sorted((r["category"], r["total"]) for r in grouped.to_records())
+    assert rows == [("A", 3), ("B", 7)]
+
+
+def test_group_by_after_group_by(test_session):
+    chain = dc.read_values(
+        category=["A", "A", "B", "B", "C"],
+        value=[1, 2, 3, 4, 5],
+        session=test_session,
+    )
+    inner = chain.group_by(total=func.sum("value"), partition_by="category")
+    # second group_by aggregates over the per-category totals: 3 + 7 + 5 = 15
+    outer = inner.group_by(grand=func.sum("total"))
+    rows = list(outer.to_values("grand"))
+    assert rows == [15]
+
+
+def test_filter_after_group_by_then_limit(test_session):
+    """Chained boundaries: group_by -> filter -> limit -> filter."""
+    chain = dc.read_values(
+        category=["A", "A", "B", "B", "C", "C", "D"],
+        value=[1, 2, 3, 4, 5, 6, 7],
+        session=test_session,
+    )
+    # group sums: A=3, B=7, C=11, D=7
+    grouped = chain.group_by(total=func.sum("value"), partition_by="category")
+    # filter > 3 -> {B=7, C=11, D=7}
+    filtered = grouped.filter(C("total") > 3).order_by("total", "category")
+    # limit 2 -> [B=7, D=7]; then filter on the limited materialized stage
+    rows = sorted(
+        (r["category"], r["total"])
+        for r in filtered.limit(2).filter(C("category") == "B").to_records()
+    )
+    assert rows == [("B", 7)]
+
+
+def test_count_after_limit(test_session):
+    chain = dc.read_values(numbers=[1, 2, 3, 4, 5], session=test_session).order_by(
+        "numbers"
+    )
+    # count() must reflect the limited row set, not the underlying 5 rows
+    assert chain.limit(3).count() == 3
+
+
+def test_count_after_distinct(test_session):
+    chain = dc.read_values(
+        numbers=[1, 1, 2, 2, 3, 3, 4],
+        session=test_session,
+    )
+    assert chain.distinct("numbers").count() == 4

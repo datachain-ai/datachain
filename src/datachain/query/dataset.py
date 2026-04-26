@@ -171,6 +171,58 @@ def step_result(
     )
 
 
+class QueryState:
+    """Tracks which terminal SQL clauses have been applied to the in-flight
+    query during ``DatasetQuery.apply_steps``.
+
+    A subsequent clause inspects these flags to decide whether the prior
+    output must be wrapped in a subquery (a *state boundary*) before the
+    new clause is applied — otherwise constructs like ``WHERE`` after
+    ``GROUP BY`` or ``ORDER BY`` after ``LIMIT`` would affect the
+    underlying rows instead of the materialized state output.
+    """
+
+    __slots__ = ("distinct", "grouped", "limited", "offset_applied")
+
+    def __init__(self) -> None:
+        self.reset()
+
+    def reset(self) -> None:
+        self.grouped = False
+        self.limited = False
+        self.offset_applied = False
+        self.distinct = False
+
+    @property
+    def has_finalized_output(self) -> bool:
+        """True if any clause that finalizes the row set has been applied."""
+        return self.grouped or self.limited or self.offset_applied or self.distinct
+
+    def emit_boundary(self, query_generator: "QueryGenerator") -> "QueryGenerator":
+        """Materialize the in-flight query as a subquery and reset flags.
+
+        After this call, the returned generator represents a fresh state:
+        any prior ``LIMIT``/``OFFSET``/``GROUP BY``/``DISTINCT`` is folded
+        into the inner subquery, so the caller can apply its clause to the
+        outer level without affecting underlying rows.
+        """
+        query = query_generator.select()
+        # Some dialects (ClickHouse) refuse to compile OFFSET without LIMIT.
+        # When wrapping a query that has OFFSET but no LIMIT, attach a
+        # sentinel max limit so the inner subquery is well-formed for all
+        # backends. No-op for queries that already have a limit.
+        if query._offset_clause is not None and query._limit_clause is None:
+            query = query.limit(2**63 - 1)
+        sub = query.subquery()
+        new_query = sqlalchemy.select(*sub.c).select_from(sub)
+
+        def q(*columns):
+            return new_query.with_only_columns(*columns)
+
+        self.reset()
+        return QueryGenerator(func=q, columns=tuple(new_query.selected_columns))
+
+
 @frozen
 class Step(ABC):
     """A query processing step (filtering, mutation, etc.)"""
@@ -181,9 +233,17 @@ class Step(ABC):
         query_generator: QueryGenerator,
         temp_tables: list[str],
         *args,
+        state: "QueryState | None" = None,
         **kwargs,
     ) -> "StepResult":
-        """Apply the processing step."""
+        """Apply the processing step.
+
+        ``state`` carries the in-flight query-state flags. SQL clauses
+        that finalize output (``filter`` after ``GROUP BY``/``LIMIT``, etc.)
+        inspect and update it via ``state.emit_boundary`` to materialize
+        a subquery boundary when needed. Steps that don't care may
+        ignore it.
+        """
 
     @abstractmethod
     def hash_inputs(self) -> str:
@@ -1128,9 +1188,12 @@ class UDFStep(Step, ABC):
         self,
         query_generator: QueryGenerator,
         temp_tables: list[str],
-        hash_input: str,
-        hash_output: str,
+        *args,
+        hash_input: str = "",
+        hash_output: str = "",
         checkpoints_enabled: bool = True,
+        state: "QueryState | None" = None,
+        **kwargs,
     ) -> "StepResult":
         query = query_generator.select()
 
@@ -1825,10 +1888,18 @@ class SQLClause(Step, ABC):
         query_generator: QueryGenerator,
         temp_tables: list[str],
         *args,
+        state: "QueryState | None" = None,
         **kwargs,
     ) -> StepResult:
-        query = query_generator.select()
-        new_query = self.apply_sql_clause(query)
+        # SELECT / MUTATE / SELECT_EXCEPT / COUNT etc. all wrap the prior
+        # result in a fresh subquery, so any prior state flags no longer
+        # apply. SQLClause subclasses that need to preserve or update the
+        # state (filter, order_by, limit, offset, distinct, group_by)
+        # override ``apply`` directly.
+        if state is not None:
+            state.reset()
+        sql = query_generator.select()
+        new_query = self.apply_sql_clause(sql)
 
         def q(*columns):
             return new_query.with_only_columns(*columns)
@@ -1951,6 +2022,27 @@ class SQLFilter(SQLClause):
         expressions = self.parse_cols(self.expressions)
         return query.filter(*expressions)
 
+    def apply(
+        self,
+        query_generator: QueryGenerator,
+        temp_tables: list[str],
+        *args,
+        state: "QueryState | None" = None,
+        **kwargs,
+    ) -> StepResult:
+        # WHERE applied after GROUP BY / LIMIT / OFFSET / DISTINCT would filter
+        # the underlying rows, not the materialized state output.
+        if state is not None and state.has_finalized_output:
+            query_generator = state.emit_boundary(query_generator)
+        sql = query_generator.select()
+        new_query = self.apply_sql_clause(sql)
+        # filter does not finalize the output; state flags carry over.
+
+        def q(*columns):
+            return new_query.with_only_columns(*columns)
+
+        return step_result(q, new_query.selected_columns)
+
 
 @frozen
 class SQLOrderBy(SQLClause):
@@ -1963,6 +2055,25 @@ class SQLOrderBy(SQLClause):
         args = self.parse_cols(self.args)
         return query.order_by(*args)
 
+    def apply(
+        self,
+        query_generator: QueryGenerator,
+        temp_tables: list[str],
+        *args,
+        state: "QueryState | None" = None,
+        **kwargs,
+    ) -> StepResult:
+        # Re-ordering after LIMIT/OFFSET would change which rows are kept.
+        if state is not None and (state.limited or state.offset_applied):
+            query_generator = state.emit_boundary(query_generator)
+        sql = query_generator.select()
+        new_query = self.apply_sql_clause(sql)
+
+        def q(*columns):
+            return new_query.with_only_columns(*columns)
+
+        return step_result(q, new_query.selected_columns)
+
 
 @frozen
 class SQLLimit(SQLClause):
@@ -1974,6 +2085,28 @@ class SQLLimit(SQLClause):
     def apply_sql_clause(self, query: Select) -> Select:
         return query.limit(self.n)
 
+    def apply(
+        self,
+        query_generator: QueryGenerator,
+        temp_tables: list[str],
+        *args,
+        state: "QueryState | None" = None,
+        **kwargs,
+    ) -> StepResult:
+        # Stacked LIMITs must materialize first. (LIMIT after OFFSET combines
+        # into a single ``LIMIT N OFFSET M`` clause, so no boundary needed.)
+        if state is not None and state.limited:
+            query_generator = state.emit_boundary(query_generator)
+        sql = query_generator.select()
+        new_query = self.apply_sql_clause(sql)
+        if state is not None:
+            state.limited = True
+
+        def q(*columns):
+            return new_query.with_only_columns(*columns)
+
+        return step_result(q, new_query.selected_columns)
+
 
 @frozen
 class SQLOffset(SQLClause):
@@ -1984,6 +2117,28 @@ class SQLOffset(SQLClause):
 
     def apply_sql_clause(self, query: "GenerativeSelect"):
         return query.offset(self.offset)
+
+    def apply(
+        self,
+        query_generator: QueryGenerator,
+        temp_tables: list[str],
+        *args,
+        state: "QueryState | None" = None,
+        **kwargs,
+    ) -> StepResult:
+        # Re-applying OFFSET requires materializing the previous offset.
+        # (OFFSET after LIMIT combines into ``LIMIT N OFFSET M``, no boundary.)
+        if state is not None and state.offset_applied:
+            query_generator = state.emit_boundary(query_generator)
+        sql = query_generator.select()
+        new_query = self.apply_sql_clause(sql)
+        if state is not None:
+            state.offset_applied = True
+
+        def q(*columns):
+            return new_query.with_only_columns(*columns)
+
+        return step_result(q, new_query.selected_columns)
 
 
 @frozen
@@ -2008,6 +2163,30 @@ class SQLDistinct(SQLClause):
             return query.group_by(*self.args)
 
         return query.distinct(*self.args)
+
+    def apply(
+        self,
+        query_generator: QueryGenerator,
+        temp_tables: list[str],
+        *args,
+        state: "QueryState | None" = None,
+        **kwargs,
+    ) -> StepResult:
+        # DISTINCT after LIMIT/OFFSET should de-duplicate the materialized
+        # rows, not the underlying ones. Also re-distinct needs a boundary.
+        if state is not None and (
+            state.limited or state.offset_applied or state.distinct
+        ):
+            query_generator = state.emit_boundary(query_generator)
+        sql = query_generator.select()
+        new_query = self.apply_sql_clause(sql)
+        if state is not None:
+            state.distinct = True
+
+        def q(*columns):
+            return new_query.with_only_columns(*columns)
+
+        return step_result(q, new_query.selected_columns)
 
 
 @frozen
@@ -2340,6 +2519,29 @@ class SQLGroupBy(SQLClause):
 
         return sqlalchemy.select(*unique_cols).select_from(subquery).group_by(*group_by)
 
+    def apply(
+        self,
+        query_generator: QueryGenerator,
+        temp_tables: list[str],
+        *args,
+        state: "QueryState | None" = None,
+        **kwargs,
+    ) -> StepResult:
+        # Re-grouping or grouping after LIMIT/OFFSET requires materialization.
+        if state is not None and (
+            state.grouped or state.limited or state.offset_applied
+        ):
+            query_generator = state.emit_boundary(query_generator)
+        sql = query_generator.select()
+        new_query = self.apply_sql_clause(sql)
+        if state is not None:
+            state.grouped = True
+
+        def q(*columns):
+            return new_query.with_only_columns(*columns)
+
+        return step_result(q, new_query.selected_columns)
+
 
 class UnionSchemaMismatchError(ValueError):
     """Union input columns mismatch."""
@@ -2639,6 +2841,9 @@ class DatasetQuery:
             raise RuntimeError("DatasetQuery has no starting dataset or steps")
 
         _hash = hasher.hexdigest()
+        # Stage flags reset at the start of every apply_steps run; they only
+        # describe the in-flight query under construction here.
+        state = QueryState()
         for step in query.steps:
             hash_input = _hash
             hasher.update(step.hash().encode("utf-8"))
@@ -2651,8 +2856,17 @@ class DatasetQuery:
                 hash_input=hash_input,
                 hash_output=hash_output,
                 checkpoints_enabled=self.checkpoints_enabled,
+                state=state,
             )  # a chain of steps linked by results
             self.dependencies.update(result.dependencies)
+            # Steps that don't manage state flags themselves (UDFs, joins,
+            # unions, set ops, raw selects in default SQLClause.apply) materialize
+            # their result via a fresh subquery, so any prior state flags no
+            # longer apply. SQLClause subclasses that *do* manage state (filter,
+            # order_by, limit, offset, distinct, group_by) handle reset/update
+            # themselves inside their own apply().
+            if not isinstance(step, SQLClause):
+                state.reset()
 
         return result.query_generator
 
