@@ -57,7 +57,7 @@
   <path d="M 98,244 A 120,10 0 0,0 338,244 L 338,292 A 120,10 0 0,1 98,292 Z" fill="rgb(225,245,238)" stroke="rgb(15,110,86)" stroke-width="1.5"/>
   <ellipse cx="218" cy="244" rx="120" ry="10" fill="rgb(225,245,238)" stroke="rgb(15,110,86)" stroke-width="1.5"/>
   <text x="218" y="264" text-anchor="middle" dominant-baseline="central" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="14" font-weight="600" fill="rgb(8,80,65)">Data Memory</text>
-  <text x="218" y="280" text-anchor="middle" dominant-baseline="central" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="12" fill="rgb(15,110,86)">datasets · versioned, typed</text>
+  <text x="218" y="280" text-anchor="middle" dominant-baseline="central" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="12" fill="rgb(15,110,86)">versioned datasets</text>
 </g>
 
 <!-- Arrow: PE -> Data Memory (on top of cylinder) -->
@@ -89,7 +89,7 @@
 <g>
   <rect x="98" y="360" width="240" height="56" rx="8" fill="rgb(250,238,218)" stroke="rgb(133,79,11)" stroke-width="0.5"/>
   <text x="218" y="382" text-anchor="middle" dominant-baseline="central" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="14" font-weight="500" fill="rgb(99,56,6)">Knowledge Base</text>
-  <text x="218" y="400" text-anchor="middle" dominant-baseline="central" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="12" fill="rgb(133,79,11)">dataset cards · schema, stats, lineage</text>
+  <text x="218" y="400" text-anchor="middle" dominant-baseline="central" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="12" fill="rgb(133,79,11)">dataset cards, schema, stats, lineage</text>
 </g>
 
 <!-- Arrow: KB -> Agents -->
