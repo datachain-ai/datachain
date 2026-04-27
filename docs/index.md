@@ -1,6 +1,6 @@
 # <a class="main-header-link" href="/" ><img style="display: inline-block;" src="/assets/datachain.svg" alt="DataChain"> <span style="display: inline-block;"> DataChain</span></a>
 
-<p align="center" class="subtitle">memory for data agents</p>
+<p align="center" class="subtitle">Data Memory for AI Agents</p>
 
 <style>
 .md-content .md-typeset h1 { font-weight: bold; display: flex; align-items: center; justify-content: center; gap: 5px; }
@@ -24,17 +24,22 @@
   </a>
 </p>
 
-DataChain chains Python functions and data operations into composable queries. Python functions process files or data and produce data. Data operations run as SQL at warehouse speed: filter, join, aggregate. Because the system sees the full chain before executing, it applies ten layers of automatic optimization, from no-copy file references to dataset reuse. Every query deposits results into **Data Memory** as a versioned, typed dataset, and the next query starts from what the last one produced. Each session enriches what the next session reads; agents and people build new conclusions on top of prior conclusions instead of re-deriving from raw bytes.
+**The model floor is the same for everyone. The context ceiling is yours.**
 
-The **Python Data Engine** is the production layer: it runs your Python functions in parallel across threads and machines with async prefetch, file caching, and checkpoints. The **Query Engine** (SQLite locally, ClickHouse in SaaS) is the recall layer: it filters, joins, and searches across datasets at warehouse speed. The **Knowledge Base** is the compilation layer that turns persistent datasets into agent-readable knowledge for Claude Code, Codex, Cursor, custom harnesses, and any LLM they support.
+DataChain gives AI agents a memory of your data: files in storage, tables in databases, and multimodal data, all typed and versioned. Every pipeline you run makes the next one start from where the last one ended instead of from raw bytes.
 
-**Get Started**
+It's a Python library. Read files from S3, GCS, or Azure, run your code, save the result as a dataset with Pydantic-typed schema. The next pipeline or agent picks up from there.
 
-- [🧭 Why DataChain](why.md) — the problem, who it fits, who it does not
-- [🤖 Agents](getting-started/agents.md) — AI-driven with a knowledge base
-- [🐍 Python](getting-started/python.md) — Full control over data processing
-- [💡 Concepts](concepts/index.md) — Memory, Datasets, and the dual engine
-- [🧩 Use Cases](use-cases/index.md) — five patterns where the harness changes the work
+## Why data memory
+
+Claude Code, Cursor, and Codex made AI good at code by giving it the repo context. Agents over your data need the same: a **data context layer** that describes what datasets exist, what they mean, and what is already computed. **Data memory is what makes that layer real** - typed, versioned datasets your team produces by running pipelines, surfaced through the Knowledge Base. Without it, the context layer points at nothing and every session starts from zero.
+
+## Get started
+
+- **[🤖 Agents](getting-started/agents.md)** — knowledge base for Claude Code, Codex, and Cursor
+- **[🐍 Python](getting-started/python.md)** — full control over data processing
+- **[💡 Concepts](concepts/index.md)** — Data Memory, the Python and Query engines, and the Knowledge Base
+- **[🧩 Use Cases](use-cases/index.md)** — patterns where the harness changes the work
 
 <div style="max-width: 680px; margin: 2em auto 0;">
   <img src="assets/data-memory.svg" alt="DataChain architecture">
