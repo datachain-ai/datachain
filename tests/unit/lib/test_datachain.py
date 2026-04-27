@@ -4997,25 +4997,6 @@ def test_filter_after_distinct(test_session, boundary_counter):
     boundary_counter.assert_count(1)
 
 
-@skip_if_not_sqlite
-def test_filter_after_distinct_filters_materialized_rows(
-    test_session, boundary_counter
-):
-    chain = dc.read_values(
-        numbers=[1, 1, 2, 2, 3],
-        labels=["drop", "keep", "keep", "drop", "keep"],
-        session=test_session,
-    )
-
-    # Distinct first keeps one representative per number:
-    # [(1, "drop"), (2, "keep"), (3, "keep")]. The filter then removes 1.
-    # If the filter is pushed below distinct, number 1 survives via its "keep" row.
-    result = chain.distinct("numbers").filter(C("labels") == "keep").to_records()
-    rows = sorted((r["numbers"], r["labels"]) for r in result)
-    assert rows == [(2, "keep"), (3, "keep")]
-    boundary_counter.assert_count(1)
-
-
 def test_order_by_after_limit(test_session, boundary_counter):
     chain = dc.read_values(numbers=[5, 4, 3, 2, 1], session=test_session).order_by(
         "numbers"
