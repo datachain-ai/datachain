@@ -109,6 +109,7 @@ OFFSET_ONLY_SENTINEL_LIMIT = sys.maxsize
 
 
 T = TypeVar("T", bound="DatasetQuery")
+QuerySelectType = TypeVar("QuerySelectType", bound="GenerativeSelect")
 
 
 def detach(
@@ -173,6 +174,13 @@ def step_result(
     )
 
 
+def ensure_offset_has_limit(query: QuerySelectType) -> QuerySelectType:
+    """Attach an effectively-unbounded limit for dialects that require it."""
+    if query._offset is not None and query._limit is None:
+        return query.limit(OFFSET_ONLY_SENTINEL_LIMIT)
+    return query
+
+
 class QueryState:
     """Tracks which terminal SQL clauses have been applied to the in-flight
     query during ``DatasetQuery.apply_steps``.
@@ -211,8 +219,7 @@ class QueryState:
         # When wrapping a query that has OFFSET but no LIMIT, attach a
         # sentinel max limit so the inner subquery is well-formed for all
         # backends. No-op for queries that already have a limit.
-        if query._offset is not None and query._limit is None:
-            query = query.limit(OFFSET_ONLY_SENTINEL_LIMIT)
+        query = ensure_offset_has_limit(query)
         sub = query.subquery()
         new_query = sqlalchemy.select(*sub.c).select_from(sub)
 
@@ -2085,7 +2092,7 @@ class SQLOffset(SQLClause):
         return hashlib.sha256(str(self.offset).encode()).hexdigest()
 
     def apply_sql_clause(self, query: "GenerativeSelect"):
-        return query.offset(self.offset)
+        return ensure_offset_has_limit(query.offset(self.offset))
 
     def requires_boundary(self, state: "QueryState") -> bool:
         # Re-applying OFFSET requires materializing the previous offset.
