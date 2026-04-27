@@ -4867,17 +4867,6 @@ def test_union_does_not_break_schema_order(test_session):
     ]
 
 
-# ---------------------------------------------------------------------------
-# Stage-boundary planner tests
-#
-# These exercise the QueryStage logic in apply_steps: when a
-# materializing clause (group_by / limit / offset / distinct) is followed by
-# a clause that would otherwise act on the underlying rows (filter, order_by,
-# limit, offset, distinct, group_by), the planner must emit a subquery
-# boundary so the second clause sees the materialized output.
-# ---------------------------------------------------------------------------
-
-
 def test_filter_after_group_by(test_session):
     chain = dc.read_values(
         category=["A", "A", "B", "B", "C"],
@@ -4904,9 +4893,10 @@ def test_filter_after_offset(test_session):
     chain = dc.read_values(numbers=[1, 2, 3, 4, 5], session=test_session).order_by(
         "numbers"
     )
-    # Skip first 2 -> [3, 4, 5], then filter on the materialized rows.
-    result = sorted(chain.offset(2).filter(C("numbers") < 5).to_values("numbers"))
-    assert result == [3, 4]
+    # Skip first 2 -> [3, 4, 5], then filter on the materialized rows. If the
+    # filter is pushed below the offset, this would incorrectly return [5].
+    result = chain.offset(2).filter(C("numbers") > 3).to_values("numbers")
+    assert result == [4, 5]
 
 
 def test_filter_after_distinct(test_session):
@@ -4919,6 +4909,22 @@ def test_filter_after_distinct(test_session):
         chain.distinct("numbers").filter(C("numbers") > 2).to_values("numbers")
     )
     assert result == [3, 4]
+
+
+@skip_if_not_sqlite
+def test_filter_after_distinct_filters_materialized_rows(test_session):
+    chain = dc.read_values(
+        numbers=[1, 1, 2, 2, 3],
+        labels=["drop", "keep", "keep", "drop", "keep"],
+        session=test_session,
+    )
+
+    # Distinct first keeps one representative per number:
+    # [(1, "drop"), (2, "keep"), (3, "keep")]. The filter then removes 1.
+    # If the filter is pushed below distinct, number 1 survives via its "keep" row.
+    result = chain.distinct("numbers").filter(C("labels") == "keep").to_records()
+    rows = sorted((r["numbers"], r["labels"]) for r in result)
+    assert rows == [(2, "keep"), (3, "keep")]
 
 
 def test_order_by_after_limit(test_session):
@@ -4943,8 +4949,18 @@ def test_limit_after_limit(test_session):
     chain = dc.read_values(numbers=[1, 2, 3, 4, 5], session=test_session).order_by(
         "numbers"
     )
-    # outer limit must apply on top of inner limit
+    # Adjacent limits coalesce at the DatasetQuery level.
     result = list(chain.limit(4).limit(2).to_values("numbers"))
+    assert result == [1, 2]
+
+
+def test_limit_after_limit_with_intervening_offset(test_session):
+    chain = dc.read_values(numbers=[1, 2, 3, 4, 5], session=test_session).order_by(
+        "numbers"
+    )
+    # The intervening offset prevents DatasetQuery.limit() from coalescing the two
+    # limits, so this exercises the planner's stacked-limit boundary.
+    result = list(chain.limit(4).offset(0).limit(2).to_values("numbers"))
     assert result == [1, 2]
 
 
@@ -4966,6 +4982,15 @@ def test_limit_after_offset(test_session):
     # ``.offset(1).limit(2)`` combines into ``LIMIT 2 OFFSET 1`` -> [2, 3].
     result = list(chain.offset(1).limit(2).to_values("numbers"))
     assert result == [2, 3]
+
+
+def test_offset_after_offset(test_session):
+    chain = dc.read_values(numbers=[1, 2, 3, 4, 5], session=test_session).order_by(
+        "numbers"
+    )
+    # first offset -> [2, 3, 4, 5], second offset -> [4, 5]
+    result = list(chain.offset(1).offset(2).to_values("numbers"))
+    assert result == [4, 5]
 
 
 def test_distinct_after_limit(test_session):
@@ -5011,6 +5036,19 @@ def test_group_by_after_group_by(test_session):
     outer = inner.group_by(grand=func.sum("total"))
     rows = list(outer.to_values("grand"))
     assert rows == [15]
+
+
+def test_distinct_after_group_by(test_session):
+    chain = dc.read_values(
+        category=["A", "B", "C"],
+        value=[1, 1, 2],
+        session=test_session,
+    )
+    grouped = chain.group_by(total=func.sum("value"), partition_by="category")
+
+    result = sorted(grouped.distinct("total").to_values("total"))
+
+    assert result == [1, 2]
 
 
 def test_filter_after_group_by_then_limit(test_session):
