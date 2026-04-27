@@ -16,6 +16,7 @@ import pytest
 from pydantic import BaseModel
 
 import datachain as dc
+import datachain.query.dataset as query_dataset
 from datachain import Column, func
 from datachain.dataset import DatasetStatus
 from datachain.error import (
@@ -4867,7 +4868,88 @@ def test_union_does_not_break_schema_order(test_session):
     ]
 
 
-def test_filter_after_group_by(test_session):
+class BoundaryCounter:
+    def __init__(self):
+        self.count = 0
+
+    def assert_count(self, expected):
+        assert self.count == expected
+
+
+@pytest.fixture
+def boundary_counter(monkeypatch):
+    counter = BoundaryCounter()
+    original = query_dataset.QueryState.emit_boundary
+
+    def emit_boundary_spy(self, query_generator):
+        counter.count += 1
+        return original(self, query_generator)
+
+    monkeypatch.setattr(query_dataset.QueryState, "emit_boundary", emit_boundary_spy)
+    return counter
+
+
+@pytest.mark.parametrize(
+    "build_chain",
+    [
+        pytest.param(
+            lambda session: dc.read_values(numbers=[1, 2, 3], session=session).filter(
+                C("numbers") > 1
+            ),
+            id="filter",
+        ),
+        pytest.param(
+            lambda session: dc.read_values(numbers=[1, 2, 3], session=session).order_by(
+                "numbers"
+            ),
+            id="order-by",
+        ),
+        pytest.param(
+            lambda session: (
+                dc.read_values(numbers=[1, 2, 3], session=session)
+                .order_by("numbers")
+                .limit(2)
+            ),
+            id="limit",
+        ),
+        pytest.param(
+            lambda session: (
+                dc.read_values(numbers=[1, 2, 3], session=session)
+                .order_by("numbers")
+                .offset(1)
+            ),
+            id="offset",
+        ),
+        pytest.param(
+            lambda session: (
+                dc.read_values(numbers=[1, 1, 2], session=session)
+                .filter(C("numbers") > 1)
+                .distinct("numbers")
+            ),
+            id="distinct-after-filter",
+        ),
+        pytest.param(
+            lambda session: (
+                dc.read_values(
+                    category=["A", "A", "B"],
+                    value=[1, 2, 3],
+                    session=session,
+                )
+                .filter(C("value") > 1)
+                .group_by(total=func.sum("value"), partition_by="category")
+            ),
+            id="group-by-after-filter",
+        ),
+    ],
+)
+def test_state_boundaries_not_emitted_when_unneeded(
+    test_session, boundary_counter, build_chain
+):
+    assert build_chain(test_session).count()
+    boundary_counter.assert_count(0)
+
+
+def test_filter_after_group_by(test_session, boundary_counter):
     chain = dc.read_values(
         category=["A", "A", "B", "B", "C"],
         value=[1, 2, 3, 4, 5],
@@ -4878,18 +4960,20 @@ def test_filter_after_group_by(test_session):
     result = grouped.filter(C("total") > 3).to_records()
     rows = sorted((r["category"], r["total"]) for r in result)
     assert rows == [("B", 7), ("C", 5)]
+    boundary_counter.assert_count(1)
 
 
-def test_filter_after_limit(test_session):
+def test_filter_after_limit(test_session, boundary_counter):
     chain = dc.read_values(numbers=[1, 2, 3, 4, 5], session=test_session).order_by(
         "numbers"
     )
     # Take first 3, then filter -- filter must apply to the limited 3 rows
     result = sorted(chain.limit(3).filter(C("numbers") > 1).to_values("numbers"))
     assert result == [2, 3]
+    boundary_counter.assert_count(1)
 
 
-def test_filter_after_offset(test_session):
+def test_filter_after_offset(test_session, boundary_counter):
     chain = dc.read_values(numbers=[1, 2, 3, 4, 5], session=test_session).order_by(
         "numbers"
     )
@@ -4897,9 +4981,10 @@ def test_filter_after_offset(test_session):
     # filter is pushed below the offset, this would incorrectly return [5].
     result = chain.offset(2).filter(C("numbers") > 3).to_values("numbers")
     assert result == [4, 5]
+    boundary_counter.assert_count(1)
 
 
-def test_filter_after_distinct(test_session):
+def test_filter_after_distinct(test_session, boundary_counter):
     chain = dc.read_values(
         numbers=[1, 1, 2, 2, 3, 3, 4],
         session=test_session,
@@ -4909,10 +4994,13 @@ def test_filter_after_distinct(test_session):
         chain.distinct("numbers").filter(C("numbers") > 2).to_values("numbers")
     )
     assert result == [3, 4]
+    boundary_counter.assert_count(1)
 
 
 @skip_if_not_sqlite
-def test_filter_after_distinct_filters_materialized_rows(test_session):
+def test_filter_after_distinct_filters_materialized_rows(
+    test_session, boundary_counter
+):
     chain = dc.read_values(
         numbers=[1, 1, 2, 2, 3],
         labels=["drop", "keep", "keep", "drop", "keep"],
@@ -4925,36 +5013,40 @@ def test_filter_after_distinct_filters_materialized_rows(test_session):
     result = chain.distinct("numbers").filter(C("labels") == "keep").to_records()
     rows = sorted((r["numbers"], r["labels"]) for r in result)
     assert rows == [(2, "keep"), (3, "keep")]
+    boundary_counter.assert_count(1)
 
 
-def test_order_by_after_limit(test_session):
+def test_order_by_after_limit(test_session, boundary_counter):
     chain = dc.read_values(numbers=[5, 4, 3, 2, 1], session=test_session).order_by(
         "numbers"
     )
     # limit takes [1,2,3], reorder desc -> [3,2,1]
     result = chain.limit(3).order_by(C("numbers").desc()).to_values("numbers")
     assert list(result) == [3, 2, 1]
+    boundary_counter.assert_count(1)
 
 
-def test_order_by_after_offset(test_session):
+def test_order_by_after_offset(test_session, boundary_counter):
     chain = dc.read_values(numbers=[1, 2, 3, 4, 5], session=test_session).order_by(
         "numbers"
     )
     # skip 2 -> [3, 4, 5], reorder desc -> [5, 4, 3]
     result = chain.offset(2).order_by(C("numbers").desc()).to_values("numbers")
     assert list(result) == [5, 4, 3]
+    boundary_counter.assert_count(1)
 
 
-def test_limit_after_limit(test_session):
+def test_limit_after_limit(test_session, boundary_counter):
     chain = dc.read_values(numbers=[1, 2, 3, 4, 5], session=test_session).order_by(
         "numbers"
     )
     # Adjacent limits coalesce at the DatasetQuery level.
     result = list(chain.limit(4).limit(2).to_values("numbers"))
     assert result == [1, 2]
+    boundary_counter.assert_count(0)
 
 
-def test_limit_after_limit_with_intervening_offset(test_session):
+def test_limit_after_limit_with_intervening_offset(test_session, boundary_counter):
     chain = dc.read_values(numbers=[1, 2, 3, 4, 5], session=test_session).order_by(
         "numbers"
     )
@@ -4962,9 +5054,10 @@ def test_limit_after_limit_with_intervening_offset(test_session):
     # limits, so this exercises the planner's stacked-limit boundary.
     result = list(chain.limit(4).offset(0).limit(2).to_values("numbers"))
     assert result == [1, 2]
+    boundary_counter.assert_count(1)
 
 
-def test_offset_after_limit(test_session):
+def test_offset_after_limit(test_session, boundary_counter):
     chain = dc.read_values(numbers=[1, 2, 3, 4, 5], session=test_session).order_by(
         "numbers"
     )
@@ -4973,27 +5066,30 @@ def test_offset_after_limit(test_session):
     # limit 4 offset 2 -> skip 2, take next 4 -> [3, 4, 5].
     result = list(chain.limit(4).offset(2).to_values("numbers"))
     assert result == [3, 4, 5]
+    boundary_counter.assert_count(0)
 
 
-def test_limit_after_offset(test_session):
+def test_limit_after_offset(test_session, boundary_counter):
     chain = dc.read_values(numbers=[1, 2, 3, 4, 5], session=test_session).order_by(
         "numbers"
     )
     # ``.offset(1).limit(2)`` combines into ``LIMIT 2 OFFSET 1`` -> [2, 3].
     result = list(chain.offset(1).limit(2).to_values("numbers"))
     assert result == [2, 3]
+    boundary_counter.assert_count(0)
 
 
-def test_offset_after_offset(test_session):
+def test_offset_after_offset(test_session, boundary_counter):
     chain = dc.read_values(numbers=[1, 2, 3, 4, 5], session=test_session).order_by(
         "numbers"
     )
     # first offset -> [2, 3, 4, 5], second offset -> [4, 5]
     result = list(chain.offset(1).offset(2).to_values("numbers"))
     assert result == [4, 5]
+    boundary_counter.assert_count(1)
 
 
-def test_distinct_after_limit(test_session):
+def test_distinct_after_limit(test_session, boundary_counter):
     chain = dc.read_values(
         numbers=[1, 1, 2, 2, 3, 3, 4, 4],
         session=test_session,
@@ -5001,9 +5097,10 @@ def test_distinct_after_limit(test_session):
     # limit 4 -> [1,1,2,2], distinct -> {1,2}
     result = sorted(chain.limit(4).distinct("numbers").to_values("numbers"))
     assert result == [1, 2]
+    boundary_counter.assert_count(1)
 
 
-def test_distinct_after_offset(test_session):
+def test_distinct_after_offset(test_session, boundary_counter):
     chain = dc.read_values(
         numbers=[1, 1, 2, 2, 3, 3],
         session=test_session,
@@ -5011,9 +5108,10 @@ def test_distinct_after_offset(test_session):
     # offset 2 -> [2, 2, 3, 3], distinct -> {2, 3}
     result = sorted(chain.offset(2).distinct("numbers").to_values("numbers"))
     assert result == [2, 3]
+    boundary_counter.assert_count(1)
 
 
-def test_group_by_after_limit(test_session):
+def test_group_by_after_limit(test_session, boundary_counter):
     chain = dc.read_values(
         category=["A", "A", "B", "B", "C"],
         value=[1, 2, 3, 4, 5],
@@ -5023,9 +5121,10 @@ def test_group_by_after_limit(test_session):
     grouped = chain.limit(4).group_by(total=func.sum("value"), partition_by="category")
     rows = sorted((r["category"], r["total"]) for r in grouped.to_records())
     assert rows == [("A", 3), ("B", 7)]
+    boundary_counter.assert_count(1)
 
 
-def test_group_by_after_group_by(test_session):
+def test_group_by_after_group_by(test_session, boundary_counter):
     chain = dc.read_values(
         category=["A", "A", "B", "B", "C"],
         value=[1, 2, 3, 4, 5],
@@ -5036,9 +5135,10 @@ def test_group_by_after_group_by(test_session):
     outer = inner.group_by(grand=func.sum("total"))
     rows = list(outer.to_values("grand"))
     assert rows == [15]
+    boundary_counter.assert_count(1)
 
 
-def test_distinct_after_group_by(test_session):
+def test_distinct_after_group_by(test_session, boundary_counter):
     chain = dc.read_values(
         category=["A", "B", "C"],
         value=[1, 1, 2],
@@ -5049,9 +5149,10 @@ def test_distinct_after_group_by(test_session):
     result = sorted(grouped.distinct("total").to_values("total"))
 
     assert result == [1, 2]
+    boundary_counter.assert_count(1)
 
 
-def test_filter_after_group_by_then_limit(test_session):
+def test_filter_after_group_by_then_limit(test_session, boundary_counter):
     """Chained boundaries: group_by -> filter -> limit -> filter."""
     chain = dc.read_values(
         category=["A", "A", "B", "B", "C", "C", "D"],
@@ -5068,19 +5169,22 @@ def test_filter_after_group_by_then_limit(test_session):
         for r in filtered.limit(2).filter(C("category") == "B").to_records()
     )
     assert rows == [("B", 7)]
+    boundary_counter.assert_count(2)
 
 
-def test_count_after_limit(test_session):
+def test_count_after_limit(test_session, boundary_counter):
     chain = dc.read_values(numbers=[1, 2, 3, 4, 5], session=test_session).order_by(
         "numbers"
     )
     # count() must reflect the limited row set, not the underlying 5 rows
     assert chain.limit(3).count() == 3
+    boundary_counter.assert_count(0)
 
 
-def test_count_after_distinct(test_session):
+def test_count_after_distinct(test_session, boundary_counter):
     chain = dc.read_values(
         numbers=[1, 1, 2, 2, 3, 3, 4],
         session=test_session,
     )
     assert chain.distinct("numbers").count() == 4
+    boundary_counter.assert_count(0)
