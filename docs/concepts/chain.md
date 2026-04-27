@@ -4,11 +4,11 @@ title: Chain
 
 # Chain
 
-A chain is a query that chains Python functions and metadata operations into a single composable sequence. Python functions handle AI work: LLM calls, embeddings, model inference. Metadata operations run as SQL at warehouse speed: filter, join, aggregate. Nothing runs until a terminal operation like `save()`, `show()`, or `to_pandas()`. DataChain is named for this pattern: every query is a chain of operations, and every chain deposits its results into [Data Memory](data-memory.md) as a versioned [dataset](datasets.md).
+A chain is a query that chains Python functions and data operations into a single composable sequence. Python functions process files or data and produce data. Data operations run as SQL at warehouse speed: filter, join, aggregate. Nothing runs until a terminal operation like `save()`, `show()`, or `to_pandas()`. DataChain is named for this pattern: every query is a chain of operations, and every chain deposits its results into [Data Memory](data-memory.md) as a versioned [dataset](datasets.md).
 
 ## Lazy Evaluation and Optimization
 
-Lazy evaluation lets the system see the full chain before executing a single row. The transpiler compiles metadata operations to SQL; filters push down, operations reorder, unnecessary computation gets skipped.
+Lazy evaluation lets the system see the full chain before executing a single row. The transpiler compiles data operations to SQL; filters push down, operations reorder, unnecessary computation gets skipped.
 
 ```python
 import datachain as dc
@@ -23,7 +23,7 @@ chain = (
 )
 ```
 
-The `filter` and `mutate` are metadata operations that compile to SQL and run at warehouse speed. The `map` runs your Python function in parallel. The system decides which engine handles what.
+The `filter` and `mutate` are data operations that compile to SQL and run at warehouse speed. The `map` runs your Python function in parallel. The system decides which engine handles what.
 
 ## Atomicity
 
@@ -31,7 +31,7 @@ Results go to staging tables during execution. Only `save()` commits them into m
 
 ## Declarative
 
-A chain declares WHAT to do, not HOW. The same fluent API covers SQL-compiled [metadata operations](../guide/operations.md) and [Python functions](../guide/python-engine.md). You never specify which operations become SQL and which run Python; the system infers this from the operation type and the Pydantic schema.
+A chain declares WHAT to do, not HOW. The same fluent API covers SQL-compiled [data operations](../guide/operations.md) and [Python functions](../guide/python-engine.md). You never specify which operations become SQL and which run Python; the system infers this from the operation type and the Pydantic schema.
 
 ## Composable
 

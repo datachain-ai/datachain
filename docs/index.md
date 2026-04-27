@@ -24,7 +24,7 @@
   </a>
 </p>
 
-DataChain chains Python functions and metadata operations into composable queries. Python functions handle AI work: LLM calls, embeddings, model inference. Metadata operations run as SQL at warehouse speed: filter, join, aggregate. Because the system sees the full chain before executing, it applies ten layers of automatic optimization, from no-copy file references to dataset reuse. Every query deposits results into **Data Memory** as a versioned dataset, and the next query starts from what the last one produced.
+DataChain chains Python functions and data operations into composable queries. Python functions process files or data and produce data. Data operations run as SQL at warehouse speed: filter, join, aggregate. Because the system sees the full chain before executing, it applies ten layers of automatic optimization, from no-copy file references to dataset reuse. Every query deposits results into **Data Memory** as a versioned dataset, and the next query starts from what the last one produced.
 
 The **Python Data Engine** runs your Python functions in parallel across threads and machines with async prefetch, file caching, and checkpoints. The **Memory Engine** (SQLite locally, ClickHouse in SaaS) filters, joins, and searches across datasets at warehouse speed. The **Knowledge Base** provides data context for Claude Code, Codex, Cursor, custom harnesses, and any LLM they support.
 

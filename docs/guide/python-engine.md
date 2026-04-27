@@ -4,13 +4,13 @@ title: Python Operations
 
 # Python Operations
 
-Python operations run your Python functions on each record in a chain. Use them when you need file content, ML models, or LLM calls. For everything else, use [metadata operations](operations.md).
+Python operations run your Python functions on each record in a chain. Use them when you need file content, ML models, or LLM calls. For everything else, use [data operations](operations.md).
 
 ## Three Types
 
 ### Mapper: map()
 
-Runs a Python function once per record. Returns metadata added to the same record.
+Runs a Python function once per record. Returns data added to the same record.
 
 ```python
 import datachain as dc

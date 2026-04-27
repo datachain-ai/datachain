@@ -8,7 +8,7 @@ DataChain's type system is built on Pydantic. Every chain carries a schema, ever
 
 ## File Abstraction
 
-`File` is the bridge between object storage and the metadata layer. Every chain begins with files: `read_storage()` produces a chain of File objects. File carries storage coordinates and provides methods to read content.
+`File` is the bridge between object storage and the data layer. Every chain begins with files: `read_storage()` produces a chain of File objects. File carries storage coordinates and provides methods to read content.
 
 ### Storage Coordinates
 
