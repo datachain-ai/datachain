@@ -1,6 +1,8 @@
+import functools
 import os
 from collections.abc import Iterator
 from contextlib import contextmanager
+from inspect import iscoroutinefunction
 from tempfile import mkdtemp
 from typing import TYPE_CHECKING
 
@@ -22,16 +24,23 @@ def try_scandir(path):
         pass
 
 
-def get_temp_cache(tmp_dir: str, prefix: str | None = None) -> "Cache":
+def get_temp_cache(
+    tmp_dir: str,
+    prefix: str | None = None,
+    fallback: "Cache | None" = None,
+) -> "Cache":
     cache_dir = mkdtemp(prefix=prefix, dir=tmp_dir)
-    return Cache(cache_dir, tmp_dir=tmp_dir)
+    return Cache(cache_dir, tmp_dir=tmp_dir, fallback=fallback)
 
 
 @contextmanager
 def temporary_cache(
-    tmp_dir: str, prefix: str | None = None, delete: bool = True
+    tmp_dir: str,
+    prefix: str | None = None,
+    delete: bool = True,
+    fallback: "Cache | None" = None,
 ) -> Iterator["Cache"]:
-    cache = get_temp_cache(tmp_dir, prefix=prefix)
+    cache = get_temp_cache(tmp_dir, prefix=prefix, fallback=fallback)
     try:
         yield cache
     finally:
@@ -39,13 +48,45 @@ def temporary_cache(
             cache.destroy()
 
 
+def _readonly_guard(method):
+    """Decorator that prevents calling a Cache method when readonly."""
+    if iscoroutinefunction(method):
+
+        @functools.wraps(method)
+        async def async_wrapper(self, *args, **kwargs):
+            if self._readonly:
+                raise RuntimeError(
+                    f"cannot call {method.__name__}() on a read-only cache"
+                )
+            return await method(self, *args, **kwargs)
+
+        return async_wrapper
+
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        if self._readonly:
+            raise RuntimeError(f"cannot call {method.__name__}() on a read-only cache")
+        return method(self, *args, **kwargs)
+
+    return wrapper
+
+
 class Cache:  # noqa: PLW1641
-    def __init__(self, cache_dir: str, tmp_dir: str):
+    def __init__(
+        self,
+        cache_dir: str,
+        tmp_dir: str,
+        fallback: "Cache | None" = None,
+        readonly: bool = False,
+    ):
         self.odb = LocalHashFileDB(
             LocalFileSystem(),
             cache_dir,
             tmp_dir=tmp_dir,
         )
+        # Read-only fallback consulted on cache misses.
+        self._fallback = fallback
+        self._readonly = readonly
 
     def __eq__(self, other) -> bool:
         return self.odb == other.odb
@@ -58,21 +99,34 @@ class Cache:  # noqa: PLW1641
     def tmp_dir(self):
         return self.odb.tmp_dir
 
+    def as_readonly(self) -> "Cache":
+        """Return a read-only Cache backed by the same files."""
+        return Cache(self.cache_dir, self.tmp_dir, readonly=True)
+
     def get_path(self, file: "File") -> str | None:
-        if self.contains(file):
+        if self.odb.exists(file.get_hash()):
             return self.path_from_checksum(file.get_hash())
+        if self._fallback is not None:
+            return self._fallback.get_path(file)
         return None
 
     def contains(self, file: "File") -> bool:
-        return self.odb.exists(file.get_hash())
+        if self.odb.exists(file.get_hash()):
+            return True
+        if self._fallback is not None:
+            return self._fallback.contains(file)
+        return False
 
     def path_from_checksum(self, checksum: str) -> str:
         assert checksum
         return self.odb.oid_to_path(checksum)
 
+    @_readonly_guard
     def remove(self, file: "File") -> None:
-        self.odb.delete(file.get_hash())
+        if self.odb.exists(file.get_hash()):
+            self.odb.delete(file.get_hash())
 
+    @_readonly_guard
     async def download(
         self, file: "File", client: "Client", callback: Callback | None = None
     ) -> None:
@@ -111,15 +165,18 @@ class Cache:  # noqa: PLW1641
         finally:
             os.unlink(tmp_info)
 
+    @_readonly_guard
     def store_data(self, file: "File", contents: bytes) -> None:
         self.odb.add_bytes(file.get_hash(), contents)
 
+    @_readonly_guard
     def clear(self) -> None:
         """
         Completely clear the cache.
         """
         self.odb.clear()
 
+    @_readonly_guard
     def destroy(self) -> None:
         # `clear` leaves the prefix directory structure intact.
         remove(self.cache_dir)
