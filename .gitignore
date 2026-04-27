@@ -144,7 +144,7 @@ cython_debug/
 # pt files produced by ultralytics examples
 *.pt
 
-.DS_Store/
+.DS_Store
 
 # for local dev, e.g. LLM generated files, .env.test to override
 # test variables, local scripts to try, etc
