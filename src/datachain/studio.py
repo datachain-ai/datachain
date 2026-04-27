@@ -201,12 +201,45 @@ def login(args: "Namespace"):
 
 
 def logout(local: bool = False):
+    from datachain.remote.studio import get_studio_env_variable
+
     level = ConfigLevel.LOCAL if local else ConfigLevel.GLOBAL
     with Config(level).edit() as conf:
         token = conf.get("studio", {}).get("token")
         if not token:
             raise DataChainError(
                 "Not logged in to Studio. Log in with 'datachain auth login'."
+            )
+
+        studio_url = (
+            conf.get("studio", {}).get("url")
+            or get_studio_env_variable("URL")
+            or STUDIO_URL
+        )
+
+        try:
+            response = requests.post(
+                f"{studio_url.rstrip('/')}/api/token-logout",
+                headers={"Authorization": f"token {token}"},
+                timeout=10,
+            )
+            if response.status_code == 401:
+                print(
+                    "Token was already revoked or is invalid on Studio.",
+                    file=sys.stderr,
+                )
+            elif not response.ok:
+                print(
+                    f"Warning: Unexpected response from Studio "
+                    f"(HTTP {response.status_code}).",
+                    file=sys.stderr,
+                )
+        except requests.RequestException:
+            print(
+                "Warning: Could not reach Studio to revoke the token. "
+                "The token has been removed locally but may still be valid "
+                "on the server.",
+                file=sys.stderr,
             )
 
         del conf["studio"]["token"]

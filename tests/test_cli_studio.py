@@ -94,13 +94,55 @@ def test_studio_login_arguments(mocker):
 
 def test_studio_logout():
     with Config(ConfigLevel.GLOBAL).edit() as conf:
-        conf["studio"] = {"token": "isat_access_token"}
+        conf["studio"] = {"token": "isat_access_token", "url": STUDIO_URL}
 
-    assert main(["auth", "logout"]) == 0
+    with requests_mock.mock() as m:
+        m.post(
+            f"{STUDIO_URL}/api/token-logout",
+            json={"detail": "Token revoked successfully"},
+        )
+        assert main(["auth", "logout"]) == 0
+        assert m.called
+        assert m.last_request.headers["Authorization"] == "token isat_access_token"
+
     config = Config(ConfigLevel.GLOBAL).read()
     assert "token" not in config["studio"]
 
     assert main(["auth", "logout"]) == 1
+
+
+def test_studio_logout_token_already_revoked(capsys):
+    with Config(ConfigLevel.GLOBAL).edit() as conf:
+        conf["studio"] = {"token": "isat_access_token", "url": STUDIO_URL}
+
+    with requests_mock.mock() as m:
+        m.post(
+            f"{STUDIO_URL}/api/token-logout",
+            json={"detail": "Invalid token"},
+            status_code=401,
+        )
+        assert main(["auth", "logout"]) == 0
+
+    config = Config(ConfigLevel.GLOBAL).read()
+    assert "token" not in config["studio"]
+
+    err = capsys.readouterr().err
+    assert "already revoked or is invalid" in err
+
+
+def test_studio_logout_custom_url():
+    custom_url = "https://custom-studio.example.com"
+    with Config(ConfigLevel.GLOBAL).edit() as conf:
+        conf["studio"] = {"token": "isat_access_token", "url": custom_url}
+
+    with requests_mock.mock() as m:
+        m.post(
+            f"{custom_url}/api/token-logout",
+            json={"detail": "Token revoked successfully"},
+        )
+        assert main(["auth", "logout"]) == 0
+        assert m.called
+        assert m.last_request.url == f"{custom_url}/api/token-logout"
 
 
 def test_studio_token(capsys):
