@@ -105,11 +105,8 @@ DatasetDependencyType = tuple["DatasetRecord", str]
 
 logger = logging.getLogger("datachain")
 
-OFFSET_ONLY_SENTINEL_LIMIT = sys.maxsize
-
 
 T = TypeVar("T", bound="DatasetQuery")
-QuerySelectType = TypeVar("QuerySelectType", bound="GenerativeSelect")
 
 
 def detach(
@@ -174,13 +171,6 @@ def step_result(
     )
 
 
-def ensure_offset_has_limit(query: QuerySelectType) -> QuerySelectType:
-    """Attach an effectively-unbounded limit for dialects that require it."""
-    if query._offset is not None and query._limit is None:
-        return query.limit(OFFSET_ONLY_SENTINEL_LIMIT)
-    return query
-
-
 class QueryState:
     """Tracks which terminal SQL clauses have been applied to the in-flight
     query during ``DatasetQuery.apply_steps``.
@@ -192,7 +182,8 @@ class QueryState:
     underlying rows instead of the materialized state output.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, warehouse: "AbstractWarehouse") -> None:
+        self.warehouse = warehouse
         self.reset()
 
     def reset(self) -> None:
@@ -215,11 +206,9 @@ class QueryState:
         outer level without affecting underlying rows.
         """
         query = query_generator.select()
-        # Some dialects (ClickHouse) refuse to compile OFFSET without LIMIT.
-        # When wrapping a query that has OFFSET but no LIMIT, attach a
-        # sentinel max limit so the inner subquery is well-formed for all
-        # backends. No-op for queries that already have a limit.
-        query = ensure_offset_has_limit(query)
+        # Some warehouses need dialect-specific LIMIT/OFFSET normalization
+        # before the query is wrapped.
+        query = self.warehouse.normalize_limit_offset(query)
         sub = query.subquery()
         new_query = sqlalchemy.select(*sub.c).select_from(sub)
 
@@ -1901,7 +1890,9 @@ class SQLClause(Step, ABC):
         if self.requires_boundary(state):
             query_generator = state.emit_boundary(query_generator)
 
-        new_query = self.apply_sql_clause(query_generator.select())
+        query = state.warehouse.normalize_limit_offset(query_generator.select())
+        new_query = self.apply_sql_clause(query)
+        new_query = state.warehouse.normalize_limit_offset(new_query)
         self.update_query_state(state)
 
         def q(*columns):
@@ -2092,7 +2083,7 @@ class SQLOffset(SQLClause):
         return hashlib.sha256(str(self.offset).encode()).hexdigest()
 
     def apply_sql_clause(self, query: "GenerativeSelect"):
-        return ensure_offset_has_limit(query.offset(self.offset))
+        return query.offset(self.offset)
 
     def requires_boundary(self, state: "QueryState") -> bool:
         # Re-applying OFFSET requires materializing the previous offset.
@@ -2774,7 +2765,7 @@ class DatasetQuery:
         _hash = hasher.hexdigest()
         # Stage flags reset at the start of every apply_steps run; they only
         # describe the in-flight query under construction here.
-        state = QueryState()
+        state = QueryState(self.catalog.warehouse)
         for step in query.steps:
             hash_input = _hash
             hasher.update(step.hash().encode("utf-8"))

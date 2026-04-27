@@ -7,7 +7,7 @@ import string
 import sys
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
-from typing import TYPE_CHECKING, Any, Union, cast
+from typing import TYPE_CHECKING, Any, TypeVar, Union, cast
 from urllib.parse import urlparse
 
 if sys.version_info >= (3, 11):
@@ -42,7 +42,7 @@ if TYPE_CHECKING:
         _FromClauseArgument,
         _OnClauseArgument,
     )
-    from sqlalchemy.sql.selectable import FromClause
+    from sqlalchemy.sql.selectable import FromClause, GenerativeSelect
     from sqlalchemy.types import TypeEngine
 
     from datachain.data_storage import schema
@@ -54,6 +54,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger("datachain")
 
 SELECT_BATCH_SIZE = 100_000  # number of rows to fetch at a time
+
+QuerySelectType = TypeVar("QuerySelectType", bound="GenerativeSelect")
 
 
 class AbstractWarehouse(ABC, Serializable):
@@ -87,6 +89,10 @@ class AbstractWarehouse(ABC, Serializable):
 
     def cleanup_for_tests(self):
         """Cleanup for tests."""
+
+    def normalize_limit_offset(self, query: QuerySelectType) -> QuerySelectType:
+        """Return query adjusted for warehouse-specific LIMIT/OFFSET semantics."""
+        return query
 
     def _to_jsonable(self, obj: Any) -> Any:
         """Recursively convert Python/Pydantic structures into JSON-serializable
