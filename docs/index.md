@@ -30,9 +30,11 @@ The **Python Data Engine** is the production layer: it runs your Python function
 
 **Get Started**
 
+- [🧭 Why DataChain](why.md) — the problem, who it fits, who it does not
 - [🤖 Agents](getting-started/agents.md) — AI-driven with a knowledge base
 - [🐍 Python](getting-started/python.md) — Full control over data processing
 - [💡 Concepts](concepts/index.md) — Memory, Datasets, and the dual engine
+- [🧩 Use Cases](use-cases/index.md) — five patterns where the harness changes the work
 
 <div style="max-width: 680px; margin: 2em auto 0;">
   <img src="assets/data-memory.svg" alt="DataChain architecture">
