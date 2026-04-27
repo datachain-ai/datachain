@@ -4,7 +4,7 @@ title: Datasets
 
 # Datasets
 
-The dataset is the atom of [Data Memory](data-memory.md): a named, versioned collection of typed records. Everything the system remembers is a dataset. Every query produces one. Every subsequent query starts from one.
+A dataset is a unit of reasoning, not just storage. It is the atom of [Data Memory](data-memory.md): a named, versioned collection of typed records. Every query produces one; every subsequent query starts from one. Each dataset encodes a conclusion the team or an agent reached, and the next consumer starts from that conclusion as a settled fact.
 
 ## Immutability Is the Foundation of Trust
 
@@ -22,7 +22,7 @@ ds = dc.read_dataset("experiment")                       # latest
 
 ## Typed by Construction
 
-Schemas are Pydantic models, not SQL DDL. A dataset carries all data types as typed columns: file references, embeddings, annotations, scores, nested objects, database fields. This is what makes datasets fundamentally different from flat SQL tables; the type system matches the complexity of the data.
+Schemas are Pydantic models, not SQL DDL. A dataset carries all data as typed columns: file references, embeddings, annotations, scores, nested objects, database fields. A Physical AI dataset might have 1000+ columns across sensor measurements, multi-level annotations, and LLM response objects. This is what makes datasets fundamentally different from flat SQL tables; the type system matches the complexity of the data.
 
 ```python
 from pydantic import BaseModel
@@ -39,6 +39,10 @@ class Detection(BaseModel):
     .save("detections")
 )
 ```
+
+## Types as Code, Not Configuration
+
+Pydantic models are the same Python objects the Python Data Engine operates on and the columnar schemas the Query Engine stores. The schema is the code; there is no mapping layer between Python types and warehouse columns, no separate registration step, no parallel YAML inventory to maintain. YAML-declared schemas in semantic-layer products drift the moment work moves faster than maintenance. Every save deposits typed records the engines already understand; every load returns the same Python objects the next operation consumes.
 
 ## Two-Level Data Model
 
@@ -108,6 +112,6 @@ Each row carries a status: **A** (added), **D** (deleted), **M** (modified), or 
 
 ## Reasoning
 
-A dataset is a unit of reasoning, not just a unit of storage. When a team computes embeddings, classifies documents, or aligns sensor data, the resulting dataset is the materialized answer to a question. A dataset of classified documents is not "rows with a label column"; it is the claim "these documents have been classified by this model with this confidence." The next query that consumes it reasons from that claim.
+Each dataset encodes a conclusion: what the team or an agent found, proved, or disproved. A dataset of classified documents is not "rows with a label column"; it is the claim "these documents have been classified by this model with this confidence", typed and versioned and backed by provenance that makes it verifiable. The next query consumes that claim as a premise rather than re-deriving it.
 
-This is what makes [Data Memory](data-memory.md) composable. The next person or agent starts from a conclusion as a settled fact and builds forward. Agents depend on this property structurally: an agent that receives a dataset treats it as an established fact in its reasoning chain. Without this, every agent interaction starts from raw data and re-derives everything.
+This is what makes [Data Memory](data-memory.md) composable. The next person or agent starts from a conclusion as a settled fact and builds forward. Agents depend on this property structurally: an agent that receives a dataset treats it as an established fact in its reasoning chain. Without this, every agent interaction starts from raw bytes and re-derives everything.

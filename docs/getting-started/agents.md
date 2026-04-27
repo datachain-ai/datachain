@@ -4,7 +4,7 @@ title: Getting Started with Agents
 
 # Getting Started with Agents
 
-Without DataChain, an agent treats every data question as a fresh problem: re-downloading files, re-computing embeddings, re-filtering results. With the DataChain skill installed, the agent checks what datasets already exist, builds on them, and registers new results. After a week, your project has a knowledge graph that both agents and humans can navigate.
+Without DataChain, an agent over a folder of files starts from raw bytes every session: re-downloading files, re-computing embeddings, re-filtering results. Effort is linear; nothing compounds. With the DataChain skill installed, every agent session deposits its conclusions into Data Memory as typed, versioned datasets, and the next session reads them as settled premises before generating its first line of code. After a week, your project has a knowledge base that both agents and humans navigate, and capability over your data rises with usage rather than staying flat.
 
 ## Installation
 

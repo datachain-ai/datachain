@@ -48,7 +48,7 @@ top10 = (
 top10.show()
 ```
 
-The pattern: compute embeddings via `map()` (Python), then search via `mutate` + `order_by` + `limit` (Memory Engine SQL). The similarity search runs at warehouse speed.
+The pattern: compute embeddings via `map()` (Python), then search via `mutate` + `order_by` + `limit` (Query Engine SQL). The similarity search runs at warehouse speed.
 
 ## Model Drift Detection
 
@@ -62,4 +62,4 @@ chain.mutate(drift=dc.func.cosine_distance(dc.C("emb_a"), dc.C("emb_b"))) \
     .order_by("drift", descending=True)
 ```
 
-This runs entirely in the Memory Engine, with no Python and no deserialization.
+This runs entirely in the Query Engine, with no Python and no deserialization.

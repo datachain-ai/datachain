@@ -4,7 +4,7 @@ title: Function Library
 
 # Function Library
 
-DataChain ships built-in functions in `dc.func` that run inside the Memory Engine as SQL. They never touch Python at runtime and execute at warehouse speed.
+DataChain ships built-in functions in `dc.func` that run inside the Query Engine as SQL. They never touch Python at runtime and execute at warehouse speed.
 
 All functions are accessed through `dc.func` after `import datachain as dc`.
 

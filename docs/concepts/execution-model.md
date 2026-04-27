@@ -4,11 +4,11 @@ title: Execution Model
 
 # Execution Model
 
-DataChain has two execution engines with a total boundary: every operation is either Python or Memory Engine, never both.
+DataChain has two execution engines with a total boundary: every operation is either Python compute or a query, never both. Querying and computing are two distinct operations on Data Memory, not implementation choices. The Query Engine handles queries over what already exists: filter, join, aggregate, and similarity search at warehouse speed. The Python Data Engine handles compute that creates what does not yet exist: LLM calls, model inference, expensive per-row file I/O. Without compute, memory is shallow; without queries, memory is ephemeral. DataChain preserves both behind one chain because both are required.
 
-## Memory Engine
+## Query Engine
 
-The Memory Engine is the columnar SQL backend (SQLite locally, ClickHouse in Studio) where filter, merge, join, group_by, order_by, mutate, and vector search run at warehouse speed, scaling to billions of records. If an operation can be expressed without Python, it runs here.
+The Query Engine is the columnar SQL backend (SQLite locally, ClickHouse in Studio) where filter, merge, join, group_by, order_by, mutate, and vector search run at warehouse speed, scaling to billions of records. If an operation can be expressed without Python, it runs here.
 
 ```python
 import datachain as dc
@@ -28,9 +28,13 @@ import datachain as dc
 
 No Python runtime spins up. No rows are deserialized. The query runs at warehouse speed on millions of records.
 
+## Why Cheap Recall Matters
+
+[Data Memory](data-memory.md) compounds only when recall is cheaper than recreation. If a team can re-run a pipeline faster than it can find and query the prior result, it will re-run it, silently. The economic gap is several orders of magnitude: re-running an LLM enrichment over 500,000 documents at one cent per call is $5,000 in API costs and hours of wall-clock time, whereas recalling the same result from a columnar dataset is fractions of a cent and sub-second. The Query Engine exists to keep recall on the cheap side of that gap permanently.
+
 ## Dataset Registry
 
-The Memory Engine is the home of the dataset registry: the queryable system of record for all datasets and their versions. The registry makes every dataset discoverable, joinable with other metadata, and accessible to agents without file-system traversal.
+The Query Engine is the home of the dataset registry: the queryable system of record for all datasets and their versions. The registry makes every dataset discoverable, joinable with other metadata, and accessible to agents without file-system traversal.
 
 ```python
 import datachain as dc
@@ -47,7 +51,7 @@ print(ds.name, ds.version)
 
 ## Agent Recall
 
-Agents query the Memory Engine directly. When an agent needs to find existing datasets, filter by schema, join metadata across versions, or run similarity search over embeddings, it submits those queries to the Memory Engine. This is the recall side of the feedback loop: agents consume data context from the [Knowledge Base](knowledge-base.md), then reach into the Memory Engine for the precise operations that context cannot precompute.
+Agents query the Query Engine directly. When an agent needs to find existing datasets, filter by schema, join metadata across versions, or run similarity search over embeddings, it submits those queries to the Query Engine. This is the recall side of the feedback loop: agents consume data context from the [Knowledge Base](knowledge-base.md), then reach into the Query Engine for the precise operations that context cannot precompute.
 
 ## Python Data Engine
 
@@ -68,7 +72,7 @@ Every primitive (parallel dispatch, prefetch, batching) is designed for Python f
 
 ## Pydantic as Bridge
 
-Pydantic is the shared type system that connects Python function outputs to the Memory Engine. A single `save()` takes a Python result with its full Pydantic schema and makes it warehouse-queryable.
+Pydantic is the shared type system that connects Python function outputs to the Query Engine. A single `save()` takes a Python result with its full Pydantic schema and makes it warehouse-queryable.
 
 Types enable transpilation: `filter(dc.C("det.confidence") > 0.9)` compiles to a SQL WHERE clause instead of deserializing every row into Python. Without typed schemas, transpilation is impossible; without transpilation, there is no warehouse speed.
 
@@ -87,9 +91,9 @@ print(f"Spent ${cost:.2f} on {chain.count()} calls")
 
 ## The Transpiler
 
-Users operate with Pydantic models and Python expressions. The system transpiles those expressions to SQL and runs them inside the Memory Engine. The result: full SQL power (filter, join, merge, group_by, order_by, windowing functions) without writing or knowing SQL.
+Users operate with Pydantic models and Python expressions. The system transpiles those expressions to SQL and runs them inside the Query Engine. The result: full SQL power (filter, join, merge, group_by, order_by, windowing functions) without writing or knowing SQL.
 
-For agents, this is critical. Agents generate Python, not SQL. The transpiler means an agent's Python output runs as fast as hand-written SQL; the agent never needs to know that a database exists.
+For agents, this is critical. Agents generate Python, not SQL. The transpiler means an agent's Python output runs as fast as hand-written SQL; the agent never needs to know that a database exists. Existing systems that collapse the two lose either Python expressivity (Snowflake, ClickHouse, Snowpark) or warehouse-speed queries (Polars, Pandas). DataChain keeps both behind one interface, with Pydantic bridging the type systems so Python outputs flatten into columnar storage automatically.
 
 ## Local vs Studio
 

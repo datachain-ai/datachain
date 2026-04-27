@@ -1,6 +1,6 @@
 # DataChain
 
-> DataChain is a Python-native data platform for AI teams. It unifies files, database records, and structured formats into versioned, typed datasets with automatic lineage tracking.
+> DataChain is memory for data agents. It chains Python functions and warehouse-speed data operations into composable queries, and every query deposits its result into Data Memory as a versioned, typed dataset with automatic lineage. The next query (human or agent) starts from prior conclusions instead of raw bytes. The Python Data Engine produces; the Query Engine recalls; the Knowledge Base compiles datasets into agent-readable knowledge.
 
 ## Import Convention
 

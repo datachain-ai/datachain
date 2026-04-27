@@ -1,4 +1,4 @@
-<svg width="100%" viewBox="0 0 600 526" xmlns="http://www.w3.org/2000/svg">
+<svg width="100%" viewBox="0 0 615 526" xmlns="http://www.w3.org/2000/svg">
 <defs>
   <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
     <path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
@@ -20,10 +20,10 @@
 <line x1="180" y1="62" x2="180" y2="136" stroke="rgb(95,94,90)" stroke-width="2" marker-end="url(#arrow-bold)"/>
 <line x1="240" y1="62" x2="240" y2="136" stroke="rgb(95,94,90)" stroke-width="2" marker-end="url(#arrow-bold)"/>
 <line x1="300" y1="62" x2="300" y2="136" stroke="rgb(95,94,90)" stroke-width="2" marker-end="url(#arrow-bold)"/>
-<text x="124" y="92" text-anchor="start" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="12" font-style="italic" fill="rgb(95,94,90)">images</text>
-<text x="184" y="92" text-anchor="start" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="12" font-style="italic" fill="rgb(95,94,90)">videos</text>
-<text x="244" y="92" text-anchor="start" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="12" font-style="italic" fill="rgb(95,94,90)">sensors</text>
-<text x="304" y="92" text-anchor="start" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="12" font-style="italic" fill="rgb(95,94,90)">docs</text>
+<text x="124" y="88" text-anchor="start" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="12" font-style="italic" fill="rgb(95,94,90)"><tspan x="124">image</tspan><tspan x="124" dy="14">files</tspan></text>
+<text x="184" y="88" text-anchor="start" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="12" font-style="italic" fill="rgb(95,94,90)"><tspan x="184">video</tspan><tspan x="184" dy="14">files</tspan></text>
+<text x="244" y="88" text-anchor="start" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="12" font-style="italic" fill="rgb(95,94,90)"><tspan x="244">sensor</tspan><tspan x="244" dy="14">files</tspan></text>
+<text x="304" y="88" text-anchor="start" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="12" font-style="italic" fill="rgb(95,94,90)"><tspan x="304">doc</tspan><tspan x="304" dy="14">files</tspan></text>
 
 <!-- Database box (gray) — y=16, bottom=62 -->
 <g>
@@ -57,24 +57,24 @@
   <path d="M 98,244 A 120,10 0 0,0 338,244 L 338,292 A 120,10 0 0,1 98,292 Z" fill="rgb(225,245,238)" stroke="rgb(15,110,86)" stroke-width="1.5"/>
   <ellipse cx="218" cy="244" rx="120" ry="10" fill="rgb(225,245,238)" stroke="rgb(15,110,86)" stroke-width="1.5"/>
   <text x="218" y="264" text-anchor="middle" dominant-baseline="central" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="14" font-weight="600" fill="rgb(8,80,65)">Data Memory</text>
-  <text x="218" y="280" text-anchor="middle" dominant-baseline="central" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="12" fill="rgb(15,110,86)">datasets (versioned, typed)</text>
+  <text x="218" y="280" text-anchor="middle" dominant-baseline="central" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="12" fill="rgb(15,110,86)">datasets · versioned, typed</text>
 </g>
 
 <!-- Arrow: PE -> Data Memory (on top of cylinder) -->
 <line x1="218" y1="192" x2="218" y2="244" stroke="rgb(115,114,108)" stroke-width="1.5" marker-end="url(#arrow)"/>
-<text x="224" y="221" text-anchor="start" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="12" font-style="italic" fill="rgb(95,94,90)">metadata</text>
+<text x="224" y="221" text-anchor="start" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="12" font-style="italic" fill="rgb(95,94,90)">data</text>
 
-<!-- Memory Engine box (purple, narrower) — y=234 -->
+<!-- Query Engine box (purple, narrower) — y=234 -->
 <g>
   <rect x="410" y="234" width="140" height="56" rx="8" fill="rgb(238,237,254)" stroke="rgb(83,74,183)" stroke-width="0.5"/>
-  <text x="480" y="256" text-anchor="middle" dominant-baseline="central" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="14" font-weight="500" fill="rgb(60,52,137)">Memory Engine</text>
+  <text x="480" y="256" text-anchor="middle" dominant-baseline="central" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="14" font-weight="500" fill="rgb(60,52,137)">Query Engine</text>
   <text x="480" y="274" text-anchor="middle" dominant-baseline="central" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="12" fill="rgb(83,74,183)">filter, join, similarity</text>
 </g>
 
-<!-- Arrows: Data Memory <-> Memory Engine -->
+<!-- Arrows: Data Memory <-> Query Engine -->
 <line x1="338" y1="255" x2="410" y2="255" stroke="rgb(115,114,108)" stroke-width="1.5" marker-end="url(#arrow)"/>
 <line x1="410" y1="269" x2="338" y2="269" stroke="rgb(115,114,108)" stroke-width="1.5" marker-end="url(#arrow)"/>
-<text x="374" y="244" text-anchor="middle" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="12" font-style="italic" fill="rgb(95,94,90)">metadata</text>
+<text x="374" y="244" text-anchor="middle" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="12" font-style="italic" fill="rgb(95,94,90)">data</text>
 
 <!-- Arrow: Data Memory -> Knowledge Base -->
 <line x1="218" y1="302" x2="218" y2="360" stroke="rgb(115,114,108)" stroke-width="1.5" marker-end="url(#arrow)"/>
@@ -89,7 +89,7 @@
 <g>
   <rect x="98" y="360" width="240" height="56" rx="8" fill="rgb(250,238,218)" stroke="rgb(133,79,11)" stroke-width="0.5"/>
   <text x="218" y="382" text-anchor="middle" dominant-baseline="central" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="14" font-weight="500" fill="rgb(99,56,6)">Knowledge Base</text>
-  <text x="218" y="400" text-anchor="middle" dominant-baseline="central" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="12" fill="rgb(133,79,11)">datasets (lineage, stats, enrichments)</text>
+  <text x="218" y="400" text-anchor="middle" dominant-baseline="central" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="12" fill="rgb(133,79,11)">dataset cards · schema, stats, lineage</text>
 </g>
 
 <!-- Arrow: KB -> Agents -->
@@ -103,13 +103,11 @@
   <text x="218" y="502" text-anchor="middle" dominant-baseline="central" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="12" fill="rgb(153,60,29)">Claude Code, Cursor, Codex</text>
 </g>
 
-<!-- Return arrow: Agents -> Python Data Engine, Knowledge Base, and Memory Engine -->
-<path d="M 98,490 L 36,490 L 36,164" fill="none" stroke="rgb(115,114,108)" stroke-width="1.5"/>
-<line x1="36" y1="164" x2="98" y2="164" stroke="rgb(115,114,108)" stroke-width="1.5" marker-end="url(#arrow)"/>
-<line x1="36" y1="388" x2="98" y2="388" stroke="rgb(115,114,108)" stroke-width="1.5" marker-end="url(#arrow)"/>
-<text x="28" y="280" text-anchor="middle" transform="rotate(-90, 28, 280)" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="12" font-style="italic" fill="rgb(95,94,90)">next query</text>
-<path d="M 338,490 L 582,490 L 582,262" fill="none" stroke="rgb(115,114,108)" stroke-width="1.5"/>
-<line x1="582" y1="262" x2="550" y2="262" stroke="rgb(115,114,108)" stroke-width="1.5" marker-end="url(#arrow)"/>
-<text x="596" y="380" text-anchor="middle" transform="rotate(-90, 596, 380)" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="12" font-style="italic" fill="rgb(95,94,90)">next query</text>
+<!-- Return arrows: Agents -> Python Data Engine, Knowledge Base, and Query Engine (consolidated on right) -->
+<path d="M 338,490 L 595,490 L 595,164" fill="none" stroke="rgb(115,114,108)" stroke-width="1.5"/>
+<line x1="595" y1="164" x2="350" y2="164" stroke="rgb(115,114,108)" stroke-width="1.5" marker-end="url(#arrow)"/>
+<line x1="595" y1="262" x2="550" y2="262" stroke="rgb(115,114,108)" stroke-width="1.5" marker-end="url(#arrow)"/>
+<line x1="595" y1="388" x2="338" y2="388" stroke="rgb(115,114,108)" stroke-width="1.5" marker-end="url(#arrow)"/>
+<text x="609" y="327" text-anchor="middle" transform="rotate(-90, 609, 327)" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="12" font-style="italic" fill="rgb(95,94,90)">next query</text>
 
 </svg>

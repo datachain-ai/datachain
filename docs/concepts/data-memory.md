@@ -4,17 +4,17 @@ title: Data Memory
 
 # Data Memory
 
-Data Memory is the accumulated record of everything a team has done with its data, deposited automatically as a consequence of the work itself.
+Multi-session work over data is impossible without persistent typed memory. Data Memory is the layer that makes it possible: the accumulated record of everything a team has done with its data, deposited automatically as a consequence of running queries, queryable by the next operation as a settled premise. Without it, every session re-derives from raw bytes; with it, agents and people build new conclusions on top of prior conclusions.
 
 ## Why Memory Matters
 
 Every query, exploration, and labeling session produces knowledge. Without persistence infrastructure, that knowledge evaporates when the script finishes. The next person, the next project, the next agent starts from raw data and a blank script. People become the memory, and people do not scale.
 
-Memory changes this. Every query records its results, schemas, lineage, and context as a side effect of running. The hundredth query runs in an environment qualitatively richer than the tenth: more features extracted, more connections traced, more context for the next person or agent.
+Memory changes this. Every query records its results, schemas, lineage, and context as a structural consequence of running, not a separate maintenance step. The hundredth query runs in an environment qualitatively richer than the tenth: more features extracted, more connections traced, more context for the next person or agent.
 
 ## Composed of Datasets
 
-Memory is not a formless accumulation; it is a collection of named, versioned, typed [datasets](datasets.md). Each one is a discrete deposit. The system does not remember raw events or intermediate state; it remembers datasets. This atomic structure is what makes memory queryable, shareable, and compoundable.
+Memory is not a formless accumulation; it is a collection of named, versioned, typed [datasets](datasets.md), each one a discrete deposit. Each dataset is a unit of reasoning, not just storage: a materialized conclusion that the next query treats as a premise. The system does not remember raw events or intermediate state; it remembers datasets. This atomic structure is what makes memory queryable, shareable, and compoundable.
 
 ```python
 import datachain as dc
@@ -36,7 +36,7 @@ Memory is not a catalog that someone maintains. It is what happens when every op
 
 ## Compounding Requires Fast Recall
 
-Compounding only works when recall is cheaper than recreation. If retrieval is slower than re-running the query, the team silently re-runs it and memory degrades into archive. The [Memory Engine](execution-model.md), a columnar SQL backend, makes building on prior work always the path of least resistance.
+Compounding only works when recall is cheaper than recreation. If recall is slower than recreation, the team silently re-runs the work, and memory degrades into archive. The [Query Engine](execution-model.md), a columnar SQL backend, makes building on prior work always the path of least resistance.
 
 ## Provenance
 
@@ -71,3 +71,15 @@ Metrics are recorded in the [dataset registry](execution-model.md#dataset-regist
 ## Discoverable by Humans and Agents
 
 Memory that exists but cannot be found does not compound. Three people build three versions of the same dataset because nobody can see what already exists. An agent hallucinates a column instead of finding the one already computed. The [knowledge base](knowledge-base.md) turns "the dataset exists" into "the next person found it and built on it."
+
+## Operational, Not Declarative
+
+Data Memory works by running, not by describing. Every chain creates new datasets; every save records full lineage; every read returns typed records the next chain builds on. Existing context-layer products (Snowflake Cortex, Databricks Metric Views, dbt MetricFlow, Cube, AtScale) come at the same goal from the declarative side. They ship YAML semantic models and governed views over warehouse tables that say what the data means and how to read it. The two modes work together. Declarative models give agents stable definitions and governed access. The operational side lets agents produce, recall, and combine new datasets through Python, ML, and multimodal compute. A full data context layer for agent work needs both, and Data Memory is what brings the operational side.
+
+## Shared, Not Per-Session
+
+Conversation memory tools (Letta, Mem0, Hindsight, supermemory) keep per-session agent state: chat history, user preferences, summaries of recent actions. That state belongs to the agent and lives only inside its conversations. Data Memory sits in a different layer. It belongs to the team. It exists before any conversation starts and persists after every session ends. The agent reads from it rather than rewriting it during a single turn. The two compose; one does not replace the other.
+
+## Out of Scope: Institutional Knowledge
+
+Data Memory is derived from data, code, and execution. The organizational context in Slack, Notion, and meeting notes requires different tooling and is deliberately out of scope.

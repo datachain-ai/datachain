@@ -4,7 +4,7 @@ title: Data Engine Operations
 
 # Data Engine Operations
 
-Data operations execute directly in the Memory Engine (SQLite locally, ClickHouse in Studio). They never spin up Python runtimes, never download files, and scale to millions or billions of records.
+Data operations execute directly in the Query Engine (SQLite locally, ClickHouse in Studio). They never spin up Python runtimes, never download files, and scale to millions or billions of records.
 
 **The rule: if it can be expressed as a data operation, it should be.** Never materialize a chain with `to_pandas()` or `to_list()` just to run aggregation or grouping in Python; use native operations instead.
 
@@ -23,7 +23,7 @@ for f, in files:
     totals[ext] = (total_bytes + f.size, file_count + 1)
 ```
 
-**Native** (runs entirely in the Memory Engine):
+**Native** (runs entirely in the Query Engine):
 
 ```python
 import datachain as dc
@@ -43,7 +43,7 @@ import datachain as dc
 
 ## Aggregate Analytics on Nested Objects
 
-The Memory Engine reaches into Pydantic models serialized in the database, including deeply nested fields:
+The Query Engine reaches into Pydantic models serialized in the database, including deeply nested fields:
 
 ```python
 import datachain as dc
@@ -159,7 +159,7 @@ Mutate does NOT accept lambdas or Python callables; use `map()` for those. See t
 
 | Aspect      | `mutate`                                    | `map`                                        |
 | ----------- | ------------------------------------------- | -------------------------------------------- |
-| Runs in     | Memory Engine (SQL, data operation)         | Python runtime (Python function)             |
+| Runs in     | Query Engine (SQL, data operation)         | Python runtime (Python function)             |
 | Speed       | Warehouse speed, vectorized                 | Per-record Python execution                  |
 | Accepts     | `dc.func.*`, column arithmetic, comparisons | Any Python callable                          |
 | File access | No                                          | Yes (can read file content)                  |

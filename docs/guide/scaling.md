@@ -136,7 +136,7 @@ Storage listings are cached as datasets. Scanning a GCS bucket of 1M files takes
 
 ## Vectorized Operations
 
-Data-engine operations (filter, group_by, order_by, mutate, aggregate) run as SQL inside the Memory Engine at warehouse speed. The entire [function library](functions.md) runs natively without Python.
+Data-engine operations (filter, group_by, order_by, mutate, aggregate) run as SQL inside the Query Engine at warehouse speed. The entire [function library](functions.md) runs natively without Python.
 
 ## Dataset Reuse
 
