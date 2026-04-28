@@ -1,4 +1,4 @@
-# ![DataChain](docs/assets/datachain.svg) DataChain - Data Context Layer for Object Storage
+# ![DataChain](docs/assets/datachain.svg) DataChain - Data Memory for AI Agents
 
 [![PyPI](https://img.shields.io/pypi/v/datachain.svg)](https://pypi.org/project/datachain/)
 [![Python Version](https://img.shields.io/pypi/pyversions/datachain)](https://pypi.org/project/datachain)
@@ -6,24 +6,29 @@
 [![Tests](https://github.com/datachain-ai/datachain/actions/workflows/tests.yml/badge.svg)](https://github.com/datachain-ai/datachain/actions/workflows/tests.yml)
 [![DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/datachain-ai/datachain)
 
-DataChain is a data context layer for object storage. It gives AI agents and pipelines a typed, versioned, queryable view of your files - what exists, what schema it has, what's already been computed - without copying data or loading it into memory.
+**The model floor is the same for everyone. The context ceiling is yours.**
 
-- Metadata queries across 100M+ files execute in milliseconds against a backend database
-- Pipelines checkpoint - re-running the same script resumes compute without duplicating expensive LLM-call or ML scoring
-- `delta=True` makes re-runs incremental — only new or changed files are processed
-- Every `.save()` registers a named, versioned dataset with schema and lineage
-- A generated knowledge base (`dc-knowledge/`) reflects the operational layer as markdown for agents to read before writing code
+Your data lives in object storage (millions of images, hours of video, documents) and databases (structured tables). Every chain a teammate or agent runs deposits a typed, versioned dataset into **Data Memory**: embeddings, classifications, joins, scores. At scale, those datasets are too expensive to recompute and too scattered to find on demand.
 
-Works with S3, GCS, Azure, and local filesystems.
+DataChain is the Python library that runs your code over heavy files and tables in parallel and queries Data Memory at warehouse speed. Read from S3, GCS, or Azure, run your code, save as a Pydantic-typed dataset; the next pipeline or agent picks up from there.
+
+## Why Data Memory
+
+Claude Code, Cursor, and Codex made AI good at code by giving it the repo context. Agents over your data need the same: a **data context layer** with schemas, lineage, and prior conclusions. **That layer is captured during production, not curated after.** Every DataChain pipeline run deposits a typed, versioned dataset into Data Memory; the Knowledge Base compiles those datasets into what agents read. Without production through DataChain, the layer has nothing structured to describe.
+
+## Install
 
 ```bash
 pip install datachain
 ```
 
-To add the agent knowledge layer and code generation skill:
+To add the agent skill (Knowledge Base + code generation):
+
 ```bash
 datachain skill install --target claude     # also: --target cursor, --target codex
 ```
+
+Works with S3, GCS, Azure, and local filesystems.
 
 ## 1. Quickstart: agent-driven pipeline
 
@@ -63,7 +68,7 @@ Result:
 
 The agent decomposed the task into steps - embeddings, breed metadata, mask join, quality filter - and saved each as a named, versioned dataset. Next time you ask a related question, it starts from what's already built.
 
-The datasets are registered in a knowledge base optimized for both agents and humans:
+The datasets are registered in a Knowledge Base optimized for both agents and humans:
 
 ```bash
 dc-knowledge
@@ -79,7 +84,7 @@ dc-knowledge
 
 Browse it as markdown files, navigate with wikilinks, or open in [Obsidian](https://obsidian.md/):
 
-![Visualize data knowledge base](docs/assets/readme_obsidian.gif)
+![Visualize data Knowledge Base](docs/assets/readme_obsidian.gif)
 
 
 ## 2. Architecture
@@ -135,13 +140,13 @@ ds.show(5)
 
 `pets_images@1.0.0` is now the shared reference to this data - schema, version, lineage, and metadata.
 
-Every `.save()` registers the dataset in DataChain's **operational data layer* - the persistent store for schemas, versions, lineage, and processing state, kept locally in SQLite DB `.datachain/db`. Pipelines reference datasets by name, not paths. When the code or input data changes, the next run bumps dataset version.
+Every `.save()` registers the dataset in **Data Memory**, DataChain's persistent store for schemas, versions, lineage, and processing state, kept locally in SQLite DB `.datachain/db`. Pipelines reference datasets by name, not paths. When the code or input data changes, the next run bumps dataset version.
 
 This is what makes a **dataset a management unit:** owned, versioned, and queryable by everyone on the team.
 
 ### 3.2. Schemas and types
 
-DataChain uses Pydantic to define the shape of every column. The return type of your UDF becomes the dataset schema — each field a queryable column in the operational layer.
+DataChain uses Pydantic to define the shape of every column. The return type of your UDF becomes the dataset schema - each field a queryable column in Data Memory.
 
 `show()` in the previous script renders nested fields as dotted columns:
 
@@ -173,9 +178,9 @@ info: ImageInfo
   height: int
 ```
 
-Models can be arbitrarily nested - a `BBox` inside an `Annotation`, a `List[Citation]` inside an LLM Response - every leaf field stays queryable the same way. The schema lives in the operational layer and is enforced at dataset creation time.
+Models can be arbitrarily nested - a `BBox` inside an `Annotation`, a `List[Citation]` inside an LLM Response - every leaf field stays queryable the same way. The schema lives in Data Memory and is enforced at dataset creation time.
 
-The operational layer handles datasets of any size - 100 millions of files, hundreds of metadata rows - without loading anything into memory. **Pandas is limited by RAM; DataChain is not.** Export to pandas when you need it, on a filtered subset:
+Data Memory handles datasets of any size - 100 millions of files, hundreds of metadata rows - without loading anything into memory. **Pandas is limited by RAM; DataChain is not.** Export to pandas when you need it, on a filtered subset:
 
 ```python
 import datachain as dc
@@ -186,7 +191,7 @@ print(df)
 
 ### 3.3. Fast queries
 
-Filters, aggregations, and joins run as vectorized operations directly against the operational layer - metadata never leaves your machine, no files downloaded.
+Filters, aggregations, and joins run as vectorized operations directly against Data Memory - metadata never leaves your machine, no files downloaded.
 
 ```python
 import datachain as dc
@@ -209,7 +214,7 @@ Large images with Cocker Spaniel: 6
 
 ## 4. Resilient Pipelines
 
-When computation is expensive, bugs and new data are both inevitable. DataChain tracks processing state in the operational layer — so crashes and new data are handled automatically, without changing how you write pipelines.
+When computation is expensive, bugs and new data are both inevitable. DataChain tracks processing state in Data Memory - so crashes and new data are handled automatically, without changing how you write pipelines.
 
 ### 4.1. Data checkpoints
 
@@ -256,7 +261,7 @@ UDF 'encode': Continuing from checkpoint
 
 ### 4.2. Similarity search
 
-The vectors live in the operational layer alongside all the metadata - `list[float]` type in pydentic schemas. Querying them is instant - no files re-read and can be combined with not vector filters like `info.width`:
+The vectors live in Data Memory alongside all the metadata - `list[float]` type in pydentic schemas. Querying them is instant - no files re-read and can be combined with not vector filters like `info.width`:
 
 Prepare data:
 ```bash
@@ -278,7 +283,7 @@ ref_emb = model.encode_image(
 
 (
     dc.read_dataset("pets_embeddings")
-    .filter(dc.C("info.width") > 500)          # from pets_images — no re-read
+    .filter(dc.C("info.width") > 500)          # from pets_images - no re-read
     .mutate(dist=dc.func.cosine_distance(dc.C("emb"), ref_emb))
     .order_by("dist")
     .limit(3)
@@ -286,7 +291,7 @@ ref_emb = model.encode_image(
 )
 ```
 
-Under a second - everything runs against the operational layer.
+Under a second - everything runs against Data Memory.
 
 
 ### 4.3. Incremental updates
@@ -307,8 +312,7 @@ Saved pets_images@1.0.2  (+500 records)
 
 ## 5. Knowledge Base
 
-DataChain maintains two layers. The operational layer is the ground truth - schemas, processing state, lineage, the vectors themselves.
-**The knowledge base layer** is derived from it: structured markdown for humans and agents to read. Because it's derived, it's always accurate. The knowledge base is stored in `dc-knowledge/` directory.
+DataChain maintains two layers. **Data Memory** is the ground truth: schemas, processing state, lineage, the vectors themselves. **The Knowledge Base** is derived from it: structured markdown for humans and agents to read. Because it's derived, it's always accurate. The Knowledge Base is stored in `dc-knowledge/`.
 
 Ask the agent to build it (from Calude Code, Codex or Cursor):
 ```bash
@@ -317,10 +321,10 @@ claude
 
 Prompt:
 ```prompt
-Build a knowledge base for my current datasets
+Build a Knowledge Base for my current datasets
 ```
 
-The skill generates `dc-knowledge/` directory from the operational layer - one file per dataset and bucket:
+The skill generates `dc-knowledge/` directory from Data Memory - one file per dataset and bucket:
 
 
 ## 6. AI-Generated Pipelines
@@ -348,7 +352,7 @@ datachain job run --workers 20 --cluster gpu-pool caption.py
 
 Studio adds: shared dataset registry, access control, UI for video/DICOM/NIfTI/point clouds, lineage graphs, reproducible runs.
 
-Bring Your Own Cloud — all data and compute stay in your infrastructure. AWS, GCP, Azure, on-prem Kubernetes.
+Bring Your Own Cloud - all data and compute stay in your infrastructure. AWS, GCP, Azure, on-prem Kubernetes.
 
 → [studio.datachain.ai](https://studio.datachain.ai)
 
