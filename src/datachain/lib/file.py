@@ -252,6 +252,8 @@ class File(DataModel):
         "is_latest",
         "last_modified",
         "location",
+        "content_type",
+        "ext",
     ]
 
     _unique_id_keys: ClassVar[list[str]] = [
