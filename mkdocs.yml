@@ -64,6 +64,7 @@ nav:
   - Home:
       - Welcome: index.md
       - Fit: fit.md
+      - Data Harness: harness.md
       - Getting Started:
           - Agents: getting-started/agents.md
           - Python: getting-started/python.md

@@ -44,5 +44,5 @@ Claude Code, Cursor, and Codex made AI good at code by giving it the repo contex
 ## Architecture
 
 <div style="max-width: 680px; margin: 2em auto 0;">
-  <img src="assets/data-memory.svg" alt="DataChain architecture">
+  <img src="assets/architecture.svg" alt="DataChain architecture">
 </div>
