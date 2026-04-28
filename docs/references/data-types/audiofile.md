@@ -20,7 +20,7 @@ If you need to save the data, you can use the `save` method of these models,
 allowing you to save data locally or upload it to a storage service.
 
 For a complete example of audio processing with DataChain, see
-[Audio-to-Text with Whisper](https://github.com/datachain-ai/datachain/blob/main/examples/multimodal/audio-to-text.py) —
+[Audio-to-Text with Whisper](https://github.com/datachain-ai/datachain/blob/main/examples/multimodal/audio-to-text.py) -
 a speech recognition pipeline that uses `AudioFile`, `AudioFragment`, and `Audio`
 to chunk audio files and transcribe them.
 

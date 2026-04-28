@@ -51,7 +51,7 @@ for examples of how to create a chain.
 
 ### ColumnExpr
 
-A column expression — either a [`Column`](#datachain.query.schema.Column) reference
+A column expression - either a [`Column`](#datachain.query.schema.Column) reference
 like `C("file.size")` or any arithmetic or comparison expression built from columns.
 
 ```python
