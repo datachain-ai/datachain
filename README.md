@@ -82,22 +82,20 @@ Browse it as markdown files, navigate with wikilinks, or open in [Obsidian](http
 ![Visualize data knowledge base](docs/assets/readme_obsidian.gif)
 
 
-## 2. How it works
-
-Claude Code (Codex, Cursor, etc) isn't just a chat interface with a shell - it's a harness that gives the LLM repo context, dedicated tools, and persistent memory. That's what makes it good.
-
-**DataChain extends that harness to data.** The agent now also understands your storage and datasets: schemas, dependencies, code, what's already computed, what's mid-run, and what changed since last time.
+## 2. Architecture
 
 <p align="center">
-  <img src="docs/assets/architecture.svg" alt="Data Context Architecture" width="700" />
+  <img src="docs/assets/architecture.svg" alt="DataChain architecture" width="700" />
 </p>
-
 
 A **dataset** is the unit of work - a named, versioned result of a pipeline step like `pets_embeddings@1.0.0`. Every `.save()` registers one.
 
-Inside DataChain, datasets live in two layers:
-1. The **operational layer** is the engine - the ground truth that makes crash recovery, incremental updates, and vector search work at scale.
-2. The **knowledge layer** is a structured reflection of it enriched by LLMs: markdown files the agent reads to understand what exists before writing a single line of code.
+DataChain has two layers:
+
+1. **Data Memory** holds typed datasets and the engines that run against them. DataChain runs your Python over heavy files and tables in parallel and writes results here; queries against Data Memory return at warehouse speed. Crash recovery, incremental updates, vector search, and large-scale processing all happen against this layer.
+2. The **Knowledge Base** is a structured reflection of Data Memory enriched by LLMs: markdown files agents read to understand what exists before writing a single line of code. Always accurate because it's derived.
+
+DataChain extends the code-harness pattern (Claude Code, Cursor, Codex) to data. See [DataChain as a data harness](https://docs.datachain.ai/harness/) for the side-by-side comparison.
 
 
 ## 3. Core concepts

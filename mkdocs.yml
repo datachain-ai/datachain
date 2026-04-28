@@ -63,6 +63,7 @@ theme:
 nav:
   - Home:
       - 🔗 Welcome to DataChain: index.md
+      - 🪢 Data Harness: harness.md
       - 🏃🏼‍♂️ Quick Start: quick-start.md
       - 🎯 Examples: examples.md
       - 📚 Tutorials: tutorials.md
