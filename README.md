@@ -87,7 +87,7 @@ Browse it as markdown files, navigate with wikilinks, or open in [Obsidian](http
 ![Visualize data Knowledge Base](docs/assets/readme_obsidian.gif)
 
 
-## 4. Architecture
+## 4. Data Harness
 
 Code harnesses (Claude Code, Cursor, Codex) give agents repo context, dedicated tools, and memory across sessions. DataChain adds the same for data: typed datasets the agent reads, chain operations the agent calls (`read_storage`, `map`, `save`), Data Memory where its results persist.
 
