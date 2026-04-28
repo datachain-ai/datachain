@@ -1464,7 +1464,7 @@ def test_column_types(column_type, signal_type):
         ),
         (
             {"file": File},
-            "26a08b3793e738814f199c89c4582f9bde052ff3dcba84c2020535063df4c36c",
+            "d3cbe27c0a980058bbc675d05b47d1f514e7aa8c603a8895f2edca317150d647",
         ),
         (
             {},

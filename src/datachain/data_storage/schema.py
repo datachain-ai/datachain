@@ -303,6 +303,8 @@ class DataTable:
             sa.Column("file__is_latest", Boolean()),
             sa.Column("file__last_modified", DateTime()),
             sa.Column("file__location", JSON()),
+            sa.Column("file__content_type", String()),
+            sa.Column("file__ext", String()),
         ]
 
     def dir_expansion(self):

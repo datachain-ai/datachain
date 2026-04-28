@@ -7,7 +7,7 @@ from fsspec.implementations.http import HTTPFileSystem
 from datachain.dataset import StorageURI
 from datachain.lib.file import File
 
-from .fsspec import Client
+from .fsspec import Client, resolve_content_type
 
 if TYPE_CHECKING:
     from datachain.cache import Cache
@@ -143,6 +143,7 @@ class HTTPClient(Client):
             version="",
             is_latest=True,
             last_modified=last_modified,
+            content_type=resolve_content_type(v),
         )
 
     def upload(self, data: bytes, path: str) -> "File":

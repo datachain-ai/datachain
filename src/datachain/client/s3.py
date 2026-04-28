@@ -8,7 +8,7 @@ from s3fs import S3FileSystem
 from datachain.lib.file import File
 from datachain.progress import tqdm
 
-from .fsspec import DELIMITER, Client, ResultQueue
+from .fsspec import DELIMITER, Client, ResultQueue, resolve_content_type
 
 UPDATE_CHUNKSIZE = 1000
 
@@ -149,6 +149,7 @@ class ClientS3(Client):
             is_latest=v.get("IsLatest", True),
             last_modified=v.get("LastModified", ""),
             size=v["Size"],
+            content_type=resolve_content_type(v),
         )
 
     async def _fetch_dir(
@@ -198,4 +199,5 @@ class ClientS3(Client):
             etag=v.get("ETag", "").strip('"'),
             is_latest=v.get("IsLatest", True),
             last_modified=v.get("LastModified", ""),
+            content_type=resolve_content_type(v),
         )

@@ -10,7 +10,7 @@ from fsspec.implementations.local import LocalFileSystem
 from datachain.fs.utils import path_to_fsspec_uri
 from datachain.lib.file import File
 
-from .fsspec import Client
+from .fsspec import Client, resolve_content_type
 
 if TYPE_CHECKING:
     from datachain.cache import Cache
@@ -216,6 +216,7 @@ class FileClient(Client):
             etag=v["mtime"].hex(),
             is_latest=True,
             last_modified=datetime.fromtimestamp(v["mtime"], timezone.utc),
+            content_type=resolve_content_type(v),
         )
 
     def fetch_nodes(

@@ -15,7 +15,7 @@ from datachain.client.fileslice import FileWrapper
 from datachain.lib.file import File
 from datachain.progress import tqdm
 
-from .fsspec import DELIMITER, Client, ResultQueue
+from .fsspec import DELIMITER, Client, ResultQueue, resolve_content_type
 
 # Patch gcsfs for consistency with s3fs
 GCSFileSystem.set_session = GCSFileSystem._set_session
@@ -221,4 +221,5 @@ class GCSClient(Client):
             is_latest=not v.get("timeDeleted"),
             last_modified=self.parse_timestamp(v["updated"]),
             size=v.get("size", ""),
+            content_type=resolve_content_type(v),
         )

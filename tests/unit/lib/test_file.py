@@ -952,3 +952,63 @@ def test_audio_get_channel_name():
     # Test out of range indices
     assert Audio.get_channel_name(2, 5) == "Ch6"
     assert Audio.get_channel_name(1, 1) == "Ch2"
+
+
+@pytest.mark.parametrize(
+    "path,expected_ext",
+    [
+        ("dir/image.JPG", "jpg"),
+        ("dir/sub/clip.mp4", "mp4"),
+        ("data/file.tar.gz", "gz"),
+        (".hidden", ""),
+        ("noext", ""),
+        ("dir/", ""),
+    ],
+)
+def test_file_ext_auto_derived(path, expected_ext):
+    """`ext` is auto-derived from `path` via the model_validator."""
+    file = File(path=path, source="s3://bucket")
+    assert file.ext == expected_ext
+
+
+def test_file_ext_explicit_override_preserved():
+    """An explicit `ext` value is preserved (not overwritten by validator)."""
+    file = File(path="data/x.txt", source="s3://bucket", ext="custom")
+    assert file.ext == "custom"
+
+
+def test_file_content_type_default_blank():
+    """`content_type` defaults to empty string when not provided."""
+    file = File(path="x.jpg", source="s3://bucket")
+    assert file.content_type == ""
+
+
+def test_file_content_type_explicit():
+    file = File(path="x.jpg", source="s3://bucket", content_type="image/jpeg")
+    assert file.content_type == "image/jpeg"
+
+
+def test_resolve_content_type_storage_keys():
+    """Each known storage key yields a normalized MIME string."""
+    from datachain.client.fsspec import resolve_content_type
+
+    assert resolve_content_type({"ContentType": "image/JPEG"}) == "image/jpeg"
+    assert resolve_content_type({"contentType": "video/mp4"}) == "video/mp4"
+    assert resolve_content_type({"content_type": "text/plain"}) == "text/plain"
+    assert resolve_content_type({"mimetype": "application/json"}) == "application/json"
+
+
+def test_resolve_content_type_strips_parameters():
+    """Charset / parameters after `;` are stripped."""
+    from datachain.client.fsspec import resolve_content_type
+
+    assert resolve_content_type({"mimetype": "text/html; charset=utf-8"}) == "text/html"
+
+
+def test_resolve_content_type_blank_when_missing():
+    """No fallback to extension — blank when the dict has no MIME key."""
+    from datachain.client.fsspec import resolve_content_type
+
+    assert resolve_content_type({"size": 10}) == ""
+    assert resolve_content_type({}) == ""
+    assert resolve_content_type({"ContentType": ""}) == ""

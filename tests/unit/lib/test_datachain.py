@@ -4862,6 +4862,8 @@ def test_union_does_not_break_schema_order(test_session):
         "file__is_latest",
         "file__last_modified",
         "file__location",
+        "file__content_type",
+        "file__ext",
         "meta__name",
         "meta__count",
     ]

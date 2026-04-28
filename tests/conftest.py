@@ -1100,6 +1100,8 @@ def remote_dataset_schema():
         "file__size": {"type": "Int64"},
         "file__location": {"type": "String"},
         "file__source": {"type": "String"},
+        "file__content_type": {"type": "String"},
+        "file__ext": {"type": "String"},
         "version": {"type": "String"},
     }
 
@@ -1123,6 +1125,8 @@ def remote_file_feature_schema():
                     "is_latest": "bool",
                     "last_modified": "datetime",
                     "location": "Union[dict, list[dict], NoneType]",
+                    "content_type": "str",
+                    "ext": "str",
                 },
                 "bases": [
                     ["File", "datachain.lib.file", "File@v1"],

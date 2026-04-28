@@ -214,6 +214,12 @@ class File(DataModel):
             Defaults to Unix epoch (`1970-01-01T00:00:00`).
         location (dict | list[dict], optional): The location of the file.
             Defaults to `None`.
+        content_type (str): The MIME content type as reported by the storage
+            backend (e.g., 'image/jpeg'). Empty string when the backend does
+            not provide one. Defaults to an empty string.
+        ext (str): The file extension parsed from ``path`` (lowercase, no dot,
+            e.g., 'jpg'). Auto-derived from ``path`` if left blank.
+            Defaults to an empty string.
     """
 
     source: str = Field(default="")
@@ -224,6 +230,8 @@ class File(DataModel):
     is_latest: bool = Field(default=True)
     last_modified: datetime = Field(default=TIME_ZERO)
     location: dict | list[dict] | None = Field(default=None)
+    content_type: str = Field(default="")
+    ext: str = Field(default="")
 
     _datachain_column_types: ClassVar[dict[str, Any]] = {
         "source": String,
@@ -234,6 +242,8 @@ class File(DataModel):
         "is_latest": Boolean,
         "last_modified": DateTime,
         "location": JSON,
+        "content_type": String,
+        "ext": String,
     }
     _hidden_fields: ClassVar[list[str]] = [
         "source",
@@ -298,6 +308,16 @@ class File(DataModel):
             and (not self.source or self.source.startswith("file://"))
         ):
             self.path = self.path.replace("\\", "/")
+        return self
+
+    @model_validator(mode="after")
+    def _derive_ext(self) -> "File":
+        # Auto-derive `ext` from `path` when not explicitly set so that all
+        # `File` instances expose a consistent extension column regardless of
+        # how they were constructed (per-backend listing, manual, warehouse
+        # round-trip).
+        if not self.ext and self.path:
+            self.ext = PurePosixPath(self.path).suffix.lstrip(".").lower()
         return self
 
     @field_validator("source")
