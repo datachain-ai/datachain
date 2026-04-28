@@ -26,4 +26,3 @@ Once you're familiar with the basics, explore:
 
 - [API Reference](../api/index.md) for programmatic access
 - [Webhooks](../webhooks.md) for event notifications
-- [Self-hosting](../self-hosting/index.md) for enterprise deployments
