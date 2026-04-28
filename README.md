@@ -90,15 +90,22 @@ Browse it as markdown files, navigate with wikilinks, or open in [Obsidian](http
 ## 4. Architecture
 
 <p align="center">
-  <img src="docs/assets/architecture.svg" alt="DataChain architecture" width="700" />
+  <img src="docs/assets/architecture.svg" alt="DataChain architecture" width="500" />
 </p>
 
 A **dataset** is the unit of work - a named, versioned result of a pipeline step like `pets_embeddings@1.0.0`. Every `.save()` registers one.
 
-DataChain has two layers:
+DataChain is split into two parts, matching the two containers in the diagram.
 
-1. **Data Memory** holds typed datasets and the engines that run against them. DataChain executes your Python over heavy files and tables in parallel and writes results here; queries against Data Memory return at warehouse speed. Crash recovery, incremental updates, vector search, and large-scale processing all happen against this layer.
-2. The **Knowledge Base** is a structured reflection of Data Memory enriched by LLMs: markdown files agents read to understand what exists before writing a single line of code. Always accurate because it's derived.
+**Python Library** runs and queries data:
+
+- **Python Data Engine** runs your Python over heavy files and tables in parallel, with async prefetch and checkpoints.
+- **Data Memory** is the typed, versioned dataset registry. Every chain deposits its results here.
+- **Query Engine** filters, joins, and runs similarity search across Data Memory at warehouse speed.
+
+**Skill and MCP** serves agents:
+
+- **Knowledge Base** is a structured reflection of Data Memory enriched by LLMs: markdown files agents read before generating code. Always accurate because it's derived.
 
 
 ## 5. Core concepts
