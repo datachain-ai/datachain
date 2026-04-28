@@ -1,8 +1,8 @@
 ---
-title: Quick Start
+title: Getting Started with Python
 ---
 
-# Quick Start
+# Getting Started with Python
 
 ## Installation
 
@@ -17,7 +17,6 @@ title: Quick Start
     ```bash
     uv add datachain
     ```
-
 
 ## Selecting files using JSON metadata
 
@@ -288,8 +287,8 @@ loader = DataLoader(chain, batch_size=1)
 
 ```
 
-**See also:**
+## Next Steps
 
-- [Examples](examples.md)
-- [Tutorials](tutorials.md)
-- [API Reference](references/index.md)
+- [Concepts](../concepts/index.md): understand Data Memory, Datasets, and the dual engine
+- [Examples](../examples.md): more code examples and notebooks
+- [Guides](../guide/index.md): in-depth coverage of every capability

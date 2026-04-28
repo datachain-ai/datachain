@@ -1,4 +1,4 @@
-site_name: 'DataChain'
+site_name: 'DataChain - memory for data agents'
 site_url: https://docs.datachain.ai
 site_description: Wrangle unstructured AI data at scale
 
@@ -62,12 +62,55 @@ theme:
 
 nav:
   - Home:
-      - 🔗 Welcome to DataChain: index.md
-      - 🪢 Data Harness: harness.md
-      - 🏃🏼‍♂️ Quick Start: quick-start.md
-      - 🎯 Examples: examples.md
-      - 📚 Tutorials: tutorials.md
-      - 🐍 API Reference:
+      - Welcome: index.md
+      - Data Harness: harness.md
+      - Fit: fit.md
+      - Getting Started:
+          - Agents: getting-started/agents.md
+          - Python: getting-started/python.md
+      - Use Cases:
+          - Overview: use-cases/index.md
+          - Agent Compounding: use-cases/agent-compounding.md
+          - Agent Anti-Patterns: use-cases/agent-anti-patterns.md
+          - Agent as Dataset Producer: use-cases/agent-as-dataset-producer.md
+          - Retroactive Agent Runs: use-cases/retroactive-agent-runs.md
+          - Cross-Agent Reasoning: use-cases/cross-agent-reasoning.md
+      - Concepts:
+          - Overview: concepts/index.md
+          - Data Memory: concepts/data-memory.md
+          - Datasets: concepts/datasets.md
+          - Chain: concepts/chain.md
+          - Files and Types: concepts/files-and-types.md
+          - Execution Model: concepts/execution-model.md
+          - Knowledge Base: concepts/knowledge-base.md
+      - Guides:
+          - Overview: guide/index.md
+          - Get Data In:
+              - Reading Data: guide/reading-data.md
+              - Remote Storage: guide/remotes.md
+          - Transform:
+              - Data Engine Operations: guide/operations.md
+              - Python Operations: guide/python-engine.md
+              - Function Library: guide/functions.md
+              - Vector Search: guide/vector-search.md
+          - Get Data Out:
+              - Exporting Data: guide/exporting-data.md
+          - Datasets: guide/datasets.md
+          - Knowledge Base: guide/knowledge-base.md
+          - Scale and Recover:
+              - Scaling and Performance: guide/scaling.md
+              - Delta Processing: guide/delta.md
+              - Checkpoints: guide/checkpoints.md
+              - Multi-Stage Pipelines: guide/multi-stage-pipelines.md
+          - Reference:
+              - Best Practices: guide/best-practices.md
+              - Error Handling and Retries: guide/retry.md
+              - Data Processing Overview: guide/processing.md
+              - Environment Variables: guide/env.md
+              - Namespaces: guide/namespaces.md
+              - Local DB Migrations: guide/db_migrations.md
+      - Examples: examples.md
+      - API Reference:
           - Overview: references/index.md
           - DataChain: references/datachain.md
           - Data Types:
@@ -95,7 +138,7 @@ nav:
               - String: references/functions/string.md
               - Window: references/functions/window.md
           - Toolkit: references/toolkit.md
-      - 📖 CLI Reference:
+      - CLI Reference:
           - Overview: commands/index.md
           - Commands:
               - gc: commands/gc.md
@@ -117,18 +160,7 @@ nav:
                   - pause: commands/pipeline/pause.md
                   - resume: commands/pipeline/resume.md
                   - remove-job: commands/pipeline/remove-job.md
-      - 📚 User Guide:
-          - Overview: guide/index.md
-          - 📡 Interacting with remote storage: guide/remotes.md
-          - Data Processing:
-              - Overview: guide/processing.md
-              - Delta Processing: guide/delta.md
-              - Errors Handling and Retries: guide/retry.md
-          - Checkpoints: guide/checkpoints.md
-          - Environment Variables: guide/env.md
-          - Namespaces: guide/namespaces.md
-          - Local DB Migrations: guide/db_migrations.md
-      - 🔗 Studio:
+      - Studio:
           - Overview: studio/index.md
           - User Guide:
               - Overview: studio/user-guide/index.md
@@ -164,30 +196,7 @@ nav:
               - Troubleshooting: studio/user-guide/troubleshooting.md
           - API: studio/api/index.md
           - Webhooks: studio/webhooks.md
-          - Self-hosting:
-              - Overview: studio/self-hosting/index.md
-              - Installation:
-                  - Overview: studio/self-hosting/installation/index.md
-                  - AWS AMI: studio/self-hosting/installation/aws-ami.md
-                  - Kubernetes (Helm): studio/self-hosting/installation/k8s-helm.md
-              - Configuration:
-                  - Overview: studio/self-hosting/configuration/index.md
-                  - SSL/TLS: studio/self-hosting/configuration/ssl-tls.md
-                  - CA Certificates: studio/self-hosting/configuration/ca-certificates.md
-                  - Git Forges:
-                      - Overview: studio/self-hosting/configuration/git-forges/index.md
-                      - GitHub: studio/self-hosting/configuration/git-forges/github.md
-                      - GitLab: studio/self-hosting/configuration/git-forges/gitlab.md
-                      - Bitbucket: studio/self-hosting/configuration/git-forges/bitbucket.md
-              - Upgrading:
-                  - Overview: studio/self-hosting/upgrading/index.md
-                  - Regular Procedure: studio/self-hosting/upgrading/regular-procedure.md
-                  - Airgap Procedure: studio/self-hosting/upgrading/airgap-procedure.md
-              - Troubleshooting:
-                  - Overview: studio/self-hosting/troubleshooting/index.md
-                  - 502 Errors: studio/self-hosting/troubleshooting/502-errors.md
-                  - Support Bundle: studio/self-hosting/troubleshooting/support-bundle.md
-      - 🤝 Contributing: contributing.md
+      - Contributing: contributing.md
   - DataChain Website ↗: https://datachain.ai" target="_blank"
   - Studio ↗: https://studio.datachain.ai" target="_blank"
 
@@ -206,6 +215,9 @@ markdown_extensions:
   - pymdownx.inlinehilite
   - pymdownx.snippets
   - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
   - pymdownx.tabbed:
       alternate_style: true
   - pymdownx.critic
