@@ -65,6 +65,7 @@ nav:
       - 🔗 Welcome to DataChain: index.md
       - 🎯 Fit: fit.md
       - 🪢 Data Harness: harness.md
+      - 🏗️ Architecture: architecture.md
       - 🏃🏼‍♂️ Getting Started:
           - Agents: getting-started/agents.md
           - Python: getting-started/python.md

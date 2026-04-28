@@ -89,23 +89,15 @@ Browse it as markdown files, navigate with wikilinks, or open in [Obsidian](http
 
 ## 4. Architecture
 
+Code harnesses (Claude Code, Cursor, Codex) give agents repo context, dedicated tools, and memory across sessions. DataChain adds the same for data: typed datasets the agent reads, chain operations the agent calls (`read_storage`, `map`, `save`), Data Memory where its results persist.
+
 <p align="center">
-  <img src="docs/assets/architecture.svg" alt="DataChain architecture" width="500" />
+  <img src="docs/assets/harness.svg" alt="DataChain as a data harness" width="500" />
 </p>
 
 A **dataset** is the unit of work - a named, versioned result of a pipeline step like `pets_embeddings@1.0.0`. Every `.save()` registers one.
 
-DataChain is split into two parts, matching the two containers in the diagram.
-
-**Python Library** runs and queries data:
-
-- **Python Data Engine** runs your Python over heavy files and tables in parallel, with async prefetch and checkpoints.
-- **Data Memory** is the typed, versioned dataset registry. Every chain deposits its results here.
-- **Query Engine** filters, joins, and runs similarity search across Data Memory at warehouse speed.
-
-**Skill and MCP** serves agents:
-
-- **Knowledge Base** is a structured reflection of Data Memory enriched by LLMs: markdown files agents read before generating code. Always accurate because it's derived.
+For the data-flow architecture (Python Data Engine, Data Memory, Query Engine, Knowledge Base) and how the components connect, see [Architecture](https://docs.datachain.ai/architecture/).
 
 
 ## 5. Core concepts
