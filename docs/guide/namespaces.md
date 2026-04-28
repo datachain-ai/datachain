@@ -171,8 +171,8 @@ Use `delete_namespace` to remove an empty namespace or an empty project within a
 def delete_namespace(name: str, session: Session | None) -> None:
 ```
 
-- **`<namespace>`** — deletes the namespace (must contain no projects or datasets).
-- **`<namespace>.<project>`** — deletes the project (must contain no datasets).
+- **`<namespace>`** - deletes the namespace (must contain no projects or datasets).
+- **`<namespace>.<project>`** - deletes the project (must contain no datasets).
 
 ### Examples
 
