@@ -9,7 +9,7 @@ Claude Code, Cursor, and Codex are harnesses for code: they give the LLM repo co
 DataChain is the same shape for data. The agent's repo is replaced by your storage and databases; the harness's notes file is replaced by the Knowledge Base; the operational memory of git history is replaced by Data Memory. Both halves of the harness, code-side and data-side, feed the same agent.
 
 <p align="center">
-  <img src="assets/harness.svg" alt="DataChain mirrors the code harness, for data" width="700" />
+  <img src="../assets/harness.svg" alt="DataChain mirrors the code harness, for data" width="700" />
 </p>
 
 ## Mapping
