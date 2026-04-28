@@ -55,6 +55,24 @@ def dedup_columns(columns: Iterable[sa.Column]) -> list[sa.Column]:
     return list(c_set.values())
 
 
+def coerce_table_types(table: sa.Table, column_types: dict[str, Any]) -> sa.Table:
+    """
+    Return a new Table bound to the same physical name, with column types
+    overridden from `column_types` where known. Reflection returns generic
+    backend types (e.g. ClickHouse String -> bytes instead of str); this
+    restores SQLTypes so values decode correctly. No DB interaction.
+    """
+    columns = []
+    for c in table.columns:
+        t = column_types.get(c.name)
+        if t is not None:
+            t = t() if inspect.isclass(t) else t
+            columns.append(sa.Column(c.name, t))
+        else:
+            columns.append(sa.Column(c.name, c.type))
+    return sa.Table(table.name, sa.MetaData(), *columns)
+
+
 def convert_rows_custom_column_types(
     columns: "ColumnCollection[str, ColumnElement[Any]]",
     rows: Iterator[tuple[Any, ...]],

@@ -1,0 +1,62 @@
+# DataChain
+
+> DataChain is memory for data agents. It chains Python functions and warehouse-speed data operations into composable queries, and every query deposits its result into Data Memory as a versioned, typed dataset with automatic lineage. The next query (human or agent) starts from prior conclusions instead of raw bytes. The Python Data Engine produces; the Query Engine recalls; the Knowledge Base compiles datasets into agent-readable knowledge.
+
+## Import Convention
+
+```python
+import datachain as dc
+```
+
+Access everything through `dc.*`: `dc.read_storage()`, `dc.Column()`, `dc.func.*`, `dc.File`, `dc.ImageFile`, etc.
+
+For annotation types: `from datachain import model`
+For custom types: `from pydantic import BaseModel`
+
+Never use: `from datachain import File, C, func`
+
+## Key Patterns
+
+### Read data
+- `dc.read_storage("s3://bucket/path/", type="image")` -- files from cloud storage
+- `dc.read_csv()`, `dc.read_json()`, `dc.read_parquet()` -- structured formats
+- `dc.read_database(query, connection_string)` -- SQL databases
+- `dc.read_dataset("name")` -- previously saved datasets
+- `dc.read_pandas(df)`, `dc.read_hf("dataset")` -- in-memory sources
+
+### Transform data
+- `.filter(dc.C("col") > value)` -- SQL-compiled filter (warehouse speed)
+- `.mutate(new_col=dc.func.path.file_ext("file.path"))` -- SQL-compiled column derivation
+- `.map(result=my_function)` -- Python operation per record (needs `settings(parallel=N)` for perf)
+- `.gen(chunks=split_function)` -- expand one record to many
+- `.agg(summary=aggregate_fn, partition_by="group_col")` -- group and reduce
+- `.merge(other, on="key")` -- join two chains
+- `.group_by(count=dc.func.count(), partition_by="col")` -- aggregate analytics
+
+### Save and export
+- `.save("dataset_name")` -- versioned, named dataset (PREFERRED terminal operation)
+- `.persist()` -- anonymous cache for branching
+- `.to_pandas()`, `.to_parquet()`, `.to_csv()`, `.to_json()` -- export formats
+- `.to_pytorch(transform=..., tokenizer=...)` -- PyTorch DataLoader
+- `.to_storage("s3://output/")` -- write files to storage
+- `.to_database("table", "connection_string")` -- write to SQL database
+
+## Critical Rules
+
+1. Always type Python operation return values -- missing annotations default to `str` and crash
+2. Always use trailing slash in storage URIs: `"s3://bucket/path/"`
+3. Pass `anon=True` for public buckets
+4. Use `save()` before `filter()` on expensive Python operation output
+5. Use `settings(parallel=True)` for ML/LLM operations
+6. Use data-engine operations (filter, mutate, group_by) over Python when possible
+7. One output signal per map/gen/agg -- use Pydantic models for multiple fields
+8. Use `dc.func.*` for SQL-speed analytics: distance, aggregate, window, path, string, conditional
+
+## Documentation Sections
+
+- Getting Started: /getting-started/
+- Core Concepts: /concepts/ (data memory, datasets, chain, execution model, files and types)
+- Guides: /guide/ (reading data, operations, Python operations, exporting, datasets, functions, scaling, best practices)
+- API Reference: /references/ (auto-generated from docstrings)
+- CLI Reference: /commands/
+- Best Practices: /guide/best-practices/

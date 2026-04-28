@@ -14,7 +14,7 @@ This command cleans up internal DataChain storage by removing:
 
 - **Temporary tables** created during query execution that were not properly cleaned up (e.g., due to crashes or interrupted operations).
 - **Failed dataset versions** that were left in an incomplete or failed state.
-- **Outdated checkpoints** and their associated UDF tables that have exceeded the time-to-live (TTL) threshold. See [Checkpoints](../guide/checkpoints.md) for more details.
+- **Outdated checkpoints** and their associated tables that have exceeded the time-to-live (TTL) threshold. See [Checkpoints](../guide/checkpoints.md) for more details.
 
 ## Options
 

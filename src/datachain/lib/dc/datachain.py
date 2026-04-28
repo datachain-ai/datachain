@@ -559,7 +559,7 @@ class DataChain:
 
         # Calculate hash including dataset name and job context to avoid conflicts
 
-        base_hash = self._query.hash(job_aware=True)
+        base_hash = self._query.hash()
         _hash = hashlib.sha256(
             (base_hash + f"{namespace_name}/{project_name}/{name}").encode("utf-8")
         ).hexdigest()
@@ -568,7 +568,10 @@ class DataChain:
         result = self._resolve_checkpoint(name, project, _hash, kwargs)
         if bool(result):
             # Checkpoint was found and reused
-            print(f"Checkpoint found for dataset '{name}', skipping creation")
+            print(
+                f"Checkpoint found for dataset '{name}', skipping creation",
+                file=sys.stderr,
+            )
 
         # Schema preparation
         schema = self.signals_schema.clone_without_sys_signals().serialize()
@@ -636,7 +639,7 @@ class DataChain:
         self,
         name: str,
         project: Project,
-        job_hash: str,
+        chain_hash: str,
         kwargs: dict,
     ) -> "DataChain | None":
         """Check if checkpoint exists and return cached dataset if possible."""
@@ -645,12 +648,29 @@ class DataChain:
         metastore = self.session.catalog.metastore
         ignore_checkpoints = env2bool("DATACHAIN_IGNORE_CHECKPOINTS", undefined=False)
 
-        if (
-            self._checkpoints_enabled
-            and self.job.rerun_from_job_id
-            and not ignore_checkpoints
-            and metastore.find_checkpoint(self.job.rerun_from_job_id, job_hash)
+        if not self._checkpoints_enabled or ignore_checkpoints:
+            return None
+
+        # delta_retry reads the output's current state (error rows, missing rows)
+        # and reprocesses based on it. Cache would return stale output and skip
+        # the retry work, so chains with delta_retry must always execute.
+        if any(
+            s.delta_spec is not None and s.delta_spec.delta_retry
+            for s in self._query.delta_sources()
+        ) or (
+            self._query.delta_spec is not None and self._query.delta_spec.delta_retry
         ):
+            return None
+
+        # Search current job first, then previous job — "done" save checkpoints
+        # act as a cache keyed by hash.
+        found = any(
+            metastore.find_checkpoint(j, chain_hash)
+            for j in (self.job.id, self.job.rerun_from_job_id)
+            if j
+        )
+
+        if found:
             # checkpoint found → find which dataset version to reuse
 
             # Find dataset version that was created by any ancestor job
@@ -715,7 +735,7 @@ class DataChain:
                 step_type=CheckpointStepType.DATASET_SAVE,
                 run_group_id=self.job.run_group_id,
                 dataset_name=full_dataset_name,
-                checkpoint_hash=job_hash,
+                checkpoint_hash=chain_hash,
                 rerun_from_job_id=self.job.rerun_from_job_id,
             )
 

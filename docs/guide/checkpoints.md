@@ -1,6 +1,6 @@
 # Checkpoints
 
-Checkpoints let DataChain skip work that was already done in a previous run and recover from failures. When you re-run a script, DataChain detects which datasets and UDF results were already created and reuses them instead of recomputing. If a UDF fails mid-execution, you can fix the bug and re-run — only the remaining rows are processed.
+Checkpoints let DataChain skip work that was already done in a previous run and recover from failures. When you re-run a script, DataChain detects which datasets and Python operation results were already created and reuses them instead of recomputing. If a Python operation fails mid-execution, you can fix the bug and re-run - only the remaining rows are processed.
 
 ## Example
 
@@ -26,7 +26,7 @@ def process(file) -> str:
 
 **First run** (`python process.py`): Processes some files, then crashes on a cat image.
 
-**Fix the bug** — edit `process.py`:
+**Fix the bug** - edit `process.py`:
 
 ```python
 import datachain as dc
@@ -58,9 +58,9 @@ Checkpoints are tied to the chain's operations. Any change produces a different 
 - Changing filter conditions, parameters, or output types
 - Adding, removing, or reordering operations in the chain
 - Changing the source data (e.g. reading from a new dataset version)
-- Modifying UDF code after a successful completion
+- Modifying Python operation code after a successful completion
 
-**Exception:** If a UDF failed mid-execution and you fix the code (without changing the output type), DataChain continues from partial results instead of restarting. If you change the output type, partial results are discarded and the UDF reruns from scratch.
+**Exception:** If a Python operation failed mid-execution and you fix the code (without changing the output type), DataChain continues from partial results instead of restarting. If you change the output type, partial results are discarded and the Python operation reruns from scratch.
 
 ## How to Use
 
@@ -95,14 +95,14 @@ Save this as `multi_chain.py`:
 ```python
 import datachain as dc
 
-# Chain 1 — filter files by size
+# Chain 1 - filter files by size
 (
     dc.read_storage("gs://datachain-demo/dogs-and-cats/", anon=True)
     .filter(dc.C("file.size") > 15000)
     .save("large_files")
 )
 
-# Chain 2 — get all file paths
+# Chain 2 - get all file paths
 (
     dc.read_storage("gs://datachain-demo/dogs-and-cats/", anon=True)
     .map(path=lambda file: file.path, output=str)
@@ -110,7 +110,7 @@ import datachain as dc
 )
 ```
 
-Run it twice — both chains are reused on the second run. Now change the filter in chain 1 (e.g. `> 20000`) and run again. Chain 1 is recomputed, but chain 2 is reused — its chain is untouched.
+Run it twice - both chains are reused on the second run. Now change the filter in chain 1 (e.g. `> 20000`) and run again. Chain 1 is recomputed, but chain 2 is reused - its chain is untouched.
 
 ### Generator recovery
 
@@ -135,11 +135,11 @@ def extract_parts(file) -> Iterator[str]:
 )
 ```
 
-Generators (`.gen()`) that yield multiple rows per input also support partial recovery. If `extract_parts` crashes mid-execution, the next run continues from where it stopped — already-processed inputs are skipped, and incomplete inputs are re-processed.
+Generators (`.gen()`) that yield multiple rows per input also support partial recovery. If `extract_parts` crashes mid-execution, the next run continues from where it stopped - already-processed inputs are skipped, and incomplete inputs are re-processed.
 
 ### What recomputes and what doesn't
 
-**Recomputes** — changing a filter:
+**Recomputes** - changing a filter:
 
 ```python
 # Run 1
@@ -147,50 +147,50 @@ dc.read_storage("gs://datachain-demo/dogs-and-cats/", anon=True).filter(
     dc.C("file.size") > 10000
 ).save("filtered")
 
-# Run 2 — changed threshold
+# Run 2 - changed threshold
 dc.read_storage("gs://datachain-demo/dogs-and-cats/", anon=True).filter(
     dc.C("file.size") > 20000
 ).save("filtered")
 # → "filtered" recomputes
 ```
 
-**Recomputes** — changing UDF code after successful completion:
+**Recomputes** - changing Python operation code after successful completion:
 
 ```python
-# Run 1 — succeeds
+# Run 1 - succeeds
 def score(file) -> float:
     return file.size
 
-# Run 2 — changed logic
+# Run 2 - changed logic
 def score(file) -> float:
     return file.size / 1024
-# → UDF recomputes from scratch
+# → Python operation recomputes from scratch
 ```
 
-**Does NOT recompute** — fixing a bug after a crash:
+**Does NOT recompute** - fixing a bug after a crash:
 
 ```python
-# Run 1 — crashes mid-UDF
+# Run 1 - crashes mid-Python operation
 def score(file) -> float:
     if "cat" in file.path:
         raise ValueError("bug")
     return file.size
 
-# Run 2 — bug fixed, same output type
+# Run 2 - bug fixed, same output type
 def score(file) -> float:
     return file.size
-# → UDF continues from where it stopped, already-processed rows are skipped
+# → Python operation continues from where it stopped, already-processed rows are skipped
 ```
 
-**Does NOT recompute** — changing an unrelated chain:
+**Does NOT recompute** - changing an unrelated chain:
 
 ```python
-# Chain 1 — changed
+# Chain 1 - changed
 dc.read_storage("gs://datachain-demo/dogs-and-cats/", anon=True).filter(
     dc.C("file.size") > 20000  # was 10000
 ).save("large_files")
 
-# Chain 2 — untouched
+# Chain 2 - untouched
 dc.read_storage("gs://datachain-demo/dogs-and-cats/", anon=True).map(
     path=lambda file: file.path, output=str
 ).save("all_paths")
@@ -200,5 +200,5 @@ dc.read_storage("gs://datachain-demo/dogs-and-cats/", anon=True).map(
 ## Limitations
 
 - **Script path matters:** DataChain links runs by the script's absolute path. Moving the script breaks checkpoint linking.
-- **Threading/multiprocessing:** Checkpoints are automatically disabled when Python threading or multiprocessing is detected. DataChain's built-in `parallel` setting for UDFs is not affected.
-- **Unhashable callables:** Built-in functions (`len`, `str`), C extensions, and `Mock` objects produce a different hash on each run, so checkpoints using these as UDFs will always recompute. Use regular `def` functions or lambdas instead.
+- **Threading/multiprocessing:** Checkpoints are automatically disabled when Python threading or multiprocessing is detected. DataChain's built-in `parallel` setting for Python operations is not affected.
+- **Unhashable callables:** Built-in functions (`len`, `str`), C extensions, and `Mock` objects produce a different hash on each run, so checkpoints using these as Python operations will always recompute. Use regular `def` functions or lambdas instead.
