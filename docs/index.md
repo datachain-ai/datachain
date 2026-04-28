@@ -26,13 +26,13 @@
 
 **The model floor is the same for everyone. The context ceiling is yours.**
 
-Millions of images, hours of video, documents, and rows in databases sit in storage as raw bytes. **Data Memory** is what your team and its agents have made of them: typed, versioned datasets - embeddings, classifications, joins, scores, every conclusion an agent or pipeline has already reached. At scale, those conclusions are too expensive to re-derive each session and too scattered across storage, databases, and sidecar files to find on demand. DataChain produces and keeps them, indexed for warehouse-speed recall.
+Your data lives in object storage (millions of images, hours of video, documents) and databases (structured tables). Every chain a teammate or agent runs deposits a typed, versioned dataset into **Data Memory**: embeddings, classifications, joins, scores. At scale, those datasets are too expensive to recompute and too scattered to find on demand.
 
-Read files from S3, GCS, or Azure, run your code, save the result as a Pydantic-typed dataset. The next pipeline or agent picks up from there.
+DataChain is the Python library that runs your code over heavy files and tables in parallel and queries Data Memory at warehouse speed. Read from S3, GCS, or Azure, run your code, save as a Pydantic-typed dataset; the next pipeline or agent picks up from there.
 
 ## Why Data Memory
 
-Claude Code, Cursor, and Codex made AI good at code by giving it the repo context. Agents over your data need the same: a **data context layer** that describes what datasets exist, what they mean, and what is already computed. **Data Memory is what makes that layer real** - typed, versioned datasets your team produces by running pipelines, surfaced through the Knowledge Base. Without it, the context layer points at nothing and every session starts from zero.
+Claude Code, Cursor, and Codex made AI good at code by giving it the repo context. Agents over your data need the same: a **data context layer** with schemas, lineage, and prior conclusions. **That layer is captured during production, not curated after.** Every DataChain pipeline run deposits a typed, versioned dataset into Data Memory; the Knowledge Base compiles those datasets into what agents read. Without production through DataChain, the layer has nothing structured to describe.
 
 ## Get started
 
