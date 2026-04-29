@@ -43,7 +43,7 @@ ResultQueue = asyncio.Queue[Sequence["File"] | None]
 # Keys that storage backends use to expose MIME / content-type on info dicts:
 #   - S3 (HEAD / s3fs `_info`): "ContentType"
 #   - GCS (object resource):    "contentType"
-#   - Azure (adlfs `_details`): "content_type"
+#   - Azure (adlfs `_details`): "content_settings".content_type
 #   - HTTP (fsspec `_file_info` from Content-Type header): "mimetype"
 _STORAGE_CONTENT_TYPE_KEYS: tuple[str, ...] = (
     "ContentType",
@@ -65,6 +65,17 @@ def resolve_content_type(info: dict[str, Any]) -> str:
         v = info.get(key)
         if v:
             return str(v).split(";", 1)[0].strip().lower()
+
+    content_settings = info.get("content_settings")
+    if content_settings:
+        v = (
+            content_settings.get("content_type")
+            if isinstance(content_settings, dict)
+            else getattr(content_settings, "content_type", None)
+        )
+        if v:
+            return str(v).split(";", 1)[0].strip().lower()
+
     return ""
 
 

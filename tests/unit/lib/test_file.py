@@ -977,38 +977,37 @@ def test_file_ext_explicit_override_preserved():
     assert file.ext == "custom"
 
 
-def test_file_content_type_default_blank():
-    """`content_type` defaults to empty string when not provided."""
-    file = File(path="x.jpg", source="s3://bucket")
-    assert file.content_type == ""
+@pytest.mark.parametrize(
+    "kwargs,expected_content_type",
+    [
+        ({}, ""),
+        ({"content_type": "image/jpeg"}, "image/jpeg"),
+    ],
+)
+def test_file_content_type(kwargs, expected_content_type):
+    file = File(path="x.jpg", source="s3://bucket", **kwargs)
+    assert file.content_type == expected_content_type
 
 
-def test_file_content_type_explicit():
-    file = File(path="x.jpg", source="s3://bucket", content_type="image/jpeg")
-    assert file.content_type == "image/jpeg"
-
-
-def test_resolve_content_type_storage_keys():
-    """Each known storage key yields a normalized MIME string."""
+@pytest.mark.parametrize(
+    "info,expected",
+    [
+        ({"ContentType": "image/JPEG"}, "image/jpeg"),
+        ({"contentType": "video/mp4"}, "video/mp4"),
+        ({"content_type": "text/plain"}, "text/plain"),
+        ({"mimetype": "application/json"}, "application/json"),
+        ({"content_settings": Mock(content_type="image/JPEG")}, "image/jpeg"),
+        (
+            {"content_settings": {"content_type": "application/JSON; charset=utf-8"}},
+            "application/json",
+        ),
+        ({"mimetype": "text/html; charset=utf-8"}, "text/html"),
+        ({"size": 10}, ""),
+        ({}, ""),
+        ({"ContentType": ""}, ""),
+    ],
+)
+def test_resolve_content_type(info, expected):
     from datachain.client.fsspec import resolve_content_type
 
-    assert resolve_content_type({"ContentType": "image/JPEG"}) == "image/jpeg"
-    assert resolve_content_type({"contentType": "video/mp4"}) == "video/mp4"
-    assert resolve_content_type({"content_type": "text/plain"}) == "text/plain"
-    assert resolve_content_type({"mimetype": "application/json"}) == "application/json"
-
-
-def test_resolve_content_type_strips_parameters():
-    """Charset / parameters after `;` are stripped."""
-    from datachain.client.fsspec import resolve_content_type
-
-    assert resolve_content_type({"mimetype": "text/html; charset=utf-8"}) == "text/html"
-
-
-def test_resolve_content_type_blank_when_missing():
-    """No fallback to extension — blank when the dict has no MIME key."""
-    from datachain.client.fsspec import resolve_content_type
-
-    assert resolve_content_type({"size": 10}) == ""
-    assert resolve_content_type({}) == ""
-    assert resolve_content_type({"ContentType": ""}) == ""
+    assert resolve_content_type(info) == expected
