@@ -1922,8 +1922,8 @@ class SQLClause(Step, ABC):
 
 @frozen
 class RegenerateSystemColumns(Step):
-    # _regenerate_system_columns() may return the original selectable unchanged.
-    # Preserve pending flags so a later SQLClause can still emit its boundary.
+    # This step resets state conditionally inside apply(): preserve pending flags
+    # for true no-ops, but reset when system-column regeneration wraps the query.
     resets_query_state_after_apply: ClassVar[bool] = False
 
     catalog: "Catalog"
@@ -1942,6 +1942,8 @@ class RegenerateSystemColumns(Step):
         new_query = self.catalog.warehouse._regenerate_system_columns(
             query, keep_existing_columns=True
         )
+        if new_query is not query:
+            state.reset()
 
         def q(*columns):
             return new_query.with_only_columns(*columns)

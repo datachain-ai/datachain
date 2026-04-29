@@ -5031,6 +5031,25 @@ def test_shuffle_after_limit_preserves_boundary_state(test_session, boundary_cou
     boundary_counter.assert_count(1)
 
 
+def test_shuffle_after_group_by_resets_boundary_state(test_session, boundary_counter):
+    chain = dc.read_values(
+        category=["A", "A", "B", "B", "C"],
+        value=[1, 2, 3, 4, 5],
+        session=test_session,
+    )
+    grouped = chain.group_by(total=func.sum("value"), partition_by="category")
+
+    # group_by drops system columns, so shuffle regenerates them by wrapping the
+    # grouped query. That materializes the grouped state, so the later filter
+    # should not need an additional emitted boundary.
+    rows = sorted(
+        (r["category"], r["total"])
+        for r in grouped.shuffle().filter(C("total") > 3).to_records()
+    )
+    assert rows == [("B", 7), ("C", 5)]
+    boundary_counter.assert_count(0)
+
+
 def test_limit_after_limit(test_session, boundary_counter):
     chain = dc.read_values(numbers=[1, 2, 3, 4, 5], session=test_session).order_by(
         "numbers"
@@ -5161,7 +5180,6 @@ def test_distinct_after_group_by(test_session, boundary_counter):
 
 
 def test_filter_after_group_by_then_limit(test_session, boundary_counter):
-    """Chained boundaries: group_by -> filter -> limit -> filter."""
     chain = dc.read_values(
         category=["A", "A", "B", "B", "C", "C", "D"],
         value=[1, 2, 3, 4, 5, 6, 7],
