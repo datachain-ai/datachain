@@ -18,6 +18,7 @@ else:
 import attrs
 import sqlalchemy as sa
 from sqlalchemy.sql.expression import true
+from sqlalchemy.sql.selectable import GenerativeSelect
 
 from datachain import json
 from datachain.client import Client
@@ -87,6 +88,10 @@ class AbstractWarehouse(ABC, Serializable):
 
     def cleanup_for_tests(self):
         """Cleanup for tests."""
+
+    def normalize_limit_offset(self, query: GenerativeSelect) -> GenerativeSelect:
+        """Return query adjusted for warehouse-specific LIMIT/OFFSET semantics."""
+        return query
 
     def _to_jsonable(self, obj: Any) -> Any:
         """Recursively convert Python/Pydantic structures into JSON-serializable
