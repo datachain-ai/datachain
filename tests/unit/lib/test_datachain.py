@@ -4978,7 +4978,7 @@ def test_filter_after_offset(test_session, boundary_counter):
         "numbers"
     )
     # Skip first 2 -> [3, 4, 5], then filter on the materialized rows. If the
-    # filter is pushed below the offset, this would incorrectly return [5].
+    # filter is pushed below the offset, the offset would drop all filtered rows.
     result = chain.offset(2).filter(C("numbers") > 3).to_values("numbers")
     assert result == [4, 5]
     boundary_counter.assert_count(1)
