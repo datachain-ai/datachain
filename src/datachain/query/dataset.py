@@ -25,7 +25,7 @@ from sqlalchemy import Column
 from sqlalchemy.sql import func as f
 from sqlalchemy.sql.elements import ColumnClause, ColumnElement, Label
 from sqlalchemy.sql.expression import label
-from sqlalchemy.sql.selectable import Select, TableClause
+from sqlalchemy.sql.selectable import GenerativeSelect, Select, TableClause
 from sqlalchemy.sql.visitors import replacement_traverse
 
 from datachain.asyn import ASYNC_WORKERS, AsyncMapper, OrderedMapper
@@ -88,7 +88,6 @@ if TYPE_CHECKING:
 
     from sqlalchemy.sql.elements import KeyedColumnElement
     from sqlalchemy.sql.schema import Table
-    from sqlalchemy.sql.selectable import GenerativeSelect
     from typing_extensions import ParamSpec, Self
 
     from datachain.catalog import Catalog
@@ -193,8 +192,8 @@ class QueryState:
         self.distinct = False
 
     @property
-    def has_finalized_output(self) -> bool:
-        """True if any clause that finalizes the row set has been applied."""
+    def has_finalizing_clause(self) -> bool:
+        """True if a prior clause finalized the current row set."""
         return self.grouped or self.limited or self.offset_applied or self.distinct
 
     def emit_boundary(self, query_generator: "QueryGenerator") -> "QueryGenerator":
@@ -205,7 +204,7 @@ class QueryState:
         into the inner subquery, so the caller can apply its clause to the
         outer level without affecting underlying rows.
         """
-        query = query_generator.select()
+        query: GenerativeSelect = query_generator.select()
         # Some warehouses need dialect-specific LIMIT/OFFSET normalization
         # before the query is wrapped.
         query = self.warehouse.normalize_limit_offset(query)
@@ -230,7 +229,6 @@ class Step(ABC):
         self,
         query_generator: QueryGenerator,
         temp_tables: list[str],
-        *args,
         state: "QueryState",
         **kwargs,
     ) -> "StepResult":
@@ -383,7 +381,7 @@ class DatasetDiffOperation(Step):
         self,
         query_generator,
         temp_tables: list[str],
-        *args,
+        state: "QueryState",
         **kwargs,
     ) -> "StepResult":
         source_query = query_generator.select()
@@ -1186,11 +1184,11 @@ class UDFStep(Step, ABC):
         self,
         query_generator: QueryGenerator,
         temp_tables: list[str],
-        *args,
+        state: "QueryState",
+        *,
         hash_input: str = "",
         hash_output: str = "",
         checkpoints_enabled: bool = True,
-        state: "QueryState",
         **kwargs,
     ) -> "StepResult":
         query = query_generator.select()
@@ -1887,14 +1885,13 @@ class SQLClause(Step, ABC):
         self,
         query_generator: QueryGenerator,
         temp_tables: list[str],
-        *args,
         state: "QueryState",
         **kwargs,
     ) -> StepResult:
         if self.requires_boundary(state):
             query_generator = state.emit_boundary(query_generator)
 
-        query = state.warehouse.normalize_limit_offset(query_generator.select())
+        query = query_generator.select()
         new_query = self.apply_sql_clause(query)
         new_query = state.warehouse.normalize_limit_offset(new_query)
         self.update_query_state(state)
@@ -1938,7 +1935,7 @@ class RegenerateSystemColumns(Step):
         self,
         query_generator: QueryGenerator,
         temp_tables: list[str],
-        *args,
+        state: "QueryState",
         **kwargs,
     ) -> StepResult:
         query = query_generator.select()
@@ -2035,7 +2032,7 @@ class SQLFilter(SQLClause):
     def requires_boundary(self, state: "QueryState") -> bool:
         # WHERE applied after GROUP BY / LIMIT / OFFSET / DISTINCT would filter
         # the underlying rows, not the materialized state output.
-        return state.has_finalized_output
+        return state.has_finalizing_clause
 
     def update_query_state(self, state: "QueryState") -> None:
         # filter does not finalize the output; state flags carry over unless a
@@ -2090,7 +2087,7 @@ class SQLOffset(SQLClause):
     def hash_inputs(self) -> str:
         return hashlib.sha256(str(self.offset).encode()).hexdigest()
 
-    def apply_sql_clause(self, query: "GenerativeSelect"):
+    def apply_sql_clause(self, query: GenerativeSelect) -> GenerativeSelect:
         return query.offset(self.offset)
 
     def requires_boundary(self, state: "QueryState") -> bool:
@@ -2169,7 +2166,7 @@ class SQLUnion(Step):
         self,
         query_generator: QueryGenerator,
         temp_tables: list[str],
-        *args,
+        state: "QueryState",
         **kwargs,
     ) -> StepResult:
         left_before = len(self.query1.temp_table_names)
@@ -2326,7 +2323,7 @@ class SQLJoin(Step):
         self,
         query_generator: QueryGenerator,
         temp_tables: list[str],
-        *args,
+        state: "QueryState",
         **kwargs,
     ) -> StepResult:
         q1 = self.get_query(self.query1, temp_tables)
@@ -2465,11 +2462,10 @@ class SQLGroupBy(SQLClause):
 
         return sqlalchemy.select(*unique_cols).select_from(subquery).group_by(*group_by)
 
-    def requires_boundary(self, state: "QueryState") -> bool:
-        # Re-grouping or grouping after LIMIT/OFFSET requires materialization.
-        return state.grouped or state.limited or state.offset_applied
-
     def update_query_state(self, state: "QueryState") -> None:
+        # SQLGroupBy.apply_sql_clause() selects from query.subquery(), so any
+        # prior finalized output is already folded into that inner selectable.
+        state.reset()
         state.grouped = True
 
 
@@ -2783,10 +2779,10 @@ class DatasetQuery:
             result = step.apply(
                 result.query_generator,
                 self.temp_table_names,
+                state,
                 hash_input=hash_input,
                 hash_output=hash_output,
                 checkpoints_enabled=self.checkpoints_enabled,
-                state=state,
             )  # a chain of steps linked by results
             self.dependencies.update(result.dependencies)
             # Most non-SQLClause steps materialize a fresh relation, so any

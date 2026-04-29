@@ -5116,7 +5116,20 @@ def test_group_by_after_limit(test_session, boundary_counter):
     grouped = chain.limit(4).group_by(total=func.sum("value"), partition_by="category")
     rows = sorted((r["category"], r["total"]) for r in grouped.to_records())
     assert rows == [("A", 3), ("B", 7)]
-    boundary_counter.assert_count(1)
+    boundary_counter.assert_count(0)
+
+
+def test_group_by_after_offset(test_session, boundary_counter):
+    chain = dc.read_values(
+        category=["A", "A", "B", "B", "C"],
+        value=[1, 2, 3, 4, 5],
+        session=test_session,
+    ).order_by("value")
+    # skip first row ordered by value -> A=2, B=3, B=4, C=5
+    grouped = chain.offset(1).group_by(total=func.sum("value"), partition_by="category")
+    rows = sorted((r["category"], r["total"]) for r in grouped.to_records())
+    assert rows == [("A", 2), ("B", 7), ("C", 5)]
+    boundary_counter.assert_count(0)
 
 
 def test_group_by_after_group_by(test_session, boundary_counter):
@@ -5130,7 +5143,7 @@ def test_group_by_after_group_by(test_session, boundary_counter):
     outer = inner.group_by(grand=func.sum("total"))
     rows = list(outer.to_values("grand"))
     assert rows == [15]
-    boundary_counter.assert_count(1)
+    boundary_counter.assert_count(0)
 
 
 def test_distinct_after_group_by(test_session, boundary_counter):

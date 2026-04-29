@@ -7,7 +7,7 @@ import string
 import sys
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
-from typing import TYPE_CHECKING, Any, TypeVar, Union, cast
+from typing import TYPE_CHECKING, Any, Union, cast
 from urllib.parse import urlparse
 
 if sys.version_info >= (3, 11):
@@ -56,8 +56,6 @@ logger = logging.getLogger("datachain")
 
 SELECT_BATCH_SIZE = 100_000  # number of rows to fetch at a time
 
-QuerySelectType = TypeVar("QuerySelectType", bound=GenerativeSelect)
-
 
 class AbstractWarehouse(ABC, Serializable):
     """
@@ -91,7 +89,7 @@ class AbstractWarehouse(ABC, Serializable):
     def cleanup_for_tests(self):
         """Cleanup for tests."""
 
-    def normalize_limit_offset(self, query: QuerySelectType) -> QuerySelectType:
+    def normalize_limit_offset(self, query: GenerativeSelect) -> GenerativeSelect:
         """Return query adjusted for warehouse-specific LIMIT/OFFSET semantics."""
         return query
 
