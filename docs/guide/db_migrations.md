@@ -99,14 +99,14 @@ for name, version, filepath in datasets:
     dc.read_parquet(filepath).save(name, version=str(version))
 ```
 
-**Note:** While exporting and importing datasets to Parquet files preserves the datasets and their data, some metadata — such as dataset dependencies — will **not** be preserved. This information will be lost during this process.
+**Note:** While exporting and importing datasets to Parquet files preserves the datasets and their data, some metadata - such as dataset dependencies - will **not** be preserved. This information will be lost during this process.
 
 ---
 
 ## Notes
 
 - This limitation only applies to the **CLI**, which uses a local SQLite database.
-- The **Studio (SaaS)** version handles all schema migrations automatically — no manual steps are required.
+- The **Studio (SaaS)** version handles all schema migrations automatically - no manual steps are required.
 - The CLI only supports the default namespace/project: `local.local`.
 
 ---

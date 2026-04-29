@@ -1,12 +1,12 @@
----
-title: Welcome to DataChain
----
 # <a class="main-header-link" href="/" ><img style="display: inline-block;" src="/assets/datachain.svg" alt="DataChain"> <span style="display: inline-block;"> DataChain</span></a>
+
+<p align="center" class="subtitle">Data Memory for AI Agents</p>
 
 <style>
 .md-content .md-typeset h1 { font-weight: bold; display: flex; align-items: center; justify-content: center; gap: 5px; }
 .md-content .md-typeset h1 .main-header-link { display: flex; align-items: center; justify-content: center; gap: 8px;
  }
+.md-content .md-typeset .subtitle { font-size: 1.2em; color: var(--md-default-fg-color--light); margin-top: -0.5em; }
 </style>
 
 <p align="center">
@@ -24,84 +24,23 @@ title: Welcome to DataChain
   </a>
 </p>
 
-<p align="center">
-<em>🔨 Wrangle unstructured AI data at scale</em>
-</p>
+**The model floor is the same for everyone. The context ceiling is yours.**
 
+Your data lives in object storage (millions of images, hours of video, documents) and databases (structured tables). Every chain a teammate or agent runs deposits a typed, versioned dataset into **Data Memory**: embeddings, classifications, joins, scores. At scale, those datasets are too expensive to recompute and too scattered to find on demand.
 
-DataChain is a Python-based AI-data warehouse for transforming and
-analyzing unstructured data like images, audio, videos, text and PDFs.
-It integrates with external storage (e.g. S3, GCP, Azure, HuggingFace) to process data
-efficiently without data duplication and manages metadata in an internal
-database for easy and efficient querying.
+DataChain is the Python library that runs your code over heavy files and tables in parallel and queries Data Memory at warehouse speed. Read from S3, GCS, or Azure, run your code, save as a Pydantic-typed dataset; the next pipeline or agent picks up from there.
 
-## Use Cases
+## Why Data Memory
 
-1.  **ETL.** Pythonic framework for describing and running unstructured
-    data transformations and enrichments, applying models to data,
-    including LLMs.
-2.  **Analytics.** DataChain dataset is a table that combines all the
-    information about data objects in one place + it provides
-    DataFrame-like API and vectorized engine to do analytics on these
-    tables at scale.
-3.  **Versioning.** DataChain doesn't store, require moving or copying
-    data. Perfect use case is a bucket with thousands or millions of
-    images, videos, audio, PDFs.
+Claude Code, Cursor, and Codex made AI good at code by giving it the repo context. Agents over your data need the same: a **data context layer** with schemas, lineage, and prior conclusions. **That layer is captured during production, not curated after.** Every DataChain pipeline run deposits a typed, versioned dataset into Data Memory; the Knowledge Base compiles those datasets into what agents read. Without production through DataChain, the layer has nothing structured to describe.
 
-## Key Features
+## Get started
 
-📂 **Multimodal Dataset Versioning.**
+- **[🤖 Agents](getting-started/agents.md)** - knowledge base for Claude Code, Codex, and Cursor
+- **[🐍 Python](getting-started/python.md)** - full control over data processing
+- **[💡 Concepts](concepts/index.md)** - Data Memory, the Python and Query engines, and the Knowledge Base
+- **[🧩 Use Cases](use-cases/index.md)** - patterns where the harness changes the work
 
-:   -   Version unstructured data without moving or creating data
-        copies, by supporting references to S3, GCP, Azure, and local
-        file systems.
-    -   Multimodal data support: images, video, text, PDFs, JSONs, CSVs,
-        parquet, etc.
-    -   Unite files and metadata together into persistent, versioned,
-        columnar datasets.
-
-🐍 **Python-friendly.**
-
-:   -   Operate on Python objects and object fields: float scores,
-        strings, matrixes, LLM response objects.
-    -   Run Python code in a high-scale, terabytes size datasets, with
-        built-in parallelization and memory-efficient computing --- no
-        SQL or Spark required.
-
-🧠 **Data Enrichment and Processing.**
-
-:   -   Generate metadata using local AI models and LLM APIs.
-    -   Filter, join, and group datasets by metadata. Search by vector
-        embeddings.
-    -   High-performance vectorized operations on Python objects: sum,
-        count, avg, etc.
-    -   Pass datasets to PyTorch and TensorFlow, or export them back
-        into storage.
-
-
-## Documentation Guide
-
-The following pages provide detailed documentation on DataChain's features, architecture, and usage patterns. You'll learn how to effectively use DataChain for managing and processing unstructured data at scale.
-
-- [🏃🏼‍♂️ Quick Start](quick-start.md): Get up and running with DataChain in no time.
-- [🎯 Examples](examples.md): Explore practical examples and use cases.
-- [📚 Tutorials](tutorials.md): Learn how to use DataChain for specific tasks.
-- [📚 User Guide](guide/index.md): Deeper dive into DataChain technical aspects and supported workflows.
-- [🐍 API Reference](references/index.md): Dive into the technical details and API reference.
-- [🤝 Contributing](contributing.md): Learn how to contribute to DataChain.
-
-
-<!-- Open source and Studio -->
-
-## Open Source and Studio
-
-DataChain is available as an open source project and Studio as a proprietary solution for teams.
-
-- [DataChain Studio](https://studio.datachain.ai/):
-    - **Centralized dataset registry** to manage data, code and dependencies in one place.
-    - **Data Lineage** for data sources as well as derivative dataset.
-    - **UI for Multimodal Data** like images, videos, and PDFs.
-    - **Scalable Compute** to handle large datasets (100M+ files) and in-house AI model inference.
-    - **Access control** including SSO and team based collaboration.
-- [DataChain Open Source](https://github.com/datachain-ai/datachain):
-    - Python-based AI-data warehouse for transforming and analyzing unstructured data like images, audio, videos, text and PDFs.
+<div style="max-width: 680px; margin: 2em auto 0;">
+  <img src="assets/harness.svg" alt="DataChain as a data harness">
+</div>
