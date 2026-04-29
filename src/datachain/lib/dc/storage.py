@@ -20,9 +20,8 @@ if TYPE_CHECKING:
 
 
 def _single_file_starting_hash(files: Sequence[File]) -> str:
-    # Identifier mirrors calc_fingerprint: prefer version (versioned bucket)
-    # over etag (which can be unstable on GCS/Azure due to internal storage
-    # operations).
+    """Return an order-independent sha256 over (source, path, version-or-etag)
+    of the given files."""
     keys = sorted((f.source, f.path, f.version or f.etag) for f in files)
     h = hashlib.sha256()
     for source, path, identifier in keys:
