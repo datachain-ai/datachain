@@ -1,76 +1,113 @@
-<svg width="100%" viewBox="0 0 680 286" xmlns="http://www.w3.org/2000/svg">
+<svg width="100%" viewBox="0 0 615 526" xmlns="http://www.w3.org/2000/svg">
 <defs>
   <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
     <path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
   </marker>
+  <marker id="arrow-bold" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+    <path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  </marker>
 </defs>
 
-<rect x="182" y="34" width="316" height="242" rx="12" fill="none" stroke="var(--color-border-secondary)" stroke-width="1" stroke-dasharray="6 4" style="fill:none;stroke:rgba(31, 30, 29, 0.3);color:rgb(0, 0, 0);stroke-width:1px;stroke-dasharray:6px, 4px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
-<text x="340" y="50" text-anchor="middle" style="fill:rgb(61, 61, 58);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:12px;font-weight:400;text-anchor:middle;dominant-baseline:auto">DataChain — data context layer</text>
-
-<g style="fill:rgb(0, 0, 0);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto">
-  <rect x="30" y="58" width="140" height="70" rx="8" stroke-width="0.5" style="fill:rgb(250, 236, 231);stroke:rgb(153, 60, 29);color:rgb(0, 0, 0);stroke-width:0.5px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
-  <text x="100" y="82" text-anchor="middle" dominant-baseline="central" style="fill:rgb(113, 43, 19);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:14px;font-weight:500;text-anchor:middle;dominant-baseline:central">Agents</text>
-  <text x="100" y="100" text-anchor="middle" dominant-baseline="central" style="fill:rgb(153, 60, 29);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:12px;font-weight:400;text-anchor:middle;dominant-baseline:central">Claude Code,</text>
-  <text x="100" y="114" text-anchor="middle" dominant-baseline="central" style="fill:rgb(153, 60, 29);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:12px;font-weight:400;text-anchor:middle;dominant-baseline:central">Cursor, Codex</text>
-</g>
-<line x1="170" y1="93" x2="184" y2="93" marker-end="url(#arrow)" style="fill:none;stroke:rgb(115, 114, 108);color:rgb(0, 0, 0);stroke-width:1.5px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
-
-<g style="fill:rgb(0, 0, 0);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto">
-  <rect x="190" y="58" width="140" height="70" rx="8" stroke-width="0.5" style="fill:rgb(250, 238, 218);stroke:rgb(133, 79, 11);color:rgb(0, 0, 0);stroke-width:0.5px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
-  <text x="260" y="82" text-anchor="middle" dominant-baseline="central" style="fill:rgb(99, 56, 6);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:14px;font-weight:500;text-anchor:middle;dominant-baseline:central">Skills</text>
-  <text x="260" y="100" text-anchor="middle" dominant-baseline="central" style="font-family:var(--font-mono);fill:rgb(133, 79, 11);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:ui-monospace, monospace;font-size:12px;font-weight:400;text-anchor:middle;dominant-baseline:central">core</text>
-  <text x="260" y="114" text-anchor="middle" dominant-baseline="central" style="font-family:var(--font-mono);fill:rgb(133, 79, 11);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:ui-monospace, monospace;font-size:12px;font-weight:400;text-anchor:middle;dominant-baseline:central">knowledge</text>
-</g>
-<line x1="330" y1="93" x2="344" y2="93" marker-end="url(#arrow)" style="fill:none;stroke:rgb(115, 114, 108);color:rgb(0, 0, 0);stroke-width:1.5px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
-
-<g style="fill:rgb(0, 0, 0);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto">
-  <rect x="350" y="58" width="140" height="70" rx="8" stroke-width="1" style="fill:rgb(230, 241, 251);stroke:rgb(24, 95, 165);color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
-  <text x="420" y="82" text-anchor="middle" dominant-baseline="central" style="fill:rgb(12, 68, 124);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:14px;font-weight:500;text-anchor:middle;dominant-baseline:central">Library</text>
-  <text x="420" y="100" text-anchor="middle" dominant-baseline="central" style="font-family:var(--font-mono);fill:rgb(24, 95, 165);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:ui-monospace, monospace;font-size:12px;font-weight:400;text-anchor:middle;dominant-baseline:central">dc.read()</text>
-  <text x="420" y="114" text-anchor="middle" dominant-baseline="central" style="font-family:var(--font-mono);fill:rgb(24, 95, 165);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:ui-monospace, monospace;font-size:12px;font-weight:400;text-anchor:middle;dominant-baseline:central">.save()</text>
-</g>
-<line x1="490" y1="93" x2="504" y2="93" marker-end="url(#arrow)" style="fill:none;stroke:rgb(115, 114, 108);color:rgb(0, 0, 0);stroke-width:1.5px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
-
-<g style="fill:rgb(0, 0, 0);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto">
-  <rect x="510" y="58" width="140" height="70" rx="8" stroke-width="0.5" style="fill:rgb(241, 239, 232);stroke:rgb(95, 94, 90);color:rgb(0, 0, 0);stroke-width:0.5px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
-  <text x="580" y="82" text-anchor="middle" dominant-baseline="central" style="fill:rgb(68, 68, 65);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:14px;font-weight:500;text-anchor:middle;dominant-baseline:central">Storage</text>
-  <text x="580" y="100" text-anchor="middle" dominant-baseline="central" style="fill:rgb(95, 94, 90);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:12px;font-weight:400;text-anchor:middle;dominant-baseline:central">S3, GCS, Azure</text>
-  <text x="580" y="114" text-anchor="middle" dominant-baseline="central" style="fill:rgb(95, 94, 90);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:12px;font-weight:400;text-anchor:middle;dominant-baseline:central">local filesystem</text>
+<!-- Storage box (gray) — y=16, bottom=62 (shorter) -->
+<g>
+  <rect x="98" y="16" width="240" height="46" rx="8" fill="rgb(241,239,232)" stroke="rgb(95,94,90)" stroke-width="0.5"/>
+  <text x="218" y="32" text-anchor="middle" dominant-baseline="central" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="14" font-weight="500" fill="rgb(68,68,65)">Storage</text>
+  <text x="218" y="50" text-anchor="middle" dominant-baseline="central" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="12" fill="rgb(95,94,90)">S3, GCS, Azure</text>
 </g>
 
-<line x1="100" y1="128" x2="100" y2="158" marker-end="url(#arrow)" style="fill:none;stroke:rgb(115, 114, 108);color:rgb(0, 0, 0);stroke-width:1.5px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
-<line x1="260" y1="128" x2="260" y2="158" marker-end="url(#arrow)" style="fill:none;stroke:rgb(115, 114, 108);color:rgb(0, 0, 0);stroke-width:1.5px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
-<line x1="420" y1="128" x2="420" y2="158" marker-end="url(#arrow)" style="fill:none;stroke:rgb(115, 114, 108);color:rgb(0, 0, 0);stroke-width:1.5px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+<!-- Four arrows: Storage -> PE (bold for data volume) -->
+<line x1="120" y1="62" x2="120" y2="136" stroke="rgb(95,94,90)" stroke-width="2" marker-end="url(#arrow-bold)"/>
+<line x1="180" y1="62" x2="180" y2="136" stroke="rgb(95,94,90)" stroke-width="2" marker-end="url(#arrow-bold)"/>
+<line x1="240" y1="62" x2="240" y2="136" stroke="rgb(95,94,90)" stroke-width="2" marker-end="url(#arrow-bold)"/>
+<line x1="300" y1="62" x2="300" y2="136" stroke="rgb(95,94,90)" stroke-width="2" marker-end="url(#arrow-bold)"/>
+<text x="124" y="88" text-anchor="start" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="12" font-style="italic" fill="rgb(95,94,90)"><tspan x="124">image</tspan><tspan x="124" dy="14">files</tspan></text>
+<text x="184" y="88" text-anchor="start" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="12" font-style="italic" fill="rgb(95,94,90)"><tspan x="184">video</tspan><tspan x="184" dy="14">files</tspan></text>
+<text x="244" y="88" text-anchor="start" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="12" font-style="italic" fill="rgb(95,94,90)"><tspan x="244">sensor</tspan><tspan x="244" dy="14">files</tspan></text>
+<text x="304" y="88" text-anchor="start" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="12" font-style="italic" fill="rgb(95,94,90)"><tspan x="304">doc</tspan><tspan x="304" dy="14">files</tspan></text>
 
-<g style="fill:rgb(0, 0, 0);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto">
-  <rect x="30" y="160" width="140" height="106" rx="8" stroke-width="0.5" style="fill:rgb(250, 236, 231);stroke:rgb(153, 60, 29);color:rgb(0, 0, 0);stroke-width:0.5px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
-  <text x="100" y="180" text-anchor="middle" dominant-baseline="central" style="fill:rgb(113, 43, 19);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:14px;font-weight:500;text-anchor:middle;dominant-baseline:central">Code Context</text>
-  <text x="100" y="198" text-anchor="middle" dominant-baseline="central" style="fill:rgb(153, 60, 29);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:12px;font-weight:400;text-anchor:middle;dominant-baseline:central">git + commits</text>
-  <text x="100" y="213" text-anchor="middle" dominant-baseline="central" style="fill:rgb(153, 60, 29);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:12px;font-weight:400;text-anchor:middle;dominant-baseline:central">prompt caching</text>
-  <text x="100" y="228" text-anchor="middle" dominant-baseline="central" style="fill:rgb(153, 60, 29);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:12px;font-weight:400;text-anchor:middle;dominant-baseline:central">session memory</text>
-  <line x1="38" y1="240" x2="162" y2="240" stroke="var(--color-border-tertiary)" stroke-width="0.5" style="fill:rgb(0, 0, 0);stroke:rgba(31, 30, 29, 0.15);color:rgb(0, 0, 0);stroke-width:0.5px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
-  <text x="100" y="256" text-anchor="middle" dominant-baseline="central" style="font-family:var(--font-mono);fill:rgb(153, 60, 29);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:ui-monospace, monospace;font-size:12px;font-weight:400;text-anchor:middle;dominant-baseline:central">~/.claude/</text>
+<!-- Database box (gray) — y=16, bottom=62 -->
+<g>
+  <rect x="370" y="16" width="150" height="46" rx="8" fill="rgb(241,239,232)" stroke="rgb(95,94,90)" stroke-width="0.5"/>
+  <text x="445" y="32" text-anchor="middle" dominant-baseline="central" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="14" font-weight="500" fill="rgb(68,68,65)">Database</text>
+  <text x="445" y="50" text-anchor="middle" dominant-baseline="central" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="12" fill="rgb(95,94,90)">Postgres, Snowflake</text>
 </g>
 
-<g style="fill:rgb(0, 0, 0);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto">
-  <rect x="190" y="160" width="140" height="106" rx="8" stroke-width="1.5" style="fill:rgb(225, 245, 238);stroke:rgb(15, 110, 86);color:rgb(0, 0, 0);stroke-width:1.5px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
-  <text x="260" y="180" text-anchor="middle" dominant-baseline="central" style="fill:rgb(8, 80, 65);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:14px;font-weight:500;text-anchor:middle;dominant-baseline:central">Knowledge Base</text>
-  <text x="260" y="198" text-anchor="middle" dominant-baseline="central" style="fill:rgb(15, 110, 86);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:12px;font-weight:400;text-anchor:middle;dominant-baseline:central">dataset summaries</text>
-  <text x="260" y="213" text-anchor="middle" dominant-baseline="central" style="fill:rgb(15, 110, 86);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:12px;font-weight:400;text-anchor:middle;dominant-baseline:central">evolution history</text>
-  <text x="260" y="228" text-anchor="middle" dominant-baseline="central" style="fill:rgb(15, 110, 86);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:12px;font-weight:400;text-anchor:middle;dominant-baseline:central">agent queries</text>
-  <line x1="198" y1="240" x2="322" y2="240" stroke="var(--color-border-tertiary)" stroke-width="0.5" style="fill:rgb(0, 0, 0);stroke:rgba(31, 30, 29, 0.15);color:rgb(0, 0, 0);stroke-width:0.5px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
-  <text x="260" y="256" text-anchor="middle" dominant-baseline="central" style="font-family:var(--font-mono);fill:rgb(15, 110, 86);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:ui-monospace, monospace;font-size:12px;font-weight:400;text-anchor:middle;dominant-baseline:central">dc-knowledge/</text>
+
+<!-- DataChain Python Library container -->
+<rect x="76" y="116" width="490" height="202" rx="12" fill="rgba(24,95,165,0.04)" stroke="rgb(24,95,165)" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="550" y="132" text-anchor="end" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="16" font-weight="600" fill="rgb(12,68,124)">DataChain</text>
+<text x="550" y="150" text-anchor="end" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="13" font-weight="500" fill="rgb(24,95,165)">Python Library</text>
+
+<!-- Python Data Engine box (blue) with stacked layers for parallelism — y=136, bottom=192 -->
+<g>
+  <rect x="110" y="148" width="240" height="56" rx="8" fill="rgb(220,235,248)" stroke="rgb(24,95,165)" stroke-width="0.5"/>
+  <rect x="106" y="144" width="240" height="56" rx="8" fill="rgb(225,238,250)" stroke="rgb(24,95,165)" stroke-width="0.5"/>
+  <rect x="102" y="140" width="240" height="56" rx="8" fill="rgb(228,240,250)" stroke="rgb(24,95,165)" stroke-width="0.5"/>
+  <rect x="98" y="136" width="240" height="56" rx="8" fill="rgb(230,241,251)" stroke="rgb(24,95,165)" stroke-width="0.5"/>
+  <text x="218" y="158" text-anchor="middle" dominant-baseline="central" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="14" font-weight="500" fill="rgb(12,68,124)">Python Data Engine</text>
+  <text x="218" y="176" text-anchor="middle" dominant-baseline="central" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="12" fill="rgb(24,95,165)">parallel, async, checkpoints</text>
 </g>
 
-<g style="fill:rgb(0, 0, 0);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto">
-  <rect x="350" y="160" width="140" height="106" rx="8" stroke-width="0.5" style="fill:rgb(238, 237, 254);stroke:rgb(83, 74, 183);color:rgb(0, 0, 0);stroke-width:0.5px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
-  <text x="420" y="180" text-anchor="middle" dominant-baseline="central" style="fill:rgb(60, 52, 137);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:14px;font-weight:500;text-anchor:middle;dominant-baseline:central">Operational DB</text>
-  <text x="420" y="198" text-anchor="middle" dominant-baseline="central" style="fill:rgb(83, 74, 183);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:12px;font-weight:400;text-anchor:middle;dominant-baseline:central">named datasets</text>
-  <text x="420" y="213" text-anchor="middle" dominant-baseline="central" style="fill:rgb(83, 74, 183);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:12px;font-weight:400;text-anchor:middle;dominant-baseline:central">lineage · schemas</text>
-  <text x="420" y="228" text-anchor="middle" dominant-baseline="central" style="fill:rgb(83, 74, 183);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:12px;font-weight:400;text-anchor:middle;dominant-baseline:central">source code</text>
-  <line x1="358" y1="240" x2="482" y2="240" stroke="var(--color-border-tertiary)" stroke-width="0.5" style="fill:rgb(0, 0, 0);stroke:rgba(31, 30, 29, 0.15);color:rgb(0, 0, 0);stroke-width:0.5px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
-  <text x="420" y="256" text-anchor="middle" dominant-baseline="central" style="font-family:var(--font-mono);fill:rgb(83, 74, 183);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:ui-monospace, monospace;font-size:12px;font-weight:400;text-anchor:middle;dominant-baseline:central">.datachain/db</text>
+<!-- Arrow: Database -> PE (on top of PDE box) -->
+<line x1="445" y1="62" x2="320" y2="136" stroke="rgb(95,94,90)" stroke-width="2" marker-end="url(#arrow-bold)"/>
+<text x="415" y="92" text-anchor="start" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="12" font-style="italic" fill="rgb(95,94,90)">SQL</text>
+
+<!-- Data Memory cylinder (green) — y=234, bottom=302 -->
+<g>
+  <path d="M 98,244 A 120,10 0 0,0 338,244 L 338,292 A 120,10 0 0,1 98,292 Z" fill="rgb(225,245,238)" stroke="rgb(15,110,86)" stroke-width="1.5"/>
+  <ellipse cx="218" cy="244" rx="120" ry="10" fill="rgb(225,245,238)" stroke="rgb(15,110,86)" stroke-width="1.5"/>
+  <text x="218" y="264" text-anchor="middle" dominant-baseline="central" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="14" font-weight="600" fill="rgb(8,80,65)">Data Memory</text>
+  <text x="218" y="280" text-anchor="middle" dominant-baseline="central" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="12" fill="rgb(15,110,86)">versioned datasets</text>
 </g>
+
+<!-- Arrow: PE -> Data Memory (on top of cylinder) -->
+<line x1="218" y1="192" x2="218" y2="244" stroke="rgb(115,114,108)" stroke-width="1.5" marker-end="url(#arrow)"/>
+<text x="224" y="221" text-anchor="start" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="12" font-style="italic" fill="rgb(95,94,90)">data</text>
+
+<!-- Query Engine box (purple, narrower) — y=234 -->
+<g>
+  <rect x="410" y="234" width="140" height="56" rx="8" fill="rgb(238,237,254)" stroke="rgb(83,74,183)" stroke-width="0.5"/>
+  <text x="480" y="256" text-anchor="middle" dominant-baseline="central" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="14" font-weight="500" fill="rgb(60,52,137)">Query Engine</text>
+  <text x="480" y="274" text-anchor="middle" dominant-baseline="central" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="12" fill="rgb(83,74,183)">filter, join, similarity</text>
+</g>
+
+<!-- Arrows: Data Memory <-> Query Engine -->
+<line x1="338" y1="255" x2="410" y2="255" stroke="rgb(115,114,108)" stroke-width="1.5" marker-end="url(#arrow)"/>
+<line x1="410" y1="269" x2="338" y2="269" stroke="rgb(115,114,108)" stroke-width="1.5" marker-end="url(#arrow)"/>
+<text x="374" y="244" text-anchor="middle" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="12" font-style="italic" fill="rgb(95,94,90)">data</text>
+
+<!-- Arrow: Data Memory -> Knowledge Base -->
+<line x1="218" y1="302" x2="218" y2="360" stroke="rgb(115,114,108)" stroke-width="1.5" marker-end="url(#arrow)"/>
+<text x="224" y="335" text-anchor="start" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="12" font-style="italic" fill="rgb(95,94,90)">LLM enrichments</text>
+
+<!-- DataChain Skill and MCP container -->
+<rect x="76" y="346" width="490" height="82" rx="12" fill="rgba(133,79,11,0.04)" stroke="rgb(133,79,11)" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="550" y="362" text-anchor="end" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="16" font-weight="600" fill="rgb(99,56,6)">DataChain</text>
+<text x="550" y="380" text-anchor="end" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="13" font-weight="500" fill="rgb(133,79,11)">Skill and MCP</text>
+
+<!-- Knowledge Base box (amber) — y=360, bottom=416 -->
+<g>
+  <rect x="98" y="360" width="240" height="56" rx="8" fill="rgb(250,238,218)" stroke="rgb(133,79,11)" stroke-width="0.5"/>
+  <text x="218" y="382" text-anchor="middle" dominant-baseline="central" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="14" font-weight="500" fill="rgb(99,56,6)">Knowledge Base</text>
+  <text x="218" y="400" text-anchor="middle" dominant-baseline="central" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="12" fill="rgb(133,79,11)">dataset cards, schema, stats, lineage</text>
+</g>
+
+<!-- Arrow: KB -> Agents -->
+<line x1="218" y1="416" x2="218" y2="462" stroke="rgb(115,114,108)" stroke-width="1.5" marker-end="url(#arrow)"/>
+<text x="224" y="447" text-anchor="start" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="12" font-style="italic" fill="rgb(95,94,90)">data context</text>
+
+<!-- Agents box (orange) — y=462, bottom=518 -->
+<g>
+  <rect x="98" y="462" width="240" height="56" rx="8" fill="rgb(250,236,231)" stroke="rgb(153,60,29)" stroke-width="0.5"/>
+  <text x="218" y="484" text-anchor="middle" dominant-baseline="central" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="14" font-weight="500" fill="rgb(113,43,19)">Agents</text>
+  <text x="218" y="502" text-anchor="middle" dominant-baseline="central" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="12" fill="rgb(153,60,29)">Claude Code, Cursor, Codex</text>
+</g>
+
+<!-- Return arrows: Agents -> Python Data Engine, Knowledge Base, and Query Engine (consolidated on right) -->
+<path d="M 338,490 L 595,490 L 595,164" fill="none" stroke="rgb(115,114,108)" stroke-width="1.5"/>
+<line x1="595" y1="164" x2="350" y2="164" stroke="rgb(115,114,108)" stroke-width="1.5" marker-end="url(#arrow)"/>
+<line x1="595" y1="262" x2="550" y2="262" stroke="rgb(115,114,108)" stroke-width="1.5" marker-end="url(#arrow)"/>
+<line x1="595" y1="388" x2="338" y2="388" stroke="rgb(115,114,108)" stroke-width="1.5" marker-end="url(#arrow)"/>
+<text x="609" y="327" text-anchor="middle" transform="rotate(-90, 609, 327)" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="12" font-style="italic" fill="rgb(95,94,90)">next query</text>
 
 </svg>

@@ -41,8 +41,6 @@ Claude Code, Cursor, and Codex made AI good at code by giving it the repo contex
 - **[💡 Concepts](concepts/index.md)** - Data Memory, the Python and Query engines, and the Knowledge Base
 - **[🧩 Use Cases](use-cases/index.md)** - patterns where the harness changes the work
 
-## Architecture
-
 <div style="max-width: 680px; margin: 2em auto 0;">
-  <img src="assets/data-memory.svg" alt="DataChain architecture">
+  <img src="assets/harness.svg" alt="DataChain as a data harness">
 </div>
