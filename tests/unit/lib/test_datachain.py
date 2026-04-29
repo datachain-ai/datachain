@@ -621,6 +621,35 @@ def test_listings_reindex(test_session, tmp_dir):
     assert listings[0].version == "1.0.0"
 
 
+def test_listings_reindex_keeps_schema_changes(test_session, tmp_dir):
+    df = pd.DataFrame(DF_DATA)
+    df.to_parquet(tmp_dir / "df.parquet")
+
+    uri = tmp_dir.as_uri()
+    catalog = test_session.catalog
+
+    dc.read_storage(uri, session=test_session).exec()
+    ds_name, _, _ = parse_listing_uri(uri)
+    dataset = catalog.get_dataset(ds_name, versions=["1.0.0"])
+    current_schema = dataset.get_version("1.0.0").schema
+
+    def _to_schema_dict(column_type):
+        column_type = column_type() if isinstance(column_type, type) else column_type
+        return column_type.to_dict()
+
+    legacy_schema = {
+        name: _to_schema_dict(column_type)
+        for name, column_type in current_schema.items()
+        if name not in {"file__content_type", "file__ext"}
+    }
+    catalog.metastore.update_dataset_version(dataset, "1.0.0", schema=legacy_schema)
+
+    dc.read_storage(uri, session=test_session, update=True).exec()
+
+    listings = list(dc.listings(session=test_session).to_values("listing"))
+    assert [listing.version for listing in listings] == ["1.0.0", "2.0.0"]
+
+
 def test_listings_reindex_subpath_local_file_system(test_session, tmp_dir):
     subdir = tmp_dir / "subdir"
     os.mkdir(subdir)
