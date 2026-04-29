@@ -5017,6 +5017,20 @@ def test_order_by_after_offset(test_session, boundary_counter):
     boundary_counter.assert_count(1)
 
 
+def test_shuffle_after_limit_preserves_boundary_state(test_session, boundary_counter):
+    chain = dc.read_values(numbers=[1, 2, 3, 4, 5], session=test_session).order_by(
+        "numbers"
+    )
+    # shuffle inserts RegenerateSystemColumns before order_by("sys.rand"). If
+    # that no-op step resets state, the shuffle order_by misses the boundary
+    # after limit and the final filter is pushed below the limit.
+    result = sorted(
+        chain.limit(3).shuffle().filter(C("numbers") > 1).to_values("numbers")
+    )
+    assert result == [2, 3]
+    boundary_counter.assert_count(1)
+
+
 def test_limit_after_limit(test_session, boundary_counter):
     chain = dc.read_values(numbers=[1, 2, 3, 4, 5], session=test_session).order_by(
         "numbers"

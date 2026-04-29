@@ -13,7 +13,7 @@ from copy import copy
 from datetime import datetime, timezone
 from functools import wraps
 from types import GeneratorType
-from typing import TYPE_CHECKING, Any, Protocol, TypeVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Protocol, TypeVar, cast
 from uuid import uuid4
 
 import attrs
@@ -222,6 +222,8 @@ class QueryState:
 @frozen
 class Step(ABC):
     """A query processing step (filtering, mutation, etc.)"""
+
+    resets_query_state_after_apply: ClassVar[bool] = True
 
     @abstractmethod
     def apply(
@@ -1879,6 +1881,8 @@ class RowGenerator(UDFStep):
 
 @frozen
 class SQLClause(Step, ABC):
+    resets_query_state_after_apply: ClassVar[bool] = False
+
     def apply(
         self,
         query_generator: QueryGenerator,
@@ -1921,6 +1925,10 @@ class SQLClause(Step, ABC):
 
 @frozen
 class RegenerateSystemColumns(Step):
+    # _regenerate_system_columns() may return the original selectable unchanged.
+    # Preserve pending flags so a later SQLClause can still emit its boundary.
+    resets_query_state_after_apply: ClassVar[bool] = False
+
     catalog: "Catalog"
 
     def hash_inputs(self) -> str:
@@ -2781,13 +2789,10 @@ class DatasetQuery:
                 state=state,
             )  # a chain of steps linked by results
             self.dependencies.update(result.dependencies)
-            # Steps that don't manage state flags themselves (UDFs, joins,
-            # unions, set ops, raw selects in default SQLClause.apply) materialize
-            # their result via a fresh subquery, so any prior state flags no
-            # longer apply. SQLClause subclasses that *do* manage state (filter,
-            # order_by, limit, offset, distinct, group_by) handle reset/update
-            # themselves inside their own apply().
-            if not isinstance(step, SQLClause):
+            # Most non-SQLClause steps materialize a fresh relation, so any
+            # prior query-state flags no longer apply. Steps that preserve the
+            # in-flight selectable, or manage flags themselves, opt out.
+            if step.resets_query_state_after_apply:
                 state.reset()
 
         return result.query_generator
