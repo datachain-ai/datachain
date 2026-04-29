@@ -4963,6 +4963,26 @@ def test_filter_after_group_by(test_session, boundary_counter):
     boundary_counter.assert_count(1)
 
 
+def test_filter_after_distinct_then_group_by(test_session, boundary_counter):
+    chain = dc.read_values(
+        path=["a", "b", "c", "d"],
+        session_id=["s1", "s1", "s2", "s3"],
+        position=[1, 1, 1, 1],
+        session=test_session,
+    )
+    grouped = chain.distinct("path").group_by(
+        cnt=func.count(),
+        partition_by=("session_id", "position"),
+    )
+
+    rows = sorted(
+        (r["session_id"], r["position"], r["cnt"])
+        for r in grouped.filter(C("cnt") > 1).to_records()
+    )
+    assert rows == [("s1", 1, 2)]
+    boundary_counter.assert_count(1)
+
+
 def test_filter_after_limit(test_session, boundary_counter):
     chain = dc.read_values(numbers=[1, 2, 3, 4, 5], session=test_session).order_by(
         "numbers"
@@ -5214,3 +5234,14 @@ def test_count_after_distinct(test_session, boundary_counter):
     )
     assert chain.distinct("numbers").count() == 4
     boundary_counter.assert_count(0)
+
+
+def test_count_after_limit_then_distinct(test_session, boundary_counter):
+    chain = dc.read_values(
+        session_id=["s1", "s1", "s2", "s2", "s3"],
+        position=[1, 1, 2, 2, 3],
+        session=test_session,
+    ).order_by("session_id", "position")
+
+    assert chain.limit(4).distinct("session_id", "position").count() == 2
+    boundary_counter.assert_count(1)
