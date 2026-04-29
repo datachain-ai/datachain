@@ -18,6 +18,7 @@ else:
 import attrs
 import sqlalchemy as sa
 from sqlalchemy.sql.expression import true
+from sqlalchemy.sql.selectable import GenerativeSelect
 
 from datachain import json
 from datachain.client import Client
@@ -42,7 +43,7 @@ if TYPE_CHECKING:
         _FromClauseArgument,
         _OnClauseArgument,
     )
-    from sqlalchemy.sql.selectable import FromClause, GenerativeSelect
+    from sqlalchemy.sql.selectable import FromClause
     from sqlalchemy.types import TypeEngine
 
     from datachain.data_storage import schema
@@ -55,7 +56,7 @@ logger = logging.getLogger("datachain")
 
 SELECT_BATCH_SIZE = 100_000  # number of rows to fetch at a time
 
-QuerySelectType = TypeVar("QuerySelectType", bound="GenerativeSelect")
+QuerySelectType = TypeVar("QuerySelectType", bound=GenerativeSelect)
 
 
 class AbstractWarehouse(ABC, Serializable):
