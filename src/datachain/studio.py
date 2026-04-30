@@ -19,7 +19,7 @@ from datachain.dataset import (
 )
 from datachain.error import DataChainError
 from datachain.remote.studio import StudioClient
-from datachain.utils import STUDIO_URL, flatten
+from datachain.utils import flatten
 
 logger = logging.getLogger("datachain")
 
@@ -161,16 +161,11 @@ def set_team(args: "Namespace"):
 def login(args: "Namespace"):
     from dvc_studio_client.auth import StudioAuthError, get_access_token
 
-    from datachain.remote.studio import get_studio_env_variable
+    from datachain.remote.studio import get_studio_url
 
     config = Config().read().get("studio", {})
     name = args.name
-    hostname = (
-        args.hostname
-        or get_studio_env_variable("URL")
-        or config.get("url")
-        or STUDIO_URL
-    )
+    hostname = args.hostname or get_studio_url(config)
     scopes = args.scopes
 
     if config.get("url", hostname) == hostname and "token" in config:
@@ -201,14 +196,40 @@ def login(args: "Namespace"):
 
 
 def logout(local: bool = False):
-    level = ConfigLevel.LOCAL if local else ConfigLevel.GLOBAL
-    with Config(level).edit() as conf:
-        token = conf.get("studio", {}).get("token")
-        if not token:
-            raise DataChainError(
-                "Not logged in to Studio. Log in with 'datachain auth login'."
-            )
+    from datachain.remote.studio import get_studio_url
 
+    level = ConfigLevel.LOCAL if local else ConfigLevel.GLOBAL
+    config = Config(level).read().get("studio", {})
+    token = config.get("token")
+    if not token:
+        raise DataChainError(
+            "Not logged in to Studio. Log in with 'datachain auth login'."
+        )
+
+    studio_url = get_studio_url(config)
+    try:
+        response = requests.post(
+            f"{studio_url}/api/device-logout",
+            headers={"Authorization": f"token {token}"},
+            timeout=10,
+        )
+    except requests.RequestException as exc:
+        raise DataChainError(
+            "Could not reach Studio to revoke the token. Please try again later."
+        ) from exc
+
+    if response.status_code == 401:
+        print(
+            "Token was already revoked or is invalid on Studio.",
+            file=sys.stderr,
+        )
+    elif not response.ok:
+        raise DataChainError(
+            f"Studio returned HTTP {response.status_code} while revoking "
+            f"the token. Please try again later."
+        )
+
+    with Config(level).edit() as conf:
         del conf["studio"]["token"]
 
     print("Logged out from Studio. (you can log back in with 'datachain auth login')")
