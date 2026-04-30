@@ -4,7 +4,7 @@ DataChain Studio provides comprehensive ML experiment tracking, allowing you to 
 
 ## Overview
 
-DataChain Studio integrates with DVC (acquired by lakeFS) to provide a powerful web-based interface for managing your ML experiments. By connecting your Git repositories, you can visualize experiment results, compare different runs, and collaborate with your team—all without leaving your browser.
+DataChain Studio integrates with DVC (acquired by lakeFS) to provide a powerful web-based interface for managing your ML experiments. By connecting your Git repositories, you can visualize experiment results, compare different runs, and collaborate with your team-all without leaving your browser.
 
 ### Key Features
 

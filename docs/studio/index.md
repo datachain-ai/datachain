@@ -24,7 +24,6 @@ New to DataChain Studio? Start with these guides:
 - **[User Guide](user-guide/index.md)** - Learn how to use DataChain Studio features
 - **[API Reference](api/index.md)** - Integrate with Studio programmatically
 - **[Webhooks](webhooks.md)** - Set up event notifications
-- **[Self-hosting](self-hosting/index.md)** - Deploy your own Studio instance
 
 ## Key Features
 
@@ -55,4 +54,4 @@ New to DataChain Studio? Start with these guides:
 - Command-line tools for developers
 
 
-Visit [studio.datachain.ai](https://studio.datachain.ai) to get started, or learn about [self-hosting](self-hosting/index.md) for enterprise deployments.
+Visit [studio.datachain.ai](https://studio.datachain.ai) to get started.

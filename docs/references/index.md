@@ -18,7 +18,7 @@ DataChain's API is organized into several modules:
     - [BBox](./data-types/bbox.md) - Bounding box data type
     - [Pose](./data-types/pose.md) - Pose data type
     - [Segment](./data-types/segment.md) - Segment data type
-- [UDF](./udf.md) - User-defined functions and transformations
+- [Python Operations](./udf.md) - Python functions and class-based operations
 - [Functions](./func.md) - Built-in functions for data manipulation and analysis
 - [Torch](./torch.md) - PyTorch data loading utilities
 - [Toolkit](./toolkit.md) - Functions for common DS/ML operations
