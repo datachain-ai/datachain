@@ -1,5 +1,5 @@
+import os
 import sys
-import time
 
 import pandas as pd
 import pytest
@@ -223,8 +223,9 @@ def test_read_storage_single_local_file_hash_changes_on_edit(test_session, tmp_d
 
     h1 = dc.read_storage(uri, session=test_session)._query.hash()
 
-    time.sleep(0.01)
     f.write_text("hello world")
+    st = f.stat()
+    os.utime(f, ns=(st.st_atime_ns, st.st_mtime_ns + 5 * 10**9))
 
     h2 = dc.read_storage(uri, session=test_session)._query.hash()
     assert h1 != h2
