@@ -40,6 +40,44 @@ CLOUD_STORAGE_PROTOCOLS = {"s3", "gs", "az", "hf"}
 
 ResultQueue = asyncio.Queue[Sequence["File"] | None]
 
+# Keys that storage backends use to expose MIME / content-type on info dicts:
+#   - S3 (HEAD / s3fs `_info`): "ContentType"
+#   - GCS (object resource):    "contentType"
+#   - Azure (adlfs `_details`): "content_settings".content_type
+#   - HTTP (fsspec `_file_info` from Content-Type header): "mimetype"
+_STORAGE_CONTENT_TYPE_KEYS: tuple[str, ...] = (
+    "ContentType",
+    "contentType",
+    "content_type",
+    "mimetype",
+)
+
+
+def resolve_content_type(info: dict[str, Any]) -> str:
+    """Extract a MIME content-type from a storage info dict.
+
+    Returns the first non-empty value found under one of the known keys,
+    normalized to lowercase and stripped of any ``;``-delimited parameters
+    (e.g. charset). Returns an empty string when the backend does not
+    surface a content-type — no extension-based fallback.
+    """
+    for key in _STORAGE_CONTENT_TYPE_KEYS:
+        v = info.get(key)
+        if v:
+            return str(v).split(";", 1)[0].strip().lower()
+
+    content_settings = info.get("content_settings")
+    if content_settings:
+        v = (
+            content_settings.get("content_type")
+            if isinstance(content_settings, dict)
+            else getattr(content_settings, "content_type", None)
+        )
+        if v:
+            return str(v).split(";", 1)[0].strip().lower()
+
+    return ""
+
 
 def is_cloud_uri(uri: str) -> bool:
     protocol = urlparse(uri).scheme

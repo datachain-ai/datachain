@@ -3463,6 +3463,11 @@ class DatasetQuery:
         if old_fp != new_fp:
             return None
 
+        old_schema_keys = set(dataset.get_version(prev_version).schema)
+        new_schema_keys = set(dataset.get_version(version).schema)
+        if old_schema_keys != new_schema_keys:
+            return None
+
         self.catalog.remove_dataset_version(dataset, version)
         # updating TTL of a bucket listing
         self.catalog.metastore.update_dataset_version(

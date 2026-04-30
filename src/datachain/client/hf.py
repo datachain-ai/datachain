@@ -4,7 +4,7 @@ from typing import Any
 
 from datachain.lib.file import File
 
-from .fsspec import Client
+from .fsspec import Client, resolve_content_type
 
 
 class classproperty:  # noqa: N801
@@ -97,6 +97,7 @@ class HfClient(Client):
             etag=v.get("blob_id", ""),
             version=last_commit.oid,
             last_modified=last_commit.date,
+            content_type=resolve_content_type(v),
         )
 
     def rel_path(self, path):

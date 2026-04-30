@@ -5,7 +5,7 @@ from adlfs import AzureBlobFileSystem
 from datachain.lib.file import File
 from datachain.progress import tqdm
 
-from .fsspec import DELIMITER, Client, ResultQueue
+from .fsspec import DELIMITER, Client, ResultQueue, resolve_content_type
 
 
 class AzureClient(Client):
@@ -23,6 +23,7 @@ class AzureClient(Client):
             is_latest=version_id is None or bool(v.get("is_current_version")),
             last_modified=v["last_modified"],
             size=v.get("size", ""),
+            content_type=resolve_content_type(v),
         )
 
     def url(

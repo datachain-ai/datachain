@@ -59,6 +59,8 @@ class Node:
     size: int = 0
     location: str | None = None
     source: StorageURI = StorageURI("")  # noqa: RUF009
+    content_type: str = ""
+    ext: str = ""
     dir_type: int = DirType.FILE
 
     @property
@@ -102,6 +104,8 @@ class Node:
             is_latest=self.is_latest,
             location=self.location,
             last_modified=self.last_modified or TIME_ZERO,
+            content_type=self.content_type,
+            ext=self.ext,
         )
 
     @classmethod
@@ -115,6 +119,8 @@ class Node:
             last_modified=f.last_modified,
             version=f.version,
             location=str(f.location) if f.location else None,
+            content_type=f.content_type,
+            ext=f.ext,
             dir_type=DirType.FILE,
         )
 
@@ -134,6 +140,8 @@ class Node:
             last_modified=_dval("last_modified"),
             version=_dval("version"),
             location=_dval("location"),
+            content_type=_dval("content_type") or "",
+            ext=_dval("ext") or "",
             dir_type=DirType.FILE,
         )
 
