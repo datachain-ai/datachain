@@ -36,6 +36,14 @@ def get_studio_env_variable(name: str) -> Any:
     return os.environ.get(f"DATACHAIN_STUDIO_{name}")
 
 
+def get_studio_url(config: dict | None = None) -> str:
+    if config is None:
+        config = Config().read().get("studio", {}) or {}
+    return (get_studio_env_variable("URL") or config.get("url") or STUDIO_URL).rstrip(
+        "/"
+    )
+
+
 def _is_server_error(status_code: int) -> bool:
     return str(status_code).startswith("5")
 
@@ -91,9 +99,7 @@ class StudioClient:
 
     @property
     def url(self) -> str:
-        return (
-            get_studio_env_variable("URL") or self.config.get("url") or STUDIO_URL
-        ).rstrip("/") + "/api"
+        return f"{get_studio_url(self.config)}/api"
 
     @property
     def config(self) -> dict:
