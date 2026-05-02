@@ -72,7 +72,8 @@ class ArrowGenerator(Generator):
     def process(self, file: File):
         if file._caching_enabled:
             file.ensure_cached()
-            cache_path = file.get_local_path()
+        cache_path = file.get_local_path()
+        if cache_path:
             fs_path = file.path
             fs = ReferenceFileSystem({fs_path: [cache_path]})
         else:

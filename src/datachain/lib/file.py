@@ -142,7 +142,7 @@ class TarVFile(VFile):
             raise VFileError("'size' is not specified", file.source, file.path)
 
         client = file._catalog.get_client(tar_file.source)
-        fd = client.open_object(tar_file, use_cache=file._caching_enabled)
+        fd = client.open_object(tar_file, use_cache=True)
         return FileSlice(fd, offset, size, file.name)
 
     @classmethod
@@ -516,9 +516,9 @@ class File(DataModel):
                 return
             if self._caching_enabled:
                 self.ensure_cached()
-            with client.open_object(
-                self, use_cache=self._caching_enabled, cb=self._download_cb
-            ) as f:
+            # _caching_enabled is a write-side switch only; reads always consult
+            # the cache (cache hit → local, miss → remote stream).
+            with client.open_object(self, use_cache=True, cb=self._download_cb) as f:
                 with self._wrap_text(f, mode, open_kwargs=open_kwargs) as wrapped:
                     yield wrapped
             return
@@ -655,12 +655,12 @@ class File(DataModel):
 
         if self._caching_enabled:
             self.ensure_cached()
-            source = self.get_local_path()
-            assert source, "File was not cached"
-        elif self.source.startswith("file://"):
-            source = self.get_fs_path()
-        else:
-            raise OSError(errno.EXDEV, "can't link across filesystems")
+        source = self.get_local_path()
+        if source is None:
+            if self.source.startswith("file://"):
+                source = self.get_fs_path()
+            else:
+                raise OSError(errno.EXDEV, "can't link across filesystems")
 
         return os.symlink(source, destination)
 
@@ -1665,9 +1665,9 @@ class ArrowRow(DataModel):
 
         if self.file._caching_enabled:
             self.file.ensure_cached()
-            path = self.file.get_local_path()
+        path = self.file.get_local_path()
+        if path:
             ds = dataset(path, **self.kwargs)
-
         else:
             path = self.file.get_fs_path()
             ds = dataset(path, filesystem=self.file.get_fs(), **self.kwargs)

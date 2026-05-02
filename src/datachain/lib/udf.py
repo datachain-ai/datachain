@@ -429,7 +429,12 @@ def _get_cache(
     tmp_dir = cache.tmp_dir
     assert tmp_dir
     if prefetch and not use_cache:
-        return temporary_cache(tmp_dir, prefix="prefetch-")
+        # Temp primary with persistent as read-only fallback: prefetch reads
+        # check both, but writes and eviction stay in temp so cache=False
+        # never persists files.
+        return temporary_cache(
+            tmp_dir, prefix="prefetch-", fallback=cache.as_readonly()
+        )
     return nullcontext(cache)
 
 

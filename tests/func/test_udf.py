@@ -10,6 +10,8 @@ import multiprocess as mp
 import pytest
 
 import datachain as dc
+from datachain.client.fileslice import FileWrapper
+from datachain.client.fsspec import Client
 from datachain.func import path as pathfunc
 from datachain.lib.file import AudioFile, AudioFragment, File
 from datachain.lib.udf import Mapper, UdfRunError
@@ -467,6 +469,88 @@ def test_map_file(cloud_test_catalog, use_cache, prefetch, monkeypatch):
     for file in chain.to_values("file"):
         assert bool(file.get_local_path()) is use_cache
     assert not os.listdir(ctc.catalog.cache.tmp_dir)
+
+
+def _read_name(file: File) -> str:
+    file.read()
+    return file.name
+
+
+def _read_size(file: File) -> int:
+    return len(file.read())
+
+
+def _make_files(tmp_dir):
+    for name, payload in (("a.txt", "hello"), ("b.txt", "world"), ("c.txt", "!")):
+        (tmp_dir / name).write_text(payload)
+    return tmp_dir.as_uri()
+
+
+def test_map_reads_from_persistent_cache_when_cache_disabled(
+    tmp_dir, test_session, mocker
+):
+    """Issue #1725 (Bug A): when cache=False but the persistent cache already
+    holds the files (e.g. a previous run with cache=True), the prefetcher
+    must NOT re-download — it should hit the persistent cache."""
+    uri = _make_files(tmp_dir)
+
+    # Step 1: warm the persistent cache by running with cache=True.
+    (
+        dc.read_storage(uri, session=test_session)
+        .settings(cache=True, prefetch=0)
+        .map(name=_read_name)
+        .save("warmed")
+    )
+
+    # Step 2: run again with cache=False, prefetch=2.
+    # Spy AFTER the warm-up so step 1's downloads don't count.
+    put_in_cache_spy = mocker.spy(Client, "_put_in_cache")
+    (
+        dc.read_dataset("warmed", session=test_session)
+        .settings(cache=False, prefetch=2)
+        .map(name2=_read_name)
+        .save("rerun")
+    )
+
+    assert put_in_cache_spy.call_count == 0, (
+        f"prefetcher re-downloaded {put_in_cache_spy.call_count} files "
+        "even though they are in the persistent cache"
+    )
+
+
+def test_map_file_read_uses_cache_when_prefetch_disabled(tmp_dir, test_session, mocker):
+    """Issue #1725 (Bug B): with cache=False AND prefetch=0 (no prefetcher to
+    flip _caching_enabled=True), file.read() inside the UDF must still read
+    from the persistent cache when it has the file, not stream from remote.
+
+    With prefetch>0 the prefetcher promotes _caching_enabled to True after
+    download (see File._prefetch), masking this bug. With prefetch=0 there is
+    no such promotion, so the read path stays uncached unless we fix it."""
+    uri = _make_files(tmp_dir)
+
+    # Warm persistent cache first so the rerun has hits available.
+    (
+        dc.read_storage(uri, session=test_session)
+        .settings(cache=True, prefetch=0)
+        .map(name=_read_name)
+        .save("warmed")
+    )
+
+    # FileWrapper is only constructed in the "open remote" branch of
+    # Client.open_object — every construction = one remote read.
+    file_wrapper_spy = mocker.spy(FileWrapper, "__init__")
+
+    (
+        dc.read_dataset("warmed", session=test_session)
+        .settings(cache=False, prefetch=0)
+        .map(size=_read_size)
+        .save("rerun")
+    )
+
+    assert file_wrapper_spy.call_count == 0, (
+        f"file.read() opened {file_wrapper_spy.call_count} files from remote "
+        "even though they are in the persistent cache"
+    )
 
 
 @pytest.mark.parametrize("use_cache", [False, True])
