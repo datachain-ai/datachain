@@ -2567,6 +2567,7 @@ class DatasetQuery:
         self.checkpoints_enabled = checkpoints_enabled
 
         self.list_ds_name: str | None = None
+        self._starting_hash_override: str | None = None
         self.dialect = self.catalog.warehouse.db.dialect
 
         if name is None:
@@ -2631,6 +2632,8 @@ class DatasetQuery:
 
     @property
     def _starting_step_hash(self) -> str:
+        if self._starting_hash_override is not None:
+            return self._starting_hash_override
         if self.starting_step:
             return self.starting_step.hash()
         if self.list_ds_name:
@@ -2639,6 +2642,25 @@ class DatasetQuery:
                 "Call resolve_listing() first."
             )
         return ""
+
+    def override_starting_hash(self, hash_value: str) -> None:
+        """Replace the starting-step hash with a caller-supplied value.
+
+        The default starting hash comes from the underlying dataset version's
+        UUID. That works when the chain starts from a "real" dataset (an
+        explicit dataset, or a listing whose version UUID is content-stable
+        thanks to the listing fingerprint). It does NOT work when the chain
+        starts from a temp dataset created on-the-fly with a random UUID
+        (e.g. read_values / read_records / single-file read_storage), because
+        the random UUID makes the chain hash non-deterministic across runs
+        and checkpoints can never be reused.
+
+        Callers that have a content-derived identifier for the starting data
+        (e.g. file URI + etag/version for single-file reads) can use this to
+        pin the starting hash so identical inputs across runs produce
+        identical chain hashes.
+        """
+        self._starting_hash_override = hash_value
 
     def __iter__(self):
         return iter(self.db_results())

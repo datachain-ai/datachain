@@ -1,5 +1,7 @@
+import os
 import sys
 
+import pandas as pd
 import pytest
 
 import datachain as dc
@@ -203,3 +205,87 @@ def test_calc_fingerprint_order_independent(test_session):
     fp1 = calc_fingerprint(test_session, ds1, ds1.latest_version)
     fp2 = calc_fingerprint(test_session, ds2, ds2.latest_version)
     assert fp1 == fp2
+
+
+def test_read_storage_single_local_file_deterministic_hash(test_session, tmp_dir):
+    (tmp_dir / "a.txt").write_text("hello")
+    uri = (tmp_dir / "a.txt").as_uri()
+
+    h1 = dc.read_storage(uri, session=test_session)._query.hash()
+    h2 = dc.read_storage(uri, session=test_session)._query.hash()
+    assert h1 == h2
+
+
+def test_read_storage_single_local_file_hash_changes_on_edit(test_session, tmp_dir):
+    f = tmp_dir / "a.txt"
+    f.write_text("hello")
+    uri = f.as_uri()
+
+    h1 = dc.read_storage(uri, session=test_session)._query.hash()
+
+    f.write_text("hello world")
+    st = f.stat()
+    os.utime(f, ns=(st.st_atime_ns, st.st_mtime_ns + 5 * 10**9))
+
+    h2 = dc.read_storage(uri, session=test_session)._query.hash()
+    assert h1 != h2
+
+
+def test_read_storage_single_file_deterministic_hash_across_clouds(
+    cloud_test_catalog,
+):
+    ctc = cloud_test_catalog
+    uri = f"{ctc.src_uri}/description"
+
+    h1 = dc.read_storage(uri, session=ctc.session)._query.hash()
+    h2 = dc.read_storage(uri, session=ctc.session)._query.hash()
+    assert h1 == h2
+
+
+def test_read_csv_single_local_file_deterministic_hash(test_session, tmp_dir):
+    f = tmp_dir / "data.csv"
+    pd.DataFrame({"name": ["Alice", "Bob"], "age": [30, 25]}).to_csv(f, index=False)
+    uri = f.as_uri()
+
+    h1 = dc.read_csv(uri, session=test_session)._query.hash()
+    h2 = dc.read_csv(uri, session=test_session)._query.hash()
+    assert h1 == h2
+
+
+def test_read_parquet_single_local_file_deterministic_hash(test_session, tmp_dir):
+    f = tmp_dir / "data.parquet"
+    pd.DataFrame({"name": ["Alice", "Bob"], "age": [30, 25]}).to_parquet(f)
+    uri = f.as_uri()
+
+    h1 = dc.read_parquet(uri, session=test_session)._query.hash()
+    h2 = dc.read_parquet(uri, session=test_session)._query.hash()
+    assert h1 == h2
+
+
+def test_read_storage_multiple_single_files_order_independent(test_session, tmp_dir):
+    (tmp_dir / "a.txt").write_text("hello")
+    (tmp_dir / "b.txt").write_text("world")
+    uri_a = (tmp_dir / "a.txt").as_uri()
+    uri_b = (tmp_dir / "b.txt").as_uri()
+
+    h1 = dc.read_storage([uri_a, uri_b], session=test_session)._query.hash()
+    h2 = dc.read_storage([uri_b, uri_a], session=test_session)._query.hash()
+    assert h1 == h2
+
+
+def test_read_storage_mixed_single_file_and_dir_deterministic(test_session, tmp_dir):
+    sub = tmp_dir / "sub"
+    sub.mkdir()
+    (sub / "a.txt").write_text("hello")
+    (sub / "b.txt").write_text("world")
+    standalone = tmp_dir / "standalone.txt"
+    standalone.write_text("solo")
+
+    dir_uri = sub.as_uri()
+    file_uri = standalone.as_uri()
+
+    chain1 = dc.read_storage([dir_uri, file_uri], session=test_session)
+    chain2 = dc.read_storage([dir_uri, file_uri], session=test_session)
+    chain1._query.resolve_all_listings()
+    chain2._query.resolve_all_listings()
+    assert chain1._query.hash() == chain2._query.hash()

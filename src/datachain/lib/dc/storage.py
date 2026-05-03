@@ -1,3 +1,4 @@
+import hashlib
 import os
 from collections.abc import Sequence
 from functools import reduce
@@ -10,12 +11,22 @@ from datachain.lib.dc.storage_pattern import (
     split_uri_pattern,
     validate_cloud_bucket_name,
 )
-from datachain.lib.file import FileType, get_file_type
+from datachain.lib.file import File, FileType, get_file_type
 from datachain.lib.listing import get_file_info, get_listing, list_bucket, ls
 from datachain.query import Session
 
 if TYPE_CHECKING:
     from .datachain import DataChain
+
+
+def _files_starting_hash(files: Sequence[File]) -> str:
+    """Return an order-independent sha256 over (source, path, version-or-etag)
+    of the given files."""
+    keys = sorted((f.source, f.path, f.version or f.etag) for f in files)
+    h = hashlib.sha256()
+    for source, path, identifier in keys:
+        h.update(f"{source}\0{path}\0{identifier}\0".encode())
+    return h.hexdigest()
 
 
 def read_storage(
@@ -257,6 +268,7 @@ def read_storage(
         file_chain.signals_schema = file_chain.signals_schema.mutate(
             {f"{column}": file_type}
         )
+        file_chain._query.override_starting_hash(_files_starting_hash(file_values))
         storage_chain = storage_chain.union(file_chain) if storage_chain else file_chain
 
     assert storage_chain is not None
