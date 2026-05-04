@@ -3,12 +3,13 @@ import os
 from typing import Any, cast
 
 from botocore.exceptions import NoCredentialsError
+from fsspec.asyn import get_loop, sync
 from s3fs import S3FileSystem
 
 from datachain.lib.file import File
 from datachain.progress import tqdm
 
-from .fsspec import DELIMITER, Client, ResultQueue
+from .fsspec import DELIMITER, BucketStatus, Client, ResultQueue
 
 UPDATE_CHUNKSIZE = 1000
 
@@ -18,8 +19,8 @@ class ClientS3(Client):
     PREFIX = "s3://"
     protocol = "s3"
 
-    @classmethod
-    def create_fs(cls, **kwargs) -> S3FileSystem:
+    @staticmethod
+    def _normalize_s3_kwargs(kwargs: dict) -> dict:
         if "aws_endpoint_url" in kwargs:
             kwargs.setdefault("client_kwargs", {}).setdefault(
                 "endpoint_url", kwargs.pop("aws_endpoint_url")
@@ -30,6 +31,11 @@ class ClientS3(Client):
             kwargs.setdefault("secret", kwargs.pop("aws_secret"))
         if "aws_token" in kwargs:
             kwargs.setdefault("token", kwargs.pop("aws_token"))
+        return kwargs
+
+    @classmethod
+    def create_fs(cls, **kwargs) -> S3FileSystem:
+        kwargs = cls._normalize_s3_kwargs(kwargs)
 
         # We want to use newer v4 signature version since regions added after
         # 2014 are not going to support v2 which is the older one.
@@ -55,6 +61,59 @@ class ClientS3(Client):
                 pass
 
         return cast("S3FileSystem", super().create_fs(**kwargs))
+
+    @classmethod
+    def bucket_status(cls, name: str, **kwargs) -> BucketStatus:
+        # Step 1: Anonymous probe. cache_regions=True handles PermanentRedirect
+        # (bucket-in-wrong-region) transparently so the bucket is found → exists=True.
+        # Preserve endpoint/region settings from caller kwargs; strip credentials.
+        credential_keys = {
+            "anon",
+            "key",
+            "secret",
+            "token",
+            "aws_key",
+            "aws_secret",
+            "aws_token",
+        }
+        anon_kwargs = cls._normalize_s3_kwargs(
+            {k: v for k, v in kwargs.items() if k not in credential_keys}
+        )
+        anon_kwargs["anon"] = True
+        anon_kwargs.setdefault("cache_regions", True)
+        anon_fs = S3FileSystem(**anon_kwargs)
+        try:
+            sync(get_loop(), anon_fs._info, name)
+            return BucketStatus(exists=True, access="anonymous")
+        except PermissionError:
+            pass
+        except FileNotFoundError:
+            return BucketStatus(
+                exists=False, access="denied", error=f"S3 bucket '{name}' not found"
+            )
+
+        # Step 2: Authenticated probe.
+        # Use raw S3FileSystem to bypass ClientS3.create_fs()'s auto-anon fallback.
+        auth_kwargs = cls._normalize_s3_kwargs(
+            {k: v for k, v in kwargs.items() if k != "anon"}
+        )
+        auth_kwargs.setdefault("cache_regions", True)
+
+        auth_fs = S3FileSystem(**auth_kwargs)
+        try:
+            sync(get_loop(), auth_fs._info, name)
+            return BucketStatus(exists=True, access="authenticated")
+        except (NoCredentialsError, PermissionError):
+            return BucketStatus(
+                exists=True,
+                access="denied",
+                error=f"Access denied to S3 bucket '{name}'"
+                " — check AWS credentials/permissions",
+            )
+        except FileNotFoundError:
+            return BucketStatus(
+                exists=False, access="denied", error=f"S3 bucket '{name}' not found"
+            )
 
     def url(
         self,
