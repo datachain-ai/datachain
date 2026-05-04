@@ -17,6 +17,7 @@ else:
 
 import attrs
 import sqlalchemy as sa
+from sqlalchemy.sql.elements import ColumnElement
 from sqlalchemy.sql.expression import true
 from sqlalchemy.sql.selectable import GenerativeSelect
 
@@ -55,6 +56,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger("datachain")
 
 SELECT_BATCH_SIZE = 100_000  # number of rows to fetch at a time
+
+JoinInputMaterializationPlan = tuple[
+    list[bool],
+    list[list[tuple[ColumnElement, str]]],
+    dict[int, tuple[int, str]],
+]
 
 
 class AbstractWarehouse(ABC, Serializable):
@@ -1104,6 +1111,23 @@ class AbstractWarehouse(ABC, Serializable):
         """
         Join two tables together.
         """
+
+    def join_input_materialization_plan(
+        self,
+        predicates: Sequence[str | ColumnElement],
+        table_names: tuple[str, str],
+        dynamic_columns: tuple[set[str], set[str]],
+        materialize_left: bool,
+    ) -> JoinInputMaterializationPlan:
+        """
+        Return backend-specific join input materialization hints.
+
+        The default is to keep both sides as subqueries. Backends can override this
+        when materializing dynamic or calculated keys gives the query planner a
+        better join strategy.
+        """
+        keys: list[list[tuple[ColumnElement, str]]] = [[], []]
+        return [False, False], keys, {}
 
     def subtract_query(
         self,

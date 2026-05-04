@@ -20,15 +20,22 @@ from sqlalchemy import (
 from sqlalchemy.dialects import sqlite
 from sqlalchemy.schema import CreateIndex, CreateTable, DropTable
 from sqlalchemy.sql import func
-from sqlalchemy.sql.elements import BinaryExpression, BooleanClauseList
+from sqlalchemy.sql.elements import (
+    BinaryExpression,
+    BooleanClauseList,
+    ColumnClause,
+    ColumnElement,
+)
 from sqlalchemy.sql.expression import bindparam, cast
-from sqlalchemy.sql.selectable import Select
+from sqlalchemy.sql.selectable import Select, TableClause
+from sqlalchemy.sql.visitors import iterate
 
 import datachain.sql.sqlite
 from datachain.data_storage import AbstractDBMetastore, AbstractWarehouse
 from datachain.data_storage.buffer import InsertBuffer
 from datachain.data_storage.db_engine import DatabaseEngine
 from datachain.data_storage.schema import DefaultSchema
+from datachain.data_storage.warehouse import JoinInputMaterializationPlan
 from datachain.dataset import DatasetRecord, StorageURI
 from datachain.error import (
     DataChainError,
@@ -49,7 +56,6 @@ if TYPE_CHECKING:
     from sqlalchemy.engine.base import Engine
     from sqlalchemy.schema import SchemaItem
     from sqlalchemy.sql._typing import _FromClauseArgument, _OnClauseArgument
-    from sqlalchemy.sql.elements import ColumnElement
     from sqlalchemy.types import TypeEngine
 
     from datachain.lib.file import File
@@ -938,6 +944,53 @@ class SQLiteWarehouse(AbstractWarehouse):
 
         union_cte = sqlalchemy.union(left_right_join, right_left_join).cte()
         return sqlalchemy.select(*union_cte.c).select_from(union_cte)
+
+    def join_input_materialization_plan(
+        self,
+        predicates: Sequence[str | ColumnElement],
+        table_names: tuple[str, str],
+        dynamic_columns: tuple[set[str], set[str]],
+        materialize_left: bool,
+    ) -> JoinInputMaterializationPlan:
+        materialize: list[bool] = [False, False]
+        keys: list[list[tuple[ColumnElement, str]]] = [[], []]
+        replace: dict[int, tuple[int, str]] = {}
+        parts: list[Any] = []
+        for predicate in predicates:
+            op = getattr(getattr(predicate, "operator", None), "__name__", None)
+            if op == "and_":
+                parts.extend(getattr(predicate, "clauses", ()))
+            else:
+                parts.append(predicate)
+        lookup = {1} | ({0} if materialize_left else set())
+
+        def side(exp: Any) -> int | None:
+            names = {
+                col.table.name
+                for col in iterate(exp)
+                if isinstance(col, ColumnClause) and isinstance(col.table, TableClause)
+            }
+            if names == {table_names[0]}:
+                return 0
+            if names == {table_names[1]}:
+                return 1
+            return None
+
+        for index, pred in enumerate(parts):
+            if getattr(getattr(pred, "operator", None), "__name__", None) != "eq":
+                continue
+            for expr in (pred.left, pred.right):
+                expr_side = side(expr)
+                if expr_side not in lookup:
+                    continue
+                if isinstance(expr, ColumnClause):
+                    materialize[expr_side] |= expr.name in dynamic_columns[expr_side]
+                else:
+                    name = f"sys__dc_join_key_{expr_side}_{index}"
+                    materialize[expr_side] = True
+                    keys[expr_side].append((expr, name))
+                    replace[id(expr)] = (expr_side, name)
+        return materialize, keys, replace
 
     def _system_row_number_expr(self):
         return func.row_number().over()
