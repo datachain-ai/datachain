@@ -9,7 +9,7 @@ from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Iterator, Sequence
 from datetime import datetime
 from shutil import copy2
-from typing import TYPE_CHECKING, Any, BinaryIO, ClassVar, NamedTuple
+from typing import TYPE_CHECKING, Any, BinaryIO, ClassVar, Literal, NamedTuple
 from urllib.parse import urlparse
 
 from dvc_objects.fs.system import reflink
@@ -55,6 +55,12 @@ class Bucket(NamedTuple):
     name: str
     uri: "StorageURI"
     created: datetime | None
+
+
+class BucketStatus(NamedTuple):
+    exists: bool
+    access: Literal["anonymous", "authenticated", "denied"]
+    error: str | None = None
 
 
 class Client(ABC):
@@ -176,6 +182,18 @@ class Client(ABC):
                 uri=StorageURI(f"{cls.PREFIX}{name}"),
                 created=entry.get("CreationDate"),
             )
+
+    @classmethod
+    def bucket_status(cls, name: str, **kwargs) -> "BucketStatus":
+        """Check bucket existence and access level without listing objects.
+
+        Returns a BucketStatus with:
+          - exists: whether the bucket/container exists
+          - access: 'anonymous' | 'authenticated' | 'denied'
+
+        Network errors propagate as exceptions.
+        """
+        raise NotImplementedError(f"bucket_status is not supported for {cls.__name__}")
 
     @classmethod
     def is_root_url(cls, url) -> bool:
