@@ -43,16 +43,16 @@ def _flatten_record(record: dict, signal_schema: SignalSchema) -> dict:
     return flattened
 
 
-def _content_uuid(
+def _content_hash(
     records: list[dict] | tuple[dict, ...] | dict,
     signal_schema: SignalSchema,
 ) -> str:
-    """Compute a deterministic UUID-shaped hex for a concrete batch of records.
+    """Compute a deterministic content hash for a concrete batch of records.
 
-    Used as the temp-dataset version UUID so chains starting from materialized
-    records (read_records, read_values, single-file read_storage) produce the
-    same chain hash on identical inputs across runs — a precondition for
-    checkpoint reuse.
+    Stored as the temp-dataset version's `content_hash` so chains starting
+    from materialized records (read_records, single-file read_storage)
+    produce the same chain hash on identical inputs across runs — a
+    precondition for checkpoint reuse.
     """
     items: Iterable[dict] = [records] if isinstance(records, dict) else records
     per_record = sorted(
@@ -65,7 +65,7 @@ def _content_uuid(
     for s in per_record:
         h.update(s.encode())
         h.update(b"\0")
-    return h.hexdigest()[:32]
+    return h.hexdigest()
 
 
 def read_records(
@@ -163,11 +163,8 @@ def read_records(
     is_seed_placeholder = (
         to_insert == INTERNAL_SEED_RECORDS and schema == INTERNAL_SEED_SCHEMA
     )
-    # Derive a deterministic temp dataset UUID from concrete input content so
-    # the chain hash is stable across runs. Generators stay random (lazy);
-    # the seed placeholder stays random too (real data comes from .gen()).
-    content_uuid = (
-        _content_uuid(to_insert, signal_schema)
+    content_hash = (
+        _content_hash(to_insert, signal_schema)
         if isinstance(to_insert, (list, tuple)) and not is_seed_placeholder
         else None
     )
@@ -177,7 +174,7 @@ def read_records(
         catalog.metastore.default_project,
         columns=columns,
         feature_schema=signal_schema.clone_without_sys_signals().serialize(),
-        uuid=content_uuid,
+        content_hash=content_hash,
     )
 
     warehouse = catalog.warehouse
