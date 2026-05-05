@@ -127,8 +127,8 @@ When any storage URI is encountered, **enlist the whole bucket first** before do
    - If the user has indicated the bucket is large: use **180** or the timeout the user specifies.
 
 6. **Handle timeout.** If the command exits with code 124 (timeout):
-   - Tell the user: "Bucket {bucket} is too large for a full listing (timed out after 60s). Proceeding with directory-level listings instead."
-   - Skip the rest of this step. The normal Steps 2–5 will handle prefix-level entries from catalog listings.
+   - Run the hierarchical fallback: `python3 {skill_dir}/scripts/bucket_overview.py {root_uri} --bucket-json dc-knowledge/buckets/{scheme}/{bucket_slug}.json` (add `--anon` for public buckets).
+   - It saves a sampled DataChain dataset of File rows and writes a bucket-shape JSON the enrich step turns into a bucket markdown marked `sampled: true`. Continue with Steps 2–5 as normal.
 
 7. **Report.** On success, read the JSON output and report a quick summary:
    > Enlisted bucket {bucket} — {N} files, total size {size}, primarily {top 2-3 extensions}.

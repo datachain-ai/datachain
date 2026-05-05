@@ -10,7 +10,7 @@ import os
 import re
 from datetime import datetime, timezone
 
-from utils import bucket_file_path, dataset_file_path
+from utils import bucket_file_path, dataset_file_path, write_text
 
 BASE_DIR = "dc-knowledge"
 
@@ -301,9 +301,7 @@ def main():
     result = render_index(plan)
 
     if args.output:
-        os.makedirs(os.path.dirname(args.output), exist_ok=True)
-        with open(args.output, "w") as f:
-            f.write(result)
+        write_text(args.output, result)
     else:
         print(result, end="")
 

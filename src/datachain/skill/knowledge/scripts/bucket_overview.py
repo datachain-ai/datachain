@@ -10,7 +10,6 @@ Stand-in for `dc.bucket_overview()` — see datachain-ai/datachain#1750.
 from __future__ import annotations
 
 import argparse
-import os
 import re
 import time
 from urllib.parse import urlparse
@@ -80,15 +79,36 @@ def bucket_overview(uri: str, limit: int = SAMPLE, anon: bool = False, name: str
     return dc.read_values(file=files).save(name)
 
 
+def _to_bucket_json(ds, uri: str, anon: bool, dataset_name: str, output: str) -> None:
+    """Derive bucket-shape JSON from the sampled dataset.
+
+    Reuses `bucket_scan.compute_bucket_metadata` so a sampled overview
+    produces the same JSON shape as a full scan, with `sampled=True` and
+    a `dataset_name` link to the underlying File rows.
+    """
+    from bucket_scan import compute_bucket_metadata
+    from utils import write_json
+
+    payload = compute_bucket_metadata(
+        ds, uri, anon, sampled=True, dataset_name=dataset_name
+    )
+    write_json(output, payload)
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("uri")
     p.add_argument("--name")
     p.add_argument("--limit", type=int, default=SAMPLE)
     p.add_argument("--anon", action="store_true")
+    p.add_argument("--bucket-json", help="Also write bucket-shape JSON for enrichment")
     a = p.parse_args()
-    ds = bucket_overview(a.uri, a.limit, a.anon, a.name)
-    print(f"Saved {ds.count()} files")
+    name = a.name or f"overview_{_slug(a.uri)}_{int(time.time())}"
+    ds = bucket_overview(a.uri, a.limit, a.anon, name)
+    print(f"Saved {ds.count()} files as dataset {name}")
+    if a.bucket_json:
+        _to_bucket_json(ds, a.uri, a.anon, name, a.bucket_json)
+        print(f"Wrote bucket JSON: {a.bucket_json}")
     ds.select("file.path", "file.size").limit(5).show()
 
 
