@@ -14,7 +14,6 @@ import re
 import time
 from urllib.parse import urlparse
 
-
 SAMPLE = 300
 REMOTE = {"gs", "s3", "az"}
 
@@ -35,7 +34,11 @@ def _open(uri: str, anon: bool):
             kw = {}
         return fsspec.filesystem(scheme, **kw), path, scheme
     raw = uri.removeprefix("file://") if scheme == "file" else uri
-    return fsspec.filesystem("file"), os.path.abspath(os.path.expanduser(raw)).rstrip("/") + "/", "file"
+    return (
+        fsspec.filesystem("file"),
+        os.path.abspath(os.path.expanduser(raw)).rstrip("/") + "/",
+        "file",
+    )
 
 
 def _sample(fs, root: str, limit: int, max_depth: int = 5) -> list[dict]:
@@ -69,7 +72,9 @@ def _make_file(scheme: str, netloc: str, entry: dict):
     return dc.File(source=source, path=path, size=entry.get("size") or 0)
 
 
-def bucket_overview(uri: str, limit: int = SAMPLE, anon: bool = False, name: str | None = None):
+def bucket_overview(
+    uri: str, limit: int = SAMPLE, anon: bool = False, name: str | None = None
+):
     import datachain as dc
 
     fs, root, scheme = _open(uri, anon)

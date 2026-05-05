@@ -278,12 +278,14 @@ def _collect_bucket_rows(buckets: list[dict]) -> list[tuple[str, str, str, str]]
         scanned = fm.get("scanned", "")
         if scanned and "T" in scanned:
             scanned = scanned.split("T")[0]
-        rows.append((
-            f"[{uri}]({file_path}.md)",
-            fm.get("files", ""),
-            fm.get("size", ""),
-            scanned,
-        ))
+        rows.append(
+            (
+                f"[{uri}]({file_path}.md)",
+                fm.get("files", ""),
+                fm.get("size", ""),
+                scanned,
+            )
+        )
 
     rows.sort(key=lambda r: r[0])
     return rows

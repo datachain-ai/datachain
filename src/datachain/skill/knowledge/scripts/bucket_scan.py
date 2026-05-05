@@ -9,7 +9,6 @@ Usage:
 
 import argparse
 import json
-import os
 import signal
 import sys
 from datetime import datetime, timezone
@@ -464,9 +463,7 @@ def compute_bucket_metadata(
             total_bytes=func.sum(C("file.size")),
         ).to_pandas()
         total_files = int(totals["total_files"].iloc[0]) if len(totals) > 0 else 0
-        total_size_bytes = (
-            int(totals["total_bytes"].iloc[0]) if len(totals) > 0 else 0
-        )
+        total_size_bytes = int(totals["total_bytes"].iloc[0]) if len(totals) > 0 else 0
     except Exception as e:  # noqa: BLE001
         print(f"[dc-knowledge error] totals: {e}", file=sys.stderr)
         total_files = 0
