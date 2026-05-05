@@ -1,3 +1,5 @@
+import hashlib
+import json as _json
 from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
@@ -18,6 +20,12 @@ if TYPE_CHECKING:
     P = ParamSpec("P")
 
 
+# One-row sentinel used by read_values and listing chains as a placeholder
+# before .gen() produces the real rows.
+INTERNAL_SEED_RECORDS: list[dict] = [{"seed": 0}]
+INTERNAL_SEED_SCHEMA: dict = {"seed": int}
+
+
 def _flatten_record(record: dict, signal_schema: SignalSchema) -> dict:
     """Converts nested DataModel objects like {"person": Person(...)} into flattened
     dictionaries like {"person__name": "Alice", "person__age": 30, ...}.
@@ -33,6 +41,31 @@ def _flatten_record(record: dict, signal_schema: SignalSchema) -> dict:
             flattened[key] = value
 
     return flattened
+
+
+def _content_uuid(
+    records: list[dict] | tuple[dict, ...] | dict,
+    signal_schema: SignalSchema,
+) -> str:
+    """Compute a deterministic UUID-shaped hex for a concrete batch of records.
+
+    Used as the temp-dataset version UUID so chains starting from materialized
+    records (read_records, read_values, single-file read_storage) produce the
+    same chain hash on identical inputs across runs — a precondition for
+    checkpoint reuse.
+    """
+    items: Iterable[dict] = [records] if isinstance(records, dict) else records
+    per_record = sorted(
+        _json.dumps(_flatten_record(rec, signal_schema), sort_keys=True, default=str)
+        for rec in items
+    )
+    h = hashlib.sha256()
+    h.update(signal_schema.hash().encode())
+    h.update(b"\0")
+    for s in per_record:
+        h.update(s.encode())
+        h.update(b"\0")
+    return h.hexdigest()[:32]
 
 
 def read_records(
@@ -122,17 +155,30 @@ def read_records(
         for c in signal_schema.db_signals(as_columns=True)
     ]
 
+    if isinstance(to_insert, dict):
+        to_insert = [to_insert]
+    elif not to_insert:
+        to_insert = []
+
+    is_seed_placeholder = (
+        to_insert == INTERNAL_SEED_RECORDS and schema == INTERNAL_SEED_SCHEMA
+    )
+    # Derive a deterministic temp dataset UUID from concrete input content so
+    # the chain hash is stable across runs. Generators stay random (lazy);
+    # the seed placeholder stays random too (real data comes from .gen()).
+    content_uuid = (
+        _content_uuid(to_insert, signal_schema)
+        if isinstance(to_insert, (list, tuple)) and not is_seed_placeholder
+        else None
+    )
+
     dsr = catalog.create_dataset(
         name,
         catalog.metastore.default_project,
         columns=columns,
         feature_schema=signal_schema.clone_without_sys_signals().serialize(),
+        uuid=content_uuid,
     )
-
-    if isinstance(to_insert, dict):
-        to_insert = [to_insert]
-    elif not to_insert:
-        to_insert = []
 
     warehouse = catalog.warehouse
 

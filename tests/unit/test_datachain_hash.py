@@ -70,6 +70,26 @@ def _set_stable_uuid(test_session, name, uuid):
     )
 
 
+def test_read_records_list_is_deterministic(test_session):
+    h1 = dc.read_records([{"x": 1}, {"x": 2}], schema={"x": int})._query.hash()
+    h2 = dc.read_records([{"x": 1}, {"x": 2}], schema={"x": int})._query.hash()
+    assert is_sha256_hex(h1)
+    assert h1 == h2
+
+
+def test_read_records_list_different_data_differs(test_session):
+    h1 = dc.read_records([{"x": 1}, {"x": 2}], schema={"x": int})._query.hash()
+    h2 = dc.read_records([{"x": 3}, {"x": 4}], schema={"x": int})._query.hash()
+    assert h1 != h2
+
+
+def test_read_records_generator_is_random(test_session):
+    # Generators are consumed lazily — we don't materialize to hash them.
+    h1 = dc.read_records(({"x": i} for i in range(3)), schema={"x": int})._query.hash()
+    h2 = dc.read_records(({"x": i} for i in range(3)), schema={"x": int})._query.hash()
+    assert h1 != h2
+
+
 def test_read_values():
     """
     Hash of the chain started with read_values is currently inconsistent.
@@ -78,14 +98,26 @@ def test_read_values():
     assert dc.read_values(num=[1, 2, 3])._query.hash() is not None
 
 
-def test_read_csv(test_session, tmp_dir):
-    """
-    Hash of the chain started with read_csv is currently inconsistent.
-    Goal of this test is just to check it doesn't break.
-    """
+def test_read_csv_single_file_is_deterministic(test_session, tmp_dir):
     path = tmp_dir / "test.csv"
     pd.DataFrame(DF_DATA).to_csv(path, index=False)
-    assert dc.read_csv(path.as_uri(), session=test_session)._query.hash() is not None
+    h1 = dc.read_csv(path.as_uri(), session=test_session)._query.hash()
+    h2 = dc.read_csv(path.as_uri(), session=test_session)._query.hash()
+    assert is_sha256_hex(h1)
+    assert h1 == h2
+
+
+def test_read_csv_multi_file_glob_is_deterministic(test_session, tmp_dir):
+    pd.DataFrame({"a": [1, 2]}).to_csv(tmp_dir / "a.csv", index=False)
+    pd.DataFrame({"a": [3, 4]}).to_csv(tmp_dir / "b.csv", index=False)
+    glob = f"{tmp_dir.as_uri()}/*.csv"
+    c1 = dc.read_csv(glob, session=test_session)
+    c1._query.resolve_all_listings()
+    c2 = dc.read_csv(glob, session=test_session)
+    c2._query.resolve_all_listings()
+    h1, h2 = c1._query.hash(), c2._query.hash()
+    assert is_sha256_hex(h1)
+    assert h1 == h2
 
 
 @pytest.mark.filterwarnings("ignore::pydantic.warnings.PydanticDeprecatedSince20")
@@ -111,17 +143,27 @@ def test_read_pandas(test_session, tmp_dir):
     assert dc.read_pandas(df, session=test_session)._query.hash() is not None
 
 
-def test_read_parquet(test_session, tmp_dir):
-    """
-    Hash of the chain started with read_parquet is currently inconsistent.
-    Goal of this test is just to check it doesn't break.
-    """
+def test_read_parquet_single_file_is_deterministic(test_session, tmp_dir):
     df = pd.DataFrame(DF_DATA)
     path = tmp_dir / "test.parquet"
     dc.read_pandas(df, session=test_session).to_parquet(path)
-    assert (
-        dc.read_parquet(path.as_uri(), session=test_session)._query.hash() is not None
-    )
+    h1 = dc.read_parquet(path.as_uri(), session=test_session)._query.hash()
+    h2 = dc.read_parquet(path.as_uri(), session=test_session)._query.hash()
+    assert is_sha256_hex(h1)
+    assert h1 == h2
+
+
+def test_read_parquet_multi_file_glob_is_deterministic(test_session, tmp_dir):
+    pd.DataFrame({"a": [1, 2]}).to_parquet(tmp_dir / "a.parquet")
+    pd.DataFrame({"a": [3, 4]}).to_parquet(tmp_dir / "b.parquet")
+    glob = f"{tmp_dir.as_uri()}/*.parquet"
+    c1 = dc.read_parquet(glob, session=test_session)
+    c1._query.resolve_all_listings()
+    c2 = dc.read_parquet(glob, session=test_session)
+    c2._query.resolve_all_listings()
+    h1, h2 = c1._query.hash(), c2._query.hash()
+    assert is_sha256_hex(h1)
+    assert h1 == h2
 
 
 def test_read_storage(test_session, tmp_dir):

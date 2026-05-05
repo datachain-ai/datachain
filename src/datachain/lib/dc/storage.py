@@ -124,7 +124,6 @@ def read_storage(
     """
     from .datasets import read_dataset
     from .records import read_records
-    from .values import read_values
 
     file_type = get_file_type(type)
 
@@ -248,11 +247,15 @@ def read_storage(
     storage_chain = None if not chains else reduce(lambda x, y: x.union(y), chains)
 
     if file_values:
-        file_chain = read_values(
+        # Use read_records directly (not read_values) so the chain hash is
+        # deterministic in (source, path, etag/version) — needed for checkpoint
+        # reuse on single-file read_storage / read_csv / read_parquet.
+        file_chain = read_records(
+            [{"file": f} for f in file_values],
+            schema={"file": file_type},
             session=session,
             settings=settings,
             in_memory=in_memory,
-            file=file_values,
         )
         file_chain.signals_schema = file_chain.signals_schema.mutate(
             {f"{column}": file_type}

@@ -564,8 +564,13 @@ class DataChain:
             (base_hash + f"{namespace_name}/{project_name}/{name}").encode("utf-8")
         ).hexdigest()
 
-        # Checkpoint handling
-        result = self._resolve_checkpoint(name, project, _hash, kwargs)
+        # Checkpoint handling — explicit version means "create this exact version";
+        # cached version may differ, so don't substitute.
+        result = (
+            None
+            if version is not None
+            else self._resolve_checkpoint(name, project, _hash, kwargs)
+        )
         if bool(result):
             # Checkpoint was found and reused
             print(
@@ -649,6 +654,11 @@ class DataChain:
         ignore_checkpoints = env2bool("DATACHAIN_IGNORE_CHECKPOINTS", undefined=False)
 
         if not self._checkpoints_enabled or ignore_checkpoints:
+            return None
+
+        # Listing saves dedup on the listing dataset name itself and re-list on
+        # update=True; chain-hash checkpoint reuse would defeat both.
+        if kwargs.get("listing"):
             return None
 
         # delta_retry reads the output's current state (error rows, missing rows)

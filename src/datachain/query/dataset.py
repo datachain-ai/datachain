@@ -3320,6 +3320,9 @@ class DatasetQuery:
             # Listing saves are internal — use existing job if present,
             # but don't create one (e.g. Studio backend `datachain ls`).
             job = self.session.get_job()
+            # Listings dedup on dataset name and re-list on update=True;
+            # any UDF-level checkpoint reuse would silently skip the re-list.
+            self.checkpoints_enabled = False
         else:
             job = self.session.get_or_create_job()
         job_id = job.id if job else None
