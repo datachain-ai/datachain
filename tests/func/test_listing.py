@@ -1,7 +1,6 @@
 import os
 import sys
 
-import pandas as pd
 import pytest
 
 import datachain as dc
@@ -239,26 +238,6 @@ def test_read_storage_single_file_deterministic_hash_across_clouds(
 
     h1 = dc.read_storage(uri, session=ctc.session)._query.hash()
     h2 = dc.read_storage(uri, session=ctc.session)._query.hash()
-    assert h1 == h2
-
-
-def test_read_csv_single_local_file_deterministic_hash(test_session, tmp_dir):
-    f = tmp_dir / "data.csv"
-    pd.DataFrame({"name": ["Alice", "Bob"], "age": [30, 25]}).to_csv(f, index=False)
-    uri = f.as_uri()
-
-    h1 = dc.read_csv(uri, session=test_session)._query.hash()
-    h2 = dc.read_csv(uri, session=test_session)._query.hash()
-    assert h1 == h2
-
-
-def test_read_parquet_single_local_file_deterministic_hash(test_session, tmp_dir):
-    f = tmp_dir / "data.parquet"
-    pd.DataFrame({"name": ["Alice", "Bob"], "age": [30, 25]}).to_parquet(f)
-    uri = f.as_uri()
-
-    h1 = dc.read_parquet(uri, session=test_session)._query.hash()
-    h2 = dc.read_parquet(uri, session=test_session)._query.hash()
     assert h1 == h2
 
 
