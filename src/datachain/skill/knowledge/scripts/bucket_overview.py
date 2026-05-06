@@ -43,7 +43,8 @@ def _open(uri: str, anon: bool):
 
 
 def _sample(fs, root: str, limit: int, max_depth: int = 5) -> list[dict]:
-    found, queue = [], [(root.rstrip("/"), 0)]
+    found: list[dict] = []
+    queue: list[tuple[str, int]] = [(root.rstrip("/"), 0)]
     while queue and len(found) < limit:
         cur, depth = queue.pop(0)
         try:
