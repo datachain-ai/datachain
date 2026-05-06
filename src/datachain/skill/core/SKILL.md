@@ -12,7 +12,7 @@ You are now loaded with expert-level DataChain SDK context. Apply every rule bel
   1. Check `dc-knowledge/buckets/` for a `.md` file — its frontmatter has `anon: true/false`. If found, use that value.
   2. If no `.md` exists, run the access check:
      ```bash
-     python3 {skill_dir}/../knowledge/scripts/bucket_status.py <uri>
+     datachain bucket status <uri>
      ```
      Prints `Status: exists|not found` and `Access: anonymous|authenticated|denied`. Exit code 0 = exists, 1 = not found.
   3. If status is `not found` or access is `denied` → **stop and ask the user** for credentials or configuration. Do not retry with variations.
@@ -235,7 +235,7 @@ Never create or modify files under `dc-knowledge/` — that directory is owned b
    ✗ dc.read_storage("s3://b/").settings(cache=True).map(fn).save("out")  # single pass
 
 9. COLUMN-COLUMN ARITHMETIC: Use chain.column() instead of C() when combining two columns.
-   C() does not carry type info → engine can't infer the result type.
+   C() does not carry type info → the transpiler can't infer the result type.
    chain.column("name") returns a typed column derived from the chain's schema.
    ✓ chain.mutate(total=chain.column("price") * chain.column("qty"))
    ✓ chain.mutate(discounted=C("price") * 0.9)          # scalar literal → type inferred
@@ -404,19 +404,22 @@ Never create or modify files under `dc-knowledge/` — that directory is owned b
    ✗ for f in os.listdir("/data/images/"): ...   ← breaks lineage, slow
    ✗ paths = glob.glob("*.csv"); dc.read_values(paths=paths)  ← no lineage
 
-2. Prefer engine-side operations over Python operations.
-   Engine-side ops — filter(), mutate(), group_by(), order_by(), select(),
-   merge(), union(), distinct(), limit() — run in SQL (SQLite local /
-   ClickHouse Studio) at warehouse speed using dc.C() and dc.func.*.
-   Python ops (map/gen/agg) spin up Python workers and are expensive.
+2. Prefer Data Memory operations over Compute Engine operations.
+   Data Memory ops — filter(), mutate(), group_by(), order_by(), select(),
+   merge(), union(), distinct(), limit() — run inside Data Memory at
+   warehouse speed (SQLite locally, ClickHouse in Studio) using dc.C() and
+   dc.func.*. The transpiler compiles them from Python expressions to SQL
+   — no Python rows, no deserialization.
+   Compute Engine ops (map/gen/agg) run heavy Python in parallel workers
+   and are expensive.
 
-   Use Python ops ONLY when you need:
+   Use Compute Engine ONLY when you need:
      - File content (file.read(), file.open())
      - ML model inference
      - LLM calls
      - External API calls
 
-   Everything else → use filter/mutate/group_by/merge with dc.C() and dc.func.*
+   Everything else → Data Memory: filter/mutate/group_by/merge with dc.C() and dc.func.*
 
 3. EXTRACTING RESULTS: Use to_values() for a single column (returns flat list),
    to_list() for multiple columns (returns list of tuples).
@@ -471,7 +474,7 @@ dc.read_dataset("name")                    # latest version
 dc.read_dataset("name", version="2.0.0")  # specific version
 ```
 
-**Metadata operations (run in engine, fast):**
+**Data Memory operations (warehouse-speed SQL, fast):**
 In all examples below, `C` = `dc.C` and `func` = `dc.func`.
 ```python
 chain.filter(C("file.size") > 1000)
@@ -520,7 +523,7 @@ chain.diff(other, on="id", compare=["score"])
 chain.file_diff(other)
 ```
 
-**Python operations (run in Python workers, expensive):**
+**Compute Engine operations (parallel Python workers, expensive):**
 ```python
 chain.map(col_name=fn)        # 1 input → 1 output record
 chain.gen(col_name=fn)        # 1 input → N output records
@@ -623,7 +626,7 @@ chain.column("price")           # typed column for arithmetic between columns
 
 ## Section 7 — func Module
 
-All run natively in the metadata engine (no Python, no deserialization).
+All run inside Data Memory (no Python, no deserialization).
 In examples below, `C` = `dc.C`, `func` = `dc.func`.
 
 ```python
@@ -940,7 +943,7 @@ combined = images.merge(labels, on="file.name", right_on="labels.name")
     chain.map(ann=parse_xml).select("ann")  ← redundant, map already created "ann"
     The keyword in map/gen IS the column name (rule 4) — no select needed
 ✗ Using C() for column-column arithmetic:
-    C("price") * C("qty")  ← no type info → engine error
+    C("price") * C("qty")  ← no type info → transpiler error
     Use chain.column("price") * chain.column("qty") instead
 ✗ Materializing to Pandas/list for aggregation:
     chain.to_pandas() then df.groupby(...)  ← never do this
@@ -967,7 +970,7 @@ combined = images.merge(labels, on="file.name", right_on="labels.name")
     DataChain.listings()      → dc.listings()
     chain.collect()           → chain.to_list() / chain.to_iter() / chain.to_values()
     File.get_uri()            → file.get_fs_path()
-✗ Using .concat() in mutate() → engine can't infer type; use it only in filter()
+✗ Using .concat() in mutate() → transpiler can't infer type; use it only in filter()
 ✗ Using C("col").asc() / .desc() in order_by():
     Use order_by("col", descending=True) instead
 ✗ Using Python @property / .name / .parent in metadata ops:

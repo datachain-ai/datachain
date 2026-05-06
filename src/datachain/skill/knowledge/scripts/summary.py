@@ -8,13 +8,12 @@ import argparse
 import inspect
 import json
 import math
-import os
 from collections import Counter
 from datetime import datetime
 from typing import get_origin
 
 from schema import extract_schema
-from utils import dc_import, human_size
+from utils import dc_import, human_size, write_json
 
 
 def _hs(nbytes):
@@ -689,14 +688,11 @@ def main():
     args = parser.parse_args()
 
     result = dataset_summary(args.name)
-    json_str = json.dumps(result, indent=2, default=str)
 
     if args.output:
-        os.makedirs(os.path.dirname(args.output), exist_ok=True)
-        with open(args.output, "w") as f:
-            f.write(json_str)
+        write_json(args.output, result)
     else:
-        print(json_str)
+        print(json.dumps(result, indent=2, default=str))
 
 
 if __name__ == "__main__":
