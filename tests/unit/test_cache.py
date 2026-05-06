@@ -83,6 +83,17 @@ def test_temporary_cache(tmp_path):
     assert not os.path.exists(temp.cache_dir)
 
 
+def test_readonly_blocks_mutating_methods(cache):
+    """Readonly cache should refuse sync mutating methods like clear/destroy."""
+    cache.store_data(
+        File(source="s3://foo", path="data/bar", etag="xyz", size=3, location=None),
+        b"foo",
+    )
+    ro = cache.as_readonly()
+    with pytest.raises(RuntimeError, match="read-only cache"):
+        ro.clear()
+
+
 def test_cache_download_reserved_chars_in_path(cloud_test_catalog_upload):
     rel_path = "dir #% percent/hello.txt"
 
