@@ -94,13 +94,158 @@ def test_studio_login_arguments(mocker):
 
 def test_studio_logout():
     with Config(ConfigLevel.GLOBAL).edit() as conf:
-        conf["studio"] = {"token": "isat_access_token"}
+        conf["studio"] = {"token": "isat_access_token", "url": STUDIO_URL}
 
-    assert main(["auth", "logout"]) == 0
+    with requests_mock.mock() as m:
+        m.post(
+            f"{STUDIO_URL}/api/device-logout",
+            json={"detail": "Token revoked successfully"},
+        )
+        assert main(["auth", "logout"]) == 0
+        assert m.called
+        assert m.last_request.headers["Authorization"] == "token isat_access_token"
+
     config = Config(ConfigLevel.GLOBAL).read()
     assert "token" not in config["studio"]
 
     assert main(["auth", "logout"]) == 1
+
+
+def test_studio_logout_token_already_revoked(capsys):
+    with Config(ConfigLevel.GLOBAL).edit() as conf:
+        conf["studio"] = {"token": "isat_access_token", "url": STUDIO_URL}
+
+    with requests_mock.mock() as m:
+        m.post(
+            f"{STUDIO_URL}/api/device-logout",
+            json={"detail": "Invalid token"},
+            status_code=401,
+        )
+        assert main(["auth", "logout"]) == 0
+
+    config = Config(ConfigLevel.GLOBAL).read()
+    assert "token" not in config["studio"]
+
+    err = capsys.readouterr().err
+    assert "already revoked or is invalid" in err
+
+
+def test_studio_logout_custom_url():
+    custom_url = "https://custom-studio.example.com"
+    with Config(ConfigLevel.GLOBAL).edit() as conf:
+        conf["studio"] = {"token": "isat_access_token", "url": custom_url}
+
+    with requests_mock.mock() as m:
+        m.post(
+            f"{custom_url}/api/device-logout",
+            json={"detail": "Token revoked successfully"},
+        )
+        assert main(["auth", "logout"]) == 0
+        assert m.called
+        assert m.last_request.url == f"{custom_url}/api/device-logout"
+
+
+def test_studio_logout_token_only_config():
+    with Config(ConfigLevel.GLOBAL).edit() as conf:
+        conf["studio"] = {"token": "isat_access_token"}
+
+    with requests_mock.mock() as m:
+        m.post(
+            f"{STUDIO_URL}/api/device-logout",
+            json={"detail": "Token revoked successfully"},
+        )
+        assert main(["auth", "logout"]) == 0
+        assert m.last_request.url == f"{STUDIO_URL}/api/device-logout"
+
+    config = Config(ConfigLevel.GLOBAL).read()
+    assert "token" not in config["studio"]
+
+
+def test_studio_logout_url_from_env(monkeypatch):
+    env_url = "https://env-studio.example.com"
+    config_url = "https://config-studio.example.com"
+    monkeypatch.setenv("DATACHAIN_STUDIO_URL", env_url)
+
+    with Config(ConfigLevel.GLOBAL).edit() as conf:
+        conf["studio"] = {"token": "isat_access_token", "url": config_url}
+
+    with requests_mock.mock() as m:
+        m.post(
+            f"{env_url}/api/device-logout",
+            json={"detail": "Token revoked successfully"},
+        )
+        assert main(["auth", "logout"]) == 0
+        assert m.last_request.url == f"{env_url}/api/device-logout"
+
+
+def test_studio_logout_network_error_aborts(capsys):
+    with Config(ConfigLevel.GLOBAL).edit() as conf:
+        conf["studio"] = {"token": "isat_access_token", "url": STUDIO_URL}
+
+    with requests_mock.mock() as m:
+        m.post(
+            f"{STUDIO_URL}/api/device-logout",
+            exc=requests.ConnectionError,
+        )
+        assert main(["auth", "logout"]) == 1
+
+    config = Config(ConfigLevel.GLOBAL).read()
+    assert config["studio"]["token"] == "isat_access_token"  # noqa: S105
+
+    err = capsys.readouterr().err
+    assert "Could not reach Studio" in err
+
+
+def test_studio_logout_server_error_aborts(capsys):
+    with Config(ConfigLevel.GLOBAL).edit() as conf:
+        conf["studio"] = {"token": "isat_access_token", "url": STUDIO_URL}
+
+    with requests_mock.mock() as m:
+        m.post(
+            f"{STUDIO_URL}/api/device-logout",
+            json={"detail": "Internal server error"},
+            status_code=500,
+        )
+        assert main(["auth", "logout"]) == 1
+
+    config = Config(ConfigLevel.GLOBAL).read()
+    assert config["studio"]["token"] == "isat_access_token"  # noqa: S105
+
+    err = capsys.readouterr().err
+    assert "500" in err
+
+
+def test_studio_logout_local_revokes_local_token():
+    with Config(ConfigLevel.LOCAL).edit() as conf:
+        conf["studio"] = {"token": "local_token", "url": STUDIO_URL}
+
+    with requests_mock.mock() as m:
+        m.post(
+            f"{STUDIO_URL}/api/device-logout",
+            json={"detail": "Token revoked successfully"},
+        )
+        assert main(["auth", "logout", "--local"]) == 0
+        assert m.called
+        assert m.last_request.headers["Authorization"] == "token local_token"
+
+    config = Config(ConfigLevel.LOCAL).read()
+    assert "token" not in config["studio"]
+
+
+def test_studio_logout_trailing_slash_url():
+    url_with_slash = "https://custom-studio.example.com/"
+    with Config(ConfigLevel.GLOBAL).edit() as conf:
+        conf["studio"] = {"token": "isat_access_token", "url": url_with_slash}
+
+    with requests_mock.mock() as m:
+        m.post(
+            "https://custom-studio.example.com/api/device-logout",
+            json={"detail": "Token revoked successfully"},
+        )
+        assert main(["auth", "logout"]) == 0
+        assert (
+            m.last_request.url == "https://custom-studio.example.com/api/device-logout"
+        )
 
 
 def test_studio_token(capsys):
