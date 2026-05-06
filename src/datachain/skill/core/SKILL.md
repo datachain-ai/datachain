@@ -12,7 +12,7 @@ You are now loaded with expert-level DataChain SDK context. Apply every rule bel
   1. Check `dc-knowledge/buckets/` for a `.md` file — its frontmatter has `anon: true/false`. If found, use that value.
   2. If no `.md` exists, run the access check:
      ```bash
-     python3 {skill_dir}/../knowledge/scripts/bucket_status.py <uri>
+     datachain bucket status <uri>
      ```
      Prints `Status: exists|not found` and `Access: anonymous|authenticated|denied`. Exit code 0 = exists, 1 = not found.
   3. If status is `not found` or access is `denied` → **stop and ask the user** for credentials or configuration. Do not retry with variations.

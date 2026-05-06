@@ -14,8 +14,9 @@ import sys
 from datetime import datetime, timezone
 from typing import Any
 
-from bucket_status import bucket_status
 from utils import dc_import, parse_uri, source_to_https, write_json
+
+from datachain import bucket_status
 
 
 class ScanTimeoutError(Exception):
@@ -508,11 +509,12 @@ def scan_bucket(uri: str, output: str | None = None, timeout: int = 0):
         signal.signal(signal.SIGALRM, _alarm_handler)
         signal.alarm(timeout)
 
-    status = bucket_status(uri)
+    parts = parse_uri(uri)
+    status = bucket_status(f"{parts['scheme']}://{parts['bucket']}/")
     if not status.exists or status.access == "denied":
         print(json.dumps({"error": status.error, "uri": uri}), file=sys.stderr)
         sys.exit(1)
-    is_anon = status.anon
+    is_anon = status.access == "anonymous"
 
     try:
         dc = dc_import()
