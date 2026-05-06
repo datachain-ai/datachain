@@ -10,6 +10,7 @@ Stand-in for `dc.bucket_overview()` — see datachain-ai/datachain#1750.
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import time
 from urllib.parse import urlparse
@@ -47,7 +48,7 @@ def _sample(fs, root: str, limit: int, max_depth: int = 5) -> list[dict]:
         cur, depth = queue.pop(0)
         try:
             items = fs.ls(cur, detail=True)
-        except Exception:
+        except (OSError, PermissionError):
             continue
         for e in items:
             if len(found) >= limit:
