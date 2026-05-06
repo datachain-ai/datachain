@@ -564,15 +564,8 @@ class DataChain:
             (base_hash + f"{namespace_name}/{project_name}/{name}").encode("utf-8")
         ).hexdigest()
 
-        # Checkpoint handling — explicit version means "create this exact version";
-        # cached version may differ, so don't substitute.
-        result = (
-            None
-            if version is not None
-            else self._resolve_checkpoint(name, project, _hash, kwargs)
-        )
+        result = self._resolve_checkpoint(name, project, _hash, kwargs, version)
         if bool(result):
-            # Checkpoint was found and reused
             print(
                 f"Checkpoint found for dataset '{name}', skipping creation",
                 file=sys.stderr,
@@ -646,6 +639,7 @@ class DataChain:
         project: Project,
         chain_hash: str,
         kwargs: dict,
+        version: str | None = None,
     ) -> "DataChain | None":
         """Check if checkpoint exists and return cached dataset if possible."""
         from .datasets import read_dataset
@@ -656,9 +650,9 @@ class DataChain:
         if not self._checkpoints_enabled or ignore_checkpoints:
             return None
 
-        # Listing saves dedup on the listing dataset name itself and re-list on
-        # update=True; chain-hash checkpoint reuse would defeat both.
-        if kwargs.get("listing"):
+        # Explicit version means "create this exact version"; the cached
+        # version may differ, so don't substitute.
+        if version is not None:
             return None
 
         # delta_retry reads the output's current state (error rows, missing rows)
