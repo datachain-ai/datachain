@@ -1670,8 +1670,7 @@ class ArrowRow(DataModel):
 
         if self.file._caching_enabled:
             self.file.ensure_cached()
-        path = self.file.get_local_path()
-        if path:
+            path = self.file.get_local_path()
             ds = dataset(path, **self.kwargs)
         else:
             path = self.file.get_fs_path()
