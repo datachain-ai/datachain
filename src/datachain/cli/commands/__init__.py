@@ -1,3 +1,4 @@
+from .bucket import bucket_status_cmd
 from .datasets import edit_dataset, list_datasets, list_datasets_local, rm_dataset
 from .du import du
 from .index import index
@@ -7,6 +8,7 @@ from .show import show
 from .skill import install_skills, list_skills, uninstall_skills
 
 __all__ = [
+    "bucket_status_cmd",
     "clear_cache",
     "completion",
     "du",

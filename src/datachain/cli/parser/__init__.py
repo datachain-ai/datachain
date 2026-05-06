@@ -506,6 +506,41 @@ def get_parser() -> ArgumentParser:  # noqa: PLR0915
     subp.add_parser("internal-run-udf", parents=[parent_parser])
     subp.add_parser("internal-run-udf-worker", parents=[parent_parser])
 
+    parse_bucket = subp.add_parser(
+        "bucket",
+        parents=[parent_parser],
+        description="Commands for cloud storage buckets.",
+        formatter_class=CustomHelpFormatter,
+    )
+    bucket_subparsers = parse_bucket.add_subparsers(
+        dest="bucket_cmd",
+        help="Use `datachain bucket CMD --help` for command-specific help",
+    )
+
+    parse_bucket_status = bucket_subparsers.add_parser(
+        "status",
+        parents=[parent_parser],
+        description=(
+            "Check existence and access level of a bucket without listing objects."
+        ),
+        formatter_class=CustomHelpFormatter,
+    )
+    parse_bucket_status.add_argument(
+        "uri",
+        type=str,
+        help=(
+            "Bucket URI to check, e.g. s3://my-bucket/, gs://my-bucket/, "
+            "az://my-container/."
+        ),
+    )
+    parse_bucket_status.add_argument(
+        "--account-name",
+        dest="account_name",
+        type=str,
+        default=None,
+        help="Azure storage account name (required for anonymous access detection).",
+    )
+
     add_completion_parser(subp, [parent_parser])
     return parser
 
