@@ -130,7 +130,11 @@ class TarVFile(VFile):
 
     @classmethod
     def open(cls, file: "File", location: list[dict]):
-        """Stream file from tar archive based on location in archive."""
+        """Stream file from tar archive based on location in archive.
+
+        Reads always consult the cache (hit → local, miss → remote stream);
+        ``_caching_enabled`` only governs whether a miss is also persisted.
+        """
         tar_file = cls.parent(file, location)
 
         loc = location[0]
@@ -492,6 +496,9 @@ class File(DataModel):
 
         Supports both read ("rb", "r") and write modes (e.g. "wb", "w", "ab").
         When opened in a write mode, metadata is refreshed after closing.
+
+        Reads always consult the cache (hit → local, miss → remote stream);
+        ``_caching_enabled`` only governs whether a miss is also persisted.
         """
         writing = any(ch in mode for ch in "wax+")
         if self.location and writing:
@@ -516,8 +523,6 @@ class File(DataModel):
                 return
             if self._caching_enabled:
                 self.ensure_cached()
-            # _caching_enabled is a write-side switch only; reads always consult
-            # the cache (cache hit → local, miss → remote stream).
             with client.open_object(self, use_cache=True, cb=self._download_cb) as f:
                 with self._wrap_text(f, mode, open_kwargs=open_kwargs) as wrapped:
                     yield wrapped
@@ -655,12 +660,12 @@ class File(DataModel):
 
         if self._caching_enabled:
             self.ensure_cached()
-        source = self.get_local_path()
-        if source is None:
-            if self.source.startswith("file://"):
-                source = self.get_fs_path()
-            else:
-                raise OSError(errno.EXDEV, "can't link across filesystems")
+            source = self.get_local_path()
+            assert source, "File was not cached"
+        elif self.source.startswith("file://"):
+            source = self.get_fs_path()
+        else:
+            raise OSError(errno.EXDEV, "can't link across filesystems")
 
         return os.symlink(source, destination)
 
