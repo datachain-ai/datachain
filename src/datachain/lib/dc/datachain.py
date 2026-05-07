@@ -564,7 +564,11 @@ class DataChain:
             (base_hash + f"{namespace_name}/{project_name}/{name}").encode("utf-8")
         ).hexdigest()
 
-        result = self._resolve_checkpoint(name, project, _hash, kwargs, version)
+        result = (
+            self._resolve_checkpoint(name, project, _hash, kwargs)
+            if version is None
+            else None
+        )
         if bool(result):
             print(
                 f"Checkpoint found for dataset '{name}', skipping creation",
@@ -639,7 +643,6 @@ class DataChain:
         project: Project,
         chain_hash: str,
         kwargs: dict,
-        version: str | None = None,
     ) -> "DataChain | None":
         """Check if checkpoint exists and return cached dataset if possible."""
         from .datasets import read_dataset
@@ -648,11 +651,6 @@ class DataChain:
         ignore_checkpoints = env2bool("DATACHAIN_IGNORE_CHECKPOINTS", undefined=False)
 
         if not self._checkpoints_enabled or ignore_checkpoints:
-            return None
-
-        # Explicit version means "create this exact version"; the cached
-        # version may differ, so don't substitute.
-        if version is not None:
             return None
 
         # delta_retry reads the output's current state (error rows, missing rows)

@@ -55,16 +55,19 @@ def _content_hash(
     precondition for checkpoint reuse.
     """
     items: Iterable[dict] = [records] if isinstance(records, dict) else records
-    per_record = sorted(
-        _json.dumps(_flatten_record(rec, signal_schema), sort_keys=True, default=str)
-        for rec in items
-    )
+    # XOR-combine per-record digests so order doesn't matter and we can
+    # stream records without buffering or sorting.
+    combined = 0
+    for rec in items:
+        payload = _json.dumps(
+            _flatten_record(rec, signal_schema), sort_keys=True, default=str
+        )
+        digest = hashlib.sha256(payload.encode()).digest()
+        combined ^= int.from_bytes(digest, "big")
     h = hashlib.sha256()
     h.update(signal_schema.hash().encode())
     h.update(b"\0")
-    for s in per_record:
-        h.update(s.encode())
-        h.update(b"\0")
+    h.update(combined.to_bytes(32, "big"))
     return h.hexdigest()
 
 
