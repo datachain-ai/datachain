@@ -123,7 +123,7 @@ def read_storage(
         ```
     """
     from .datasets import read_dataset
-    from .records import read_records
+    from .records import _read_records_with_hash, read_records
 
     file_type = get_file_type(type)
 
@@ -200,12 +200,15 @@ def read_storage(
         if update or not list_ds_exists:
 
             def lst_fn(ds_name, lst_uri):
-                # Start with a single dummy record so gen() has one row to iterate over.
-                # Disable prefetch=0 to prevent downloading files during listing.
+                # Seed for .gen() iteration. content_hash=None because hash_callable
+                # doesn't capture list_func's closure (which holds `lst_uri`, `cache`,
+                # `client_config`) — auto-hashing the seed would let the UDF
+                # checkpoint cache return a stale listing across URIs/runs.
                 (
-                    read_records(
+                    _read_records_with_hash(
                         [{"seed": 0}],
                         schema={"seed": int},
+                        content_hash=None,
                         session=session,
                         settings=settings,
                         in_memory=in_memory,

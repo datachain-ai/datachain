@@ -20,12 +20,6 @@ if TYPE_CHECKING:
     P = ParamSpec("P")
 
 
-# One-row sentinel used by read_values and listing chains as a placeholder
-# before .gen() produces the real rows.
-INTERNAL_SEED_RECORDS: list[dict] = [{"seed": 0}]
-INTERNAL_SEED_SCHEMA: dict = {"seed": int}
-
-
 def _flatten_record(record: dict, signal_schema: SignalSchema) -> dict:
     """Converts nested DataModel objects like {"person": Person(...)} into flattened
     dictionaries like {"person__name": "Alice", "person__age": 30, ...}.
@@ -69,6 +63,76 @@ def _content_hash(
     h.update(b"\0")
     h.update(combined.to_bytes(32, "big"))
     return h.hexdigest()
+
+
+def _read_records_with_hash(
+    to_insert: dict | Iterable[dict] | None,
+    schema: dict[str, DataType],
+    content_hash: str | None,
+    session: Session | None = None,
+    settings: dict | None = None,
+    in_memory: bool = False,
+) -> "DataChain":
+    """Internal: temp-dataset creation with caller-supplied content_hash.
+
+    Pass ``content_hash=None`` to skip content-derived hashing for this temp
+    dataset (the version's UUID will be the only identity anchor).
+    """
+    from datachain.query.dataset import adjust_outputs, get_col_types
+    from datachain.sql.types import SQLType
+
+    from .datasets import read_dataset
+
+    session = Session.get(session, in_memory=in_memory)
+    catalog = session.catalog
+
+    name = session.generate_temp_dataset_name()
+    signal_schema = SignalSchema(schema)
+    columns = [
+        sqlalchemy.Column(c.name, c.type)  # type: ignore[union-attr]
+        for c in signal_schema.db_signals(as_columns=True)
+    ]
+
+    if isinstance(to_insert, dict):
+        to_insert = [to_insert]
+    elif not to_insert:
+        to_insert = []
+
+    dsr = catalog.create_dataset(
+        name,
+        catalog.metastore.default_project,
+        columns=columns,
+        feature_schema=signal_schema.clone_without_sys_signals().serialize(),
+        content_hash=content_hash,
+    )
+
+    warehouse = catalog.warehouse
+
+    # Create the rows table (create_dataset only creates metadata).
+    table_name = warehouse.dataset_table_name(dsr, dsr.latest_version)
+    warehouse.create_dataset_rows_table(table_name, columns=columns)
+
+    dr = warehouse.dataset_rows(dsr)
+    table = dr.get_table()
+
+    # Optimization: Compute row types once, rather than for every row.
+    col_types = get_col_types(
+        warehouse,
+        {c.name: c.type for c in columns if isinstance(c.type, SQLType)},
+    )
+
+    flattened_records = (_flatten_record(record, signal_schema) for record in to_insert)
+    records = (
+        adjust_outputs(warehouse, record, col_types, signal_schema)
+        for record in flattened_records
+    )
+    warehouse.insert_rows(table, records)
+    warehouse.insert_rows_done(table)
+
+    # Finalize warehouse-derived metadata before marking the version COMPLETE.
+    catalog.complete_dataset_version(dsr, dsr.latest_version)
+
+    return read_dataset(name=dsr.full_name, session=session, settings=settings)
 
 
 def read_records(
@@ -143,67 +207,25 @@ def read_records(
         This call blocks until all records are inserted, but iterators are processed
         in batches to avoid loading all data into memory at once.
     """
-    from datachain.query.dataset import adjust_outputs, get_col_types
-    from datachain.sql.types import SQLType
-
-    from .datasets import read_dataset
-
-    session = Session.get(session, in_memory=in_memory)
-    catalog = session.catalog
-
-    name = session.generate_temp_dataset_name()
-    signal_schema = SignalSchema(schema)
-    columns = [
-        sqlalchemy.Column(c.name, c.type)  # type: ignore[union-attr]
-        for c in signal_schema.db_signals(as_columns=True)
-    ]
-
     if isinstance(to_insert, dict):
-        to_insert = [to_insert]
+        normalized: dict | Iterable[dict] | None = [to_insert]
     elif not to_insert:
-        to_insert = []
+        normalized = []
+    else:
+        normalized = to_insert
 
-    is_seed_placeholder = (
-        to_insert == INTERNAL_SEED_RECORDS and schema == INTERNAL_SEED_SCHEMA
-    )
+    signal_schema = SignalSchema(schema)
     content_hash = (
-        _content_hash(to_insert, signal_schema)
-        if isinstance(to_insert, (list, tuple)) and not is_seed_placeholder
+        _content_hash(normalized, signal_schema)
+        if isinstance(normalized, (list, tuple))
         else None
     )
 
-    dsr = catalog.create_dataset(
-        name,
-        catalog.metastore.default_project,
-        columns=columns,
-        feature_schema=signal_schema.clone_without_sys_signals().serialize(),
-        content_hash=content_hash,
+    return _read_records_with_hash(
+        normalized,
+        schema,
+        content_hash,
+        session=session,
+        settings=settings,
+        in_memory=in_memory,
     )
-
-    warehouse = catalog.warehouse
-
-    # Create the rows table (create_dataset only creates metadata).
-    table_name = warehouse.dataset_table_name(dsr, dsr.latest_version)
-    warehouse.create_dataset_rows_table(table_name, columns=columns)
-
-    dr = warehouse.dataset_rows(dsr)
-    table = dr.get_table()
-
-    # Optimization: Compute row types once, rather than for every row.
-    col_types = get_col_types(
-        warehouse,
-        {c.name: c.type for c in columns if isinstance(c.type, SQLType)},
-    )
-
-    flattened_records = (_flatten_record(record, signal_schema) for record in to_insert)
-    records = (
-        adjust_outputs(warehouse, record, col_types, signal_schema)
-        for record in flattened_records
-    )
-    warehouse.insert_rows(table, records)
-    warehouse.insert_rows_done(table)
-
-    # Finalize warehouse-derived metadata before marking the version COMPLETE.
-    catalog.complete_dataset_version(dsr, dsr.latest_version)
-
-    return read_dataset(name=dsr.full_name, session=session, settings=settings)
