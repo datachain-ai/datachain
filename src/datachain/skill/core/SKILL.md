@@ -486,7 +486,7 @@ chain.filter(C("name").startswith("al"))
 chain.filter(C("name").endswith("ob"))
 chain.filter(C("name").like("%ob"))
 chain.filter(C("name").ilike("AL%"))
-chain.filter(C("name").regexp_match("^al"))
+chain.filter(C("name").regexp("^al"))
 # NULL checks
 chain.filter(C("name").isnot(None))
 chain.filter(C("name").is_(None))

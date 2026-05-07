@@ -2901,6 +2901,59 @@ def test_filter_with_glob_patterns(test_session):
     ]
 
 
+def test_filter_with_like_and_ilike(test_session):
+    """`like` is case-sensitive, `ilike` is case-insensitive (SQL LIKE)."""
+    chain = dc.read_values(
+        id=[1, 2, 3, 4, 5],
+        text=[
+            "empty vehicle on road",
+            "Empty Vehicle parked",
+            "EMPTY VEHICLE detected",
+            "loaded vehicle moving",
+            "no match here",
+        ],
+        session=test_session,
+    )
+
+    # like is case-sensitive: only the exact-cased "empty vehicle" matches
+    assert sorted(chain.filter(C("text").like("%empty vehicle%")).to_values("id")) == [
+        1
+    ]
+
+    # ilike is case-insensitive: matches all three casings
+    assert sorted(chain.filter(C("text").ilike("%empty vehicle%")).to_values("id")) == [
+        1,
+        2,
+        3,
+    ]
+
+    # Wildcards: `_` matches a single character
+    assert sorted(chain.filter(C("text").ilike("empty_vehicle%")).to_values("id")) == [
+        1,
+        2,
+        3,
+    ]
+
+
+def test_filter_with_regexp(test_session):
+    """`regexp` is case-sensitive by default; `(?i)` makes it insensitive."""
+    chain = dc.read_values(
+        id=[1, 2, 3, 4],
+        name=["IMG_001.jpg", "img_002.jpg", "Img_003.JPG", "video.mp4"],
+        session=test_session,
+    )
+
+    # case-sensitive default: only lowercase "img_" with lowercase ".jpg" matches
+    assert sorted(
+        chain.filter(C("name").regexp(r"^img_\d+\.jpg$")).to_values("id")
+    ) == [2]
+
+    # inline (?i) flag: case-insensitive across name and extension
+    assert sorted(
+        chain.filter(C("name").regexp(r"(?i)^img_\d+\.jpg$")).to_values("id")
+    ) == [1, 2, 3]
+
+
 def test_filter_with_in_operator(test_session):
     """Test filter with 'in' operator."""
     chain = dc.read_values(

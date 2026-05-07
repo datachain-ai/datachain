@@ -2685,7 +2685,7 @@ class DataChain:
 
     @resolve_columns
     def filter(self, *args: Any) -> "Self":
-        """Filter the chain according to conditions.
+        r"""Filter the chain according to conditions.
 
         Example:
             Basic usage with built-in operators
@@ -2693,9 +2693,23 @@ class DataChain:
             dc.filter(C("width") < 200)
             ```
 
-            Using glob to match patterns
+            Using glob to match patterns (case-sensitive, shell-style wildcards)
             ```py
             dc.filter(C("file.path").glob("*.jpg"))
+            ```
+
+            Using `like` / `ilike` for SQL pattern matching with `%` and `_`
+            wildcards. `like` is case-sensitive; `ilike` is case-insensitive:
+            ```py
+            dc.filter(C("text").like("%empty vehicle%"))
+            dc.filter(C("text").ilike("%empty vehicle%"))
+            ```
+
+            Using `regexp` for regular-expression matching. Case-sensitive by
+            default; prepend the `(?i)` inline flag for case-insensitive:
+            ```py
+            dc.filter(C("file.name").regexp(r"^IMG_\d+\.jpg$"))
+            dc.filter(C("file.name").regexp(r"(?i)^img_\d+\.jpg$"))
             ```
 
             Using in to match lists
@@ -2751,6 +2765,16 @@ class DataChain:
             ```py
             dc.filter(~(C("file.path").glob("*.jpg")))
             ```
+
+            Quick reference for column-level filter operators:
+
+            | Operator          | Wildcards / syntax     | Case sensitive?  |
+            |-------------------|------------------------|------------------|
+            | `glob(pattern)`   | shell: `*`, `?`, `[…]` | yes              |
+            | `like(pattern)`   | SQL: `%`, `_`          | yes              |
+            | `ilike(pattern)`  | SQL: `%`, `_`          | **no**           |
+            | `regexp(pattern)` | regular expression     | yes (use `(?i)`) |
+            | `in_(values)`     | exact values           | yes              |
         """
         return self._evolve(query=self._query.filter(*args))
 
