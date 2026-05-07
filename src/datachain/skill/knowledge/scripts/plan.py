@@ -21,6 +21,7 @@ from utils import (
     read_md_scanned,
     read_md_versions,
     studio_available,
+    write_json,
 )
 
 
@@ -216,14 +217,10 @@ def cmd_plan(studio: bool = False, output: str | None = None):
     result["datasets"] = datasets_out
     result["buckets"] = buckets_out
 
-    json_str = json.dumps(result, indent=2)
-
     if output:
-        os.makedirs(os.path.dirname(output), exist_ok=True)
-        with open(output, "w") as f:
-            f.write(json_str)
+        write_json(output, result)
     else:
-        print(json_str)
+        print(json.dumps(result, indent=2))
 
 
 def main():

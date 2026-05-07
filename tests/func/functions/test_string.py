@@ -171,6 +171,30 @@ def test_string_regexp_replace(test_session):
     ]
 
 
+def test_string_regexp_replace_case_insensitive(test_session):
+    ds = list(
+        dc.read_values(
+            id=(1, 2, 3),
+            s=("Foo bar FOO", "no match here", "FOObarfoo"),
+            session=test_session,
+        )
+        .mutate(
+            # case-sensitive (default): only lowercase "foo" replaced
+            cs=func.string.regexp_replace("s", r"foo", "X"),
+            # inline (?i) flag enables case-insensitive matching
+            ci=func.string.regexp_replace("s", r"(?i)foo", "X"),
+        )
+        .order_by("id")
+        .to_list("cs", "ci")
+    )
+
+    assert ds == [
+        ("Foo bar FOO", "X bar X"),
+        ("no match here", "no match here"),
+        ("FOObarX", "XbarX"),
+    ]
+
+
 def test_string_byte_hamming_distance(test_session):
     class Data(dc.DataModel):
         s1: str

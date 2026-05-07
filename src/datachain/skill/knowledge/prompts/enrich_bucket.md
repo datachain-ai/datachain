@@ -127,3 +127,5 @@ Example with `file_url_prefix = "https://my-bucket.s3.amazonaws.com"`:
 - **Do not make `uri` values clickable.** Storage URIs like `s3://`, `gs://`, `az://` are not browsable URLs — show them as plain text.
 - **Listing freshness is critical.** Users need to know if they're looking at stale data. Always show the listing timestamp.
 - **Human-readable timestamps.** Format all timestamps as `YYYY-MM-DD HH:MM:SS` (no `T`, no `Z`).
+- **Structure only, no pipelines.** Do not propose decompositions, slices, example queries, or recommended pipelines. The right shape depends on the question being asked — let the agent decide at runtime.
+- **Sampled.** If the input has `sampled: true`, totals reflect a subset, not full enumeration. Carry `sampled: true` to frontmatter, state prominently in the body that the document describes a sampled overview, and link to the underlying dataset (`dataset_name` field) so readers can query the actual file rows.
