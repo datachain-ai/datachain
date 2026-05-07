@@ -440,7 +440,9 @@ class Client(ABC):
             cb,
         )  # type: ignore[return-value]
 
-    def upload(self, data: "bytes | bytearray | memoryview | BinaryIO", path: str) -> "File":
+    def upload(
+        self, data: "bytes | bytearray | memoryview | BinaryIO", path: str
+    ) -> "File":
         """Upload *data* to *path*.
 
         ``data`` may be:
