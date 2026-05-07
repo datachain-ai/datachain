@@ -2,13 +2,12 @@
 
 import argparse
 import json
-import os
 import sys
 
 from changes import build_changes, dep_to_dict
 from dataset import fetch_version_data
 from schema import extract_preview, extract_schema, get_catalog
-from utils import collect_datasets, dc_import, parse_semver
+from utils import collect_datasets, dc_import, parse_semver, write_json
 
 
 def _fetch_all_versions(name: str) -> dict:  # noqa: C901, PLR0912, PLR0915
@@ -282,10 +281,7 @@ def cmd_dataset_all(
     if new_data.get("warnings"):
         result["warnings"] = new_data["warnings"]
 
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    with open(output_path, "w") as f:
-        json.dump(result, f, indent=2)
-        f.write("\n")
+    write_json(output_path, result)
 
 
 def main():

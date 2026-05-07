@@ -112,7 +112,21 @@ String operations via `dc.func.string.*`:
 - `length(col)`: string length
 - `split(col, sep)`: split on separator
 - `replace(col, old, new)`: substring replacement
-- `regexp_replace(col, pattern, replacement)`: regex-based replacement
+- `regexp_replace(col, pattern, replacement)`: regex-based replacement. Matching
+  is case-sensitive by default — prepend the `(?i)` inline flag to the pattern
+  for case-insensitive matching (e.g. `r"(?i)foo"`).
+
+```python
+import datachain as dc
+from datachain.func import string
+
+chain.mutate(
+    # Replace any digit run with "X"
+    masked=string.regexp_replace("text", r"\d+", "X"),
+    # Case-insensitive replacement: matches "foo", "FOO", "Foo", ...
+    normalized=string.regexp_replace("text", r"(?i)foo", "bar"),
+)
+```
 
 ## Numeric / Bit Functions
 
