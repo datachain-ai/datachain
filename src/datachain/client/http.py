@@ -145,7 +145,7 @@ class HTTPClient(Client):
             last_modified=last_modified,
         )
 
-    def upload(self, data: bytes, path: str) -> "File":
+    def upload(self, data, path: str) -> "File":
         raise NotImplementedError(
             "HTTP/HTTPS client is read-only. Upload operations are not supported."
         )

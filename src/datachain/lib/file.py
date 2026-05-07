@@ -631,7 +631,11 @@ class File(DataModel):
 
         destination = stringify_path(destination)
         client, rel_path = self._resolve_destination(destination, client_config)
-        result = client.upload(self.read_bytes(), rel_path)
+        # Stream the source via Client.upload(stream) instead of materializing
+        # the full file into bytes via read_bytes(). For multi-GB artifacts the
+        # bytes path peaks at file_size in RAM, which OOMs workers.
+        with self.open() as src:
+            result = client.upload(src, rel_path)
         result._set_stream(self._catalog)
         return result
 

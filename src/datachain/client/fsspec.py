@@ -5,10 +5,10 @@ import multiprocessing
 import os
 import posixpath
 import re
+import shutil
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Iterator, Sequence
 from datetime import datetime
-from shutil import copy2
 from typing import TYPE_CHECKING, Any, BinaryIO, ClassVar, Literal, NamedTuple
 from urllib.parse import urlparse
 
@@ -424,7 +424,7 @@ class Client(ABC):
             reflink(src, dst)
         except OSError:
             # Default to copy if reflinks are not supported
-            copy2(src, dst)
+            shutil.copy2(src, dst)
 
     def open_object(
         self, file: "File", use_cache: bool = True, cb: Callback = DEFAULT_CALLBACK
@@ -440,7 +440,19 @@ class Client(ABC):
             cb,
         )  # type: ignore[return-value]
 
-    def upload(self, data: bytes, path: str) -> "File":
+    def upload(self, data: "bytes | bytearray | memoryview | BinaryIO", path: str) -> "File":
+        """Upload *data* to *path*.
+
+        ``data`` may be:
+          - a bytes-like object (``bytes``/``bytearray``/``memoryview``) —
+            written in a single ``pipe_file`` call.
+          - a binary readable stream — copied into the destination via
+            ``fs.open(path, 'wb')`` using ``shutil.copyfileobj``. The
+            destination handle (an ``AbstractBufferedFile`` on cloud
+            backends) flushes a multipart part every ``self.blocksize``
+            bytes (e.g. 5 MiB on s3fs), so peak RAM is bounded by the
+            backend's part size rather than the file size.
+        """
         if path.startswith(self.PREFIX):
             full_path = path
             _, rel_path = self.split_url(path)
@@ -453,7 +465,11 @@ class Client(ABC):
         parent = posixpath.dirname(full_path)
         self.fs.makedirs(parent, exist_ok=True)
 
-        self.fs.pipe_file(full_path, data)
+        if isinstance(data, (bytes, bytearray, memoryview)):
+            self.fs.pipe_file(full_path, data)
+        else:
+            with self.fs.open(full_path, "wb") as dst:
+                shutil.copyfileobj(data, dst)
         file_info = self.fs.info(full_path, **self._file_info_kwargs())
         return self.info_to_file(file_info, rel_path)
 
