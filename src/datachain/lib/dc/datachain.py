@@ -561,14 +561,12 @@ class DataChain:
 
         base_hash = self._query.hash()
         _hash = hashlib.sha256(
-            (base_hash + f"{namespace_name}/{project_name}/{name}").encode("utf-8")
+            (
+                base_hash + f"{namespace_name}/{project_name}/{name}/{version or ''}"
+            ).encode("utf-8")
         ).hexdigest()
 
-        result = (
-            self._resolve_checkpoint(name, project, _hash, kwargs)
-            if version is None
-            else None
-        )
+        result = self._resolve_checkpoint(name, project, _hash, kwargs)
         if bool(result):
             print(
                 f"Checkpoint found for dataset '{name}', skipping creation",
