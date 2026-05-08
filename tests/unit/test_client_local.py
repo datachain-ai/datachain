@@ -440,6 +440,13 @@ def test_upload_accepts_binary_stream(tmp_path, catalog):
     assert result.path == "out.bin"
 
 
+def test_upload_rejects_non_bytes_non_stream(tmp_path, catalog):
+    client = FileClient.from_source(str(tmp_path), catalog.cache)
+
+    with pytest.raises(TypeError, match="bytes-like data or a binary readable stream"):
+        client.upload("not-bytes-or-stream", "out.bin")  # type: ignore[arg-type]
+
+
 @pytest.mark.parametrize(
     "path,match",
     [

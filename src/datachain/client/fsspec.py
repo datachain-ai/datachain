@@ -469,9 +469,20 @@ class Client(ABC):
 
         if isinstance(data, (bytes, bytearray, memoryview)):
             self.fs.pipe_file(full_path, data)
-        else:
+        elif hasattr(data, "read"):
             with self.fs.open(full_path, "wb") as dst:
-                shutil.copyfileobj(data, dst)
+                # Use a larger copy buffer than shutil's 16 KiB default to
+                # reduce per-chunk overhead on multi-GB uploads. The
+                # destination's blocksize (when exposed by fsspec backends)
+                # matches the multipart part size it will flush at, making it
+                # a natural choice; fall back to 8 MiB otherwise.
+                buf_size = getattr(dst, "blocksize", None) or 8 * 1024 * 1024
+                shutil.copyfileobj(data, dst, length=buf_size)
+        else:
+            raise TypeError(
+                "Client.upload(data) expects bytes-like data or a binary "
+                f"readable stream (with a .read() method); got {type(data).__name__}"
+            )
         file_info = self.fs.info(full_path, **self._file_info_kwargs())
         return self.info_to_file(file_info, rel_path)
 
