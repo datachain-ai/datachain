@@ -62,19 +62,21 @@ theme:
 
 nav:
   - Home:
-      - Welcome: index.md
-      - Fit: fit.md
-      - Getting Started:
+      - 🔗 Welcome to DataChain: index.md
+      - 🎯 Fit: fit.md
+      - 🪢 Data Harness: harness.md
+      - 🏗️ Architecture: architecture.md
+      - 🏃🏼‍♂️ Getting Started:
           - Agents: getting-started/agents.md
           - Python: getting-started/python.md
-      - Use Cases:
+      - 🧩 Use Cases:
           - Overview: use-cases/index.md
           - Agent Compounding: use-cases/agent-compounding.md
           - Agent Anti-Patterns: use-cases/agent-anti-patterns.md
           - Agent as Dataset Producer: use-cases/agent-as-dataset-producer.md
           - Retroactive Agent Runs: use-cases/retroactive-agent-runs.md
           - Cross-Agent Reasoning: use-cases/cross-agent-reasoning.md
-      - Concepts:
+      - 💡 Concepts:
           - Overview: concepts/index.md
           - Data Memory: concepts/data-memory.md
           - Datasets: concepts/datasets.md
@@ -82,7 +84,7 @@ nav:
           - Files and Types: concepts/files-and-types.md
           - Execution Model: concepts/execution-model.md
           - Knowledge Base: concepts/knowledge-base.md
-      - Guides:
+      - 📚 Guides:
           - Overview: guide/index.md
           - Get Data In:
               - Reading Data: guide/reading-data.md
@@ -108,8 +110,8 @@ nav:
               - Environment Variables: guide/env.md
               - Namespaces: guide/namespaces.md
               - Local DB Migrations: guide/db_migrations.md
-      - Examples: examples.md
-      - API Reference:
+      - 🎬 Examples: examples.md
+      - 🐍 API Reference:
           - Overview: references/index.md
           - DataChain: references/datachain.md
           - Data Types:
@@ -137,7 +139,7 @@ nav:
               - String: references/functions/string.md
               - Window: references/functions/window.md
           - Toolkit: references/toolkit.md
-      - CLI Reference:
+      - 📖 CLI Reference:
           - Overview: commands/index.md
           - Commands:
               - gc: commands/gc.md
@@ -159,7 +161,7 @@ nav:
                   - pause: commands/pipeline/pause.md
                   - resume: commands/pipeline/resume.md
                   - remove-job: commands/pipeline/remove-job.md
-      - Studio:
+      - ☁️ Studio:
           - Overview: studio/index.md
           - User Guide:
               - Overview: studio/user-guide/index.md
@@ -195,7 +197,7 @@ nav:
               - Troubleshooting: studio/user-guide/troubleshooting.md
           - API: studio/api/index.md
           - Webhooks: studio/webhooks.md
-      - Contributing: contributing.md
+      - 🤝 Contributing: contributing.md
   - DataChain Website ↗: https://datachain.ai" target="_blank"
   - Studio ↗: https://studio.datachain.ai" target="_blank"
 

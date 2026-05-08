@@ -72,10 +72,13 @@ When loaded, determine the user's intent:
 → **Before building anything**, read `dc-knowledge/index.md` and check whether an existing dataset already covers the data the user needs. If one does, start from `dc.read_dataset("name")` — filter, merge, or extend it instead of re-reading raw storage. This avoids recomputing expensive operations (LLM calls, model inference) and reuses proven code patterns.
 → **Run the access check** (if not already done in Step 1):
   ```bash
-  python3 {skill_dir}/scripts/bucket_status.py <uri>
+  datachain bucket status <uri>
   ```
   Prints `Status: exists|not found` and `Access: anonymous|authenticated|denied`. Exit code 0 = exists, 1 = not found. If status is `not found` or access is `denied` → stop and ask the user for credentials. If access is `anonymous` → pass `anon=True` to `read_storage()`.
 → Read `{skill_dir}/../core/SKILL.md` for DataChain SDK rules and patterns.
+→ **Superlative defaults.** When the user asks "best/worst/highest/lowest" without naming a metric, pick the most natural metric the data supports, name it in a one-line comment, and emit `n` per group. Drop groups with `n < max(5, sqrt(median_n))` before ranking. Ask one clarifying question only if multiple metrics would materially change the ranking.
+→ **Slice sanity check.** Before committing to a prefix or glob, verify the slice still contains every entity dimension the question groups, compares, or ranks over. If too large, narrow on an orthogonal dimension — never on one the question depends on.
+→ **Multi-axis classification batching.** When a per-row LLM/VLM call classifies on the axis the user asked about, extend the prompt to return plausible related axes in the same call. Variant questions then hit cache on the saved dataset.
 → Build and execute the pipeline the user requested, following core skill rules.
 → **While the pipeline is running**, enrich any Step 1 bucket JSON that does not yet have a `.md` — read `{skill_dir}/prompts/enrich_bucket.md` and generate the markdown in parallel with the running script.
 → After the pipeline completes, **always** run Steps 2–5 to update the knowledge base.
@@ -110,7 +113,7 @@ When any storage URI is encountered, **enlist the whole bucket first** before do
 
 4. **Access check.** Run:
    ```bash
-   python3 {skill_dir}/scripts/bucket_status.py {root_uri}
+   datachain bucket status {root_uri}
    ```
    If access is `denied` or bucket is `not found` → stop and ask the user. Note the access level for the scan step.
 
@@ -124,8 +127,8 @@ When any storage URI is encountered, **enlist the whole bucket first** before do
    - If the user has indicated the bucket is large: use **180** or the timeout the user specifies.
 
 6. **Handle timeout.** If the command exits with code 124 (timeout):
-   - Tell the user: "Bucket {bucket} is too large for a full listing (timed out after 60s). Proceeding with directory-level listings instead."
-   - Skip the rest of this step. The normal Steps 2–5 will handle prefix-level entries from catalog listings.
+   - Run the hierarchical fallback: `python3 {skill_dir}/scripts/bucket_overview.py {root_uri} --bucket-json dc-knowledge/buckets/{scheme}/{bucket_slug}.json` (add `--anon` for public buckets).
+   - It saves a sampled DataChain dataset of File rows and writes a bucket-shape JSON the enrich step turns into a bucket markdown marked `sampled: true`. Continue with Steps 2–5 as normal.
 
 7. **Report.** On success, read the JSON output and report a quick summary:
    > Enlisted bucket {bucket} — {N} files, total size {size}, primarily {top 2-3 extensions}.

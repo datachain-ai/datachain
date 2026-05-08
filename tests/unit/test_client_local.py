@@ -427,6 +427,19 @@ def test_upload_returned_file_path_matches_relative_input(tmp_path, catalog):
     assert result.source == path_to_fsspec_uri(str(tmp_path))
 
 
+def test_upload_accepts_binary_stream(tmp_path, catalog):
+    client = FileClient.from_source(str(tmp_path), catalog.cache)
+
+    src = tmp_path / "src.bin"
+    src.write_bytes(b"streamed-content")
+
+    with open(src, "rb") as fh:
+        result = client.upload(fh, "out.bin")
+
+    assert (tmp_path / "out.bin").read_bytes() == b"streamed-content"
+    assert result.path == "out.bin"
+
+
 @pytest.mark.parametrize(
     "path,match",
     [

@@ -1,3 +1,4 @@
+from datachain.client import BucketStatus, bucket_status
 from datachain.lib.data_model import DataModel, DataType, is_chain_type
 from datachain.lib.dc import (
     C,
@@ -53,6 +54,7 @@ __all__ = [
     "Audio",
     "AudioFile",
     "AudioFragment",
+    "BucketStatus",
     "C",
     "Column",
     "ColumnExpr",
@@ -75,6 +77,7 @@ __all__ = [
     "VideoFile",
     "VideoFragment",
     "VideoFrame",
+    "bucket_status",
     "create_project",
     "datasets",
     "delete_dataset",

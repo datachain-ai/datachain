@@ -10,7 +10,7 @@ import os
 import re
 from datetime import datetime, timezone
 
-from utils import bucket_file_path, dataset_file_path, human_size, read_json_data
+from utils import bucket_file_path, dataset_file_path, write_text
 
 BASE_DIR = "dc-knowledge"
 
@@ -245,42 +245,50 @@ def render_index(plan: dict) -> str:
             lines.extend(_render_dataset_table(by_ns[ns], strip_namespace=bool(ns)))
             lines.append("")
 
-    # Buckets table
-    if buckets:
+    # Buckets table — merge plan-derived entries with on-disk markdowns
+    bucket_rows = _collect_bucket_rows(buckets)
+    if bucket_rows:
         lines.append("## Buckets")
         lines.append("")
         lines.append("| Listing | Files | Size | Scanned |")
         lines.append("|---------|------:|-----:|---------|")
-
-        for b in sorted(buckets, key=lambda x: x["uri"]):
-            uri = b["uri"]
-            file_path = b.get("file_path", bucket_file_path(uri))
-
-            # Read JSON for rich stats
-            abs_json_path = os.path.join(BASE_DIR, file_path + ".json")
-            data = read_json_data(abs_json_path)
-
-            total_files = ""
-            total_size = ""
-            scanned = b.get("scanned") or ""
-
-            if data:
-                tf = data.get("total_files")
-                total_files = f"{tf:,}" if tf else ""
-                tb = data.get("total_size_bytes", 0)
-                total_size = human_size(tb) if tb else ""
-                scanned = data.get("scanned", scanned) or ""
-
-            if scanned and "T" in scanned:
-                scanned = scanned.split("T")[0]
-
-            link = f"[{uri}]({file_path}.md)"
-
-            lines.append(f"| {link} | {total_files} | {total_size} | {scanned} |")
-
+        for link, files_val, size_val, scanned in bucket_rows:
+            lines.append(f"| {link} | {files_val} | {size_val} | {scanned} |")
         lines.append("")
 
     return "\n".join(lines)
+
+
+def _collect_bucket_rows(buckets: list[dict]) -> list[tuple[str, str, str, str]]:
+    """Return (link, files, size, scanned) rows for plan-derived bucket mds.
+
+    Single source of truth is the markdown frontmatter — JSON is intermediate
+    and may be cleaned up. Plan entries without an md on disk are skipped
+    so the index never contains broken links.
+    """
+    rows: list[tuple[str, str, str, str]] = []
+
+    for b in buckets:
+        file_path = b.get("file_path", bucket_file_path(b["uri"]))
+        md_path = os.path.join(BASE_DIR, file_path + ".md")
+        if not os.path.exists(md_path):
+            continue
+        fm = _read_md_frontmatter(md_path)
+        uri = fm.get("uri", b["uri"])
+        scanned = fm.get("scanned", "")
+        if scanned and "T" in scanned:
+            scanned = scanned.split("T")[0]
+        rows.append(
+            (
+                f"[{uri}]({file_path}.md)",
+                fm.get("files", ""),
+                fm.get("size", ""),
+                scanned,
+            )
+        )
+
+    rows.sort(key=lambda r: r[0])
+    return rows
 
 
 def main():
@@ -295,9 +303,7 @@ def main():
     result = render_index(plan)
 
     if args.output:
-        os.makedirs(os.path.dirname(args.output), exist_ok=True)
-        with open(args.output, "w") as f:
-            f.write(result)
+        write_text(args.output, result)
     else:
         print(result, end="")
 

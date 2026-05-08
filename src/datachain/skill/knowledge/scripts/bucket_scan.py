@@ -9,14 +9,14 @@ Usage:
 
 import argparse
 import json
-import os
 import signal
 import sys
 from datetime import datetime, timezone
 from typing import Any
 
-from bucket_status import bucket_status
-from utils import dc_import, parse_uri, source_to_https
+from utils import dc_import, parse_uri, source_to_https, write_json
+
+from datachain import bucket_status
 
 
 class ScanTimeoutError(Exception):
@@ -437,97 +437,100 @@ def _enrich_text(file_obj, info):
 # ---------------------------------------------------------------------------
 
 
+def compute_bucket_metadata(
+    chain,
+    uri: str,
+    is_anon: bool,
+    sampled: bool = False,
+    dataset_name: str | None = None,
+) -> dict:
+    """Aggregate metadata + samples from a File-shape DataChain into a bucket JSON dict.
+
+    Reusable across full bucket scans and sampled overviews. `sampled=True`
+    means the chain represents a subset, not a full enumeration; downstream
+    enrichment surfaces this prominently in the bucket markdown. When
+    `dataset_name` is provided, it is recorded so readers can recover the
+    actual File rows via `dc.read_dataset(dataset_name)`.
+    """
+    from datachain import C, func
+
+    parts = parse_uri(uri)
+    now = datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    listing_info = get_listing_info(uri) if not sampled else {}
+
+    try:
+        totals = chain.group_by(
+            total_files=func.count(),
+            total_bytes=func.sum(C("file.size")),
+        ).to_pandas()
+        total_files = int(totals["total_files"].iloc[0]) if len(totals) > 0 else 0
+        total_size_bytes = int(totals["total_bytes"].iloc[0]) if len(totals) > 0 else 0
+    except Exception as e:  # noqa: BLE001
+        print(f"[dc-knowledge error] totals: {e}", file=sys.stderr)
+        total_files = 0
+        total_size_bytes = 0
+
+    extensions = compute_extensions(chain)
+    directories = compute_directories(chain)
+    size_distribution = compute_size_distribution(chain)
+    time_range = compute_time_range(chain)
+    samples = sample_files(chain, extensions)
+    url_prefix = source_to_https(uri)
+
+    result = {
+        "uri": uri,
+        "scheme": parts["scheme"],
+        "bucket": parts["bucket"],
+        "prefix": parts["prefix"],
+        "anon": is_anon,
+        "sampled": sampled,
+        "scanned": now,
+        **listing_info,
+        "total_files": total_files,
+        "total_size_bytes": total_size_bytes,
+        "max_depth": max((d["depth"] for d in directories), default=0),
+        "extensions": extensions,
+        "directories": directories,
+        "size_distribution": size_distribution,
+        "time_range": time_range,
+        "samples": samples,
+    }
+    if url_prefix and is_anon:
+        result["file_url_prefix"] = url_prefix
+    if dataset_name:
+        result["dataset_name"] = dataset_name
+    return result
+
+
 def scan_bucket(uri: str, output: str | None = None, timeout: int = 0):
-    """Aggregate metadata + sample files for one bucket URI."""
+    """Full bucket scan: list via read_storage and emit a bucket JSON."""
 
     if timeout > 0:
         signal.signal(signal.SIGALRM, _alarm_handler)
         signal.alarm(timeout)
 
-    # Fast pre-check: verify the bucket exists and detect anon access.
-    # Uses cloud SDKs directly — no DC listing.
-    status = bucket_status(uri)
+    parts = parse_uri(uri)
+    status = bucket_status(f"{parts['scheme']}://{parts['bucket']}/")
     if not status.exists or status.access == "denied":
-        print(
-            json.dumps({"error": status.error, "uri": uri}),
-            file=sys.stderr,
-        )
+        print(json.dumps({"error": status.error, "uri": uri}), file=sys.stderr)
         sys.exit(1)
-    is_anon = status.anon
+    is_anon = status.access == "anonymous"
 
     try:
         dc = dc_import()
-        from datachain import C, func
-
-        parts = parse_uri(uri)
-        now = datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
         # Never pass update=True. Listing is already cached from a prior
         # read_storage() call. Pass anon=True for public buckets so listing
         # doesn't hang on credential lookup.
         chain = dc.read_storage(uri, anon=True) if is_anon else dc.read_storage(uri)
-
-        listing_info = get_listing_info(uri)
-
-        # Total files and size
-        try:
-            totals = chain.group_by(
-                total_files=func.count(),
-                total_bytes=func.sum(C("file.size")),
-            ).to_pandas()
-            total_files = int(totals["total_files"].iloc[0]) if len(totals) > 0 else 0
-            total_size_bytes = (
-                int(totals["total_bytes"].iloc[0]) if len(totals) > 0 else 0
-            )
-        except Exception as e:  # noqa: BLE001
-            print(f"[dc-knowledge error] totals: {e}", file=sys.stderr)
-            total_files = 0
-            total_size_bytes = 0
-
-        extensions = compute_extensions(chain)
-
-        directories = compute_directories(chain)
-        max_depth = max((d["depth"] for d in directories), default=0)
-
-        size_distribution = compute_size_distribution(chain)
-
-        time_range = compute_time_range(chain)
-
-        samples = sample_files(chain, extensions)
-
-        url_prefix = source_to_https(uri)
-
-        result = {
-            "uri": uri,
-            "scheme": parts["scheme"],
-            "bucket": parts["bucket"],
-            "prefix": parts["prefix"],
-            "anon": is_anon,
-            "scanned": now,
-            **listing_info,
-            "total_files": total_files,
-            "total_size_bytes": total_size_bytes,
-            "max_depth": max_depth,
-            "extensions": extensions,
-            "directories": directories,
-            "size_distribution": size_distribution,
-            "time_range": time_range,
-            "samples": samples,
-        }
-        if url_prefix and is_anon:
-            result["file_url_prefix"] = url_prefix
+        result = compute_bucket_metadata(chain, uri, is_anon)
 
         if timeout > 0:
             signal.alarm(0)
 
-        json_str = json.dumps(result, indent=2, default=str)
-
         if output:
-            os.makedirs(os.path.dirname(output), exist_ok=True)
-            with open(output, "w") as f:
-                f.write(json_str)
+            write_json(output, result)
         else:
-            print(json_str)
+            print(json.dumps(result, indent=2, default=str))
     except ScanTimeoutError:
         print(
             json.dumps({"error": "timeout", "uri": uri, "timeout": timeout}),
