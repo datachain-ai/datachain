@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING
 
 from datachain.lib.convert.values_to_tuples import values_to_tuples
 from datachain.lib.data_model import dict_to_data_model
-from datachain.lib.dc.records import _read_records_with_hash
+from datachain.lib.dc.records import create_records_dataset
 from datachain.lib.dc.utils import OutputType
 from datachain.query import Session
 
@@ -43,7 +43,7 @@ def read_values(
     # doesn't capture _func_fr's closure (which holds `tuples`) — auto-hashing
     # the seed would collide every read_values() call saved under the same
     # name. Drop this once hash_callable becomes closure-aware.
-    chain = _read_records_with_hash(
+    chain = create_records_dataset(
         [{"seed": 0}],
         schema={"seed": int},
         content_hash=None,

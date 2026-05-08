@@ -1,5 +1,4 @@
 import hashlib
-import json as _json
 from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
@@ -38,26 +37,27 @@ def _flatten_record(record: dict, signal_schema: SignalSchema) -> dict:
 
 
 def _content_hash(
-    records: list[dict] | tuple[dict, ...] | dict,
+    flat_records: Iterable[dict],
     signal_schema: SignalSchema,
 ) -> str:
     """Compute a deterministic content hash for a concrete batch of records.
 
-    Stored as the temp-dataset version's `content_hash` so chains starting
-    from materialized records (read_records, single-file read_storage)
-    produce the same chain hash on identical inputs across runs — a
-    precondition for checkpoint reuse.
+    Records must be pre-flattened (no pydantic values). Stored as the
+    temp-dataset version's `content_hash` so chains starting from
+    materialized records (read_records, single-file read_storage) produce
+    the same chain hash on identical inputs across runs — a precondition
+    for checkpoint reuse.
     """
-    items: Iterable[dict] = [records] if isinstance(records, dict) else records
-    # XOR-combine per-record digests so order doesn't matter and we can
-    # stream records without buffering or sorting.
+    # XOR-combine per-record digests so order doesn't matter.
     combined = 0
-    for rec in items:
-        payload = _json.dumps(
-            _flatten_record(rec, signal_schema), sort_keys=True, default=str
-        )
-        digest = hashlib.sha256(payload.encode()).digest()
-        combined ^= int.from_bytes(digest, "big")
+    for rec in flat_records:
+        h = hashlib.sha256()
+        for k in sorted(rec):
+            h.update(k.encode())
+            h.update(b"\0")
+            h.update(repr(rec[k]).encode())
+            h.update(b"\0")
+        combined ^= int.from_bytes(h.digest(), "big")
     h = hashlib.sha256()
     h.update(signal_schema.hash().encode())
     h.update(b"\0")
@@ -65,19 +65,18 @@ def _content_hash(
     return h.hexdigest()
 
 
-def _read_records_with_hash(
-    to_insert: dict | Iterable[dict] | None,
+def create_records_dataset(
+    flat_records: Iterable[dict],
     schema: dict[str, DataType],
     content_hash: str | None,
     session: Session | None = None,
     settings: dict | None = None,
     in_memory: bool = False,
 ) -> "DataChain":
-    """Internal: temp-dataset creation with caller-supplied content_hash.
-
-    Pass ``content_hash=None`` to skip content-derived hashing for this temp
-    dataset (the version's UUID will be the only identity anchor).
-    """
+    """Create a temp dataset from pre-flattened records with caller-supplied
+    ``content_hash``. Pass ``content_hash=None`` to anchor identity on UUID
+    only (used by ``read_values`` and the listing chain to opt out of
+    content-derived hashing)."""
     from datachain.query.dataset import adjust_outputs, get_col_types
     from datachain.sql.types import SQLType
 
@@ -92,11 +91,6 @@ def _read_records_with_hash(
         sqlalchemy.Column(c.name, c.type)  # type: ignore[union-attr]
         for c in signal_schema.db_signals(as_columns=True)
     ]
-
-    if isinstance(to_insert, dict):
-        to_insert = [to_insert]
-    elif not to_insert:
-        to_insert = []
 
     dsr = catalog.create_dataset(
         name,
@@ -121,10 +115,9 @@ def _read_records_with_hash(
         {c.name: c.type for c in columns if isinstance(c.type, SQLType)},
     )
 
-    flattened_records = (_flatten_record(record, signal_schema) for record in to_insert)
     records = (
         adjust_outputs(warehouse, record, col_types, signal_schema)
-        for record in flattened_records
+        for record in flat_records
     )
     warehouse.insert_rows(table, records)
     warehouse.insert_rows_done(table)
@@ -208,21 +201,19 @@ def read_records(
         in batches to avoid loading all data into memory at once.
     """
     if isinstance(to_insert, dict):
-        normalized: dict | Iterable[dict] | None = [to_insert]
+        to_insert = [to_insert]
     elif not to_insert:
-        normalized = []
-    else:
-        normalized = to_insert
+        to_insert = []
 
     signal_schema = SignalSchema(schema)
-    content_hash = (
-        _content_hash(normalized, signal_schema)
-        if isinstance(normalized, (list, tuple))
-        else None
-    )
+    flat: Iterable[dict] = (_flatten_record(rec, signal_schema) for rec in to_insert)
+    content_hash: str | None = None
+    if isinstance(to_insert, (list, tuple)):
+        flat = list(flat)
+        content_hash = _content_hash(flat, signal_schema)
 
-    return _read_records_with_hash(
-        normalized,
+    return create_records_dataset(
+        flat,
         schema,
         content_hash,
         session=session,

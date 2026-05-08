@@ -123,7 +123,7 @@ def read_storage(
         ```
     """
     from .datasets import read_dataset
-    from .records import _read_records_with_hash, read_records
+    from .records import create_records_dataset, read_records
 
     file_type = get_file_type(type)
 
@@ -205,7 +205,7 @@ def read_storage(
                 # `client_config`) — auto-hashing the seed would let the UDF
                 # checkpoint cache return a stale listing across URIs/runs.
                 (
-                    _read_records_with_hash(
+                    create_records_dataset(
                         [{"seed": 0}],
                         schema={"seed": int},
                         content_hash=None,
