@@ -10,6 +10,10 @@ def image_info(file: File | ImageFile) -> Image:
     """
     Returns image file information.
 
+    Streams the file so PIL only reads the header bytes it needs to
+    determine dimensions and format, instead of downloading the whole
+    object up front.
+
     Args:
         file (ImageFile): Image file object.
 
@@ -17,15 +21,15 @@ def image_info(file: File | ImageFile) -> Image:
         Image: Image file information.
     """
     try:
-        img = file.as_image_file().read()
+        with file.as_image_file().open(mode="rb") as stream:
+            with PILImage.open(stream) as img:
+                return Image(
+                    width=img.width,
+                    height=img.height,
+                    format=img.format or "",
+                )
     except Exception as exc:
         raise FileError("unable to open image file", file.source, file.path) from exc
-
-    return Image(
-        width=img.width,
-        height=img.height,
-        format=img.format or "",
-    )
 
 
 def convert_image(
