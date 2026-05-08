@@ -1027,7 +1027,7 @@ def run_datachain_worker(monkeypatch):
         worker_cmd = [
             "celery",
             "-A",
-            "datachain_worker.tasks",
+            "compute.tasks",
             "worker",
             "--loglevel=INFO",
             f"--hostname=tests-datachain-worker-udf-runner-{i}",
@@ -1047,7 +1047,7 @@ def run_datachain_worker(monkeypatch):
         )
         workers.append(worker_proc)
     try:
-        from datachain_worker.utils.celery import celery_app
+        from compute.utils.celery import celery_app
 
         inspect = celery_app.control.inspect()
         attempts = 0

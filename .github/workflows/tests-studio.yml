@@ -78,7 +78,7 @@ jobs:
       - name: Check out DataChain
         uses: actions/checkout@v6
         with:
-          path: './backend/datachain'
+          path: './datachain'
           fetch-depth: 1
 
       - name: Set up Python ${{ matrix.pyv }}
@@ -92,8 +92,8 @@ jobs:
           enable-cache: true
           cache-suffix: studio
           cache-dependency-glob: |
-            backend/datachain_server/pyproject.toml
-            backend/datachain/pyproject.toml
+            datachain_saas/pyproject.toml
+            datachain/pyproject.toml
 
       - name: Use CPU-only PyTorch on Linux
         # torch 2.11+ on PyPI pulls CUDA deps missing libnppicc (nvidia-npp)
@@ -110,7 +110,7 @@ jobs:
           sudo apt install -y ffmpeg
 
       - name: Install dependencies
-        run: uv pip install --system ./backend/datachain_server[tests] ./backend/datachain[tests]
+        run: uv pip install --system ./datachain_saas[tests] ./datachain[tests]
 
       - name: Print installed system packages
         run: uv pip list --system
@@ -134,12 +134,12 @@ jobs:
           $pip_bin install -U pip wheel setuptools \
             --cache-dir="$pip_cache_dir"
 
-          $pip_bin wheel ./backend/datachain_server \
+          $pip_bin wheel ./datachain_saas \
             --wheel-dir="$pip_wheel_dir" \
             --cache-dir="$pip_cache_dir"
 
           uv venv --python "$PYTHON_VERSION" "${DATACHAIN_VENV_DIR}/default"
-          uv pip install -r ./backend/requirements-worker-venv.txt \
+          uv pip install -r ./compute/requirements-worker-venv.txt \
             --find-links="$pip_wheel_dir" \
             --cache-dir="${DATACHAIN_VENV_DIR}/.cache/uv" \
             -p "${DATACHAIN_VENV_DIR}/default/bin/python"
@@ -158,4 +158,4 @@ jobs:
           --splits=6 --group=${{ matrix.group }} --durations-path=../../.github/.test_durations
           --benchmark-skip
           tests ../datachain/tests
-        working-directory: backend/datachain_server
+        working-directory: datachain_saas
