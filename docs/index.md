@@ -78,7 +78,7 @@ Claude Code, Cursor, and Codex read DataChain through agent skills and an MCP se
 
 ## Get started
 
-- [Python quickstart](getting-started/python.md) — installation and first chain
-- [Where DataChain fits](fit.md) — when to reach for it, when not to
+- [Python quickstart](getting-started/python.md) — install and first chain
+- [Agents quickstart](getting-started/agents.md) — Claude Code, Cursor, Codex setup
 - [Concepts](concepts/index.md) — Compute Engine, Data Memory, Knowledge Base
 - [Use cases](use-cases/index.md) — five patterns where the work compounds
