@@ -5,7 +5,7 @@ title: Architecture
 # Architecture
 
 <p align="center">
-  <img src="../assets/architecture.svg" alt="DataChain architecture" width="700" />
+  <img src="../assets/data-memory-layer.svg" alt="DataChain architecture: AI agents, the memory layer, and object storage" width="700" />
 </p>
 
 A **dataset** is the unit of work: a named, versioned result of a pipeline step like `pets_embeddings@1.0.0`. Every `.save()` registers one.
