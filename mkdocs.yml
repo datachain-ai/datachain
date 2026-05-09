@@ -84,6 +84,7 @@ nav:
           - Files and Types: concepts/files-and-types.md
           - Compute Engine: concepts/compute-engine.md
           - Knowledge Base: concepts/knowledge-base.md
+          - Skill and MCP: concepts/skill-and-mcp.md
       - 📚 Guides:
           - Overview: guide/index.md
           - Get Data In:

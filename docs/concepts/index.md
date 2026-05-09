@@ -12,3 +12,4 @@ DataChain is built around a small number of ideas. Understanding them makes the 
 - [Files and Types](files-and-types.md): the File abstraction, modality types, annotation types, and the type system
 - [Compute Engine](compute-engine.md): heavy Python work over files in object storage; parallel, async, distributed, checkpoint-recoverable; the only layer that produces what does not yet exist
 - [Knowledge Base](knowledge-base.md): the compilation layer that turns persistent datasets into agent-readable knowledge; derived from Data Memory via LLM enrichments
+- [Skill and MCP](skill-and-mcp.md): the delivery surface that reaches Claude Code, Cursor, and Codex; agents read context here while pipelines write through the Python library

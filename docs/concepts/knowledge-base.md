@@ -8,7 +8,7 @@ The Knowledge Base is the compilation layer that turns persistent typed datasets
 
 ## Skill and MCP Layer
 
-The Knowledge Base reaches agents through a Skill and an MCP server, architecturally separate from the [Compute Engine](compute-engine.md) and [Data Memory](data-memory.md) that the Python library exposes. Pipelines run through compute and memory; agents read context through Skill and MCP. This separation reflects the two audiences: pipelines need a compute engine, agents need a context surface.
+The Knowledge Base reaches agents through the [Skill and MCP](skill-and-mcp.md) layer, architecturally separate from the [Compute Engine](compute-engine.md) and [Data Memory](data-memory.md) that the Python library exposes. Pipelines run through compute and memory; agents read context through Skill and MCP. This separation reflects the two audiences: pipelines need a compute engine, agents need a context surface.
 
 ## Compilation Is What Makes Memory Readable
 
