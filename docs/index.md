@@ -1,6 +1,6 @@
 # <a class="main-header-link" href="/" ><img style="display: inline-block;" src="/assets/datachain.svg" alt="DataChain"> <span style="display: inline-block;"> DataChain</span></a>
 
-<p align="center" class="subtitle">Datasets for files in S3, GCS, and Azure — typed, versioned, queryable at warehouse speed</p>
+<p align="center" class="subtitle">Data Memory for AI Agents</p>
 
 <style>
 .md-content .md-typeset h1 { font-weight: bold; display: flex; align-items: center; justify-content: center; gap: 5px; }
@@ -24,61 +24,23 @@
   </a>
 </p>
 
-```python
-import datachain as dc
+**The model floor is the same for everyone. The context ceiling is yours.**
 
-(
-    dc.read_storage("s3://bucket/videos/", type="video")
-    .gen(frame=lambda f: f.get_frames(step=30))
-    .settings(parallel=8, workers=50)
-    .map(embedding=clip_embedding)
-    .save("video_frame_embeddings")
-)
-```
+Your data lives in object storage (millions of images, hours of video, documents) and databases (structured tables). Every chain a teammate or agent runs deposits a typed, versioned dataset into **Data Memory**: embeddings, classifications, joins, scores. At scale, those datasets are too expensive to recompute and too scattered to find on demand.
 
-```bash
-pip install datachain
-```
+DataChain is the Python library that runs your code over heavy files and tables in parallel and queries Data Memory at warehouse speed. Read from S3, GCS, or Azure, run your code, save as a Pydantic-typed dataset; the next pipeline or agent picks up from there.
 
-**Stop reprocessing raw storage every run.**
+## Why Data Memory
 
-Your data lives as files in object storage: images, video, documents, sensor recordings. Every script that touches them re-lists the bucket, re-downloads, re-embeds, re-classifies, and the result vanishes when the script ends. The next person, project, or session starts from raw bytes.
-
-DataChain is a Python library that runs your code over those files in parallel and saves the output as a typed, versioned dataset. Files stay in S3, GCS, or Azure; the library captures provenance automatically; the next pipeline reads the dataset instead of recomputing.
-
-## What you get
-
-- **Datasets, not notebooks.** Every `.save()` is named, versioned, and ships with the script that produced it. Lineage and author captured automatically; no YAML to maintain.
-- **Warehouse-speed queries.** Filter, join, group_by, and similarity search over millions of typed records, sub-second on SQLite locally and ClickHouse in production.
-- **Heavy Python in parallel.** LLM calls, model inference, multimodal extraction with async prefetch, batching, and checkpoint recovery; one chain scales from a laptop to a 300-machine Kubernetes cluster.
-- **Files stay in your cloud.** No copies, no migration. Reads happen in place against S3, GCS, or Azure; `read_database()` covers Postgres and Snowflake when you need them.
-- **Plays well with the ML stack.** `to_pytorch()` streams batches into training loops, `read_hf()` pulls HuggingFace datasets, native Parquet and Arrow under the hood, vector similarity search in the same query layer as filter and join.
-
-## Recall economics
-
-The work compounds because recall is two orders of magnitude cheaper than recomputing. End-to-end measurements on 1,500-document SEC filings and 1,500-image MS-COCO corpora confirm a five-session compounding ratio of roughly 5×.
-
-| Tier | What it is | Cost per recall |
-|---|---|---|
-| Raw files | Re-running the producing pipeline (LLM calls, inference, extraction) | ~$100 |
-| Datasets | Querying materialised typed records | ~$1 |
-| Summaries | Reading schema, lineage, stats | ~$0.01 |
-
-## Where it fits, and where it doesn't
-
-DataChain fits when your data is files in object storage and you want what your team produces to outlive the script that produced it. It is not the right tool for BI on a curated warehouse with a stable schema (dbt plus a semantic layer), conversation memory for one user across chat sessions (Letta or Mem0), or file-blob versioning for a small ML repo (DVC).
-
-## For AI agents
-
-Claude Code, Cursor, and Codex read DataChain through agent skills and an MCP server. Same library, same datasets; the agent sees schemas, lineage, and dataset summaries before generating code, and writes its own outputs back as versioned datasets. See the [agents quickstart](getting-started/agents.md).
-
-<div style="max-width: 720px; margin: 2em auto;">
-  <img src="assets/data-memory-layer.svg" alt="Where DataChain sits between agents and storage">
-</div>
+Claude Code, Cursor, and Codex made AI good at code by giving it the repo context. Agents over your data need the same: a **data context layer** with schemas, lineage, and prior conclusions. **That layer is captured during production, not curated after.** Every DataChain pipeline run deposits a typed, versioned dataset into Data Memory; the Knowledge Base compiles those datasets into what agents read. Without production through DataChain, the layer has nothing structured to describe.
 
 ## Get started
 
-- [Python quickstart](getting-started/python.md) — install and first chain
-- [Agents quickstart](getting-started/agents.md) — Claude Code, Cursor, Codex setup
-- [Concepts](concepts/index.md) — Compute Engine, Data Memory, Knowledge Base
-- [Use cases](use-cases/index.md) — five patterns where the work compounds
+- **[🤖 Agents](getting-started/agents.md)** - knowledge base for Claude Code, Codex, and Cursor
+- **[🐍 Python](getting-started/python.md)** - full control over data processing
+- **[💡 Concepts](concepts/index.md)** - Data Memory, the Python and Query engines, and the Knowledge Base
+- **[🧩 Use Cases](use-cases/index.md)** - patterns where the harness changes the work
+
+<div style="max-width: 680px; margin: 2em auto 0;">
+  <img src="assets/data-memory-layer.svg" alt="DataChain — memory layer between AI agents and object storage">
+</div>
