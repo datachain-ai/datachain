@@ -157,11 +157,16 @@ def regexp_replace(col: ColT, regex: str, replacement: str) -> Func:
                 r"\s+",
                 "_",
             ),
+            # Case-insensitive matching via the `(?i)` inline flag:
+            # matches "foo", "FOO", "Foo", etc.
+            s4=func.string.regexp_replace("signal.name", r"(?i)foo", "bar"),
         )
         ```
 
     Notes:
         - The result column will always be of type string.
+        - Matching is case-sensitive by default. For case-insensitive matching
+          prepend the `(?i)` inline flag to the pattern (e.g. `r"(?i)foo"`).
     """
 
     def inner(arg):
