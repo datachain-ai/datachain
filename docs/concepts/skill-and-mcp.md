@@ -14,7 +14,7 @@ Skill and MCP are the two ways an agent reaches DataChain. The **Skill** ships w
 | Reads | Local `dc-knowledge/` + `.datachain/db` (SQLite) | Centralized data warehouse + shared Knowledge Base |
 | Compute | Local machine, parallel threads | Attached BYOC clusters: dozens to thousands of CPU/GPU machines |
 | Scale | One project's SQLite registry | Billions of typed records (LAION-scale corpora) |
-| Access control | Filesystem only | Teams, namespaces, per-project ACLs |
+| Access control | Filesystem only | Teams, namespaces, per-team ACLs |
 | Audience | Solo dev; small teams syncing via Git | Teams; large datasets; headless agent services |
 
 ## The Skill (OSS)
@@ -43,7 +43,7 @@ Studio adds four capabilities the OSS path does not have:
 
 - **Distributed compute.** `map()` / `gen()` / `agg()` dispatch to attached BYOC clusters: dozens to thousands of CPU and GPU machines. Same chain code; the fleet runs the work.
 - **Billion-record registry.** A full-scale data warehouse replaces SQLite. Filter, join, group_by, and similarity search run at warehouse speed over billions of typed records (LAION-scale corpora).
-- **Teams and access control.** Users belong to teams; datasets sit in namespaces; per-project ACLs determine who reads and writes what. The MCP surface enforces the same model as the Studio UI.
+- **Teams and access control.** Users belong to teams; datasets sit in namespaces; per-team ACLs determine who reads and writes what. The MCP surface enforces the same model as the Studio UI.
 - **BYOC.** Compute clusters and storage stay in your cloud account. Studio orchestrates without holding the data.
 
 ## When You Need Each
