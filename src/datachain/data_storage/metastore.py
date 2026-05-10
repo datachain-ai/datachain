@@ -1306,7 +1306,7 @@ class AbstractDBMetastore(AbstractMetastore):
             dataset.name,
             namespace_name=dataset.project.namespace.name,
             project_name=dataset.project.name,
-            versions=None,
+            versions=[version],
             include_incomplete=True,
         )
 

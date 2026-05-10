@@ -3387,7 +3387,11 @@ class DatasetQuery:
                 **kwargs,
             )
 
-            version = version or dataset.latest_version
+            assert len(dataset.versions) == 1
+            dataset_version = (
+                dataset.get_version(version) if version else dataset.versions[0]
+            )
+            version = dataset_version.version
 
             # Phase 3: Rename staging table to the final dataset table name.
             final_table_name = self.catalog.warehouse.dataset_table_name(
