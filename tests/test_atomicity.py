@@ -6,7 +6,10 @@ import uuid
 import pytest
 import sqlalchemy as sa
 
+import datachain as dc
+from datachain.catalog.catalog import Catalog
 from datachain.dataset import DatasetStatus
+from datachain.error import DatasetNotFoundError
 from datachain.sql.types import Float32
 from tests.utils import (
     run_test_subprocess,
@@ -189,8 +192,36 @@ def test_concurrent_save_fails_after_max_retries(tmp_dir, catalog_tmpfile):
     stored_versions = sorted(v.version for v in dataset.versions if v.version)
     assert stored_versions == expected_versions
 
+    # No orphan CREATED/FAILED versions should remain: post-claim failures
+    # must roll back the claim so the metastore stays consistent.
+    for v in dataset.versions:
+        assert v.status == DatasetStatus.COMPLETE, (
+            f"orphan version {v.version} status={v.status}"
+        )
+
     for version in stored_versions:
         dataset_version = dataset.get_version(version)
         table_name = catalog_tmpfile.warehouse.dataset_table_name(dataset, version)
         assert dataset_version.status == DatasetStatus.COMPLETE
         assert table_row_count(catalog_tmpfile.warehouse.db, table_name) == 1
+
+
+def test_save_rolls_back_claimed_version_on_post_claim_failure(
+    test_session, monkeypatch
+):
+    """If save() fails after claiming a version, the claim must be rolled back
+    so the metastore stays consistent (no orphan CREATED rows)."""
+    dataset_name = f"rollback_test_{uuid.uuid4().hex}"
+    boom = RuntimeError("simulated post-claim failure")
+
+    def failing_complete(self, dataset, version, **kwargs):
+        raise boom
+
+    monkeypatch.setattr(Catalog, "complete_dataset_version", failing_complete)
+
+    with pytest.raises(RuntimeError, match="simulated post-claim failure"):
+        dc.read_values(num=[1], session=test_session).save(dataset_name)
+
+    catalog = test_session.catalog
+    with pytest.raises(DatasetNotFoundError):
+        catalog.get_dataset(dataset_name, include_incomplete=True, versions=None)

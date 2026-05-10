@@ -3389,47 +3389,50 @@ class DatasetQuery:
 
             version = version or dataset.latest_version
 
-            # Phase 3: Rename staging table to the final dataset table name.
-            final_table_name = self.catalog.warehouse.dataset_table_name(
-                dataset, version
-            )
-            self.catalog.warehouse.rename_table(temp_table, final_table_name)
-            self.temp_table_names.remove(temp_table_name)
-
-            # Link this dataset version to the job that created it
-            if job_id:
-                self.catalog.metastore.link_dataset_version_to_job(
-                    dataset.get_version(version).id, job_id, is_creator=True
+            # Phases 3-7: roll back the claim if anything below fails so we
+            # never leave an orphan CREATED row in the metastore.
+            with self._rollback_version_on_failure(dataset, version):
+                # Phase 3: Rename staging table to the final dataset table name.
+                final_table_name = self.catalog.warehouse.dataset_table_name(
+                    dataset, version
                 )
+                self.catalog.warehouse.rename_table(temp_table, final_table_name)
+                self.temp_table_names.remove(temp_table_name)
 
-            if dependencies:
-                # overriding dependencies
-                self.dependencies = set()
-                for dep in dependencies:
-                    self.dependencies.add(
-                        (
-                            self.catalog.get_dataset(
-                                dep.name,
-                                namespace_name=dep.namespace,
-                                project_name=dep.project,
-                                versions=[dep.version],
-                                include_incomplete=False,
-                            ),
-                            dep.version,
-                        )
+                # Link this dataset version to the job that created it
+                if job_id:
+                    self.catalog.metastore.link_dataset_version_to_job(
+                        dataset.get_version(version).id, job_id, is_creator=True
                     )
 
-            self._add_dependencies(dataset, version)  # type: ignore [arg-type]
+                if dependencies:
+                    # overriding dependencies
+                    self.dependencies = set()
+                    for dep in dependencies:
+                        self.dependencies.add(
+                            (
+                                self.catalog.get_dataset(
+                                    dep.name,
+                                    namespace_name=dep.namespace,
+                                    project_name=dep.project,
+                                    versions=[dep.version],
+                                    include_incomplete=False,
+                                ),
+                                dep.version,
+                            )
+                        )
 
-            if kwargs.get("listing"):
-                reused = self._reuse_listing_if_unchanged(
-                    dataset, version, name, project
-                )
-                if reused is not None:
-                    return reused
+                self._add_dependencies(dataset, version)  # type: ignore [arg-type]
 
-            # Mark as COMPLETE only after all operations succeed.
-            self.catalog.complete_dataset_version(dataset, version)
+                if kwargs.get("listing"):
+                    reused = self._reuse_listing_if_unchanged(
+                        dataset, version, name, project
+                    )
+                    if reused is not None:
+                        return reused
+
+                # Mark as COMPLETE only after all operations succeed.
+                self.catalog.complete_dataset_version(dataset, version)
         finally:
             self.cleanup()
         return self.__class__(
@@ -3439,6 +3442,26 @@ class DatasetQuery:
             version=version,
             catalog=self.catalog,
         )
+
+    @contextlib.contextmanager
+    def _rollback_version_on_failure(
+        self, dataset: "DatasetRecord", version: str
+    ) -> Iterator[None]:
+        """Remove the just-claimed dataset version on any exception so the
+        metastore never holds an orphan CREATED row when post-claim phases
+        fail (e.g. SQLite contention during rename or stats refresh)."""
+        try:
+            yield
+        except BaseException:
+            try:
+                self.catalog.remove_dataset_version(dataset, version, drop_rows=True)
+            except Exception:
+                logger.exception(
+                    "Failed to roll back claimed version %s of dataset %s",
+                    version,
+                    dataset.name,
+                )
+            raise
 
     def _reuse_listing_if_unchanged(
         self,
