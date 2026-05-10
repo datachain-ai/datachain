@@ -3458,19 +3458,25 @@ class DatasetQuery:
         """
         from datachain.lib.listing import calc_fingerprint
 
-        prev_version = dataset.latest_complete_version
+        full_dataset = self.catalog.get_dataset(
+            name,
+            namespace_name=project.namespace.name,
+            project_name=project.name,
+            versions=None,
+        )
+        prev_version = full_dataset.latest_complete_version
         if not prev_version:
             return None
 
-        old_fp = calc_fingerprint(self.session, dataset, prev_version)
-        new_fp = calc_fingerprint(self.session, dataset, version)
+        old_fp = calc_fingerprint(self.session, full_dataset, prev_version)
+        new_fp = calc_fingerprint(self.session, full_dataset, version)
         if old_fp != new_fp:
             return None
 
-        self.catalog.remove_dataset_version(dataset, version)
+        self.catalog.remove_dataset_version(full_dataset, version)
         # updating TTL of a bucket listing
         self.catalog.metastore.update_dataset_version(
-            dataset, prev_version, finished_at=datetime.now(timezone.utc)
+            full_dataset, prev_version, finished_at=datetime.now(timezone.utc)
         )
         return self.__class__(
             name=name,
