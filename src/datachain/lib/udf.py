@@ -428,13 +428,15 @@ def _get_cache(
 ) -> "AbstractContextManager[Cache]":
     tmp_dir = cache.tmp_dir
     assert tmp_dir
-    if prefetch and not use_cache:
-        # Temp primary with persistent as read-only fallback: prefetch reads
-        # check both, but writes and eviction stay in temp so cache=False
-        # never persists files.
-        return temporary_cache(
-            tmp_dir, prefix="prefetch-", fallback=cache.as_readonly()
-        )
+    if not use_cache:
+        # cache=False = "don't write to persistent"; reads still hit it.
+        if prefetch:
+            # Temp cache for new writes (evicted at end), persistent as
+            # read-only fallback for reads.
+            return temporary_cache(
+                tmp_dir, prefix="prefetch-", fallback=cache.as_readonly()
+            )
+        return nullcontext(cache.as_readonly())
     return nullcontext(cache)
 
 
