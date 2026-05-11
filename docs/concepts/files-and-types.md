@@ -12,7 +12,7 @@ DataChain's type system is built on Pydantic. Every chain carries a schema, ever
 
 ### Storage Coordinates
 
-File tracks everything needed to locate and identify a blob: `source`, `path`, `version`, `etag`, `size`, `is_latest`, and `last_modified`. This metadata is indexed by the Query Engine and available for data-engine operations without touching the actual bytes.
+File tracks everything needed to locate and identify a blob: `source`, `path`, `version`, `etag`, `size`, `is_latest`, and `last_modified`. This metadata is indexed by Data Memory and available for chain operations without touching the actual bytes.
 
 ### Content Access
 

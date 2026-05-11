@@ -70,7 +70,7 @@ jobs:
       - name: Check out Studio
         uses: actions/checkout@v6
         with:
-          fetch-depth: 0
+          fetch-depth: 1
           repository: datachain-ai/studio
           ref: ${{ env.STUDIO_BRANCH }}
           token: ${{ secrets.ITERATIVE_STUDIO_READ_ACCESS_TOKEN }}
@@ -102,7 +102,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           path: './backend/datachain'
-          fetch-depth: 0
+          fetch-depth: 1
 
       - name: Install FFmpeg
         run: |

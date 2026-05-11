@@ -113,7 +113,7 @@ String operations via `dc.func.string.*`:
 - `split(col, sep)`: split on separator
 - `replace(col, old, new)`: substring replacement
 - `regexp_replace(col, pattern, replacement)`: regex-based replacement. Matching
-  is case-sensitive by default — prepend the `(?i)` inline flag to the pattern
+  is case-sensitive by default. Prepend the `(?i)` inline flag to the pattern
   for case-insensitive matching (e.g. `r"(?i)foo"`).
 
 ```python
