@@ -63,12 +63,10 @@ theme:
 nav:
   - Home:
       - 🔗 Welcome to DataChain: index.md
-      - 🎯 Fit: fit.md
-      - 🪢 Data Harness: harness.md
-      - 🏗️ Architecture: architecture.md
       - 🏃🏼‍♂️ Getting Started:
-          - Agents: getting-started/agents.md
           - Python: getting-started/python.md
+          - Agents: getting-started/agents.md
+          - Where DataChain fits: fit.md
       - 🧩 Use Cases:
           - Overview: use-cases/index.md
           - Agent Compounding: use-cases/agent-compounding.md
@@ -78,12 +76,15 @@ nav:
           - Cross-Agent Reasoning: use-cases/cross-agent-reasoning.md
       - 💡 Concepts:
           - Overview: concepts/index.md
+          - Architecture: architecture.md
+          - Data Harness: harness.md
           - Data Memory: concepts/data-memory.md
           - Datasets: concepts/datasets.md
           - Chain: concepts/chain.md
           - Files and Types: concepts/files-and-types.md
-          - Execution Model: concepts/execution-model.md
+          - Compute Engine: concepts/compute-engine.md
           - Knowledge Base: concepts/knowledge-base.md
+          - Skill and MCP: concepts/skill-and-mcp.md
       - 📚 Guides:
           - Overview: guide/index.md
           - Get Data In:

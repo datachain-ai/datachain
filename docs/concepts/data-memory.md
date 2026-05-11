@@ -34,9 +34,50 @@ ds = dc.read_dataset("image_embeddings")
 
 Memory is not a catalog that someone maintains. It is what happens when every operation records its results as a side effect. Systems that depend on voluntary human entry collapse within months: representations drift, adoption falls, teams revert to social workarounds. Memory stays current because it *is* the operational reality.
 
+## Queryable at Warehouse Speed
+
+Filter, join, group_by, order_by, and similarity search are properties of Data Memory itself, not a separate query engine sitting next to it. They run on a columnar SQL backend (SQLite locally, ClickHouse in Studio) at sub-second latency over millions of per-file records, two orders of magnitude below the cost of re-running the producing pipeline.
+
+```python
+import datachain as dc
+
+(
+    dc.read_storage("gs://datachain-demo/")
+    .filter(dc.C("file.size") > 0)
+    .group_by(
+        count=dc.func.count(),
+        total=dc.func.sum(dc.C("file.size")),
+        partition_by=dc.func.path.file_ext(dc.C("file.path")),
+    )
+    .order_by("total", descending=True)
+    .show()
+)
+```
+
+No Python runtime spins up. No rows are deserialized. The query runs at warehouse speed.
+
+The boundary with the [Compute Engine](compute-engine.md) is total. Every operation is either heavy Python compute over raw files (LLM calls, model inference, multimodal extraction), or a Data Memory operation over typed records already saved. The user writes one chain; the system decides which side handles what.
+
 ## Compounding Requires Fast Recall
 
-Compounding only works when recall is cheaper than recreation. If recall is slower than recreation, the team silently re-runs the work, and memory degrades into archive. The [Query Engine](execution-model.md), a columnar SQL backend, makes building on prior work always the path of least resistance.
+Compounding only works when recall is cheaper than recreation. If recall is slower than recreation, the team silently re-runs the work, and memory degrades into archive. Warehouse-speed recall makes building on prior work always the path of least resistance.
+
+## Dataset Registry
+
+Data Memory is the queryable system of record for every dataset and its versions. The registry indexes names, versions, provenance, and links every dataset to the records it holds. Agents reach the registry without filesystem traversal: a single query returns what already exists, with full lineage attached.
+
+```python
+import datachain as dc
+
+# Browse all datasets
+for info in dc.datasets().collect("dataset"):
+    print(f"{info.name} v{info.version}")
+
+# Inspect a specific dataset
+ds = dc.read_dataset("image_embeddings")
+ds.print_schema()
+print(ds.name, ds.version)
+```
 
 ## Provenance
 
@@ -66,7 +107,7 @@ dc.metrics.set("f1_score", 0.91)
 learning_rate = dc.param("learning_rate", 0.001)
 ```
 
-Metrics are recorded in the [dataset registry](execution-model.md#dataset-registry) alongside provenance. Parameters are captured in lineage so the exact configuration that produced a dataset is always recoverable.
+Metrics are recorded in the [dataset registry](#dataset-registry) alongside provenance. Parameters are captured in lineage so the exact configuration that produced a dataset is always recoverable.
 
 ## Discoverable by Humans and Agents
 
