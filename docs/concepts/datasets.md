@@ -42,7 +42,7 @@ class Detection(BaseModel):
 
 ## Types as Code, Not Configuration
 
-Pydantic models are the same Python objects the Python Data Engine operates on and the columnar schemas the Query Engine stores. The schema is the code; there is no mapping layer between Python types and warehouse columns, no separate registration step, no parallel YAML inventory to maintain. YAML-declared schemas in semantic-layer products drift the moment work moves faster than maintenance. Every save deposits typed records the engines already understand; every load returns the same Python objects the next operation consumes.
+Pydantic models are the same Python objects the Compute Engine operates on and the columnar schemas Data Memory stores. The schema is the code; there is no mapping layer between Python types and warehouse columns, no separate registration step, no parallel YAML inventory to maintain. YAML-declared schemas in semantic-layer products drift the moment work moves faster than maintenance. Every save deposits typed records the engines already understand; every load returns the same Python objects the next operation consumes.
 
 ## Two-Level Data Model
 
