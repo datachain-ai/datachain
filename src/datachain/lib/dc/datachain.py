@@ -96,9 +96,9 @@ UDFObjT = TypeVar("UDFObjT", bound=UDFBase)
 
 DEFAULT_PARQUET_CHUNK_SIZE = 100_000
 
-# Frozen UUID-suffixed name for the temp similarity-score column (must be
-# deterministic across runs so chain hashes stay stable for checkpoint reuse).
-SIMILARITY_SCORE_COL_NAME = "similarity_a4f74e9a1ea74dd293049359291d0c38"
+# Frozen name for the temp similarity-score column (must be deterministic
+# across runs so chain hashes stay stable for checkpoint reuse).
+SIMILARITY_SCORE_COL_NAME = "sim_a4f74e9a"
 
 if TYPE_CHECKING:
     import sqlite3
