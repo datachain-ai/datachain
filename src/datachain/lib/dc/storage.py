@@ -1,8 +1,10 @@
+import logging
 import os
 from collections.abc import Sequence
 from functools import reduce
 from typing import TYPE_CHECKING
 
+from datachain.client import Client
 from datachain.lib.dc.storage_pattern import (
     apply_glob_filter,
     expand_brace_pattern,
@@ -16,6 +18,40 @@ from datachain.query import Session
 
 if TYPE_CHECKING:
     from .datachain import DataChain
+
+
+logger = logging.getLogger("datachain")
+
+
+def _all_buckets_anonymous(uris, client_config: dict | None) -> bool:
+    """True only if every unique bucket in ``uris`` probes as anonymous.
+
+    Any failure (unsupported backend, network error, mixed access) returns
+    False so the caller falls through to the default credentialed path.
+    """
+    probed: set[tuple[type[Client], str]] = set()
+    for uri in uris:
+        try:
+            client_cls = Client.get_implementation(str(uri))
+        except NotImplementedError:
+            return False
+        name, _ = client_cls.split_url(str(uri))
+        if not name:
+            return False
+        probed.add((client_cls, name))
+
+    if not probed:
+        return False
+
+    for client_cls, name in probed:
+        try:
+            status = client_cls.bucket_status(name, **(client_config or {}))
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("anon auto-detect probe failed for %s: %s", name, exc)
+            return False
+        if status.access != "anonymous":
+            return False
+    return True
 
 
 def read_storage(
@@ -128,6 +164,14 @@ def read_storage(
 
     file_type = get_file_type(type)
 
+    uris = uri if isinstance(uri, (list, tuple)) else [uri]
+
+    if not uris:
+        raise ValueError("No URIs provided")
+
+    if anon is None and _all_buckets_anonymous(uris, client_config):
+        anon = True
+
     if anon is not None:
         client_config = (client_config or {}) | {"anon": anon}
     session = Session.get(session, client_config=client_config, in_memory=in_memory)
@@ -136,11 +180,6 @@ def read_storage(
     client_config = session.catalog.client_config
     listing_namespace_name = catalog.metastore.system_namespace_name
     listing_project_name = catalog.metastore.listing_project_name
-
-    uris = uri if isinstance(uri, (list, tuple)) else [uri]
-
-    if not uris:
-        raise ValueError("No URIs provided")
 
     # Then expand all URIs that contain brace patterns
     expanded_uris = []
