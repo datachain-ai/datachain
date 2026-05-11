@@ -104,8 +104,9 @@ class Cache:  # noqa: PLW1641
         return Cache(self.cache_dir, self.tmp_dir, readonly=True)
 
     def get_path(self, file: "File") -> str | None:
-        if self.odb.exists(file.get_hash()):
-            return self.path_from_checksum(file.get_hash())
+        oid = file.get_hash()
+        if self.odb.exists(oid):
+            return self.path_from_checksum(oid)
         if self._fallback is not None:
             return self._fallback.get_path(file)
         return None
@@ -123,8 +124,9 @@ class Cache:  # noqa: PLW1641
 
     @_readonly_guard
     def remove(self, file: "File") -> None:
-        if self.odb.exists(file.get_hash()):
-            self.odb.delete(file.get_hash())
+        oid = file.get_hash()
+        if self.odb.exists(oid):
+            self.odb.delete(oid)
 
     @_readonly_guard
     async def download(
