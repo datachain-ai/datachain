@@ -70,10 +70,16 @@ jobs:
       - name: Check out Studio
         uses: actions/checkout@v6
         with:
-          fetch-depth: 0
+          fetch-depth: 1
           repository: datachain-ai/studio
           ref: ${{ env.STUDIO_BRANCH }}
           token: ${{ secrets.ITERATIVE_STUDIO_READ_ACCESS_TOKEN }}
+
+      - name: Check out DataChain
+        uses: actions/checkout@v6
+        with:
+          path: './backend/datachain'
+          fetch-depth: 1
 
       - name: Set up Python ${{ matrix.pyv }}
         uses: actions/setup-python@v6
@@ -97,12 +103,6 @@ jobs:
         if: ${{ env.BRANCH != 'main' }}
         working-directory: backend
         run: make update_datachain_deps "${{ env.BRANCH }}"
-
-      - name: Check out repository
-        uses: actions/checkout@v6
-        with:
-          path: './backend/datachain'
-          fetch-depth: 0
 
       - name: Install FFmpeg
         run: |

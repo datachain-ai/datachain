@@ -1,9 +1,29 @@
 """Shared pure helpers for the dc-knowledge skill scripts."""
 
 import json
+import os
 import re
 import sys
 from urllib.parse import urlparse
+
+
+def write_text(path: str, content: str) -> None:
+    """Write text to a file, creating parent directories as needed."""
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w") as f:
+        f.write(content)
+
+
+def write_json(path: str, data, **kwargs) -> None:
+    """Write JSON to a file, creating parent directories as needed.
+
+    Defaults to `indent=2, default=str` for human-readable output that
+    handles non-JSON-native types (datetimes, etc.). Always appends a
+    trailing newline.
+    """
+    kwargs.setdefault("indent", 2)
+    kwargs.setdefault("default", str)
+    write_text(path, json.dumps(data, **kwargs) + "\n")
 
 
 def dc_import():
