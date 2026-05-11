@@ -4,7 +4,7 @@ title: Chain
 
 # Chain
 
-A chain is a query that chains Python functions and data operations into a single composable sequence. Python functions process files or data and produce data (via the Python Data Engine). Data operations run as SQL at warehouse speed: filter, join, aggregate (via the Query Engine). Nothing runs until a terminal operation like `save()`, `show()`, or `to_pandas()`. DataChain is named for this pattern: every query is a chain of operations, and every chain deposits its results into [Data Memory](data-memory.md) as a versioned [dataset](datasets.md).
+A chain is a query that combines Python functions and data operations into a single composable sequence. Python functions run on the [Compute Engine](compute-engine.md): file content reads, ML models, LLM calls, multimodal extraction. Data operations run as SQL at warehouse speed against [Data Memory](data-memory.md): filter, join, aggregate, similarity search. Nothing runs until a terminal operation like `save()`, `show()`, or `to_pandas()`. DataChain is named for this pattern: every query is a chain of operations, and every chain deposits its results into Data Memory as a versioned [dataset](datasets.md).
 
 ## Lazy Evaluation and Optimization
 
