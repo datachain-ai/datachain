@@ -31,6 +31,7 @@ from datachain.error import (
     ProjectNotFoundError,
 )
 from datachain.func import literal
+from datachain.func.array import cosine_distance, euclidean_distance
 from datachain.func.base import Function
 from datachain.func.func import Func
 from datachain.job import Job
@@ -94,6 +95,10 @@ _T = TypeVar("_T")
 UDFObjT = TypeVar("UDFObjT", bound=UDFBase)
 
 DEFAULT_PARQUET_CHUNK_SIZE = 100_000
+
+# Frozen name for the temp similarity-score column (must be deterministic
+# across runs so chain hashes stay stable for checkpoint reuse).
+SIMILARITY_SCORE_COL_NAME = "sim_a4f74e9a"
 
 if TYPE_CHECKING:
     import sqlite3
@@ -2788,6 +2793,60 @@ class DataChain:
             n (int): Number of rows to return.
         """
         return self._evolve(query=self._query.limit(n))
+
+    def similarity_search(
+        self,
+        column: str,
+        query: Sequence[float],
+        *,
+        k: int | None = 10,
+        metric: str = "cosine",
+        score_column: str | None = None,
+    ) -> "Self":
+        """Return rows whose ``column`` embedding is closest to ``query``.
+
+        Shortcut for ``.mutate(...).order_by(...).limit(k)``.
+
+        Parameters:
+            column: name of the embedding column on each row.
+            query: reference embedding (the vector to compare against).
+            k: how many closest rows to return. ``None`` skips the limit and
+                annotates/sorts every row.
+            metric: ``"cosine"``, ``"euclidean"`` or ``"l2"``
+                (``"l2"`` is an alias for ``"euclidean"``).
+            score_column: name to store the distance under. If ``None``
+                (default) the score is not included in the result.
+
+        Example:
+            ```py
+            query = [0.1, 0.2, 0.3]
+            top5 = chain.similarity_search("emb", query, k=5)
+
+            with_score = chain.similarity_search(
+                "emb", query, k=5, score_column="dist"
+            )
+            ```
+        """
+        metric_funcs = {
+            "cosine": cosine_distance,
+            "euclidean": euclidean_distance,
+            "l2": euclidean_distance,
+        }
+        if metric not in metric_funcs:
+            raise ValueError(
+                f"Unsupported metric '{metric}'. Choose one of: {sorted(metric_funcs)}"
+            )
+
+        col_name: str = score_column or SIMILARITY_SCORE_COL_NAME
+
+        chain = self.mutate(
+            **{col_name: metric_funcs[metric](column, list(query))}
+        ).order_by(col_name)
+        if k is not None:
+            chain = chain.limit(k)
+        if score_column is None:
+            chain = chain.select_except(col_name)
+        return chain
 
     def offset(self, offset: int) -> "Self":
         """Return the results starting with the offset row.
