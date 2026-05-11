@@ -48,8 +48,11 @@ def _content_hash(
     the same chain hash on identical inputs across runs — a precondition
     for checkpoint reuse.
     """
-    # XOR-combine per-record digests so order doesn't matter.
+    # Sum per-record digests mod 2^256 so order doesn't matter but duplicates
+    # don't cancel (XOR would: [r, r] would collide with []).
+    modulus = 1 << 256
     combined = 0
+    count = 0
     for rec in flat_records:
         h = hashlib.sha256()
         for k in sorted(rec):
@@ -57,9 +60,12 @@ def _content_hash(
             h.update(b"\0")
             h.update(repr(rec[k]).encode())
             h.update(b"\0")
-        combined ^= int.from_bytes(h.digest(), "big")
+        combined = (combined + int.from_bytes(h.digest(), "big")) % modulus
+        count += 1
     h = hashlib.sha256()
     h.update(signal_schema.hash().encode())
+    h.update(b"\0")
+    h.update(count.to_bytes(8, "big"))
     h.update(b"\0")
     h.update(combined.to_bytes(32, "big"))
     return h.hexdigest()
