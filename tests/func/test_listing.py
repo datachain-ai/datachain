@@ -21,7 +21,7 @@ def test_listing_generator(cloud_test_catalog, cloud_type):
 
     uri = f"{ctc.src_uri}/cats"
 
-    chain = dc.read_records([{"seed": 0}], schema={"seed": int}).gen(
+    chain = dc.read_records([{"uri": uri}], schema={"uri": str}).gen(
         file=list_bucket(uri, catalog.cache, client_config=catalog.client_config)
     )
     assert chain.count() == 2
