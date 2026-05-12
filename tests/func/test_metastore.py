@@ -197,14 +197,17 @@ def test_create_dataset_version_finished_at(metastore):
         status=DatasetStatus.COMPLETE,
         finished_at=now.isoformat(),
     )
-    assert len(ds.versions) == 2
-    assert ds.versions[1].finished_at == now
+    assert len(ds.versions) == 1
+    assert ds.versions[0].finished_at == now
 
     ds, _ = metastore.create_dataset_version(
         dataset=ds, version="1.2.5", status=DatasetStatus.FAILED
     )
-    assert len(ds.versions) == 3
-    assert ds.versions[2].finished_at is not None
+    assert len(ds.versions) == 1
+    assert ds.versions[0].finished_at is not None
+
+    full_ds = metastore.get_dataset("test_dataset", versions=None)
+    assert len(full_ds.versions) == 3
 
 
 @pytest.mark.parametrize("ignore_if_exists", [True, False])
@@ -699,6 +702,7 @@ def test_remove_dataset_version(metastore):
     ds, _ = metastore.create_dataset_version(
         dataset=ds, version="2.0.0", status=DatasetStatus.COMPLETE
     )
+    ds = metastore.get_dataset("ds", versions=None)
     assert len(ds.versions) == 2
 
     # Removing non-existent version should raise an exception
@@ -729,6 +733,7 @@ def test_remove_dataset_version_cleans_dependencies(metastore):
     ds1, _ = metastore.create_dataset_version(
         dataset=ds1, version="2.0.0", status=DatasetStatus.COMPLETE
     )
+    ds1 = metastore.get_dataset("ds1", versions=None)
 
     ds2 = metastore.create_dataset(name="ds2")
     ds2, _ = metastore.create_dataset_version(
@@ -826,6 +831,7 @@ def test_update_dataset_dependency_source_default_new_source(metastore):
     src, _ = metastore.create_dataset_version(
         dataset=src, version="2.0.0", status=DatasetStatus.COMPLETE
     )
+    src = metastore.get_dataset("src", versions=None)
     tgt = metastore.create_dataset(name="tgt")
     tgt, _ = metastore.create_dataset_version(
         dataset=tgt, version="1.0.0", status=DatasetStatus.COMPLETE

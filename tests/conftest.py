@@ -530,17 +530,16 @@ def datachain_job_id(test_session, monkeypatch):
 
 
 @pytest.fixture(scope="session")
-def cloud_server_credentials(cloud_server):
+def cloud_server_credentials(cloud_server, monkeypatch_session):
     if cloud_server.kind == "s3":
         cfg = cloud_server.src.fs.client_kwargs
-        try:
-            os.environ.pop("AWS_PROFILE")
-        except KeyError:
-            pass
-        os.environ["AWS_ACCESS_KEY_ID"] = cfg.get("aws_access_key_id")
-        os.environ["AWS_SECRET_ACCESS_KEY"] = cfg.get("aws_secret_access_key")
-        os.environ["AWS_SESSION_TOKEN"] = cfg.get("aws_session_token")
-        os.environ["AWS_DEFAULT_REGION"] = cfg.get("region_name")
+        monkeypatch_session.delenv("AWS_PROFILE", raising=False)
+        monkeypatch_session.setenv("AWS_ACCESS_KEY_ID", cfg["aws_access_key_id"])
+        monkeypatch_session.setenv(
+            "AWS_SECRET_ACCESS_KEY", cfg["aws_secret_access_key"]
+        )
+        monkeypatch_session.setenv("AWS_SESSION_TOKEN", cfg["aws_session_token"])
+        monkeypatch_session.setenv("AWS_DEFAULT_REGION", cfg["region_name"])
 
 
 def get_cloud_test_catalog(cloud_server, tmp_path, metastore, warehouse):

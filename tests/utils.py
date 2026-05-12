@@ -176,6 +176,23 @@ def wait_for_condition(
     raise TimeoutError(f"Timeout expired while waiting for: {message}")
 
 
+def e2e_subprocess_env(
+    catalog: Catalog, exclude_keys: set[str] | None = None
+) -> dict[str, str]:
+    # Strip AWS_* so the subprocess talks to real public S3 instead of inheriting
+    # moto/pytest-servers credentials and region from cloud-emulator fixtures
+    # that ran earlier in the same pytest process.
+    exclude = exclude_keys or set()
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if not k.startswith("AWS_") and k not in exclude
+    }
+    env["DATACHAIN__METASTORE"] = catalog.metastore.serialize()
+    env["DATACHAIN__WAREHOUSE"] = catalog.warehouse.serialize()
+    return env
+
+
 def run_test_subprocess(command, env: dict[str, str], capture_output: bool = True):
     stdout = subprocess.PIPE if capture_output else None
     stderr = subprocess.PIPE if capture_output else None
