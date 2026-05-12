@@ -137,7 +137,9 @@ def read_records(
     warehouse = catalog.warehouse
 
     # Create the rows table (create_dataset only creates metadata).
-    table_name = warehouse.dataset_table_name(dsr, dsr.latest_version)
+    assert len(dsr.versions) == 1
+    dataset_version = dsr.versions[0].version
+    table_name = warehouse.dataset_table_name(dsr, dataset_version)
     warehouse.create_dataset_rows_table(table_name, columns=columns)
 
     dr = warehouse.dataset_rows(dsr)
@@ -158,6 +160,6 @@ def read_records(
     warehouse.insert_rows_done(table)
 
     # Finalize warehouse-derived metadata before marking the version COMPLETE.
-    catalog.complete_dataset_version(dsr, dsr.latest_version)
+    catalog.complete_dataset_version(dsr, dataset_version)
 
     return read_dataset(name=dsr.full_name, session=session, settings=settings)
