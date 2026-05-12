@@ -1,3 +1,4 @@
+import hashlib
 from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
@@ -33,6 +34,106 @@ def _flatten_record(record: dict, signal_schema: SignalSchema) -> dict:
             flattened[key] = value
 
     return flattened
+
+
+def _content_hash(
+    flat_records: Iterable[dict],
+    signal_schema: SignalSchema,
+) -> str:
+    """Compute a deterministic content hash for a concrete batch of records.
+
+    Records must be pre-flattened (no pydantic values). Stored as the
+    temp-dataset version's `content_hash` so chains starting from
+    materialized records (read_records, single-file read_storage) produce
+    the same chain hash on identical inputs across runs — a precondition
+    for checkpoint reuse.
+    """
+    # Sum per-record digests mod 2^256 so order doesn't matter but duplicates
+    # don't cancel (XOR would: [r, r] would collide with []).
+    modulus = 1 << 256
+    combined = 0
+    count = 0
+    for rec in flat_records:
+        h = hashlib.sha256()
+        for k in sorted(rec):
+            h.update(k.encode())
+            h.update(b"\0")
+            h.update(repr(rec[k]).encode())
+            h.update(b"\0")
+        combined = (combined + int.from_bytes(h.digest(), "big")) % modulus
+        count += 1
+    h = hashlib.sha256()
+    h.update(signal_schema.hash().encode())
+    h.update(b"\0")
+    h.update(count.to_bytes(8, "big"))
+    h.update(b"\0")
+    h.update(combined.to_bytes(32, "big"))
+    return h.hexdigest()
+
+
+def create_records_dataset(
+    flat_records: Iterable[dict],
+    schema: dict[str, DataType],
+    content_hash: str | None,
+    session: Session | None = None,
+    settings: dict | None = None,
+    in_memory: bool = False,
+) -> "DataChain":
+    """Create a temp dataset from pre-flattened records with caller-supplied
+    ``content_hash``. Pass ``content_hash=None`` to anchor identity on UUID
+    only (used by ``read_values`` and the listing chain to opt out of
+    content-derived hashing)."""
+    from datachain.query.dataset import adjust_outputs, get_col_types
+    from datachain.sql.types import SQLType
+
+    from .datasets import read_dataset
+
+    session = Session.get(session, in_memory=in_memory)
+    catalog = session.catalog
+
+    name = session.generate_temp_dataset_name()
+    signal_schema = SignalSchema(schema)
+    columns = [
+        sqlalchemy.Column(c.name, c.type)  # type: ignore[union-attr]
+        for c in signal_schema.db_signals(as_columns=True)
+    ]
+
+    dsr = catalog.create_dataset(
+        name,
+        catalog.metastore.default_project,
+        columns=columns,
+        feature_schema=signal_schema.clone_without_sys_signals().serialize(),
+        content_hash=content_hash,
+    )
+
+    warehouse = catalog.warehouse
+
+    # Create the rows table (create_dataset only creates metadata).
+    assert len(dsr.versions) == 1
+    dataset_version = dsr.versions[0].version
+    table_name = warehouse.dataset_table_name(dsr, dataset_version)
+    warehouse.create_dataset_rows_table(table_name, columns=columns)
+
+    dr = warehouse.dataset_rows(dsr)
+    table = dr.get_table()
+
+    # Optimization: Compute row types once, rather than for every row.
+    col_types = get_col_types(
+        warehouse,
+        {c.name: c.type for c in columns if isinstance(c.type, SQLType)},
+    )
+
+    records = (
+        adjust_outputs(warehouse, record, col_types, signal_schema)
+        for record in flat_records
+    )
+    warehouse.insert_rows(table, records)
+    warehouse.insert_rows_done(table)
+
+    # Finalize warehouse-derived metadata before marking the version COMPLETE.
+    catalog.complete_dataset_version(dsr, dataset_version)
+
+    return read_dataset(name=dsr.full_name, session=session, settings=settings)
 
 
 def read_records(
@@ -107,59 +208,23 @@ def read_records(
         This call blocks until all records are inserted, but iterators are processed
         in batches to avoid loading all data into memory at once.
     """
-    from datachain.query.dataset import adjust_outputs, get_col_types
-    from datachain.sql.types import SQLType
-
-    from .datasets import read_dataset
-
-    session = Session.get(session, in_memory=in_memory)
-    catalog = session.catalog
-
-    name = session.generate_temp_dataset_name()
-    signal_schema = SignalSchema(schema)
-    columns = [
-        sqlalchemy.Column(c.name, c.type)  # type: ignore[union-attr]
-        for c in signal_schema.db_signals(as_columns=True)
-    ]
-
-    dsr = catalog.create_dataset(
-        name,
-        catalog.metastore.default_project,
-        columns=columns,
-        feature_schema=signal_schema.clone_without_sys_signals().serialize(),
-    )
-
     if isinstance(to_insert, dict):
         to_insert = [to_insert]
     elif not to_insert:
         to_insert = []
 
-    warehouse = catalog.warehouse
+    signal_schema = SignalSchema(schema)
+    flat: Iterable[dict] = (_flatten_record(rec, signal_schema) for rec in to_insert)
+    content_hash: str | None = None
+    if isinstance(to_insert, (list, tuple)):
+        flat = list(flat)
+        content_hash = _content_hash(flat, signal_schema)
 
-    # Create the rows table (create_dataset only creates metadata).
-    assert len(dsr.versions) == 1
-    dataset_version = dsr.versions[0].version
-    table_name = warehouse.dataset_table_name(dsr, dataset_version)
-    warehouse.create_dataset_rows_table(table_name, columns=columns)
-
-    dr = warehouse.dataset_rows(dsr)
-    table = dr.get_table()
-
-    # Optimization: Compute row types once, rather than for every row.
-    col_types = get_col_types(
-        warehouse,
-        {c.name: c.type for c in columns if isinstance(c.type, SQLType)},
+    return create_records_dataset(
+        flat,
+        schema,
+        content_hash,
+        session=session,
+        settings=settings,
+        in_memory=in_memory,
     )
-
-    flattened_records = (_flatten_record(record, signal_schema) for record in to_insert)
-    records = (
-        adjust_outputs(warehouse, record, col_types, signal_schema)
-        for record in flattened_records
-    )
-    warehouse.insert_rows(table, records)
-    warehouse.insert_rows_done(table)
-
-    # Finalize warehouse-derived metadata before marking the version COMPLETE.
-    catalog.complete_dataset_version(dsr, dataset_version)
-
-    return read_dataset(name=dsr.full_name, session=session, settings=settings)

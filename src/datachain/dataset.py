@@ -294,6 +294,7 @@ class DatasetVersion:
     sources: str = ""
     query_script: str = ""
     job_id: str | None = None
+    content_hash: str | None = None
 
     @classmethod
     def parse(  # noqa: PLR0913
@@ -316,6 +317,7 @@ class DatasetVersion:
         sources: str = "",
         query_script: str = "",
         job_id: str | None = None,
+        content_hash: str | None = None,
         *,
         preview_loaded: bool = True,
     ):
@@ -343,6 +345,7 @@ class DatasetVersion:
             sources=sources,
             query_script=query_script,
             job_id=job_id,
+            content_hash=content_hash,
             _preview_loaded=preview_loaded,
         )
 
@@ -570,6 +573,7 @@ class DatasetRecord:
         version_query_script: str | None = None,
         version_schema: str | None = None,
         version_job_id: str | None = None,
+        version_content_hash: str | None = None,
         *,
         versions_loaded: bool = True,
         preview_loaded: bool = True,
@@ -627,6 +631,7 @@ class DatasetRecord:
                 version_sources or "",
                 version_query_script or "",
                 version_job_id,
+                version_content_hash,
                 preview_loaded=preview_loaded,
             )
             versions_list = [dataset_version]

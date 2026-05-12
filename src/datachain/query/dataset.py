@@ -323,7 +323,10 @@ class QueryStep:
 
     def hash(self) -> str:
         version = self.dataset.get_version(self.dataset_version)
-        return hashlib.sha256(version.uuid.encode()).hexdigest()
+        anchor = (
+            version.content_hash if version.content_hash is not None else version.uuid
+        )
+        return hashlib.sha256(anchor.encode()).hexdigest()
 
 
 def generator_then_call(generator, func: Callable):
