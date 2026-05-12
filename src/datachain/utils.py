@@ -286,12 +286,11 @@ def time_to_str(dt):
 
 def time_to_local(dt: datetime | str) -> datetime:
     # TODO check usage
-    if isinstance(dt, str):
-        dt = isoparse(dt)
+    d: datetime = isoparse(dt) if isinstance(dt, str) else dt
     try:
-        return dt.astimezone(tz.tzlocal())
+        return d.astimezone(tz.tzlocal())
     except (OverflowError, OSError, ValueError):
-        return dt
+        return d
 
 
 def time_to_local_str(dt: datetime | str) -> str:
