@@ -914,6 +914,8 @@ class Catalog:
             )
 
             if version_created:
+                assert len(dataset.versions) == 1
+                assert dataset.versions[0].version == target_version
                 return dataset
 
             # Another writer claimed this version between our check and insert.
