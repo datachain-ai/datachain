@@ -200,7 +200,7 @@ def read_storage(
         def lst_fn(ds_name, lst_uri):
             # Seed for .gen() iteration. content_hash=None because hash_callable
             # doesn't capture list_func's closure (which holds `lst_uri`, `cache`,
-            # `client_config`) — auto-hashing the seed would let the UDF
+            # `client_config`) -- auto-hashing the seed would let the UDF
             # checkpoint cache return a stale listing across URIs/runs.
             (
                 create_records_dataset(
