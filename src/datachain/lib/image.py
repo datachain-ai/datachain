@@ -8,14 +8,11 @@ from datachain.lib.file import File, FileError, Image, ImageFile
 
 def image_info(file: File | ImageFile) -> Image:
     """
-    Returns image file information.
-
-    Streams the file so PIL only reads the header bytes it needs to
-    determine dimensions and format, instead of downloading the whole
-    object up front.
+    Returns image file information (dimensions, format) using a streaming
+    read so the full file isn't downloaded.
 
     Args:
-        file (ImageFile): Image file object.
+        file (File | ImageFile): Image file object.
 
     Returns:
         Image: Image file information.
