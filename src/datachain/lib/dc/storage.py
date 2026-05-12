@@ -169,7 +169,7 @@ def read_storage(
             updated_uris.add(list_uri_to_use)
             update_single_uri = True
 
-        list_ds_name, list_uri, list_path, list_ds_exists = get_listing(
+        list_ds_name, list_uri, list_path, _ = get_listing(
             list_uri_to_use, session, update=update_single_uri
         )
 
@@ -197,38 +197,37 @@ def read_storage(
         dc._query.update = update
         dc.signals_schema = dc.signals_schema.mutate({f"{column}": file_type})
 
-        if update or not list_ds_exists:
-
-            def lst_fn(ds_name, lst_uri):
-                # Seed for .gen() iteration. content_hash=None because hash_callable
-                # doesn't capture list_func's closure (which holds `lst_uri`, `cache`,
-                # `client_config`) — auto-hashing the seed would let the UDF
-                # checkpoint cache return a stale listing across URIs/runs.
-                (
-                    create_records_dataset(
-                        [{"seed": 0}],
-                        schema={"seed": int},
-                        content_hash=None,
-                        session=session,
-                        settings=settings,
-                        in_memory=in_memory,
-                    )
-                    .settings(
-                        prefetch=0,
-                        namespace=listing_namespace_name,
-                        project=listing_project_name,
-                    )
-                    .gen(
-                        list_bucket(lst_uri, cache, client_config=client_config),
-                        output={f"{column}": file_type},
-                    )
-                    # for internal listing datasets, we always bump major version
-                    .save(ds_name, listing=True, update_version="major")
+        def lst_fn(ds_name, lst_uri):
+            # Seed for .gen() iteration. content_hash=None because hash_callable
+            # doesn't capture list_func's closure (which holds `lst_uri`, `cache`,
+            # `client_config`) -- auto-hashing the seed would let the UDF
+            # checkpoint cache return a stale listing across URIs/runs.
+            (
+                create_records_dataset(
+                    [{"seed": 0}],
+                    schema={"seed": int},
+                    content_hash=None,
+                    session=session,
+                    settings=settings,
+                    in_memory=in_memory,
                 )
-
-            dc._query.set_listing_fn(
-                lambda ds_name=list_ds_name, lst_uri=list_uri: lst_fn(ds_name, lst_uri)
+                .settings(
+                    prefetch=0,
+                    namespace=listing_namespace_name,
+                    project=listing_project_name,
+                )
+                .gen(
+                    list_bucket(lst_uri, cache, client_config=client_config),
+                    output={f"{column}": file_type},
+                )
+                # for internal listing datasets, we always bump major version
+                .save(ds_name, listing=True, update_version="major")
             )
+
+        # Always attach listing_fn so resolve_listing can refresh stale listings.
+        dc._query.set_listing_fn(
+            lambda ds_name=list_ds_name, lst_uri=list_uri: lst_fn(ds_name, lst_uri)
+        )
 
         # If a glob pattern was detected, use it for filtering
         # Otherwise, use the original list_path from get_listing
