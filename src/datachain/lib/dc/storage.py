@@ -251,8 +251,9 @@ def read_storage(
 
     if file_values:
         # Use read_records directly (not read_values) so the chain hash is
-        # deterministic in (source, path, etag/version) — needed for checkpoint
-        # reuse on single-file read_storage / read_csv / read_parquet.
+        # derived from the flattened File records (deterministic across runs) —
+        # needed for checkpoint reuse on single-file read_storage /
+        # read_csv / read_parquet.
         file_chain = read_records(
             [{"file": f} for f in file_values],
             schema={"file": file_type},
