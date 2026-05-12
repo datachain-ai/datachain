@@ -298,6 +298,7 @@ class AbstractMetastore(ABC, Serializable):
         preview: list[dict] | None = None,
         job_id: str | None = None,
         uuid: str | None = None,
+        content_hash: str | None = None,
     ) -> tuple[DatasetRecord, bool]:
         """Creates new dataset version.
 
@@ -844,6 +845,7 @@ class AbstractDBMetastore(AbstractMetastore):
             Column("query_script", Text, nullable=False, default=""),
             Column("schema", JSON, nullable=True),
             Column("job_id", Text, nullable=True),
+            Column("content_hash", Text, nullable=True),
             UniqueConstraint("dataset_id", "version"),
         ]
 
@@ -1262,6 +1264,7 @@ class AbstractDBMetastore(AbstractMetastore):
         preview: list[dict] | None = None,
         job_id: str | None = None,
         uuid: str | None = None,
+        content_hash: str | None = None,
     ) -> tuple[DatasetRecord, bool]:
         """Creates new dataset version.
 
@@ -1295,6 +1298,7 @@ class AbstractDBMetastore(AbstractMetastore):
             size=size,
             preview=json.dumps(preview or []),
             job_id=job_id or os.getenv("DATACHAIN_JOB_ID"),
+            content_hash=content_hash,
         )
         if ignore_if_exists:
             query = query.on_conflict_do_nothing(  # type: ignore[attr-defined]

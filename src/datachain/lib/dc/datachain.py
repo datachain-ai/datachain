@@ -565,14 +565,13 @@ class DataChain:
         # Calculate hash including dataset name and job context to avoid conflicts
 
         base_hash = self._query.hash()
-        _hash = hashlib.sha256(
-            (base_hash + f"{namespace_name}/{project_name}/{name}").encode("utf-8")
-        ).hexdigest()
+        name_salt = f"{namespace_name}/{project_name}/{name}"
+        if version is not None:
+            name_salt += f"/{version}"
+        _hash = hashlib.sha256((base_hash + name_salt).encode("utf-8")).hexdigest()
 
-        # Checkpoint handling
         result = self._resolve_checkpoint(name, project, _hash, kwargs)
         if bool(result):
-            # Checkpoint was found and reused
             print(
                 f"Checkpoint found for dataset '{name}', skipping creation",
                 file=sys.stderr,

@@ -789,6 +789,7 @@ class Catalog:
         attrs: list[str] | None = None,
         update_version: str | None = "patch",
         job_id: str | None = None,
+        content_hash: str | None = None,
     ) -> "DatasetRecord":
         """
         Creates new dataset of a specific version.
@@ -851,6 +852,7 @@ class Catalog:
             job_id=job_id,
             validate_version=validate_version,
             update_version=update_version,
+            content_hash=content_hash,
         )
 
     @staticmethod
@@ -878,6 +880,7 @@ class Catalog:
         job_id: str | None,
         validate_version: bool | None,
         update_version: str | None,
+        content_hash: str | None = None,
     ) -> "DatasetRecord":
         """
         Try to claim a dataset version, retrying on conflict.
@@ -911,6 +914,7 @@ class Catalog:
                 columns=columns,
                 uuid=uuid,
                 job_id=job_id,
+                content_hash=content_hash,
             )
 
             if version_created:
@@ -962,6 +966,7 @@ class Catalog:
         script_output="",
         job_id: str | None = None,
         uuid: str | None = None,
+        content_hash: str | None = None,
     ) -> tuple[DatasetRecord, bool]:
         """
         Creates dataset version metadata (no rows table).
@@ -990,6 +995,7 @@ class Catalog:
             job_id=job_id,
             ignore_if_exists=True,
             uuid=uuid,
+            content_hash=content_hash,
         )
 
         return dataset, version_created

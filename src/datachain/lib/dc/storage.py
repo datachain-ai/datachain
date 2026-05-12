@@ -123,8 +123,7 @@ def read_storage(
         ```
     """
     from .datasets import read_dataset
-    from .records import read_records
-    from .values import read_values
+    from .records import create_records_dataset, read_records
 
     file_type = get_file_type(type)
 
@@ -201,12 +200,15 @@ def read_storage(
         if update or not list_ds_exists:
 
             def lst_fn(ds_name, lst_uri):
-                # Start with a single dummy record so gen() has one row to iterate over.
-                # Disable prefetch=0 to prevent downloading files during listing.
+                # Seed for .gen() iteration. content_hash=None because hash_callable
+                # doesn't capture list_func's closure (which holds `lst_uri`, `cache`,
+                # `client_config`) — auto-hashing the seed would let the UDF
+                # checkpoint cache return a stale listing across URIs/runs.
                 (
-                    read_records(
+                    create_records_dataset(
                         [{"seed": 0}],
                         schema={"seed": int},
+                        content_hash=None,
                         session=session,
                         settings=settings,
                         in_memory=in_memory,
@@ -248,11 +250,16 @@ def read_storage(
     storage_chain = None if not chains else reduce(lambda x, y: x.union(y), chains)
 
     if file_values:
-        file_chain = read_values(
+        # Use read_records directly (not read_values) so the chain hash is
+        # derived from the flattened File records (deterministic across runs) —
+        # needed for checkpoint reuse on single-file read_storage /
+        # read_csv / read_parquet.
+        file_chain = read_records(
+            [{"file": f} for f in file_values],
+            schema={"file": file_type},
             session=session,
             settings=settings,
             in_memory=in_memory,
-            file=file_values,
         )
         file_chain.signals_schema = file_chain.signals_schema.mutate(
             {f"{column}": file_type}
