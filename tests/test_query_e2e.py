@@ -1,4 +1,3 @@
-import os
 import os.path
 import signal
 import subprocess
@@ -11,6 +10,8 @@ from threading import Thread
 from typing import IO
 
 import pytest
+
+from tests.utils import e2e_subprocess_env
 
 tests_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -185,13 +186,11 @@ def run_step(step, catalog):
         popen_args = {"start_new_session": True}
     stdin_path = step.get("stdin_file")
     with open(stdin_path) if stdin_path else nullcontext(None) as stdin_file:
-        # Build env without DATACHAIN_MAIN_PROCESS_PID so script starts fresh
-        # as its own main process (with checkpoints enabled)
-        script_env = {
-            k: v for k, v in os.environ.items() if k != "DATACHAIN_MAIN_PROCESS_PID"
-        }
-        script_env["DATACHAIN__METASTORE"] = catalog.metastore.serialize()
-        script_env["DATACHAIN__WAREHOUSE"] = catalog.warehouse.serialize()
+        # Strip DATACHAIN_MAIN_PROCESS_PID so script starts fresh as its own
+        # main process (with checkpoints enabled).
+        script_env = e2e_subprocess_env(
+            catalog, exclude_keys={"DATACHAIN_MAIN_PROCESS_PID"}
+        )
 
         process = subprocess.Popen(  # noqa: S603
             command,
