@@ -68,6 +68,15 @@ class Client(ABC):
     FS_CLASS: ClassVar[type["AbstractFileSystem"]]
     PREFIX: ClassVar[str]
     protocol: ClassVar[str]
+    # client_config keys this backend treats as credentials.
+    CREDENTIAL_KEYS: ClassVar[frozenset[str]] = frozenset()
+
+    @classmethod
+    def has_explicit_credentials(cls, client_config: dict | None) -> bool:
+        """True if client_config contains any backend-specific credential key."""
+        if not client_config:
+            return False
+        return any(k in client_config for k in cls.CREDENTIAL_KEYS)
 
     def __init__(self, name: str, fs_kwargs: dict[str, Any], cache: Cache) -> None:
         self.name = name

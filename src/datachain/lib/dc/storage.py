@@ -1,4 +1,3 @@
-import logging
 import os
 from collections.abc import Sequence
 from functools import reduce
@@ -20,16 +19,22 @@ if TYPE_CHECKING:
     from .datachain import DataChain
 
 
-logger = logging.getLogger("datachain")
+def _backends_have_credentials(uris, client_config: dict | None) -> bool:
+    """True if any backend behind ``uris`` sees credentials in client_config."""
+    if not client_config:
+        return False
+    seen: set[type[Client]] = set()
+    for uri in uris:
+        try:
+            seen.add(Client.get_implementation(str(uri)))
+        except NotImplementedError:
+            return True
+    return any(c.has_explicit_credentials(client_config) for c in seen)
 
 
 def _all_buckets_anonymous(uris, client_config: dict | None) -> bool:
-    """True only if every unique bucket in ``uris`` probes as anonymous.
-
-    Any failure (unsupported backend, network error, mixed access) returns
-    False so the caller falls through to the default credentialed path.
-    """
-    probed: set[tuple[type[Client], str]] = set()
+    """Probe each unique bucket; True iff all probe as anonymous."""
+    to_probe: set[tuple[type[Client], str]] = set()
     for uri in uris:
         try:
             client_cls = Client.get_implementation(str(uri))
@@ -38,16 +43,16 @@ def _all_buckets_anonymous(uris, client_config: dict | None) -> bool:
         name, _ = client_cls.split_url(str(uri))
         if not name:
             return False
-        probed.add((client_cls, name))
+        to_probe.add((client_cls, name))
 
-    if not probed:
+    if not to_probe:
         return False
 
-    for client_cls, name in probed:
+    for client_cls, name in to_probe:
         try:
             status = client_cls.bucket_status(name, **(client_config or {}))
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("anon auto-detect probe failed for %s: %s", name, exc)
+        except NotImplementedError:
+            # Backend doesn't support bucket_status (e.g. local files).
             return False
         if status.access != "anonymous":
             return False
@@ -168,7 +173,14 @@ def read_storage(
     if not uris:
         raise ValueError("No URIs provided")
 
-    if anon is None and _all_buckets_anonymous(uris, client_config):
+    for single_uri in uris:
+        validate_cloud_bucket_name(str(single_uri))
+
+    if (
+        anon is None
+        and not _backends_have_credentials(uris, client_config)
+        and _all_buckets_anonymous(uris, client_config)
+    ):
         anon = True
 
     if anon is not None:
@@ -184,7 +196,6 @@ def read_storage(
     expanded_uris = []
     for single_uri in uris:
         uri_str = str(single_uri)
-        validate_cloud_bucket_name(uri_str)
         expanded_uris.extend(expand_brace_pattern(uri_str))
 
     # Now process each expanded URI
