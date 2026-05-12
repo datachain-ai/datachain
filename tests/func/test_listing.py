@@ -144,6 +144,26 @@ def test_listing_update_unchanged_keeps_old_version(test_session, tmp_dir):
     assert ds.get_version("1.0.0").finished_at > original_finished_at
 
 
+def test_listing_refresh_when_expired_after_construction(
+    test_session, tmp_dir, monkeypatch
+):
+    """Regression test for ``AssertionError: self.listing_fn`` raised from
+    ``DatasetQuery.resolve_listing`` when the listing dataset exists at chain
+    construction time but is detected as expired at execution time. The
+    listing function must be attached unconditionally so the refresh path can
+    invoke it.
+    """
+    (tmp_dir / "a.txt").write_text("hello")
+    uri = tmp_dir.as_uri()
+
+    dc.read_storage(uri, session=test_session).exec()
+
+    chain = dc.read_storage(uri, session=test_session)
+    monkeypatch.setattr("datachain.lib.listing.LISTING_TTL", -1)
+
+    assert chain.count() == 1
+
+
 def test_listing_update_changed_creates_new_version(test_session, tmp_dir):
     """update=True with changed files should create a new listing version."""
     (tmp_dir / "a.txt").write_text("hello")
