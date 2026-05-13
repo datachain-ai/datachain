@@ -728,6 +728,7 @@ def cats_dataset(listed_bucket, cloud_test_catalog):
 def dataset_record():
     return DatasetRecord(
         id=1,
+        uuid=str(uuid.uuid4()),
         name=f"ds_{uuid.uuid4().hex}",
         description="",
         attrs=[],
@@ -776,6 +777,7 @@ def dataset_record():
 def dataset_list_record():
     return DatasetListRecord(
         id=1,
+        uuid=str(uuid.uuid4()),
         name=f"ds_{uuid.uuid4().hex}",
         project=Project(
             id=1,

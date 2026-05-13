@@ -62,6 +62,7 @@ def remote_dataset(
 ):
     return {
         "id": 1,
+        "uuid": "11111111-1111-1111-1111-111111111111",
         "name": "dogs",
         "project": remote_project,
         "description": "",
