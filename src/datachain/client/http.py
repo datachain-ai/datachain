@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, ClassVar, cast
+from typing import TYPE_CHECKING, Any, BinaryIO, ClassVar, cast
 from urllib.parse import quote, urlparse
 
 from fsspec.implementations.http import HTTPFileSystem
@@ -145,7 +145,9 @@ class HTTPClient(Client):
             last_modified=last_modified,
         )
 
-    def upload(self, data: bytes, path: str) -> "File":
+    def upload(
+        self, data: bytes | bytearray | memoryview | BinaryIO, path: str
+    ) -> "File":
         raise NotImplementedError(
             "HTTP/HTTPS client is read-only. Upload operations are not supported."
         )

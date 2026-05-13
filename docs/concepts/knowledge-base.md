@@ -4,11 +4,11 @@ title: Knowledge Base
 
 # Knowledge Base
 
-The Knowledge Base is the compilation layer that turns persistent typed datasets into agent-readable knowledge. It reads accumulated [datasets](datasets.md) from the Query Engine and emits typed pages (one per dataset, one per bucket listing) that the next agent session reads as premises before generating its first line of code. Each page carries schema, lineage summary, previews, and links. Humans browse the same pages in Obsidian; the compilation step exists for agents.
+The Knowledge Base is the compilation layer that turns persistent typed datasets into agent-readable knowledge. It reads accumulated [datasets](datasets.md) from [Data Memory](data-memory.md) and emits typed pages (one per dataset, one per bucket listing) that the next agent session reads as premises before generating its first line of code. Each page carries schema, lineage summary, previews, and links. Humans browse the same pages in Obsidian; the compilation step exists for agents.
 
 ## Skill and MCP Layer
 
-The Knowledge Base lives in the DataChain Skill and MCP layer, architecturally separate from the Python Library that holds the Python Data Engine, [Data Memory](data-memory.md), and Query Engine. The Python Library runs queries and stores results. The Skill and MCP layer serves data context to agents via a different protocol. This separation reflects the two audiences: queries need a compute engine, agents need a context surface.
+The Knowledge Base reaches agents through the [Skill and MCP](skill-and-mcp.md) layer, architecturally separate from the [Compute Engine](compute-engine.md) and [Data Memory](data-memory.md) that the Python library exposes. Pipelines run through compute and memory; agents read context through Skill and MCP. This separation reflects the two audiences: pipelines need a compute engine, agents need a context surface.
 
 ## Compilation Is What Makes Memory Readable
 

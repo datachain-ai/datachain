@@ -323,7 +323,10 @@ class QueryStep:
 
     def hash(self) -> str:
         version = self.dataset.get_version(self.dataset_version)
-        return hashlib.sha256(version.uuid.encode()).hexdigest()
+        anchor = (
+            version.content_hash if version.content_hash is not None else version.uuid
+        )
+        return hashlib.sha256(anchor.encode()).hexdigest()
 
 
 def generator_then_call(generator, func: Callable):
@@ -3387,7 +3390,11 @@ class DatasetQuery:
                 **kwargs,
             )
 
-            version = version or dataset.latest_version
+            assert len(dataset.versions) == 1
+            dataset_version = (
+                dataset.get_version(version) if version else dataset.versions[0]
+            )
+            version = dataset_version.version
 
             # Phase 3: Rename staging table to the final dataset table name.
             final_table_name = self.catalog.warehouse.dataset_table_name(
@@ -3454,19 +3461,25 @@ class DatasetQuery:
         """
         from datachain.lib.listing import calc_fingerprint
 
-        prev_version = dataset.latest_complete_version
+        full_dataset = self.catalog.get_dataset(
+            name,
+            namespace_name=project.namespace.name,
+            project_name=project.name,
+            versions=None,
+        )
+        prev_version = full_dataset.latest_complete_version
         if not prev_version:
             return None
 
-        old_fp = calc_fingerprint(self.session, dataset, prev_version)
-        new_fp = calc_fingerprint(self.session, dataset, version)
+        old_fp = calc_fingerprint(self.session, full_dataset, prev_version)
+        new_fp = calc_fingerprint(self.session, full_dataset, version)
         if old_fp != new_fp:
             return None
 
-        self.catalog.remove_dataset_version(dataset, version)
+        self.catalog.remove_dataset_version(full_dataset, version)
         # updating TTL of a bucket listing
         self.catalog.metastore.update_dataset_version(
-            dataset, prev_version, finished_at=datetime.now(timezone.utc)
+            full_dataset, prev_version, finished_at=datetime.now(timezone.utc)
         )
         return self.__class__(
             name=name,
