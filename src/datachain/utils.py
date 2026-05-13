@@ -16,7 +16,6 @@ from typing import TYPE_CHECKING, Any, TypeVar
 
 import cloudpickle
 import platformdirs
-from dateutil import tz
 from dateutil.parser import isoparse
 from pydantic import BaseModel
 
@@ -282,27 +281,6 @@ def time_to_str(dt):
     if isinstance(dt, str):
         dt = isoparse(dt)
     return dt.strftime("%Y-%m-%d %H:%M:%S")
-
-
-def time_to_local(dt: datetime | str) -> datetime:
-    # TODO check usage
-    if isinstance(dt, str):
-        dt = isoparse(dt)
-    try:
-        return dt.astimezone(tz.tzlocal())
-    except (OverflowError, OSError, ValueError):
-        return dt
-
-
-def time_to_local_str(dt: datetime | str) -> str:
-    return time_to_str(time_to_local(dt))
-
-
-def is_expired(expires: datetime | str | None):
-    if expires:
-        return time_to_local(expires) < time_to_local(datetime.now())  # noqa: DTZ005
-
-    return False
 
 
 SIZE_SUFFIXES = ["", "K", "M", "G", "T", "P", "E", "Z", "Y", "R", "Q"]

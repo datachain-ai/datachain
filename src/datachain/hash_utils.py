@@ -119,6 +119,11 @@ def hash_callable(func, include_body: bool = True):
     - **Dynamically generated callables**: If __call__ is created via exec/eval
       or the behavior depends on runtime state, the hash won't reflect changes
       in behavior. Only the method's code is hashed, not captured state.
+    - **Closure cell contents**: NOT hashed. If a callable's behavior depends on
+      closed-over variables (e.g., a generator yielding from a captured list),
+      two instances with different closures will produce identical hashes.
+      Callers that need closure-aware identity must hash the closure data
+      themselves. See ``lib.dc.values.read_values`` for a workaround.
 
     Args:
         func: A callable object (function, lambda, method, or object with __call__)
