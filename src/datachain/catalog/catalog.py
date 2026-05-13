@@ -48,7 +48,7 @@ from datachain.error import (
     NamespaceNotFoundError,
     ProjectNotFoundError,
 )
-from datachain.lib.listing import get_listing
+from datachain.lib.listing import get_listing, is_listing_dataset
 from datachain.node import DirType, Node, NodeWithPath
 from datachain.nodes_thread_pool import NodesThreadPool
 from datachain.progress import tqdm
@@ -1094,21 +1094,47 @@ class Catalog:
         self.warehouse.rename_dataset_tables(dataset, dataset_updated)
         return dataset_updated
 
-    def remove_dataset_version(
-        self, dataset: DatasetRecord, version: str, drop_rows: bool | None = True
-    ) -> None:
+    def remove_dataset_version(self, dataset: DatasetRecord, version: str) -> None:
         """
-        Deletes one single dataset version.
-        If it was last version, it removes dataset completely.
+        Remove a single dataset version.
+
+        For COMPLETE user-named versions this is a soft delete: rows table is
+        dropped, dependencies are preserved, and the version row stays with
+        status REMOVED so dependents can still render lineage.
+
+        For non-COMPLETE versions (CREATED/FAILED/STALE/REMOVING leftovers) and
+        for internal datasets (listing `lst__*` / `session_*` intermediates),
+        this is a hard delete: rows table dropped, dependencies removed,
+        version row deleted, and dataset row removed if it was the last
+        version.
         """
+        from datachain.query.session import Session
+
         if not dataset.has_version(version):
             return
+        v = dataset.get_version(version)
+        if v.status == DatasetStatus.REMOVED:
+            return
+
+        is_internal = is_listing_dataset(dataset.name) or dataset.name.startswith(
+            Session.DATASET_PREFIX
+        )
+        soft = v.status == DatasetStatus.COMPLETE and not is_internal
+
         self.metastore.update_dataset_version(
             dataset, version, status=DatasetStatus.REMOVING
         )
-        if drop_rows:
-            self.warehouse.drop_dataset_rows_table(dataset, version)
-        dataset = self.metastore.remove_dataset_version(dataset, version)
+        self.warehouse.drop_dataset_rows_table(dataset, version)
+
+        if soft:
+            self.metastore.update_dataset_version(
+                dataset,
+                version,
+                status=DatasetStatus.REMOVED,
+                removed_at=datetime.now(timezone.utc),
+            )
+        else:
+            self.metastore.remove_dataset_version(dataset, version)
 
     def _remove_versions(self, pairs: Iterable[tuple[DatasetRecord, str]]) -> int:
         num_removed = 0

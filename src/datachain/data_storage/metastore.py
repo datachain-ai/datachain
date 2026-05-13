@@ -846,6 +846,7 @@ class AbstractDBMetastore(AbstractMetastore):
             Column("schema", JSON, nullable=True),
             Column("job_id", Text, nullable=True),
             Column("content_hash", Text, nullable=True),
+            Column("removed_at", DateTime(timezone=True), nullable=True),
             UniqueConstraint("dataset_id", "version"),
         ]
 
