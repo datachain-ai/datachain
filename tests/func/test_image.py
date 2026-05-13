@@ -1,4 +1,5 @@
 import os
+from contextlib import contextmanager
 
 import pytest
 from PIL import Image as PILImage
@@ -6,7 +7,23 @@ from torch import Tensor
 from torchvision.transforms import ToTensor
 
 from datachain.lib.file import File, FileError, ImageFile
-from datachain.lib.image import convert_image
+from datachain.lib.image import convert_image, image_info
+
+
+class _CountingStream:
+    """Wraps a binary stream and tallies bytes returned by ``read``."""
+
+    def __init__(self, raw, counter: list[int]) -> None:
+        self._raw = raw
+        self._counter = counter
+
+    def read(self, n: int = -1) -> bytes:
+        data = self._raw.read(n)
+        self._counter[0] += len(data)
+        return data
+
+    def __getattr__(self, name):
+        return getattr(self._raw, name)
 
 
 @pytest.fixture(autouse=True)
@@ -73,6 +90,32 @@ def test_image_save_cloud(cloud_test_catalog_upload, image_file, format):
 def test_get_info(image_file):
     info = image_file.as_image_file().get_info()
     assert info.model_dump() == {"width": 256, "height": 256, "format": "JPEG"}
+
+
+def test_image_info_streams_does_not_slurp(image_file, monkeypatch):
+    """image_info should let PIL read only the header, not pull all bytes.
+
+    Regression for the prior implementation that called
+    ``ImageFile.read()`` (= full file) before handing to PIL.
+    """
+    img = image_file.as_image_file()
+    bytes_read: list[int] = [0]
+    real_open = ImageFile.open
+
+    @contextmanager
+    def counting_open(self, *args, **kwargs):
+        with real_open(self, *args, **kwargs) as raw:
+            yield _CountingStream(raw, bytes_read)
+
+    monkeypatch.setattr(ImageFile, "open", counting_open)
+
+    info = image_info(img)
+
+    assert info.width == 256 and info.height == 256
+    assert 0 < bytes_read[0] < image_file.size, (
+        f"image_info read {bytes_read[0]} of {image_file.size} bytes — "
+        "expected header-only streaming"
+    )
 
 
 def test_get_info_error():
