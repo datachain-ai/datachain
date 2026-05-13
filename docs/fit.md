@@ -4,7 +4,7 @@ title: Where DataChain fits
 
 # Where DataChain fits
 
-AI coding agents are stateless on data. Each session starts from raw bytes; embeddings recompute, classifications recompute, joins recompute, and the work fails to compound. The two-orders-of-magnitude gap between recomputing a dataset (~$100), querying a materialised one (~$1), and reading its summary (~$0.01) is what makes Data Memory worth building. DataChain fits where that gap is real for your team.
+AI coding agents are stateless on data. Each session starts from raw bytes; embeddings recompute, classifications recompute, joins recompute, and the work fails to compound. The two-orders-of-magnitude gap between recomputing a dataset (~$100), querying a materialised one (~$1), and reading its summary (~$0.01) is what makes the Dataset DB worth building. DataChain fits where that gap is real for your team.
 
 ## When DataChain fits
 

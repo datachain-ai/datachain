@@ -289,6 +289,6 @@ loader = DataLoader(chain, batch_size=1)
 
 ## Next Steps
 
-- [Concepts](../concepts/index.md): understand Data Memory, Datasets, and the dual engine
+- [Concepts](../concepts/index.md): understand the Dataset DB, Datasets, and the dual engine
 - [Examples](../examples.md): more code examples and notebooks
 - [Guides](../guide/index.md): in-depth coverage of every capability

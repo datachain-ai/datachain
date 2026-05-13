@@ -4,7 +4,7 @@ title: Chain
 
 # Chain
 
-A chain is a query that combines Python functions and data operations into a single composable sequence. Python functions run on the [Compute Engine](compute-engine.md): file content reads, ML models, LLM calls, multimodal extraction. Data operations run as SQL at warehouse speed against [Data Memory](data-memory.md): filter, join, aggregate, similarity search. Nothing runs until a terminal operation like `save()`, `show()`, or `to_pandas()`. DataChain is named for this pattern: every query is a chain of operations, and every chain deposits its results into Data Memory as a versioned [dataset](datasets.md).
+A chain is a query that combines Python functions and data operations into a single composable sequence. Python functions run on the [Compute Engine](compute-engine.md): file content reads, ML models, LLM calls, multimodal extraction. Data operations run as SQL at warehouse speed against the [Dataset DB](dataset-db.md): filter, join, aggregate, similarity search. Nothing runs until a terminal operation like `save()`, `show()`, or `to_pandas()`. DataChain is named for this pattern: every query is a chain of operations, and every chain deposits its results into the Dataset DB as a versioned [dataset](datasets.md).
 
 ## Lazy Evaluation and Optimization
 
@@ -27,7 +27,7 @@ The `filter` and `mutate` are data operations that compile to SQL and run at war
 
 ## Atomicity
 
-Results go to staging tables during execution. Only `save()` commits them into memory. If the chain fails at any point, no partial results pollute the shared layer. Deposits are all-or-nothing. Combined with [checkpoints](../guide/scaling.md#checkpoints), failed chains resume from where they stopped on the next run, but nothing is visible to other users until the chain succeeds.
+Results go to staging tables during execution. Only `save()` commits them into the Dataset DB. If the chain fails at any point, no partial results pollute the shared layer. Deposits are all-or-nothing. Combined with [checkpoints](../guide/scaling.md#checkpoints), failed chains resume from where they stopped on the next run, but nothing is visible to other users until the chain succeeds.
 
 ## Declarative
 
