@@ -6,7 +6,7 @@ title: Data Harness
 
 Claude Code, Cursor, and Codex are harnesses for code: they give the LLM repo context, dedicated tools, and persistent memory across sessions. The code side compounds because of this; the data side restarts every time. Today an agent calls a data tool and the session collapses: outputs exceed the context budget, schemas get guessed, embeddings recompute from scratch, and the next session starts from zero.
 
-The data harness pairs with the code harness on every dimension. Its working unit is the typed dataset (what the file in a repo is for code), its persistent store is Data Memory, its tools are pipeline operations, and its surface for agents is a compiled knowledge layer they read before generating code. Both halves, code-side and data-side, feed the same agent in the same session.
+The data harness pairs with the code harness on every dimension. Its working unit is the typed dataset (what the file in a repo is for code), its persistent store is the Dataset DB, its tools are pipeline operations, and its surface for agents is a compiled knowledge layer they read before generating code. Both halves, code-side and data-side, feed the same agent in the same session.
 
 <p align="center">
   <img src="../assets/harness.svg" alt="DataChain mirrors the code harness, for data" width="700" />
@@ -16,9 +16,9 @@ The data harness pairs with the code harness on every dimension. Its working uni
 
 | Code harness | Data harness |
 |---|---|
-| Working unit: typed file in a repo | Working unit: typed dataset in Data Memory |
+| Working unit: typed file in a repo | Working unit: typed dataset in the Dataset DB |
 | Raw inputs: source files, libraries | Raw inputs: files in object storage, tables in databases |
-| Persistent context: git history, `~/.claude/`, `CLAUDE.md` | Persistent context: Data Memory + Knowledge Base (`dc-knowledge/`) |
+| Persistent context: git history, `~/.claude/`, `CLAUDE.md` | Persistent context: Dataset DB + Knowledge Base (`dc-knowledge/`) |
 | Tools: Read, Edit, Bash | Tools: DataChain operations (`read_storage`, `map`, `save`) |
 | Output: new commit on the same repo | Output: new dataset version in `.datachain/db` |
 
