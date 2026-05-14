@@ -1158,6 +1158,9 @@ class VideoFile(File):
         """
         Returns a specific video frame by its frame number.
 
+        This reads the requested frame so the returned timestamp matches the
+        frame's playback time.
+
         Args:
             frame (int): The frame number to read.
             video_stream_index: Zero-based index among video streams to read.

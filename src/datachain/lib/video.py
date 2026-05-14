@@ -187,11 +187,11 @@ def validate_frame_range(
 
 
 def _frame_timestamp(frame, frame_index: int, fps: float) -> float:
-    if frame.time is not None:
-        return float(frame.time)
-
     if frame.pts is not None and frame.time_base is not None:
         return float(frame.pts * frame.time_base)
+
+    if frame.time is not None:
+        return float(frame.time)
 
     if fps > 0:
         return frame_index / fps
@@ -283,8 +283,6 @@ def _decode_video_frame(video: VideoFile, frame: int, video_stream_index: int = 
                 ):
                     if frame_index == frame:
                         return decoded_frame, fps
-                    if frame_index > frame:
-                        break
     except FileError:
         raise
     except Exception as exc:

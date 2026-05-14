@@ -14,7 +14,7 @@ from PIL import Image
 from datachain import VideoFragment, VideoFrame
 from datachain.lib.file import File, FileError, ImageFile, VideoFile
 from datachain.lib.tar import process_tar
-from datachain.lib.video import save_video_fragment, video_frame_np
+from datachain.lib.video import save_video_fragment, video_frame, video_frame_np
 
 requires_ffmpeg = pytest.mark.skipif(
     not shutil.which("ffmpeg"), reason="ffmpeg not installed"
@@ -29,6 +29,17 @@ def _install_fake_ffmpeg(tmp_path, monkeypatch, script: str) -> None:
     fake_ffmpeg.write_text(script)
     fake_ffmpeg.chmod(0o755)
     monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ.get('PATH', '')}")
+
+
+def _fake_ffmpeg_write_output_script(record_args: bool = False) -> str:
+    record = 'printf \'%s\n\' "$@" > "$FFMPEG_ARGS_FILE"\n' if record_args else ""
+    return (
+        "#!/bin/sh\n"
+        f"{record}"
+        'out=""\n'
+        'for arg do out="$arg"; done\n'
+        'printf fake-video > "$out"\n'
+    )
 
 
 def _write_variable_timestamp_video(path):
@@ -46,6 +57,26 @@ def _write_variable_timestamp_video(path):
             frame = av.VideoFrame.from_ndarray(image, format="rgb24")
             frame.pts = pts
             frame.time_base = time_base
+            for packet in stream.encode(frame):
+                container.mux(packet)
+
+        for packet in stream.encode():
+            container.mux(packet)
+    finally:
+        container.close()
+
+
+def _write_raw_h264_video(path):
+    container = av.open(str(path), "w", format="h264")
+    stream = container.add_stream("h264", rate=30)
+    stream.width = 16
+    stream.height = 16
+    stream.pix_fmt = "yuv420p"
+
+    try:
+        for index in range(4):
+            image = np.full((16, 16, 3), index * 40, dtype=np.uint8)
+            frame = av.VideoFrame.from_ndarray(image, format="rgb24")
             for packet in stream.encode(frame):
                 container.mux(packet)
 
@@ -194,6 +225,18 @@ def test_get_info_error():
         file.get_info()
 
 
+def test_get_info_handles_raw_video_without_duration(tmp_path):
+    video_path = tmp_path / "raw.h264"
+    _write_raw_h264_video(video_path)
+    file = VideoFile.upload(video_path.read_bytes(), video_path.name)
+
+    info = file.get_info()
+
+    assert info.fps > 0
+    assert info.duration == -1.0
+    assert info.frames == 0
+
+
 def test_get_frame(video_file):
     frame = video_file.as_video_file().get_frame(37)
     assert isinstance(frame, VideoFrame)
@@ -202,9 +245,25 @@ def test_get_frame(video_file):
     assert frame.timestamp == pytest.approx(37 / 30)
 
 
+def test_get_frame_uses_frame_index_when_timestamps_are_missing(tmp_path):
+    video_path = tmp_path / "raw.h264"
+    _write_raw_h264_video(video_path)
+    file = VideoFile.upload(video_path.read_bytes(), video_path.name)
+    info = file.get_info()
+
+    frame = file.get_frame(3)
+
+    assert frame.timestamp == pytest.approx(frame.frame / info.fps)
+
+
 def test_get_frame_error(video_file):
     with pytest.raises(ValueError):
         video_file.as_video_file().get_frame(-1)
+
+
+def test_video_frame_function_rejects_negative_frame(video_file):
+    with pytest.raises(ValueError):
+        video_frame(video_file.as_video_file(), -1)
 
 
 def test_get_frame_missing_frame_error(video_file):
@@ -246,6 +305,18 @@ def test_get_frame_np_error(video_file):
 def test_get_frame_np_missing_frame_error(video_file):
     with pytest.raises(FileError, match="unable to read video frame"):
         video_frame_np(video_file.as_video_file(), 10_000)
+
+
+def test_get_frame_np_video_stream_index_error(video_file):
+    with pytest.raises(FileError, match="video_stream_index 1 is out of range"):
+        video_frame_np(video_file.as_video_file(), 0, video_stream_index=1)
+
+
+def test_get_frame_np_wraps_decode_errors():
+    file = VideoFile.upload(b"not a video", "broken.mp4")
+
+    with pytest.raises(FileError, match="unable to read video frame"):
+        video_frame_np(file, 0)
 
 
 @pytest.mark.parametrize(
@@ -354,6 +425,16 @@ def test_video_stream_index_error(video_file):
 
     with pytest.raises(FileError):
         video_file.as_video_file().get_info(video_stream_index=1)
+
+    with pytest.raises(FileError):
+        list(video_file.as_video_file().get_frames(0, 1, video_stream_index=1))
+
+
+def test_get_frames_wraps_decode_errors():
+    file = VideoFile.upload(b"not a video", "broken.mp4")
+
+    with pytest.raises(FileError, match="unable to read video frames"):
+        list(file.get_frames(0, 1))
 
 
 @requires_ffmpeg
@@ -475,6 +556,68 @@ def test_save_video_fragment_uses_cached_input(tmp_path, video_file):
 
 
 @requires_ffmpeg
+def test_save_video_fragment_uses_cache_after_ensure_cached(
+    tmp_path, monkeypatch, video_file
+):
+    video = video_file.as_video_file()
+    real_cached_path = video.get_fs_path()
+    video.source = "gs://bucket"
+    video._caching_enabled = True
+    calls = []
+
+    def fake_get_local_path(self):
+        calls.append("get_local_path")
+        return real_cached_path if "ensure_cached" in calls else None
+
+    def fake_ensure_cached(self):
+        calls.append("ensure_cached")
+
+    monkeypatch.setattr(VideoFile, "get_local_path", fake_get_local_path)
+    monkeypatch.setattr(VideoFile, "ensure_cached", fake_ensure_cached)
+
+    fragment = save_video_fragment(video, 0, 1, str(tmp_path / "out"))
+
+    assert calls == ["get_local_path", "ensure_cached", "get_local_path"]
+    fragment.ensure_cached()
+    assert fragment.get_info().duration == 1
+
+
+@requires_ffmpeg
+@pytest.mark.parametrize("caching_enabled", [False, True])
+def test_save_video_fragment_remote_input_uses_temp_file_when_cache_is_unavailable(
+    tmp_path, monkeypatch, video_file, caching_enabled
+):
+    video = video_file.as_video_file()
+    source_path = video.get_fs_path()
+    video.source = "gs://bucket"
+    video._caching_enabled = caching_enabled
+    calls = []
+
+    def fake_get_local_path(self):
+        calls.append("get_local_path")
+
+    def fake_ensure_cached(self):
+        calls.append("ensure_cached")
+
+    def fake_save(self, destination, client_config=None):
+        calls.append("save")
+        shutil.copyfile(source_path, destination)
+
+    monkeypatch.setattr(VideoFile, "get_local_path", fake_get_local_path)
+    monkeypatch.setattr(VideoFile, "ensure_cached", fake_ensure_cached)
+    monkeypatch.setattr(VideoFile, "save", fake_save)
+
+    fragment = save_video_fragment(video, 0, 1, str(tmp_path / "out"))
+
+    if caching_enabled:
+        assert calls == ["get_local_path", "ensure_cached", "get_local_path", "save"]
+    else:
+        assert calls == ["get_local_path", "save"]
+    fragment.ensure_cached()
+    assert fragment.get_info().duration == 1
+
+
+@requires_ffmpeg
 def test_save_video_fragment_temp_input_uses_original_name_on_error(
     tmp_path, make_tar_member_file
 ):
@@ -539,43 +682,25 @@ def test_save_video_fragment_rejects_negative_timeout(tmp_path, video_file):
         save_video_fragment(video_file.as_video_file(), 0, 1, str(tmp_path), timeout=-1)
 
 
-@requires_posix
-def test_save_video_fragment_accepts_zero_timeout(tmp_path, monkeypatch, video_file):
-    _install_fake_ffmpeg(
-        tmp_path,
-        monkeypatch,
-        '#!/bin/sh\nout=""\nfor arg do out="$arg"; done\nprintf fake-video > "$out"\n',
-    )
-
+@requires_ffmpeg
+def test_save_video_fragment_accepts_zero_timeout(tmp_path, video_file):
     fragment = save_video_fragment(
         video_file.as_video_file(), 0, 1, str(tmp_path / "out"), timeout=0
     )
 
-    assert fragment.path.endswith(".mp4")
+    fragment.ensure_cached()
+    assert fragment.get_info().duration == 1
 
 
-@requires_posix
-def test_save_video_fragment_uses_explicit_format(tmp_path, monkeypatch, video_file):
-    args_file = tmp_path / "ffmpeg.args"
-    monkeypatch.setenv("FFMPEG_ARGS_FILE", str(args_file))
-    _install_fake_ffmpeg(
-        tmp_path,
-        monkeypatch,
-        "#!/bin/sh\n"
-        'printf \'%s\n\' "$@" > "$FFMPEG_ARGS_FILE"\n'
-        'out=""\n'
-        'for arg do out="$arg"; done\n'
-        'printf fake-video > "$out"\n',
-    )
-
+@requires_ffmpeg
+def test_save_video_fragment_uses_explicit_format(tmp_path, video_file):
     fragment = save_video_fragment(
         video_file.as_video_file(), 0, 1, str(tmp_path / "out"), format="avi"
     )
 
-    args = args_file.read_text().splitlines()
     assert fragment.path.endswith(".avi")
-    assert "avi" in args
-    assert "-movflags" not in args
+    fragment.ensure_cached()
+    assert fragment.get_info().format == "avi"
 
 
 @requires_posix
@@ -587,11 +712,7 @@ def test_save_video_fragment_invokes_ffmpeg_non_interactively(
     _install_fake_ffmpeg(
         tmp_path,
         monkeypatch,
-        "#!/bin/sh\n"
-        'printf \'%s\n\' "$@" > "$FFMPEG_ARGS_FILE"\n'
-        'out=""\n'
-        'for arg do out="$arg"; done\n'
-        'printf fake-video > "$out"\n',
+        _fake_ffmpeg_write_output_script(record_args=True),
     )
 
     save_video_fragment(video_file.as_video_file(), 0, 1, str(tmp_path / "out"))

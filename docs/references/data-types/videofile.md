@@ -17,6 +17,8 @@ There are additional models for working with video files:
 
 `video_stream_index` arguments are zero-based indexes among video streams, matching FFmpeg `v:N` and PyAV `container.streams.video[N]` selectors.
 
+`VideoFile.get_frame()` reads the requested frame so that `VideoFrame.timestamp` matches the frame's playback time.
+
 These are virtual models that do not create physical files.
 Instead, they are used to represent the data in the `VideoFile` these models are referring to.
 If you need to save the data, you can use the `save` method of these models,
