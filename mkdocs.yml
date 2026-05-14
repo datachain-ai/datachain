@@ -78,7 +78,7 @@ nav:
           - Overview: concepts/index.md
           - Architecture: architecture.md
           - Data Harness: harness.md
-          - Data Memory: concepts/data-memory.md
+          - Dataset DB: concepts/dataset-db.md
           - Datasets: concepts/datasets.md
           - Chain: concepts/chain.md
           - Files and Types: concepts/files-and-types.md

@@ -4,7 +4,7 @@ title: Datasets
 
 # Datasets
 
-A dataset is a unit of reasoning, not just storage. It is the atom of [Data Memory](data-memory.md): a named, versioned collection of typed records. Every query produces one; every subsequent query starts from one. Each dataset encodes a conclusion the team or an agent reached, and the next consumer starts from that conclusion as a settled fact.
+A dataset is a unit of reasoning, not just storage. It is the atom of the [Dataset DB](dataset-db.md): a named, versioned collection of typed records. Every query produces one; every subsequent query starts from one. Each dataset encodes a conclusion the team or an agent reached, and the next consumer starts from that conclusion as a settled fact.
 
 ## Immutability Is the Foundation of Trust
 
@@ -42,7 +42,7 @@ class Detection(BaseModel):
 
 ## Types as Code, Not Configuration
 
-Pydantic models are the same Python objects the Compute Engine operates on and the columnar schemas Data Memory stores. The schema is the code; there is no mapping layer between Python types and warehouse columns, no separate registration step, no parallel YAML inventory to maintain. YAML-declared schemas in semantic-layer products drift the moment work moves faster than maintenance. Every save deposits typed records the engines already understand; every load returns the same Python objects the next operation consumes.
+Pydantic models are the same Python objects the Compute Engine operates on and the columnar schemas the Dataset DB stores. The schema is the code; there is no mapping layer between Python types and warehouse columns, no separate registration step, no parallel YAML inventory to maintain. YAML-declared schemas in semantic-layer products drift the moment work moves faster than maintenance. Every save deposits typed records the engines already understand; every load returns the same Python objects the next operation consumes.
 
 ## Two-Level Data Model
 
@@ -114,4 +114,4 @@ Each row carries a status: **A** (added), **D** (deleted), **M** (modified), or 
 
 Each dataset encodes a conclusion: what the team or an agent found, proved, or disproved. A dataset of classified documents is not "rows with a label column"; it is the claim "these documents have been classified by this model with this confidence", typed and versioned and backed by provenance that makes it verifiable. The next query consumes that claim as a premise rather than re-deriving it.
 
-This is what makes [Data Memory](data-memory.md) composable. The next person or agent starts from a conclusion as a settled fact and builds forward. Agents depend on this property structurally: an agent that receives a dataset treats it as an established fact in its reasoning chain. Without this, every agent interaction starts from raw bytes and re-derives everything.
+This is what makes the [Dataset DB](dataset-db.md) composable. The next person or agent starts from a conclusion as a settled fact and builds forward. Agents depend on this property structurally: an agent that receives a dataset treats it as an established fact in its reasoning chain. Without this, every agent interaction starts from raw bytes and re-derives everything.

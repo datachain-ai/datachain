@@ -22,16 +22,23 @@ def try_scandir(path):
         pass
 
 
-def get_temp_cache(tmp_dir: str, prefix: str | None = None) -> "Cache":
+def get_temp_cache(
+    tmp_dir: str,
+    prefix: str | None = None,
+    fallback: "Cache | None" = None,
+) -> "Cache":
     cache_dir = mkdtemp(prefix=prefix, dir=tmp_dir)
-    return Cache(cache_dir, tmp_dir=tmp_dir)
+    return Cache(cache_dir, tmp_dir=tmp_dir, fallback=fallback)
 
 
 @contextmanager
 def temporary_cache(
-    tmp_dir: str, prefix: str | None = None, delete: bool = True
+    tmp_dir: str,
+    prefix: str | None = None,
+    delete: bool = True,
+    fallback: "Cache | None" = None,
 ) -> Iterator["Cache"]:
-    cache = get_temp_cache(tmp_dir, prefix=prefix)
+    cache = get_temp_cache(tmp_dir, prefix=prefix, fallback=fallback)
     try:
         yield cache
     finally:
@@ -40,12 +47,19 @@ def temporary_cache(
 
 
 class Cache:  # noqa: PLW1641
-    def __init__(self, cache_dir: str, tmp_dir: str):
+    def __init__(
+        self,
+        cache_dir: str,
+        tmp_dir: str,
+        fallback: "Cache | None" = None,
+    ):
         self.odb = LocalHashFileDB(
             LocalFileSystem(),
             cache_dir,
             tmp_dir=tmp_dir,
         )
+        # Read-only fallback consulted on cache misses.
+        self._fallback = fallback
 
     def __eq__(self, other) -> bool:
         return self.odb == other.odb
@@ -58,20 +72,33 @@ class Cache:  # noqa: PLW1641
     def tmp_dir(self):
         return self.odb.tmp_dir
 
+    def as_readonly(self) -> "ReadonlyCache":
+        """Return a read-only Cache backed by the same files."""
+        return ReadonlyCache(self.cache_dir, self.tmp_dir)
+
     def get_path(self, file: "File") -> str | None:
-        if self.contains(file):
-            return self.path_from_checksum(file.get_hash())
+        oid = file.get_hash()
+        if self.odb.exists(oid):
+            return self.path_from_checksum(oid)
+        if self._fallback is not None:
+            return self._fallback.get_path(file)
         return None
 
     def contains(self, file: "File") -> bool:
-        return self.odb.exists(file.get_hash())
+        if self.odb.exists(file.get_hash()):
+            return True
+        if self._fallback is not None:
+            return self._fallback.contains(file)
+        return False
 
     def path_from_checksum(self, checksum: str) -> str:
         assert checksum
         return self.odb.oid_to_path(checksum)
 
     def remove(self, file: "File") -> None:
-        self.odb.delete(file.get_hash())
+        oid = file.get_hash()
+        if self.odb.exists(oid):
+            self.odb.delete(oid)
 
     async def download(
         self, file: "File", client: "Client", callback: Callback | None = None
@@ -133,3 +160,31 @@ class Cache:  # noqa: PLW1641
                 except OSError:
                     pass
         return total
+
+
+class ReadonlyCache(Cache):
+    """A read-only view over an existing cache directory.
+
+    Used as a fallback for short-lived temp caches: writes/eviction stay
+    scoped to the temp cache, reads see hits in the persistent one.
+    """
+
+    def _readonly_error(self, name: str) -> RuntimeError:
+        return RuntimeError(f"cannot call {name}() on a read-only cache")
+
+    def remove(self, file: "File") -> None:
+        raise self._readonly_error("remove")
+
+    async def download(
+        self, file: "File", client: "Client", callback: Callback | None = None
+    ) -> None:
+        raise self._readonly_error("download")
+
+    def store_data(self, file: "File", contents: bytes) -> None:
+        raise self._readonly_error("store_data")
+
+    def clear(self) -> None:
+        raise self._readonly_error("clear")
+
+    def destroy(self) -> None:
+        raise self._readonly_error("destroy")
