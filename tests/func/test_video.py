@@ -207,6 +207,11 @@ def test_get_frame_error(video_file):
         video_file.as_video_file().get_frame(-1)
 
 
+def test_get_frame_missing_frame_error(video_file):
+    with pytest.raises(FileError, match="unable to read video frame"):
+        video_file.as_video_file().get_frame(10_000)
+
+
 def test_get_frame_np(video_file):
     frame = video_file.as_video_file().get_frame(0).get_np()
     assert isinstance(frame, ndarray)
@@ -216,6 +221,11 @@ def test_get_frame_np(video_file):
 def test_get_frame_np_error(video_file):
     with pytest.raises(ValueError):
         video_frame_np(video_file.as_video_file(), -1)
+
+
+def test_get_frame_np_missing_frame_error(video_file):
+    with pytest.raises(FileError, match="unable to read video frame"):
+        video_frame_np(video_file.as_video_file(), 10_000)
 
 
 @pytest.mark.parametrize(
@@ -251,6 +261,14 @@ def test_save_frame(tmp_path, video_file, use_format):
     with Image.open(frame_path) as img:
         assert img.format == "JPEG"
         assert img.size == (640, 360)
+
+
+def test_video_frame_save_requires_catalog(tmp_path):
+    video = VideoFile(source="file:///tmp", path="video.mp4")
+    frame = VideoFrame(video=video, frame=0, timestamp=0)
+
+    with pytest.raises(RuntimeError, match="catalog is not set"):
+        frame.save(str(tmp_path))
 
 
 def test_get_frames(video_file):
@@ -489,6 +507,53 @@ def test_save_video_fragment_requires_format_without_source_extension(tmp_path):
         save_video_fragment(video, 0, 1, str(tmp_path))
 
 
+def test_save_video_fragment_requires_catalog(tmp_path):
+    video = VideoFile(source="file:///tmp", path="video.mp4")
+
+    with pytest.raises(RuntimeError, match="catalog is not set"):
+        save_video_fragment(video, 0, 1, str(tmp_path))
+
+
+def test_save_video_fragment_rejects_negative_timeout(tmp_path, video_file):
+    with pytest.raises(ValueError, match="non-negative"):
+        save_video_fragment(video_file.as_video_file(), 0, 1, str(tmp_path), timeout=-1)
+
+
+@requires_posix
+def test_save_video_fragment_accepts_zero_timeout(tmp_path, monkeypatch, video_file):
+    _install_fake_ffmpeg(
+        tmp_path,
+        monkeypatch,
+        "#!/bin/sh\nprintf fake-video\n",
+    )
+
+    fragment = save_video_fragment(
+        video_file.as_video_file(), 0, 1, str(tmp_path / "out"), timeout=0
+    )
+
+    assert fragment.path.endswith(".mp4")
+
+
+@requires_posix
+def test_save_video_fragment_uses_explicit_format(tmp_path, monkeypatch, video_file):
+    args_file = tmp_path / "ffmpeg.args"
+    monkeypatch.setenv("FFMPEG_ARGS_FILE", str(args_file))
+    _install_fake_ffmpeg(
+        tmp_path,
+        monkeypatch,
+        '#!/bin/sh\nprintf \'%s\n\' "$@" > "$FFMPEG_ARGS_FILE"\nprintf fake-video\n',
+    )
+
+    fragment = save_video_fragment(
+        video_file.as_video_file(), 0, 1, str(tmp_path / "out"), format="avi"
+    )
+
+    args = args_file.read_text().splitlines()
+    assert fragment.path.endswith(".avi")
+    assert "avi" in args
+    assert "-movflags" not in args
+
+
 @requires_posix
 def test_save_video_fragment_invokes_ffmpeg_non_interactively(
     tmp_path, monkeypatch, video_file
@@ -518,11 +583,7 @@ def test_save_video_fragment_times_out_ffmpeg(tmp_path, monkeypatch, video_file)
 
     with pytest.raises(FileError, match="ffmpeg timed out"):
         save_video_fragment(
-            video_file.as_video_file(),
-            0,
-            1,
-            str(tmp_path / "out"),
-            timeout=0.01,
+            video_file.as_video_file(), 0, 1, str(tmp_path / "out"), timeout=0.01
         )
 
 
