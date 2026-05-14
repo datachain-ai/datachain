@@ -247,7 +247,7 @@ def video_frames(
 def video_frame(
     video: VideoFile, frame: int, video_stream_index: int = 0
 ) -> VideoFrame:
-    """Return one video frame reference with a metadata-based timestamp."""
+    """Return one video frame reference with an FPS-derived timestamp."""
     if frame < 0:
         raise ValueError("frame must be a non-negative integer")
 

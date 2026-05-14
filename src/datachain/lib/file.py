@@ -1161,9 +1161,9 @@ class VideoFile(File):
         """
         Returns a specific video frame by its frame number.
 
-        The returned timestamp is derived from video metadata. Use
-        ``get_frames()`` to iterate frames with decoder-provided presentation
-        timestamps.
+        The returned timestamp is estimated from FPS metadata when available.
+        Use ``get_frames()`` to iterate frames with decoder-provided
+        presentation timestamps.
 
         Args:
             frame (int): The frame number to read.
@@ -1503,7 +1503,10 @@ class VideoFrame(DataModel):
         frame (int): The frame number referencing a specific frame in the video file.
         video_stream_index (int): Zero-based index among video streams containing
             the frame.
-        timestamp (float): Frame timestamp in seconds.
+        timestamp (float): Frame timestamp in seconds. For frames returned by
+            ``VideoFile.get_frame()``, this is estimated from FPS metadata when
+            available. Frames yielded by ``VideoFile.get_frames()`` use
+            decoder-provided timestamps when available.
     """
 
     video: VideoFile

@@ -14,7 +14,7 @@ from PIL import Image
 from datachain import VideoFragment, VideoFrame
 from datachain.lib.file import File, FileError, ImageFile, VideoFile
 from datachain.lib.tar import process_tar
-from datachain.lib.video import save_video_fragment, video_frame, video_frame_np
+from datachain.lib.video import save_video_fragment, video_frame_np
 
 requires_ffmpeg = pytest.mark.skipif(
     not shutil.which("ffmpeg"), reason="ffmpeg not installed"
@@ -245,25 +245,22 @@ def test_get_frame(video_file):
     assert frame.timestamp == pytest.approx(37 / 30)
 
 
-def test_get_frame_uses_frame_index_when_timestamps_are_missing(tmp_path):
+def test_get_frames_uses_frame_index_when_timestamps_are_missing(tmp_path):
     video_path = tmp_path / "raw.h264"
     _write_raw_h264_video(video_path)
     file = VideoFile.upload(video_path.read_bytes(), video_path.name)
     info = file.get_info()
 
-    frame = file.get_frame(3)
+    frames = list(file.get_frames(0, 4))
 
-    assert frame.timestamp == pytest.approx(frame.frame / info.fps)
+    assert [frame.timestamp for frame in frames] == pytest.approx(
+        [frame.frame / info.fps for frame in frames]
+    )
 
 
 def test_get_frame_error(video_file):
     with pytest.raises(ValueError):
         video_file.as_video_file().get_frame(-1)
-
-
-def test_video_frame_function_rejects_negative_frame(video_file):
-    with pytest.raises(ValueError):
-        video_frame(video_file.as_video_file(), -1)
 
 
 def test_get_frame_missing_frame_error(video_file):
