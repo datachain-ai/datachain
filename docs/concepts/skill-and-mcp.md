@@ -24,7 +24,7 @@ pip install datachain
 datachain skill install --target claude     # also: cursor, codex
 ```
 
-The Skill is the agent-side instruction package. Installing it places files into the agent harness's directory (for Claude Code: `~/.claude/skills/datachain/`). The Skill teaches the agent where the Knowledge Base is, how to introspect Data Memory, when to materialize a new dataset, and how to write idiomatic chains.
+The Skill is the agent-side instruction package. Installing it places files into the agent harness's directory (for Claude Code: `~/.claude/skills/datachain/`). The Skill teaches the agent where the Knowledge Base is, how to introspect the Dataset DB, when to materialize a new dataset, and how to write idiomatic chains.
 
 Reads target two local sources:
 
@@ -37,7 +37,7 @@ A small team can extend the Skill beyond solo work by **synchronizing both folde
 
 ## MCP (Studio)
 
-When the team outgrows file sync, Data Memory moves into Studio and the agent reads through MCP, the open Model Context Protocol with native client support in Claude Code, Cursor, and Codex. The Skill stays installed; it routes registry queries, schema introspection, and Data Memory reads through the MCP endpoint instead of the local filesystem. To set this up for your team, get in touch at [datachain.ai](https://datachain.ai).
+When the team outgrows file sync, the Dataset DB moves into Studio and the agent reads through MCP, the open Model Context Protocol with native client support in Claude Code, Cursor, and Codex. The Skill stays installed; it routes registry queries, schema introspection, and Dataset DB reads through the MCP endpoint instead of the local filesystem. To set this up for your team, get in touch at [datachain.ai](https://datachain.ai).
 
 Studio adds four capabilities the OSS path does not have:
 

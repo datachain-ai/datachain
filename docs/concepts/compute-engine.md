@@ -8,7 +8,7 @@ The Compute Engine runs heavy Python work over files in object storage: LLM call
 
 ## Storage Native, Database As Bridge
 
-Object storage is the primary substrate. Files in S3, GCS, or Azure are read by Python through the chain, processed, and the results deposited as typed records into [Data Memory](data-memory.md). Database access is a bridge: `read_database()` pulls a query result into the operational layer, `to_database()` writes results back. Appropriate for selective enrichment of warehouse data, not a warehouse-native runtime.
+Object storage is the primary substrate. Files in S3, GCS, or Azure are read by Python through the chain, processed, and the results deposited as typed records into [Dataset DB](dataset-db.md). Database access is a bridge: `read_database()` pulls a query result into the operational layer, `to_database()` writes results back. Appropriate for selective enrichment of warehouse data, not a warehouse-native runtime.
 
 ```python
 import datachain as dc
@@ -33,7 +33,7 @@ Heavy Python compute over files cannot afford to be stateless. dbt can rebuild a
 
 ## Pydantic as Bridge
 
-Pydantic is the shared type system that connects Python function outputs to Data Memory. A single `save()` takes a Python result with its full Pydantic schema and makes it warehouse-queryable.
+Pydantic is the shared type system that connects Python function outputs to the Dataset DB. A single `save()` takes a Python result with its full Pydantic schema and makes it warehouse-queryable.
 
 Types enable transpilation: `filter(dc.C("det.confidence") > 0.9)` compiles to a SQL WHERE clause instead of deserializing every row into Python. Without typed schemas, transpilation is impossible; without transpilation, there is no warehouse speed.
 
@@ -52,19 +52,19 @@ print(f"Spent ${cost:.2f} on {chain.count()} calls")
 
 ## The Transpiler
 
-Users operate with Pydantic models and Python expressions. The transpiler dispatches per-row Python work to the Compute Engine and compiles per-column expressions (filter, join, group_by, similarity) to SQL that runs inside [Data Memory](data-memory.md). The result: full SQL power without writing or knowing SQL.
+Users operate with Pydantic models and Python expressions. The transpiler dispatches per-row Python work to the Compute Engine and compiles per-column expressions (filter, join, group_by, similarity) to SQL that runs inside [Dataset DB](dataset-db.md). The result: full SQL power without writing or knowing SQL.
 
 For agents, this is critical. Agents generate Python, not SQL. The transpiler means an agent's Python output runs as fast as hand-written SQL; the agent never needs to know that a database exists. Existing systems collapse to one side of this boundary: Polars and Pandas keep Python expressivity but lose warehouse-speed recall; Snowflake and Snowpark keep warehouse speed but lose Python expressivity. DataChain holds both behind one chain.
 
-## Boundary With Data Memory
+## Boundary With the Dataset DB
 
-The Compute Engine produces typed records; [Data Memory](data-memory.md) persists them and serves queries over them. The user writes one chain; the boundary is invisible at the surface and total underneath. Without the Compute Engine, Data Memory is empty; without Data Memory, Compute Engine results vanish at the end of the session.
+The Compute Engine produces typed records; the [Dataset DB](dataset-db.md) persists them and serves queries over them. The user writes one chain; the boundary is invisible at the surface and total underneath. Without the Compute Engine, the Dataset DB is empty; without the Dataset DB, Compute Engine results vanish at the end of the session.
 
 ## Local vs Studio
 
 | Aspect | Local | Studio |
 |---|---|---|
-| Data Memory backend | SQLite | ClickHouse |
+| Dataset DB backend | SQLite | ClickHouse |
 | Python execution | Threads | Kubernetes clusters |
 | Scale | Single machine | 10-300 machines (BYOC) |
 | Transpiler | Automatic | Automatic (handles dialect differences) |
