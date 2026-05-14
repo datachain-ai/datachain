@@ -247,19 +247,21 @@ def video_frames(
 def video_frame(
     video: VideoFile, frame: int, video_stream_index: int = 0
 ) -> VideoFrame:
-    """Return one video frame with its presentation timestamp."""
+    """Return one video frame reference with a metadata-based timestamp."""
     if frame < 0:
         raise ValueError("frame must be a non-negative integer")
 
-    decoded_frame, fps = _decode_video_frame(video, frame, video_stream_index)
-    video_frame_ = VideoFrame(
+    info = video_info(video, video_stream_index=video_stream_index)
+    if info.frames > 0 and frame >= info.frames:
+        raise FileError("unable to read video frame", video.source, video.path)
+
+    timestamp = frame / info.fps if info.fps > 0 else -1.0
+    return VideoFrame(
         video=video,
         frame=frame,
         video_stream_index=video_stream_index,
-        timestamp=_frame_timestamp(decoded_frame, frame, fps),
+        timestamp=timestamp,
     )
-    video_frame_._set_decoded_frame(decoded_frame)
-    return video_frame_
 
 
 def _decode_video_frame(video: VideoFile, frame: int, video_stream_index: int = 0):

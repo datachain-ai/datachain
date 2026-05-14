@@ -50,7 +50,7 @@ audio  = dc.read_storage("s3://bucket/audio/",  type="audio")  # AudioFile
 
 **ImageFile**: `read()` returns a `PIL.Image.Image`. `get_info()` returns Image metadata (width, height, format). `save()` supports format conversion.
 
-**VideoFile**: `get_frame(frame, video_stream_index=0)` reads one frame and returns its playback timestamp. `get_frames(start, end, step, video_stream_index=0)` yields VideoFrame objects with frame indexes, video stream indexes, and timestamps. `get_fragments(duration, start, end)` yields VideoFragment time slices. `get_info(video_stream_index=0)` returns Video metadata (fps, duration, codec, resolution).
+**VideoFile**: `get_frame(frame, video_stream_index=0)` returns one frame reference with a metadata-based timestamp. `get_frames(start, end, step, video_stream_index=0)` yields VideoFrame objects with frame indexes, video stream indexes, and decoder-provided presentation timestamps. `get_fragments(duration, start, end)` yields VideoFragment time slices. `get_info(video_stream_index=0)` returns Video metadata (fps, duration, codec, resolution).
 
 **AudioFile**: `get_fragments(duration, start, end)` yields AudioFragment chunks. `get_info()` returns Audio metadata (sample_rate, channels, duration, codec). `save()` supports format conversion.
 

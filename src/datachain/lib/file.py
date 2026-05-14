@@ -1158,8 +1158,9 @@ class VideoFile(File):
         """
         Returns a specific video frame by its frame number.
 
-        This reads the requested frame so the returned timestamp matches the
-        frame's playback time.
+        The returned timestamp is derived from video metadata. Use
+        ``get_frames()`` to iterate frames with decoder-provided presentation
+        timestamps.
 
         Args:
             frame (int): The frame number to read.
@@ -1497,19 +1498,14 @@ class VideoFrame(DataModel):
         frame (int): The frame number referencing a specific frame in the video file.
         video_stream_index (int): Zero-based index among video streams containing
             the frame.
-        timestamp (float): Presentation timestamp in seconds.
+        timestamp (float): Frame timestamp in seconds.
     """
 
     video: VideoFile
     frame: int
     video_stream_index: int = 0
     timestamp: float
-    _decoded_frame: Any = PrivateAttr(default=None)
     _np_cache: Any = PrivateAttr(default=None)
-
-    def _set_decoded_frame(self, frame: Any) -> None:
-        self._decoded_frame = frame
-        self._np_cache = None
 
     def get_np(self) -> "ndarray":
         """
@@ -1520,17 +1516,13 @@ class VideoFrame(DataModel):
                      in the shape (height, width, channels).
         """
         if self._np_cache is None:
-            if self._decoded_frame is not None:
-                self._np_cache = self._decoded_frame.to_ndarray(format="rgb24")
-                self._decoded_frame = None
-            else:
-                from .video import video_frame_np
+            from .video import video_frame_np
 
-                self._np_cache = video_frame_np(
-                    self.video,
-                    self.frame,
-                    video_stream_index=self.video_stream_index,
-                )
+            self._np_cache = video_frame_np(
+                self.video,
+                self.frame,
+                video_stream_index=self.video_stream_index,
+            )
         return self._np_cache
 
     def read_bytes(self, format: str = "jpg") -> bytes:
