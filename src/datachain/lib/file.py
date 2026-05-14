@@ -1139,8 +1139,11 @@ class VideoFile(File):
 
     def get_info(self, video_stream_index: int = 0) -> "Video":
         """
-        Retrieves metadata and information about the video file without forcing
-        a local cached copy.
+        Retrieves metadata and information about the video file.
+
+        Metadata is read through ``File.open()``, so it can stream when caching
+        is disabled. When caching is enabled, opening the file may populate the
+        local cache first.
 
         Args:
             video_stream_index: Zero-based index among video streams to inspect.
@@ -1294,10 +1297,12 @@ class AudioFile(File):
 
     def get_info(self) -> "Audio":
         """
-        Retrieves metadata and information about the audio file without forcing
-        a local cached copy. It reads the audio header through a file-like stream,
-        so it can be useful to disable caching and prefetching for UDFs that only
-        need audio metadata.
+        Retrieves metadata and information about the audio file.
+
+        Metadata is read through ``File.open()``, so it can stream when caching
+        is disabled. When caching is enabled, opening the file may populate the
+        local cache first. For UDFs that only need audio metadata, it can be
+        useful to disable caching and prefetching.
 
         Returns:
             Audio: A Model containing audio metadata such as duration,
