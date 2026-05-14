@@ -218,6 +218,26 @@ def test_get_frame_np(video_file):
     assert frame.shape == (360, 640, 3)
 
 
+def test_get_frame_get_np_reuses_decoded_frame(monkeypatch, video_file):
+    video = video_file.as_video_file()
+    calls = 0
+    original_open = VideoFile.open
+
+    def counted_open(self, *args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(VideoFile, "open", counted_open)
+
+    frame = video.get_frame(0)
+    image = frame.get_np()
+
+    assert image.shape == (360, 640, 3)
+    assert frame.get_np() is image
+    assert calls == 1
+
+
 def test_get_frame_np_error(video_file):
     with pytest.raises(ValueError):
         video_frame_np(video_file.as_video_file(), -1)
@@ -524,7 +544,7 @@ def test_save_video_fragment_accepts_zero_timeout(tmp_path, monkeypatch, video_f
     _install_fake_ffmpeg(
         tmp_path,
         monkeypatch,
-        "#!/bin/sh\nprintf fake-video\n",
+        '#!/bin/sh\nout=""\nfor arg do out="$arg"; done\nprintf fake-video > "$out"\n',
     )
 
     fragment = save_video_fragment(
@@ -541,7 +561,11 @@ def test_save_video_fragment_uses_explicit_format(tmp_path, monkeypatch, video_f
     _install_fake_ffmpeg(
         tmp_path,
         monkeypatch,
-        '#!/bin/sh\nprintf \'%s\n\' "$@" > "$FFMPEG_ARGS_FILE"\nprintf fake-video\n',
+        "#!/bin/sh\n"
+        'printf \'%s\n\' "$@" > "$FFMPEG_ARGS_FILE"\n'
+        'out=""\n'
+        'for arg do out="$arg"; done\n'
+        'printf fake-video > "$out"\n',
     )
 
     fragment = save_video_fragment(
@@ -563,14 +587,36 @@ def test_save_video_fragment_invokes_ffmpeg_non_interactively(
     _install_fake_ffmpeg(
         tmp_path,
         monkeypatch,
-        '#!/bin/sh\nprintf \'%s\n\' "$@" > "$FFMPEG_ARGS_FILE"\nprintf fake-video\n',
+        "#!/bin/sh\n"
+        'printf \'%s\n\' "$@" > "$FFMPEG_ARGS_FILE"\n'
+        'out=""\n'
+        'for arg do out="$arg"; done\n'
+        'printf fake-video > "$out"\n',
     )
 
     save_video_fragment(video_file.as_video_file(), 0, 1, str(tmp_path / "out"))
 
     args = args_file.read_text().splitlines()
     assert args[:4] == ["-nostdin", "-hide_banner", "-loglevel", "error"]
-    assert "pipe:1" in args
+    assert "pipe:1" not in args
+    assert args[-1].endswith(".mp4")
+
+
+@requires_posix
+def test_save_video_fragment_drops_stdout_on_ffmpeg_error(
+    tmp_path, monkeypatch, video_file
+):
+    _install_fake_ffmpeg(
+        tmp_path,
+        monkeypatch,
+        "#!/bin/sh\nprintf stdout-noise\nprintf stderr-detail >&2\nexit 1\n",
+    )
+
+    with pytest.raises(ffmpeg.Error) as exc_info:
+        save_video_fragment(video_file.as_video_file(), 0, 1, str(tmp_path / "out"))
+
+    assert exc_info.value.stdout == b""
+    assert exc_info.value.stderr == b"stderr-detail"
 
 
 @requires_posix

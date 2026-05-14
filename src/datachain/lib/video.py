@@ -145,9 +145,8 @@ def video_frame_np(
     if frame < 0:
         raise ValueError("frame must be a non-negative integer")
 
-    return _decode_video_frame(video, frame, video_stream_index).to_ndarray(
-        format="rgb24"
-    )
+    decoded_frame, _ = _decode_video_frame(video, frame, video_stream_index)
+    return decoded_frame.to_ndarray(format="rgb24")
 
 
 def validate_frame_range(
@@ -252,10 +251,15 @@ def video_frame(
     if frame < 0:
         raise ValueError("frame must be a non-negative integer")
 
-    for video_frame_ in video_frames(video, frame, frame + 1, 1, video_stream_index):
-        return video_frame_
-
-    raise FileError("unable to read video frame", video.source, video.path)
+    decoded_frame, fps = _decode_video_frame(video, frame, video_stream_index)
+    video_frame_ = VideoFrame(
+        video=video,
+        frame=frame,
+        video_stream_index=video_stream_index,
+        timestamp=_frame_timestamp(decoded_frame, frame, fps),
+    )
+    video_frame_._set_decoded_frame(decoded_frame)
+    return video_frame_
 
 
 def _decode_video_frame(video: VideoFile, frame: int, video_stream_index: int = 0):
@@ -272,12 +276,13 @@ def _decode_video_frame(video: VideoFile, frame: int, video_stream_index: int = 
                     video.path,
                     "unable to read video frame",
                 )
+                fps = _video_fps(video_stream)
 
                 for frame_index, decoded_frame in enumerate(
                     input_container.decode(video_stream)
                 ):
                     if frame_index == frame:
-                        return decoded_frame
+                        return decoded_frame, fps
                     if frame_index > frame:
                         break
     except FileError:
@@ -382,23 +387,22 @@ def _ffmpeg_fragment_timeout(
     )
 
 
-def _run_ffmpeg_output(stream_spec: Any, timeout: float | None) -> bytes:
-    process = stream_spec.run_async(
-        cmd=FFMPEG_FRAGMENT_CMD,
-        pipe_stdout=True,
-        pipe_stderr=True,
+def _run_ffmpeg(stream_spec: Any, timeout: float | None) -> None:
+    process = subprocess.Popen(  # noqa: S603
+        stream_spec.compile(cmd=FFMPEG_FRAGMENT_CMD),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
     )
     try:
-        data, err = process.communicate(timeout=timeout)
+        _, err = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired as exc:
         process.kill()
         process.communicate()
         raise TimeoutError(f"ffmpeg timed out after {timeout:.3f} seconds") from exc
 
     if process.poll():
-        raise ffmpeg.Error("ffmpeg", data, err)
-
-    return data or b""
+        raise ffmpeg.Error("ffmpeg", b"", err or b"")
 
 
 def _video_fragment_format(video: VideoFile, format: str | None) -> str:
@@ -485,23 +489,28 @@ def save_video_fragment(
         destination, f"{video.get_file_stem()}_{start_ms:06d}_{end_ms:06d}.{format}"
     )
 
-    with _local_video_input(video) as input_file:
-        try:
-            data = _run_ffmpeg_output(
-                ffmpeg.input(input_file, ss=start, to=end).output(
-                    "pipe:1", **_ffmpeg_output_options(format)
-                ),
-                timeout,
-            )
-        except TimeoutError as exc:
-            raise FileError(
-                "ffmpeg timed out while saving video fragment",
-                video.source,
-                video.path,
-            ) from exc
-
     client, rel_path = video._resolve_destination(output_file, client_config)
-    result = client.upload(data, rel_path)
+    with _local_video_input(video) as input_file:
+        with tempfile.TemporaryDirectory(
+            prefix="datachain-video-fragment-"
+        ) as temp_dir:
+            temp_output = os.path.join(temp_dir, f"fragment.{format}")
+            try:
+                _run_ffmpeg(
+                    ffmpeg.input(input_file, ss=start, to=end).output(
+                        temp_output, **_ffmpeg_output_options(format)
+                    ),
+                    timeout,
+                )
+            except TimeoutError as exc:
+                raise FileError(
+                    "ffmpeg timed out while saving video fragment",
+                    video.source,
+                    video.path,
+                ) from exc
+
+            with open(temp_output, "rb") as data:
+                result = client.upload(data, rel_path)
     vf = VideoFile(**result.model_dump())
     vf._set_stream(catalog)
     return vf

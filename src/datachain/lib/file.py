@@ -17,7 +17,7 @@ from urllib.parse import urlparse
 
 from fsspec.callbacks import DEFAULT_CALLBACK, Callback
 from fsspec.utils import stringify_path
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, PrivateAttr, field_validator, model_validator
 
 from datachain import json
 from datachain.client.fileslice import FileSlice
@@ -1501,6 +1501,12 @@ class VideoFrame(DataModel):
     frame: int
     video_stream_index: int = 0
     timestamp: float
+    _decoded_frame: Any = PrivateAttr(default=None)
+    _np_cache: Any = PrivateAttr(default=None)
+
+    def _set_decoded_frame(self, frame: Any) -> None:
+        self._decoded_frame = frame
+        self._np_cache = None
 
     def get_np(self) -> "ndarray":
         """
@@ -1510,11 +1516,19 @@ class VideoFrame(DataModel):
             ndarray: A NumPy array representing the video frame,
                      in the shape (height, width, channels).
         """
-        from .video import video_frame_np
+        if self._np_cache is None:
+            if self._decoded_frame is not None:
+                self._np_cache = self._decoded_frame.to_ndarray(format="rgb24")
+                self._decoded_frame = None
+            else:
+                from .video import video_frame_np
 
-        return video_frame_np(
-            self.video, self.frame, video_stream_index=self.video_stream_index
-        )
+                self._np_cache = video_frame_np(
+                    self.video,
+                    self.frame,
+                    video_stream_index=self.video_stream_index,
+                )
+        return self._np_cache
 
     def read_bytes(self, format: str = "jpg") -> bytes:
         """
