@@ -428,8 +428,15 @@ def _get_cache(
 ) -> "AbstractContextManager[Cache]":
     tmp_dir = cache.tmp_dir
     assert tmp_dir
-    if prefetch and not use_cache:
-        return temporary_cache(tmp_dir, prefix="prefetch-")
+    if not use_cache:
+        # cache=False = "don't write to persistent"; reads still hit it.
+        if prefetch:
+            # Temp cache for new writes (evicted at end), persistent as
+            # read-only fallback for reads.
+            return temporary_cache(
+                tmp_dir, prefix="prefetch-", fallback=cache.as_readonly()
+            )
+        return nullcontext(cache.as_readonly())
     return nullcontext(cache)
 
 
