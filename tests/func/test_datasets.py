@@ -361,20 +361,21 @@ def test_create_dataset_whole_bucket(listed_bucket, cloud_test_catalog, project)
 
 def test_remove_dataset(test_session, saved_dataset):
     catalog = test_session.catalog
+    warehouse = catalog.warehouse
 
     dataset_version = saved_dataset.get_version("1.0.0")
     assert dataset_version.num_objects
 
+    rows_table = warehouse.dataset_table_name(saved_dataset, "1.0.0")
+    assert table_row_count(warehouse.db, rows_table) is not None
+
     catalog.remove_dataset(saved_dataset.name, saved_dataset.project, force=True)
-    with pytest.raises(DatasetNotFoundError):
-        catalog.get_dataset(saved_dataset.name)
 
-    dataset_table_name = catalog.warehouse.dataset_table_name(saved_dataset, "1.0.0")
-    assert table_row_count(catalog.warehouse.db, dataset_table_name) is None
-
-    assert (
-        catalog.metastore.get_direct_dataset_dependencies(saved_dataset, "1.0.0") == []
-    )
+    # Soft delete: dataset row stays with REMOVED tombstones; rows table gone.
+    ds = catalog.get_dataset(saved_dataset.name, versions=None, include_incomplete=True)
+    assert not ds.live_versions
+    assert all(v.status == DatasetStatus.REMOVED for v in ds.versions)
+    assert table_row_count(warehouse.db, rows_table) is None
 
 
 def test_remove_dataset_with_multiple_versions(test_session, saved_dataset):
@@ -389,13 +390,17 @@ def test_remove_dataset_with_multiple_versions(test_session, saved_dataset):
     assert updated_dataset.has_version("1.0.0")
 
     catalog.remove_dataset(updated_dataset.name, saved_dataset.project, force=True)
-    with pytest.raises(DatasetNotFoundError):
-        catalog.get_dataset(updated_dataset.name)
 
-    assert (
-        catalog.metastore.get_direct_dataset_dependencies(updated_dataset, "1.0.0")
-        == []
+    # Soft delete: the COMPLETE v1.0.0 becomes a REMOVED tombstone, the
+    # CREATED v2.0.0 (no rows ever published) is hard-deleted. Dataset row
+    # stays alive thanks to the surviving tombstone.
+    ds = catalog.get_dataset(
+        updated_dataset.name, versions=None, include_incomplete=True
     )
+    assert not ds.live_versions
+    removed = [v for v in ds.versions if v.status == DatasetStatus.REMOVED]
+    assert len(removed) == 1
+    assert removed[0].display_version == "1.0.0"
 
 
 def test_remove_dataset_dataset_not_found(test_session, project):

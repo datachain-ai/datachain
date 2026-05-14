@@ -250,6 +250,12 @@ def _get_source_info(
         include_incomplete=False,
     )
 
+    # The version the dep points at may have been soft-deleted (REMOVED
+    # tombstone). Without a readable previous version we can't compute a
+    # diff; fall back to normal dataset creation, same as a missing dep.
+    if not source_ds.has_version(source_ds_dep.version):
+        return None, None, None, None
+
     return (
         source_ds.name,
         source_ds.project,

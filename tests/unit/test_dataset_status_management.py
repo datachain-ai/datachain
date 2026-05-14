@@ -420,9 +420,13 @@ def test_cleanup_dataset_versions_removes_marked_for_removal(
 # ---------------------------------------------------------------------------
 
 
-def _get_version(catalog, name: str, version: str):
-    ds = catalog.get_dataset(name, versions=None, include_incomplete=True)
-    return ds, ds.get_version(version)
+def _find_removed(ds: DatasetRecord, display_version: str):
+    """Find a REMOVED tombstone by its original semver. The actual `version`
+    column was mangled with REMOVED_VERSION_SUFFIX to free the slot."""
+    for v in ds.versions:
+        if v.status == DatasetStatus.REMOVED and v.display_version == display_version:
+            return v
+    return None
 
 
 def test_soft_delete_keeps_version_row_and_drops_rows_table(
@@ -436,9 +440,13 @@ def test_soft_delete_keeps_version_row_and_drops_rows_table(
 
     catalog.remove_dataset_version(dataset_complete, version)
 
-    _, v = _get_version(catalog, dataset_complete.name, version)
-    assert v.status == DatasetStatus.REMOVED
-    assert v.removed_at is not None
+    ds = catalog.get_dataset(
+        dataset_complete.name, versions=None, include_incomplete=True
+    )
+    removed = _find_removed(ds, version)
+    assert removed is not None
+    assert removed.status == DatasetStatus.REMOVED
+    assert removed.removed_at is not None
     assert not warehouse.db.has_table(rows_table)
 
 
@@ -459,6 +467,7 @@ def test_soft_delete_preserves_dependencies(test_session, dataset_complete):
 
     deps = metastore.get_direct_dataset_dependencies(dep_ds, dep_version)
     assert len(deps) == 1
+    assert deps[0] is not None
 
 
 def test_soft_delete_is_idempotent(test_session, dataset_complete):
@@ -466,17 +475,26 @@ def test_soft_delete_is_idempotent(test_session, dataset_complete):
     version = dataset_complete.latest_version
 
     catalog.remove_dataset_version(dataset_complete, version)
-    ds, v = _get_version(catalog, dataset_complete.name, version)
-    first_removed_at = v.removed_at
-    assert v.status == DatasetStatus.REMOVED
+    ds = catalog.get_dataset(
+        dataset_complete.name, versions=None, include_incomplete=True
+    )
+    first = _find_removed(ds, version)
+    assert first is not None
+    first_removed_at = first.removed_at
 
+    # Second call sees no live version "1.0.0" (it was mangled) → no-op.
     catalog.remove_dataset_version(ds, version)
-    _, v2 = _get_version(catalog, dataset_complete.name, version)
-    assert v2.status == DatasetStatus.REMOVED
-    assert v2.removed_at == first_removed_at
+    ds = catalog.get_dataset(
+        dataset_complete.name, versions=None, include_incomplete=True
+    )
+    assert len([v for v in ds.versions if v.status == DatasetStatus.REMOVED]) == 1
+    assert _find_removed(ds, version).removed_at == first_removed_at
 
 
-def test_save_after_soft_delete_bumps_version(test_session, dataset_complete):
+def test_save_after_soft_delete_reuses_version_slot(test_session, dataset_complete):
+    """Once a version is soft-deleted, its (dataset_id, version) slot is
+    freed via the mangle suffix so the next save can reclaim the same
+    semver."""
     catalog = test_session.catalog
     name = dataset_complete.name
     first_version = dataset_complete.latest_version
@@ -485,10 +503,11 @@ def test_save_after_soft_delete_bumps_version(test_session, dataset_complete):
 
     new_chain = dc.read_values(value=["new1"], session=test_session).save(name)
     assert new_chain.dataset is not None
-    assert new_chain.dataset.latest_version != first_version
+    assert new_chain.dataset.latest_version == first_version
 
-    _, removed = _get_version(catalog, name, first_version)
-    assert removed.status == DatasetStatus.REMOVED
+    # The old data lives on as a tombstone for lineage.
+    ds = catalog.get_dataset(name, versions=None, include_incomplete=True)
+    assert _find_removed(ds, first_version) is not None
 
 
 def test_latest_version_skips_removed(test_session, dataset_complete):
@@ -547,15 +566,38 @@ def test_remove_non_complete_version_is_hard_delete(test_session, dataset_failed
         catalog.get_dataset(name, include_incomplete=True)
 
 
+def _make_completed_dataset(catalog, name: str, project=None):
+    listing = name.startswith(LISTING_PREFIX)
+    ds = catalog.create_dataset(
+        name,
+        project=project,
+        columns=(sa.Column("name", String),),
+        listing=listing,
+    )
+    catalog.metastore.update_dataset_version(
+        ds, ds.latest_version, status=DatasetStatus.COMPLETE
+    )
+    return catalog.get_dataset(
+        name,
+        namespace_name=project.namespace.name if project else None,
+        project_name=project.name if project else None,
+        versions=None,
+        include_incomplete=True,
+    )
+
+
 def test_listing_dataset_stays_on_hard_delete(test_session):
     """`lst__*` listing datasets must never become tombstones — they're
     internal cache, soft-deleting them serves nobody and wastes rows."""
     catalog = test_session.catalog
+    metastore = catalog.metastore
+    listing_project = metastore.get_project(
+        metastore.listing_project_name, metastore.system_namespace_name
+    )
     name = f"{LISTING_PREFIX}internal_test"
-    ds_chain = dc.read_values(value=["a"], session=test_session).save(name)
-    assert ds_chain.dataset is not None
+    ds = _make_completed_dataset(catalog, name, project=listing_project)
 
-    catalog.remove_dataset_version(ds_chain.dataset, ds_chain.dataset.latest_version)
+    catalog.remove_dataset_version(ds, ds.latest_version)
     with pytest.raises(DatasetNotFoundError):
         catalog.get_dataset(name, include_incomplete=True)
 
@@ -564,9 +606,8 @@ def test_session_dataset_stays_on_hard_delete(test_session):
     """`session_*` intermediates are throwaway too — hard delete only."""
     catalog = test_session.catalog
     name = f"{Session.DATASET_PREFIX}internal_test"
-    ds_chain = dc.read_values(value=["a"], session=test_session).save(name)
-    assert ds_chain.dataset is not None
+    ds = _make_completed_dataset(catalog, name)
 
-    catalog.remove_dataset_version(ds_chain.dataset, ds_chain.dataset.latest_version)
+    catalog.remove_dataset_version(ds, ds.latest_version)
     with pytest.raises(DatasetNotFoundError):
         catalog.get_dataset(name, include_incomplete=True)

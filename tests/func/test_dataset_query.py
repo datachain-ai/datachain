@@ -1111,9 +1111,13 @@ def test_dataset_dependencies_one_dataset_as_dependency(
         for d in catalog.get_dataset_dependencies(ds_name, "1.0.0", indirect=indirect)
     ] == expected
 
+    # Soft delete preserves the dependency record so dependents can still
+    # render lineage to the removed source.
     catalog.remove_dataset(dogs_dataset.name, force=True)
-    # None means dependency was there but was removed in the meantime
-    assert catalog.get_dataset_dependencies(ds_name, "1.0.0") == [None]
+    assert [
+        dataset_dependency_asdict(d)
+        for d in catalog.get_dataset_dependencies(ds_name, "1.0.0")
+    ] == expected
 
 
 @pytest.mark.parametrize("method", ["union", "join"])
@@ -1177,22 +1181,26 @@ def test_dataset_dependencies_multiple_direct_dataset_dependencies(
         key=lambda d: d["name"],
     ) == sorted(expected, key=lambda d: d["name"])
 
-    # check when removing one dependency
+    # Soft delete preserves dependency records: removing either source
+    # leaves the dependent's lineage intact (versions stay as REMOVED
+    # tombstones, FK still resolves).
     catalog.remove_dataset(dogs_dataset.name, force=True)
-    expected[0] = None
-    expected[1]["dependencies"] = []
-
     assert sorted(
         (
             dataset_dependency_asdict(d)
-            for d in catalog.get_dataset_dependencies(ds_name, "1.0.0")
+            for d in catalog.get_dataset_dependencies(ds_name, "1.0.0", indirect=True)
         ),
-        key=lambda d: d["name"] if d else "",
-    ) == sorted(expected, key=lambda d: d["name"] if d else "")
+        key=lambda d: d["name"],
+    ) == sorted(expected, key=lambda d: d["name"])
 
-    # check when removing the other dependency
     catalog.remove_dataset(cats_dataset.name, force=True)
-    assert catalog.get_dataset_dependencies(ds_name, "1.0.0") == [None, None]
+    assert sorted(
+        (
+            dataset_dependency_asdict(d)
+            for d in catalog.get_dataset_dependencies(ds_name, "1.0.0", indirect=True)
+        ),
+        key=lambda d: d["name"],
+    ) == sorted(expected, key=lambda d: d["name"])
 
 
 def test_dataset_dependencies_multiple_union(
