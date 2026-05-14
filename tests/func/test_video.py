@@ -328,6 +328,7 @@ def test_get_frame_np_wraps_decode_errors():
         ("jpg", "JPEG", [b"\xff\xd8\xff\xe0"]),
         ("png", "PNG", [b"\x89PNG\r\n\x1a\n"]),
         ("gif", "GIF", [b"GIF87a", b"GIF89a"]),
+        ("tif", "TIFF", [b"II*\x00", b"MM\x00*"]),
     ],
 )
 def test_get_frame_bytes(video_file, format, img_format, header):

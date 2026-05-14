@@ -318,8 +318,14 @@ def video_frame_bytes(
 
 
 def _image_format(format: str) -> str:
-    if format.lower() == "jpg":
-        return "JPEG"
+    extension = format.lower()
+    if not extension.startswith("."):
+        extension = f".{extension}"
+
+    image_format = PilImage.registered_extensions().get(extension)
+    if image_format is not None:
+        return image_format
+
     return format.upper()
 
 
