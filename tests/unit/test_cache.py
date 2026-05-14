@@ -83,6 +83,29 @@ def test_temporary_cache(tmp_path):
     assert not os.path.exists(temp.cache_dir)
 
 
+@pytest.mark.parametrize("method", ["remove", "store_data", "clear", "destroy"])
+def test_readonly_blocks_sync_mutating_methods(cache, method):
+    file = File(source="s3://foo", path="data/bar", etag="xyz", size=3, location=None)
+    cache.store_data(file, b"foo")
+    ro = cache.as_readonly()
+
+    args: tuple = ()
+    if method == "remove":
+        args = (file,)
+    elif method == "store_data":
+        args = (file, b"foo")
+
+    with pytest.raises(RuntimeError, match=f"cannot call {method}\\(\\)"):
+        getattr(ro, method)(*args)
+
+
+def test_readonly_blocks_download(cache):
+    file = File(source="s3://foo", path="data/bar", etag="xyz", size=3, location=None)
+    ro = cache.as_readonly()
+    with pytest.raises(RuntimeError, match=r"cannot call download\(\)"):
+        sync(get_loop(), ro.download, file, None)
+
+
 def test_cache_download_reserved_chars_in_path(cloud_test_catalog_upload):
     rel_path = "dir #% percent/hello.txt"
 
