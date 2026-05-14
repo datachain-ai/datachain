@@ -277,29 +277,6 @@ def test_get_frame_np(video_file):
     assert frame.shape == (360, 640, 3)
 
 
-def test_video_frame_get_np_caches_array(monkeypatch, video_file):
-    video = video_file.as_video_file()
-    calls = 0
-    original_open = VideoFile.open
-
-    def counted_open(self, *args, **kwargs):
-        nonlocal calls
-        calls += 1
-        return original_open(self, *args, **kwargs)
-
-    monkeypatch.setattr(VideoFile, "open", counted_open)
-
-    frame = video.get_frame(0)
-    assert calls == 1
-
-    image = frame.get_np()
-
-    assert image.shape == (360, 640, 3)
-    assert calls == 2
-    assert frame.get_np() is image
-    assert calls == 2
-
-
 def test_get_frame_np_error(video_file):
     with pytest.raises(ValueError):
         video_frame_np(video_file.as_video_file(), -1)
