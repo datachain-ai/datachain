@@ -509,8 +509,10 @@ chain.group_by(cnt=func.count(), total=func.sum(C("file.size")), partition_by="c
 chain.order_by("dist")
 chain.order_by("score", descending=True)
 chain.distinct("response.text")
+chain.distinct(file_ext=func.path.file_ext(C("file.path")))  # expressions need names
 chain.limit(100)
 chain.select("file", "score", "label")
+chain.select("file", score_pct=C("score") * 100)  # expressions need names
 chain.select_except("internal_id")
 chain.merge(other, on="id", right_on="meta.id")  # left join (default)
 chain.merge(other, on="id", inner=True)          # inner join
@@ -939,6 +941,10 @@ combined = images.merge(labels, on="file.name", right_on="labels.name")
     Use inner=True for inner join, full=True for full outer join.
     Default (no flags) is left join.
 ✗ Long select() list after merge — use select_except() instead (rule 19)
+✗ Positional expressions in select()/distinct():
+    chain.select(C("score") * 100)
+    chain.distinct(func.path.file_ext(C("file.path")))
+    Use keyword names instead: select(score_pct=...), distinct(file_ext=...)
 ✗ select() right after map/gen to "pick" the new column:
     chain.map(ann=parse_xml).select("ann")  ← redundant, map already created "ann"
     The keyword in map/gen IS the column name (rule 4) — no select needed
