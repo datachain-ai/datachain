@@ -903,6 +903,7 @@ def studio_datasets(requests_mock, studio_token):
         "description": "dogs dataset",
         "attrs": ["dogs", "dataset"],
         "project": project,
+        "uuid": str(uuid.uuid4()),
         "versions": [
             {
                 "version": "1.0.0",
@@ -929,6 +930,7 @@ def studio_datasets(requests_mock, studio_token):
             "description": "cats dataset",
             "attrs": ["cats", "dataset"],
             "project": project,
+            "uuid": str(uuid.uuid4()),
             "versions": [
                 {
                     "version": "1.0.0",
@@ -945,6 +947,7 @@ def studio_datasets(requests_mock, studio_token):
             "description": "both dataset",
             "attrs": ["both", "dataset"],
             "project": project,
+            "uuid": str(uuid.uuid4()),
             "versions": [
                 {
                     "version": "1.0.0",
