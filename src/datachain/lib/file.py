@@ -1162,7 +1162,9 @@ class VideoFile(File):
         Returns a specific video frame by its frame number.
 
         The returned timestamp is estimated from FPS metadata when available.
-        Use ``get_frames()`` to iterate frames with decoder-provided
+        This returns a frame reference without decoding or validating that the
+        frame exists. Pixel access methods decode the requested frame; use
+        ``get_frames()`` for sequential access and decoder-provided
         presentation timestamps.
 
         Args:
@@ -1518,6 +1520,11 @@ class VideoFrame(DataModel):
         """
         Returns a video frame from the video file as a NumPy array.
 
+        For seekable constant-FPS streams, this seeks near the requested frame
+        and decodes forward from the previous keyframe. Otherwise, it may decode
+        from the start. Use ``VideoFile.get_frames()`` when reading many frames
+        sequentially.
+
         Returns:
             ndarray: A NumPy array representing the video frame,
                      in the shape (height, width, channels).
@@ -1533,6 +1540,11 @@ class VideoFrame(DataModel):
     def read_bytes(self, format: str = "jpg") -> bytes:
         """
         Returns a video frame from the video file as image bytes.
+
+        For seekable constant-FPS streams, this seeks near the requested frame
+        and decodes forward from the previous keyframe. Otherwise, it may decode
+        from the start. Use ``VideoFile.get_frames()`` when reading many frames
+        sequentially.
 
         Args:
             format (str): The desired image format (e.g., 'jpg', 'png').
@@ -1558,6 +1570,11 @@ class VideoFrame(DataModel):
     ) -> "ImageFile":
         """
         Saves the current video frame as an image file.
+
+        For seekable constant-FPS streams, this seeks near the requested frame
+        and decodes forward from the previous keyframe. Otherwise, it may decode
+        from the start. Use ``VideoFile.get_frames()`` when reading many frames
+        sequentially.
 
         If ``destination`` is a remote path, the image file will be uploaded
         to remote storage.

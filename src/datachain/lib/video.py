@@ -5,6 +5,7 @@ import subprocess
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
+from math import ceil
 from typing import Any, cast
 
 from fsspec.utils import stringify_path
@@ -69,7 +70,7 @@ def video_info(file: File | VideoFile, video_stream_index: int = 0) -> Video:
                 height = int(video_stream.height or 0)
                 frames = int(video_stream.frames or 0)
                 if frames <= 0 and duration > 0 and fps > 0:
-                    frames = int(duration * fps)
+                    frames = ceil(duration * fps)
 
                 format_name = container.format.name or ""
                 codec_name = video_stream.codec_context.name or ""
@@ -126,6 +127,79 @@ def _video_duration(container, video_stream) -> float:
     if video_stream.duration is not None and video_stream.time_base is not None:
         return float(video_stream.duration * video_stream.time_base)
     return -1.0
+
+
+def _has_constant_frame_rate(video_stream) -> bool:
+    average_rate = video_stream.average_rate
+    base_rate = video_stream.base_rate
+    guessed_rate = video_stream.guessed_rate
+    if not average_rate or not base_rate or average_rate != base_rate:
+        return False
+    return not guessed_rate or guessed_rate == average_rate
+
+
+def _stream_start_time(video_stream) -> float:
+    if video_stream.start_time is None or video_stream.time_base is None:
+        return 0.0
+    return float(video_stream.start_time * video_stream.time_base)
+
+
+def _seekable(file_obj) -> bool:
+    seekable = getattr(file_obj, "seekable", None)
+    if seekable is not None:
+        try:
+            return bool(seekable())
+        except OSError:
+            return False
+    return hasattr(file_obj, "seek") and hasattr(file_obj, "tell")
+
+
+def _seek_to_frame(container, file_obj, video_stream, frame: int, fps: float) -> bool:
+    if (
+        frame <= 0
+        or fps <= 0
+        or video_stream.time_base is None
+        or not _seekable(file_obj)
+        or not _has_constant_frame_rate(video_stream)
+    ):
+        return False
+
+    offset = (video_stream.start_time or 0) + int(
+        (frame / fps) / video_stream.time_base
+    )
+    try:
+        container.seek(offset, backward=True, any_frame=False, stream=video_stream)
+    except (av.error.FFmpegError, OSError, ValueError):
+        return False
+    return True
+
+
+def _decoded_frame_index(decoded_frame, fps: float, video_stream) -> int:
+    if decoded_frame.pts is not None and decoded_frame.time_base is not None:
+        timestamp = float(decoded_frame.pts * decoded_frame.time_base)
+    elif decoded_frame.time is not None:
+        timestamp = float(decoded_frame.time)
+    else:
+        return 0
+
+    return max(0, round((timestamp - _stream_start_time(video_stream)) * fps))
+
+
+def _find_decoded_frame(container, video_stream, frame: int, fps: float, seeked: bool):
+    start_frame_index = 0
+    for decoded_offset, decoded_frame in enumerate(container.decode(video_stream)):
+        if decoded_offset == 0 and seeked:
+            start_frame_index = _decoded_frame_index(decoded_frame, fps, video_stream)
+            if start_frame_index > frame:
+                return None
+
+        frame_index = start_frame_index + decoded_offset
+        if frame_index == frame:
+            return decoded_frame
+        if frame_index > frame:
+            return None
+
+    return None
 
 
 def video_frame_np(
@@ -248,13 +322,7 @@ def video_frame(
     video: VideoFile, frame: int, video_stream_index: int = 0
 ) -> VideoFrame:
     """Return one video frame reference with an FPS-derived timestamp."""
-    if frame < 0:
-        raise ValueError("frame must be a non-negative integer")
-
     info = video_info(video, video_stream_index=video_stream_index)
-    if info.frames > 0 and frame >= info.frames:
-        raise FileError("unable to read video frame", video.source, video.path)
-
     timestamp = frame / info.fps if info.fps > 0 else -1.0
     return VideoFrame(
         video=video,
@@ -279,11 +347,25 @@ def _decode_video_frame(video: VideoFile, frame: int, video_stream_index: int = 
                     "unable to read video frame",
                 )
                 fps = _video_fps(video_stream)
+                seeked = _seek_to_frame(input_container, f, video_stream, frame, fps)
 
-                for frame_index, decoded_frame in enumerate(
-                    input_container.decode(video_stream)
-                ):
-                    if frame_index == frame:
+                decoded_frame = _find_decoded_frame(
+                    input_container, video_stream, frame, fps, seeked
+                )
+                if decoded_frame is not None:
+                    return decoded_frame, fps
+
+                if seeked:
+                    input_container.seek(
+                        video_stream.start_time or 0,
+                        backward=True,
+                        any_frame=False,
+                        stream=video_stream,
+                    )
+                    decoded_frame = _find_decoded_frame(
+                        input_container, video_stream, frame, fps, False
+                    )
+                    if decoded_frame is not None:
                         return decoded_frame, fps
     except FileError:
         raise

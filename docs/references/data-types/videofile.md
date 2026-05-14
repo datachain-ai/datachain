@@ -17,7 +17,7 @@ There are additional models for working with video files:
 
 `video_stream_index` arguments are zero-based indexes among video streams, matching FFmpeg `v:N` and PyAV `container.streams.video[N]` selectors.
 
-`VideoFile.get_frame()` returns a single frame reference with a timestamp estimated from FPS metadata. Use `VideoFile.get_frames()` when you need decoder-provided presentation timestamps while iterating over frames.
+`VideoFile.get_frame()` returns a single frame reference with a timestamp estimated from FPS metadata. Pixel access may seek to a nearby keyframe and decode forward; use `VideoFile.get_frames()` for sequential access and decoder-provided presentation timestamps.
 
 These are virtual models that do not create physical files.
 Instead, they are used to represent the data in the `VideoFile` these models are referring to.

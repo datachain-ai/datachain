@@ -86,6 +86,29 @@ def _write_raw_h264_video(path):
         container.close()
 
 
+def _write_mkv_video_without_frame_count(path, frame_count: int, fps: int):
+    container = av.open(str(path), "w")
+    stream = container.add_stream("mpeg4", rate=fps)
+    stream.width = 16
+    stream.height = 16
+    stream.pix_fmt = "yuv420p"
+    stream.time_base = Fraction(1, fps)
+
+    try:
+        for index in range(frame_count):
+            image = np.full((16, 16, 3), index * 20, dtype=np.uint8)
+            frame = av.VideoFrame.from_ndarray(image, format="rgb24")
+            frame.pts = index
+            frame.time_base = Fraction(1, fps)
+            for packet in stream.encode(frame):
+                container.mux(packet)
+
+        for packet in stream.encode():
+            container.mux(packet)
+    finally:
+        container.close()
+
+
 def _write_multi_stream_video(path):
     container = av.open(str(path), "w")
     time_base = Fraction(1, 30)
@@ -237,6 +260,16 @@ def test_get_info_handles_raw_video_without_duration(tmp_path):
     assert info.frames == 0
 
 
+def test_get_info_ceil_inferred_frame_count(tmp_path):
+    video_path = tmp_path / "inferred_frames.mkv"
+    _write_mkv_video_without_frame_count(video_path, frame_count=7, fps=3)
+    file = VideoFile.upload(video_path.read_bytes(), video_path.name)
+
+    info = file.get_info()
+
+    assert info.frames == 7
+
+
 def test_get_frame(video_file):
     frame = video_file.as_video_file().get_frame(37)
     assert isinstance(frame, VideoFrame)
@@ -258,20 +291,49 @@ def test_get_frames_uses_frame_index_when_timestamps_are_missing(tmp_path):
     )
 
 
+def test_get_frame_np_handles_raw_video_without_timestamps(tmp_path):
+    video_path = tmp_path / "raw.h264"
+    _write_raw_h264_video(video_path)
+    file = VideoFile.upload(video_path.read_bytes(), video_path.name)
+
+    frame = file.get_frame(3).get_np()
+
+    assert frame.shape == (16, 16, 3)
+
+
 def test_get_frame_error(video_file):
     with pytest.raises(ValueError):
         video_file.as_video_file().get_frame(-1)
 
 
-def test_get_frame_missing_frame_error(video_file):
-    with pytest.raises(FileError, match="unable to read video frame"):
-        video_file.as_video_file().get_frame(10_000)
+def test_get_frame_returns_reference_without_decoding(video_file):
+    frame = video_file.as_video_file().get_frame(10_000)
+
+    assert frame.frame == 10_000
+    assert frame.timestamp == pytest.approx(10_000 / 30)
 
 
 def test_get_frame_np(video_file):
     frame = video_file.as_video_file().get_frame(0).get_np()
     assert isinstance(frame, ndarray)
     assert frame.shape == (360, 640, 3)
+
+
+def test_get_frame_np_matches_sequential_decode_after_seek(video_file):
+    frame_index = 250
+    image = video_file.as_video_file().get_frame(frame_index).get_np()
+
+    data_path = os.path.join(os.path.dirname(__file__), "data")
+    video_path = os.path.join(data_path, "Big_Buck_Bunny_360_10s_1MB.mp4")
+    with av.open(video_path) as container:
+        stream = container.streams.video[0]
+        expected = next(
+            frame.to_ndarray(format="rgb24")
+            for index, frame in enumerate(container.decode(stream))
+            if index == frame_index
+        )
+
+    np.testing.assert_array_equal(image, expected)
 
 
 def test_get_frame_np_error(video_file):
