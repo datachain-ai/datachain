@@ -1,113 +1,119 @@
-<svg width="100%" viewBox="0 0 615 526" xmlns="http://www.w3.org/2000/svg">
+<svg width="100%" viewBox="0 0 1080 420" xmlns="http://www.w3.org/2000/svg">
 <defs>
-  <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-    <path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-  </marker>
-  <marker id="arrow-bold" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+  <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
     <path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
   </marker>
 </defs>
 
-<!-- Storage box (gray) — y=16, bottom=62 (shorter) -->
-<g>
-  <rect x="98" y="16" width="240" height="46" rx="8" fill="rgb(241,239,232)" stroke="rgb(95,94,90)" stroke-width="0.5"/>
-  <text x="218" y="32" text-anchor="middle" dominant-baseline="central" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="14" font-weight="500" fill="rgb(68,68,65)">Storage</text>
-  <text x="218" y="50" text-anchor="middle" dominant-baseline="central" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="12" fill="rgb(95,94,90)">S3, GCS, Azure</text>
+<!-- AI Agents container (compact, h=72, centered on Skill·MCP arrow y=144) -->
+<rect x="40" y="108" width="240" height="72" rx="12" fill="rgba(153,60,29,0.04)" stroke="rgb(153,60,29)" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="160" y="122" text-anchor="middle" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="14" font-weight="600" fill="rgb(113,43,19)">AI Agents</text>
+<g color="rgb(113,43,19)" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif">
+  <!-- Claude Code icon (sourced from datachain.ai hero) -->
+  <g transform="translate(50, 135) scale(0.75)">
+    <circle cx="12" cy="12" r="4" fill="currentColor"/>
+    <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.5"/>
+  </g>
+  <text x="72" y="144" dominant-baseline="central" font-size="11" font-weight="500" fill="currentColor">Claude Code</text>
+  <text x="138" y="144" text-anchor="middle" dominant-baseline="central" font-size="11" fill="rgb(180,180,180)">·</text>
+  <!-- Cursor icon (sourced from datachain.ai hero) -->
+  <g transform="translate(148, 135) scale(0.75)">
+    <path d="m4 6 8 4 8-4-8-4-8 4Zm0 0v12l8 4 8-4V6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+  </g>
+  <text x="170" y="144" dominant-baseline="central" font-size="11" font-weight="500" fill="currentColor">Cursor</text>
+  <text x="208" y="144" text-anchor="middle" dominant-baseline="central" font-size="11" fill="rgb(180,180,180)">·</text>
+  <!-- Codex icon (sourced from datachain.ai hero) -->
+  <g transform="translate(218, 135) scale(0.75)">
+    <path d="m9 8-4 4 4 4M15 8l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <text x="240" y="144" dominant-baseline="central" font-size="11" font-weight="500" fill="currentColor">Codex</text>
 </g>
 
-<!-- Four arrows: Storage -> PE (bold for data volume) -->
-<line x1="120" y1="62" x2="120" y2="136" stroke="rgb(95,94,90)" stroke-width="2" marker-end="url(#arrow-bold)"/>
-<line x1="180" y1="62" x2="180" y2="136" stroke="rgb(95,94,90)" stroke-width="2" marker-end="url(#arrow-bold)"/>
-<line x1="240" y1="62" x2="240" y2="136" stroke="rgb(95,94,90)" stroke-width="2" marker-end="url(#arrow-bold)"/>
-<line x1="300" y1="62" x2="300" y2="136" stroke="rgb(95,94,90)" stroke-width="2" marker-end="url(#arrow-bold)"/>
-<text x="124" y="88" text-anchor="start" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="12" font-style="italic" fill="rgb(95,94,90)"><tspan x="124">image</tspan><tspan x="124" dy="14">files</tspan></text>
-<text x="184" y="88" text-anchor="start" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="12" font-style="italic" fill="rgb(95,94,90)"><tspan x="184">video</tspan><tspan x="184" dy="14">files</tspan></text>
-<text x="244" y="88" text-anchor="start" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="12" font-style="italic" fill="rgb(95,94,90)"><tspan x="244">sensor</tspan><tspan x="244" dy="14">files</tspan></text>
-<text x="304" y="88" text-anchor="start" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="12" font-style="italic" fill="rgb(95,94,90)"><tspan x="304">doc</tspan><tspan x="304" dy="14">files</tspan></text>
-
-<!-- Database box (gray) — y=16, bottom=62 -->
-<g>
-  <rect x="370" y="16" width="150" height="46" rx="8" fill="rgb(241,239,232)" stroke="rgb(95,94,90)" stroke-width="0.5"/>
-  <text x="445" y="32" text-anchor="middle" dominant-baseline="central" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="14" font-weight="500" fill="rgb(68,68,65)">Database</text>
-  <text x="445" y="50" text-anchor="middle" dominant-baseline="central" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="12" fill="rgb(95,94,90)">Postgres, Snowflake</text>
+<!-- Humans container (compact, h=72, centered on Python SDK arrow y=234) -->
+<rect x="40" y="198" width="240" height="72" rx="12" fill="rgba(64,84,128,0.04)" stroke="rgb(64,84,128)" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="160" y="212" text-anchor="middle" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="14" font-weight="600" fill="rgb(50,68,108)">Humans</text>
+<g color="rgb(50,68,108)" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif">
+  <!-- Pipelines icon (line-art, matching datachain.ai style) -->
+  <g transform="translate(55, 225) scale(0.75)">
+    <circle cx="5" cy="12" r="2" fill="none" stroke="currentColor" stroke-width="1.6"/>
+    <circle cx="12" cy="12" r="2" fill="none" stroke="currentColor" stroke-width="1.6"/>
+    <circle cx="19" cy="12" r="2" fill="none" stroke="currentColor" stroke-width="1.6"/>
+    <path d="M7 12h3M14 12h3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+  </g>
+  <text x="77" y="234" dominant-baseline="central" font-size="11" font-weight="500" fill="currentColor">Pipelines</text>
+  <text x="133" y="234" text-anchor="middle" dominant-baseline="central" font-size="11" fill="rgb(180,180,180)">·</text>
+  <!-- Notebooks icon (line-art) -->
+  <g transform="translate(143, 225) scale(0.75)">
+    <path d="M6 4h12v16H6z M9 4v16 M9 8h8 M9 12h8 M9 16h5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <text x="165" y="234" dominant-baseline="central" font-size="11" font-weight="500" fill="currentColor">Notebooks</text>
+  <text x="225" y="234" text-anchor="middle" dominant-baseline="central" font-size="11" fill="rgb(180,180,180)">·</text>
+  <!-- UI icon (line-art) -->
+  <g transform="translate(235, 225) scale(0.75)">
+    <rect x="4" y="5" width="16" height="14" rx="1" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+    <path d="M4 9h16 M8 13h4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+  </g>
+  <text x="257" y="234" dominant-baseline="central" font-size="11" font-weight="500" fill="currentColor">UI</text>
 </g>
 
+<!-- DataChain container (CENTER, blue dashed) -->
+<rect x="380" y="60" width="320" height="320" rx="12" fill="rgba(24,95,165,0.04)" stroke="rgb(24,95,165)" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="540" y="94" text-anchor="middle" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="18" font-weight="700" fill="rgb(12,68,124)">DataChain</text>
 
-<!-- DataChain Python Library container -->
-<rect x="76" y="116" width="490" height="202" rx="12" fill="rgba(24,95,165,0.04)" stroke="rgb(24,95,165)" stroke-width="1.5" stroke-dasharray="6 4"/>
-<text x="550" y="132" text-anchor="end" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="16" font-weight="600" fill="rgb(12,68,124)">DataChain</text>
-<text x="550" y="150" text-anchor="end" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="13" font-weight="500" fill="rgb(24,95,165)">Python Library</text>
-
-<!-- Python Data Engine box (blue) with stacked layers for parallelism — y=136, bottom=192 -->
+<!-- Knowledge Base tier (amber, top — closest to agents; shifted up for breathing room) -->
 <g>
-  <rect x="110" y="148" width="240" height="56" rx="8" fill="rgb(220,235,248)" stroke="rgb(24,95,165)" stroke-width="0.5"/>
-  <rect x="106" y="144" width="240" height="56" rx="8" fill="rgb(225,238,250)" stroke="rgb(24,95,165)" stroke-width="0.5"/>
-  <rect x="102" y="140" width="240" height="56" rx="8" fill="rgb(228,240,250)" stroke="rgb(24,95,165)" stroke-width="0.5"/>
-  <rect x="98" y="136" width="240" height="56" rx="8" fill="rgb(230,241,251)" stroke="rgb(24,95,165)" stroke-width="0.5"/>
-  <text x="218" y="158" text-anchor="middle" dominant-baseline="central" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="14" font-weight="500" fill="rgb(12,68,124)">Python Data Engine</text>
-  <text x="218" y="176" text-anchor="middle" dominant-baseline="central" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="12" fill="rgb(24,95,165)">parallel, async, checkpoints</text>
+  <rect x="400" y="114" width="280" height="60" rx="8" fill="rgb(250,238,218)" stroke="rgb(133,79,11)" stroke-width="0.5"/>
+  <text x="540" y="136" text-anchor="middle" dominant-baseline="central" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="14" font-weight="600" fill="rgb(99,56,6)">Knowledge Base</text>
+  <text x="540" y="156" text-anchor="middle" dominant-baseline="central" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="11" font-style="italic" fill="rgb(133,79,11)">LLM summaries · stats · lineage · pipeline source</text>
 </g>
 
-<!-- Arrow: Database -> PE (on top of PDE box) -->
-<line x1="445" y1="62" x2="320" y2="136" stroke="rgb(95,94,90)" stroke-width="2" marker-end="url(#arrow-bold)"/>
-<text x="415" y="92" text-anchor="start" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="12" font-style="italic" fill="rgb(95,94,90)">SQL</text>
-
-<!-- Data Memory cylinder (green) — y=234, bottom=302 -->
+<!-- Dataset DB tier (green, middle, cylinder/database shape) -->
 <g>
-  <path d="M 98,244 A 120,10 0 0,0 338,244 L 338,292 A 120,10 0 0,1 98,292 Z" fill="rgb(225,245,238)" stroke="rgb(15,110,86)" stroke-width="1.5"/>
-  <ellipse cx="218" cy="244" rx="120" ry="10" fill="rgb(225,245,238)" stroke="rgb(15,110,86)" stroke-width="1.5"/>
-  <text x="218" y="264" text-anchor="middle" dominant-baseline="central" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="14" font-weight="600" fill="rgb(8,80,65)">Data Memory</text>
-  <text x="218" y="280" text-anchor="middle" dominant-baseline="central" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="12" fill="rgb(15,110,86)">versioned datasets</text>
+  <path d="M 400 212 v 44 a 140 8 0 0 0 280 0 v -44" fill="rgb(225,245,238)" stroke="rgb(15,110,86)" stroke-width="0.5"/>
+  <ellipse cx="540" cy="212" rx="140" ry="8" fill="rgb(225,245,238)" stroke="rgb(15,110,86)" stroke-width="0.5"/>
+  <text x="540" y="230" text-anchor="middle" dominant-baseline="central" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="14" font-weight="600" fill="rgb(8,80,65)">Dataset DB</text>
+  <text x="540" y="248" text-anchor="middle" dominant-baseline="central" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="11" font-style="italic" fill="rgb(15,110,86)">Pydantic schemas · versioning · file pointers</text>
 </g>
 
-<!-- Arrow: PE -> Data Memory (on top of cylinder) -->
-<line x1="218" y1="192" x2="218" y2="244" stroke="rgb(115,114,108)" stroke-width="1.5" marker-end="url(#arrow)"/>
-<text x="224" y="221" text-anchor="start" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="12" font-style="italic" fill="rgb(95,94,90)">data</text>
-
-<!-- Query Engine box (purple, narrower) — y=234 -->
+<!-- Compute Engine tier (blue, bottom — closest to storage; shifted down for breathing room) -->
 <g>
-  <rect x="410" y="234" width="140" height="56" rx="8" fill="rgb(238,237,254)" stroke="rgb(83,74,183)" stroke-width="0.5"/>
-  <text x="480" y="256" text-anchor="middle" dominant-baseline="central" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="14" font-weight="500" fill="rgb(60,52,137)">Query Engine</text>
-  <text x="480" y="274" text-anchor="middle" dominant-baseline="central" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="12" fill="rgb(83,74,183)">filter, join, similarity</text>
+  <rect x="400" y="294" width="280" height="60" rx="8" fill="rgb(230,241,251)" stroke="rgb(24,95,165)" stroke-width="0.5"/>
+  <text x="540" y="316" text-anchor="middle" dominant-baseline="central" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="14" font-weight="600" fill="rgb(12,68,124)">Compute Engine</text>
+  <text x="540" y="336" text-anchor="middle" dominant-baseline="central" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="11" font-style="italic" fill="rgb(24,95,165)">distributed · async I/O · checkpoint recovery</text>
 </g>
 
-<!-- Arrows: Data Memory <-> Query Engine -->
-<line x1="338" y1="255" x2="410" y2="255" stroke="rgb(115,114,108)" stroke-width="1.5" marker-end="url(#arrow)"/>
-<line x1="410" y1="269" x2="338" y2="269" stroke="rgb(115,114,108)" stroke-width="1.5" marker-end="url(#arrow)"/>
-<text x="374" y="244" text-anchor="middle" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="12" font-style="italic" fill="rgb(95,94,90)">data</text>
-
-<!-- Arrow: Data Memory -> Knowledge Base -->
-<line x1="218" y1="302" x2="218" y2="360" stroke="rgb(115,114,108)" stroke-width="1.5" marker-end="url(#arrow)"/>
-<text x="224" y="335" text-anchor="start" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="12" font-style="italic" fill="rgb(95,94,90)">LLM enrichments</text>
-
-<!-- DataChain Skill and MCP container -->
-<rect x="76" y="346" width="490" height="82" rx="12" fill="rgba(133,79,11,0.04)" stroke="rgb(133,79,11)" stroke-width="1.5" stroke-dasharray="6 4"/>
-<text x="550" y="362" text-anchor="end" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="16" font-weight="600" fill="rgb(99,56,6)">DataChain</text>
-<text x="550" y="380" text-anchor="end" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="13" font-weight="500" fill="rgb(133,79,11)">Skill and MCP</text>
-
-<!-- Knowledge Base box (amber) — y=360, bottom=416 -->
+<!-- Object Storage container (RIGHT, gray dashed) -->
+<rect x="800" y="60" width="240" height="320" rx="12" fill="rgba(95,94,90,0.04)" stroke="rgb(95,94,90)" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="920" y="92" text-anchor="middle" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="15" font-weight="600" fill="rgb(68,68,65)">Object Storage</text>
 <g>
-  <rect x="98" y="360" width="240" height="56" rx="8" fill="rgb(250,238,218)" stroke="rgb(133,79,11)" stroke-width="0.5"/>
-  <text x="218" y="382" text-anchor="middle" dominant-baseline="central" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="14" font-weight="500" fill="rgb(99,56,6)">Knowledge Base</text>
-  <text x="218" y="400" text-anchor="middle" dominant-baseline="central" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="12" fill="rgb(133,79,11)">dataset cards, schema, stats, lineage</text>
+  <rect x="820" y="124" width="200" height="60" rx="8" fill="rgb(241,239,232)" stroke="rgb(95,94,90)" stroke-width="0.5"/>
+  <text x="920" y="154" text-anchor="middle" dominant-baseline="central" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="14" font-weight="500" fill="rgb(68,68,65)">S3</text>
 </g>
-
-<!-- Arrow: KB -> Agents -->
-<line x1="218" y1="416" x2="218" y2="462" stroke="rgb(115,114,108)" stroke-width="1.5" marker-end="url(#arrow)"/>
-<text x="224" y="447" text-anchor="start" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="12" font-style="italic" fill="rgb(95,94,90)">data context</text>
-
-<!-- Agents box (orange) — y=462, bottom=518 -->
 <g>
-  <rect x="98" y="462" width="240" height="56" rx="8" fill="rgb(250,236,231)" stroke="rgb(153,60,29)" stroke-width="0.5"/>
-  <text x="218" y="484" text-anchor="middle" dominant-baseline="central" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="14" font-weight="500" fill="rgb(113,43,19)">Agents</text>
-  <text x="218" y="502" text-anchor="middle" dominant-baseline="central" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="12" fill="rgb(153,60,29)">Claude Code, Cursor, Codex</text>
+  <rect x="820" y="204" width="200" height="60" rx="8" fill="rgb(241,239,232)" stroke="rgb(95,94,90)" stroke-width="0.5"/>
+  <text x="920" y="234" text-anchor="middle" dominant-baseline="central" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="14" font-weight="500" fill="rgb(68,68,65)">GCS</text>
 </g>
+<g>
+  <rect x="820" y="284" width="200" height="60" rx="8" fill="rgb(241,239,232)" stroke="rgb(95,94,90)" stroke-width="0.5"/>
+  <text x="920" y="314" text-anchor="middle" dominant-baseline="central" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="14" font-weight="500" fill="rgb(68,68,65)">Azure</text>
+</g>
+<text x="920" y="362" text-anchor="middle" dominant-baseline="central" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="10" font-style="italic" fill="rgb(95,94,90)">Sensor Data · Videos · Images · Logs · Docs</text>
 
-<!-- Return arrows: Agents -> Python Data Engine, Knowledge Base, and Query Engine (consolidated on right) -->
-<path d="M 338,490 L 595,490 L 595,164" fill="none" stroke="rgb(115,114,108)" stroke-width="1.5"/>
-<line x1="595" y1="164" x2="350" y2="164" stroke="rgb(115,114,108)" stroke-width="1.5" marker-end="url(#arrow)"/>
-<line x1="595" y1="262" x2="550" y2="262" stroke="rgb(115,114,108)" stroke-width="1.5" marker-end="url(#arrow)"/>
-<line x1="595" y1="388" x2="338" y2="388" stroke="rgb(115,114,108)" stroke-width="1.5" marker-end="url(#arrow)"/>
-<text x="609" y="327" text-anchor="middle" transform="rotate(-90, 609, 327)" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="12" font-style="italic" fill="rgb(95,94,90)">next query</text>
+<!-- Unidirectional arrow: AI Agents -> Knowledge Base -->
+<line x1="282" y1="144" x2="378" y2="144" stroke="rgb(95,94,90)" stroke-width="1.5" marker-end="url(#arrow)"/>
+<text x="330" y="136" text-anchor="middle" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="12" font-style="italic" fill="rgb(95,94,90)">Skill · MCP</text>
+
+<!-- Unidirectional arrow: Humans -> Dataset DB -->
+<line x1="282" y1="234" x2="378" y2="234" stroke="rgb(95,94,90)" stroke-width="1.5" marker-end="url(#arrow)"/>
+<text x="330" y="226" text-anchor="middle" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="12" font-style="italic" fill="rgb(95,94,90)">Python SDK</text>
+
+<!-- Internal arrows: Dataset DB -> Knowledge Base (upward); Compute Engine -> Dataset DB (upward) -->
+<line x1="540" y1="212" x2="540" y2="174" stroke="rgb(95,94,90)" stroke-width="1.5" marker-end="url(#arrow)"/>
+<line x1="540" y1="294" x2="540" y2="264" stroke="rgb(95,94,90)" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<!-- Bidirectional arrows: Compute Engine <-> Storage (Raw files, aligned with CE row) -->
+<line x1="702" y1="317" x2="798" y2="317" stroke="rgb(95,94,90)" stroke-width="1.5" marker-end="url(#arrow)"/>
+<line x1="798" y1="331" x2="702" y2="331" stroke="rgb(95,94,90)" stroke-width="1.5" marker-end="url(#arrow)"/>
+<text x="755" y="305" text-anchor="middle" font-family="'Anthropic Sans',-apple-system,system-ui,'Segoe UI',sans-serif" font-size="12" font-style="italic" fill="rgb(95,94,90)">Raw files</text>
 
 </svg>
