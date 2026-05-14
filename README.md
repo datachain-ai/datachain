@@ -1,4 +1,4 @@
-# ![DataChain](docs/assets/datachain.svg) DataChain — The Data Context Layer for Unstructured Data
+# ![DataChain](docs/assets/datachain.svg) DataChain: The Context Layer for Unstructured Data
 
 [![PyPI](https://img.shields.io/pypi/v/datachain.svg)](https://pypi.org/project/datachain/)
 [![Python Version](https://img.shields.io/pypi/pyversions/datachain)](https://pypi.org/project/datachain)
@@ -6,11 +6,17 @@
 [![Tests](https://github.com/datachain-ai/datachain/actions/workflows/tests.yml/badge.svg)](https://github.com/datachain-ai/datachain/actions/workflows/tests.yml)
 [![DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/datachain-ai/datachain)
 
-**Turn files in S3, GCS, and Azure into versioned, typed datasets your agents can query and reason over.**
+**A Python library that turns files in S3, GCS, and Azure into versioned, typed datasets, queryable at warehouse speed.**
 
-Your data lives in object storage (millions of images, hours of video, documents) and databases (structured tables). Every chain a teammate or agent runs deposits a typed, versioned dataset into the **Dataset DB**: embeddings, classifications, joins, scores. At scale, those datasets are too expensive to recompute and too scattered to find on demand.
+- **Compute Engine**: parallel and distributed Python over files. Async I/O, checkpoint recovery, incremental updates.
+- **Dataset DB**: Pydantic schemas, versioning, file pointers, automatic lineage. Sub-second filter, join, and similarity search over hundreds of millions of records.
 
-DataChain is the Python library that runs your code over heavy files and tables in parallel and queries the Dataset DB at warehouse speed. Read from S3, GCS, or Azure, run your code, save as a Pydantic-typed dataset; the next pipeline or agent picks up from there. Claude Code, Cursor, and Codex made AI good at code by giving it the repo context. Agents over your data need the same: a **Data Context Layer** with schemas, lineage, and prior conclusions, captured during production, not curated after.
+Optional, for agent workflows:
+
+- **Knowledge Base**: markdown summaries derived from the Dataset DB and enriched by LLM. Readable by humans and LLMs.
+- **Agent Harness**: skill and MCP server that plug all three into Claude Code, Cursor, and Codex, so they understand your data.
+
+Bytes never leave your storage. Every run deposits a typed dataset the next pipeline (or agent) reads instead of recomputing.
 
 ## 1. Install
 

@@ -1,6 +1,6 @@
 # <a class="main-header-link" href="/" ><img style="display: inline-block;" src="/assets/datachain.svg" alt="DataChain"> <span style="display: inline-block;"> DataChain</span></a>
 
-<p align="center" class="subtitle">The Data Context Layer for unstructured data</p>
+<p align="center" class="subtitle">The Context Layer for unstructured data</p>
 
 <style>
 .md-content .md-typeset h1 { font-weight: bold; display: flex; align-items: center; justify-content: center; gap: 5px; }
@@ -24,11 +24,11 @@
   </a>
 </p>
 
-**Turn files in S3, GCS, and Azure into versioned, typed datasets your agents can query and reason over.**
+<p align="center" style="font-style: italic; font-size: 1.05em; margin: 1.5em 0;">The Model Floor Is the Same for Everyone. The Context Ceiling Is Yours.</p>
 
-Your data lives in object storage (millions of images, hours of video, documents) and databases (structured tables). Every chain a teammate or agent runs deposits a typed, versioned dataset into the **Dataset DB**: embeddings, classifications, joins, scores. At scale, those datasets are too expensive to recompute and too scattered to find on demand.
+**A Python library that turns files in S3, GCS, and Azure into versioned, typed datasets, queryable at warehouse speed.**
 
-DataChain is the Python library that runs your code over heavy files and tables in parallel and queries the Dataset DB at warehouse speed. Read from S3, GCS, or Azure, run your code, save as a Pydantic-typed dataset; the next pipeline or agent picks up from there. Claude Code, Cursor, and Codex made AI good at code by giving it the repo context. Agents over your data need the same: a **Data Context Layer** with schemas, lineage, and prior conclusions, captured during production, not curated after.
+Bytes never leave your storage. Two core components: a **Compute Engine** for distributed Python over files and a **Dataset DB** for warehouse-speed queries over Pydantic-typed records. For agent workflows, two more: a **Knowledge Base** of markdown summaries and an **Agent Harness** (skill + MCP) that plugs all of it into Claude Code, Cursor, and Codex, so they understand your data.
 
 ## Get started
 
