@@ -4,7 +4,7 @@ title: Getting Started with Agents
 
 # Getting Started with Agents
 
-Without DataChain, an agent over a folder of files starts from raw bytes every session: re-downloading files, re-computing embeddings, re-filtering results. Effort is linear; nothing compounds. With the DataChain skill installed, every agent session deposits its conclusions into Data Memory as typed, versioned datasets, and the next session reads them as settled premises before generating its first line of code. After a week, your project has a knowledge base that both agents and humans navigate, and capability over your data rises with usage rather than staying flat.
+Without DataChain, an agent over a folder of files starts from raw bytes every session: re-downloading files, re-computing embeddings, re-filtering results. Effort is linear; nothing compounds. With the DataChain skill installed, every agent session deposits its conclusions into the Dataset DB as typed, versioned datasets, and the next session reads them as settled premises before generating its first line of code. After a week, your project has a knowledge base that both agents and humans navigate, and capability over your data rises with usage rather than staying flat.
 
 ## Installation
 
@@ -86,6 +86,6 @@ Run the skill prompt again to update the knowledge base after creating new datas
 
 ## Next Steps
 
-- [Concepts](../concepts/index.md): understand Data Memory, Datasets, and the dual engine
+- [Concepts](../concepts/index.md): understand the Dataset DB, Datasets, and the dual engine
 - [Knowledge Base guide](../guide/knowledge-base.md): skill installation, generation, browsing
 - [Guides](../guide/index.md): in-depth coverage of every capability

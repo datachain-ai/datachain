@@ -82,4 +82,4 @@ import datachain as dc
 
 - [Checkpoints](../guide/checkpoints.md): mid-run resume
 - [Delta processing](../guide/delta.md): incremental updates over new files
-- [Data Memory](../concepts/data-memory.md): why prior work is recoverable instead of recomputed
+- [Dataset DB](../concepts/dataset-db.md): why prior work is recoverable instead of recomputed

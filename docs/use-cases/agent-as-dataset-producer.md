@@ -10,7 +10,7 @@ An agent runs an LLM judge over 50,000 dialog files and prints the verdicts in t
 
 ## With DataChain
 
-The agent's output is a versioned typed dataset, not a notebook artifact. The Pydantic model declares the shape of the conclusion. The `.save("name")` call records it into Data Memory with full lineage: the source dataset, the prompt, the model, the script, and the time. The Knowledge Base compiles the dataset into a page the next agent reads as context before generating any code.
+The agent's output is a versioned typed dataset, not a notebook artifact. The Pydantic model declares the shape of the conclusion. The `.save("name")` call records it into the Dataset DB with full lineage: the source dataset, the prompt, the model, the script, and the time. The Knowledge Base compiles the dataset into a page the next agent reads as context before generating any code.
 
 ```python
 import os
@@ -65,5 +65,5 @@ The agent that wrote `dialog_verdicts` did not need to coordinate with the agent
 ## See also
 
 - [Datasets](../concepts/datasets.md): why each save is a unit of reasoning, not just storage
-- [Data Memory](../concepts/data-memory.md): provenance and immutability
+- [Dataset DB](../concepts/dataset-db.md): provenance and immutability
 - [Files and types](../concepts/files-and-types.md): Pydantic models as the schema layer
