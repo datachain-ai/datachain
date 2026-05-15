@@ -379,10 +379,27 @@ def test_get_frame_error(video_file):
 
 
 def test_get_frame_returns_reference_without_decoding(video_file):
-    frame = video_file.as_video_file().get_frame(10_000)
+    video = video_file.as_video_file()
+
+    frame = video.get_frame(10_000)
 
     assert frame.frame == 10_000
     assert frame.timestamp == pytest.approx(10_000 / 30)
+
+
+def test_get_frame_reuses_metadata(video_file, monkeypatch):
+    video = video_file.as_video_file()
+    frame = video.get_frame(37)
+    assert frame.timestamp == pytest.approx(37 / 30)
+
+    def fail_open(self, *args, **kwargs):
+        raise AssertionError("get_frame should reuse cached video metadata")
+
+    monkeypatch.setattr(VideoFile, "open", fail_open)
+
+    frame = video.get_frame(38)
+
+    assert frame.timestamp == pytest.approx(38 / 30)
 
 
 def test_get_frame_np(video_file):
@@ -502,6 +519,34 @@ def test_get_frames(video_file):
     assert [frame.timestamp for frame in frames[:3]] == pytest.approx(
         [10 / 30, 15 / 30, 20 / 30]
     )
+
+
+def test_get_frames_uses_seek_for_large_start(video_file):
+    start = 250
+    frames = list(video_file.as_video_file().get_frames(start, 256, 2))
+
+    assert [frame.frame for frame in frames] == [250, 252, 254]
+    assert [frame.timestamp for frame in frames] == pytest.approx(
+        [250 / 30, 252 / 30, 254 / 30]
+    )
+
+
+def test_get_frames_handles_stream_start_time_without_seek(mpegts_video):
+    start = 5
+    frames = list(mpegts_video.file.get_frames(start, 8))
+
+    assert [frame.frame for frame in frames] == [5, 6, 7]
+
+    with av.open(str(mpegts_video.path)) as container:
+        stream = container.streams.video[0]
+        assert stream.start_time not in (None, 0)
+        expected = [
+            frame.time
+            for index, frame in enumerate(container.decode(stream))
+            if start <= index < 8
+        ]
+
+    assert [frame.timestamp for frame in frames] == pytest.approx(expected)
 
 
 def test_get_frames_uses_presentation_timestamps(variable_timestamp_video):

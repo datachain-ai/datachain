@@ -205,6 +205,17 @@ def _find_decoded_frame(container, video_stream, frame: int, fps: float, seeked:
     return None
 
 
+def _decoded_frames(container, video_stream, start: int, fps: float, seeked: bool):
+    start_frame_index = 0
+    for decoded_offset, decoded_frame in enumerate(container.decode(video_stream)):
+        if decoded_offset == 0 and seeked:
+            start_frame_index = _decoded_frame_index(decoded_frame, fps, video_stream)
+            if start_frame_index > start:
+                return
+
+        yield start_frame_index + decoded_offset, decoded_frame
+
+
 def video_frame_np(
     video: VideoFile, frame: int, video_stream_index: int = 0
 ) -> ndarray:
@@ -298,9 +309,10 @@ def video_frames(
                     "unable to read video frames",
                 )
                 fps = _video_fps(video_stream)
+                seeked = _seek_to_frame(input_container, f, video_stream, start, fps)
 
-                for frame_index, frame in enumerate(
-                    input_container.decode(video_stream)
+                for frame_index, frame in _decoded_frames(
+                    input_container, video_stream, start, fps, seeked
                 ):
                     if frame_index >= end:
                         break
@@ -324,8 +336,9 @@ def video_frames(
 def video_frame(
     video: VideoFile, frame: int, video_stream_index: int = 0
 ) -> VideoFrame:
-    """Return one video frame reference with an FPS-derived timestamp if available."""
-    info = video_info(video, video_stream_index=video_stream_index)
+    """Return one video frame reference with an FPS-derived timestamp."""
+    _validate_video_stream_index(video_stream_index)
+    info = video.get_info(video_stream_index=video_stream_index)
     timestamp = frame / info.fps if info.fps > 0 else -1.0
     return VideoFrame(
         video=video,

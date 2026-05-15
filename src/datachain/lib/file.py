@@ -1137,6 +1137,10 @@ class VideoFile(File):
     ``container.streams.video[N]`` selectors.
     """
 
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._video_info_cache: dict[int, Any] = {}
+
     def get_info(self, video_stream_index: int = 0) -> "Video":
         """
         Retrieves metadata and information about the video file.
@@ -1155,17 +1159,20 @@ class VideoFile(File):
         """
         from .video import video_info
 
-        return video_info(self, video_stream_index=video_stream_index)
+        if video_stream_index not in self._video_info_cache:
+            self._video_info_cache[video_stream_index] = video_info(
+                self, video_stream_index=video_stream_index
+            )
+        return self._video_info_cache[video_stream_index]
 
     def get_frame(self, frame: int, video_stream_index: int = 0) -> "VideoFrame":
         """
         Returns a specific video frame by its frame number.
 
-        The returned timestamp is estimated from FPS metadata when available.
         This returns a frame reference without decoding or validating that the
-        frame exists. Pixel access methods decode the requested frame; use
-        ``get_frames()`` for sequential access and decoded frame timestamps
-        when available.
+        frame exists. The returned timestamp is estimated from FPS metadata.
+        Pixel access methods decode the requested frame; use ``get_frames()``
+        for sequential access and decoded frame timestamps when available.
 
         Args:
             frame (int): The frame number to read.
@@ -1505,10 +1512,10 @@ class VideoFrame(DataModel):
         frame (int): The frame number referencing a specific frame in the video file.
         video_stream_index (int): Zero-based index among video streams containing
             the frame.
-        timestamp (float): Frame timestamp in seconds. For frames returned by
-            ``VideoFile.get_frame()``, this is estimated from FPS metadata when
-            available. Frames yielded by ``VideoFile.get_frames()`` use decoded
-            frame timestamps when available.
+        timestamp (float): Frame timestamp in seconds. Frames returned by
+            ``VideoFile.get_frame()`` use FPS metadata. Frames yielded by
+            ``VideoFile.get_frames()`` use decoded frame timestamps when
+            available.
     """
 
     video: VideoFile
