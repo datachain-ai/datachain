@@ -34,6 +34,31 @@ class GeneratedVideo:
     file: VideoFile
 
 
+class NonSeekableBytesIO(io.BytesIO):
+    def seekable(self):
+        return False
+
+
+class SeekTellReader:
+    def __init__(self, data: bytes):
+        self._buffer = io.BytesIO(data)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def read(self, size=-1):
+        return self._buffer.read(size)
+
+    def seek(self, offset, whence=0):
+        return self._buffer.seek(offset, whence)
+
+    def tell(self):
+        return self._buffer.tell()
+
+
 def _install_fake_ffmpeg(tmp_path, monkeypatch, script: str) -> None:
     fake_ffmpeg = tmp_path / "ffmpeg"
     fake_ffmpeg.write_text(script)
@@ -200,6 +225,20 @@ def mpegts_video(tmp_path) -> GeneratedVideo:
 
 
 @pytest.fixture
+def nut_video_without_average_rate(tmp_path) -> GeneratedVideo:
+    path = tmp_path / "no_average_rate.nut"
+    _write_single_stream_video(
+        path,
+        codec="mpeg4",
+        fps=5,
+        frame_count=6,
+        container_format="nut",
+        pixel_value=lambda frame_index: frame_index * 20,
+    )
+    return _generated_video(path)
+
+
+@pytest.fixture
 def multi_stream_video(tmp_path) -> GeneratedVideo:
     path = tmp_path / "multi_stream.mp4"
     container = av.open(str(path), "w")
@@ -342,10 +381,30 @@ def test_get_info_handles_raw_video_without_duration(raw_h264_video):
     assert info.frames == 0
 
 
+def test_get_frame_uses_raw_video_fps_for_timestamp(raw_h264_video):
+    info = raw_h264_video.file.get_info()
+    frame = raw_h264_video.file.get_frame(3)
+
+    assert frame.timestamp == pytest.approx(3 / info.fps)
+
+
 def test_get_info_ceil_inferred_frame_count(mkv_video_without_frame_count):
     info = mkv_video_without_frame_count.file.get_info()
 
     assert info.frames == 7
+
+
+def test_get_info_uses_base_rate_when_average_rate_is_missing(
+    nut_video_without_average_rate,
+):
+    with av.open(str(nut_video_without_average_rate.path)) as container:
+        stream = container.streams.video[0]
+        assert stream.average_rate is None
+        assert stream.base_rate == 5
+
+    info = nut_video_without_average_rate.file.get_info()
+
+    assert info.fps == 5.0
 
 
 def test_get_frame(video_file):
@@ -425,6 +484,32 @@ def test_get_frame_np_matches_sequential_decode_after_seek(video_file):
     np.testing.assert_array_equal(image, expected)
 
 
+def test_get_frame_np_decodes_non_seekable_stream(video_file, monkeypatch):
+    data = video_file.read()
+
+    def open_non_seekable(self, *args, **kwargs):
+        return NonSeekableBytesIO(data)
+
+    monkeypatch.setattr(VideoFile, "open", open_non_seekable)
+
+    image = video_file.as_video_file().get_frame(3).get_np()
+
+    assert image.shape == (360, 640, 3)
+
+
+def test_get_frame_np_decodes_seek_tell_stream(video_file, monkeypatch):
+    data = video_file.read()
+
+    def open_seek_tell(self, *args, **kwargs):
+        return SeekTellReader(data)
+
+    monkeypatch.setattr(VideoFile, "open", open_seek_tell)
+
+    image = video_file.as_video_file().get_frame(3).get_np()
+
+    assert image.shape == (360, 640, 3)
+
+
 def test_get_frame_np_handles_stream_start_time_without_seek(mpegts_video):
     video_path = mpegts_video.path
     file = mpegts_video.file
@@ -452,6 +537,11 @@ def test_get_frame_np_error(video_file):
 def test_get_frame_np_missing_frame_error(video_file):
     with pytest.raises(FileError, match="unable to read video frame"):
         video_frame_np(video_file.as_video_file(), 10_000)
+
+
+def test_get_frame_np_missing_raw_frame_error(raw_h264_video):
+    with pytest.raises(FileError, match="unable to read video frame"):
+        video_frame_np(raw_h264_video.file, 10_000)
 
 
 def test_get_frame_np_video_stream_index_error(video_file):
