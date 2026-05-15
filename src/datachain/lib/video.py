@@ -1,6 +1,7 @@
 import io
 import os
 import posixpath
+import shutil
 import subprocess
 import tempfile
 from collections.abc import Iterator
@@ -36,7 +37,8 @@ except ImportError as exc:
 VIDEO_TIME_BASE = 1_000_000
 FFMPEG_FRAGMENT_TIMEOUT_MIN = 60.0
 FFMPEG_FRAGMENT_TIMEOUT_FACTOR = 10.0
-FFMPEG_FRAGMENT_CMD = ("ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error")
+FFMPEG_FRAGMENT_EXECUTABLE = "ffmpeg"
+FFMPEG_FRAGMENT_ARGS = ("-nostdin", "-hide_banner", "-loglevel", "error")
 
 
 def video_info(file: File | VideoFile, video_stream_index: int = 0) -> Video:
@@ -158,6 +160,7 @@ def _seek_to_frame(container, file_obj, video_stream, frame: int, fps: float) ->
     if (
         frame <= 0
         or fps <= 0
+        or video_stream.start_time not in (None, 0)
         or video_stream.time_base is None
         or not _seekable(file_obj)
         or not _has_constant_frame_rate(video_stream)
@@ -475,9 +478,16 @@ def _ffmpeg_fragment_timeout(
     )
 
 
-def _run_ffmpeg(stream_spec: Any, timeout: float | None) -> None:
+def _ffmpeg_fragment_cmd(video: VideoFile) -> tuple[str, ...]:
+    ffmpeg_path = shutil.which(FFMPEG_FRAGMENT_EXECUTABLE)
+    if ffmpeg_path is None:
+        raise FileError("ffmpeg executable not found in PATH", video.source, video.path)
+    return (ffmpeg_path, *FFMPEG_FRAGMENT_ARGS)
+
+
+def _run_ffmpeg(stream_spec: Any, video: VideoFile, timeout: float | None) -> None:
     process = subprocess.Popen(  # noqa: S603
-        stream_spec.compile(cmd=FFMPEG_FRAGMENT_CMD),
+        stream_spec.compile(cmd=_ffmpeg_fragment_cmd(video)),
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
@@ -588,6 +598,7 @@ def save_video_fragment(
                     ffmpeg.input(input_file, ss=start, to=end).output(
                         temp_output, **_ffmpeg_output_options(format)
                     ),
+                    video,
                     timeout,
                 )
             except TimeoutError as exc:

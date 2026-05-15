@@ -2,7 +2,11 @@ import io
 import os
 import shutil
 import tarfile
+from collections.abc import Callable
+from dataclasses import dataclass
 from fractions import Fraction
+from pathlib import Path
+from typing import cast
 
 import av
 import ffmpeg
@@ -24,6 +28,12 @@ requires_posix = pytest.mark.skipif(
 )
 
 
+@dataclass(frozen=True)
+class GeneratedVideo:
+    path: Path
+    file: VideoFile
+
+
 def _install_fake_ffmpeg(tmp_path, monkeypatch, script: str) -> None:
     fake_ffmpeg = tmp_path / "ffmpeg"
     fake_ffmpeg.write_text(script)
@@ -32,7 +42,7 @@ def _install_fake_ffmpeg(tmp_path, monkeypatch, script: str) -> None:
 
 
 def _fake_ffmpeg_write_output_script(record_args: bool = False) -> str:
-    record = 'printf \'%s\n\' "$@" > "$FFMPEG_ARGS_FILE"\n' if record_args else ""
+    record = 'printf \'%s\n\' "$0" "$@" > "$FFMPEG_ARGS_FILE"\n' if record_args else ""
     return (
         "#!/bin/sh\n"
         f"{record}"
@@ -42,118 +52,192 @@ def _fake_ffmpeg_write_output_script(record_args: bool = False) -> str:
     )
 
 
-def _write_variable_timestamp_video(path):
-    container = av.open(str(path), "w")
-    stream = container.add_stream("mpeg4", rate=30)
-    stream.width = 16
-    stream.height = 16
+def _add_video_stream(
+    container,
+    codec: str,
+    fps: int,
+    *,
+    width: int = 16,
+    height: int = 16,
+    set_time_base: bool = True,
+):
+    stream = cast("av.VideoStream", container.add_stream(codec, rate=fps))
+    stream.width = width
+    stream.height = height
     stream.pix_fmt = "yuv420p"
-    time_base = Fraction(1, 30)
-    stream.time_base = time_base
+    if set_time_base:
+        stream.time_base = Fraction(1, fps)
+    return stream
+
+
+def _mux_video_frame(container, stream, pixel_value: int, pts: int | None, fps: int):
+    image = np.full((stream.height, stream.width, 3), pixel_value, dtype=np.uint8)
+    frame = av.VideoFrame.from_ndarray(image, format="rgb24")
+    if pts is not None:
+        frame.pts = pts
+        frame.time_base = Fraction(1, fps)
+    for packet in stream.encode(frame):
+        container.mux(packet)
+
+
+def _flush_video_stream(container, stream) -> None:
+    for packet in stream.encode():
+        container.mux(packet)
+
+
+def _default_pixel_value(frame_index: int) -> int:
+    return frame_index * 40
+
+
+def _write_single_stream_video(
+    path: Path,
+    *,
+    codec: str,
+    fps: int,
+    frame_count: int,
+    container_format: str | None = None,
+    set_stream_time_base: bool = True,
+    set_frame_timestamps: bool = True,
+    pts: list[int] | None = None,
+    pixel_value: Callable[[int], int] | None = None,
+) -> None:
+    if container_format:
+        container = av.open(str(path), "w", format=container_format)
+    else:
+        container = av.open(str(path), "w")
+    stream = _add_video_stream(
+        container,
+        codec,
+        fps,
+        set_time_base=set_stream_time_base,
+    )
+    if pixel_value is None:
+        pixel_value = _default_pixel_value
 
     try:
-        for index, pts in enumerate([0, 1, 5, 6]):
-            image = np.full((16, 16, 3), index * 40, dtype=np.uint8)
-            frame = av.VideoFrame.from_ndarray(image, format="rgb24")
-            frame.pts = pts
-            frame.time_base = time_base
-            for packet in stream.encode(frame):
-                container.mux(packet)
+        for frame_index in range(frame_count):
+            if pts is not None:
+                frame_pts = pts[frame_index]
+            elif set_frame_timestamps:
+                frame_pts = frame_index
+            else:
+                frame_pts = None
+            _mux_video_frame(
+                container,
+                stream,
+                pixel_value(frame_index),
+                frame_pts,
+                fps,
+            )
 
-        for packet in stream.encode():
-            container.mux(packet)
+        _flush_video_stream(container, stream)
     finally:
         container.close()
 
 
-def _write_raw_h264_video(path):
-    container = av.open(str(path), "w", format="h264")
-    stream = container.add_stream("h264", rate=30)
-    stream.width = 16
-    stream.height = 16
-    stream.pix_fmt = "yuv420p"
-
-    try:
-        for index in range(4):
-            image = np.full((16, 16, 3), index * 40, dtype=np.uint8)
-            frame = av.VideoFrame.from_ndarray(image, format="rgb24")
-            for packet in stream.encode(frame):
-                container.mux(packet)
-
-        for packet in stream.encode():
-            container.mux(packet)
-    finally:
-        container.close()
+def _generated_video(path: Path) -> GeneratedVideo:
+    return GeneratedVideo(
+        path=path,
+        file=VideoFile.upload(path.read_bytes(), path.name),
+    )
 
 
-def _write_mkv_video_without_frame_count(path, frame_count: int, fps: int):
+@pytest.fixture
+def variable_timestamp_video(tmp_path) -> GeneratedVideo:
+    path = tmp_path / "variable_timestamp.mp4"
+    frame_pts = [0, 1, 5, 6]
+    _write_single_stream_video(
+        path,
+        codec="mpeg4",
+        fps=30,
+        frame_count=len(frame_pts),
+        pts=frame_pts,
+    )
+    return _generated_video(path)
+
+
+@pytest.fixture
+def raw_h264_video(tmp_path) -> GeneratedVideo:
+    path = tmp_path / "raw.h264"
+    _write_single_stream_video(
+        path,
+        codec="h264",
+        fps=30,
+        frame_count=4,
+        container_format="h264",
+        set_stream_time_base=False,
+        set_frame_timestamps=False,
+        pts=None,
+    )
+    return _generated_video(path)
+
+
+@pytest.fixture
+def mkv_video_without_frame_count(tmp_path) -> GeneratedVideo:
+    path = tmp_path / "inferred_frames.mkv"
+    _write_single_stream_video(
+        path,
+        codec="mpeg4",
+        fps=3,
+        frame_count=7,
+        pixel_value=lambda frame_index: frame_index * 20,
+    )
+    return _generated_video(path)
+
+
+@pytest.fixture
+def mpegts_video(tmp_path) -> GeneratedVideo:
+    path = tmp_path / "start_time.ts"
+    _write_single_stream_video(
+        path,
+        codec="mpeg2video",
+        fps=24,
+        frame_count=10,
+        container_format="mpegts",
+        pixel_value=lambda frame_index: frame_index * 20,
+    )
+    return _generated_video(path)
+
+
+@pytest.fixture
+def multi_stream_video(tmp_path) -> GeneratedVideo:
+    path = tmp_path / "multi_stream.mp4"
     container = av.open(str(path), "w")
-    stream = container.add_stream("mpeg4", rate=fps)
-    stream.width = 16
-    stream.height = 16
-    stream.pix_fmt = "yuv420p"
-    stream.time_base = Fraction(1, fps)
-
-    try:
-        for index in range(frame_count):
-            image = np.full((16, 16, 3), index * 20, dtype=np.uint8)
-            frame = av.VideoFrame.from_ndarray(image, format="rgb24")
-            frame.pts = index
-            frame.time_base = Fraction(1, fps)
-            for packet in stream.encode(frame):
-                container.mux(packet)
-
-        for packet in stream.encode():
-            container.mux(packet)
-    finally:
-        container.close()
-
-
-def _write_multi_stream_video(path):
-    container = av.open(str(path), "w")
-    time_base = Fraction(1, 30)
-    streams = []
-
-    for width, height in [(16, 16), (32, 24)]:
-        stream = container.add_stream("mpeg4", rate=30)
-        stream.width = width
-        stream.height = height
-        stream.pix_fmt = "yuv420p"
-        stream.time_base = time_base
-        streams.append(stream)
+    fps = 30
+    streams = [
+        _add_video_stream(container, "mpeg4", fps, width=16, height=16),
+        _add_video_stream(container, "mpeg4", fps, width=32, height=24),
+    ]
 
     try:
         for frame_index in range(2):
             for video_stream_index, stream in enumerate(streams):
-                image = np.full(
-                    (stream.height, stream.width, 3),
+                _mux_video_frame(
+                    container,
+                    stream,
                     video_stream_index * 80 + frame_index * 20,
-                    dtype=np.uint8,
+                    frame_index,
+                    fps,
                 )
-                frame = av.VideoFrame.from_ndarray(image, format="rgb24")
-                frame.pts = frame_index
-                frame.time_base = time_base
-                for packet in stream.encode(frame):
-                    container.mux(packet)
 
         for stream in streams:
-            for packet in stream.encode():
-                container.mux(packet)
+            _flush_video_stream(container, stream)
     finally:
         container.close()
 
+    return _generated_video(path)
 
-def _write_audio_first_video(path):
+
+@pytest.fixture
+def audio_first_video(tmp_path) -> GeneratedVideo:
+    path = tmp_path / "audio_first.mp4"
     container = av.open(str(path), "w")
     sample_rate = 44100
     audio_stream = container.add_stream("aac", rate=sample_rate)
     audio_stream.layout = "mono"
 
-    video_stream = container.add_stream("mpeg4", rate=2)
-    video_stream.width = 16
-    video_stream.height = 16
-    video_stream.pix_fmt = "yuv420p"
-    video_stream.time_base = Fraction(1, 2)
+    fps = 2
+    video_stream = _add_video_stream(container, "mpeg4", fps)
 
     try:
         audio_frame_samples = 1024
@@ -177,17 +261,19 @@ def _write_audio_first_video(path):
             container.mux(packet)
 
         for frame_index in range(2):
-            image = np.full((16, 16, 3), frame_index * 40, dtype=np.uint8)
-            video_frame = av.VideoFrame.from_ndarray(image, format="rgb24")
-            video_frame.pts = frame_index
-            video_frame.time_base = Fraction(1, 2)
-            for packet in video_stream.encode(video_frame):
-                container.mux(packet)
+            _mux_video_frame(
+                container,
+                video_stream,
+                frame_index * 40,
+                frame_index,
+                fps,
+            )
 
-        for packet in video_stream.encode():
-            container.mux(packet)
+        _flush_video_stream(container, video_stream)
     finally:
         container.close()
+
+    return _generated_video(path)
 
 
 @pytest.fixture(autouse=True)
@@ -248,24 +334,16 @@ def test_get_info_error():
         file.get_info()
 
 
-def test_get_info_handles_raw_video_without_duration(tmp_path):
-    video_path = tmp_path / "raw.h264"
-    _write_raw_h264_video(video_path)
-    file = VideoFile.upload(video_path.read_bytes(), video_path.name)
-
-    info = file.get_info()
+def test_get_info_handles_raw_video_without_duration(raw_h264_video):
+    info = raw_h264_video.file.get_info()
 
     assert info.fps > 0
     assert info.duration == -1.0
     assert info.frames == 0
 
 
-def test_get_info_ceil_inferred_frame_count(tmp_path):
-    video_path = tmp_path / "inferred_frames.mkv"
-    _write_mkv_video_without_frame_count(video_path, frame_count=7, fps=3)
-    file = VideoFile.upload(video_path.read_bytes(), video_path.name)
-
-    info = file.get_info()
+def test_get_info_ceil_inferred_frame_count(mkv_video_without_frame_count):
+    info = mkv_video_without_frame_count.file.get_info()
 
     assert info.frames == 7
 
@@ -278,10 +356,8 @@ def test_get_frame(video_file):
     assert frame.timestamp == pytest.approx(37 / 30)
 
 
-def test_get_frames_uses_frame_index_when_timestamps_are_missing(tmp_path):
-    video_path = tmp_path / "raw.h264"
-    _write_raw_h264_video(video_path)
-    file = VideoFile.upload(video_path.read_bytes(), video_path.name)
+def test_get_frames_uses_frame_index_when_timestamps_are_missing(raw_h264_video):
+    file = raw_h264_video.file
     info = file.get_info()
 
     frames = list(file.get_frames(0, 4))
@@ -291,12 +367,8 @@ def test_get_frames_uses_frame_index_when_timestamps_are_missing(tmp_path):
     )
 
 
-def test_get_frame_np_handles_raw_video_without_timestamps(tmp_path):
-    video_path = tmp_path / "raw.h264"
-    _write_raw_h264_video(video_path)
-    file = VideoFile.upload(video_path.read_bytes(), video_path.name)
-
-    frame = file.get_frame(3).get_np()
+def test_get_frame_np_handles_raw_video_without_timestamps(raw_h264_video):
+    frame = raw_h264_video.file.get_frame(3).get_np()
 
     assert frame.shape == (16, 16, 3)
 
@@ -336,6 +408,25 @@ def test_get_frame_np_matches_sequential_decode_after_seek(video_file):
     np.testing.assert_array_equal(image, expected)
 
 
+def test_get_frame_np_handles_stream_start_time_without_seek(mpegts_video):
+    video_path = mpegts_video.path
+    file = mpegts_video.file
+    frame_index = 5
+
+    image = file.get_frame(frame_index).get_np()
+
+    with av.open(str(video_path)) as container:
+        stream = container.streams.video[0]
+        assert stream.start_time not in (None, 0)
+        expected = next(
+            frame.to_ndarray(format="rgb24")
+            for index, frame in enumerate(container.decode(stream))
+            if index == frame_index
+        )
+
+    np.testing.assert_array_equal(image, expected)
+
+
 def test_get_frame_np_error(video_file):
     with pytest.raises(ValueError):
         video_frame_np(video_file.as_video_file(), -1)
@@ -362,9 +453,11 @@ def test_get_frame_np_wraps_decode_errors():
     "format,img_format,header",
     [
         ("jpg", "JPEG", [b"\xff\xd8\xff\xe0"]),
+        (".jpg", "JPEG", [b"\xff\xd8\xff\xe0"]),
         ("png", "PNG", [b"\x89PNG\r\n\x1a\n"]),
         ("gif", "GIF", [b"GIF87a", b"GIF89a"]),
         ("tif", "TIFF", [b"II*\x00", b"MM\x00*"]),
+        ("JPEG2000", "JPEG2000", [b"\x00\x00\x00\x0cjP"]),
     ],
 )
 def test_get_frame_bytes(video_file, format, img_format, header):
@@ -411,11 +504,8 @@ def test_get_frames(video_file):
     )
 
 
-def test_get_frames_uses_presentation_timestamps(tmp_path):
-    video_path = tmp_path / "variable_timestamp.mp4"
-    _write_variable_timestamp_video(video_path)
-
-    file = VideoFile.upload(video_path.read_bytes(), video_path.name)
+def test_get_frames_uses_presentation_timestamps(variable_timestamp_video):
+    file = variable_timestamp_video.file
 
     frames = list(file.get_frames(0, 4))
     assert [frame.frame for frame in frames] == [0, 1, 2, 3]
@@ -424,11 +514,8 @@ def test_get_frames_uses_presentation_timestamps(tmp_path):
     )
 
 
-def test_video_stream_index_selects_video_stream(tmp_path):
-    video_path = tmp_path / "multi_stream.mp4"
-    _write_multi_stream_video(video_path)
-
-    file = VideoFile.upload(video_path.read_bytes(), video_path.name)
+def test_video_stream_index_selects_video_stream(multi_stream_video):
+    file = multi_stream_video.file
 
     info = file.get_info(video_stream_index=1)
     assert info.width == 32
@@ -445,15 +532,14 @@ def test_video_stream_index_selects_video_stream(tmp_path):
     assert [frame.timestamp for frame in frames] == pytest.approx([0, 1 / 30])
 
 
-def test_video_stream_index_is_relative_to_video_streams(tmp_path):
-    video_path = tmp_path / "audio_first.mp4"
-    _write_audio_first_video(video_path)
+def test_video_stream_index_is_relative_to_video_streams(audio_first_video):
+    video_path = audio_first_video.path
 
     with av.open(str(video_path)) as container:
         assert next(iter(container.streams)).type == "audio"
         assert container.streams.video[0].index == 1
 
-    file = VideoFile.upload(video_path.read_bytes(), video_path.name)
+    file = audio_first_video.file
     info = file.get_info(video_stream_index=0)
     assert info.width == 16
     assert info.height == 16
@@ -717,6 +803,15 @@ def test_save_video_fragment_requires_catalog(tmp_path):
         save_video_fragment(video, 0, 1, str(tmp_path))
 
 
+def test_save_video_fragment_requires_ffmpeg_executable(
+    tmp_path, monkeypatch, video_file
+):
+    monkeypatch.setenv("PATH", "")
+
+    with pytest.raises(FileError, match="ffmpeg executable not found"):
+        save_video_fragment(video_file.as_video_file(), 0, 1, str(tmp_path / "out"))
+
+
 def test_save_video_fragment_rejects_negative_timeout(tmp_path, video_file):
     with pytest.raises(ValueError, match="non-negative"):
         save_video_fragment(video_file.as_video_file(), 0, 1, str(tmp_path), timeout=-1)
@@ -758,7 +853,9 @@ def test_save_video_fragment_invokes_ffmpeg_non_interactively(
     save_video_fragment(video_file.as_video_file(), 0, 1, str(tmp_path / "out"))
 
     args = args_file.read_text().splitlines()
-    assert args[:4] == ["-nostdin", "-hide_banner", "-loglevel", "error"]
+    assert os.path.isabs(args[0])
+    assert os.path.basename(args[0]) == "ffmpeg"
+    assert args[1:5] == ["-nostdin", "-hide_banner", "-loglevel", "error"]
     assert "pipe:1" not in args
     assert args[-1].endswith(".mp4")
 
