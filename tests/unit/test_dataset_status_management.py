@@ -536,7 +536,9 @@ def test_listing_excludes_removed_only_dataset(test_session, dataset_complete):
     assert name not in {ds.name for (ds,) in ds_chain.to_iter("dataset")}
 
 
-def test_read_dataset_after_soft_delete_raises(test_session, dataset_complete):
+def test_read_dataset_after_soft_delete_raises(
+    test_session, dataset_complete, no_studio_dataset
+):
     catalog = test_session.catalog
     name = dataset_complete.name
 
