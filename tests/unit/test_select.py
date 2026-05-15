@@ -194,7 +194,7 @@ def test_select_except_accepts_column(test_session):
     selected = chain.select_except(dc.C("val"))
 
     assert selected.schema == {"name": str}
-    assert selected.to_records() == [{"name": "a"}, {"name": "b"}]
+    assert selected.order_by("name").to_records() == [{"name": "a"}, {"name": "b"}]
 
 
 def test_select_except_error(test_session):
