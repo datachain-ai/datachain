@@ -577,14 +577,16 @@ def test_get_frame_bytes(video_file, format, img_format, header):
         assert img.size == (640, 360)
 
 
-@pytest.mark.parametrize("use_format", [True, False])
-def test_save_frame(tmp_path, video_file, use_format):
+@pytest.mark.parametrize("format", [None, "jpg", ".jpg"])
+def test_save_frame(tmp_path, video_file, format):
     frame = video_file.as_video_file().get_frame(3)
-    if use_format:
-        frame_file = frame.save(str(tmp_path), format="jpg")
+    if format is not None:
+        frame_file = frame.save(str(tmp_path), format=format)
     else:
         frame_file = frame.save(str(tmp_path))
     assert isinstance(frame_file, ImageFile)
+    assert frame_file.path.endswith("_0003.jpg")
+    assert "..jpg" not in frame_file.path
 
     frame_file.ensure_cached()
     frame_path = frame_file.get_local_path()

@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
-from math import ceil
+from math import ceil, floor
 from typing import Any, cast
 
 from fsspec.utils import stringify_path
@@ -39,6 +39,7 @@ FFMPEG_FRAGMENT_TIMEOUT_MIN = 60.0
 FFMPEG_FRAGMENT_TIMEOUT_FACTOR = 10.0
 FFMPEG_FRAGMENT_EXECUTABLE = "ffmpeg"
 FFMPEG_FRAGMENT_ARGS = ("-nostdin", "-hide_banner", "-loglevel", "error")
+FRAME_INDEX_EPSILON = 1e-9
 
 
 def video_info(file: File | VideoFile, video_stream_index: int = 0) -> Video:
@@ -185,7 +186,8 @@ def _decoded_frame_index(decoded_frame, fps: float, video_stream) -> int:
     else:
         return 0
 
-    return max(0, round((timestamp - _stream_start_time(video_stream)) * fps))
+    frame_position = (timestamp - _stream_start_time(video_stream)) * fps
+    return max(0, floor(frame_position + FRAME_INDEX_EPSILON))
 
 
 def _find_decoded_frame(container, video_stream, frame: int, fps: float, seeked: bool):
@@ -427,6 +429,10 @@ def _image_format(format: str) -> str:
     return format.upper()
 
 
+def _image_extension(format: str) -> str:
+    return format.removeprefix(".")
+
+
 def save_video_frame(
     video: VideoFile,
     frame: int,
@@ -459,7 +465,7 @@ def save_video_frame(
         video, frame, format=format, video_stream_index=video_stream_index
     )
     output_file = posixpath.join(
-        destination, f"{video.get_file_stem()}_{frame:04d}.{format}"
+        destination, f"{video.get_file_stem()}_{frame:04d}.{_image_extension(format)}"
     )
     client, rel_path = video._resolve_destination(output_file, client_config)
     result = client.upload(img, rel_path)
