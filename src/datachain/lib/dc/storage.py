@@ -176,10 +176,14 @@ def read_storage(
     for single_uri in uris:
         validate_cloud_bucket_name(str(single_uri))
 
+    probe_config = client_config or (
+        session.catalog.client_config if session is not None else None
+    )
+
     if (
         anon is None
-        and not _backends_have_credentials(uris, client_config)
-        and _all_buckets_anonymous(uris, client_config)
+        and not _backends_have_credentials(uris, probe_config)
+        and _all_buckets_anonymous(uris, probe_config)
     ):
         anon = True
 
@@ -189,6 +193,11 @@ def read_storage(
     catalog = session.catalog
     cache = catalog.cache
     client_config = session.catalog.client_config
+    if anon is not None:
+        # Session.get discards our client_config when an existing session is
+        # passed. Re-apply anon locally for the listing path without mutating
+        # the caller's session.
+        client_config = client_config | {"anon": anon}
     listing_namespace_name = catalog.metastore.system_namespace_name
     listing_project_name = catalog.metastore.listing_project_name
 
