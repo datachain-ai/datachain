@@ -18,6 +18,9 @@ class ClientS3(Client):
     FS_CLASS = S3FileSystem
     PREFIX = "s3://"
     protocol = "s3"
+    CREDENTIAL_KEYS = frozenset(
+        {"key", "secret", "token", "aws_key", "aws_secret", "aws_token"}
+    )
 
     @staticmethod
     def _normalize_s3_kwargs(kwargs: dict) -> dict:
@@ -67,17 +70,9 @@ class ClientS3(Client):
         # Step 1: Anonymous probe. cache_regions=True handles PermanentRedirect
         # (bucket-in-wrong-region) transparently so the bucket is found → exists=True.
         # Preserve endpoint/region settings from caller kwargs; strip credentials.
-        credential_keys = {
-            "anon",
-            "key",
-            "secret",
-            "token",
-            "aws_key",
-            "aws_secret",
-            "aws_token",
-        }
+        strip = cls.CREDENTIAL_KEYS | {"anon"}
         anon_kwargs = cls._normalize_s3_kwargs(
-            {k: v for k, v in kwargs.items() if k not in credential_keys}
+            {k: v for k, v in kwargs.items() if k not in strip}
         )
         anon_kwargs["anon"] = True
         anon_kwargs.setdefault("cache_regions", True)
