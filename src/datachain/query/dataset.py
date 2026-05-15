@@ -2259,12 +2259,31 @@ class SQLJoin(Step):
             query2=self.query2.replace_source(source, replacement),
         )
 
-    def get_query(self, dq: "DatasetQuery", temp_tables: list[str]) -> sa.Subquery:
+    def get_query(
+        self,
+        dq: "DatasetQuery",
+        temp_tables: list[str],
+        materialize: bool = False,
+        join_keys: Sequence[tuple[ColumnElement, str]] = (),
+    ) -> sa.Subquery:
         temp_tables_before = len(dq.temp_table_names)
         query = dq.apply_steps().select()
         temp_tables.extend(dq.temp_table_names[temp_tables_before:])
 
-        if not any(isinstance(step, (SQLJoin, SQLUnion)) for step in dq.steps):
+        if join_keys:
+            subq = query.subquery()
+            extras = []
+            for exp, name in join_keys:
+                key = self.bind_and_validate_expression(exp, subq, subq).label(name)
+                if getattr(key.type, "_isnull", False):
+                    key.type = sa.LargeBinary()
+                extras.append(key)
+            query = sa.select(*subq.c, *extras).select_from(subq)
+            materialize = True
+
+        if not materialize and not any(
+            isinstance(step, (SQLJoin, SQLUnion)) for step in dq.steps
+        ):
             return query.subquery(dq.table.name)
 
         warehouse = self.catalog.warehouse
@@ -2283,11 +2302,32 @@ class SQLJoin(Step):
 
         return temp_table.select().subquery(dq.table.name)
 
-    def bind_and_validate_expression(self, exp: ColumnElement, q1, q2) -> ColumnElement:
+    @staticmethod
+    def _dynamic_columns(dq: "DatasetQuery") -> set[str]:
+        names: set[str] = set()
+        for step in dq.steps:
+            if isinstance(step, (UDFStep, SQLJoin, SQLUnion)):
+                names.clear()
+            elif isinstance(step, SQLMutate):
+                names.update(arg.name for arg in step.args)
+        return names
+
+    def bind_and_validate_expression(
+        self,
+        exp: ColumnElement,
+        q1,
+        q2,
+        replacements: dict[int, ColumnElement] | None = None,
+    ) -> ColumnElement:
         left_name = self.query1.table.name
         right_name = self.query2.table.name
 
         def replace(element, **_kwargs):
+            if (
+                replacements
+                and (replacement := replacements.get(id(element))) is not None
+            ):
+                return replacement
             if not isinstance(element, ColumnClause):
                 return None
 
@@ -2331,8 +2371,28 @@ class SQLJoin(Step):
         state: "QueryState",
         **kwargs,
     ) -> StepResult:
-        q1 = self.get_query(self.query1, temp_tables)
-        q2 = self.get_query(self.query2, temp_tables)
+        predicates = (
+            (self.predicates,)
+            if not isinstance(self.predicates, tuple)
+            else self.predicates
+        )
+        materialize, join_keys, key_replacements = (
+            self.catalog.warehouse.join_input_materialization_plan(
+                predicates,
+                (self.query1.table.name, self.query2.table.name),
+                (
+                    self._dynamic_columns(self.query1),
+                    self._dynamic_columns(self.query2),
+                ),
+                self.inner or self.full,
+            )
+        )
+        q1 = self.get_query(self.query1, temp_tables, materialize[0], join_keys[0])
+        q2 = self.get_query(self.query2, temp_tables, materialize[1], join_keys[1])
+        bound_replacements: dict[int, ColumnElement] = {
+            expr_id: (q1 if side == 0 else q2).c[name]
+            for expr_id, (side, name) in key_replacements.items()
+        }
 
         q1_columns = _drop_system_columns(q1.c)
         existing_column_names = {c.name for c in q1_columns}
@@ -2369,11 +2429,6 @@ class SQLJoin(Step):
             q2_columns.append(column)
 
         res_columns = q1_columns + q2_columns
-        predicates = (
-            (self.predicates,)
-            if not isinstance(self.predicates, tuple)
-            else self.predicates
-        )
 
         def bind_same_name_predicate(column_name: str) -> ColumnElement:
             left_col = q1.c.get(column_name)
@@ -2402,7 +2457,11 @@ class SQLJoin(Step):
             elif isinstance(p, str):
                 expressions.append(bind_same_name_predicate(p))
             elif isinstance(p, ColumnElement):
-                expressions.append(self.bind_and_validate_expression(p, q1, q2))
+                expressions.append(
+                    self.bind_and_validate_expression(
+                        p, q1, q2, replacements=bound_replacements
+                    )
+                )
             else:
                 raise TypeError(f"Unsupported predicate {p} for join expression")
 
