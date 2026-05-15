@@ -474,10 +474,6 @@ def _image_format(format: str) -> str:
     return format.upper()
 
 
-def _image_extension(format: str) -> str:
-    return format.removeprefix(".")
-
-
 def save_video_frame(
     video: VideoFile,
     frame: int,
@@ -509,8 +505,9 @@ def save_video_frame(
     img = video_frame_bytes(
         video, frame, format=format, video_stream_index=video_stream_index
     )
+    extension = format.removeprefix(".")
     output_file = posixpath.join(
-        destination, f"{video.get_file_stem()}_{frame:04d}.{_image_extension(format)}"
+        destination, f"{video.get_file_stem()}_{frame:04d}.{extension}"
     )
     client, rel_path = video._resolve_destination(output_file, client_config)
     result = client.upload(img, rel_path)
@@ -570,6 +567,7 @@ def _run_ffmpeg(stream_spec: Any, video: VideoFile, timeout: float | None) -> No
 def _video_fragment_format(video: VideoFile, format: str | None) -> str:
     if format is None:
         format = video.get_file_ext()
+    format = format.removeprefix(".").lower()
     if not format:
         raise ValueError(
             f"Can't save video fragment for '{video.path}', "

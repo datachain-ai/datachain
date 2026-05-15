@@ -1024,12 +1024,14 @@ def test_save_video_fragment_accepts_zero_timeout(tmp_path, video_file):
 
 
 @requires_ffmpeg
-def test_save_video_fragment_uses_explicit_format(tmp_path, video_file):
+@pytest.mark.parametrize("format", ["avi", ".avi", ".AVI"])
+def test_save_video_fragment_uses_explicit_format(tmp_path, video_file, format):
     fragment = save_video_fragment(
-        video_file.as_video_file(), 0, 1, str(tmp_path / "out"), format="avi"
+        video_file.as_video_file(), 0, 1, str(tmp_path / "out"), format=format
     )
 
     assert fragment.path.endswith(".avi")
+    assert "..avi" not in fragment.path
     fragment.ensure_cached()
     assert fragment.get_info().format == "avi"
 
