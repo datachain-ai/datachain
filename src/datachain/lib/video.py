@@ -42,6 +42,10 @@ FFMPEG_FRAGMENT_ARGS = ("-nostdin", "-hide_banner", "-loglevel", "error")
 FRAME_INDEX_EPSILON = 1e-9
 
 
+class _SeekLandedAfterStartError(Exception):
+    pass
+
+
 def video_info(file: File | VideoFile, video_stream_index: int = 0) -> Video:
     """
     Returns video file information.
@@ -213,9 +217,32 @@ def _decoded_frames(container, video_stream, start: int, fps: float, seeked: boo
         if decoded_offset == 0 and seeked:
             start_frame_index = _decoded_frame_index(decoded_frame, fps, video_stream)
             if start_frame_index > start:
-                return
+                raise _SeekLandedAfterStartError
 
         yield start_frame_index + decoded_offset, decoded_frame
+
+
+def _video_frames_from_decoded(
+    video: VideoFile,
+    decoded_frames,
+    start: int,
+    end: int,
+    step: int,
+    fps: float,
+    video_stream_index: int,
+) -> Iterator[VideoFrame]:
+    for frame_index, frame in decoded_frames:
+        if frame_index >= end:
+            break
+        if frame_index < start or (frame_index - start) % step:
+            continue
+
+        yield VideoFrame(
+            video=video,
+            frame=frame_index,
+            video_stream_index=video_stream_index,
+            timestamp=_frame_timestamp(frame, frame_index, fps),
+        )
 
 
 def video_frame_np(
@@ -313,19 +340,37 @@ def video_frames(
                 fps = _video_fps(video_stream)
                 seeked = _seek_to_frame(input_container, f, video_stream, start, fps)
 
-                for frame_index, frame in _decoded_frames(
-                    input_container, video_stream, start, fps, seeked
-                ):
-                    if frame_index >= end:
-                        break
-                    if frame_index < start or (frame_index - start) % step:
-                        continue
-
-                    yield VideoFrame(
+                try:
+                    yield from _video_frames_from_decoded(
                         video=video,
-                        frame=frame_index,
+                        decoded_frames=_decoded_frames(
+                            input_container, video_stream, start, fps, seeked
+                        ),
+                        start=start,
+                        end=end,
+                        step=step,
+                        fps=fps,
                         video_stream_index=video_stream_index,
-                        timestamp=_frame_timestamp(frame, frame_index, fps),
+                    )
+                except _SeekLandedAfterStartError:
+                    if not seeked:
+                        raise
+                    input_container.seek(
+                        video_stream.start_time or 0,
+                        backward=True,
+                        any_frame=False,
+                        stream=video_stream,
+                    )
+                    yield from _video_frames_from_decoded(
+                        video=video,
+                        decoded_frames=_decoded_frames(
+                            input_container, video_stream, start, fps, False
+                        ),
+                        start=start,
+                        end=end,
+                        step=step,
+                        fps=fps,
+                        video_stream_index=video_stream_index,
                     )
     except FileError:
         raise

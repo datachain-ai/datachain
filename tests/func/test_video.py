@@ -6,6 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 
 import av
@@ -57,6 +58,47 @@ class SeekTellReader:
 
     def tell(self):
         return self._buffer.tell()
+
+
+class SeekAheadContainer:
+    def __init__(self, container, start_frame: int):
+        self._container = container
+        self._start_frame = start_frame
+        self._seek_landed_after_start = False
+        self.streams = container.streams
+
+    def __enter__(self):
+        self._container.__enter__()
+        return self
+
+    def __exit__(self, *args):
+        return self._container.__exit__(*args)
+
+    def seek(self, offset, *, backward=True, any_frame=False, stream=None):
+        result = self._container.seek(
+            offset,
+            backward=backward,
+            any_frame=any_frame,
+            stream=stream,
+        )
+        self._seek_landed_after_start = bool(
+            stream is not None and offset != (stream.start_time or 0)
+        )
+        return result
+
+    def decode(self, stream):
+        frames = self._container.decode(stream)
+        if self._seek_landed_after_start:
+            self._seek_landed_after_start = False
+            yield self._frame_after_start(stream)
+            return
+        yield from frames
+
+    def _frame_after_start(self, stream):
+        fps = float(stream.average_rate or stream.base_rate or stream.guessed_rate)
+        timestamp = (self._start_frame + 1) / fps
+        pts = (stream.start_time or 0) + int(timestamp / stream.time_base)
+        return SimpleNamespace(pts=pts, time_base=stream.time_base, time=timestamp)
 
 
 def _install_fake_ffmpeg(tmp_path, monkeypatch, script: str) -> None:
@@ -620,6 +662,23 @@ def test_get_frames_uses_seek_for_large_start(video_file):
     assert [frame.frame for frame in frames] == [250, 252, 254]
     assert [frame.timestamp for frame in frames] == pytest.approx(
         [250 / 30, 252 / 30, 254 / 30]
+    )
+
+
+def test_get_frames_retries_when_seek_lands_after_start(video_file, monkeypatch):
+    start = 250
+    real_av_open = av.open
+
+    def open_with_seek_ahead(*args, **kwargs):
+        return SeekAheadContainer(real_av_open(*args, **kwargs), start)
+
+    monkeypatch.setattr(av, "open", open_with_seek_ahead)
+
+    frames = list(video_file.as_video_file().get_frames(start, start + 3))
+
+    assert [frame.frame for frame in frames] == [250, 251, 252]
+    assert [frame.timestamp for frame in frames] == pytest.approx(
+        [250 / 30, 251 / 30, 252 / 30]
     )
 
 
