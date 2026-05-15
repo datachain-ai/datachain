@@ -295,10 +295,12 @@ class SQLiteDatabaseEngine(DatabaseEngine):
         parts = [column.name, str(compiled_type)]
 
         default_clause: str | None = None
+        callable_default: bool = False
         if column.default is not None and hasattr(column.default, "arg"):
             default_val = column.default.arg
             if callable(default_val):
                 default_clause = None
+                callable_default = True
             elif isinstance(default_val, bool):
                 default_clause = f"DEFAULT {int(default_val)}"
             elif isinstance(default_val, int | float):
@@ -312,7 +314,7 @@ class SQLiteDatabaseEngine(DatabaseEngine):
                     f"{type(default_val).__name__}"
                 )
 
-        if not column.nullable:
+        if not column.nullable and not callable_default:
             parts.append("NOT NULL")
 
         if default_clause is not None:
