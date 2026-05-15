@@ -1218,7 +1218,20 @@ class AbstractDBMetastore(AbstractMetastore):
         else:
             project = self.get_project_by_id(project_id)
 
-        my_uuid = uuid or str(uuid4())
+        if uuid is not None:
+            # Validate UUID format if explicitly provided
+            if not uuid.strip():
+                raise ValueError("UUID cannot be empty or whitespace")
+            try:
+                # Validate UUID format by parsing it
+                import uuid as uuid_module
+
+                uuid_module.UUID(uuid)
+                my_uuid = uuid
+            except ValueError as e:
+                raise ValueError(f"Invalid UUID format: {uuid}") from e
+        else:
+            my_uuid = str(uuid4())
 
         query = self._datasets_insert().values(
             name=name,
