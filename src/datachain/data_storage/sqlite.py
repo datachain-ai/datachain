@@ -312,7 +312,7 @@ class SQLiteDatabaseEngine(DatabaseEngine):
                     f"{type(default_val).__name__}"
                 )
 
-        if not column.nullable and default_clause is not None:
+        if not column.nullable:
             parts.append("NOT NULL")
 
         if default_clause is not None:
