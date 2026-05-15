@@ -130,7 +130,11 @@ class TarVFile(VFile):
 
     @classmethod
     def open(cls, file: "File", location: list[dict]):
-        """Stream file from tar archive based on location in archive."""
+        """Stream file from tar archive based on location in archive.
+
+        Reads always consult the cache (hit → local, miss → remote stream);
+        ``_caching_enabled`` only governs whether a miss is also persisted.
+        """
         tar_file = cls.parent(file, location)
 
         loc = location[0]
@@ -142,7 +146,7 @@ class TarVFile(VFile):
             raise VFileError("'size' is not specified", file.source, file.path)
 
         client = file._catalog.get_client(tar_file.source)
-        fd = client.open_object(tar_file, use_cache=file._caching_enabled)
+        fd = client.open_object(tar_file, use_cache=True)
         return FileSlice(fd, offset, size, file.name)
 
     @classmethod
@@ -492,6 +496,9 @@ class File(DataModel):
 
         Supports both read ("rb", "r") and write modes (e.g. "wb", "w", "ab").
         When opened in a write mode, metadata is refreshed after closing.
+
+        Reads always consult the cache (hit → local, miss → remote stream);
+        ``_caching_enabled`` only governs whether a miss is also persisted.
         """
         writing = any(ch in mode for ch in "wax+")
         if self.location and writing:
@@ -516,9 +523,7 @@ class File(DataModel):
                 return
             if self._caching_enabled:
                 self.ensure_cached()
-            with client.open_object(
-                self, use_cache=self._caching_enabled, cb=self._download_cb
-            ) as f:
+            with client.open_object(self, use_cache=True, cb=self._download_cb) as f:
                 with self._wrap_text(f, mode, open_kwargs=open_kwargs) as wrapped:
                     yield wrapped
             return
@@ -1668,7 +1673,6 @@ class ArrowRow(DataModel):
             self.file.ensure_cached()
             path = self.file.get_local_path()
             ds = dataset(path, **self.kwargs)
-
         else:
             path = self.file.get_fs_path()
             ds = dataset(path, filesystem=self.file.get_fs(), **self.kwargs)

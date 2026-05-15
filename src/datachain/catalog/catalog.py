@@ -1217,7 +1217,7 @@ class Catalog:
                     source,
                     session=self.session,
                     recursive=recursive,
-                    client_config=client_config,
+                    client_config=client_config or self.client_config,
                 )
 
             chains.append(dc)
