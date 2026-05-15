@@ -4091,6 +4091,21 @@ def test_group_by_expression_without_name_error(test_session):
         chain.group_by(func.sum("col2"))
 
 
+@pytest.mark.parametrize(
+    "arg",
+    ["col2", C("col2"), C("col2") + 1, object()],
+    ids=["str", "column", "column-expr", "object"],
+)
+def test_group_by_positional_argument_error(test_session, arg):
+    chain = dc.read_values(col2=[1, 2], session=test_session)
+
+    with pytest.raises(
+        DataChainParamsError,
+        match=r"group_by\(\) does not accept positional arguments.*partition_by=",
+    ):
+        chain.group_by(arg)
+
+
 def test_group_by_case(test_session):
     from datachain import func
 

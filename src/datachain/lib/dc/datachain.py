@@ -1245,7 +1245,13 @@ class DataChain:
             ```
         """
         if args:
-            raise self._named_expression_error("group_by()", args[0])
+            if isinstance(args[0], Func):
+                raise self._named_expression_error("group_by()", args[0])
+            raise DataChainParamsError(
+                "group_by() does not accept positional arguments "
+                f"of type {type(args[0]).__name__}; pass grouping columns with "
+                "`partition_by=` and aggregate expressions as keyword arguments"
+            )
 
         if partition_by is None:
             partition_by = []
