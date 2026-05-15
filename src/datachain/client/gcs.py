@@ -29,6 +29,7 @@ class GCSClient(Client):
     FS_CLASS = GCSFileSystem
     PREFIX = "gs://"
     protocol = "gs"
+    CREDENTIAL_KEYS = frozenset({"token"})
 
     @classmethod
     def create_fs(cls, **kwargs) -> GCSFileSystem:
