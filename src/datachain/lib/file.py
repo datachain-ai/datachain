@@ -1164,8 +1164,8 @@ class VideoFile(File):
         The returned timestamp is estimated from FPS metadata when available.
         This returns a frame reference without decoding or validating that the
         frame exists. Pixel access methods decode the requested frame; use
-        ``get_frames()`` for sequential access and decoder-provided
-        presentation timestamps.
+        ``get_frames()`` for sequential access and decoded frame timestamps
+        when available.
 
         Args:
             frame (int): The frame number to read.
@@ -1507,8 +1507,8 @@ class VideoFrame(DataModel):
             the frame.
         timestamp (float): Frame timestamp in seconds. For frames returned by
             ``VideoFile.get_frame()``, this is estimated from FPS metadata when
-            available. Frames yielded by ``VideoFile.get_frames()`` use
-            decoder-provided timestamps when available.
+            available. Frames yielded by ``VideoFile.get_frames()`` use decoded
+            frame timestamps when available.
     """
 
     video: VideoFile

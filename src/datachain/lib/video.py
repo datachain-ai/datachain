@@ -280,7 +280,7 @@ def video_frames(
     step: int,
     video_stream_index: int = 0,
 ) -> Iterator[VideoFrame]:
-    """Yield video frames with presentation timestamps."""
+    """Yield video frames with decoded timestamps when available."""
     _validate_video_stream_index(video_stream_index)
 
     try:
@@ -321,7 +321,7 @@ def video_frames(
 def video_frame(
     video: VideoFile, frame: int, video_stream_index: int = 0
 ) -> VideoFrame:
-    """Return one video frame reference with an FPS-derived timestamp."""
+    """Return one video frame reference with an FPS-derived timestamp if available."""
     info = video_info(video, video_stream_index=video_stream_index)
     timestamp = frame / info.fps if info.fps > 0 else -1.0
     return VideoFrame(
