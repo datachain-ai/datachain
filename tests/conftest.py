@@ -727,6 +727,7 @@ def cats_dataset(listed_bucket, cloud_test_catalog):
 def dataset_record():
     return DatasetRecord(
         id=1,
+        uuid=str(uuid.uuid4()),
         name=f"ds_{uuid.uuid4().hex}",
         description="",
         attrs=[],
@@ -775,6 +776,7 @@ def dataset_record():
 def dataset_list_record():
     return DatasetListRecord(
         id=1,
+        uuid=str(uuid.uuid4()),
         name=f"ds_{uuid.uuid4().hex}",
         project=Project(
             id=1,
@@ -901,6 +903,7 @@ def studio_datasets(requests_mock, studio_token):
         "description": "dogs dataset",
         "attrs": ["dogs", "dataset"],
         "project": project,
+        "uuid": str(uuid.uuid4()),
         "versions": [
             {
                 "version": "1.0.0",
@@ -927,6 +930,7 @@ def studio_datasets(requests_mock, studio_token):
             "description": "cats dataset",
             "attrs": ["cats", "dataset"],
             "project": project,
+            "uuid": str(uuid.uuid4()),
             "versions": [
                 {
                     "version": "1.0.0",
@@ -943,6 +947,7 @@ def studio_datasets(requests_mock, studio_token):
             "description": "both dataset",
             "attrs": ["both", "dataset"],
             "project": project,
+            "uuid": str(uuid.uuid4()),
             "versions": [
                 {
                     "version": "1.0.0",

@@ -274,6 +274,7 @@ class AbstractMetastore(ABC, Serializable):
         ignore_if_exists: bool = False,
         description: str | None = None,
         attrs: list[str] | None = None,
+        uuid: str | None = None,
     ) -> DatasetRecord:
         """Creates new dataset."""
 
@@ -777,6 +778,8 @@ class AbstractDBMetastore(AbstractMetastore):
         """Datasets table columns."""
         return [
             Column("id", Integer, primary_key=True),
+            Column("uuid", Text, nullable=False, default=lambda: str(uuid4())),
+            Index("uq_datasets_uuid", "uuid", unique=True),
             Column(
                 "project_id",
                 Integer,
@@ -801,17 +804,16 @@ class AbstractDBMetastore(AbstractMetastore):
     @cached_property
     def _dataset_fields(self) -> list[str]:
         return [
-            c.name  # type: ignore [attr-defined]
-            for c in self._datasets_columns()
-            if c.name  # type: ignore [attr-defined]
+            c.name for c in self._datasets_columns() if isinstance(c, Column) and c.name
         ]
 
     @cached_property
     def _dataset_list_fields(self) -> list[str]:
         return [
-            c.name  # type: ignore [attr-defined]
+            c.name
             for c in self._datasets_columns()
-            if c.name in self.dataset_list_class.__dataclass_fields__  # type: ignore [attr-defined]
+            if isinstance(c, Column)
+            and c.name in self.dataset_list_class.__dataclass_fields__
         ]
 
     @classmethod
@@ -1207,6 +1209,7 @@ class AbstractDBMetastore(AbstractMetastore):
         ignore_if_exists: bool = False,
         description: str | None = None,
         attrs: list[str] | None = None,
+        uuid: str | None = None,
         **kwargs,  # TODO registered = True / False
     ) -> DatasetRecord:
         """Creates new dataset."""
@@ -1215,8 +1218,24 @@ class AbstractDBMetastore(AbstractMetastore):
         else:
             project = self.get_project_by_id(project_id)
 
+        if uuid is not None:
+            # Validate UUID format if explicitly provided
+            if not uuid.strip():
+                raise ValueError("UUID cannot be empty or whitespace")
+            try:
+                # Validate UUID format by parsing it
+                import uuid as uuid_module
+
+                uuid_module.UUID(uuid)
+                my_uuid = uuid
+            except ValueError as e:
+                raise ValueError(f"Invalid UUID format: {uuid}") from e
+        else:
+            my_uuid = str(uuid4())
+
         query = self._datasets_insert().values(
             name=name,
+            uuid=my_uuid,
             project_id=project.id,
             status=status,
             feature_schema=json.dumps(feature_schema or {}),

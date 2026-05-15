@@ -415,6 +415,7 @@ def test_query_step_hash_uses_version_uuid():
 
     ds = DatasetRecord(
         id=1,
+        uuid="d4e5f6a1-b2c3-4d4e-8f6a-1b2c3d4e5f6a",
         name="test_ds",
         description="",
         attrs=[],
