@@ -318,9 +318,13 @@ class AbstractMetastore(ABC, Serializable):
 
     @abstractmethod
     def update_dataset_version(
-        self, dataset: DatasetRecord, version: str, **kwargs
+        self, dataset: DatasetRecord, dataset_version: str, **kwargs
     ) -> DatasetVersion:
-        """Updates dataset version fields."""
+        """Updates dataset version fields.
+
+        ``dataset_version`` is the lookup key (the current value of the row's
+        ``version`` column).
+        """
 
     @abstractmethod
     def remove_dataset_version(
@@ -846,6 +850,7 @@ class AbstractDBMetastore(AbstractMetastore):
             Column("schema", JSON, nullable=True),
             Column("job_id", Text, nullable=True),
             Column("content_hash", Text, nullable=True),
+            Column("removed_at", DateTime(timezone=True), nullable=True),
             UniqueConstraint("dataset_id", "version"),
         ]
 
@@ -1381,14 +1386,18 @@ class AbstractDBMetastore(AbstractMetastore):
         return result_ds
 
     def update_dataset_version(
-        self, dataset: DatasetRecord, version: str, **kwargs
+        self, dataset: DatasetRecord, dataset_version: str, **kwargs
     ) -> DatasetVersion:
-        """Updates dataset fields."""
+        """Updates dataset version fields.
+
+        ``dataset_version`` is the lookup key (the current value of the row's
+        ``version`` column).
+        """
         logger.debug(
             "Metastore.update_dataset_version called for %s@%s: "
             "num_objects=%s, size=%s, preview_len=%s, all_fields=%s",
             dataset.name,
-            version,
+            dataset_version,
             kwargs.get("num_objects"),
             kwargs.get("size"),
             len(kwargs["preview"])
@@ -1440,16 +1449,16 @@ class AbstractDBMetastore(AbstractMetastore):
                 values[field] = value
                 version_values[field] = value
 
-        dataset_version = dataset.get_version(version)
+        version_obj = dataset.get_version(dataset_version)
 
         if not values:
-            return dataset_version
+            return version_obj
 
         logger.debug(
             "Writing to database for %s@%s: num_objects=%s, size=%s, "
             "preview_serialized=%s, fields_to_update=%s",
             dataset.name,
-            version,
+            dataset_version,
             values.get("num_objects"),
             values.get("size"),
             bool(values.get("preview")),
@@ -1459,21 +1468,21 @@ class AbstractDBMetastore(AbstractMetastore):
         dv = self._datasets_versions
         self.db.execute(
             self._datasets_versions_update()
-            .where(dv.c.dataset_id == dataset.id, dv.c.version == version)
+            .where(dv.c.dataset_id == dataset.id, dv.c.version == dataset_version)
             .values(values),
         )  # type: ignore [attr-defined]
 
-        dataset_version.update(**version_values)
+        version_obj.update(**version_values)
         logger.debug(
             "Dataset version updated successfully: %s@%s, "
             "final_num_objects=%s, final_size=%s, has_preview=%s",
             dataset.name,
-            version,
-            dataset_version.num_objects,
-            dataset_version.size,
-            bool(getattr(dataset_version, "_preview_data", None)),
+            dataset_version,
+            version_obj.num_objects,
+            version_obj.size,
+            bool(getattr(version_obj, "_preview_data", None)),
         )
-        return dataset_version
+        return version_obj
 
     def _parse_dataset(
         self,
@@ -2830,6 +2839,7 @@ class AbstractDBMetastore(AbstractMetastore):
                 self._projects.c.name == project_name,
                 self._dataset_version_jobs.c.job_id.in_(job_ancestry),
                 self._dataset_version_jobs.c.is_creator.is_(True),
+                self._datasets_versions.c.status != DatasetStatus.REMOVED,
             )
             .order_by(desc(self._dataset_version_jobs.c.created_at))
             .limit(1)

@@ -234,7 +234,7 @@ class DatasetDependency:
             namespace_name,
             project_name,
             dataset_name,
-            dataset_version or None,  # type: ignore[arg-type]
+            dataset_version,  # type: ignore[arg-type]
             dataset_version_created_at,  # type: ignore[arg-type]
             [],
         )
@@ -264,6 +264,7 @@ class DatasetStatus:
     COMPLETE = 4
     STALE = 6
     REMOVING = 7
+    REMOVED = 8
 
 
 @dataclass
@@ -295,6 +296,7 @@ class DatasetVersion:
     query_script: str = ""
     job_id: str | None = None
     content_hash: str | None = None
+    removed_at: datetime | None = None
 
     @classmethod
     def parse(  # noqa: PLR0913
@@ -318,6 +320,7 @@ class DatasetVersion:
         query_script: str = "",
         job_id: str | None = None,
         content_hash: str | None = None,
+        removed_at: datetime | None = None,
         *,
         preview_loaded: bool = True,
     ):
@@ -346,6 +349,7 @@ class DatasetVersion:
             query_script=query_script,
             job_id=job_id,
             content_hash=content_hash,
+            removed_at=removed_at,
             _preview_loaded=preview_loaded,
         )
 
@@ -372,6 +376,7 @@ class DatasetVersion:
             DatasetStatus.COMPLETE,
             DatasetStatus.STALE,
             DatasetStatus.REMOVING,
+            DatasetStatus.REMOVED,
         ]
 
     def update(self, **kwargs):
@@ -574,6 +579,7 @@ class DatasetRecord:
         version_schema: str | None = None,
         version_job_id: str | None = None,
         version_content_hash: str | None = None,
+        version_removed_at: datetime | None = None,
         *,
         versions_loaded: bool = True,
         preview_loaded: bool = True,
@@ -632,6 +638,7 @@ class DatasetRecord:
                 version_query_script or "",
                 version_job_id,
                 version_content_hash,
+                version_removed_at,
                 preview_loaded=preview_loaded,
             )
             versions_list = [dataset_version]
@@ -674,15 +681,13 @@ class DatasetRecord:
     def is_valid_next_version(self, version: str) -> bool:
         """
         Checks if a number can be a valid next latest version for dataset.
-        The only rule is that it cannot be lower than current latest version
+        Compares against the highest version ever used, including REMOVED
+        ones — once a semver has been claimed it is permanently reserved.
         """
         if not self.versions:
             return True
 
-        return not (
-            self.latest_version
-            and semver.value(self.latest_version) >= semver.value(version)
-        )
+        return self._max_version_value < semver.value(version)
 
     def get_version(self, version: str) -> DatasetVersion:
         if not self.has_version(version):
@@ -729,41 +734,60 @@ class DatasetRecord:
     def next_version_major(self) -> str:
         """
         Returns the next auto-incremented version if the major part is being bumped.
+        Skips past REMOVED versions so deleted semvers are never reclaimed.
         """
         if not self.versions:
             return "1.0.0"
 
-        major, _, _ = semver.parse(self.latest_version)
+        major, _, _ = semver.parse(self._max_version)
         return semver.create(major + 1, 0, 0)
 
     @property
     def next_version_minor(self) -> str:
         """
         Returns the next auto-incremented version if the minor part is being bumped.
+        Skips past REMOVED versions so deleted semvers are never reclaimed.
         """
         if not self.versions:
             return "1.0.0"
 
-        major, minor, _ = semver.parse(self.latest_version)
+        major, minor, _ = semver.parse(self._max_version)
         return semver.create(major, minor + 1, 0)
 
     @property
     def next_version_patch(self) -> str:
         """
         Returns the next auto-incremented version if the patch part is being bumped.
+        Skips past REMOVED versions so deleted semvers are never reclaimed.
         """
         if not self.versions:
             return "1.0.0"
 
-        major, minor, patch = semver.parse(self.latest_version)
+        major, minor, patch = semver.parse(self._max_version)
         return semver.create(major, minor, patch + 1)
 
     @property
-    def latest_version(self) -> str:
-        """Returns latest version of a dataset"""
-        if not self.versions:
-            raise DatasetVersionNotFoundError("Dataset has no versions")
+    def live_versions(self) -> list[DatasetVersion]:
+        """Versions excluding REMOVED ones."""
+        return [v for v in self.versions if v.status != DatasetStatus.REMOVED]
+
+    @property
+    def _max_version(self) -> str:
+        """Highest semver across all versions including REMOVED ones. Used for
+        collision avoidance — once a semver is claimed it's reserved forever,
+        even after soft-delete."""
         return max(self.versions).version
+
+    @property
+    def _max_version_value(self) -> int:
+        return semver.value(self._max_version)
+
+    @property
+    def latest_version(self) -> str:
+        """Latest user-visible version (skips REMOVED ones)."""
+        if not self.live_versions:
+            raise DatasetVersionNotFoundError("Dataset has no versions")
+        return max(self.live_versions).version
 
     @property
     def latest_complete_version(self) -> str | None:
@@ -783,7 +807,9 @@ class DatasetRecord:
         and we call `.latest_major_version(2)` it will return: "2.4.0".
         If no major version is find with input value, None will be returned
         """
-        versions = [v for v in self.versions if semver.parse(v.version)[0] == major]
+        versions = [
+            v for v in self.live_versions if semver.parse(v.version)[0] == major
+        ]
         if not versions:
             return None
         return max(versions).version
@@ -811,7 +837,7 @@ class DatasetRecord:
         # Convert dataset versions to packaging.Version objects
         # and filter compatible ones
         compatible_versions = []
-        for v in self.versions:
+        for v in self.live_versions:
             pkg_version = Version(v.version)
             if spec_set.contains(pkg_version):
                 compatible_versions.append(v)
@@ -943,7 +969,8 @@ class DatasetListRecord:
         return f"{self.project.namespace.name}.{self.project.name}.{self.name}"
 
     def latest_version(self) -> DatasetListVersion:
-        return max(self.versions, key=lambda v: v.version_value)
+        live = [v for v in self.versions if v.status != DatasetStatus.REMOVED]
+        return max(live or self.versions, key=lambda v: v.version_value)
 
     @property
     def is_bucket_listing(self) -> bool:

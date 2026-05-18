@@ -140,14 +140,9 @@ def test_delta_falls_back_when_dependency_missing(test_session, no_studio_datase
     with pytest.raises(DatasetNotFoundError):
         dc.read_dataset(source_ds, session=test_session, version="1.0.0")
 
-    deps_after_removal = catalog.get_dataset_dependencies(
-        delta_ds,
-        "1.0.0",
-        namespace_name=catalog.metastore.default_project.namespace.name,
-        project_name=catalog.metastore.default_project.name,
-        indirect=False,
-    )
-    assert deps_after_removal == [None]
+    # Soft delete keeps the dep row pointing at the now-REMOVED v1.0.0 of
+    # the source so the dependent's lineage view still resolves.
+    assert _get_dependencies(catalog, delta_ds, "1.0.0") == [(source_ds, "1.0.0")]
 
     dc.read_dataset(
         source_ds,

@@ -5,6 +5,7 @@ import pytest
 import sqlalchemy as sa
 
 import datachain as dc
+from datachain.dataset import DatasetStatus
 from datachain.error import (
     DatasetNotFoundError,
     JobNotFoundError,
@@ -258,20 +259,23 @@ def test_checkpoint_with_deleted_dataset_version(test_session, nums_dataset):
 
     catalog.remove_dataset("nums_deleted", version="1.0.0", force=True)
 
-    with pytest.raises(DatasetNotFoundError):
-        catalog.get_dataset("nums_deleted")
+    # Soft delete: dataset row stays, version is REMOVED.
+    dataset = catalog.get_dataset(
+        "nums_deleted", versions=None, include_incomplete=True
+    )
+    assert not dataset.live_versions
+    assert all(v.status == DatasetStatus.REMOVED for v in dataset.versions)
 
     # -------------- SECOND RUN: Checkpoint exists but version gone
     reset_session_job_state()
     chain.save("nums_deleted")
     job2_id = test_session.get_or_create_job().id
 
-    # Should create a NEW version since old one was deleted
+    # The REMOVED 1.0.0 slot is reserved forever — the new save auto-bumps.
     dataset = catalog.get_dataset("nums_deleted", versions=None)
-    assert len(dataset.versions) == 1
-    assert dataset.latest_version == "1.0.0"
+    assert dataset.latest_version != "1.0.0"
 
-    new_version = dataset.get_version("1.0.0")
+    new_version = dataset.get_version(dataset.latest_version)
     assert new_version.job_id == job2_id
 
 

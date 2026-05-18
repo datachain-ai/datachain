@@ -48,7 +48,7 @@ from datachain.error import (
     NamespaceNotFoundError,
     ProjectNotFoundError,
 )
-from datachain.lib.listing import get_listing
+from datachain.lib.listing import get_listing, is_listing_dataset
 from datachain.node import DirType, Node, NodeWithPath
 from datachain.nodes_thread_pool import NodesThreadPool
 from datachain.progress import tqdm
@@ -1095,20 +1095,56 @@ class Catalog:
         return dataset_updated
 
     def remove_dataset_version(
-        self, dataset: DatasetRecord, version: str, drop_rows: bool | None = True
+        self, dataset: DatasetRecord, version: str, purge: bool = False
     ) -> None:
         """
-        Deletes one single dataset version.
-        If it was last version, it removes dataset completely.
+        Remove a single dataset version.
+
+        For COMPLETE user-named versions this is a soft delete: rows table is
+        dropped, dependencies are preserved, and the version row stays with
+        status REMOVED so dependents can still render lineage. The semver is
+        permanently reserved — saving the same name again auto-bumps past it.
+
+        For non-COMPLETE versions (CREATED/FAILED/STALE/REMOVING leftovers) and
+        for internal datasets (listing `lst__*` / `session_*` intermediates),
+        this is a hard delete: rows table dropped, dependencies removed,
+        version row deleted, and dataset row removed if it was the last
+        version.
+
+        When ``purge=True`` the soft branch is skipped entirely — everything
+        is hard-deleted including any already-REMOVED record. Reserved for
+        admin tools (e.g. Django admin); not exposed via the CLI or public
+        Python API.
         """
+        from datachain.query.session import Session
+
         if not dataset.has_version(version):
             return
-        self.metastore.update_dataset_version(
-            dataset, version, status=DatasetStatus.REMOVING
+        v = dataset.get_version(version)
+        if v.status == DatasetStatus.REMOVED and not purge:
+            return
+
+        is_internal = is_listing_dataset(dataset.name) or dataset.name.startswith(
+            Session.DATASET_PREFIX
         )
-        if drop_rows:
+        soft = v.status == DatasetStatus.COMPLETE and not is_internal and not purge
+
+        # Rows table is already gone for REMOVED records.
+        if v.status != DatasetStatus.REMOVED:
+            self.metastore.update_dataset_version(
+                dataset, version, status=DatasetStatus.REMOVING
+            )
             self.warehouse.drop_dataset_rows_table(dataset, version)
-        dataset = self.metastore.remove_dataset_version(dataset, version)
+
+        if soft:
+            self.metastore.update_dataset_version(
+                dataset,
+                version,
+                status=DatasetStatus.REMOVED,
+                removed_at=datetime.now(timezone.utc),
+            )
+        else:
+            self.metastore.remove_dataset_version(dataset, version)
 
     def _remove_versions(self, pairs: Iterable[tuple[DatasetRecord, str]]) -> int:
         num_removed = 0
