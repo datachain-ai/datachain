@@ -582,7 +582,7 @@ class Detection(BaseModel):
 | `dc.File` | (default) | `bytes` | `.read_text()`, `.open()`, `.ensure_cached()` |
 | `dc.TextFile` | `"text"` | `str` | `.read_text()` |
 | `dc.ImageFile` | `"image"` | `PIL.Image` | `.get_info()` → `dc.Image(width,height,format)` |
-| `dc.VideoFile` | `"video"` | -- | `.get_frames(step=N)` → `VideoFrame[]`, `.get_fragments(duration)` → `VideoFragment[]`, `.get_info()` → `dc.Video(fps,duration,codec,...)` |
+| `dc.VideoFile` | `"video"` | -- | `.get_frame(frame, video_stream_index=N)` → `VideoFrame`, `.get_frames(step=N, video_stream_index=N)` → `VideoFrame[]`, `.get_fragments(duration)` → `VideoFragment[]`, `.get_info(video_stream_index=N)` → `dc.Video(fps,duration,codec,...)` |
 | `dc.AudioFile` | `"audio"` | -- | `.get_fragments(duration)` → `AudioFragment[]`, `.get_info()` → `dc.Audio(sample_rate,channels,duration,...)` |
 
 `dc.Image`, `dc.Video`, `dc.Audio` are media metadata models in the `dc` namespace — NOT in `datachain.model`.
@@ -590,7 +590,7 @@ class Detection(BaseModel):
 ✓ `def get_video_meta(file: dc.VideoFile) -> dc.Video:`
 
 Sub-file units:
-- `VideoFrame` -- `.get_np()` → ndarray, `.save(path)`
+- `VideoFrame` -- `.video_stream_index`, `.timestamp` seconds, `.get_np()` → ndarray, `.read_bytes(format)` → bytes, `.save(path)`
 - `VideoFragment` -- `.save(path)`
 - `AudioFragment` -- `.get_np()` → `(ndarray, sample_rate)`, `.save(path)`
 
