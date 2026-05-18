@@ -37,6 +37,8 @@ def describe_image(file: File, client: openai.OpenAI) -> tuple[str, str]:
             ],
         )
 
+        if not response.choices or response.choices[0].message is None:
+            raise ValueError("LLM returned empty or filtered response")
         openai_description = response.choices[0].message.content or ""
         error = ""
 
