@@ -371,7 +371,7 @@ def test_remove_dataset(test_session, saved_dataset):
 
     catalog.remove_dataset(saved_dataset.name, saved_dataset.project, force=True)
 
-    # Soft delete: dataset row stays with REMOVED tombstones; rows table gone.
+    # Soft delete: dataset row stays with REMOVED versions; rows table gone.
     ds = catalog.get_dataset(saved_dataset.name, versions=None, include_incomplete=True)
     assert not ds.live_versions
     assert all(v.status == DatasetStatus.REMOVED for v in ds.versions)
@@ -391,16 +391,16 @@ def test_remove_dataset_with_multiple_versions(test_session, saved_dataset):
 
     catalog.remove_dataset(updated_dataset.name, saved_dataset.project, force=True)
 
-    # Soft delete: the COMPLETE v1.0.0 becomes a REMOVED tombstone, the
+    # Soft delete: the COMPLETE v1.0.0 becomes a REMOVED record, the
     # CREATED v2.0.0 (no rows ever published) is hard-deleted. Dataset row
-    # stays alive thanks to the surviving tombstone.
+    # stays alive thanks to the surviving REMOVED version.
     ds = catalog.get_dataset(
         updated_dataset.name, versions=None, include_incomplete=True
     )
     assert not ds.live_versions
     removed = [v for v in ds.versions if v.status == DatasetStatus.REMOVED]
     assert len(removed) == 1
-    assert removed[0].display_version == "1.0.0"
+    assert removed[0].version == "1.0.0"
 
 
 def test_remove_dataset_dataset_not_found(test_session, project):

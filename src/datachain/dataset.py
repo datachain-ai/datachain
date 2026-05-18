@@ -34,10 +34,6 @@ LISTING_PREFIX = "lst__"
 DEFAULT_DATASET_VERSION = "1.0.0"
 DATASET_NAME_RESERVED_CHARS = [".", "@"]
 DATASET_NAME_REPLACEMENT_CHAR = "_"
-# Suffix appended to the `version` column on soft-delete so the
-# (dataset_id, version) uniqueness slot is freed for reuse. The semver
-# part before the suffix is the version originally claimed by the user.
-REMOVED_VERSION_SUFFIX = "~removed-"
 
 
 # StorageURI represents a normalized URI to a valid storage location
@@ -228,13 +224,6 @@ class DatasetDependency:
 
         assert dataset_name is not None
 
-        # The `version` column on REMOVED tombstones carries a mangle suffix
-        # so the (dataset_id, version) slot is reusable. For lineage display
-        # we surface the original semver.
-        display_version = dataset_version
-        if display_version and REMOVED_VERSION_SUFFIX in display_version:
-            display_version = display_version.split(REMOVED_VERSION_SUFFIX, 1)[0]
-
         return cls(
             id,
             (
@@ -245,7 +234,7 @@ class DatasetDependency:
             namespace_name,
             project_name,
             dataset_name,
-            display_version or None,  # type: ignore[arg-type]
+            dataset_version,  # type: ignore[arg-type]
             dataset_version_created_at,  # type: ignore[arg-type]
             [],
         )
@@ -366,15 +355,7 @@ class DatasetVersion:
 
     @property
     def version_value(self) -> int:
-        return semver.value(self.display_version)
-
-    @property
-    def display_version(self) -> str:
-        """Real semver version. For REMOVED tombstones, strips the internal
-        mangle suffix that frees the (dataset_id, version) slot."""
-        if REMOVED_VERSION_SUFFIX in self.version:
-            return self.version.split(REMOVED_VERSION_SUFFIX, 1)[0]
-        return self.version
+        return semver.value(self.version)
 
     def __eq__(self, other):
         if not isinstance(other, DatasetVersion):
@@ -700,14 +681,13 @@ class DatasetRecord:
     def is_valid_next_version(self, version: str) -> bool:
         """
         Checks if a number can be a valid next latest version for dataset.
-        The only rule is that it cannot be lower than current latest live
-        version. REMOVED tombstones free their slot (see
-        REMOVED_VERSION_SUFFIX) so they don't participate in comparison.
+        Compares against the highest version ever used, including REMOVED
+        ones — once a semver has been claimed it is permanently reserved.
         """
-        if not self.live_versions:
+        if not self.versions:
             return True
 
-        return semver.value(self.latest_version) < semver.value(version)
+        return self._max_version_value < semver.value(version)
 
     def get_version(self, version: str) -> DatasetVersion:
         if not self.has_version(version):
@@ -754,43 +734,57 @@ class DatasetRecord:
     def next_version_major(self) -> str:
         """
         Returns the next auto-incremented version if the major part is being bumped.
+        Skips past REMOVED versions so deleted semvers are never reclaimed.
         """
-        if not self.live_versions:
+        if not self.versions:
             return "1.0.0"
 
-        major, _, _ = semver.parse(self.latest_version)
+        major, _, _ = semver.parse(self._max_version)
         return semver.create(major + 1, 0, 0)
 
     @property
     def next_version_minor(self) -> str:
         """
         Returns the next auto-incremented version if the minor part is being bumped.
+        Skips past REMOVED versions so deleted semvers are never reclaimed.
         """
-        if not self.live_versions:
+        if not self.versions:
             return "1.0.0"
 
-        major, minor, _ = semver.parse(self.latest_version)
+        major, minor, _ = semver.parse(self._max_version)
         return semver.create(major, minor + 1, 0)
 
     @property
     def next_version_patch(self) -> str:
         """
         Returns the next auto-incremented version if the patch part is being bumped.
+        Skips past REMOVED versions so deleted semvers are never reclaimed.
         """
-        if not self.live_versions:
+        if not self.versions:
             return "1.0.0"
 
-        major, minor, patch = semver.parse(self.latest_version)
+        major, minor, patch = semver.parse(self._max_version)
         return semver.create(major, minor, patch + 1)
 
     @property
     def live_versions(self) -> list[DatasetVersion]:
-        """Versions excluding REMOVED tombstones."""
+        """Versions excluding REMOVED ones."""
         return [v for v in self.versions if v.status != DatasetStatus.REMOVED]
 
     @property
+    def _max_version(self) -> str:
+        """Highest semver across all versions including REMOVED ones. Used for
+        collision avoidance — once a semver is claimed it's reserved forever,
+        even after soft-delete."""
+        return max(self.versions).version
+
+    @property
+    def _max_version_value(self) -> int:
+        return semver.value(self._max_version)
+
+    @property
     def latest_version(self) -> str:
-        """Latest user-visible version (skips REMOVED tombstones)."""
+        """Latest user-visible version (skips REMOVED ones)."""
         if not self.live_versions:
             raise DatasetVersionNotFoundError("Dataset has no versions")
         return max(self.live_versions).version

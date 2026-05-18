@@ -259,7 +259,7 @@ def test_checkpoint_with_deleted_dataset_version(test_session, nums_dataset):
 
     catalog.remove_dataset("nums_deleted", version="1.0.0", force=True)
 
-    # Soft delete: dataset row stays, version becomes a REMOVED tombstone.
+    # Soft delete: dataset row stays, version is REMOVED.
     dataset = catalog.get_dataset(
         "nums_deleted", versions=None, include_incomplete=True
     )
@@ -271,11 +271,11 @@ def test_checkpoint_with_deleted_dataset_version(test_session, nums_dataset):
     chain.save("nums_deleted")
     job2_id = test_session.get_or_create_job().id
 
-    # Slot is reusable — the new live version reclaims "1.0.0".
+    # The REMOVED 1.0.0 slot is reserved forever — the new save auto-bumps.
     dataset = catalog.get_dataset("nums_deleted", versions=None)
-    assert dataset.latest_version == "1.0.0"
+    assert dataset.latest_version != "1.0.0"
 
-    new_version = dataset.get_version("1.0.0")
+    new_version = dataset.get_version(dataset.latest_version)
     assert new_version.job_id == job2_id
 
 

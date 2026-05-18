@@ -29,7 +29,6 @@ from datachain.dataset import (
     DATASET_PREFIX,
     DEFAULT_DATASET_VERSION,
     QUERY_DATASET_PREFIX,
-    REMOVED_VERSION_SUFFIX,
     DatasetDependency,
     DatasetListRecord,
     DatasetRecord,
@@ -1101,7 +1100,8 @@ class Catalog:
 
         For COMPLETE user-named versions this is a soft delete: rows table is
         dropped, dependencies are preserved, and the version row stays with
-        status REMOVED so dependents can still render lineage.
+        status REMOVED so dependents can still render lineage. The semver is
+        permanently reserved — saving the same name again auto-bumps past it.
 
         For non-COMPLETE versions (CREATED/FAILED/STALE/REMOVING leftovers) and
         for internal datasets (listing `lst__*` / `session_*` intermediates),
@@ -1128,14 +1128,9 @@ class Catalog:
         self.warehouse.drop_dataset_rows_table(dataset, version)
 
         if soft:
-            # Rename the `version` column to free the (dataset_id, version)
-            # uniqueness slot so a future save can reclaim it. The original
-            # semver is still recoverable via DatasetVersion.display_version.
-            mangled_version = f"{version}{REMOVED_VERSION_SUFFIX}{v.id}"
             self.metastore.update_dataset_version(
                 dataset,
                 version,
-                version=mangled_version,
                 status=DatasetStatus.REMOVED,
                 removed_at=datetime.now(timezone.utc),
             )

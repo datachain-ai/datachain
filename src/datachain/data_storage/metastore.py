@@ -323,8 +323,7 @@ class AbstractMetastore(ABC, Serializable):
         """Updates dataset version fields.
 
         ``dataset_version`` is the lookup key (the current value of the row's
-        ``version`` column). Pass ``version=`` in ``kwargs`` to rename the
-        column itself.
+        ``version`` column).
         """
 
     @abstractmethod
@@ -1392,8 +1391,7 @@ class AbstractDBMetastore(AbstractMetastore):
         """Updates dataset version fields.
 
         ``dataset_version`` is the lookup key (the current value of the row's
-        ``version`` column). Pass ``version=`` in ``kwargs`` to rename the
-        column itself.
+        ``version`` column).
         """
         logger.debug(
             "Metastore.update_dataset_version called for %s@%s: "

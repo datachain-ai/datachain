@@ -4,7 +4,7 @@ from functools import wraps
 from typing import TYPE_CHECKING, TypeVar
 
 import datachain
-from datachain.dataset import DatasetDependency, DatasetRecord
+from datachain.dataset import DatasetDependency, DatasetRecord, DatasetStatus
 from datachain.error import DatasetNotFoundError, SchemaDriftError
 from datachain.project import Project
 from datachain.query.dataset import UnionSchemaMismatchError
@@ -250,10 +250,12 @@ def _get_source_info(
         include_incomplete=False,
     )
 
-    # The version the dep points at may have been soft-deleted (REMOVED
-    # tombstone). Without a readable previous version we can't compute a
-    # diff; fall back to normal dataset creation, same as a missing dep.
-    if not source_ds.has_version(source_ds_dep.version):
+    # The version the dep points at may have been soft-deleted. Without a
+    # readable previous version we can't compute a diff; fall back to
+    # normal dataset creation, same as a missing dep.
+    if not source_ds.has_version(source_ds_dep.version) or (
+        source_ds.get_version(source_ds_dep.version).status == DatasetStatus.REMOVED
+    ):
         return None, None, None, None
 
     return (

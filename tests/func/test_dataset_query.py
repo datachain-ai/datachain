@@ -1182,8 +1182,8 @@ def test_dataset_dependencies_multiple_direct_dataset_dependencies(
     ) == sorted(expected, key=lambda d: d["name"])
 
     # Soft delete preserves dependency records: removing either source
-    # leaves the dependent's lineage intact (versions stay as REMOVED
-    # tombstones, FK still resolves).
+    # leaves the dependent's lineage intact (versions stay as REMOVED,
+    # FK still resolves).
     catalog.remove_dataset(dogs_dataset.name, force=True)
     assert sorted(
         (

@@ -6,6 +6,7 @@ import pytest
 import sqlalchemy as sa
 
 import datachain as dc
+from datachain import semver
 from datachain.data_storage import JobStatus
 from datachain.dataset import DatasetRecord, DatasetStatus
 from datachain.error import DatasetNotFoundError
@@ -420,11 +421,10 @@ def test_cleanup_dataset_versions_removes_marked_for_removal(
 # ---------------------------------------------------------------------------
 
 
-def _find_removed(ds: DatasetRecord, display_version: str):
-    """Find a REMOVED tombstone by its original semver. The actual `version`
-    column was mangled with REMOVED_VERSION_SUFFIX to free the slot."""
+def _find_removed(ds: DatasetRecord, version: str):
+    """Find a REMOVED version by its semver."""
     for v in ds.versions:
-        if v.status == DatasetStatus.REMOVED and v.display_version == display_version:
+        if v.status == DatasetStatus.REMOVED and v.version == version:
             return v
     return None
 
@@ -482,7 +482,7 @@ def test_soft_delete_is_idempotent(test_session, dataset_complete):
     assert first is not None
     first_removed_at = first.removed_at
 
-    # Second call sees no live version "1.0.0" (it was mangled) → no-op.
+    # Second call finds the same row already REMOVED → no-op.
     catalog.remove_dataset_version(ds, version)
     ds = catalog.get_dataset(
         dataset_complete.name, versions=None, include_incomplete=True
@@ -491,10 +491,9 @@ def test_soft_delete_is_idempotent(test_session, dataset_complete):
     assert _find_removed(ds, version).removed_at == first_removed_at
 
 
-def test_save_after_soft_delete_reuses_version_slot(test_session, dataset_complete):
-    """Once a version is soft-deleted, its (dataset_id, version) slot is
-    freed via the mangle suffix so the next save can reclaim the same
-    semver."""
+def test_save_after_soft_delete_skips_removed_version(test_session, dataset_complete):
+    """A removed semver is permanently reserved — the next save auto-bumps
+    past it instead of reclaiming the slot."""
     catalog = test_session.catalog
     name = dataset_complete.name
     first_version = dataset_complete.latest_version
@@ -503,11 +502,24 @@ def test_save_after_soft_delete_reuses_version_slot(test_session, dataset_comple
 
     new_chain = dc.read_values(value=["new1"], session=test_session).save(name)
     assert new_chain.dataset is not None
-    assert new_chain.dataset.latest_version == first_version
+    assert new_chain.dataset.latest_version != first_version
+    assert semver.value(new_chain.dataset.latest_version) > semver.value(first_version)
 
-    # The old data lives on as a tombstone for lineage.
+    # The old row lives on as a REMOVED record for lineage.
     ds = catalog.get_dataset(name, versions=None, include_incomplete=True)
     assert _find_removed(ds, first_version) is not None
+
+
+def test_save_explicit_removed_version_rejected(test_session, dataset_complete):
+    """Saving with an explicit version that matches a REMOVED one must fail."""
+    catalog = test_session.catalog
+    name = dataset_complete.name
+    version = dataset_complete.latest_version
+
+    catalog.remove_dataset_version(dataset_complete, version)
+
+    with pytest.raises(RuntimeError, match=f"already has version {version}"):
+        dc.read_values(value=["new1"], session=test_session).save(name, version=version)
 
 
 def test_latest_version_skips_removed(test_session, dataset_complete):
@@ -550,7 +562,7 @@ def test_read_dataset_after_soft_delete_raises(
 
 def test_janitor_still_hard_deletes_created_version(test_session, job, dataset_created):
     """The cleanup path must still hard-delete non-COMPLETE versions — we
-    don't want REMOVED tombstones piling up for failed/abandoned saves."""
+    don't want REMOVED rows piling up for failed/abandoned saves."""
     catalog = test_session.catalog
     catalog.metastore.set_job_status(job.id, JobStatus.FAILED)
 
@@ -589,7 +601,7 @@ def _make_completed_dataset(catalog, name: str, project=None):
 
 
 def test_listing_dataset_stays_on_hard_delete(test_session):
-    """`lst__*` listing datasets must never become tombstones — they're
+    """`lst__*` listing datasets must never get soft-deleted — they're
     internal cache, soft-deleting them serves nobody and wastes rows."""
     catalog = test_session.catalog
     metastore = catalog.metastore
