@@ -1094,7 +1094,9 @@ class Catalog:
         self.warehouse.rename_dataset_tables(dataset, dataset_updated)
         return dataset_updated
 
-    def remove_dataset_version(self, dataset: DatasetRecord, version: str) -> None:
+    def remove_dataset_version(
+        self, dataset: DatasetRecord, version: str, purge: bool = False
+    ) -> None:
         """
         Remove a single dataset version.
 
@@ -1108,24 +1110,31 @@ class Catalog:
         this is a hard delete: rows table dropped, dependencies removed,
         version row deleted, and dataset row removed if it was the last
         version.
+
+        When ``purge=True`` the soft branch is skipped entirely — everything
+        is hard-deleted including any already-REMOVED record. Reserved for
+        admin tools (e.g. Django admin); not exposed via the CLI or public
+        Python API.
         """
         from datachain.query.session import Session
 
         if not dataset.has_version(version):
             return
         v = dataset.get_version(version)
-        if v.status == DatasetStatus.REMOVED:
+        if v.status == DatasetStatus.REMOVED and not purge:
             return
 
         is_internal = is_listing_dataset(dataset.name) or dataset.name.startswith(
             Session.DATASET_PREFIX
         )
-        soft = v.status == DatasetStatus.COMPLETE and not is_internal
+        soft = v.status == DatasetStatus.COMPLETE and not is_internal and not purge
 
-        self.metastore.update_dataset_version(
-            dataset, version, status=DatasetStatus.REMOVING
-        )
-        self.warehouse.drop_dataset_rows_table(dataset, version)
+        # Rows table is already gone for REMOVED records.
+        if v.status != DatasetStatus.REMOVED:
+            self.metastore.update_dataset_version(
+                dataset, version, status=DatasetStatus.REMOVING
+            )
+            self.warehouse.drop_dataset_rows_table(dataset, version)
 
         if soft:
             self.metastore.update_dataset_version(

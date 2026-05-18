@@ -510,6 +510,35 @@ def test_save_after_soft_delete_skips_removed_version(test_session, dataset_comp
     assert _find_removed(ds, first_version) is not None
 
 
+def test_purge_hard_deletes_already_removed_version(test_session, dataset_complete):
+    """Admin escape hatch: purge=True wipes a REMOVED record completely
+    (version row gone, dataset row gone if it was the last)."""
+    catalog = test_session.catalog
+    name = dataset_complete.name
+    version = dataset_complete.latest_version
+
+    catalog.remove_dataset_version(dataset_complete, version)
+    ds = catalog.get_dataset(name, versions=None, include_incomplete=True)
+    assert _find_removed(ds, version) is not None
+
+    catalog.remove_dataset_version(ds, version, purge=True)
+
+    with pytest.raises(DatasetNotFoundError):
+        catalog.get_dataset(name, include_incomplete=True)
+
+
+def test_purge_hard_deletes_live_complete_version(test_session, dataset_complete):
+    """purge=True bypasses soft-delete even on a fresh COMPLETE version."""
+    catalog = test_session.catalog
+    name = dataset_complete.name
+    version = dataset_complete.latest_version
+
+    catalog.remove_dataset_version(dataset_complete, version, purge=True)
+
+    with pytest.raises(DatasetNotFoundError):
+        catalog.get_dataset(name, include_incomplete=True)
+
+
 def test_save_explicit_removed_version_rejected(test_session, dataset_complete):
     """Saving with an explicit version that matches a REMOVED one must fail."""
     catalog = test_session.catalog
