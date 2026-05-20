@@ -68,8 +68,26 @@ When loaded, determine the user's intent:
 → Then run Steps 2–5 as normal.
 
 **Mode B — Dataset Creation/Pipeline** (e.g., "create dataset X from ...", "process images and save"):
+
+> **STEP 0 (precondition, do this FIRST — before ANY tool call):**
+>
+>     $ cat dc-knowledge/index.md
+>
+> This is the rendered map of available datasets — schemas, sample rows, lineage,
+> and reuse recommendations. If it exists and your task can be solved by reading
+> an existing dataset, do not write a pipeline — read it directly with
+> `dc.read_dataset("name")`. Filter, merge, or extend the existing dataset
+> instead of re-reading raw storage. This avoids recomputing expensive operations
+> (LLM calls, model inference) and reuses proven code patterns.
+>
+> **Never parse files under `dc-knowledge/datasets/*.json` or `dc-knowledge/buckets/**/*.json`
+> directly.** Those are pre-render intermediates that get deleted after
+> `render_index.py` runs. The information you need is in `index.md`. Parsing the
+> intermediates is wasted turns AND gives you a worse mental model.
+>
+> If `dc-knowledge/index.md` does not exist, proceed with Steps 1–5 to build it.
+
 → **If the pipeline reads from a bucket** (`read_storage`), run **Step 1** (Bucket Enlistment) for the bucket root first. The bucket overview in the knowledge base may inform the pipeline design.
-→ **Before building anything**, read `dc-knowledge/index.md` and check whether an existing dataset already covers the data the user needs. If one does, start from `dc.read_dataset("name")` — filter, merge, or extend it instead of re-reading raw storage. This avoids recomputing expensive operations (LLM calls, model inference) and reuses proven code patterns.
 → **Run the access check** (if not already done in Step 1):
   ```bash
   datachain bucket status <uri>
