@@ -91,9 +91,8 @@ hf = [
   "fsspec>=2024.12.0"
 ]
 video = [
-  "ffmpeg-python",
-  "imageio[ffmpeg,pyav]>=2.37.0",
-  "opencv-python"
+  "av>=16.1.0",
+  "ffmpeg-python"
 ]
 postgres = [
   "psycopg2-binary>=2.9.0"

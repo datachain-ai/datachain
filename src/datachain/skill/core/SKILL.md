@@ -509,8 +509,10 @@ chain.group_by(cnt=func.count(), total=func.sum(C("file.size")), partition_by="c
 chain.order_by("dist")
 chain.order_by("score", descending=True)
 chain.distinct("response.text")
+chain.distinct(file_ext=func.path.file_ext(C("file.path")))  # expressions need names
 chain.limit(100)
 chain.select("file", "score", "label")
+chain.select("file", score_pct=C("score") * 100)  # expressions need names
 chain.select_except("internal_id")
 chain.merge(other, on="id", right_on="meta.id")  # left join (default)
 chain.merge(other, on="id", inner=True)          # inner join
@@ -582,7 +584,7 @@ class Detection(BaseModel):
 | `dc.File` | (default) | `bytes` | `.read_text()`, `.open()`, `.ensure_cached()` |
 | `dc.TextFile` | `"text"` | `str` | `.read_text()` |
 | `dc.ImageFile` | `"image"` | `PIL.Image` | `.get_info()` → `dc.Image(width,height,format)` |
-| `dc.VideoFile` | `"video"` | -- | `.get_frames(step=N)` → `VideoFrame[]`, `.get_fragments(duration)` → `VideoFragment[]`, `.get_info()` → `dc.Video(fps,duration,codec,...)` |
+| `dc.VideoFile` | `"video"` | -- | `.get_frame(frame, video_stream_index=N)` → `VideoFrame`, `.get_frames(step=N, video_stream_index=N)` → `VideoFrame[]`, `.get_fragments(duration)` → `VideoFragment[]`, `.get_info(video_stream_index=N)` → `dc.Video(fps,duration,codec,...)` |
 | `dc.AudioFile` | `"audio"` | -- | `.get_fragments(duration)` → `AudioFragment[]`, `.get_info()` → `dc.Audio(sample_rate,channels,duration,...)` |
 
 `dc.Image`, `dc.Video`, `dc.Audio` are media metadata models in the `dc` namespace — NOT in `datachain.model`.
@@ -590,7 +592,7 @@ class Detection(BaseModel):
 ✓ `def get_video_meta(file: dc.VideoFile) -> dc.Video:`
 
 Sub-file units:
-- `VideoFrame` -- `.get_np()` → ndarray, `.save(path)`
+- `VideoFrame` -- `.video_stream_index`, `.timestamp` seconds, `.get_np()` → ndarray, `.read_bytes(format)` → bytes, `.save(path)`
 - `VideoFragment` -- `.save(path)`
 - `AudioFragment` -- `.get_np()` → `(ndarray, sample_rate)`, `.save(path)`
 
@@ -939,6 +941,10 @@ combined = images.merge(labels, on="file.name", right_on="labels.name")
     Use inner=True for inner join, full=True for full outer join.
     Default (no flags) is left join.
 ✗ Long select() list after merge — use select_except() instead (rule 19)
+✗ Positional expressions in select()/distinct():
+    chain.select(C("score") * 100)
+    chain.distinct(func.path.file_ext(C("file.path")))
+    Use keyword names instead: select(score_pct=...), distinct(file_ext=...)
 ✗ select() right after map/gen to "pick" the new column:
     chain.map(ann=parse_xml).select("ann")  ← redundant, map already created "ann"
     The keyword in map/gen IS the column name (rule 4) — no select needed

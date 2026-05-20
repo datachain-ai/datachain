@@ -437,8 +437,16 @@ class CloudServer:
 def make_cloud_server(src_path, cloud_type, tree):
     fs = src_path.fs
     if cloud_type == "s3":
-        endpoint_url = fs.client_kwargs["endpoint_url"]
-        client_config = {"aws_endpoint_url": endpoint_url}
+        client_kwargs = fs.client_kwargs
+        # The mock S3 server allows anonymous bucket-HEAD but rejects anon
+        # object access, which would mislead the auto-anon probe. Pass creds
+        # explicitly so has_explicit_credentials() short-circuits the probe.
+        client_config = {
+            "aws_endpoint_url": client_kwargs["endpoint_url"],
+            "aws_key": client_kwargs["aws_access_key_id"],
+            "aws_secret": client_kwargs["aws_secret_access_key"],
+            "aws_token": client_kwargs["aws_session_token"],
+        }
     elif cloud_type in ("gs", "gcs"):
         endpoint_url = fs._endpoint
         client_config = {"endpoint_url": endpoint_url}

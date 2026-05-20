@@ -84,8 +84,10 @@ class SignalResolvingError(SignalSchemaError):
     def __init__(self, path: list[str] | None, msg: str):
         self._path = path
         self._msg = msg
-        name = " '" + ".".join(path) + "'" if path else ""
-        super().__init__(f"cannot resolve signal name{name}: {msg}")
+        if path:
+            name = " '" + ".".join(path) + "'"
+            msg = f"cannot resolve signal name{name}: {msg}"
+        super().__init__(msg)
 
     def __reduce__(self):
         return self.__class__, (self._path, self._msg)
@@ -151,14 +153,14 @@ def generate_merge_root_mapping(
 
 
 class SignalResolvingTypeError(SignalResolvingError):
-    def __init__(self, method: str, field: Any):
+    def __init__(self, method: str, field: Any, supported_types: str = "`str` type"):
         self._method = method
         if isinstance(field, str):
-            # Restoring from pickle — field is the pre-computed message
+            # Restoring from pickle; field is the pre-computed message
             msg = field
         else:
             msg = (
-                f"{method} supports only `str` type"
+                f"{method} supports only {supported_types}"
                 f" while '{field!r}' has type '{type(field).__name__}'"
             )
         super().__init__(None, msg)

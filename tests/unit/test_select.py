@@ -5,7 +5,12 @@ from pydantic import BaseModel
 import datachain as dc
 from datachain import File, func
 from datachain.lib.model_store import ModelStore
-from datachain.lib.signal_schema import SignalRemoveError, SignalResolvingTypeError
+from datachain.lib.signal_schema import (
+    SignalRemoveError,
+    SignalResolvingError,
+    SignalResolvingTypeError,
+)
+from datachain.lib.utils import DataChainParamsError
 
 
 class MyFr(BaseModel):
@@ -106,11 +111,90 @@ def test_select_except_after_gen(test_session):
 def test_select_wrong_type(test_session):
     chain = dc.read_values(fr1=_features_nested, fr2=_features, session=test_session)
 
-    with pytest.raises(SignalResolvingTypeError):
+    with pytest.raises(
+        SignalResolvingTypeError, match=r"select\(\) supports only `str` or `Column`"
+    ):
         chain.select(4).to_list()
 
-    with pytest.raises(SignalResolvingTypeError):
+    with pytest.raises(
+        SignalResolvingTypeError,
+        match=r"select_except\(\) supports only `str` or `Column`",
+    ):
         chain.select_except(_features[0]).to_list()
+
+    with pytest.raises(
+        SignalResolvingTypeError,
+        match=r"to_values\(\) supports only `str` or `Column`",
+    ):
+        chain.to_values(4)
+
+
+def test_select_accepts_named_expression(test_session):
+    chain = dc.read_values(name=["a", "b"], val=[1, 2], session=test_session)
+
+    selected = chain.select(dc.C("name"), doubled=dc.C("val") * 2).order_by("name")
+
+    assert selected.schema == {"name": str, "doubled": int}
+    assert selected.to_records() == [
+        {"name": "a", "doubled": 2},
+        {"name": "b", "doubled": 4},
+    ]
+
+
+def test_select_expression_without_name_error(test_session):
+    chain = dc.read_values(name=["a"], val=[1], session=test_session)
+
+    with pytest.raises(
+        DataChainParamsError,
+        match=r"select\(\) cannot infer a name.*select\(name=expr\)",
+    ):
+        chain.select(dc.C("val") + 1)
+
+    with pytest.raises(
+        DataChainParamsError,
+        match=r"select\(\) cannot infer a name.*select\(name=expr\)",
+    ):
+        chain.select(func.string.length(dc.C("name")))
+
+
+@pytest.mark.parametrize(
+    "expr_fn",
+    [lambda: dc.C("val") + 1, lambda: func.string.length(dc.C("name"))],
+    ids=["column-expr", "func"],
+)
+@pytest.mark.parametrize(
+    ("method", "call"),
+    [
+        ("select_except", lambda chain, expr: chain.select_except(expr)),
+        ("to_values", lambda chain, expr: chain.to_values(expr)),
+        ("to_list", lambda chain, expr: chain.to_list(expr)),
+        ("to_iter", lambda chain, expr: next(chain.to_iter(expr))),
+    ],
+)
+def test_name_only_operations_reject_expressions(test_session, method, call, expr_fn):
+    chain = dc.read_values(name=["a"], val=[1], session=test_session)
+
+    with pytest.raises(
+        SignalResolvingTypeError,
+        match=rf"{method}\(\) supports only `str` or `Column`",
+    ):
+        call(chain, expr_fn())
+
+
+def test_select_named_expression_error_uses_select_name(test_session):
+    chain = dc.read_values(name=["a"], session=test_session)
+
+    with pytest.raises(SignalResolvingError, match=r"select\(\) error.*missing"):
+        chain.select(missing=dc.C("missing"))
+
+
+def test_select_except_accepts_column(test_session):
+    chain = dc.read_values(name=["a", "b"], val=[1, 2], session=test_session)
+
+    selected = chain.select_except(dc.C("val"))
+
+    assert selected.schema == {"name": str}
+    assert selected.order_by("name").to_records() == [{"name": "a"}, {"name": "b"}]
 
 
 def test_select_except_error(test_session):
@@ -230,8 +314,9 @@ def test_to_values_and_to_iter_keep_flattening(test_session):
         session=test_session,
     )
 
-    assert chain.to_values("file.path") == ["a.txt"]
-    assert list(chain.to_iter("file.path")) == [("a.txt",)]
+    assert chain.to_values(dc.C("file.path")) == ["a.txt"]
+    assert chain.to_list(dc.C("file.path")) == [("a.txt",)]
+    assert list(chain.to_iter(dc.C("file.path"))) == [("a.txt",)]
 
 
 def test_select_except_nested_excludes_field_via_partial(test_session):

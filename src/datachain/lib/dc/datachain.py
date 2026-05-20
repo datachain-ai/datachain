@@ -50,6 +50,7 @@ from datachain.lib.model_store import ModelStore
 from datachain.lib.settings import Settings
 from datachain.lib.signal_schema import (
     SignalResolvingError,
+    SignalResolvingTypeError,
     SignalSchema,
 )
 from datachain.lib.udf import Aggregator, Generator, Mapper, UDFBase
@@ -269,6 +270,31 @@ class DataChain:
         c = self.column(column) if isinstance(column, str) else self.column(column.name)
         c.table = self._query.table
         return c
+
+    @staticmethod
+    def _named_expression_error(method: str, expr: object) -> DataChainParamsError:
+        example = method.replace("()", "(name=expr)")
+        return DataChainParamsError(
+            f"{method} cannot infer a name for positional expression "
+            f"of type {type(expr).__name__}; pass it as a keyword argument, "
+            f"e.g. `{example}`"
+        )
+
+    @staticmethod
+    def _signal_names(
+        names: Sequence[object], method: str, *, named_expressions: bool = False
+    ) -> tuple[str, ...]:
+        signal_names: list[str] = []
+        for name in names:
+            if isinstance(name, Column):
+                signal_names.append(name.name.replace(DEFAULT_DELIMITER, "."))
+            elif isinstance(name, str):
+                signal_names.append(name)
+            elif named_expressions and isinstance(name, (Func, ColumnExpr)):
+                raise DataChain._named_expression_error(method, name)
+            else:
+                raise SignalResolvingTypeError(method, name, "`str` or `Column` type")
+        return tuple(signal_names)
 
     @property
     def session(self) -> Session:
@@ -1110,7 +1136,9 @@ class DataChain:
         return self._evolve(query=self._query.order_by(*args))
 
     @delta_disabled
-    def distinct(self, arg: str, *args: str) -> "Self":  # type: ignore[override]
+    def distinct(  # type: ignore[override]
+        self, *args: str | Column, **kwargs
+    ) -> "Self":
         """Removes duplicate rows based on uniqueness of some input column(s)
         i.e if rows are found with the same value of input column(s), only one
         row is left in the result set.
@@ -1118,20 +1146,34 @@ class DataChain:
         Example:
             ```py
             dc.distinct("file.path")
+            dc.distinct(file_name=func.path.name(C("file.path")))
             ```
         """
+        args = self._signal_names(args, "distinct()", named_expressions=True)
+        if kwargs:
+            return self._mutate("distinct()", **kwargs).distinct(*args, *kwargs)
+        if not args:
+            raise TypeError("distinct() expected at least 1 argument, got 0")
+
         return self._evolve(
-            query=self._query.distinct(
-                *self.signals_schema.resolve(arg, *args).db_signals()
-            )
+            query=self._query.distinct(*self.signals_schema.resolve(*args).db_signals())
         )
 
-    def select(self, *args: str) -> "Self":
+    def select(self, *args: str | Column, **kwargs) -> "Self":
         """Select only a specified set of signals.
 
         Nested selections (e.g. ``"file.path"``) preserve the parent object by
         generating partial models rather than flattening into standalone fields.
+
+        Example:
+            ```py
+            dc.select("file.path", "score")
+            dc.select("file.path", file_name=func.path.name(C("file.path")))
+            ```
         """
+        args = self._signal_names(args, "select()", named_expressions=True)
+        if kwargs:
+            return self._mutate("select()", **kwargs).select(*args, *kwargs)
         if not args:
             return self
         new_schema = self.signals_schema.to_partial(*args)
@@ -1147,15 +1189,21 @@ class DataChain:
             signal_schema=new_schema,
         )
 
-    def select_except(self, *args: str) -> "Self":
+    def select_except(self, *args: str | Column) -> "Self":
         """Select all signals except the specified ones.
 
         Supports excluding nested fields (e.g. ``"file.path"``), in which case a
         partial model is generated for the parent signal.
+
+        Example:
+            ```py
+            dc.select_except("tmp_score")
+            ```
         """
         if not args:
             return self
 
+        args = self._signal_names(args, "select_except()")
         new_schema = self.signals_schema.select_except_signals(*args)
 
         columns = new_schema.db_signals()
@@ -1167,7 +1215,7 @@ class DataChain:
     @delta_disabled  # type: ignore[arg-type]
     def group_by(  # noqa: C901, PLR0912, PLR0915
         self,
-        *,
+        *args: Any,
         partition_by: (
             str | Func | ColumnExpr | Sequence[str | Func | ColumnExpr] | None
         ) = None,
@@ -1196,6 +1244,15 @@ class DataChain:
             )
             ```
         """
+        if args:
+            if isinstance(args[0], Func):
+                raise self._named_expression_error("group_by()", args[0])
+            raise DataChainParamsError(
+                "group_by() does not accept positional arguments "
+                f"of type {type(args[0]).__name__}; pass grouping columns with "
+                "`partition_by=` and aggregate expressions as keyword arguments"
+            )
+
         if partition_by is None:
             partition_by = []
         elif isinstance(partition_by, (str, Func, ColumnExpr)):
@@ -1319,7 +1376,7 @@ class DataChain:
             signal_schema=signal_schema,
         )
 
-    def mutate(self, **kwargs) -> "Self":
+    def mutate(self, *args, **kwargs) -> "Self":
         """Create or modify signals based on existing signals.
 
         This method is vectorized and more efficient compared to map(), and it does not
@@ -1370,40 +1427,59 @@ class DataChain:
         )
         ```
         """
+        if args:
+            raise self._named_expression_error("mutate()", args[0])
+        return self._mutate("mutate()", **kwargs)
+
+    def _mutate(self, method: str, **kwargs) -> "Self":
         from sqlalchemy.sql.sqltypes import NullType
 
         primitives = (bool, str, int, float)
 
-        for col_name, expr in kwargs.items():
-            if not isinstance(expr, (*primitives, Column, Func)):
-                if isinstance(expr, ColumnExpr):
+        try:
+            for col_name, expr in kwargs.items():
+                if not isinstance(expr, (*primitives, Column, Func)):
+                    if not isinstance(expr, ColumnExpr):
+                        raise DataChainColumnError(
+                            col_name,
+                            f"{method} value has type {type(expr)} but expected "
+                            "bool, str, int, float, Column, Func, or ColumnExpr",
+                        )
                     expr = self.signals_schema.enrich_expr_types(expr)
-                if isinstance(expr.type, NullType):
-                    raise DataChainColumnError(
-                        col_name, f"Cannot infer type for expression {expr}"
+                    if isinstance(expr.type, NullType):
+                        raise DataChainColumnError(
+                            col_name,
+                            f"{method} cannot infer type for expression {expr}",
+                        )
+                    kwargs[col_name] = expr
+
+            mutated = {}
+            schema = self.signals_schema
+            for name, value in kwargs.items():
+                if isinstance(value, Column):
+                    # renaming existing column
+                    signals = cast(
+                        "list[Column]",
+                        schema.db_signals(name=value.name, as_columns=True),
                     )
-                kwargs[col_name] = expr
+                    for signal in signals:
+                        mutated_name = signal.name.replace(value.name, name, 1)
+                        mutated[mutated_name] = signal
+                elif isinstance(value, Func):
+                    # adding new signal
+                    mutated[name] = value.get_column(schema)
+                elif isinstance(value, primitives):
+                    val = literal(value)
+                    val.type = python_to_sql(type(value))()
+                    mutated[name] = val  # type: ignore[assignment]
+                else:
+                    # adding new signal
+                    mutated[name] = value
 
-        mutated = {}
-        schema = self.signals_schema
-        for name, value in kwargs.items():
-            if isinstance(value, Column):
-                # renaming existing column
-                for signal in schema.db_signals(name=value.name, as_columns=True):
-                    mutated[signal.name.replace(value.name, name, 1)] = signal  # type: ignore[union-attr]
-            elif isinstance(value, Func):
-                # adding new signal
-                mutated[name] = value.get_column(schema)
-            elif isinstance(value, primitives):
-                # adding simple python constant primitives like str, int, float, bool
-                val = literal(value)
-                val.type = python_to_sql(type(value))()
-                mutated[name] = val  # type: ignore[assignment]
-            else:
-                # adding new signal
-                mutated[name] = value
+            new_schema = schema.mutate(kwargs)
+        except SignalResolvingError as err:
+            raise SignalResolvingError(None, f"{method} error - {err}") from err
 
-        new_schema = schema.mutate(kwargs)
         return self._evolve(
             query=self._query.mutate(new_schema=new_schema, **mutated),
             signal_schema=new_schema,
@@ -1512,12 +1588,14 @@ class DataChain:
         return self.results(row_factory=to_dict)
 
     def to_iter(
-        self, *cols: str
+        self, *cols: str | Column
     ) -> IteratorGenerator[tuple[DataValue, ...], None, None]:
         """Yields rows of values, optionally limited to the specified columns.
 
         Args:
-            *cols: Limit to the specified columns. By default, all columns are selected.
+            *cols: Limit to the specified columns. String names and plain
+                ``C("...")`` column references are supported. By default, all
+                columns are selected.
 
         Yields:
             (tuple[DataType, ...]): Yields a tuple of items for each row.
@@ -1548,6 +1626,7 @@ class DataChain:
                 print(file)
             ```
         """
+        cols = self._signal_names(cols, "to_iter()")
         signals_schema = (
             self.signals_schema.resolve(*cols)
             if cols
@@ -2888,12 +2967,14 @@ class DataChain:
         """
         return self._evolve(query=self._query.chunk(index, total))
 
-    def to_list(self, *cols: str) -> list[tuple[DataValue, ...]]:
+    def to_list(self, *cols: str | Column) -> list[tuple[DataValue, ...]]:
         """Returns a list of rows of values, optionally limited to the specified
         columns.
 
         Parameters:
-            *cols: Limit to the specified columns. By default, all columns are selected.
+            *cols: Limit to the specified columns. String names and plain
+                ``C("...")`` column references are supported. By default, all
+                columns are selected.
 
         Returns:
             list[tuple[DataType, ...]]: Returns a list of tuples of items for each row.
@@ -2917,13 +2998,14 @@ class DataChain:
             print(files)  # Returns list of 1-tuples
             ```
         """
-        return list(self.to_iter(*cols))
+        return list(self.to_iter(*self._signal_names(cols, "to_list()")))
 
-    def to_values(self, col: str) -> list[DataValue]:
+    def to_values(self, col: str | Column) -> list[DataValue]:
         """Returns a flat list of values from a single column.
 
         Parameters:
-            col: The name of the column to extract values from.
+            col: The column to extract values from. String names and plain
+                ``C("...")`` column references are supported.
 
         Returns:
             list[DataValue]: Returns a flat list of values from the specified column.
@@ -2941,7 +3023,9 @@ class DataChain:
             print(sizes)  # Returns list of integers
             ```
         """
-        return [row[0] for row in self.to_list(col)]
+        return [
+            row[0] for row in self.to_list(*self._signal_names((col,), "to_values()"))
+        ]
 
     def __iter__(self) -> Iterator[tuple[DataValue, ...]]:
         """Make DataChain objects iterable.
