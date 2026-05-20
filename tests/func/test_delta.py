@@ -140,8 +140,8 @@ def test_delta_falls_back_when_dependency_missing(test_session, no_studio_datase
     with pytest.raises(DatasetNotFoundError):
         dc.read_dataset(source_ds, session=test_session, version="1.0.0")
 
-    # Soft delete keeps the dep row pointing at the now-REMOVED v1.0.0 of
-    # the source so the dependent's lineage view still resolves.
+    # The dep row still points at the now-REMOVED v1.0.0 of the source
+    # so the dependent's lineage view still resolves.
     assert _get_dependencies(catalog, delta_ds, "1.0.0") == [(source_ds, "1.0.0")]
 
     dc.read_dataset(

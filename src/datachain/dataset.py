@@ -775,7 +775,7 @@ class DatasetRecord:
     def _max_version(self) -> str:
         """Highest semver across all versions including REMOVED ones. Used for
         collision avoidance — once a semver is claimed it's reserved forever,
-        even after soft-delete."""
+        even after removal."""
         return max(self.versions).version
 
     @property

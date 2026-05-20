@@ -1111,7 +1111,7 @@ def test_dataset_dependencies_one_dataset_as_dependency(
         for d in catalog.get_dataset_dependencies(ds_name, "1.0.0", indirect=indirect)
     ] == expected
 
-    # Soft delete preserves the dependency record so dependents can still
+    # Removing keeps the dependency record so dependents can still
     # render lineage to the removed source.
     catalog.remove_dataset(dogs_dataset.name, force=True)
     assert [
@@ -1181,9 +1181,8 @@ def test_dataset_dependencies_multiple_direct_dataset_dependencies(
         key=lambda d: d["name"],
     ) == sorted(expected, key=lambda d: d["name"])
 
-    # Soft delete preserves dependency records: removing either source
-    # leaves the dependent's lineage intact (versions stay as REMOVED,
-    # FK still resolves).
+    # Removing keeps dependency records intact: the dependent's lineage
+    # still resolves (versions stay as REMOVED, FK still points at them).
     catalog.remove_dataset(dogs_dataset.name, force=True)
     assert sorted(
         (

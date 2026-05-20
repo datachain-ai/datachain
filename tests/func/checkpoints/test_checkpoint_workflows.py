@@ -259,7 +259,7 @@ def test_checkpoint_with_deleted_dataset_version(test_session, nums_dataset):
 
     catalog.remove_dataset("nums_deleted", version="1.0.0", force=True)
 
-    # Soft delete: dataset row stays, version is REMOVED.
+    # Dataset row stays, version is REMOVED.
     dataset = catalog.get_dataset(
         "nums_deleted", versions=None, include_incomplete=True
     )

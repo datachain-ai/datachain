@@ -1095,48 +1095,48 @@ class Catalog:
         return dataset_updated
 
     def remove_dataset_version(
-        self, dataset: DatasetRecord, version: str, purge: bool = False
+        self, dataset: DatasetRecord, version: str, keep_metadata: bool = True
     ) -> None:
         """
         Remove a single dataset version.
 
-        For COMPLETE user-named versions this is a soft delete: rows table is
-        dropped, dependencies are preserved, and the version row stays with
-        status REMOVED so dependents can still render lineage. The semver is
-        permanently reserved — saving the same name again auto-bumps past it.
+        Default behavior (``keep_metadata=True``) for COMPLETE user-named
+        versions: the rows table is dropped, dependencies are preserved, and
+        the version row stays with status REMOVED so dependents can still
+        render lineage. The semver is permanently reserved — saving the same
+        name again auto-bumps past it.
 
-        For non-COMPLETE versions (CREATED/FAILED/STALE/REMOVING leftovers) and
-        for internal datasets (listing `lst__*` / `session_*` intermediates),
-        this is a hard delete: rows table dropped, dependencies removed,
-        version row deleted, and dataset row removed if it was the last
-        version.
+        For non-COMPLETE versions (CREATED/FAILED/STALE/REMOVING leftovers)
+        and for internal datasets (listing `lst__*` / `session_*`
+        intermediates), the version row and dependencies are always dropped,
+        and the dataset row is removed if it was the last version.
 
-        When ``purge=True`` the soft branch is skipped entirely — everything
-        is hard-deleted including any already-REMOVED record. Reserved for
-        admin tools (e.g. Django admin); not exposed via the CLI or public
-        Python API.
+        Pass ``keep_metadata=False`` to fully wipe the version regardless of
+        status — including any existing REMOVED record. This frees nothing
+        slot-wise (the semver was already reserved) but removes all trace.
         """
         from datachain.query.session import Session
 
         if not dataset.has_version(version):
             return
         v = dataset.get_version(version)
-        if v.status == DatasetStatus.REMOVED and not purge:
+        if v.status == DatasetStatus.REMOVED and keep_metadata:
             return
 
         is_internal = is_listing_dataset(dataset.name) or dataset.name.startswith(
             Session.DATASET_PREFIX
         )
-        soft = v.status == DatasetStatus.COMPLETE and not is_internal and not purge
+        reserve_slot = (
+            v.status == DatasetStatus.COMPLETE and not is_internal and keep_metadata
+        )
 
-        # Rows table is already gone for REMOVED records.
         if v.status != DatasetStatus.REMOVED:
             self.metastore.update_dataset_version(
                 dataset, version, status=DatasetStatus.REMOVING
             )
             self.warehouse.drop_dataset_rows_table(dataset, version)
 
-        if soft:
+        if reserve_slot:
             self.metastore.update_dataset_version(
                 dataset,
                 version,

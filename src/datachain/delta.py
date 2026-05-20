@@ -250,7 +250,7 @@ def _get_source_info(
         include_incomplete=False,
     )
 
-    # The version the dep points at may have been soft-deleted. Without a
+    # The version the dep points at may have been removed. Without a
     # readable previous version we can't compute a diff; fall back to
     # normal dataset creation, same as a missing dep.
     if not source_ds.has_version(source_ds_dep.version) or (

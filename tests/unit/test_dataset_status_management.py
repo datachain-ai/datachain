@@ -416,11 +416,6 @@ def test_cleanup_dataset_versions_removes_marked_for_removal(
         test_session.catalog.get_dataset(dataset_marked_for_removal.name)
 
 
-# ---------------------------------------------------------------------------
-# Soft-delete (REMOVED) behavior
-# ---------------------------------------------------------------------------
-
-
 def _find_removed(ds: DatasetRecord, version: str):
     """Find a REMOVED version by its semver."""
     for v in ds.versions:
@@ -429,9 +424,7 @@ def _find_removed(ds: DatasetRecord, version: str):
     return None
 
 
-def test_soft_delete_keeps_version_row_and_drops_rows_table(
-    test_session, dataset_complete
-):
+def test_remove_keeps_version_row_and_drops_rows_table(test_session, dataset_complete):
     catalog = test_session.catalog
     warehouse = catalog.warehouse
     version = dataset_complete.latest_version
@@ -450,7 +443,7 @@ def test_soft_delete_keeps_version_row_and_drops_rows_table(
     assert not warehouse.db.has_table(rows_table)
 
 
-def test_soft_delete_preserves_dependencies(test_session, dataset_complete):
+def test_remove_preserves_dependencies(test_session, dataset_complete):
     catalog = test_session.catalog
     metastore = catalog.metastore
 
@@ -470,7 +463,7 @@ def test_soft_delete_preserves_dependencies(test_session, dataset_complete):
     assert deps[0] is not None
 
 
-def test_soft_delete_is_idempotent(test_session, dataset_complete):
+def test_remove_is_idempotent_on_already_removed(test_session, dataset_complete):
     catalog = test_session.catalog
     version = dataset_complete.latest_version
 
@@ -491,7 +484,7 @@ def test_soft_delete_is_idempotent(test_session, dataset_complete):
     assert _find_removed(ds, version).removed_at == first_removed_at
 
 
-def test_save_after_soft_delete_skips_removed_version(test_session, dataset_complete):
+def test_save_after_remove_skips_removed_version(test_session, dataset_complete):
     """A removed semver is permanently reserved — the next save auto-bumps
     past it instead of reclaiming the slot."""
     catalog = test_session.catalog
@@ -510,8 +503,10 @@ def test_save_after_soft_delete_skips_removed_version(test_session, dataset_comp
     assert _find_removed(ds, first_version) is not None
 
 
-def test_purge_hard_deletes_already_removed_version(test_session, dataset_complete):
-    """Admin escape hatch: purge=True wipes a REMOVED record completely
+def test_remove_keep_metadata_false_wipes_already_removed_version(
+    test_session, dataset_complete
+):
+    """keep_metadata=False wipes a REMOVED record completely
     (version row gone, dataset row gone if it was the last)."""
     catalog = test_session.catalog
     name = dataset_complete.name
@@ -521,19 +516,21 @@ def test_purge_hard_deletes_already_removed_version(test_session, dataset_comple
     ds = catalog.get_dataset(name, versions=None, include_incomplete=True)
     assert _find_removed(ds, version) is not None
 
-    catalog.remove_dataset_version(ds, version, purge=True)
+    catalog.remove_dataset_version(ds, version, keep_metadata=False)
 
     with pytest.raises(DatasetNotFoundError):
         catalog.get_dataset(name, include_incomplete=True)
 
 
-def test_purge_hard_deletes_live_complete_version(test_session, dataset_complete):
-    """purge=True bypasses soft-delete even on a fresh COMPLETE version."""
+def test_remove_keep_metadata_false_wipes_live_complete_version(
+    test_session, dataset_complete
+):
+    """keep_metadata=False wipes a fresh COMPLETE version without leaving a record."""
     catalog = test_session.catalog
     name = dataset_complete.name
     version = dataset_complete.latest_version
 
-    catalog.remove_dataset_version(dataset_complete, version, purge=True)
+    catalog.remove_dataset_version(dataset_complete, version, keep_metadata=False)
 
     with pytest.raises(DatasetNotFoundError):
         catalog.get_dataset(name, include_incomplete=True)
@@ -577,7 +574,7 @@ def test_listing_excludes_removed_only_dataset(test_session, dataset_complete):
     assert name not in {ds.name for (ds,) in ds_chain.to_iter("dataset")}
 
 
-def test_read_dataset_after_soft_delete_raises(
+def test_read_dataset_after_remove_raises(
     test_session, dataset_complete, no_studio_dataset
 ):
     catalog = test_session.catalog
@@ -630,8 +627,8 @@ def _make_completed_dataset(catalog, name: str, project=None):
 
 
 def test_listing_dataset_stays_on_hard_delete(test_session):
-    """`lst__*` listing datasets must never get soft-deleted — they're
-    internal cache, soft-deleting them serves nobody and wastes rows."""
+    """`lst__*` listing datasets must never keep metadata on remove — they're
+    internal cache, keeping a record serves nobody and wastes rows."""
     catalog = test_session.catalog
     metastore = catalog.metastore
     listing_project = metastore.get_project(
