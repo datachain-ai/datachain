@@ -280,23 +280,27 @@ Never create or modify files under `dc-knowledge/` — that directory is owned b
    ✓ chain.mutate(discounted=C("price") * 0.9)          # scalar literal → type inferred
    ✗ chain.mutate(total=C("price") * C("qty"))           # no type → error
 
-10. READ NOT FROM: Use dc.read_* module functions, not deprecated DataChain.from_* methods.
-   The full deprecated list (all of these → use the dc.read_* equivalent):
-     DataChain.from_dataset(...)   →  dc.read_dataset(...)    ← MOST COMMON misuse
-     DataChain.from_storage(...)   →  dc.read_storage(...)
-     DataChain.from_csv(...)       →  dc.read_csv(...)
-     DataChain.from_parquet(...)   →  dc.read_parquet(...)
-     DataChain.from_json(...)      →  dc.read_json(...)
-     DataChain.from_hf(...)        →  dc.read_hf(...)
-     DataChain.from_images(...)    →  dc.read_storage(..., type="image")
-   `from datachain import DataChain` is itself a smell — never write it.
-   And never assign to the name `dc`: e.g. `dc = DataChain.from_dataset("x")`
-   shadows the package and breaks every subsequent `dc.read_*`, `dc.C`, `dc.func.*`.
-   ✓ dc.read_csv("s3://data.csv")
-   ✓ dc.read_dataset("sec_10k_text_profile")
-   ✗ DataChain.from_csv("s3://data.csv")        ← deprecated
-   ✗ DataChain.from_dataset("sec_10k_text_profile")  ← deprecated; use dc.read_dataset
-   ✗ dc = DataChain.from_dataset("x")            ← double anti-pattern: deprecated AND shadows `dc`
+10. READ NOT FROM: Use dc.read_* module functions. The `DataChain.from_*`
+    methods were REMOVED in #1720 — they no longer exist on the class and
+    calling them raises `AttributeError: type object 'DataChain' has no
+    attribute 'from_*'`. The full removal list (use the dc.read_* equivalent):
+      DataChain.from_dataset(...)   →  dc.read_dataset(...)    ← MOST COMMON misuse
+      DataChain.from_storage(...)   →  dc.read_storage(...)
+      DataChain.from_csv(...)       →  dc.read_csv(...)
+      DataChain.from_parquet(...)   →  dc.read_parquet(...)
+      DataChain.from_json(...)      →  dc.read_json(...)
+      DataChain.from_hf(...)        →  dc.read_hf(...)
+      DataChain.from_values(...)    →  dc.read_values(...)
+      DataChain.from_pandas(...)    →  dc.read_pandas(...)
+      DataChain.from_records(...)   →  dc.read_records(...)
+    `from datachain import DataChain` is itself a smell — never write it.
+    And never assign to the name `dc`: e.g. `dc = DataChain.from_dataset("x")`
+    shadows the package and breaks every subsequent `dc.read_*`, `dc.C`, `dc.func.*`.
+    ✓ dc.read_csv("s3://data.csv")
+    ✓ dc.read_dataset("sec_10k_text_profile")
+    ✗ DataChain.from_csv("s3://data.csv")        ← AttributeError, method removed
+    ✗ DataChain.from_dataset("sec_10k_text_profile")  ← AttributeError, use dc.read_dataset
+    ✗ dc = DataChain.from_dataset("x")            ← double anti-pattern: AttributeError + shadows `dc`
 
 11. GLOB IN PATH: When filtering by file extension or name pattern, put the glob
    directly in the read_storage() path instead of a separate .filter() call.
@@ -1055,7 +1059,7 @@ combined = images.merge(labels, on="file.name", right_on="labels.name")
     ✗ for row in chain.to_iter("file"): row.read_text()  ← tuple, not File
     ✗ for row in chain.to_list("file"): row.read_text()  ← also tuple
     ✓ for f in chain.to_values("file"): f.read_text()    ← flat list of File objects
-✗ DEPRECATED APIs — never use these:
+✗ REMOVED APIs (raise AttributeError, see #1720):
     DataChain.from_storage()  → dc.read_storage()
     DataChain.from_dataset()  → dc.read_dataset()
     DataChain.from_csv()      → dc.read_csv()
@@ -1067,7 +1071,7 @@ combined = images.merge(labels, on="file.name", right_on="labels.name")
     DataChain.from_records()  → dc.read_records()
     DataChain.datasets()      → dc.datasets()
     DataChain.listings()      → dc.listings()
-    chain.collect()           → chain.to_list() / chain.to_iter() / chain.to_values()
+    chain.collect()           → chain.to_list() / chain.to_values()
     File.get_uri()            → file.get_fs_path()
 ✗ Using .concat() in mutate() → transpiler can't infer type; use it only in filter()
 ✗ Using C("col").asc() / .desc() in order_by():
