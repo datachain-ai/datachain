@@ -389,7 +389,7 @@ def dataset_marked_for_removal(test_session, job) -> DatasetRecord:
     test_session.catalog.metastore.db.execute(
         dv.update()
         .where(dv.c.dataset_id == dataset.id)
-        .values(status=DatasetStatus.REMOVING)
+        .values(status=DatasetStatus.REMOVING_DROP_METADATA)
     )
     return test_session.catalog.get_dataset(dataset.name, include_incomplete=True)
 

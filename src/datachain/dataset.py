@@ -263,8 +263,9 @@ class DatasetStatus:
     FAILED = 3
     COMPLETE = 4
     STALE = 6
-    REMOVING = 7
+    REMOVING = 7  # keep-metadata removal in progress; resumes to REMOVED
     REMOVED = 8
+    REMOVING_DROP_METADATA = 9  # wipe in progress; resumes to row deletion
 
 
 @dataclass
@@ -376,6 +377,7 @@ class DatasetVersion:
             DatasetStatus.COMPLETE,
             DatasetStatus.STALE,
             DatasetStatus.REMOVING,
+            DatasetStatus.REMOVING_DROP_METADATA,
             DatasetStatus.REMOVED,
         ]
 

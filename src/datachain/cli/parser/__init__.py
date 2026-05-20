@@ -294,6 +294,17 @@ def get_parser() -> ArgumentParser:  # noqa: PLR0915
         help="Force delete registered dataset with all of its versions",
     )
     rm_dataset_parser.add_argument(
+        "--keep-metadata",
+        default=True,
+        action=BooleanOptionalAction,
+        help=(
+            "Keep version metadata after removal so the semver stays "
+            "reserved and dependents can still resolve lineage. "
+            "Pass --no-keep-metadata to fully wipe the version "
+            "(rows, dependencies, and version row)."
+        ),
+    )
+    rm_dataset_parser.add_argument(
         "--studio",
         action="store_true",
         default=False,

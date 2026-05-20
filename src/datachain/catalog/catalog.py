@@ -1097,23 +1097,13 @@ class Catalog:
     def remove_dataset_version(
         self, dataset: DatasetRecord, version: str, keep_metadata: bool = True
     ) -> None:
-        """
-        Remove a single dataset version.
+        """Remove a single dataset version.
 
-        Default behavior (``keep_metadata=True``) for COMPLETE user-named
-        versions: the rows table is dropped, dependencies are preserved, and
-        the version row stays with status REMOVED so dependents can still
-        render lineage. The semver is permanently reserved — saving the same
-        name again auto-bumps past it.
-
-        For non-COMPLETE versions (CREATED/FAILED/STALE/REMOVING leftovers)
-        and for internal datasets (listing `lst__*` / `session_*`
-        intermediates), the version row and dependencies are always dropped,
-        and the dataset row is removed if it was the last version.
-
-        Pass ``keep_metadata=False`` to fully wipe the version regardless of
-        status — including any existing REMOVED record. This frees nothing
-        slot-wise (the semver was already reserved) but removes all trace.
+        With ``keep_metadata=True`` (default), COMPLETE user-named versions
+        keep a REMOVED record so the semver stays reserved and dependents can
+        resolve lineage; the rows table is always dropped. Non-COMPLETE
+        versions and internal datasets (`lst__*`, `session_*`) are always
+        fully removed. ``keep_metadata=False`` forces a full wipe.
         """
         from datachain.query.session import Session
 
@@ -1126,17 +1116,19 @@ class Catalog:
         is_internal = is_listing_dataset(dataset.name) or dataset.name.startswith(
             Session.DATASET_PREFIX
         )
-        reserve_slot = (
+        # Resume by status (in-flight retries override the caller's flag):
+        #   REMOVING               → finish keep-metadata path
+        #   REMOVING_DROP_METADATA → finish wipe path
+        reserve_slot = v.status == DatasetStatus.REMOVING or (
             v.status == DatasetStatus.COMPLETE and not is_internal and keep_metadata
         )
 
-        if v.status != DatasetStatus.REMOVED:
-            self.metastore.update_dataset_version(
-                dataset, version, status=DatasetStatus.REMOVING
-            )
-            self.warehouse.drop_dataset_rows_table(dataset, version)
-
         if reserve_slot:
+            if v.status != DatasetStatus.REMOVING:
+                self.metastore.update_dataset_version(
+                    dataset, version, status=DatasetStatus.REMOVING
+                )
+            self.warehouse.drop_dataset_rows_table(dataset, version)
             self.metastore.update_dataset_version(
                 dataset,
                 version,
@@ -1144,6 +1136,15 @@ class Catalog:
                 removed_at=datetime.now(timezone.utc),
             )
         else:
+            if v.status not in (
+                DatasetStatus.REMOVING_DROP_METADATA,
+                DatasetStatus.REMOVED,
+            ):
+                self.metastore.update_dataset_version(
+                    dataset, version, status=DatasetStatus.REMOVING_DROP_METADATA
+                )
+            if v.status != DatasetStatus.REMOVED:
+                self.warehouse.drop_dataset_rows_table(dataset, version)
             self.metastore.remove_dataset_version(dataset, version)
 
     def _remove_versions(self, pairs: Iterable[tuple[DatasetRecord, str]]) -> int:
@@ -1187,7 +1188,7 @@ class Catalog:
         Clean up dataset versions that are no longer needed.
 
         Removes dataset versions that:
-        - Have status CREATED, FAILED, STALE, or REMOVING
+        - Have status CREATED, FAILED, STALE, REMOVING, or REMOVING_DROP_METADATA
         - Belong to completed/failed/canceled jobs (not running)
         - Are session_* datasets from finished jobs (orphaned intermediates)
 
@@ -1639,6 +1640,7 @@ class Catalog:
         project: Project | None = None,
         version: str | None = None,
         force: bool | None = False,
+        keep_metadata: bool = True,
     ):
         dataset = self.get_dataset(
             name,
@@ -1654,7 +1656,7 @@ class Catalog:
             )
 
         if version:
-            self.remove_dataset_version(dataset, version)
+            self.remove_dataset_version(dataset, version, keep_metadata=keep_metadata)
             return
 
         for v in dataset.versions:
@@ -1662,6 +1664,7 @@ class Catalog:
             self.remove_dataset_version(
                 dataset,
                 version,
+                keep_metadata=keep_metadata,
             )
 
     def edit_dataset(
