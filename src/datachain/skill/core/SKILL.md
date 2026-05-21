@@ -130,6 +130,61 @@ labeled = (
 labeled.show()
 ```
 
+### Code-level decomposition: one stage = one script
+
+A multi-stage pipeline that produces multiple named datasets through expensive
+stages (LLM calls, embeddings, ML inference, multi-step transforms) belongs in
+MULTIPLE scripts — one per stage — not folded into one monolithic file. Each
+script reads from the previous stage's saved dataset via `dc.read_dataset(...)`
+and writes its own with `.save("name")`.
+
+This is the natural sibling of the `.save()` discipline above: dataset-level
+decomposition is necessary but not sufficient — code-level decomposition is what
+makes the saved datasets actually reusable.
+
+**Split when ANY of these hold** for a stage's output dataset:
+
+- The stage runs an LLM/VLM call, embedding model, or ML inference.
+- The result is expected to be reused by future questions.
+- The result will exceed ~10 rows AND the user might want to inspect or merge it later.
+- Wall time is expected to exceed ~5 minutes.
+- The stage's chain involves 3+ distinct DataChain operations.
+
+**Don't split** — keep as inline code at the end of the previous script, or as an
+ad-hoc query (not a script at all):
+
+- Single filter / select / limit / order_by on an existing dataset.
+- Cheap metadata aggregation (no UDFs, no API calls, no model inference).
+- A one-off query the user asked to display, not save.
+
+**Naming convention:** each script is named after the dataset it produces.
+
+```
+build_oxford_micro_dog_embeddings.py    →  oxford_micro_dog_embeddings dataset
+build_oxford_micro_dog_breeds.py        →  oxford_micro_dog_breeds dataset
+similar_to_fiona.py                      →  similar_to_fiona dataset (or ad-hoc query)
+```
+
+```bash
+# ✓ Three focused scripts — each stage independently rerunnable, reusable, and
+#   composable with future questions:
+python build_chunks.py             # reads s3://, .save("chunks")
+python build_chunk_embeddings.py   # reads "chunks", .save("chunk_embeddings")
+python classify_chunks.py          # reads "chunk_embeddings", .save("classified_chunks")
+
+# ✗ One mega-script — three saves in one file:
+python pipeline.py
+#       dc.read_storage(...).gen(chunk=...).save("chunks")
+#       dc.read_dataset("chunks").map(emb=...).save("chunk_embeddings")
+#       dc.read_dataset("chunk_embeddings").map(cat=...).save("classified_chunks")
+# Failure in stage 2 forces the whole file to re-run from the top; future reuse
+# of just the embeddings stage requires excising code from the monolith; the
+# script cannot compose with other questions that need only one of the stages.
+```
+
+See `docs/guide/multi-stage-pipelines.md` for the canonical multi-script
+pattern, including comparative-evaluation and cost-tracking variations.
+
 **Special case — expensive compute.** When a UDF is expensive (ML inference, LLM calls, heavy per-row processing), save the **full, unfiltered** result before any filtering or subsetting. A downstream `.save()` after filtering only preserves a fraction of the rows — the rest of the compute is lost.
 
 ```python
