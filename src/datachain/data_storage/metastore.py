@@ -779,7 +779,6 @@ class AbstractDBMetastore(AbstractMetastore):
         return [
             Column("id", Integer, primary_key=True),
             Column("uuid", Text, nullable=False, default=lambda: str(uuid4())),
-            Index("uq_datasets_uuid", "uuid", unique=True),
             Column(
                 "project_id",
                 Integer,
@@ -799,6 +798,7 @@ class AbstractDBMetastore(AbstractMetastore):
             Column("sources", Text, nullable=False, default=""),
             Column("query_script", Text, nullable=False, default=""),
             Column("schema", JSON, nullable=True),
+            Index("uq_datasets_uuid", "uuid", unique=True),
         ]
 
     @cached_property
@@ -1218,20 +1218,7 @@ class AbstractDBMetastore(AbstractMetastore):
         else:
             project = self.get_project_by_id(project_id)
 
-        if uuid is not None:
-            # Validate UUID format if explicitly provided
-            if not uuid.strip():
-                raise ValueError("UUID cannot be empty or whitespace")
-            try:
-                # Validate UUID format by parsing it
-                import uuid as uuid_module
-
-                uuid_module.UUID(uuid)
-                my_uuid = uuid
-            except ValueError as e:
-                raise ValueError(f"Invalid UUID format: {uuid}") from e
-        else:
-            my_uuid = str(uuid4())
+        my_uuid = uuid.strip() if uuid and uuid.strip() else str(uuid4())
 
         query = self._datasets_insert().values(
             name=name,

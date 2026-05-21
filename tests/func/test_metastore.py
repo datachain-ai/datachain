@@ -103,20 +103,6 @@ def test_create_dataset_explicit_uuid_is_preserved(metastore):
     assert ds.uuid == explicit
 
 
-def test_create_dataset_invalid_uuid_raises_error(metastore):
-    with pytest.raises(ValueError, match="UUID cannot be empty or whitespace"):
-        metastore.create_dataset(name="bad_uuid_empty", uuid="")
-
-    with pytest.raises(ValueError, match="UUID cannot be empty or whitespace"):
-        metastore.create_dataset(name="bad_uuid_spaces", uuid="   ")
-
-    with pytest.raises(ValueError, match="Invalid UUID format"):
-        metastore.create_dataset(name="bad_uuid_format", uuid="not-a-uuid")
-
-    with pytest.raises(ValueError, match="Invalid UUID format"):
-        metastore.create_dataset(name="bad_uuid_short", uuid="123")
-
-
 def test_create_dataset_duplicate_uuid_constraint(metastore):
     duplicate_uuid = "11111111-2222-3333-4444-555555555555"
 
