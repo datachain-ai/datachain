@@ -187,6 +187,59 @@ pattern, including comparative-evaluation and cost-tracking variations.
 
 **Special case — expensive compute.** When a UDF is expensive (ML inference, LLM calls, heavy per-row processing), save the **full, unfiltered** result before any filtering or subsetting. A downstream `.save()` after filtering only preserves a fraction of the rows — the rest of the compute is lost.
 
+**Problem-specific filters belong DOWNSTREAM of the expensive `.save()`.** This is the
+load-bearing rule for reuse: pre-filtering the input chain with criteria taken from
+the current task makes the saved dataset useless for any future question with
+different criteria.
+
+A filter is **problem-specific** if its criterion comes from the user's task description
+(a named exclusion like "Cocker Spaniels", a threshold like "width > 400", a category, a
+ranking criterion). It MUST go after the expensive `.save()`.
+
+A filter is **data-quality** if it would apply to ANY question over this dataset (the
+file is corrupted, a mandatory field is missing, the row doesn't parse). It MAY go
+before the `.save()` to skip work that is never useful.
+
+```python
+# Task: "Find dogs similar to fiona.jpg in s3://dc-readme/oxford-pets-micro/,
+#        excluding Cocker Spaniels, only width > 400px, must have a mask."
+#
+# ✗ Pre-filtering with problem-specific criteria — saved embeddings are useless for
+#   any future question that touches Cocker Spaniels or narrow images.
+embeddings = (
+    dc.read_storage("s3://dc-readme/oxford-pets-micro/.../images/", anon=True)
+    .merge(breed_meta, on="file.stem")
+    .filter(dc.C("breed") != "cocker_spaniel")    # ← problem-specific
+    .filter(dc.C("width") > 400)                   # ← problem-specific
+    .filter(dc.C("has_mask") == True)              # ← problem-specific
+    .setup(model=lambda: clip)
+    .map(emb=encode_image)
+    .save("oxford_micro_dog_embeddings")           # ← USELESS for next question
+)
+
+# ✓ Save embeddings over the WHOLE input, apply problem filters downstream.
+#   The embeddings dataset stays reusable; the filtered ranking is a separate save.
+embeddings = (
+    dc.read_storage("s3://dc-readme/oxford-pets-micro/.../images/", anon=True)
+    .setup(model=lambda: clip)
+    .map(emb=encode_image)
+    .save("oxford_micro_dog_embeddings")           # ← FULL coverage, reusable
+)
+
+ranked = (
+    dc.read_dataset("oxford_micro_dog_embeddings")
+    .merge(dc.read_dataset("oxford_micro_dog_breeds"), on="file.stem")
+    .filter(dc.C("breed") != "cocker_spaniel")    # ← problem-specific, downstream
+    .filter(dc.C("width") > 400)
+    .filter(dc.C("has_mask") == True)
+    .mutate(distance=dc.func.cosine_distance(dc.C("emb"), fiona_emb))
+    .order_by("distance").limit(5)
+    .save("similar_to_fiona")                      # ← problem-specific subset
+)
+```
+
+Other examples of correct decomposition:
+
 ```python
 # ✓ Expensive result saved unfiltered, then filtered result saved separately
 embeddings = (
@@ -195,7 +248,7 @@ embeddings = (
     .map(emb=compute_embedding)
     .save("product_images_embeddings")      # ← all rows preserved
 )
-similar = embeddings.filter(...)
+similar = embeddings.filter(...)             # ← downstream filter (cheap)
 similar.save("similar_products")            # ← filtered view also saved
 
 # ✓ Expensive result flows unfiltered into final dataset — no separate save needed
@@ -205,6 +258,15 @@ enriched = (
     .map(emb=compute_embedding)
     .merge(labels, on="file.path")
     .save("product_images_enriched")        # ← emb column is in the final dataset
+)
+
+# ✓ Data-quality filter BEFORE expensive UDF is fine — corrupted rows never useful
+embeddings = (
+    dc.read_storage("s3://b/", anon=True)
+    .filter(dc.C("file.size") > 0)           # ← data-quality (broken file), OK
+    .setup(model=lambda: clip)
+    .map(emb=encode_image)
+    .save("clip_embeddings")
 )
 ```
 
