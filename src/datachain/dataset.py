@@ -7,6 +7,7 @@ from typing import (
     NewType,
     TypeVar,
 )
+from uuid import uuid4
 
 from packaging.specifiers import SpecifierSet
 from packaging.version import Version
@@ -487,7 +488,7 @@ class DatasetRecord:
     attrs: list[str]
     schema: dict[str, SQLType | type[SQLType]]
     feature_schema: dict
-    uuid: str = field(kw_only=True)
+    uuid: str = field(kw_only=True, default_factory=lambda: str(uuid4()))
     _versions: list[DatasetVersion] = field(
         default_factory=list, metadata={"alias": "versions"}
     )
