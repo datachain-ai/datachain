@@ -237,7 +237,9 @@ def test_install_all_copilot_global(tmp_path, fake_skills_src, fake_home):
         assert "description: Test skill" not in content
 
 
-def test_install_copilot_local_uses_github_path(tmp_path, fake_skills_src, fake_home, monkeypatch):
+def test_install_copilot_local_uses_github_path(
+    tmp_path, fake_skills_src, fake_home, monkeypatch
+):
     """--local mode for copilot writes to .github/instructions/ + .datachain/skills/
     (the canonical GitHub Copilot paths), not the ~/.copilot/ user-level layout."""
     project_dir = tmp_path / "project"

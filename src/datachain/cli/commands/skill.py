@@ -138,7 +138,9 @@ def install_skills(skills: str | None, target: str, local: bool) -> int:
         and layout["command_ext"] is not None
         and (local or not layout["commands_local_only"])
     )
-    commands_dir = base / commands_dir_rel if write_commands and commands_dir_rel else None
+    commands_dir = (
+        base / commands_dir_rel if write_commands and commands_dir_rel else None
+    )
     command_ext = layout["command_ext"]
 
     installed = []
@@ -225,7 +227,9 @@ def uninstall_skills(skills: str | None, target: str, local: bool) -> int:
         and layout["command_ext"] is not None
         and (local or not layout["commands_local_only"])
     )
-    commands_dir = base / commands_dir_rel if write_commands and commands_dir_rel else None
+    commands_dir = (
+        base / commands_dir_rel if write_commands and commands_dir_rel else None
+    )
     command_ext = layout["command_ext"]
 
     removed = []
