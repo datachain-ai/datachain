@@ -394,7 +394,12 @@ def test_transform_copilot_instructions_strips_frontmatter():
     p = Path(__file__).parent / "_test_copilot_fm.md"
     try:
         p.write_text(
-            "---\nname: datachain-core\ndescription: SDK skill\ntriggers: ['py']\n---\n# Body\n"
+            "---\n"
+            "name: datachain-core\n"
+            "description: SDK skill\n"
+            "triggers: ['py']\n"
+            "---\n"
+            "# Body\n"
         )
         result = _transform_copilot_instructions(p)
         assert result.startswith("---\napplyTo: '**/*.py'\n---\n")
