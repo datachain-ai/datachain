@@ -1118,7 +1118,7 @@ class Catalog:
         )
         # Resume by status (in-flight retries override the caller's flag):
         #   REMOVING               → finish keep-metadata path
-        #   REMOVING_DROP_METADATA → finish wipe path
+        #   REMOVING_TOTAL → finish wipe path
         reserve_slot = v.status == DatasetStatus.REMOVING or (
             v.status == DatasetStatus.COMPLETE and not is_internal and keep_metadata
         )
@@ -1137,11 +1137,11 @@ class Catalog:
             )
         else:
             if v.status not in (
-                DatasetStatus.REMOVING_DROP_METADATA,
+                DatasetStatus.REMOVING_TOTAL,
                 DatasetStatus.REMOVED,
             ):
                 self.metastore.update_dataset_version(
-                    dataset, version, status=DatasetStatus.REMOVING_DROP_METADATA
+                    dataset, version, status=DatasetStatus.REMOVING_TOTAL
                 )
             if v.status != DatasetStatus.REMOVED:
                 self.warehouse.drop_dataset_rows_table(dataset, version)
@@ -1188,7 +1188,7 @@ class Catalog:
         Clean up dataset versions that are no longer needed.
 
         Removes dataset versions that:
-        - Have status CREATED, FAILED, STALE, REMOVING, or REMOVING_DROP_METADATA
+        - Have status CREATED, FAILED, STALE, REMOVING, or REMOVING_TOTAL
         - Belong to completed/failed/canceled jobs (not running)
         - Are session_* datasets from finished jobs (orphaned intermediates)
 

@@ -56,7 +56,6 @@ def dataset_complete(test_session, job) -> DatasetRecord:
 
 
 def test_mark_job_dataset_versions_as_failed(test_session, job, dataset_created):
-    """Test that mark_job_dataset_versions_as_failed marks versions as FAILED."""
     # Verify initial status is CREATED
     dataset = test_session.catalog.get_dataset(dataset_created.name, versions=None)
     dataset_version = dataset.get_version(dataset.latest_version)
@@ -76,7 +75,6 @@ def test_mark_job_dataset_versions_as_failed(test_session, job, dataset_created)
 def test_mark_job_dataset_versions_as_failed_skips_complete(
     test_session, job, dataset_complete
 ):
-    """Test that mark_job_dataset_versions_as_failed skips COMPLETE versions."""
     # Verify initial status is COMPLETE
     dataset = test_session.catalog.get_dataset(dataset_complete.name, versions=None)
     dataset_version = dataset.get_version(dataset_complete.latest_version)
@@ -95,10 +93,6 @@ def test_mark_job_dataset_versions_as_failed_skips_complete(
 def test_finalize_job_as_failed_removes_incomplete_dataset_versions(
     test_session, job, dataset_created, dataset_failed, dataset_complete
 ):
-    """
-    Test that _finalize_job_as_failed marks dataset versions as FAILED and removes
-    them right away.
-    """
     from datachain.query.session import Session
 
     # Set up Session state as if job is running
@@ -131,7 +125,6 @@ def test_finalize_job_as_failed_removes_incomplete_dataset_versions(
 def test_status_filtering_hides_non_complete_versions(
     test_session, job, dataset_created, dataset_failed, dataset_complete
 ):
-    """Test that non-COMPLETE dataset versions are hidden from queries."""
     # Test with include_incomplete=False (what public API/CLI uses)
     datasets = list(test_session.catalog.ls_datasets())
     dataset_names = {d.name for d in datasets}
@@ -145,7 +138,6 @@ def test_status_filtering_hides_non_complete_versions(
 def test_get_dataset_versions_to_clean(
     test_session, job, dataset_created, dataset_failed, dataset_complete
 ):
-    """Test get_dataset_versions_to_clean."""
     # Mark job as failed
     test_session.catalog.metastore.set_job_status(job.id, JobStatus.FAILED)
 
@@ -167,7 +159,6 @@ def test_get_dataset_versions_to_clean(
 def test_get_dataset_versions_to_clean_skips_running_jobs(
     test_session, job, dataset_created
 ):
-    """Test that gc skips versions whose job is still running."""
     # Job is RUNNING — its versions should NOT be returned
     to_clean = test_session.catalog.metastore.get_dataset_versions_to_clean()
     assert dataset_created.name not in {ds.name for ds, _ in to_clean}
@@ -181,7 +172,6 @@ def test_get_dataset_versions_to_clean_skips_running_jobs(
 def test_get_dataset_versions_to_clean_scoped_to_job(
     test_session, job, dataset_created
 ):
-    """Test that get_dataset_versions_to_clean with job_id scopes to that job."""
     test_session.catalog.metastore.set_job_status(job.id, JobStatus.FAILED)
     to_clean = test_session.catalog.metastore.get_dataset_versions_to_clean(
         job_id=job.id
@@ -266,7 +256,6 @@ def test_get_dataset_versions_to_clean_finds_no_job_id(test_session):
 
 
 def test_cleanup_dataset_versions(test_session, job, dataset_failed):
-    """Test cleanup_dataset_versions removes datasets and returns IDs."""
     # Mark job as failed
     test_session.catalog.metastore.set_job_status(job.id, JobStatus.FAILED)
 
@@ -282,7 +271,6 @@ def test_cleanup_dataset_versions(test_session, job, dataset_failed):
 
 
 def test_save_sets_complete_status_at_end(test_session, dataset_complete):
-    """Test that save() sets COMPLETE status only after all operations."""
     # Verify status is COMPLETE
     dataset_version = dataset_complete.get_version(dataset_complete.latest_version)
     assert dataset_version.status == DatasetStatus.COMPLETE
@@ -295,7 +283,6 @@ def test_save_sets_complete_status_at_end(test_session, dataset_complete):
 def test_public_api_datasets_filters_non_complete(
     test_session, dataset_created, dataset_failed, dataset_complete
 ):
-    """Test that dc.datasets() filters out non-COMPLETE datasets."""
     ds_chain = datasets(session=test_session, column="dataset")
     dataset_names = {ds.name for (ds,) in ds_chain.to_iter("dataset")}
 
@@ -306,7 +293,6 @@ def test_public_api_datasets_filters_non_complete(
 
 @pytest.mark.parametrize("is_studio", [True])
 def test_public_api_read_dataset_rejects_non_complete(test_session, studio_job):
-    """Test that dc.read_dataset() rejects non-COMPLETE datasets."""
     ds_created = test_session.catalog.create_dataset(
         "ds_created_read", columns=(sa.Column("name", String),), job_id=studio_job
     )
@@ -329,7 +315,6 @@ def test_public_api_read_dataset_rejects_non_complete(test_session, studio_job):
 def test_public_api_delete_dataset_rejects_non_complete(
     test_session, dataset_created, dataset_failed
 ):
-    """Test that dc.delete_dataset() rejects non-COMPLETE datasets."""
     # Should raise error for CREATED dataset
     with pytest.raises(DatasetNotFoundError):
         delete_dataset(dataset_created.name, session=test_session)
@@ -342,7 +327,6 @@ def test_public_api_delete_dataset_rejects_non_complete(
 def test_public_api_move_dataset_rejects_non_complete(
     test_session, dataset_created, dataset_failed
 ):
-    """Test that dc.move_dataset() rejects non-COMPLETE datasets."""
     # Should raise error for CREATED dataset
     with pytest.raises(DatasetNotFoundError):
         move_dataset(dataset_created.name, "new_name_created", session=test_session)
@@ -361,7 +345,6 @@ def test_public_api_move_dataset_rejects_non_complete(
     ids=["finished-job", "running-job"],
 )
 def test_cleanup_session_dataset_versions(test_session, job, job_status, should_clean):
-    """Test that cleanup_dataset_versions also cleans session_* datasets."""
     ds = dc.read_values(value=["a", "b"], session=test_session).save(
         "session_test_abc123"
     )
@@ -389,7 +372,7 @@ def dataset_marked_for_removal(test_session, job) -> DatasetRecord:
     test_session.catalog.metastore.db.execute(
         dv.update()
         .where(dv.c.dataset_id == dataset.id)
-        .values(status=DatasetStatus.REMOVING_DROP_METADATA)
+        .values(status=DatasetStatus.REMOVING_TOTAL)
     )
     return test_session.catalog.get_dataset(dataset.name, include_incomplete=True)
 
@@ -626,7 +609,7 @@ def _make_completed_dataset(catalog, name: str, project=None):
     )
 
 
-def test_listing_dataset_stays_on_hard_delete(test_session):
+def test_listing_dataset_never_keeps_metadata(test_session):
     """`lst__*` listing datasets must never keep metadata on remove — they're
     internal cache, keeping a record serves nobody and wastes rows."""
     catalog = test_session.catalog
@@ -642,8 +625,8 @@ def test_listing_dataset_stays_on_hard_delete(test_session):
         catalog.get_dataset(name, include_incomplete=True)
 
 
-def test_session_dataset_stays_on_hard_delete(test_session):
-    """`session_*` intermediates are throwaway too — hard delete only."""
+def test_session_dataset_never_keeps_metadata(test_session):
+    """`session_*` intermediates are throwaway too — always fully removed."""
     catalog = test_session.catalog
     name = f"{Session.DATASET_PREFIX}internal_test"
     ds = _make_completed_dataset(catalog, name)

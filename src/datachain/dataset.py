@@ -265,7 +265,7 @@ class DatasetStatus:
     STALE = 6
     REMOVING = 7  # keep-metadata removal in progress; resumes to REMOVED
     REMOVED = 8
-    REMOVING_DROP_METADATA = 9  # wipe in progress; resumes to row deletion
+    REMOVING_TOTAL = 9  # wipe in progress; resumes to row deletion
 
 
 @dataclass
@@ -377,7 +377,7 @@ class DatasetVersion:
             DatasetStatus.COMPLETE,
             DatasetStatus.STALE,
             DatasetStatus.REMOVING,
-            DatasetStatus.REMOVING_DROP_METADATA,
+            DatasetStatus.REMOVING_TOTAL,
             DatasetStatus.REMOVED,
         ]
 
@@ -769,7 +769,7 @@ class DatasetRecord:
         return semver.create(major, minor, patch + 1)
 
     @property
-    def live_versions(self) -> list[DatasetVersion]:
+    def _live_versions(self) -> list[DatasetVersion]:
         """Versions excluding REMOVED ones."""
         return [v for v in self.versions if v.status != DatasetStatus.REMOVED]
 
@@ -786,10 +786,12 @@ class DatasetRecord:
 
     @property
     def latest_version(self) -> str:
-        """Latest user-visible version (skips REMOVED ones)."""
-        if not self.live_versions:
-            raise DatasetVersionNotFoundError("Dataset has no versions")
-        return max(self.live_versions).version
+        """Latest non-REMOVED version."""
+        if not self._live_versions:
+            raise DatasetVersionNotFoundError(
+                f"Dataset {self.name} has no live versions"
+            )
+        return max(self._live_versions).version
 
     @property
     def latest_complete_version(self) -> str | None:
@@ -810,7 +812,7 @@ class DatasetRecord:
         If no major version is find with input value, None will be returned
         """
         versions = [
-            v for v in self.live_versions if semver.parse(v.version)[0] == major
+            v for v in self._live_versions if semver.parse(v.version)[0] == major
         ]
         if not versions:
             return None
@@ -839,7 +841,7 @@ class DatasetRecord:
         # Convert dataset versions to packaging.Version objects
         # and filter compatible ones
         compatible_versions = []
-        for v in self.live_versions:
+        for v in self._live_versions:
             pkg_version = Version(v.version)
             if spec_set.contains(pkg_version):
                 compatible_versions.append(v)

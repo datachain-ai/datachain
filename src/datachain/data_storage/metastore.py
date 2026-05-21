@@ -346,7 +346,7 @@ class AbstractMetastore(ABC, Serializable):
           - the associated job has finished, or
           - there is no associated job (job_id is NULL) and the version is
             older than STALE_CREATED_THRESHOLD_HOURS
-        - Status REMOVING / REMOVING_DROP_METADATA: removal in progress
+        - Status REMOVING / REMOVING_TOTAL: removal in progress
           (GC resumes to REMOVED or to full row deletion respectively)
 
         Returns:
@@ -1828,7 +1828,7 @@ class AbstractDBMetastore(AbstractMetastore):
                                 DatasetStatus.FAILED,
                                 DatasetStatus.STALE,
                                 DatasetStatus.REMOVING,
-                                DatasetStatus.REMOVING_DROP_METADATA,
+                                DatasetStatus.REMOVING_TOTAL,
                             ]
                         ),
                         or_(
@@ -2833,7 +2833,7 @@ class AbstractDBMetastore(AbstractMetastore):
                 self._projects.c.name == project_name,
                 self._dataset_version_jobs.c.job_id.in_(job_ancestry),
                 self._dataset_version_jobs.c.is_creator.is_(True),
-                self._datasets_versions.c.status != DatasetStatus.REMOVED,
+                self._datasets_versions.c.status == DatasetStatus.COMPLETE,
             )
             .order_by(desc(self._dataset_version_jobs.c.created_at))
             .limit(1)

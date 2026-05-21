@@ -411,7 +411,7 @@ def test_preview_raises_when_not_loaded(dataset_record):
 
 def test_latest_version_empty_raises(dataset_record):
     record = replace(dataset_record, _versions=[], _versions_loaded=True)
-    with pytest.raises(DatasetVersionNotFoundError, match="has no versions"):
+    with pytest.raises(DatasetVersionNotFoundError, match="has no live versions"):
         _ = record.latest_version
 
 
