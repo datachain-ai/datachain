@@ -791,11 +791,12 @@ class DatasetRecord:
     @property
     def latest_version(self) -> str:
         """Latest non-REMOVED version."""
-        if not self._live_versions:
+        live = self._live_versions
+        if not live:
             raise DatasetVersionNotFoundError(
                 f"Dataset {self.name} has no live versions"
             )
-        return max(self._live_versions).version
+        return max(live).version
 
     @property
     def latest_complete_version(self) -> str | None:
