@@ -1113,17 +1113,20 @@ class Catalog:
         if v.status == DatasetStatus.REMOVED and keep_metadata:
             return
 
-        is_internal = is_listing_dataset(dataset.name) or dataset.name.startswith(
-            Session.DATASET_PREFIX
-        )
-        # Resume by status (in-flight retries override the caller's flag):
-        #   REMOVING               → finish keep-metadata path
-        #   REMOVING_TOTAL → finish wipe path
-        reserve_slot = v.status == DatasetStatus.REMOVING or (
-            v.status == DatasetStatus.COMPLETE and not is_internal and keep_metadata
-        )
+        # Internal datasets and non-COMPLETE versions never keep metadata.
+        if (
+            is_listing_dataset(dataset.name)
+            or dataset.name.startswith(Session.DATASET_PREFIX)
+            or v.status != DatasetStatus.COMPLETE
+        ):
+            keep_metadata = False
+        # In-flight retries: existing status wins over caller's flag.
+        if v.status == DatasetStatus.REMOVING:
+            keep_metadata = True
+        elif v.status == DatasetStatus.REMOVING_TOTAL:
+            keep_metadata = False
 
-        if reserve_slot:
+        if keep_metadata:
             if v.status != DatasetStatus.REMOVING:
                 self.metastore.update_dataset_version(
                     dataset, version, status=DatasetStatus.REMOVING
