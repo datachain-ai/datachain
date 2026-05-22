@@ -215,6 +215,60 @@ def test_install_all_codex_global(tmp_path, fake_skills_src, fake_home):
     assert not (fake_home / ".codex" / "commands").exists()
 
 
+# --- copilot, global ---
+
+
+def test_install_all_copilot_global(tmp_path, fake_skills_src, fake_home):
+    _run_install(fake_skills_src, fake_home, skills=None, target="copilot", local=False)
+
+    skills_base = fake_home / ".copilot" / "skills"
+    instructions_base = fake_home / ".copilot" / "instructions"
+
+    for skill in ALL_SKILLS:
+        # Full vendor copy of the skill dir (scripts, SKILL.md, etc.)
+        assert (skills_base / skill / "SKILL.md").exists()
+        # Per-skill .instructions.md file with applyTo frontmatter
+        instr_file = instructions_base / f"datachain-{skill}.instructions.md"
+        assert instr_file.exists()
+        content = instr_file.read_text()
+        assert "applyTo: '**/*.py'" in content
+        # Original SKILL.md frontmatter fields should be stripped
+        assert "name: datachain-" not in content
+        assert "description: Test skill" not in content
+
+
+def test_install_copilot_local_uses_github_path(
+    tmp_path, fake_skills_src, fake_home, monkeypatch
+):
+    """--local mode for copilot writes to .github/instructions/ + .datachain/skills/
+    (the canonical GitHub Copilot paths), not the ~/.copilot/ user-level layout."""
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+
+    from datachain.cli.commands.skill import install_skills
+
+    with patch(
+        "datachain.cli.commands.skill._skills_src", return_value=fake_skills_src
+    ):
+        monkeypatch.chdir(project_dir)
+        install_skills(skills=None, target="copilot", local=True)
+
+    # Repo-local Copilot uses the canonical .github/instructions/ path,
+    # NOT .copilot/instructions/.
+    instructions_base = project_dir / ".github" / "instructions"
+    vendor_base = project_dir / ".datachain" / "skills"
+
+    for skill in ALL_SKILLS:
+        assert (vendor_base / skill / "SKILL.md").exists()
+        instr_file = instructions_base / f"datachain-{skill}.instructions.md"
+        assert instr_file.exists()
+        assert "applyTo: '**/*.py'" in instr_file.read_text()
+
+    # The user-level layout MUST NOT be touched in --local mode.
+    assert not (project_dir / ".copilot").exists()
+    assert not (fake_home / ".copilot").exists()
+
+
 # --- local install ---
 
 
@@ -329,6 +383,44 @@ def test_transform_cursor_mdc_missing_description():
         result = _transform_cursor_mdc(p)
         assert "alwaysApply: true" in result
         assert "description: \n" in result
+    finally:
+        p.unlink(missing_ok=True)
+
+
+def test_transform_copilot_instructions_strips_frontmatter():
+    """SKILL.md frontmatter is replaced with Copilot's applyTo block."""
+    from datachain.cli.commands.skill import _transform_copilot_instructions
+
+    p = Path(__file__).parent / "_test_copilot_fm.md"
+    try:
+        p.write_text(
+            "---\n"
+            "name: datachain-core\n"
+            "description: SDK skill\n"
+            "triggers: ['py']\n"
+            "---\n"
+            "# Body\n"
+        )
+        result = _transform_copilot_instructions(p)
+        assert result.startswith("---\napplyTo: '**/*.py'\n---\n")
+        assert "# Body" in result
+        # All original frontmatter fields stripped
+        assert "name: datachain-core" not in result
+        assert "description: SDK skill" not in result
+        assert "triggers:" not in result
+    finally:
+        p.unlink(missing_ok=True)
+
+
+def test_transform_copilot_instructions_no_frontmatter():
+    """SKILL.md without frontmatter still gets the Copilot applyTo block prepended."""
+    from datachain.cli.commands.skill import _transform_copilot_instructions
+
+    p = Path(__file__).parent / "_test_copilot_no_fm.md"
+    try:
+        p.write_text("# Direct heading\nbody text\n")
+        result = _transform_copilot_instructions(p)
+        assert result == "---\napplyTo: '**/*.py'\n---\n# Direct heading\nbody text\n"
     finally:
         p.unlink(missing_ok=True)
 

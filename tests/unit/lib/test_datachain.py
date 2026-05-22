@@ -2602,9 +2602,13 @@ def test_distinct_basic(test_session):
 
     # Test with duplicates
     chain = dc.read_values(numbers=[1, 2, 2, 3, 3, 3, 4], session=test_session)
-    distinct_chain = chain.distinct("numbers")
+    distinct_chain = chain.distinct(C("numbers"))
     assert distinct_chain.count() == 4
     assert sorted(distinct_chain.to_values("numbers")) == [1, 2, 3, 4]
+
+    distinct_named = chain.distinct(doubled=C("numbers") * 2)
+    assert distinct_named.count() == 4
+    assert sorted(distinct_named.to_values("doubled")) == [2, 4, 6, 8]
 
     # Test with strings
     chain = dc.read_values(
@@ -2767,12 +2771,33 @@ def test_distinct_error_handling(test_session):
         chain.distinct("")
 
     # Test with invalid type
-    with pytest.raises(SignalResolvingTypeError):
+    with pytest.raises(
+        SignalResolvingTypeError,
+        match=r"distinct\(\) supports only `str` or `Column`",
+    ):
         chain.distinct(42)
 
     # Test with invalid nested field
     with pytest.raises(SignalResolvingError):
         chain.distinct("numbers.invalid_field")
+
+    with pytest.raises(SignalResolvingError, match=r"distinct\(\) error.*missing"):
+        chain.distinct(missing=C("missing"))
+
+
+@pytest.mark.parametrize(
+    "expr_fn",
+    [lambda: C("numbers") + 1, lambda: func.sum("numbers")],
+    ids=["column-expr", "func"],
+)
+def test_distinct_expression_without_name_error(test_session, expr_fn):
+    chain = dc.read_values(numbers=[1, 2, 3], session=test_session)
+
+    with pytest.raises(
+        DataChainParamsError,
+        match=r"distinct\(\) cannot infer a name.*distinct\(name=expr\)",
+    ):
+        chain.distinct(expr_fn())
 
 
 def test_filter_basic(test_session):
@@ -3418,6 +3443,31 @@ def test_mutate_with_nonexistent_column_expression(test_session):
         dc.read_values(id=[1, 2], session=test_session).mutate(new=(Column("nope") - 1))
 
 
+@pytest.mark.parametrize(
+    "expr_fn",
+    [lambda: C("id") + 1, lambda: string.length(C("name"))],
+    ids=["column-expr", "func"],
+)
+def test_mutate_expression_without_name_error(test_session, expr_fn):
+    chain = dc.read_values(id=[1], name=["a"], session=test_session)
+
+    with pytest.raises(
+        DataChainParamsError,
+        match=r"mutate\(\) cannot infer a name.*mutate\(name=expr\)",
+    ):
+        chain.mutate(expr_fn())
+
+
+def test_mutate_error_messages_use_mutate_name(test_session):
+    chain = dc.read_values(id=[1], session=test_session)
+
+    with pytest.raises(SignalResolvingError, match=r"mutate\(\) error.*missing"):
+        chain.mutate(new=Column("missing"))
+
+    with pytest.raises(DataChainColumnError, match=r"mutate\(\) value has type"):
+        chain.mutate(new=object())
+
+
 def test_read_values_nan_inf(test_session):
     vals = [float("nan"), float("inf"), float("-inf")]
     chain = dc.read_values(vals=vals, session=test_session)
@@ -4029,6 +4079,31 @@ def test_group_by_error(test_session):
         SignalResolvingError, match="cannot resolve signal name 'col3': is not found"
     ):
         chain.group_by(foo=func.sum("col2"), partition_by="col3")
+
+
+def test_group_by_expression_without_name_error(test_session):
+    chain = dc.read_values(col2=[1, 2], session=test_session)
+
+    with pytest.raises(
+        DataChainParamsError,
+        match=r"group_by\(\) cannot infer a name.*group_by\(name=expr\)",
+    ):
+        chain.group_by(func.sum("col2"))
+
+
+@pytest.mark.parametrize(
+    "arg",
+    ["col2", C("col2"), C("col2") + 1, object()],
+    ids=["str", "column", "column-expr", "object"],
+)
+def test_group_by_positional_argument_error(test_session, arg):
+    chain = dc.read_values(col2=[1, 2], session=test_session)
+
+    with pytest.raises(
+        DataChainParamsError,
+        match=r"group_by\(\) does not accept positional arguments.*partition_by=",
+    ):
+        chain.group_by(arg)
 
 
 def test_group_by_case(test_session):

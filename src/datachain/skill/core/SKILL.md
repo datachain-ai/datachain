@@ -62,6 +62,41 @@ pipeline.show()
 - **Final pipeline results.** Rankings, filtered cohorts, evaluation outputs, aggregations — always `.save("name")`.
 - **Chains with no UDFs** (`read_storage` + `filter`/`mutate`/`select` only) may remain transient if transformations are straight forward. They read or reshape existing data without transforming it, so they are cheap to recompute and easy to understand from the code alone.
 
+**Prompt-trigger keywords for `.save()`.** When the user's task description contains any of the following phrases, the task IS a save task — call `.save("name")` on the derived chain and print a short summary of the save (name + row count, or a few stats), NOT the full result set:
+
+- "make available for downstream queries"
+- "compute per-X aggregates" (where X is a grouping key)
+- "build / extract / produce X" (where X is a noun phrase: embeddings, detections, features, summaries)
+- "store / persist / materialize / save"
+- "process and save"
+
+The summary lets the user verify the work landed without flooding stdout (which on large datasets is many MB and not parseable). If the task prompt explicitly says `print "OK"` or similar literal token, follow that — but otherwise prefer a useful one-liner.
+
+```python
+# Task: "Compute per-company stats. Make available for downstream queries."
+# ✓ DO this — save, then print a confirmation that includes name + row count:
+stats = (
+    dc.read_dataset("sec_10k_text_profile")
+    .group_by("cik")
+    .agg(avg_words=..., std_words=..., n_filings=...)
+    .save("cik_text_stats")
+)
+print(f"saved cik_text_stats: {stats.count()} rows")
+# → "saved cik_text_stats: 412 rows"
+
+# ✓ Also fine — summary with a few descriptive stats:
+print(f"cik_text_stats: {stats.count()} companies, "
+      f"median n_filings={stats.to_values('n_filings').median()}")
+
+# ✗ NOT this — values gone after print, downstream B-task can't reuse:
+result = chain.group_by("cik").agg(...).collect()
+print(result)
+
+# ✗ NOT this — fine for the agent's internal log, useless for the human reader:
+chain.save("cik_text_stats")
+print("OK")
+```
+
 **`.persist()` is not `.save()`.** `.persist()` materializes a chain into an anonymous cache for performance — it prevents re-execution but does NOT create a named dataset. When a chain should be saved per the rules above, always use `.save("name")`. Using `.persist()` where `.save()` is required is an anti-pattern: the computed result becomes unreferenceable and invisible to future pipelines.
 
 ```python
@@ -95,7 +130,115 @@ labeled = (
 labeled.show()
 ```
 
+### Code-level decomposition: one stage = one script
+
+A multi-stage pipeline that produces multiple named datasets through expensive
+stages (LLM calls, embeddings, ML inference, multi-step transforms) belongs in
+MULTIPLE scripts — one per stage — not folded into one monolithic file. Each
+script reads from the previous stage's saved dataset via `dc.read_dataset(...)`
+and writes its own with `.save("name")`.
+
+This is the natural sibling of the `.save()` discipline above: dataset-level
+decomposition is necessary but not sufficient — code-level decomposition is what
+makes the saved datasets actually reusable.
+
+**Split when ANY of these hold** for a stage's output dataset:
+
+- The stage runs an LLM/VLM call, embedding model, or ML inference.
+- The result is expected to be reused by future questions.
+- The result will exceed ~10 rows AND the user might want to inspect or merge it later.
+- Wall time is expected to exceed ~5 minutes.
+- The stage's chain involves 3+ distinct DataChain operations.
+
+**Don't split** — keep as inline code at the end of the previous script, or as an
+ad-hoc query (not a script at all):
+
+- Single filter / select / limit / order_by on an existing dataset.
+- Cheap metadata aggregation (no UDFs, no API calls, no model inference).
+- A one-off query the user asked to display, not save.
+
+**Naming convention:** each script is named after the dataset it produces.
+
+```
+build_oxford_micro_dog_embeddings.py    →  oxford_micro_dog_embeddings dataset
+build_oxford_micro_dog_breeds.py        →  oxford_micro_dog_breeds dataset
+similar_to_fiona.py                      →  similar_to_fiona dataset (or ad-hoc query)
+```
+
+```bash
+# ✓ Three focused scripts — each stage independently rerunnable, reusable, and
+#   composable with future questions:
+python build_chunks.py             # reads s3://, .save("chunks")
+python build_chunk_embeddings.py   # reads "chunks", .save("chunk_embeddings")
+python classify_chunks.py          # reads "chunk_embeddings", .save("classified_chunks")
+
+# ✗ One mega-script — three saves in one file:
+python pipeline.py
+#       dc.read_storage(...).gen(chunk=...).save("chunks")
+#       dc.read_dataset("chunks").map(emb=...).save("chunk_embeddings")
+#       dc.read_dataset("chunk_embeddings").map(cat=...).save("classified_chunks")
+# Failure in stage 2 forces the whole file to re-run from the top; future reuse
+# of just the embeddings stage requires excising code from the monolith; the
+# script cannot compose with other questions that need only one of the stages.
+```
+
+See `docs/guide/multi-stage-pipelines.md` for the canonical multi-script
+pattern, including comparative-evaluation and cost-tracking variations.
+
 **Special case — expensive compute.** When a UDF is expensive (ML inference, LLM calls, heavy per-row processing), save the **full, unfiltered** result before any filtering or subsetting. A downstream `.save()` after filtering only preserves a fraction of the rows — the rest of the compute is lost.
+
+**Problem-specific filters belong DOWNSTREAM of the expensive `.save()`.** This is the
+load-bearing rule for reuse: pre-filtering the input chain with criteria taken from
+the current task makes the saved dataset useless for any future question with
+different criteria.
+
+A filter is **problem-specific** if its criterion comes from the user's task description
+(a named exclusion like "Cocker Spaniels", a threshold like "width > 400", a category, a
+ranking criterion). It MUST go after the expensive `.save()`.
+
+A filter is **data-quality** if it would apply to ANY question over this dataset (the
+file is corrupted, a mandatory field is missing, the row doesn't parse). It MAY go
+before the `.save()` to skip work that is never useful.
+
+```python
+# Task: "Find dogs similar to fiona.jpg in s3://dc-readme/oxford-pets-micro/,
+#        excluding Cocker Spaniels, only width > 400px, must have a mask."
+#
+# ✗ Pre-filtering with problem-specific criteria — saved embeddings are useless for
+#   any future question that touches Cocker Spaniels or narrow images.
+embeddings = (
+    dc.read_storage("s3://dc-readme/oxford-pets-micro/.../images/", anon=True)
+    .merge(breed_meta, on="file.stem")
+    .filter(dc.C("breed") != "cocker_spaniel")    # ← problem-specific
+    .filter(dc.C("width") > 400)                   # ← problem-specific
+    .filter(dc.C("has_mask") == True)              # ← problem-specific
+    .setup(model=lambda: clip)
+    .map(emb=encode_image)
+    .save("oxford_micro_dog_embeddings")           # ← USELESS for next question
+)
+
+# ✓ Save embeddings over the WHOLE input, apply problem filters downstream.
+#   The embeddings dataset stays reusable; the filtered ranking is a separate save.
+embeddings = (
+    dc.read_storage("s3://dc-readme/oxford-pets-micro/.../images/", anon=True)
+    .setup(model=lambda: clip)
+    .map(emb=encode_image)
+    .save("oxford_micro_dog_embeddings")           # ← FULL coverage, reusable
+)
+
+ranked = (
+    dc.read_dataset("oxford_micro_dog_embeddings")
+    .merge(dc.read_dataset("oxford_micro_dog_breeds"), on="file.stem")
+    .filter(dc.C("breed") != "cocker_spaniel")    # ← problem-specific, downstream
+    .filter(dc.C("width") > 400)
+    .filter(dc.C("has_mask") == True)
+    .mutate(distance=dc.func.cosine_distance(dc.C("emb"), fiona_emb))
+    .order_by("distance").limit(5)
+    .save("similar_to_fiona")                      # ← problem-specific subset
+)
+```
+
+Other examples of correct decomposition:
 
 ```python
 # ✓ Expensive result saved unfiltered, then filtered result saved separately
@@ -105,7 +248,7 @@ embeddings = (
     .map(emb=compute_embedding)
     .save("product_images_embeddings")      # ← all rows preserved
 )
-similar = embeddings.filter(...)
+similar = embeddings.filter(...)             # ← downstream filter (cheap)
 similar.save("similar_products")            # ← filtered view also saved
 
 # ✓ Expensive result flows unfiltered into final dataset — no separate save needed
@@ -115,6 +258,15 @@ enriched = (
     .map(emb=compute_embedding)
     .merge(labels, on="file.path")
     .save("product_images_enriched")        # ← emb column is in the final dataset
+)
+
+# ✓ Data-quality filter BEFORE expensive UDF is fine — corrupted rows never useful
+embeddings = (
+    dc.read_storage("s3://b/", anon=True)
+    .filter(dc.C("file.size") > 0)           # ← data-quality (broken file), OK
+    .setup(model=lambda: clip)
+    .map(emb=encode_image)
+    .save("clip_embeddings")
 )
 ```
 
@@ -131,20 +283,24 @@ Never create or modify files under `dc-knowledge/` — that directory is owned b
    ✓ dc.read_storage("s3://bucket/images/")
    ✗ dc.read_storage("s3://bucket/images")  ← permission error on anon access
 
-1. ANON FOR PUBLIC BUCKETS: Always add anon=True for public/anonymous-access
-    buckets in read_storage() — both gs:// and s3://.
-    - GCS (gs://): without anon=True, the client tries credential discovery first,
-      adding ~1 min delay.
-    - S3 (s3://): without anon=True, the client attempts authenticated access and
-      gets 403 Forbidden on public buckets that don't allow authenticated requests.
-    Remove anon=True only if the user says they need authenticated access to a private bucket.
-    This applies ONLY to dc.read_storage() — NOT to File.at() or other APIs.
-    ✓ dc.read_storage("gs://bucket/data/", anon=True)
-    ✓ dc.read_storage("s3://public-bucket/data/", anon=True)
-    ✗ dc.read_storage("gs://bucket/data/")  ← 1 min credential timeout
-    ✗ dc.read_storage("s3://public-bucket/data/")  ← 403 Forbidden
-    Note: File.at() works on public buckets without any anon flag.
-    ✗ dc.File.at("gs://bucket/file.txt", anon=True)  ← File.at() has no anon param (and doesn't need one)
+1. ANON FOR PUBLIC BUCKETS (auto-detected since #1763): When `anon` is not
+    passed, `dc.read_storage()` probes the bucket anonymously first; if the
+    anonymous probe succeeds, it transparently sets `anon=True` for the read.
+    You no longer need to pass `anon=True` for public buckets — it works
+    correctly whether or not the user has cloud credentials configured.
+    The probe is one HEAD-style request per unique bucket per `read_storage`
+    call (deduplicated across URIs within the same call, but NOT cached
+    across separate calls).
+    Pass `anon=True` explicitly only when:
+    - You want to skip the probe round-trip in a latency-sensitive path.
+    - You want to be defensive against future changes to the auto-detect heuristic.
+    Pass `anon=False` explicitly only when you need authenticated access to a
+    private bucket and want to bypass the anonymous probe.
+    This flag applies ONLY to dc.read_storage() — NOT to File.at() or other APIs.
+    ✓ dc.read_storage("gs://bucket/data/")                # auto-detected as public
+    ✓ dc.read_storage("s3://public-bucket/data/")         # auto-detected as public
+    ✓ dc.read_storage("gs://bucket/data/", anon=True)     # explicit, skips probe
+    ✗ dc.File.at("gs://bucket/file.txt", anon=True)        ← File.at() has no anon param
 
 2. EVERY UDF MUST HAVE A KNOWN OUTPUT TYPE. A UDF passed to map/gen/agg without
    a resolved return type defaults to str and crashes at runtime for any non-str
@@ -241,9 +397,27 @@ Never create or modify files under `dc-knowledge/` — that directory is owned b
    ✓ chain.mutate(discounted=C("price") * 0.9)          # scalar literal → type inferred
    ✗ chain.mutate(total=C("price") * C("qty"))           # no type → error
 
-10. READ NOT FROM: Use dc.read_* module functions, not deprecated DataChain.from_* methods.
-   ✓ dc.read_csv("s3://data.csv")
-   ✗ DataChain.from_csv("s3://data.csv")  ← deprecated
+10. READ NOT FROM: Use dc.read_* module functions. The `DataChain.from_*`
+    methods were REMOVED in #1720 — they no longer exist on the class and
+    calling them raises `AttributeError: type object 'DataChain' has no
+    attribute 'from_*'`. The full removal list (use the dc.read_* equivalent):
+      DataChain.from_dataset(...)   →  dc.read_dataset(...)    ← MOST COMMON misuse
+      DataChain.from_storage(...)   →  dc.read_storage(...)
+      DataChain.from_csv(...)       →  dc.read_csv(...)
+      DataChain.from_parquet(...)   →  dc.read_parquet(...)
+      DataChain.from_json(...)      →  dc.read_json(...)
+      DataChain.from_hf(...)        →  dc.read_hf(...)
+      DataChain.from_values(...)    →  dc.read_values(...)
+      DataChain.from_pandas(...)    →  dc.read_pandas(...)
+      DataChain.from_records(...)   →  dc.read_records(...)
+    `from datachain import DataChain` is itself a smell — never write it.
+    And never assign to the name `dc`: e.g. `dc = DataChain.from_dataset("x")`
+    shadows the package and breaks every subsequent `dc.read_*`, `dc.C`, `dc.func.*`.
+    ✓ dc.read_csv("s3://data.csv")
+    ✓ dc.read_dataset("sec_10k_text_profile")
+    ✗ DataChain.from_csv("s3://data.csv")        ← AttributeError, method removed
+    ✗ DataChain.from_dataset("sec_10k_text_profile")  ← AttributeError, use dc.read_dataset
+    ✗ dc = DataChain.from_dataset("x")            ← double anti-pattern: AttributeError + shadows `dc`
 
 11. GLOB IN PATH: When filtering by file extension or name pattern, put the glob
    directly in the read_storage() path instead of a separate .filter() call.
@@ -290,6 +464,16 @@ Never create or modify files under `dc-knowledge/` — that directory is owned b
     ✓ def fn(file: dc.File) -> MyModel: ...   # named fields via BaseModel
     ✓ def fn(file: dc.File) -> int: ...       # single scalar
     ✗ def fn(file: dc.File) -> tuple[int, int]: ...  # → col_0, col_1
+
+    **Scope.** This rule covers UDFs passed to `.map()`, `.gen()`, and `.agg()`
+    — those return values become chain signals (columns), and tuple returns force
+    auto-generated names (`col_0`, `col_1`) that downstream `.merge()` / `.select_except()`
+    can't address. The rule does NOT apply to:
+      - Free helper functions called inside UDFs (return any Python shape).
+      - `.setup(name=loader_fn)` loaders. The loader's return value is an opaque
+        per-worker Python resource injected into UDFs by keyword; it is NOT a
+        chain signal. A tuple works; a Pydantic BaseModel is nicer for readability
+        when the loader produces multiple distinct resources.
 
 15. MERGE NOT DICTS: When combining multiple data sources, read each as its own
     chain, parse inside map()/gen(), then merge(). Never build Python dicts outside
@@ -394,15 +578,32 @@ Never create or modify files under `dc-knowledge/` — that directory is owned b
 
 ```
 1. ALWAYS use DataChain to access files in storage (local, S3, GCS, Azure).
-   NEVER use os.walk, os.listdir, glob.glob, pathlib, or any manual file-system
-   traversal to discover or read data files.
+   NEVER use the stdlib for file discovery or traversal of DATA files (images,
+   documents, videos, parquet, etc.). Specifically forbidden:
+     - os.walk(...)             — recursive traversal
+     - os.listdir(...)          — directory listing
+     - glob.glob("...")         — glob expansion
+     - pathlib.Path(p).iterdir()
+     - pathlib.Path(p).glob("...")
+     - pathlib.Path(p).rglob("...")
+   All of the above lose lineage, skip prefetch/cache settings, and can't be
+   materialized as a typed dataset.
    - Single known file: dc.File.at(), dc.TextFile.at(), dc.ImageFile.at()
    - Single CSV/JSON/Parquet: dc.read_csv(), dc.read_json(), dc.read_parquet()
    - Many files in a directory: dc.read_storage() (vectorised, preserves lineage)
+   - Glob pattern: use `dc.read_storage("path/**/*.jpg")`, NOT `glob.glob`
    ✓ dc.read_storage("/data/images/", type="image").map(emb=encode)
+   ✓ dc.read_storage("s3://b/**/*.{jpg,png}", type="image")
    ✓ dc.File.at("s3://bucket/config.json").read_bytes()
-   ✗ for f in os.listdir("/data/images/"): ...   ← breaks lineage, slow
-   ✗ paths = glob.glob("*.csv"); dc.read_values(paths=paths)  ← no lineage
+   ✗ for f in os.listdir("/data/images/"): ...                    ← breaks lineage
+   ✗ for p in pathlib.Path("/data/images").iterdir(): ...          ← same
+   ✗ for p in pathlib.Path("/data").rglob("*.jpg"): ...            ← same
+   ✗ paths = glob.glob("*.csv"); dc.read_values(paths=paths)       ← no lineage
+
+   **Scope.** This rule governs DATA file access — anything that ought to become
+   a dataset row. Reading a handful of metadata/log files for one-off introspection
+   (e.g., `glob.glob("*.log")` while debugging your own pipeline) is fine and
+   outside this rule's scope.
 
 2. Prefer Data Memory operations over Compute Engine operations.
    Data Memory ops — filter(), mutate(), group_by(), order_by(), select(),
@@ -438,6 +639,15 @@ Never create or modify files under `dc-knowledge/` — that directory is owned b
 ---
 
 ## Section 4 — Import Cheat Sheet
+
+**Critical import rule (load-bearing — agents reverting to `from datachain import ...` is the #1 style/correctness regression):**
+
+- ✓ `import datachain as dc` — the ONLY way to import the package.
+- ✓ `from pydantic import BaseModel` — for custom schemas.
+- ✓ `from datachain import model` — for annotation type imports (rare).
+- ✗ `from datachain import File, C, func, ...` — NEVER. Use `dc.File`, `dc.C`, `dc.func` instead.
+- ✗ `from datachain import DataChain` — NEVER. Use `dc.read_*` module functions.
+- ✗ `dc = DataChain.from_dataset("x")` — NEVER assign to the name `dc`. It shadows the package and every subsequent `dc.read_*` / `dc.C` / `dc.func.*` becomes an `AttributeError`. The name `dc` is reserved for the package import alias.
 
 ```python
 import datachain as dc
@@ -509,8 +719,10 @@ chain.group_by(cnt=func.count(), total=func.sum(C("file.size")), partition_by="c
 chain.order_by("dist")
 chain.order_by("score", descending=True)
 chain.distinct("response.text")
+chain.distinct(file_ext=func.path.file_ext(C("file.path")))  # expressions need names
 chain.limit(100)
 chain.select("file", "score", "label")
+chain.select("file", score_pct=C("score") * 100)  # expressions need names
 chain.select_except("internal_id")
 chain.merge(other, on="id", right_on="meta.id")  # left join (default)
 chain.merge(other, on="id", inner=True)          # inner join
@@ -939,6 +1151,10 @@ combined = images.merge(labels, on="file.name", right_on="labels.name")
     Use inner=True for inner join, full=True for full outer join.
     Default (no flags) is left join.
 ✗ Long select() list after merge — use select_except() instead (rule 19)
+✗ Positional expressions in select()/distinct():
+    chain.select(C("score") * 100)
+    chain.distinct(func.path.file_ext(C("file.path")))
+    Use keyword names instead: select(score_pct=...), distinct(file_ext=...)
 ✗ select() right after map/gen to "pick" the new column:
     chain.map(ann=parse_xml).select("ann")  ← redundant, map already created "ann"
     The keyword in map/gen IS the column name (rule 4) — no select needed
@@ -946,8 +1162,12 @@ combined = images.merge(labels, on="file.name", right_on="labels.name")
     C("price") * C("qty")  ← no type info → transpiler error
     Use chain.column("price") * chain.column("qty") instead
 ✗ Materializing to Pandas/list for aggregation:
-    chain.to_pandas() then df.groupby(...)  ← never do this
-    Use chain.group_by(...) natively instead
+    chain.to_pandas() then df.groupby(...)              ← never do this
+    chain.to_pandas()['col'].value_counts()             ← never do this
+    chain.to_pandas() then df['col'].apply(fn)          ← UDF? .map(); aggregate? .group_by()
+    Use chain.group_by(...).agg(count=dc.func.count()) natively instead.
+    For per-row Python transformation, use .map() with a typed UDF.
+    .to_pandas() is for final display / interop only — always after .limit() or .select().
 ✗ Reading files in a Python loop outside the chain:
     rows = chain.to_list(); for path in rows: open(path)  ← no parallelism, no cache
     Use dc.File.at(path) inside map() instead
@@ -956,7 +1176,7 @@ combined = images.merge(labels, on="file.name", right_on="labels.name")
     ✗ for row in chain.to_iter("file"): row.read_text()  ← tuple, not File
     ✗ for row in chain.to_list("file"): row.read_text()  ← also tuple
     ✓ for f in chain.to_values("file"): f.read_text()    ← flat list of File objects
-✗ DEPRECATED APIs — never use these:
+✗ REMOVED APIs (raise AttributeError, see #1720):
     DataChain.from_storage()  → dc.read_storage()
     DataChain.from_dataset()  → dc.read_dataset()
     DataChain.from_csv()      → dc.read_csv()
@@ -968,7 +1188,7 @@ combined = images.merge(labels, on="file.name", right_on="labels.name")
     DataChain.from_records()  → dc.read_records()
     DataChain.datasets()      → dc.datasets()
     DataChain.listings()      → dc.listings()
-    chain.collect()           → chain.to_list() / chain.to_iter() / chain.to_values()
+    chain.collect()           → chain.to_list() / chain.to_values()
     File.get_uri()            → file.get_fs_path()
 ✗ Using .concat() in mutate() → transpiler can't infer type; use it only in filter()
 ✗ Using C("col").asc() / .desc() in order_by():

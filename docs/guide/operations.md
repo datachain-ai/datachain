@@ -93,6 +93,12 @@ chain = dc.read_storage("s3://bucket/data/")
 chain.filter(dc.C("score") > 0.9)
 chain.filter((dc.C("meta.inference.class_") == "cat") & (dc.C("meta.confidence") > 0.93))
 chain.filter(dc.C("detection.label").contains("person"))
+
+chain.select("file.path", "score")
+chain.select("file.path", score_pct=dc.C("score") * 100)
+chain.select_except("tmp_score")
+chain.distinct("file.path")
+chain.distinct(file_name=dc.func.path.name(dc.C("file.path")))
 ```
 
 ### Sorting and Grouping

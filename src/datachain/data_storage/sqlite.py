@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from functools import cached_property, wraps
 from time import sleep
 from typing import TYPE_CHECKING, Any, ClassVar, Union
+from uuid import uuid4
 
 import sqlalchemy
 from sqlalchemy import (
@@ -16,6 +17,7 @@ from sqlalchemy import (
     UniqueConstraint,
     exists,
     select,
+    update,
 )
 from sqlalchemy.dialects import sqlite
 from sqlalchemy.schema import CreateIndex, CreateTable, DropTable
@@ -292,17 +294,31 @@ class SQLiteDatabaseEngine(DatabaseEngine):
 
         parts = [column.name, str(compiled_type)]
 
-        if not column.nullable:
-            parts.append("NOT NULL")
-
+        default_clause: str | None = None
+        callable_default: bool = False
         if column.default is not None and hasattr(column.default, "arg"):
             default_val = column.default.arg
-            if isinstance(default_val, str):
-                parts.append(f"DEFAULT '{default_val}'")
+            if callable(default_val):
+                default_clause = None
+                callable_default = True
             elif isinstance(default_val, bool):
-                parts.append(f"DEFAULT {int(default_val)}")
+                default_clause = f"DEFAULT {int(default_val)}"
+            elif isinstance(default_val, int | float):
+                default_clause = f"DEFAULT {default_val}"
+            elif isinstance(default_val, str):
+                escaped = default_val.replace("'", "''")
+                default_clause = f"DEFAULT '{escaped}'"
             else:
-                parts.append(f"DEFAULT {default_val}")
+                raise RuntimeError(
+                    f"unsupported default for {table_name}.{column.name}: "
+                    f"{type(default_val).__name__}"
+                )
+
+        if not column.nullable and not callable_default:
+            parts.append("NOT NULL")
+
+        if default_clause is not None:
+            parts.append(default_clause)
 
         column_def = " ".join(parts)
         alter_query = f"ALTER TABLE {table_name} ADD COLUMN {column_def}"
@@ -541,6 +557,24 @@ class SQLiteMetastore(AbstractDBMetastore):
         # Auto-migrate: add missing columns based on schema definitions
         for table in self._metastore_tables:
             self._migrate_table_schema(table)
+
+        self._backfill_dataset_uuids()
+
+    def _backfill_dataset_uuids(self) -> None:
+        d = self._datasets
+        duplicate_uuids = (
+            select(d.c.uuid)
+            .group_by(d.c.uuid)
+            .having(func.count() > 1)
+            .scalar_subquery()
+        )
+        bad_rows_query = select(d.c.id).where(
+            d.c.uuid.is_(None) | (d.c.uuid == "") | d.c.uuid.in_(duplicate_uuids)
+        )
+        for (dataset_id,) in self.db.execute(bad_rows_query).fetchall():
+            self.db.execute(
+                update(d).where(d.c.id == dataset_id).values(uuid=str(uuid4()))
+            )
 
     def _migrate_table_schema(self, table: Table) -> None:
         """

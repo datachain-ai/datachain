@@ -77,6 +77,7 @@ def test_create_dataset(metastore):
         attrs=["test", "dataset"],
     )
     assert ds.id is not None
+    assert ds.uuid
     assert ds.name == "test_dataset"
     assert ds.status == DatasetStatus.COMPLETE
     assert ds.sources == "gs://test_source"
@@ -86,6 +87,77 @@ def test_create_dataset(metastore):
     assert ds.description == "test dataset"
     assert ds.attrs == ["test", "dataset"]
     assert ds.created_at is not None
+
+
+def test_create_dataset_uuid_is_unique_per_create(metastore):
+    a = metastore.create_dataset(name="a")
+    b = metastore.create_dataset(name="b")
+    assert a.uuid
+    assert b.uuid
+    assert a.uuid != b.uuid
+
+
+def test_create_dataset_explicit_uuid_is_preserved(metastore):
+    explicit = "11111111-2222-3333-4444-555555555555"
+    ds = metastore.create_dataset(name="with_uuid", uuid=explicit)
+    assert ds.uuid == explicit
+
+
+def test_create_dataset_invalid_uuid_raises_error(metastore):
+    with pytest.raises(ValueError, match="Invalid UUID format"):
+        metastore.create_dataset(name="bad_uuid_format", uuid="not-a-uuid")
+
+    with pytest.raises(ValueError, match="Invalid UUID format"):
+        metastore.create_dataset(name="bad_uuid_short", uuid="123")
+
+
+def test_create_dataset_duplicate_uuid_constraint(metastore):
+    duplicate_uuid = "11111111-2222-3333-4444-555555555555"
+
+    metastore.create_dataset(name="first", uuid=duplicate_uuid)
+
+    with pytest.raises(Exception, match="constraint"):
+        metastore.create_dataset(name="second", uuid=duplicate_uuid)
+
+
+def test_dataset_uuid_backfilled_on_upgrade(tmp_path):
+    from datachain.data_storage.sqlite import SQLiteMetastore
+
+    db_file = str(tmp_path / "upgrade.db")
+
+    old = SQLiteMetastore(db_file=db_file)
+    for name in ("a", "b", "c"):
+        ds = old.create_dataset(name=name)
+        old.create_dataset_version(ds, "1.0.0", DatasetStatus.COMPLETE)
+    indexes = old.db.execute_str(
+        "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='datasets'"
+        " AND name NOT LIKE 'sqlite_%'"
+    ).fetchall()
+    for (idx_name,) in indexes:
+        old.db.execute_str(f"DROP INDEX {idx_name}")
+    old.db.execute_str("ALTER TABLE datasets DROP COLUMN uuid")
+    old.close()
+
+    upgraded = SQLiteMetastore(db_file=db_file)
+    try:
+        listed = [d for d in upgraded.list_datasets() if d.name in ("a", "b", "c")]
+        uuids = {d.uuid for d in listed}
+        fetched = [
+            upgraded.get_dataset(
+                name=name,
+                namespace_name=listed[0].project.namespace.name,
+                project_name=listed[0].project.name,
+                versions=None,
+            ).uuid
+            for name in ("a", "b", "c")
+        ]
+    finally:
+        upgraded.close()
+
+    assert len(listed) == 3
+    assert len(uuids) == 3
+    assert all(uuids)
+    assert set(fetched) == uuids
 
 
 @pytest.mark.parametrize("ignore_if_exists", [True, False])

@@ -11,6 +11,11 @@ SKILLS = ("core", "knowledge", "jobs")
 class _TargetLayout(TypedDict):
     commands_dir: str | None
     skills_dir: str
+    # Optional per-mode overrides. None = use the main `commands_dir`/`skills_dir`.
+    # GitHub Copilot uses these to write to the standard `.github/instructions/`
+    # path in --local mode while keeping the user-level vendor under `~/.copilot/`.
+    commands_dir_local: str | None
+    skills_dir_local: str | None
     command_ext: str | None
     commands_local_only: bool
 
@@ -22,19 +27,36 @@ TARGET_LAYOUT: dict[str, _TargetLayout] = {
     "claude": {
         "commands_dir": ".claude/commands",
         "skills_dir": ".claude/skills",
+        "commands_dir_local": None,
+        "skills_dir_local": None,
         "command_ext": ".md",
         "commands_local_only": True,
     },
     "cursor": {
         "commands_dir": ".cursor/rules",
         "skills_dir": ".cursor/skills",
+        "commands_dir_local": None,
+        "skills_dir_local": None,
         "command_ext": ".mdc",
         "commands_local_only": False,
     },
     "codex": {
         "commands_dir": None,
         "skills_dir": ".codex/skills",
+        "commands_dir_local": None,
+        "skills_dir_local": None,
         "command_ext": None,
+        "commands_local_only": False,
+    },
+    "copilot": {
+        # User-level: write to ~/.copilot/ (datachain convention; VS Code can be
+        # pointed here via the chat.instructionsFilesLocations setting).
+        "commands_dir": ".copilot/instructions",
+        "skills_dir": ".copilot/skills",
+        # Repo-local: write to the canonical GitHub Copilot paths.
+        "commands_dir_local": ".github/instructions",
+        "skills_dir_local": ".datachain/skills",
+        "command_ext": ".instructions.md",
         "commands_local_only": False,
     },
 }
@@ -66,6 +88,20 @@ def _transform_cursor_mdc(skill_md_path: Path) -> str:
     return f"---\ndescription: {description}\nglobs:\nalwaysApply: true\n---\n{body}"
 
 
+def _transform_copilot_instructions(skill_md_path: Path) -> str:
+    """Transform SKILL.md into GitHub Copilot .instructions.md format.
+
+    Strips any existing frontmatter (Claude/Cursor-specific keys like
+    `triggers:`, `globs:`, `description:`) and replaces it with a Copilot
+    `applyTo` glob. Copilot reads instruction files that match a glob against
+    the active file path and prepends them to the prompt.
+    """
+    text = skill_md_path.read_text()
+    fm_match = re.match(r"^---\s*\n(.*?)\n---\s*\n", text, re.DOTALL)
+    body = text[fm_match.end() :] if fm_match else text
+    return f"---\napplyTo: '**/*.py'\n---\n{body}"
+
+
 def install_skills(skills: str | None, target: str, local: bool) -> int:
     layout = TARGET_LAYOUT[target]
     base = Path.cwd() if local else Path.home()
@@ -82,18 +118,28 @@ def install_skills(skills: str | None, target: str, local: bool) -> int:
     else:
         skills_to_install = list(SKILLS)
 
-    skills_dir = base / layout["skills_dir"]
+    # Per-mode overrides — when installing --local some targets (e.g. copilot)
+    # write to a different directory layout than the user-level default.
+    skills_dir_rel = (
+        layout["skills_dir_local"]
+        if (local and layout["skills_dir_local"] is not None)
+        else layout["skills_dir"]
+    )
+    commands_dir_rel = (
+        layout["commands_dir_local"]
+        if (local and layout["commands_dir_local"] is not None)
+        else layout["commands_dir"]
+    )
+    skills_dir = base / skills_dir_rel
 
     # Determine whether to write command/rule files
     write_commands = (
-        layout["commands_dir"] is not None
+        commands_dir_rel is not None
         and layout["command_ext"] is not None
         and (local or not layout["commands_local_only"])
     )
     commands_dir = (
-        base / layout["commands_dir"]
-        if write_commands and layout["commands_dir"]
-        else None
+        base / commands_dir_rel if write_commands and commands_dir_rel else None
     )
     command_ext = layout["command_ext"]
 
@@ -127,6 +173,8 @@ def install_skills(skills: str | None, target: str, local: bool) -> int:
                 skill_dir_resolved = str(dest.resolve())
                 if command_ext == ".mdc":
                     content = _transform_cursor_mdc(skill_md)
+                elif command_ext == ".instructions.md":
+                    content = _transform_copilot_instructions(skill_md)
                 else:
                     content = skill_md.read_text()
                 cmd_dest.write_text(content.replace("{skill_dir}", skill_dir_resolved))
@@ -162,17 +210,25 @@ def uninstall_skills(skills: str | None, target: str, local: bool) -> int:
     else:
         skills_to_uninstall = list(SKILLS)
 
-    skills_dir = base / layout["skills_dir"]
+    skills_dir_rel = (
+        layout["skills_dir_local"]
+        if (local and layout["skills_dir_local"] is not None)
+        else layout["skills_dir"]
+    )
+    commands_dir_rel = (
+        layout["commands_dir_local"]
+        if (local and layout["commands_dir_local"] is not None)
+        else layout["commands_dir"]
+    )
+    skills_dir = base / skills_dir_rel
 
     write_commands = (
-        layout["commands_dir"] is not None
+        commands_dir_rel is not None
         and layout["command_ext"] is not None
         and (local or not layout["commands_local_only"])
     )
     commands_dir = (
-        base / layout["commands_dir"]
-        if write_commands and layout["commands_dir"]
-        else None
+        base / commands_dir_rel if write_commands and commands_dir_rel else None
     )
     command_ext = layout["command_ext"]
 
