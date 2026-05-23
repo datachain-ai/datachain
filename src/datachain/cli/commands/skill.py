@@ -48,6 +48,16 @@ TARGET_LAYOUT: dict[str, _TargetLayout] = {
         "command_ext": None,
         "commands_local_only": False,
     },
+    "pi": {
+        # User-level: Pi scans ~/.pi/agent/{skills,prompts}/.
+        # Repo-local: Pi scans .pi/{skills,prompts}/ (no `agent/` segment).
+        "commands_dir": ".pi/agent/prompts",
+        "skills_dir": ".pi/agent/skills",
+        "commands_dir_local": ".pi/prompts",
+        "skills_dir_local": ".pi/skills",
+        "command_ext": ".md",
+        "commands_local_only": False,
+    },
     "copilot": {
         # User-level: write to ~/.copilot/ (datachain convention; VS Code can be
         # pointed here via the chat.instructionsFilesLocations setting).

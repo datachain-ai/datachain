@@ -45,7 +45,7 @@ claude
 
 Prompt:
 ```prompt
-Find dogs in s3://dc-readme/oxford-pets-micro/ similar to fiona.jpg:
+Find dogs in s3://dc-readme/oxford-pets-micro/ similar to ./fiona.jpg:
   - Pull breed metadata and mask files from annotations/
   - Exclude images without mask
   - Exclude Cocker Spaniels
