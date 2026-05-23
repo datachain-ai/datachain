@@ -47,6 +47,8 @@ def fetch_version_data(name_version: str) -> dict:  # noqa: C901, PLR0912, PLR09
     # --- Metadata: query_script, uuid, version history ---
     query_script = None
     uuid = None
+    attrs: list[str] = []
+    description: str | None = None
     _prev_version_info = None
     dependencies = []
 
@@ -60,6 +62,8 @@ def fetch_version_data(name_version: str) -> dict:  # noqa: C901, PLR0912, PLR09
             response = client.dataset_info(_namespace, _project, _bare_name)
             if response.ok and response.data:
                 dataset = DatasetRecord.from_dict(response.data)
+                attrs = list(dataset.attrs or [])
+                description = dataset.description
                 resolved_ver = version or dataset.latest_version
                 if version is None:
                     version = resolved_ver
@@ -108,6 +112,8 @@ def fetch_version_data(name_version: str) -> dict:  # noqa: C901, PLR0912, PLR09
         try:
             if catalog is not None:
                 dataset = catalog.get_dataset(_bare_name, include_incomplete=False)
+                attrs = list(dataset.attrs or [])
+                description = dataset.description
                 resolved_ver = version or dataset.latest_version
                 dv = dataset.get_version(resolved_ver)
                 query_script = dv.query_script or None
@@ -185,6 +191,8 @@ def fetch_version_data(name_version: str) -> dict:  # noqa: C901, PLR0912, PLR09
     return {
         "name": output_name,
         "uuid": uuid,
+        "attrs": attrs,
+        "description": description,
         "schema": schema,
         "preview": preview,
         "query_script": query_script,

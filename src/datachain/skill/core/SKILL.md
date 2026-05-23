@@ -214,27 +214,36 @@ embeddings = (
     .filter(dc.C("has_mask") == True)              # ← problem-specific
     .setup(model=lambda: clip)
     .map(emb=encode_image)
-    .save("oxford_micro_dog_embeddings")           # ← USELESS for next question
+    .save("l3_sense_oxford_pets_clip_embeddings") # ← USELESS for next question
 )
 
 # ✓ Save embeddings over the WHOLE input, apply problem filters downstream.
-#   The embeddings dataset stays reusable; the filtered ranking is a separate save.
+#   The Sense layer stays reusable; the filtered ranking is a separate Experiment save.
 embeddings = (
     dc.read_storage("s3://dc-readme/oxford-pets-micro/.../images/", anon=True)
     .setup(model=lambda: clip)
     .map(emb=encode_image)
-    .save("oxford_micro_dog_embeddings")           # ← FULL coverage, reusable
+    .save(
+        "l3_sense_oxford_pets_clip_embeddings",       # ← FULL coverage, reusable Sense layer
+        attrs=["case:sense", "scope:bucket", "source:oxford_pets"],
+        description="CLIP ViT-B-32 embeddings over the full oxford-pets-micro bucket.",
+    )
 )
 
 ranked = (
-    dc.read_dataset("oxford_micro_dog_embeddings")
-    .merge(dc.read_dataset("oxford_micro_dog_breeds"), on="file.stem")
+    dc.read_dataset("l3_sense_oxford_pets_clip_embeddings")
+    .merge(dc.read_dataset("l1_container_oxford_pets_breeds"), on="file.stem")
     .filter(dc.C("breed") != "cocker_spaniel")    # ← problem-specific, downstream
     .filter(dc.C("width") > 400)
     .filter(dc.C("has_mask") == True)
     .mutate(distance=dc.func.cosine_distance(dc.C("emb"), fiona_emb))
     .order_by("distance").limit(5)
-    .save("similar_to_fiona")                      # ← problem-specific subset
+    .save(
+        "l4_experiment_dogs_similar_to_fiona",        # ← Experiment, persist by exception
+        attrs=["case:experiment", "scope:onetime", "source:dogs_similar_to_fiona",
+               "parent:l3_sense_oxford_pets_clip_embeddings"],
+        description="Top-5 Oxford-pets dogs visually closest to fiona.jpg under the filter set.",
+    )
 )
 ```
 
@@ -270,7 +279,42 @@ embeddings = (
 )
 ```
 
-**Naming convention.** Dataset names should describe the data content (e.g., `"product_annotations"`, `"similar_products"`, `"labeled_images"`), not the pipeline step (`"step1"`, `"intermediate"`, `"temp"`).
+**Naming convention — CASE prefix.** Every new dataset gets a layer prefix that puts it in CASE order alphabetically. The prefix is mandatory; it makes the layer visible in `dc.datasets()` listings and in the KB index without any extra lookup.
+
+```
+l1_container_<source>_<descriptor>      # file headers, listings, sidecar metadata, schema-only views
+l2_asset_<source>_<descriptor>          # raw extracted data (frames, clips, audio, parsed arrays)
+l3_sense_<source>_<descriptor>          # model outputs (embeddings, LLM labels, classifications)
+l4_experiment_<task-slug>               # task-specific analytics, similarity, joins, evaluations
+```
+
+`<source>` is the bucket slug for L1–L3 (`oxford_pets`, `sec_10k`, …). `<task-slug>` for L4 is the question the experiment answers (`dogs_similar_to_fiona`). All snake_case; no dots, no `@` (DataChain reserves them).
+
+Dataset names still describe content rather than pipeline step (`l3_sense_oxford_pets_clip_embeddings`, not `l3_sense_step1`).
+
+**Tag every `.save()` with `attrs` and `description`.** The CASE skill enforces the methodology by reading these tags:
+
+```python
+chain.save(
+    "l3_sense_oxford_pets_clip_embeddings",
+    attrs=[
+        "case:sense",                            # container | asset | sense | experiment
+        "scope:bucket",                          # bucket (full, reusable) | sample | onetime
+        "source:oxford_pets",                    # bucket slug for L1-L3, task slug for L4
+        "parent:l2_asset_oxford_pets_frames",   # immediate upstream CASE dataset(s); repeat key for multi
+    ],
+    description="CLIP ViT-B-32 embeddings over the full oxford_pets bucket; reusable for any visual-similarity query.",
+)
+```
+
+**Per-layer reuse.** Each layer has a different reuse profile — this dictates what to `.save()` and at what coverage:
+
+- **L1 Container** — file listings, header-only views, parsed sidecar metadata. Persist by default, full coverage. Cheap to refresh on delta. Shared between teams that touch the same bucket.
+- **L2 Asset** — heavy file-content extractions (frames, audio tracks, NumPy from H5, decoded text) **and dataset mixtures (joins / unions / training mixes across two or more datasets on a shared key)**. Persist by default, full coverage. The "expensive UDF → save full → filter downstream" rule keeps single-source Assets reusable; for mixtures, the equivalent is to save the *full* combined Asset (not pre-filtered to the current task) so a different team's question over the same mixture reads instead of re-joins. 
+- **L3 Sense** — model outputs (embeddings, LLM labels, classifications, transcriptions). Persist by default, full coverage. This is the layer the recall economics is built around — the per-row inference cost paid once means future queries are warehouse-speed.
+- **L4 Experiment** — task-specific analytics (rankings, filtered cohorts, eval outputs). **Persist by exception.** Default to `scope:onetime` and skip `.save()` unless the result is a standing benchmark or curated training set. The skill rule "always `.save()` for UDF chains" still applies, but the L4 save is short-lived and gets recycled.
+
+The `.save()` produced inside a CASE-aware pipeline is which-layer-this-is + which-source + which-parent, all encoded in the name and `attrs` so the next session (and the KB index) can find and reuse it.
 
 Never create or modify files under `dc-knowledge/` — that directory is owned by the datachain-knowledge skill.
 
