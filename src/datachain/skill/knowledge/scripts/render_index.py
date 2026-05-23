@@ -223,11 +223,18 @@ def _render_dataset_table(
     return lines
 
 
-CASE_SECTION_TITLES = {
-    "container": "Container · file headers, listings, sidecar metadata",
-    "asset": "Asset · raw extracted data",
-    "sense": "Sense · model-derived signals",
-    "experiment": "Experiment Dataset · task-specific analytics and untagged datasets",
+CASE_SECTION_NAMES = {
+    "container": "Container",
+    "asset": "Asset",
+    "sense": "Sense",
+    "experiment": "Experiment Dataset",
+}
+
+CASE_SECTION_BLURBS = {
+    "container": "_File headers, listings, and sidecar metadata. One row per file._",
+    "asset": "_Raw data extracted from Containers or mixed across multiple sources._",
+    "sense": "_Model-derived signals: embeddings, classifications, transcriptions, LLM outputs._",
+    "experiment": "_Task-specific analytics and any dataset not tagged as Container, Asset, or Sense._",
 }
 
 
@@ -273,7 +280,9 @@ def _render_case_grouped(datasets: list[dict]) -> list[str]:
         rows = by_layer[layer]
         if not rows and layer != "experiment":
             continue
-        lines.append(f"### {CASE_SECTION_TITLES[layer]}")
+        lines.append(f"### {CASE_SECTION_NAMES[layer]}")
+        lines.append("")
+        lines.append(CASE_SECTION_BLURBS[layer])
         lines.append("")
         if rows:
             lines.extend(_render_case_table(rows, layer))

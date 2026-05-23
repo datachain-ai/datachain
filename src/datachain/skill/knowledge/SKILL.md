@@ -81,10 +81,10 @@ Every new dataset gets a layer prefix that sorts the layers in CASE order:
 l1_container_<source>_<descriptor>      # listings, headers, sidecar metadata
 l2_asset_<source>_<descriptor>          # extracted/reshaped raw data
 l3_sense_<source>_<descriptor>          # model-derived signals
-l4_experiment_<task-slug>               # task-specific analytics
+<descriptor>                            # Experiment outputs (and anything not C/A/S) — no prefix
 ```
 
-`<source>` is the bucket slug for L1–L3 (the data root the layer indexes; reusable across teams). `<task-slug>` for L4 is the question being answered. Underscores throughout, snake_case, no dots (`.` and `@` are reserved by DataChain naming).
+`<source>` is the bucket slug for L1–L3 (the data root the layer indexes; reusable across teams). Experiment-layer datasets carry no prefix; the name describes the question (`products_similar_to_query`, `recsys_eval_runs`, `cik_text_stats`), and layer membership is recorded only via `attrs=["case:experiment", …]` and the resulting `case_layer: experiment` frontmatter. Underscores throughout, snake_case, no dots (`.` and `@` are reserved by DataChain naming).
 
 ### Tagging on `.save()`
 
@@ -94,13 +94,13 @@ Layer + scope + source + parents are dual-encoded — in the name (for visibilit
 attrs = [
     "case:sense",                                # one of: container | asset | sense | experiment
     "scope:bucket",                              # bucket | sample | onetime
-    "source:oxford_pets",                        # bucket slug for L1-L3, task slug for L4
-    "parent:l2_asset_oxford_pets_frames",        # immediate upstream CASE dataset(s); repeat key for multiple
+    "source:product_catalog",                    # bucket slug for L1-L3, task slug for Experiment
+    "parent:l2_asset_product_catalog_frames",    # immediate upstream CASE dataset(s); repeat key for multiple
 ]
 chain.save(
-    "l3_sense_oxford_pets_clip_embeddings",
+    "l3_sense_product_catalog_clip_embeddings",
     attrs=attrs,
-    description="CLIP ViT-B-32 embeddings over the full oxford_pets bucket; reusable for any visual-similarity query.",
+    description="CLIP ViT-B-32 embeddings over the full product-catalog bucket; reusable for any visual-similarity query.",
 )
 ```
 
@@ -172,7 +172,7 @@ When loaded, determine the user's intent:
 >
 > 1. **Identify required layers.** Examples: similarity search needs a Sense layer of embeddings on top of an Asset layer of frames/images; "find videos with X" needs a Sense layer of classifications on Asset clips; "summarise this bucket" needs Container + optional Sense LLM annotations.
 > 2. **Look for mixture opportunities.** If the task names two or more datasets (or two or more bucket regions / sources), the Asset-level combination of them is itself a CASE artifact.
-> 3. **Direct reuse first.** From `dc-knowledge/index.md`, for each required layer × source, check if an existing dataset already covers the question (even partially). If yes, write the pipeline as `dc.read_dataset(...)` over it. **Celebrate the reuse**: in the response, name the layer being reused and quote the saved cost — e.g., "Reusing `l3_sense_oxford_pets_clip_embeddings` (built last session). This query is ~$0.002 instead of the $1.40 the embedding pass would otherwise cost — exactly the win the Sense layer was built for." This is the moment that teaches the methodology; do not skip it.
+> 3. **Direct reuse first.** From `dc-knowledge/index.md`, for each required layer × source, check if an existing dataset already covers the question (even partially). If yes, write the pipeline as `dc.read_dataset(...)` over it. **Celebrate the reuse**: in the response, name the layer being reused and quote the saved cost — e.g., "Reusing `l3_sense_product_catalog_clip_embeddings` (built last session). This query is ~$0.002 instead of the $1.40 the embedding pass would otherwise cost — exactly the win the Sense layer was built for." This is the moment that teaches the methodology; do not skip it.
 > 4. **Reduce-to-CAS if direct reuse impossible.** Before defaulting to a raw rebuild, work the problem from the other side: can the task be reformulated so it operates on an *existing* CAS layer plus a small Experiment delta? Examples: a new similarity question on the same bucket → reuse the Sense embeddings, just change the query vector; a new "find X" question → reuse the Sense classifications and add a filter. Spend real effort here — propose at least one reformulation when any CAS layer for this source exists.
 > 5. **Cost gate on CAS reuse.** Reuse a CAS layer only when it gives a meaningful win — at least ~2× speedup or ~2× $-saving versus the raw rebuild. If the layer technically covers the data but reading it is no cheaper than re-reading raw storage, do not force the reuse; the methodology is justified by economics, not formalism.
 > 6. **Estimate cost** of both branches when reuse is not available:
@@ -203,7 +203,7 @@ When loaded, determine the user's intent:
 >
 >    Wait for the user's choice. Always name the whole-bucket option explicitly; never present a build proposal that omits it.
 > 8. **Apply shortcut phrases.** If the user's message contains any of "just solve", "no layers", "sample only", "fast as possible", "skip CASE", "one-off", "don't build a layer", "just answer", "quick" — skip the proposal and solve directly. State once: "Solving directly without building a layer." Do not re-propose layers in the same session unless the user volunteers CASE vocabulary themselves.
-> 9. **On layer build, tag the datasets.** Name them per the convention (`l1_…`/`l2_…`/`l3_…`/`l4_…`) and pass `attrs=["case:<layer>", "scope:bucket|sample|onetime", "source:<slug>", "parent:<name>"]` + `description="…"` on `.save()`. Set `scope:bucket` for reusable, `scope:sample` for one-shot, `scope:onetime` for non-persistable Experiment outputs.
+> 9. **On layer build, tag the datasets.** Name them per the convention (`l1_…`/`l2_…`/`l3_…` for C/A/S; no prefix for Experiment outputs) and pass `attrs=["case:<layer>", "scope:bucket|sample|onetime", "source:<slug>", "parent:<name>"]` + `description="…"` on `.save()`. Set `scope:bucket` for reusable, `scope:sample` for one-shot, `scope:onetime` for non-persistable Experiment outputs.
 > 10. **Containerise raw JSON / sidecars too.** If the task pulls structured JSON / Parquet / CSV from the bucket and parses it inline, propose lifting that parse into an `l1_container_<source>_<descriptor>` dataset so the parsed schema becomes reusable. Same auto-vs-ask rule, same whole-bucket-first framing.
 >
 > Step 1 (Bucket Enlistment) is itself a Container-layer artifact for the storage root: a lightweight, header-only view of what's in the bucket. The bucket entries appear in the Container row of the KB index next to any DataChain datasets explicitly tagged `case:container` (e.g., parsed JSON sidecars promoted via the rule in step 10).
