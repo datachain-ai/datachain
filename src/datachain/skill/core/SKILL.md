@@ -45,7 +45,20 @@ Only go to raw storage (`read_storage`, `read_csv`, etc.) when no existing datas
 
 Datasets are the unit of reasoning. Chains that transform data through UDFs — or that produce a pipeline's final result — should be saved as named datasets. This creates a lineage graph where each node is reusable, inspectable, and referenceable by future pipelines and users.
 
-**Core rule: always `.save()`, never just `.show()`.** A pipeline's terminal operation should be `.save("descriptive_name")`, followed by `.show()` on the saved result for display. The only exception is one-off exploratory queries where the user explicitly asks to just "show me" or "print" without saving.
+**Core rule: always `.save()`, never just `.show()`, and NEVER write results to a local file.** A pipeline's terminal operation should be `.save("descriptive_name")`, followed by `.show()` on the saved result for display. The only exception is one-off exploratory queries where the user explicitly asks to just "show me" or "print" without saving.
+
+**Critical anti-pattern: writing results to local files via `open(...)`, `json.dump`, `pandas.to_csv`, or any Python-side file handle is forbidden for UDF-bearing pipelines.** The result must land as a DataChain dataset via `.save()`. Local `.json` / `.csv` / `.parquet` files bypass lineage, version tracking, and the knowledge base; they also strand the work outside DataChain so the next session cannot find or reuse it. If the user wants a file artifact at the end (rare), produce the dataset first with `.save()`, then export from the saved dataset with `chain.to_csv()` / `chain.to_parquet()` — never write directly from in-memory Python rows.
+
+```python
+# ✗ ANTI-PATTERN — UDF result written to a local file, no dataset created.
+results = chain.map(emb=encode_image).to_list("file", "emb")
+with open("similar_results.json", "w") as f:        # ← bypasses DataChain entirely
+    json.dump(results, f)
+
+# ✓ Save the dataset, then (if a file artifact is genuinely required) export from it.
+saved = chain.map(emb=encode_image).save("product_catalog_clip_embeddings", attrs=[...])
+saved.to_csv("similar_results.csv")                  # ← export FROM the saved dataset
+```
 
 ```python
 # ✓ Save then show — result is preserved AND displayed
@@ -185,6 +198,14 @@ python pipeline.py
 See `docs/guide/multi-stage-pipelines.md` for the canonical multi-script
 pattern, including comparative-evaluation and cost-tracking variations.
 
+**Common rationalizations that are NOT exceptions to the one-script-per-stage rule.** If you find yourself thinking any of these, stop and split the script:
+
+- *"I'll compress the stages for speed / fewer files."* — Speed of writing is not the optimization target. Stage-per-script makes resume-on-failure free and lets the next session reuse any single stage.
+- *"The task is end-to-end so it's one logical script."* — End-to-end thinking lives in the conversation, not in the file layout. The CASE Decomposition step 1 already enumerated the named datasets; each named dataset is a script.
+- *"The user asked for one thing, not multiple steps."* — Irrelevant. The user asked for an answer; how the answer is produced (decomposed into a Sense build + an Experiment query) is the skill's responsibility. Surface the multi-script structure to the user; do not collapse it.
+- *"Stage N is trivial, I'll inline it into stage N-1."* — Trivial filters / selects / limits MAY be inlined at the bottom of the previous script. UDF stages, `.save()` calls, and anything that warrants a named dataset MAY NOT.
+- *"Refactoring after the fact is the same thing."* — It isn't. Producing the monolith first and "I can refactor it later" is the regression. Generate the stage scripts up front, on the first pass.
+
 **Special case — expensive compute.** When a UDF is expensive (ML inference, LLM calls, heavy per-row processing), save the **full, unfiltered** result before any filtering or subsetting. A downstream `.save()` after filtering only preserves a fraction of the rows — the rest of the compute is lost.
 
 **Problem-specific filters belong DOWNSTREAM of the expensive `.save()`.** This is the
@@ -299,7 +320,7 @@ chain.save(
     "l3_sense_product_catalog_clip_embeddings",
     attrs=[
         "case:sense",                                # container | asset | sense | experiment
-        "scope:bucket",                              # bucket (full, reusable) | sample | onetime
+        "scope:bucket",                              # bucket (full root, default) | directory (subdir opt-in) | sample | onetime
         "source:product_catalog",                    # bucket slug for L1-L3, task slug for Experiment
         "parent:l2_asset_product_catalog_frames",    # immediate upstream CASE dataset(s); repeat key for multi
     ],
@@ -307,7 +328,7 @@ chain.save(
 )
 ```
 
-**Per-layer reuse.** Each layer has a different reuse profile — this dictates what to `.save()` and at what coverage:
+**Per-layer reuse.** Each layer has a different reuse profile — this dictates what to `.save()` and at what coverage. **The default scope for any CAS layer is the bucket root**, not whatever subdirectory the user's prompt happened to mention. Widen `read_storage` from the user's subdir up to the bucket root before saving; the narrower `scope:directory` is reserved for the case where the user explicitly opts in to a subdirectory scope.
 
 - **L1 Container** — file listings, header-only views, parsed sidecar metadata. Persist by default, full coverage. Cheap to refresh on delta. Shared between teams that touch the same bucket.
 - **L2 Asset** — heavy file-content extractions (frames, audio tracks, NumPy from H5, decoded text) **and dataset mixtures (joins / unions / training mixes across two or more datasets on a shared key)**. Persist by default, full coverage. The "expensive UDF → save full → filter downstream" rule keeps single-source Assets reusable; for mixtures, the equivalent is to save the *full* combined Asset (not pre-filtered to the current task) so a different team's question over the same mixture reads instead of re-joins. 

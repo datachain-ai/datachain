@@ -9,7 +9,7 @@ Read the JSON file at the path provided. It contains:
 - `name`: dataset name
 - `source`: `"local"` or `"studio"`
 - `description` (optional): the dataset's free-form description string from the DataChain record (set via `.save(description=...)`). May be `null` if no description was provided.
-- `attrs` (optional): a list of string tags from the DataChain record (set via `.save(attrs=[...])`). The skill encodes CASE methodology fields here: `case:<layer>`, `scope:<bucket|sample|onetime>`, `source:<slug>`, `parent:<dataset-name>` (the parent key may appear multiple times). Empty list `[]` is the default when no tags were set.
+- `attrs` (optional): a list of string tags from the DataChain record (set via `.save(attrs=[...])`). The skill encodes CASE methodology fields here: `case:<layer>`, `scope:<bucket|directory|sample|onetime>`, `source:<slug>`, `parent:<dataset-name>` (the parent key may appear multiple times). Empty list `[]` is the default when no tags were set.
 - `session_context` (optional): not present in the JSON. If the dataset already has an enriched `.md` file, check it for a `## Session Context` section — this is session-level context about why the dataset was created, preserved across re-enrichments.
 - `versions[]`: array ordered oldest-first, each with:
   - `version`, `uuid`, `records`, `updated`
@@ -41,7 +41,7 @@ records: {records}
 is_local: {true if source is "local", false if "studio"}
 known_versions: [{comma-separated list of all version strings, e.g. 1.0.0, 1.0.1}]
 case_layer: {container | asset | sense | experiment, or empty if not a CASE dataset}
-case_scope: {bucket | sample | onetime, or empty}
+case_scope: {bucket | directory | sample | onetime, or empty}
 case_source: {bucket slug for L1-L3, task slug for L4, or empty}
 case_parents: [{comma-separated list of upstream CASE dataset names, or empty}]
 ---
