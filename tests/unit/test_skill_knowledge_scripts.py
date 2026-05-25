@@ -383,14 +383,15 @@ def test_render_index_local_datasets():
     assert "db_last_updated: 2024-01-01T00:00:00Z" in result
     assert "## Datasets" in result
     assert "test_ds" in result
-    assert "Dependencies" in result
-    assert "Summary" in result
+    assert "Parents" in result
+    assert "Description" in result
     assert "Updated" in result
     # Removed columns
     assert "| Last Ver |" not in result
     assert "| # Vers |" not in result
     assert "| Count |" not in result
-    assert "| Source |" not in result
+    assert "| Dependencies |" not in result
+    assert "| Summary |" not in result
     assert "## Buckets" not in result
 
 
@@ -482,12 +483,13 @@ def test_render_index_all_metadata_from_md(tmp_path, monkeypatch):
     (ds_dir / "my_ds.md").write_text(
         "---\nname: my_ds\nlast_version: 3.0.0\n"
         "records: 12000\nupdated: 2025-04-01T10:00:00Z\n"
-        "known_versions: [1.0.0, 2.0.0, 3.0.0]\n---\n\n"
+        "known_versions: [1.0.0, 2.0.0, 3.0.0]\n"
+        "case_layer: experiment\n"
+        "case_scope: onetime\n"
+        "case_source: raw_images\n"
+        "case_parents: [raw_images, labels]\n---\n\n"
         "# my_ds\n\n"
         "Image metadata with EXIF and GPS for 12k photos.\n\n"
-        "## Dependencies\n\n"
-        "- [raw_images](datasets/raw_images.md)\n"
-        "- [labels](datasets/labels.md)\n\n"
         "## Schema\n"
     )
     plan = {
@@ -501,10 +503,13 @@ def test_render_index_all_metadata_from_md(tmp_path, monkeypatch):
         "buckets": [],
     }
     result = ri.render_index(plan)
-    # Summary from description
+    # Description from md body
     assert "Image metadata with EXIF and GPS for 12k photos." in result
     # Updated from frontmatter
     assert "2025-04-01" in result
-    # Dependencies are clickable markdown links
-    assert "[raw_images](datasets/raw_images.md)" in result
-    assert "[labels](datasets/labels.md)" in result
+    # Parents from case_parents frontmatter
+    assert "raw_images" in result
+    assert "labels" in result
+    # CASE metadata propagated to the table
+    assert "onetime" in result
+    assert "12000" in result

@@ -45,7 +45,21 @@ Only go to raw storage (`read_storage`, `read_csv`, etc.) when no existing datas
 
 Datasets are the unit of reasoning. Chains that transform data through UDFs — or that produce a pipeline's final result — should be saved as named datasets. This creates a lineage graph where each node is reusable, inspectable, and referenceable by future pipelines and users.
 
-**Core rule: always `.save()`, never just `.show()`.** A pipeline's terminal operation should be `.save("descriptive_name")`, followed by `.show()` on the saved result for display. The only exception is one-off exploratory queries where the user explicitly asks to just "show me" or "print" without saving.
+**Core rule: always `.save()`, never just `.show()`.** A pipeline's terminal operation should be `.save("descriptive_name")`, followed by `.show()` on the saved result for display. Two exceptions: (1) one-off exploratory queries where the user explicitly asks to just "show me" or "print"; (2) Experiment-layer outputs per the CASE methodology — Container / Asset / Sense / Experiment, the four-layer model for unstructured data documented in the `knowledge` skill — persist by exception, not by default. The always-save rule remains absolute for C/A/S substrate layers regardless of phrasing.
+
+**Critical anti-pattern: bypassing `.save()` by dumping in-memory Python rows to a file.** Reading the chain into Python via `.to_list()` / `.to_values()` and then writing to disk via `open(...)`, `json.dump`, `pandas.to_csv`, or any Python-side file handle is forbidden for UDF-bearing pipelines. That path strands the work outside DataChain (no lineage, no version tracking, not visible in the knowledge base, the next session cannot find or reuse it). The pipeline result must land as a saved dataset first via `.save()`. Once the dataset exists, exporting it to a file or to storage is fine — that is exactly what the dedicated terminal ops `chain.to_csv()`, `chain.to_parquet()`, `chain.to_storage()` are for.
+
+```python
+# ✗ ANTI-PATTERN — UDF result pulled into Python and dumped to disk, no dataset created.
+results = chain.map(emb=encode_image).to_list("file", "emb")
+with open("similar_results.json", "w") as f:        # ← bypasses DataChain entirely
+    json.dump(results, f)
+
+# ✓ Save the dataset first, then export from it if a file artifact is genuinely required.
+saved = chain.map(emb=encode_image).save("product_catalog_clip_embeddings", attrs=[...])
+saved.to_csv("similar_results.csv")                  # ← export FROM the saved dataset
+# saved.to_storage("s3://my-output/")                # ← export back to storage also fine
+```
 
 ```python
 # ✓ Save then show — result is preserved AND displayed
@@ -160,9 +174,9 @@ ad-hoc query (not a script at all):
 **Naming convention:** each script is named after the dataset it produces.
 
 ```
-build_oxford_micro_dog_embeddings.py    →  oxford_micro_dog_embeddings dataset
-build_oxford_micro_dog_breeds.py        →  oxford_micro_dog_breeds dataset
-similar_to_fiona.py                      →  similar_to_fiona dataset (or ad-hoc query)
+build_product_catalog_embeddings.py    →  l3_sense_product_catalog_embeddings dataset
+build_product_catalog_metadata.py      →  l1_container_product_catalog_metadata dataset
+similar_to_query.py                     →  products_similar_to_query dataset (or ad-hoc query)
 ```
 
 ```bash
@@ -185,6 +199,8 @@ python pipeline.py
 See `docs/guide/multi-stage-pipelines.md` for the canonical multi-script
 pattern, including comparative-evaluation and cost-tracking variations.
 
+Generate stage scripts up front, on the first pass — "I'll write one script for speed and refactor later" is the regression. Trivial filters / selects / limits MAY be inlined at the bottom of the previous script; UDF stages and anything that warrants a named dataset MAY NOT.
+
 **Special case — expensive compute.** When a UDF is expensive (ML inference, LLM calls, heavy per-row processing), save the **full, unfiltered** result before any filtering or subsetting. A downstream `.save()` after filtering only preserves a fraction of the rows — the rest of the compute is lost.
 
 **Problem-specific filters belong DOWNSTREAM of the expensive `.save()`.** This is the
@@ -201,40 +217,49 @@ file is corrupted, a mandatory field is missing, the row doesn't parse). It MAY 
 before the `.save()` to skip work that is never useful.
 
 ```python
-# Task: "Find dogs similar to fiona.jpg in s3://dc-readme/oxford-pets-micro/,
-#        excluding Cocker Spaniels, only width > 400px, must have a mask."
+# Task: "Find products visually similar to query.jpg in s3://product-catalog/images/,
+#        excluding refurbished SKUs, only width > 400px, must be a primary photo."
 #
 # ✗ Pre-filtering with problem-specific criteria — saved embeddings are useless for
-#   any future question that touches Cocker Spaniels or narrow images.
+#   any future question that touches refurbished items or narrow images.
 embeddings = (
-    dc.read_storage("s3://dc-readme/oxford-pets-micro/.../images/", anon=True)
-    .merge(breed_meta, on="file.stem")
-    .filter(dc.C("breed") != "cocker_spaniel")    # ← problem-specific
+    dc.read_storage("s3://product-catalog/images/", anon=True)
+    .merge(product_meta, on="file.stem")
+    .filter(dc.C("condition") != "refurbished")   # ← problem-specific
     .filter(dc.C("width") > 400)                   # ← problem-specific
-    .filter(dc.C("has_mask") == True)              # ← problem-specific
+    .filter(dc.C("is_primary") == True)            # ← problem-specific
     .setup(model=lambda: clip)
     .map(emb=encode_image)
-    .save("oxford_micro_dog_embeddings")           # ← USELESS for next question
+    .save("l3_sense_product_catalog_clip_embeddings")  # ← USELESS for next question
 )
 
 # ✓ Save embeddings over the WHOLE input, apply problem filters downstream.
-#   The embeddings dataset stays reusable; the filtered ranking is a separate save.
+#   The Sense layer stays reusable; the filtered ranking is a separate Experiment save.
 embeddings = (
-    dc.read_storage("s3://dc-readme/oxford-pets-micro/.../images/", anon=True)
+    dc.read_storage("s3://product-catalog/images/", anon=True)
     .setup(model=lambda: clip)
     .map(emb=encode_image)
-    .save("oxford_micro_dog_embeddings")           # ← FULL coverage, reusable
+    .save(
+        "l3_sense_product_catalog_clip_embeddings",   # ← FULL coverage, reusable Sense layer
+        attrs=["case:sense", "scope:bucket", "source:product_catalog"],
+        description="CLIP ViT-B-32 embeddings over the full product-catalog bucket.",
+    )
 )
 
 ranked = (
-    dc.read_dataset("oxford_micro_dog_embeddings")
-    .merge(dc.read_dataset("oxford_micro_dog_breeds"), on="file.stem")
-    .filter(dc.C("breed") != "cocker_spaniel")    # ← problem-specific, downstream
+    dc.read_dataset("l3_sense_product_catalog_clip_embeddings")
+    .merge(dc.read_dataset("l1_container_product_catalog_metadata"), on="file.stem")
+    .filter(dc.C("condition") != "refurbished")   # ← problem-specific, downstream
     .filter(dc.C("width") > 400)
-    .filter(dc.C("has_mask") == True)
-    .mutate(distance=dc.func.cosine_distance(dc.C("emb"), fiona_emb))
+    .filter(dc.C("is_primary") == True)
+    .mutate(distance=dc.func.cosine_distance(dc.C("emb"), query_emb))
     .order_by("distance").limit(5)
-    .save("similar_to_fiona")                      # ← problem-specific subset
+    .save(
+        "products_similar_to_query",                  # ← Experiment, persist by exception, no prefix
+        attrs=["case:experiment", "scope:onetime", "source:products_similar_to_query",
+               "parent:l3_sense_product_catalog_clip_embeddings"],
+        description="Top-5 catalog products visually closest to query.jpg under the filter set.",
+    )
 )
 ```
 
@@ -270,7 +295,51 @@ embeddings = (
 )
 ```
 
-**Naming convention.** Dataset names should describe the data content (e.g., `"product_annotations"`, `"similar_products"`, `"labeled_images"`), not the pipeline step (`"step1"`, `"intermediate"`, `"temp"`).
+**CASE quick reference.** CASE is the four-layer pattern for organising unstructured-data work — recommended, not required. The skill suggests it because it makes recall cheap; the user can decline. Each layer answers a different question:
+
+- **Container** — a typed index of what each file IS without decoding its full content: paths, sizes, format headers (e.g., MP4 codec/duration, HDF5 attributes, DICOM tags, Parquet schema), sidecar JSON/XML, and external-DB joins. Use it when the task asks "what files are here, what format/metadata, which match this predicate" without paying decode cost.
+- **Asset** — raw extracted or mixed data in a workable shape (video frames, audio tracks, decoded arrays, multi-source training mixtures). Use it when downstream work needs decoded or combined content rather than file pointers.
+- **Sense** — what a model said about the data (embeddings, LLM labels, classifier scores, transcriptions). Use it when the task needs semantic or learned signals — similarity search, content classification, captioning, retrieval, RAG.
+- **Experiment** — a task-specific composition on top of C/A/S (ranking, filter, eval set, curated training subset). Build for one question; persist by exception only.
+
+The `knowledge` skill carries the full methodology (recall-economics costs, build-or-not heuristic, KB integration). This quick reference exists so someone reading only `core` recognises the layer names below.
+
+**Naming convention — CASE prefix.** Container, Asset, and Sense datasets carry a layer prefix that puts them in CASE order alphabetically. The prefix makes the layer visible in `dc.datasets()` listings and in the KB index without any extra lookup. Experiment-layer datasets (and anything not C/A/S) use natural prefix-free names.
+
+```
+l1_container_<source>_<descriptor>      # file headers, listings, sidecar metadata, schema-only views
+l2_asset_<source>_<descriptor>          # raw extracted data (frames, clips, audio, parsed arrays)
+l3_sense_<source>_<descriptor>          # model outputs (embeddings, LLM labels, classifications)
+<descriptor>                            # Experiment outputs (and anything not C/A/S) — no prefix
+```
+
+`<source>` is the bucket slug for L1–L3 (`product_catalog`, `sec_10k`, `robot_demos`, …). Experiment-layer datasets use no prefix; the name describes the question (`products_similar_to_query`, `recsys_eval_runs`, `cik_text_stats`), and layer membership is carried only by `attrs=["case:experiment", …]` and the resulting `case_layer: experiment` frontmatter. All snake_case; no dots, no `@` (DataChain reserves them).
+
+Dataset names still describe content rather than pipeline step (`l3_sense_product_catalog_clip_embeddings`, not `l3_sense_step1`).
+
+**Tag every `.save()` with `attrs` and `description`.** The CASE skill enforces the methodology by reading these tags:
+
+```python
+chain.save(
+    "l3_sense_product_catalog_clip_embeddings",
+    attrs=[
+        "case:sense",                                # container | asset | sense | experiment
+        "scope:bucket",                              # bucket (full root, default) | directory (subdir opt-in) | sample | onetime
+        "source:product_catalog",                    # bucket slug for L1-L3, task slug for Experiment
+        "parent:l2_asset_product_catalog_frames",    # immediate upstream CASE dataset(s); repeat key for multi
+    ],
+    description="CLIP ViT-B-32 embeddings over the full product-catalog bucket; reusable for any visual-similarity query.",
+)
+```
+
+**Per-layer reuse.** Each layer has a different reuse profile — this dictates what to `.save()` and at what coverage. Default scope for a CAS layer is the bucket root (widen `read_storage` from any subdir the user mentioned); `scope:directory` is only set when the user explicitly opted into it.
+
+- **L1 Container** — file listings, header-only views, parsed sidecar metadata. Persist by default, full coverage. Cheap to refresh on delta. Shared between teams that touch the same bucket.
+- **L2 Asset** — heavy file-content extractions (frames, audio tracks, NumPy from H5, decoded text) **and dataset mixtures (joins / unions / training mixes across two or more datasets on a shared key)**. Persist by default, full coverage. The "expensive UDF → save full → filter downstream" rule keeps single-source Assets reusable; for mixtures, the equivalent is to save the *full* combined Asset (not pre-filtered to the current task) so a different team's question over the same mixture reads instead of re-joins.
+- **L3 Sense** — model outputs (embeddings, LLM labels, classifications, transcriptions). Persist by default, full coverage. This is the layer the recall economics is built around — the per-row inference cost paid once means future queries are warehouse-speed.
+- **Experiment** — task-specific analytics (rankings, filtered cohorts, eval outputs). **No name prefix**; the name describes the question (`products_similar_to_query`, `cik_text_stats`, `recsys_eval_runs`). **Persist by exception.** Default to `scope:onetime` and skip `.save()` unless the result is a standing benchmark or curated training set. The skill rule "always `.save()` for UDF chains" still applies, but the Experiment save is short-lived and gets recycled.
+
+The `.save()` produced inside a CASE-aware pipeline is which-layer-this-is + which-source + which-parent, all encoded in the name and `attrs` so the next session (and the KB index) can find and reuse it.
 
 Never create or modify files under `dc-knowledge/` — that directory is owned by the datachain-knowledge skill.
 
@@ -301,6 +370,19 @@ Never create or modify files under `dc-knowledge/` — that directory is owned b
     ✓ dc.read_storage("s3://public-bucket/data/")         # auto-detected as public
     ✓ dc.read_storage("gs://bucket/data/", anon=True)     # explicit, skips probe
     ✗ dc.File.at("gs://bucket/file.txt", anon=True)        ← File.at() has no anon param
+
+    **Anon does NOT propagate across `.save()` boundaries.** `read_storage(anon=True)`
+    works for the listing, but the anon flag is session-scoped — it is not persisted
+    on the saved dataset, nor walked from the listing dataset's lineage. A downstream
+    UDF that calls `file.open()` / `file.read()` in a new process will make a fresh
+    S3 HeadObject without anon → 403 Forbidden. Fix: pass anon into the downstream
+    session via `client_config`:
+    ✓ session = dc.Session.get(client_config={"anon": True})
+      (dc.read_dataset("l2_asset_my_bucket_images", session=session)
+         .map(emb=encode_image)
+         .save("l3_sense_my_bucket_embeddings"))
+    The session flows anon into every `file.open()` it issues. No cache, no
+    re-listing, no extra disk I/O.
 
 2. EVERY UDF MUST HAVE A KNOWN OUTPUT TYPE. A UDF passed to map/gen/agg without
    a resolved return type defaults to str and crashes at runtime for any non-str
@@ -459,11 +541,33 @@ Never create or modify files under `dc-knowledge/` — that directory is owned b
    ✓ chain.map(info=fn)                    # BaseModel with named fields
    ✗ chain.map(a=fn1, b=fn2)              # ERROR: multiple signals
 
-14. NO TUPLE RETURNS: Always prefer Pydantic BaseModel classes to tuple in map/gen/agg
-    functions until user directly asks for tuple.
+14. NO TUPLE RETURNS, NO DICT RETURNS: Always prefer Pydantic BaseModel classes to tuple
+    or dict in map/gen/agg functions until user directly asks for tuple.
     ✓ def fn(file: dc.File) -> MyModel: ...   # named fields via BaseModel
     ✓ def fn(file: dc.File) -> int: ...       # single scalar
     ✗ def fn(file: dc.File) -> tuple[int, int]: ...  # → col_0, col_1
+    ✗ def fn(file: dc.File) -> dict: ...      # dict keys become column VALUES, not names → crash
+
+    **Multi-column output: use BaseModel, NEVER tuple-via-output{}.** Pairing a
+    tuple-returning UDF with `output={"width": int, "height": int}` works by
+    positional accident; BaseModel is the canonical, named, addressable form:
+    ✓ class Dims(BaseModel):
+          width: int
+          height: int
+      def get_dims(file: dc.ImageFile) -> Dims:
+          info = file.get_info()
+          return Dims(width=info.width, height=info.height)
+      chain.map(dims=get_dims)                                     # → dims.width, dims.height
+    ✗ def get_dims(file: dc.ImageFile) -> tuple[int, int]:
+          info = file.get_info()
+          return info.width, info.height
+      chain.map(dims=get_dims, output={"width": int, "height": int})  # ← anti-pattern
+
+    **For image dimensions specifically, do not write a UDF at all** —
+    `dc.ImageFile.get_info()` already returns `dc.Image(width, height, format)`:
+    ✓ def img_info(file: dc.ImageFile) -> dc.Image:
+          return file.get_info()
+      chain.map(info=img_info)                                     # → info.width, info.height
 
     **Scope.** This rule covers UDFs passed to `.map()`, `.gen()`, and `.agg()`
     — those return values become chain signals (columns), and tuple returns force

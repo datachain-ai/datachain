@@ -125,10 +125,23 @@ def _extract_deps(lines: list[str]) -> list[str]:
     return deps
 
 
+def _parse_list_field(raw: str) -> list[str]:
+    """Parse a `[a, b, c]` list-style frontmatter value into a list of strings."""
+    if not raw:
+        return []
+    if raw.startswith("[") and raw.endswith("]"):
+        raw = raw[1:-1]
+    return [v.strip() for v in raw.split(",") if v.strip()]
+
+
+CASE_LAYERS = ("container", "asset", "sense", "experiment")
+
+
 def _read_md_info(md_path: str) -> dict:
     """Read metadata, description, and dependencies from an enriched dataset .md.
 
-    Returns dict with keys: description, deps, last_version, records, updated.
+    Returns dict with keys: description, deps, last_version, records, updated,
+    case_layer, case_scope, case_source, case_parents.
     """
     info: dict = {
         "description": "",
@@ -138,6 +151,10 @@ def _read_md_info(md_path: str) -> dict:
         "records": "",
         "num_versions": "",
         "updated": "",
+        "case_layer": "",
+        "case_scope": "",
+        "case_source": "",
+        "case_parents": [],
     }
 
     try:
@@ -146,7 +163,12 @@ def _read_md_info(md_path: str) -> dict:
     except Exception:  # noqa: BLE001
         return info
 
-    info.update(_parse_frontmatter_info(_read_md_frontmatter(md_path)))
+    fm = _read_md_frontmatter(md_path)
+    info.update(_parse_frontmatter_info(fm))
+    info["case_layer"] = fm.get("case_layer", "").strip().lower()
+    info["case_scope"] = fm.get("case_scope", "").strip().lower()
+    info["case_source"] = fm.get("case_source", "").strip()
+    info["case_parents"] = _parse_list_field(fm.get("case_parents", ""))
 
     body = _strip_frontmatter(content)
     if body is None:
@@ -160,37 +182,129 @@ def _read_md_info(md_path: str) -> dict:
     return info
 
 
+def _collect_dataset_row(ds: dict, strip_namespace: bool = False) -> tuple[dict, dict]:
+    """Read frontmatter + body info for a dataset entry.
+
+    Returns (ds_with_link, info).
+    """
+    name = ds["name"]
+    source = ds["source"]
+    file_path = ds.get("file_path", dataset_file_path(name, source))
+
+    display_name = name
+    if strip_namespace:
+        parts = name.split(".", 2)
+        if len(parts) == 3:
+            display_name = parts[2]
+
+    md_path = os.path.join(BASE_DIR, file_path + ".md")
+    info = _read_md_info(md_path)
+    enriched = {
+        "name": name,
+        "display_name": display_name,
+        "link": f"[{display_name}]({file_path}.md)",
+        "file_path": file_path,
+    }
+    return enriched, info
+
+
 def _render_dataset_table(
     datasets: list[dict], strip_namespace: bool = False
 ) -> list[str]:
-    """Render a markdown table for a list of dataset entries."""
+    """Render a markdown table for a list of dataset entries (legacy/Studio shape)."""
     lines = []
     lines.append("| Name | Updated | Dependencies | Summary |")
     lines.append("|------|---------|--------------|---------|")
 
     for ds in sorted(datasets, key=lambda d: d["name"]):
-        name = ds["name"]
-        source = ds["source"]
-        file_path = ds.get("file_path", dataset_file_path(name, source))
-
-        # Display name: strip namespace prefix if inside a namespace subsection
-        display_name = name
-        if strip_namespace:
-            parts = name.split(".", 2)
-            if len(parts) == 3:
-                display_name = parts[2]
-
-        link = f"[{display_name}]({file_path}.md)"
-
-        # All metadata from enriched .md
-        md_path = os.path.join(BASE_DIR, file_path + ".md")
-        info = _read_md_info(md_path)
+        enriched, info = _collect_dataset_row(ds, strip_namespace=strip_namespace)
         updated = info["updated"]
         deps_str = ", ".join(info["deps"]) if info["deps"] else ""
         summary = info["description"]
+        lines.append(f"| {enriched['link']} | {updated} | {deps_str} | {summary} |")
 
-        lines.append(f"| {link} | {updated} | {deps_str} | {summary} |")
+    return lines
 
+
+CASE_SECTION_NAMES = {
+    "container": "Container",
+    "asset": "Asset",
+    "sense": "Sense",
+    "experiment": "Experiment Dataset",
+}
+
+CASE_SECTION_BLURBS = {
+    "container": "_File headers, listings, and sidecar metadata. One row per file._",
+    "asset": (
+        "_Raw extracted data (frames, clips, audio, parsed arrays) "
+        "or training mixtures of multiple datasets._"
+    ),
+    "sense": (
+        "_Model-derived signals: embeddings, classifications, "
+        "transcriptions, LLM outputs._"
+    ),
+    "experiment": (
+        "_Task-specific analytics and any dataset not tagged as "
+        "Container, Asset, or Sense._"
+    ),
+}
+
+
+def _render_case_table(rows: list[tuple[dict, dict]], layer: str) -> list[str]:
+    """Render a markdown table for one CASE layer.
+
+    Columns are uniform across layers for readability: Name, Scope, Source,
+    Parents, Updated, Records, Description.
+    """
+    lines = []
+    lines.append(
+        "| Name | Scope | Source | Parents | Updated | Records | Description |"
+    )
+    lines.append(
+        "|------|-------|--------|---------|---------|--------:|-------------|"
+    )
+    for enriched, info in sorted(rows, key=lambda r: r[0]["name"]):
+        parents = ", ".join(info["case_parents"]) if info["case_parents"] else ""
+        lines.append(
+            f"| {enriched['link']} "
+            f"| {info['case_scope']} "
+            f"| {info['case_source']} "
+            f"| {parents} "
+            f"| {info['updated']} "
+            f"| {info['records']} "
+            f"| {info['description']} |"
+        )
+    return lines
+
+
+def _render_case_grouped(datasets: list[dict]) -> list[str]:
+    """Render the local-datasets block as four CASE-grouped tables.
+
+    Untagged datasets and any non-C/A/S `case_layer` value fall under
+    "Experiment Dataset" (the catch-all).
+    """
+    by_layer: dict[str, list[tuple[dict, dict]]] = {layer: [] for layer in CASE_LAYERS}
+    for ds in datasets:
+        enriched, info = _collect_dataset_row(ds)
+        layer = info["case_layer"]
+        if layer not in CASE_LAYERS:
+            layer = "experiment"
+        by_layer[layer].append((enriched, info))
+
+    lines: list[str] = []
+    for layer in CASE_LAYERS:
+        rows = by_layer[layer]
+        if not rows and layer != "experiment":
+            continue
+        lines.append(f"### {CASE_SECTION_NAMES[layer]}")
+        lines.append("")
+        lines.append(CASE_SECTION_BLURBS[layer])
+        lines.append("")
+        if rows:
+            lines.extend(_render_case_table(rows, layer))
+        else:
+            lines.append("_No datasets yet._")
+        lines.append("")
     return lines
 
 
@@ -214,12 +328,13 @@ def render_index(plan: dict) -> str:
     lines.append("---")
     lines.append("")
 
-    # Local datasets (default section — no "Local" header)
+    # Local datasets, grouped by CASE layer
+    # (Container, Asset, Sense, Experiment Dataset).
+    # Untagged datasets fall into "Experiment Dataset" as the catch-all.
     if local_ds:
         lines.append("## Datasets")
         lines.append("")
-        lines.extend(_render_dataset_table(local_ds))
-        lines.append("")
+        lines.extend(_render_case_grouped(local_ds))
 
     # Studio datasets grouped by namespace
     if studio_ds:
