@@ -198,13 +198,7 @@ python pipeline.py
 See `docs/guide/multi-stage-pipelines.md` for the canonical multi-script
 pattern, including comparative-evaluation and cost-tracking variations.
 
-**Common rationalizations that are NOT exceptions to the one-script-per-stage rule.** If you find yourself thinking any of these, stop and split the script:
-
-- *"I'll compress the stages for speed / fewer files."* — Speed of writing is not the optimization target. Stage-per-script makes resume-on-failure free and lets the next session reuse any single stage.
-- *"The task is end-to-end so it's one logical script."* — End-to-end thinking lives in the conversation, not in the file layout. The CASE Decomposition step 1 already enumerated the named datasets; each named dataset is a script.
-- *"The user asked for one thing, not multiple steps."* — Irrelevant. The user asked for an answer; how the answer is produced (decomposed into a Sense build + an Experiment query) is the skill's responsibility. Surface the multi-script structure to the user; do not collapse it.
-- *"Stage N is trivial, I'll inline it into stage N-1."* — Trivial filters / selects / limits MAY be inlined at the bottom of the previous script. UDF stages, `.save()` calls, and anything that warrants a named dataset MAY NOT.
-- *"Refactoring after the fact is the same thing."* — It isn't. Producing the monolith first and "I can refactor it later" is the regression. Generate the stage scripts up front, on the first pass.
+Generate stage scripts up front, on the first pass — "I'll write one script for speed and refactor later" is the regression. Trivial filters / selects / limits MAY be inlined at the bottom of the previous script; UDF stages and anything that warrants a named dataset MAY NOT.
 
 **Special case — expensive compute.** When a UDF is expensive (ML inference, LLM calls, heavy per-row processing), save the **full, unfiltered** result before any filtering or subsetting. A downstream `.save()` after filtering only preserves a fraction of the rows — the rest of the compute is lost.
 
@@ -328,7 +322,7 @@ chain.save(
 )
 ```
 
-**Per-layer reuse.** Each layer has a different reuse profile — this dictates what to `.save()` and at what coverage. **The default scope for any CAS layer is the bucket root**, not whatever subdirectory the user's prompt happened to mention. Widen `read_storage` from the user's subdir up to the bucket root before saving; the narrower `scope:directory` is reserved for the case where the user explicitly opts in to a subdirectory scope.
+**Per-layer reuse.** Each layer has a different reuse profile — this dictates what to `.save()` and at what coverage. Default scope for a CAS layer is the bucket root (widen `read_storage` from any subdir the user mentioned); `scope:directory` is only set when the user explicitly opted into it.
 
 - **L1 Container** — file listings, header-only views, parsed sidecar metadata. Persist by default, full coverage. Cheap to refresh on delta. Shared between teams that touch the same bucket.
 - **L2 Asset** — heavy file-content extractions (frames, audio tracks, NumPy from H5, decoded text) **and dataset mixtures (joins / unions / training mixes across two or more datasets on a shared key)**. Persist by default, full coverage. The "expensive UDF → save full → filter downstream" rule keeps single-source Assets reusable; for mixtures, the equivalent is to save the *full* combined Asset (not pre-filtered to the current task) so a different team's question over the same mixture reads instead of re-joins. 
