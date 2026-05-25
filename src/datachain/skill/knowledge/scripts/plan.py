@@ -24,7 +24,6 @@ from utils import (
     write_json,
 )
 
-
 # Calibration runs are session-scoped instrumentation, not knowledge — they
 # don't get JSON/MD records, don't appear in the index, and don't show up in
 # reuse recommendations. The skill prescribes `.persist()` for calibration
