@@ -1146,8 +1146,7 @@ class Catalog:
                 self.metastore.update_dataset_version(
                     dataset, version, status=DatasetStatus.REMOVING_TOTAL
                 )
-            if v.status != DatasetStatus.REMOVED:
-                self.warehouse.drop_dataset_rows_table(dataset, version)
+            self.warehouse.drop_dataset_rows_table(dataset, version)
             self.metastore.remove_dataset_version(dataset, version)
 
     def _remove_versions(self, pairs: Iterable[tuple[DatasetRecord, str]]) -> int:
