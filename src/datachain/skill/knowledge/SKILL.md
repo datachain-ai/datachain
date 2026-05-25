@@ -200,29 +200,29 @@ When loaded, determine the user's intent:
 > 3. **Direct reuse first.** From `dc-knowledge/index.md`, for each required layer × source, check if an existing dataset already covers the question (even partially). If yes, write the pipeline as `dc.read_dataset(...)` over it. **Celebrate the reuse**: in the response, name the layer being reused and quote the saved cost — e.g., "Reusing `l3_sense_product_catalog_clip_embeddings` (built last session). This query is ~$0.002 instead of the $1.40 the embedding pass would otherwise cost — exactly the win the Sense layer was built for." This is the moment that teaches the methodology; do not skip it.
 > 4. **Reduce-to-CAS if direct reuse impossible.** Before defaulting to a raw rebuild, work the problem from the other side: can the task be reformulated so it operates on an *existing* CAS layer plus a small Experiment delta? Examples: a new similarity question on the same bucket → reuse the Sense embeddings, just change the query vector; a new "find X" question → reuse the Sense classifications and add a filter. Spend real effort here — propose at least one reformulation when any CAS layer for this source exists.
 > 5. **Cost gate on CAS reuse.** Reuse a CAS layer only when it gives a meaningful win — at least ~2× speedup or ~2× $-saving versus the raw rebuild. If the layer technically covers the data but reading it is no cheaper than re-reading raw storage, do not force the reuse; the methodology is justified by economics, not formalism.
-> 5.5. **Derive task minimum BEFORE pilot.** For decode-heavy sources (video/audio/large H5/NIfTI/multi-page PDF), name the minimum fidelity the task requires across three axes:
+> 5.5. **Derive task minimum BEFORE the calibration run.** For decode-heavy sources (video/audio/large H5/NIfTI/multi-page PDF), name the minimum fidelity the task requires across three axes:
 >     - **Temporal sampling:** shortest event the answer depends on. People on screen → 1 fps; brief impacts/flashes → ≥5 fps; one scene/video → 1 frame.
 >     - **Spatial resolution:** smallest visual detail. Object detection of people/cars → 640px; OCR / small text → full resolution.
 >     - **Encoding:** audio full-rate (transcription) vs resampled (speech-vs-silence); PDF OCR vs text-layer.
 >
->     This minimum is the FLOOR for any thin-Asset preset in step 7 and what the pilot measures against. Never pilot at coarser sampling than the task requires. If genuinely ambiguous, ask one targeted question — do not guess.
+>     This minimum is the FLOOR for any thin-Asset preset in step 7 and what the calibration measures against. Never calibrate at coarser sampling than the task requires. If genuinely ambiguous, ask one targeted question — do not guess.
 >
-> 6. **Estimate cost** by measurement, never guess. The number going into the 7c gate MUST be pilot-derived. Two branches when reuse is unavailable: direct solve (this question only) vs layer build (full source, reusable).
+> 6. **Estimate cost** by measurement, never guess. The number going into the 7c gate MUST be calibration-derived. Two branches when reuse is unavailable: direct solve (this question only) vs layer build (full source, reusable).
 >
->    **6a. Lead with sizes.** Before piloting, quote bucket footprint from the scan (total GB, files, avg size, top extensions) and a size-derived I/O baseline: `total_GB / bandwidth` where bandwidth ≈ 50–150 MB/s GCS→Mac, 80–200 S3→local, 500+ same-region cloud. The pilot refines; the size baseline anchors.
+>    **6a. Lead with sizes.** Before the calibration run, quote bucket footprint from the scan (total GB, files, avg size, top extensions) and a size-derived I/O baseline: `total_GB / bandwidth` where bandwidth ≈ 50–150 MB/s GCS→Mac, 80–200 S3→local, 500+ same-region cloud. The calibration refines; the size baseline anchors.
 >
->    **6b. Calibrated pilot procedure** (mandatory for any `.map`/`.gen` over >50 source items, or any UDF that decodes/downloads/calls a model). Pick `N = min(50, max(5, ⌈total/100⌉))`. Run two pilots back-to-back sharing one decode-once `.map`, each ending in `.persist()` (never `.save()`):
+>    **6b. Calibration procedure** (mandatory for any `.map`/`.gen` over >50 source items, or any UDF that decodes/downloads/calls a model). Pick `N = min(50, max(5, ⌈total/100⌉))`. Run two calibration runs back-to-back sharing one decode-once `.map`, each ending in `.persist()` (never `.save()`):
 >
->    1. **no-Asset pilot:** emit only the aggregate/Sense output.
->    2. **thin-Asset pilot:** same `.map`, ALSO encode the materialized payload at task-minimum fidelity and return `sum(len(bytes))` as a column. **Do NOT upload during pilot** — encoding suffices to measure compute + size; upload happens only at full-run time.
+>    1. **no-Asset calibration:** emit only the aggregate/Sense output.
+>    2. **thin-Asset calibration:** same `.map`, ALSO encode the materialized payload at task-minimum fidelity and return `sum(len(bytes))` as a column. **Do NOT upload during calibration** — encoding suffices to measure compute + size; upload happens only at full-run time.
 >
->    60–120 s timeout per pilot. If neither finishes, auto-build is off → go to 7d dialogue. Record wall seconds, GB read, rows out, plus encoded-bytes sum for thin-Asset.
+>    60–120 s timeout per run. If neither finishes, auto-build is off → go to 7d dialogue. Record wall seconds, GB read, rows out, plus encoded-bytes sum for thin-Asset.
 >
->    Extrapolate: `wall_full = (wall_sample/N) × total × 1.5`; `asset_full_bytes = (sample_bytes/N) × total × 1.5`. Cost in $ from the recall-economics tier (lines 72–75) unless pilot disagrees by >3×.
+>    Extrapolate: `wall_full = (wall_sample/N) × total × 1.5`; `asset_full_bytes = (sample_bytes/N) × total × 1.5`. Cost in $ from the recall-economics tier (lines 72–75) unless calibration disagrees by >3×.
 >
->    **Sanity floor:** estimate disagreeing with the recall-economics tier by >100× → re-pilot, do not paper over.
+>    **Sanity floor:** estimate disagreeing with the recall-economics tier by >100× → re-calibrate, do not paper over.
 >
->    **Fallback rules of thumb** (use only when piloting is impossible — empty/unreachable source): Container ≈ 0.5 ms/file (header-only); Asset 50–500 ms/file — for video/audio decode budget per source file, not per frame; Sense CLIP ≈ 5 ms/img on CPU, LLM ≈ $0.001–0.01/row, CPU YOLO ≈ 100–500 ms/frame plus download/decode I/O.
+>    **Fallback rules of thumb** (use only when calibration is impossible — empty/unreachable source): Container ≈ 0.5 ms/file (header-only); Asset 50–500 ms/file — for video/audio decode budget per source file, not per frame; Sense CLIP ≈ 5 ms/img on CPU, LLM ≈ $0.001–0.01/row, CPU YOLO ≈ 100–500 ms/frame plus download/decode I/O.
 >
 >    **Materialized thin Asset.** Source decoded once, derivative is real bytes (not a pointer back to the source). Pointer-row Asset (`(source_uri, timestamp)` without the payload) is **forbidden** for video/audio — re-decode trap.
 >
@@ -242,7 +242,7 @@ When loaded, determine the user's intent:
 >      Downstream UDFs declare `params=["frame"]` with `frame: dc.File`, not `params=["frame.jpeg"]` over a bytes column. Never `source_path: str`.
 >    - **Default presets** (must meet step 5.5 minimum; adjust up when minimum demands it): **video** — 1 fps × 640px long side × JPEG q80; **audio** — 1-sec windows × 16 kHz mono PCM.
 >
->    **Pilot policy.** `.persist()` not `.save()`; no `attrs` / `description` on pilots; no enrichment. End state: no `pilot_*` row in `dc.datasets()` and no `pilot_*` in `dc-knowledge/`. `plan.py` filters `pilot_*` names and `scope:pilot` as backstop.
+>    **Calibration policy.** `.persist()` not `.save()`; no `attrs` / `description` on calibration runs; no enrichment. End state: no `calib_*` (or legacy `pilot_*`) row in `dc.datasets()` and no `calib_*` / `pilot_*` in `dc-knowledge/`. `plan.py` filters `calib_*` / `pilot_*` names and `scope:calibration` / `scope:pilot` attrs as backstop.
 > 7. **Decide branch** — strict order, bucket-root scope throughout.
 >
 >    **7a. Bucket root from URI.** From `s3://dc-readme/oxford-pets-micro/images/`, root is `s3://dc-readme/`. A subdir the user phrased the task around is not the root.
@@ -257,11 +257,11 @@ When loaded, determine the user's intent:
 >
 >    Never silently auto-build at directory or sample scope. Format times as `~Xh Ym` / `~Xm` (concrete numbers, not band names).
 >
->    **Scope-and-preset dialogue template** (substitute the measured pilot numbers verbatim; ≥3 options, more when warranted; the recommended option is ALWAYS thin Asset):
+>    **Scope-and-preset dialogue template** (substitute the measured calibration numbers verbatim; ≥3 options, more when warranted; the recommended option is ALWAYS thin Asset):
 >    ```
 >    Source: {bucket_size} / {n_total} {ext_summary} / avg file {avg_size}.
 >    Task minimum (5.5): {sample_rate}, {resolution}, {format}.
->    Pilot ({n_pilot}): no-Asset ~{wall_pilot_no}s, thin-Asset ~{wall_pilot_thin}s (+{thin_storage_pilot}); R = {R:.1f}.
+>    Calibration ({n_calib}): no-Asset ~{wall_calib_no}s, thin-Asset ~{wall_calib_thin}s (+{thin_storage_calib}); R = {R:.1f}.
 >    {if R > 2:} thin Asset costs ~{R:.1f}× more — substrate-vs-immediate-cost trade-off. Recommendation follows CASE (substrate compounds); pick no-Asset only for genuinely one-shot answers.
 >
 >    Full-run options (~{baseline_io} unavoidable I/O):
@@ -284,8 +284,8 @@ When loaded, determine the user's intent:
 > 9. **On layer build, tag the datasets.** Name them per the convention (`l1_…`/`l2_…`/`l3_…` for C/A/S; no prefix for Experiment outputs) and pass `attrs=["case:<layer>", "scope:bucket|directory|sample|onetime", "source:<slug>", "parent:<name>"]` + `description="…"` on `.save()`. `scope:bucket` covers the bucket root (the default for auto-build) and the source slug is the bucket name. `scope:directory` is set ONLY when the user explicitly opted into a subdirectory in the scope-and-preset dialogue; the source slug includes the directory path (e.g., `source:my_bucket__images_subset`) so it does not collide with bucket-root layers. `scope:sample` is one-shot. `scope:onetime` is for non-persistable Experiment outputs.
 > 10. **Containerise raw JSON / sidecars too.** If the task pulls structured JSON / Parquet / CSV from the bucket and parses it inline, propose lifting that parse into an `l1_container_<source>_<descriptor>` dataset so the parsed schema becomes reusable. Same auto-vs-ask rule, same whole-bucket-first framing.
 > 11. **Mid-flight monitoring + early abort.** For any job estimated >5 min, watch the first 60–90 s of stdout for a throughput line (DataChain emits `Processed: N rows [elapsed, rate]`) and compute observed per-row rate.
->     - `observed_rate ≥ 0.66 × pilot_rate` → carry on.
->     - `observed_rate < 0.5 × pilot_rate` → **kill**, report the gap and the revised estimate, re-open the dialogue from 7d at the new band.
+>     - `observed_rate ≥ 0.66 × calib_rate` → carry on.
+>     - `observed_rate < 0.5 × calib_rate` → **kill**, report the gap and the revised estimate, re-open the dialogue from 7d at the new band.
 >     - No throughput line within 2 min → kill, investigate (startup cost, model download, auth retry), report.
 >
 > Step 1 (Bucket Enlistment) is itself a Container-layer artifact for the storage root: a lightweight, header-only view of what's in the bucket. The bucket entries appear in the Container row of the KB index next to any DataChain datasets explicitly tagged `case:container` (e.g., parsed JSON sidecars promoted via the rule in step 10).

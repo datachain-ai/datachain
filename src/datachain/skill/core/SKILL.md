@@ -856,7 +856,7 @@ chain.settings(parallel=True, cache=True, prefetch=10)              # local mult
 chain.settings(parallel=True, workers=50)                           # workers=N → distributed; requires Studio setup (DATACHAIN_DISTRIBUTED env var). Drop workers when running locally.
 ```
 
-**Terminal operations (trigger execution).** `.save()` creates a named, versioned, KB-tracked dataset (knowledge that future sessions should find). `.persist()` materializes the chain into the anonymous dataset without a name — use it for pilots, measurement runs, and intermediate materialization that should not enter the KB.
+**Terminal operations (trigger execution).** `.save()` creates a named, versioned, KB-tracked dataset (knowledge that future sessions should find). `.persist()` materializes the chain into the anonymous dataset without a name — use it for calibration and measurement runs, and intermediate materialization that should not enter the KB.
 
 ```python
 chain.save("dataset_name")                     # versioned named dataset, appears in dc.datasets() and KB
