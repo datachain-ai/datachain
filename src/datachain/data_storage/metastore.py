@@ -475,9 +475,14 @@ class AbstractMetastore(ABC, Serializable):
 
     @abstractmethod
     def get_direct_dataset_dependencies(
-        self, dataset: DatasetRecord, version: str
+        self,
+        dataset: DatasetRecord,
+        version: str,
+        include_removed: bool = True,
     ) -> list[DatasetDependency | None]:
-        """Gets direct dataset dependencies."""
+        """Gets direct dataset dependencies. Deps pointing at soft-removed
+        versions are surfaced by default so lineage views can show them; pass
+        ``include_removed=False`` to filter them out."""
 
     @abstractmethod
     def get_dataset_dependency_nodes(
@@ -2022,7 +2027,10 @@ class AbstractDBMetastore(AbstractMetastore):
         """
 
     def get_direct_dataset_dependencies(
-        self, dataset: DatasetRecord, version: str
+        self,
+        dataset: DatasetRecord,
+        version: str,
+        include_removed: bool = True,
     ) -> list[DatasetDependency | None]:
         n = self._namespaces
         p = self._projects
@@ -2034,6 +2042,17 @@ class AbstractDBMetastore(AbstractMetastore):
 
         select_cols = self._dataset_dependencies_select_columns()
 
+        where_clause = (dd.c.source_dataset_id == dataset.id) & (
+            dd.c.source_dataset_version_id == dataset_version.id
+        )
+        if not include_removed:
+            # Hide deps whose target version has been soft-removed; rows where
+            # the FK is dangling (status is NULL on outer join) stay surfaced
+            # so callers can still see broken lineage.
+            where_clause = where_clause & (
+                (dv.c.status != DatasetStatus.REMOVED) | (dv.c.status.is_(None))
+            )
+
         query = (
             self._datasets_dependencies_select(*select_cols)
             .select_from(
@@ -2042,10 +2061,7 @@ class AbstractDBMetastore(AbstractMetastore):
                 .join(p, d.c.project_id == p.c.id, isouter=True)
                 .join(n, p.c.namespace_id == n.c.id, isouter=True)
             )
-            .where(
-                (dd.c.source_dataset_id == dataset.id)
-                & (dd.c.source_dataset_version_id == dataset_version.id)
-            )
+            .where(where_clause)
         )
 
         return [self.dependency_class.parse(*r) for r in self.db.execute(query)]

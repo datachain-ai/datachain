@@ -250,12 +250,6 @@ def _get_source_info(
         include_incomplete=False,
     )
 
-    # The version the dep points at may have been removed. Without a
-    # readable previous version we can't compute a diff; fall back to
-    # normal dataset creation, same as a missing dep.
-    if not source_ds.has_version(source_ds_dep.version):
-        return None, None, None, None
-
     return (
         source_ds.name,
         source_ds.project,
@@ -405,6 +399,7 @@ def delta_retry_update(
         namespace_name=namespace_name,
         project_name=project_name,
         indirect=False,
+        include_removed=False,
     )
     latest_dataset = datachain.read_dataset(
         name,
