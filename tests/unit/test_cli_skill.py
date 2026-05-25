@@ -46,6 +46,12 @@ def test_skill_install_target_codex():
     assert args.target == "codex"
 
 
+def test_skill_install_target_pi():
+    parser = get_parser()
+    args = parser.parse_args(["skill", "install", "--target", "pi"])
+    assert args.target == "pi"
+
+
 def test_skill_install_local_flag():
     parser = get_parser()
     args = parser.parse_args(["skill", "install", "--local"])
@@ -215,6 +221,55 @@ def test_install_all_codex_global(tmp_path, fake_skills_src, fake_home):
     assert not (fake_home / ".codex" / "commands").exists()
 
 
+# --- pi, global + local ---
+
+
+def test_install_all_pi_global(tmp_path, fake_skills_src, fake_home):
+    _run_install(fake_skills_src, fake_home, skills=None, target="pi", local=False)
+
+    skills_base = fake_home / ".pi" / "agent" / "skills"
+    prompts_base = fake_home / ".pi" / "agent" / "prompts"
+
+    for skill in ALL_SKILLS:
+        assert (skills_base / skill / "SKILL.md").exists()
+        prompt_file = prompts_base / f"datachain-{skill}.md"
+        assert prompt_file.exists()
+        # No transform — Pi accepts SKILL.md frontmatter as-is.
+        content = prompt_file.read_text()
+        assert f"name: datachain-{skill}" in content
+        assert f"description: Test skill {skill}" in content
+
+    # User-level layout MUST be ~/.pi/agent/..., not ~/.pi/...
+    assert not (fake_home / ".pi" / "skills").exists()
+    assert not (fake_home / ".pi" / "prompts").exists()
+
+
+def test_install_pi_local(tmp_path, fake_skills_src, fake_home, monkeypatch):
+    """--local mode for pi writes to .pi/skills/ + .pi/prompts/ (no `agent/`)."""
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+
+    from datachain.cli.commands.skill import install_skills
+
+    with patch(
+        "datachain.cli.commands.skill._skills_src", return_value=fake_skills_src
+    ):
+        monkeypatch.chdir(project_dir)
+        install_skills(skills=None, target="pi", local=True)
+
+    skills_base = project_dir / ".pi" / "skills"
+    prompts_base = project_dir / ".pi" / "prompts"
+
+    for skill in ALL_SKILLS:
+        assert (skills_base / skill / "SKILL.md").exists()
+        assert (prompts_base / f"datachain-{skill}.md").exists()
+
+    # Repo-local --local mode MUST NOT use the user-level agent/ layout.
+    assert not (project_dir / ".pi" / "agent").exists()
+    # And the user home is untouched.
+    assert not (fake_home / ".pi").exists()
+
+
 # --- copilot, global ---
 
 
@@ -326,6 +381,7 @@ def test_list_skills_output(capsys):
     assert "claude" in out
     assert "cursor" in out
     assert "codex" in out
+    assert "pi" in out
 
 
 # ---------------------------------------------------------------------------
