@@ -52,7 +52,7 @@ You are now loaded with the datachain-knowledge skill. Maintain a knowledge base
 ## Critical Rules
 
 1. **Path is `dc-knowledge/`** — NOT `.datachain/`. The `.datachain/` directory is the internal database; the knowledge base lives at `dc-knowledge/`.
-2. **Never pass `update=True`** to `dc.read_storage()` unless the user explicitly asks to refresh the listing.
+2. **Never pass `update=True`** to `dc.read_storage()` in Experiment or exploration code unless the user explicitly asks to refresh the listing. L1/L2/L3 build scripts are the exception — they always pass `update=True, delta=True` per step 12 (running a build script IS the refresh).
 3. **Prefer DataChain operations** over plain Python for all metadata analysis.
 4. **Bounded output** — JSON and markdown files stay small regardless of data size.
 5. **Stop on auth/connection errors** — `bucket_scan.py` runs a fast access check before scanning (uses cloud SDKs, no DC listing). If it exits with an error JSON on stderr, **stop immediately** and show the error to the user. Do not retry with different regions, credential profiles, or endpoint variations — ask the user for the missing credentials or configuration.
@@ -108,6 +108,8 @@ attrs = [
     "scope:bucket",                              # bucket | sample | onetime
     "source:product_catalog",                    # bucket slug for L1-L3, task slug for Experiment
     "parent:l2_asset_product_catalog_frames",    # immediate upstream CASE dataset(s); repeat key for multiple
+    "model:clip_vit_b32@open_clip-2.24",         # build-signature: model id @ version (for refresh-signature check, step 12)
+    "preset:cpu_fp32",                           # build-signature: preset/config tag
 ]
 chain.save(
     "l3_sense_product_catalog_clip_embeddings",
@@ -287,6 +289,11 @@ When loaded, determine the user's intent:
 >     - `observed_rate ≥ 0.66 × calib_rate` → carry on.
 >     - `observed_rate < 0.5 × calib_rate` → **kill**, report the gap and the revised estimate, re-open the dialogue from 7d at the new band.
 >     - No throughput line within 2 min → kill, investigate (startup cost, model download, auth retry), report.
+> 12. **L1/L2/L3 builds always take the delta path; L4 (Experiment) and queries do NOT.** For L1/L2/L3 builds whose source is `dc.read_storage()`, pass `update=True, delta=True, delta_on="file.path", delta_compare="file.mtime"`. Same code on first build (SDK processes everything, since no prior version) and on subsequent runs (SDK processes only new/changed source items). When the source is `dc.read_dataset()` (chaining from a parent CAS layer), the parent's delta semantics propagate — no extra args needed. See `core/SKILL.md` Section 8 "Delta updates".
+>
+>     **Do NOT apply `update=True` / `delta=True` to L4 Experiment code or regular queries / exploration.** Those read the cached listing (per Critical Rule 2) unless the user explicitly asks to refresh. The delta-path rule is scoped to the C/A/S substrate; it does not generalize to downstream consumption.
+>
+>     Build signature lives in `attrs`: `model:<id>@<version>`, `preset:<name>`, optional `udf_hash:<short>` (skip when not trivially computable). When the current build signature differs from the prior version's `attrs`, do a **full rebuild** — old rows are stale even though source unchanged. Schema changes are a different dataset (different name), not a refresh of this one. Source-file deletions leave orphaned L2 storage files — keep them for audit and lineage; never auto-delete.
 >
 > Step 1 (Bucket Enlistment) is itself a Container-layer artifact for the storage root: a lightweight, header-only view of what's in the bucket. The bucket entries appear in the Container row of the KB index next to any DataChain datasets explicitly tagged `case:container` (e.g., parsed JSON sidecars promoted via the rule in step 10).
 

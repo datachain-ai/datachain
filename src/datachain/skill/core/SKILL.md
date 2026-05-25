@@ -1133,7 +1133,9 @@ def detect_in_video(file: dc.VideoFile, model) -> VideoSignals:
     )
 
 (
-    dc.read_storage("gs://videos/", type="video", anon=True)
+    dc.read_storage("gs://videos/", type="video", anon=True,
+                    update=True, delta=True,
+                    delta_on="file.path", delta_compare="file.mtime")
     .settings(parallel=True)
     .setup(model=lambda: YOLO("yolov8n.pt"))
     .map(signals=detect_in_video)
@@ -1193,7 +1195,9 @@ def sample_frames(file: dc.VideoFile) -> Iterator[VideoFrameAsset]:
 
 
 (
-    dc.read_storage("gs://datachain-starss23/", type="video", anon=True)
+    dc.read_storage("gs://datachain-starss23/", type="video", anon=True,
+                    update=True, delta=True,
+                    delta_on="file.path", delta_compare="file.mtime")
     .settings(parallel=True)
     .gen(frame=sample_frames)
     .save("l2_asset_starss23_frames", attrs=["case:asset", "source:starss23", "preset:1fps_640", "format:jpeg"])
