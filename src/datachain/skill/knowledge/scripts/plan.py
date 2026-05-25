@@ -48,6 +48,21 @@ def plan_datasets(
                 seen_keys.add(key)
                 all_datasets.append(entry)
 
+    # Filter out pilot artifacts. Pilots are session-scoped instrumentation, not
+    # knowledge — they don't get JSON/MD records, don't appear in the index, and
+    # don't show up in reuse recommendations. The skill prescribes `.persist()`
+    # for pilots; this filter is defense-in-depth for cases where a pilot was
+    # accidentally `.save()`d under the `pilot_` naming convention or tagged
+    # with `scope:pilot`.
+    def _is_pilot(entry: dict) -> bool:
+        name = entry.get("name") or ""
+        if name.startswith("pilot_") or ".pilot_" in name:
+            return True
+        attrs = entry.get("attrs") or []
+        return "scope:pilot" in attrs
+
+    all_datasets = [e for e in all_datasets if not _is_pilot(e)]
+
     # Group by name
     by_name: dict[str, list[dict]] = {}
     for entry in all_datasets:

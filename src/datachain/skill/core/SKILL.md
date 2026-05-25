@@ -8,6 +8,7 @@ You are now loaded with expert-level DataChain SDK context. Apply every rule bel
 ## Pre-Generation Checklist (verify BEFORE writing any code)
 
 - [ ] **Every UDF has a known output type?** Every function passed to `.map()`, `.gen()`, or `.agg()` must have its return type resolved. See Rule 2 — this is the #1 source of runtime errors.
+- [ ] **No `from __future__ import annotations` in UDF modules.** It turns type hints into strings, and DataChain's signal-schema resolution then rejects the match (`SignalResolvingError: types mismatch: dc.VideoFrame != <class 'datachain.lib.file.VideoFrame'>`). Use plain runtime annotations.
 - [ ] **Bucket access: anonymous or authenticated?** Before generating any `read_storage()` call for a bucket:
   1. Check `dc-knowledge/buckets/` for a `.md` file — its frontmatter has `anon: true/false`. If found, use that value.
   2. If no `.md` exists, run the access check:
@@ -48,6 +49,8 @@ Datasets are the unit of reasoning. Chains that transform data through UDFs — 
 **Core rule: always `.save()`, never just `.show()`.** A pipeline's terminal operation should be `.save("descriptive_name")`, followed by `.show()` on the saved result for display. Two exceptions: (1) one-off exploratory queries where the user explicitly asks to just "show me" or "print"; (2) Experiment-layer outputs per the CASE methodology — Container / Asset / Sense / Experiment, the four-layer model for unstructured data documented in the `knowledge` skill — persist by exception, not by default. The always-save rule remains absolute for C/A/S substrate layers regardless of phrasing.
 
 **Critical anti-pattern: bypassing `.save()` by dumping in-memory Python rows to a file.** Reading the chain into Python via `.to_list()` / `.to_values()` and then writing to disk via `open(...)`, `json.dump`, `pandas.to_csv`, or any Python-side file handle is forbidden for UDF-bearing pipelines. That path strands the work outside DataChain (no lineage, no version tracking, not visible in the knowledge base, the next session cannot find or reuse it). The pipeline result must land as a saved dataset first via `.save()`. Once the dataset exists, exporting it to a file or to storage is fine — that is exactly what the dedicated terminal ops `chain.to_csv()`, `chain.to_parquet()`, `chain.to_storage()` are for.
+
+**Not a bypass:** a UDF that materializes a payload to storage and returns a `dc.File` pointer (e.g., thumbnail JPEGs uploaded to `gs://…/l2_asset_<source>_frames/` with the row carrying `frame: dc.File`). The dataset still lands via `.save()`; the file in storage is the row's payload, owned by DataChain via the pointer. See Section 8 "Materialized thumbnail Asset" for the canonical shape.
 
 ```python
 # ✗ ANTI-PATTERN — UDF result pulled into Python and dumped to disk, no dataset created.
@@ -111,7 +114,7 @@ chain.save("cik_text_stats")
 print("OK")
 ```
 
-**`.persist()` is not `.save()`.** `.persist()` materializes a chain into an anonymous cache for performance — it prevents re-execution but does NOT create a named dataset. When a chain should be saved per the rules above, always use `.save("name")`. Using `.persist()` where `.save()` is required is an anti-pattern: the computed result becomes unreferenceable and invisible to future pipelines.
+**`.persist()` is not `.save()`.** `.persist()` materializes a chain into an anonymous dataset for performance — it prevents re-execution but does NOT create a named dataset. When a chain should be saved per the rules above, always use `.save("name")`. Using `.persist()` where `.save()` is required is an anti-pattern: the computed result becomes unreferenceable and invisible to future pipelines.
 
 ```python
 # ✓ UDF chain saved as named dataset — reusable by any future pipeline
@@ -125,7 +128,7 @@ annotations = (
 annotations = (
     dc.read_storage("s3://bucket/labels/**/*.txt", type="text")
     .gen(ann=parse_label_file)
-    .persist()                              # ← anonymous cache, no name
+    .persist()                              # ← anonymous dataset, no name
 )
 
 # ✓ No-UDF chain left transient — cheap to recompute, easy to read
@@ -849,14 +852,16 @@ chain.agg(col_name=fn, partition_by="key")  # group → aggregate
 **Setup and execution settings:**
 ```python
 chain.setup(model=lambda: load_model()).map(fn)   # initialize once per worker and use in fn
-chain.settings(parallel=True, cache=True, prefetch=10, workers=50)  # cache only if needed
+chain.settings(parallel=True, cache=True, prefetch=10)              # local multiprocessing, no extra setup
+chain.settings(parallel=True, workers=50)                           # workers=N → distributed; requires Studio setup (DATACHAIN_DISTRIBUTED env var). Drop workers when running locally.
 ```
 
-**Terminal operations (trigger execution):**
+**Terminal operations (trigger execution).** `.save()` creates a named, versioned, KB-tracked dataset (knowledge that future sessions should find). `.persist()` materializes the chain into the anonymous dataset without a name — use it for pilots, measurement runs, and intermediate materialization that should not enter the KB.
+
 ```python
-chain.save("dataset_name")                     # versioned named dataset
+chain.save("dataset_name")                     # versioned named dataset, appears in dc.datasets() and KB
 chain.save("ns.proj.name", update_version="minor")
-chain.persist()                                # anonymous cache (not a named dataset)
+chain.persist()                                # anonymous dataset (throwaway, NOT a named dataset, NOT in KB)
 chain.show(limit=10)
 chain.to_values("col")                         # → flat list: [val1, val2, ...]
 chain.to_list("col1", "col2")                  # → list of tuples: [(v1,v2), ...]
@@ -1076,6 +1081,137 @@ def split_clips(file: dc.VideoFile) -> Iterator[dc.VideoFragment]:
     .settings(parallel=True)
     .gen(frag=split_clips)
     .save("video_clips")
+)
+```
+
+**Decode-once is the I/O rule for heavy sources (video, audio, large H5/NIfTI):**
+
+Each source file MUST be fetched from storage exactly once per build. The unit of work is **one source file → one `.map` invocation**, and everything that needs that file's decoded bytes happens inside that invocation: sampling, model inference, summarising. This is independent of *what* the build emits.
+
+**Anti-pattern: pointer-row Asset.** Saving rows like `VideoFrame = (uri, timestamp)` as a separate Asset layer and then running a `.map` over them in a second stage looks like "decompose into layers", but each row in the second stage re-downloads and re-decodes the source video. The cost compounds: an N-frame pointer-row Asset followed by a per-row Sense pass downloads each source file **N times**. For video/audio, pointer-row Asset is forbidden — see knowledge/SKILL.md "Materialized thin Asset" for the correct shape when an Asset layer is genuinely needed.
+
+**Two output shapes from the same decode-once pass:**
+
+1. **Per-source aggregate** — emit one row per source file. Use `.map(SourceFile → Result)`. Right shape when downstream consumes one signal per file (e.g., "videos with people = bool", "audio duration histogram").
+
+2. **Per-frame fan-out from inside the same decode** — emit `Iterator[FrameRow]` where `FrameRow` carries the materialized payload (e.g., JPEG bytes, embedding, detection record). Use `.gen(SourceFile → Iterator[FrameRow])`. Right shape when downstream genuinely needs per-frame access AND the rows are materialized — never pointer-only. Crucially, the video is still fetched **once** per outer invocation; the fan-out is at the *output* of that single decode pass, not at the input of a future stage.
+
+The choice between shapes is driven by task requirements and Asset-reuse economics — see knowledge/SKILL.md CASE Decomposition for the decision procedure.
+
+**Aggregate example (one row per video):**
+
+```python
+from pydantic import BaseModel
+
+class VideoSignals(BaseModel):
+    person_frames: int
+    car_frames: int
+    sampled_frames: int
+    max_person_conf: float
+
+def detect_in_video(file: dc.VideoFile, model) -> VideoSignals:
+    info = file.get_info()
+    step = max(int(round(info.fps or 30.0)), 1)        # 1 sample/sec
+    counts = {"person": 0, "car": 0}
+    confs = {"person": 0.0}
+    sampled = 0
+    for frame in file.get_frames(step=step):
+        sampled += 1
+        result = model.predict(frame.get_np(), imgsz=640, conf=0.25, verbose=False)[0]
+        for cls_id, conf in zip(result.boxes.cls.tolist(), result.boxes.conf.tolist()):
+            label = result.names[int(cls_id)]
+            if label in counts:
+                counts[label] += 1
+                if label == "person":
+                    confs["person"] = max(confs["person"], float(conf))
+    return VideoSignals(
+        person_frames=counts["person"],
+        car_frames=counts["car"],
+        sampled_frames=sampled,
+        max_person_conf=confs["person"],
+    )
+
+(
+    dc.read_storage("gs://videos/", type="video", anon=True)
+    .settings(parallel=True)
+    .setup(model=lambda: YOLO("yolov8n.pt"))
+    .map(signals=detect_in_video)
+    .save("l3_sense_videos_yolo_signals", attrs=["case:sense", "scope:bucket", "source:videos"])
+)
+```
+
+Cost: a pointer-row Asset path (38k rows for 235 videos at 1 fps) re-fetches each video ~160× in the Sense stage. Decode-once fetches each video once — typically 30–100× cheaper. If thin per-frame rows are also needed, emit them inside the same `.gen` from the same `SourceFile`; never via a separate pointer-row stage.
+
+**Materialized thumbnail Asset (storage + `dc.File` pointer):**
+
+For standard container formats (JPEG/PNG/WAV/MP3/etc.), write files into storage and save a `dc.File` pointer on the row — never a `bytes` column by default. Destination-resolution policy lives in `knowledge/SKILL.md` "Materialized thin Asset".
+
+```python
+from io import BytesIO
+from typing import Iterator
+
+import datachain as dc
+from PIL import Image
+from pydantic import BaseModel
+
+
+class VideoFrameAsset(BaseModel):
+    source: dc.VideoFile      # full reference to the source mp4
+    timestamp: float
+    sampled_frame_index: int
+    frame: dc.File            # pointer to the materialized JPEG in storage
+
+
+THIN_FRAMES_PREFIX = "gs://my-output-bucket/l2_asset_starss23_frames"   # confirmed with user
+
+
+def encode_jpeg_640(np_frame) -> bytes:
+    image = Image.fromarray(np_frame).convert("RGB")
+    long_side = max(image.size)
+    if long_side > 640:
+        scale = 640 / long_side
+        image = image.resize((max(1, round(image.width * scale)), max(1, round(image.height * scale))))
+    buf = BytesIO()
+    image.save(buf, format="JPEG", quality=80)
+    return buf.getvalue()
+
+
+def sample_frames(file: dc.VideoFile) -> Iterator[VideoFrameAsset]:
+    info = file.get_info()
+    step = max(int(round(info.fps or 30.0)), 1)        # 1 sample/sec
+    for idx, frame in enumerate(file.get_frames(step=step)):
+        jpeg_bytes = encode_jpeg_640(frame.get_np())
+        out_path = f"{THIN_FRAMES_PREFIX}/{file.path.rsplit('/', 1)[-1].rsplit('.', 1)[0]}__t{frame.timestamp:05.2f}.jpg"
+        dst = dc.File.upload(jpeg_bytes, out_path)     # writes to storage, returns dc.File pointer
+        yield VideoFrameAsset(
+            source=file,
+            timestamp=float(frame.timestamp),
+            sampled_frame_index=idx,
+            frame=dst,
+        )
+
+
+(
+    dc.read_storage("gs://datachain-starss23/", type="video", anon=True)
+    .settings(parallel=True)
+    .gen(frame=sample_frames)
+    .save("l2_asset_starss23_frames", attrs=["case:asset", "source:starss23", "preset:1fps_640", "format:jpeg"])
+)
+```
+
+Downstream Sense layer consumes the `dc.File`-typed thumbnail directly:
+
+```python
+def detect_objects(frame: dc.File, yolo_model) -> ObjectCounts:
+    image = Image.open(BytesIO(frame.read())).convert("RGB")
+    ...
+
+(
+    dc.read_dataset("l2_asset_starss23_frames")
+    .settings(parallel=True)
+    .setup(yolo_model=lambda: YOLO("yolov8n.pt"))
+    .map(det=detect_objects, params=["frame"])           # not params=["frame.jpeg"]
+    .save("l3_sense_starss23_yolo_objects", attrs=["case:sense", "source:starss23", "parent:l2_asset_starss23_frames"])
 )
 ```
 
