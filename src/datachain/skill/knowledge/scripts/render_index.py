@@ -245,8 +245,12 @@ def _render_case_table(rows: list[tuple[dict, dict]], layer: str) -> list[str]:
     Parents, Updated, Records, Description.
     """
     lines = []
-    lines.append("| Name | Scope | Source | Parents | Updated | Records | Description |")
-    lines.append("|------|-------|--------|---------|---------|--------:|-------------|")
+    lines.append(
+        "| Name | Scope | Source | Parents | Updated | Records | Description |"
+    )
+    lines.append(
+        "|------|-------|--------|---------|---------|--------:|-------------|"
+    )
     for enriched, info in sorted(rows, key=lambda r: r[0]["name"]):
         parents = ", ".join(info["case_parents"]) if info["case_parents"] else ""
         lines.append(
