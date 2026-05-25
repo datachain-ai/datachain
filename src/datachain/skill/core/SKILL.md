@@ -45,7 +45,7 @@ Only go to raw storage (`read_storage`, `read_csv`, etc.) when no existing datas
 
 Datasets are the unit of reasoning. Chains that transform data through UDFs — or that produce a pipeline's final result — should be saved as named datasets. This creates a lineage graph where each node is reusable, inspectable, and referenceable by future pipelines and users.
 
-**Core rule: always `.save()`, never just `.show()`, and NEVER write results to a local file.** A pipeline's terminal operation should be `.save("descriptive_name")`, followed by `.show()` on the saved result for display. The only exception is one-off exploratory queries where the user explicitly asks to just "show me" or "print" without saving.
+**Core rule: always `.save()`, never just `.show()`, and NEVER write results to a local file.** A pipeline's terminal operation should be `.save("descriptive_name")`, followed by `.show()` on the saved result for display. Two exceptions: (1) one-off exploratory queries where the user explicitly asks to just "show me" or "print"; (2) Experiment-layer outputs (rankings, filters over Sense, custom analytics) per CASE per-layer reuse — persist by exception, not by default. The always-save rule remains absolute for C/A/S layers (Container, Asset, Sense) regardless of phrasing.
 
 **Critical anti-pattern: writing results to local files via `open(...)`, `json.dump`, `pandas.to_csv`, or any Python-side file handle is forbidden for UDF-bearing pipelines.** The result must land as a DataChain dataset via `.save()`. Local `.json` / `.csv` / `.parquet` files bypass lineage, version tracking, and the knowledge base; they also strand the work outside DataChain so the next session cannot find or reuse it. If the user wants a file artifact at the end (rare), produce the dataset first with `.save()`, then export from the saved dataset with `chain.to_csv()` / `chain.to_parquet()` — never write directly from in-memory Python rows.
 
@@ -361,6 +361,19 @@ Never create or modify files under `dc-knowledge/` — that directory is owned b
     ✓ dc.read_storage("gs://bucket/data/", anon=True)     # explicit, skips probe
     ✗ dc.File.at("gs://bucket/file.txt", anon=True)        ← File.at() has no anon param
 
+    **Anon does NOT propagate across `.save()` boundaries.** `read_storage(anon=True)`
+    works for the listing, but the anon flag is session-scoped — it is not persisted
+    on the saved dataset, nor walked from the listing dataset's lineage. A downstream
+    UDF that calls `file.open()` / `file.read()` in a new process will make a fresh
+    S3 HeadObject without anon → 403 Forbidden. Fix: pass anon into the downstream
+    session via `client_config`:
+    ✓ session = dc.Session.get(client_config={"anon": True})
+      (dc.read_dataset("l2_asset_my_bucket_images", session=session)
+         .map(emb=encode_image)
+         .save("l3_sense_my_bucket_embeddings"))
+    The session flows anon into every `file.open()` it issues. No cache, no
+    re-listing, no extra disk I/O.
+
 2. EVERY UDF MUST HAVE A KNOWN OUTPUT TYPE. A UDF passed to map/gen/agg without
    a resolved return type defaults to str and crashes at runtime for any non-str
    value. This is the #1 source of production errors — enforce strictly.
@@ -518,11 +531,33 @@ Never create or modify files under `dc-knowledge/` — that directory is owned b
    ✓ chain.map(info=fn)                    # BaseModel with named fields
    ✗ chain.map(a=fn1, b=fn2)              # ERROR: multiple signals
 
-14. NO TUPLE RETURNS: Always prefer Pydantic BaseModel classes to tuple in map/gen/agg
-    functions until user directly asks for tuple.
+14. NO TUPLE RETURNS, NO DICT RETURNS: Always prefer Pydantic BaseModel classes to tuple
+    or dict in map/gen/agg functions until user directly asks for tuple.
     ✓ def fn(file: dc.File) -> MyModel: ...   # named fields via BaseModel
     ✓ def fn(file: dc.File) -> int: ...       # single scalar
     ✗ def fn(file: dc.File) -> tuple[int, int]: ...  # → col_0, col_1
+    ✗ def fn(file: dc.File) -> dict: ...      # dict keys become column VALUES, not names → crash
+
+    **Multi-column output: use BaseModel, NEVER tuple-via-output{}.** Pairing a
+    tuple-returning UDF with `output={"width": int, "height": int}` works by
+    positional accident; BaseModel is the canonical, named, addressable form:
+    ✓ class Dims(BaseModel):
+          width: int
+          height: int
+      def get_dims(file: dc.ImageFile) -> Dims:
+          info = file.get_info()
+          return Dims(width=info.width, height=info.height)
+      chain.map(dims=get_dims)                                     # → dims.width, dims.height
+    ✗ def get_dims(file: dc.ImageFile) -> tuple[int, int]:
+          info = file.get_info()
+          return info.width, info.height
+      chain.map(dims=get_dims, output={"width": int, "height": int})  # ← anti-pattern
+
+    **For image dimensions specifically, do not write a UDF at all** —
+    `dc.ImageFile.get_info()` already returns `dc.Image(width, height, format)`:
+    ✓ def img_info(file: dc.ImageFile) -> dc.Image:
+          return file.get_info()
+      chain.map(info=img_info)                                     # → info.width, info.height
 
     **Scope.** This rule covers UDFs passed to `.map()`, `.gen()`, and `.agg()`
     — those return values become chain signals (columns), and tuple returns force

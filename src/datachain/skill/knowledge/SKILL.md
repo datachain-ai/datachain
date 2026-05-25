@@ -336,6 +336,8 @@ Run independent `dataset_all.py` and `bucket_scan.py` calls concurrently when mu
 
 For each dataset or bucket processed in Step 3, generate a human-readable markdown summary from the JSON data.
 
+**MANDATORY:** read the prompt file in full and follow its template literally — frontmatter shape, section order, schema/stats/preview/version blocks. Do NOT hand-roll markdown via a Python script that emits a different structure; downstream tooling (`render_index.py`, `case_layer` resolution) parses the exact frontmatter the prompt prescribes, so shortcuts produce lower-quality enrichment that may break the index.
+
 ### Datasets
 
 1. Read the enrichment prompt at `{skill_dir}/prompts/enrich.md`.
