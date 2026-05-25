@@ -183,7 +183,10 @@ def _read_md_info(md_path: str) -> dict:
 
 
 def _collect_dataset_row(ds: dict, strip_namespace: bool = False) -> tuple[dict, dict]:
-    """Read frontmatter + body info for a dataset entry. Returns (ds_with_link, info)."""
+    """Read frontmatter + body info for a dataset entry.
+
+    Returns (ds_with_link, info).
+    """
     name = ds["name"]
     source = ds["source"]
     file_path = ds.get("file_path", dataset_file_path(name, source))
@@ -232,9 +235,18 @@ CASE_SECTION_NAMES = {
 
 CASE_SECTION_BLURBS = {
     "container": "_File headers, listings, and sidecar metadata. One row per file._",
-    "asset": "_Raw extracted data (frames, clips, audio, parsed arrays) or training mixtures of multiple datasets._",
-    "sense": "_Model-derived signals: embeddings, classifications, transcriptions, LLM outputs._",
-    "experiment": "_Task-specific analytics and any dataset not tagged as Container, Asset, or Sense._",
+    "asset": (
+        "_Raw extracted data (frames, clips, audio, parsed arrays) "
+        "or training mixtures of multiple datasets._"
+    ),
+    "sense": (
+        "_Model-derived signals: embeddings, classifications, "
+        "transcriptions, LLM outputs._"
+    ),
+    "experiment": (
+        "_Task-specific analytics and any dataset not tagged as "
+        "Container, Asset, or Sense._"
+    ),
 }
 
 
@@ -316,7 +328,8 @@ def render_index(plan: dict) -> str:
     lines.append("---")
     lines.append("")
 
-    # Local datasets, grouped by CASE layer (Container, Asset, Sense, Experiment Dataset).
+    # Local datasets, grouped by CASE layer
+    # (Container, Asset, Sense, Experiment Dataset).
     # Untagged datasets fall into "Experiment Dataset" as the catch-all.
     if local_ds:
         lines.append("## Datasets")
