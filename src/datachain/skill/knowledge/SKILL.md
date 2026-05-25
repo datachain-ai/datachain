@@ -65,16 +65,16 @@ You are now loaded with the datachain-knowledge skill. Maintain a knowledge base
 
 ## CASE Methodology
 
-CASE is the four-layer methodology for unstructured-data work. Every dataset the skill creates belongs to exactly one layer.
+CASE is the four-layer pattern the skill suggests for organising unstructured-data work — Container, Asset, Sense, Experiment. It is a recommendation backed by recall-economics math, not a mandate; users may decline at any time via a shortcut phrase (see Methodology transmission rule 5). When the skill does create datasets, each one belongs to exactly one CASE layer.
 
 ### The four layers
 
-- **Container** — file headers, listings, sidecar metadata, schema-only views. One row per file. Light compute (header-only). Compounds across teams (every team that touches the same bucket starts from the same Container). Recall cost ~$1.
-- **Asset** — raw extracted *or mixed* data in a workable shape: frames sampled from videos, audio tracks, NumPy arrays from H5 files, clips at multiple qualities, parsed JSON sidecars, **training mixtures of two or more existing datasets joined on a shared key**. Heavy file compute but no model touched the rows yet. Compounds across teams. Recall cost ~$10.
-- **Sense** — model outputs: embeddings, LLM scene descriptions, classifier scores, transcriptions, object detections. Per-row inference cost dominates. Compounds within a domain (same embeddings answer many similarity variants). Recall cost ~$100 to build, ~$1 to query the saved layer.
-- **Experiment** — task-specific analytics: similarity rankings, filters over Sense outputs, joins across two or three layers, custom evaluation runs, curated training subsets. Composed for one question; rarely reused. Recall cost ~$1 but **persist by exception**, not by default.
+- **Container** — A typed, queryable index of what each file IS without decoding its full content: paths, sizes, format headers (e.g., MP4 codec/duration, HDF5 attributes, DICOM tags, Parquet schema), sidecar metadata (JSON/XML), and external-DB joins. *Build it when the task needs to answer "what files are here, what format/metadata do they carry, which match this predicate" without paying decode cost.* One row per source file. Light compute (header bytes only). Recall cost ~$1.
+- **Asset** — Raw extracted or mixed data in a workable shape: video frames, audio tracks, decoded arrays, or a training mixture of multiple source datasets joined on a shared key. *Build it when downstream work needs decoded or combined content rather than file pointers — annotation, training, multi-source analytics.* Heavy file compute, no model has touched the rows yet. Recall cost ~$10.
+- **Sense** — What a model said about the data: embeddings, LLM annotations, classifier scores, transcriptions, detections. *Build it when the task needs semantic or learned signals — similarity search, classification, captioning, retrieval, RAG.* Per-row model inference dominates the cost (LLM ~$0.001–0.01/row, CLIP ~ms/image). Pay once at build time, query at warehouse speed forever. Recall cost ~$100 build, ~$1 query.
+- **Experiment** — A task-specific composition on top of C/A/S: a similarity ranking, filter over Sense outputs, join across layers, eval set, curated training subset. *Build it (and usually do NOT save it) when answering one specific question.* **Persist by exception** — only when the result becomes a standing benchmark or shared training set. Recall cost ~$1.
 
-User questions almost always arrive Experiment-shaped on top of C/A/S substrate. The skill's job is to make the C/A/S substrate visible, reusable, and cheap. See Critical Rules 7–9 above for the enforcement bottom line.
+Most user questions arrive Experiment-shaped on top of C/A/S substrate. The skill's job is to make the C/A/S substrate visible, reusable, and cheap. See Critical Rules 7–9 above for the enforcement bottom line.
 
 ### Naming convention
 
@@ -122,7 +122,7 @@ chain.save(
 
 Apply these rules in every data-related response:
 
-1. **Default voice is pragmatic, not didactic.** Mention layers only when they touch the answer. Never moralise about how the user should organise their data; recommend layers only when there is a concrete cost win for the current question.
+1. **Suggest CASE, do not push it.** When telling the user about layers, the tone is "here is the cheap way to do this and why" — never "you must follow the methodology". Mention layers only when they touch the answer. Recommend a layer build only when there is a concrete cost win for the current question (always quote a number, see rule 3). Never moralise about how the user should organise their data. If the user declines a layer suggestion, solve directly — that's their call, and re-proposing the same layer later in the session is pushing.
 2. **Match user energy.** When the user uses CASE vocabulary ("container", "asset", "sense", "experiment", "build the layer", "CASE"), engage with the full vocabulary, name parents explicitly, and propose lineage. When they don't, stay terse.
 3. **Always quote a number** when recommending a layer build. "Building the Sense layer takes ~3 min and $0.40; running the same embedding next time is free." No cost estimate → no recommendation.
 4. **Celebrate CAS reuse explicitly.** Every time the skill reuses an existing Container / Asset / Sense layer instead of rebuilding, state the win out loud: which layer is being reused, what cost was avoided, and (when natural) a one-line connection to the session that originally built it. This is the only place the skill should sound enthusiastic about the methodology — the point is to make the value of a properly built layer felt, not asserted.

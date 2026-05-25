@@ -45,19 +45,20 @@ Only go to raw storage (`read_storage`, `read_csv`, etc.) when no existing datas
 
 Datasets are the unit of reasoning. Chains that transform data through UDFs — or that produce a pipeline's final result — should be saved as named datasets. This creates a lineage graph where each node is reusable, inspectable, and referenceable by future pipelines and users.
 
-**Core rule: always `.save()`, never just `.show()`, and NEVER write results to a local file.** A pipeline's terminal operation should be `.save("descriptive_name")`, followed by `.show()` on the saved result for display. Two exceptions: (1) one-off exploratory queries where the user explicitly asks to just "show me" or "print"; (2) Experiment-layer outputs (rankings, filters over Sense, custom analytics) per CASE per-layer reuse — persist by exception, not by default. The always-save rule remains absolute for C/A/S layers (Container, Asset, Sense) regardless of phrasing.
+**Core rule: always `.save()`, never just `.show()`.** A pipeline's terminal operation should be `.save("descriptive_name")`, followed by `.show()` on the saved result for display. Two exceptions: (1) one-off exploratory queries where the user explicitly asks to just "show me" or "print"; (2) Experiment-layer outputs per the CASE methodology — Container / Asset / Sense / Experiment, the four-layer model for unstructured data documented in the `knowledge` skill — persist by exception, not by default. The always-save rule remains absolute for C/A/S substrate layers regardless of phrasing.
 
-**Critical anti-pattern: writing results to local files via `open(...)`, `json.dump`, `pandas.to_csv`, or any Python-side file handle is forbidden for UDF-bearing pipelines.** The result must land as a DataChain dataset via `.save()`. Local `.json` / `.csv` / `.parquet` files bypass lineage, version tracking, and the knowledge base; they also strand the work outside DataChain so the next session cannot find or reuse it. If the user wants a file artifact at the end (rare), produce the dataset first with `.save()`, then export from the saved dataset with `chain.to_csv()` / `chain.to_parquet()` — never write directly from in-memory Python rows.
+**Critical anti-pattern: bypassing `.save()` by dumping in-memory Python rows to a file.** Reading the chain into Python via `.to_list()` / `.to_values()` and then writing to disk via `open(...)`, `json.dump`, `pandas.to_csv`, or any Python-side file handle is forbidden for UDF-bearing pipelines. That path strands the work outside DataChain (no lineage, no version tracking, not visible in the knowledge base, the next session cannot find or reuse it). The pipeline result must land as a saved dataset first via `.save()`. Once the dataset exists, exporting it to a file or to storage is fine — that is exactly what the dedicated terminal ops `chain.to_csv()`, `chain.to_parquet()`, `chain.to_storage()` are for.
 
 ```python
-# ✗ ANTI-PATTERN — UDF result written to a local file, no dataset created.
+# ✗ ANTI-PATTERN — UDF result pulled into Python and dumped to disk, no dataset created.
 results = chain.map(emb=encode_image).to_list("file", "emb")
 with open("similar_results.json", "w") as f:        # ← bypasses DataChain entirely
     json.dump(results, f)
 
-# ✓ Save the dataset, then (if a file artifact is genuinely required) export from it.
+# ✓ Save the dataset first, then export from it if a file artifact is genuinely required.
 saved = chain.map(emb=encode_image).save("product_catalog_clip_embeddings", attrs=[...])
 saved.to_csv("similar_results.csv")                  # ← export FROM the saved dataset
+# saved.to_storage("s3://my-output/")                # ← export back to storage also fine
 ```
 
 ```python
@@ -293,6 +294,15 @@ embeddings = (
     .save("clip_embeddings")
 )
 ```
+
+**CASE quick reference.** CASE is the four-layer pattern for organising unstructured-data work — recommended, not required. The skill suggests it because it makes recall cheap; the user can decline. Each layer answers a different question:
+
+- **Container** — a typed index of what each file IS without decoding its full content: paths, sizes, format headers (e.g., MP4 codec/duration, HDF5 attributes, DICOM tags, Parquet schema), sidecar JSON/XML, and external-DB joins. Use it when the task asks "what files are here, what format/metadata, which match this predicate" without paying decode cost.
+- **Asset** — raw extracted or mixed data in a workable shape (video frames, audio tracks, decoded arrays, multi-source training mixtures). Use it when downstream work needs decoded or combined content rather than file pointers.
+- **Sense** — what a model said about the data (embeddings, LLM labels, classifier scores, transcriptions). Use it when the task needs semantic or learned signals — similarity search, content classification, captioning, retrieval, RAG.
+- **Experiment** — a task-specific composition on top of C/A/S (ranking, filter, eval set, curated training subset). Build for one question; persist by exception only.
+
+The `knowledge` skill carries the full methodology (recall-economics costs, build-or-not heuristic, KB integration). This quick reference exists so someone reading only `core` recognises the layer names below.
 
 **Naming convention — CASE prefix.** Container, Asset, and Sense datasets carry a layer prefix that puts them in CASE order alphabetically. The prefix makes the layer visible in `dc.datasets()` listings and in the KB index without any extra lookup. Experiment-layer datasets (and anything not C/A/S) use natural prefix-free names.
 
