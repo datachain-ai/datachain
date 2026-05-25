@@ -9,7 +9,7 @@ import datachain as dc
 from datachain import semver
 from datachain.data_storage import JobStatus
 from datachain.dataset import DatasetRecord, DatasetStatus
-from datachain.error import DatasetNotFoundError
+from datachain.error import DataChainError, DatasetNotFoundError
 from datachain.job import Job
 from datachain.lib.dc.datasets import (
     datasets,
@@ -634,3 +634,89 @@ def test_session_dataset_never_keeps_metadata(test_session):
     catalog.remove_dataset_version(ds, ds.latest_version)
     with pytest.raises(DatasetNotFoundError):
         catalog.get_dataset(name, include_incomplete=True)
+
+
+def _force_status(catalog, dataset: DatasetRecord, version: str, status: int):
+    """Put a version into a specific status directly. Simulates a mid-flight
+    removal that crashed, or another caller having claimed the transition."""
+    catalog.metastore.update_dataset_version(dataset, version, status=status)
+    return catalog.get_dataset(dataset.name, versions=None, include_incomplete=True)
+
+
+def test_remove_resumes_stuck_removing(test_session, dataset_complete):
+    """A version stuck in REMOVING (previous keep-removal crashed mid-flight)
+    is resumed to REMOVED on the next remove call, regardless of the caller's
+    keep_metadata flag."""
+    catalog = test_session.catalog
+    version = dataset_complete.latest_version
+    ds = _force_status(catalog, dataset_complete, version, DatasetStatus.REMOVING)
+
+    catalog.remove_dataset_version(ds, version, keep_metadata=False)
+
+    ds = catalog.get_dataset(
+        dataset_complete.name, versions=None, include_incomplete=True
+    )
+    assert _find_removed(ds, version) is not None
+
+
+def test_remove_resumes_stuck_removing_total(test_session, dataset_complete):
+    """A version stuck in REMOVING_TOTAL is resumed to a full wipe on the
+    next remove call, regardless of the caller's keep_metadata flag."""
+    catalog = test_session.catalog
+    version = dataset_complete.latest_version
+    name = dataset_complete.name
+    ds = _force_status(catalog, dataset_complete, version, DatasetStatus.REMOVING_TOTAL)
+
+    catalog.remove_dataset_version(ds, version, keep_metadata=True)
+
+    with pytest.raises(DatasetNotFoundError):
+        catalog.get_dataset(name, include_incomplete=True)
+
+
+def test_remove_keep_loses_to_inflight_wipe(test_session, dataset_complete):
+    """If a wipe is already in flight (REMOVING_TOTAL) and a keep caller
+    arrives, the in-flight wipe wins — caller's keep flag is overridden."""
+    catalog = test_session.catalog
+    version = dataset_complete.latest_version
+    name = dataset_complete.name
+    ds = _force_status(catalog, dataset_complete, version, DatasetStatus.REMOVING_TOTAL)
+
+    catalog.remove_dataset_version(ds, version, keep_metadata=True)
+
+    with pytest.raises(DatasetNotFoundError):
+        catalog.get_dataset(name, include_incomplete=True)
+
+
+def test_remove_wipe_loses_to_inflight_keep(test_session, dataset_complete):
+    """If a keep-metadata removal is already in flight (REMOVING) and a
+    wipe caller arrives, the in-flight keep wins — caller's wipe flag is
+    overridden by the resume routing."""
+    catalog = test_session.catalog
+    version = dataset_complete.latest_version
+    ds = _force_status(catalog, dataset_complete, version, DatasetStatus.REMOVING)
+
+    catalog.remove_dataset_version(ds, version, keep_metadata=False)
+
+    ds = catalog.get_dataset(
+        dataset_complete.name, versions=None, include_incomplete=True
+    )
+    assert _find_removed(ds, version) is not None
+
+
+def test_complete_raises_when_version_removed_concurrently(
+    test_session, dataset_complete
+):
+    """If a version is removed before completion finishes, the guarded
+    final status flip refuses to stomp it and raises a clean error
+    instead of silently corrupting state."""
+    catalog = test_session.catalog
+    version = dataset_complete.latest_version
+    ds = _force_status(catalog, dataset_complete, version, DatasetStatus.REMOVED)
+
+    with pytest.raises(DataChainError, match="Could not update status"):
+        catalog.metastore.update_dataset_status(
+            ds,
+            DatasetStatus.COMPLETE,
+            version=version,
+            where_version_status=[DatasetStatus.CREATED, DatasetStatus.PENDING],
+        )

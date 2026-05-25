@@ -1079,6 +1079,9 @@ class Catalog:
         as COMPLETE.
         """
         self.update_dataset_version_with_warehouse_info(dataset, version, **kwargs)
+        # Guard the version-level write: only flip to COMPLETE if the
+        # version is still in a saveable state. Prevents a late-arriving
+        # completion from stomping a concurrent removal.
         self.metastore.update_dataset_status(
             dataset,
             DatasetStatus.COMPLETE,
@@ -1086,6 +1089,7 @@ class Catalog:
             error_message=error_message,
             error_stack=error_stack,
             script_output=script_output,
+            where_version_status=[DatasetStatus.CREATED, DatasetStatus.PENDING],
         )
 
     def update_dataset(self, dataset: DatasetRecord, **kwargs) -> DatasetRecord:
@@ -1110,27 +1114,62 @@ class Catalog:
         if not dataset.has_version(version):
             return
         v = dataset.get_version(version)
-        if v.status == DatasetStatus.REMOVED and keep_metadata:
-            return
 
-        # Internal datasets and non-COMPLETE versions never keep metadata.
-        if (
-            is_listing_dataset(dataset.name)
-            or dataset.name.startswith(Session.DATASET_PREFIX)
-            or v.status != DatasetStatus.COMPLETE
-        ):
-            keep_metadata = False
-        # In-flight retries: existing status wins over caller's flag.
+        # Resume routing. REMOVING / REMOVING_TOTAL each have a single next
+        # transition, so the current status fully determines the path —
+        # caller's flag is overridden. Internal datasets and incomplete /
+        # failed versions are always wiped.
         if v.status == DatasetStatus.REMOVING:
             keep_metadata = True
-        elif v.status == DatasetStatus.REMOVING_TOTAL:
+        elif (
+            is_listing_dataset(dataset.name)
+            or dataset.name.startswith(Session.DATASET_PREFIX)
+            or v.status
+            in (
+                DatasetStatus.CREATED,
+                DatasetStatus.PENDING,
+                DatasetStatus.FAILED,
+                DatasetStatus.STALE,
+                DatasetStatus.REMOVING_TOTAL,
+            )
+        ):
             keep_metadata = False
 
+        target = (
+            DatasetStatus.REMOVING if keep_metadata else DatasetStatus.REMOVING_TOTAL
+        )
+        # Atomic claim. Only one caller wins the transition; re-entry from
+        # the same target is allowed for idempotent resume. Wipe is also
+        # allowed from REMOVED so a prior soft-delete can be escalated to a
+        # full wipe.
         if keep_metadata:
-            if v.status != DatasetStatus.REMOVING:
-                self.metastore.update_dataset_version(
-                    dataset, version, status=DatasetStatus.REMOVING
-                )
+            allowed_from = [DatasetStatus.COMPLETE, target]
+        else:
+            allowed_from = [
+                DatasetStatus.COMPLETE,
+                DatasetStatus.CREATED,
+                DatasetStatus.PENDING,
+                DatasetStatus.FAILED,
+                DatasetStatus.STALE,
+                DatasetStatus.REMOVED,
+                target,
+            ]
+
+        claimed = self.metastore.update_dataset_version(
+            dataset,
+            version,
+            status=target,
+            where_status=allowed_from,
+        )
+        if claimed is None:
+            logger.debug(
+                "Skipped remove of %s@%s: another caller is already handling it",
+                dataset.name,
+                version,
+            )
+            return
+
+        if keep_metadata:
             self.warehouse.drop_dataset_rows_table(dataset, version)
             self.metastore.update_dataset_version(
                 dataset,
@@ -1139,13 +1178,6 @@ class Catalog:
                 removed_at=datetime.now(timezone.utc),
             )
         else:
-            if v.status not in (
-                DatasetStatus.REMOVING_TOTAL,
-                DatasetStatus.REMOVED,
-            ):
-                self.metastore.update_dataset_version(
-                    dataset, version, status=DatasetStatus.REMOVING_TOTAL
-                )
             self.warehouse.drop_dataset_rows_table(dataset, version)
             self.metastore.remove_dataset_version(dataset, version)
 

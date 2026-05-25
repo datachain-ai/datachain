@@ -319,9 +319,16 @@ class AbstractMetastore(ABC, Serializable):
 
     @abstractmethod
     def update_dataset_version(
-        self, dataset: DatasetRecord, version: str, **kwargs
-    ) -> DatasetVersion:
-        """Updates dataset version fields."""
+        self,
+        dataset: DatasetRecord,
+        version: str,
+        *,
+        where_status: list[int] | None = None,
+        **kwargs,
+    ) -> DatasetVersion | None:
+        """Updates dataset version fields. When ``where_status`` is given the
+        UPDATE only applies if the row's current status is in that list;
+        returns None if no row matched."""
 
     @abstractmethod
     def remove_dataset_version(
@@ -434,8 +441,12 @@ class AbstractMetastore(ABC, Serializable):
         error_message="",
         error_stack="",
         script_output="",
+        where_version_status: list[int] | None = None,
     ) -> DatasetRecord:
-        """Updates dataset status and appropriate fields related to status."""
+        """Updates dataset status and appropriate fields related to status.
+        When ``where_version_status`` is given the version-level UPDATE is
+        guarded by ``status IN (...)``; if no version row matches, raises
+        :class:`DataChainError` before touching the dataset-level row."""
 
     @abstractmethod
     def mark_job_dataset_versions_as_failed(self, job_id: str) -> None:
@@ -1401,8 +1412,13 @@ class AbstractDBMetastore(AbstractMetastore):
         return result_ds
 
     def update_dataset_version(
-        self, dataset: DatasetRecord, version: str, **kwargs
-    ) -> DatasetVersion:
+        self,
+        dataset: DatasetRecord,
+        version: str,
+        *,
+        where_status: list[int] | None = None,
+        **kwargs,
+    ) -> DatasetVersion | None:
         """Updates dataset version fields."""
         logger.debug(
             "Metastore.update_dataset_version called for %s@%s: "
@@ -1477,11 +1493,14 @@ class AbstractDBMetastore(AbstractMetastore):
         )
 
         dv = self._datasets_versions
-        self.db.execute(
-            self._datasets_versions_update()
-            .where(dv.c.dataset_id == dataset.id, dv.c.version == version)
-            .values(values),
-        )  # type: ignore [attr-defined]
+        update_stmt = self._datasets_versions_update().where(
+            dv.c.dataset_id == dataset.id, dv.c.version == version
+        )
+        if where_status is not None:
+            update_stmt = update_stmt.where(dv.c.status.in_(where_status))
+        result = self.db.execute(update_stmt.values(values))  # type: ignore [attr-defined]
+        if where_status is not None and result.rowcount == 0:  # type: ignore [attr-defined]
+            return None
 
         version_obj.update(**version_values)
         logger.debug(
@@ -1911,6 +1930,7 @@ class AbstractDBMetastore(AbstractMetastore):
         error_message="",
         error_stack="",
         script_output="",
+        where_version_status: list[int] | None = None,
     ) -> DatasetRecord:
         """
         Updates dataset status and appropriate fields related to status
@@ -1927,12 +1947,23 @@ class AbstractDBMetastore(AbstractMetastore):
             update_data["error_message"] = error_message
             update_data["error_stack"] = error_stack
 
-        dataset = self.update_dataset(dataset, **update_data)
-
         if version:
-            self.update_dataset_version(dataset, version, **update_data)
+            # Update the version row first. If a status guard was requested
+            # and the row's status no longer matches, abort before touching
+            # the dataset-level (denormalized) row.
+            updated = self.update_dataset_version(
+                dataset,
+                version,
+                where_status=where_version_status,
+                **update_data,
+            )
+            if where_version_status is not None and updated is None:
+                raise DataChainError(
+                    f"Could not update status of {dataset.name}@{version}: "
+                    f"current status not in {where_version_status} "
+                )
 
-        return dataset
+        return self.update_dataset(dataset, **update_data)
 
     def mark_job_dataset_versions_as_failed(self, job_id: str) -> None:
         """
