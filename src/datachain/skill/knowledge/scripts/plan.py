@@ -25,6 +25,27 @@ from utils import (
 )
 
 
+# Calibration runs are session-scoped instrumentation, not knowledge — they
+# don't get JSON/MD records, don't appear in the index, and don't show up in
+# reuse recommendations. The skill prescribes `.persist()` for calibration
+# runs; this filter is defense-in-depth for cases where one was accidentally
+# `.save()`d under the `calib_` naming convention or tagged with
+# `scope:calibration`. The legacy `pilot_` / `scope:pilot` aliases are also
+# recognized.
+_CALIB_NAME_PREFIXES = ("calib_", "pilot_")
+_CALIB_ATTRS = frozenset({"scope:calibration", "scope:pilot"})
+
+
+def _is_calibration(entry: dict) -> bool:
+    name = entry.get("name") or ""
+    if name.startswith(_CALIB_NAME_PREFIXES):
+        return True
+    if any(f".{p}" in name for p in _CALIB_NAME_PREFIXES):
+        return True
+    attrs = entry.get("attrs") or []
+    return any(a in _CALIB_ATTRS for a in attrs)
+
+
 def plan_datasets(
     dc, db_last_updated: str, studio: bool = False
 ) -> tuple[list[dict], bool]:
@@ -48,25 +69,7 @@ def plan_datasets(
                 seen_keys.add(key)
                 all_datasets.append(entry)
 
-    # Filter out calibration artifacts. Calibration runs are session-scoped
-    # instrumentation, not knowledge — they don't get JSON/MD records, don't
-    # appear in the index, and don't show up in reuse recommendations. The skill
-    # prescribes `.persist()` for calibration runs; this filter is
-    # defense-in-depth for cases where one was accidentally `.save()`d under the
-    # `calib_` naming convention or tagged with `scope:calibration`. The legacy
-    # `pilot_` / `scope:pilot` aliases are also recognized.
-    _CALIB_NAME_PREFIXES = ("calib_", "pilot_")
-    _CALIB_ATTRS = {"scope:calibration", "scope:pilot"}
-
-    def _is_calibration(entry: dict) -> bool:
-        name = entry.get("name") or ""
-        if name.startswith(_CALIB_NAME_PREFIXES):
-            return True
-        if any(f".{p}" in name for p in _CALIB_NAME_PREFIXES):
-            return True
-        attrs = entry.get("attrs") or []
-        return any(a in _CALIB_ATTRS for a in attrs)
-
+    # Drop calibration artifacts (see _is_calibration definition above).
     all_datasets = [e for e in all_datasets if not _is_calibration(e)]
 
     # Group by name

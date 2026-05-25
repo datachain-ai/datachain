@@ -852,8 +852,9 @@ chain.agg(col_name=fn, partition_by="key")  # group → aggregate
 **Setup and execution settings:**
 ```python
 chain.setup(model=lambda: load_model()).map(fn)   # initialize once per worker and use in fn
-chain.settings(parallel=True, cache=True, prefetch=10)              # local multiprocessing, no extra setup
-chain.settings(parallel=True, workers=50)                           # workers=N → distributed; requires Studio setup (DATACHAIN_DISTRIBUTED env var). Drop workers when running locally.
+chain.settings(parallel=True, cache=True, prefetch=10)              # local multiprocessing, works anywhere
+if dc.is_studio():                                                  # workers=N is Studio-only distributed UDF processing
+    chain = chain.settings(workers=50)                              # Guard with dc.is_studio() / dc.is_local(); never check env vars.
 ```
 
 **Terminal operations (trigger execution).** `.save()` creates a named, versioned, KB-tracked dataset (knowledge that future sessions should find). `.persist()` materializes the chain into the anonymous dataset without a name — use it for calibration and measurement runs, and intermediate materialization that should not enter the KB.

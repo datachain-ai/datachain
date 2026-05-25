@@ -143,7 +143,7 @@ Apply these rules in every data-related response:
 
 These are the failure modes that have actually consumed sessions. Apply them whenever writing a `.map`/`.gen`/`.agg` script.
 
-- **`parallel=N` vs `workers=N`.** `parallel=N` is plain local multiprocessing — works out of the box. `workers=N` engages distributed UDF processing and needs `DATACHAIN_DISTRIBUTED`. If you hit `DATACHAIN_DISTRIBUTED import path is required`, the failure is `workers=`, not `parallel=` — drop `workers`, keep `parallel`.
+- **`parallel=N` vs `workers=N`.** `parallel=N` is local multiprocessing (works anywhere). `workers=N` is distributed UDF processing — Studio-only. Guard with `dc.is_studio()`, never with env vars: `chain = chain.settings(parallel=N); if dc.is_studio(): chain = chain.settings(workers=N)`. If you see `DATACHAIN_DISTRIBUTED import path is required` locally, a script is using `workers=` without the guard — fix the script.
 - **No `from __future__ import annotations` in UDF modules.** It stringifies type hints; DataChain's signal-schema resolution then rejects the string-vs-class mismatch (`SignalResolvingError: types mismatch`). Use plain runtime annotations.
 - **Type the UDF return precisely.** `Iterator[object]`/`Iterator[Any]`/bare `dict` fail schema resolution. Return `Iterator[dc.VideoFrame]`/`Iterator[dc.VideoFragment]`, a Pydantic `BaseModel`, or a primitive.
 - **Generators aren't subscriptable.** `file.get_frames(step=…)` returns a generator; `frames[:2]` raises `TypeError`. Use `enumerate` + `break`, or `list(...)` only when the result is genuinely small.
