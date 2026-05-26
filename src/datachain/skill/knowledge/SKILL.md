@@ -107,7 +107,9 @@ attrs = [
     "case:sense",                                # one of: container | asset | sense | experiment
     "scope:bucket",                              # bucket | sample | onetime
     "source:product_catalog",                    # bucket slug for L1-L3, task slug for Experiment
-    "parent:l2_asset_product_catalog_frames",    # immediate upstream CASE dataset(s); repeat key for multiple
+    # DataChain tracks lineage automatically — no need for parent: attrs.
+    # Direct dependencies live in DatasetDependency; query via
+    # Catalog.get_dataset_dependencies(name, version).
     "model:clip_vit_b32@open_clip-2.24",         # build-signature: model id @ version (for refresh-signature check, step 12)
     "preset:cpu_fp32",                           # build-signature: preset/config tag
 ]
@@ -123,13 +125,30 @@ chain.save(
 - `scope:sample` — covers only a sample of the source. One-shot, no future savings.
 - `scope:onetime` — Experiment layer that should NOT be persisted (the default for Experiment). Use this when the dataset is purely the answer to one question.
 
+**`.save()` checklist for L1/L2/L3.** Before calling `.save()`, verify every item:
+
+- `attrs` includes `case:<layer>`, `scope:<scope>`, `source:<slug>` — slug stripped per the prefix-strip rule above (e.g. `starss23`, not `datachain_starss23`).
+- Do NOT add `parent:<dataset_name>` to attrs. Lineage is tracked natively by DataChain — when you do `dc.read_dataset("foo").map(...).save("bar")`, the catalog records `bar`'s dependency on `foo` automatically (queryable via `Catalog.get_dataset_dependencies`). Duplicating lineage in attrs creates two sources of truth that drift.
+- `attrs` includes `model:<id>@<version>` and `preset:<name>` whenever a model/encoding was used. These are the build signature read by step 12 on refresh.
+- `description="…"` set to a one-line human summary.
+- The corresponding `read_storage` includes `update=True, delta=True` (defaults for the rest — see step 12).
+- The Pydantic output type carries the operation's full output, not the current question's projection (see "Saved schema captures what was produced" below). Derived columns — counts, booleans, top-k labels, aggregates of the actual output — live in Experiment, not on the substrate row.
+
 ### Per-layer reuse rule
 
 - **L1/L2 (Container, Asset)** — persist by default, refresh by delta. These are the load-bearing reusable substrate. Always full-coverage; never problem-specific filters before the `.save()`.
 - **L3 (Sense)** — persist by default, full coverage of input. The "expensive UDF → save full → filter downstream" rule in core/SKILL.md exists exactly to make L3 reusable.
 - **L4 (Experiment)** — persist by exception. Most ranking / similarity / filter outputs do not deserve a name. Save only when the user explicitly asks, or when the result is a standing benchmark / training set referenced again. (Critical Rule 8 already pins down that this exception applies ONLY to the final Experiment output, never to the C/A/S substrate underneath.)
 
-**Saved schema captures what was produced, not what's currently needed.** Every L1/L2/L3 row carries everything the upstream operation produced — substantive output PLUS per-call metadata where it has any. For L1, the full result of `get_info()` / header parses / sidecar parses (codec, fps, duration, sample rate, dimensions, schema, …), not the single field today's question reads. For L2, the materialized payload plus auxiliary metadata (source File reference, timestamps, frame index, original dimensions before downscale, encoding params). For L3, the model's complete output (all detections + bboxes + confidences, full embedding vector, full transcript + per-segment timestamps, all class probabilities or logits) PLUS per-call telemetry — model id + version, `input_tokens` / `output_tokens` for LLMs, latency, finish reason. The Experiment layer projects to the asked question; cost is computed there (`input_tokens × $/1M + output_tokens × $/1M` for LLMs, `filter(cls_name == "person")` for detection, distance metrics for embeddings). Operation cost dominates schema cost — never trade dollars for bytes. For free-form LLM/VLM prompts, see Multi-axis classification batching in CASE Decomposition (same principle from a different angle).
+**Saved schema captures what was produced, not what's currently needed.** Every L1/L2/L3 row holds everything the upstream operation produced — its substantive output plus per-call telemetry. Don't trim to the columns the current question reads. Three categories of upstream operation, with what to capture from each:
+
+- **Decode / parse / read** (file headers, schemas, sidecars, manifests, archive indexes): every field the parser surfaces, not just the one the current question filters on.
+- **Materialize** (decoded payloads, derived files, segments): the payload as a typed reference (`dc.File` or similar), plus auxiliary metadata about how it was produced (preset, encoding params, source/timestamp link).
+- **Inference / external call** (any model call, any paid API): the operation's complete structured output, plus per-call telemetry — operation id + version, latency, finish/status code, and units consumed (e.g. tokens for LLMs, requests for rate-limited APIs).
+
+The Experiment layer projects to the asked question; per-question cost is computed there. Operation cost dominates schema cost — never trade dollars or compute for bytes. For free-form LLM/VLM prompts, see Multi-axis classification batching in CASE Decomposition (same principle applied at the prompt-construction step).
+
+**No projection columns alongside the full output.** A projection column is one *derived* from the operation's output by filtering, counting, aggregating, comparing, thresholding, or top-k-picking — not a field the operation itself returned. Saving a projection alongside the full output bakes the current question into the substrate. Litmus: *"Is this column something the operation directly returned, or did I derive it from the actual output?"* Derived → it belongs in an Experiment `.save()` or a downstream `.read_dataset().filter().group_by()` query, not on the L3 row. The substrate row holds full output + per-call telemetry — that's it.
 
 ### Methodology transmission
 
@@ -226,9 +245,22 @@ When loaded, determine the user's intent:
 >
 >    **Sanity floor:** estimate disagreeing with the recall-economics tier by >100× → re-calibrate, do not paper over.
 >
->    **Fallback rules of thumb** (use only when calibration is impossible — empty/unreachable source): Container ≈ 0.5 ms/file (header-only); Asset 50–500 ms/file — for video/audio decode budget per source file, not per frame; Sense CLIP ≈ 5 ms/img on CPU, LLM ≈ $0.001–0.01/row, CPU YOLO ≈ 100–500 ms/frame plus download/decode I/O.
+>    **Fallback rules of thumb** (use only when calibration is impossible — empty/unreachable source). Representative cost ranges per operation type:
+>    - Container (header-only parse): ~0.5 ms/file.
+>    - Asset (full-file decode, materialize): 50–500 ms/file; for heavy-source codecs (video/audio/large blobs) budget per source file, not per unit.
+>    - Sense — paid API (LLM/VLM, hosted embeddings): ~$0.001–0.01/row plus latency; cost dominates, batch when prompt allows.
+>    - Sense — local model on CPU: ms-to-seconds/item depending on size (small classifiers/embeddings: 5–50 ms; mid-size detection/segmentation: 50–500 ms; ASR ≈ 0.1–0.5× realtime). Add source-read/decode I/O for non-cached inputs.
+>    - Sense — local model on GPU: ~10–100× faster than CPU baselines above (when GPU is available; check `dc.is_studio()` for distributed Studio context).
 >
->    **Materialized thin Asset.** Source decoded once, derivative is real bytes (not a pointer back to the source). Pointer-row Asset (`(source_uri, timestamp)` without the payload) is **forbidden** for video/audio — re-decode trap.
+>    **L2 shape — three valid options for heavy-decode sources** (video frames, audio segments, PDF pages, archive entries, multi-channel sensor data, etc.). Pick deliberately based on selection criteria; none is forbidden.
+>
+>    1. **Pointer-row L2.** Emit `Iterator[dc.VideoFrame]` (or `Iterator[dc.VideoFragment]` for audio) from `.gen()` walking `file.get_frames(step=N)`. Saved row = `{video: VideoFile, frame: int, timestamp: float}` — pure metadata, bytes per row. Downstream `frame.get_np()` calls `video.open()` which streams from storage with DataChain's local caching (see `lib/video.py:398`). **No data duplication, no re-download per frame.** Per-frame cost is local CPU + cached disk I/O. Simplest shape; the right default for in-DataChain consumption (subsequent queries via `read_dataset` + `.map`/`.filter`/`.gen`).
+>    2. **Materialized thumbnail L2.** Emit rows with `frame: dc.File` pointing at written JPEGs / segment files in storage. Choose when downstream needs files-on-disk for **non-DataChain interop** — annotation UIs, training pipelines that consume files directly, browsing in the storage browser. Format/destination/schema details below apply to this shape.
+>    3. **Fused decode-once L3 (no separate L2).** `.gen(VideoFile → Iterator[Detection])` reads `read_storage` directly, decodes the source once sequentially, emits per-detection (or per-frame) rows. Choose when there's no Asset reuse case — the Sense layer is the only consumer; no intermediate substrate needed.
+>
+>    A prior version of this rule flagged shape (1) as "forbidden / re-decode trap". That was wrong (over-calibrated against a misdiagnosed earlier trace). All three shapes are valid; pick by selection criteria.
+>
+>    **Shape (2) — materialized thumbnail — details follow.** Skip this block for shapes (1) and (3).
 >
 >    - **Storage shape, by format:**
 >      - **Standard containers** (JPEG/PNG/WEBP/GIF/BMP/WAV/MP3/FLAC/OGG/MP4/MOV/WEBM) → file in storage + `dc.File` pointer on the row **by default**. Bytes column only on explicit user request ("store inline" / "blob column").
@@ -285,7 +317,7 @@ When loaded, determine the user's intent:
 >
 >    The agent's instinct to optimize for "the user's current question" is what CASE doctrine deliberately overrides. Render the options, render the [recommended] tag, let the user decide.
 > 8. **Apply shortcut phrases.** If the user's message contains any of "just solve", "no layers", "sample only", "fast as possible", "skip CASE", "one-off", "don't build a layer", "just answer", "quick" — skip the proposal and solve directly. State once: "Solving directly without building a layer." Do not re-propose layers in the same session unless the user volunteers CASE vocabulary themselves.
-> 9. **On layer build, tag the datasets.** Name them per the convention (`l1_…`/`l2_…`/`l3_…` for C/A/S; no prefix for Experiment outputs) and pass `attrs=["case:<layer>", "scope:bucket|directory|sample|onetime", "source:<slug>", "parent:<name>"]` + `description="…"` on `.save()`. `scope:bucket` covers the bucket root (the default for auto-build) and the source slug is the bucket name. `scope:directory` is set ONLY when the user explicitly opted into a subdirectory in the scope-and-preset dialogue; the source slug includes the directory path (e.g., `source:my_bucket__images_subset`) so it does not collide with bucket-root layers. `scope:sample` is one-shot. `scope:onetime` is for non-persistable Experiment outputs.
+> 9. **On layer build, tag the datasets.** Name them per the convention (`l1_…`/`l2_…`/`l3_…` for C/A/S; no prefix for Experiment outputs) and pass `attrs=["case:<layer>", "scope:bucket|directory|sample|onetime", "source:<slug>"]` + `description="…"` on `.save()`. Lineage (parent dataset references) is tracked automatically by DataChain — do not duplicate it in attrs. `scope:bucket` covers the bucket root (the default for auto-build) and the source slug is the bucket name. `scope:directory` is set ONLY when the user explicitly opted into a subdirectory in the scope-and-preset dialogue; the source slug includes the directory path (e.g., `source:my_bucket__images_subset`) so it does not collide with bucket-root layers. `scope:sample` is one-shot. `scope:onetime` is for non-persistable Experiment outputs.
 > 10. **Containerise raw JSON / sidecars too.** If the task pulls structured JSON / Parquet / CSV from the bucket and parses it inline, propose lifting that parse into an `l1_container_<source>_<descriptor>` dataset so the parsed schema becomes reusable. Same auto-vs-ask rule, same whole-bucket-first framing.
 > 11. **Mid-flight monitoring + early abort.** For any job estimated >5 min, watch the first 60–90 s of stdout for a throughput line (DataChain emits `Processed: N rows [elapsed, rate]`) and compute observed per-row rate.
 >     - `observed_rate ≥ 0.66 × calib_rate` → carry on.

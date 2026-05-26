@@ -259,8 +259,9 @@ ranked = (
     .order_by("distance").limit(5)
     .save(
         "products_similar_to_query",                  # ← Experiment, persist by exception, no prefix
-        attrs=["case:experiment", "scope:onetime", "source:products_similar_to_query",
-               "parent:l3_sense_product_catalog_clip_embeddings"],
+        attrs=["case:experiment", "scope:onetime", "source:products_similar_to_query"],
+        # Lineage to l3_sense_product_catalog_clip_embeddings is tracked
+        # automatically by DataChain — no parent: attr needed.
         description="Top-5 catalog products visually closest to query.jpg under the filter set.",
     )
 )
@@ -329,7 +330,8 @@ chain.save(
         "case:sense",                                # container | asset | sense | experiment
         "scope:bucket",                              # bucket (full root, default) | directory (subdir opt-in) | sample | onetime
         "source:product_catalog",                    # bucket slug for L1-L3, task slug for Experiment
-        "parent:l2_asset_product_catalog_frames",    # immediate upstream CASE dataset(s); repeat key for multi
+        # Lineage (parent datasets) is tracked automatically by DataChain via
+        # DatasetDependency — don't duplicate it in attrs.
     ],
     description="CLIP ViT-B-32 embeddings over the full product-catalog bucket; reusable for any visual-similarity query.",
 )
@@ -1114,6 +1116,10 @@ class Detection(BaseModel):
     cls_id: int
     cls_name: str
     confidence: float
+    # Every field the operation produced goes on the row. Don't trim to the
+    # columns the current question reads — trimming bakes the question into
+    # the substrate and forces the next question to re-run the operation. See
+    # knowledge/SKILL.md "Saved schema captures what was produced".
     bbox_x1: float; bbox_y1: float; bbox_x2: float; bbox_y2: float
 
 def detect_in_video(file: dc.VideoFile, model) -> Iterator[Detection]:
@@ -1253,7 +1259,7 @@ def detect_in_frame(frame: dc.File, model) -> Iterator[Detection]:
     .setup(model=lambda: <load_object_detector>())
     .gen(det=detect_in_frame, params=["frame"])           # not params=["frame.jpeg"]
     .save("l3_sense_starss23_object_detections",
-          attrs=["case:sense", "source:starss23", "parent:l2_asset_starss23_frames",
+          attrs=["case:sense", "source:starss23",  # lineage auto-tracked, no parent: attr
                  "model:<id>@<ver>", "preset:1fps_640"])
 )
 ```
