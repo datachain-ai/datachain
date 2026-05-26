@@ -1547,7 +1547,9 @@ class VideoFrame(DataModel):
                      in the shape (height, width, channels).
         """
         if self._decoded is not None:
-            return self._decoded.to_ndarray(format="rgb24")
+            result = self._decoded.to_ndarray(format="rgb24")
+            self._decoded = None
+            return result
 
         from .video import video_frame_np
 
