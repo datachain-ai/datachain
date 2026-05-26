@@ -9,7 +9,7 @@ Read the JSON file at the path provided. It contains:
 - `name`: dataset name
 - `source`: `"local"` or `"studio"`
 - `description` (optional): the dataset's free-form description string from the DataChain record (set via `.save(description=...)`). May be `null` if no description was provided.
-- `attrs` (optional): a list of string tags from the DataChain record (set via `.save(attrs=[...])`). The skill encodes CASE methodology fields here: `case:<layer>`, `scope:<bucket|directory|sample|onetime>`, `source:<slug>`, `parent:<dataset-name>` (the parent key may appear multiple times). Empty list `[]` is the default when no tags were set.
+- `attrs` (optional): a list of string tags from the DataChain record (set via `.save(attrs=[...])`). The skill encodes CAST methodology fields here: `cast:<layer>`, `scope:<bucket|directory|sample|onetime>`, `source:<slug>`, `parent:<dataset-name>` (the parent key may appear multiple times). Empty list `[]` is the default when no tags were set.
 - `session_context` (optional): not present in the JSON. If the dataset already has an enriched `.md` file, check it for a `## Session Context` section — this is session-level context about why the dataset was created, preserved across re-enrichments.
 - `versions[]`: array ordered oldest-first, each with:
   - `version`, `uuid`, `records`, `updated`
@@ -40,10 +40,10 @@ updated: {updated}
 records: {records}
 is_local: {true if source is "local", false if "studio"}
 known_versions: [{comma-separated list of all version strings, e.g. 1.0.0, 1.0.1}]
-case_layer: {container | asset | sense | experiment, or empty if not a CASE dataset}
-case_scope: {bucket | directory | sample | onetime, or empty}
-case_source: {bucket slug for L1-L3, task slug for L4, or empty}
-case_parents: [{comma-separated list of upstream CASE dataset names, or empty}]
+cast_layer: {container | asset | sense | task, or empty if not a CAST dataset}
+cast_scope: {bucket | directory | sample | onetime, or empty}
+cast_source: {bucket slug for L1-L3, task slug for L4, or empty}
+cast_parents: [{comma-separated list of upstream CAST dataset names, or empty}]
 ---
 
 # {dataset_name}
@@ -178,9 +178,9 @@ query_script in a python block if available.}
 - **Human-readable timestamps.** Format all timestamps as `YYYY-MM-DD HH:MM:SS` (no `T`, no `Z`).
 - **If nothing meaningful changed** between versions (no script change, no dep changes), write "Data refreshed; no functional changes."
 - **Frontmatter `known_versions`** must list every version string from the input, comma-separated inside brackets. This field is used by tooling to detect which versions are documented.
-- **CASE frontmatter fields are resolved in this order:**
-  1. If the existing `.md` already has `case_layer` / `case_scope` / `case_source` / `case_parents` in its frontmatter, **preserve them verbatim** during re-enrichment (same rule as `## Session Context`).
-  2. Otherwise, read the `attrs` list from the input JSON. If it contains a `case:<layer>` tag, use that as `case_layer`. Apply the same for `scope:<scope>` → `case_scope`, `source:<slug>` → `case_source`, and all `parent:<name>` entries → `case_parents` (comma-separated list).
-  3. If `attrs` carries no CASE tags, fall back to the dataset name. If the name matches `l1_container_…` / `l2_asset_…` / `l3_sense_…`, set `case_layer` to container / asset / sense respectively. There is no name-prefix rule for Experiment (Experiment outputs use natural prefix-free names); they fall through to step 4. Leave `case_scope`, `case_source`, `case_parents` empty.
-  4. If neither `attrs` nor the name encodes a CASE layer, leave all four fields empty. The KB index will render the dataset under "Experiment Dataset" as the catch-all.
-- **Conflict resolution.** If the name prefix and the `attrs` `case:<layer>` tag disagree, prefer `attrs` silently — `attrs` is authoritative.
+- **CAST frontmatter fields are resolved in this order:**
+  1. If the existing `.md` already has `cast_layer` / `cast_scope` / `cast_source` / `cast_parents` in its frontmatter, **preserve them verbatim** during re-enrichment (same rule as `## Session Context`).
+  2. Otherwise, read the `attrs` list from the input JSON. If it contains a `cast:<layer>` tag, use that as `cast_layer`. Apply the same for `scope:<scope>` → `cast_scope`, `source:<slug>` → `cast_source`, and all `parent:<name>` entries → `cast_parents` (comma-separated list).
+  3. If `attrs` carries no CAST tags, fall back to the dataset name. If the name matches `l1_container_…` / `l2_asset_…` / `l3_sense_…`, set `cast_layer` to container / asset / sense respectively. There is no name-prefix rule for Task (Task outputs use natural prefix-free names); they fall through to step 4. Leave `cast_scope`, `cast_source`, `cast_parents` empty.
+  4. If neither `attrs` nor the name encodes a CAST layer, leave all four fields empty. The KB index will render the dataset under "Task Dataset" as the catch-all.
+- **Conflict resolution.** If the name prefix and the `attrs` `cast:<layer>` tag disagree, prefer `attrs` silently — `attrs` is authoritative.

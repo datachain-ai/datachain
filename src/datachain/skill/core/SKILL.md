@@ -46,7 +46,7 @@ Only go to raw storage (`read_storage`, `read_csv`, etc.) when no existing datas
 
 Datasets are the unit of reasoning. Chains that transform data through UDFs — or that produce a pipeline's final result — should be saved as named datasets. This creates a lineage graph where each node is reusable, inspectable, and referenceable by future pipelines and users.
 
-**Core rule: always `.save()`, never just `.show()`.** A pipeline's terminal operation should be `.save("descriptive_name")`, followed by `.show()` on the saved result for display. Two exceptions: (1) one-off exploratory queries where the user explicitly asks to just "show me" or "print"; (2) Experiment-layer outputs per the CASE methodology — Container / Asset / Sense / Experiment, the four-layer model for unstructured data documented in the `knowledge` skill — persist by exception, not by default. The always-save rule remains absolute for C/A/S substrate layers regardless of phrasing.
+**Core rule: always `.save()`, never just `.show()`.** A pipeline's terminal operation should be `.save("descriptive_name")`, followed by `.show()` on the saved result for display. Two exceptions: (1) one-off exploratory queries where the user explicitly asks to just "show me" or "print"; (2) Task-layer outputs per the CAST methodology — Container / Asset / Sense / Task, the four-layer model for unstructured data documented in the `knowledge` skill — persist by exception, not by default. The always-save rule remains absolute for C/A/S substrate layers regardless of phrasing.
 
 **Critical anti-pattern: bypassing `.save()` by dumping in-memory Python rows to a file.** Reading the chain into Python via `.to_list()` / `.to_values()` and then writing to disk via `open(...)`, `json.dump`, `pandas.to_csv`, or any Python-side file handle is forbidden for UDF-bearing pipelines. That path strands the work outside DataChain (no lineage, no version tracking, not visible in the knowledge base, the next session cannot find or reuse it). The pipeline result must land as a saved dataset first via `.save()`. Once the dataset exists, exporting it to a file or to storage is fine — that is exactly what the dedicated terminal ops `chain.to_csv()`, `chain.to_parquet()`, `chain.to_storage()` are for.
 
@@ -237,14 +237,14 @@ embeddings = (
 )
 
 # ✓ Save embeddings over the WHOLE input, apply problem filters downstream.
-#   The Sense layer stays reusable; the filtered ranking is a separate Experiment save.
+#   The Sense layer stays reusable; the filtered ranking is a separate Task save.
 embeddings = (
     dc.read_storage("s3://product-catalog/images/", anon=True)
     .setup(model=lambda: clip)
     .map(emb=encode_image)
     .save(
         "l3_sense_product_catalog_clip_embeddings",   # ← FULL coverage, reusable Sense layer
-        attrs=["case:sense", "scope:bucket", "source:product_catalog"],
+        attrs=["cast:sense", "scope:bucket", "source:product_catalog"],
         description="CLIP ViT-B-32 embeddings over the full product-catalog bucket.",
     )
 )
@@ -258,8 +258,8 @@ ranked = (
     .mutate(distance=dc.func.cosine_distance(dc.C("emb"), query_emb))
     .order_by("distance").limit(5)
     .save(
-        "products_similar_to_query",                  # ← Experiment, persist by exception, no prefix
-        attrs=["case:experiment", "scope:onetime", "source:products_similar_to_query"],
+        "products_similar_to_query",                  # ← Task, persist by exception, no prefix
+        attrs=["cast:task", "scope:onetime", "source:products_similar_to_query"],
         # Lineage to l3_sense_product_catalog_clip_embeddings is tracked
         # automatically by DataChain — no parent: attr needed.
         description="Top-5 catalog products visually closest to query.jpg under the filter set.",
@@ -299,37 +299,37 @@ embeddings = (
 )
 ```
 
-**CASE quick reference.** CASE is the four-layer pattern for organising unstructured-data work — recommended, not required. The skill suggests it because it makes recall cheap; the user can decline. Each layer answers a different question:
+**CAST quick reference.** CAST is the four-layer pattern for organising unstructured-data work — recommended, not required. The skill suggests it because it makes recall cheap; the user can decline. Each layer answers a different question:
 
 - **Container** — a typed index of what each file IS without decoding its full content: paths, sizes, format headers (e.g., MP4 codec/duration, HDF5 attributes, DICOM tags, Parquet schema), sidecar JSON/XML, and external-DB joins. Use it when the task asks "what files are here, what format/metadata, which match this predicate" without paying decode cost.
 - **Asset** — raw extracted or mixed data in a workable shape (video frames, audio tracks, decoded arrays, multi-source training mixtures). Use it when downstream work needs decoded or combined content rather than file pointers.
 - **Sense** — what a model said about the data (embeddings, LLM labels, classifier scores, transcriptions). Use it when the task needs semantic or learned signals — similarity search, content classification, captioning, retrieval, RAG.
-- **Experiment** — a task-specific composition on top of C/A/S (ranking, filter, eval set, curated training subset). Build for one question; persist by exception only.
+- **Task** — a task-specific composition on top of C/A/S (ranking, filter, eval set, curated training subset). Build for one question; persist by exception only.
 
 The `knowledge` skill carries the full methodology (recall-economics costs, build-or-not heuristic, KB integration). This quick reference exists so someone reading only `core` recognises the layer names below.
 
-**Naming convention — CASE prefix.** Container, Asset, and Sense datasets carry a layer prefix that puts them in CASE order alphabetically. The prefix makes the layer visible in `dc.datasets()` listings and in the KB index without any extra lookup. Experiment-layer datasets (and anything not C/A/S) use natural prefix-free names.
+**Naming convention — CAST prefix.** Container, Asset, and Sense datasets carry a layer prefix that puts them in CAST order alphabetically. The prefix makes the layer visible in `dc.datasets()` listings and in the KB index without any extra lookup. Task-layer datasets (and anything not C/A/S) use natural prefix-free names.
 
 ```
 l1_container_<source>_<descriptor>      # file headers, listings, sidecar metadata, schema-only views
 l2_asset_<source>_<descriptor>          # raw extracted data (frames, clips, audio, parsed arrays)
 l3_sense_<source>_<descriptor>          # model outputs (embeddings, LLM labels, classifications)
-<descriptor>                            # Experiment outputs (and anything not C/A/S) — no prefix
+<descriptor>                            # Task outputs (and anything not C/A/S) — no prefix
 ```
 
-`<source>` is the bucket slug for L1–L3 (`product_catalog`, `sec_10k`, `robot_demos`, …). Experiment-layer datasets use no prefix; the name describes the question (`products_similar_to_query`, `recsys_eval_runs`, `cik_text_stats`), and layer membership is carried only by `attrs=["case:experiment", …]` and the resulting `case_layer: experiment` frontmatter. All snake_case; no dots, no `@` (DataChain reserves them).
+`<source>` is the bucket slug for L1–L3 (`product_catalog`, `sec_10k`, `robot_demos`, …). Task-layer datasets use no prefix; the name describes the question (`products_similar_to_query`, `recsys_eval_runs`, `cik_text_stats`), and layer membership is carried only by `attrs=["cast:task", …]` and the resulting `cast_layer: task` frontmatter. All snake_case; no dots, no `@` (DataChain reserves them).
 
 Dataset names still describe content rather than pipeline step (`l3_sense_product_catalog_clip_embeddings`, not `l3_sense_step1`).
 
-**Tag every `.save()` with `attrs` and `description`.** The CASE skill enforces the methodology by reading these tags:
+**Tag every `.save()` with `attrs` and `description`.** The CAST skill enforces the methodology by reading these tags:
 
 ```python
 chain.save(
     "l3_sense_product_catalog_clip_embeddings",
     attrs=[
-        "case:sense",                                # container | asset | sense | experiment
+        "cast:sense",                                # container | asset | sense | task
         "scope:bucket",                              # bucket (full root, default) | directory (subdir opt-in) | sample | onetime
-        "source:product_catalog",                    # bucket slug for L1-L3, task slug for Experiment
+        "source:product_catalog",                    # bucket slug for L1-L3, task slug for Task
         # Lineage (parent datasets) is tracked automatically by DataChain via
         # DatasetDependency — don't duplicate it in attrs.
     ],
@@ -342,9 +342,9 @@ chain.save(
 - **L1 Container** — file listings, header-only views, parsed sidecar metadata. Persist by default, full coverage. Cheap to refresh on delta. Shared between teams that touch the same bucket.
 - **L2 Asset** — heavy file-content extractions (frames, audio tracks, NumPy from H5, decoded text) **and dataset mixtures (joins / unions / training mixes across two or more datasets on a shared key)**. Persist by default, full coverage. The "expensive UDF → save full → filter downstream" rule keeps single-source Assets reusable; for mixtures, the equivalent is to save the *full* combined Asset (not pre-filtered to the current task) so a different team's question over the same mixture reads instead of re-joins.
 - **L3 Sense** — model outputs (embeddings, LLM labels, classifications, transcriptions). Persist by default, full coverage. This is the layer the recall economics is built around — the per-row inference cost paid once means future queries are warehouse-speed.
-- **Experiment** — task-specific analytics (rankings, filtered cohorts, eval outputs). **No name prefix**; the name describes the question (`products_similar_to_query`, `cik_text_stats`, `recsys_eval_runs`). **Persist by exception.** Default to `scope:onetime` and skip `.save()` unless the result is a standing benchmark or curated training set. The skill rule "always `.save()` for UDF chains" still applies, but the Experiment save is short-lived and gets recycled.
+- **Task** — task-specific analytics (rankings, filtered cohorts, eval outputs). **No name prefix**; the name describes the question (`products_similar_to_query`, `cik_text_stats`, `recsys_eval_runs`). **Persist by exception.** Default to `scope:onetime` and skip `.save()` unless the result is a standing benchmark or curated training set. The skill rule "always `.save()` for UDF chains" still applies, but the Task save is short-lived and gets recycled.
 
-The `.save()` produced inside a CASE-aware pipeline is which-layer-this-is + which-source + which-parent, all encoded in the name and `attrs` so the next session (and the KB index) can find and reuse it.
+The `.save()` produced inside a CAST-aware pipeline is which-layer-this-is + which-source + which-parent, all encoded in the name and `attrs` so the next session (and the KB index) can find and reuse it.
 
 Never create or modify files under `dc-knowledge/` — that directory is owned by the datachain-knowledge skill.
 
@@ -1101,13 +1101,13 @@ Each source file MUST be fetched from storage exactly once per build. The unit o
 
 2. **Per-frame fan-out from inside the same decode** — emit `Iterator[FrameRow]` where `FrameRow` carries the materialized payload (e.g., JPEG bytes, embedding, detection record). Use `.gen(SourceFile → Iterator[FrameRow])`. Right shape when downstream genuinely needs per-frame access AND the rows are materialized — never pointer-only. Crucially, the video is still fetched **once** per outer invocation; the fan-out is at the *output* of that single decode pass, not at the input of a future stage.
 
-The choice between shapes is driven by task requirements and Asset-reuse economics — see knowledge/SKILL.md CASE Decomposition for the decision procedure.
+The choice between shapes is driven by task requirements and Asset-reuse economics — see knowledge/SKILL.md CAST Decomposition for the decision procedure.
 
-**Sense fan-out example (one row per inference unit, full output captured).** Object detection is one concretization; the same shape generalizes to any per-frame / per-segment inference. Schema captures the model's full output (every detected class + bbox + confidence), not a question-specific projection. The Experiment layer reduces to the asked question — see `knowledge/SKILL.md` "Per-layer reuse rule" / "Saved schema captures what was produced".
+**Sense fan-out example (one row per inference unit, full output captured).** Object detection is one concretization; the same shape generalizes to any per-frame / per-segment inference. Schema captures the model's full output (every detected class + bbox + confidence), not a question-specific projection. The Task layer reduces to the asked question — see `knowledge/SKILL.md` "Per-layer reuse rule" / "Saved schema captures what was produced".
 
 **Same principle, other inference shapes:**
 
-- **Image / audio embeddings** — row: `embedding: list[float]` (full vector), `model: str`, `embedding_dim: int`, optional `latency_ms: float`. Distance queries are Experiment.
+- **Image / audio embeddings** — row: `embedding: list[float]` (full vector), `model: str`, `embedding_dim: int`, optional `latency_ms: float`. Distance queries are Task.
 - **Transcription** — row per segment: `text: str`, `start_ms: int`, `end_ms: int`, `confidence: float`, `model: str`. "Files containing speech" is `filter(text != "").group_by(source.path).count()`.
 - **Classification** — row has all class probabilities or logits, plus `top_cls`/`top_conf`. Don't store only the argmax.
 - **LLM / VLM call** — row: `response_text: str` (or structured fields), `input_tokens: int`, `output_tokens: int`, `model: str`, `finish_reason: str`, `latency_ms: float`. Cost is computed at query time (`input_tokens × $/1M + output_tokens × $/1M`), not at save time.
