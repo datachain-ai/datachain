@@ -1537,11 +1537,10 @@ class VideoFrame(DataModel):
         """
         Returns a video frame from the video file as a NumPy array.
 
-        Frames yielded by ``VideoFile.get_frames()`` cache the decoded
-        ``av.VideoFrame`` in ``_decoded`` so repeated calls to ``get_np()``
-        return the cached pixels without a second decode pass. For
-        single-frame lookups via ``VideoFile.get_frame()``, seeks to and
-        decodes the requested frame on every call.
+        The decoded ``av.VideoFrame`` is cached in ``_decoded`` on the first
+        call, so repeated calls to ``get_np()`` return the cached pixels
+        without a second decode pass regardless of whether the frame came
+        from ``VideoFile.get_frames()`` or ``VideoFile.get_frame()``.
 
         Returns:
             ndarray: A NumPy array representing the video frame,
@@ -1550,13 +1549,14 @@ class VideoFrame(DataModel):
         if self._decoded is not None:
             return self._decoded.to_ndarray(format="rgb24")
 
-        from .video import video_frame_np
+        from .video import _decode_video_frame
 
-        return video_frame_np(
+        self._decoded, _ = _decode_video_frame(
             self.video,
             self.frame,
-            video_stream_index=self.video_stream_index,
+            self.video_stream_index,
         )
+        return self._decoded.to_ndarray(format="rgb24")
 
     def read_bytes(self, format: str = "jpg") -> bytes:
         """
