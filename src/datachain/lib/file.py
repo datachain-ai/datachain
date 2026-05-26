@@ -1516,6 +1516,18 @@ class VideoFrame(DataModel):
             ``VideoFile.get_frame()`` use FPS metadata. Frames yielded by
             ``VideoFile.get_frames()`` use decoded frame timestamps when
             available.
+
+    Note:
+        The decoded ``av.VideoFrame`` is cached in the ``_decoded`` instance
+        attribute the first time any of ``get_np()``, ``read_bytes()``, or
+        ``save()`` is called.  Frames yielded by ``VideoFile.get_frames()``
+        are pre-populated with the decoded frame, so the first call to any of
+        those methods requires no I/O.  The cache is held for the lifetime of
+        the ``VideoFrame`` object; when many frames are kept in memory at once
+        (e.g. ``list(video.get_frames())``) the cached pixel buffers can
+        create significant memory pressure (~3 MB each for 1080p video).  The
+        cache is excluded from pickling so cross-process serialisation (e.g.
+        DataChain ``.gen()`` workers) is unaffected.
     """
 
     video: VideoFile
