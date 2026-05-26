@@ -63,6 +63,34 @@ class BucketStatus(NamedTuple):
     error: str | None = None
 
 
+def _anon_fallback(method):
+    """Retry a Client method once with anonymous access on PermissionError.
+
+    Only marks the bucket as anon-needed if the retry actually succeeds, so
+    genuinely inaccessible buckets keep raising clean errors instead of
+    being silently cached as anon.
+    """
+
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        try:
+            return method(self, *args, **kwargs)
+        except PermissionError:
+            if self.fs_kwargs.get("anon") or self._bucket_needs_anon(self.name):
+                raise
+            saved_fs = self._fs
+            self._fs = type(self).create_fs(**{**self.fs_kwargs, "anon": True})
+            try:
+                result = method(self, *args, **kwargs)
+            except PermissionError:
+                self._fs = saved_fs
+                raise
+            self._mark_bucket_anon(self.name)
+            return result
+
+    return wrapper
+
+
 class Client(ABC):
     MAX_THREADS = multiprocessing.cpu_count()
     FS_CLASS: ClassVar[type["AbstractFileSystem"]]
@@ -70,6 +98,10 @@ class Client(ABC):
     protocol: ClassVar[str]
     # client_config keys this backend treats as credentials.
     CREDENTIAL_KEYS: ClassVar[frozenset[str]] = frozenset()
+    # Process-local cache of (protocol, bucket) pairs that have been
+    # resolved as needing anonymous access. Populated only after an anon
+    # retry actually succeeds.
+    _ANON_BUCKETS: ClassVar[set[tuple[str, str]]] = set()
 
     @classmethod
     def has_explicit_credentials(cls, client_config: dict | None) -> bool:
@@ -77,6 +109,14 @@ class Client(ABC):
         if not client_config:
             return False
         return any(k in client_config for k in cls.CREDENTIAL_KEYS)
+
+    @classmethod
+    def _bucket_needs_anon(cls, name: str) -> bool:
+        return (cls.protocol, name) in cls._ANON_BUCKETS
+
+    @classmethod
+    def _mark_bucket_anon(cls, name: str) -> None:
+        cls._ANON_BUCKETS.add((cls.protocol, name))
 
     def __init__(self, name: str, fs_kwargs: dict[str, Any], cache: Cache) -> None:
         self.name = name
@@ -232,7 +272,10 @@ class Client(ABC):
     @property
     def fs(self) -> "AbstractFileSystem":
         if not self._fs:
-            self._fs = self.create_fs(**self.fs_kwargs)
+            kwargs = dict(self.fs_kwargs)
+            if self._bucket_needs_anon(self.name):
+                kwargs["anon"] = True
+            self._fs = self.create_fs(**kwargs)
         return self._fs
 
     def url(
@@ -251,6 +294,7 @@ class Client(ABC):
         info = await self.fs._info(full_path, **self._file_info_kwargs(file.version))
         return self.info_to_file(info, file.path).etag
 
+    @_anon_fallback
     def get_file_info(self, path: str, version_id: str | None = None) -> "File":
         self.validate_file_path(path)
         full_path = self.get_uri(path)
@@ -435,6 +479,7 @@ class Client(ABC):
             # Default to copy if reflinks are not supported
             shutil.copy2(src, dst)
 
+    @_anon_fallback
     def open_object(
         self, file: "File", use_cache: bool = True, cb: Callback = DEFAULT_CALLBACK
     ) -> BinaryIO:

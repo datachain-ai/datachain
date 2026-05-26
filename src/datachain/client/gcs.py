@@ -16,7 +16,7 @@ from datachain.client.fileslice import FileWrapper
 from datachain.lib.file import File
 from datachain.progress import tqdm
 
-from .fsspec import DELIMITER, BucketStatus, Client, ResultQueue
+from .fsspec import DELIMITER, BucketStatus, Client, ResultQueue, _anon_fallback
 
 # Patch gcsfs for consistency with s3fs
 GCSFileSystem.set_session = GCSFileSystem._set_session
@@ -154,6 +154,7 @@ class GCSClient(Client):
         info = await self.fs._info(path)
         return self.info_to_file(info, file.path).etag
 
+    @_anon_fallback
     def get_file_info(self, path: str, version_id: str | None = None) -> File:
         self.validate_file_path(path)
         fs_path = self._path_with_generation(self.get_uri(path), version_id)
@@ -168,6 +169,7 @@ class GCSClient(Client):
             raise FileNotFoundError(file.get_fs_path())
         return int(size)
 
+    @_anon_fallback
     def open_object(
         self,
         file: File,
