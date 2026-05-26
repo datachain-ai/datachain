@@ -1562,10 +1562,9 @@ class VideoFrame(DataModel):
         """
         Returns a video frame from the video file as image bytes.
 
-        For seekable constant-FPS streams, this seeks near the requested frame
-        and decodes forward from the previous keyframe. Otherwise, it may decode
-        from the start. Use ``VideoFile.get_frames()`` when reading many frames
-        sequentially.
+        Uses the cached decoded frame when available (e.g. after ``get_np()``
+        or for frames yielded by ``VideoFile.get_frames()``), avoiding a second
+        decode pass.
 
         Args:
             format (str): The desired image format (e.g., 'jpg', 'png').
@@ -1574,14 +1573,13 @@ class VideoFrame(DataModel):
         Returns:
             bytes: The encoded video frame as image bytes.
         """
-        from .video import video_frame_bytes
+        from PIL import Image as PilImage
 
-        return video_frame_bytes(
-            self.video,
-            self.frame,
-            format,
-            video_stream_index=self.video_stream_index,
-        )
+        from .video import _image_format
+
+        buf = BytesIO()
+        PilImage.fromarray(self.get_np()).save(buf, format=_image_format(format))
+        return buf.getvalue()
 
     def save(
         self,
@@ -1592,10 +1590,9 @@ class VideoFrame(DataModel):
         """
         Saves the current video frame as an image file.
 
-        For seekable constant-FPS streams, this seeks near the requested frame
-        and decodes forward from the previous keyframe. Otherwise, it may decode
-        from the start. Use ``VideoFile.get_frames()`` when reading many frames
-        sequentially.
+        Uses the cached decoded frame when available (e.g. after ``get_np()``
+        or for frames yielded by ``VideoFile.get_frames()``), avoiding a second
+        decode pass.
 
         If ``destination`` is a remote path, the image file will be uploaded
         to remote storage.
@@ -1608,16 +1605,21 @@ class VideoFrame(DataModel):
         Returns:
             ImageFile: A Model representing the saved image file.
         """
-        from .video import save_video_frame
+        catalog = self.video._catalog
+        if catalog is None:
+            raise RuntimeError("Cannot save video frame: catalog is not set")
 
-        return save_video_frame(
-            self.video,
-            self.frame,
-            destination,
-            format,
-            client_config=client_config,
-            video_stream_index=self.video_stream_index,
+        destination = stringify_path(destination)
+        img = self.read_bytes(format)
+        extension = format.removeprefix(".")
+        output_file = posixpath.join(
+            destination, f"{self.video.get_file_stem()}_{self.frame:04d}.{extension}"
         )
+        client, rel_path = self.video._resolve_destination(output_file, client_config)
+        result = client.upload(img, rel_path)
+        image = ImageFile(**result.model_dump())
+        image._set_stream(catalog)
+        return image
 
 
 class VideoFragment(DataModel):
