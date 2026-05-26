@@ -170,6 +170,7 @@ These are the failure modes that have actually consumed sessions. Apply them whe
 - **No `from __future__ import annotations` in UDF modules.** It stringifies type hints; DataChain's signal-schema resolution then rejects the string-vs-class mismatch (`SignalResolvingError: types mismatch`). Use plain runtime annotations.
 - **Type the UDF return precisely.** `Iterator[object]`/`Iterator[Any]`/bare `dict` fail schema resolution. Return `Iterator[dc.VideoFrame]`/`Iterator[dc.VideoFragment]`, a Pydantic `BaseModel`, or a primitive.
 - **Generators aren't subscriptable.** `file.get_frames(step=…)` returns a generator; `frames[:2]` raises `TypeError`. Use `enumerate` + `break`, or `list(...)` only when the result is genuinely small.
+- **`datachain.__version__` does not exist.** The module doesn't export `__version__` (it's missing from `__init__.py`). Use `from importlib.metadata import version; version("datachain")` if you need the installed version. Same pattern for any package whose `__version__` attribute isn't set; `importlib.metadata` always works for installed packages.
 
 ---
 
