@@ -5,6 +5,31 @@ description: Use ONLY for abstract DataChain SDK questions — API usage, method
 
 You are now loaded with expert-level DataChain SDK context. Apply every rule below when generating DataChain Python code. Do not deviate.
 
+## Scope of this skill
+
+This file is SDK mechanics — how to write DataChain Python code that
+runs correctly: API usage, UDF signatures, settings, delta semantics,
+materialization patterns, saving, exporting.
+
+**It does not own methodology.** Decisions about *which* datasets to
+build, what scope (bucket / directory / sample), what shape
+(Container / Asset / Sense / Task), what fields to save, and when to
+dialogue with the user about layer choices — those are the CAST
+methodology, which lives in the **datachain-knowledge** skill at
+`{knowledge_skill_dir}/CAST.md`.
+
+When knowledge is loaded for the same task, it is the orchestrator: it
+plans the layers (CAST §4), invokes the rules in this file to write the
+code, then runs the KB pipeline. When knowledge is *not* loaded (raw
+SDK use without a `dc-knowledge/` directory in the project), this file
+is self-sufficient — CAST doctrine simply does not apply, and the
+operator is expected to know what they want.
+
+If you find yourself reasoning about "should I build a Sense layer
+here?" or "should this be scoped to the bucket or the directory?" from
+inside this file, stop — those questions belong upstream. Ask the user
+to load the knowledge skill, or fall through to a direct solve.
+
 ## Pre-Generation Checklist (verify BEFORE writing any code)
 
 - [ ] **Every UDF has a known output type?** Every function passed to `.map()`, `.gen()`, or `.agg()` must have its return type resolved. See Rule 2 — this is the #1 source of runtime errors.

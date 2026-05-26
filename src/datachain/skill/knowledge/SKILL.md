@@ -51,14 +51,20 @@ You are now loaded with the datachain-knowledge skill. Maintain a knowledge base
 
 ## Critical Rules
 
+> See `CAST.md` (sibling to this file) for the full methodology — the
+> four layers, naming + tagging, the layer-ladder planning walk,
+> two-branch calibration, the scope-and-ladder dialogue template, row
+> schema rules, and methodology transmission. The Critical Rules below
+> are the must-not-violate subset; `CAST.md` is the canonical doctrine.
+
 1. **Path is `dc-knowledge/`** — NOT `.datachain/`. The `.datachain/` directory is the internal database; the knowledge base lives at `dc-knowledge/`.
-2. **Never pass `update=True`** to `dc.read_storage()` in Task or exploration code unless the user explicitly asks to refresh the listing. L1/L2/L3 build scripts are the exception — they always pass `update=True, delta=True` per step 12 (running a build script IS the refresh).
+2. **Never pass `update=True`** to `dc.read_storage()` in Task or exploration code unless the user explicitly asks to refresh the listing. L1/L2/L3 build scripts are the exception — they always pass `update=True, delta=True` per `CAST.md` §5 "Delta path" (running a build script IS the refresh).
 3. **Prefer DataChain operations** over plain Python for all metadata analysis.
 4. **Bounded output** — JSON and markdown files stay small regardless of data size.
 5. **Stop on auth/connection errors** — `bucket_scan.py` runs a fast access check before scanning (uses cloud SDKs, no DC listing). If it exits with an error JSON on stderr, **stop immediately** and show the error to the user. Do not retry with different regions, credential profiles, or endpoint variations — ask the user for the missing credentials or configuration.
-6. **Follow the CAST methodology.** Every dataset belongs to one of four layers — Container, Asset, Sense, Task — and every new dataset is named, tagged, and described accordingly. The methodology is enforced through naming + `attrs` + frontmatter and through the CAST Decomposition stage in Mode B. See "## CAST Methodology" below.
+6. **Follow the CAST methodology.** Every dataset belongs to one of four layers — Container, Asset, Sense, Task — and every new dataset is named, tagged, and described accordingly. The methodology is enforced through naming + `attrs` + frontmatter and through the layer-ladder walk in Mode B. See `CAST.md`.
 7. **NEVER bypass DataChain for results.** UDF outputs (embeddings, LLM, classification, file extraction) MUST land via `.save("name", attrs=[...], description=...)`. Writing to local `.json` / `.csv` / `.parquet` files via `open()`, `json.dump`, `pandas.to_csv`, etc., bypasses lineage and the KB — the most common regression.
-8. **C/A/S substrate is mandatory.** Any UDF-bearing task builds and saves **at least one** Container / Asset / Sense layer. "At least one" means exactly that — Sense alone satisfies the rule. Building a Container or Asset dataset *by reflex*, when neither adds information, is the regression (see CAST Decomposition step 1 for the Container justification test). "Persist by exception" applies ONLY to the final Task ranking, never to substrate that does meaningfully reduce future cost. "One-off question" / "small dataset" / "in-memory is enough" are not legal opt-outs.
+8. **C/A/S substrate is mandatory.** Any UDF-bearing task builds and saves **at least one** Container / Asset / Sense layer. "At least one" means exactly that — Sense alone satisfies the rule. Building a Container or Asset dataset *by reflex*, when neither adds information, is the regression (see `CAST.md` §4.1 for the Container justification test). "Persist by exception" applies ONLY to the final Task ranking, never to substrate that does meaningfully reduce future cost. "One-off question" / "small dataset" / "in-memory is enough" are not legal opt-outs.
 9. **One script per stage.** Multi-stage pipelines (2+ named datasets) decompose into separate scripts named after the dataset each produces. Never one monolith with multiple `.save()` calls. See `core/SKILL.md` "Code-level decomposition" for the canonical pattern.
 10. **One script, one `.save()`. Never manually batch or shard.** A long L2/L3 build is ONE script with ONE terminal `.save()` over the whole source. DataChain checkpoints UDF progress internally; rerunning the same script after a kill resumes from where it stopped. **Do NOT** split the source into batches and save them as `name_b00`/`name_b01`/…, do NOT union shards together, do NOT loop `.save()` calls. Manual sharding is the regression this rule used to recommend; DataChain's checkpoint recovery made that obsolete.
 
@@ -66,99 +72,20 @@ You are now loaded with the datachain-knowledge skill. Maintain a knowledge base
 
 ## CAST Methodology
 
-CAST is the four-layer pattern the skill suggests for organising unstructured-data work — Container, Asset, Sense, Task. It is a recommendation backed by recall-economics math, not a mandate; users may decline at any time via a shortcut phrase (see Methodology transmission rule 5). When the skill does create datasets, each one belongs to exactly one CAST layer.
+The full doctrine lives in `CAST.md` (sibling to this file). Mode B
+reads it as a precondition. Do not duplicate doctrine here — when
+something needs to change, change `CAST.md` and let this file stay
+operational.
 
-### The four layers
-
-- **Container** — A typed, queryable index of what each file IS without decoding its full content: paths, sizes, format headers (e.g., MP4 codec/duration, HDF5 attributes, DICOM tags, Parquet schema), sidecar metadata (JSON/XML), and external-DB joins. *Build it when the task needs to answer "what files are here, what format/metadata do they carry, which match this predicate" without paying decode cost.* One row per source file. Light compute (header bytes only). Recall cost ~$1.
-- **Asset** — Raw extracted or mixed data in a workable shape: video frames, audio tracks, decoded arrays, or a training mixture of multiple source datasets joined on a shared key. *Build it when downstream work needs decoded or combined content rather than file pointers — annotation, training, multi-source analytics.* Heavy file compute, no model has touched the rows yet. Recall cost ~$10.
-- **Sense** — What a model said about the data: embeddings, LLM annotations, classifier scores, transcriptions, detections. *Build it when the task needs semantic or learned signals — similarity search, classification, captioning, retrieval, RAG.* Per-row model inference dominates the cost (LLM ~$0.001–0.01/row, CLIP ~ms/image). Pay once at build time, query at warehouse speed forever. Recall cost ~$100 build, ~$1 query.
-- **Task** — A task-specific composition on top of C/A/S: a similarity ranking, filter over Sense outputs, join across layers, eval set, curated training subset. *Build it (and usually do NOT save it) when answering one specific question.* **Persist by exception** — only when the result becomes a standing benchmark or shared training set. Recall cost ~$1.
-
-Most user questions arrive Task-shaped on top of C/A/S substrate. The skill's job is to make the C/A/S substrate visible, reusable, and cheap. See Critical Rules 7–9 above for the enforcement bottom line.
-
-### Naming convention
-
-Every new dataset gets a layer prefix that sorts the layers in CAST order:
-
-```
-l1_container_<source>_<descriptor>      # listings, headers, sidecar metadata
-l2_asset_<source>_<descriptor>          # extracted/reshaped raw data
-l3_sense_<source>_<descriptor>          # model-derived signals
-<descriptor>                            # Task outputs (and anything not C/A/S) — no prefix
-```
-
-`<source>` is the bucket slug for L1–L3 (the data root the layer indexes; reusable across teams). Task-layer datasets carry no prefix; the name describes the question (`products_similar_to_query`, `recsys_eval_runs`, `cik_text_stats`), and layer membership is recorded only via `attrs=["cast:task", …]` and the resulting `cast_layer: task` frontmatter. Underscores throughout, snake_case, no dots (`.` and `@` are reserved by DataChain naming).
-
-**Source slug — strip uninformative prefixes.** Strip these from the bucket name (case-insensitive) before using it as the source slug: `datachain-`, `dc-`, `iterative-`, `gs-`, `s3-`, `aws-`, `gcp-`, `azure-`, `public-`, `private-`. Then replace `-` with `_`. Example: `datachain-starss23` → `starss23`.
-
-**Preset/config → `attrs`, never in the name.** Names describe content (frames, embeddings, transcriptions), not parameters. Right: `l2_asset_starss23_frames` + `attrs=["cast:asset", "source:starss23", "preset:1fps_640", "format:jpeg"]`. The agent does not append preset suffixes to names by default.
-
-**Cap names at 40 characters.** If a meaningful name would exceed, shorten the descriptor (`frames` not `video_frames` when source implies video).
-
-**Task names are JUST the question** — no source slug, no layer prefix (`cik_text_stats`, `products_similar_to_query`). Add `_<source_slug>` only when the same question runs on two different sources and disambiguation is genuinely needed.
-
-### Tagging on `.save()`
-
-Layer + scope + source + parents are dual-encoded — in the name (for visibility in `dc.datasets()` and the KB index) AND in `attrs` (for machine filtering) AND in the dataset's `description` (for human one-liners):
-
-```python
-attrs = [
-    "cast:sense",                                # one of: container | asset | sense | task
-    "scope:bucket",                              # bucket | sample | onetime
-    "source:product_catalog",                    # bucket slug for L1-L3, task slug for Task
-    # DataChain tracks lineage automatically — no need for parent: attrs.
-    # Direct dependencies live in DatasetDependency; query via
-    # Catalog.get_dataset_dependencies(name, version).
-    "model:clip_vit_b32@open_clip-2.24",         # build-signature: model id @ version (for refresh-signature check, step 12)
-    "preset:cpu_fp32",                           # build-signature: preset/config tag
-]
-chain.save(
-    "l3_sense_product_catalog_clip_embeddings",
-    attrs=attrs,
-    description="CLIP ViT-B-32 embeddings over the full product-catalog bucket; reusable for any visual-similarity query.",
-)
-```
-
-- `scope:bucket` — full coverage of the **bucket root** (the storage root such as `s3://my-bucket/`). **Default for any auto-build, even when the user's prompt named a subdirectory.** Reusable across every team and every future query on the same bucket.
-- `scope:directory` — coverage of a specific subdirectory under the bucket. Set ONLY when the user explicitly opted into a narrower scope via the scope-and-preset dialogue. The `source` slug includes the directory path so different subdirectories of the same bucket do not collide (e.g., `source:my_bucket__images_subset`). Never auto-build at directory scope without asking.
-- `scope:sample` — covers only a sample of the source. One-shot, no future savings.
-- `scope:onetime` — Task layer that should NOT be persisted (the default for Task). Use this when the dataset is purely the answer to one question.
-
-**`.save()` checklist for L1/L2/L3.** Before calling `.save()`, verify every item:
-
-- `attrs` includes `cast:<layer>`, `scope:<scope>`, `source:<slug>` — slug stripped per the prefix-strip rule above (e.g. `starss23`, not `datachain_starss23`).
-- Do NOT add `parent:<dataset_name>` to attrs. Lineage is tracked natively by DataChain — when you do `dc.read_dataset("foo").map(...).save("bar")`, the catalog records `bar`'s dependency on `foo` automatically (queryable via `Catalog.get_dataset_dependencies`). Duplicating lineage in attrs creates two sources of truth that drift.
-- `attrs` includes `model:<id>@<version>` and `preset:<name>` whenever a model/encoding was used. These are the build signature read by step 12 on refresh.
-- `description="…"` set to a one-line human summary.
-- The corresponding `read_storage` includes `update=True, delta=True` (defaults for the rest — see step 12).
-- The Pydantic output type carries the operation's full output, not the current question's projection (see "Saved schema captures what was produced" below). Derived columns — counts, booleans, top-k labels, aggregates of the actual output — live in Task, not on the substrate row.
-
-### Per-layer reuse rule
-
-- **L1/L2 (Container, Asset)** — persist by default, refresh by delta. These are the load-bearing reusable substrate. Always full-coverage; never problem-specific filters before the `.save()`.
-- **L3 (Sense)** — persist by default, full coverage of input. The "expensive UDF → save full → filter downstream" rule in core/SKILL.md exists exactly to make L3 reusable.
-- **L4 (Task)** — persist by exception. Most ranking / similarity / filter outputs do not deserve a name. Save only when the user explicitly asks, or when the result is a standing benchmark / training set referenced again. (Critical Rule 8 already pins down that this exception applies ONLY to the final Task output, never to the C/A/S substrate underneath.)
-
-**Saved schema captures what was produced, not what's currently needed.** Every L1/L2/L3 row holds everything the upstream operation produced — its substantive output plus per-call telemetry. Don't trim to the columns the current question reads. Three categories of upstream operation, with what to capture from each:
-
-- **Decode / parse / read** (file headers, schemas, sidecars, manifests, archive indexes): every field the parser surfaces, not just the one the current question filters on.
-- **Materialize** (decoded payloads, derived files, segments): the payload as a typed reference (`dc.File` or similar), plus auxiliary metadata about how it was produced (preset, encoding params, source/timestamp link).
-- **Inference / external call** (any model call, any paid API): the operation's complete structured output, plus per-call telemetry — operation id + version, latency, finish/status code, and units consumed (e.g. tokens for LLMs, requests for rate-limited APIs).
-
-The Task layer projects to the asked question; per-question cost is computed there. Operation cost dominates schema cost — never trade dollars or compute for bytes. For free-form LLM/VLM prompts, see Multi-axis classification batching in CAST Decomposition (same principle applied at the prompt-construction step).
-
-**No projection columns alongside the full output.** A projection column is one *derived* from the operation's output by filtering, counting, aggregating, comparing, thresholding, or top-k-picking — not a field the operation itself returned. Saving a projection alongside the full output bakes the current question into the substrate. Litmus: *"Is this column something the operation directly returned, or did I derive it from the actual output?"* Derived → it belongs in an Task `.save()` or a downstream `.read_dataset().filter().group_by()` query, not on the L3 row. The substrate row holds full output + per-call telemetry — that's it.
-
-### Methodology transmission
-
-Apply these rules in every data-related response:
-
-1. **Suggest CAST, do not push it.** When telling the user about layers, the tone is "here is the cheap way to do this and why" — never "you must follow the methodology". Mention layers only when they touch the answer. Recommend a layer build only when there is a concrete cost win for the current question (always quote a number, see rule 3). Never moralise about how the user should organise their data. If the user declines a layer suggestion, solve directly — that's their call, and re-proposing the same layer later in the session is pushing.
-2. **Match user energy.** When the user uses CAST vocabulary ("container", "asset", "sense", "task", "build the layer", "CAST"), engage with the full vocabulary, name parents explicitly, and propose lineage. When they don't, stay terse.
-3. **Always quote a number** when recommending a layer build. "Building the Sense layer takes ~3 min and $0.40; running the same embedding next time is free." No cost estimate → no recommendation.
-4. **Celebrate CAS reuse explicitly.** Every time the skill reuses an existing Container / Asset / Sense layer instead of rebuilding, state the win out loud: which layer is being reused, what cost was avoided, and (when natural) a one-line connection to the session that originally built it. This is the only place the skill should sound enthusiastic about the methodology — the point is to make the value of a properly built layer felt, not asserted.
-5. **Honour shortcuts immediately, do not re-litigate.** If the user has said any of "just solve", "no layers", "sample only", "fast as possible", "skip CAST", "one-off", "don't build a layer", "just answer", "quick" — solve directly and do not re-propose layers in the same session unless the user volunteers CAST terminology themselves.
+The canonical sections in `CAST.md`:
+- §1 Mission — job of this skill + substrate rows are general-purpose
+- §2 The four layers — Container / Asset / Sense / Task + recall economics
+- §3 Naming + tagging — `.save()` checklist + `.gen()` pre-flight checklist
+- §4 Planning a task — the layer-ladder walk + two-branch calibration +
+  scope-and-ladder dialogue template (the heart of Mode B)
+- §5 Reuse rules — delta path + build signature
+- §7 Methodology transmission — push the ladder by default, honour
+  shortcuts immediately
 
 ---
 
@@ -187,13 +114,22 @@ When loaded, determine the user's intent:
 > **Precondition (do this FIRST — before ANY tool call):**
 >
 >     $ cat dc-knowledge/index.md
+>     $ cat {skill_dir}/CAST.md
 >
-> This is the rendered map of available datasets — schemas, sample rows, lineage,
-> and reuse recommendations. If it exists and your task can be solved by reading
-> an existing dataset, do not write a pipeline — read it directly with
-> `dc.read_dataset("name")`. Filter, merge, or extend the existing dataset
-> instead of re-reading raw storage. This avoids recomputing expensive operations
-> (LLM calls, model inference) and reuses proven code patterns.
+> `index.md` is the rendered map of available datasets — schemas, sample
+> rows, lineage, and reuse recommendations. If it exists and your task
+> can be solved by reading an existing dataset, do not write a pipeline
+> — read it directly with `dc.read_dataset("name")`. Filter, merge, or
+> extend the existing dataset instead of re-reading raw storage. This
+> avoids recomputing expensive operations (LLM calls, model inference)
+> and reuses proven code patterns.
+>
+> `CAST.md` is the methodology — read it in full on every Mode B entry.
+> It drives every layer / scope / shape decision below. The Critical
+> Rules above are the bullet-list view; `CAST.md` is the canonical
+> source. Skim it once per session is not enough — re-read on each new
+> task so the layer-ladder walk and dialogue template are in working
+> context when you plan.
 >
 > **Never parse files under `dc-knowledge/datasets/*.json` or `dc-knowledge/buckets/**/*.json`
 > directly.** Those are pre-render intermediates that get deleted after
@@ -211,126 +147,40 @@ When loaded, determine the user's intent:
 → Read `{skill_dir}/../core/SKILL.md` for DataChain SDK rules and patterns.
 → **Superlative defaults.** When the user asks "best/worst/highest/lowest" without naming a metric, pick the most natural metric the data supports, name it in a one-line comment, and emit `n` per group. Drop groups with `n < max(5, sqrt(median_n))` before ranking. Ask one clarifying question only if multiple metrics would materially change the ranking.
 → **Slice sanity check.** Before committing to a prefix or glob, verify the slice still contains every entity dimension the question groups, compares, or ranks over. If too large, narrow on an orthogonal dimension — never on one the question depends on.
-→ **Multi-axis classification batching.** When a per-row LLM/VLM call classifies on the axis the user asked about, extend the prompt to return plausible related axes in the same call. Variant questions then hit cache on the saved dataset.
+→ **Multi-axis classification batching.** When a per-row LLM/VLM call classifies on the axis the user asked about, extend the prompt to return plausible related axes in the same call. Variant questions then hit cache on the saved dataset. (Detailed in `CAST.md` §4.7 — the prompt-extension axis of the layer-ladder walk.)
 
-> **CAST Decomposition (silent unless costly).**
+> **CAST Decomposition.** Follow `CAST.md` §4 in full before writing
+> pipeline code:
 >
-> Before writing pipeline code, decompose the task into the CAST layers it conceptually needs. User questions are almost always Task-shaped on top of C/A/S substrate. The order of preference is strict: **(1) direct reuse → (2) reduce-to-CAS → (3) build missing CAS → (4) raw rebuild**.
+> - §4.1 identify required layers; §4.2 mixture opportunities; §4.3
+>   direct reuse; §4.4 reduce-to-CAS; §4.5 cost gate on reuse; §4.6
+>   derive task minimum.
+> - **§4.7 — walk the ladder top-down** for every task. If the minimum
+>   layer is Sense, ask whether Asset and Container would compound for
+>   future questions on this source and surface them as build candidates.
+>   Never silently fall to a fused-L3 just because the immediate question
+>   only consumes Sense.
+> - **§4.8 — two-branch calibration** (no-Asset + thin-Asset) is
+>   mandatory for any `.map`/`.gen` over >50 items or any UDF that
+>   decodes / downloads / calls a model. Single-branch calibration is
+>   not a legal abbreviation; if R = thin/no is undefined, the shape
+>   decision is undefined.
+> - §4.9 bucket-root cost; §4.9c auto-build heuristic.
+> - **§4.10 — render the scope-and-ladder dialogue.** Dialogue is
+>   mandatory whenever ANY new CAS layer would be built — wall time
+>   does NOT gate it. Silent path is allowed only when (a) the task is
+>   fully solved by reading an existing CAS layer with no new build, OR
+>   (b) the user used a shortcut phrase from `CAST.md` §7.
+> - §4.11 containerise raw JSON / sidecars too.
+> - §4.12 mid-flight monitoring and early abort.
 >
-> 1. **Identify required layers.** The output of this step is a non-empty list of CAS layers the task depends on, NOT a decision to skip layers. If the task involves a UDF (embedding model, LLM call, classifier, file decode), at least one CAS layer is required and must be saved. Examples: similarity search → Sense layer of embeddings on top of an Asset layer of frames/images; "find videos with X" → Sense layer of classifications (and possibly thin Asset of materialized frames); "summarise this bucket" → Container of header metadata + optional Sense LLM annotations; "extract frames from videos" → Asset layer of frames on top of bucket scan. There is no "no layer needed" branch for UDF tasks; the only decisions are *which* layers and *what scope*.
+> Tagging and delta-path rules on `.save()` live in `CAST.md` §3 and §5.
 >
->    **Container layer = partial-read or metadata-only work.** Justified when per-row work reads only a bounded prefix of each file (headers, schema, EXIF, tags, footer) or a sidecar, not the full file body. **Any partial read without a full-file read is a sign of L1.** Header/schema reads are native in PIL Image (dims/mode/EXIF), pyarrow Parquet (schema + footer stats), h5py (file structure + dataset attrs), `dc.VideoFile.get_info()` (codec/fps/duration), pydicom (tags), `file.read(N)` with bounded N. Sidecar JSON/XML/CSV/YAML next to primary files, and cross-bucket joins on parsed identifiers, are also Container. **Full file decode → L2 Asset, not L1** (decoded pixels, audio samples, parsed CSV/Parquet rows, video frames are payload, not metadata). **Filter-only Container datasets are forbidden** — `.filter(glob)` reads zero bytes; inline into `read_storage` glob or an L2/L3 `.filter()`. The bucket scan in `dc-knowledge/buckets/` already covers "what files are here". Critical Rule 8's "at least one" is satisfied by Sense alone.
-> 2. **Look for mixture opportunities.** If the task names two or more datasets (or two or more bucket regions / sources), the Asset-level combination of them is itself a CAST artifact.
-> 3. **Direct reuse first.** From `dc-knowledge/index.md`, for each required layer × source, check if an existing dataset already covers the question (even partially). If yes, write the pipeline as `dc.read_dataset(...)` over it. **Celebrate the reuse**: in the response, name the layer being reused and quote the saved cost — e.g., "Reusing `l3_sense_product_catalog_clip_embeddings` (built last session). This query is ~$0.002 instead of the $1.40 the embedding pass would otherwise cost — exactly the win the Sense layer was built for." This is the moment that teaches the methodology; do not skip it.
-> 4. **Reduce-to-CAS if direct reuse impossible.** Before defaulting to a raw rebuild, work the problem from the other side: can the task be reformulated so it operates on an *existing* CAS layer plus a small Task delta? Examples: a new similarity question on the same bucket → reuse the Sense embeddings, just change the query vector; a new "find X" question → reuse the Sense classifications and add a filter. Spend real effort here — propose at least one reformulation when any CAS layer for this source exists.
-> 5. **Cost gate on CAS reuse.** Reuse a CAS layer only when it gives a meaningful win — at least ~2× speedup or ~2× $-saving versus the raw rebuild. If the layer technically covers the data but reading it is no cheaper than re-reading raw storage, do not force the reuse; the methodology is justified by economics, not formalism.
-> 5.5. **Derive task minimum BEFORE the calibration run.** For decode-heavy sources (video/audio/large H5/NIfTI/multi-page PDF), name the minimum fidelity the task requires across three axes:
->     - **Temporal sampling:** shortest event the answer depends on. People on screen → 1 fps; brief impacts/flashes → ≥5 fps; one scene/video → 1 frame.
->     - **Spatial resolution:** smallest visual detail. Object detection of people/cars → 640px; OCR / small text → full resolution.
->     - **Encoding:** audio full-rate (transcription) vs resampled (speech-vs-silence); PDF OCR vs text-layer.
->
->     This minimum is the FLOOR for any thin-Asset preset in step 7 and what the calibration measures against. Never calibrate at coarser sampling than the task requires. If genuinely ambiguous, ask one targeted question — do not guess.
->
-> 6. **Estimate cost** by measurement, never guess. The number going into the 7c gate MUST be calibration-derived. Two branches when reuse is unavailable: direct solve (this question only) vs layer build (full source, reusable).
->
->    **6a. Lead with sizes.** Before the calibration run, quote bucket footprint from the scan (total GB, files, avg size, top extensions) and a size-derived I/O baseline: `total_GB / bandwidth` where bandwidth ≈ 50–150 MB/s GCS→Mac, 80–200 S3→local, 500+ same-region cloud. The calibration refines; the size baseline anchors.
->
->    **6b. Calibration procedure** (mandatory for any `.map`/`.gen` over >50 source items, or any UDF that decodes/downloads/calls a model). Pick `N = min(50, max(5, ⌈total/100⌉))`. Run two calibration runs back-to-back sharing one decode-once `.map`, each ending in `.persist()` (never `.save()`):
->
->    1. **no-Asset calibration:** emit only the aggregate/Sense output.
->    2. **thin-Asset calibration:** same `.map`, ALSO encode the materialized payload at task-minimum fidelity and return `sum(len(bytes))` as a column. **Do NOT upload during calibration** — encoding suffices to measure compute + size; upload happens only at full-run time.
->
->    60–120 s timeout per run. If neither finishes, auto-build is off → go to 7d dialogue. Record wall seconds, GB read, rows out, plus encoded-bytes sum for thin-Asset.
->
->    Extrapolate: `wall_full = (wall_sample/N) × total × 1.5`; `asset_full_bytes = (sample_bytes/N) × total × 1.5`. Cost in $ from the recall-economics tier (lines 72–75) unless calibration disagrees by >3×.
->
->    **Sanity floor:** estimate disagreeing with the recall-economics tier by >100× → re-calibrate, do not paper over.
->
->    **Fallback rules of thumb** (use only when calibration is impossible — empty/unreachable source). Representative cost ranges per operation type:
->    - Container (header-only parse): ~0.5 ms/file.
->    - Asset (full-file decode, materialize): 50–500 ms/file; for heavy-source codecs (video/audio/large blobs) budget per source file, not per unit.
->    - Sense — paid API (LLM/VLM, hosted embeddings): ~$0.001–0.01/row plus latency; cost dominates, batch when prompt allows.
->    - Sense — local model on CPU: ms-to-seconds/item depending on size (small classifiers/embeddings: 5–50 ms; mid-size detection/segmentation: 50–500 ms; ASR ≈ 0.1–0.5× realtime). Add source-read/decode I/O for non-cached inputs.
->    - Sense — local model on GPU: ~10–100× faster than CPU baselines above (when GPU is available; check `dc.is_studio()` for distributed Studio context).
->
->    **L2 shape — three valid options for heavy-decode sources** (video frames, audio segments, PDF pages, archive entries, multi-channel sensor data, etc.). Pick deliberately based on selection criteria; none is forbidden.
->
->    1. **Pointer-row L2.** Emit `Iterator[dc.VideoFrame]` (or `Iterator[dc.VideoFragment]` for audio) from `.gen()` walking `file.get_frames(step=N)`. Saved row = `{video: VideoFile, frame: int, timestamp: float}` — pure metadata, bytes per row. Downstream `frame.get_np()` calls `video.open()` which streams from storage with DataChain's local caching (see `lib/video.py:398`). **No data duplication, no re-download per frame.** Per-frame cost is local CPU + cached disk I/O. Simplest shape; the right default for in-DataChain consumption (subsequent queries via `read_dataset` + `.map`/`.filter`/`.gen`).
->    2. **Materialized thumbnail L2.** Emit rows with `frame: dc.File` pointing at written JPEGs / segment files in storage. Choose when downstream needs files-on-disk for **non-DataChain interop** — annotation UIs, training pipelines that consume files directly, browsing in the storage browser. Format/destination/schema details below apply to this shape.
->    3. **Fused decode-once L3 (no separate L2).** `.gen(VideoFile → Iterator[Detection])` reads `read_storage` directly, decodes the source once sequentially, emits per-detection (or per-frame) rows. Choose when there's no Asset reuse case — the Sense layer is the only consumer; no intermediate substrate needed.
->
->    A prior version of this rule flagged shape (1) as "forbidden / re-decode trap". That was wrong (over-calibrated against a misdiagnosed earlier trace). All three shapes are valid; pick by selection criteria.
->
->    **Shape (2) — materialized thumbnail — details follow.** Skip this block for shapes (1) and (3).
->
->    - **Storage shape, by format:**
->      - **Standard containers** (JPEG/PNG/WEBP/GIF/BMP/WAV/MP3/FLAC/OGG/MP4/MOV/WEBM) → file in storage + `dc.File` pointer on the row **by default**. Bytes column only on explicit user request ("store inline" / "blob column").
->      - **Custom binary** (numpy, embedding tensors, intermediate features) → bytes column on row.
->      - **Text/JSON** (transcripts, summaries) → string column on row.
->    - **Destination** (asked once per session, then reused): source on GCS/S3/Azure → derivative on cloud in same scheme, default proposal mirrors the dataset name `gs://<user-bucket>/<dataset_name>/` — agent ASKS to confirm bucket + prefix before writing. Source on local FS → parallel local prefix like `./<dataset_name>/`, still confirm. User-specified → respect verbatim. **NEVER default to `.datachain/thin-assets/`** — invisible to the team — unless the user asks for local-only.
->    - **Row schema** uses typed file objects, never bare paths or bytes columns by default:
->      ```python
->      class VideoFrameAsset(BaseModel):
->          source: dc.VideoFile      # preserves path/size/etag and the .get_info()/.get_frames() API
->          timestamp: float
->          sampled_frame_index: int
->          frame: dc.File            # pointer to materialized payload in storage
->      ```
->      Downstream UDFs declare `params=["frame"]` with `frame: dc.File`, not `params=["frame.jpeg"]` over a bytes column. Never `source_path: str`.
->    - **Default presets** (must meet step 5.5 minimum; adjust up when minimum demands it): **video** — 1 fps × 640px long side × JPEG q80; **audio** — 1-sec windows × 16 kHz mono PCM.
->
->    **Calibration policy.** `.persist()` not `.save()`; no `attrs` / `description` on calibration runs; no enrichment. End state: no `calib_*` (or legacy `pilot_*`) row in `dc.datasets()` and no `calib_*` / `pilot_*` in `dc-knowledge/`. `plan.py` filters `calib_*` / `pilot_*` names and `scope:calibration` / `scope:pilot` attrs as backstop.
-> 7. **Decide branch** — strict order, bucket-root scope throughout.
->
->    **7a. Bucket root from URI.** From `s3://dc-readme/oxford-pets-micro/images/`, root is `s3://dc-readme/`. A subdir the user phrased the task around is not the root.
->
->    **7b. Compute cost AT BUCKET-ROOT SCOPE.** Carrying a subdir cost into 7c biases every downstream decision toward narrowing.
->
->    **7c. Auto-build heuristic** (ALL must hold, bucket-root scope): `layer_build_wall_time ≤ max(2 × direct_solve_wall_time, 60s)`; `layer_build_$ ≤ max(2 × direct_solve_$, $0.10)`; absolute wall ≤ 5 min; absolute $ ≤ $1; not Studio remote; no shortcut phrase used.
->
->    **7d. Decide. Two independent decisions:**
->    1. **Silent vs ask** (wall time): `wall ≤ 5 min` AND 7c passes → silent at bucket-root. `5 min < wall ≤ 8 h` → open dialogue, always. `wall > 8 h` → require explicit user override; surface architectural alternatives (smaller model, GPU, Studio, restricted subdir, coarser sampling).
->    2. **Shape** (Asset × 2): `R = thin_asset_cost / no_asset_cost`. In the silent branch R picks the shape (thin when R ≤ 2, no-Asset when R > 2). In the dialogue branch **recommendation is ALWAYS thin Asset** (CAST doctrine — substrate compounds); R is shown as information. When R > 2 in dialogue, surface a cost-premium framing line; recommendation does not flip.
->
->    Never silently auto-build at directory or sample scope. Format times as `~Xh Ym` / `~Xm` (concrete numbers, not band names).
->
->    **Scope-and-preset dialogue template** (substitute the measured calibration numbers verbatim; ≥3 options, more when warranted; the recommended option is ALWAYS thin Asset):
->    ```
->    Source: {bucket_size} / {n_total} {ext_summary} / avg file {avg_size}.
->    Task minimum (5.5): {sample_rate}, {resolution}, {format}.
->    Calibration ({n_calib}): no-Asset ~{wall_calib_no}s, thin-Asset ~{wall_calib_thin}s (+{thin_storage_calib}); R = {R:.1f}.
->    {if R > 2:} thin Asset costs ~{R:.1f}× more — substrate-vs-immediate-cost trade-off. Recommendation follows CAST (substrate compounds); pick no-Asset only for genuinely one-shot answers.
->
->    Full-run options (~{baseline_io} unavoidable I/O):
->    - **WHOLE bucket, thin Asset {preset}** [recommended — CAST substrate]: ~{wall_full_thin}, ${cost_full_thin}, Asset ~{asset_full_gb}. Reusable across future queries at fidelity ≥ task minimum. Destination: {default_destination_proposal} — confirm or override.
->    - **WHOLE bucket, no Asset**: ~{wall_full_no}, ${cost_full_no}. Re-decodes on the next question.
->    - **{Largest subdir} only**, thin Asset ({subdir_n}): ~{wall_sub}, ${cost_sub}. Won't cover sibling subdirs. ← include largest 1–2 subdirs from the scan
->    - **Tighter preset** (1/5 sec or 320px), whole bucket: ~{wall_tight}, ${cost_tight}, Asset ~{asset_tight_gb}. Must still meet step 5.5 minimum.
->    - **Sample only** ({sample_n}), no Asset: ~{wall_sample}, ${cost_sample}. One-shot.
->    - {if prior dataset on this source:} KB shows {prior_dataset} — thin Asset is the right call.
->    ```
->    Full-Asset (every frame, original resolution) is deliberately not in the default options; surface only on explicit user request. If you catch yourself rationalizing a silent narrow ("the directory is small", "the prompt was task-specific"), STOP and re-run 7a–7d.
->
->    **Render the template verbatim — do not paraphrase the recommendation.** Three specific failure modes that defeat CAST doctrine:
->    - **Do NOT reorder** so no-Asset comes first. Thin Asset is option 1, always.
->    - **Do NOT replace `[recommended — CAST substrate]` with conditional phrasing** like "recommended if you expect future queries" / "useful if you'll re-ask". The recommendation is unconditional in the dialogue.
->    - **Do NOT add competing labels to no-Asset** like "best for this one answer" or "best for the current question". That's the agent applying its own immediate-cost framing — exactly the regression Round 3 fixed. The user picks; the agent does not nudge with "best for X" tags.
->
->    The agent's instinct to optimize for "the user's current question" is what CAST doctrine deliberately overrides. Render the options, render the [recommended] tag, let the user decide.
-> 8. **Apply shortcut phrases.** If the user's message contains any of "just solve", "no layers", "sample only", "fast as possible", "skip CAST", "one-off", "don't build a layer", "just answer", "quick" — skip the proposal and solve directly. State once: "Solving directly without building a layer." Do not re-propose layers in the same session unless the user volunteers CAST vocabulary themselves.
-> 9. **On layer build, tag the datasets.** Name them per the convention (`l1_…`/`l2_…`/`l3_…` for C/A/S; no prefix for Task outputs) and pass `attrs=["cast:<layer>", "scope:bucket|directory|sample|onetime", "source:<slug>"]` + `description="…"` on `.save()`. Lineage (parent dataset references) is tracked automatically by DataChain — do not duplicate it in attrs. `scope:bucket` covers the bucket root (the default for auto-build) and the source slug is the bucket name. `scope:directory` is set ONLY when the user explicitly opted into a subdirectory in the scope-and-preset dialogue; the source slug includes the directory path (e.g., `source:my_bucket__images_subset`) so it does not collide with bucket-root layers. `scope:sample` is one-shot. `scope:onetime` is for non-persistable Task outputs.
-> 10. **Containerise raw JSON / sidecars too.** If the task pulls structured JSON / Parquet / CSV from the bucket and parses it inline, propose lifting that parse into an `l1_container_<source>_<descriptor>` dataset so the parsed schema becomes reusable. Same auto-vs-ask rule, same whole-bucket-first framing.
-> 11. **Mid-flight monitoring + early abort.** For any job estimated >5 min, watch the first 60–90 s of stdout for a throughput line (DataChain emits `Processed: N rows [elapsed, rate]`) and compute observed per-row rate.
->     - `observed_rate ≥ 0.66 × calib_rate` → carry on.
->     - `observed_rate < 0.5 × calib_rate` → **kill**, report the gap and the revised estimate, re-open the dialogue from 7d at the new band.
->     - No throughput line within 2 min → kill, investigate (startup cost, model download, auth retry), report.
-> 12. **L1/L2/L3 builds always take the delta path; L4 (Task) and queries do NOT.** For L1/L2/L3 builds whose source is `dc.read_storage()`, pass `update=True, delta=True`. The defaults are right: `delta_on` defaults to `("file.path", "file.etag", "file.version")` (catches re-uploads with same path but different content); `delta_compare=None` uses all non-`delta_on` fields. Override only when you have a specific reason (e.g., local FS sources where `etag` is empty — then pass `delta_compare="file.mtime"`). Same code on first build (SDK processes everything, since no prior version) and on subsequent runs (SDK processes only new/changed source items). When the source is `dc.read_dataset()` (chaining from a parent CAS layer), the parent's delta semantics propagate — no extra args needed. See `core/SKILL.md` Section 8 "Delta updates".
->
->     **Do NOT apply `update=True` / `delta=True` to L4 Task code or regular queries / exploration.** Those read the cached listing (per Critical Rule 2) unless the user explicitly asks to refresh. The delta-path rule is scoped to the C/A/S substrate; it does not generalize to downstream consumption.
->
->     Build signature lives in `attrs`: `model:<id>@<version>`, `preset:<name>`, optional `udf_hash:<short>` (skip when not trivially computable). When the current build signature differs from the prior version's `attrs`, do a **full rebuild** — old rows are stale even though source unchanged. Schema changes are a different dataset (different name), not a refresh of this one. Source-file deletions leave orphaned L2 storage files — keep them for audit and lineage; never auto-delete.
->
-> Step 1 (Bucket Enlistment) is itself a Container-layer artifact for the storage root: a lightweight, header-only view of what's in the bucket. The bucket entries appear in the Container row of the KB index next to any DataChain datasets explicitly tagged `cast:container` (e.g., parsed JSON sidecars promoted via the rule in step 10).
+> Step 1 (Bucket Enlistment) is itself a Container-layer artifact for
+> the storage root: a lightweight, header-only view of what's in the
+> bucket. Bucket entries appear in the Container row of the KB index
+> next to datasets explicitly tagged `cast:container` (e.g., parsed JSON
+> sidecars promoted per `CAST.md` §4.11).
 
 → Build and execute the pipeline the user requested, following core skill rules.
 → **While the pipeline is running**, enrich any Step 1 bucket JSON that does not yet have a `.md` — read `{skill_dir}/prompts/enrich_bucket.md` and generate the markdown in parallel with the running script.
