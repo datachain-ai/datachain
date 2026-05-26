@@ -671,7 +671,9 @@ def test_get_frames_get_np_no_double_decode(video_file, monkeypatch):
 
     open_call_count = 0
     arrays = [frame.get_np() for frame in frames]
-    assert open_call_count == 0, "get_np() should not re-open the file for frames from get_frames()"
+    assert open_call_count == 0, (
+        "get_np() should not re-open the file for frames from get_frames()"
+    )
     assert all(isinstance(arr, ndarray) for arr in arrays)
     assert all(arr.shape == (360, 640, 3) for arr in arrays)
 
@@ -690,7 +692,7 @@ def test_get_frames_decoded_not_pickled(video_file):
     frames = list(video_file.as_video_file().get_frames(0, 2))
     assert frames[0]._decoded is not None
 
-    restored = pickle.loads(pickle.dumps(frames[0]))
+    restored = pickle.loads(pickle.dumps(frames[0]))  # noqa: S301
     assert restored._decoded is None
 
 
