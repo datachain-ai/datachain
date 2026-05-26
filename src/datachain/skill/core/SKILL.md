@@ -43,6 +43,53 @@ to load the knowledge skill, or fall through to a direct solve.
      Prints `Status: exists|not found` and `Access: anonymous|authenticated|denied`. Exit code 0 = exists, 1 = not found.
   3. If status is `not found` or access is `denied` → **stop and ask the user** for credentials or configuration. Do not retry with variations.
   4. If access is `anonymous` → add `anon=True` to `read_storage()`. If `authenticated` → omit it. (Rule 1a)
+- [ ] **Model / heavy-init resource loaded via `.setup()`, not a module-level lazy global.** Use:
+  ```python
+  def load_model() -> Model:
+      return Model(...)                                 # any heavy init: ML model, DB client, tokenizer, etc.
+
+  chain = chain.setup(model=load_model).map(result=run_model)
+
+  def run_model(input: InputType, model: Model) -> OutputType:
+      ...
+  ```
+  NOT a `_model = None` + `_get_model()` lazy-init pattern. `.setup()`
+  initializes the resource once per worker process with the right
+  lifecycle hooks; module-level globals work for `parallel=1` but have
+  subtle pitfalls under `parallel=N` (each worker process initializes
+  its own copy on first call rather than at chain start, the resource
+  is invisible in the chain definition, and the global state across
+  multiple chains in the same process can leak). Make the dependency
+  explicit via `.setup()`.
+- [ ] **`.settings(parallel=N)` considered for the workload?** Parallel processing helps many UDF chains but is NOT mandatory — it's the right tool only when the workload benefits. DataChain's `parallel=N` is local multi-processing, with a real bootstrap cost (worker spawn + `.setup()` re-run per process). Use deliberately.
+
+  **Use `parallel=N` when:**
+  - Per-item work is I/O bound (file download/decode, API calls, header parses) — workers wait on network/disk in parallel.
+  - Per-item work is CPU-bound AND the model / UDF does NOT already saturate cores via internal multi-threading (small classifiers, regex, parsing, hashing, lightweight encoders).
+  - Total wall time is large enough to amortize the per-worker bootstrap (~seconds per worker for model re-load and process spawn). Rule of thumb: if total work is <30s, `parallel=` often costs more than it saves.
+
+  **Skip `parallel=N` (default serial) when:**
+  - The model already saturates the device (single-GPU inference where one process owns the GPU; PyTorch / NumPy with default OMP threading already using all CPU cores).
+  - Per-worker memory footprint × N would OOM (large model weights, large in-memory buffers).
+  - Chain is small (<50 items) or short-running (<30s) — bootstrap dominates.
+  - The UDF holds non-picklable / non-fork-safe state (some C-extension handles, CUDA contexts initialized at import time).
+
+  When you DO use it, the canonical form is:
+  ```python
+  chain = chain.settings(parallel=4)        # local multiprocessing — works anywhere
+  if dc.is_studio():
+      chain = chain.settings(workers=8)     # distributed UDF processing — Studio-only
+  ```
+  `workers=N` is Studio-only and MUST be guarded with `dc.is_studio()` — using `workers=` locally fails with `DATACHAIN_DISTRIBUTED import path is required`.
+
+  Rough N picks (when parallel applies):
+  - I/O-bound (header parse, sidecar, file listing, small download): `parallel=4-8`.
+  - Small / mid CPU model + decode (image embedder, small classifier, audio resample): `parallel=2-4`. Combine with `prefetch=2` for cache priming.
+  - External API calls (LLM / VLM / OCR / hosted embedding API): `parallel=8-16`, respect provider rate limits.
+
+  Anti-pattern to flag if you see it: a parallel chain that takes longer than the same chain serial. That's the bootstrap cost dominating — drop `parallel=`.
+
+  Combination with `.setup()`: `chain.setup(model=load_model).settings(parallel=4)...` — `.setup()` runs once per worker process under `parallel=N`, so each worker has its own model instance.
 
 ---
 

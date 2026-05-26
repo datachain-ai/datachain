@@ -381,6 +381,79 @@ for this question" — without surfacing what Asset / Container would
 unlock for the next question. Fused-L3 is a valid shape when the user
 has explicitly chosen it, not the agent's silent default.
 
+### 4.7b L1 wiring rule — three modes
+
+L1 captures task-agnostic source characteristics (codec, dimensions,
+fps, duration, format, schema). It is the most general substrate;
+future tasks (unknown today) will query headers regardless of what the
+current task wants. So L1 data is always worth capturing — but
+*whether* it lives as a standalone dataset or folded onto the L2 row
+depends on the substrate's maturity on the source.
+
+**Mode 1 — First L2 on this source, no L1 yet → fold into L2.**
+
+Add the header read as a column on the L2 row. The L2 UDF usually
+already needs the header to compute its sampling step, so capture is
+essentially free.
+
+```python
+class VideoFrameAsset(BaseModel):
+    source: dc.VideoFile
+    info: dc.Video                # folded L1 — codec, fps, duration, dims
+    timestamp: float
+    sampled_frame_index: int
+    frame: dc.File                # only for materialized-thumbnail L2
+```
+
+Do NOT build a separate L1 dataset at this stage. The folded column IS
+the L1 data, just colocated. Future tasks can still query headers via
+`dc.read_dataset("l2_…").select("source", "info")`. At one L2, a
+separate L1 is a dataset with no second consumer — pure bookkeeping
+cost.
+
+**Mode 2 — L1 already exists on this source → L2 reads from L1, no
+re-call.**
+
+```python
+def to_frames(file: VideoFile, info: Video) -> Iterator[VideoFrame]:
+    step = max(1, int(round(info.fps / TARGET_FPS)))
+    yield from file.get_frames(step=step)
+
+chain = dc.read_dataset("l1_container_<source>_headers").gen(frame=to_frames)
+```
+
+Never re-call `file.get_info()` inside the UDF — "L1 paid for this
+once" is the whole point of the layer. Re-calling it is the test_c2
+regression: L1 becomes decorative substrate.
+
+**Mode 3 — 3+ L2 layers on this source carry folded headers → extract
+L1.**
+
+Header data is now duplicated across L2 versions; refresh
+coordination gets expensive. Break L1 out into a canonical dataset:
+
+```python
+# project from an existing L2:
+(dc.read_dataset("l2_…")
+   .select("source", "info")
+   .save("l1_container_<source>_headers", attrs=[...]))
+# OR rebuild from raw storage, then migrate L2 reads to read from L1
+# on next refresh.
+```
+
+After extraction, future L2 builds switch to Mode 2.
+
+**Dialogue impact.** §4.10 and §4.10b should reflect this: the
+recommended Asset shape is "L2 with folded `info` column" when no L1
+exists yet on the source. Standalone L1 appears as a separate build
+candidate ONLY when:
+
+- The task is genuinely header-only (the user asked "what codecs are
+  used" or "list all 4K videos" and no decode is needed) — build L1
+  alone, no L2.
+- ≥3 L2s already exist on this source and the duplication is biting.
+- The user explicitly asks for it.
+
 ### 4.8 Estimate cost by measurement, never guess
 
 The number going into the §4.9 gate MUST be calibration-derived.
@@ -417,6 +490,14 @@ fallback rules of thumb below.
 Extrapolate: `wall_full = (wall_sample / N) × total × 1.5`;
 `asset_full_bytes = (sample_bytes / N) × total × 1.5`. Cost in $ from the
 recall-economics tier unless calibration disagrees by >3×.
+
+**Calibration measurements are reusable across scope changes** within
+the same media / decode profile. When the user narrows or broadens
+scope after the dialogue was rendered, do NOT re-calibrate "for
+cleanliness" — just re-extrapolate the existing per-item numbers to
+the new item count. See §4.10.5 for the narrow set of cases that
+warrant a fresh run, and for the user-facing question to ask when in
+doubt.
 
 **Sanity floor.** Estimate disagreeing with the recall-economics tier by
 >100× → re-calibrate, do not paper over.
@@ -572,6 +653,93 @@ Failure modes that defeat CAST doctrine:
 calibration is feasible but wasn't run, run it first and then render the
 dialogue.
 
+### 4.10b Small-scope dialogue variant
+
+When the chosen scope has **<50 source items** OR the full L3 wall time
+is **<5 min**, the L1+L2+L3 ladder is often over-engineering: the
+substrate covers only the narrow subdirectory, not its siblings, so the
+per-question reuse payoff is small while the bookkeeping cost (three
+saved datasets, three KB entries, three rebuilds on schema change) is
+unchanged. Render the small-scope template instead of §4.10:
+
+```
+Scope: {dir}, {n} items, full L3 wall ~{wall_l3}.
+Substrate at this scope covers ONLY {dir} — siblings ({sibling list})
+would need a separate build.
+
+Two ways forward:
+
+  a) [recommended for one-shot] fused-L3 only
+     ~{wall_l3_fused}, leaves no reusable substrate; re-decodes if
+     you ask another question on this directory later.
+
+  b) full ladder L1 + L2 + L3 at directory scope
+     ~{wall_full_dir}, $L1+L2+L3 substrate covers ONLY {dir}.
+     Worth it only if you expect >2 future questions on this exact
+     subdirectory.
+
+  c) full ladder L1 + L2 + L3 at bucket scope (broader)
+     ~{wall_full_bucket}, substrate compounds across siblings
+     ({n_sibling_items} extra items, ~{extra_wall} extra wall).
+     The CAST default; pick this when bucket-wide substrate is the
+     real goal.
+```
+
+Lead with (a) — the user narrowed scope; respect the intent. Surface
+(c) so the bucket-wide alternative is visible (this is the "compounds"
+nudge); never silently default to (b) just because directory scope was
+named.
+
+If neither §4.10 nor §4.10b clearly applies (mid-size scope, ambiguous
+wall), default to §4.10 (full template).
+
+### 4.10.5 Scope-change re-dialogue protocol
+
+If the user broadens or narrows scope **after** the dialogue was
+rendered ("actually, just dev-test-sony", "do it for the whole bucket
+instead", "drop the eval split"), reuse the existing calibration
+measurements and re-extrapolate to the new item count. Render the
+dialogue again with the updated cost numbers — picking §4.10 or §4.10b
+based on the *new* scope's size.
+
+**Do NOT re-calibrate by default.** Re-running 60–240 s of calibration
+on the same media/decode profile is wasted wall time. The only cases
+that warrant a fresh calibration are:
+
+- **Media-type change** within the same task (video task → audio task
+  on the same bucket).
+- **Decode-profile change** (e.g., 360° 1920×960 MP4 → 4K MP4, or
+  small JPEG thumbnails → original-resolution TIFF) where the prior
+  per-item wall is unlikely to extrapolate.
+
+Even then, do NOT auto-recalibrate — ASK the user one targeted
+question:
+
+```
+Scope changed from {old} to {new}. Existing calibration was on
+{sample-shape}; the new scope's items are {different-shape}. Re-run
+calibration (~{calib_wall}) or extrapolate from the existing one?
+Extrapolation is fine for most narrowings within the same media type.
+```
+
+Default to extrapolation when in doubt.
+
+**The recommendation can flip even when the measurements are reused.**
+A bucket-scope dialogue may have recommended the full L1+L2+L3 ladder;
+the same measurements at directory scope may now point to fused-L3
+(via §4.10b). Re-deriving the recommendation is the whole point of
+re-rendering the dialogue — never silently carry the prior
+recommendation forward at the new scope.
+
+**Orphan-substrate warning.** When the user picks the full ladder at
+`scope:directory` (small-scope variant option (b)), surface the trade
+explicitly in the post-build report: *"L1+L2 substrate is
+directory-scoped — it covers only {dir}. A future task on a sibling
+subdirectory ({sibling list}) will require a separate build, or you
+can promote to `scope:bucket` later by re-running the build scripts
+with the bucket-root URI."* The agent should NOT auto-rebuild at
+bucket scope without asking.
+
 ### 4.11 Containerise raw JSON / sidecars too
 
 If the task pulls structured JSON / Parquet / CSV from the bucket and
@@ -692,3 +860,12 @@ Apply these in every data-related response.
    State once: "Solving directly without building a layer." Shortcuts are
    the user-side opt-out; until they're spoken, default is
    over-communicate.
+6. **Narrowing scope mid-dialogue is a soft shortcut.** When the user
+   voluntarily narrows scope after seeing a bucket-scope dialogue ("just
+   this directory", "only the sony split", "drop eval"), that's a signal
+   they want a smaller investment than the full ladder. Re-render via
+   §4.10.5 — and if the new scope is small (§4.10b applies), **lead with
+   fused-L3**, not the full ladder. The user can still pick the ladder,
+   but the recommendation order flips. Do NOT treat the narrow as "same
+   plan, smaller domain" — that defeats the point of letting the user
+   redirect.
