@@ -879,8 +879,10 @@ chain.avg("column")
 
 **Delta + incremental:**
 ```python
-dc.read_storage("s3://bucket/", update=True, delta=True,
-                delta_on="file.path", delta_compare="file.mtime")
+dc.read_storage("s3://bucket/", update=True, delta=True)
+# Defaults: delta_on=("file.path", "file.etag", "file.version"); delta_compare=None
+# (all non-delta_on fields). Override (e.g., delta_compare="file.mtime") only for
+# sources where etag is empty/unreliable, like local FS.
 ```
 
 ---
@@ -1099,51 +1101,77 @@ Each source file MUST be fetched from storage exactly once per build. The unit o
 
 The choice between shapes is driven by task requirements and Asset-reuse economics — see knowledge/SKILL.md CASE Decomposition for the decision procedure.
 
-**Aggregate example (one row per video):**
+**Sense fan-out example (one row per inference unit, full output captured).** Object detection is one concretization; the same shape generalizes to any per-frame / per-segment inference. Schema captures the model's full output (every detected class + bbox + confidence), not a question-specific projection. The Experiment layer reduces to the asked question — see `knowledge/SKILL.md` "Per-layer reuse rule" / "Saved schema captures what was produced".
 
 ```python
+from typing import Iterator
 from pydantic import BaseModel
 
-class VideoSignals(BaseModel):
-    person_frames: int
-    car_frames: int
-    sampled_frames: int
-    max_person_conf: float
+class Detection(BaseModel):
+    source: dc.VideoFile
+    timestamp: float
+    sampled_frame_index: int
+    cls_id: int
+    cls_name: str
+    confidence: float
+    bbox_x1: float; bbox_y1: float; bbox_x2: float; bbox_y2: float
 
-def detect_in_video(file: dc.VideoFile, model) -> VideoSignals:
-    info = file.get_info()
-    step = max(int(round(info.fps or 30.0)), 1)        # 1 sample/sec
-    counts = {"person": 0, "car": 0}
-    confs = {"person": 0.0}
-    sampled = 0
-    for frame in file.get_frames(step=step):
-        sampled += 1
+def detect_in_video(file: dc.VideoFile, model) -> Iterator[Detection]:
+    # Walk source once at task-minimum sampling; emit ALL detections the
+    # model produced — not a question-specific projection.
+    step = max(int(round((file.get_info().fps or 30.0))), 1)
+    for idx, frame in enumerate(file.get_frames(step=step)):
         result = model.predict(frame.get_np(), imgsz=640, conf=0.25, verbose=False)[0]
-        for cls_id, conf in zip(result.boxes.cls.tolist(), result.boxes.conf.tolist()):
-            label = result.names[int(cls_id)]
-            if label in counts:
-                counts[label] += 1
-                if label == "person":
-                    confs["person"] = max(confs["person"], float(conf))
-    return VideoSignals(
-        person_frames=counts["person"],
-        car_frames=counts["car"],
-        sampled_frames=sampled,
-        max_person_conf=confs["person"],
-    )
+        ts = float(frame.timestamp)
+        for cid, conf, box in zip(result.boxes.cls.tolist(),
+                                  result.boxes.conf.tolist(),
+                                  result.boxes.xyxyn.tolist()):
+            yield Detection(
+                source=file, timestamp=ts, sampled_frame_index=idx,
+                cls_id=int(cid), cls_name=result.names[int(cid)],
+                confidence=float(conf),
+                bbox_x1=box[0], bbox_y1=box[1], bbox_x2=box[2], bbox_y2=box[3],
+            )
 
 (
-    dc.read_storage("gs://videos/", type="video", anon=True,
-                    update=True, delta=True,
-                    delta_on="file.path", delta_compare="file.mtime")
+    dc.read_storage("<source_uri>", type="video", anon=True,
+                    update=True, delta=True)
     .settings(parallel=True)
-    .setup(model=lambda: YOLO("yolov8n.pt"))
-    .map(signals=detect_in_video)
-    .save("l3_sense_videos_yolo_signals", attrs=["case:sense", "scope:bucket", "source:videos"])
+    .setup(model=lambda: <load_object_detector>())
+    .gen(det=detect_in_video)
+    .save("<l3_name>", attrs=["case:sense", "source:<slug>",
+                              "model:<id>@<version>", "preset:<preset>"])
+)
+
+# Experiment layer — different questions, one Sense substrate.
+# Each question is a cheap projection over the saved detections.
+
+videos_with_people = (
+    dc.read_dataset("<l3_name>")
+    .filter(dc.C("cls_name") == "person")
+    .group_by(person_frames=dc.func.count(), partition_by="source.path")
+    .filter(dc.C("person_frames") > 0)
+    .save("videos_with_people", attrs=["case:experiment", "source:<slug>"])
+)
+
+videos_with_vehicles = (
+    dc.read_dataset("<l3_name>")
+    .filter(dc.C("cls_name").isin(["car", "truck", "bus"]))
+    .group_by(vehicle_frames=dc.func.count(), partition_by="source.path")
+    .filter(dc.C("vehicle_frames") > 0)
+    .save("videos_with_vehicles", attrs=["case:experiment", "source:<slug>"])
 )
 ```
 
-Cost: a pointer-row Asset path (38k rows for 235 videos at 1 fps) re-fetches each video ~160× in the Sense stage. Decode-once fetches each video once — typically 30–100× cheaper. If thin per-frame rows are also needed, emit them inside the same `.gen` from the same `SourceFile`; never via a separate pointer-row stage.
+**Same principle, other inference shapes:**
+
+- **Image / audio embeddings** — row: `embedding: list[float]` (full vector), `model: str`, `embedding_dim: int`, optional `latency_ms: float`. Distance queries are Experiment.
+- **Transcription** — row per segment: `text: str`, `start_ms: int`, `end_ms: int`, `confidence: float`, `model: str`. "Files containing speech" is `filter(text != "").group_by(source.path).count()`.
+- **Classification** — row has all class probabilities or logits, plus `top_cls`/`top_conf`. Don't store only the argmax.
+- **LLM / VLM call** — row: `response_text: str` (or structured fields), `input_tokens: int`, `output_tokens: int`, `model: str`, `finish_reason: str`, `latency_ms: float`. Cost is computed at query time (`input_tokens × $/1M + output_tokens × $/1M`), not at save time.
+- **L1 header parse** — row has every field the parser produced (codec, fps, duration, dimensions, sample rate, schema, …), not just the field the current question reads.
+
+Cost note: a pointer-row Asset path (38k rows for 235 videos at 1 fps) re-fetches each video ~160× in the Sense stage. Decode-once fetches each video once — typically 30–100× cheaper. If thin per-frame rows are also needed for materialized Asset, emit them inside the same `.gen` from the same `SourceFile`; never via a separate pointer-row stage.
 
 **Materialized thumbnail Asset (storage + `dc.File` pointer):**
 
@@ -1196,27 +1224,37 @@ def sample_frames(file: dc.VideoFile) -> Iterator[VideoFrameAsset]:
 
 (
     dc.read_storage("gs://datachain-starss23/", type="video", anon=True,
-                    update=True, delta=True,
-                    delta_on="file.path", delta_compare="file.mtime")
+                    update=True, delta=True)
     .settings(parallel=True)
     .gen(frame=sample_frames)
     .save("l2_asset_starss23_frames", attrs=["case:asset", "source:starss23", "preset:1fps_640", "format:jpeg"])
 )
 ```
 
-Downstream Sense layer consumes the `dc.File`-typed thumbnail directly:
+Downstream Sense layer consumes the `dc.File`-typed thumbnail directly and emits per-detection rows (full inference output, not a question-specific projection):
 
 ```python
-def detect_objects(frame: dc.File, yolo_model) -> ObjectCounts:
+def detect_in_frame(frame: dc.File, model) -> Iterator[Detection]:
     image = Image.open(BytesIO(frame.read())).convert("RGB")
-    ...
+    result = model.predict(image, imgsz=640, conf=0.25, verbose=False)[0]
+    for cid, conf, box in zip(result.boxes.cls.tolist(),
+                              result.boxes.conf.tolist(),
+                              result.boxes.xyxyn.tolist()):
+        yield Detection(  # same Detection schema as the decode-once example above
+            cls_id=int(cid), cls_name=result.names[int(cid)],
+            confidence=float(conf),
+            bbox_x1=box[0], bbox_y1=box[1], bbox_x2=box[2], bbox_y2=box[3],
+            # plus carry source / timestamp / sampled_frame_index from the L2 row via .merge or .map signature
+        )
 
 (
     dc.read_dataset("l2_asset_starss23_frames")
     .settings(parallel=True)
-    .setup(yolo_model=lambda: YOLO("yolov8n.pt"))
-    .map(det=detect_objects, params=["frame"])           # not params=["frame.jpeg"]
-    .save("l3_sense_starss23_yolo_objects", attrs=["case:sense", "source:starss23", "parent:l2_asset_starss23_frames"])
+    .setup(model=lambda: <load_object_detector>())
+    .gen(det=detect_in_frame, params=["frame"])           # not params=["frame.jpeg"]
+    .save("l3_sense_starss23_object_detections",
+          attrs=["case:sense", "source:starss23", "parent:l2_asset_starss23_frames",
+                 "model:<id>@<ver>", "preset:1fps_640"])
 )
 ```
 
@@ -1298,8 +1336,7 @@ def analyze(file: dc.File, client) -> Analysis:
 **Delta updates (incremental, process only new/changed files):**
 ```python
 (
-    dc.read_storage("s3://bucket/data/", update=True, delta=True,
-                    delta_on="file.path", delta_compare="file.mtime")
+    dc.read_storage("s3://bucket/data/", update=True, delta=True)
     .map(result=process_file)
     .save("processed_data")
 )
