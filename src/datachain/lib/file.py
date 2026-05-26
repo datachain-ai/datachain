@@ -1523,19 +1523,32 @@ class VideoFrame(DataModel):
     video_stream_index: int = 0
     timestamp: float
 
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._decoded = None
+
+    def __getstate__(self):
+        state = super().__getstate__()
+        state["__dict__"] = state["__dict__"].copy()
+        state["__dict__"]["_decoded"] = None
+        return state
+
     def get_np(self) -> "ndarray":
         """
         Returns a video frame from the video file as a NumPy array.
 
-        For seekable constant-FPS streams, this seeks near the requested frame
-        and decodes forward from the previous keyframe. Otherwise, it may decode
-        from the start. Use ``VideoFile.get_frames()`` when reading many frames
-        sequentially.
+        When called on frames yielded by ``VideoFile.get_frames()``, returns
+        the already-decoded pixel data without a second decode pass. For
+        single-frame lookups via ``VideoFile.get_frame()``, seeks to and
+        decodes the requested frame.
 
         Returns:
             ndarray: A NumPy array representing the video frame,
                      in the shape (height, width, channels).
         """
+        if self._decoded is not None:
+            return self._decoded.to_ndarray(format="rgb24")
+
         from .video import video_frame_np
 
         return video_frame_np(

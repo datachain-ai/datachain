@@ -237,12 +237,14 @@ def _video_frames_from_decoded(
         if frame_index < start or (frame_index - start) % step:
             continue
 
-        yield VideoFrame(
+        video_frame = VideoFrame(
             video=video,
             frame=frame_index,
             video_stream_index=video_stream_index,
             timestamp=_frame_timestamp(frame, frame_index, fps),
         )
+        video_frame._decoded = frame
+        yield video_frame
 
 
 def video_frame_np(
