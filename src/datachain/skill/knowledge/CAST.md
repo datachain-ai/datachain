@@ -139,9 +139,10 @@ l3_<source>_<descriptor>      # model-derived signals
 - **Preserve source-path word order in the slug.** Write subdirs
   left-to-right matching the bucket path; never drop or reverse path
   components. Example: source URI
-  `gs://datachain-starss23/video_dev/dev-{train,test}-sony/` →
-  slug `starss23_video_dev_sony` ✓; slug `starss23_sony` ✗ (drops
-  `video_dev/`; collides with hypothetical `metadata_dev/dev-*-sony/`).
+  `<scheme>://<bucket>/<level1>/<sublevel>-{a,b}-<tag>/` →
+  slug `<bucket>_<level1>_<tag>` ✓; slug `<bucket>_<tag>` ✗ (drops
+  `<level1>/`; collides with hypothetical sibling
+  `<other-level1>/<sublevel>-*-<tag>/`).
 - **Preset/config → `attrs`, never in the name.** Names describe content,
   not parameters.
 - **One content noun per name.** Pick one — don't stack redundant
@@ -249,17 +250,17 @@ class DetectionRow(BaseModel):
     bbox: list[float]
 
 # Build chain:
-(dc.read_storage("gs://.../video_eval/", type="video", update=True, delta=True)
-   .setup(model=load_yolo)
+(dc.read_storage("<scheme>://<bucket>/<prefix>/", type="video", update=True, delta=True)
+   .setup(model=load_detector)
    .gen(det=detect_per_frame)        # one source → many detection rows
-   .save("l3_starss23_video_eval_yolo", attrs=["cast:sense", ...]))
+   .save("l3_<source>_<descriptor>", attrs=["cast:sense", ...]))
 
-# Task: "videos with N+ people" — one .filter() + one .group_by() + one .save()
-(dc.read_dataset("l3_starss23_video_eval_yolo")
-   .filter(dc.C("label") == "person")
-   .group_by(n_person=dc.func.count(), partition_by="source")
-   .filter(dc.C("n_person") >= THRESHOLD)
-   .save("videos_with_people", attrs=["cast:task", ...]))
+# Task: "sources with N+ matches" — one .filter() + one .group_by() + one .save()
+(dc.read_dataset("l3_<source>_<descriptor>")
+   .filter(dc.C("label") == "<target_label>")
+   .group_by(n_matches=dc.func.count(), partition_by="source")
+   .filter(dc.C("n_matches") >= THRESHOLD)
+   .save("<task_slug>", attrs=["cast:task", ...]))
 ```
 
 **Anti-pattern — do NOT replicate:** per-video L3 with `frames:

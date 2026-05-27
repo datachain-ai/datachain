@@ -63,11 +63,32 @@ List dependencies as clickable links when `file_path` is present:
 
 ## Preview
 
-{Markdown table from preview.columns and preview.rows. Show all provided rows;
-never omit because values are large — truncate instead.
-- Long list/vector columns: show the first 2-3 elements + `…` + length, e.g. `[0.0132, -3.34e-3, …] (768)`.
-- If `preview.file_url_prefix` is present, cells in columns ending with `.path` or named `path` MUST be clickable: `[value]({file_url_prefix}/{value})`.
-Omit this section entirely if `preview` is null.}
+Render the Markdown table **from `preview.columns` and `preview.rows`
+verbatim**. Do NOT rename columns, drop columns, reorder columns, or
+inject derived columns. The saved schema is the contract; the preview
+shows that schema's rows as they are.
+
+- Show every row in `preview.rows` (never omit for size — truncate
+  values instead).
+- Long list / vector columns: show the first 2-3 elements + `…` + length,
+  e.g. `[0.0132, -3.34e-3, …] (768)`.
+- **Clickable file paths — mandatory when `preview.file_url_prefix` is
+  set.** For every column whose name ends in `.path` or equals `path`,
+  wrap each cell value in `[<value>]({file_url_prefix}/<value>)`. This
+  applies to **every** such column, including secondary file columns
+  on Task rows that joined multiple sources (e.g. a `right_*.path` from
+  a merge). If a column was renamed for display, the rule still applies
+  — the underlying source field type, not the display label, determines
+  clickability.
+
+  Transformation recipe:
+
+  ```
+  Cell value:     <relative/file/path.ext>
+  Wrapped:        [<relative/file/path.ext>]({file_url_prefix}/<relative/file/path.ext>)
+  ```
+
+Omit this section entirely if `preview` is null.
 
 ## Schema
 
