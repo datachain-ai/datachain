@@ -70,6 +70,32 @@ def add_auth_parser(subparsers, parent_parser) -> None:
         help="Save the token in the local project config",
     )
 
+    # Team scoping arguments
+    login_parser.add_argument(
+        "--team",
+        action="append",
+        help="Scope token to specific teams (can specify multiple)",
+    )
+    login_parser.add_argument(
+        "--all-teams",
+        action="store_true",
+        default=False,
+        help="Grant access to all teams (default behavior)",
+    )
+
+    # Expiration arguments
+    login_parser.add_argument(
+        "--expires-in",
+        type=int,
+        help="Token expiration in days (default: 365)",
+    )
+    login_parser.add_argument(
+        "--never-expires",
+        action="store_true",
+        default=False,
+        help="Create token that never expires",
+    )
+
     auth_logout_help = "Log out from Studio"
     auth_logout_description = (
         "Remove the Studio authentication token from global config."

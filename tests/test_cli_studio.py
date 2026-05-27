@@ -55,7 +55,10 @@ def test_studio_login_success(mocker):
     assert main(["auth", "login"]) == 0
 
     config = Config().read()
-    assert config["studio"]["token"] == "isat_access_token"  # noqa: S105 # nosec B105
+    # Check enhanced token structure
+    token_config = config["studio"]["token"]
+    assert isinstance(token_config, dict), "Token should be enhanced structure"
+    assert token_config["value"] == "isat_access_token"  # nosec B105
     assert config["studio"]["url"] == STUDIO_URL
 
 
@@ -86,10 +89,108 @@ def test_studio_login_arguments(mocker):
         token_name="token_name",  #  noqa: S106
         hostname="https://example.com",
         scopes="experiments",
+        team_names=None,  # New parameter
+        expires_in_days=365,  # New parameter
+        never_expires=False,  # New parameter
         client_name="DataChain",
         open_browser=False,
         post_login_message=POST_LOGIN_MESSAGE,
     )
+
+
+def test_studio_login_with_team_scoping(mocker):
+    mock = mocker.patch(
+        "dvc_studio_client.auth.get_access_token",
+        return_value=("token_name", "isat_access_token"),
+    )
+
+    assert (
+        main(
+            [
+                "auth",
+                "login",
+                "--team",
+                "ml-team",
+                "--team",
+                "data-team",
+                "--expires-in",
+                "90",
+            ]
+        )
+        == 0
+    )
+
+    mock.assert_called_with(
+        token_name=None,
+        hostname=STUDIO_URL,
+        scopes=None,
+        team_names=["ml-team", "data-team"],  # Multiple teams
+        expires_in_days=90,  # Custom expiration
+        never_expires=False,
+        client_name="DataChain",
+        open_browser=True,
+        post_login_message=POST_LOGIN_MESSAGE,
+    )
+
+    # Check saved token config
+    config = Config().read()
+    token_config = config["studio"]["token"]
+    assert token_config["teams"] == ["ml-team", "data-team"]
+    assert not token_config["never_expires"]
+
+
+def test_studio_login_with_all_teams(mocker):
+    mock = mocker.patch(
+        "dvc_studio_client.auth.get_access_token",
+        return_value=("token_name", "isat_access_token"),
+    )
+
+    assert main(["auth", "login", "--all-teams"]) == 0
+
+    mock.assert_called_with(
+        token_name=None,
+        hostname=STUDIO_URL,
+        scopes=None,
+        team_names=["all"],  # All teams access
+        expires_in_days=365,
+        never_expires=False,
+        client_name="DataChain",
+        open_browser=True,
+        post_login_message=POST_LOGIN_MESSAGE,
+    )
+
+
+def test_studio_login_never_expires(mocker):
+    mock = mocker.patch(
+        "dvc_studio_client.auth.get_access_token",
+        return_value=("token_name", "isat_access_token"),
+    )
+
+    assert main(["auth", "login", "--never-expires"]) == 0
+
+    mock.assert_called_with(
+        token_name=None,
+        hostname=STUDIO_URL,
+        scopes=None,
+        team_names=None,
+        expires_in_days=365,
+        never_expires=True,  # Never expires flag
+        client_name="DataChain",
+        open_browser=True,
+        post_login_message=POST_LOGIN_MESSAGE,
+    )
+
+    # Check saved token config
+    config = Config().read()
+    token_config = config["studio"]["token"]
+    assert token_config["never_expires"] is True
+    assert "expires_at" not in token_config  # expires_at key should not exist
+
+
+def test_studio_login_conflicting_team_args():
+    """Test that conflicting --team and --all-teams arguments are rejected."""
+    result = main(["auth", "login", "--team", "ml-team", "--all-teams"])
+    assert result == 1  # Should fail
 
 
 def test_studio_logout():

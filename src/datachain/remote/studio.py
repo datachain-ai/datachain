@@ -30,6 +30,7 @@ ClusterListData = list[dict[str, Any]]
 logger = logging.getLogger("datachain")
 
 DATASET_ROWS_CHUNK_SIZE = 8192
+ALL_TEAMS_ACCESS = "all"
 
 
 def get_studio_env_variable(name: str) -> Any:
@@ -82,20 +83,73 @@ class StudioClient:
     def __init__(self, timeout: float = 3600.0, team: str | None = None) -> None:
         self._check_dependencies()
         self.timeout = timeout
-        self._config = None
+        self._config: dict[str, Any] | None = None
         self._team = team
 
     @property
     def token(self) -> str:
-        token = get_studio_env_variable("TOKEN") or self.config.get("token")
+        env_token = get_studio_env_variable("TOKEN")
+        if env_token:
+            # Environment token is always treated as valid legacy token
+            return env_token
 
-        if not token:
+        token_config = self.config.get("token")
+        if not token_config:
             raise DataChainError(
                 "Studio token is not set. Use `datachain auth login` "
                 "or environment variable `DATACHAIN_STUDIO_TOKEN` to set it."
             )
 
-        return token
+        # Handle legacy string token format
+        if isinstance(token_config, str):
+            # Auto-migrate legacy token to enhanced format
+            from datachain.studio import migrate_legacy_token
+
+            migrated_config = migrate_legacy_token(token_config)
+
+            # Save migrated config
+            from datachain.config import Config, ConfigLevel
+
+            with Config(ConfigLevel.GLOBAL).edit() as conf:
+                studio_conf = conf.get("studio", {})
+                studio_conf["token"] = migrated_config
+                conf["studio"] = studio_conf
+
+            # Update cached config
+            self._config = self.config.copy()
+            self._config["token"] = migrated_config
+            token_config = migrated_config
+
+        # Validate token expiration
+        from datachain.studio import validate_token_config
+
+        if not validate_token_config(token_config):
+            raise DataChainError(
+                "Studio token has expired. Please run: datachain auth login"
+            )
+
+        # Check team authorization if team is being used
+        if hasattr(self, "_team") and self._team:
+            self._check_team_authorization(token_config, self._team)
+
+        return token_config["value"]
+
+    def _check_team_authorization(self, token_config, requested_team):
+        """Check if token has access to requested team."""
+        if isinstance(token_config, str):
+            return True  # Legacy tokens have all access
+
+        token_teams = token_config.get("teams", ALL_TEAMS_ACCESS)
+        if token_teams == ALL_TEAMS_ACCESS:
+            return True
+
+        if isinstance(token_teams, list) and requested_team in token_teams:
+            return True
+
+        raise DataChainError(
+            f"Token does not have access to team '{requested_team}'. "
+            f"Re-login with: datachain auth login --team {requested_team}"
+        )
 
     @property
     def url(self) -> str:

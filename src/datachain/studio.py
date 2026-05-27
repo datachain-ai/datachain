@@ -3,7 +3,7 @@ import logging
 import os
 import random
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 import dateparser
@@ -168,6 +168,21 @@ def login(args: "Namespace"):
     hostname = args.hostname or get_studio_url(config)
     scopes = args.scopes
 
+    # Parse team arguments
+    team_names = getattr(args, "team", None)
+    all_teams = getattr(args, "all_teams", False)
+
+    if all_teams and team_names:
+        raise DataChainError("Cannot specify both --team and --all-teams")
+
+    # Set team_names to ["all"] if all_teams is True
+    if all_teams:
+        team_names = ["all"]
+
+    # Parse expiration arguments
+    expires_in_days = getattr(args, "expires_in", None) or 365
+    never_expires = getattr(args, "never_expires", False)
+
     if config.get("url", hostname) == hostname and "token" in config:
         raise DataChainError(
             "Token already exists. "
@@ -181,6 +196,9 @@ def login(args: "Namespace"):
             token_name=name,
             hostname=hostname,
             scopes=scopes,
+            team_names=team_names,  # New parameter
+            expires_in_days=expires_in_days,  # New parameter
+            never_expires=never_expires,  # New parameter
             open_browser=open_browser,
             client_name="DataChain",
             post_login_message=POST_LOGIN_MESSAGE,
@@ -189,8 +207,16 @@ def login(args: "Namespace"):
         raise DataChainError(f"Failed to authenticate with Studio: {exc}") from exc
 
     level = ConfigLevel.LOCAL if args.local else ConfigLevel.GLOBAL
-    config_path = save_config(hostname, access_token, level=level)
+    config_path = save_enhanced_config(
+        hostname, access_token, team_names, expires_in_days, never_expires, level
+    )
     print(f"Authentication complete. Saved token to {config_path}.")
+    if team_names and team_names != ["all"]:
+        print(f"Token is scoped to teams: {', '.join(team_names)}")
+    if never_expires:
+        print("Token will never expire.")
+    else:
+        print(f"Token will expire in {expires_in_days} days.")
     print("You can now use 'datachain auth team' to set the default team.")
     return 0
 
@@ -340,6 +366,77 @@ def save_config(hostname, token, level=ConfigLevel.GLOBAL):
         conf["studio"] = studio_conf
 
     return config.config_file()
+
+
+def save_enhanced_config(
+    hostname,
+    token,
+    team_names,
+    expires_in_days,
+    never_expires,
+    level=ConfigLevel.GLOBAL,
+):
+    """Save enhanced token configuration with team scoping and expiration."""
+    config = Config(level)
+    with config.edit() as conf:
+        studio_conf = conf.get("studio", {})
+        studio_conf["url"] = hostname
+
+        # Create enhanced token structure
+        token_config = {
+            "value": token,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "never_expires": never_expires,
+        }
+
+        # Set expiration - don't include expires_at key if never_expires is True
+        if not never_expires:
+            expiry_date = datetime.now(timezone.utc) + timedelta(days=expires_in_days)
+            token_config["expires_at"] = expiry_date.isoformat()
+
+        # Set team scoping
+        if team_names:
+            token_config["teams"] = team_names
+        else:
+            token_config["teams"] = "all"
+
+        studio_conf["token"] = token_config
+        conf["studio"] = studio_conf
+
+    return config.config_file()
+
+
+def validate_token_config(token_config):
+    """Validate token expiration and return True if valid."""
+    if isinstance(token_config, str):
+        # Legacy token format - always valid but should be migrated
+        logger.info(
+            "Found legacy token format. Consider re-logging in for enhanced security."
+        )
+        return True
+
+    if token_config.get("never_expires", False):
+        return True
+
+    expires_at = token_config.get("expires_at")
+    return not (
+        expires_at and datetime.fromisoformat(expires_at) <= datetime.now(timezone.utc)
+    )
+
+
+def migrate_legacy_token(token_config):
+    """Migrate legacy string token to enhanced format."""
+    if isinstance(token_config, str):
+        logger.info("Migrating legacy token format to enhanced structure.")
+        return {
+            "value": token_config,
+            "teams": "all",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "never_expires": True,
+            "migrated_from_legacy": True,
+            # Note: No expires_at key for never-expires tokens
+        }
+    return token_config
 
 
 def parse_start_time(start_time_str: str | None) -> str | None:
