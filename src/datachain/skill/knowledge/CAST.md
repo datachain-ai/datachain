@@ -203,40 +203,40 @@ When you call `.gen(name=fn)`:
   stringifies hints and DataChain's signal-schema resolution rejects the
   string-vs-class mismatch.
 
-### Row shape — prefer nested over flat
+### Row granularity — one big table, pick the right grain
 
-When a source decomposes into sub-units (segments, frames, chunks,
-events, time-windows, records), the default row shape is **nested**:
-one row per source, with sub-units as nested Pydantic lists.
+Every saved dataset is **one big Pydantic table** — that part is fixed.
+The methodology choice is **granularity**: what entity is "one row"?
+
+**Default: row granularity matches the Task entity.** Identify what
+the user's question filters or groups on; make that the row. An ideal
+dataset answers the Task with one `.filter()` / `.group_by()` — no
+`.map()` to walk nested lists.
+
+**Finer sub-units stay nested as Pydantic lists** (preserves §1.2
+full-output rule). One row per Task entity; everything below sits in
+nested fields that downstream `.gen` / `.map` can fan out when needed,
+but Task-level analytics never touch.
 
 ```python
-class SegmentInfo(BaseModel):
-    start: float
-    end: float
-    mask: list[float]
-
-class FrameAnalysis(BaseModel):
-    timestamp: float
-    frame_index: int
-    detections: list[Detection]
-    segments: list[SegmentInfo]
-
+# Task: "find videos with high pedestrian density"
+# Row = per-video. Frames + detections live as nested lists.
 class VideoRow(BaseModel):
     source: dc.VideoFile
-    info: dc.Video                  # codec, fps, duration, dims (folded L1, §4.7b)
-    frames: list[FrameAnalysis]
+    info: dc.Video                          # folded L1 (§4.7b)
+    frames: list[FrameAnalysis]             # nested
+    pedestrian_density: float               # derived column for the Task filter
 ```
 
-The flat alternative — one row per terminal unit with parent dimensions
-as scalar references — wins only in two cases: (a) a downstream tool
-requires one-row-per-unit (annotation UI, training pipeline reading
-filesystem rows), or (b) per-unit aggregations dominate over hierarchy
-queries.
+**Anti-pattern: the Task's filter target is buried in nested lists.**
+If the user filters on something inside `list[list[T]]`, the
+granularity is wrong — pick one level deeper. Lists at the root level
+force `.map()` for every analytic query and defeat Data Memory's
+warehouse-speed promise.
 
-The full menu of row shapes (nested, flat-pointer, flat-materialized,
-fused-L3) and the dialogue rules for picking among them live in §4.8
-and §4.10.0. Nested is always the recommended default in the §4.10
-dialogue; flat shapes appear as the alternative for cases (a) and (b).
+Granularity is a first-class user question in the §4.10 dialogue
+(§4.10.0 Q3), phrased in domain terms (per-video / per-frame /
+per-segment) with the Task-matched grain pre-selected.
 
 ### Typed File references on substrate rows — never bare paths
 
@@ -463,32 +463,28 @@ Never paraphrase a missing measurement — say `not measured` literally.
 If the estimate disagrees with the recall-economics tier by >100×,
 re-derive before quoting (wrong table row? wrong file count?).
 
-**L2 row-shape options — pick deliberately.** This is the data-model
-dimension surfaced in §4.10.0. Four shapes, in default-recommended order:
+**Asset payload — where decoded bytes live.** Once granularity is
+picked (§4.10.0 Q3), one sub-question remains for L2: where does the
+decoded payload sit on the row?
 
-| Shape | Row schema | When to choose |
-|---|---|---|
-| **Nested** (recommended default) | `SourceRow(source: dc.File, info: ..., units: list[Unit])` where `Unit` may itself nest deeper (`Unit.sub_units: list[SubUnit]`). One row per source. | Default for any source that decomposes into sub-units. Composes with downstream queries (`.select("source", "units.sub_units")` projects the right slice). Source fetched once per row. |
-| **Flat-pointer** | `UnitRow(source: dc.File, offset, index)` — one row per terminal unit; source is a reference, no payload bytes on the row. | Downstream consumes one-row-per-unit AND downstream is in-DataChain only (no external interop). **Consume via `.gen()` over the source File**, never per-row `.map()` that re-opens the file per emitted unit (cache key is per source file, not per unit). |
-| **Flat-materialized** | `UnitRow(source: dc.File, unit_file: dc.File)` — one row per terminal unit; `unit_file` points at a written derivative at task-minimum preset. | Downstream tool needs files-on-disk for non-DataChain interop (annotation UIs, training pipelines that read filesystem rows). Destination: cloud-source → cloud-derivative same scheme; confirm bucket + prefix with the user, never default to `.datachain/`. |
-| **Fused-L3** (skip L2) | `SenseRow(source: dc.File, ...)` — `.gen(File → Iterator[SenseUnit])` decodes once, emits per-unit Sense rows, no separate L2. | User explicitly opted out of L2 in the dialogue, OR L2 has no plausible reuse (one-pass embedding only). Cheapest single pass; re-decodes from raw storage on the next question. |
+- **On the row** (default for compact payloads — embeddings, transcripts,
+  small structured fields). Compose with downstream queries; no extra
+  round-trip.
+- **Source reference only** (`source: dc.File` on the row; decode lazily
+  at consume time). Pick for large payloads (>10 MB/row) when downstream
+  is in-DataChain only. Consume via `.gen()` over the source — never
+  per-row `.map()` (cache key is per source file, re-opens per row).
+- **Materialised derivative file** (`unit_file: dc.File` pointing at a
+  written derivative at task-minimum preset). Pick when an external tool
+  needs files-on-disk (annotation UI, training pipeline reading
+  filesystem rows). Destination: cloud-source → cloud-derivative same
+  scheme; confirm bucket + prefix with the user, never default to
+  `.datachain/`.
 
-**Why nested is the default.** Nested rows let downstream queries project
-to any granularity (`.select("source", "units")` for per-source aggregates;
-`.gen(u=lambda row: row.units)` to flatten to per-unit). Flat rows can
-only fan out, never re-aggregate without a costly `group_by`. Nested
-also fetches the source once per row by construction — no per-unit
-cache-miss trap.
-
-**Flat is right when:** (a) a downstream tool requires one-row-per-unit
-(annotation UI, training pipeline reading filesystem rows), OR (b)
-per-unit aggregations dominate (`.group_by(unit_class, partition_by=...)`
-across millions of units, where a nested schema would force a huge
-`.gen()` fan-out before the aggregation).
-
-**Calibration policy.** `.persist()` not `.save()`; no `attrs` /
-`description` on calibration runs; no enrichment. End state: no `calib_*`
-row in `dc.datasets()` and no `calib_*` in `dc-knowledge/`.
+**Skip L2 entirely (fused-L3)** when L2 has no plausible reuse beyond
+the current Sense pass (one-pass embedding, no future per-unit
+questions). This is a §4.7 ladder-walk decision — drop L2 from the
+build candidates, emit Sense rows directly from source decode.
 
 ### 4.9 Decide branch — strict order, bucket-root scope throughout
 
@@ -528,7 +524,7 @@ cost depends on every answer above.
 |---|---|---|---|---|
 | 1 | **Method** | Which library or approach realises the Sense (or heavy Asset) operation — e.g. a segmentation library vs an LLM vs custom code; OCR vs text-layer; an embedding family. | ASK whenever ≥2 plausible methods exist with different precision/recall/cost profiles. NOTIFY when only one is reasonable. | This section |
 | 2 | **Parameters** | Model id + version, threshold, fidelity — anything within the chosen method that materially changes results. | Task-minimum-derived (NOTIFY) for fidelity; ASK for model+version and threshold. | §4.6 ASK / NOTIFY table |
-| 3 | **Data model** | Row schema, per layer that decomposes into sub-units: **nested** (one row per source, sub-units as nested Pydantic lists) vs **flat-pointer** vs **flat-materialized** vs **fused-L3** (skip L2). | **Nested.** See §4.8 L2-row-shape table for the full menu and when flat wins. | §4.8 |
+| 3 | **Granularity** | One row per what domain entity? Always one big table; the question is which entity is "one row". Sub-units below the chosen grain stay nested as Pydantic lists. | **Per-Task-entity** — the grain at which the Task answers in one `.filter()` / `.group_by()` (no `.map()` over nested lists). | §3 "Row granularity" |
 | 4 | **Scope** | Bucket / directory / sample. | Bucket (whole root). Per §4.9. | §4.9 |
 
 Method comes first because parameters live *inside* a method — `threshold`
@@ -540,9 +536,9 @@ one dimension per question**. AskUserQuestion accepts up to 4 questions
 per call, presented to the user as a sequential wizard ("answer Q1,
 then Q2, then Q3, then Q4, submit"). Pack the dimensions that genuinely
 need an answer into that one call, in order: method → parameters →
-data-model → scope. Do NOT collapse two dimensions into one option list
-(e.g., `[a) WHOLE bucket nested, b) directory flat-pointer]` is a bug
-— that mixes scope AND data-model).
+granularity → scope. Do NOT collapse two dimensions into one option
+list (e.g., `[a) WHOLE bucket per-video, b) directory per-frame]` is a
+bug — that mixes scope AND granularity).
 
 **Skip rule.** Drop a dimension from the wizard when it has no real
 choice:
@@ -550,9 +546,8 @@ choice:
 - Method: if only one library/approach is plausible, NOTIFY in the
   rendered prose, skip the question.
 - Parameters: if §4.6 lists no ASK rows for this task, skip.
-- Data model: nested is the default; ask only when there's a concrete
-  reason to consider flat (downstream tool requires it, or per-unit
-  aggregations dominate).
+- Granularity: **always ask**, in domain terms. The user often anticipates
+  future questions at a finer grain than the current Task strictly needs.
 - Scope: always ask.
 
 The minimum wizard is one question (scope). The maximum is four.
@@ -590,15 +585,15 @@ Q2. PARAMETERS — only ASK rows from §4.6, for the method picked in Q1
   • threshold:{default} | tighter ({alt}) | looser ({alt})
   (NOTIFY rows shown above in `Task minimum`; user can override but no question.)
 
-Q3. DATA MODEL — row shape (per layer that decomposes)
-  • nested:           one row per source, sub-units as nested lists     [recommended]
-                      composes with downstream queries; source fetched once per row
-  • flat-pointer:     one row per unit, source as reference
-                      pick when downstream is in-DC AND consumes per-unit
-  • flat-materialized: one row per unit, unit file written to storage
-                      pick when external tool needs files-on-disk
-  • fused-L3 (no L2): emit Sense rows directly from source decode
-                      pick when no L2 reuse is plausible
+Q3. GRANULARITY — one row per {task_entity}? (phrased in domain terms)
+  • per-{task_entity}: Task answers in one .filter()/.group_by()     [recommended]
+  • per-{finer_entity}: finer than Task needs; reusable for future per-{finer} questions
+  • per-{coarser_entity}: coarser; sub-units nested as list, Task needs .map() (avoid)
+
+  Pick {task_entity} from the user's question — what does it filter / group on?
+  E.g. "videos with people" → per-video; "frames containing cars" → per-frame;
+  "segments above threshold" → per-segment. Sub-units below the chosen grain
+  stay nested as Pydantic lists (§1.2 full-output rule still holds).
 
 Q4. SCOPE — coverage of the source
   • WHOLE bucket: ~{wall_full_bucket}, ${cost_full_bucket}     [recommended]
@@ -623,11 +618,11 @@ Reasoning: {one line — what compounds across future questions}.
 Failure modes that defeat CAST doctrine:
 
 - **Do NOT collapse dimensions into one menu.** "Pick one of: A) WHOLE
-  bucket nested, B) directory flat-pointer, C) sample fused" mixes
-  scope AND data-model AND L2-shape into one question. That's the
+  bucket per-video, B) directory per-frame, C) sample fused" mixes
+  scope AND granularity AND ladder choice into one question. That's the
   exact bug the four-dimension split fixes.
-- **Do NOT reorder so flat / fused-L3 come first.** The recommended
-  option is the recommended option; render it first.
+- **Do NOT reorder so the Task-matched grain isn't first.** The
+  recommended option is the recommended option; render it first.
 - **Do NOT replace `[recommended]` with conditional phrasing** like
   "recommended if you expect future queries". The recommendation is
   unconditional.
