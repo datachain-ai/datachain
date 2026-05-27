@@ -1595,7 +1595,7 @@ class VideoFrame(DataModel):
 
     def save(
         self,
-        destination: str,
+        destination: str | os.PathLike[str],
         format: str = "jpg",
         client_config: dict | None = None,
     ) -> "ImageFile":
