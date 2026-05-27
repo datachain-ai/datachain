@@ -122,7 +122,7 @@ Datasets are the unit of reasoning. Chains that transform data through UDFs — 
 
 **Critical anti-pattern: bypassing `.save()` by dumping in-memory Python rows to a file.** Reading the chain into Python via `.to_list()` / `.to_values()` and then writing to disk via `open(...)`, `json.dump`, `pandas.to_csv`, or any Python-side file handle is forbidden for UDF-bearing pipelines. That path strands the work outside DataChain (no lineage, no version tracking, not visible in the knowledge base, the next session cannot find or reuse it). The pipeline result must land as a saved dataset first via `.save()`. Once the dataset exists, exporting it to a file or to storage is fine — that is exactly what the dedicated terminal ops `chain.to_csv()`, `chain.to_parquet()`, `chain.to_storage()` are for.
 
-**Not a bypass:** a UDF that materializes a payload to storage and returns a `dc.File` pointer (e.g., thumbnail JPEGs uploaded to `gs://…/l2_asset_<source>_frames/` with the row carrying `frame: dc.File`). The dataset still lands via `.save()`; the file in storage is the row's payload, owned by DataChain via the pointer. See Section 8 "Materialized thumbnail Asset" for the canonical shape.
+**Not a bypass:** a UDF that materializes a payload to storage and returns a `dc.File` pointer (e.g., thumbnail JPEGs uploaded to `gs://…/l2_<source>_frames/` with the row carrying `frame: dc.File`). The dataset still lands via `.save()`; the file in storage is the row's payload, owned by DataChain via the pointer. See Section 8 "Materialized thumbnail Asset" for the canonical shape.
 
 ```python
 # ✗ ANTI-PATTERN — UDF result pulled into Python and dumped to disk, no dataset created.
@@ -249,8 +249,8 @@ ad-hoc query (not a script at all):
 **Naming convention:** each script is named after the dataset it produces.
 
 ```
-build_product_catalog_embeddings.py    →  l3_sense_product_catalog_embeddings dataset
-build_product_catalog_metadata.py      →  l1_container_product_catalog_metadata dataset
+build_product_catalog_embeddings.py    →  l3_product_catalog_emb dataset
+build_product_catalog_metadata.py      →  l1_product_catalog_meta dataset
 similar_to_query.py                     →  products_similar_to_query dataset (or ad-hoc query)
 ```
 
@@ -305,7 +305,7 @@ embeddings = (
     .filter(dc.C("is_primary") == True)            # ← problem-specific
     .setup(model=lambda: clip)
     .map(emb=encode_image)
-    .save("l3_sense_product_catalog_clip_embeddings")  # ← USELESS for next question
+    .save("l3_product_catalog_clip")  # ← USELESS for next question
 )
 
 # ✓ Save embeddings over the WHOLE input, apply problem filters downstream.
@@ -315,15 +315,15 @@ embeddings = (
     .setup(model=lambda: clip)
     .map(emb=encode_image)
     .save(
-        "l3_sense_product_catalog_clip_embeddings",   # ← FULL coverage, reusable Sense layer
+        "l3_product_catalog_clip",   # ← FULL coverage, reusable Sense layer
         attrs=["cast:sense", "scope:bucket", "source:product_catalog"],
         description="CLIP ViT-B-32 embeddings over the full product-catalog bucket.",
     )
 )
 
 ranked = (
-    dc.read_dataset("l3_sense_product_catalog_clip_embeddings")
-    .merge(dc.read_dataset("l1_container_product_catalog_metadata"), on="file.stem")
+    dc.read_dataset("l3_product_catalog_clip")
+    .merge(dc.read_dataset("l1_product_catalog_meta"), on="file.stem")
     .filter(dc.C("condition") != "refurbished")   # ← problem-specific, downstream
     .filter(dc.C("width") > 400)
     .filter(dc.C("is_primary") == True)
@@ -332,7 +332,7 @@ ranked = (
     .save(
         "products_similar_to_query",                  # ← Task, persist by exception, no prefix
         attrs=["cast:task", "scope:onetime", "source:products_similar_to_query"],
-        # Lineage to l3_sense_product_catalog_clip_embeddings is tracked
+        # Lineage to l3_product_catalog_clip is tracked
         # automatically by DataChain — no parent: attr needed.
         description="Top-5 catalog products visually closest to query.jpg under the filter set.",
     )
@@ -383,21 +383,27 @@ The `knowledge` skill carries the full methodology (recall-economics costs, buil
 **Naming convention — CAST prefix.** Container, Asset, and Sense datasets carry a layer prefix that puts them in CAST order alphabetically. The prefix makes the layer visible in `dc.datasets()` listings and in the KB index without any extra lookup. Task-layer datasets (and anything not C/A/S) use natural prefix-free names.
 
 ```
-l1_container_<source>_<descriptor>      # file headers, listings, sidecar metadata, schema-only views
-l2_asset_<source>_<descriptor>          # raw extracted data (frames, clips, audio, parsed arrays)
-l3_sense_<source>_<descriptor>          # model outputs (embeddings, LLM labels, classifications)
-<descriptor>                            # Task outputs (and anything not C/A/S) — no prefix
+l1_<source>_<descriptor>      # file headers, listings, sidecar metadata, schema-only views
+l2_<source>_<descriptor>      # raw extracted data (frames, clips, audio, parsed arrays)
+l3_<source>_<descriptor>      # model outputs (embeddings, LLM labels, classifications)
+<descriptor>                  # Task outputs (and anything not C/A/S) — no prefix
 ```
+
+The `l1_` / `l2_` / `l3_` prefix is enough; do NOT add a layer-type
+infix like `_container_`, `_asset_`, `_sense_`. The L-number already
+says the layer; repeating it adds 6–9 chars per name with no new
+information. Names cap at 30 chars and shorter is better; the full
+doctrine is in `knowledge/CAST.md` §3.
 
 `<source>` is the bucket slug for L1–L3 (`product_catalog`, `sec_10k`, `robot_demos`, …). Task-layer datasets use no prefix; the name describes the question (`products_similar_to_query`, `recsys_eval_runs`, `cik_text_stats`), and layer membership is carried only by `attrs=["cast:task", …]` and the resulting `cast_layer: task` frontmatter. All snake_case; no dots, no `@` (DataChain reserves them).
 
-Dataset names still describe content rather than pipeline step (`l3_sense_product_catalog_clip_embeddings`, not `l3_sense_step1`).
+Dataset names still describe content rather than pipeline step (`l3_product_catalog_clip`, not `l3_step1`).
 
 **Tag every `.save()` with `attrs` and `description`.** The CAST skill enforces the methodology by reading these tags:
 
 ```python
 chain.save(
-    "l3_sense_product_catalog_clip_embeddings",
+    "l3_product_catalog_clip",
     attrs=[
         "cast:sense",                                # container | asset | sense | task
         "scope:bucket",                              # bucket (full root, default) | directory (subdir opt-in) | sample | onetime
@@ -455,9 +461,9 @@ Never create or modify files under `dc-knowledge/` — that directory is owned b
     S3 HeadObject without anon → 403 Forbidden. Fix: pass anon into the downstream
     session via `client_config`:
     ✓ session = dc.Session.get(client_config={"anon": True})
-      (dc.read_dataset("l2_asset_my_bucket_images", session=session)
+      (dc.read_dataset("l2_my_bucket_images", session=session)
          .map(emb=encode_image)
-         .save("l3_sense_my_bucket_embeddings"))
+         .save("l3_my_bucket_emb"))
     The session flows anon into every `file.open()` it issues. No cache, no
     re-listing, no extra disk I/O.
 

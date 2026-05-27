@@ -63,10 +63,10 @@ substrate — push it downstream into a Task query.
 ```python
 # WRONG — `counts` is derived from `boxes.name`. It bakes the current
 # "people / cars / trucks / bags" question into the L3 row.
-chain.map(boxes=detect_objects).map(counts=count_targets).save("l3_sense_…")
+chain.map(boxes=detect_objects).map(counts=count_targets).save("l3_…")
 
 # RIGHT — keep only what YOLO returned.
-chain.map(boxes=detect_objects).save("l3_sense_…")
+chain.map(boxes=detect_objects).save("l3_…")
 # Counts (and any filter / threshold / agg) live in a downstream
 # read_dataset(…).map(counts=…).save("…") Task, or a one-shot query.
 ```
@@ -118,30 +118,59 @@ skill's job is to make the C/A/S substrate visible, reusable, and cheap.
 ### Names
 
 ```
-l1_container_<source>_<descriptor>      # listings, headers, sidecar metadata
-l2_asset_<source>_<descriptor>          # extracted/reshaped raw data
-l3_sense_<source>_<descriptor>          # model-derived signals
-<descriptor>                            # Task outputs — no prefix
+l1_<source>_<descriptor>      # listings, headers, sidecar metadata
+l2_<source>_<descriptor>      # extracted/reshaped raw data
+l3_<source>_<descriptor>      # model-derived signals
+<descriptor>                  # Task outputs — no prefix
 ```
 
+- **`l1_` / `l2_` / `l3_` prefix is enough — do NOT add the layer-type
+  infix.** `l1_starss23_info` ✓; `l1_container_starss23_info` ✗
+  (`container_` is redundant — the `l1_` prefix already says
+  Container). Same for `asset_` (drop) and `sense_` (drop). The layer
+  type is encoded once: by the L-number prefix and by `cast:<layer>`
+  in `attrs`. Repeating it in the middle of the name adds 6–9 chars
+  per dataset for zero new information.
 - `<source>` is the bucket slug for L1–L3.
 - **Strip uninformative prefixes** from the bucket name (case-insensitive)
   before using it as the source slug: `datachain-`, `dc-`, `iterative-`,
   `gs-`, `s3-`, `aws-`, `gcp-`, `azure-`, `public-`, `private-`. Replace
   `-` with `_`. Example: `datachain-starss23` → `starss23`.
+- **Preserve source-path word order in the slug.** When the source slug
+  encodes a subdirectory, write it left-to-right matching the bucket
+  path: `video_dev/dev-test-sony/` → `starss23_video_dev_dev_test_sony`,
+  or shortened `starss23_dev_test_sony`. NEVER reverse to
+  `sony_test_starss23` or `sony_dev_test`. The agent's instinct to
+  re-order for a "friendlier slug" desyncs the KB index from the bucket
+  browser; a user who lists `gs://bucket/foo/bar/` cannot find the
+  derived dataset by intuition.
 - **Preset/config → `attrs`, never in the name.** Names describe content,
   not parameters.
 - **One content noun per name.** `yolo` and `detections` are the same
-  content axis — pick one. `l3_sense_starss23_yolo` ✓.
-  `l3_sense_starss23_dts_yolo` ✗ — the `dts` infix is redundant content
+  content axis — pick one. `l3_starss23_yolo` ✓.
+  `l3_starss23_dts_yolo` ✗ — the `dts` infix is redundant content
   marker the agent invented.
-- **Cap names at 40 characters.** If a meaningful name would exceed,
-  shorten the descriptor (`frames` not `video_frames` when source implies
-  video).
+- **Cap names at 30 characters, shorter is better.** If a meaningful
+  name would exceed, in order: (a) drop the layer-type infix if you
+  added one (you shouldn't have); (b) shorten the descriptor
+  (`frames` not `video_frames` when source implies video; `info` not
+  `headers`); (c) shorten the source slug (`starss23` not
+  `starss23_video_dev_dev_test_sony` if there's only one bucket in
+  the project). The 30-char cap exists because longer names get
+  truncated in UI lists and table headers; readable in
+  `dc.datasets()` output matters more than encyclopedic naming.
 - **Task names are JUST the question** — no source slug, no layer prefix
   (`cik_text_stats`, `products_similar_to_query`). Add `_<source_slug>`
   only when the same question runs on two different sources and
   disambiguation is genuinely needed.
+
+**Examples** (good → too long → wrong):
+
+| Layer | Good (≤30) | Too long (>30) | Wrong (reversed / infix) |
+|-------|------------|----------------|--------------------------|
+| L1    | `l1_starss23_info` | `l1_starss23_video_dev_dev_test_sony_info` | `l1_container_starss23_info`; `l1_sony_test_info` |
+| L2    | `l2_starss23_frames` | `l2_starss23_dev_test_sony_frames_jpeg` | `l2_asset_starss23_frames`; `l2_sony_test_frames` |
+| L3    | `l3_starss23_yolo` | `l3_starss23_video_dev_dev_test_sony_yolo11n` | `l3_sense_starss23_yolo`; `l3_sony_test_yolo` |
 
 ### Tagging on `.save()`
 
@@ -158,7 +187,7 @@ attrs = [
     "preset:cpu_fp32",                         # build signature (preset/config tag)
 ]
 chain.save(
-    "l3_sense_product_catalog_clip_embeddings",
+    "l3_product_catalog_clip",
     attrs=attrs,
     description="CLIP ViT-B-32 embeddings over the full product-catalog bucket; reusable for any visual-similarity query.",
 )
@@ -348,7 +377,7 @@ an existing dataset already covers the question (even partially). If yes,
 write the pipeline as `dc.read_dataset(...)` over it.
 
 **Celebrate the reuse.** In the response, name the layer being reused and
-quote the saved cost — e.g., "Reusing `l3_sense_product_catalog_clip_embeddings`
+quote the saved cost — e.g., "Reusing `l3_product_catalog_clip`
 (built last session). This query is ~$0.002 instead of the $1.40 the
 embedding pass would otherwise cost — exactly the win the Sense layer was
 built for." This is the moment that teaches the methodology to the user;
@@ -444,7 +473,7 @@ Concrete walk for "find videos with people":
 - Walk down to Asset: thin-Asset of materialized 0.5 fps frames in S3 —
   YES, it's a candidate. Decouples decode from inference, reusable for any
   other per-frame model (CLIP, BLIP, OCR), reusable for human annotation
-  UIs. Preset: 0.5 fps × 640px × JPEG q80. Destination: `gs://<user-bucket>/l2_asset_<source>_frames/`.
+  UIs. Preset: 0.5 fps × 640px × JPEG q80. Destination: `gs://<user-bucket>/l2_<source>_frames/`.
 - Walk down to Container: `video_info` via `get_info()` — YES, it's a
   candidate. Codec/fps/duration/dimensions/audio is reusable across every
   video task on this bucket.
@@ -506,7 +535,7 @@ def to_frames(file: VideoFile, info: Video) -> Iterator[VideoFrame]:
     step = max(1, int(round(info.fps / TARGET_FPS)))
     yield from file.get_frames(step=step)
 
-chain = dc.read_dataset("l1_container_<source>_headers").gen(frame=to_frames)
+chain = dc.read_dataset("l1_<source>_info").gen(frame=to_frames)
 ```
 
 Never re-call `file.get_info()` inside the UDF — "L1 paid for this
@@ -523,7 +552,7 @@ coordination gets expensive. Break L1 out into a canonical dataset:
 # project from an existing L2:
 (dc.read_dataset("l2_…")
    .select("source", "info")
-   .save("l1_container_<source>_headers", attrs=[...]))
+   .save("l1_<source>_info", attrs=[...]))
 # OR rebuild from raw storage, then migrate L2 reads to read from L1
 # on next refresh.
 ```
@@ -574,6 +603,40 @@ calibration is genuinely infeasible (empty source, network unreachable),
 auto-build is OFF and the agent goes to the §4.10 dialogue with the
 fallback rules of thumb below.
 
+**Never quote unmeasured calibration numbers — say "unmeasured"
+instead.** If a calibration branch timed out, errored, or never ran,
+the dialogue MUST report the unmeasured branch literally as
+`not measured` and R as `unknown`. Do NOT extrapolate the measured
+branch's wall onto the unmeasured one. Do NOT paraphrase ("about the
+same as no-Asset"). Do NOT guess from recall-economics tiers and
+present the guess as measurement.
+
+The pi-harness trace (test/) timed out both calibration attempts on
+no-Asset, never measured thin-Asset at all, then rendered:
+
+```
+Calibration (N=5): no-Asset ~1 frame/s, thin-Asset ~0.85 frame/s; R ≈ 1.2
+```
+
+— the `0.85` and `R ≈ 1.2` are fabricated. That is the exact
+integrity failure CAST exists to prevent. The honest render would be:
+
+```
+Calibration (N=5): no-Asset ~1 frame/s; thin-Asset not measured (timed out); R unknown
+```
+
+When R is unknown, the §4.10 dialogue still surfaces the layer-ladder
+options — but the dialogue cannot recommend thin-Asset vs no-Asset
+shape on cost grounds. Surface this honestly: *"R is unknown — pick
+thin-Asset to preserve substrate reuse, or no-Asset to keep this
+build minimal."* The user picks under uncertainty; the agent does not
+fabricate the missing measurement.
+
+If a calibration run keeps timing out, that is signal — the workload
+is heavier than the timeout suggests. Options: (a) shrink N by 5×
+and re-run; (b) widen the timeout (with explicit user opt-in);
+(c) accept R-unknown and surface honestly.
+
 Extrapolate: `wall_full = (wall_sample / N) × total × 1.5`;
 `asset_full_bytes = (sample_bytes / N) × total × 1.5`. Cost in $ from the
 recall-economics tier unless calibration disagrees by >3×.
@@ -610,6 +673,36 @@ etc.). Pick deliberately based on selection criteria; none is forbidden.
    `frame.get_np()` calls `video.open()` which streams from storage with
    DataChain's local caching. **No data duplication, no re-download per
    frame.** Simplest shape; the right default for in-DataChain consumption.
+
+   **⚠ Pointer-row L2 + per-row `.map()` is a perf trap.** When a
+   downstream stage reads pointer-row L2 with `.map(...)` and calls
+   `frame.get_np()` per row, the cache key is per source FILE, not
+   per frame. The cache opens the video file once per row, seeks to
+   the frame, decodes, closes — even with prefetch this re-streams
+   the same video over and over. The Claude-Code trace (test_c2)
+   wasted ~17 minutes on this exact pathology before pivoting.
+
+   The fix is one of:
+
+   - **Consume pointer-row L2 with `.gen()` over `VideoFile`**, not
+     per-frame `.map()`. The `.gen()` UDF receives the whole video
+     file once, iterates frames internally (opening / decoding once
+     per file), yields per-frame rows:
+     ```python
+     def detect_frames(file: dc.VideoFile, info: dc.Video) -> Iterator[FrameDetections]:
+         for frame in file.get_frames(step=int(info.fps)):
+             yield FrameDetections(source=file, timestamp=frame.timestamp, ...)
+     ```
+     One file open per source video, not one per frame.
+
+   - **OR fuse Sense directly from L1 (skip pointer-row L2).** If the
+     only downstream consumer of pointer-row L2 is one per-frame Sense
+     build, the L2 dataset is itself decorative. Fused-L3 with the
+     same `.gen()` shape avoids the round trip.
+
+   **Heuristic:** if a per-frame `.map()` over pointer-row L2 shows
+   throughput ≤ 1 row/s on a local 360° MP4 (or similar codec) source,
+   you've hit this pathology. Kill, refactor to `.gen()`-from-L1.
 2. **Materialized thumbnail L2.** Emit rows with `frame: dc.File` pointing
    at written JPEGs / segment files in storage. Choose when downstream
    needs files-on-disk for **non-DataChain interop** — annotation UIs,
@@ -700,7 +793,7 @@ L1 Container — {what it'd hold, e.g. video headers via get_info()}
 L2 Asset — {what it'd hold, e.g. 0.5 fps × 640px JPEGs at gs://…/l2_…/}
   Row schema: {field list, with full operation output, no projections}
   a) WHOLE bucket, thin {preset}: ~{wall_l2_bucket}, ${cost_l2_bucket}, ~{asset_gb}GB     [recommended — CAST substrate]
-     Destination proposal: gs://<user-bucket>/<l2_asset_name>/ — confirm or override.
+     Destination proposal: gs://<user-bucket>/<l2_name>/ — confirm or override.
   b) directory only, thin {preset}: ~{wall_l2_dir}, ${cost_l2_dir}
   c) tighter preset (1/5 sec or 320px), whole bucket: ~{wall_l2_tight}, ${cost_l2_tight}
   d) skip (fused-L3 below re-decodes on the next question)
@@ -867,7 +960,7 @@ bucket scope without asking.
 
 If the task pulls structured JSON / Parquet / CSV from the bucket and
 parses it inline, propose lifting that parse into an
-`l1_container_<source>_<descriptor>` dataset so the parsed schema becomes
+`l1_<source>_<descriptor>` dataset so the parsed schema becomes
 reusable. Same dialogue rule, same whole-bucket-first framing.
 
 ### 4.12 Mid-flight monitoring + early abort
