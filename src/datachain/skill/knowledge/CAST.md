@@ -232,6 +232,66 @@ def extract_frames(file: dc.VideoFile) -> Iterator[Starss23FrameAsset]:
     ...
 ```
 
+### Heavy-init resources go through `.setup()`, never module-level lazy globals
+
+Models, tokenizers, DB clients, any object with a non-trivial init cost
+load via `chain.setup(resource=load_fn)` — NOT a `_resource = None`
+module-level lazy global. The lazy-global pattern works for
+`parallel=1` but has subtle pitfalls under `parallel=N` (each worker
+process initializes its own copy on first call rather than at chain
+start, the resource is invisible in the chain definition, and global
+state across multiple chains in the same process can leak). The
+canonical pattern and its rationale live in `core/SKILL.md`
+"Pre-Generation Checklist"; the knowledge skill enforces them
+unconditionally when generating any L2/L3 build script.
+
+### Typed File references on substrate rows — never bare paths
+
+A substrate row that points at a file MUST carry the typed reference,
+not a string path. For video: `dc.VideoFile`. For images:
+`dc.ImageFile`. For audio: `dc.AudioFile`. For generic: `dc.File`. The
+typed reference preserves path, etag, size, version, access config,
+AND the methods the file's modality needs (`.get_info()`,
+`.get_frames()`, `.read()`, `.open()`).
+
+```python
+class FrameDetections(BaseModel):
+    source: dc.VideoFile      # ✓ typed reference — full lineage + methods + UI render
+    timestamp: float
+    detections: list[Detection]
+```
+
+```python
+class FrameDetections(BaseModel):
+    video_path: str           # ✗ bare path — lineage lost, no methods,
+                              #   no UI render, no consistency check
+    timestamp: float
+    detections: list[Detection]
+```
+
+A row with `video_path: str` instead of `source: dc.VideoFile` loses:
+
+- **Lineage / consistency.** DataChain can no longer trace the row back
+  to the source listing; etag-change detection breaks.
+- **UI visualisation.** Studio and the local UI render `dc.File`
+  subclasses with previews / thumbnails / sample players. A bare
+  string is just text.
+- **Downstream methods.** `frame.get_np()` and similar require the
+  typed object on the row; `path.get_np()` does not exist.
+- **Access config.** The `anon=True` / credentials from the original
+  `read_storage` are carried by the `VideoFile`, not by the string.
+
+The **only** legal exception is when the user explicitly asks for a
+string-only payload ("I just need the path", "no DataChain pointer
+here"). In that case, keep the typed `dc.VideoFile` on the row AND add
+the string as a secondary derived column — don't replace.
+
+(Common cause of this regression: `.gen()` dropping a parent column,
+agent's response is to write a string column to "carry the path
+forward". The correct fix is to put `source: dc.VideoFile` in the
+yielded Pydantic model and use the source row's `file` directly, not
+synthesize a string.)
+
 ---
 
 ## 4. Planning a Task — the Layer-Ladder Walk
@@ -329,6 +389,33 @@ This minimum is the **floor** for any thin-Asset preset and what the
 calibration measures against. Never calibrate at coarser sampling than
 the task requires. If genuinely ambiguous, ask one targeted question —
 do not guess.
+
+**Silent defaults are forbidden.** The skill picks five things by
+default that materially affect the result and the cost — each one
+must be surfaced to the user, not chosen silently:
+
+| Parameter           | Default rule              | User must see / pick                                |
+|---------------------|---------------------------|-----------------------------------------------------|
+| Model id + version  | from task type            | **ASK** — model and version change results materially (yolo11n vs yolov8n vs RT-DETR; clip-vit-b32 vs siglip; gpt-4o-mini vs gpt-4o). Quote one alternative with a "+precision / +recall / +wall" hint. |
+| Confidence threshold| 0.25 for detection        | **ASK** — directly determines what gets counted. Different defaults across models. |
+| Sample rate (fps / window) | from task-minimum  | NOTIFY in the §4.10 dialogue's `Task minimum` line. User can override but does not need to confirm. |
+| Image size (imgsz)  | model-native (often 640)  | NOTIFY. User overrides only if the task minimum (§4.6 spatial) demands higher. |
+| Preset / quality    | task-minimum-derived      | NOTIFY in `Task minimum` line. |
+
+**ASK** = surface via an AskUserQuestion (with the default
+pre-selected and one alternative shown) BEFORE running calibration.
+Two questions max; combine into one multi-select if appropriate.
+**NOTIFY** = render verbatim in the `Task minimum` line of the §4.10
+dialogue; do not require explicit confirmation, but the value must
+be visible.
+
+Why this matters: a yolov8n@0.25 result and a yolo11n@0.50 result on
+the same bucket give different person/car/truck counts. The user
+asking for "objects in videos" cannot tell from the agent's output
+which model/threshold produced the numbers unless the dialogue made
+it explicit. The model and threshold MUST be in the substrate `attrs`
+(per §3 `.save()` checklist) AND in the conversation the user can
+audit later.
 
 ### 4.7 Walk the ladder top-down (NEW — the test_c2 fix)
 
@@ -653,6 +740,22 @@ Failure modes that defeat CAST doctrine:
 calibration is feasible but wasn't run, run it first and then render the
 dialogue.
 
+**AskUserQuestion options MUST mirror the rendered prose dialogue.**
+Every named option (a / b / c / d) from the prose dialogue must appear
+as an `AskUserQuestion` option with the same label and the cost
+numbers in the option's description. Do NOT collapse the rich prose
+options to short labels like "Recommended: L1+L2+L3" — the user needs
+the wall, the dollars, and the trade-offs visible at the moment they
+pick. If the prose lists four trade-offs, the AskUserQuestion has
+four options with those four descriptions. The prose render is the
+source of truth; AskUserQuestion is just the UI affordance.
+
+Concretely: every option's `description` field includes the wall-time
+estimate, the dollar estimate, and the one-line trade-off from the
+prose. The `label` field uses the same short tag (e.g.
+"WHOLE bucket thin Asset", "Directory only", "Fused-L3", "Sample") —
+do not abbreviate beyond what the prose used.
+
 ### 4.10b Small-scope dialogue variant
 
 When the chosen scope has **<50 source items** OR the full L3 wall time
@@ -695,12 +798,32 @@ wall), default to §4.10 (full template).
 
 ### 4.10.5 Scope-change re-dialogue protocol
 
-If the user broadens or narrows scope **after** the dialogue was
-rendered ("actually, just dev-test-sony", "do it for the whole bucket
-instead", "drop the eval split"), reuse the existing calibration
-measurements and re-extrapolate to the new item count. Render the
-dialogue again with the updated cost numbers — picking §4.10 or §4.10b
-based on the *new* scope's size.
+**Triggers — any of these is a scope-change event.** The agent must
+detect this mechanically BEFORE writing any code or issuing the next
+AskUserQuestion:
+
+1. **Free-text reply outside the offered AskUserQuestion options.** If
+   the user did not pick any of the labelled options (a/b/c/d) and
+   instead typed a free-form constraint, that's an override — treat it
+   as a scope change, even if the words sound like a "small
+   refinement". (The test_c2 trace: user replied "only one dir" when
+   none of the four bucket-wide options matched. Agent must NOT just
+   ask "which dir?" and proceed — must re-render at the new scope
+   first.)
+2. **Scope-narrowing keywords** in any user message: "only", "just",
+   "limit to", "single", "one dir", "this dir only", "subset",
+   "narrow to", "skip the …".
+3. **Scope-broadening keywords**: "whole bucket", "all of …", "every
+   …", "across all", "include the train/eval split".
+4. **Explicit dir / prefix / glob** named by the user that wasn't in
+   the original dialogue (e.g. "do `video_dev/dev-test-sony/`
+   instead").
+
+When any trigger fires, reuse the existing calibration measurements
+and re-extrapolate to the new item count. Render the dialogue again
+with the updated cost numbers — picking §4.10 or §4.10b based on the
+*new* scope's size. Never proceed to script generation off the prior
+recommendation.
 
 **Do NOT re-calibrate by default.** Re-running 60–240 s of calibration
 on the same media/decode profile is wasted wall time. The only cases
