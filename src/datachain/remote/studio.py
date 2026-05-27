@@ -117,7 +117,14 @@ class StudioClient:
         return cache_age.total_seconds() < 60
 
     def _get_validated_token(self) -> str:
-        """Get token from config with validation and migration."""
+        """Get token from config with validation (migration at config load)."""
+        token_config = self._get_token_config()
+        self._validate_token_config(token_config)
+        self._authorize_team_access(token_config)
+        return token_config["value"]
+
+    def _get_token_config(self) -> dict:
+        """Get token configuration from config with basic validation."""
         token_config = self.config.get("token")
         if not token_config:
             raise DataChainError(
@@ -125,20 +132,34 @@ class StudioClient:
                 "or environment variable `DATACHAIN_STUDIO_TOKEN` to set it."
             )
 
-        # Handle legacy string token format
+        # At this point, legacy tokens should already be migrated
         if isinstance(token_config, str):
-            token_config = self._migrate_legacy_token(token_config)
+            raise DataChainError(
+                "Legacy token format detected but migration failed. "
+                "Please run `datachain auth login` to refresh your token."
+            )
 
-        # Validate token expiration and team authorization
-        self._validate_token_config(token_config)
+        return token_config
 
+    def _authorize_team_access(self, token_config: dict) -> None:
+        """Check team authorization if team is specified."""
         if self._team:
             self._check_team_authorization(token_config, self._team)
 
-        return token_config["value"]
+    def _migrate_legacy_token_if_needed(self) -> None:
+        """Check for legacy token and migrate if needed during config load."""
+        if self._config is None:
+            return
+
+        token_config = self._config.get("token")
+        if isinstance(token_config, str):
+            # Legacy token found - migrate it
+            migrated_config = self._migrate_legacy_token(token_config)
+            # Update the in-memory config
+            self._config["token"] = migrated_config
 
     def _migrate_legacy_token(self, legacy_token: str) -> dict:
-        """Migrate legacy string token and update config."""
+        """Migrate legacy string token and persist to config file."""
         from datachain.config import Config, ConfigLevel
         from datachain.studio import migrate_legacy_token
 
@@ -149,10 +170,6 @@ class StudioClient:
             studio_conf = conf.get("studio", {})
             studio_conf["token"] = migrated_config
             conf["studio"] = studio_conf
-
-        # Update cached config
-        self._config = self.config.copy()
-        self._config["token"] = migrated_config
 
         return migrated_config
 
@@ -197,6 +214,8 @@ class StudioClient:
     def config(self) -> dict:
         if self._config is None:
             self._config = Config().read().get("studio", {})
+            # Handle legacy token migration during config load
+            self._migrate_legacy_token_if_needed()
         return self._config  # type: ignore [return-value]
 
     @property

@@ -189,8 +189,8 @@ def login(args: "Namespace"):
         team_names = ["all"]
 
     # Parse expiration arguments
-    expires_in_days = getattr(args, "expires_in", None) or 365
-    never_expires = getattr(args, "never_expires", False)
+    expires_in_days = args.expires_in
+    never_expires = args.never_expires
 
     if config.get("url", hostname) == hostname and "token" in config:
         raise DataChainError(
@@ -216,8 +216,13 @@ def login(args: "Namespace"):
         raise DataChainError(f"Failed to authenticate with Studio: {exc}") from exc
 
     level = ConfigLevel.LOCAL if args.local else ConfigLevel.GLOBAL
-    config_path = save_enhanced_config(
-        hostname, access_token, team_names, expires_in_days, never_expires, level
+    config_path = save_config(
+        hostname,
+        access_token,
+        level,
+        team_names=team_names,
+        expires_in_days=expires_in_days,
+        never_expires=never_expires,
     )
     print(f"Authentication complete. Saved token to {config_path}.")
     if team_names and team_names != ["all"]:
@@ -366,20 +371,15 @@ def remove_studio_dataset(
     print(f"Dataset '{name}' removed from Studio")
 
 
-def save_config(hostname, token, level=ConfigLevel.GLOBAL):
-    """Save simple string token configuration (legacy format)."""
-    return _save_studio_config(hostname, token, None, None, True, level)
-
-
-def save_enhanced_config(
+def save_config(
     hostname,
     token,
-    team_names,
-    expires_in_days,
-    never_expires,
     level=ConfigLevel.GLOBAL,
+    team_names=None,
+    expires_in_days=None,
+    never_expires=False,
 ):
-    """Save enhanced token configuration with team scoping and expiration."""
+    """Save studio token configuration with optional team scoping and expiration."""
     return _save_studio_config(
         hostname, token, team_names, expires_in_days, never_expires, level
     )

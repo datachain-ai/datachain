@@ -89,9 +89,9 @@ def test_studio_login_arguments(mocker):
         token_name="token_name",  #  noqa: S106
         hostname="https://example.com",
         scopes="experiments",
-        team_names=None,  # New parameter
-        expires_in_days=365,  # New parameter
-        never_expires=False,  # New parameter
+        team_names=None,
+        expires_in_days=365,
+        never_expires=False,
         client_name="DataChain",
         open_browser=False,
         post_login_message=POST_LOGIN_MESSAGE,
