@@ -280,7 +280,7 @@ the methodology exists to prevent.
 
 Granularity is a first-class user question in the §4.10 dialogue
 (§4.10.0 Q3), phrased in domain terms (per-detection / per-frame /
-per-video) with the model's per-unit grain pre-selected.
+per-video) with the model's per-unit grain preselected.
 
 ### Row provenance — emitted rows MUST carry the typed source
 
@@ -428,7 +428,7 @@ the result or the cost — model id and version, threshold, granularity,
 fidelity, preset — is surfaced to the user, never chosen silently. Two
 levels:
 
-- **ASK** (via AskUserQuestion, default pre-selected, one alternative
+- **ASK** (via AskUserQuestion, default preselected, one alternative
   shown) for parameters that change *what gets counted* — model + version,
   threshold. Two questions max; combine into one multi-select if
   appropriate.
