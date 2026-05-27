@@ -1,4 +1,3 @@
-import io
 import os
 import posixpath
 import shutil
@@ -437,30 +436,6 @@ def _decode_video_frame(video: VideoFile, frame: int, video_stream_index: int = 
         raise FileError("unable to read video frame", video.source, video.path) from exc
 
     raise FileError("unable to read video frame", video.source, video.path)
-
-
-def video_frame_bytes(
-    video: VideoFile,
-    frame: int,
-    format: str = "jpg",
-    video_stream_index: int = 0,
-) -> bytes:
-    """
-    Reads video frame from a file and returns as image bytes.
-
-    Args:
-        video (VideoFile): Video file object.
-        frame (int): Frame index.
-        format (str): Image format (default: 'jpg').
-        video_stream_index: Zero-based index among video streams.
-
-    Returns:
-        bytes: Video frame image as bytes.
-    """
-    img = video_frame_np(video, frame, video_stream_index=video_stream_index)
-    buf = io.BytesIO()
-    PilImage.fromarray(img).save(buf, format=_image_format(format))
-    return buf.getvalue()
 
 
 def _image_format(format: str) -> str:
