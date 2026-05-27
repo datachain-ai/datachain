@@ -499,23 +499,8 @@ def save_video_frame(
     Returns:
         ImageFile: Image file model.
     """
-    catalog = video._catalog
-    if catalog is None:
-        raise RuntimeError("Cannot save video frame: catalog is not set")
-
-    destination = stringify_path(destination)
-    img = video_frame_bytes(
-        video, frame, format=format, video_stream_index=video_stream_index
-    )
-    extension = format.removeprefix(".")
-    output_file = posixpath.join(
-        destination, f"{video.get_file_stem()}_{frame:04d}.{extension}"
-    )
-    client, rel_path = video._resolve_destination(output_file, client_config)
-    result = client.upload(img, rel_path)
-    image = ImageFile(**result.model_dump())
-    image._set_stream(catalog)
-    return image
+    vf = video_frame(video, frame, video_stream_index=video_stream_index)
+    return vf.save(destination, format=format, client_config=client_config)
 
 
 def _ffmpeg_output_options(format: str) -> dict[str, str]:
