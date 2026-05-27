@@ -329,7 +329,7 @@ covers the data but reading it is no cheaper than re-reading raw storage,
 do not force the reuse; the methodology is justified by economics, not
 formalism.
 
-### 4.6 Derive task minimum BEFORE the calibration run
+### 4.6 Derive task minimum BEFORE estimating cost
 
 For decode-heavy sources, name the minimum fidelity the task requires
 along whichever axes apply to the format:
@@ -341,10 +341,10 @@ along whichever axes apply to the format:
 - **Encoding.** Lossy vs lossless; full-rate vs resampled;
   decoded vs raw container.
 
-This minimum is the **floor** for any thin-Asset preset and what the
-calibration measures against. Never calibrate at coarser fidelity than
-the task requires. If genuinely ambiguous, ask one targeted question —
-do not guess.
+This minimum is the **floor** for any Asset preset and the input to the
+§4.8 estimate (or calibration, when one runs). Never estimate at coarser
+fidelity than the task requires. If genuinely ambiguous, ask one
+targeted question — do not guess.
 
 **Silent defaults are forbidden.** Any parameter that materially affects
 the result or the cost — model id and version, threshold, granularity,
@@ -414,79 +414,54 @@ Standalone L1 appears as a separate build candidate in §4.10 ONLY when:
 the task is genuinely header-only (no decode needed), OR ≥3 L2s on this
 source make duplication bite, OR the user explicitly asks.
 
-### 4.8 Estimate cost by measurement, never guess
+### 4.8 Estimate cost — prior first, calibrate only when needed
 
-The number going into the §4.9 gate MUST be calibration-derived.
+**Default: estimate from priors.** Quote bucket footprint
+(`total_GB`, `total_files`, `avg_size`, top extensions) and a wall
+estimate built from the table below:
 
-**4.8a — Lead with sizes.** Before the calibration run, quote bucket
-footprint from the scan (total GB, files, avg size, top extensions) and a
-size-derived I/O baseline: `total_GB / bandwidth` where bandwidth ≈
-50–150 MB/s GCS→Mac, 80–200 S3→local, 500+ same-region cloud.
+```
+wall ≈ files × per-row × 1.5 / parallel
+```
 
-**4.8b — Calibration procedure** (mandatory for any `.map`/`.gen` over
->50 source items, or any UDF that decodes / downloads / calls a model).
+Most tasks need nothing more — standard models on familiar source
+shapes are predictable to within 2-3×.
 
-Pick `N = min(50, max(5, ⌈total/100⌉))`. Run **two** calibration runs
-back-to-back sharing one decode-once `.map`, each ending in `.persist()`
-(never `.save()`):
+| Op class | Per-row | Notes |
+|---|---|---|
+| Container header parse | ~1 ms | bounded-prefix reads |
+| Asset decode (file body) | size / 10-50 MB/s | I/O dominates |
+| Sense — small CPU classifier | 5-50 ms | text, light CV |
+| Sense — mid CPU model | 50-500 ms | detection, segmentation |
+| Sense — streaming CPU model | 0.1-0.5× realtime | ASR, audio |
+| Sense — local GPU | 10-100× faster than CPU | depends on model size |
+| Sense — paid API (LLM/VLM) | $0.001-0.01/row + 0.5-2s | rate-limited |
 
-1. **no-Asset calibration:** emit only the aggregate / Sense output.
-2. **thin-Asset calibration:** same `.map`, ALSO encode the materialized
-   payload at task-minimum fidelity and return `sum(len(bytes))` as a
-   column. **Do NOT upload during calibration** — encoding suffices to
-   measure compute + size; upload happens only at full-run time.
+Quote in §4.10 as `Estimated wall: ~X (prior)`.
 
-60–120 s timeout per run. Record wall seconds, GB read, rows out, plus
-encoded-bytes sum for thin-Asset.
+**Calibrate only when the prior is unreliable:**
 
-**Both branches are mandatory.** Single-branch calibration leaves
-R = thin/no undefined — which forces a fused-L3 default in §4.9 and
-prevents the layer choice. If only one branch was run, re-run the
-missing branch before proceeding to §4.9. If the full calibration is
-genuinely infeasible (empty source, network unreachable), auto-build is
-OFF and the agent goes to the §4.10 dialogue with the fallback rules of
-thumb below.
+1. **Untested implementation** — smoke-test 2-3 items to catch schema
+   mismatches, missing deps, model-load failures.
+2. **Unknown model or library** — no row in the table covers it.
+3. **Heavy-decode files** (avg >100 MB) where decode dominates and the
+   table is too loose. For files >300 MB, sample headers, don't decode.
+4. **Prior is within 3× of the §4.9c auto-build threshold** — a soft
+   prior on a multi-hour run is risky.
 
-**Never quote unmeasured calibration numbers — say "unmeasured"
-instead.** If a calibration branch timed out, errored, or never ran,
-the dialogue MUST report the unmeasured branch literally as
-`not measured` and R as `unknown`. Do NOT extrapolate the measured
-branch's wall onto the unmeasured one. Do NOT paraphrase ("about the
-same as no-Asset"). Do NOT guess from recall-economics tiers and
-present the guess as measurement.
+Skip otherwise: small source (<50 items or <100 MB), model in the
+table, or shortcut phrase (§7).
 
-When R is unknown, the §4.10 dialogue still surfaces the layer-ladder
-options — but the dialogue cannot recommend thin-Asset vs no-Asset
-shape on cost grounds. Surface this honestly: *"R is unknown — pick
-thin-Asset to preserve substrate reuse, or no-Asset to keep this
-build minimal."* The user picks under uncertainty; the agent does not
-fabricate the missing measurement. If calibration keeps timing out,
-options: (a) shrink N by 5× and re-run; (b) widen the timeout (with
-explicit user opt-in); (c) accept R-unknown and surface honestly.
+**Fast calibration.** Budget **60s wall**. `N = 3-5` items,
+`.persist()` (never `.save()`), no `attrs`. Extrapolate
+`wall_full = (wall_sample / N) × total_files × 1.5`. Kill at 60s;
+fall back to the prior with a `calibration timed out` flag.
 
-Extrapolate: `wall_full = (wall_sample / N) × total × 1.5`;
-`asset_full_bytes = (sample_bytes / N) × total × 1.5`. Cost in $ from the
-recall-economics tier unless calibration disagrees by >3×.
-
-**Calibration measurements are reusable across scope changes** within
-the same media / decode profile. When the user narrows or broadens
-scope after the dialogue was rendered, do NOT re-calibrate "for
-cleanliness" — just re-extrapolate the existing per-item numbers to
-the new item count. See §4.10.5.
-
-**Sanity floor.** Estimate disagreeing with the recall-economics tier by
->100× → re-calibrate, do not paper over.
-
-**Fallback rules of thumb** (use only when calibration is impossible):
-- Container (header-only parse): ~0.5 ms/file.
-- Asset (full-file decode, materialize): 50–500 ms/file; for heavy-decode
-  sources budget per source file, not per emitted unit.
-- Sense — paid API (LLM/VLM, hosted embeddings): ~$0.001–0.01/row plus
-  latency.
-- Sense — local model on CPU: 5–50 ms (small classifiers), 50–500 ms
-  (mid-size detection / segmentation), 0.1–0.5× realtime for streaming
-  models.
-- Sense — local model on GPU: ~10–100× faster than CPU baselines above.
+**Don't conflate estimate vs measurement.** A prior-derived number is
+`Estimated wall: ~X (prior)`. A measured number is `Calibration (N=5): ~X`.
+Never paraphrase a missing measurement — say `not measured` literally.
+If the estimate disagrees with the recall-economics tier by >100×,
+re-derive before quoting (wrong table row? wrong file count?).
 
 **L2 row-shape options — pick deliberately.** This is the data-model
 dimension surfaced in §4.10.0. Four shapes, in default-recommended order:
@@ -584,18 +559,16 @@ The minimum wizard is one question (scope). The maximum is four.
 
 #### 4.10.1 Rendered dialogue template
 
-Substitute measured calibration numbers verbatim. Render every layer
-that passed §4.7's "build candidate" test.
+Substitute numbers verbatim (estimate or calibration — label which).
+Render every layer that passed §4.7's "build candidate" test.
 
 ```
 Task: {one-line user goal}.
 Source: {bucket_size} / {n_total} {ext_summary} / avg file {avg_size}.
 Task minimum (§4.6): {granularity}, {fidelity}, {encoding}.
-Calibration (N={n_calib}): no-Asset ~{wall_calib_no}s, thin-Asset ~{wall_calib_thin}s
-                           (+{thin_storage_calib}); R = {R:.1f}.
-{if R > 2:} thin Asset costs ~{R:.1f}× more — substrate-vs-immediate
-trade-off. Recommendation follows CAST (substrate compounds); pick no-Asset
-only for genuinely one-shot answers.
+{if estimated:} Estimated wall: ~{wall_estimate} (prior: {avg_size} × {throughput_class}).
+{if calibrated:} Calibration (N={n_calib}): ~{wall_calib} per-row × {n_total} files = ~{wall_full}.
+{if calibration timed out:} Calibration timed out at 60s; falling back to estimate ~{wall_estimate} (prior).
 
 Build candidates (§4.7 walk):
 - L1 Container — {what it'd hold}; row: {field list}
@@ -653,17 +626,18 @@ Failure modes that defeat CAST doctrine:
   bucket nested, B) directory flat-pointer, C) sample fused" mixes
   scope AND data-model AND L2-shape into one question. That's the
   exact bug the four-dimension split fixes.
-- **Do NOT reorder so flat / fused-L3 / no-Asset come first.** The
-  recommended option is the recommended option; render it first.
+- **Do NOT reorder so flat / fused-L3 come first.** The recommended
+  option is the recommended option; render it first.
 - **Do NOT replace `[recommended]` with conditional phrasing** like
   "recommended if you expect future queries". The recommendation is
   unconditional.
-- **Do NOT add competing labels to flat / fused-L3 / no-Asset** like
-  "best for this one answer". The user picks; the agent does not nudge.
+- **Do NOT add competing labels to flat / fused-L3** like "best for
+  this one answer". The user picks; the agent does not nudge.
 
-**Always quote a number.** Every option carries an estimate. If
-calibration is feasible but wasn't run, run it first and then render the
-dialogue.
+**Always quote a number.** Every option carries a wall + cost. Derive
+the number from §4.8 priors by default; calibrate only when §4.8b's
+triggers fire. Label the source (`estimate` or `calibration`) so the
+user knows which.
 
 **AskUserQuestion options MUST mirror the rendered prose dialogue.**
 Every named option (a / b / c / d) from the prose dialogue must appear
@@ -731,18 +705,17 @@ before proceeding to script generation.
 7. **Explicit dir / prefix / glob** named by the user that wasn't in
    the original dialogue.
 
-When any trigger fires, reuse the existing calibration measurements and
-re-extrapolate (parameters and data-model changes can affect the
-extrapolation — see §4.8 sanity rules). Render the dialogue again at
-the new state (§4.10 or §4.10b). Never proceed to script generation off
-the prior recommendation.
+When any trigger fires, reuse the existing per-row numbers (estimate
+or calibration — either is fine) and re-extrapolate to the new state.
+Parameter and data-model changes can shift the per-row baseline — see
+§4.8 sanity floor. Render the dialogue again at the new state (§4.10 or
+§4.10b). Never proceed to script generation off the prior recommendation.
 
-**Do NOT re-calibrate by default.** Re-running calibration on the same
-media/decode profile is wasted wall time. The only cases that warrant a
-fresh calibration: media-type change within the same task, or
-decode-profile change where the prior per-item wall is unlikely to
-extrapolate. Even then, ASK rather than auto-recalibrate. Default to
-extrapolation when in doubt.
+**Do NOT re-measure by default.** Re-running calibration on the same
+model + file-size profile is wasted wall time. Fresh measurement is
+worth it only when the model or decode profile actually changed (new
+library, very different file size class). Default to re-extrapolation
+when in doubt.
 
 **The recommendation can flip even when the measurements are reused.**
 Re-deriving the recommendation is the whole point of re-rendering the
@@ -855,8 +828,8 @@ Apply these in every data-related response.
    lineage. When they don't, stay concrete but still render the dialogue.
 3. **Always quote a number** when recommending a layer build. "Building
    the Sense layer takes ~3 min and $0.40; running the same embedding
-   next time is free." No cost estimate → run the calibration first, then
-   render the dialogue.
+   next time is free." Derive the number from §4.8 priors by default;
+   calibrate only when the prior is unreliable.
 4. **Celebrate CAS reuse explicitly.** Every time the skill reuses an
    existing C/A/S layer instead of rebuilding, state the win out loud:
    which layer is being reused, what cost was avoided, and (when natural)
