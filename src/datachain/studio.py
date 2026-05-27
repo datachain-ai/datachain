@@ -23,6 +23,15 @@ from datachain.utils import flatten
 
 logger = logging.getLogger("datachain")
 
+# Constants
+ALL_TEAMS_ACCESS = "all"
+
+
+def _get_current_utc_time() -> str:
+    """Get current UTC time as ISO string."""
+    return datetime.now(timezone.utc).isoformat()
+
+
 if TYPE_CHECKING:
     from argparse import Namespace
 
@@ -196,9 +205,9 @@ def login(args: "Namespace"):
             token_name=name,
             hostname=hostname,
             scopes=scopes,
-            team_names=team_names,  # New parameter
-            expires_in_days=expires_in_days,  # New parameter
-            never_expires=never_expires,  # New parameter
+            team_names=team_names,
+            expires_in_days=expires_in_days,
+            never_expires=never_expires,
             open_browser=open_browser,
             client_name="DataChain",
             post_login_message=POST_LOGIN_MESSAGE,
@@ -358,14 +367,8 @@ def remove_studio_dataset(
 
 
 def save_config(hostname, token, level=ConfigLevel.GLOBAL):
-    config = Config(level)
-    with config.edit() as conf:
-        studio_conf = conf.get("studio", {})
-        studio_conf["url"] = hostname
-        studio_conf["token"] = token
-        conf["studio"] = studio_conf
-
-    return config.config_file()
+    """Save simple string token configuration (legacy format)."""
+    return _save_studio_config(hostname, token, None, None, True, level)
 
 
 def save_enhanced_config(
@@ -377,32 +380,44 @@ def save_enhanced_config(
     level=ConfigLevel.GLOBAL,
 ):
     """Save enhanced token configuration with team scoping and expiration."""
+    return _save_studio_config(
+        hostname, token, team_names, expires_in_days, never_expires, level
+    )
+
+
+def _save_studio_config(
+    hostname, token, team_names, expires_in_days, never_expires, level
+):
+    """Internal function to save studio configuration."""
     config = Config(level)
     with config.edit() as conf:
         studio_conf = conf.get("studio", {})
         studio_conf["url"] = hostname
 
-        # Create enhanced token structure
-        token_config = {
-            "value": token,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "never_expires": never_expires,
-        }
-
-        # Set expiration - don't include expires_at key if never_expires is True
-        if not never_expires:
-            expiry_date = datetime.now(timezone.utc) + timedelta(days=expires_in_days)
-            token_config["expires_at"] = expiry_date.isoformat()
-
-        # Set team scoping
-        if team_names:
-            token_config["teams"] = team_names
+        # Legacy format: simple string token
+        if team_names is None and expires_in_days is None:
+            studio_conf["token"] = token
         else:
-            token_config["teams"] = "all"
+            # Enhanced format: structured token
+            now = _get_current_utc_time()
+            token_config = {
+                "value": token,
+                "created_at": now,
+                "never_expires": never_expires,
+            }
 
-        studio_conf["token"] = token_config
+            # Set expiration
+            if not never_expires and expires_in_days:
+                expiry_date = datetime.now(timezone.utc) + timedelta(
+                    days=expires_in_days
+                )
+                token_config["expires_at"] = expiry_date.isoformat()
+
+            # Set team scoping
+            token_config["teams"] = team_names or ALL_TEAMS_ACCESS
+            studio_conf["token"] = token_config
+
         conf["studio"] = studio_conf
-
     return config.config_file()
 
 
@@ -430,10 +445,9 @@ def migrate_legacy_token(token_config):
         logger.info("Migrating legacy token format to enhanced structure.")
         return {
             "value": token_config,
-            "teams": "all",
-            "created_at": datetime.now(timezone.utc).isoformat(),
+            "teams": ALL_TEAMS_ACCESS,
+            "created_at": _get_current_utc_time(),
             "never_expires": True,
-            "migrated_from_legacy": True,
             # Note: No expires_at key for never-expires tokens
         }
     return token_config
