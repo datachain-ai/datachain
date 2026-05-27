@@ -131,8 +131,11 @@ l3_<source>_<descriptor>      # model-derived signals
   `gs-`, `s3-`, `aws-`, `gcp-`, `azure-`, `public-`, `private-`. Replace
   `-` with `_`.
 - **Preserve source-path word order in the slug.** Write subdirs
-  left-to-right matching the bucket path; never reverse for a
-  "friendlier" slug — that desyncs the KB from the bucket browser.
+  left-to-right matching the bucket path; never drop or reverse path
+  components. Example: source URI
+  `gs://datachain-starss23/video_dev/dev-{train,test}-sony/` →
+  slug `starss23_video_dev_sony` ✓; slug `starss23_sony` ✗ (drops
+  `video_dev/`; collides with hypothetical `metadata_dev/dev-*-sony/`).
 - **Preset/config → `attrs`, never in the name.** Names describe content,
   not parameters.
 - **One content noun per name.** Pick one — don't stack redundant
@@ -208,35 +211,69 @@ When you call `.gen(name=fn)`:
 Every saved dataset is **one big Pydantic table** — that part is fixed.
 The methodology choice is **granularity**: what entity is "one row"?
 
-**Default: row granularity matches the Task entity.** Identify what
-the user's question filters or groups on; make that the row. An ideal
-dataset answers the Task with one `.filter()` / `.group_by()` — no
-`.map()` to walk nested lists.
+**Default: row granularity = the model's per-unit-of-output grain.**
+Object detection emits one detection per box → per-detection rows.
+Segmentation emits one segment per shape → per-segment rows. LLM
+extraction emits one structured response per call → per-call rows.
+Header parsing emits one record per file → per-file rows. Match the
+substrate to what the generating operation actually produces.
 
-**Finer sub-units stay nested as Pydantic lists** (preserves §1.2
-full-output rule). One row per Task entity; everything below sits in
-nested fields that downstream `.gen` / `.map` can fan out when needed,
-but Task-level analytics never touch.
+**Why not the Task entity?** The Task's filter target is often nested
+*inside* the model's output (the user asks "videos with people" but
+the model produced individual detections, each with a `label`). When
+the substrate grain is coarser than the model's output grain, the
+Task's filter target ends up buried in `list[list[T]]` at the root,
+and every analytic query needs `.gen()` to fan it out — defeating
+Data Memory's warehouse-speed promise. Aggregating UP from per-unit
+substrate to per-Task-entity Task is one `.group_by()`; fanning DOWN
+from per-Task-entity substrate to per-unit analytics needs `.gen()` per
+query, forever.
+
+**Correct shape — per-detection L3 + per-video Task:**
 
 ```python
-# Task: "find videos with high pedestrian density"
-# Row = per-video. Frames + detections live as nested lists.
-class VideoRow(BaseModel):
-    source: dc.VideoFile
-    info: dc.Video                          # folded L1 (§4.7b)
-    frames: list[FrameAnalysis]             # nested
-    pedestrian_density: float               # derived column for the Task filter
+# L3 Sense: one row per detection. Full model output preserved.
+class DetectionRow(BaseModel):
+    source: dc.VideoFile      # parent video — typed reference, not a path
+    frame_idx: int            # which frame in the source
+    timestamp: float
+    label: str
+    class_id: int
+    confidence: float
+    bbox: list[float]
+
+# Build chain:
+(dc.read_storage("gs://.../video_eval/", type="video", update=True, delta=True)
+   .setup(model=load_yolo)
+   .gen(det=detect_per_frame)        # one source → many detection rows
+   .save("l3_starss23_video_eval_yolo", attrs=["cast:sense", ...]))
+
+# Task: "videos with N+ people" — one .filter() + one .group_by() + one .save()
+(dc.read_dataset("l3_starss23_video_eval_yolo")
+   .filter(dc.C("label") == "person")
+   .group_by(n_person=dc.func.count(), partition_by="source")
+   .filter(dc.C("n_person") >= THRESHOLD)
+   .save("videos_with_people", attrs=["cast:task", ...]))
 ```
 
-**Anti-pattern: the Task's filter target is buried in nested lists.**
-If the user filters on something inside `list[list[T]]`, the
-granularity is wrong — pick one level deeper. Lists at the root level
-force `.map()` for every analytic query and defeat Data Memory's
-warehouse-speed promise.
+**Anti-pattern — do NOT replicate:** per-video L3 with `frames:
+list[FrameDetections]` where `FrameDetections.detections:
+list[Detection]`. The Task's filter target (`label`) sits in
+`list[list[T]]` at the root. No Data Memory op answers the Task; the
+agent falls back to `dc.read_dataset(...).to_iter(...)` plus Python
+loops and never `.save()`s the result. That bypass is the §6 regression
+the methodology exists to prevent.
+
+**Where coarser grains are still legitimate:**
+- The model itself emits per-source units (e.g., one classification per
+  video, one whole-document summary, one global embedding per file) —
+  then per-source IS the per-unit grain. No coarser-than-model question.
+- The user explicitly prefers coarser rows for compact storage or for a
+  specific downstream tool — they pick that in §4.10.0 Q3.
 
 Granularity is a first-class user question in the §4.10 dialogue
-(§4.10.0 Q3), phrased in domain terms (per-video / per-frame /
-per-segment) with the Task-matched grain pre-selected.
+(§4.10.0 Q3), phrased in domain terms (per-detection / per-frame /
+per-video) with the model's per-unit grain pre-selected.
 
 ### Typed File references on substrate rows — never bare paths
 
@@ -388,31 +425,36 @@ build. The agent does **not** pre-filter to "just what the current
 question needs" — that's exactly the substrate-erosion regression CAST
 exists to prevent.
 
-### 4.7b L1 wiring rule — three modes
+### 4.7b L1 wiring — three options, no folding
 
 L1 captures task-agnostic source characteristics (codec, dimensions,
-schema, format). It is the most general substrate; future tasks
-(unknown today) will query headers regardless. So L1 data is always
-worth capturing — but *whether* it lives as a standalone dataset or
-folded onto the L2 row depends on the substrate's maturity on the source.
+schema, format). It's the most general substrate; future tasks may
+query headers. But L1's grain (per-file) is rarely the same as L2's or
+L3's grain (per-detection, per-segment, per-frame). Forcing them to
+share a row duplicates header bytes thousands of times for zero
+analytic benefit and hides the L1 reuse story inside whichever layer
+absorbed it. The methodology has **no fold mode**.
 
-- **Mode 1 — First L2 on this source, no L1 yet → fold into L2.** Add
-  the header read as a column on the L2 row. The L2 UDF usually
-  already needs the header to compute its sampling step, so capture is
-  essentially free. Do NOT build a separate L1 at this stage — the
-  folded column IS the L1 data, colocated. Future tasks can still query
-  via `dc.read_dataset("l2_…").select("source", "info")`.
-- **Mode 2 — L1 already exists on this source → L2 reads from L1, no
-  re-call.** Never re-call the header op inside the L2 UDF — "L1 paid
-  for this once" is the whole point of the layer.
-- **Mode 3 — 3+ L2 layers on this source carry folded headers → extract
-  L1.** Header data is now duplicated; refresh coordination gets
-  expensive. Break L1 out as a canonical dataset, then migrate L2 reads
-  to Mode 2 on next refresh.
+Three legitimate options for any source:
 
-Standalone L1 appears as a separate build candidate in §4.10 ONLY when:
-the task is genuinely header-only (no decode needed), OR ≥3 L2s on this
-source make duplication bite, OR the user explicitly asks.
+- **No L1, no fold.** L3/L2 UDFs that need a header value (e.g., `fps`
+  to pick a sampling step) call `file.get_info()` inside the UDF and
+  don't save the result. The default when no future task plausibly
+  filters on header fields.
+- **Standalone L1.** Build a dedicated `l1_<source>_info` dataset when
+  ≥2 plausible future tasks would filter on header fields (codec
+  diversity, dimensions, duration), or when the user explicitly asks
+  for a header-only dataset.
+- **L2/L3 reads from L1.** When a standalone L1 already exists,
+  downstream layers chain from it via `dc.read_dataset("l1_<source>_info")`
+  — never re-call `get_info()` inside the UDF.
+
+**Skipping L1 entirely is a first-class option**, not a fallback —
+higher layers often need a different grain than L1 would, and forcing
+them to share rows is the substrate-erosion the methodology exists to
+prevent. The same skip-by-default principle applies to L2: when L3
+naturally answers the user's questions, L2 can be omitted from the
+build candidates.
 
 ### 4.8 Estimate cost — prior first, calibrate only when needed
 
@@ -524,7 +566,7 @@ cost depends on every answer above.
 |---|---|---|---|---|
 | 1 | **Method** | Which library or approach realises the Sense (or heavy Asset) operation — e.g. a segmentation library vs an LLM vs custom code; OCR vs text-layer; an embedding family. | ASK whenever ≥2 plausible methods exist with different precision/recall/cost profiles. NOTIFY when only one is reasonable. | This section |
 | 2 | **Parameters** | Model id + version, threshold, fidelity — anything within the chosen method that materially changes results. | Task-minimum-derived (NOTIFY) for fidelity; ASK for model+version and threshold. | §4.6 ASK / NOTIFY table |
-| 3 | **Granularity** | One row per what domain entity? Always one big table; the question is which entity is "one row". Sub-units below the chosen grain stay nested as Pydantic lists. | **Per-Task-entity** — the grain at which the Task answers in one `.filter()` / `.group_by()` (no `.map()` over nested lists). | §3 "Row granularity" |
+| 3 | **Granularity** | One row per what domain entity? Always one big table; the question is which entity is "one row". | **Per-unit-of-output** — the model's emit grain (per-detection, per-segment, per-token, per-event). The Task aggregates UP to the user's entity in a separate `.save(attrs=["cast:task", ...])`. | §3 "Row granularity" |
 | 4 | **Scope** | Bucket / directory / sample. | Bucket (whole root). Per §4.9. | §4.9 |
 
 Method comes first because parameters live *inside* a method — `threshold`
@@ -551,6 +593,20 @@ choice:
 - Scope: always ask.
 
 The minimum wizard is one question (scope). The maximum is four.
+
+**Granularity pre-check before rendering Q3's [recommended].** Mentally
+write the Data Memory chain for each sub-question in the user's Task at
+the proposed grain. If any sub-question requires `.gen()` to flatten a
+nested list before `.filter()` / `.group_by()`, the grain is too coarse
+— pick the next finer grain (typically the model's per-unit-of-output
+grain: per-detection for object detection, per-segment for
+segmentation, per-token for LLM extraction, per-event for log parsing).
+Surface coarser grains as alternatives for users who prioritise compact
+per-source rows; never as the default. The agent's most common failure
+mode is matching the row to the first noun in the user's question
+("find VIDEOS with people" → per-video) and then discovering, at query
+time, that the Task's filter target (`label == "person"`) lives in
+`list[list[T]]` at the root.
 
 #### 4.10.1 Rendered dialogue template
 
@@ -585,15 +641,21 @@ Q2. PARAMETERS — only ASK rows from §4.6, for the method picked in Q1
   • threshold:{default} | tighter ({alt}) | looser ({alt})
   (NOTIFY rows shown above in `Task minimum`; user can override but no question.)
 
-Q3. GRANULARITY — one row per {task_entity}? (phrased in domain terms)
-  • per-{task_entity}: Task answers in one .filter()/.group_by()     [recommended]
-  • per-{finer_entity}: finer than Task needs; reusable for future per-{finer} questions
-  • per-{coarser_entity}: coarser; sub-units nested as list, Task needs .map() (avoid)
+Q3. GRANULARITY — one row per {domain_entity}? (phrased in domain terms)
+  • per-{model_unit}: model's emit grain; every Task sub-question is one .filter()/.group_by()    [recommended]
+  • per-{intermediate}: coarser than the model emits but finer than the Task's projection grain;
+                       Task sub-questions may need one .gen() to flatten
+  • per-{task_projection}: row = the entity in the user's question prose;
+                           Task analytics need .gen() per sub-question (avoid unless user opts in)
 
-  Pick {task_entity} from the user's question — what does it filter / group on?
-  E.g. "videos with people" → per-video; "frames containing cars" → per-frame;
-  "segments above threshold" → per-segment. Sub-units below the chosen grain
-  stay nested as Pydantic lists (§1.2 full-output rule still holds).
+  {model_unit} is what the chosen method emits per call:
+    • object detection → per-detection
+    • segmentation    → per-segment / per-mask
+    • LLM extraction  → per-call response (one row per structured response)
+    • header parse    → per-file
+  The per-{task_projection} grain comes from the surface noun in the user's
+  question ("find VIDEOS with X" → per-video). It's the agent's most common
+  trap — see §3 "Row granularity" and the granularity pre-check above.
 
 Q4. SCOPE — coverage of the source
   • WHOLE bucket: ~{wall_full_bucket}, ${cost_full_bucket}     [recommended]
@@ -751,10 +813,20 @@ compute observed per-row rate.
 - **L3 (Sense).** Persist by default, full coverage of input. The
   "expensive UDF → save full → filter downstream" rule exists exactly to
   make L3 reusable.
-- **L4 (Task).** Persist by exception. Most ranking / similarity / filter
-  outputs do not deserve a name. Save only when the user explicitly asks,
-  or when the result is a standing benchmark / training set referenced
-  again.
+- **L4 (Task).** Persist by exception for one-shot rankings and
+  similarity queries the user wants to see once. **Persist by default**
+  when the Task derives reusable analytics from a CAS layer:
+  `.group_by()` aggregations, `.distinct()` projections, scalar
+  summaries per Task entity (counts, presence booleans, top-k labels).
+  These are themselves a new dataset — `.save(attrs=["cast:task",
+  "source:<task_slug>"], description=...)` and let the next session
+  find them in the KB. The "by exception" wording covered the
+  one-shot-ranking case; the aggregation case is the new default.
+
+  Walking the CAS chain via `.to_iter()` / `.to_list()` into Python
+  and computing in-memory then printing is the §6 bypass — even when
+  the output looks small. `.show()` on the saved Task for display is
+  fine; discard-after-print is not.
 
 ### Delta path
 
@@ -794,7 +866,16 @@ this section rather than restating the rules.
 - **NEVER bypass DataChain for results.** UDF outputs MUST land via
   `.save("name", attrs=[...], description=...)`. Writing to local `.json`
   / `.csv` / `.parquet` via `open()`, `json.dump`, `pandas.to_csv`, etc.,
-  bypasses lineage and the KB.
+  bypasses lineage and the KB. **Also forbidden: `dc.read_dataset(...)
+  .to_iter(...)` (or `.to_list()`) followed by Python loops that walk
+  nested fields and `print()` the result.** That pattern bypasses
+  DataChain for the Task layer specifically — the derived aggregation
+  disappears, the KB has no record, the next session re-walks the CAS
+  layer from scratch. Task aggregations are Data Memory chains
+  (`.filter`, `.group_by`, `.mutate`, `.distinct`) ending in `.save(
+  attrs=["cast:task", ...])`. If the substrate forces you to walk
+  nested lists in Python, the substrate grain is wrong — go back to
+  §3 / §4.10.0 Q3 and re-pick.
 - **C/A/S substrate is mandatory.** Any UDF-bearing task builds and saves
   **at least one** Container / Asset / Sense layer. "Persist by exception"
   applies ONLY to the final Task ranking, never to substrate that
