@@ -45,10 +45,16 @@ By operation type:
 - **Materialize** — typed file reference (`dc.File` and subclasses),
   the preset that produced it, source link, encoding parameters.
 - **Inference / model call** — the model's complete structured output
-  (full detection list, full embedding vector, full LLM response),
-  plus per-call telemetry: `model_id`, `model_version`, `inference_ms`,
-  `prompt_tokens` / `completion_tokens` for LLMs, `finish_reason`,
-  `request_id` for paid APIs.
+  (full detection list, full embedding vector, full LLM response). Note:
+  per-call telemetry (`model_id`, `inference_ms`, `prompt_tokens`,
+  `finish_reason`, `request_id`) is **opt-in, not default**. The build
+  signature for the dataset as a whole already lives in `attrs`
+  (§3 — `model:<id>@<version>`, `preset:<name>`); duplicating it on
+  every row is unnecessary cost. Add per-row telemetry only when there
+  is a concrete reason: the dataset will be unioned with sibling
+  datasets built at different model versions (telemetry disambiguates
+  which row came from which build), or per-row latency / cost is
+  itself the analytic target.
 
 If the agent finds itself writing `if conf > 0.5` or `if label == X`
 before `.save()`, that filter is the current question leaking into the
@@ -234,8 +240,8 @@ query, forever.
 ```python
 # L3 Sense: one row per detection. Full model output preserved.
 class DetectionRow(BaseModel):
-    source: dc.VideoFile      # parent video — typed reference, not a path
-    frame_idx: int            # which frame in the source
+    source: dc.VideoFile      # row provenance — typed back-pointer to the source file
+    frame_idx: int
     timestamp: float
     label: str
     class_id: int
@@ -275,27 +281,60 @@ Granularity is a first-class user question in the §4.10 dialogue
 (§4.10.0 Q3), phrased in domain terms (per-detection / per-frame /
 per-video) with the model's per-unit grain pre-selected.
 
-### Typed File references on substrate rows — never bare paths
+### Row provenance — emitted rows MUST carry the typed source
 
-A substrate row that points at a file MUST carry the typed reference,
-not a string path. Use `dc.File` or its modality-specific subclass.
-A bare `str` loses:
-
-- **Lineage / consistency.** DataChain can no longer trace the row back
-  to the source listing; etag-change detection breaks.
-- **UI visualisation.** Studio renders `dc.File` subclasses with
-  previews. A bare string is just text.
-- **Downstream methods.** Modality methods like `.get_info()`,
-  `.read()`, `.open()` require the typed object on the row.
-- **Access config.** The `anon=True` / credentials from the original
-  `read_storage` are carried by the typed File, not by the string.
+Every row produced by a UDF that fans out a source file (`.gen()` or a
+`.map()` that returns a derived value) MUST include the originating
+source file as a typed field in the emitted Pydantic model. This is
+**row provenance**: the back-pointer that ties each row to the source
+it was derived from.
 
 ```python
-class Row(BaseModel):
-    source: dc.VideoFile      # ✓ typed reference — lineage + methods + UI
+# ✓ Detection row carries its source video.
+class Detection(BaseModel):
+    source: dc.VideoFile      # ← row provenance
+    frame_idx: int
     timestamp: float
-    detections: list[Detection]
+    label: str
+    class_id: int
+    confidence: float
+    bbox: list[float]
+
+def detect_per_frame(file: dc.VideoFile, model) -> Iterator[Detection]:
+    for frame in file.get_frames(step=...):
+        for box in model(frame.get_np()).boxes:
+            yield Detection(source=file, frame_idx=..., ...)   # pass source through
 ```
+
+```python
+# ✗ Source field omitted. The Detection row has no back-pointer to its
+#   originating video — every downstream .merge / .group_by(partition_by=source)
+#   query fails, lineage to the file listing is broken, and the row is
+#   orphaned in the saved dataset.
+class Detection(BaseModel):
+    frame_idx: int
+    timestamp: float
+    label: str
+    ...
+```
+
+Do NOT rely on DataChain's parent-column propagation to carry the source
+implicitly. Be explicit in the emitted model — the saved schema is the
+contract the next session reads.
+
+**Typed reference, never a bare path.** Use `dc.File` or its
+modality-specific subclass (`dc.VideoFile`, `dc.ImageFile`,
+`dc.AudioFile`, `dc.TextFile`), not `source: str`. A bare string
+loses:
+
+- **DataChain lineage.** Etag-change detection and the source-listing
+  link break — DataChain can no longer trace the row back.
+- **UI visualisation.** Studio renders `dc.File` subclasses with
+  previews / thumbnails. A bare string is just text.
+- **Downstream methods.** Modality methods like `.get_info()`,
+  `.read()`, `.open()` need the typed object on the row.
+- **Access config.** `anon=True` / credentials from the original
+  `read_storage` flow with the typed File, not with a string.
 
 The only legal exception is when the user explicitly asks for a
 string-only payload. In that case, keep the typed File AND add the
