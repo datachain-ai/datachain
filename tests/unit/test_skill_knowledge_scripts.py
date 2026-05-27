@@ -484,10 +484,10 @@ def test_render_index_all_metadata_from_md(tmp_path, monkeypatch):
         "---\nname: my_ds\nlast_version: 3.0.0\n"
         "records: 12000\nupdated: 2025-04-01T10:00:00Z\n"
         "known_versions: [1.0.0, 2.0.0, 3.0.0]\n"
-        "case_layer: experiment\n"
-        "case_scope: onetime\n"
-        "case_source: raw_images\n"
-        "case_parents: [raw_images, labels]\n---\n\n"
+        "cast_layer: task\n"
+        "cast_scope: onetime\n"
+        "cast_source: raw_images\n"
+        "cast_parents: [raw_images, labels]\n---\n\n"
         "# my_ds\n\n"
         "Image metadata with EXIF and GPS for 12k photos.\n\n"
         "## Schema\n"
@@ -507,9 +507,9 @@ def test_render_index_all_metadata_from_md(tmp_path, monkeypatch):
     assert "Image metadata with EXIF and GPS for 12k photos." in result
     # Updated from frontmatter
     assert "2025-04-01" in result
-    # Parents from case_parents frontmatter
+    # Parents from cast_parents frontmatter
     assert "raw_images" in result
     assert "labels" in result
-    # CASE metadata propagated to the table
+    # CAST metadata propagated to the table
     assert "onetime" in result
     assert "12000" in result
