@@ -203,6 +203,41 @@ When you call `.gen(name=fn)`:
   stringifies hints and DataChain's signal-schema resolution rejects the
   string-vs-class mismatch.
 
+### Row shape — prefer nested over flat
+
+When a source decomposes into sub-units (segments, frames, chunks,
+events, time-windows, records), the default row shape is **nested**:
+one row per source, with sub-units as nested Pydantic lists.
+
+```python
+class SegmentInfo(BaseModel):
+    start: float
+    end: float
+    mask: list[float]
+
+class FrameAnalysis(BaseModel):
+    timestamp: float
+    frame_index: int
+    detections: list[Detection]
+    segments: list[SegmentInfo]
+
+class VideoRow(BaseModel):
+    source: dc.VideoFile
+    info: dc.Video                  # codec, fps, duration, dims (folded L1, §4.7b)
+    frames: list[FrameAnalysis]
+```
+
+The flat alternative — one row per terminal unit with parent dimensions
+as scalar references — wins only in two cases: (a) a downstream tool
+requires one-row-per-unit (annotation UI, training pipeline reading
+filesystem rows), or (b) per-unit aggregations dominate over hierarchy
+queries.
+
+The full menu of row shapes (nested, flat-pointer, flat-materialized,
+fused-L3) and the dialogue rules for picking among them live in §4.8
+and §4.10.0. Nested is always the recommended default in the §4.10
+dialogue; flat shapes appear as the alternative for cases (a) and (b).
+
 ### Typed File references on substrate rows — never bare paths
 
 A substrate row that points at a file MUST carry the typed reference,
@@ -453,19 +488,28 @@ the new item count. See §4.10.5.
   models.
 - Sense — local model on GPU: ~10–100× faster than CPU baselines above.
 
-**L2 shape — three options for heavy-decode sources.** Pick deliberately:
+**L2 row-shape options — pick deliberately.** This is the data-model
+dimension surfaced in §4.10.0. Four shapes, in default-recommended order:
 
-| Shape | When to choose | Cost |
+| Shape | Row schema | When to choose |
 |---|---|---|
-| **Pointer-row** (`.gen` yields rows with the source `dc.File` + offsets) | Downstream is in-DataChain only; no external interop. **Consume via `.gen()` over the source File**, never per-row `.map()` that re-opens the file per emitted unit. | No data duplication; storage I/O paid once per source file at consume time. |
-| **Materialized** (`.gen` yields rows with `frame: dc.File` pointing at written derivative files at the task-minimum preset) | Downstream needs files-on-disk for non-DataChain interop — annotation UIs, training pipelines, browsing in the storage browser. Destination: cloud-source → cloud-derivative same scheme; confirm bucket + prefix with the user, never default to `.datachain/`. | Encode + upload cost paid at build time; downstream reads at file-system speed. |
-| **Fused-L3** (`.gen(File → Iterator[Detection])` decodes once, emits per-detection rows, no separate L2) | User has explicitly opted out of L2 in the dialogue, OR L2 has no plausible reuse (one-pass embedding only). | Cheapest single pass; re-decodes from raw storage on the next question. |
+| **Nested** (recommended default) | `SourceRow(source: dc.File, info: ..., units: list[Unit])` where `Unit` may itself nest deeper (`Unit.sub_units: list[SubUnit]`). One row per source. | Default for any source that decomposes into sub-units. Composes with downstream queries (`.select("source", "units.sub_units")` projects the right slice). Source fetched once per row. |
+| **Flat-pointer** | `UnitRow(source: dc.File, offset, index)` — one row per terminal unit; source is a reference, no payload bytes on the row. | Downstream consumes one-row-per-unit AND downstream is in-DataChain only (no external interop). **Consume via `.gen()` over the source File**, never per-row `.map()` that re-opens the file per emitted unit (cache key is per source file, not per unit). |
+| **Flat-materialized** | `UnitRow(source: dc.File, unit_file: dc.File)` — one row per terminal unit; `unit_file` points at a written derivative at task-minimum preset. | Downstream tool needs files-on-disk for non-DataChain interop (annotation UIs, training pipelines that read filesystem rows). Destination: cloud-source → cloud-derivative same scheme; confirm bucket + prefix with the user, never default to `.datachain/`. |
+| **Fused-L3** (skip L2) | `SenseRow(source: dc.File, ...)` — `.gen(File → Iterator[SenseUnit])` decodes once, emits per-unit Sense rows, no separate L2. | User explicitly opted out of L2 in the dialogue, OR L2 has no plausible reuse (one-pass embedding only). Cheapest single pass; re-decodes from raw storage on the next question. |
 
-**Per-row `.map()` over pointer-row L2 is a perf trap.** The cache key
-is per source file, not per emitted unit — reading per row re-opens and
-re-seeks the same source for every emitted row. Consume pointer-row L2
-with `.gen()` over the source File (one open per file, iterate units
-internally) or fuse to Sense directly from L1.
+**Why nested is the default.** Nested rows let downstream queries project
+to any granularity (`.select("source", "units")` for per-source aggregates;
+`.gen(u=lambda row: row.units)` to flatten to per-unit). Flat rows can
+only fan out, never re-aggregate without a costly `group_by`. Nested
+also fetches the source once per row by construction — no per-unit
+cache-miss trap.
+
+**Flat is right when:** (a) a downstream tool requires one-row-per-unit
+(annotation UI, training pipeline reading filesystem rows), OR (b)
+per-unit aggregations dominate (`.group_by(unit_class, partition_by=...)`
+across millions of units, where a nested schema would force a huge
+`.gen()` fan-out before the aggregation).
 
 **Calibration policy.** `.persist()` not `.save()`; no `attrs` /
 `description` on calibration runs; no enrichment. End state: no `calib_*`
@@ -498,8 +542,50 @@ when:
 For every other case, render the template below — even for sub-minute
 builds.
 
-**Template** (substitute measured calibration numbers verbatim; render
-every layer that passed §4.7's "build candidate" test):
+#### 4.10.0 Four dimensions — ask separately, never mix
+
+A layer-ladder dialogue settles **four orthogonal dimensions** with the
+user. Each is asked as its own question; never bundle options from two
+dimensions into one menu. Order is fixed — scope is last because its
+cost depends on every answer above.
+
+| # | Dimension | Question | Default | Source |
+|---|---|---|---|---|
+| 1 | **Method** | Which library or approach realises the Sense (or heavy Asset) operation — e.g. a segmentation library vs an LLM vs custom code; OCR vs text-layer; an embedding family. | ASK whenever ≥2 plausible methods exist with different precision/recall/cost profiles. NOTIFY when only one is reasonable. | This section |
+| 2 | **Parameters** | Model id + version, threshold, fidelity — anything within the chosen method that materially changes results. | Task-minimum-derived (NOTIFY) for fidelity; ASK for model+version and threshold. | §4.6 ASK / NOTIFY table |
+| 3 | **Data model** | Row schema, per layer that decomposes into sub-units: **nested** (one row per source, sub-units as nested Pydantic lists) vs **flat-pointer** vs **flat-materialized** vs **fused-L3** (skip L2). | **Nested.** See §4.8 L2-row-shape table for the full menu and when flat wins. | §4.8 |
+| 4 | **Scope** | Bucket / directory / sample. | Bucket (whole root). Per §4.9. | §4.9 |
+
+Method comes first because parameters live *inside* a method — `threshold`
+and `model_id` only make sense once the library is picked. Scope is last
+because its cost depends on every answer above.
+
+**Separation rule.** Render every AskUserQuestion call with **exactly
+one dimension per question**. AskUserQuestion accepts up to 4 questions
+per call, presented to the user as a sequential wizard ("answer Q1,
+then Q2, then Q3, then Q4, submit"). Pack the dimensions that genuinely
+need an answer into that one call, in order: method → parameters →
+data-model → scope. Do NOT collapse two dimensions into one option list
+(e.g., `[a) WHOLE bucket nested, b) directory flat-pointer]` is a bug
+— that mixes scope AND data-model).
+
+**Skip rule.** Drop a dimension from the wizard when it has no real
+choice:
+
+- Method: if only one library/approach is plausible, NOTIFY in the
+  rendered prose, skip the question.
+- Parameters: if §4.6 lists no ASK rows for this task, skip.
+- Data model: nested is the default; ask only when there's a concrete
+  reason to consider flat (downstream tool requires it, or per-unit
+  aggregations dominate).
+- Scope: always ask.
+
+The minimum wizard is one question (scope). The maximum is four.
+
+#### 4.10.1 Rendered dialogue template
+
+Substitute measured calibration numbers verbatim. Render every layer
+that passed §4.7's "build candidate" test.
 
 ```
 Task: {one-line user goal}.
@@ -511,53 +597,69 @@ Calibration (N={n_calib}): no-Asset ~{wall_calib_no}s, thin-Asset ~{wall_calib_t
 trade-off. Recommendation follows CAST (substrate compounds); pick no-Asset
 only for genuinely one-shot answers.
 
-What to leave behind on this source — pick any combination:
+Build candidates (§4.7 walk):
+- L1 Container — {what it'd hold}; row: {field list}
+- L2 Asset     — {what it'd hold + preset + destination}; row: {field list}
+- L3 Sense     — {what it'd hold, model + full output schema}; row: {field list}
+                 (no derived counts/booleans — those are Task queries, §1.2)
 
 ──────────────────────────────────────────────────────────────────────
-L1 Container — {what it'd hold}
-  Row schema: {field list}
-  a) WHOLE bucket: ~{wall_l1_bucket}, ${cost_l1_bucket}     [recommended]
-  b) directory only ({subdir}): ~{wall_l1_dir}, ${cost_l1_dir}
-  c) skip
+Dimensions to settle (each in its own question):
 
-L2 Asset — {what it'd hold, with preset and destination}
-  Row schema: {field list, with full operation output, no projections}
-  a) WHOLE bucket, thin {preset}: ~{wall_l2_bucket}, ${cost_l2_bucket}, ~{asset_gb}GB     [recommended — CAST substrate]
-     Destination proposal: {scheme}://<user-bucket>/<l2_name>/ — confirm or override.
-  b) directory only, thin {preset}: ~{wall_l2_dir}, ${cost_l2_dir}
-  c) tighter preset, whole bucket: ~{wall_l2_tight}, ${cost_l2_tight}
-  d) skip (fused-L3 below re-decodes on the next question)
+Q1. METHOD — which library / approach
+  • {method_a} — {one-line precision/recall/cost hint}     [recommended]
+  • {method_b} — {hint}
+  • {method_c} — {hint}
+  (Skip the question if only one method is plausible; NOTIFY instead.)
 
-L3 Sense — {what it'd hold, e.g. model + full output schema per unit}
-  Row schema: {full operation output} + telemetry (inference_ms, model_id, model_version)
-  (No derived counts, booleans, top-k labels — those are Task queries — §1.2)
-  a) WHOLE bucket on top of L2: ~{wall_l3_bucket}, ${cost_l3_bucket}     [recommended]
-  b) directory only on top of L2: ~{wall_l3_dir}, ${cost_l3_dir}
-  c) fused-L3 directly from files (skips L2): ~{wall_l3_fused}, ${cost_l3_fused}
-  d) sample only ({sample_n}): ~{wall_sample}, ${cost_sample}
+Q2. PARAMETERS — only ASK rows from §4.6, for the method picked in Q1
+  • model:    {default} | {alternative-1 (+precision/-wall)} | {alternative-2}
+  • threshold:{default} | tighter ({alt}) | looser ({alt})
+  (NOTIFY rows shown above in `Task minimum`; user can override but no question.)
 
-{if LLM/VLM Sense:}
-L3 Sense — optional prompt extension (same API cost, multiplies reuse)
-  Default prompt covers: {axis_1}.
-  Optional axes (free at same call): {axis_2}, {axis_3}, {axis_4}.
-  Pick: default | extended | custom
+Q3. DATA MODEL — row shape (per layer that decomposes)
+  • nested:           one row per source, sub-units as nested lists     [recommended]
+                      composes with downstream queries; source fetched once per row
+  • flat-pointer:     one row per unit, source as reference
+                      pick when downstream is in-DC AND consumes per-unit
+  • flat-materialized: one row per unit, unit file written to storage
+                      pick when external tool needs files-on-disk
+  • fused-L3 (no L2): emit Sense rows directly from source decode
+                      pick when no L2 reuse is plausible
+
+Q4. SCOPE — coverage of the source
+  • WHOLE bucket: ~{wall_full_bucket}, ${cost_full_bucket}     [recommended]
+  • directory only ({subdir}): ~{wall_dir}, ${cost_dir}
+  • sample ({sample_n}): ~{wall_sample}, ${cost_sample}
+  • skip the build
+
+{if LLM/VLM Sense, add to Q1 (it's a method-axis sub-choice):}
+  Prompt extension — same API cost, multiplies reuse:
+  • default prompt covers {axis_1}
+  • extended covers {axis_1}, {axis_2}, {axis_3}
+  • custom
+
 ──────────────────────────────────────────────────────────────────────
 
-Recommendation: {explicit combination, e.g. "L1 (a) + L2 (a) + L3 (a)"}
+Recommendation: {explicit combination across all four dimensions, e.g.
+"method: {library} / params: {model_id}@{threshold} / data model: nested / scope: bucket"}
 Reasoning: {one line — what compounds across future questions}.
 ```
 
 **Render the template verbatim — do not paraphrase the recommendation.**
 Failure modes that defeat CAST doctrine:
 
-- **Do NOT reorder** so no-Asset comes first. Thin Asset is the recommended
-  option, always.
+- **Do NOT collapse dimensions into one menu.** "Pick one of: A) WHOLE
+  bucket nested, B) directory flat-pointer, C) sample fused" mixes
+  scope AND data-model AND L2-shape into one question. That's the
+  exact bug the four-dimension split fixes.
+- **Do NOT reorder so flat / fused-L3 / no-Asset come first.** The
+  recommended option is the recommended option; render it first.
 - **Do NOT replace `[recommended]` with conditional phrasing** like
-  "recommended if you expect future queries" / "useful if you'll re-ask".
-  The recommendation is unconditional.
-- **Do NOT add competing labels to no-Asset / fused-L3** like "best for
-  this one answer". The user picks; the agent does not nudge with
-  "best for X" tags.
+  "recommended if you expect future queries". The recommendation is
+  unconditional.
+- **Do NOT add competing labels to flat / fused-L3 / no-Asset** like
+  "best for this one answer". The user picks; the agent does not nudge.
 
 **Always quote a number.** Every option carries an estimate. If
 calibration is feasible but wasn't run, run it first and then render the
@@ -569,6 +671,13 @@ as an `AskUserQuestion` option with the same label, and the `description`
 field must include the wall-time estimate, the dollar estimate, and the
 one-line trade-off. The prose render is the source of truth;
 AskUserQuestion is just the UI affordance.
+
+**One AskUserQuestion call carries all dimensions that need answers.**
+Pack Q1..Q4 (whichever apply) into a single AskUserQuestion call as
+separate `questions[]` entries. The runtime renders them as a wizard
+— the user fills each, then submits all together. Do NOT make four
+sequential AskUserQuestion tool calls; that fragments the user's
+attention and forces them to wait between rounds.
 
 ### 4.10b Small-scope dialogue variant
 
@@ -598,22 +707,35 @@ Lead with (a) — the user narrowed scope; respect the intent. Surface
 (c) so the bucket-wide alternative is visible. Never silently default to
 (b) just because directory scope was named.
 
-### 4.10.5 Scope-change re-dialogue protocol
+### 4.10.5 Dimension-change re-dialogue protocol
 
-**Triggers — any of these is a scope-change event:**
+Any post-dialogue user reply that changes one of the four dimensions
+(§4.10.0) re-opens the dialogue. The agent re-renders at the new state
+before proceeding to script generation.
 
-1. **Free-text reply outside the offered AskUserQuestion options.**
-2. **Scope-narrowing keywords**: "only", "just", "limit to", "single",
+**Triggers — any of these:**
+
+1. **Free-text reply outside the offered AskUserQuestion options.** The
+   user said something the wizard didn't surface — treat as a
+   dimension change.
+2. **Parameter-change keywords**: a different model name, a new
+   threshold value, "higher resolution", "more precise".
+3. **Method-change keywords**: "use {other library}", "try LLM
+   instead", "switch to {framework}".
+4. **Data-model-change keywords**: "flat", "one row per {unit}",
+   "nested", "annotate this", "I need files on disk", "skip L2".
+5. **Scope-narrowing keywords**: "only", "just", "limit to", "single",
    "this dir only", "subset", "narrow to", "skip the …".
-3. **Scope-broadening keywords**: "whole bucket", "all of …", "every …",
+6. **Scope-broadening keywords**: "whole bucket", "all of …", "every …",
    "across all", "include the train/eval split".
-4. **Explicit dir / prefix / glob** named by the user that wasn't in the
-   original dialogue.
+7. **Explicit dir / prefix / glob** named by the user that wasn't in
+   the original dialogue.
 
 When any trigger fires, reuse the existing calibration measurements and
-re-extrapolate to the new item count. Render the dialogue again at the
-new scope (§4.10 or §4.10b). Never proceed to script generation off the
-prior recommendation.
+re-extrapolate (parameters and data-model changes can affect the
+extrapolation — see §4.8 sanity rules). Render the dialogue again at
+the new state (§4.10 or §4.10b). Never proceed to script generation off
+the prior recommendation.
 
 **Do NOT re-calibrate by default.** Re-running calibration on the same
 media/decode profile is wasted wall time. The only cases that warrant a
