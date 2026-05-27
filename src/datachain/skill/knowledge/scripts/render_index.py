@@ -134,14 +134,14 @@ def _parse_list_field(raw: str) -> list[str]:
     return [v.strip() for v in raw.split(",") if v.strip()]
 
 
-CASE_LAYERS = ("container", "asset", "sense", "experiment")
+CAST_LAYERS = ("container", "asset", "sense", "task")
 
 
 def _read_md_info(md_path: str) -> dict:
     """Read metadata, description, and dependencies from an enriched dataset .md.
 
     Returns dict with keys: description, deps, last_version, records, updated,
-    case_layer, case_scope, case_source, case_parents.
+    cast_layer, cast_scope, cast_source, cast_parents.
     """
     info: dict = {
         "description": "",
@@ -151,10 +151,10 @@ def _read_md_info(md_path: str) -> dict:
         "records": "",
         "num_versions": "",
         "updated": "",
-        "case_layer": "",
-        "case_scope": "",
-        "case_source": "",
-        "case_parents": [],
+        "cast_layer": "",
+        "cast_scope": "",
+        "cast_source": "",
+        "cast_parents": [],
     }
 
     try:
@@ -165,10 +165,10 @@ def _read_md_info(md_path: str) -> dict:
 
     fm = _read_md_frontmatter(md_path)
     info.update(_parse_frontmatter_info(fm))
-    info["case_layer"] = fm.get("case_layer", "").strip().lower()
-    info["case_scope"] = fm.get("case_scope", "").strip().lower()
-    info["case_source"] = fm.get("case_source", "").strip()
-    info["case_parents"] = _parse_list_field(fm.get("case_parents", ""))
+    info["cast_layer"] = fm.get("cast_layer", "").strip().lower()
+    info["cast_scope"] = fm.get("cast_scope", "").strip().lower()
+    info["cast_source"] = fm.get("cast_source", "").strip()
+    info["cast_parents"] = _parse_list_field(fm.get("cast_parents", ""))
 
     body = _strip_frontmatter(content)
     if body is None:
@@ -226,14 +226,14 @@ def _render_dataset_table(
     return lines
 
 
-CASE_SECTION_NAMES = {
+CAST_SECTION_NAMES = {
     "container": "Container",
     "asset": "Asset",
     "sense": "Sense",
-    "experiment": "Experiment Dataset",
+    "task": "Task Dataset",
 }
 
-CASE_SECTION_BLURBS = {
+CAST_SECTION_BLURBS = {
     "container": "_File headers, listings, and sidecar metadata. One row per file._",
     "asset": (
         "_Raw extracted data (frames, clips, audio, parsed arrays) "
@@ -243,15 +243,15 @@ CASE_SECTION_BLURBS = {
         "_Model-derived signals: embeddings, classifications, "
         "transcriptions, LLM outputs._"
     ),
-    "experiment": (
+    "task": (
         "_Task-specific analytics and any dataset not tagged as "
         "Container, Asset, or Sense._"
     ),
 }
 
 
-def _render_case_table(rows: list[tuple[dict, dict]], layer: str) -> list[str]:
-    """Render a markdown table for one CASE layer.
+def _render_cast_table(rows: list[tuple[dict, dict]], layer: str) -> list[str]:
+    """Render a markdown table for one CAST layer.
 
     Columns are uniform across layers for readability: Name, Scope, Source,
     Parents, Updated, Records, Description.
@@ -264,11 +264,11 @@ def _render_case_table(rows: list[tuple[dict, dict]], layer: str) -> list[str]:
         "|------|-------|--------|---------|---------|--------:|-------------|"
     )
     for enriched, info in sorted(rows, key=lambda r: r[0]["name"]):
-        parents = ", ".join(info["case_parents"]) if info["case_parents"] else ""
+        parents = ", ".join(info["cast_parents"]) if info["cast_parents"] else ""
         lines.append(
             f"| {enriched['link']} "
-            f"| {info['case_scope']} "
-            f"| {info['case_source']} "
+            f"| {info['cast_scope']} "
+            f"| {info['cast_source']} "
             f"| {parents} "
             f"| {info['updated']} "
             f"| {info['records']} "
@@ -277,31 +277,31 @@ def _render_case_table(rows: list[tuple[dict, dict]], layer: str) -> list[str]:
     return lines
 
 
-def _render_case_grouped(datasets: list[dict]) -> list[str]:
-    """Render the local-datasets block as four CASE-grouped tables.
+def _render_cast_grouped(datasets: list[dict]) -> list[str]:
+    """Render the local-datasets block as four CAST-grouped tables.
 
-    Untagged datasets and any non-C/A/S `case_layer` value fall under
-    "Experiment Dataset" (the catch-all).
+    Untagged datasets and any non-C/A/S `cast_layer` value fall under
+    "Task Dataset" (the catch-all).
     """
-    by_layer: dict[str, list[tuple[dict, dict]]] = {layer: [] for layer in CASE_LAYERS}
+    by_layer: dict[str, list[tuple[dict, dict]]] = {layer: [] for layer in CAST_LAYERS}
     for ds in datasets:
         enriched, info = _collect_dataset_row(ds)
-        layer = info["case_layer"]
-        if layer not in CASE_LAYERS:
-            layer = "experiment"
+        layer = info["cast_layer"]
+        if layer not in CAST_LAYERS:
+            layer = "task"
         by_layer[layer].append((enriched, info))
 
     lines: list[str] = []
-    for layer in CASE_LAYERS:
+    for layer in CAST_LAYERS:
         rows = by_layer[layer]
-        if not rows and layer != "experiment":
+        if not rows and layer != "task":
             continue
-        lines.append(f"### {CASE_SECTION_NAMES[layer]}")
+        lines.append(f"### {CAST_SECTION_NAMES[layer]}")
         lines.append("")
-        lines.append(CASE_SECTION_BLURBS[layer])
+        lines.append(CAST_SECTION_BLURBS[layer])
         lines.append("")
         if rows:
-            lines.extend(_render_case_table(rows, layer))
+            lines.extend(_render_cast_table(rows, layer))
         else:
             lines.append("_No datasets yet._")
         lines.append("")
@@ -328,13 +328,13 @@ def render_index(plan: dict) -> str:
     lines.append("---")
     lines.append("")
 
-    # Local datasets, grouped by CASE layer
-    # (Container, Asset, Sense, Experiment Dataset).
-    # Untagged datasets fall into "Experiment Dataset" as the catch-all.
+    # Local datasets, grouped by CAST layer
+    # (Container, Asset, Sense, Task Dataset).
+    # Untagged datasets fall into "Task Dataset" as the catch-all.
     if local_ds:
         lines.append("## Datasets")
         lines.append("")
-        lines.extend(_render_case_grouped(local_ds))
+        lines.extend(_render_cast_grouped(local_ds))
 
     # Studio datasets grouped by namespace
     if studio_ds:

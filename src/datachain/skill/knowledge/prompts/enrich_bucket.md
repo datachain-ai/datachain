@@ -1,53 +1,44 @@
 # Bucket Enrichment Prompt
 
-Generate a human-readable markdown overview for a cloud storage bucket from its JSON data file. The audience is data practitioners who build models, extract insights, or process data.
+Generate a human-readable markdown overview for a cloud storage bucket from its JSON data file. The audience is data practitioners.
 
 ## Input
 
-Read the JSON file at the path provided. It contains:
+JSON fields:
 
-- `uri`: the full storage URI
-- `scheme`: storage scheme (s3, gs, az)
-- `bucket`: bucket name
-- `prefix`: subdirectory prefix (empty string if whole bucket)
-- `anon`: whether the bucket requires anonymous access (`true`, `false`, or `null` if unknown)
-- `scanned`: when this scan was performed
-- `listing_uuid`: unique identifier for the listing
-- `listing_created`, `listing_expires`, `listing_expired`: listing freshness
-- `total_files`, `total_size_bytes`: aggregate counts
-- `max_depth`: deepest directory nesting level
-- `extensions[]`: file type breakdown with counts, bytes, percentages
-- `directories[]`: directory breakdown with path, file count, bytes, depth
+- Identity: `uri`, `scheme`, `bucket`, `prefix`, `anon` (true/false/null)
+- Listing: `scanned`, `listing_uuid`, `listing_created`, `listing_expires`, `listing_expired`
+- Aggregates: `total_files`, `total_size_bytes`, `max_depth`
+- `extensions[]`: file-type breakdown with counts, bytes, percentages
+- `directories[]`: per-dir path, file count, bytes, depth
 - `size_distribution`: min, max, median, p10, p90, empty_count
-- `time_range`: oldest and newest file timestamps
+- `time_range`: oldest, newest
 - `samples{}`: per-extension content samples with type-specific metadata
-- `file_url_prefix` (optional): HTTPS URL prefix for building clickable file links
+- `file_url_prefix` (optional): HTTPS URL prefix for clickable links
+- `sampled` (optional): if true, totals reflect a subset; pass through to frontmatter
 
 ## Output Format
 
-Write a markdown file with this structure:
-
-```
+```markdown
 ---
 uri: {uri}
 bucket: {bucket}
 prefix: {prefix}
-anon: {anon — true, false, or omit if null}
+anon: {true | false | omit if null}
 uuid: {listing_uuid}
 scanned: {scanned}
 files: {total_files}
-size: {human-readable size}
+size: {human-readable}
+sampled: {true | omit if false}
 ---
 
 # {bucket}{" / " + prefix if prefix else ""}
 
-{AI-generated description: 1-3 sentences explaining what this bucket contains
-and what it is likely used for. Infer purpose from directory structure, file types,
-naming patterns, and sample content. Be specific — mention data modalities,
-organizational patterns, and likely use cases.}
+{1-3 sentences: what this bucket contains and what it is likely used for.
+Infer from directory structure, file types, naming patterns, and sample content.
+Name the modalities and likely use case.}
 
-{If prefix is set, add: "**Note:** This is a subdirectory (`{prefix}`) within
-the `{bucket}` bucket."}
+{If prefix is set, add: "**Note:** This is a subdirectory (`{prefix}`) within `{bucket}`."}
 
 ## Quick Stats
 
@@ -55,15 +46,17 @@ the `{bucket}` bucket."}
 - **Total size:** {human-readable}
 - **File types:** {top 3 extensions with counts}
 - **Date range:** {oldest} to {newest}
-- **Access:** {if anon is true: "Public (use `anon=True` in `read_storage()`)", if false: "Authenticated", if null: omit this line}
+- **Access:** {"Public (use `anon=True`)" if anon=true; "Authenticated" if anon=false; omit if null}
 - **Listing:** {freshness message — see below}
 
-{Listing freshness message:
-- If listing_expired is false: "Bucket listing from {listing_created} (valid until {listing_expires})"
-- If listing_expired is true: "Bucket listing from {listing_created} (**expired** — refresh with `dc.read_storage(\"{uri}\", update=True)`)"
-- If listing_created is null: "Listing timestamp unavailable"}
+Listing freshness message:
+- `listing_expired: false` → "Bucket listing from {listing_created} (valid until {listing_expires})"
+- `listing_expired: true` → "Bucket listing from {listing_created} (**expired** — refresh with `dc.read_storage(\"{uri}\", update=True)`)"
+- `listing_created: null` → "Listing timestamp unavailable"
 
 ## Directory Structure
+
+Render a human-readable tree from `directories[]`:
 
 ```
 {uri}
@@ -73,59 +66,52 @@ the `{bucket}` bucket."}
 └── {dir2}/                  {files:>10,} files  ({human_size})
 ```
 
-{Build a human-readable tree from the directories array. Rules:
-- Show depth-1 and depth-2 directories as the primary structure.
-- For deeper paths, collapse intermediate levels: show as "misc/deep/nested/" not three separate entries.
-- Right-align file counts and sizes for readability.
-- If there are more directories than shown, add a note: "(N additional directories not shown)"
-- Highlight organizational patterns in 1 sentence after the tree: e.g., "Data is organized into train/val splits with separate image and label subdirectories."}
+- Show depth-1 and depth-2 as the primary structure; collapse deeper paths into one entry (`misc/deep/nested/`).
+- Right-align file counts and sizes.
+- If there are more directories than shown, add: "(N additional directories not shown)".
+- After the tree, add one sentence naming the organizational pattern (e.g. "train/val splits with image and label subdirectories").
 
 ## File Types
 
 | Extension | Files | Size | % Files | Description |
 |-----------|------:|-----:|--------:|-------------|
-| {ext}     | {count,} | {human_size} | {pct}% | {AI-inferred description from samples} |
+| {ext}     | {count,} | {human_size} | {pct}% | {inferred description from samples} |
 
-{For each extension, use the samples data to describe what these files contain.
-E.g., ".jpg" with width/height samples → "JPEG images, mostly 640×480"
-E.g., ".json" with snippet → "JSON annotation files with bbox labels"
-E.g., ".parquet" with columns → "Parquet files with columns: id, embedding, label"}
+Describe each extension from its samples — name the contents concretely (dimensions for images, columns for tabular, duration/codec for media).
 
 ## Samples
 
-{For each extension that has samples, show representative examples.}
+For each extension with samples, show representative examples.
 
-**IMPORTANT: If `file_url_prefix` is present in the JSON, ALL file paths in sample tables MUST be clickable links using the format `[path/to/file]({file_url_prefix}/{path/to/file})`.**
-
-Example with `file_url_prefix = "https://my-bucket.s3.amazonaws.com"`:
-`| [images/cat.jpg](https://my-bucket.s3.amazonaws.com/images/cat.jpg) | 102.4 KB |`
+**File-path clickability.** If `file_url_prefix` is present, ALL file paths in sample tables MUST be clickable: `[path/to/file]({file_url_prefix}/{path/to/file})`.
 
 ### {ext} — {type_detected}
 
-{For images: show a table with path, size, dimensions, format.}
-{For structured: show column names. If snippet available, show a formatted code block.}
-{For text: show first few lines in a code block.}
-{For audio/video: show duration, codec, sample rate, etc.}
+- Images: table with path, size, dimensions, format.
+- Structured (Parquet/CSV/JSON): column list; if a snippet is available, show it in a code block.
+- Text: first few lines in a code block.
+- Audio/video: duration, codec, sample rate, channels.
 
 ## Data Quality
 
-{Only include this section if there are notable quality observations:
-- Empty files (empty_count > 0): "⚠ {N} empty files (0 bytes)"
-- Size outliers: if p90/p10 ratio > 100, note wide size variation
-- If max_bytes is very large relative to median (>100x), note outliers
-- If nothing notable, omit this section entirely.}
+Include this section ONLY when there's something notable:
+- Empty files (`empty_count > 0`): "⚠ {N} empty files (0 bytes)".
+- Size outliers: if `p90/p10 > 100`, note wide size variation.
+- If `max_bytes` is >100× the median, note outliers.
+
+Omit the section entirely when nothing is notable.
 
 ```
 
 ## Guidelines
 
-- **Be concise.** Each section should be scannable in seconds.
-- **Infer purpose.** Read directory names, file patterns, and sample content to understand what the data is for. Name the likely use case.
-- **Human-readable numbers.** Use comma separators (10,000) and human-readable sizes (3.2 GB).
-- **Omit empty sections.** If time_range is empty, skip date info. If no quality issues, skip Data Quality.
-- **No raw JSON dumps.** The markdown is a summary, not a data dump.
-- **Do not make `uri` values clickable.** Storage URIs like `s3://`, `gs://`, `az://` are not browsable URLs — show them as plain text.
-- **Listing freshness is critical.** Users need to know if they're looking at stale data. Always show the listing timestamp.
-- **Human-readable timestamps.** Format all timestamps as `YYYY-MM-DD HH:MM:SS` (no `T`, no `Z`).
-- **Structure only, no pipelines.** Do not propose decompositions, slices, example queries, or recommended pipelines. The right shape depends on the question being asked — let the agent decide at runtime.
-- **Sampled.** If the input has `sampled: true`, totals reflect a subset, not full enumeration. Carry `sampled: true` to frontmatter, state prominently in the body that the document describes a sampled overview, and link to the underlying dataset (`dataset_name` field) so readers can query the actual file rows.
+- **Be concise.** Each section is scannable in seconds.
+- **Infer purpose** from directory names, file patterns, and sample content. Name the likely use case.
+- **Human-readable numbers.** Comma separators (10,000) and human-readable sizes (3.2 GB).
+- **Omit empty sections.** If `time_range` is empty, skip date info. If no quality issues, skip Data Quality.
+- **No raw JSON dumps.** Markdown is a summary, not a data dump.
+- **`uri` is not a clickable URL.** Storage URIs (`s3://`, `gs://`, `az://`) are not browsable — show as plain text.
+- **Listing freshness is critical.** Always show the listing timestamp.
+- **Human-readable timestamps:** `YYYY-MM-DD HH:MM:SS` (no `T`, no `Z`).
+- **Structure only, no pipelines.** Do not propose decompositions, slices, example queries, or recommended pipelines — the right shape depends on the question being asked.
+- **Sampled mode.** If input has `sampled: true`, totals reflect a subset; carry through to frontmatter, state prominently in the body, and link to the underlying dataset (`dataset_name`) so readers can query actual file rows.
