@@ -16,7 +16,6 @@ from PIL import Image as PilImage
 from datachain.lib.file import (
     File,
     FileError,
-    ImageFile,
     VFileRegistry,
     Video,
     VideoFile,
@@ -474,33 +473,6 @@ def _image_format(format: str) -> str:
         return image_format
 
     return format.upper()
-
-
-def save_video_frame(
-    video: VideoFile,
-    frame: int,
-    destination: str | os.PathLike[str],
-    format: str = "jpg",
-    client_config: dict | None = None,
-    video_stream_index: int = 0,
-) -> ImageFile:
-    """
-    Saves video frame as a new image file. If ``destination`` is a remote
-    path, the image will be uploaded to remote storage.
-
-    Args:
-        video: Video file object.
-        frame: Frame index.
-        destination: Output directory path or URI (e.g. ``s3://…``, ``gs://…``).
-        format: Image format (default: 'jpg').
-        client_config: Optional client configuration (e.g. credentials).
-        video_stream_index: Zero-based index among video streams.
-
-    Returns:
-        ImageFile: Image file model.
-    """
-    vf = video_frame(video, frame, video_stream_index=video_stream_index)
-    return vf.save(destination, format=format, client_config=client_config)
 
 
 def _ffmpeg_output_options(format: str) -> dict[str, str]:
