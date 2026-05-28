@@ -52,7 +52,7 @@ dependencies = [
   "iterative-telemetry>=0.0.10",
   "platformdirs",
   "filelock",
-  "dvc-studio-client>=0.21,<1",
+  "dvc-studio-client @ git+https://github.com/treeverse/dvc-studio-client.git@55198e91fcfa0ca40a2ca4ad809733b269785b18",
   "tabulate",
   "websockets",
   "tomli;python_version<'3.11'"
