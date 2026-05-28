@@ -987,7 +987,11 @@ class DatasetListRecord:
 
     def latest_version(self) -> DatasetListVersion:
         live = [v for v in self.versions if v.status != DatasetStatus.REMOVED]
-        return max(live or self.versions, key=lambda v: v.version_value)
+        if not live:
+            raise DatasetVersionNotFoundError(
+                f"Dataset {self.name} has no live versions"
+            )
+        return max(live, key=lambda v: v.version_value)
 
     @property
     def is_bucket_listing(self) -> bool:
