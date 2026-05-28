@@ -4,7 +4,7 @@ Generate a human-readable one short paragraph summary for a DataChain dataset fr
 
 ## Input
 
-Read the JSON file at the path provided. It contains:
+The input is a JSON document with these fields:
 
 - `name`: dataset name
 - `source`: `"local"` or `"studio"`

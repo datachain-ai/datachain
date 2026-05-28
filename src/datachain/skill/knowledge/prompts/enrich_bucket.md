@@ -4,7 +4,7 @@ Generate a human-readable markdown overview for a cloud storage bucket from its 
 
 ## Input
 
-Read the JSON file at the path provided. It contains:
+The input is a JSON document with these fields:
 
 - `uri`: the full storage URI
 - `scheme`: storage scheme (s3, gs, az)
