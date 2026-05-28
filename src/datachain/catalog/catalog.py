@@ -1144,12 +1144,12 @@ class Catalog:
         self, dataset: DatasetRecord, version: str
     ) -> None:
         """Drop rows table, mark version REMOVED (keeps semver + lineage)."""
-        if not self._claim_for_removal(
-            dataset,
-            version,
-            target=DatasetStatus.REMOVING,
-            allowed_from=[DatasetStatus.COMPLETE, DatasetStatus.REMOVING],
-        ):
+        if not self.metastore.claim_removing_dataset_version(dataset, version):
+            logger.debug(
+                "Skipped remove of %s@%s: another caller is already handling it",
+                dataset.name,
+                version,
+            )
             return
 
         self.warehouse.drop_dataset_rows_table(dataset, version)
@@ -1164,50 +1164,16 @@ class Catalog:
         self, dataset: DatasetRecord, version: str
     ) -> None:
         """Drop rows table and delete the version row entirely."""
-        if not self._claim_for_removal(
-            dataset,
-            version,
-            target=DatasetStatus.REMOVING_TOTAL,
-            allowed_from=[
-                DatasetStatus.COMPLETE,
-                DatasetStatus.CREATED,
-                DatasetStatus.PENDING,
-                DatasetStatus.FAILED,
-                DatasetStatus.STALE,
-                DatasetStatus.REMOVED,
-                DatasetStatus.REMOVING_TOTAL,
-            ],
-        ):
-            return
-
-        self.warehouse.drop_dataset_rows_table(dataset, version)
-        self.metastore.remove_dataset_version(dataset, version)
-
-    def _claim_for_removal(
-        self,
-        dataset: DatasetRecord,
-        version: str,
-        target: int,
-        allowed_from: list[int],
-    ) -> bool:
-        """Atomically transition the version to ``target``.
-
-        Returns True if this caller won the transition.
-        """
-        claimed = self.metastore.update_dataset_version(
-            dataset,
-            version,
-            status=target,
-            where_status=allowed_from,
-        )
-        if claimed is None:
+        if not self.metastore.claim_removing_total_dataset_version(dataset, version):
             logger.debug(
                 "Skipped remove of %s@%s: another caller is already handling it",
                 dataset.name,
                 version,
             )
-            return False
-        return True
+            return
+
+        self.warehouse.drop_dataset_rows_table(dataset, version)
+        self.metastore.remove_dataset_version(dataset, version)
 
     def _remove_versions(self, pairs: Iterable[tuple[DatasetRecord, str]]) -> int:
         num_removed = 0

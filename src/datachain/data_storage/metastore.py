@@ -61,6 +61,7 @@ from datachain.error import (
     CheckpointNotFoundError,
     DataChainError,
     DatasetNotFoundError,
+    DatasetVersionNotFoundError,
     NamespaceDeleteNotAllowedError,
     NamespaceNotFoundError,
     ProjectDeleteNotAllowedError,
@@ -329,6 +330,26 @@ class AbstractMetastore(ABC, Serializable):
         """Updates dataset version fields. When ``where_status`` is given the
         UPDATE only applies if the row's current status is in that list;
         returns None if no row matched."""
+
+    @abstractmethod
+    def claim_removing_dataset_version(
+        self, dataset: DatasetRecord, version: str
+    ) -> bool:
+        """Atomically transition the version to REMOVING.
+
+        Returns True iff this caller is the one that landed the transition.
+        Other concurrent callers see False and should abort.
+        """
+
+    @abstractmethod
+    def claim_removing_total_dataset_version(
+        self, dataset: DatasetRecord, version: str
+    ) -> bool:
+        """Atomically transition the version to REMOVING_TOTAL.
+
+        Returns True iff this caller is the one that landed the transition.
+        Other concurrent callers see False and should abort.
+        """
 
     @abstractmethod
     def remove_dataset_version(
@@ -866,6 +887,7 @@ class AbstractDBMetastore(AbstractMetastore):
             Column("job_id", Text, nullable=True),
             Column("content_hash", Text, nullable=True),
             Column("removed_at", DateTime(timezone=True), nullable=True),
+            Column("op_uuid", Text, nullable=True),
             UniqueConstraint("dataset_id", "version"),
         ]
 
@@ -1513,6 +1535,73 @@ class AbstractDBMetastore(AbstractMetastore):
             bool(getattr(version_obj, "_preview_data", None)),
         )
         return version_obj
+
+    def _try_transition_version_with_uuid(
+        self,
+        dataset: DatasetRecord,
+        version: str,
+        *,
+        target_status: int,
+        allowed_source_statuses: list[int],
+    ) -> bool:
+        """Atomically transition a version's status and signal win/loss.
+
+        Writes a fresh ``op_uuid`` together with the new status; the caller
+        wins iff that UUID is the one stored after the UPDATE. This decouples
+        the won/lost signal from the status enum so the same mechanism can be
+        reused for other transitions.
+        """
+        my_uuid = str(uuid4())
+        dv = self._datasets_versions
+        self.db.execute(
+            self._datasets_versions_update()
+            .where(dv.c.dataset_id == dataset.id, dv.c.version == version)
+            .where(dv.c.status.in_(allowed_source_statuses))
+            .values(status=target_status, op_uuid=my_uuid)
+        )
+        try:
+            refreshed = self.get_dataset(
+                dataset.name,
+                namespace_name=dataset.project.namespace.name,
+                project_name=dataset.project.name,
+                versions=[version],
+                include_incomplete=True,
+            )
+            return refreshed.get_version(version).op_uuid == my_uuid
+        except (DatasetNotFoundError, DatasetVersionNotFoundError):
+            # Row was wiped by a concurrent caller — we lost.
+            return False
+
+    def claim_removing_dataset_version(
+        self, dataset: DatasetRecord, version: str
+    ) -> bool:
+        return self._try_transition_version_with_uuid(
+            dataset,
+            version,
+            target_status=DatasetStatus.REMOVING,
+            allowed_source_statuses=[
+                DatasetStatus.COMPLETE,
+                DatasetStatus.REMOVING,
+            ],
+        )
+
+    def claim_removing_total_dataset_version(
+        self, dataset: DatasetRecord, version: str
+    ) -> bool:
+        return self._try_transition_version_with_uuid(
+            dataset,
+            version,
+            target_status=DatasetStatus.REMOVING_TOTAL,
+            allowed_source_statuses=[
+                DatasetStatus.COMPLETE,
+                DatasetStatus.CREATED,
+                DatasetStatus.PENDING,
+                DatasetStatus.FAILED,
+                DatasetStatus.STALE,
+                DatasetStatus.REMOVED,
+                DatasetStatus.REMOVING_TOTAL,
+            ],
+        )
 
     def _parse_dataset(
         self,

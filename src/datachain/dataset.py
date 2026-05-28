@@ -299,6 +299,7 @@ class DatasetVersion:
     job_id: str | None = None
     content_hash: str | None = None
     removed_at: datetime | None = None
+    op_uuid: str | None = None
 
     @classmethod
     def parse(  # noqa: PLR0913
@@ -323,6 +324,7 @@ class DatasetVersion:
         job_id: str | None = None,
         content_hash: str | None = None,
         removed_at: datetime | None = None,
+        op_uuid: str | None = None,
         *,
         preview_loaded: bool = True,
     ):
@@ -352,6 +354,7 @@ class DatasetVersion:
             job_id=job_id,
             content_hash=content_hash,
             removed_at=removed_at,
+            op_uuid=op_uuid,
             _preview_loaded=preview_loaded,
         )
 
@@ -585,6 +588,7 @@ class DatasetRecord:
         version_job_id: str | None = None,
         version_content_hash: str | None = None,
         version_removed_at: datetime | None = None,
+        version_op_uuid: str | None = None,
         *,
         versions_loaded: bool = True,
         preview_loaded: bool = True,
@@ -644,6 +648,7 @@ class DatasetRecord:
                 version_job_id,
                 version_content_hash,
                 version_removed_at,
+                version_op_uuid,
                 preview_loaded=preview_loaded,
             )
             versions_list = [dataset_version]
