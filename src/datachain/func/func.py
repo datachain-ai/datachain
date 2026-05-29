@@ -10,7 +10,7 @@ from sqlalchemy.sql.elements import ColumnElement
 
 from datachain.lib.convert.python_to_sql import python_to_sql
 from datachain.lib.convert.sql_to_python import sql_to_python
-from datachain.lib.data_model import unwrap_optional
+from datachain.lib.data_model import NULLABLE_SCALARS, unwrap_optional
 from datachain.lib.model_store import ModelStore
 from datachain.lib.utils import DataChainColumnError, DataChainParamsError
 from datachain.query.schema import Column, ColumnExpr, ColumnMeta
@@ -31,9 +31,10 @@ if TYPE_CHECKING:
 ColT = Union[str, tuple, Column, ColumnExpr, "Func"]
 
 # Result types that should become Nullable on backends with non-nullable leaves
-# (CH) when the source can be NULL — float excluded (NaN/NULL are indistinguishable
-# on SQLite). Mirrors SignalSchema._NULLABLE_SCALARS.
-_NULLABLE_RESULT_TYPES: "tuple[type, ...]" = (int, str, bool, bytes, datetime)
+# (CH) when the source can be NULL. Single source of truth:
+# ``datachain.lib.data_model.NULLABLE_SCALARS`` (float excluded — NaN/NULL are
+# indistinguishable on SQLite).
+_NULLABLE_RESULT_TYPES = NULLABLE_SCALARS
 
 
 def _source_is_nullable(col: ColT, signals_schema: "SignalSchema | None") -> bool:

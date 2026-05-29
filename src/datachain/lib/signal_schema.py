@@ -33,6 +33,7 @@ from datachain.lib.convert.unflatten import (
     unflatten_to_json_pos,
 )
 from datachain.lib.data_model import (
+    NULLABLE_SCALARS,
     DataModel,
     DataType,
     DataValue,
@@ -836,10 +837,8 @@ class SignalSchema:
                 return _type
         raise SignalResolvingError([col_name], "is not found")
 
-    # Scalars whose Optional form maps to a nullable column. ``float`` is excluded:
-    # backends that store NaN as NULL reconstitute it on read, so a nullable float
-    # could not tell NaN from None.
-    _NULLABLE_SCALARS: "tuple[type, ...]" = (int, str, bool, bytes, datetime)
+    # Single source of truth in ``data_model`` (shared with ``func``).
+    _NULLABLE_SCALARS: "tuple[type, ...]" = NULLABLE_SCALARS
 
     @classmethod
     def _leaf_sql_type(cls, anno: "DataType") -> Any:

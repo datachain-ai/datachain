@@ -140,6 +140,13 @@ def unwrap_optional(t: Any) -> tuple[Any, bool]:
     return t, False
 
 
+# Scalars whose Optional form maps to a nullable column. ``float`` is excluded:
+# backends that store NaN as NULL reconstitute it on read, so a nullable float
+# could not tell NaN from None. Shared by ``signal_schema`` and ``func`` (both
+# import it here to avoid a cycle: ``func`` cannot import ``signal_schema``).
+NULLABLE_SCALARS: "tuple[type, ...]" = (int, str, bool, bytes, datetime)
+
+
 def validate_default_none(model: type[BaseModel]) -> None:
     """Reject non-Optional fields with `default=None`.
 
