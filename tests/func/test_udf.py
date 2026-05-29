@@ -223,6 +223,81 @@ def test_filter_optional_datamodel_via_sentinel(test_session):
     assert absent == 2
 
 
+def test_count_optional_datamodel_uses_sentinel(test_session):
+    """``func.count("opt_model")`` returns the number of rows whose parent is
+    present — same value on SQLite and ClickHouse, regardless of how CH
+    coerces absent-row leaves."""
+    from datachain import func
+
+    def maybe(score: int) -> _Inner | None:
+        return _Inner(score=score, label="ok") if score > 0 else None
+
+    chain = (
+        dc.read_values(score=[1, 0, 2, 0, 3], session=test_session)
+        .map(item=maybe)
+        .mutate(grp=1)
+    )
+
+    rows = chain.group_by(
+        present=func.count("item"), total=func.count(), partition_by="grp"
+    ).to_records()
+    assert rows == [{"grp": 1, "present": 3, "total": 5}]
+
+
+def test_aggregates_over_optional_datamodel_leaf(test_session):
+    """SUM/AVG/MIN/MAX on a leaf under ``Optional[DataModel]`` skip absent
+    rows on both SQLite and ClickHouse (without the sentinel-aware wrap, CH
+    would include the type-defaulted absent leaves)."""
+    from datachain import func
+
+    def maybe(score: int) -> _Inner | None:
+        return _Inner(score=score, label="ok") if score > 0 else None
+
+    chain = (
+        dc.read_values(score=[10, 0, 30], session=test_session)
+        .map(item=maybe)
+        .mutate(grp=1)
+    )
+    rows = chain.group_by(
+        n=func.count("item"),
+        s=func.sum("item.score"),
+        a=func.avg("item.score"),
+        mn=func.min("item.score"),
+        mx=func.max("item.score"),
+        partition_by="grp",
+    ).to_records()
+    assert rows == [{"grp": 1, "n": 2, "s": 40, "a": 20.0, "mn": 10, "mx": 30}]
+
+
+def test_extra_aggregates_over_optional_datamodel_leaf(test_session):
+    """any_value/concat/xor_agg also skip absent-parent rows."""
+    from datachain import func
+
+    def maybe(score: int) -> _Inner | None:
+        return _Inner(score=score, label=f"l{score}") if score > 0 else None
+
+    chain = (
+        dc.read_values(score=[10, 0, 30], session=test_session)
+        .map(item=maybe)
+        .mutate(grp=1)
+    )
+    rows = chain.group_by(
+        any_label=func.any_value("item.label"),
+        concat_labels=func.concat("item.label", separator=","),
+        xor_score=func.xor_agg("item.score"),
+        partition_by="grp",
+    ).to_records()
+    assert len(rows) == 1
+    [r] = rows
+    # any_value returns one of the present labels (non-deterministic, but
+    # never the empty-string default that CH would emit for the absent row).
+    assert r["any_label"] in {"l10", "l30"}
+    # concat skips absent rows on both backends.
+    assert set(r["concat_labels"].split(",")) == {"l10", "l30"}
+    # xor of {10, 30} excluding the absent 0 (which XORs to itself).
+    assert r["xor_score"] == 10 ^ 30
+
+
 @pytest.mark.parametrize(
     "cloud_type,version_aware",
     [("s3", True)],

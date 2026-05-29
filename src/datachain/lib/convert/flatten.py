@@ -26,6 +26,7 @@ def flatten_value(value, anno) -> tuple:
       per-element sentinels are emitted.
     - True multi-arg ``Union[A, B]`` without None: falls back to JSON, no
       schema-level discrimination.
+
     """
     inner, is_optional = unwrap_optional(anno)
     if ModelStore.is_pydantic(inner):
