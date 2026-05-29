@@ -1541,7 +1541,7 @@ class DataChain:
             include_hidden: Whether to include hidden signals from the schema.
         """
         db_signals = self._effective_signals_schema.db_signals(
-            include_hidden=include_hidden
+            include_hidden=include_hidden, include_sentinels=False
         )
 
         with self._query.ordered_select(*db_signals).as_iterable() as rows:

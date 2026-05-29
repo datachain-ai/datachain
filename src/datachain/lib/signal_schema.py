@@ -851,7 +851,11 @@ class SignalSchema:
         return sql_type
 
     def db_signals(
-        self, name: str | None = None, as_columns=False, include_hidden: bool = True
+        self,
+        name: str | None = None,
+        as_columns=False,
+        include_hidden: bool = True,
+        include_sentinels: bool = True,
     ) -> list[str] | list[Column]:
         """
         Returns DB columns as strings or Column objects with proper types
@@ -863,7 +867,7 @@ class SignalSchema:
             if not as_columns
             else Column(DEFAULT_DELIMITER.join(path), self._leaf_sql_type(_type))
             for path, _type, has_subtree, _ in self.get_flat_tree(
-                include_hidden=include_hidden
+                include_hidden=include_hidden, include_sentinels=include_sentinels
             )
             if not has_subtree
         ]
@@ -1198,8 +1202,11 @@ class SignalSchema:
         self,
         include_hidden: bool = True,
         include_sys: bool = True,
+        include_sentinels: bool = True,
     ) -> Iterator[tuple[list[str], DataType, bool, int]]:
-        yield from self._get_flat_tree(self.tree, [], 0, include_hidden, include_sys)
+        yield from self._get_flat_tree(
+            self.tree, [], 0, include_hidden, include_sys, include_sentinels
+        )
 
     def _get_flat_tree(
         self,
@@ -1208,15 +1215,17 @@ class SignalSchema:
         depth: int,
         include_hidden: bool,
         include_sys: bool,
+        include_sentinels: bool,
     ) -> Iterator[tuple[list[str], DataType, bool, int]]:
         for name, (type_, substree) in tree.items():
             suffix = name.split(".")
             new_prefix = prefix + suffix
             if not include_sys and new_prefix and new_prefix[0] == "sys":
                 continue
-            # Leading-underscore names are internal columns (e.g. the
-            # Optional[DataModel] `_is_null` sentinel) — hidden like system columns.
-            if not include_hidden and name.startswith("_"):
+            # Sentinel columns are named with a leading underscore (the
+            # Optional[DataModel] `_is_null` sentinel) — kept for storage and
+            # hydration but dropped from user-facing output.
+            if not include_sentinels and name.startswith("_"):
                 continue
             hidden_fields = getattr(type_, "_hidden_fields", None)
             if hidden_fields and substree and not include_hidden:
@@ -1230,7 +1239,12 @@ class SignalSchema:
             yield new_prefix, type_, has_subtree, depth
             if substree is not None:
                 yield from self._get_flat_tree(
-                    substree, new_prefix, depth + 1, include_hidden, include_sys
+                    substree,
+                    new_prefix,
+                    depth + 1,
+                    include_hidden,
+                    include_sys,
+                    include_sentinels,
                 )
 
     def print_tree(self, indent: int = 2, start_at: int = 0, file: IO | None = None):
@@ -1252,7 +1266,7 @@ class SignalSchema:
         paths = [
             path
             for path, _, has_subtree, _ in self.get_flat_tree(
-                include_hidden=include_hidden
+                include_hidden=include_hidden, include_sentinels=False
             )
             if not has_subtree
         ]

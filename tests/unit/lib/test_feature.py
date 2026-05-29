@@ -442,7 +442,7 @@ def test_signal_schema_emits_sentinel_column_for_optional_datamodel():
     # The sentinel is an internal column: hidden from user-facing views.
     visible = [
         ".".join(p)
-        for p, _, has_subtree, _ in schema.get_flat_tree(include_hidden=False)
+        for p, _, has_subtree, _ in schema.get_flat_tree(include_sentinels=False)
         if not has_subtree
     ]
     assert "out.addr._is_null" not in visible
