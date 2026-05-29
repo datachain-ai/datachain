@@ -4,15 +4,17 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, Union, get_args, get_origin
 
 from sqlalchemy import Integer, desc
+from sqlalchemy import case as sa_case
 from sqlalchemy import cast as sa_cast
 from sqlalchemy.sql import func as sa_func
 from sqlalchemy.sql.elements import ColumnElement
 
 from datachain.lib.convert.python_to_sql import python_to_sql
 from datachain.lib.convert.sql_to_python import sql_to_python
+from datachain.lib.data_model import unwrap_optional
 from datachain.lib.model_store import ModelStore
 from datachain.lib.utils import DataChainColumnError, DataChainParamsError
-from datachain.query.schema import Column, ColumnExpr, ColumnMeta
+from datachain.query.schema import DEFAULT_DELIMITER, Column, ColumnExpr, ColumnMeta
 from datachain.sql.functions import numeric
 from datachain.sql.functions.conversion import datetime_to_string
 
@@ -28,6 +30,46 @@ if TYPE_CHECKING:
 
 
 ColT = Union[str, tuple, Column, ColumnExpr, "Func"]
+
+
+def _optional_parent_sentinel(
+    db_col: str, signals_schema: "SignalSchema | None"
+) -> str | None:
+    """Closest ``Optional[DataModel]`` ancestor's sentinel column, or None."""
+    from datachain.lib.signal_schema import SignalResolvingError, SignalSchema
+
+    if signals_schema is None:
+        return None
+    parts = db_col.split(DEFAULT_DELIMITER)
+    for i in range(len(parts), 0, -1):
+        prefix = DEFAULT_DELIMITER.join(parts[:i])
+        try:
+            anno = signals_schema.get_column_type(prefix, with_subtree=True)
+        except SignalResolvingError:
+            continue
+        inner, is_optional = unwrap_optional(anno)
+        if is_optional and ModelStore.is_pydantic(inner):
+            return f"{prefix}{DEFAULT_DELIMITER}{SignalSchema._OPTIONAL_SENTINEL_FIELD}"
+    return None
+
+
+def _wrap_optional_leaf(
+    column: Column,
+    db_col: str,
+    signals_schema: "SignalSchema | None",
+    table: "TableClause | None",
+) -> ColumnElement:
+    """Return ``CASE WHEN sentinel = 0 THEN column END`` when ``db_col`` is a
+    leaf under an ``Optional[DataModel]``. Forces ClickHouse's type-defaulted
+    absent rows to read back as SQL NULL — matching SQLite — so functions and
+    filters that touch the leaf give consistent results across backends.
+    """
+    sentinel_path = _optional_parent_sentinel(db_col, signals_schema)
+    if sentinel_path is None:
+        return column
+    sentinel = Column(sentinel_path)
+    sentinel.table = table
+    return sa_case((sentinel == 0, column), else_=None)
 
 
 class Func(Function):  # noqa: PLW1641
@@ -475,7 +517,7 @@ class Func(Function):  # noqa: PLW1641
                 column_sql_type = column_sql_type()
             column = Column(col, column_sql_type)
             column.table = table
-            return column
+            return _wrap_optional_leaf(column, col, signals_schema, table)
 
         return col
 
