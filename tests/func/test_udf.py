@@ -387,14 +387,65 @@ def test_print_schema_hides_optional_sentinel(test_session):
     import io
 
     chain = dc.read_values(
-        id=[1], d=[_Deep(name="a", inner=_Inner(score=2, label="y"))],
-        output={"id": int, "d": Optional[_Deep]}, session=test_session,
+        id=[1],
+        d=[_Deep(name="a", inner=_Inner(score=2, label="y"))],
+        output={"id": int, "d": Optional[_Deep]},
+        session=test_session,
     )
     buf = io.StringIO()
     chain.print_schema(file=buf)
     out = buf.getvalue()
     assert "_is_null" not in out
     assert "score" in out and "inner" in out  # real fields still shown
+
+
+def test_to_json_absent_optional_datamodel_is_null(test_session, tmp_path):
+    """to_json/to_jsonl serialize an absent Optional[DataModel] as null (not an
+    object of nulls), consistent with hydration. A present object whose leaves
+    are the type defaults (0/"") is kept — only an all-NULL parent collapses."""
+    import json
+
+    presents = {
+        0: _Inner(score=0, label=""),
+        1: _Inner(score=10, label="a"),
+        3: _Inner(score=30, label="c"),
+    }
+    chain = dc.read_values(
+        id=[0, 1, 2, 3],
+        item=[presents.get(i) for i in [0, 1, 2, 3]],
+        output={"id": int, "item": Optional[_Inner]},
+        session=test_session,
+    ).order_by("id")
+
+    p = str(tmp_path / "out.json")
+    chain.to_json(p)
+    with open(p) as f:
+        rows = json.load(f)
+    by_id = {r["id"]: r["item"] for r in rows}
+    assert by_id[0] == {"score": 0, "label": ""}  # present default kept, not None
+    assert by_id[1] == {"score": 10, "label": "a"}
+    assert by_id[2] is None  # absent parent -> null
+    assert by_id[3] == {"score": 30, "label": "c"}
+
+    # nested: present-with-absent-inner and fully-absent
+    vals = [
+        _Deep(name="x", inner=_Inner(score=5, label="z")),
+        _Deep(name="y", inner=None),
+        None,
+    ]
+    nchain = dc.read_values(
+        id=[1, 2, 3],
+        d=vals,
+        output={"id": int, "d": Optional[_Deep]},
+        session=test_session,
+    ).order_by("id")
+    pn = str(tmp_path / "nested.json")
+    nchain.to_json(pn)
+    with open(pn) as f:
+        nrows = {r["id"]: r["d"] for r in json.load(f)}
+    assert nrows[1] == {"name": "x", "inner": {"score": 5, "label": "z"}}
+    assert nrows[2] == {"name": "y", "inner": None}
+    assert nrows[3] is None
 
 
 def test_group_by_partition_optional_datamodel_leaf(test_session):

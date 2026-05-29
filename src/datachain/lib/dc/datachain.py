@@ -124,6 +124,32 @@ if TYPE_CHECKING:
 T = TypeVar("T", bound="DataChain")
 
 
+def _is_all_none(value: Any) -> bool:
+    """True for None or a (non-empty) dict whose every value is recursively None."""
+    if value is None:
+        return True
+    if isinstance(value, dict):
+        return bool(value) and all(_is_all_none(v) for v in value.values())
+    return False
+
+
+def _collapse_absent_optionals(
+    nested: dict[str, Any], optional_paths: list[list[str]]
+) -> None:
+    """In a flat-export nested dict, replace an absent Optional[DataModel] (all
+    leaves NULL) with None at each path in ``optional_paths`` (deepest first)."""
+    for path in optional_paths:
+        parent: Any = nested
+        for key in path[:-1]:
+            parent = parent.get(key) if isinstance(parent, dict) else None
+            if parent is None:
+                break
+        if isinstance(parent, dict):
+            leaf = path[-1]
+            if leaf in parent and _is_all_none(parent[leaf]):
+                parent[leaf] = None
+
+
 class DataChain:
     """DataChain - a data structure for batch data processing and evaluation.
 
@@ -2415,17 +2441,23 @@ class DataChain:
         headers: list[list[str]],
         include_outer_list: bool,
     ) -> None:
+        # Paths of Optional[DataModel] fields, so an absent parent serializes as
+        # null (not an object of nulls) — consistent with hydration/to_list. The
+        # sentinel is dropped from output, so absence is read off all-NULL leaves.
+        optional_paths = self._effective_signals_schema.optional_model_paths()
         is_first = True
         if include_outer_list:
             f.write(b"[\n")
         for row in self._leaf_values():
+            nested = row_to_nested_dict(headers, row)
+            _collapse_absent_optionals(nested, optional_paths)
             if not is_first:
                 f.write(b",\n" if include_outer_list else b"\n")
             else:
                 is_first = False
             f.write(
                 json.dumps(
-                    row_to_nested_dict(headers, row),
+                    nested,
                     ensure_ascii=False,
                 ).encode("utf-8")
             )

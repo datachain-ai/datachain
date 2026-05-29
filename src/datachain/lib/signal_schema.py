@@ -964,6 +964,24 @@ class SignalSchema:
 
         return curr_type
 
+    def optional_model_paths(self) -> "list[list[str]]":
+        """Field-name paths of every ``Optional[DataModel]`` node, deepest first.
+
+        Used by flat exports (e.g. ``to_json``) to collapse an absent parent —
+        whose leaves are all NULL because the sentinel is dropped from output —
+        back to a single ``None`` instead of an object of nulls. Deepest-first so
+        nested optionals collapse before their parents.
+        """
+        paths: list[list[str]] = []
+        for path, type_, has_subtree, _ in self.get_flat_tree(include_sentinels=False):
+            if not has_subtree:
+                continue
+            inner, is_optional = unwrap_optional(type_)
+            if is_optional and ModelStore.is_pydantic(inner):
+                paths.append(list(path))
+        paths.sort(key=len, reverse=True)
+        return paths
+
     def model_sentinel(self, db_col: str) -> "str | None":
         """DB name of the sentinel for ``db_col`` when it is itself an
         ``Optional[DataModel]``, else None."""
