@@ -104,7 +104,8 @@ def _numpy_to_python(value: Any, numpy_module) -> Any:
     if isinstance(value, numpy_module.generic):
         return value.tolist()
     if isinstance(value, (list, tuple, set)):
-        return [_numpy_to_python(item, numpy_module) for item in value]
+        converted = [_numpy_to_python(item, numpy_module) for item in value]
+        return tuple(converted) if isinstance(value, tuple) else converted
     if isinstance(value, dict):
         return {
             _numpy_to_python(key, numpy_module): _numpy_to_python(item, numpy_module)

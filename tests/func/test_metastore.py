@@ -2,7 +2,6 @@ import json
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
-import numpy as np
 import pytest
 
 from datachain.data_storage import JobQueryType, JobStatus
@@ -1005,10 +1004,7 @@ def test_update_job(metastore):
         error_message="err",
         error_stack="stack",
         finished_at=datetime.now(timezone.utc),
-        metrics={
-            "acc": np.float32(0.5),
-            "hist": np.array([1, 2], dtype=np.int64),
-        },
+        metrics={"acc": 0.5, "hist": [1, 2]},
     )
     assert updated.status == JobStatus.FAILED
     assert updated.error_message == "err"

@@ -2352,7 +2352,7 @@ class AbstractDBMetastore(AbstractMetastore):
         if finished_at is not None:
             values["finished_at"] = finished_at
         if metrics:
-            values["metrics"] = json.dumps(metrics, serialize_numpy=True)
+            values["metrics"] = json.dumps(metrics)
 
         if values:
             j = self._jobs

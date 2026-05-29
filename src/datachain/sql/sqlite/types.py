@@ -1,7 +1,5 @@
 import sqlite3
 from datetime import timezone
-from importlib import import_module
-from typing import Any
 
 from sqlalchemy import types
 
@@ -9,9 +7,11 @@ from datachain import json
 from datachain.sql.types import TypeConverter, TypeReadConverter
 
 try:
-    np: Any | None = import_module("numpy")
+    import numpy as np
+
+    numpy_imported = True
 except ImportError:
-    np = None
+    numpy_imported = False
 
 
 class Array(types.UserDefinedType):
@@ -54,7 +54,7 @@ def register_type_converters():
     sqlite3.register_adapter(list, adapt_array)
     sqlite3.register_adapter(dict, adapt_dict)
     sqlite3.register_converter("ARRAY", convert_array)
-    if np is not None:
+    if numpy_imported:
         sqlite3.register_adapter(np.ndarray, adapt_np_array)
         sqlite3.register_adapter(np.int32, adapt_np_generic)
         sqlite3.register_adapter(np.int64, adapt_np_generic)
