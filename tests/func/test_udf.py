@@ -144,6 +144,88 @@ class _Inner(DataModel):
     label: str = ""
 
 
+class _ServerToolUsage(DataModel):
+    """Stub of anthropic.types.ServerToolUsage (no SDK dependency)."""
+
+    web_search_requests: int = 0
+
+
+class _Usage(DataModel):
+    """Stub of anthropic.types.Usage from issue #1055: a DataModel with
+    Optional[int] fields and an Optional[DataModel] field."""
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_creation_input_tokens: Optional[int] = None
+    cache_read_input_tokens: Optional[int] = None
+    server_tool_use: Optional[_ServerToolUsage] = None
+    service_tier: Optional[str] = None
+
+
+def test_issue_1055_optional_datamodel_output(test_session):
+    """#1055 original repro: a UDF returning Optional[DataModel] must not crash
+    UDF prep, and None must survive."""
+
+    def maybe(id: int) -> Optional[_Inner]:
+        return _Inner(score=id, label=f"n{id}") if id else None
+
+    chain = dc.read_values(id=[0, 1, 2], session=test_session).map(item=maybe)
+    by_id = dict(chain.order_by("id").to_list("id", "item"))
+    assert by_id[0] is None
+    assert by_id[1] == _Inner(score=1, label="n1")
+    assert by_id[2] == _Inner(score=2, label="n2")
+
+
+def test_issue_1055_anthropic_usage_roundtrip(test_session):
+    """#1055: an Anthropic-Usage-shaped model (Optional[int] fields + a nested
+    Optional[DataModel] field) round-trips through save() on both backends —
+    present values preserved, absent optionals come back as None (not 0/'')."""
+
+    usages = [
+        _Usage(
+            input_tokens=10,
+            output_tokens=5,
+            cache_creation_input_tokens=3,
+            cache_read_input_tokens=None,
+            server_tool_use=_ServerToolUsage(web_search_requests=2),
+            service_tier="standard",
+        ),
+        _Usage(
+            input_tokens=20,
+            output_tokens=7,
+            cache_creation_input_tokens=None,
+            cache_read_input_tokens=None,
+            server_tool_use=None,
+            service_tier=None,
+        ),
+    ]
+    (
+        dc.read_values(
+            id=[1, 2],
+            usage=usages,
+            output={"id": int, "usage": _Usage},
+            session=test_session,
+        ).save("issue_1055_usage")
+    )
+
+    by_id = dict(
+        dc.read_dataset("issue_1055_usage", session=test_session).to_list("id", "usage")
+    )
+    u1, u2 = by_id[1], by_id[2]
+
+    assert (u1.input_tokens, u1.output_tokens) == (10, 5)
+    assert u1.cache_creation_input_tokens == 3
+    assert u1.cache_read_input_tokens is None  # Optional[int]=None survives save()
+    assert u1.server_tool_use == _ServerToolUsage(web_search_requests=2)
+    assert u1.service_tier == "standard"
+
+    assert (u2.input_tokens, u2.output_tokens) == (20, 7)
+    assert u2.cache_creation_input_tokens is None
+    assert u2.cache_read_input_tokens is None
+    assert u2.server_tool_use is None  # absent nested Optional[DataModel]
+    assert u2.service_tier is None
+
+
 def test_optional_basic_scalar_roundtrips_none(test_session):
     """An explicit Optional[scalar] column stores/reads None as NULL on both
     backends (without it, ClickHouse coerces None to the type default 0/"").
