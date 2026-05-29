@@ -10,6 +10,13 @@ def flatten(obj: BaseModel) -> tuple:
     return tuple(_flatten_fields_values(type(obj).model_fields, obj))
 
 
+def is_optional_model(anno) -> bool:
+    """True when ``anno`` is ``Optional[DataModel]`` — the only shape that needs
+    an ``is_null`` sentinel emitted alongside its flattened leaves."""
+    inner, is_optional = unwrap_optional(anno)
+    return is_optional and ModelStore.is_pydantic(inner)
+
+
 def flatten_value(value, anno) -> tuple:
     """Flatten ``value`` for one column declared with annotation ``anno``.
 
@@ -34,6 +41,12 @@ def flatten_value(value, anno) -> tuple:
             if value is None:
                 return (True, *_emit_absent(inner))
             return (False, *flatten(value))
+        if value is None:
+            # Non-Optional model but the value is None (e.g. an unmatched side of
+            # a full outer merge). There is no sentinel column, so emit absent
+            # placeholders for every leaf — NULL on SQLite, type-defaults on
+            # ClickHouse — matching the schema width.
+            return tuple(_emit_absent(inner))
         return flatten(value)
     return (value,)
 

@@ -14,7 +14,7 @@ import datachain as dc
 from datachain.client.fileslice import FileWrapper
 from datachain.client.fsspec import Client
 from datachain.func import path as pathfunc
-from datachain.lib.data_model import DataModel
+from datachain.lib.data_model import DataModel, unwrap_optional
 from datachain.lib.file import AudioFile, AudioFragment, File
 from datachain.lib.udf import Mapper, UdfRunError
 from datachain.lib.utils import DataChainColumnError
@@ -181,6 +181,64 @@ def test_read_values_with_optional_datamodel(test_session):
     scores = [(item.score if item else None) for (item,) in chain.to_list()]
     assert sorted(s for s in scores if s is not None) == [1, 3]
     assert scores.count(None) == 1
+
+
+def test_read_values_optional_datamodel_multi_column(test_session):
+    """read_values with an Optional[DataModel] *alongside another column* — the
+    multi-output flatten path, which must still emit the is_null sentinel."""
+    from datachain import func
+
+    items = [_Inner(score=1, label="a"), None, _Inner(score=3, label="c")]
+    chain = dc.read_values(
+        id=[1, 2, 3],
+        item=items,
+        output={"id": int, "item": Optional[_Inner]},
+        session=test_session,
+    ).save("rv_multi_opt")
+
+    by_id = {r[0]: r[1] for r in chain.select("id", "item").to_list()}
+    assert by_id[1] == _Inner(score=1, label="a")
+    assert by_id[2] is None
+    assert by_id[3] == _Inner(score=3, label="c")
+
+    present = chain.group_by(n=func.count("item"), partition_by="id")
+    assert {r["id"]: r["n"] for r in present.to_records()} == {1: 1, 2: 0, 3: 1}
+    absent = chain.filter(dc.C("item.is_null") == True).count()  # noqa: E712
+    assert absent == 1
+
+
+def test_read_values_optional_datamodel_inferred(test_session):
+    """A DataModel column with some None values is inferred as Optional[DataModel]
+    (so the sentinel is emitted) rather than the bare model type."""
+    items = [_Inner(score=1, label="a"), None, _Inner(score=3, label="c")]
+    chain = dc.read_values(id=[1, 2, 3], item=items, session=test_session)
+
+    inner, is_optional = unwrap_optional(chain.signals_schema.values["item"])
+    assert is_optional and inner is _Inner
+    assert "item__is_null" in chain.signals_schema.db_signals()
+
+    saved = chain.save("rv_inferred_opt")
+    by_id = {r[0]: r[1] for r in saved.select("id", "item").to_list()}
+    assert by_id[1] == _Inner(score=1, label="a")
+    assert by_id[2] is None
+    assert by_id[3] == _Inner(score=3, label="c")
+
+
+def test_multi_output_map_optional_datamodel(test_session):
+    """A multi-output map returning Optional[DataModel] in one slot must emit the
+    sentinel for that slot (single-output already worked; multi-output did not)."""
+
+    def split(id: int):
+        return id * 10, (None if id == 2 else _Inner(score=id, label=f"x{id}"))
+
+    chain = dc.read_values(id=[1, 2, 3], session=test_session).map(
+        split, output={"big": int, "item": Optional[_Inner]}
+    )
+
+    by_id = {r[0]: (r[1], r[2]) for r in chain.select("id", "big", "item").to_list()}
+    assert by_id[1] == (10, _Inner(score=1, label="x1"))
+    assert by_id[2] == (20, None)
+    assert by_id[3] == (30, _Inner(score=3, label="x3"))
 
 
 def test_nested_optional_datamodel_in_outer_model(test_session):

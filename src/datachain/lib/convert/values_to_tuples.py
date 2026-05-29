@@ -3,6 +3,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from datachain.lib.data_model import DataType, DataTypeNames, DataValue, is_chain_type
+from datachain.lib.model_store import ModelStore
 from datachain.lib.utils import DataChainParamsError
 
 
@@ -115,6 +116,13 @@ def _infer_type_from_sequence(
         first_key = next(iter(first_element.keys()))
         value_type = _infer_dict_value_type(first_element)
         return dict[type(first_key), value_type]  # type: ignore[misc, return-value]
+
+    # A DataModel column with some None values is an Optional[DataModel]: promote
+    # so the is_null sentinel is emitted (a non-Optional model can't represent the
+    # None row — it would store type-defaults on ClickHouse). Scoped to DataModels;
+    # Optional[basic]/Optional[list/dict] inference is intentionally left alone.
+    if ModelStore.is_pydantic(typ) and any(v is None for v in sequence):
+        return typ | None  # type: ignore[return-value]
 
     return typ
 
