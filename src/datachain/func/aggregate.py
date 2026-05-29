@@ -7,18 +7,16 @@ from sqlalchemy import func as sa_func
 from datachain.query.schema import Column, ColumnExpr
 from datachain.sql.functions import aggregate
 
-from .func import ColT, Func
+from .func import ColT, Func, _SentinelAwareFunc
 
 if TYPE_CHECKING:
     from sqlalchemy import TableClause
-
-    from datachain.lib.signal_schema import SignalSchema
 
 
 AggColT = str | Column | ColumnExpr | Func
 
 
-class _CountFunc(Func):
+class _CountFunc(_SentinelAwareFunc):
     """``count(<Optional[DataModel]>)`` counts rows where the parent is present.
 
     The parent isn't a real column on disk — picking any leaf gives different
@@ -29,26 +27,16 @@ class _CountFunc(Func):
     so a plain ``count(<leaf>)`` is also correct.
     """
 
-    def get_column(
+    def _sentinel_column(
         self,
-        signals_schema: "SignalSchema | None" = None,
-        label: str | None = None,
-        table: "TableClause | None" = None,
+        sentinel_path: str,
+        label: str | None,
+        table: "TableClause | None",
     ) -> Column:
-        if (sentinel_path := self._self_sentinel_path(signals_schema)) is not None:
-            sentinel = Column(sentinel_path)
-            sentinel.table = table
-            func_col = sa_func.sum(1 - sa_cast(sentinel, Integer))
-            return self._finalize_column(func_col, Integer, label)
-        return super().get_column(signals_schema, label, table)
-
-    def _self_sentinel_path(self, signals_schema: "SignalSchema | None") -> str | None:
-        if signals_schema is None or not self._db_cols:
-            return None
-        col = self._db_cols[0]
-        if not isinstance(col, str):
-            return None
-        return signals_schema.model_sentinel(col)
+        sentinel = Column(sentinel_path)
+        sentinel.table = table
+        func_col = sa_func.sum(1 - sa_cast(sentinel, Integer))
+        return self._finalize_column(func_col, Integer, label)
 
 
 def count(col: AggColT | None = None) -> Func:

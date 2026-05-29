@@ -591,6 +591,34 @@ class Func(Function):  # noqa: PLW1641
         return self._finalize_column(func_col, sql_type, label)
 
 
+class _SentinelAwareFunc(Func):
+    """A ``Func`` whose first argument may be an ``Optional[DataModel]`` — which
+    has no real column on disk. When it is, the column resolves to that model's
+    ``_is_null`` sentinel (via ``_sentinel_column``); otherwise it falls back to
+    the plain ``Func`` column. Shared by ``count`` and ``isnone``."""
+
+    def get_column(
+        self,
+        signals_schema: "SignalSchema | None" = None,
+        label: str | None = None,
+        table: "TableClause | None" = None,
+    ) -> Column:
+        col = self._db_cols[0] if self._db_cols else None
+        if signals_schema is not None and isinstance(col, str):
+            sentinel_path = signals_schema.model_sentinel(col)
+            if sentinel_path is not None:
+                return self._sentinel_column(sentinel_path, label, table)
+        return super().get_column(signals_schema, label, table)
+
+    def _sentinel_column(
+        self,
+        sentinel_path: str,
+        label: str | None,
+        table: "TableClause | None",
+    ) -> Column:
+        raise NotImplementedError
+
+
 class CastFunc(Func):
     def __init__(
         self,

@@ -11,39 +11,32 @@ from datachain.lib.utils import DataChainParamsError
 from datachain.query.schema import Column, ColumnExpr
 from datachain.sql.functions import conditional
 
-from .func import Func
+from .func import Func, _SentinelAwareFunc
 
 if TYPE_CHECKING:
     from sqlalchemy import TableClause
 
-    from datachain.lib.signal_schema import SignalSchema
-
 CaseT = int | float | complex | bool | str | Func | ColumnExpr
 
 
-class _IsNoneFunc(Func):
+class _IsNoneFunc(_SentinelAwareFunc):
     """``isnone`` is None-aware for ``Optional[DataModel]``: that column isn't a
     real column on disk, so it reads the model's ``_is_null`` sentinel. Any other
     column (including ``Optional[basic]``) keeps the plain ``col IS NULL`` check.
     """
 
-    def get_column(
+    def _sentinel_column(
         self,
-        signals_schema: "SignalSchema | None" = None,
-        label: str | None = None,
-        table: "TableClause | None" = None,
+        sentinel_path: str,
+        label: str | None,
+        table: "TableClause | None",
     ) -> Column:
-        col = self._db_cols[0] if self._db_cols else None
-        if signals_schema is not None and isinstance(col, str):
-            sentinel_path = signals_schema.model_sentinel(col)
-            if sentinel_path is not None:
-                sentinel = Column(sentinel_path)
-                sentinel.table = table
-                func_col = sql_case(
-                    (sql_or(sentinel.is_(None), sentinel != 0), True), else_=False
-                )
-                return self._finalize_column(func_col, python_to_sql(bool), label)
-        return super().get_column(signals_schema, label, table)
+        sentinel = Column(sentinel_path)
+        sentinel.table = table
+        func_col = sql_case(
+            (sql_or(sentinel.is_(None), sentinel != 0), True), else_=False
+        )
+        return self._finalize_column(func_col, python_to_sql(bool), label)
 
 
 def greatest(*args: str | Column | Func | float) -> Func:

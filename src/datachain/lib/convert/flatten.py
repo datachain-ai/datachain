@@ -1,4 +1,5 @@
-from collections.abc import Generator
+from collections.abc import Generator, Iterator
+from typing import Any, NamedTuple
 
 from pydantic import BaseModel
 
@@ -6,13 +7,58 @@ from datachain.lib.data_model import unwrap_optional
 from datachain.lib.model_store import ModelStore
 
 
+class FieldKind(NamedTuple):
+    """Classification of a model field's annotation. Single source of truth for
+    the per-field branch shared by every walk over a model's fields (flatten,
+    unflatten, arrow, column counting)."""
+
+    inner: Any  # the annotation with Optional unwrapped
+    is_optional: bool  # the annotation was Optional[...]
+    is_model: bool  # inner is a pydantic model
+
+
+def classify_field(annotation: Any) -> FieldKind:
+    inner, is_optional = unwrap_optional(annotation)
+    return FieldKind(inner, is_optional, ModelStore.is_pydantic(inner))
+
+
+class FlatColumn(NamedTuple):
+    """One column a model emits, in DB-column order. ``is_sentinel`` marks the
+    ``_is_null`` boolean prepended for an ``Optional[DataModel]`` node; otherwise
+    it is a scalar/list/dict leaf."""
+
+    path: tuple[str, ...]
+    is_sentinel: bool
+
+
+def iter_flat_columns(
+    model: type[BaseModel], _prefix: tuple[str, ...] = ()
+) -> Iterator[FlatColumn]:
+    """Yield the flat columns ``model`` emits, in order: each ``Optional[DataModel]``
+    node contributes a leading sentinel, then its (recursively flattened) leaves.
+
+    Single source of truth for the flat column layout — used by column counting
+    (``_leaf_count``), absent-parent placeholders (``_emit_absent``), and the
+    parquet/arrow absent-subtree check.
+    """
+    for name, f_info in model.model_fields.items():
+        kind = classify_field(f_info.annotation)
+        path = (*_prefix, name)
+        if kind.is_model:
+            if kind.is_optional:
+                yield FlatColumn(path, True)
+            yield from iter_flat_columns(kind.inner, path)
+        else:
+            yield FlatColumn(path, False)
+
+
 def flatten(obj: BaseModel) -> tuple:
     return tuple(_flatten_fields_values(type(obj).model_fields, obj))
 
 
 def is_optional_model(anno) -> bool:
-    inner, is_optional = unwrap_optional(anno)
-    return is_optional and ModelStore.is_pydantic(inner)
+    kind = classify_field(anno)
+    return kind.is_optional and kind.is_model
 
 
 def flatten_value(value, anno) -> tuple:
@@ -22,16 +68,16 @@ def flatten_value(value, anno) -> tuple:
     ``Optional[basic]`` is a plain nullable column. Nulls inside collections
     (``list[Optional[T]]``) and bare ``Union[A, B]`` are not represented.
     """
-    inner, is_optional = unwrap_optional(anno)
-    if ModelStore.is_pydantic(inner):
-        if is_optional:
+    kind = classify_field(anno)
+    if kind.is_model:
+        if kind.is_optional:
             if value is None:
-                return (True, *_emit_absent(inner))
+                return (True, *_emit_absent(kind.inner))
             return (False, *flatten(value))
         if value is None:
             # None for a non-Optional model (e.g. an unmatched outer-merge side):
             # no sentinel column, so emit a placeholder per leaf to keep the width.
-            return tuple(_emit_absent(inner))
+            return tuple(_emit_absent(kind.inner))
         return flatten(value)
     return (value,)
 
@@ -54,35 +100,20 @@ def _flatten_list_field(value: list) -> list:
 
 
 def _leaf_count(model: type[BaseModel]) -> int:
-    """Count of flat columns ``_flatten_fields_values`` emits for ``model``."""
-    count = 0
-    for f_info in model.model_fields.values():
-        inner, is_optional = unwrap_optional(f_info.annotation)
-        if ModelStore.is_pydantic(inner):
-            if is_optional:
-                count += 1
-            count += _leaf_count(inner)
-        else:
-            count += 1
-    return count
+    """Count of flat columns ``model`` emits (sentinels included)."""
+    return sum(1 for _ in iter_flat_columns(model))
 
 
 def _emit_absent(model: type[BaseModel]) -> Generator:
     """Placeholder values shaped like ``model``'s flat columns, used when an
     ``Optional[DataModel]`` parent is None and the leaves still need a slot."""
-    for f_info in model.model_fields.values():
-        inner, is_optional = unwrap_optional(f_info.annotation)
-        if ModelStore.is_pydantic(inner):
-            if is_optional:
-                yield True
-            yield from _emit_absent(inner)
-        else:
-            yield None
+    for col in iter_flat_columns(model):
+        yield True if col.is_sentinel else None
 
 
 def _flatten_fields_values(fields: dict, obj: BaseModel) -> Generator:
     for name, f_info in fields.items():
-        inner, is_optional = unwrap_optional(f_info.annotation)
+        kind = classify_field(f_info.annotation)
         # Direct attribute access skips Pydantic's model_dump().
         value = getattr(obj, name)
         if isinstance(value, list):
@@ -92,16 +123,16 @@ def _flatten_fields_values(fields: dict, obj: BaseModel) -> Generator:
                 key: val.model_dump() if ModelStore.is_pydantic(type(val)) else val
                 for key, val in value.items()
             }
-        elif ModelStore.is_pydantic(inner):
-            if is_optional:
+        elif kind.is_model:
+            if kind.is_optional:
                 if value is None:
                     yield True
-                    yield from _emit_absent(inner)
+                    yield from _emit_absent(kind.inner)
                 else:
                     yield False
-                    yield from _flatten_fields_values(inner.model_fields, value)
+                    yield from _flatten_fields_values(kind.inner.model_fields, value)
             else:
-                yield from _flatten_fields_values(inner.model_fields, value)
+                yield from _flatten_fields_values(kind.inner.model_fields, value)
         else:
             yield value
 

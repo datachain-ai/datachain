@@ -8,7 +8,8 @@ from pyarrow.dataset import CsvFileFormat, dataset
 
 from datachain import json
 from datachain.fs.reference import ReferenceFileSystem
-from datachain.lib.data_model import dict_to_data_model, unwrap_optional
+from datachain.lib.convert.flatten import classify_field, iter_flat_columns
+from datachain.lib.data_model import dict_to_data_model
 from datachain.lib.file import ArrowRow, File
 from datachain.lib.model_store import ModelStore
 from datachain.lib.signal_schema import SignalSchema
@@ -285,13 +286,11 @@ def _subtree_all_none(
     """True when every scalar leaf under ``model`` (at ``prefix``) is None — i.e.
     an absent ``Optional[DataModel]`` parent. Exports drop the ``_is_null``
     sentinel, so absence is recovered from the leaves being NULL."""
-    for field, field_info in model.model_fields.items():
-        inner, _ = unwrap_optional(field_info.annotation)
-        cur_path = f"{prefix}.{field}"
-        if ModelStore.is_pydantic(inner):
-            if not _subtree_all_none(column_values, inner, cur_path):  # type: ignore[arg-type]
-                return False
-        elif column_values.get(cur_path) is not None:
+    for col in iter_flat_columns(model):
+        if col.is_sentinel:
+            continue
+        cur_path = f"{prefix}." + ".".join(col.path)
+        if column_values.get(cur_path) is not None:
             return False
     return True
 
@@ -303,17 +302,18 @@ def _nested_model_instantiate(
     column values."""
     vals_dict: dict[str, Any] = {}
     for field, field_info in model.model_fields.items():
-        anno = field_info.annotation
-        inner, is_optional = unwrap_optional(anno)
+        kind = classify_field(field_info.annotation)
         cur_path = f"{prefix}.{field}" if prefix else field
-        if ModelStore.is_pydantic(inner):
-            if is_optional and _subtree_all_none(column_values, inner, cur_path):  # type: ignore[arg-type]
+        if kind.is_model:
+            if kind.is_optional and _subtree_all_none(
+                column_values, kind.inner, cur_path
+            ):
                 # Absent Optional[DataModel] parent (all leaves NULL) -> None.
                 vals_dict[field] = None
             else:
                 vals_dict[field] = _nested_model_instantiate(
                     column_values,
-                    inner,  # type: ignore[arg-type]
+                    kind.inner,
                     prefix=cur_path,
                 )
         elif cur_path in column_values:

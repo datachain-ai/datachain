@@ -2,12 +2,11 @@ import copy
 import inspect
 import re
 from collections.abc import Sequence
-from typing import Any, get_origin
+from typing import Any
 
 from pydantic import BaseModel
 
-from datachain.lib.convert.flatten import _leaf_count
-from datachain.lib.data_model import unwrap_optional
+from datachain.lib.convert.flatten import _leaf_count, classify_field
 from datachain.query.schema import DEFAULT_DELIMITER
 
 
@@ -34,20 +33,14 @@ def unflatten_to_json_pos(
 ) -> tuple[dict, int]:
     res: dict[str, Any] = {}
     for name, f_info in model.model_fields.items():
-        anno = f_info.annotation
-        inner, is_optional = unwrap_optional(anno)
-        origin = get_origin(anno)
-        if (
-            origin not in (list, dict)
-            and inspect.isclass(inner)
-            and issubclass(inner, BaseModel)
-        ):
-            if is_optional:
-                absent, pos = read_optional_sentinel(inner, row, pos)
+        kind = classify_field(f_info.annotation)
+        if kind.is_model:
+            if kind.is_optional:
+                absent, pos = read_optional_sentinel(kind.inner, row, pos)
                 if absent:
                     res[name] = None
                     continue
-            res[name], pos = unflatten_to_json_pos(inner, row, pos)
+            res[name], pos = unflatten_to_json_pos(kind.inner, row, pos)
         else:
             res[name] = row[pos]
             pos += 1
