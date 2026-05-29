@@ -47,10 +47,8 @@ def _gcs_client(bucket: str = "foo", **fs_kwargs) -> GCSClient:
     return GCSClient(bucket, fs_kwargs, MagicMock())
 
 
-def test_anon_fallback_no_error_no_retry(monkeypatch, _clear_anon_cache):
-    client = _gcs_client()
-    client._fs = MagicMock()
-    client._fs._info = AsyncMock(
+def _info_ok():
+    return AsyncMock(
         return_value={
             "name": "gs://foo/x.txt",
             "size": 1,
@@ -58,107 +56,104 @@ def test_anon_fallback_no_error_no_retry(monkeypatch, _clear_anon_cache):
             "updated": "2024-01-01T00:00:00Z",
         }
     )
-    create_fs = MagicMock()
+
+
+def test_anon_fallback_no_error_no_retry(monkeypatch, _clear_anon_cache):
+    auth_fs = MagicMock()
+    auth_fs._info = _info_ok()
+    create_fs = MagicMock(return_value=auth_fs)
     monkeypatch.setattr(GCSClient, "create_fs", create_fs)
 
+    client = _gcs_client()
     client.get_file_info("x.txt")
 
-    create_fs.assert_not_called()
-    assert not GCSClient._bucket_needs_anon("foo")
+    create_fs.assert_called_once()
+    assert create_fs.call_args.kwargs.get("anon") is None
+    assert GCSClient._bucket_needs_anon("foo") is None
 
 
 def test_anon_fallback_retry_succeeds_marks_bucket(monkeypatch, _clear_anon_cache):
-    client = _gcs_client()
     auth_fs = MagicMock()
     auth_fs._info = AsyncMock(side_effect=PermissionError)
-    client._fs = auth_fs
-
     anon_fs = MagicMock()
-    anon_fs._info = AsyncMock(
-        return_value={
-            "name": "gs://foo/x.txt",
-            "size": 1,
-            "etag": "e",
-            "updated": "2024-01-01T00:00:00Z",
-        }
-    )
-    monkeypatch.setattr(GCSClient, "create_fs", MagicMock(return_value=anon_fs))
+    anon_fs._info = _info_ok()
+    create_fs = MagicMock(side_effect=[auth_fs, anon_fs])
+    monkeypatch.setattr(GCSClient, "create_fs", create_fs)
 
+    client = _gcs_client()
     client.get_file_info("x.txt")
 
-    assert GCSClient._bucket_needs_anon("foo")
-    assert client._fs is anon_fs
-    assert GCSClient.create_fs.call_args.kwargs.get("anon") is True
+    assert GCSClient._bucket_needs_anon("foo") is True
+    assert create_fs.call_count == 2
+    assert create_fs.call_args_list[1].kwargs.get("anon") is True
 
 
 def test_anon_fallback_retry_also_fails_marks_as_failed(monkeypatch, _clear_anon_cache):
-    client = _gcs_client()
     auth_fs = MagicMock()
     auth_fs._info = AsyncMock(side_effect=PermissionError)
-    client._fs = auth_fs
-
     anon_fs = MagicMock()
     anon_fs._info = AsyncMock(side_effect=PermissionError)
-    monkeypatch.setattr(GCSClient, "create_fs", MagicMock(return_value=anon_fs))
+    create_fs = MagicMock(side_effect=[auth_fs, anon_fs])
+    monkeypatch.setattr(GCSClient, "create_fs", create_fs)
 
+    client = _gcs_client()
     with pytest.raises(PermissionError):
         client.get_file_info("x.txt")
 
     assert GCSClient._bucket_needs_anon("foo") is False
-    assert client._fs is auth_fs
+    assert create_fs.call_count == 2
 
 
 def test_anon_fallback_cached_as_failed_skips_retry(monkeypatch, _clear_anon_cache):
     GCSClient._mark_bucket_anon("foo", False)
-    client = _gcs_client()
     auth_fs = MagicMock()
     auth_fs._info = AsyncMock(side_effect=PermissionError)
-    client._fs = auth_fs
-    create_fs = MagicMock()
+    create_fs = MagicMock(return_value=auth_fs)
     monkeypatch.setattr(GCSClient, "create_fs", create_fs)
 
+    client = _gcs_client()
     with pytest.raises(PermissionError):
         client.get_file_info("x.txt")
 
-    create_fs.assert_not_called()
+    create_fs.assert_called_once()
+    assert create_fs.call_args.kwargs.get("anon") is None
 
 
 def test_anon_fallback_cached_bucket_uses_anon_directly(monkeypatch, _clear_anon_cache):
     GCSClient._mark_bucket_anon("foo", True)
-    create_fs = MagicMock()
+    create_fs = MagicMock(return_value=MagicMock())
     monkeypatch.setattr(GCSClient, "create_fs", create_fs)
 
-    _ = _gcs_client().fs
+    _ = _gcs_client().fs._info
 
     create_fs.assert_called_once()
     assert create_fs.call_args.kwargs.get("anon") is True
 
 
 def test_anon_fallback_explicit_anon_no_retry(monkeypatch, _clear_anon_cache):
-    client = _gcs_client(anon=True)
-    client._fs = MagicMock()
-    client._fs._info = AsyncMock(side_effect=PermissionError)
-    create_fs = MagicMock()
+    auth_fs = MagicMock()
+    auth_fs._info = AsyncMock(side_effect=PermissionError)
+    create_fs = MagicMock(return_value=auth_fs)
     monkeypatch.setattr(GCSClient, "create_fs", create_fs)
 
+    client = _gcs_client(anon=True)
     with pytest.raises(PermissionError):
         client.get_file_info("x.txt")
 
-    create_fs.assert_not_called()
-    assert not GCSClient._bucket_needs_anon("foo")
+    create_fs.assert_called_once()
+    assert GCSClient._bucket_needs_anon("foo") is None
 
 
 def test_anon_fallback_open_object_retry_succeeds(monkeypatch, _clear_anon_cache):
-    client = _gcs_client()
     auth_fs = MagicMock()
     auth_fs.open = MagicMock(side_effect=PermissionError)
-    client._fs = auth_fs
-    client.cache.get_path = MagicMock(return_value=None)
-
     anon_fs = MagicMock()
     anon_fs.open = MagicMock(return_value=MagicMock())
-    monkeypatch.setattr(GCSClient, "create_fs", MagicMock(return_value=anon_fs))
+    create_fs = MagicMock(side_effect=[auth_fs, anon_fs])
+    monkeypatch.setattr(GCSClient, "create_fs", create_fs)
 
+    client = _gcs_client()
+    client.cache.get_path = MagicMock(return_value=None)
     client.open_object(File(source="gs://foo", path="x.txt"))
 
-    assert GCSClient._bucket_needs_anon("foo")
+    assert GCSClient._bucket_needs_anon("foo") is True

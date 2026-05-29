@@ -63,36 +63,87 @@ class BucketStatus(NamedTuple):
     error: str | None = None
 
 
-def _anon_fallback(method):
-    """Retry a Client method once with anonymous access on PermissionError.
+class AnonFallbackFS:
+    """Proxy for an fsspec ``AbstractFileSystem`` that retries any method on
+    ``PermissionError`` with ``anon=True``, and caches the decision per
+    ``(protocol, bucket)`` so future calls go straight to the right mode.
 
-    Only marks the bucket as anon-needed if the retry actually succeeds, so
-    genuinely inaccessible buckets keep raising clean errors instead of
-    being silently cached as anon.
+    Wrapping at this layer (rather than on individual ``Client`` methods)
+    means every code path that goes through ``self.fs`` is covered - both
+    sync paths (``get_file_info``, ``open_object``) and async ones
+    (``get_current_etag``, ``get_file``, ``get_size``).
     """
 
-    @functools.wraps(method)
-    def wrapper(self, *args, **kwargs):
-        try:
-            return method(self, *args, **kwargs)
-        except PermissionError:
-            if (
-                self.fs_kwargs.get("anon")
-                or self._bucket_needs_anon(self.name) is not None
-            ):
-                raise
-            saved_fs = self._fs
-            self._fs = type(self).create_fs(**{**self.fs_kwargs, "anon": True})
-            try:
-                result = method(self, *args, **kwargs)
-            except PermissionError:
-                self._fs = saved_fs
-                self._mark_bucket_anon(self.name, False)
-                raise
-            self._mark_bucket_anon(self.name, True)
-            return result
+    def __init__(self, client: "Client") -> None:
+        self._client = client
+        kwargs = dict(client.fs_kwargs)
+        if client._bucket_needs_anon(client.name) is True:
+            kwargs["anon"] = True
+        self._inner_fs = type(client).create_fs(**kwargs)
 
-    return wrapper
+    @property  # type: ignore[misc]
+    def __class__(self):
+        # Pretend to be the underlying fsspec class so isinstance checks
+        # (e.g. pyarrow's ``isinstance(fs, AbstractFileSystem)``) pass.
+        return type(self._inner_fs)
+
+    def __getattr__(self, name: str):
+        attr = getattr(self._inner_fs, name)
+        if not callable(attr):
+            return attr
+        if asyncio.iscoroutinefunction(attr):
+            return self._wrap_async(name, attr)
+        return self._wrap_sync(name, attr)
+
+    def _can_retry(self) -> bool:
+        if self._client.fs_kwargs.get("anon"):
+            return False
+        return self._client._bucket_needs_anon(self._client.name) is None
+
+    def _swap_to_anon(self) -> None:
+        self._inner_fs = type(self._client).create_fs(
+            **{**self._client.fs_kwargs, "anon": True}
+        )
+
+    def _wrap_sync(self, name, attr):
+        def call(*args, **kwargs):
+            try:
+                return attr(*args, **kwargs)
+            except PermissionError:
+                if not self._can_retry():
+                    raise
+                saved = self._inner_fs
+                self._swap_to_anon()
+                try:
+                    result = getattr(self._inner_fs, name)(*args, **kwargs)
+                except PermissionError:
+                    self._inner_fs = saved
+                    self._client._mark_bucket_anon(self._client.name, False)
+                    raise
+                self._client._mark_bucket_anon(self._client.name, True)
+                return result
+
+        return call
+
+    def _wrap_async(self, name, attr):
+        async def call(*args, **kwargs):
+            try:
+                return await attr(*args, **kwargs)
+            except PermissionError:
+                if not self._can_retry():
+                    raise
+                saved = self._inner_fs
+                self._swap_to_anon()
+                try:
+                    result = await getattr(self._inner_fs, name)(*args, **kwargs)
+                except PermissionError:
+                    self._inner_fs = saved
+                    self._client._mark_bucket_anon(self._client.name, False)
+                    raise
+                self._client._mark_bucket_anon(self._client.name, True)
+                return result
+
+        return call
 
 
 class Client(ABC):
@@ -102,6 +153,10 @@ class Client(ABC):
     protocol: ClassVar[str]
     # client_config keys this backend treats as credentials.
     CREDENTIAL_KEYS: ClassVar[frozenset[str]] = frozenset()
+    # Whether ``anon=True`` is a meaningful fsspec kwarg for this backend.
+    # Subclasses for S3/GCS/Azure flip this to True so ``Client.fs`` returns
+    # an ``AnonFallbackFS`` proxy.
+    _ANON_FALLBACK: ClassVar[bool] = False
     # Process-local cache of (protocol, bucket) anon decisions.
     # True  = anon retry succeeded, use anon from the start.
     # False = anon retry also failed, don't bother retrying again.
@@ -277,10 +332,10 @@ class Client(ABC):
     @property
     def fs(self) -> "AbstractFileSystem":
         if not self._fs:
-            kwargs = dict(self.fs_kwargs)
-            if self._bucket_needs_anon(self.name) is True:
-                kwargs["anon"] = True
-            self._fs = self.create_fs(**kwargs)
+            if type(self)._ANON_FALLBACK:
+                self._fs = AnonFallbackFS(self)  # type: ignore[assignment]
+            else:
+                self._fs = self.create_fs(**self.fs_kwargs)
         return self._fs
 
     def url(
@@ -299,7 +354,6 @@ class Client(ABC):
         info = await self.fs._info(full_path, **self._file_info_kwargs(file.version))
         return self.info_to_file(info, file.path).etag
 
-    @_anon_fallback
     def get_file_info(self, path: str, version_id: str | None = None) -> "File":
         self.validate_file_path(path)
         full_path = self.get_uri(path)
@@ -484,7 +538,6 @@ class Client(ABC):
             # Default to copy if reflinks are not supported
             shutil.copy2(src, dst)
 
-    @_anon_fallback
     def open_object(
         self, file: "File", use_cache: bool = True, cb: Callback = DEFAULT_CALLBACK
     ) -> BinaryIO:

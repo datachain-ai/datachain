@@ -21,6 +21,7 @@ class ClientS3(Client):
     CREDENTIAL_KEYS = frozenset(
         {"key", "secret", "token", "aws_key", "aws_secret", "aws_token"}
     )
+    _ANON_FALLBACK = True
 
     @staticmethod
     def _normalize_s3_kwargs(kwargs: dict) -> dict:
