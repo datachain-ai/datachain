@@ -1,6 +1,7 @@
 import datetime as dt
 import io
 
+import numpy as np
 import pytest
 from pydantic import BaseModel
 
@@ -67,3 +68,18 @@ def test_datetime_serialization_matches_pydantic_json_mode() -> None:
         )
         == expected
     )
+
+
+def test_numpy_serialization_is_opt_in() -> None:
+    with pytest.raises(TypeError, match="ndarray"):
+        json.dumps({"payload": np.array([1, 2])})
+
+
+def test_numpy_serialization_handles_nested_values() -> None:
+    payload = np.empty(2, dtype=object)
+    payload[0] = np.array([1, 2], dtype=np.int64)
+    payload[1] = {np.int64(7): np.float32(0.5)}
+
+    assert json.loads(
+        json.dumps({"payload": payload}, serialize_bytes=True, serialize_numpy=True)
+    ) == {"payload": [[1, 2], {"7": 0.5}]}

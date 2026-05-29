@@ -1,5 +1,7 @@
 import sqlite3
 from datetime import timezone
+from importlib import import_module
+from typing import Any
 
 from sqlalchemy import types
 
@@ -7,11 +9,9 @@ from datachain import json
 from datachain.sql.types import TypeConverter, TypeReadConverter
 
 try:
-    import numpy as np
-
-    numpy_imported = True
+    np: Any | None = import_module("numpy")
 except ImportError:
-    numpy_imported = False
+    np = None
 
 
 class Array(types.UserDefinedType):
@@ -29,11 +29,11 @@ class Array(types.UserDefinedType):
 
 
 def adapt_array(arr):
-    return json.dumps(arr, ensure_ascii=False)
+    return json.dumps(arr, ensure_ascii=False, serialize_numpy=True)
 
 
 def adapt_dict(dct):
-    return json.dumps(dct, ensure_ascii=False)
+    return json.dumps(dct, ensure_ascii=False, serialize_numpy=True)
 
 
 def convert_array(arr):
@@ -41,9 +41,9 @@ def convert_array(arr):
 
 
 def adapt_np_array(arr):
-    # Primarily needed for UDF numpy results (e.g. WDS)
-    # tolist() gives nested Python lists + native scalars; ujson.dumps handles NaN/Inf.
-    return json.dumps(arr.tolist(), ensure_ascii=False)
+    # Needed for numpy values produced locally by UDFs and by parquet readers
+    # during remote pulls. datachain.json handles nested object arrays.
+    return json.dumps(arr, ensure_ascii=False, serialize_numpy=True)
 
 
 def adapt_np_generic(val):
@@ -54,7 +54,7 @@ def register_type_converters():
     sqlite3.register_adapter(list, adapt_array)
     sqlite3.register_adapter(dict, adapt_dict)
     sqlite3.register_converter("ARRAY", convert_array)
-    if numpy_imported:
+    if np is not None:
         sqlite3.register_adapter(np.ndarray, adapt_np_array)
         sqlite3.register_adapter(np.int32, adapt_np_generic)
         sqlite3.register_adapter(np.int64, adapt_np_generic)
