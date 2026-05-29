@@ -322,6 +322,103 @@ def test_optional_datamodel_mutate_leaf(test_session):
     assert by_id[3] == 3
 
 
+class _Deep(DataModel):
+    name: str = ""
+    inner: Optional[_Inner] = None
+
+
+def test_optional_datamodel_parquet_roundtrip(test_session, tmp_path):
+    """to_parquet/read_parquet of an Optional[DataModel] preserves present
+    objects and reads an absent parent back as None. Regression: read mapped the
+    whole Optional[Model] field to None for every row (the Optional annotation
+    isn't a bare pydantic model, so the nested instantiate skipped it)."""
+    presents = {
+        0: _Inner(score=0, label=""),
+        1: _Inner(score=10, label="a"),
+        3: _Inner(score=30, label="c"),
+    }
+    items = [presents.get(i) for i in [0, 1, 2, 3]]
+    path = str(tmp_path / "opt.parquet")
+    dc.read_values(
+        id=[0, 1, 2, 3],
+        item=items,
+        output={"id": int, "item": Optional[_Inner]},
+        session=test_session,
+    ).order_by("id").to_parquet(path)
+
+    back = dc.read_parquet(path, session=test_session)
+    got = {
+        i: (None if it is None else (it.score, it.label))
+        for i, it in back.to_list("id", "item")
+    }
+    assert got == {0: (0, ""), 1: (10, "a"), 2: None, 3: (30, "c")}
+
+
+def test_optional_datamodel_parquet_roundtrip_nested(test_session, tmp_path):
+    """Nested Optional[DataModel] survives a parquet round trip: present,
+    present-with-absent-inner, and fully-absent rows all reconstruct."""
+    vals = [
+        _Deep(name="x", inner=_Inner(score=5, label="z")),
+        _Deep(name="y", inner=None),
+        None,
+    ]
+    path = str(tmp_path / "deep.parquet")
+    dc.read_values(
+        id=[1, 2, 3],
+        d=vals,
+        output={"id": int, "d": Optional[_Deep]},
+        session=test_session,
+    ).order_by("id").to_parquet(path)
+
+    back = dc.read_parquet(path, session=test_session)
+    got = {}
+    for i, d in back.to_list("id", "d"):
+        got[i] = (
+            None
+            if d is None
+            else (d.name, None if d.inner is None else (d.inner.score, d.inner.label))
+        )
+    assert got == {1: ("x", (5, "z")), 2: ("y", None), 3: None}
+
+
+def test_group_by_partition_optional_datamodel_leaf(test_session):
+    """group_by partitioning on a leaf under Optional[DataModel] works.
+    Regression: to_partial/_build_partial_type asserted the base was a pydantic
+    model but got Optional[Model] (a Union) un-unwrapped and crashed."""
+    from datachain import func
+
+    items = [
+        _Inner(score=0, label="x"),
+        _Inner(score=10, label="y"),
+        _Inner(score=10, label="z"),
+    ]
+    chain = dc.read_values(
+        id=[1, 2, 3],
+        item=items,
+        output={"id": int, "item": Optional[_Inner]},
+        session=test_session,
+    )
+    rows = chain.group_by(cnt=func.count(), partition_by="item.score").to_records()
+    assert sorted((r.get("item__score"), r["cnt"]) for r in rows) == [(0, 1), (10, 2)]
+
+
+def test_select_partial_optional_datamodel_leaf(test_session):
+    """select() of a single leaf under Optional[DataModel] builds a partial model
+    and preserves None for the absent parent (same to_partial path as group_by)."""
+    items = [_Inner(score=5, label="a"), None]
+    chain = dc.read_values(
+        id=[1, 2],
+        item=items,
+        output={"id": int, "item": Optional[_Inner]},
+        session=test_session,
+    )
+    got = {
+        r["id"]: r.get("item__score")
+        for r in chain.select("id", "item.score").to_records()
+    }
+    assert got == {1: 5, 2: None}
+
+
 def test_udf_returns_optional_datamodel_mixed_none(test_session):
     """Regression for #1055: UDF returning Optional[DataModel] across rows."""
 

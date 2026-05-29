@@ -1482,7 +1482,11 @@ class SignalSchema:
                     f"empty selection for '{'.'.join(path)}'"
                 )
 
-            model = ModelStore.to_pydantic(base_type)
+            # The base may be Optional[Model] (e.g. partitioning/selecting a leaf
+            # under an Optional[DataModel]); resolve the model from the inner type
+            # and re-wrap the partial as Optional below.
+            inner_type, is_optional = unwrap_optional(base_type)
+            model = ModelStore.to_pydantic(inner_type)
             assert model is not None, "Expected complex type to be a Pydantic model"
 
             # Check if all signals under this model are covered by requested columns
@@ -1538,7 +1542,7 @@ class SignalSchema:
                     "with a different fingerprint"
                 )
                 raise SignalSchemaError(msg)
-            return partial_model
+            return (partial_model | None) if is_optional else partial_model
 
         new_values: dict[str, DataType] = {}
         for signal, selection in selections.items():
