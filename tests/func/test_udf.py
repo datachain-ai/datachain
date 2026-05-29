@@ -364,6 +364,44 @@ def test_order_by_optional_datamodel_leaf_nulls_last(test_session):
     assert order(descending=True, use_c=False) == [1, 4, 3, 2]
 
 
+def test_flat_export_optional_datamodel_leaf_none(test_session):
+    """Flat exports (to_records/to_pandas/...) return None for an absent-parent
+    row's nested leaf cells on both backends. Without the sentinel wrap in the
+    flat projection, ClickHouse returns the leaf type default (''/0) for those
+    cells while SQLite returns None."""
+
+    # id=2 -> absent. id=3 has a *real present* score of 0 / label "".
+    presents = {
+        1: _Inner(score=10, label="a"),
+        3: _Inner(score=0, label=""),
+    }
+
+    def pick(id: int) -> _Inner | None:
+        return presents.get(id)
+
+    chain = dc.read_values(id=[1, 2, 3], session=test_session).map(item=pick)
+
+    def norm(v):
+        # ClickHouse returns String leaves as bytes in the raw flat path; the
+        # bytes-vs-str divergence is orthogonal to the absent-leaf fix here.
+        return v.decode() if isinstance(v, bytes) else v
+
+    rows = {
+        r["id"]: (r["item__score"], norm(r["item__label"])) for r in chain.to_records()
+    }
+    assert rows[1] == (10, "a")
+    assert rows[2] == (None, None)  # absent parent -> NULL leaves, not 0/""
+    assert rows[3] == (0, "")  # present parent keeps its real 0/"" values
+
+    df = chain.order_by("id").to_pandas()
+    score = df["item"]["score"].tolist()
+    label = [norm(v) for v in df["item"]["label"].tolist()]
+    assert score[0] == 10 and score[2] == 0
+    assert score[1] is None or (isinstance(score[1], float) and score[1] != score[1])
+    assert label[0] == "a" and label[2] == ""
+    assert label[1] is None
+
+
 def test_count_optional_datamodel_uses_sentinel(test_session):
     """``func.count("opt_model")`` returns the number of rows whose parent is
     present — same value on SQLite and ClickHouse, regardless of how CH

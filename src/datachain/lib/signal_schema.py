@@ -976,6 +976,30 @@ class SignalSchema:
                 return None if sentinel == db_col else sentinel
         return None
 
+    def leaf_select_columns(self, *, include_hidden: bool = True) -> list:
+        """Select args for flat exports (``to_pandas``/``to_records``/``to_csv``/
+        ``to_json``/columnar).
+
+        Leaves under an ``Optional[DataModel]`` are wrapped in
+        ``CASE WHEN sentinel = 0 THEN col END`` so an absent-parent row's leaf
+        cells read back as NULL on every backend. Without this, ClickHouse returns
+        the type default (``''``/``0``) for those cells while SQLite returns None.
+        Sentinel columns themselves stay excluded from the output.
+        """
+        cols: list = []
+        for db_name in self.db_signals(
+            include_hidden=include_hidden, include_sentinels=False
+        ):
+            name = str(db_name)
+            sentinel = self.optional_parent_sentinel(name)
+            if sentinel is None:
+                cols.append(name)
+            else:
+                cols.append(
+                    case((Column(sentinel) == 0, Column(name)), else_=None).label(name)
+                )
+        return cols
+
     def order_by_column(
         self, db_col: str, *, descending: bool = False
     ) -> "ColumnExpr | None":

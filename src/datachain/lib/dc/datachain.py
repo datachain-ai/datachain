@@ -1540,11 +1540,16 @@ class DataChain:
                 a tuple of row values.
             include_hidden: Whether to include hidden signals from the schema.
         """
-        db_signals = self._effective_signals_schema.db_signals(
+        schema = self._effective_signals_schema
+        db_signals = schema.db_signals(
             include_hidden=include_hidden, include_sentinels=False
         )
+        # Optional[DataModel] leaves are sentinel-wrapped so an absent-parent
+        # row's cells read back as NULL on every backend (ClickHouse otherwise
+        # returns the type default). Column names/order are unchanged.
+        projection = schema.leaf_select_columns(include_hidden=include_hidden)
 
-        with self._query.ordered_select(*db_signals).as_iterable() as rows:
+        with self._query.ordered_select(*projection).as_iterable() as rows:
             if row_factory:
                 rows = (row_factory(db_signals, r) for r in rows)  # type: ignore[assignment]
             yield from rows
