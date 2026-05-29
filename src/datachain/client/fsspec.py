@@ -76,7 +76,10 @@ def _anon_fallback(method):
         try:
             return method(self, *args, **kwargs)
         except PermissionError:
-            if self.fs_kwargs.get("anon") or self._bucket_needs_anon(self.name):
+            if (
+                self.fs_kwargs.get("anon")
+                or self._bucket_needs_anon(self.name) is not None
+            ):
                 raise
             saved_fs = self._fs
             self._fs = type(self).create_fs(**{**self.fs_kwargs, "anon": True})
@@ -84,8 +87,9 @@ def _anon_fallback(method):
                 result = method(self, *args, **kwargs)
             except PermissionError:
                 self._fs = saved_fs
+                self._mark_bucket_anon(self.name, False)
                 raise
-            self._mark_bucket_anon(self.name)
+            self._mark_bucket_anon(self.name, True)
             return result
 
     return wrapper
@@ -98,10 +102,11 @@ class Client(ABC):
     protocol: ClassVar[str]
     # client_config keys this backend treats as credentials.
     CREDENTIAL_KEYS: ClassVar[frozenset[str]] = frozenset()
-    # Process-local cache of (protocol, bucket) pairs that have been
-    # resolved as needing anonymous access. Populated only after an anon
-    # retry actually succeeds.
-    _ANON_BUCKETS: ClassVar[set[tuple[str, str]]] = set()
+    # Process-local cache of (protocol, bucket) anon decisions.
+    # True  = anon retry succeeded, use anon from the start.
+    # False = anon retry also failed, don't bother retrying again.
+    # Missing key = no decision yet.
+    _ANON_BUCKETS: ClassVar[dict[tuple[str, str], bool]] = {}
 
     @classmethod
     def has_explicit_credentials(cls, client_config: dict | None) -> bool:
@@ -111,12 +116,12 @@ class Client(ABC):
         return any(k in client_config for k in cls.CREDENTIAL_KEYS)
 
     @classmethod
-    def _bucket_needs_anon(cls, name: str) -> bool:
-        return (cls.protocol, name) in cls._ANON_BUCKETS
+    def _bucket_needs_anon(cls, name: str) -> bool | None:
+        return cls._ANON_BUCKETS.get((cls.protocol, name))
 
     @classmethod
-    def _mark_bucket_anon(cls, name: str) -> None:
-        cls._ANON_BUCKETS.add((cls.protocol, name))
+    def _mark_bucket_anon(cls, name: str, anon: bool) -> None:
+        cls._ANON_BUCKETS[(cls.protocol, name)] = anon
 
     def __init__(self, name: str, fs_kwargs: dict[str, Any], cache: Cache) -> None:
         self.name = name
@@ -273,7 +278,7 @@ class Client(ABC):
     def fs(self) -> "AbstractFileSystem":
         if not self._fs:
             kwargs = dict(self.fs_kwargs)
-            if self._bucket_needs_anon(self.name):
+            if self._bucket_needs_anon(self.name) is True:
                 kwargs["anon"] = True
             self._fs = self.create_fs(**kwargs)
         return self._fs

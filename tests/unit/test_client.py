@@ -36,9 +36,6 @@ def test_parse_file_path_ends_with_slash(cloud_type):
     assert rel_part == ""
 
 
-# Anonymous-access fallback (auto-retry on PermissionError) ---------------
-
-
 @pytest.fixture
 def _clear_anon_cache():
     Client._ANON_BUCKETS.clear()
@@ -94,7 +91,7 @@ def test_anon_fallback_retry_succeeds_marks_bucket(monkeypatch, _clear_anon_cach
     assert GCSClient.create_fs.call_args.kwargs.get("anon") is True
 
 
-def test_anon_fallback_retry_also_fails_does_not_mark(monkeypatch, _clear_anon_cache):
+def test_anon_fallback_retry_also_fails_marks_as_failed(monkeypatch, _clear_anon_cache):
     client = _gcs_client()
     auth_fs = MagicMock()
     auth_fs._info = AsyncMock(side_effect=PermissionError)
@@ -107,12 +104,27 @@ def test_anon_fallback_retry_also_fails_does_not_mark(monkeypatch, _clear_anon_c
     with pytest.raises(PermissionError):
         client.get_file_info("x.txt")
 
-    assert not GCSClient._bucket_needs_anon("foo")
+    assert GCSClient._bucket_needs_anon("foo") is False
     assert client._fs is auth_fs
 
 
+def test_anon_fallback_cached_as_failed_skips_retry(monkeypatch, _clear_anon_cache):
+    GCSClient._mark_bucket_anon("foo", False)
+    client = _gcs_client()
+    auth_fs = MagicMock()
+    auth_fs._info = AsyncMock(side_effect=PermissionError)
+    client._fs = auth_fs
+    create_fs = MagicMock()
+    monkeypatch.setattr(GCSClient, "create_fs", create_fs)
+
+    with pytest.raises(PermissionError):
+        client.get_file_info("x.txt")
+
+    create_fs.assert_not_called()
+
+
 def test_anon_fallback_cached_bucket_uses_anon_directly(monkeypatch, _clear_anon_cache):
-    GCSClient._mark_bucket_anon("foo")
+    GCSClient._mark_bucket_anon("foo", True)
     create_fs = MagicMock()
     monkeypatch.setattr(GCSClient, "create_fs", create_fs)
 
