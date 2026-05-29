@@ -1144,7 +1144,9 @@ class Catalog:
         self, dataset: DatasetRecord, version: str
     ) -> None:
         """Drop rows table, mark version REMOVED (keeps semver + lineage)."""
-        if not self.metastore.claim_removing_dataset_version(dataset, version):
+        if not self.metastore.claim_remove_dataset_version(
+            dataset, version, keep_metadata=True
+        ):
             logger.debug(
                 "Skipped remove of %s@%s: another caller is already handling it",
                 dataset.name,
@@ -1164,7 +1166,9 @@ class Catalog:
         self, dataset: DatasetRecord, version: str
     ) -> None:
         """Drop rows table and delete the version row entirely."""
-        if not self.metastore.claim_removing_total_dataset_version(dataset, version):
+        if not self.metastore.claim_remove_dataset_version(
+            dataset, version, keep_metadata=False
+        ):
             logger.debug(
                 "Skipped remove of %s@%s: another caller is already handling it",
                 dataset.name,
