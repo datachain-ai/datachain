@@ -1140,7 +1140,13 @@ class SignalSchema:
                 new_values[name] = self.get_column_type(value.name, with_subtree=True)
             elif isinstance(value, Func):
                 # adding new signal with function
-                new_values[name] = value.get_result_type(self)
+                result_type = value.get_result_type(self)
+                # A func over a nullable source can yield NULL; keep the result
+                # column Optional so None round-trips (CH would otherwise coerce
+                # to the type default on store/read).
+                if value.is_nullable_result(self, result_type):
+                    result_type = result_type | None  # type: ignore[assignment]
+                new_values[name] = result_type
             elif isinstance(value, primitives):
                 # For primitives, store the type, not the value
                 val = literal(value)

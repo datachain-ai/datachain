@@ -322,6 +322,33 @@ def test_optional_datamodel_mutate_leaf(test_session):
     assert by_id[3] == 3
 
 
+def test_mutate_func_over_absent_leaf_is_none(test_session):
+    """A row-level func over a leaf under Optional[DataModel] returns None for the
+    absent-parent row on both backends (and survives save). The func result column
+    is marked nullable; without it ClickHouse coerces the NULL result to 0/''."""
+    from datachain import func
+
+    items = [_Inner(score=1, label="aa"), None, _Inner(score=3, label="ccc")]
+    chain = dc.read_values(
+        id=[1, 2, 3],
+        item=items,
+        output={"id": int, "item": Optional[_Inner]},
+        session=test_session,
+    ).mutate(ln=func.string.length("item.label"))
+
+    by_id = {r["id"]: r["ln"] for r in chain.to_records()}
+    assert by_id == {1: 2, 2: None, 3: 3}
+
+    chain.save("mutate_func_absent")
+    saved = {
+        r["id"]: r["ln"]
+        for r in dc.read_dataset(
+            "mutate_func_absent", session=test_session
+        ).to_records()
+    }
+    assert saved == {1: 2, 2: None, 3: 3}  # None survives save() on both backends
+
+
 class _Deep(DataModel):
     name: str = ""
     inner: Optional[_Inner] = None

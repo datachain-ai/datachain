@@ -30,10 +30,10 @@ if TYPE_CHECKING:
 
 ColT = Union[str, tuple, Column, ColumnExpr, "Func"]
 
-# Aggregate result types that should become Nullable on backends with non-nullable
-# leaves (CH) when the source can be NULL — float excluded (NaN/NULL are
-# indistinguishable on SQLite). Mirrors SignalSchema._NULLABLE_SCALARS.
-_NULLABLE_AGG_TYPES: "tuple[type, ...]" = (int, str, bool, bytes, datetime)
+# Result types that should become Nullable on backends with non-nullable leaves
+# (CH) when the source can be NULL — float excluded (NaN/NULL are indistinguishable
+# on SQLite). Mirrors SignalSchema._NULLABLE_SCALARS.
+_NULLABLE_RESULT_TYPES: "tuple[type, ...]" = (int, str, bool, bytes, datetime)
 
 
 def _source_is_nullable(col: ColT, signals_schema: "SignalSchema | None") -> bool:
@@ -91,7 +91,6 @@ class Func(Function):  # noqa: PLW1641
         is_window: bool = False,
         window: "Window | None" = None,
         label: str | None = None,
-        is_aggregate: bool = False,
     ) -> None:
         self.name = name
         self.inner = inner
@@ -105,7 +104,6 @@ class Func(Function):  # noqa: PLW1641
         self.is_window = is_window
         self.window = window
         self.col_label = label
-        self.is_aggregate = is_aggregate
 
     def __str__(self) -> str:
         return self.name + "()"
@@ -127,7 +125,6 @@ class Func(Function):  # noqa: PLW1641
             self.is_window,
             window,
             self.col_label,
-            self.is_aggregate,
         )
 
     @property
@@ -419,6 +416,24 @@ class Func(Function):  # noqa: PLW1641
                 return first_col.get_col_name()
         return self.name
 
+    def is_nullable_result(
+        self,
+        signals_schema: "SignalSchema | None",
+        col_type: "DataType | None" = None,
+    ) -> bool:
+        """Whether this func's result column may hold NULL: it operates on a
+        nullable source (a leaf under ``Optional[DataModel]`` or an
+        ``Optional[basic]`` column) and its result is a nullable scalar type
+        (float excluded). ``f(NULL)`` is NULL, and an aggregate over an all-absent
+        group is NULL — both must round-trip as None on every backend."""
+        if signals_schema is None:
+            return False
+        if col_type is None:
+            col_type = self.get_result_type(signals_schema)
+        return col_type in _NULLABLE_RESULT_TYPES and any(
+            _source_is_nullable(c, signals_schema) for c in self._db_cols
+        )
+
     def get_result_type(
         self, signals_schema: "SignalSchema | None" = None
     ) -> "DataType":
@@ -548,14 +563,11 @@ class Func(Function):  # noqa: PLW1641
         col_type = self.get_result_type(signals_schema)
         sql_type = python_to_sql(col_type)
 
-        if (
-            self.is_aggregate
-            and col_type in _NULLABLE_AGG_TYPES
-            and any(_source_is_nullable(c, signals_schema) for c in self._db_cols)
-        ):
-            # All values in a group may be absent (NULL) -> the aggregate is NULL.
-            # Mark the result column Nullable so CH keeps NULL instead of coercing
-            # to the type default, matching SQLite.
+        if self.is_nullable_result(signals_schema, col_type):
+            # f(NULL) is NULL: a func/aggregate over a nullable source can yield
+            # NULL (an absent leaf, or an all-absent group). Mark the result column
+            # Nullable so CH keeps NULL instead of coercing to the type default,
+            # matching SQLite.
             sql_type = sql_type() if inspect.isclass(sql_type) else sql_type
             sql_type.dc_nullable = True
 

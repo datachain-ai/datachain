@@ -121,7 +121,7 @@ def sum(col: AggColT) -> Func:
         - The result column type will be inferred from the input expression type.
         - Skips rows where the value's ``Optional[DataModel]`` parent is absent.
     """
-    return Func("sum", inner=sa_func.sum, cols=[col], is_aggregate=True)
+    return Func("sum", inner=sa_func.sum, cols=[col])
 
 
 def avg(col: AggColT) -> Func:
@@ -155,9 +155,7 @@ def avg(col: AggColT) -> Func:
         - The result column will always be of type float.
         - Skips rows where the value's ``Optional[DataModel]`` parent is absent.
     """
-    return Func(
-        "avg", inner=aggregate.avg, cols=[col], result_type=float, is_aggregate=True
-    )
+    return Func("avg", inner=aggregate.avg, cols=[col], result_type=float)
 
 
 def min(col: AggColT) -> Func:
@@ -189,7 +187,7 @@ def min(col: AggColT) -> Func:
         - The result column will have the same type as the input expression.
         - Skips rows where the value's ``Optional[DataModel]`` parent is absent.
     """
-    return Func("min", inner=sa_func.min, cols=[col], is_aggregate=True)
+    return Func("min", inner=sa_func.min, cols=[col])
 
 
 def max(col: AggColT) -> Func:
@@ -221,7 +219,7 @@ def max(col: AggColT) -> Func:
         - The result column will have the same type as the input expression.
         - Skips rows where the value's ``Optional[DataModel]`` parent is absent.
     """
-    return Func("max", inner=sa_func.max, cols=[col], is_aggregate=True)
+    return Func("max", inner=sa_func.max, cols=[col])
 
 
 def any_value(col: AggColT) -> Func:
@@ -257,7 +255,7 @@ def any_value(col: AggColT) -> Func:
           meaning it may return different values for different executions.
         - Skips rows where the value's ``Optional[DataModel]`` parent is absent.
     """
-    return Func("any_value", inner=aggregate.any_value, cols=[col], is_aggregate=True)
+    return Func("any_value", inner=aggregate.any_value, cols=[col])
 
 
 def collect(col: AggColT) -> Func:
@@ -331,7 +329,7 @@ def concat(col: AggColT, separator="") -> Func:
     def inner(arg):
         return aggregate.group_concat(arg, separator)
 
-    return Func("concat", inner=inner, cols=[col], result_type=str, is_aggregate=True)
+    return Func("concat", inner=inner, cols=[col], result_type=str)
 
 
 def xor_agg(col: str | Column | ColT) -> Func:
@@ -358,13 +356,7 @@ def xor_agg(col: str | Column | ColT) -> Func:
     Notes:
         - Skips rows where the value's ``Optional[DataModel]`` parent is absent.
     """
-    return Func(
-        "xor_agg",
-        inner=aggregate.xor_agg,
-        cols=[col],
-        result_type=int,
-        is_aggregate=True,
-    )
+    return Func("xor_agg", inner=aggregate.xor_agg, cols=[col], result_type=int)
 
 
 def row_number() -> Func:
