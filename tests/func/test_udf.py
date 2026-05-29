@@ -195,6 +195,51 @@ def test_optional_basic_scalar_roundtrips_none_through_save(test_session):
     assert rows[3] == (30, "n3")
 
 
+def test_optional_datamodel_leaf_null_through_save(test_session):
+    """SPIKE: a scalar leaf under an Optional[DataModel] is Nullable, so an
+    absent-parent row stores/reads real NULL (not 0/"") through save() on both
+    backends."""
+    items = [_Inner(score=1, label="a"), None, _Inner(score=3, label="c")]
+    (
+        dc.read_values(
+            id=[1, 2, 3],
+            item=items,
+            output={"id": int, "item": Optional[_Inner]},
+            session=test_session,
+        ).save("opt_dm_leaf_save")
+    )
+    chain = dc.read_dataset("opt_dm_leaf_save", session=test_session)
+
+    def _s(v):  # CH returns str leaves as bytes in this raw flat path (pre-existing)
+        return v.decode() if isinstance(v, bytes) else v
+
+    by_id = {
+        r["id"]: (r["item__score"], _s(r["item__label"])) for r in chain.to_records()
+    }
+    assert by_id[1] == (1, "a")
+    assert by_id[2] == (None, None)  # absent parent → NULL leaves on both backends
+    assert by_id[3] == (3, "c")
+
+
+def test_optional_datamodel_mutate_leaf(test_session):
+    """SPIKE: mutate of a leaf under Optional[DataModel] reads NULL for the
+    absent-parent row. Previously unfixable via sentinel-CASE on ClickHouse;
+    genuine Nullable leaves remove the CASE entirely."""
+    from datachain import C
+
+    items = [_Inner(score=1, label="a"), None, _Inner(score=3, label="c")]
+    chain = dc.read_values(
+        id=[1, 2, 3],
+        item=items,
+        output={"id": int, "item": Optional[_Inner]},
+        session=test_session,
+    ).mutate(s=C("item.score"))
+    by_id = {r["id"]: r["s"] for r in chain.to_records()}
+    assert by_id[1] == 1
+    assert by_id[2] is None
+    assert by_id[3] == 3
+
+
 def test_udf_returns_optional_datamodel_mixed_none(test_session):
     """Regression for #1055: UDF returning Optional[DataModel] across rows."""
 

@@ -597,7 +597,7 @@ class SignalSchema:
                 continue
             if not has_subtree:
                 db_name = DEFAULT_DELIMITER.join(path)
-                res[db_name] = self._leaf_sql_type(type_)
+                res[db_name] = self._db_leaf_sql_type(path, type_)
         return res
 
     def row_to_objs(self, row: Sequence[Any]) -> list[Any]:
@@ -850,6 +850,22 @@ class SignalSchema:
             sql_type.dc_nullable = True
         return sql_type
 
+    def _db_leaf_sql_type(self, path: "list[str]", anno: "DataType") -> Any:
+        """SQL type for a leaf at ``path``. A scalar leaf under an
+        ``Optional[DataModel]`` is marked ``dc_nullable`` so the backend stores
+        real NULL for absent-parent rows (not the type default), letting None
+        round-trip uniformly without a read-time sentinel CASE."""
+        sql_type = self._leaf_sql_type(anno)
+        if getattr(sql_type, "dc_nullable", False):
+            return sql_type
+        db_col = DEFAULT_DELIMITER.join(path)
+        if self.optional_parent_sentinel(db_col) is not None:
+            inner, _ = unwrap_optional(anno)
+            if inner in self._NULLABLE_SCALARS:
+                sql_type = sql_type() if isclass(sql_type) else sql_type
+                sql_type.dc_nullable = True
+        return sql_type
+
     def db_signals(
         self,
         name: str | None = None,
@@ -865,7 +881,7 @@ class SignalSchema:
         signals = [
             DEFAULT_DELIMITER.join(path)
             if not as_columns
-            else Column(DEFAULT_DELIMITER.join(path), self._leaf_sql_type(_type))
+            else Column(DEFAULT_DELIMITER.join(path), self._db_leaf_sql_type(path, _type))
             for path, _type, has_subtree, _ in self.get_flat_tree(
                 include_hidden=include_hidden, include_sentinels=include_sentinels
             )
