@@ -176,10 +176,19 @@ class SQLType(TypeDecorator):
         raise NotImplementedError
 
     def to_dict(self) -> dict[str, Any]:
-        return {"type": self.__class__.__name__}
+        d: dict[str, Any] = {"type": self.__class__.__name__}
+        # Persist the Optional[scalar] marker so a None field round-trips as NULL
+        # (not the type default) after the dataset schema is serialized and reloaded.
+        if self.dc_nullable:
+            d["dc_nullable"] = True
+        return d
 
     @classmethod
-    def from_dict(cls, _: dict[str, Any]) -> Union[type["SQLType"], "SQLType"]:
+    def from_dict(cls, d: dict[str, Any]) -> Union[type["SQLType"], "SQLType"]:
+        if d.get("dc_nullable"):
+            inst = cls()
+            inst.dc_nullable = True
+            return inst
         return cls
 
 

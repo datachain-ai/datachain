@@ -170,6 +170,31 @@ def test_optional_basic_scalar_roundtrips_none(test_session):
     assert rows[3] == (30, "n3", False)
 
 
+def test_optional_basic_scalar_roundtrips_none_through_save(test_session):
+    """An Optional[scalar] None must survive save()/read_dataset on both backends.
+    The dc_nullable marker is carried through the serialized dataset schema so the
+    persisted ClickHouse column stays Nullable and reads back None, not 0/"" """
+
+    def num(id: int) -> Optional[int]:
+        return None if id == 2 else id * 10
+
+    def txt(id: int) -> Optional[str]:
+        return None if id == 2 else f"n{id}"
+
+    (
+        dc.read_values(id=[1, 2, 3], session=test_session)
+        .map(num=num)
+        .map(txt=txt)
+        .save("opt_scalar_save_roundtrip")
+    )
+
+    chain = dc.read_dataset("opt_scalar_save_roundtrip", session=test_session)
+    rows = {r["id"]: (r["num"], r["txt"]) for r in chain.to_records()}
+    assert rows[1] == (10, "n1")
+    assert rows[2] == (None, None)
+    assert rows[3] == (30, "n3")
+
+
 def test_udf_returns_optional_datamodel_mixed_none(test_session):
     """Regression for #1055: UDF returning Optional[DataModel] across rows."""
 
