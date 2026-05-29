@@ -319,7 +319,7 @@ class UDFBase(AbstractUDF):
 
     def _flatten_row(self, row):
         if len(self.output.values) > 1 and not isinstance(row, BaseModel):
-            # An Optional[DataModel] output needs flatten_value to emit its is_null
+            # An Optional[DataModel] output needs flatten_value to emit its
             # sentinel; other outputs (incl. auto-wrapper models typed as a leaf)
             # flatten by object shape via _obj_to_list, not the declared type.
             flat: list[Any] = []

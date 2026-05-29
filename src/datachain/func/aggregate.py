@@ -4,9 +4,6 @@ from sqlalchemy import Integer
 from sqlalchemy import cast as sa_cast
 from sqlalchemy import func as sa_func
 
-from datachain.lib.data_model import unwrap_optional
-from datachain.lib.model_store import ModelStore
-from datachain.lib.signal_schema import DEFAULT_DELIMITER, SignalResolvingError
 from datachain.query.schema import Column, ColumnExpr
 from datachain.sql.functions import aggregate
 
@@ -46,21 +43,12 @@ class _CountFunc(Func):
         return super().get_column(signals_schema, label, table)
 
     def _self_sentinel_path(self, signals_schema: "SignalSchema | None") -> str | None:
-        from datachain.lib.signal_schema import SignalSchema as _Schema
-
         if signals_schema is None or not self._db_cols:
             return None
         col = self._db_cols[0]
         if not isinstance(col, str):
             return None
-        try:
-            anno = signals_schema.get_column_type(col, with_subtree=True)
-        except SignalResolvingError:
-            return None
-        inner, is_optional = unwrap_optional(anno)
-        if not (is_optional and ModelStore.is_pydantic(inner)):
-            return None
-        return f"{col}{DEFAULT_DELIMITER}{_Schema._OPTIONAL_SENTINEL_FIELD}"
+        return signals_schema.model_sentinel(col)
 
 
 def count(col: AggColT | None = None) -> Func:

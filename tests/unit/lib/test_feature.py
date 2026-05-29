@@ -429,17 +429,29 @@ def test_unflatten_ignores_leaf_garbage_when_sentinel_true():
 
 def test_signal_schema_emits_sentinel_column_for_optional_datamodel():
     schema = SignalSchema({"out": _Outer})
-    flat = list(schema.get_flat_tree())
-    leaf_names = [".".join(p) for p, _, has_subtree, _ in flat if not has_subtree]
-    assert "out.name" in leaf_names
-    assert "out.addr.is_null" in leaf_names
-    assert "out.addr.city" in leaf_names
-    assert "out.addr.zip" in leaf_names
+    leaves = [
+        ".".join(p)
+        for p, _, has_subtree, _ in schema.get_flat_tree()
+        if not has_subtree
+    ]
+    assert "out.name" in leaves
+    assert "out.addr._is_null" in leaves
+    assert "out.addr.city" in leaves
+    assert "out.addr.zip" in leaves
+
+    # The sentinel is an internal column: hidden from user-facing views.
+    visible = [
+        ".".join(p)
+        for p, _, has_subtree, _ in schema.get_flat_tree(include_hidden=False)
+        if not has_subtree
+    ]
+    assert "out.addr._is_null" not in visible
+    assert "out.addr.city" in visible
 
 
 def test_to_udf_spec_includes_sentinel_for_optional_datamodel():
     spec = SignalSchema({"out": _Outer}).to_udf_spec()
-    assert "out__addr__is_null" in spec
+    assert "out__addr___is_null" in spec
     assert "out__addr__city" in spec
 
 
@@ -450,7 +462,7 @@ def test_optional_datamodel_roundtrip_at_top_level():
         for p, _, has_subtree, _ in schema.get_flat_tree()
         if not has_subtree
     ]
-    assert "item.is_null" in flat
+    assert "item._is_null" in flat
     assert "item.city" in flat
     # row_to_objs with sentinel=True returns None for top-level Optional[Model].
     assert schema.row_to_objs((True, None, None)) == [None]

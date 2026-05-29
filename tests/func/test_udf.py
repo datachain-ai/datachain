@@ -211,7 +211,7 @@ def test_read_values_with_optional_datamodel(test_session):
 
 def test_read_values_optional_datamodel_multi_column(test_session):
     """read_values with an Optional[DataModel] *alongside another column* — the
-    multi-output flatten path, which must still emit the is_null sentinel."""
+    multi-output flatten path, which must still emit the sentinel."""
     from datachain import func
 
     items = [_Inner(score=1, label="a"), None, _Inner(score=3, label="c")]
@@ -229,8 +229,7 @@ def test_read_values_optional_datamodel_multi_column(test_session):
 
     present = chain.group_by(n=func.count("item"), partition_by="id")
     assert {r["id"]: r["n"] for r in present.to_records()} == {1: 1, 2: 0, 3: 1}
-    absent = chain.filter(dc.C("item.is_null") == True).count()  # noqa: E712
-    assert absent == 1
+    assert chain.filter(func.isnone("item")).count() == 1
 
 
 def test_read_values_optional_datamodel_inferred(test_session):
@@ -241,7 +240,7 @@ def test_read_values_optional_datamodel_inferred(test_session):
 
     inner, is_optional = unwrap_optional(chain.signals_schema.values["item"])
     assert is_optional and inner is _Inner
-    assert "item__is_null" in chain.signals_schema.db_signals()
+    assert "item___is_null" in chain.signals_schema.db_signals()
 
     saved = chain.save("rv_inferred_opt")
     by_id = {r[0]: r[1] for r in saved.select("id", "item").to_list()}
@@ -293,23 +292,23 @@ def test_nested_optional_datamodel_in_outer_model(test_session):
     assert name_to_out["cc"].inner == _Inner(score=2, label="cc")
 
 
-def test_filter_optional_datamodel_via_sentinel(test_session):
-    """The sentinel column `..._is_null` is queryable in WHERE clauses."""
+def test_isnone_filters_optional_datamodel(test_session):
+    """func.isnone selects rows where an Optional[DataModel] is None."""
+    from datachain import func
 
     def maybe(score: int) -> _Inner | None:
         return _Inner(score=score, label="ok") if score > 0 else None
 
     chain = dc.read_values(score=[1, 0, 2, 0, 3], session=test_session).map(item=maybe)
-    present = chain.filter(dc.C("item.is_null") == False).count()  # noqa: E712
-    absent = chain.filter(dc.C("item.is_null") == True).count()  # noqa: E712
-    assert present == 3
-    assert absent == 2
+    assert chain.filter(func.not_(func.isnone("item"))).count() == 3
+    assert chain.filter(func.isnone("item")).count() == 2
 
 
 def test_filter_optional_datamodel_leaf_excludes_absent(test_session):
     """A predicate on a leaf under Optional[DataModel] must not match absent-parent
     rows, whose leaf holds the type default (0/"") on ClickHouse. Absence is driven
     by ``id`` since Optional[basic] None doesn't survive to the UDF on ClickHouse."""
+    from datachain import func
 
     # id=2 -> absent. id=3 has a *real present* score of 0.
     presents = {
@@ -329,7 +328,7 @@ def test_filter_optional_datamodel_leaf_excludes_absent(test_session):
     assert ids(chain.filter(dc.C("item.score") == 0)) == [3]
     assert ids(chain.filter(dc.C("item.label") == "")) == []
     assert ids(chain.filter(dc.C("item.score") > 5)) == [1, 4]
-    assert ids(chain.filter(dc.C("item.is_null") == True)) == [2]  # noqa: E712
+    assert ids(chain.filter(func.isnone("item"))) == [2]
 
 
 def test_order_by_optional_datamodel_leaf_nulls_last(test_session):

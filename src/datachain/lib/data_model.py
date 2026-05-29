@@ -15,8 +15,6 @@ from datachain import json
 from datachain.lib.model_store import ModelStore
 from datachain.lib.utils import DataChainParamsError, normalize_col_names, type_to_str
 
-RESERVED_FIELD_NAMES: frozenset[str] = frozenset({"is_null"})
-
 _skip_dc_validation: ContextVar[bool] = ContextVar("_skip_dc_validation", default=False)
 
 
@@ -56,7 +54,6 @@ class DataModel(BaseModel):
     @classmethod
     def __pydantic_init_subclass__(cls):
         """It automatically registers every declared DataModel child class."""
-        validate_reserved_names(cls)
         validate_default_none(cls)
         ModelStore.register(cls)
 
@@ -169,23 +166,6 @@ def validate_default_none(model: type[BaseModel]) -> None:
             f"`Optional[{type_to_str(anno)}]` or `{type_to_str(anno)} | None` "
             f"annotation."
         )
-
-
-def validate_reserved_names(model: type[BaseModel]) -> None:
-    """Reject user fields that collide with DataChain's reserved sentinel names.
-
-    `is_null` is reserved for the sentinel column emitted alongside
-    `Optional[DataModel|list|dict]` fields after flattening.
-    """
-    if _skip_dc_validation.get():
-        return
-    for name in model.model_fields:
-        if name in RESERVED_FIELD_NAMES:
-            raise DataChainParamsError(
-                f"Field name '{name}' in {model.__name__} is reserved by "
-                f"DataChain for sentinel columns of Optional[DataModel|list|dict] "
-                f"fields. Reserved names: {sorted(RESERVED_FIELD_NAMES)}."
-            )
 
 
 def is_chain_type(t: type) -> bool:

@@ -18,7 +18,7 @@ def is_optional_model(anno) -> bool:
 def flatten_value(value, anno) -> tuple:
     """Flatten ``value`` for one column declared with annotation ``anno``.
 
-    ``Optional[DataModel]`` emits a leading ``is_null`` sentinel before its leaves.
+    ``Optional[DataModel]`` emits a leading ``_is_null`` sentinel before its leaves.
     ``Optional[basic]`` is a plain nullable column. Nulls inside collections
     (``list[Optional[T]]``) and bare ``Union[A, B]`` are not represented.
     """

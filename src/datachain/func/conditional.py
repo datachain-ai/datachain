@@ -1,15 +1,49 @@
+from typing import TYPE_CHECKING
+
 from sqlalchemy import and_ as sql_and
 from sqlalchemy import case as sql_case
 from sqlalchemy import not_ as sql_not
 from sqlalchemy import or_ as sql_or
+from sqlalchemy import true as sql_true
 
+from datachain.lib.convert.python_to_sql import python_to_sql
 from datachain.lib.utils import DataChainParamsError
 from datachain.query.schema import Column, ColumnExpr
 from datachain.sql.functions import conditional
 
 from .func import Func
 
+if TYPE_CHECKING:
+    from sqlalchemy import TableClause
+
+    from datachain.lib.signal_schema import SignalSchema
+
 CaseT = int | float | complex | bool | str | Func | ColumnExpr
+
+
+class _IsNoneFunc(Func):
+    """``isnone`` is None-aware for ``Optional[DataModel]``: that column isn't a
+    real column on disk, so it reads the model's ``_is_null`` sentinel. Any other
+    column (including ``Optional[basic]``) keeps the plain ``col IS NULL`` check.
+    """
+
+    def get_column(
+        self,
+        signals_schema: "SignalSchema | None" = None,
+        label: str | None = None,
+        table: "TableClause | None" = None,
+    ) -> Column:
+        col = self._db_cols[0] if self._db_cols else None
+        if signals_schema is not None and isinstance(col, str):
+            sentinel_path = signals_schema.model_sentinel(col)
+            if sentinel_path is not None:
+                sentinel = Column(sentinel_path)
+                sentinel.table = table
+                func_col = sql_case(
+                    (sql_or(sentinel.is_(None), sentinel != 0), True), else_=False
+                )
+                return self._finalize_column(func_col, python_to_sql(bool), label)
+        return super().get_column(signals_schema, label, table)
 
 
 def greatest(*args: str | Column | Func | float) -> Func:
@@ -192,6 +226,9 @@ def isnone(col: str | ColumnExpr) -> Func:
     """
     Returns a function that checks if the column value is `None` (NULL in DB).
 
+    Works for an `Optional[DataModel]` column too — it checks the model's absence
+    rather than a raw column.
+
     Args:
         col (str | Column): Column to check if it's None or not.
             If a string is provided, it is assumed to be the name of the column.
@@ -204,16 +241,23 @@ def isnone(col: str | ColumnExpr) -> Func:
     Example:
         ```py
         dc.mutate(test=ifelse(isnone("col"), "EMPTY", "NOT_EMPTY"))
+        dc.filter(isnone("address"))  # address: Optional[Address]
         ```
 
     Notes:
         - The result column will always be of type bool.
     """
     if isinstance(col, str):
-        # if string is provided, it is assumed to be the name of the column
         col = Column(col)
 
-    return case((col.is_(None) if col is not None else True, True), else_=False)
+    return _IsNoneFunc(
+        "isnone",
+        inner=lambda c: sql_case(
+            (c.is_(None) if c is not None else sql_true(), True), else_=False
+        ),
+        cols=[col],
+        result_type=bool,
+    )
 
 
 def or_(*args: ColumnExpr | Func) -> Func:

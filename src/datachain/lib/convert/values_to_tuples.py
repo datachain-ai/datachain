@@ -117,7 +117,7 @@ def _infer_type_from_sequence(
         value_type = _infer_dict_value_type(first_element)
         return dict[type(first_key), value_type]  # type: ignore[misc, return-value]
 
-    # A model column with some None values needs the is_null sentinel, which only
+    # A model column with some None values needs the sentinel, which only
     # an Optional[DataModel] emits. Basic/list/dict inference is left untouched.
     if ModelStore.is_pydantic(typ) and any(v is None for v in sequence):
         return typ | None  # type: ignore[return-value]

@@ -18,7 +18,7 @@ def unflatten_to_json(model: type[BaseModel], row: Sequence[Any], pos: int = 0) 
 def read_optional_sentinel(
     inner: type[BaseModel], row: Sequence[Any], pos: int
 ) -> tuple[bool, int]:
-    """Consume the leading ``is_null`` sentinel of an ``Optional[DataModel]``
+    """Consume the leading ``_is_null`` sentinel of an ``Optional[DataModel]``
     subtree, returning ``(absent, next_pos)``. A NULL sentinel (e.g. outer-join
     padding) counts as absent.
     """

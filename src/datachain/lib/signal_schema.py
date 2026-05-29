@@ -942,8 +942,20 @@ class SignalSchema:
 
         return curr_type
 
+    def model_sentinel(self, db_col: str) -> "str | None":
+        """DB name of the sentinel for ``db_col`` when it is itself an
+        ``Optional[DataModel]``, else None."""
+        try:
+            anno = self.get_column_type(db_col, with_subtree=True)
+        except SignalResolvingError:
+            return None
+        inner, is_optional = unwrap_optional(anno)
+        if is_optional and ModelStore.is_pydantic(inner):
+            return f"{db_col}{DEFAULT_DELIMITER}{self._OPTIONAL_SENTINEL_FIELD}"
+        return None
+
     def optional_parent_sentinel(self, db_col: str) -> "str | None":
-        """DB name of the ``is_null`` sentinel for the closest ``Optional[DataModel]``
+        """DB name of the ``_is_null`` sentinel for the closest ``Optional[DataModel]``
         ancestor of leaf ``db_col``, or None when ``db_col`` is not such a leaf (or
         is itself a sentinel).
         """
@@ -1202,6 +1214,10 @@ class SignalSchema:
             new_prefix = prefix + suffix
             if not include_sys and new_prefix and new_prefix[0] == "sys":
                 continue
+            # Leading-underscore names are internal columns (e.g. the
+            # Optional[DataModel] `_is_null` sentinel) — hidden like system columns.
+            if not include_hidden and name.startswith("_"):
+                continue
             hidden_fields = getattr(type_, "_hidden_fields", None)
             if hidden_fields and substree and not include_hidden:
                 substree = {
@@ -1289,9 +1305,11 @@ class SignalSchema:
             register_pydantic=True,
         )
 
-    # Sentinel typed Optional[bool] so it maps to a nullable boolean column; a
-    # NULL an outer join pads in then reads back as "absent" instead of False.
-    _OPTIONAL_SENTINEL_FIELD = "is_null"
+    # Leading underscore makes this an internal column: pydantic forbids user
+    # fields starting with "_" (collision-proof) and `_get_flat_tree` hides it
+    # from user-facing views. Typed Optional[bool] so it maps to a nullable
+    # boolean column; a NULL an outer join pads in reads back as "absent".
+    _OPTIONAL_SENTINEL_FIELD = "_is_null"
     _OPTIONAL_SENTINEL_TYPE = bool | None  # type: ignore[valid-type]
 
     @staticmethod

@@ -207,20 +207,30 @@ def test_default_none_error_names_field_and_type():
     assert "Optional[int]" in str(exc_info.value)
 
 
-# -- validate_reserved_names ---------------------------------------------
+# -- sentinel name does not collide with user fields ---------------------
 
 
-def test_reserved_is_null_field_rejected():
-    with pytest.raises(DataChainParamsError, match="is reserved by DataChain"):
+def test_is_null_field_name_allowed():
+    # `is_null` is a normal user field now; the sentinel uses the internal
+    # `_is_null` name, which pydantic forbids users from declaring.
+    class HasIsNull(DataModel):
+        is_null: bool = False
+        value: int = 0
 
-        class Bad(DataModel):
-            is_null: bool = False
+    assert HasIsNull(is_null=True).is_null is True
 
 
-def test_non_reserved_field_names_ok():
-    class Ok(DataModel):
-        is_valid: bool = True
-        null_count: int = 0
-        isnull: bool = False  # close, but not exactly `is_null`
+def test_optional_datamodel_sentinel_does_not_collide_with_is_null_field():
+    from datachain.lib.signal_schema import SignalSchema
 
-    assert Ok().is_valid is True
+    class M(DataModel):
+        is_null: bool = False  # same spelling as the old reserved word
+        value: int = 0
+
+    leaves = [
+        "__".join(p)
+        for p, _, has_subtree, _ in SignalSchema({"m": Optional[M]}).get_flat_tree()
+        if not has_subtree
+    ]
+    assert "m__is_null" in leaves  # the user's field
+    assert "m___is_null" in leaves  # the internal sentinel, no collision
