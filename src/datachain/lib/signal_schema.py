@@ -28,12 +28,17 @@ from datachain.func import literal
 from datachain.func.func import Func
 from datachain.lib.convert.python_to_sql import python_to_sql
 from datachain.lib.convert.sql_to_python import sql_to_python
-from datachain.lib.convert.unflatten import unflatten_to_json_pos
+from datachain.lib.convert.unflatten import (
+    read_optional_sentinel,
+    unflatten_to_json_pos,
+)
 from datachain.lib.data_model import (
     DataModel,
     DataType,
     DataValue,
     compute_model_fingerprint,
+    skip_dc_validation,
+    unwrap_optional,
 )
 from datachain.lib.file import File
 from datachain.lib.model_store import ModelStore
@@ -238,15 +243,18 @@ def create_feature_model(
     base_name, parsed_version = ModelStore.parse_name_version(name)
     class_name = f"{base_name}_v{parsed_version}" if parsed_version > 0 else base_name
     model_name = class_name.replace("@", "_")
-    model = create_model(
-        model_name,
-        __base__=base or DataModel,  # type: ignore[call-overload]
-        # These are tuples for each field of: annotation, default (if any)
-        **{
-            field_name: anno if isinstance(anno, tuple) else (anno, None)
-            for field_name, anno in fields.items()
-        },  # type: ignore[arg-type]
-    )
+    # Generated partial/feature models replay user-authored schemas; their
+    # field defaults are not user input, so skip the strict-Optional validators.
+    with skip_dc_validation():
+        model = create_model(
+            model_name,
+            __base__=base or DataModel,  # type: ignore[call-overload]
+            # These are tuples for each field of: annotation, default (if any)
+            **{
+                field_name: anno if isinstance(anno, tuple) else (anno, None)
+                for field_name, anno in fields.items()
+            },  # type: ignore[arg-type]
+        )
 
     model._version = parsed_version  # type: ignore[attr-defined]
     model._modelstore_base_name = base_name  # type: ignore[attr-defined]
@@ -599,9 +607,15 @@ class SignalSchema:
         objs: list[Any] = []
         pos = 0
         for name, fr_type in self.values.items():
+            inner_type, is_optional = unwrap_optional(fr_type)
             if self.setup_values and name in self.setup_values:
                 objs.append(self.setup_values.get(name))
-            elif (fr := ModelStore.to_pydantic(fr_type)) is not None:
+            elif (fr := ModelStore.to_pydantic(inner_type)) is not None:
+                if is_optional:
+                    absent, pos = read_optional_sentinel(fr, row, pos)
+                    if absent:
+                        objs.append(None)
+                        continue
                 j, pos = unflatten_to_json_pos(fr, row, pos)
                 try:
                     obj = fr(**j)
@@ -705,12 +719,18 @@ class SignalSchema:
         res = []
         pos = 0
         for fr_cls in self.values.values():
-            if (fr := ModelStore.to_pydantic(fr_cls)) is None:
+            inner_cls, is_optional = unwrap_optional(fr_cls)
+            if (fr := ModelStore.to_pydantic(inner_cls)) is None:
                 value = row[pos]
                 pos += 1
                 converted = self._convert_feature_value(fr_cls, value, catalog, cache)
                 res.append(converted)
             else:
+                if is_optional:
+                    absent, pos = read_optional_sentinel(fr, row, pos)
+                    if absent:
+                        res.append(None)
+                        continue
                 json, pos = unflatten_to_json_pos(fr, row, pos)  # type: ignore[union-attr]
                 try:
                     obj = fr(**json)
@@ -824,6 +844,7 @@ class SignalSchema:
         Returns DB columns as strings or Column objects with proper types
         Optionally, it can filter results by specific object, returning only his signals
         """
+
         signals = [
             DEFAULT_DELIMITER.join(path)
             if not as_columns
@@ -1207,12 +1228,28 @@ class SignalSchema:
             register_pydantic=True,
         )
 
+    # Sentinel typed Optional[bool] so ClickHouse emits Nullable(Bool) and a
+    # NULL from `join_use_nulls=1` reads back as "absent" instead of False.
+    _OPTIONAL_SENTINEL_FIELD = "is_null"
+    _OPTIONAL_SENTINEL_TYPE = bool | None  # type: ignore[valid-type]
+
     @staticmethod
     def _build_tree_for_type(
         model: DataType,
     ) -> dict[str, tuple[DataType, dict | None]] | None:
-        if (fr := ModelStore.to_pydantic(model)) is not None:
-            return SignalSchema._build_tree_for_model(fr)
+        inner, is_optional = unwrap_optional(model)
+        if (fr := ModelStore.to_pydantic(inner)) is not None:
+            subtree = SignalSchema._build_tree_for_model(fr) or {}
+            if is_optional:
+                sentinel_entry: tuple[Any, Any] = (
+                    SignalSchema._OPTIONAL_SENTINEL_TYPE,
+                    None,
+                )
+                subtree = {
+                    SignalSchema._OPTIONAL_SENTINEL_FIELD: sentinel_entry,
+                    **subtree,
+                }
+            return subtree
         return None
 
     @staticmethod
@@ -1223,8 +1260,18 @@ class SignalSchema:
 
         for name, f_info in model.model_fields.items():
             anno = f_info.annotation
-            if (fr := ModelStore.to_pydantic(anno)) is not None:
-                subtree = SignalSchema._build_tree_for_model(fr)
+            inner, is_optional = unwrap_optional(anno)
+            if (fr := ModelStore.to_pydantic(inner)) is not None:
+                subtree = SignalSchema._build_tree_for_model(fr) or {}
+                if is_optional:
+                    sentinel_entry: tuple[Any, Any] = (
+                        SignalSchema._OPTIONAL_SENTINEL_TYPE,
+                        None,
+                    )
+                    subtree = {
+                        SignalSchema._OPTIONAL_SENTINEL_FIELD: sentinel_entry,
+                        **subtree,
+                    }
             else:
                 subtree = None
             res[name] = (anno, subtree)  # type: ignore[assignment]

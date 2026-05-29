@@ -5,6 +5,7 @@ import posixpath
 import sys
 import time
 from collections.abc import Iterator
+from typing import Optional
 
 import multiprocess as mp
 import pytest
@@ -13,6 +14,7 @@ import datachain as dc
 from datachain.client.fileslice import FileWrapper
 from datachain.client.fsspec import Client
 from datachain.func import path as pathfunc
+from datachain.lib.data_model import DataModel
 from datachain.lib.file import AudioFile, AudioFragment, File
 from datachain.lib.udf import Mapper, UdfRunError
 from datachain.lib.utils import DataChainColumnError
@@ -135,6 +137,90 @@ def test_udf_none_nested_datamodel_after_outer_merge(test_session):
     assert isinstance(rows[2][4], AudioFile)
     assert rows[2][4].path == "audio2.wav"
     assert rows[2][4].source == "file://"
+
+
+class _Inner(DataModel):
+    score: int = 0
+    label: str = ""
+
+
+def test_udf_returns_optional_datamodel_mixed_none(test_session):
+    """Regression for #1055: UDF returning Optional[DataModel] across rows."""
+
+    def maybe(score: int) -> _Inner | None:
+        return _Inner(score=score, label="ok") if score > 0 else None
+
+    chain = (
+        dc.read_values(score=[1, 0, 2], session=test_session)
+        .map(item=maybe)
+        .order_by("score")
+    )
+
+    score_to_item = dict(chain.to_list())
+    assert score_to_item[0] is None
+    assert score_to_item[1] == _Inner(score=1, label="ok")
+    assert score_to_item[2] == _Inner(score=2, label="ok")
+
+
+def test_udf_returns_optional_datamodel_all_none(test_session):
+    def always_none(score: int) -> _Inner | None:
+        return None
+
+    chain = dc.read_values(score=[1, 2, 3], session=test_session).map(item=always_none)
+    rows = list(chain.to_list())
+    assert all(item is None for _, item in rows)
+
+
+def test_read_values_with_optional_datamodel(test_session):
+    items = [_Inner(score=1, label="a"), None, _Inner(score=3, label="c")]
+    chain = dc.read_values(
+        items=items,
+        output={"items": Optional[_Inner]},
+        session=test_session,
+    )
+    scores = [(item.score if item else None) for (item,) in chain.to_list()]
+    assert sorted(s for s in scores if s is not None) == [1, 3]
+    assert scores.count(None) == 1
+
+
+def test_nested_optional_datamodel_in_outer_model(test_session):
+    """Optional[DataModel] inside another DataModel returned by a UDF."""
+
+    class Outer(DataModel):
+        name: str
+        inner: _Inner | None = None
+
+    def make_outer(n: str) -> Outer:
+        return Outer(
+            name=n,
+            inner=None if n == "b" else _Inner(score=len(n), label=n),
+        )
+
+    chain = (
+        dc.read_values(n=["a", "b", "cc"], session=test_session)
+        .map(out=make_outer)
+        .order_by("n")
+    )
+
+    rows = list(chain.to_list())
+    name_to_out = {r[0]: r[1] for r in rows}
+    assert name_to_out["a"].inner == _Inner(score=1, label="a")
+    assert name_to_out["b"].inner is None
+    assert name_to_out["cc"].inner == _Inner(score=2, label="cc")
+
+
+def test_filter_optional_datamodel_via_sentinel(test_session):
+    """The sentinel column `..._is_null` is queryable in WHERE clauses."""
+
+    def maybe(score: int) -> _Inner | None:
+        return _Inner(score=score, label="ok") if score > 0 else None
+
+    chain = dc.read_values(score=[1, 0, 2, 0, 3], session=test_session).map(item=maybe)
+    # Sentinel column is exposed via the dotted path; user can filter on it.
+    present = chain.filter(dc.C("item.is_null") == False).count()  # noqa: E712
+    absent = chain.filter(dc.C("item.is_null") == True).count()  # noqa: E712
+    assert present == 3
+    assert absent == 2
 
 
 @pytest.mark.parametrize(

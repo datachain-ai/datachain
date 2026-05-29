@@ -2,16 +2,39 @@ import hashlib
 import inspect
 import types
 import uuid
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime
-from typing import ClassVar, Union, get_args, get_origin
+from typing import Any, ClassVar, Union, get_args, get_origin
 
 from pydantic import AliasChoices, BaseModel, Field, create_model
 from pydantic.fields import FieldInfo
 
 from datachain import json
 from datachain.lib.model_store import ModelStore
-from datachain.lib.utils import normalize_col_names, type_to_str
+from datachain.lib.utils import DataChainParamsError, normalize_col_names, type_to_str
+
+RESERVED_FIELD_NAMES: frozenset[str] = frozenset({"is_null"})
+
+_skip_dc_validation: ContextVar[bool] = ContextVar("_skip_dc_validation", default=False)
+
+
+@contextmanager
+def skip_dc_validation() -> Iterator[None]:
+    """Suppress DataModel field validators (used for internally-generated models).
+
+    DataChain generates partial/feature models on the fly (see
+    `create_feature_model`) whose field set is derived from existing schemas
+    rather than user-authored. Those generators bypass `validate_default_none`
+    and `validate_reserved_names` because their fields are not user-controlled.
+    """
+    token = _skip_dc_validation.set(True)
+    try:
+        yield
+    finally:
+        _skip_dc_validation.reset(token)
+
 
 StandardType = (
     type[int]
@@ -37,6 +60,8 @@ class DataModel(BaseModel):
     @classmethod
     def __pydantic_init_subclass__(cls):
         """It automatically registers every declared DataModel child class."""
+        validate_reserved_names(cls)
+        validate_default_none(cls)
         ModelStore.register(cls)
 
     @staticmethod
@@ -105,12 +130,82 @@ def compute_model_fingerprint(
     return hashlib.sha256(json_str.encode("utf-8")).hexdigest()
 
 
+def unwrap_optional(t: Any) -> tuple[Any, bool]:
+    """Unwrap a type that includes `None` to `(non_none, True)`.
+
+    Handles `Optional[X]`, `Union[X, None]`, and PEP-604 `X | None`. Also
+    handles multi-arg unions like `Union[A, B, None]` / `A | B | None` —
+    returns `(Union[A, B], True)`. Non-Optional types return `(t, False)`.
+    Mixed unions without `None` (e.g. `Union[int, str]`) are returned as-is.
+
+    See `datachain.lib.convert.flatten.flatten_value` for which of these
+    shapes the storage layer supports end-to-end on each backend.
+    """
+    orig = get_origin(t)
+    args = get_args(t)
+    if orig in (Union, types.UnionType) and type(None) in args:
+        non_none = tuple(a for a in args if a is not type(None))
+        if len(non_none) == 1:
+            return non_none[0], True
+        return Union[non_none], True  # type: ignore[return-value]  # noqa: UP007
+    return t, False
+
+
+def validate_default_none(model: type[BaseModel]) -> None:
+    """Reject non-Optional fields with `default=None`.
+
+    A field declared `x: int = None` is almost always a mistake — the storage
+    column will be non-nullable but the value is None. Force users to write
+    `Optional[int] = None` or `int | None = None` explicitly so the schema
+    matches the intent.
+    """
+    if _skip_dc_validation.get():
+        return
+    for name, finfo in model.model_fields.items():
+        if finfo.default is not None:
+            continue
+        if finfo.is_required():
+            continue
+        anno = finfo.annotation
+        if anno is None:
+            continue
+        _, is_optional = unwrap_optional(anno)
+        if is_optional:
+            continue
+        raise DataChainParamsError(
+            f"Field '{name}' in {model.__name__}: default value `None` requires "
+            f"`Optional[{type_to_str(anno)}]` or `{type_to_str(anno)} | None` "
+            f"annotation."
+        )
+
+
+def validate_reserved_names(model: type[BaseModel]) -> None:
+    """Reject user fields that collide with DataChain's reserved sentinel names.
+
+    `is_null` is reserved for the sentinel column emitted alongside
+    `Optional[DataModel|list|dict]` fields after flattening.
+    """
+    if _skip_dc_validation.get():
+        return
+    for name in model.model_fields:
+        if name in RESERVED_FIELD_NAMES:
+            raise DataChainParamsError(
+                f"Field name '{name}' in {model.__name__} is reserved by "
+                f"DataChain for sentinel columns of Optional[DataModel|list|dict] "
+                f"fields. Reserved names: {sorted(RESERVED_FIELD_NAMES)}."
+            )
+
+
 def is_chain_type(t: type) -> bool:
     """Return true if type is supported by `DataChain`."""
     if ModelStore.is_pydantic(t):
         return True
     if any(t is ft or t is get_args(ft)[0] for ft in get_args(StandardType)):
         return True
+
+    inner, is_optional = unwrap_optional(t)
+    if is_optional:
+        return is_chain_type(inner)
 
     orig = get_origin(t)
     args = get_args(t)
@@ -119,9 +214,6 @@ def is_chain_type(t: type) -> bool:
 
     if orig is dict and len(args) == 2:
         return is_chain_type(args[0]) and is_chain_type(args[1])
-
-    if orig in (Union, types.UnionType) and len(args) == 2 and (type(None) in args):
-        return is_chain_type(args[0] if args[1] is type(None) else args[1])
 
     return False
 

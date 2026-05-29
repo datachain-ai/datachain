@@ -367,3 +367,115 @@ def test_dict_to_feature():
         "val__type",
     ]
     assert list(spec.values()) == [String, String, Int64, Int64, String]
+
+
+# ---------------------------------------------------------------------------
+# Optional[DataModel] round-trip via sentinel column.
+# ---------------------------------------------------------------------------
+
+
+class _Addr(DataModel):
+    city: str = ""
+    zip: str = ""
+
+
+class _Outer(DataModel):
+    name: str
+    addr: _Addr | None = None
+
+
+def test_flatten_optional_datamodel_present():
+    out = _Outer(name="Alice", addr=_Addr(city="Berlin", zip="10115"))
+    assert flatten(out) == ("Alice", False, "Berlin", "10115")
+
+
+def test_flatten_optional_datamodel_absent():
+    out = _Outer(name="Bob", addr=None)
+    assert flatten(out) == ("Bob", True, None, None)
+
+
+def test_unflatten_optional_datamodel_present():
+    row = ("Alice", False, "Berlin", "10115")
+    j = unflatten_to_json(_Outer, row)
+    assert j == {
+        "name": "Alice",
+        "addr": {"city": "Berlin", "zip": "10115"},
+    }
+    obj = _Outer(**j)
+    assert obj.addr == _Addr(city="Berlin", zip="10115")
+
+
+def test_unflatten_optional_datamodel_absent():
+    row = ("Bob", True, None, None)
+    j = unflatten_to_json(_Outer, row)
+    assert j == {"name": "Bob", "addr": None}
+    assert _Outer(**j).addr is None
+
+
+def test_unflatten_ignores_leaf_garbage_when_sentinel_true():
+    # The user's correctness concern: even if leaf columns hold default
+    # values (as ClickHouse does for non-Nullable types), sentinel=True
+    # still hydrates the parent as None.
+    row = ("Bob", True, "garbage-city", "garbage-zip")
+    j = unflatten_to_json(_Outer, row)
+    assert j == {"name": "Bob", "addr": None}
+
+
+def test_signal_schema_emits_sentinel_column_for_optional_datamodel():
+    schema = SignalSchema({"out": _Outer})
+    flat = list(schema.get_flat_tree())
+    leaf_names = [".".join(p) for p, _, has_subtree, _ in flat if not has_subtree]
+    assert "out.name" in leaf_names
+    assert "out.addr.is_null" in leaf_names
+    assert "out.addr.city" in leaf_names
+    assert "out.addr.zip" in leaf_names
+
+
+def test_to_udf_spec_includes_sentinel_for_optional_datamodel():
+    spec = SignalSchema({"out": _Outer}).to_udf_spec()
+    assert "out__addr__is_null" in spec
+    assert "out__addr__city" in spec
+
+
+def test_optional_datamodel_roundtrip_at_top_level():
+    schema = SignalSchema({"item": Optional[_Addr]})
+    flat = [
+        ".".join(p)
+        for p, _, has_subtree, _ in schema.get_flat_tree()
+        if not has_subtree
+    ]
+    assert "item.is_null" in flat
+    assert "item.city" in flat
+    # row_to_objs with sentinel=True returns None for top-level Optional[Model].
+    assert schema.row_to_objs((True, None, None)) == [None]
+    assert schema.row_to_objs((False, "Paris", "75001")) == [
+        _Addr(city="Paris", zip="75001")
+    ]
+
+
+def test_nested_optional_datamodel_roundtrip():
+    class Mid(DataModel):
+        addr: _Addr | None = None
+        tag: str = ""
+
+    class Top(DataModel):
+        mid: Mid | None = None
+
+    # Outer present, inner absent
+    obj = Top(mid=Mid(addr=None, tag="x"))
+    flat = flatten(obj)
+    # mid_is_null=False, mid_addr_is_null=True, addr_city=None, addr_zip=None, tag="x"
+    assert flat == (False, True, None, None, "x")
+    rec = unflatten_to_json(Top, flat)
+    assert rec == {"mid": {"addr": None, "tag": "x"}}
+
+    # Both absent
+    obj2 = Top(mid=None)
+    flat2 = flatten(obj2)
+    # mid_is_null=True, then 4 placeholder values for the (absent) inner subtree
+    assert flat2[0] is True
+    assert (
+        len(flat2) == 5
+    )  # sentinel + (inner sentinel + 2 addr leaves + tag) placeholders
+    rec2 = unflatten_to_json(Top, flat2)
+    assert rec2 == {"mid": None}

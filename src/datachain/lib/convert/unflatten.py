@@ -6,6 +6,8 @@ from typing import Any, get_origin
 
 from pydantic import BaseModel
 
+from datachain.lib.convert.flatten import _leaf_count
+from datachain.lib.data_model import unwrap_optional
 from datachain.query.schema import DEFAULT_DELIMITER
 
 
@@ -13,19 +15,41 @@ def unflatten_to_json(model: type[BaseModel], row: Sequence[Any], pos: int = 0) 
     return unflatten_to_json_pos(model, row, pos)[0]
 
 
+def read_optional_sentinel(
+    inner: type[BaseModel], row: Sequence[Any], pos: int
+) -> tuple[bool, int]:
+    """Consume the leading sentinel of an ``Optional[DataModel]`` subtree.
+
+    A NULL sentinel — produced by outer joins with ``join_use_nulls=1`` —
+    is treated as absent so the parent hydrates to None even when the
+    ClickHouse leaf columns hold their non-Nullable type defaults.
+    """
+    sentinel = row[pos]
+    pos += 1
+    if sentinel is None or sentinel:
+        return True, pos + _leaf_count(inner)
+    return False, pos
+
+
 def unflatten_to_json_pos(
     model: type[BaseModel], row: Sequence[Any], pos: int = 0
 ) -> tuple[dict, int]:
-    res = {}
+    res: dict[str, Any] = {}
     for name, f_info in model.model_fields.items():
         anno = f_info.annotation
+        inner, is_optional = unwrap_optional(anno)
         origin = get_origin(anno)
         if (
             origin not in (list, dict)
-            and inspect.isclass(anno)
-            and issubclass(anno, BaseModel)
+            and inspect.isclass(inner)
+            and issubclass(inner, BaseModel)
         ):
-            res[name], pos = unflatten_to_json_pos(anno, row, pos)
+            if is_optional:
+                absent, pos = read_optional_sentinel(inner, row, pos)
+                if absent:
+                    res[name] = None
+                    continue
+            res[name], pos = unflatten_to_json_pos(inner, row, pos)
         else:
             res[name] = row[pos]
             pos += 1

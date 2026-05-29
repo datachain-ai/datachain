@@ -13,7 +13,7 @@ from datachain.asyn import AsyncMapper
 from datachain.cache import temporary_cache
 from datachain.dataset import RowDict
 from datachain.hash_utils import hash_callable
-from datachain.lib.convert.flatten import flatten
+from datachain.lib.convert.flatten import flatten, flatten_value
 from datachain.lib.file import DataModel, File, FileError
 from datachain.lib.utils import AbstractUDF, DataChainParamsError
 from datachain.query.batch import (
@@ -319,11 +319,18 @@ class UDFBase(AbstractUDF):
 
     def _flatten_row(self, row):
         if len(self.output.values) > 1 and not isinstance(row, BaseModel):
-            flat = []
+            flat: list[Any] = []
             for obj in row:
                 flat.extend(self._obj_to_list(obj))
             return tuple(flat)
-        return row if isinstance(row, tuple) else tuple(self._obj_to_list(row))
+        if isinstance(row, tuple):
+            return row
+        if len(self.output.values) == 1:
+            # Route through flatten_value so a top-level Optional[DataModel]
+            # return emits its is_null sentinel.
+            single_type = next(iter(self.output.values.values()))
+            return flatten_value(row, single_type)
+        return tuple(self._obj_to_list(row))
 
     @staticmethod
     def _obj_to_list(obj):
