@@ -20,7 +20,7 @@ from typing import (
 )
 
 from pydantic import BaseModel, Field, ValidationError, create_model
-from sqlalchemy import Cast, cast
+from sqlalchemy import Cast, case, cast
 from sqlalchemy.sql.elements import BinaryExpression, Grouping, Label
 
 from datachain import json
@@ -929,21 +929,62 @@ class SignalSchema:
 
         return curr_type
 
-    def enrich_expr_types(self, expr: "ColumnExpr") -> "ColumnExpr":
+    def optional_parent_sentinel(self, db_col: str) -> "str | None":
+        """DB name of the ``is_null`` sentinel for the closest ``Optional[DataModel]``
+        ancestor of leaf ``db_col`` — or None when ``db_col`` is not such a leaf, or
+        is itself a sentinel.
+
+        Leaves under an absent parent physically hold type-defaults on ClickHouse
+        (``0`` / ``""``) but SQL NULL on SQLite. Callers wrap such a leaf in
+        ``CASE WHEN sentinel = 0 THEN col END`` so it reads back as NULL on both.
+        """
+        parts = db_col.split(DEFAULT_DELIMITER)
+        for i in range(len(parts), 0, -1):
+            prefix = DEFAULT_DELIMITER.join(parts[:i])
+            try:
+                anno = self.get_column_type(prefix, with_subtree=True)
+            except SignalResolvingError:
+                continue
+            inner, is_optional = unwrap_optional(anno)
+            if is_optional and ModelStore.is_pydantic(inner):
+                sentinel = f"{prefix}{DEFAULT_DELIMITER}{self._OPTIONAL_SENTINEL_FIELD}"
+                return None if sentinel == db_col else sentinel
+        return None
+
+    def enrich_expr_types(
+        self, expr: "ColumnExpr", *, wrap_optional: bool = False
+    ) -> "ColumnExpr":
         """Rebuild a ColumnExpr expression with typed columns from the schema.
 
         dc.C("col") creates untyped columns (NullType). This method rebuilds the
         expression tree replacing them with typed columns so SQLAlchemy propagates
         types correctly through operators.
+
+        When ``wrap_optional`` is set, leaf columns under an ``Optional[DataModel]``
+        are additionally wrapped in ``CASE WHEN sentinel = 0 THEN col END`` so that
+        absent-parent rows read back as NULL on ClickHouse too (matching SQLite).
+        Used by ``filter`` so a predicate like ``C("addr.score") == 0`` does not
+        match the type-defaulted leaves of absent rows on ClickHouse.
         """
 
         typed_cols = {
             c.name: c for c in self.db_signals(as_columns=True) if isinstance(c, Column)
         }
 
+        def wrap_leaf(col, name):
+            if not wrap_optional:
+                return col
+            sentinel_path = self.optional_parent_sentinel(name)
+            if sentinel_path is None:
+                return col
+            sentinel = typed_cols.get(sentinel_path)
+            if sentinel is None:
+                sentinel = Column(sentinel_path)
+            return case((sentinel == 0, col), else_=None)
+
         def rebuild(node):
             if isinstance(node, Column):
-                return typed_cols.get(node.name, node)
+                return wrap_leaf(typed_cols.get(node.name, node), node.name)
             if isinstance(node, Label):
                 return rebuild(node.element).label(node.name)
             if isinstance(node, Grouping):

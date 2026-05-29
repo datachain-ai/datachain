@@ -2766,7 +2766,7 @@ class DataChain:
         """
         return self._evolve(query=self._query.sample(n))
 
-    @resolve_columns
+    @resolve_columns(wrap_optional=True)
     def filter(self, *args: Any) -> "Self":
         r"""Filter the chain according to conditions.
 

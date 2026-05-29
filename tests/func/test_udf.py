@@ -281,6 +281,43 @@ def test_filter_optional_datamodel_via_sentinel(test_session):
     assert absent == 2
 
 
+def test_filter_optional_datamodel_leaf_excludes_absent(test_session):
+    """A predicate on a leaf under Optional[DataModel] must not match absent-parent
+    rows on ClickHouse, where the leaf physically holds the type-default (0/"").
+    The filter path wraps the leaf in a sentinel-guarded CASE so it reads as NULL
+    on both backends.
+
+    Absence is driven by ``id`` (always present) rather than a nullable input
+    column, because Optional[basic] None values do not survive to the UDF on
+    ClickHouse (they coerce to the type-default — a separate, documented gap)."""
+
+    # id=2 -> absent. id=3 has a *real present* score of 0.
+    presents = {
+        1: _Inner(score=10, label="a"),
+        3: _Inner(score=0, label="c"),
+        4: _Inner(score=7, label="d"),
+    }
+
+    def pick(id: int) -> _Inner | None:
+        return presents.get(id)
+
+    chain = dc.read_values(id=[1, 2, 3, 4], session=test_session).map(
+        item=pick, output={"item": Optional[_Inner]}
+    )
+
+    def ids(c):
+        return sorted(r["id"] for r in c.select("id").to_records())
+
+    # absent row's score default (0 on CH) must NOT match; only the real 0 (id=3).
+    assert ids(chain.filter(dc.C("item.score") == 0)) == [3]
+    # absent row's label default ("" on CH) must not match either.
+    assert ids(chain.filter(dc.C("item.label") == "")) == []
+    # comparisons that exclude both NULL and the default still agree.
+    assert ids(chain.filter(dc.C("item.score") > 5)) == [1, 4]
+    # the sentinel path itself stays unwrapped and queryable.
+    assert ids(chain.filter(dc.C("item.is_null") == True)) == [2]  # noqa: E712
+
+
 def test_count_optional_datamodel_uses_sentinel(test_session):
     """``func.count("opt_model")`` returns the number of rows whose parent is
     present — same value on SQLite and ClickHouse, regardless of how CH

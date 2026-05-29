@@ -11,10 +11,9 @@ from sqlalchemy.sql.elements import ColumnElement
 
 from datachain.lib.convert.python_to_sql import python_to_sql
 from datachain.lib.convert.sql_to_python import sql_to_python
-from datachain.lib.data_model import unwrap_optional
 from datachain.lib.model_store import ModelStore
 from datachain.lib.utils import DataChainColumnError, DataChainParamsError
-from datachain.query.schema import DEFAULT_DELIMITER, Column, ColumnExpr, ColumnMeta
+from datachain.query.schema import Column, ColumnExpr, ColumnMeta
 from datachain.sql.functions import numeric
 from datachain.sql.functions.conversion import datetime_to_string
 
@@ -36,21 +35,9 @@ def _optional_parent_sentinel(
     db_col: str, signals_schema: "SignalSchema | None"
 ) -> str | None:
     """Closest ``Optional[DataModel]`` ancestor's sentinel column, or None."""
-    from datachain.lib.signal_schema import SignalResolvingError, SignalSchema
-
     if signals_schema is None:
         return None
-    parts = db_col.split(DEFAULT_DELIMITER)
-    for i in range(len(parts), 0, -1):
-        prefix = DEFAULT_DELIMITER.join(parts[:i])
-        try:
-            anno = signals_schema.get_column_type(prefix, with_subtree=True)
-        except SignalResolvingError:
-            continue
-        inner, is_optional = unwrap_optional(anno)
-        if is_optional and ModelStore.is_pydantic(inner):
-            return f"{prefix}{DEFAULT_DELIMITER}{SignalSchema._OPTIONAL_SENTINEL_FIELD}"
-    return None
+    return signals_schema.optional_parent_sentinel(db_col)
 
 
 def _wrap_optional_leaf(
