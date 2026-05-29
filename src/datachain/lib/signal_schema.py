@@ -598,7 +598,7 @@ class SignalSchema:
                 continue
             if not has_subtree:
                 db_name = DEFAULT_DELIMITER.join(path)
-                res[db_name] = python_to_sql(type_)
+                res[db_name] = self._leaf_sql_type(type_)
         return res
 
     def row_to_objs(self, row: Sequence[Any]) -> list[Any]:
@@ -837,6 +837,27 @@ class SignalSchema:
                 return _type
         raise SignalResolvingError([col_name], "is not found")
 
+    # Scalar leaf types for which an explicit ``Optional[...]`` annotation should
+    # produce a nullable column (so a None round-trips as NULL, not the type
+    # default). ``float`` is intentionally excluded: backends that store NaN as
+    # NULL rely on the read converter turning NULL back into NaN, so a nullable
+    # float column cannot distinguish NaN from None. Models use the is_null
+    # sentinel, and nullable array/map types are rejected by some warehouses, so
+    # both are left off deliberately.
+    _NULLABLE_SCALARS: "tuple[type, ...]" = (int, str, bool, bytes, datetime)
+
+    @classmethod
+    def _leaf_sql_type(cls, anno: "DataType") -> Any:
+        """SQL type for a leaf annotation, marked ``dc_nullable`` when the source
+        annotation is an explicit ``Optional[scalar]`` so non-nullable backends
+        emit a nullable column (a None then round-trips as NULL, not a default)."""
+        sql_type = python_to_sql(anno)
+        inner, is_optional = unwrap_optional(anno)
+        if is_optional and inner in cls._NULLABLE_SCALARS:
+            sql_type = sql_type() if isclass(sql_type) else sql_type
+            sql_type.dc_nullable = True
+        return sql_type
+
     def db_signals(
         self, name: str | None = None, as_columns=False, include_hidden: bool = True
     ) -> list[str] | list[Column]:
@@ -848,7 +869,7 @@ class SignalSchema:
         signals = [
             DEFAULT_DELIMITER.join(path)
             if not as_columns
-            else Column(DEFAULT_DELIMITER.join(path), python_to_sql(_type))
+            else Column(DEFAULT_DELIMITER.join(path), self._leaf_sql_type(_type))
             for path, _type, has_subtree, _ in self.get_flat_tree(
                 include_hidden=include_hidden
             )

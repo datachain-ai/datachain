@@ -144,6 +144,25 @@ class _Inner(DataModel):
     label: str = ""
 
 
+def test_optional_basic_scalar_roundtrips_none(test_session):
+    """An explicit Optional[scalar] column stores/reads None as NULL on both
+    backends. Without the nullable-column support, ClickHouse would coerce the
+    None to the type default (0 / ""). float is intentionally excluded (NaN and
+    NULL are indistinguishable on SQLite)."""
+
+    def f(id: int):
+        return (None, None, None) if id == 2 else (id * 10, f"n{id}", id % 2 == 0)
+
+    chain = dc.read_values(id=[1, 2, 3], session=test_session).map(
+        f,
+        output={"num": Optional[int], "txt": Optional[str], "flag": Optional[bool]},
+    )
+    rows = {r["id"]: (r["num"], r["txt"], r["flag"]) for r in chain.to_records()}
+    assert rows[1] == (10, "n1", False)
+    assert rows[2] == (None, None, None)
+    assert rows[3] == (30, "n3", False)
+
+
 def test_udf_returns_optional_datamodel_mixed_none(test_session):
     """Regression for #1055: UDF returning Optional[DataModel] across rows."""
 
