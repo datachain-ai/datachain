@@ -1544,12 +1544,9 @@ class DataChain:
         db_signals = schema.db_signals(
             include_hidden=include_hidden, include_sentinels=False
         )
-        # Optional[DataModel] leaves are sentinel-wrapped so an absent-parent
-        # row's cells read back as NULL on every backend (ClickHouse otherwise
-        # returns the type default). Column names/order are unchanged.
-        projection = schema.leaf_select_columns(include_hidden=include_hidden)
-
-        with self._query.ordered_select(*projection).as_iterable() as rows:
+        # Optional[DataModel] leaves are genuinely Nullable, so an absent-parent
+        # row's cells read back as NULL on every backend without any wrapping.
+        with self._query.ordered_select(*db_signals).as_iterable() as rows:
             if row_factory:
                 rows = (row_factory(db_signals, r) for r in rows)  # type: ignore[assignment]
             yield from rows
@@ -2790,7 +2787,7 @@ class DataChain:
         """
         return self._evolve(query=self._query.sample(n))
 
-    @resolve_columns(wrap_optional=True)
+    @resolve_columns
     def filter(self, *args: Any) -> "Self":
         r"""Filter the chain according to conditions.
 

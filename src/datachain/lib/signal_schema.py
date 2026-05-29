@@ -20,7 +20,7 @@ from typing import (
 )
 
 from pydantic import BaseModel, Field, ValidationError, create_model
-from sqlalchemy import Cast, asc, case, cast, desc, nulls_last
+from sqlalchemy import Cast, asc, cast, desc, nulls_last
 from sqlalchemy.sql.elements import BinaryExpression, Grouping, Label
 
 from datachain import json
@@ -881,7 +881,9 @@ class SignalSchema:
         signals = [
             DEFAULT_DELIMITER.join(path)
             if not as_columns
-            else Column(DEFAULT_DELIMITER.join(path), self._db_leaf_sql_type(path, _type))
+            else Column(
+                DEFAULT_DELIMITER.join(path), self._db_leaf_sql_type(path, _type)
+            )
             for path, _type, has_subtree, _ in self.get_flat_tree(
                 include_hidden=include_hidden, include_sentinels=include_sentinels
             )
@@ -992,75 +994,36 @@ class SignalSchema:
                 return None if sentinel == db_col else sentinel
         return None
 
-    def leaf_select_columns(self, *, include_hidden: bool = True) -> list:
-        """Select args for flat exports (``to_pandas``/``to_records``/``to_csv``/
-        ``to_json``/columnar).
-
-        Leaves under an ``Optional[DataModel]`` are wrapped in
-        ``CASE WHEN sentinel = 0 THEN col END`` so an absent-parent row's leaf
-        cells read back as NULL on every backend. Without this, ClickHouse returns
-        the type default (``''``/``0``) for those cells while SQLite returns None.
-        Sentinel columns themselves stay excluded from the output.
-        """
-        cols: list = []
-        for db_name in self.db_signals(
-            include_hidden=include_hidden, include_sentinels=False
-        ):
-            name = str(db_name)
-            sentinel = self.optional_parent_sentinel(name)
-            if sentinel is None:
-                cols.append(name)
-            else:
-                cols.append(
-                    case((Column(sentinel) == 0, Column(name)), else_=None).label(name)
-                )
-        return cols
-
     def order_by_column(
         self, db_col: str, *, descending: bool = False
     ) -> "ColumnExpr | None":
         """Order-by expression for a leaf ``db_col`` under ``Optional[DataModel]``:
-        absent rows sort as NULL (via the sentinel CASE) and go last on every
-        backend. None when ``db_col`` is not such a leaf (caller keeps the default).
+        the leaf is genuinely ``Nullable`` so an absent-parent row is NULL; emit
+        explicit ``NULLS LAST`` so it sorts last on every backend (SQLite would
+        otherwise sort NULLs first). None when ``db_col`` is not such a leaf
+        (caller keeps the default handling).
         """
         sentinel = self.optional_parent_sentinel(db_col)
         if sentinel is None:
             return None
-        col = case((Column(sentinel) == 0, Column(db_col)), else_=None)
+        col = Column(db_col)
         return nulls_last(desc(col) if descending else asc(col))
 
-    def enrich_expr_types(
-        self, expr: "ColumnExpr", *, wrap_optional: bool = False
-    ) -> "ColumnExpr":
+    def enrich_expr_types(self, expr: "ColumnExpr") -> "ColumnExpr":
         """Rebuild a ColumnExpr expression with typed columns from the schema.
 
         dc.C("col") creates untyped columns (NullType). This method rebuilds the
         expression tree replacing them with typed columns so SQLAlchemy propagates
         types correctly through operators.
-
-        With ``wrap_optional`` (used by ``filter``), leaves under an
-        ``Optional[DataModel]`` are wrapped in ``CASE WHEN sentinel = 0 THEN col
-        END`` so absent-parent rows compare as NULL on every backend.
         """
 
         typed_cols = {
             c.name: c for c in self.db_signals(as_columns=True) if isinstance(c, Column)
         }
 
-        def wrap_leaf(col, name):
-            if not wrap_optional:
-                return col
-            sentinel_path = self.optional_parent_sentinel(name)
-            if sentinel_path is None:
-                return col
-            sentinel = typed_cols.get(sentinel_path)
-            if sentinel is None:
-                sentinel = Column(sentinel_path)
-            return case((sentinel == 0, col), else_=None)
-
         def rebuild(node):
             if isinstance(node, Column):
-                return wrap_leaf(typed_cols.get(node.name, node), node.name)
+                return typed_cols.get(node.name, node)
             if isinstance(node, Label):
                 return rebuild(node.element).label(node.name)
             if isinstance(node, Grouping):

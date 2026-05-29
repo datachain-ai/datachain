@@ -37,8 +37,6 @@ def is_local() -> bool:
 
 def resolve_columns(
     method: "Callable[Concatenate[D, P], D] | None" = None,
-    *,
-    wrap_optional: bool = False,
 ) -> "Callable[..., Any]":
     """Normalize positional column inputs against the current schema.
 
@@ -53,10 +51,6 @@ def resolve_columns(
       schema
     - existing SQL expressions are type-enriched, and are only traversed when they
       still contain Function-valued bind parameters that must be converted to SQL
-
-    ``wrap_optional`` (used by filter) additionally wraps leaf columns under an
-    ``Optional[DataModel]`` in a sentinel-guarded CASE so absent-parent rows read
-    back as NULL regardless of backend — see ``SignalSchema.enrich_expr_types``.
     """
 
     def decorator(
@@ -92,9 +86,7 @@ def resolve_columns(
                         ),
                     )
 
-                return self.signals_schema.enrich_expr_types(
-                    expr, wrap_optional=wrap_optional
-                )
+                return self.signals_schema.enrich_expr_types(expr)
 
             for arg in args:
                 if isinstance(arg, Function):

@@ -4,7 +4,6 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, Union, get_args, get_origin
 
 from sqlalchemy import Integer, desc
-from sqlalchemy import case as sa_case
 from sqlalchemy import cast as sa_cast
 from sqlalchemy.sql import func as sa_func
 from sqlalchemy.sql.elements import ColumnElement
@@ -29,32 +28,6 @@ if TYPE_CHECKING:
 
 
 ColT = Union[str, tuple, Column, ColumnExpr, "Func"]
-
-
-def _optional_parent_sentinel(
-    db_col: str, signals_schema: "SignalSchema | None"
-) -> str | None:
-    """Closest ``Optional[DataModel]`` ancestor's sentinel column, or None."""
-    if signals_schema is None:
-        return None
-    return signals_schema.optional_parent_sentinel(db_col)
-
-
-def _wrap_optional_leaf(
-    column: Column,
-    db_col: str,
-    signals_schema: "SignalSchema | None",
-    table: "TableClause | None",
-) -> ColumnElement:
-    """Wrap a leaf under an ``Optional[DataModel]`` in ``CASE WHEN sentinel = 0
-    THEN column END`` so absent-parent rows read as NULL on every backend.
-    """
-    sentinel_path = _optional_parent_sentinel(db_col, signals_schema)
-    if sentinel_path is None:
-        return column
-    sentinel = Column(sentinel_path)
-    sentinel.table = table
-    return sa_case((sentinel == 0, column), else_=None)
 
 
 class Func(Function):  # noqa: PLW1641
@@ -502,7 +475,7 @@ class Func(Function):  # noqa: PLW1641
                 column_sql_type = column_sql_type()
             column = Column(col, column_sql_type)
             column.table = table
-            return _wrap_optional_leaf(column, col, signals_schema, table)
+            return column
 
         return col
 

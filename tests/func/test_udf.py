@@ -376,8 +376,8 @@ def test_isnone_filters_optional_datamodel(test_session):
 
 def test_filter_optional_datamodel_leaf_excludes_absent(test_session):
     """A predicate on a leaf under Optional[DataModel] must not match absent-parent
-    rows, whose leaf holds the type default (0/"") on ClickHouse. Absence is driven
-    by ``id`` since Optional[basic] None doesn't survive to the UDF on ClickHouse."""
+    rows. The leaf is genuinely Nullable, so an absent parent's leaf is NULL on both
+    backends and NULL never satisfies an equality/comparison predicate."""
     from datachain import func
 
     # id=2 -> absent. id=3 has a *real present* score of 0.
@@ -403,8 +403,9 @@ def test_filter_optional_datamodel_leaf_excludes_absent(test_session):
 
 def test_order_by_optional_datamodel_leaf_nulls_last(test_session):
     """order_by on a leaf under Optional[DataModel] sorts absent rows last on both
-    backends. Without the fix, ClickHouse sorts the absent row by its type-default
-    (0) intermixed with real values, while SQLite sorts NULL first (asc)."""
+    backends. The leaf is genuinely Nullable (absent -> NULL); order_by emits an
+    explicit NULLS LAST so SQLite (which sorts NULL first by default) agrees with
+    ClickHouse."""
 
     # id=2 -> absent. Present scores: id1=10, id3=0, id4=7.
     presents = {
@@ -436,9 +437,9 @@ def test_order_by_optional_datamodel_leaf_nulls_last(test_session):
 
 def test_flat_export_optional_datamodel_leaf_none(test_session):
     """Flat exports (to_records/to_pandas/...) return None for an absent-parent
-    row's nested leaf cells on both backends. Without the sentinel wrap in the
-    flat projection, ClickHouse returns the leaf type default (''/0) for those
-    cells while SQLite returns None."""
+    row's nested leaf cells on both backends. The leaves are genuinely Nullable,
+    so an absent parent stores real NULL (not the ''/0 type default ClickHouse
+    used to coerce non-nullable columns to)."""
 
     # id=2 -> absent. id=3 has a *real present* score of 0 / label "".
     presents = {
@@ -495,8 +496,8 @@ def test_count_optional_datamodel_uses_sentinel(test_session):
 
 def test_aggregates_over_optional_datamodel_leaf(test_session):
     """SUM/AVG/MIN/MAX on a leaf under ``Optional[DataModel]`` skip absent
-    rows on both SQLite and ClickHouse (without the sentinel-aware wrap, CH
-    would include the type-defaulted absent leaves)."""
+    rows on both SQLite and ClickHouse: the leaf is genuinely Nullable, so an
+    absent parent is NULL and SQL aggregates skip NULL natively."""
     from datachain import func
 
     def maybe(score: int) -> _Inner | None:
