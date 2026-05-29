@@ -381,6 +381,22 @@ def test_optional_datamodel_parquet_roundtrip_nested(test_session, tmp_path):
     assert got == {1: ("x", (5, "z")), 2: ("y", None), 3: None}
 
 
+def test_print_schema_hides_optional_sentinel(test_session):
+    """print_schema() must not expose the internal _is_null sentinel of an
+    Optional[DataModel] (consistent with to_pandas/to_records output)."""
+    import io
+
+    chain = dc.read_values(
+        id=[1], d=[_Deep(name="a", inner=_Inner(score=2, label="y"))],
+        output={"id": int, "d": Optional[_Deep]}, session=test_session,
+    )
+    buf = io.StringIO()
+    chain.print_schema(file=buf)
+    out = buf.getvalue()
+    assert "_is_null" not in out
+    assert "score" in out and "inner" in out  # real fields still shown
+
+
 def test_group_by_partition_optional_datamodel_leaf(test_session):
     """group_by partitioning on a leaf under Optional[DataModel] works.
     Regression: to_partial/_build_partial_type asserted the base was a pydantic

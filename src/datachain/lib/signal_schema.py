@@ -1251,7 +1251,9 @@ class SignalSchema:
                 )
 
     def print_tree(self, indent: int = 2, start_at: int = 0, file: IO | None = None):
-        for path, type_, _, depth in self.get_flat_tree():
+        # Drop the internal Optional[DataModel] `_is_null` sentinel — it is not a
+        # user-facing field (consistent with to_pandas/to_records output).
+        for path, type_, _, depth in self.get_flat_tree(include_sentinels=False):
             total_indent = start_at + depth * indent
             col_name = " " * total_indent + path[-1]
             col_type = SignalSchema._type_to_str(type_)
