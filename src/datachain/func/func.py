@@ -10,6 +10,7 @@ from sqlalchemy.sql.elements import ColumnElement
 
 from datachain.lib.convert.python_to_sql import python_to_sql
 from datachain.lib.convert.sql_to_python import sql_to_python
+from datachain.lib.data_model import unwrap_optional
 from datachain.lib.model_store import ModelStore
 from datachain.lib.utils import DataChainColumnError, DataChainParamsError
 from datachain.query.schema import Column, ColumnExpr, ColumnMeta
@@ -28,6 +29,31 @@ if TYPE_CHECKING:
 
 
 ColT = Union[str, tuple, Column, ColumnExpr, "Func"]
+
+# Aggregate result types that should become Nullable on backends with non-nullable
+# leaves (CH) when the source can be NULL — float excluded (NaN/NULL are
+# indistinguishable on SQLite). Mirrors SignalSchema._NULLABLE_SCALARS.
+_NULLABLE_AGG_TYPES: "tuple[type, ...]" = (int, str, bool, bytes, datetime)
+
+
+def _source_is_nullable(col: ColT, signals_schema: "SignalSchema | None") -> bool:
+    """True when ``col`` resolves to a column that may hold NULL — a leaf under an
+    ``Optional[DataModel]`` or an ``Optional[basic]`` column. Used to make an
+    aggregate over such a source produce a Nullable result (an all-absent group
+    aggregates to NULL, which CH would otherwise coerce to the type default)."""
+    if signals_schema is None or not isinstance(col, str):
+        return False
+    db_col = ColumnMeta.to_db_name(col)
+    if signals_schema.optional_parent_sentinel(db_col) is not None:
+        return True
+    from datachain.lib.signal_schema import SignalResolvingError
+
+    try:
+        anno = signals_schema.get_column_type(db_col)
+    except SignalResolvingError:
+        return False
+    _, is_optional = unwrap_optional(anno)
+    return is_optional
 
 
 class Func(Function):  # noqa: PLW1641
@@ -65,6 +91,7 @@ class Func(Function):  # noqa: PLW1641
         is_window: bool = False,
         window: "Window | None" = None,
         label: str | None = None,
+        is_aggregate: bool = False,
     ) -> None:
         self.name = name
         self.inner = inner
@@ -78,6 +105,7 @@ class Func(Function):  # noqa: PLW1641
         self.is_window = is_window
         self.window = window
         self.col_label = label
+        self.is_aggregate = is_aggregate
 
     def __str__(self) -> str:
         return self.name + "()"
@@ -99,6 +127,7 @@ class Func(Function):  # noqa: PLW1641
             self.is_window,
             window,
             self.col_label,
+            self.is_aggregate,
         )
 
     @property
@@ -518,6 +547,17 @@ class Func(Function):  # noqa: PLW1641
 
         col_type = self.get_result_type(signals_schema)
         sql_type = python_to_sql(col_type)
+
+        if (
+            self.is_aggregate
+            and col_type in _NULLABLE_AGG_TYPES
+            and any(_source_is_nullable(c, signals_schema) for c in self._db_cols)
+        ):
+            # All values in a group may be absent (NULL) -> the aggregate is NULL.
+            # Mark the result column Nullable so CH keeps NULL instead of coercing
+            # to the type default, matching SQLite.
+            sql_type = sql_type() if inspect.isclass(sql_type) else sql_type
+            sql_type.dc_nullable = True
 
         cols = [
             self._resolve_col(col, sql_type, signals_schema, table)

@@ -1042,7 +1042,16 @@ class SignalSchema:
         orig_schema = SignalSchema(copy.deepcopy(self.values))
         schema = orig_schema.to_partial(*partition_by)
 
-        vals = {c.name: sql_to_python(c) for c in new_column}
+        def _col_type(c: Column) -> DataType:
+            py_type = sql_to_python(c)
+            # An aggregate over a nullable source carries dc_nullable; keep the
+            # result column Optional so the persisted schema stays nullable and a
+            # None aggregate round-trips (CH would otherwise coerce to the default).
+            if getattr(c.type, "dc_nullable", False):
+                return py_type | None  # type: ignore[return-value]
+            return py_type
+
+        vals = {c.name: _col_type(c) for c in new_column}
         return SignalSchema(schema.values | vals)
 
     def select_except_signals(self, *args: str) -> "SignalSchema":

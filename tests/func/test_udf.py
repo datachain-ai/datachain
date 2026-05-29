@@ -743,6 +743,38 @@ def test_extra_aggregates_over_optional_datamodel_leaf(test_session):
     assert r["xor_score"] == 10 ^ 30
 
 
+def test_aggregates_over_all_absent_partition_return_none(test_session):
+    """sum/min/max over a group whose every row's Optional[DataModel] parent is
+    absent return None on both backends (and survive save()). The aggregate
+    result column is marked nullable; without it ClickHouse coerces the NULL
+    aggregate to the type default (0)."""
+    from datachain import func
+
+    # group g=1 has present items; group g=2 is entirely absent.
+    items = [_Inner(score=10, label="a"), _Inner(score=20, label="b"), None, None]
+    chain = dc.read_values(
+        id=[1, 2, 3, 4],
+        g=[1, 1, 2, 2],
+        item=items,
+        output={"id": int, "g": int, "item": Optional[_Inner]},
+        session=test_session,
+    )
+    chain.group_by(
+        sm=func.sum("item.score"),
+        mn=func.min("item.score"),
+        mx=func.max("item.score"),
+        cnt=func.count("item"),
+        partition_by="g",
+    ).save("agg_all_absent")
+
+    rows = {
+        r["g"]: (r["sm"], r["mn"], r["mx"], r["cnt"])
+        for r in dc.read_dataset("agg_all_absent", session=test_session).to_records()
+    }
+    assert rows[1] == (30, 10, 20, 2)
+    assert rows[2] == (None, None, None, 0)  # all-absent group -> NULL, not 0
+
+
 @pytest.mark.parametrize(
     "cloud_type,version_aware",
     [("s3", True)],
