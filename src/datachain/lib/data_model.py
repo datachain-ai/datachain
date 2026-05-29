@@ -22,12 +22,8 @@ _skip_dc_validation: ContextVar[bool] = ContextVar("_skip_dc_validation", defaul
 
 @contextmanager
 def skip_dc_validation() -> Iterator[None]:
-    """Suppress DataModel field validators (used for internally-generated models).
-
-    DataChain generates partial/feature models on the fly (see
-    `create_feature_model`) whose field set is derived from existing schemas
-    rather than user-authored. Those generators bypass `validate_default_none`
-    and `validate_reserved_names` because their fields are not user-controlled.
+    """Suppress the strict DataModel field validators for internally-generated
+    models, whose fields are derived from existing schemas rather than user input.
     """
     token = _skip_dc_validation.set(True)
     try:
@@ -133,13 +129,9 @@ def compute_model_fingerprint(
 def unwrap_optional(t: Any) -> tuple[Any, bool]:
     """Unwrap a type that includes `None` to `(non_none, True)`.
 
-    Handles `Optional[X]`, `Union[X, None]`, and PEP-604 `X | None`. Also
-    handles multi-arg unions like `Union[A, B, None]` / `A | B | None` —
-    returns `(Union[A, B], True)`. Non-Optional types return `(t, False)`.
-    Mixed unions without `None` (e.g. `Union[int, str]`) are returned as-is.
-
-    See `datachain.lib.convert.flatten.flatten_value` for which of these
-    shapes the storage layer supports end-to-end on each backend.
+    Handles `Optional[X]`, `Union[X, None]`, and PEP-604 `X | None`. Multi-arg
+    unions like `Union[A, B, None]` return `(Union[A, B], True)`; non-Optional and
+    None-free unions return `(t, False)`.
     """
     orig = get_origin(t)
     args = get_args(t)

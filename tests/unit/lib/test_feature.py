@@ -421,9 +421,7 @@ def test_unflatten_optional_datamodel_absent():
 
 
 def test_unflatten_ignores_leaf_garbage_when_sentinel_true():
-    # The user's correctness concern: even if leaf columns hold default
-    # values (as ClickHouse does for non-Nullable types), sentinel=True
-    # still hydrates the parent as None.
+    # sentinel=True hydrates the parent as None even when the leaves hold values.
     row = ("Bob", True, "garbage-city", "garbage-zip")
     j = unflatten_to_json(_Outer, row)
     assert j == {"name": "Bob", "addr": None}

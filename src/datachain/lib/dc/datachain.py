@@ -1130,10 +1130,8 @@ class DataChain:
             See https://github.com/datachain-ai/datachain/issues/477
             for further details.
         """
-        # For absent-parent rows, a leaf under an Optional[DataModel] holds the
-        # column type's default on backends with non-nullable leaves; wrap it in
-        # the sentinel CASE (so it sorts as NULL everywhere) with an explicit NULLS
-        # LAST so placement matches too. Non-optional columns keep default handling.
+        # Optional[DataModel] leaves sort as NULL last on every backend (via
+        # order_by_column); other columns keep their default handling.
         resolved: list[Any] = []
         for arg in args:
             if isinstance(arg, str):

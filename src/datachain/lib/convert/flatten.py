@@ -11,8 +11,6 @@ def flatten(obj: BaseModel) -> tuple:
 
 
 def is_optional_model(anno) -> bool:
-    """True when ``anno`` is ``Optional[DataModel]`` — the only shape that needs
-    an ``is_null`` sentinel emitted alongside its flattened leaves."""
     inner, is_optional = unwrap_optional(anno)
     return is_optional and ModelStore.is_pydantic(inner)
 
@@ -20,20 +18,9 @@ def is_optional_model(anno) -> bool:
 def flatten_value(value, anno) -> tuple:
     """Flatten ``value`` for one column declared with annotation ``anno``.
 
-    Optional shapes (see also ``unwrap_optional`` in ``data_model.py``):
-
-    - ``Optional[basic]`` (int/str/float/bool/bytes/datetime): native nullable
-      column.
-    - ``Optional[DataModel]``: leading ``is_null`` sentinel + leaf columns.
-    - ``Optional[list[T]]`` / ``Optional[dict[K, V]]``: stored as NULL where the
-      backend has a nullable array/map column; on backends that reject a nullable
-      array/map type, use ``list[T] = []`` / ``dict = {{}}`` instead of an
-      Optional collection until that is supported.
-    - ``list[Optional[T]]`` / ``dict[K, Optional[V]]``: not supported — no
-      per-element sentinels are emitted.
-    - True multi-arg ``Union[A, B]`` without None: falls back to JSON, no
-      schema-level discrimination.
-
+    ``Optional[DataModel]`` emits a leading ``is_null`` sentinel before its leaves.
+    ``Optional[basic]`` is a plain nullable column. Nulls inside collections
+    (``list[Optional[T]]``) and bare ``Union[A, B]`` are not represented.
     """
     inner, is_optional = unwrap_optional(anno)
     if ModelStore.is_pydantic(inner):
@@ -42,10 +29,8 @@ def flatten_value(value, anno) -> tuple:
                 return (True, *_emit_absent(inner))
             return (False, *flatten(value))
         if value is None:
-            # Non-Optional model but the value is None (e.g. an unmatched side of
-            # a full outer merge). There is no sentinel column, so emit absent
-            # placeholders for every leaf — SQL NULL, or the column type's default
-            # on backends with non-nullable leaves — matching the schema width.
+            # None for a non-Optional model (e.g. an unmatched outer-merge side):
+            # no sentinel column, so emit a placeholder per leaf to keep the width.
             return tuple(_emit_absent(inner))
         return flatten(value)
     return (value,)

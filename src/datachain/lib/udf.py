@@ -319,11 +319,9 @@ class UDFBase(AbstractUDF):
 
     def _flatten_row(self, row):
         if len(self.output.values) > 1 and not isinstance(row, BaseModel):
-            # Only an Optional[DataModel] output needs the annotation, to emit its
-            # is_null sentinel (plain flatten() would drop it). Every other output
-            # — including auto-wrapper models whose declared type is a leaf — must
-            # stay object-keyed via _obj_to_list, which flattens by the object's
-            # own shape rather than the declared type.
+            # An Optional[DataModel] output needs flatten_value to emit its is_null
+            # sentinel; other outputs (incl. auto-wrapper models typed as a leaf)
+            # flatten by object shape via _obj_to_list, not the declared type.
             flat: list[Any] = []
             for obj, anno in zip(row, self.output.values.values(), strict=False):
                 if is_optional_model(anno):
@@ -334,8 +332,6 @@ class UDFBase(AbstractUDF):
         if isinstance(row, tuple):
             return row
         if len(self.output.values) == 1:
-            # Route through flatten_value so a top-level Optional[DataModel]
-            # return emits its is_null sentinel.
             single_type = next(iter(self.output.values.values()))
             return flatten_value(row, single_type)
         return tuple(self._obj_to_list(row))

@@ -46,11 +46,8 @@ def _wrap_optional_leaf(
     signals_schema: "SignalSchema | None",
     table: "TableClause | None",
 ) -> ColumnElement:
-    """Return ``CASE WHEN sentinel = 0 THEN column END`` when ``db_col`` is a
-    leaf under an ``Optional[DataModel]``. Forces absent rows — whose leaf holds
-    the column type's default on backends with non-nullable columns — to read
-    back as SQL NULL, so functions and filters that touch the leaf give
-    consistent results across backends.
+    """Wrap a leaf under an ``Optional[DataModel]`` in ``CASE WHEN sentinel = 0
+    THEN column END`` so absent-parent rows read as NULL on every backend.
     """
     sentinel_path = _optional_parent_sentinel(db_col, signals_schema)
     if sentinel_path is None:

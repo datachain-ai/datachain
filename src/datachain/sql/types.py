@@ -157,18 +157,14 @@ class SQLType(TypeDecorator):
     impl: type[types.TypeEngine[Any]] = types.TypeEngine
     cache_ok = True
 
-    # Set on an instance (see ``SignalSchema._leaf_sql_type``) when the column's
-    # source annotation was an explicit ``Optional[scalar]``. Warehouses whose
-    # leaf columns are non-nullable then emit a nullable column type, so a None
-    # value round-trips as NULL instead of the column type's default.
+    # Marks a column whose source annotation was an explicit Optional[scalar], so
+    # backends with non-nullable leaves emit a nullable type and None round-trips
+    # as NULL rather than the type default.
     dc_nullable: bool = False
 
     def load_dialect_impl(self, dialect):
         impl = self._load_dialect_impl(dialect)
         if self.dc_nullable:
-            # Backends without nullable leaves (e.g. ClickHouse) wrap the type so
-            # a stored None reads back as NULL; the default no-op leaves the impl
-            # unchanged (SQLite columns are already nullable).
             return converter(dialect).nullable(impl)
         return impl
 
@@ -580,7 +576,6 @@ class TypeReadConverter:
 
 class TypeConverter:
     def nullable(self, inner):
-        # SQLite (and the default) store NULL natively; no wrapper needed.
         return inner
 
     def string(self):

@@ -95,8 +95,6 @@ def convert_rows_custom_column_types(
         row_list = list(row)
         for idx, t in custom_columns_types:
             if row_list[idx] is None:
-                # An explicit Optional[scalar] keeps NULL as None; others read back
-                # as the type default (matching how the value was stored).
                 row_list[idx] = None if t.dc_nullable else t.default_value(dialect)
             else:
                 row_list[idx] = t.on_read_convert(row_list[idx], dialect)

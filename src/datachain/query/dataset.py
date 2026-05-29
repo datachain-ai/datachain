@@ -541,8 +541,6 @@ def get_col_types(
             col_type_inst := col_type() if inspect.isclass(col_type) else col_type,
             warehouse.python_type(col_type_inst),
             type(col_type_inst).__name__,
-            # An explicit Optional[scalar] keeps None (stored as NULL in its
-            # nullable column) instead of being filled with the type's default.
             None
             if getattr(col_type_inst, "dc_nullable", False)
             else col_type.default_value(dialect),

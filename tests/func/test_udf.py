@@ -146,16 +146,23 @@ class _Inner(DataModel):
 
 def test_optional_basic_scalar_roundtrips_none(test_session):
     """An explicit Optional[scalar] column stores/reads None as NULL on both
-    backends. Without the nullable-column support, ClickHouse would coerce the
-    None to the type default (0 / ""). float is intentionally excluded (NaN and
-    NULL are indistinguishable on SQLite)."""
+    backends (without it, ClickHouse coerces None to the type default 0/"").
+    float is excluded — NaN and NULL are indistinguishable on SQLite."""
 
-    def f(id: int):
-        return (None, None, None) if id == 2 else (id * 10, f"n{id}", id % 2 == 0)
+    def num(id: int) -> Optional[int]:
+        return None if id == 2 else id * 10
 
-    chain = dc.read_values(id=[1, 2, 3], session=test_session).map(
-        f,
-        output={"num": Optional[int], "txt": Optional[str], "flag": Optional[bool]},
+    def txt(id: int) -> Optional[str]:
+        return None if id == 2 else f"n{id}"
+
+    def flag(id: int) -> Optional[bool]:
+        return None if id == 2 else id % 2 == 0
+
+    chain = (
+        dc.read_values(id=[1, 2, 3], session=test_session)
+        .map(num=num)
+        .map(txt=txt)
+        .map(flag=flag)
     )
     rows = {r["id"]: (r["num"], r["txt"], r["flag"]) for r in chain.to_records()}
     assert rows[1] == (10, "n1", False)
@@ -293,7 +300,6 @@ def test_filter_optional_datamodel_via_sentinel(test_session):
         return _Inner(score=score, label="ok") if score > 0 else None
 
     chain = dc.read_values(score=[1, 0, 2, 0, 3], session=test_session).map(item=maybe)
-    # Sentinel column is exposed via the dotted path; user can filter on it.
     present = chain.filter(dc.C("item.is_null") == False).count()  # noqa: E712
     absent = chain.filter(dc.C("item.is_null") == True).count()  # noqa: E712
     assert present == 3
@@ -302,13 +308,8 @@ def test_filter_optional_datamodel_via_sentinel(test_session):
 
 def test_filter_optional_datamodel_leaf_excludes_absent(test_session):
     """A predicate on a leaf under Optional[DataModel] must not match absent-parent
-    rows on ClickHouse, where the leaf physically holds the type-default (0/"").
-    The filter path wraps the leaf in a sentinel-guarded CASE so it reads as NULL
-    on both backends.
-
-    Absence is driven by ``id`` (always present) rather than a nullable input
-    column, because Optional[basic] None values do not survive to the UDF on
-    ClickHouse (they coerce to the type-default — a separate, documented gap)."""
+    rows, whose leaf holds the type default (0/"") on ClickHouse. Absence is driven
+    by ``id`` since Optional[basic] None doesn't survive to the UDF on ClickHouse."""
 
     # id=2 -> absent. id=3 has a *real present* score of 0.
     presents = {
@@ -320,20 +321,14 @@ def test_filter_optional_datamodel_leaf_excludes_absent(test_session):
     def pick(id: int) -> _Inner | None:
         return presents.get(id)
 
-    chain = dc.read_values(id=[1, 2, 3, 4], session=test_session).map(
-        item=pick, output={"item": Optional[_Inner]}
-    )
+    chain = dc.read_values(id=[1, 2, 3, 4], session=test_session).map(item=pick)
 
     def ids(c):
         return sorted(r["id"] for r in c.select("id").to_records())
 
-    # absent row's score default (0 on CH) must NOT match; only the real 0 (id=3).
     assert ids(chain.filter(dc.C("item.score") == 0)) == [3]
-    # absent row's label default ("" on CH) must not match either.
     assert ids(chain.filter(dc.C("item.label") == "")) == []
-    # comparisons that exclude both NULL and the default still agree.
     assert ids(chain.filter(dc.C("item.score") > 5)) == [1, 4]
-    # the sentinel path itself stays unwrapped and queryable.
     assert ids(chain.filter(dc.C("item.is_null") == True)) == [2]  # noqa: E712
 
 
@@ -352,9 +347,7 @@ def test_order_by_optional_datamodel_leaf_nulls_last(test_session):
     def pick(id: int) -> _Inner | None:
         return presents.get(id)
 
-    chain = dc.read_values(id=[1, 2, 3, 4], session=test_session).map(
-        item=pick, output={"item": Optional[_Inner]}
-    )
+    chain = dc.read_values(id=[1, 2, 3, 4], session=test_session).map(item=pick)
 
     def order(*, descending: bool, use_c: bool):
         col = dc.C("item.score") if use_c else "item.score"

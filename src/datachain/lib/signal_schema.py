@@ -243,13 +243,12 @@ def create_feature_model(
     base_name, parsed_version = ModelStore.parse_name_version(name)
     class_name = f"{base_name}_v{parsed_version}" if parsed_version > 0 else base_name
     model_name = class_name.replace("@", "_")
-    # Generated partial/feature models replay user-authored schemas; their
-    # field defaults are not user input, so skip the strict-Optional validators.
+    # Generated models replay existing schemas, so their field defaults aren't
+    # user input — skip the strict-Optional validators.
     with skip_dc_validation():
         model = create_model(
             model_name,
             __base__=base or DataModel,  # type: ignore[call-overload]
-            # These are tuples for each field of: annotation, default (if any)
             **{
                 field_name: anno if isinstance(anno, tuple) else (anno, None)
                 for field_name, anno in fields.items()
@@ -837,20 +836,13 @@ class SignalSchema:
                 return _type
         raise SignalResolvingError([col_name], "is not found")
 
-    # Scalar leaf types for which an explicit ``Optional[...]`` annotation should
-    # produce a nullable column (so a None round-trips as NULL, not the type
-    # default). ``float`` is intentionally excluded: backends that store NaN as
-    # NULL rely on the read converter turning NULL back into NaN, so a nullable
-    # float column cannot distinguish NaN from None. Models use the is_null
-    # sentinel, and nullable array/map types are rejected by some warehouses, so
-    # both are left off deliberately.
+    # Scalars whose Optional form maps to a nullable column. ``float`` is excluded:
+    # backends that store NaN as NULL reconstitute it on read, so a nullable float
+    # could not tell NaN from None.
     _NULLABLE_SCALARS: "tuple[type, ...]" = (int, str, bool, bytes, datetime)
 
     @classmethod
     def _leaf_sql_type(cls, anno: "DataType") -> Any:
-        """SQL type for a leaf annotation, marked ``dc_nullable`` when the source
-        annotation is an explicit ``Optional[scalar]`` so non-nullable backends
-        emit a nullable column (a None then round-trips as NULL, not a default)."""
         sql_type = python_to_sql(anno)
         inner, is_optional = unwrap_optional(anno)
         if is_optional and inner in cls._NULLABLE_SCALARS:
@@ -952,14 +944,8 @@ class SignalSchema:
 
     def optional_parent_sentinel(self, db_col: str) -> "str | None":
         """DB name of the ``is_null`` sentinel for the closest ``Optional[DataModel]``
-        ancestor of leaf ``db_col`` — or None when ``db_col`` is not such a leaf, or
-        is itself a sentinel.
-
-        Leaves under an absent parent read back as SQL NULL on backends with
-        nullable leaf columns, but as the column type's default (``0`` / ``""``)
-        on backends that store them as non-nullable typed columns. Callers wrap
-        such a leaf in ``CASE WHEN sentinel = 0 THEN col END`` so it reads back as
-        NULL regardless of backend.
+        ancestor of leaf ``db_col``, or None when ``db_col`` is not such a leaf (or
+        is itself a sentinel).
         """
         parts = db_col.split(DEFAULT_DELIMITER)
         for i in range(len(parts), 0, -1):
@@ -977,13 +963,9 @@ class SignalSchema:
     def order_by_column(
         self, db_col: str, *, descending: bool = False
     ) -> "ColumnExpr | None":
-        """Order-by expression for one leaf ``db_col`` under ``Optional[DataModel]``.
-
-        Returns None when ``db_col`` is not such a leaf, so the caller keeps its
-        default handling. Otherwise wraps the leaf in the sentinel CASE (so absent
-        rows sort as NULL everywhere, not as a type-default) and places those NULLs
-        last — emitted explicitly so backends with differing default NULL ordering
-        agree.
+        """Order-by expression for a leaf ``db_col`` under ``Optional[DataModel]``:
+        absent rows sort as NULL (via the sentinel CASE) and go last on every
+        backend. None when ``db_col`` is not such a leaf (caller keeps the default).
         """
         sentinel = self.optional_parent_sentinel(db_col)
         if sentinel is None:
@@ -1000,12 +982,9 @@ class SignalSchema:
         expression tree replacing them with typed columns so SQLAlchemy propagates
         types correctly through operators.
 
-        When ``wrap_optional`` is set, leaf columns under an ``Optional[DataModel]``
-        are additionally wrapped in ``CASE WHEN sentinel = 0 THEN col END`` so that
-        absent-parent rows read back as NULL regardless of backend. Used by
-        ``filter`` so a predicate like ``C("addr.score") == 0`` does not match
-        absent rows whose leaf holds the column type's default on backends with
-        non-nullable leaf columns.
+        With ``wrap_optional`` (used by ``filter``), leaves under an
+        ``Optional[DataModel]`` are wrapped in ``CASE WHEN sentinel = 0 THEN col
+        END`` so absent-parent rows compare as NULL on every backend.
         """
 
         typed_cols = {

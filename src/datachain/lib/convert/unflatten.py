@@ -18,11 +18,9 @@ def unflatten_to_json(model: type[BaseModel], row: Sequence[Any], pos: int = 0) 
 def read_optional_sentinel(
     inner: type[BaseModel], row: Sequence[Any], pos: int
 ) -> tuple[bool, int]:
-    """Consume the leading sentinel of an ``Optional[DataModel]`` subtree.
-
-    A NULL sentinel — which an outer join may pad in place of a missing row —
-    is treated as absent so the parent hydrates to None even on backends whose
-    non-nullable leaf columns hold their type defaults instead of SQL NULL.
+    """Consume the leading ``is_null`` sentinel of an ``Optional[DataModel]``
+    subtree, returning ``(absent, next_pos)``. A NULL sentinel (e.g. outer-join
+    padding) counts as absent.
     """
     sentinel = row[pos]
     pos += 1
