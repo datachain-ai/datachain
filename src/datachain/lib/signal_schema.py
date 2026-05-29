@@ -1208,7 +1208,10 @@ class SignalSchema:
 
     def get_signals(self, target_type: type[DataModel]) -> Iterator[str]:
         for path, type_, has_subtree, _ in self.get_flat_tree():
-            if has_subtree and issubclass(type_, target_type):
+            # ``type_`` is ``Optional[Model]`` (a Union, not a class) for an
+            # Optional[DataModel] node; guard isclass so issubclass doesn't raise
+            # on Python <3.11 (returns False on 3.12+).
+            if has_subtree and isclass(type_) and issubclass(type_, target_type):
                 yield ".".join(path)
 
     def create_model(self, name: str) -> type[DataModel]:
