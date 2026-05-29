@@ -30,7 +30,6 @@ ClusterListData = list[dict[str, Any]]
 logger = logging.getLogger("datachain")
 
 DATASET_ROWS_CHUNK_SIZE = 8192
-ALL_TEAMS_ACCESS = "all"
 
 
 def get_studio_env_variable(name: str) -> Any:
@@ -83,128 +82,20 @@ class StudioClient:
     def __init__(self, timeout: float = 3600.0, team: str | None = None) -> None:
         self._check_dependencies()
         self.timeout = timeout
-        self._config: dict[str, Any] | None = None
+        self._config = None
         self._team = team
-        self._cached_token: str | None = None
-        self._token_last_validated: datetime | None = None
 
     @property
     def token(self) -> str:
-        # Check environment token first (always valid)
-        env_token = get_studio_env_variable("TOKEN")
-        if env_token:
-            return env_token
+        token = get_studio_env_variable("TOKEN") or self.config.get("token")
 
-        # Use cached token if recently validated
-        if self._cached_token and self._is_token_cache_valid():
-            return self._cached_token
-
-        # Get and validate token
-        token_value = self._get_validated_token()
-
-        # Cache the validated token
-        self._cached_token = token_value
-        self._token_last_validated = datetime.now(timezone.utc)
-
-        return token_value
-
-    def _is_token_cache_valid(self) -> bool:
-        """Check if cached token is still valid (within 1 minute)."""
-        if not self._token_last_validated:
-            return False
-
-        cache_age = datetime.now(timezone.utc) - self._token_last_validated
-        return cache_age.total_seconds() < 60
-
-    def _get_validated_token(self) -> str:
-        """Get token from config with validation (migration at config load)."""
-        token_config = self._get_token_config()
-        self._validate_token_config(token_config)
-        self._authorize_team_access(token_config)
-        return token_config["value"]
-
-    def _get_token_config(self) -> dict:
-        """Get token configuration from config with basic validation."""
-        token_config = self.config.get("token")
-        if not token_config:
+        if not token:
             raise DataChainError(
                 "Studio token is not set. Use `datachain auth login` "
                 "or environment variable `DATACHAIN_STUDIO_TOKEN` to set it."
             )
 
-        # At this point, legacy tokens should already be migrated
-        if isinstance(token_config, str):
-            raise DataChainError(
-                "Legacy token format detected but migration failed. "
-                "Please run `datachain auth login` to refresh your token."
-            )
-
-        return token_config
-
-    def _authorize_team_access(self, token_config: dict) -> None:
-        """Check team authorization if team is specified."""
-        if self._team:
-            self._check_team_authorization(token_config, self._team)
-
-    def _migrate_legacy_token_if_needed(self) -> None:
-        """Check for legacy token and migrate if needed during config load."""
-        if self._config is None:
-            return
-
-        token_config = self._config.get("token")
-        if isinstance(token_config, str):
-            # Legacy token found - migrate it
-            migrated_config = self._migrate_legacy_token(token_config)
-            # Update the in-memory config
-            self._config["token"] = migrated_config
-
-    def _migrate_legacy_token(self, legacy_token: str) -> dict:
-        """Migrate legacy string token and persist to config file."""
-        from datachain.config import Config, ConfigLevel
-        from datachain.studio import migrate_legacy_token
-
-        migrated_config = migrate_legacy_token(legacy_token)
-
-        # Save migrated config (one-time operation)
-        with Config(ConfigLevel.GLOBAL).edit() as conf:
-            studio_conf = conf.get("studio", {})
-            studio_conf["token"] = migrated_config
-            conf["studio"] = studio_conf
-
-        return migrated_config
-
-    def _validate_token_config(self, token_config: dict) -> None:
-        """Validate token expiration."""
-        if token_config.get("never_expires", False):
-            return
-
-        expires_at = token_config.get("expires_at")
-        if expires_at and datetime.fromisoformat(expires_at) <= datetime.now(
-            timezone.utc
-        ):
-            # Clear cache on expiration
-            self._cached_token = None
-            self._token_last_validated = None
-            raise DataChainError(
-                "Studio token has expired. Please run: datachain auth login"
-            )
-
-    def _check_team_authorization(self, token_config, requested_team):
-        """Check if token has access to requested team."""
-        if isinstance(token_config, str):
-            return True  # Legacy tokens have all access
-
-        token_teams = token_config.get("teams", ALL_TEAMS_ACCESS)
-        if token_teams == ALL_TEAMS_ACCESS:
-            return True
-
-        if isinstance(token_teams, list) and requested_team in token_teams:
-            return True
-
-        raise DataChainError(
-            f"Token does not have access to team '{requested_team}'. "
-            f"Re-login with: datachain auth login --team {requested_team}"
-        )
+        return token
 
     @property
     def url(self) -> str:
@@ -214,8 +105,6 @@ class StudioClient:
     def config(self) -> dict:
         if self._config is None:
             self._config = Config().read().get("studio", {})
-            # Handle legacy token migration during config load
-            self._migrate_legacy_token_if_needed()
         return self._config  # type: ignore [return-value]
 
     @property

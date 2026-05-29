@@ -43,7 +43,7 @@ def test_studio_login_token_check_failed(mocker):
         "dvc_studio_client.auth.get_access_token",
         side_effect=AuthorizationExpiredError,
     )
-    assert main(["auth", "login"]) == 1
+    assert main(["auth", "login", "--all-teams"]) == 1
 
 
 def test_studio_login_success(mocker):
@@ -52,13 +52,12 @@ def test_studio_login_success(mocker):
         return_value=("token_name", "isat_access_token"),
     )
 
-    assert main(["auth", "login"]) == 0
+    assert main(["auth", "login", "--all-teams"]) == 0
 
     config = Config().read()
-    # Check enhanced token structure
-    token_config = config["studio"]["token"]
-    assert isinstance(token_config, dict), "Token should be enhanced structure"
-    assert token_config["value"] == "isat_access_token"  # nosec B105
+    # Check simplified token structure
+    token = config["studio"]["token"]
+    assert token == "isat_access_token"  # noqa: S105
     assert config["studio"]["url"] == STUDIO_URL
 
 
@@ -73,6 +72,7 @@ def test_studio_login_arguments(mocker):
             [
                 "auth",
                 "login",
+                "--all-teams",
                 "--name",
                 "token_name",
                 "--hostname",
@@ -90,6 +90,7 @@ def test_studio_login_arguments(mocker):
         hostname="https://example.com",
         scopes="experiments",
         team_names=None,
+        all_teams=True,
         expires_in_days=365,
         never_expires=False,
         client_name="DataChain",
@@ -125,6 +126,7 @@ def test_studio_login_with_team_scoping(mocker):
         hostname=STUDIO_URL,
         scopes=None,
         team_names=["ml-team", "data-team"],  # Multiple teams
+        all_teams=False,
         expires_in_days=90,  # Custom expiration
         never_expires=False,
         client_name="DataChain",
@@ -132,11 +134,10 @@ def test_studio_login_with_team_scoping(mocker):
         post_login_message=POST_LOGIN_MESSAGE,
     )
 
-    # Check saved token config
+    # Check saved token is simple string
     config = Config().read()
-    token_config = config["studio"]["token"]
-    assert token_config["teams"] == ["ml-team", "data-team"]
-    assert not token_config["never_expires"]
+    token = config["studio"]["token"]
+    assert token == "isat_access_token"  # noqa: S105
 
 
 def test_studio_login_with_all_teams(mocker):
@@ -151,7 +152,8 @@ def test_studio_login_with_all_teams(mocker):
         token_name=None,
         hostname=STUDIO_URL,
         scopes=None,
-        team_names=["all"],  # All teams access
+        team_names=None,  # All teams access
+        all_teams=True,
         expires_in_days=365,
         never_expires=False,
         client_name="DataChain",
@@ -166,30 +168,36 @@ def test_studio_login_never_expires(mocker):
         return_value=("token_name", "isat_access_token"),
     )
 
-    assert main(["auth", "login", "--never-expires"]) == 0
+    assert main(["auth", "login", "--all-teams", "--never-expires"]) == 0
 
     mock.assert_called_with(
         token_name=None,
         hostname=STUDIO_URL,
         scopes=None,
         team_names=None,
-        expires_in_days=365,
+        all_teams=True,
+        expires_in_days=None,
         never_expires=True,  # Never expires flag
         client_name="DataChain",
         open_browser=True,
         post_login_message=POST_LOGIN_MESSAGE,
     )
 
-    # Check saved token config
+    # Check saved token is simple string
     config = Config().read()
-    token_config = config["studio"]["token"]
-    assert token_config["never_expires"] is True
-    assert "expires_at" not in token_config  # expires_at key should not exist
+    token = config["studio"]["token"]
+    assert token == "isat_access_token"  # noqa: S105
 
 
 def test_studio_login_conflicting_team_args():
-    """Test that conflicting --team and --all-teams arguments are rejected."""
     result = main(["auth", "login", "--team", "ml-team", "--all-teams"])
+    assert result == 1  # Should fail
+
+
+def test_studio_login_conflicting_expiration_args():
+    result = main(
+        ["auth", "login", "--all-teams", "--expires-in", "30", "--never-expires"]
+    )
     assert result == 1  # Should fail
 
 
