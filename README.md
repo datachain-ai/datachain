@@ -14,7 +14,7 @@
 Optional, for agent workflows:
 
 - **Knowledge Base**: markdown summaries derived from the Dataset DB and enriched by LLM. Readable by humans and LLMs.
-- **Agent Harness**: skill and MCP server that plug all three into Claude Code, Cursor, and Codex, so they understand your data.
+- **Agent Harness**: skill and MCP server that plug all three into Claude Code, Cursor, Codex, GitHub Copilot, and Pi, so they understand your data.
 
 Bytes never leave your storage. Every run deposits a typed dataset the next pipeline (or agent) reads instead of recomputing.
 
@@ -27,7 +27,7 @@ pip install datachain
 To add the agent skill (Knowledge Base + code generation):
 
 ```bash
-datachain skill install --target claude     # also: --target cursor, --target codex
+datachain skill install --target claude     # also: cursor, codex, copilot, pi
 ```
 
 Works with S3, GCS, Azure, and local filesystems.
@@ -45,7 +45,7 @@ claude
 
 Prompt:
 ```prompt
-Find dogs in s3://dc-readme/oxford-pets-micro/ similar to fiona.jpg:
+Find dogs in s3://dc-readme/oxford-pets-micro/ similar to ./fiona.jpg:
   - Pull breed metadata and mask files from annotations/
   - Exclude images without mask
   - Exclude Cocker Spaniels
@@ -91,7 +91,7 @@ Browse it as markdown files, navigate with wikilinks, or open in [Obsidian](http
 
 ## 3. Data Harness
 
-Code harnesses (Claude Code, Cursor, Codex) give agents repo context, dedicated tools, and memory across sessions. DataChain adds the same for data: typed datasets the agent reads, chain operations the agent calls (`read_storage`, `map`, `save`), a Dataset DB where its results persist.
+Code harnesses (Claude Code, Cursor, Codex, GitHub Copilot, Pi) give agents repo context, dedicated tools, and memory across sessions. DataChain adds the same for data: typed datasets the agent reads, chain operations the agent calls (`read_storage`, `map`, `save`), a Dataset DB where its results persist.
 
 <p align="center">
   <img src="docs/assets/harness.svg" alt="DataChain as a data harness" width="500" />
@@ -313,7 +313,7 @@ Saved pets_images@1.0.2  (+500 records)
 
 DataChain maintains two layers. The **Dataset DB** is the ground truth: schemas, processing state, lineage, the vectors themselves. **The Knowledge Base** is derived from it: structured markdown for humans and agents to read. Because it's derived, it's always accurate. The Knowledge Base is stored in `dc-knowledge/`.
 
-Ask the agent to build it (from Calude Code, Codex or Cursor):
+Ask the agent to build it (from Claude Code, Cursor, Codex, GitHub Copilot, or Pi):
 ```bash
 claude
 ```

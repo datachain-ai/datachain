@@ -125,10 +125,23 @@ def _extract_deps(lines: list[str]) -> list[str]:
     return deps
 
 
+def _parse_list_field(raw: str) -> list[str]:
+    """Parse a `[a, b, c]` list-style frontmatter value into a list of strings."""
+    if not raw:
+        return []
+    if raw.startswith("[") and raw.endswith("]"):
+        raw = raw[1:-1]
+    return [v.strip() for v in raw.split(",") if v.strip()]
+
+
+CAST_LAYERS = ("container", "asset", "sense", "task")
+
+
 def _read_md_info(md_path: str) -> dict:
     """Read metadata, description, and dependencies from an enriched dataset .md.
 
-    Returns dict with keys: description, deps, last_version, records, updated.
+    Returns dict with keys: description, deps, last_version, records, updated,
+    cast_layer, cast_scope, cast_source, cast_parents.
     """
     info: dict = {
         "description": "",
@@ -138,6 +151,10 @@ def _read_md_info(md_path: str) -> dict:
         "records": "",
         "num_versions": "",
         "updated": "",
+        "cast_layer": "",
+        "cast_scope": "",
+        "cast_source": "",
+        "cast_parents": [],
     }
 
     try:
@@ -146,7 +163,12 @@ def _read_md_info(md_path: str) -> dict:
     except Exception:  # noqa: BLE001
         return info
 
-    info.update(_parse_frontmatter_info(_read_md_frontmatter(md_path)))
+    fm = _read_md_frontmatter(md_path)
+    info.update(_parse_frontmatter_info(fm))
+    info["cast_layer"] = fm.get("cast_layer", "").strip().lower()
+    info["cast_scope"] = fm.get("cast_scope", "").strip().lower()
+    info["cast_source"] = fm.get("cast_source", "").strip()
+    info["cast_parents"] = _parse_list_field(fm.get("cast_parents", ""))
 
     body = _strip_frontmatter(content)
     if body is None:
@@ -160,37 +182,129 @@ def _read_md_info(md_path: str) -> dict:
     return info
 
 
+def _collect_dataset_row(ds: dict, strip_namespace: bool = False) -> tuple[dict, dict]:
+    """Read frontmatter + body info for a dataset entry.
+
+    Returns (ds_with_link, info).
+    """
+    name = ds["name"]
+    source = ds["source"]
+    file_path = ds.get("file_path", dataset_file_path(name, source))
+
+    display_name = name
+    if strip_namespace:
+        parts = name.split(".", 2)
+        if len(parts) == 3:
+            display_name = parts[2]
+
+    md_path = os.path.join(BASE_DIR, file_path + ".md")
+    info = _read_md_info(md_path)
+    enriched = {
+        "name": name,
+        "display_name": display_name,
+        "link": f"[{display_name}]({file_path}.md)",
+        "file_path": file_path,
+    }
+    return enriched, info
+
+
 def _render_dataset_table(
     datasets: list[dict], strip_namespace: bool = False
 ) -> list[str]:
-    """Render a markdown table for a list of dataset entries."""
+    """Render a markdown table for a list of dataset entries (legacy/Studio shape)."""
     lines = []
     lines.append("| Name | Updated | Dependencies | Summary |")
     lines.append("|------|---------|--------------|---------|")
 
     for ds in sorted(datasets, key=lambda d: d["name"]):
-        name = ds["name"]
-        source = ds["source"]
-        file_path = ds.get("file_path", dataset_file_path(name, source))
-
-        # Display name: strip namespace prefix if inside a namespace subsection
-        display_name = name
-        if strip_namespace:
-            parts = name.split(".", 2)
-            if len(parts) == 3:
-                display_name = parts[2]
-
-        link = f"[{display_name}]({file_path}.md)"
-
-        # All metadata from enriched .md
-        md_path = os.path.join(BASE_DIR, file_path + ".md")
-        info = _read_md_info(md_path)
+        enriched, info = _collect_dataset_row(ds, strip_namespace=strip_namespace)
         updated = info["updated"]
         deps_str = ", ".join(info["deps"]) if info["deps"] else ""
         summary = info["description"]
+        lines.append(f"| {enriched['link']} | {updated} | {deps_str} | {summary} |")
 
-        lines.append(f"| {link} | {updated} | {deps_str} | {summary} |")
+    return lines
 
+
+CAST_SECTION_NAMES = {
+    "container": "Container",
+    "asset": "Asset",
+    "sense": "Sense",
+    "task": "Task Dataset",
+}
+
+CAST_SECTION_BLURBS = {
+    "container": "_File headers, listings, and sidecar metadata. One row per file._",
+    "asset": (
+        "_Raw extracted data (frames, clips, audio, parsed arrays) "
+        "or training mixtures of multiple datasets._"
+    ),
+    "sense": (
+        "_Model-derived signals: embeddings, classifications, "
+        "transcriptions, LLM outputs._"
+    ),
+    "task": (
+        "_Task-specific analytics and any dataset not tagged as "
+        "Container, Asset, or Sense._"
+    ),
+}
+
+
+def _render_cast_table(rows: list[tuple[dict, dict]], layer: str) -> list[str]:
+    """Render a markdown table for one CAST layer.
+
+    Columns are uniform across layers for readability: Name, Scope, Source,
+    Parents, Updated, Records, Description.
+    """
+    lines = []
+    lines.append(
+        "| Name | Scope | Source | Parents | Updated | Records | Description |"
+    )
+    lines.append(
+        "|------|-------|--------|---------|---------|--------:|-------------|"
+    )
+    for enriched, info in sorted(rows, key=lambda r: r[0]["name"]):
+        parents = ", ".join(info["cast_parents"]) if info["cast_parents"] else ""
+        lines.append(
+            f"| {enriched['link']} "
+            f"| {info['cast_scope']} "
+            f"| {info['cast_source']} "
+            f"| {parents} "
+            f"| {info['updated']} "
+            f"| {info['records']} "
+            f"| {info['description']} |"
+        )
+    return lines
+
+
+def _render_cast_grouped(datasets: list[dict]) -> list[str]:
+    """Render the local-datasets block as four CAST-grouped tables.
+
+    Untagged datasets and any non-C/A/S `cast_layer` value fall under
+    "Task Dataset" (the catch-all).
+    """
+    by_layer: dict[str, list[tuple[dict, dict]]] = {layer: [] for layer in CAST_LAYERS}
+    for ds in datasets:
+        enriched, info = _collect_dataset_row(ds)
+        layer = info["cast_layer"]
+        if layer not in CAST_LAYERS:
+            layer = "task"
+        by_layer[layer].append((enriched, info))
+
+    lines: list[str] = []
+    for layer in CAST_LAYERS:
+        rows = by_layer[layer]
+        if not rows and layer != "task":
+            continue
+        lines.append(f"### {CAST_SECTION_NAMES[layer]}")
+        lines.append("")
+        lines.append(CAST_SECTION_BLURBS[layer])
+        lines.append("")
+        if rows:
+            lines.extend(_render_cast_table(rows, layer))
+        else:
+            lines.append("_No datasets yet._")
+        lines.append("")
     return lines
 
 
@@ -214,12 +328,13 @@ def render_index(plan: dict) -> str:
     lines.append("---")
     lines.append("")
 
-    # Local datasets (default section — no "Local" header)
+    # Local datasets, grouped by CAST layer
+    # (Container, Asset, Sense, Task Dataset).
+    # Untagged datasets fall into "Task Dataset" as the catch-all.
     if local_ds:
         lines.append("## Datasets")
         lines.append("")
-        lines.extend(_render_dataset_table(local_ds))
-        lines.append("")
+        lines.extend(_render_cast_grouped(local_ds))
 
     # Studio datasets grouped by namespace
     if studio_ds:

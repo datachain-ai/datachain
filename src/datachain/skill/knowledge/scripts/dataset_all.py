@@ -33,11 +33,16 @@ def _fetch_all_versions(name: str) -> dict:  # noqa: C901, PLR0912, PLR0915
             key=parse_semver,
         )
         versions_out = []
+        ds_attrs: list[str] = []
+        ds_description: str | None = None
         for idx, version in enumerate(versions_sorted):
             version_entry = next(
                 (e for e in version_entries if e["version"] == version), None
             )
             data = fetch_version_data(f"{name}@{version}")
+            if idx == 0:
+                ds_attrs = list(data.get("attrs") or [])
+                ds_description = data.get("description")
             is_latest = idx == len(versions_sorted) - 1
             ver_summary = None
             if is_latest:
@@ -62,7 +67,13 @@ def _fetch_all_versions(name: str) -> dict:  # noqa: C901, PLR0912, PLR0915
                     "dependencies": data.get("dependencies", []),
                 }
             )
-        result = {"name": name, "source": source, "versions": versions_out}
+        result = {
+            "name": name,
+            "source": source,
+            "attrs": ds_attrs,
+            "description": ds_description,
+            "versions": versions_out,
+        }
         if warnings_list:
             result["warnings"] = warnings_list
         return result
@@ -79,11 +90,15 @@ def _fetch_all_versions(name: str) -> dict:  # noqa: C901, PLR0912, PLR0915
 
     # 2. Get full dataset record once — has all versions with query_script, num_objects.
     versions_sorted_obj = []
+    ds_attrs_main: list[str] = []
+    ds_description_main: str | None = None
     if catalog is not None:
         try:
             dataset_record = catalog.get_dataset(
                 bare_name, versions=None, include_incomplete=False
             )
+            ds_attrs_main = list(dataset_record.attrs or [])
+            ds_description_main = dataset_record.description
             versions_sorted_obj = sorted(
                 dataset_record.versions, key=lambda v: v.version_value
             )
@@ -103,11 +118,16 @@ def _fetch_all_versions(name: str) -> dict:  # noqa: C901, PLR0912, PLR0915
             key=parse_semver,
         )
         versions_out = []
+        ds_attrs_fb: list[str] = []
+        ds_description_fb: str | None = None
         for idx, version in enumerate(versions_sorted_str):
             version_entry = next(
                 (e for e in version_entries if e["version"] == version), None
             )
             data = fetch_version_data(f"{name}@{version}")
+            if idx == 0:
+                ds_attrs_fb = list(data.get("attrs") or [])
+                ds_description_fb = data.get("description")
             is_latest = idx == len(versions_sorted_str) - 1
             fb_summary = None
             if is_latest:
@@ -132,7 +152,13 @@ def _fetch_all_versions(name: str) -> dict:  # noqa: C901, PLR0912, PLR0915
                     "dependencies": data.get("dependencies", []),
                 }
             )
-        result = {"name": bare_name, "source": source, "versions": versions_out}
+        result = {
+            "name": bare_name,
+            "source": source,
+            "attrs": ds_attrs_fb,
+            "description": ds_description_fb,
+            "versions": versions_out,
+        }
         if warnings_list:
             result["warnings"] = warnings_list
         return result
@@ -222,7 +248,13 @@ def _fetch_all_versions(name: str) -> dict:  # noqa: C901, PLR0912, PLR0915
             }
         )
 
-    result = {"name": bare_name, "source": source, "versions": versions_out}
+    result = {
+        "name": bare_name,
+        "source": source,
+        "attrs": ds_attrs_main,
+        "description": ds_description_main,
+        "versions": versions_out,
+    }
     if warnings_list:
         result["warnings"] = warnings_list
     return result
@@ -276,6 +308,8 @@ def cmd_dataset_all(
     result = {
         "name": name,
         "source": new_data.get("source", "local"),
+        "attrs": new_data.get("attrs", []),
+        "description": new_data.get("description"),
         "versions": merged_versions,
     }
     if new_data.get("warnings"):
