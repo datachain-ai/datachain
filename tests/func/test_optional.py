@@ -11,6 +11,8 @@ Extracted from ``test_udf.py`` to keep nullable-object coverage in one place.
 
 from typing import Optional
 
+import pandas as pd
+
 import datachain as dc
 from datachain.lib.data_model import DataModel, unwrap_optional
 
@@ -637,9 +639,11 @@ def test_flat_export_optional_datamodel_leaf_none(test_session):
     score = df["item"]["score"].tolist()
     label = [norm(v) for v in df["item"]["label"].tolist()]
     assert score[0] == 10 and score[2] == 0
-    assert score[1] is None or (isinstance(score[1], float) and score[1] != score[1])
     assert label[0] == "a" and label[2] == ""
-    assert label[1] is None
+    # absent parent -> null leaf; pandas spells it None or NaN depending on
+    # version/dtype, so use pandas' own null check.
+    assert pd.isna(score[1])
+    assert pd.isna(label[1])
 
 
 def test_count_optional_datamodel_uses_sentinel(test_session):
