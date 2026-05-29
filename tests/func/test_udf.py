@@ -426,6 +426,47 @@ def test_print_schema_hides_optional_sentinel(test_session):
     assert "score" in out and "inner" in out  # real fields still shown
 
 
+def test_union_optional_and_plain_datamodel(test_session):
+    """union of an Optional[DataModel] chain with a plain DataModel chain yields
+    Optional[DataModel]: the plain side is promoted (a present sentinel is added)
+    so the column sets align. Regression: it raised UnionSchemaMismatchError and
+    leaked the internal _is_null sentinel name."""
+
+    def optional_chain():
+        return dc.read_values(
+            id=[1, 2],
+            item=[_Inner(score=1, label="x"), None],
+            output={"id": int, "item": Optional[_Inner]},
+            session=test_session,
+        )
+
+    def plain_chain():
+        return dc.read_values(
+            id=[3],
+            item=[_Inner(score=9, label="z")],
+            output={"id": int, "item": _Inner},
+            session=test_session,
+        )
+
+    def rows(chain):
+        return sorted(
+            (i, None if it is None else (it.score, it.label))
+            for i, it in chain.to_list("id", "item")
+        )
+
+    merged = optional_chain().union(plain_chain())
+    inner, is_optional = unwrap_optional(merged.signals_schema.values["item"])
+    assert is_optional and inner is _Inner
+    assert rows(merged) == [(1, (1, "x")), (2, None), (3, (9, "z"))]
+
+    # order-independent: plain.union(optional) is equivalent
+    assert rows(plain_chain().union(optional_chain())) == [
+        (1, (1, "x")),
+        (2, None),
+        (3, (9, "z")),
+    ]
+
+
 def test_to_json_absent_optional_datamodel_is_null(test_session, tmp_path):
     """to_json/to_jsonl serialize an absent Optional[DataModel] as null (not an
     object of nulls), consistent with hydration. A present object whose leaves

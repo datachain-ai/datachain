@@ -43,6 +43,7 @@ from datachain.lib.data_model import (
     DataValue,
     StandardType,
     dict_to_data_model,
+    unwrap_optional,
 )
 from datachain.lib.file import EXPORT_FILES_MAX_THREADS, ArrowRow, File, FileExporter
 from datachain.lib.file import ExportPlacement as FileExportPlacement
@@ -1843,6 +1844,68 @@ class DataChain:
 
         return ds
 
+    def _align_optional_for_union(self, other: "Self") -> "tuple[Self, Self]":
+        """Reconcile ``Optional[DataModel]`` vs plain ``DataModel`` for the same
+        signal across the two sides of a union.
+
+        A union of ``Optional[M]`` with ``M`` should yield ``Optional[M]``. The
+        plain side lacks the ``_is_null`` sentinel column, so it is promoted: a
+        ``present`` (False) sentinel is added and its schema signal becomes
+        ``Optional[M]``. Without this the column sets mismatch and the union
+        fails (leaking the internal sentinel name). Sides already matching are
+        returned unchanged.
+        """
+        from datachain.lib.signal_schema import SignalSchema
+
+        lvals = self.signals_schema.values
+        rvals = other.signals_schema.values
+        if set(lvals) != set(rvals):
+            return self, other  # genuinely different signals -> let union error
+
+        lprom, rprom = dict(lvals), dict(rvals)
+        left_add: dict[str, Any] = {}
+        right_add: dict[str, Any] = {}
+        sentinel_field = SignalSchema._OPTIONAL_SENTINEL_FIELD
+
+        def _present_sentinel() -> Any:
+            # present = not absent = False (read_optional_sentinel treats NULL/true
+            # as absent). Typed to match the optional side's Boolean sentinel.
+            col = literal(False)
+            col.type = python_to_sql(bool)()
+            return col
+
+        for name in lvals:
+            l_inner, l_opt = unwrap_optional(lvals[name])
+            r_inner, r_opt = unwrap_optional(rvals[name])
+            if not ModelStore.is_pydantic(l_inner):
+                continue
+            if not ModelStore.is_pydantic(r_inner):
+                continue
+            if l_opt == r_opt:
+                continue
+            sentinel = f"{name}{DEFAULT_DELIMITER}{sentinel_field}"
+            if not l_opt:
+                left_add[sentinel] = _present_sentinel()
+                lprom[name] = l_inner | None
+            if not r_opt:
+                right_add[sentinel] = _present_sentinel()
+                rprom[name] = r_inner | None
+
+        left, right = self, other
+        if left_add:
+            schema = SignalSchema(lprom)
+            left = self._evolve(
+                query=self._query.mutate(new_schema=schema, **left_add),
+                signal_schema=schema,
+            )
+        if right_add:
+            schema = SignalSchema(rprom)
+            right = other._evolve(
+                query=other._query.mutate(new_schema=schema, **right_add),
+                signal_schema=schema,
+            )
+        return left, right
+
     @delta_disabled
     def union(self, other: "Self") -> "Self":
         """Return the set union of the two datasets.
@@ -1850,8 +1913,9 @@ class DataChain:
         Parameters:
             other: chain whose rows will be added to `self`.
         """
-        self_schema = self.signals_schema
-        other_schema = other.signals_schema
+        left, right = self._align_optional_for_union(other)
+        self_schema = left.signals_schema
+        other_schema = right.signals_schema
         missing_left, missing_right = self_schema.compare_signals(other_schema)
         if missing_left or missing_right:
             raise UnionSchemaMismatchError.from_column_sets(
@@ -1859,8 +1923,8 @@ class DataChain:
                 missing_right,
             )
 
-        self.signals_schema = self_schema.clone_without_sys_signals()
-        return self._evolve(query=self._query.union(other._query))
+        left.signals_schema = self_schema.clone_without_sys_signals()
+        return left._evolve(query=left._query.union(right._query))
 
     @delta_disabled
     def subtract(  # type: ignore[override]
