@@ -284,24 +284,6 @@ def test_optional_datamodel_parquet_roundtrip_nested(test_session, tmp_path):
     assert got == {1: ("x", (5, "z")), 2: ("y", None), 3: None}
 
 
-def test_print_schema_hides_optional_sentinel(test_session):
-    """print_schema() must not expose the internal _is_null sentinel of an
-    Optional[DataModel] (consistent with to_pandas/to_records output)."""
-    import io
-
-    chain = dc.read_values(
-        id=[1],
-        d=[_Deep(name="a", inner=_Inner(score=2, label="y"))],
-        output={"id": int, "d": Optional[_Deep]},
-        session=test_session,
-    )
-    buf = io.StringIO()
-    chain.print_schema(file=buf)
-    out = buf.getvalue()
-    assert "_is_null" not in out
-    assert "score" in out and "inner" in out  # real fields still shown
-
-
 def test_union_optional_and_plain_datamodel(test_session):
     """union of an Optional[DataModel] chain with a plain DataModel chain yields
     Optional[DataModel]: the plain side is promoted (a present sentinel is added)
@@ -493,16 +475,13 @@ def test_read_values_optional_datamodel_multi_column(test_session):
 
 
 def test_read_values_optional_datamodel_inferred(test_session):
-    """A DataModel column with some None values is inferred as Optional[DataModel]
-    (so the sentinel is emitted) rather than the bare model type."""
+    """A DataModel column with some None values inferred as Optional[DataModel]
+    round-trips through save() with None preserved on both backends. (The pure
+    type-inference assertion lives in tests/unit/lib/test_optional.py.)"""
     items = [_Inner(score=1, label="a"), None, _Inner(score=3, label="c")]
-    chain = dc.read_values(id=[1, 2, 3], item=items, session=test_session)
-
-    inner, is_optional = unwrap_optional(chain.signals_schema.values["item"])
-    assert is_optional and inner is _Inner
-    assert "item___is_null" in chain.signals_schema.db_signals()
-
-    saved = chain.save("rv_inferred_opt")
+    saved = dc.read_values(id=[1, 2, 3], item=items, session=test_session).save(
+        "rv_inferred_opt"
+    )
     by_id = {r[0]: r[1] for r in saved.select("id", "item").to_list()}
     assert by_id[1] == _Inner(score=1, label="a")
     assert by_id[2] is None

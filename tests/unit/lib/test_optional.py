@@ -9,6 +9,7 @@ nullable-object coverage in one place.
 """
 
 import copy
+import io
 from typing import Optional, Union
 
 import pytest
@@ -16,6 +17,7 @@ from pydantic import BaseModel
 
 from datachain.lib.convert.flatten import flatten
 from datachain.lib.convert.unflatten import unflatten_to_json
+from datachain.lib.convert.values_to_tuples import _infer_type_from_sequence
 from datachain.lib.data_model import DataModel, is_chain_type, unwrap_optional
 from datachain.lib.model_store import ModelStore
 from datachain.lib.signal_schema import SignalSchema
@@ -247,10 +249,29 @@ def test_signal_schema_emits_sentinel_column_for_optional_datamodel():
     assert "out.addr.city" in visible
 
 
+def test_print_schema_hides_optional_sentinel():
+    # print_schema()/print_tree() must not expose the internal _is_null sentinel
+    # of an Optional[DataModel] (consistent with to_pandas/to_records output).
+    buf = io.StringIO()
+    SignalSchema({"out": _Outer}).print_tree(file=buf)
+    out = buf.getvalue()
+    assert "_is_null" not in out
+    assert "city" in out and "addr" in out  # real fields still shown
+
+
 def test_to_udf_spec_includes_sentinel_for_optional_datamodel():
     spec = SignalSchema({"out": _Outer}).to_udf_spec()
     assert "out__addr___is_null" in spec
     assert "out__addr__city" in spec
+
+
+def test_infer_optional_datamodel_from_nones():
+    # A DataModel column with some None values is inferred as Optional[DataModel]
+    # (so the sentinel is emitted) rather than the bare model type. This is the
+    # pure-inference half of the func read_values round-trip test.
+    seq = [_Addr(city="a"), None, _Addr(city="c")]
+    inner, is_optional = unwrap_optional(_infer_type_from_sequence(seq, "item", "ds"))
+    assert is_optional and inner is _Addr
 
 
 def test_optional_datamodel_roundtrip_at_top_level():
