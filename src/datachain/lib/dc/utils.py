@@ -56,7 +56,7 @@ def resolve_columns(
 
     ``wrap_optional`` (used by filter) additionally wraps leaf columns under an
     ``Optional[DataModel]`` in a sentinel-guarded CASE so absent-parent rows read
-    back as NULL on ClickHouse too — see ``SignalSchema.enrich_expr_types``.
+    back as NULL regardless of backend — see ``SignalSchema.enrich_expr_types``.
     """
 
     def decorator(

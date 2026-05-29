@@ -23,12 +23,12 @@ def flatten_value(value, anno) -> tuple:
     Optional shapes (see also ``unwrap_optional`` in ``data_model.py``):
 
     - ``Optional[basic]`` (int/str/float/bool/bytes/datetime): native nullable
-      column on both backends.
+      column.
     - ``Optional[DataModel]``: leading ``is_null`` sentinel + leaf columns.
-    - ``Optional[list[T]]`` / ``Optional[dict[K, V]]``: NULL in the JSON cell
-      on SQLite; on ClickHouse ``Nullable(Array(...))`` is rejected, so
-      schemas targeting CH should use ``list[T] = []`` / ``dict = {{}}``
-      instead of an Optional collection until that fix lands.
+    - ``Optional[list[T]]`` / ``Optional[dict[K, V]]``: stored as NULL where the
+      backend has a nullable array/map column; on backends that reject a nullable
+      array/map type, use ``list[T] = []`` / ``dict = {{}}`` instead of an
+      Optional collection until that is supported.
     - ``list[Optional[T]]`` / ``dict[K, Optional[V]]``: not supported — no
       per-element sentinels are emitted.
     - True multi-arg ``Union[A, B]`` without None: falls back to JSON, no
@@ -44,8 +44,8 @@ def flatten_value(value, anno) -> tuple:
         if value is None:
             # Non-Optional model but the value is None (e.g. an unmatched side of
             # a full outer merge). There is no sentinel column, so emit absent
-            # placeholders for every leaf — NULL on SQLite, type-defaults on
-            # ClickHouse — matching the schema width.
+            # placeholders for every leaf — SQL NULL, or the column type's default
+            # on backends with non-nullable leaves — matching the schema width.
             return tuple(_emit_absent(inner))
         return flatten(value)
     return (value,)

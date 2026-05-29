@@ -318,6 +318,41 @@ def test_filter_optional_datamodel_leaf_excludes_absent(test_session):
     assert ids(chain.filter(dc.C("item.is_null") == True)) == [2]  # noqa: E712
 
 
+def test_order_by_optional_datamodel_leaf_nulls_last(test_session):
+    """order_by on a leaf under Optional[DataModel] sorts absent rows last on both
+    backends. Without the fix, ClickHouse sorts the absent row by its type-default
+    (0) intermixed with real values, while SQLite sorts NULL first (asc)."""
+
+    # id=2 -> absent. Present scores: id1=10, id3=0, id4=7.
+    presents = {
+        1: _Inner(score=10, label="a"),
+        3: _Inner(score=0, label="c"),
+        4: _Inner(score=7, label="d"),
+    }
+
+    def pick(id: int) -> _Inner | None:
+        return presents.get(id)
+
+    chain = dc.read_values(id=[1, 2, 3, 4], session=test_session).map(
+        item=pick, output={"item": Optional[_Inner]}
+    )
+
+    def order(*, descending: bool, use_c: bool):
+        col = dc.C("item.score") if use_c else "item.score"
+        return [
+            r["id"]
+            for r in chain.order_by(col, descending=descending)
+            .select("id")
+            .to_records()
+        ]
+
+    # ascending: real 0,7,10 then the absent row (NULL) last.
+    assert order(descending=False, use_c=False) == [3, 4, 1, 2]
+    assert order(descending=False, use_c=True) == [3, 4, 1, 2]
+    # descending: real 10,7,0 then the absent row (NULL) last.
+    assert order(descending=True, use_c=False) == [1, 4, 3, 2]
+
+
 def test_count_optional_datamodel_uses_sentinel(test_session):
     """``func.count("opt_model")`` returns the number of rows whose parent is
     present — same value on SQLite and ClickHouse, regardless of how CH

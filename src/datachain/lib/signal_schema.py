@@ -20,7 +20,7 @@ from typing import (
 )
 
 from pydantic import BaseModel, Field, ValidationError, create_model
-from sqlalchemy import Cast, case, cast
+from sqlalchemy import Cast, asc, case, cast, desc, nulls_last
 from sqlalchemy.sql.elements import BinaryExpression, Grouping, Label
 
 from datachain import json
@@ -934,9 +934,11 @@ class SignalSchema:
         ancestor of leaf ``db_col`` — or None when ``db_col`` is not such a leaf, or
         is itself a sentinel.
 
-        Leaves under an absent parent physically hold type-defaults on ClickHouse
-        (``0`` / ``""``) but SQL NULL on SQLite. Callers wrap such a leaf in
-        ``CASE WHEN sentinel = 0 THEN col END`` so it reads back as NULL on both.
+        Leaves under an absent parent read back as SQL NULL on backends with
+        nullable leaf columns, but as the column type's default (``0`` / ``""``)
+        on backends that store them as non-nullable typed columns. Callers wrap
+        such a leaf in ``CASE WHEN sentinel = 0 THEN col END`` so it reads back as
+        NULL regardless of backend.
         """
         parts = db_col.split(DEFAULT_DELIMITER)
         for i in range(len(parts), 0, -1):
@@ -951,6 +953,23 @@ class SignalSchema:
                 return None if sentinel == db_col else sentinel
         return None
 
+    def order_by_column(
+        self, db_col: str, *, descending: bool = False
+    ) -> "ColumnExpr | None":
+        """Order-by expression for one leaf ``db_col`` under ``Optional[DataModel]``.
+
+        Returns None when ``db_col`` is not such a leaf, so the caller keeps its
+        default handling. Otherwise wraps the leaf in the sentinel CASE (so absent
+        rows sort as NULL everywhere, not as a type-default) and places those NULLs
+        last — emitted explicitly so backends with differing default NULL ordering
+        agree.
+        """
+        sentinel = self.optional_parent_sentinel(db_col)
+        if sentinel is None:
+            return None
+        col = case((Column(sentinel) == 0, Column(db_col)), else_=None)
+        return nulls_last(desc(col) if descending else asc(col))
+
     def enrich_expr_types(
         self, expr: "ColumnExpr", *, wrap_optional: bool = False
     ) -> "ColumnExpr":
@@ -962,9 +981,10 @@ class SignalSchema:
 
         When ``wrap_optional`` is set, leaf columns under an ``Optional[DataModel]``
         are additionally wrapped in ``CASE WHEN sentinel = 0 THEN col END`` so that
-        absent-parent rows read back as NULL on ClickHouse too (matching SQLite).
-        Used by ``filter`` so a predicate like ``C("addr.score") == 0`` does not
-        match the type-defaulted leaves of absent rows on ClickHouse.
+        absent-parent rows read back as NULL regardless of backend. Used by
+        ``filter`` so a predicate like ``C("addr.score") == 0`` does not match
+        absent rows whose leaf holds the column type's default on backends with
+        non-nullable leaf columns.
         """
 
         typed_cols = {
@@ -1269,8 +1289,8 @@ class SignalSchema:
             register_pydantic=True,
         )
 
-    # Sentinel typed Optional[bool] so ClickHouse emits Nullable(Bool) and a
-    # NULL from `join_use_nulls=1` reads back as "absent" instead of False.
+    # Sentinel typed Optional[bool] so it maps to a nullable boolean column; a
+    # NULL an outer join pads in then reads back as "absent" instead of False.
     _OPTIONAL_SENTINEL_FIELD = "is_null"
     _OPTIONAL_SENTINEL_TYPE = bool | None  # type: ignore[valid-type]
 

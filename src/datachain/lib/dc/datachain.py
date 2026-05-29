@@ -1130,10 +1130,31 @@ class DataChain:
             See https://github.com/datachain-ai/datachain/issues/477
             for further details.
         """
-        if descending:
-            args = tuple(sqlalchemy.desc(a) for a in args)
+        # For absent-parent rows, a leaf under an Optional[DataModel] holds the
+        # column type's default on backends with non-nullable leaves; wrap it in
+        # the sentinel CASE (so it sorts as NULL everywhere) with an explicit NULLS
+        # LAST so placement matches too. Non-optional columns keep default handling.
+        resolved: list[Any] = []
+        for arg in args:
+            if isinstance(arg, str):
+                name = arg
+            elif isinstance(arg, Column):
+                name = arg.name
+            else:
+                name = None
+            wrapped = (
+                self.signals_schema.order_by_column(name, descending=descending)
+                if name is not None
+                else None
+            )
+            if wrapped is not None:
+                resolved.append(wrapped)
+            elif descending:
+                resolved.append(sqlalchemy.desc(arg))
+            else:
+                resolved.append(arg)
 
-        return self._evolve(query=self._query.order_by(*args))
+        return self._evolve(query=self._query.order_by(*resolved))
 
     @delta_disabled
     def distinct(  # type: ignore[override]

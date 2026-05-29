@@ -20,9 +20,9 @@ def read_optional_sentinel(
 ) -> tuple[bool, int]:
     """Consume the leading sentinel of an ``Optional[DataModel]`` subtree.
 
-    A NULL sentinel — produced by outer joins with ``join_use_nulls=1`` —
-    is treated as absent so the parent hydrates to None even when the
-    ClickHouse leaf columns hold their non-Nullable type defaults.
+    A NULL sentinel — which an outer join may pad in place of a missing row —
+    is treated as absent so the parent hydrates to None even on backends whose
+    non-nullable leaf columns hold their type defaults instead of SQL NULL.
     """
     sentinel = row[pos]
     pos += 1

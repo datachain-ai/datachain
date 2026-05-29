@@ -47,9 +47,10 @@ def _wrap_optional_leaf(
     table: "TableClause | None",
 ) -> ColumnElement:
     """Return ``CASE WHEN sentinel = 0 THEN column END`` when ``db_col`` is a
-    leaf under an ``Optional[DataModel]``. Forces ClickHouse's type-defaulted
-    absent rows to read back as SQL NULL — matching SQLite — so functions and
-    filters that touch the leaf give consistent results across backends.
+    leaf under an ``Optional[DataModel]``. Forces absent rows — whose leaf holds
+    the column type's default on backends with non-nullable columns — to read
+    back as SQL NULL, so functions and filters that touch the leaf give
+    consistent results across backends.
     """
     sentinel_path = _optional_parent_sentinel(db_col, signals_schema)
     if sentinel_path is None:
