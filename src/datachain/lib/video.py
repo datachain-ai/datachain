@@ -1,4 +1,3 @@
-import io
 import os
 import posixpath
 import shutil
@@ -16,7 +15,6 @@ from PIL import Image as PilImage
 from datachain.lib.file import (
     File,
     FileError,
-    ImageFile,
     VFileRegistry,
     Video,
     VideoFile,
@@ -237,12 +235,14 @@ def _video_frames_from_decoded(
         if frame_index < start or (frame_index - start) % step:
             continue
 
-        yield VideoFrame(
+        video_frame = VideoFrame(
             video=video,
             frame=frame_index,
             video_stream_index=video_stream_index,
             timestamp=_frame_timestamp(frame, frame_index, fps),
         )
+        video_frame._decoded = frame
+        yield video_frame
 
 
 def video_frame_np(
@@ -438,30 +438,6 @@ def _decode_video_frame(video: VideoFile, frame: int, video_stream_index: int = 
     raise FileError("unable to read video frame", video.source, video.path)
 
 
-def video_frame_bytes(
-    video: VideoFile,
-    frame: int,
-    format: str = "jpg",
-    video_stream_index: int = 0,
-) -> bytes:
-    """
-    Reads video frame from a file and returns as image bytes.
-
-    Args:
-        video (VideoFile): Video file object.
-        frame (int): Frame index.
-        format (str): Image format (default: 'jpg').
-        video_stream_index: Zero-based index among video streams.
-
-    Returns:
-        bytes: Video frame image as bytes.
-    """
-    img = video_frame_np(video, frame, video_stream_index=video_stream_index)
-    buf = io.BytesIO()
-    PilImage.fromarray(img).save(buf, format=_image_format(format))
-    return buf.getvalue()
-
-
 def _image_format(format: str) -> str:
     extension = format.lower()
     if not extension.startswith("."):
@@ -472,48 +448,6 @@ def _image_format(format: str) -> str:
         return image_format
 
     return format.upper()
-
-
-def save_video_frame(
-    video: VideoFile,
-    frame: int,
-    destination: str | os.PathLike[str],
-    format: str = "jpg",
-    client_config: dict | None = None,
-    video_stream_index: int = 0,
-) -> ImageFile:
-    """
-    Saves video frame as a new image file. If ``destination`` is a remote
-    path, the image will be uploaded to remote storage.
-
-    Args:
-        video: Video file object.
-        frame: Frame index.
-        destination: Output directory path or URI (e.g. ``s3://…``, ``gs://…``).
-        format: Image format (default: 'jpg').
-        client_config: Optional client configuration (e.g. credentials).
-        video_stream_index: Zero-based index among video streams.
-
-    Returns:
-        ImageFile: Image file model.
-    """
-    catalog = video._catalog
-    if catalog is None:
-        raise RuntimeError("Cannot save video frame: catalog is not set")
-
-    destination = stringify_path(destination)
-    img = video_frame_bytes(
-        video, frame, format=format, video_stream_index=video_stream_index
-    )
-    extension = format.removeprefix(".")
-    output_file = posixpath.join(
-        destination, f"{video.get_file_stem()}_{frame:04d}.{extension}"
-    )
-    client, rel_path = video._resolve_destination(output_file, client_config)
-    result = client.upload(img, rel_path)
-    image = ImageFile(**result.model_dump())
-    image._set_stream(catalog)
-    return image
 
 
 def _ffmpeg_output_options(format: str) -> dict[str, str]:
