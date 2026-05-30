@@ -1004,13 +1004,13 @@ def test_update_job(metastore):
         error_message="err",
         error_stack="stack",
         finished_at=datetime.now(timezone.utc),
-        metrics={"acc": 0.99},
+        metrics={"acc": 0.5, "hist": [1, 2]},
     )
     assert updated.status == JobStatus.FAILED
     assert updated.error_message == "err"
     assert updated.error_stack == "stack"
     assert updated.finished_at is not None
-    assert updated.metrics == {"acc": 0.99}
+    assert updated.metrics == {"acc": 0.5, "hist": [1, 2]}
 
 
 def test_set_job_status(metastore):

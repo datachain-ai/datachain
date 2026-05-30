@@ -9,6 +9,7 @@ All code inside DataChain should import this module instead of using
 
 import datetime as _dt
 import json as _json
+import sys as _sys
 import uuid as _uuid
 from collections.abc import Callable
 from typing import Any
@@ -58,35 +59,76 @@ def _format_time(value: _dt.time) -> str:
     return iso
 
 
-def _coerce(value: Any, serialize_bytes: bool) -> Any:
+def _coerce(value: Any, serialize_bytes: bool, serialize_numpy: bool) -> Any:
     """Return a JSON-serializable representation for supported extra types."""
 
+    converted = _SENTINEL
     if isinstance(value, _dt.datetime):
-        return _format_datetime(value)
-    if isinstance(value, _dt.date):
-        return value.isoformat()
-    if isinstance(value, _dt.time):
-        return _format_time(value)
-    if isinstance(value, _uuid.UUID):
-        return str(value)
-    if serialize_bytes and isinstance(value, (bytes, bytearray)):
-        return list(bytes(value)[:DEFAULT_PREVIEW_BYTES])
+        converted = _format_datetime(value)
+    elif isinstance(value, _dt.date):
+        converted = value.isoformat()
+    elif isinstance(value, _dt.time):
+        converted = _format_time(value)
+    elif isinstance(value, _uuid.UUID):
+        converted = str(value)
+
+    if converted is _SENTINEL and serialize_numpy:
+        converted = _coerce_numpy(value)
+    if (
+        converted is _SENTINEL
+        and serialize_bytes
+        and isinstance(value, (bytes, bytearray))
+    ):
+        converted = list(bytes(value)[:DEFAULT_PREVIEW_BYTES])
+
+    return converted
+
+
+def _coerce_numpy(value: Any) -> Any:
+    if "numpy" not in _sys.modules:
+        return _SENTINEL
+
+    import numpy as np
+
+    if isinstance(value, (np.ndarray, np.generic)):
+        return _numpy_to_python(value, np)
     return _SENTINEL
 
 
-def _base_default(value: Any, serialize_bytes: bool) -> Any:
-    converted = _coerce(value, serialize_bytes)
+def _numpy_to_python(value: Any, numpy_module) -> Any:
+    if isinstance(value, numpy_module.ndarray):
+        converted = value.tolist()
+        if value.dtype != object:
+            return converted
+        return _numpy_to_python(converted, numpy_module)
+    if isinstance(value, numpy_module.generic):
+        return value.tolist()
+    if isinstance(value, (list, tuple, set)):
+        converted = [_numpy_to_python(item, numpy_module) for item in value]
+        return tuple(converted) if isinstance(value, tuple) else converted
+    if isinstance(value, dict):
+        return {
+            _numpy_to_python(key, numpy_module): _numpy_to_python(item, numpy_module)
+            for key, item in value.items()
+        }
+    return value
+
+
+def _base_default(value: Any, serialize_bytes: bool, serialize_numpy: bool) -> Any:
+    converted = _coerce(value, serialize_bytes, serialize_numpy)
     if converted is not _SENTINEL:
         return converted
     raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
 
 
-def _build_default(user_default: _Default | None, serialize_bytes: bool) -> _Default:
+def _build_default(
+    user_default: _Default | None, serialize_bytes: bool, serialize_numpy: bool
+) -> _Default:
     if user_default is None:
-        return lambda value: _base_default(value, serialize_bytes)
+        return lambda value: _base_default(value, serialize_bytes, serialize_numpy)
 
     def combined(value: Any) -> Any:
-        converted = _coerce(value, serialize_bytes)
+        converted = _coerce(value, serialize_bytes, serialize_numpy)
         if converted is not _SENTINEL:
             return converted
         return user_default(value)
@@ -99,14 +141,19 @@ def dumps(
     *,
     default: _Default | None = None,
     serialize_bytes: bool = False,
+    serialize_numpy: bool = False,
     **kwargs: Any,
 ) -> str:
     """Serialize *obj* to a JSON-formatted ``str``."""
 
     if serialize_bytes:
-        return _json.dumps(obj, default=_build_default(default, True), **kwargs)
+        return _json.dumps(
+            obj, default=_build_default(default, True, serialize_numpy), **kwargs
+        )
 
-    return _ujson.dumps(obj, default=_build_default(default, False), **kwargs)
+    return _ujson.dumps(
+        obj, default=_build_default(default, False, serialize_numpy), **kwargs
+    )
 
 
 def dump(
@@ -115,15 +162,20 @@ def dump(
     *,
     default: _Default | None = None,
     serialize_bytes: bool = False,
+    serialize_numpy: bool = False,
     **kwargs: Any,
 ) -> None:
     """Serialize *obj* as a JSON formatted stream to *fp*."""
 
     if serialize_bytes:
-        _json.dump(obj, fp, default=_build_default(default, True), **kwargs)
+        _json.dump(
+            obj, fp, default=_build_default(default, True, serialize_numpy), **kwargs
+        )
         return
 
-    _ujson.dump(obj, fp, default=_build_default(default, False), **kwargs)
+    _ujson.dump(
+        obj, fp, default=_build_default(default, False, serialize_numpy), **kwargs
+    )
 
 
 def loads(s: str | bytes | bytearray, **kwargs: Any) -> Any:

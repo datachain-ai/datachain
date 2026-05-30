@@ -1,6 +1,7 @@
 from datetime import datetime
 from typing import Any
 
+import numpy as np
 import pytest
 import ujson as json
 from pydantic import BaseModel, ConfigDict
@@ -146,6 +147,18 @@ def test_convert_type(test_session):
     assert run_convert_type({"ts": dt_value}, JSON()) == '{"ts":"2024-01-02T03:04:05"}'
     # primitives should serialize to valid JSON
     assert run_convert_type(0.5, JSON()) == "0.5"
+
+    out = run_convert_type(
+        {
+            "a": np.array([1, 2], dtype=np.int64),
+            "b": {"score": np.float32(0.5)},
+        },
+        JSON(),
+    )
+    assert json.loads(out) == {"a": [1, 2], "b": {"score": 0.5}}
+
+    out = run_convert_type({np.int64(7): "v"}, JSON())
+    assert json.loads(out) == {"7": "v"}
 
     # JSON with Pydantic models (values and nested)
     class MyFr(BaseModel):
