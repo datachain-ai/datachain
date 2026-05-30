@@ -98,7 +98,7 @@ def to_database(
     signals_schema = chain.signals_schema.clone_without_sys_signals()
     all_columns = [
         sqlalchemy.Column(c.name, c.type)  # type: ignore[union-attr]
-        for c in signals_schema.db_signals(as_columns=True)
+        for c in signals_schema.db_signals(as_columns=True, include_sentinels=False)
     ]
 
     column_mapping = column_mapping or {}

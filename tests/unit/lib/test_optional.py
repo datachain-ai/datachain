@@ -262,6 +262,16 @@ def test_print_schema_hides_optional_sentinel():
     assert "city" in out and "addr" in out  # real fields still shown
 
 
+def test_get_signals_recognizes_optional_file():
+    """get_signals(File) must still find an Optional[File] node. The isclass
+    guard (needed because Optional[File] is a Union) would otherwise silently
+    skip it, which undercounts File-derived dataset stats (e.g. total size)."""
+    from datachain.lib.file import File
+
+    schema = SignalSchema({"plain": File, "maybe": Optional[File]})
+    assert set(schema.get_signals(File)) == {"plain", "maybe"}
+
+
 def test_to_udf_spec_includes_sentinel_for_optional_datamodel():
     spec = SignalSchema({"out": _Outer}).to_udf_spec()
     assert "out__addr___is_null" in spec

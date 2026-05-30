@@ -31,7 +31,8 @@ class _CountFunc(_SentinelAwareFunc):
     ) -> Column:
         sentinel = Column(sentinel_path)
         sentinel.table = table
-        func_col = sa_func.sum(1 - sa_cast(sentinel, Integer))
+        # COALESCE keeps count()'s 0-for-empty contract: SUM over zero rows is NULL.
+        func_col = sa_func.coalesce(sa_func.sum(1 - sa_cast(sentinel, Integer)), 0)
         return self._finalize_column(func_col, Integer, label)
 
 

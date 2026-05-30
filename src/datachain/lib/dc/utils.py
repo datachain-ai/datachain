@@ -1,6 +1,6 @@
 from collections.abc import Sequence
 from functools import wraps
-from typing import TYPE_CHECKING, Any, TypeVar, cast
+from typing import TYPE_CHECKING, TypeVar, cast
 
 import sqlalchemy
 from sqlalchemy.sql.elements import BindParameter
@@ -36,8 +36,8 @@ def is_local() -> bool:
 
 
 def resolve_columns(
-    method: "Callable[Concatenate[D, P], D] | None" = None,
-) -> "Callable[..., Any]":
+    method: "Callable[Concatenate[D, P], D]",
+) -> "Callable[Concatenate[D, P], D]":
     """Normalize positional column inputs against the current schema.
 
     This is mainly used by APIs like filter() and order_by() that accept a mix of
@@ -53,61 +53,52 @@ def resolve_columns(
       still contain Function-valued bind parameters that must be converted to SQL
     """
 
-    def decorator(
-        method: "Callable[Concatenate[D, P], D]",
-    ) -> "Callable[Concatenate[D, P], D]":
-        @wraps(method)
-        def _inner(self: D, *args: "P.args", **kwargs: "P.kwargs") -> D:
-            resolved_args: list[object] = []
+    @wraps(method)
+    def _inner(self: D, *args: "P.args", **kwargs: "P.kwargs") -> D:
+        resolved_args: list[object] = []
 
-            def resolve_expr(expr: ColumnExpr) -> ColumnExpr:
-                plain_bind_params: list[BindParameter] = []
-                func_bind_replacements: dict[int, ColumnExpr] = {}
+        def resolve_expr(expr: ColumnExpr) -> ColumnExpr:
+            plain_bind_params: list[BindParameter] = []
+            func_bind_replacements: dict[int, ColumnExpr] = {}
 
-                for element in iterate(expr):
-                    if not isinstance(element, BindParameter):
-                        continue
-                    if isinstance(element.value, Function):
-                        func_bind_replacements[id(element)] = element.value.get_column(
-                            self.signals_schema
-                        )
-                    else:
-                        plain_bind_params.append(element)
-
-                if func_bind_replacements:
-                    # replacement_traverse clones visited bind params by default.
-                    # Preserve ordinary binds and only replace the Function-valued
-                    # ones we collected from the original expression tree.
-                    expr = replacement_traverse(
-                        expr,
-                        {"stop_on": plain_bind_params},
-                        lambda element, **_kwargs: func_bind_replacements.get(
-                            id(element)
-                        ),
+            for element in iterate(expr):
+                if not isinstance(element, BindParameter):
+                    continue
+                if isinstance(element.value, Function):
+                    func_bind_replacements[id(element)] = element.value.get_column(
+                        self.signals_schema
                     )
-
-                return self.signals_schema.enrich_expr_types(expr)
-
-            for arg in args:
-                if isinstance(arg, Function):
-                    resolved_args.append(arg.get_column(self.signals_schema))
-                elif isinstance(arg, ColumnExpr):
-                    resolved_args.append(resolve_expr(arg))
                 else:
-                    resolved_args.extend(
-                        cast(
-                            "list[str]",
-                            self.signals_schema.resolve(cast("str", arg)).db_signals(),
-                        )
+                    plain_bind_params.append(element)
+
+            if func_bind_replacements:
+                # replacement_traverse clones visited bind params by default.
+                # Preserve ordinary binds and only replace the Function-valued ones
+                # we collected from the original expression tree.
+                expr = replacement_traverse(
+                    expr,
+                    {"stop_on": plain_bind_params},
+                    lambda element, **_kwargs: func_bind_replacements.get(id(element)),
+                )
+
+            return self.signals_schema.enrich_expr_types(expr)
+
+        for arg in args:
+            if isinstance(arg, Function):
+                resolved_args.append(arg.get_column(self.signals_schema))
+            elif isinstance(arg, ColumnExpr):
+                resolved_args.append(resolve_expr(arg))
+            else:
+                resolved_args.extend(
+                    cast(
+                        "list[str]",
+                        self.signals_schema.resolve(cast("str", arg)).db_signals(),
                     )
+                )
 
-            return method(self, *resolved_args, **kwargs)  # type: ignore[arg-type,misc]
+        return method(self, *resolved_args, **kwargs)  # type: ignore[arg-type,misc]
 
-        return _inner
-
-    if method is not None:
-        return decorator(method)
-    return decorator
+    return _inner
 
 
 class DatasetPrepareError(DataChainParamsError):

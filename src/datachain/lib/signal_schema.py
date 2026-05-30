@@ -999,12 +999,15 @@ class SignalSchema:
     def order_by_column(
         self, db_col: str, *, descending: bool = False
     ) -> "ColumnExpr | None":
-        """Order-by expression for a leaf under ``Optional[DataModel]``, with
-        explicit ``NULLS LAST`` so an absent-parent row sorts last on every backend
-        (SQLite would otherwise sort NULLs first). None when ``db_col`` is not such
-        a leaf."""
-        sentinel = self.optional_parent_sentinel(db_col)
-        if sentinel is None:
+        """Order-by expression for a nullable column (a leaf under
+        ``Optional[DataModel]`` or a top-level ``Optional[basic]``), with explicit
+        ``NULLS LAST`` so a NULL row sorts last on every backend (SQLite would
+        otherwise sort NULLs first). None when ``db_col`` is not nullable."""
+        try:
+            anno = self.get_column_type(db_col)
+        except SignalResolvingError:
+            return None
+        if not self.is_nullable_column(db_col, anno):
             return None
         col = Column(db_col)
         return nulls_last(desc(col) if descending else asc(col))
@@ -1194,9 +1197,9 @@ class SignalSchema:
 
     def get_signals(self, target_type: type[DataModel]) -> Iterator[str]:
         for path, type_, has_subtree, _ in self.get_flat_tree():
-            # type_ is a Union for an Optional[DataModel] node; guard isclass so
-            # issubclass doesn't raise on Python <3.11.
-            if has_subtree and isclass(type_) and issubclass(type_, target_type):
+            # isclass guards issubclass against a Union; unwrap keeps Optional[File].
+            inner, _ = unwrap_optional(type_)
+            if has_subtree and isclass(inner) and issubclass(inner, target_type):
                 yield ".".join(path)
 
     def create_model(self, name: str) -> type[DataModel]:
@@ -1344,22 +1347,24 @@ class SignalSchema:
     _OPTIONAL_SENTINEL_TYPE = bool | None  # type: ignore[valid-type]
 
     @staticmethod
+    def _model_subtree(
+        fr: type[BaseModel], is_optional: bool
+    ) -> dict[str, tuple[DataType, dict | None]]:
+        """Flat tree for a model, prepending the ``_is_null`` sentinel when the
+        field is ``Optional[DataModel]``."""
+        subtree = SignalSchema._build_tree_for_model(fr) or {}
+        if is_optional:
+            sentinel: tuple[Any, Any] = (SignalSchema._OPTIONAL_SENTINEL_TYPE, None)
+            subtree = {SignalSchema._OPTIONAL_SENTINEL_FIELD: sentinel, **subtree}
+        return subtree
+
+    @staticmethod
     def _build_tree_for_type(
         model: DataType,
     ) -> dict[str, tuple[DataType, dict | None]] | None:
         inner, is_optional = unwrap_optional(model)
         if (fr := ModelStore.to_pydantic(inner)) is not None:
-            subtree = SignalSchema._build_tree_for_model(fr) or {}
-            if is_optional:
-                sentinel_entry: tuple[Any, Any] = (
-                    SignalSchema._OPTIONAL_SENTINEL_TYPE,
-                    None,
-                )
-                subtree = {
-                    SignalSchema._OPTIONAL_SENTINEL_FIELD: sentinel_entry,
-                    **subtree,
-                }
-            return subtree
+            return SignalSchema._model_subtree(fr, is_optional)
         return None
 
     @staticmethod
@@ -1372,16 +1377,7 @@ class SignalSchema:
             anno = f_info.annotation
             inner, is_optional = unwrap_optional(anno)
             if (fr := ModelStore.to_pydantic(inner)) is not None:
-                subtree = SignalSchema._build_tree_for_model(fr) or {}
-                if is_optional:
-                    sentinel_entry: tuple[Any, Any] = (
-                        SignalSchema._OPTIONAL_SENTINEL_TYPE,
-                        None,
-                    )
-                    subtree = {
-                        SignalSchema._OPTIONAL_SENTINEL_FIELD: sentinel_entry,
-                        **subtree,
-                    }
+                subtree: dict | None = SignalSchema._model_subtree(fr, is_optional)
             else:
                 subtree = None
             res[name] = (anno, subtree)  # type: ignore[assignment]

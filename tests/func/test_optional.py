@@ -606,6 +606,32 @@ def test_order_by_optional_datamodel_leaf_nulls_last(test_session):
     assert order(descending=True, use_c=False) == [1, 4, 3, 2]
 
 
+def test_order_by_optional_basic_nulls_last(test_session):
+    """order_by on a top-level Optional[basic] column sorts NULL rows last on both
+    backends. The column stores genuine NULL, and order_by emits an explicit
+    NULLS LAST so SQLite (which sorts NULL first by default) agrees with
+    ClickHouse."""
+    chain = dc.read_values(
+        id=[1, 2, 3, 4],
+        score=[10, None, 0, 7],
+        output={"id": int, "score": Optional[int]},
+        session=test_session,
+    )
+
+    def order(*, descending):
+        return [
+            r["id"]
+            for r in chain.order_by("score", descending=descending)
+            .select("id")
+            .to_records()
+        ]
+
+    # ascending: present 0,7,10 then the NULL row (id=2) last.
+    assert order(descending=False) == [3, 4, 1, 2]
+    # descending: present 10,7,0 then the NULL row last.
+    assert order(descending=True) == [1, 4, 3, 2]
+
+
 def test_flat_export_optional_datamodel_leaf_none(test_session):
     """Flat exports (to_records/to_pandas/...) return None for an absent-parent
     row's nested leaf cells on both backends. The leaves are genuinely Nullable,
@@ -665,6 +691,24 @@ def test_count_optional_datamodel_uses_sentinel(test_session):
         present=func.count("item"), total=func.count(), partition_by="grp"
     ).to_records()
     assert rows == [{"grp": 1, "present": 3, "total": 5}]
+
+
+def test_count_optional_datamodel_empty_is_zero(test_session):
+    """A global ``func.count("opt_model")`` over an empty chain returns 0, not
+    NULL. The sentinel-based count uses SUM, which is NULL over zero rows; a
+    COALESCE keeps count()'s 0-for-empty contract."""
+    from datachain import func
+
+    def maybe(score: int) -> _Inner | None:
+        return _Inner(score=score, label="ok") if score > 0 else None
+
+    chain = (
+        dc.read_values(score=[1, 2, 3], session=test_session)
+        .map(item=maybe)
+        .filter(dc.C("score") > 100)  # matches nothing -> empty input
+    )
+    rows = chain.group_by(present=func.count("item")).to_records()
+    assert rows == [{"present": 0}]
 
 
 def test_aggregates_over_optional_datamodel_leaf(test_session):
