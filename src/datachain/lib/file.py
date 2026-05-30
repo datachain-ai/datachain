@@ -1622,13 +1622,13 @@ class VideoFrame(DataModel):
             raise RuntimeError("Cannot save video frame: catalog is not set")
 
         destination = stringify_path(destination)
-        img = self.read_bytes(format)
+        image_bytes = self.read_bytes(format)
         extension = format.removeprefix(".")
         output_file = posixpath.join(
             destination, f"{self.video.get_file_stem()}_{self.frame:04d}.{extension}"
         )
         client, rel_path = self.video._resolve_destination(output_file, client_config)
-        result = client.upload(img, rel_path)
+        result = client.upload(image_bytes, rel_path)
         image = ImageFile(**result.model_dump())
         image._set_stream(catalog)
         return image
