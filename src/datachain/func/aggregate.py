@@ -19,12 +19,8 @@ AggColT = str | Column | ColumnExpr | Func
 class _CountFunc(_SentinelAwareFunc):
     """``count(<Optional[DataModel]>)`` counts rows where the parent is present.
 
-    The parent isn't a real column on disk — picking any leaf gives different
-    numbers per backend because absent leaves coerce to type-defaults on
-    ClickHouse but are NULL on SQLite. ``SUM(1 - {prefix}__is_null)`` reads
-    only the sentinel and agrees on both. For leaves under an
-    ``Optional[DataModel]``, ``Func._resolve_col`` already masks absent rows,
-    so a plain ``count(<leaf>)`` is also correct.
+    The parent isn't a real column on disk, so it counts via the sentinel
+    (``SUM(1 - {prefix}__is_null)``) to agree across backends.
     """
 
     def _sentinel_column(

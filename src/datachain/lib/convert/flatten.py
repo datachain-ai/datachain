@@ -8,13 +8,11 @@ from datachain.lib.model_store import ModelStore
 
 
 class FieldKind(NamedTuple):
-    """Classification of a model field's annotation. Single source of truth for
-    the per-field branch shared by every walk over a model's fields (flatten,
-    unflatten, arrow, column counting)."""
+    """Classification of a model field's annotation."""
 
-    inner: Any  # the annotation with Optional unwrapped
-    is_optional: bool  # the annotation was Optional[...]
-    is_model: bool  # inner is a pydantic model
+    inner: Any
+    is_optional: bool
+    is_model: bool
 
 
 def classify_field(annotation: Any) -> FieldKind:
@@ -36,10 +34,6 @@ def iter_flat_columns(
 ) -> Iterator[FlatColumn]:
     """Yield the flat columns ``model`` emits, in order: each ``Optional[DataModel]``
     node contributes a leading sentinel, then its (recursively flattened) leaves.
-
-    Single source of truth for the flat column layout — used by column counting
-    (``_leaf_count``), absent-parent placeholders (``_emit_absent``), and the
-    parquet/arrow absent-subtree check.
     """
     for name, f_info in model.model_fields.items():
         kind = classify_field(f_info.annotation)

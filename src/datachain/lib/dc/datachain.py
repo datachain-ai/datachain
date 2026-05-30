@@ -1157,8 +1157,6 @@ class DataChain:
             See https://github.com/datachain-ai/datachain/issues/477
             for further details.
         """
-        # Optional[DataModel] leaves sort as NULL last on every backend (via
-        # order_by_column); other columns keep their default handling.
         resolved: list[Any] = []
         for arg in args:
             if isinstance(arg, str):
@@ -1571,8 +1569,6 @@ class DataChain:
         db_signals = schema.db_signals(
             include_hidden=include_hidden, include_sentinels=False
         )
-        # Optional[DataModel] leaves are genuinely Nullable, so an absent-parent
-        # row's cells read back as NULL on every backend without any wrapping.
         with self._query.ordered_select(*db_signals).as_iterable() as rows:
             if row_factory:
                 rows = (row_factory(db_signals, r) for r in rows)  # type: ignore[assignment]
@@ -2505,9 +2501,7 @@ class DataChain:
         headers: list[list[str]],
         include_outer_list: bool,
     ) -> None:
-        # Paths of Optional[DataModel] fields, so an absent parent serializes as
-        # null (not an object of nulls) — consistent with hydration/to_list. The
-        # sentinel is dropped from output, so absence is read off all-NULL leaves.
+        # Collapse an absent parent to null instead of an object of nulls.
         optional_paths = self._effective_signals_schema.optional_model_paths()
         is_first = True
         if include_outer_list:

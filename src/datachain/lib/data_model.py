@@ -142,23 +142,20 @@ def unwrap_optional(t: Any) -> tuple[Any, bool]:
 
 # Scalars whose Optional form maps to a nullable column. ``float`` is excluded:
 # backends that store NaN as NULL reconstitute it on read, so a nullable float
-# could not tell NaN from None. Shared by ``signal_schema`` and ``func`` (both
-# import it here to avoid a cycle: ``func`` cannot import ``signal_schema``).
+# could not tell NaN from None.
 NULLABLE_SCALARS: "tuple[type, ...]" = (int, str, bool, bytes, datetime)
 
 
 def promote_default_none(model: type[BaseModel]) -> None:
     """Auto-promote non-Optional fields with `default=None` to `Optional[...]`.
 
-    A field declared `x: int = None` means the column should hold None, so its
-    type is promoted to `Optional[int]` (i.e. `x: int = None` is treated as
-    `x: Optional[int] = None`). This keeps the schema honest — the column becomes
-    genuinely nullable and None round-trips, instead of silently coercing to the
-    type default (`0`/`""`) on ClickHouse.
+    `x: int = None` is treated as `x: Optional[int] = None` so the column is
+    genuinely nullable and None round-trips instead of coercing to the type
+    default on ClickHouse.
 
-    Skipped under `skip_dc_validation()` for internally-generated models, which set
-    `default=None` on non-Optional fields as an implementation detail and must not
-    be promoted (it breaks the partial-model tree walker).
+    Skipped under `skip_dc_validation()` for internally-generated models, whose
+    `default=None` on non-Optional fields must not be promoted (it breaks the
+    partial-model tree walker).
     """
     if _skip_dc_validation.get():
         return

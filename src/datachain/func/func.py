@@ -30,18 +30,10 @@ if TYPE_CHECKING:
 
 ColT = Union[str, tuple, Column, ColumnExpr, "Func"]
 
-# Result types that should become Nullable on backends with non-nullable leaves
-# (CH) when the source can be NULL. Single source of truth:
-# ``datachain.lib.data_model.NULLABLE_SCALARS`` (float excluded — NaN/NULL are
-# indistinguishable on SQLite).
-_NULLABLE_RESULT_TYPES = NULLABLE_SCALARS
-
 
 def _source_is_nullable(col: ColT, signals_schema: "SignalSchema | None") -> bool:
     """True when ``col`` resolves to a column that may hold NULL — a leaf under an
-    ``Optional[DataModel]`` or an ``Optional[basic]`` column. Used to make an
-    aggregate over such a source produce a Nullable result (an all-absent group
-    aggregates to NULL, which CH would otherwise coerce to the type default)."""
+    ``Optional[DataModel]`` or an ``Optional[basic]`` column."""
     if signals_schema is None or not isinstance(col, str):
         return False
     db_col = ColumnMeta.to_db_name(col)
@@ -422,16 +414,13 @@ class Func(Function):  # noqa: PLW1641
         signals_schema: "SignalSchema | None",
         col_type: "DataType | None" = None,
     ) -> bool:
-        """Whether this func's result column may hold NULL: it operates on a
-        nullable source (a leaf under ``Optional[DataModel]`` or an
-        ``Optional[basic]`` column) and its result is a nullable scalar type
-        (float excluded). ``f(NULL)`` is NULL, and an aggregate over an all-absent
-        group is NULL — both must round-trip as None on every backend."""
+        """Whether this func's result column may hold NULL: a nullable scalar
+        result (float excluded) over a nullable source."""
         if signals_schema is None:
             return False
         if col_type is None:
             col_type = self.get_result_type(signals_schema)
-        return col_type in _NULLABLE_RESULT_TYPES and any(
+        return col_type in NULLABLE_SCALARS and any(
             _source_is_nullable(c, signals_schema) for c in self._db_cols
         )
 
@@ -565,10 +554,6 @@ class Func(Function):  # noqa: PLW1641
         sql_type = python_to_sql(col_type)
 
         if self.is_nullable_result(signals_schema, col_type):
-            # f(NULL) is NULL: a func/aggregate over a nullable source can yield
-            # NULL (an absent leaf, or an all-absent group). Mark the result column
-            # Nullable so CH keeps NULL instead of coercing to the type default,
-            # matching SQLite.
             sql_type = sql_type() if inspect.isclass(sql_type) else sql_type
             sql_type.dc_nullable = True
 
@@ -592,10 +577,9 @@ class Func(Function):  # noqa: PLW1641
 
 
 class _SentinelAwareFunc(Func):
-    """A ``Func`` whose first argument may be an ``Optional[DataModel]`` — which
+    """A ``Func`` whose first argument may be an ``Optional[DataModel]``, which
     has no real column on disk. When it is, the column resolves to that model's
-    ``_is_null`` sentinel (via ``_sentinel_column``); otherwise it falls back to
-    the plain ``Func`` column. Shared by ``count`` and ``isnone``."""
+    ``_is_null`` sentinel; otherwise it falls back to the plain ``Func`` column."""
 
     def get_column(
         self,
