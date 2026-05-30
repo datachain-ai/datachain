@@ -21,7 +21,6 @@ from datachain.lib.convert.values_to_tuples import _infer_type_from_sequence
 from datachain.lib.data_model import DataModel, is_chain_type, unwrap_optional
 from datachain.lib.model_store import ModelStore
 from datachain.lib.signal_schema import SignalSchema
-from datachain.lib.utils import DataChainParamsError
 
 
 @pytest.fixture(autouse=True)
@@ -99,35 +98,36 @@ def test_is_chain_type_optional_collections():
     assert is_chain_type(dict[str, int | None])
 
 
-# -- validate_default_none -----------------------------------------------
+# -- promote_default_none: `x: T = None` -> `Optional[T]` ----------------
 
 
-def test_default_none_rejected_for_non_optional():
-    with pytest.raises(DataChainParamsError, match="default value `None` requires"):
+def test_default_none_promoted_to_optional():
+    # `x: int = None` is auto-promoted to `Optional[int]` (not an error) so the
+    # column is genuinely nullable and None round-trips.
+    class M(DataModel):
+        x: int = None  # type: ignore[assignment]
 
-        class Bad(DataModel):
-            x: int = None  # type: ignore[assignment]
+    inner, is_optional = unwrap_optional(M.model_fields["x"].annotation)
+    assert is_optional and inner is int
+    assert M().x is None
+    assert M(x=5).x == 5
 
 
-def test_default_none_accepted_for_optional_typing():
-    class Ok(DataModel):
+def test_default_none_already_optional_unchanged():
+    # The three Optional spellings already work; promotion is a no-op for them.
+    class A(DataModel):
+        x: Optional[int] = None
+
+    class B(DataModel):
         x: int | None = None
 
-    assert Ok().x is None
+    class C(DataModel):
+        x: Union[int, None] = None
 
-
-def test_default_none_accepted_for_pep604():
-    class Ok(DataModel):
-        x: int | None = None
-
-    assert Ok().x is None
-
-
-def test_default_none_accepted_for_union_none():
-    class Ok(DataModel):
-        x: int | None = None
-
-    assert Ok().x is None
+    for ok in (A, B, C):
+        assert ok().x is None
+        inner, is_optional = unwrap_optional(ok.model_fields["x"].annotation)
+        assert is_optional and inner is int
 
 
 def test_default_non_none_unaffected():
@@ -137,17 +137,20 @@ def test_default_non_none_unaffected():
 
     assert Ok().x == 5
     assert Ok().y == "hello"
+    # not promoted — still required-with-default, non-optional
+    _, x_optional = unwrap_optional(Ok.model_fields["x"].annotation)
+    assert x_optional is False
 
 
-def test_default_none_error_names_field_and_type():
-    with pytest.raises(DataChainParamsError) as exc_info:
+def test_default_none_promotes_only_the_none_field():
+    class M(DataModel):
+        count: int = None  # type: ignore[assignment]
+        name: str = "x"
 
-        class Bad(DataModel):
-            count: int = None  # type: ignore[assignment]
-
-    assert "count" in str(exc_info.value)
-    assert "Bad" in str(exc_info.value)
-    assert "Optional[int]" in str(exc_info.value)
+    assert M().count is None and M().name == "x"
+    _, count_opt = unwrap_optional(M.model_fields["count"].annotation)
+    _, name_opt = unwrap_optional(M.model_fields["name"].annotation)
+    assert count_opt is True and name_opt is False
 
 
 # -- sentinel name does not collide with user fields ---------------------

@@ -13,7 +13,7 @@ from pydantic.fields import FieldInfo
 
 from datachain import json
 from datachain.lib.model_store import ModelStore
-from datachain.lib.utils import DataChainParamsError, normalize_col_names, type_to_str
+from datachain.lib.utils import normalize_col_names, type_to_str
 
 _skip_dc_validation: ContextVar[bool] = ContextVar("_skip_dc_validation", default=False)
 
@@ -54,7 +54,7 @@ class DataModel(BaseModel):
     @classmethod
     def __pydantic_init_subclass__(cls):
         """It automatically registers every declared DataModel child class."""
-        validate_default_none(cls)
+        promote_default_none(cls)
         ModelStore.register(cls)
 
     @staticmethod
@@ -147,20 +147,24 @@ def unwrap_optional(t: Any) -> tuple[Any, bool]:
 NULLABLE_SCALARS: "tuple[type, ...]" = (int, str, bool, bytes, datetime)
 
 
-def validate_default_none(model: type[BaseModel]) -> None:
-    """Reject non-Optional fields with `default=None`.
+def promote_default_none(model: type[BaseModel]) -> None:
+    """Auto-promote non-Optional fields with `default=None` to `Optional[...]`.
 
-    A field declared `x: int = None` is almost always a mistake — the storage
-    column will be non-nullable but the value is None. Force users to write
-    `Optional[int] = None` or `int | None = None` explicitly so the schema
-    matches the intent.
+    A field declared `x: int = None` means the column should hold None, so its
+    type is promoted to `Optional[int]` (i.e. `x: int = None` is treated as
+    `x: Optional[int] = None`). This keeps the schema honest — the column becomes
+    genuinely nullable and None round-trips, instead of silently coercing to the
+    type default (`0`/`""`) on ClickHouse.
+
+    Skipped under `skip_dc_validation()` for internally-generated models, which set
+    `default=None` on non-Optional fields as an implementation detail and must not
+    be promoted (it breaks the partial-model tree walker).
     """
     if _skip_dc_validation.get():
         return
-    for name, finfo in model.model_fields.items():
-        if finfo.default is not None:
-            continue
-        if finfo.is_required():
+    promoted = False
+    for finfo in model.model_fields.values():
+        if finfo.default is not None or finfo.is_required():
             continue
         anno = finfo.annotation
         if anno is None:
@@ -168,11 +172,10 @@ def validate_default_none(model: type[BaseModel]) -> None:
         _, is_optional = unwrap_optional(anno)
         if is_optional:
             continue
-        raise DataChainParamsError(
-            f"Field '{name}' in {model.__name__}: default value `None` requires "
-            f"`Optional[{type_to_str(anno)}]` or `{type_to_str(anno)} | None` "
-            f"annotation."
-        )
+        finfo.annotation = anno | None  # type: ignore[assignment]
+        promoted = True
+    if promoted:
+        model.model_rebuild(force=True)
 
 
 def is_chain_type(t: type) -> bool:
