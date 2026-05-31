@@ -420,7 +420,8 @@ class Func(Function):  # noqa: PLW1641
             return False
         if col_type is None:
             col_type = self.get_result_type(signals_schema)
-        return col_type in NULLABLE_SCALARS and any(
+        inner, _ = unwrap_optional(col_type)
+        return inner in NULLABLE_SCALARS and any(
             _source_is_nullable(c, signals_schema) for c in self._db_cols
         )
 

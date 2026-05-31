@@ -101,7 +101,8 @@ def compute_model_fingerprint(
                 "default": None if required else repr(finfo.default),
             }
 
-            child_model = ModelStore.to_pydantic(field_type)
+            inner_type, _ = unwrap_optional(field_type)
+            child_model = ModelStore.to_pydantic(inner_type)
             if sub_sel is not None:
                 if child_model is None:
                     raise ValueError(

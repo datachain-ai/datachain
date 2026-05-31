@@ -795,3 +795,39 @@ def test_aggregates_over_all_absent_partition_return_none(test_session):
     }
     assert rows[1] == (30, 10, 20, 2)
     assert rows[2] == (None, None, None, 0)  # all-absent group -> NULL, not 0
+
+
+def test_aggregates_over_top_level_optional_scalar_keep_none(test_session):
+    """sum/min/max over a top-level Optional[scalar] keep None for an all-NULL
+    group, with the result column typed Optional. Regression: the func result
+    type is the Union (int | None), so is_nullable_result must unwrap before the
+    NULLABLE_SCALARS check; otherwise the column is downgraded to plain int and
+    ClickHouse reads the NULL aggregate back as 0."""
+    from datachain import func
+
+    # group g=2 has only NULL x values.
+    chain = dc.read_values(
+        id=[1, 2, 3, 4],
+        g=[1, 1, 2, 2],
+        x=[10, 20, None, None],
+        output={"id": int, "g": int, "x": Optional[int]},
+        session=test_session,
+    )
+    grouped = chain.group_by(
+        sm=func.sum("x"),
+        mn=func.min("x"),
+        mx=func.max("x"),
+        partition_by="g",
+    )
+    # the result columns stay nullable in the schema, not downgraded to int.
+    for col in ("sm", "mn", "mx"):
+        _, is_optional = unwrap_optional(grouped.signals_schema.values[col])
+        assert is_optional, f"{col} should be Optional"
+
+    grouped.save("agg_top_optional")
+    rows = {
+        r["g"]: (r["sm"], r["mn"], r["mx"])
+        for r in dc.read_dataset("agg_top_optional", session=test_session).to_records()
+    }
+    assert rows[1] == (30, 10, 20)
+    assert rows[2] == (None, None, None)  # all-NULL group -> NULL, not 0

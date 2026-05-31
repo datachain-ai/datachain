@@ -902,7 +902,9 @@ class SignalSchema:
         return [
             ".".join(path)
             for path, _, has_subtree, _ in self.get_flat_tree(
-                include_hidden=include_hidden, include_sys=include_sys
+                include_hidden=include_hidden,
+                include_sys=include_sys,
+                include_sentinels=False,
             )
             if not has_subtree
         ]

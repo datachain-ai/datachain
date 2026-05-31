@@ -530,6 +530,7 @@ def dataset_summary_from_chain(chain) -> dict:
         chain.signals_schema.get_flat_tree(
             include_hidden=False,
             include_sys=False,
+            include_sentinels=False,
         )
     )
     columns_info = _classify_columns(flat_tree)

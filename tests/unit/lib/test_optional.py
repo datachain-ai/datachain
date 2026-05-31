@@ -278,6 +278,36 @@ def test_to_udf_spec_includes_sentinel_for_optional_datamodel():
     assert "out__addr__city" in spec
 
 
+def test_user_signals_hides_optional_sentinel():
+    """user_signals() is the user-facing leaf list, so it must not leak the
+    internal _is_null sentinel — otherwise select_except/compare_signals seed it
+    and to_partial asserts it against the model's real fields."""
+    signals = SignalSchema({"out": _Outer}).user_signals()
+    assert not any(s.endswith("_is_null") for s in signals), signals
+    assert "out.addr.city" in signals
+
+
+def test_select_except_on_optional_datamodel():
+    """select_except() on a schema with an Optional[DataModel] must not crash:
+    the sentinel used to leak via user_signals() and trip to_partial's
+    'Selection should match existing model fields' assertion."""
+    schema = SignalSchema({"out": _Outer, "id": int})
+    result = schema.select_except_signals("out.addr.city")
+    leaves = result.user_signals()
+    assert "out.addr.city" not in leaves
+    assert "out.addr.zip" in leaves
+    assert not any(s.endswith("_is_null") for s in leaves)
+
+
+def test_compare_signals_ignores_optional_sentinel():
+    """compare_signals() (delta/diff) must not surface the internal sentinel."""
+    a = SignalSchema({"out": _Outer})
+    b = SignalSchema({"out": _Outer, "extra": int})
+    added, removed = b.compare_signals(a)
+    assert added == {"extra"}
+    assert all(not s.endswith("_is_null") for s in added | removed)
+
+
 def test_infer_optional_datamodel_from_nones():
     # A DataModel column with some None values is inferred as Optional[DataModel]
     # (so the sentinel is emitted) rather than the bare model type. This is the
