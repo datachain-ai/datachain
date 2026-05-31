@@ -24,8 +24,7 @@ class _CountFunc(_SentinelAwareFunc):
     """
 
     def is_nullable_result(self, signals_schema=None, col_type=None) -> bool:
-        # COUNT never returns NULL (COALESCE gives 0 for an empty group), so the
-        # result column must stay a plain int even over a nullable source.
+        # COUNT never returns NULL (0 for an empty group), so its column stays int.
         return False
 
     def _sentinel_column(

@@ -1207,9 +1207,8 @@ class SignalSchema:
     def create_model(self, name: str) -> type[DataModel]:
         fields = {key: (value, None) for key, value in self.values.items()}
 
-        # Fields carry default=None to replay the schema, not as user intent, so
-        # skip promote_default_none (same as create_feature_model) — otherwise
-        # every field is promoted to Optional and gains an _is_null sentinel.
+        # default=None here replays the schema, not user intent — skip
+        # promote_default_none or every field becomes Optional with a sentinel.
         with skip_dc_validation():
             return create_model(
                 name,
