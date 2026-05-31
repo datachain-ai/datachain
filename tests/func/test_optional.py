@@ -831,3 +831,23 @@ def test_aggregates_over_top_level_optional_scalar_keep_none(test_session):
     }
     assert rows[1] == (30, 10, 20)
     assert rows[2] == (None, None, None)  # all-NULL group -> NULL, not 0
+
+
+def test_count_over_optional_scalar_stays_non_nullable(test_session):
+    """count() over a nullable source must stay a plain int, not Optional[int]:
+    COUNT never returns NULL (it returns 0), so it is exempt from the
+    nullable-result marking that sum/min/max get."""
+    from datachain import func
+
+    chain = dc.read_values(
+        id=[1, 2, 3],
+        g=[1, 1, 2],
+        x=[10, None, None],
+        output={"id": int, "g": int, "x": Optional[int]},
+        session=test_session,
+    )
+    grouped = chain.group_by(c=func.count("x"), partition_by="g")
+    _, is_optional = unwrap_optional(grouped.signals_schema.values["c"])
+    assert not is_optional, "count column must be plain int, not Optional[int]"
+    rows = {r["g"]: r["c"] for r in grouped.to_records()}
+    assert rows == {1: 1, 2: 0}  # g=2 has no non-NULL x -> 0, never None

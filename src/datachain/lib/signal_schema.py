@@ -1207,11 +1207,15 @@ class SignalSchema:
     def create_model(self, name: str) -> type[DataModel]:
         fields = {key: (value, None) for key, value in self.values.items()}
 
-        return create_model(
-            name,
-            __base__=(DataModel,),  # type: ignore[call-overload]
-            **fields,  # type: ignore[arg-type]
-        )
+        # Fields carry default=None to replay the schema, not as user intent, so
+        # skip promote_default_none (same as create_feature_model) — otherwise
+        # every field is promoted to Optional and gains an _is_null sentinel.
+        with skip_dc_validation():
+            return create_model(
+                name,
+                __base__=(DataModel,),  # type: ignore[call-overload]
+                **fields,  # type: ignore[arg-type]
+            )
 
     @staticmethod
     def _build_tree(

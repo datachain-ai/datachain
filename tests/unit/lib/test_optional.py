@@ -308,6 +308,19 @@ def test_compare_signals_ignores_optional_sentinel():
     assert all(not s.endswith("_is_null") for s in added | removed)
 
 
+def test_create_model_does_not_promote_non_optional_fields():
+    """SignalSchema.create_model() replays a schema, so its default=None fields
+    must not be promoted to Optional (which would add _is_null sentinels the
+    source schema never had). It must behave like create_feature_model."""
+    schema = SignalSchema({"id": int, "addr": _Addr, "name": str})
+    model = schema.create_model("Probe")
+    annotations = {f: fi.annotation for f, fi in model.model_fields.items()}
+    assert annotations == {"id": int, "addr": _Addr, "name": str}
+    # the rebuilt schema must not have gained an Optional[DataModel] sentinel.
+    leaves = SignalSchema({"probe": model}).user_signals()
+    assert not any(s.endswith("_is_null") for s in leaves), leaves
+
+
 def test_infer_optional_datamodel_from_nones():
     # A DataModel column with some None values is inferred as Optional[DataModel]
     # (so the sentinel is emitted) rather than the bare model type. This is the

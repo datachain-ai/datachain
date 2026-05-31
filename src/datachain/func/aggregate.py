@@ -23,6 +23,11 @@ class _CountFunc(_SentinelAwareFunc):
     (``SUM(1 - {prefix}__is_null)``) to agree across backends.
     """
 
+    def is_nullable_result(self, signals_schema=None, col_type=None) -> bool:
+        # COUNT never returns NULL (COALESCE gives 0 for an empty group), so the
+        # result column must stay a plain int even over a nullable source.
+        return False
+
     def _sentinel_column(
         self,
         sentinel_path: str,
