@@ -415,6 +415,70 @@ def test_latest_version_empty_raises(dataset_record):
         _ = record.latest_version
 
 
+def _versions_with_statuses(dataset_record, statuses):
+    return [
+        replace(
+            dataset_record.versions[0],
+            id=i + 1,
+            version=f"{i + 1}.0.0",
+            status=status,
+        )
+        for i, status in enumerate(statuses)
+    ]
+
+
+def test_latest_version_returns_max_live(dataset_record):
+    versions = _versions_with_statuses(
+        dataset_record,
+        [DatasetStatus.COMPLETE, DatasetStatus.COMPLETE, DatasetStatus.CREATED],
+    )
+    record = replace(dataset_record, _versions=versions, _versions_loaded=True)
+    assert record.latest_version == "3.0.0"
+
+
+def test_latest_version_skips_removed(dataset_record):
+    versions = _versions_with_statuses(
+        dataset_record,
+        [DatasetStatus.COMPLETE, DatasetStatus.COMPLETE, DatasetStatus.REMOVED],
+    )
+    record = replace(dataset_record, _versions=versions, _versions_loaded=True)
+    assert record.latest_version == "2.0.0"
+
+
+def test_latest_version_all_removed_raises(dataset_record):
+    versions = _versions_with_statuses(
+        dataset_record, [DatasetStatus.REMOVED, DatasetStatus.REMOVED]
+    )
+    record = replace(dataset_record, _versions=versions, _versions_loaded=True)
+    with pytest.raises(DatasetVersionNotFoundError, match="has no live versions"):
+        _ = record.latest_version
+
+
+@pytest.mark.parametrize(
+    "prop,expected",
+    [
+        ("next_version_major", "1.0.0"),
+        ("next_version_minor", "1.0.0"),
+        ("next_version_patch", "1.0.0"),
+    ],
+)
+def test_next_version_empty(dataset_record, prop, expected):
+    record = replace(dataset_record, _versions=[], _versions_loaded=True)
+    assert getattr(record, prop) == expected
+
+
+def test_next_version_skips_removed(dataset_record):
+    # Existing semvers: 1.0.0 (REMOVED), 2.0.0 (COMPLETE). Removed slot must
+    # stay reserved, so bumps go off of 2.0.0, not 1.0.0.
+    versions = _versions_with_statuses(
+        dataset_record, [DatasetStatus.REMOVED, DatasetStatus.COMPLETE]
+    )
+    record = replace(dataset_record, _versions=versions, _versions_loaded=True)
+    assert record.next_version_major == "3.0.0"
+    assert record.next_version_minor == "2.1.0"
+    assert record.next_version_patch == "2.0.1"
+
+
 @pytest.mark.parametrize(
     "statuses,expected",
     [
