@@ -14,9 +14,14 @@ from datachain.sql.sqlite.base import (
 )
 from datachain.sql.sqlite.types import (
     SQLiteTypeReadConverter,
+    adapt_array,
+    adapt_dict,
     adapt_np_array,
+    adapt_np_generic,
+    convert_array,
 )
 from datachain.sql.types import DateTime as DCDateTime
+from datachain.sql.types import Int as DCInt
 
 
 class ValueErrorTZ(tzinfo):
@@ -63,6 +68,33 @@ def test_adapt_np_array_nan_inf():
     assert parsed[0][1] == 1.0
     assert parsed[1][0] == 2.0
     assert np.isinf(parsed[1][1])
+
+
+def test_adapt_np_array_with_nested_object_arrays():
+    arr = np.empty(2, dtype=object)
+    arr[0] = np.array([1, 2], dtype=np.int64)
+    arr[1] = np.array([3, 4], dtype=np.int64)
+
+    assert adapt_np_array(arr) == "[[1,2],[3,4]]"
+
+
+def test_adapt_array_and_dict_with_nested_numpy_values():
+    assert adapt_array([np.array([1, 2], dtype=np.int64)]) == "[[1,2]]"
+    assert adapt_dict({"value": np.float32(0.5)}) == '{"value":0.5}'
+
+
+def test_adapt_np_generic():
+    assert adapt_np_generic(np.float32(0.5)) == 0.5
+
+
+def test_convert_array():
+    assert convert_array("[1,2]") == [1, 2]
+
+
+def test_sqlite_type_read_converter_array_decodes_json_string():
+    converter = SQLiteTypeReadConverter()
+
+    assert converter.array("[1,2]", DCInt(), sqlite_base.sqlite_dialect) == [1, 2]
 
 
 @pytest.mark.parametrize(

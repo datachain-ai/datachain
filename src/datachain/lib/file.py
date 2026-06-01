@@ -1516,6 +1516,18 @@ class VideoFrame(DataModel):
             ``VideoFile.get_frame()`` use FPS metadata. Frames yielded by
             ``VideoFile.get_frames()`` use decoded frame timestamps when
             available.
+
+    Note:
+        The decoded ``av.VideoFrame`` is cached in the ``_decoded`` instance
+        attribute the first time any of ``get_np()``, ``read_bytes()``, or
+        ``save()`` is called.  Frames yielded by ``VideoFile.get_frames()``
+        are pre-populated with the decoded frame, so the first call to any of
+        those methods requires no I/O.  The cache is held for the lifetime of
+        the ``VideoFrame`` object; when many frames are kept in memory at once
+        (e.g. ``list(video.get_frames())``) the cached pixel buffers can
+        create significant memory pressure (~3 MB each for 1080p video).  The
+        cache is excluded from pickling so cross-process serialisation (e.g.
+        DataChain ``.gen()`` workers) is unaffected.
     """
 
     video: VideoFile
@@ -1523,35 +1535,48 @@ class VideoFrame(DataModel):
     video_stream_index: int = 0
     timestamp: float
 
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._decoded = None
+
+    def __getstate__(self):
+        state = super().__getstate__()
+        state["__dict__"] = state["__dict__"].copy()
+        state["__dict__"]["_decoded"] = None
+        return state
+
     def get_np(self) -> "ndarray":
         """
         Returns a video frame from the video file as a NumPy array.
 
-        For seekable constant-FPS streams, this seeks near the requested frame
-        and decodes forward from the previous keyframe. Otherwise, it may decode
-        from the start. Use ``VideoFile.get_frames()`` when reading many frames
-        sequentially.
+        The decoded ``av.VideoFrame`` is cached in ``_decoded`` on the first
+        call, so repeated calls to ``get_np()`` return the cached pixels
+        without a second decode pass regardless of whether the frame came
+        from ``VideoFile.get_frames()`` or ``VideoFile.get_frame()``.
 
         Returns:
             ndarray: A NumPy array representing the video frame,
                      in the shape (height, width, channels).
         """
-        from .video import video_frame_np
+        if self._decoded is not None:
+            return self._decoded.to_ndarray(format="rgb24")
 
-        return video_frame_np(
+        from .video import _decode_video_frame
+
+        self._decoded, _ = _decode_video_frame(
             self.video,
             self.frame,
-            video_stream_index=self.video_stream_index,
+            self.video_stream_index,
         )
+        return self._decoded.to_ndarray(format="rgb24")
 
     def read_bytes(self, format: str = "jpg") -> bytes:
         """
         Returns a video frame from the video file as image bytes.
 
-        For seekable constant-FPS streams, this seeks near the requested frame
-        and decodes forward from the previous keyframe. Otherwise, it may decode
-        from the start. Use ``VideoFile.get_frames()`` when reading many frames
-        sequentially.
+        Uses the cached decoded frame when available (e.g. after ``get_np()``
+        or for frames yielded by ``VideoFile.get_frames()``), avoiding a second
+        decode pass.
 
         Args:
             format (str): The desired image format (e.g., 'jpg', 'png').
@@ -1560,28 +1585,26 @@ class VideoFrame(DataModel):
         Returns:
             bytes: The encoded video frame as image bytes.
         """
-        from .video import video_frame_bytes
+        from PIL import Image as PilImage
 
-        return video_frame_bytes(
-            self.video,
-            self.frame,
-            format,
-            video_stream_index=self.video_stream_index,
-        )
+        from .video import _image_format
+
+        buf = BytesIO()
+        PilImage.fromarray(self.get_np()).save(buf, format=_image_format(format))
+        return buf.getvalue()
 
     def save(
         self,
-        destination: str,
+        destination: str | os.PathLike[str],
         format: str = "jpg",
         client_config: dict | None = None,
     ) -> "ImageFile":
         """
         Saves the current video frame as an image file.
 
-        For seekable constant-FPS streams, this seeks near the requested frame
-        and decodes forward from the previous keyframe. Otherwise, it may decode
-        from the start. Use ``VideoFile.get_frames()`` when reading many frames
-        sequentially.
+        Uses the cached decoded frame when available (e.g. after ``get_np()``
+        or for frames yielded by ``VideoFile.get_frames()``), avoiding a second
+        decode pass.
 
         If ``destination`` is a remote path, the image file will be uploaded
         to remote storage.
@@ -1594,16 +1617,21 @@ class VideoFrame(DataModel):
         Returns:
             ImageFile: A Model representing the saved image file.
         """
-        from .video import save_video_frame
+        catalog = self.video._catalog
+        if catalog is None:
+            raise RuntimeError("Cannot save video frame: catalog is not set")
 
-        return save_video_frame(
-            self.video,
-            self.frame,
-            destination,
-            format,
-            client_config=client_config,
-            video_stream_index=self.video_stream_index,
+        destination = stringify_path(destination)
+        image_bytes = self.read_bytes(format)
+        extension = format.removeprefix(".")
+        output_file = posixpath.join(
+            destination, f"{self.video.get_file_stem()}_{self.frame:04d}.{extension}"
         )
+        client, rel_path = self.video._resolve_destination(output_file, client_config)
+        result = client.upload(image_bytes, rel_path)
+        image = ImageFile(**result.model_dump())
+        image._set_stream(catalog)
+        return image
 
 
 class VideoFragment(DataModel):
