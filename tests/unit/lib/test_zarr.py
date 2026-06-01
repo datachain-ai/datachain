@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 
@@ -50,6 +52,7 @@ def test_read_zarr_directory(tmp_dir, test_session):
     store = _single_store(tmp_dir, test_session, name="only")
 
     assert store.path == "only.zarr"
+    assert store.source.startswith("file://")
 
 
 def test_zarr_store_get_info(tmp_dir, test_session):
@@ -142,3 +145,40 @@ def test_zarr_selection_read_bytes_rejects_non_image(tmp_dir, test_session):
 
     with pytest.raises(ValueError, match="supports image media"):
         selection.read_bytes()
+
+
+def test_zarr_selection_read_bytes_converts_non_uint8(tmp_dir, test_session):
+    g = zarr.open_group(str(tmp_dir / "f.zarr"), mode="w")
+    g.create_array("img", shape=(2, 4, 4), chunks=(1, 4, 4), dtype="float32")
+    g["img"][:] = np.zeros((2, 4, 4), dtype="float32")
+
+    chain = dc.read_zarr((tmp_dir / "f.zarr").as_uri(), session=test_session)
+    (store,) = next(iter(chain.to_iter("zarr")))
+    content = store.get_array("img").select(0, media="image").read_bytes()
+
+    assert content[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_zarr_store_open_passes_remote_storage_options(
+    tmp_dir, test_session, monkeypatch
+):
+    from datachain.lib.file import File
+    from datachain.lib.zarr import ZarrStore
+
+    _make_store(tmp_dir / "s.zarr", "s")
+    captured = {}
+    real_open = zarr.open
+
+    def fake_open(url, mode="r", storage_options=None):
+        captured["url"] = url
+        captured["storage_options"] = storage_options
+        return real_open(str(tmp_dir / "s.zarr"), mode=mode)
+
+    monkeypatch.setattr("datachain.lib.zarr.zarr.open", fake_open)
+
+    file = File(source="s3://bucket", path="s.zarr")
+    file._catalog = SimpleNamespace(client_config={"key": "secret"})
+    info = ZarrStore(file=file).get_info()
+
+    assert captured["storage_options"] == {"key": "secret"}
+    assert info.attrs == {"who": "s"}

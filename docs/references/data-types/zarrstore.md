@@ -29,13 +29,6 @@ There are additional models for working with Zarr stores:
   column and is materialized on demand via `read()` or rendered to image bytes
   via `read_bytes()`.
 
-Reading the actual data requires the optional `zarr` dependency, which is
-available on Python 3.11 and newer:
-
-```sh
-pip install 'datachain[zarr]'
-```
-
 For a complete example of Zarr processing with DataChain, see
 [Embedding Zarr image frames](https://github.com/datachain-ai/datachain/blob/main/examples/multimodal/zarr-robot-frames.py) -
 a pipeline that reads RGB camera frames from a directory of Zarr stores and

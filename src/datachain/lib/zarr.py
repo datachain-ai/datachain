@@ -4,17 +4,13 @@ This module provides the generic Zarr "core": a :class:`ZarrStore` data model
 that points at a Zarr store root and lets you inspect its arrays and read array
 data.  Higher-level conventions (xarray dimensions/coordinates, OME-Zarr
 multiscale preview, ...) are intentionally *not* handled here.
-
-Reading the actual data requires the optional ``zarr`` dependency:
-
-    pip install 'datachain[zarr]'
 """
 
 import posixpath
-import sys
 from collections.abc import Iterator
 from typing import Any, ClassVar, Literal
 
+import zarr
 from pydantic import Field
 
 from datachain.lib.data_model import DataModel
@@ -26,21 +22,6 @@ from datachain.lib.file import File
 #   - ``.zarray``    : Zarr v2 array metadata (array-only store)
 ZARR_ROOT_MARKERS = frozenset({"zarr.json", ".zgroup", ".zarray"})
 ZARR_SUFFIX = ".zarr"
-
-
-def _import_zarr() -> Any:
-    try:
-        import zarr
-    except ImportError as exc:
-        hint = (
-            "  pip install 'datachain[zarr]'\n"
-            if sys.version_info >= (3, 11)
-            else "Zarr support requires Python 3.11 or newer.\n"
-        )
-        raise ImportError(
-            "Missing dependencies for Zarr support.\nTo install run:\n\n" + hint
-        ) from exc
-    return zarr
 
 
 class ZarrInfo(DataModel):
@@ -70,8 +51,7 @@ class ZarrStore(DataModel):
     def path(self) -> str:
         return self.file.path
 
-    def _open(self, mode: str = "r") -> Any:
-        zarr = _import_zarr()
+    def _open(self, mode: Literal["r", "r+", "a", "w", "w-"] = "r") -> Any:
         f = self.file
         url = f.get_fs_path()
         storage_options = None
@@ -96,14 +76,12 @@ class ZarrStore(DataModel):
         yield from self._arrays(self._open())
 
     def _arrays(self, node: Any) -> Iterator["ZarrArray"]:
-        zarr = _import_zarr()
         if isinstance(node, zarr.Array):
             yield self._to_array(node, "")
             return
         yield from self._walk_arrays(node, "")
 
     def _walk_arrays(self, group: Any, prefix: str) -> Iterator["ZarrArray"]:
-        zarr = _import_zarr()
         seen: set[str] = set()
         for name, child in group.members():
             # Some store backends (e.g. ``HfFileSystem``) list each member more
@@ -120,7 +98,6 @@ class ZarrStore(DataModel):
 
     def get_array(self, path: str = "") -> "ZarrArray":
         """Return a single array by its path within the store."""
-        zarr = _import_zarr()
         node = self._open()
         arr = node[path] if path else node
         if not isinstance(arr, zarr.Array):
@@ -208,7 +185,7 @@ class ZarrSelection(DataModel):
 
         try:
             from PIL import Image
-        except ImportError as exc:
+        except ImportError as exc:  # pragma: no cover
             raise ImportError(
                 "Pillow is required to render Zarr image previews.\n"
                 "To install run:\n\n  pip install pillow\n"
