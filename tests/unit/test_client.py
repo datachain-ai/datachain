@@ -198,3 +198,25 @@ def test_anon_fallback_explicit_creds_anon_retry_does_not_cache(
 
     # Cache untouched.
     assert GCSClient._bucket_needs_anon("foo") is None
+
+
+def test_anon_fallback_write_open_no_retry_no_cache_poisoning(
+    monkeypatch, _clear_anon_cache
+):
+    # A write-mode open that fails with PermissionError must NOT trigger
+    # an anon retry (anon can never write) and must NOT poison the cache
+    # with False - otherwise future legitimate reads would lose fallback.
+    auth_fs = MagicMock()
+    auth_fs.open = MagicMock(side_effect=PermissionError)
+    create_fs = MagicMock(return_value=auth_fs)
+    monkeypatch.setattr(GCSClient, "create_fs", create_fs)
+
+    client = _gcs_client()
+    with pytest.raises(PermissionError):
+        client.fs.open("gs://foo/x.txt", "wb")
+
+    # No anon fs was built (no retry attempted).
+    create_fs.assert_called_once()
+    assert create_fs.call_args.kwargs.get("anon") is None
+    # Cache is clean - subsequent reads can still fall back.
+    assert GCSClient._bucket_needs_anon("foo") is None
