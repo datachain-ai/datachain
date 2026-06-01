@@ -1,8 +1,9 @@
 import numpy as np
 import pytest
-import zarr
 
 import datachain as dc
+
+zarr = pytest.importorskip("zarr")
 
 
 def _make_store(root, who, n=4):
