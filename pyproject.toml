@@ -95,7 +95,7 @@ video = [
   "ffmpeg-python"
 ]
 zarr = [
-  "zarr>=3.0.0 ; python_version >= '3.11'"
+  "zarr>=3.0.0"
 ]
 postgres = [
   "psycopg2-binary>=2.9.0"

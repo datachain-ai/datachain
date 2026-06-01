@@ -51,9 +51,7 @@ def read_zarr(
     from .storage import read_storage
 
     # ``read_storage`` lists the whole prefix recursively (markers *and*
-    # chunks); we then keep only the store-root markers. See
-    # ``local/zarr-support-task/followups.md`` for the listing-pushdown
-    # optimization that would avoid descending into chunk objects.
+    # chunks); we then keep only the store-root markers.
     chain = read_storage(
         path,
         session=session,

@@ -1,9 +1,8 @@
 import numpy as np
 import pytest
+import zarr
 
 import datachain as dc
-
-zarr = pytest.importorskip("zarr")
 
 
 def _make_store(root, who, n=4):
@@ -91,3 +90,54 @@ def test_zarr_store_get_array_not_an_array(tmp_dir, test_session):
 
     with pytest.raises(ValueError, match="not a Zarr array"):
         store.get_array("labels")
+
+
+def test_read_zarr_custom_column(tmp_dir, test_session):
+    _make_store(tmp_dir / "s.zarr", "s")
+
+    chain = dc.read_zarr(
+        (tmp_dir / "s.zarr").as_uri(), column="store", session=test_session
+    )
+    (store,) = next(iter(chain.to_iter("store")))
+
+    assert store.path == "s.zarr"
+
+
+def test_zarr_array_only_store(tmp_dir, test_session):
+    zarr.open_array(str(tmp_dir / "arr.zarr"), mode="w", shape=(2, 3), dtype="uint8")
+
+    chain = dc.read_zarr((tmp_dir / "arr.zarr").as_uri(), session=test_session)
+    (store,) = next(iter(chain.to_iter("zarr")))
+    arrays = store.get_arrays()
+
+    assert [a.path for a in arrays] == [""]
+    assert store.get_array().shape == [2, 3]
+
+
+def test_zarr_selection_read(tmp_dir, test_session):
+    store = _single_store(tmp_dir, test_session)
+
+    selection = store.get_array("images").select(0)
+    assert selection.index == [0]
+    assert selection.read().shape == (8, 8)
+
+    block = store.get_array("images").select([1])
+    assert block.read().shape == (8, 8)
+
+
+def test_zarr_selection_read_bytes_image(tmp_dir, test_session):
+    store = _single_store(tmp_dir, test_session)
+
+    selection = store.get_array("images").select(0, media="image")
+    content = selection.read_bytes()
+
+    assert content[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_zarr_selection_read_bytes_rejects_non_image(tmp_dir, test_session):
+    store = _single_store(tmp_dir, test_session)
+
+    selection = store.get_array("images").select(0, media="audio")
+
+    with pytest.raises(ValueError, match="supports image media"):
+        selection.read_bytes()
