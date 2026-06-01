@@ -125,16 +125,20 @@ class AnonFallbackFS:
                     raise
                 saved = self._inner_fs
                 self._swap_to_anon()
+                keep_anon = False
                 try:
                     result = getattr(self._inner_fs, name)(*args, **kwargs)
+                    keep_anon = True
+                    if self._should_use_anon_cache():
+                        self._client._mark_bucket_anon(self._client.name, True)
+                    return result
                 except PermissionError:
-                    self._inner_fs = saved
                     if self._should_use_anon_cache():
                         self._client._mark_bucket_anon(self._client.name, False)
                     raise
-                if self._should_use_anon_cache():
-                    self._client._mark_bucket_anon(self._client.name, True)
-                return result
+                finally:
+                    if not keep_anon:
+                        self._inner_fs = saved
 
         return call
 
@@ -147,16 +151,20 @@ class AnonFallbackFS:
                     raise
                 saved = self._inner_fs
                 self._swap_to_anon()
+                keep_anon = False
                 try:
                     result = await getattr(self._inner_fs, name)(*args, **kwargs)
+                    keep_anon = True
+                    if self._should_use_anon_cache():
+                        self._client._mark_bucket_anon(self._client.name, True)
+                    return result
                 except PermissionError:
-                    self._inner_fs = saved
                     if self._should_use_anon_cache():
                         self._client._mark_bucket_anon(self._client.name, False)
                     raise
-                if self._should_use_anon_cache():
-                    self._client._mark_bucket_anon(self._client.name, True)
-                return result
+                finally:
+                    if not keep_anon:
+                        self._inner_fs = saved
 
         return call
 
