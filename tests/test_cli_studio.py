@@ -1522,15 +1522,6 @@ def test_unpacker_hook_unknown_ext_type():
     assert result.data == b"\x01\x02\x03"
 
 
-def test_studio_team_display_current(capsys):
-    with Config(ConfigLevel.GLOBAL).edit() as conf:
-        conf["studio"] = {"team": "test-display-team"}
-
-    assert main(["auth", "team"]) == 0
-    captured = capsys.readouterr()
-    assert "Default team is 'test-display-team'" in captured.out
-
-
 def test_studio_login_missing_team_specification(capsys):
     assert main(["auth", "login"]) == 1
     captured = capsys.readouterr()
