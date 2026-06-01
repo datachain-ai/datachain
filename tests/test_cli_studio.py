@@ -1520,3 +1520,43 @@ def test_unpacker_hook_unknown_ext_type():
     assert isinstance(result, msgpack.ExtType)
     assert result.code == 99
     assert result.data == b"\x01\x02\x03"
+
+
+def test_studio_team_display_current(capsys):
+    with Config(ConfigLevel.GLOBAL).edit() as conf:
+        conf["studio"] = {"team": "test-display-team"}
+
+    assert main(["auth", "team"]) == 0
+    captured = capsys.readouterr()
+    assert "Default team is 'test-display-team'" in captured.out
+
+
+def test_studio_login_missing_team_specification(capsys):
+    assert main(["auth", "login"]) == 1
+    captured = capsys.readouterr()
+    assert "Must specify either --team or --all-teams" in captured.err
+
+
+def test_studio_login_token_already_exists(capsys):
+    with Config(ConfigLevel.GLOBAL).edit() as conf:
+        conf["studio"] = {"token": "existing_token", "url": STUDIO_URL}
+
+    assert main(["auth", "login", "--all-teams"]) == 1
+    captured = capsys.readouterr()
+    assert "Token already exists" in captured.err
+    assert "logout using" in captured.err
+
+
+def test_studio_login_single_team_saves_default(mocker, capsys):
+    mocker.patch(
+        "dvc_studio_client.auth.get_access_token",
+        return_value=("token_name", "isat_access_token"),
+    )
+
+    assert main(["auth", "login", "--team", "my-team"]) == 0
+
+    config = Config().read()
+    assert config["studio"]["team"] == "my-team"
+
+    captured = capsys.readouterr()
+    assert "Set default team to 'my-team'" in captured.out
