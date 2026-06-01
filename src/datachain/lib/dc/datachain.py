@@ -891,7 +891,28 @@ class DataChain:
             )
             chain.save("new_dataset")
             ```
+
+            Defining multiple signals in one call (sugar for chained `.map()`):
+            ```py
+            chain = chain.map(stem=lambda name: name[:-4], ext=lambda name: name[-3:])
+            chain.save("new_dataset")
+            ```
         """
+        if len(signal_map) > 1:
+            if func is not None:
+                raise DataChainParamsError(
+                    "map() can't combine 'func' with multiple signal kwargs"
+                )
+            if output is not None:
+                raise DataChainParamsError(
+                    "map() can't combine 'output' with multiple signal kwargs; "
+                    "use function return-type annotations instead"
+                )
+            chain = self
+            for signal_name, signal_func in signal_map.items():
+                chain = chain.map(params=params, **{signal_name: signal_func})
+            return chain
+
         udf_obj = self._udf_to_obj(Mapper, func, params, output, signal_map)
         if (prefetch := self._settings.prefetch) is not None:
             udf_obj.prefetch = prefetch

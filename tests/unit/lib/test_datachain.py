@@ -911,6 +911,27 @@ def test_map(test_session):
         assert x.my_name == test_fr.my_name
 
 
+def test_map_multiple_signals(test_session):
+    chain = dc.read_values(name=["foo.txt", "bar.md"], session=test_session).map(
+        stem=lambda name: name.rsplit(".", 1)[0],
+        ext=lambda name: name.rsplit(".", 1)[1],
+    )
+    rows = sorted(chain.to_iter("name", "stem", "ext"))
+    assert rows == [("bar.md", "bar", "md"), ("foo.txt", "foo", "txt")]
+
+
+def test_map_multiple_signals_rejects_func(test_session):
+    chain = dc.read_values(name=["x"], session=test_session)
+    with pytest.raises(DataChainParamsError, match="can't combine 'func'"):
+        chain.map(lambda n: n, a=lambda n: n, b=lambda n: n)
+
+
+def test_map_multiple_signals_rejects_output(test_session):
+    chain = dc.read_values(name=["x"], session=test_session)
+    with pytest.raises(DataChainParamsError, match="can't combine 'output'"):
+        chain.map(a=lambda n: n, b=lambda n: n, output=str)
+
+
 def test_map_existing_column_after_step(test_session):
     chain = dc.read_values(t1=features, session=test_session).map(
         x=lambda _: "test",
