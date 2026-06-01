@@ -22,6 +22,7 @@ from datachain.lib.dc import (
     read_records,
     read_storage,
     read_values,
+    read_zarr,
 )
 from datachain.lib.file import (
     ArrowRow,
@@ -99,4 +100,5 @@ __all__ = [
     "read_records",
     "read_storage",
     "read_values",
+    "read_zarr",
 ]

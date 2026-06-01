@@ -94,11 +94,14 @@ video = [
   "av>=16.1.0",
   "ffmpeg-python"
 ]
+zarr = [
+  "zarr>=3.0.0"
+]
 postgres = [
   "psycopg2-binary>=2.9.0"
 ]
 tests = [
-  "datachain[torch,audio,remote,vector,hf,video,postgres]",
+  "datachain[torch,audio,remote,vector,hf,video,zarr,postgres]",
   "pytest>=8,<10",
   "pytest-asyncio",
   "pytest-sugar>=0.9.6",
