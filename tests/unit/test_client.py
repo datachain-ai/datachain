@@ -38,9 +38,9 @@ def test_parse_file_path_ends_with_slash(cloud_type):
 
 @pytest.fixture
 def _clear_anon_cache():
-    Client._ANON_BUCKETS.clear()
+    Client._anon_buckets.clear()
     yield
-    Client._ANON_BUCKETS.clear()
+    Client._anon_buckets.clear()
 
 
 def _gcs_client(bucket: str = "foo", **fs_kwargs) -> GCSClient:

@@ -176,7 +176,7 @@ class Client(ABC):
     # True  = anon retry succeeded, use anon from the start.
     # False = anon retry also failed, don't bother retrying again.
     # Missing key = no decision yet.
-    _ANON_BUCKETS: ClassVar[dict[tuple[str, str], bool]] = {}
+    _anon_buckets: ClassVar[dict[tuple[str, str], bool]] = {}
 
     @classmethod
     def has_explicit_credentials(cls, client_config: dict | None) -> bool:
@@ -187,11 +187,11 @@ class Client(ABC):
 
     @classmethod
     def _bucket_needs_anon(cls, name: str) -> bool | None:
-        return cls._ANON_BUCKETS.get((cls.protocol, name))
+        return cls._anon_buckets.get((cls.protocol, name))
 
     @classmethod
     def _mark_bucket_anon(cls, name: str, anon: bool) -> None:
-        cls._ANON_BUCKETS[(cls.protocol, name)] = anon
+        cls._anon_buckets[(cls.protocol, name)] = anon
 
     def __init__(self, name: str, fs_kwargs: dict[str, Any], cache: Cache) -> None:
         self.name = name

@@ -3,7 +3,10 @@ from unittest.mock import patch
 import pytest
 
 import datachain as dc
+from datachain.cache import Cache
+from datachain.client import Client
 from datachain.client.azure import AzureClient
+from datachain.client.fsspec import AnonFallbackFS
 from datachain.client.gcs import GCSClient
 from datachain.client.s3 import ClientS3
 
@@ -71,3 +74,22 @@ def test_explicit_anon_skips_auto_detect(probe, explicit, tmp_dir, catalog):
     chain = dc.read_storage(tmp_dir.as_uri(), anon=explicit)
     probe.assert_not_called()
     assert chain.session.catalog.client_config.get("anon") is explicit
+
+
+@pytest.mark.parametrize("cloud_type", ["s3", "gs"], indirect=True)
+def test_anon_fallback_proxy_integration(
+    cloud_server, cloud_server_credentials, tmp_path
+):
+    cache = Cache(str(tmp_path / "cache"), str(tmp_path / "tmp"))
+    client = Client.get_client(
+        cloud_server.src_uri, cache, **cloud_server.client_config
+    )
+
+    # Building fs returns the proxy for cloud clients.
+    _ = client.fs
+    assert isinstance(client._fs, AnonFallbackFS)
+
+    # End-to-end op through proxy → real fsspec → emulator.
+    info = client.get_file_info("description")
+    assert info.path == "description"
+    assert info.size and info.size > 0
