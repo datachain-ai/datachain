@@ -80,7 +80,7 @@ def add_auth_parser(subparsers, parent_parser) -> None:
         "--all-teams",
         action="store_true",
         default=False,
-        help="Grant access to all teams (default behavior)",
+        help="Grant access to all teams",
     )
 
     # Expiration arguments

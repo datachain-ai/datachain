@@ -23,9 +23,6 @@ from datachain.utils import flatten
 
 logger = logging.getLogger("datachain")
 
-# Constants
-ALL_TEAMS_ACCESS = "all"
-
 
 if TYPE_CHECKING:
     from argparse import Namespace
@@ -223,14 +220,14 @@ def login(args: "Namespace"):
     level = ConfigLevel.LOCAL if args.local else ConfigLevel.GLOBAL
     config_path = save_config(hostname, access_token, level=level)
     print(f"Authentication complete. Saved token to {config_path}.")
-    if team_names and team_names != ["all"]:
+    if team_names:
         print(f"Token is scoped to teams: {', '.join(team_names)}")
     if never_expires:
         print("Token will never expire.")
     else:
         print(f"Token will expire in {expires_in_days} days.")
 
-    if team_names and len(team_names) == 1 and team_names[0] != ALL_TEAMS_ACCESS:
+    if team_names and len(team_names) == 1:
         file_path = _save_default_team(team_names[0], level)
         print(f"Set default team to '{team_names[0]}' in {file_path}")
     else:

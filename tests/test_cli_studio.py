@@ -55,7 +55,6 @@ def test_studio_login_success(mocker):
     assert main(["auth", "login", "--all-teams"]) == 0
 
     config = Config().read()
-    # Check simplified token structure
     token = config["studio"]["token"]
     assert token == "isat_access_token"  # noqa: S105
     assert config["studio"]["url"] == STUDIO_URL
