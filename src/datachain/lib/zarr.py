@@ -236,4 +236,13 @@ def _store_root_split(file: File) -> tuple[str, str]:
 def file_to_store(file: File) -> ZarrStore:
     """Build a :class:`ZarrStore` from a matched store-root metadata file."""
     source, path = _store_root_split(file)
-    return ZarrStore(file=File(source=source, path=path))
+    root = File(source=source, path=path)
+    # Carry over the stream so a store built in-process keeps its credentials
+    # (DataChain otherwise re-injects the catalog when materializing rows).
+    if file._catalog is not None:
+        root._set_stream(
+            file._catalog,
+            caching_enabled=file._caching_enabled,
+            download_cb=file._download_cb,
+        )
+    return ZarrStore(file=root)
