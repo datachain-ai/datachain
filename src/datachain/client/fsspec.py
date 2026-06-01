@@ -64,15 +64,37 @@ class BucketStatus(NamedTuple):
 
 
 class AnonFallbackFS:
-    """Proxy for an fsspec ``AbstractFileSystem`` that retries any method on
-    ``PermissionError`` with ``anon=True``, and caches the decision per
+    """Proxy for an fsspec ``AbstractFileSystem`` that retries read methods
+    on ``PermissionError`` with ``anon=True``, and caches the decision per
     ``(protocol, bucket)`` so future calls go straight to the right mode.
 
-    Wrapping at this layer (rather than on individual ``Client`` methods)
-    means every code path that goes through ``self.fs`` is covered - both
-    sync paths (``get_file_info``, ``open_object``) and async ones
-    (``get_current_etag``, ``get_file``, ``get_size``).
+    Only read methods are wrapped - anon is read-only on every cloud
+    backend, so retrying writes would always fail and would mis-mark the
+    bucket as anon-impossible, defeating the feature for later reads.
     """
+
+    # fsspec read-side methods we wrap. ``open`` / ``_open`` are also here
+    # but the wrapper checks ``mode`` and skips retry for write modes.
+    READ_METHODS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "_info",
+            "_open",
+            "open",
+            "_cat_file",
+            "_ls",
+            "_get_file",
+            "_glob",
+            "_walk",
+            "_find",
+            "_du",
+            "_size",
+            "_exists",
+            "_isdir",
+            "_isfile",
+            "_modified",
+            "sign",
+        }
+    )
 
     def __init__(self, client: "Client") -> None:
         self._client = client
@@ -92,11 +114,17 @@ class AnonFallbackFS:
 
     def __getattr__(self, name: str):
         attr = getattr(self._inner_fs, name)
-        if not callable(attr):
+        if not callable(attr) or name not in self.READ_METHODS:
             return attr
         if asyncio.iscoroutinefunction(attr):
             return self._wrap_async(name, attr)
         return self._wrap_sync(name, attr)
+
+    @staticmethod
+    def _is_write_open(args, kwargs) -> bool:
+        """``open`` / ``_open`` mode arg indicates write/append/exclusive."""
+        mode = args[1] if len(args) >= 2 else kwargs.get("mode", "rb")
+        return any(c in mode for c in "wax+")
 
     def _should_use_anon_cache(self) -> bool:
         # Clients with explicit creds skip the shared anon cache - reading
@@ -118,6 +146,8 @@ class AnonFallbackFS:
 
     def _wrap_sync(self, name, attr):
         def call(*args, **kwargs):
+            if name in ("open", "_open") and self._is_write_open(args, kwargs):
+                return attr(*args, **kwargs)
             try:
                 return attr(*args, **kwargs)
             except PermissionError:
@@ -144,6 +174,8 @@ class AnonFallbackFS:
 
     def _wrap_async(self, name, attr):
         async def call(*args, **kwargs):
+            if name in ("open", "_open") and self._is_write_open(args, kwargs):
+                return await attr(*args, **kwargs)
             try:
                 return await attr(*args, **kwargs)
             except PermissionError:
