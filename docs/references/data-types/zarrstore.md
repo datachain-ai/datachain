@@ -19,12 +19,15 @@ for (store,) in chain.limit(1).to_iter("zarr"):
 
 There are additional models for working with Zarr stores:
 
-- `ZarrInfo` - summary metadata for a store (format, array paths, attributes).
-- `ZarrArray` - a single array within a store; exposes `shape`, `chunks`,
-  `dtype`, and `attrs`, and reads data via `read()` or `select()`.
-- `ZarrSelection` - a lazy, bounded region inside an array (e.g. one image
-  frame) that can travel through a chain as a column and is materialized on
-  demand via `read()` or rendered to image bytes via `read_bytes()`.
+- [`ZarrInfo`](#datachain.lib.zarr.ZarrInfo) - summary metadata for a store
+  (format, array paths, attributes).
+- [`ZarrArray`](#datachain.lib.zarr.ZarrArray) - a single array within a store;
+  exposes `shape`, `chunks`, `dtype`, and `attrs`, and reads data via `read()`
+  or `select()`.
+- [`ZarrSelection`](#datachain.lib.zarr.ZarrSelection) - a lazy, bounded region
+  inside an array (e.g. one image frame) that can travel through a chain as a
+  column and is materialized on demand via `read()` or rendered to image bytes
+  via `read_bytes()`.
 
 Reading the actual data requires the optional `zarr` dependency:
 
