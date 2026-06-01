@@ -29,11 +29,11 @@ class Array(types.UserDefinedType):
 
 
 def adapt_array(arr):
-    return json.dumps(arr, ensure_ascii=False)
+    return json.dumps(arr, ensure_ascii=False, serialize_numpy=True)
 
 
 def adapt_dict(dct):
-    return json.dumps(dct, ensure_ascii=False)
+    return json.dumps(dct, ensure_ascii=False, serialize_numpy=True)
 
 
 def convert_array(arr):
@@ -41,9 +41,9 @@ def convert_array(arr):
 
 
 def adapt_np_array(arr):
-    # Primarily needed for UDF numpy results (e.g. WDS)
-    # tolist() gives nested Python lists + native scalars; ujson.dumps handles NaN/Inf.
-    return json.dumps(arr.tolist(), ensure_ascii=False)
+    # Needed for numpy values produced locally by UDFs and by parquet readers
+    # during remote pulls. datachain.json handles nested object arrays.
+    return json.dumps(arr, ensure_ascii=False, serialize_numpy=True)
 
 
 def adapt_np_generic(val):
