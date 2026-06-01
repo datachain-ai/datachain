@@ -175,16 +175,16 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        pyv: ['3.11', '3.14']
+        pyv: ['3.11', '3.13']
         group: ['get_started', 'computer_vision', 'multimodal']
         exclude:
           - {os: ubuntu-latest, pyv: '3.11', group: 'multimodal'}
-          - {os: ubuntu-latest, pyv: '3.14', group: 'multimodal'}
+          - {os: ubuntu-latest, pyv: '3.13', group: 'multimodal'}
         include:
           # HF runs against actual API - thus run it only once
-          - {os: ubuntu-latest, pyv: "3.14", group: llm_and_nlp}
+          - {os: ubuntu-latest, pyv: "3.13", group: llm_and_nlp}
           - {os: ubuntu-latest-4-cores, pyv: "3.11", group: multimodal}
-          - {os: ubuntu-latest-4-cores, pyv: "3.14", group: multimodal}
+          - {os: ubuntu-latest-4-cores, pyv: "3.13", group: multimodal}
 
     steps:
       - uses: actions/checkout@v6

@@ -29,7 +29,8 @@ There are additional models for working with Zarr stores:
   column and is materialized on demand via `read()` or rendered to image bytes
   via `read_bytes()`.
 
-Reading the actual data requires the optional `zarr` dependency:
+Reading the actual data requires the optional `zarr` dependency, which is
+available on Python 3.11 and newer:
 
 ```sh
 pip install 'datachain[zarr]'

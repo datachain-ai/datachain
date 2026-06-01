@@ -11,6 +11,7 @@ Reading the actual data requires the optional ``zarr`` dependency:
 """
 
 import posixpath
+import sys
 from collections.abc import Iterator
 from typing import Any, ClassVar, Literal
 
@@ -31,10 +32,13 @@ def _import_zarr() -> Any:
     try:
         import zarr
     except ImportError as exc:
-        raise ImportError(
-            "Missing dependencies for Zarr support.\n"
-            "To install run:\n\n"
+        hint = (
             "  pip install 'datachain[zarr]'\n"
+            if sys.version_info >= (3, 11)
+            else "Zarr support requires Python 3.11 or newer.\n"
+        )
+        raise ImportError(
+            "Missing dependencies for Zarr support.\nTo install run:\n\n" + hint
         ) from exc
     return zarr
 
