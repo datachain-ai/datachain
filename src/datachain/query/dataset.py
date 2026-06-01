@@ -1037,7 +1037,7 @@ class UDFStep(Step, ABC):
             rerun_from_job_id=rerun_from_job_id,
             details=details,
         )
-        logger.info(
+        logger.debug(
             "UDF(%s) [job=%s run_group=%s]: %s - "
             "input=%s, processed=%s, output=%s, input_reused=%s, output_reused=%s",
             self._udf_name,
@@ -1292,11 +1292,7 @@ class UDFStep(Step, ABC):
         record. "Done" checkpoints act as a cache keyed by hash.
         Returns (output_table, input_table).
         """
-        print(
-            f"UDF '{self._udf_name}': Skipped, reusing output from checkpoint",
-            file=sys.stderr,
-        )
-        logger.info(
+        logger.debug(
             "UDF(%s) [job=%s run_group=%s]: Skipping execution, "
             "reusing output from job_id=%s",
             self._udf_name,
@@ -1364,7 +1360,7 @@ class UDFStep(Step, ABC):
         """Execute UDF from scratch. Returns (output_table, input_table)."""
         run_id = job.id if job else str(uuid4())  # unique ID for table naming
 
-        logger.info(
+        logger.debug(
             "UDF(%s) [job=%s run_group=%s]: Running from scratch",
             self._udf_name,
             self._job_id_short(job),
@@ -1457,8 +1453,7 @@ class UDFStep(Step, ABC):
         """
         is_same_job = checkpoint.job_id == job.id
 
-        print(f"UDF '{self._udf_name}': Continuing from checkpoint", file=sys.stderr)
-        logger.info(
+        logger.debug(
             "UDF(%s) [job=%s run_group=%s]: Continuing from partial checkpoint, "
             "source_job_id=%s%s",
             self._udf_name,
