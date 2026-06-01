@@ -83,14 +83,16 @@ class ZarrStore(DataModel):
         node = self._open()
         return ZarrInfo(
             zarr_format=int(node.metadata.zarr_format),
-            arrays=[a.path for a in self.get_arrays()],
+            arrays=[a.path for a in self._arrays(node)],
             attrs=dict(node.attrs),
         )
 
     def get_arrays(self) -> Iterator["ZarrArray"]:
         """Yield every array in the store (recursively)."""
+        yield from self._arrays(self._open())
+
+    def _arrays(self, node: Any) -> Iterator["ZarrArray"]:
         zarr = _import_zarr()
-        node = self._open()
         if isinstance(node, zarr.Array):
             yield self._to_array(node, "")
             return
