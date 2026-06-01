@@ -77,7 +77,10 @@ class AnonFallbackFS:
     def __init__(self, client: "Client") -> None:
         self._client = client
         kwargs = dict(client.fs_kwargs)
-        if client._bucket_needs_anon(client.name) is True:
+        if (
+            self._should_use_anon_cache()
+            and client._bucket_needs_anon(client.name) is True
+        ):
             kwargs["anon"] = True
         self._inner_fs = type(client).create_fs(**kwargs)
 
@@ -95,9 +98,17 @@ class AnonFallbackFS:
             return self._wrap_async(name, attr)
         return self._wrap_sync(name, attr)
 
+    def _should_use_anon_cache(self) -> bool:
+        # Clients with explicit creds skip the shared anon cache - reading
+        # could lock them out of paths their creds cover, writing could
+        # mis-flag a bucket as anon-needed for future no-creds callers.
+        return not type(self._client).has_explicit_credentials(self._client.fs_kwargs)
+
     def _can_retry(self) -> bool:
         if self._client.fs_kwargs.get("anon"):
             return False
+        if not self._should_use_anon_cache():
+            return True
         return self._client._bucket_needs_anon(self._client.name) is None
 
     def _swap_to_anon(self) -> None:
@@ -118,9 +129,11 @@ class AnonFallbackFS:
                     result = getattr(self._inner_fs, name)(*args, **kwargs)
                 except PermissionError:
                     self._inner_fs = saved
-                    self._client._mark_bucket_anon(self._client.name, False)
+                    if self._should_use_anon_cache():
+                        self._client._mark_bucket_anon(self._client.name, False)
                     raise
-                self._client._mark_bucket_anon(self._client.name, True)
+                if self._should_use_anon_cache():
+                    self._client._mark_bucket_anon(self._client.name, True)
                 return result
 
         return call
@@ -138,9 +151,11 @@ class AnonFallbackFS:
                     result = await getattr(self._inner_fs, name)(*args, **kwargs)
                 except PermissionError:
                     self._inner_fs = saved
-                    self._client._mark_bucket_anon(self._client.name, False)
+                    if self._should_use_anon_cache():
+                        self._client._mark_bucket_anon(self._client.name, False)
                     raise
-                self._client._mark_bucket_anon(self._client.name, True)
+                if self._should_use_anon_cache():
+                    self._client._mark_bucket_anon(self._client.name, True)
                 return result
 
         return call

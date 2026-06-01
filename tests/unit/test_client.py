@@ -157,3 +157,44 @@ def test_anon_fallback_open_object_retry_succeeds(monkeypatch, _clear_anon_cache
     client.open_object(File(source="gs://foo", path="x.txt"))
 
     assert GCSClient._bucket_needs_anon("foo") is True
+
+
+def test_anon_fallback_explicit_creds_ignore_cache(monkeypatch, _clear_anon_cache):
+    # A previous no-creds caller cached the bucket as anon-needed.
+    GCSClient._mark_bucket_anon("foo", True)
+
+    # New client with explicit creds: should NOT use anon directly, should
+    # try with creds first, and should NOT overwrite the cache.
+    auth_fs = MagicMock()
+    auth_fs._info = _info_ok()
+    anon_fs = MagicMock()
+    create_fs = MagicMock(side_effect=[auth_fs, anon_fs])
+    monkeypatch.setattr(GCSClient, "create_fs", create_fs)
+
+    client = _gcs_client(token="explicit-token")  # noqa: S106
+    client.get_file_info("x.txt")
+
+    # Only the auth fs was built, anon was never instantiated.
+    create_fs.assert_called_once()
+    assert create_fs.call_args.kwargs.get("anon") is None
+    # Cache was not touched - still True from the earlier no-creds caller.
+    assert GCSClient._bucket_needs_anon("foo") is True
+
+
+def test_anon_fallback_explicit_creds_anon_retry_does_not_cache(
+    monkeypatch, _clear_anon_cache
+):
+    # Client with explicit creds whose creds fail - anon retry succeeds,
+    # but the success must NOT pollute the shared cache.
+    auth_fs = MagicMock()
+    auth_fs._info = AsyncMock(side_effect=PermissionError)
+    anon_fs = MagicMock()
+    anon_fs._info = _info_ok()
+    create_fs = MagicMock(side_effect=[auth_fs, anon_fs])
+    monkeypatch.setattr(GCSClient, "create_fs", create_fs)
+
+    client = _gcs_client(token="explicit-token")  # noqa: S106
+    client.get_file_info("x.txt")
+
+    # Cache untouched.
+    assert GCSClient._bucket_needs_anon("foo") is None
