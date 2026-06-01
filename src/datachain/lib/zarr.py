@@ -9,6 +9,7 @@ multiscale preview, ...) are intentionally *not* handled here.
 import posixpath
 from collections.abc import Iterator
 from typing import Any, ClassVar, Literal
+from urllib.parse import urlsplit, urlunsplit
 
 import zarr
 from pydantic import Field
@@ -27,7 +28,7 @@ ZARR_SUFFIX = ".zarr"
 class ZarrInfo(DataModel):
     """Summary metadata for a Zarr store."""
 
-    zarr_format: int = Field(default=0)
+    zarr_format: int | None = Field(default=None)
     arrays: list[str] = Field(default_factory=list)
     attrs: dict = Field(default_factory=dict)
 
@@ -203,15 +204,22 @@ def _store_root_split(file: File) -> tuple[str, str]:
     """Return ``(source, path)`` for the store root containing ``file``.
 
     ``file`` is a store-root metadata marker.  The store root is the directory
-    that contains it.  When that directory coincides with the listing source
-    (so the marker's relative path has no parent), the source is lifted one
-    level so the root is always addressable as ``source`` + ``path``.
+    that contains it.  When the marker sits directly under the listing source
+    (so its relative path has no parent), the store root *is* the source: the
+    last path segment is peeled off for a clean ``(source, name)`` pair, falling
+    back to the whole source with an empty path when it has no path segment
+    (e.g. a bare bucket like ``s3://bucket``).
     """
     parent = posixpath.dirname(file.path)
     if parent:
         return file.source, parent
-    base, _, name = file.source.rstrip("/").rpartition("/")
-    return base, name
+    parts = urlsplit(file.source)
+    root = parts.path.rstrip("/")
+    if "/" in root:
+        head, _, name = root.rpartition("/")
+        base = urlunsplit((parts.scheme, parts.netloc, head, "", ""))
+        return base, name
+    return file.source.rstrip("/"), ""
 
 
 def file_to_store(file: File) -> ZarrStore:

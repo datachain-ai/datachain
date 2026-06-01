@@ -182,3 +182,25 @@ def test_zarr_store_open_passes_remote_storage_options(
 
     assert captured["storage_options"] == {"key": "secret"}
     assert info.attrs == {"who": "s"}
+
+
+@pytest.mark.parametrize(
+    "source,path,expected_source,expected_path",
+    [
+        # Discovered marker nested under the listing root.
+        ("gs://bucket", "data/scan.zarr/zarr.json", "gs://bucket", "data/scan.zarr"),
+        # Concrete store path: the store root is the source itself.
+        ("gs://bucket/scan.zarr", "zarr.json", "gs://bucket", "scan.zarr"),
+        # Whole bucket is a single store (no path segment to split off).
+        ("s3://bucket", ".zgroup", "s3://bucket", ""),
+        ("s3://bucket/", ".zgroup", "s3://bucket", ""),
+    ],
+)
+def test_file_to_store_root_split(source, path, expected_source, expected_path):
+    from datachain.lib.file import File
+    from datachain.lib.zarr import file_to_store
+
+    store = file_to_store(File(source=source, path=path))
+
+    assert store.source == expected_source
+    assert store.path == expected_path
