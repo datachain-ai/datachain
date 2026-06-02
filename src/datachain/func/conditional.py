@@ -25,6 +25,10 @@ class _IsNoneFunc(_SentinelAwareFunc):
     column (including ``Optional[basic]``) keeps the plain ``col IS NULL`` check.
     """
 
+    def is_nullable_result(self, signals_schema=None, col_type=None) -> bool:
+        # isnone always returns True/False (never NULL), so its column stays bool.
+        return False
+
     def _sentinel_column(
         self,
         sentinel_path: str,
