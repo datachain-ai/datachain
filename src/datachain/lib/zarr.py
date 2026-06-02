@@ -31,7 +31,7 @@ def _require_zarr() -> Any:
     if zarr is None:
         raise ImportError(
             "Missing dependencies for Zarr support.\n"
-            "To install run:\n\n"
+            "Zarr requires Python >= 3.11.  On a supported Python, run:\n\n"
             "  pip install 'datachain[zarr]'\n"
         )
     return zarr
@@ -213,11 +213,13 @@ class ZarrSelection(DataModel):
                 "To install run:\n\n  pip install pillow\n"
             ) from exc
 
+        from .video import _image_format
+
         arr = np.asarray(self.read())
         if arr.dtype != np.uint8:
             arr = arr.astype("uint8")
         buf = io.BytesIO()
-        Image.fromarray(arr).save(buf, format=format)
+        Image.fromarray(arr).save(buf, format=_image_format(format))
         return buf.getvalue()
 
 

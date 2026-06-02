@@ -1,7 +1,7 @@
 """
-To run this example, install:
+To run this example, install (on Python >= 3.11, which Zarr support requires):
 
-`datachain[examples]`
+`datachain[examples,zarr]`
 
 It demonstrates how to use DataChain's Zarr support to turn a directory of
 Zarr stores into an embedding dataset. Each store is one robot-manipulation
