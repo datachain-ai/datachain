@@ -20,6 +20,20 @@ from datachain.utils import STUDIO_URL
 from tests.utils import skip_if_not_sqlite
 
 
+@pytest.fixture(autouse=True)
+def clean_config_env(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    for level in [ConfigLevel.LOCAL, ConfigLevel.GLOBAL]:
+        try:
+            with Config(level).edit() as conf:
+                conf.pop("studio", None)
+        except (FileNotFoundError, PermissionError):
+            continue
+
+    yield tmp_path
+
+
 def mocked_connect(url, additional_headers):
     async def mocked_recv():
         raise websockets.exceptions.ConnectionClosed("Connection closed")
@@ -115,6 +129,7 @@ def test_studio_login_with_team_scoping(mocker):
                 "data-team",
                 "--expires-in",
                 "90",
+                "--local",
             ]
         )
         == 0
@@ -134,7 +149,7 @@ def test_studio_login_with_team_scoping(mocker):
     )
 
     # Check saved token is simple string
-    config = Config().read()
+    config = Config(level=ConfigLevel.LOCAL).read()
     token = config["studio"]["token"]
     assert token == "isat_access_token"  # noqa: S105
 
@@ -145,7 +160,7 @@ def test_studio_login_with_all_teams(mocker):
         return_value=("token_name", "isat_access_token"),
     )
 
-    assert main(["auth", "login", "--all-teams"]) == 0
+    assert main(["auth", "login", "--all-teams", "--local"]) == 0
 
     mock.assert_called_with(
         token_name=None,
@@ -167,7 +182,7 @@ def test_studio_login_never_expires(mocker):
         return_value=("token_name", "isat_access_token"),
     )
 
-    assert main(["auth", "login", "--all-teams", "--never-expires"]) == 0
+    assert main(["auth", "login", "--all-teams", "--never-expires", "--local"]) == 0
 
     mock.assert_called_with(
         token_name=None,
@@ -183,7 +198,7 @@ def test_studio_login_never_expires(mocker):
     )
 
     # Check saved token is simple string
-    config = Config().read()
+    config = Config(level=ConfigLevel.LOCAL).read()
     token = config["studio"]["token"]
     assert token == "isat_access_token"  # noqa: S105
 
@@ -1529,10 +1544,10 @@ def test_studio_login_missing_team_specification(capsys):
 
 
 def test_studio_login_token_already_exists(capsys):
-    with Config(ConfigLevel.GLOBAL).edit() as conf:
+    with Config(ConfigLevel.LOCAL).edit() as conf:
         conf["studio"] = {"token": "existing_token", "url": STUDIO_URL}
 
-    assert main(["auth", "login", "--all-teams"]) == 1
+    assert main(["auth", "login", "--all-teams", "--local"]) == 1
     captured = capsys.readouterr()
     assert "Token already exists" in captured.err
     assert "logout using" in captured.err
@@ -1544,9 +1559,9 @@ def test_studio_login_single_team_saves_default(mocker, capsys):
         return_value=("token_name", "isat_access_token"),
     )
 
-    assert main(["auth", "login", "--team", "my-team"]) == 0
+    assert main(["auth", "login", "--team", "my-team", "--local"]) == 0
 
-    config = Config().read()
+    config = Config(level=ConfigLevel.LOCAL).read()
     assert config["studio"]["team"] == "my-team"
 
     captured = capsys.readouterr()
