@@ -204,22 +204,19 @@ class ZarrSelection(DataModel):
         import io
 
         import numpy as np
+        from PIL import Image
 
-        try:
-            from PIL import Image
-        except ImportError as exc:  # pragma: no cover
-            raise ImportError(
-                "Pillow is required to render Zarr image previews.\n"
-                "To install run:\n\n  pip install pillow\n"
-            ) from exc
-
-        from .video import _image_format
+        # Normalize e.g. "jpg"/".png" to a registered Pillow format name, with a
+        # plain upper-cased fallback (mirrors VideoFrame.read_bytes without the
+        # optional video dependency).
+        ext = format if format.startswith(".") else f".{format}"
+        pil_format = Image.registered_extensions().get(ext.lower(), format.upper())
 
         arr = np.asarray(self.read())
         if arr.dtype != np.uint8:
             arr = arr.astype("uint8")
         buf = io.BytesIO()
-        Image.fromarray(arr).save(buf, format=_image_format(format))
+        Image.fromarray(arr).save(buf, format=pil_format)
         return buf.getvalue()
 
 

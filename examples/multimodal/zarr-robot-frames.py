@@ -16,6 +16,12 @@ embedding — no raw pixels are carried in the row. The result is saved as a
 DataChain dataset that can be reused for search or clustering.
 """
 
+import sys
+
+if sys.version_info < (3, 11):
+    print("This example requires Python >= 3.11 for Zarr support; skipping.")
+    sys.exit(0)
+
 import numpy as np
 import open_clip
 from PIL import Image
