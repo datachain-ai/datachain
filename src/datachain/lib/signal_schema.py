@@ -592,7 +592,7 @@ class SignalSchema:
 
         return hidden_fields
 
-    def to_udf_spec(self) -> dict[str, type]:
+    def to_udf_spec(self) -> "dict[str, type[SQLType] | SQLType]":
         res = {}
         for path, type_, has_subtree, _ in self.get_flat_tree():
             if path[0] in self.setup_func:
