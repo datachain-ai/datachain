@@ -216,6 +216,14 @@ def login(args: "Namespace"):
         )
     except StudioAuthError as exc:
         raise DataChainError(f"Failed to authenticate with Studio: {exc}") from exc
+    except requests.HTTPError as exc:
+        response = exc.response
+        if response.status_code == 400:
+            message = response.json().get("detail", "Unknown error")
+            raise DataChainError(
+                f"Failed to authenticate with Studio: {message}"
+            ) from exc
+        raise DataChainError(f"Failed to authenticate with Studio: {exc}") from exc
 
     level = ConfigLevel.LOCAL if args.local else ConfigLevel.GLOBAL
     config_path = save_config(hostname, access_token, level=level)
