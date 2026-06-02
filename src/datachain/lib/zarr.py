@@ -11,11 +11,31 @@ from collections.abc import Iterator
 from typing import Any, ClassVar, Literal
 from urllib.parse import urlsplit, urlunsplit
 
-import zarr
 from pydantic import Field
 
 from datachain.lib.data_model import DataModel
 from datachain.lib.file import File
+
+try:
+    import zarr
+except ImportError:
+    zarr = None  # type: ignore[assignment]
+
+
+def _require_zarr() -> Any:
+    """Return the ``zarr`` module, raising a clear error if it is missing.
+
+    Zarr is an optional dependency, so importing this module must not require
+    it; the hard failure is deferred to the moment Zarr functionality is used.
+    """
+    if zarr is None:
+        raise ImportError(
+            "Missing dependencies for Zarr support.\n"
+            "To install run:\n\n"
+            "  pip install 'datachain[zarr]'\n"
+        )
+    return zarr
+
 
 # Names of the metadata objects that mark a Zarr store/array root.
 #   - ``zarr.json``  : Zarr v3 group or array metadata
@@ -53,6 +73,7 @@ class ZarrStore(DataModel):
         return self.file.path
 
     def _open(self, mode: Literal["r", "r+", "a", "w", "w-"] = "r") -> Any:
+        zarr = _require_zarr()
         f = self.file
         url = f.get_fs_path()
         storage_options = None
