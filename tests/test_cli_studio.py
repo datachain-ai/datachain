@@ -1559,3 +1559,56 @@ def test_studio_login_single_team_saves_default(mocker, capsys):
 
     captured = capsys.readouterr()
     assert "Set default team to 'my-team'" in captured.out
+
+
+def test_studio_login_http_error_400(mocker, capsys):
+    mock_response = mocker.MagicMock()
+    mock_response.status_code = 400
+    mock_response.json.return_value = {"detail": "Invalid token scope"}
+
+    http_error = requests.HTTPError()
+    http_error.response = mock_response
+
+    mocker.patch(
+        "dvc_studio_client.auth.get_access_token",
+        side_effect=http_error,
+    )
+
+    assert main(["auth", "login", "--all-teams"]) == 1
+    captured = capsys.readouterr()
+    assert "Failed to authenticate with Studio: Invalid token scope" in captured.err
+
+
+def test_studio_login_http_error_other(mocker, capsys):
+    mock_response = mocker.MagicMock()
+    mock_response.status_code = 500
+
+    http_error = requests.HTTPError("Server error")
+    http_error.response = mock_response
+
+    mocker.patch(
+        "dvc_studio_client.auth.get_access_token",
+        side_effect=http_error,
+    )
+
+    assert main(["auth", "login", "--all-teams"]) == 1
+    captured = capsys.readouterr()
+    assert "Failed to authenticate with Studio: Server error" in captured.err
+
+
+def test_studio_team_no_name_and_no_default(capsys):
+    assert main(["auth", "team"]) == 1
+    captured = capsys.readouterr()
+    assert (
+        "No default team set. Use `datachain auth team <team_name>` to set one."
+        in captured.err
+    )
+
+
+def test_studio_team_no_name_with_existing_default(capsys):
+    with Config(ConfigLevel.GLOBAL).edit() as conf:
+        conf["studio"] = {"team": "existing-team"}
+
+    assert main(["auth", "team"]) == 0
+    captured = capsys.readouterr()
+    assert "Default team is 'existing-team'" in captured.out
