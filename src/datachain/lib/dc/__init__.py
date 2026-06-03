@@ -11,6 +11,7 @@ from .records import read_records
 from .storage import read_storage
 from .utils import DatasetMergeError, DatasetPrepareError, Sys, is_local, is_studio
 from .values import read_values
+from .zarr import read_zarr
 
 __all__ = [
     "C",
@@ -36,4 +37,5 @@ __all__ = [
     "read_records",
     "read_storage",
     "read_values",
+    "read_zarr",
 ]

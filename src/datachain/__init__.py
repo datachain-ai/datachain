@@ -1,3 +1,5 @@
+from importlib.metadata import version
+
 from datachain.client import BucketStatus, bucket_status
 from datachain.lib.data_model import DataModel, DataType, is_chain_type
 from datachain.lib.dc import (
@@ -22,6 +24,7 @@ from datachain.lib.dc import (
     read_records,
     read_storage,
     read_values,
+    read_zarr,
 )
 from datachain.lib.file import (
     ArrowRow,
@@ -46,6 +49,8 @@ from datachain.lib.udf import Aggregator, Generator, Mapper
 from datachain.lib.utils import AbstractUDF, DataChainError
 from datachain.query import metrics, param
 from datachain.query.session import Session
+
+__version__ = version("datachain")
 
 __all__ = [
     "AbstractUDF",
@@ -99,4 +104,5 @@ __all__ = [
     "read_records",
     "read_storage",
     "read_values",
+    "read_zarr",
 ]
