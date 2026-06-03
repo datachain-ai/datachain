@@ -184,13 +184,9 @@ def login(args: "Namespace"):
         raise DataChainError("Must specify either --team or --all-teams")
 
     expires_in_days = args.expires_in
-    never_expires = args.never_expires
 
-    if expires_in_days is not None and never_expires:
-        raise DataChainError("Cannot specify both --expires-in and --never-expires")
-
-    # Set default expiration if not specified and not never expires
-    if expires_in_days is None and not never_expires:
+    # Set default expiration if not specified
+    if expires_in_days is None:
         expires_in_days = 365
 
     if config.get("url", hostname) == hostname and "token" in config:
@@ -208,7 +204,7 @@ def login(args: "Namespace"):
             scopes=scopes,
             team_names=team_names,
             expires_in_days=expires_in_days,
-            never_expires=never_expires,
+            never_expires=False,
             open_browser=open_browser,
             client_name="DataChain",
             post_login_message=POST_LOGIN_MESSAGE,
@@ -230,10 +226,7 @@ def login(args: "Namespace"):
     print(f"Authentication complete. Saved token to {config_path}.")
     if team_names:
         print(f"Token is scoped to teams: {', '.join(team_names)}")
-    if never_expires:
-        print("Token will never expire.")
-    else:
-        print(f"Token will expire in {expires_in_days} days.")
+    print(f"Token will expire in {expires_in_days} days.")
 
     if team_names and len(team_names) == 1:
         file_path = _save_default_team(team_names[0], level)

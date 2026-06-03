@@ -176,13 +176,13 @@ def test_studio_login_with_all_teams(mocker):
     )
 
 
-def test_studio_login_never_expires(mocker):
+def test_studio_login_default_expiration(mocker):
     mock = mocker.patch(
         "dvc_studio_client.auth.get_access_token",
         return_value=("token_name", "isat_access_token"),
     )
 
-    assert main(["auth", "login", "--all-teams", "--never-expires", "--local"]) == 0
+    assert main(["auth", "login", "--all-teams", "--local"]) == 0
 
     mock.assert_called_with(
         token_name=None,
@@ -190,8 +190,8 @@ def test_studio_login_never_expires(mocker):
         scopes=None,
         team_names=None,
         all_teams=True,
-        expires_in_days=None,
-        never_expires=True,  # Never expires flag
+        expires_in_days=365,  # Default expiration
+        never_expires=False,
         client_name="DataChain",
         open_browser=True,
         post_login_message=POST_LOGIN_MESSAGE,
@@ -205,13 +205,6 @@ def test_studio_login_never_expires(mocker):
 
 def test_studio_login_conflicting_team_args():
     result = main(["auth", "login", "--team", "ml-team", "--all-teams"])
-    assert result == 1  # Should fail
-
-
-def test_studio_login_conflicting_expiration_args():
-    result = main(
-        ["auth", "login", "--all-teams", "--expires-in", "30", "--never-expires"]
-    )
     assert result == 1  # Should fail
 
 

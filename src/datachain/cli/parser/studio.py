@@ -90,12 +90,6 @@ def add_auth_parser(subparsers, parent_parser) -> None:
         default=None,
         help="Token expiration in days (default: 365)",
     )
-    login_parser.add_argument(
-        "--never-expires",
-        action="store_true",
-        default=False,
-        help="Create token that never expires",
-    )
 
     auth_logout_help = "Log out from Studio"
     auth_logout_description = (
