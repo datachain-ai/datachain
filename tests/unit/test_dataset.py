@@ -454,6 +454,118 @@ def test_latest_version_all_removed_raises(dataset_record):
         _ = record.latest_version
 
 
+def _versions_from_pairs(dataset_record, pairs):
+    return [
+        replace(
+            dataset_record.versions[0],
+            id=i + 1,
+            version=version,
+            status=status,
+        )
+        for i, (version, status) in enumerate(pairs)
+    ]
+
+
+def test_latest_major_version_returns_max_within_major(dataset_record):
+    versions = _versions_from_pairs(
+        dataset_record,
+        [
+            ("1.4.1", DatasetStatus.COMPLETE),
+            ("2.0.1", DatasetStatus.COMPLETE),
+            ("2.1.1", DatasetStatus.COMPLETE),
+            ("2.4.0", DatasetStatus.COMPLETE),
+        ],
+    )
+    record = replace(dataset_record, _versions=versions, _versions_loaded=True)
+    assert record.latest_major_version(2) == "2.4.0"
+    assert record.latest_major_version(1) == "1.4.1"
+
+
+def test_latest_major_version_missing_returns_none(dataset_record):
+    versions = _versions_from_pairs(
+        dataset_record,
+        [("1.0.0", DatasetStatus.COMPLETE), ("2.0.0", DatasetStatus.COMPLETE)],
+    )
+    record = replace(dataset_record, _versions=versions, _versions_loaded=True)
+    assert record.latest_major_version(3) is None
+
+
+def test_latest_major_version_skips_removed(dataset_record):
+    versions = _versions_from_pairs(
+        dataset_record,
+        [
+            ("2.0.0", DatasetStatus.COMPLETE),
+            ("2.1.0", DatasetStatus.COMPLETE),
+            ("2.4.0", DatasetStatus.REMOVED),
+        ],
+    )
+    record = replace(dataset_record, _versions=versions, _versions_loaded=True)
+    assert record.latest_major_version(2) == "2.1.0"
+
+
+def test_latest_compatible_version_returns_max_matching(dataset_record):
+    versions = _versions_from_pairs(
+        dataset_record,
+        [
+            ("1.0.0", DatasetStatus.COMPLETE),
+            ("1.5.2", DatasetStatus.COMPLETE),
+            ("2.0.0", DatasetStatus.COMPLETE),
+            ("2.5.0", DatasetStatus.COMPLETE),
+        ],
+    )
+    record = replace(dataset_record, _versions=versions, _versions_loaded=True)
+    assert record.latest_compatible_version(">=1.0.0,<2.0.0") == "1.5.2"
+    assert record.latest_compatible_version(">=2.0.0") == "2.5.0"
+
+
+def test_latest_compatible_version_no_match_returns_none(dataset_record):
+    versions = _versions_from_pairs(
+        dataset_record,
+        [("1.0.0", DatasetStatus.COMPLETE), ("2.0.0", DatasetStatus.COMPLETE)],
+    )
+    record = replace(dataset_record, _versions=versions, _versions_loaded=True)
+    assert record.latest_compatible_version(">=3.0.0") is None
+
+
+def test_latest_compatible_version_skips_removed(dataset_record):
+    versions = _versions_from_pairs(
+        dataset_record,
+        [
+            ("1.0.0", DatasetStatus.COMPLETE),
+            ("1.5.0", DatasetStatus.REMOVED),
+        ],
+    )
+    record = replace(dataset_record, _versions=versions, _versions_loaded=True)
+    assert record.latest_compatible_version(">=1.0.0,<2.0.0") == "1.0.0"
+
+
+def test_dataset_list_record_latest_version_returns_max_live(dataset_list_record):
+    assert dataset_list_record.latest_version().version == "2.0.0"
+
+
+def test_dataset_list_record_latest_version_skips_removed(dataset_list_record):
+    v3 = replace(
+        dataset_list_record.versions[0],
+        id=3,
+        version="3.0.0",
+        status=DatasetStatus.REMOVED,
+    )
+    record = replace(
+        dataset_list_record,
+        versions=[*dataset_list_record.versions, v3],
+    )
+    assert record.latest_version().version == "2.0.0"
+
+
+def test_dataset_list_record_latest_version_all_removed_raises(dataset_list_record):
+    versions = [
+        replace(v, status=DatasetStatus.REMOVED) for v in dataset_list_record.versions
+    ]
+    record = replace(dataset_list_record, versions=versions)
+    with pytest.raises(DatasetVersionNotFoundError, match="has no live versions"):
+        record.latest_version()
+
+
 @pytest.mark.parametrize(
     "prop,expected",
     [
