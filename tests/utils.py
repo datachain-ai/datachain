@@ -176,18 +176,11 @@ def wait_for_condition(
     raise TimeoutError(f"Timeout expired while waiting for: {message}")
 
 
-def e2e_subprocess_env(
-    catalog: Catalog, exclude_keys: set[str] | None = None
-) -> dict[str, str]:
+def e2e_subprocess_env(catalog: Catalog) -> dict[str, str]:
     # Strip AWS_* so the subprocess talks to real public S3 instead of inheriting
     # moto/pytest-servers credentials and region from cloud-emulator fixtures
     # that ran earlier in the same pytest process.
-    exclude = exclude_keys or set()
-    env = {
-        k: v
-        for k, v in os.environ.items()
-        if not k.startswith("AWS_") and k not in exclude
-    }
+    env = {k: v for k, v in os.environ.items() if not k.startswith("AWS_")}
     env["DATACHAIN__METASTORE"] = catalog.metastore.serialize()
     env["DATACHAIN__WAREHOUSE"] = catalog.warehouse.serialize()
     return env
@@ -351,12 +344,6 @@ def reset_session_job_state():
     Session._JOB_STATUS = None
     Session._OWNS_JOB = None
     Session._JOB_HOOKS_REGISTERED = False
-
-    # Clear checkpoint state (now in utils module)
-    from datachain.utils import _CheckpointState
-
-    _CheckpointState.disabled = False
-    _CheckpointState.warning_shown = False
 
     # Clear DATACHAIN_JOB_ID env var to allow new job creation on next run
     # This is important for studio/SaaS mode where job_id comes from env var

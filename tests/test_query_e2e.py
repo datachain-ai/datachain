@@ -186,11 +186,7 @@ def run_step(step, catalog):
         popen_args = {"start_new_session": True}
     stdin_path = step.get("stdin_file")
     with open(stdin_path) if stdin_path else nullcontext(None) as stdin_file:
-        # Strip DATACHAIN_MAIN_PROCESS_PID so script starts fresh as its own
-        # main process (with checkpoints enabled).
-        script_env = e2e_subprocess_env(
-            catalog, exclude_keys={"DATACHAIN_MAIN_PROCESS_PID"}
-        )
+        script_env = e2e_subprocess_env(catalog)
 
         process = subprocess.Popen(  # noqa: S603
             command,

@@ -28,6 +28,8 @@ for examples of how to create a chain.
 
 ::: datachain.lib.dc.storage.read_storage
 
+::: datachain.lib.dc.zarr.read_zarr
+
 ::: datachain.lib.dc.values.read_values
 
 ::: datachain.lib.dc.database.read_database
