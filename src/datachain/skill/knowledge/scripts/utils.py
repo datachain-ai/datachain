@@ -108,8 +108,10 @@ def read_frontmatter(path: str) -> dict[str, str]:
 
 
 def _first_prose_paragraph(lines: list[str]) -> str:
-    """First contiguous block of prose lines, skipping headings, tables, code
-    fences and list items."""
+    """First contiguous block of prose lines.
+
+    Skips headings, tables, code fences and list items.
+    """
     paragraph: list[str] = []
     in_fence = False
     for raw in lines:
