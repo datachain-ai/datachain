@@ -338,9 +338,14 @@ class AbstractMetastore(ABC, Serializable):
         version: str,
         *,
         keep_metadata: bool,
+        expected_status: int,
     ) -> bool:
         """Atomically transition the version to REMOVING (``keep_metadata=True``)
         or REMOVING_TOTAL (``keep_metadata=False``).
+
+        The transition only applies if the row's current status equals
+        ``expected_status`` (the status the caller read before deciding to
+        attempt the transition).
 
         Returns True iff this caller is the one that landed the transition.
         Other concurrent callers see False and should abort.
@@ -1537,7 +1542,7 @@ class AbstractDBMetastore(AbstractMetastore):
         version: str,
         *,
         target_status: int,
-        allowed_source_statuses: list[int],
+        expected_status: int,
     ) -> bool:
         """Atomically transition a version's status and signal win/loss.
 
@@ -1551,7 +1556,7 @@ class AbstractDBMetastore(AbstractMetastore):
         self.db.execute(
             self._datasets_versions_update()
             .where(dv.c.dataset_id == dataset.id, dv.c.version == version)
-            .where(dv.c.status.in_(allowed_source_statuses))
+            .where(dv.c.status == expected_status)
             .values(status=target_status, op_uuid=my_uuid)
         )
         try:
@@ -1564,7 +1569,7 @@ class AbstractDBMetastore(AbstractMetastore):
             )
             return refreshed.get_version(version).op_uuid == my_uuid
         except (DatasetNotFoundError, DatasetVersionNotFoundError):
-            # Row was wiped by a concurrent caller — we lost.
+            # Row was wiped by a concurrent caller, we lost.
             return False
 
     def claim_remove_dataset_version(
@@ -1573,29 +1578,16 @@ class AbstractDBMetastore(AbstractMetastore):
         version: str,
         *,
         keep_metadata: bool,
+        expected_status: int,
     ) -> bool:
-        if keep_metadata:
-            target_status = DatasetStatus.REMOVING
-            allowed_source_statuses = [
-                DatasetStatus.COMPLETE,
-                DatasetStatus.REMOVING,
-            ]
-        else:
-            target_status = DatasetStatus.REMOVING_TOTAL
-            allowed_source_statuses = [
-                DatasetStatus.COMPLETE,
-                DatasetStatus.CREATED,
-                DatasetStatus.PENDING,
-                DatasetStatus.FAILED,
-                DatasetStatus.STALE,
-                DatasetStatus.REMOVED,
-                DatasetStatus.REMOVING_TOTAL,
-            ]
+        target_status = (
+            DatasetStatus.REMOVING if keep_metadata else DatasetStatus.REMOVING_TOTAL
+        )
         return self._try_transition_version_with_uuid(
             dataset,
             version,
             target_status=target_status,
-            allowed_source_statuses=allowed_source_statuses,
+            expected_status=expected_status,
         )
 
     def _parse_dataset(

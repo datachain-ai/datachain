@@ -1135,17 +1135,20 @@ class Catalog:
         ):
             keep_metadata = False
 
+        if keep_metadata and v.status == DatasetStatus.REMOVED:
+            return
+
         if keep_metadata:
-            self._remove_version_keep_metadata(dataset, version)
+            self._remove_version_keep_metadata(dataset, version, v.status)
         else:
-            self._remove_version_wipe_metadata(dataset, version)
+            self._remove_version_wipe_metadata(dataset, version, v.status)
 
     def _remove_version_keep_metadata(
-        self, dataset: DatasetRecord, version: str
+        self, dataset: DatasetRecord, version: str, expected_status: int
     ) -> None:
         """Drop rows table, mark version REMOVED (keeps semver + lineage)."""
         if not self.metastore.claim_remove_dataset_version(
-            dataset, version, keep_metadata=True
+            dataset, version, keep_metadata=True, expected_status=expected_status
         ):
             logger.debug(
                 "Skipped remove of %s@%s: another caller is already handling it",
@@ -1163,11 +1166,11 @@ class Catalog:
         )
 
     def _remove_version_wipe_metadata(
-        self, dataset: DatasetRecord, version: str
+        self, dataset: DatasetRecord, version: str, expected_status: int
     ) -> None:
         """Drop rows table and delete the version row entirely."""
         if not self.metastore.claim_remove_dataset_version(
-            dataset, version, keep_metadata=False
+            dataset, version, keep_metadata=False, expected_status=expected_status
         ):
             logger.debug(
                 "Skipped remove of %s@%s: another caller is already handling it",
