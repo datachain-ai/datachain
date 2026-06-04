@@ -76,14 +76,13 @@ def split_frontmatter(content: str) -> tuple[dict[str, str], str]:
     text = (content or "").strip()
     first_line, _, rest = text.partition("\n")
     if first_line.strip().lower() in ("```", "```markdown", "```md"):
-        inner = rest.rstrip()
-        # Strip the wrapper's closing fence, but only when it's unmatched.
-        fence_lines = sum(
-            1 for ln in inner.splitlines() if ln.lstrip().startswith("```")
-        )
-        if inner.endswith("```") and fence_lines % 2 == 1:
-            inner = inner[:-3].rstrip()
-        text = inner
+        lines = rest.rstrip().splitlines()
+        # Strip the wrapper's closing fence, but only when it's an unmatched
+        # *standalone* fence line (a line that is only ```).
+        fence_lines = sum(1 for ln in lines if ln.lstrip().startswith("```"))
+        if lines and lines[-1].strip() == "```" and fence_lines % 2 == 1:
+            lines = lines[:-1]
+        text = "\n".join(lines).rstrip()
     if not text.startswith("---"):
         return {}, text
     try:
@@ -108,12 +107,40 @@ def read_frontmatter(path: str) -> dict[str, str]:
     return split_frontmatter(content)[0]
 
 
-def extract_description(lines: list[str]) -> str:
-    """First prose paragraph after the `# ` H1 heading, up to the first `##`.
+def _first_prose_paragraph(lines: list[str]) -> str:
+    """First contiguous block of prose lines, skipping headings, tables, code
+    fences and list items."""
+    paragraph: list[str] = []
+    in_fence = False
+    for raw in lines:
+        line = raw.strip()
+        if line.startswith("```"):
+            in_fence = not in_fence
+            if paragraph:
+                break
+            continue
+        if in_fence:
+            continue
+        if not line:
+            if paragraph:
+                break
+            continue
+        if line.startswith(("#", "|", "---", "- ", "* ", "+ ")):
+            if paragraph:
+                break
+            continue
+        paragraph.append(line)
+    return " ".join(paragraph)
 
-    `lines` is the markdown body split on newlines (frontmatter already removed,
-    e.g. via `split_frontmatter`). Returns the joined paragraph, or "" when
-    there's no H1 or no prose under it.
+
+def extract_description(lines: list[str]) -> str:
+    """Short description of an enriched document.
+
+    The intro paragraph after the `# ` H1 heading (up to the first `##`); if the
+    document has no H1 or no prose under it, the first prose paragraph anywhere
+    (skipping headings, tables and code fences). `lines` is the markdown body
+    split on newlines (frontmatter already removed, e.g. via `split_frontmatter`).
+    Returns "" when there's no prose at all.
     """
     desc_lines: list[str] = []
     past_heading = False
@@ -129,12 +156,20 @@ def extract_description(lines: list[str]) -> str:
             break
         if stripped:
             desc_lines.append(stripped)
-    return " ".join(desc_lines)
+    return " ".join(desc_lines) or _first_prose_paragraph(lines)
 
 
 def is_sys_column(col: str) -> bool:
     """True for DataChain system columns — the whole `sys` signal namespace."""
     return col == "sys" or col.startswith(("sys.", "sys__"))
+
+
+def escape_table_cell(value: object) -> str:
+    """Escape a value for a markdown table cell.
+
+    `|` breaks columns and newlines break rows.
+    """
+    return str(value).replace("|", "\\|").replace("\n", " ").replace("\r", " ")
 
 
 def read_json_versions(path):

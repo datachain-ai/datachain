@@ -18,6 +18,7 @@ from schema import parse_dataset_name, type_name  # noqa: E402
 from utils import (  # noqa: E402
     bucket_file_path,
     dataset_file_path,
+    escape_table_cell,
     extract_description,
     human_size,
     is_sys_column,
@@ -64,8 +65,22 @@ def test_extract_description_paragraph_after_heading():
     assert extract_description(body.split("\n")) == "First paragraph. Second line."
 
 
-def test_extract_description_no_heading():
-    assert extract_description(["no heading here", "just text"]) == ""
+def test_extract_description_no_heading_falls_back_to_first_prose():
+    assert (
+        extract_description(["no heading here", "just text"])
+        == "no heading here just text"
+    )
+
+
+def test_extract_description_h1_without_prose_skips_tables():
+    lines = ["# Title", "", "## Schema", "| a | b |", "| 1 | 2 |"]
+    assert extract_description(lines) == ""
+
+
+def test_escape_table_cell():
+    assert escape_table_cell("a | b") == "a \\| b"
+    assert escape_table_cell("line1\nline2") == "line1 line2"
+    assert escape_table_cell(42) == "42"
 
 
 def test_is_sys_column():
@@ -166,6 +181,16 @@ def test_split_frontmatter_strips_outer_fence_around_code_block():
     )
     assert fm == {"name": "foo"}
     assert body == "# T\n\n```python\nprint(1)\n```"
+
+
+def test_split_frontmatter_keeps_glued_closing_backticks():
+    # The body's last line glues ``` to text (not a standalone closing fence):
+    # it must NOT be chopped, even with an odd wrapper-fence count.
+    fm, body = split_frontmatter(
+        "```markdown\n---\nname: foo\n---\n# T\n\n```python\nx = 1```"
+    )
+    assert fm == {"name": "foo"}
+    assert body == "# T\n\n```python\nx = 1```"
 
 
 def test_parse_uri_s3():
