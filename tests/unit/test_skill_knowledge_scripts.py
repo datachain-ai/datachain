@@ -142,6 +142,13 @@ def test_split_frontmatter_empty():
     assert split_frontmatter("") == ({}, "")
 
 
+def test_split_frontmatter_keeps_leading_code_block():
+    # A document that legitimately starts with a language-tagged code fence
+    # is NOT a wrapper — it must be left intact, language tag and all.
+    content = "```python\nprint(1)\n```"
+    assert split_frontmatter(content) == ({}, content)
+
+
 def test_split_frontmatter_keeps_inner_code_block_when_outer_fence_omitted():
     # Wrapped doc whose body ends in a fenced code block, with the outer
     # closing fence omitted: the code block's own ``` must survive intact.

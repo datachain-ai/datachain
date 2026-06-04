@@ -51,8 +51,8 @@ def parse_semver(v: object) -> tuple[int, int, int]:
     """Parse a dotted version into a fixed (major, minor, patch) tuple for sorting.
 
     The fixed length keeps ordering total and length-independent: "1", "1.0" and
-    "1.0.0" all normalise to (1, 0, 0), so a 2-part version no longer sorts below
-    its 3-part equal. Components past patch are dropped. Unparseable input sorts
+    "1.0.0" all normalize to (1, 0, 0), so a 2-part version no longer sorts below
+    its 3-part equal. Components past patch are dropped. Unparsable input sorts
     strictly below every real version — and below a literal "0.0.0" — via a
     (-1, -1, -1) sentinel, so garbage is never mistaken for (or tied with) 0.0.0.
     """
@@ -69,20 +69,21 @@ def split_frontmatter(content: str) -> tuple[dict[str, str], str]:
 
     Tolerates a single outer ```/```markdown ... ``` fence — the enrichment
     prompt's Output Format section shows the document inside such a fence, and
-    some models echo it. Returns ({}, body) when there's no frontmatter block.
+    some models echo it. Only a *bare* wrapper fence is stripped: a document
+    that legitimately begins with a language-tagged code block (e.g. ```python)
+    is left intact. Returns ({}, body) when there's no frontmatter block.
     """
     text = (content or "").strip()
-    if text.startswith("```"):
-        nl = text.find("\n")
-        if nl != -1:
-            inner = text[nl + 1 :].rstrip()
-            # Strip the wrapper's closing fence, but only when it's unmatched.
-            fence_lines = sum(
-                1 for ln in inner.splitlines() if ln.lstrip().startswith("```")
-            )
-            if inner.endswith("```") and fence_lines % 2 == 1:
-                inner = inner[:-3].rstrip()
-            text = inner
+    first_line, _, rest = text.partition("\n")
+    if first_line.strip().lower() in ("```", "```markdown", "```md"):
+        inner = rest.rstrip()
+        # Strip the wrapper's closing fence, but only when it's unmatched.
+        fence_lines = sum(
+            1 for ln in inner.splitlines() if ln.lstrip().startswith("```")
+        )
+        if inner.endswith("```") and fence_lines % 2 == 1:
+            inner = inner[:-3].rstrip()
+        text = inner
     if not text.startswith("---"):
         return {}, text
     try:
