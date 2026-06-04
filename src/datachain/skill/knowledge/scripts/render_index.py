@@ -10,30 +10,16 @@ import os
 import re
 from datetime import datetime, timezone
 
-from utils import bucket_file_path, dataset_file_path, write_text
+from utils import (
+    bucket_file_path,
+    dataset_file_path,
+    extract_description,
+    read_frontmatter,
+    split_frontmatter,
+    write_text,
+)
 
 BASE_DIR = "dc-knowledge"
-
-
-def _read_md_frontmatter(md_path: str) -> dict:
-    """Read YAML frontmatter from a markdown file. Returns dict or {}."""
-    try:
-        with open(md_path) as f:
-            content = f.read()
-    except Exception:  # noqa: BLE001
-        return {}
-    if not content.startswith("---"):
-        return {}
-    try:
-        end = content.index("\n---", 3)
-    except ValueError:
-        return {}
-    result = {}
-    for line in content[4:end].splitlines():
-        if ":" in line:
-            key, _, val = line.partition(":")
-            result[key.strip()] = val.strip().strip('"').strip("'")
-    return result
 
 
 def _parse_frontmatter_info(fm: dict) -> dict:
@@ -51,36 +37,6 @@ def _parse_frontmatter_info(fm: dict) -> dict:
         "num_versions": str(len(versions_list)) if versions_list else "",
         "updated": updated,
     }
-
-
-def _strip_frontmatter(content: str) -> str | None:
-    """Strip YAML frontmatter from markdown content. Returns None if malformed."""
-    if not content.startswith("---"):
-        return content
-    try:
-        end = content.index("\n---", 3)
-    except ValueError:
-        return None
-    return content[end + 4 :].strip()
-
-
-def _extract_description(lines: list[str]) -> str:
-    """Paragraph between `# heading` and the first `##` heading."""
-    desc_lines: list[str] = []
-    past_heading = False
-    for line in lines:
-        if not past_heading:
-            if line.startswith("# "):
-                past_heading = True
-            continue
-        if line.startswith("##"):
-            break
-        stripped = line.strip()
-        if not stripped and desc_lines:
-            break
-        if stripped:
-            desc_lines.append(stripped)
-    return " ".join(desc_lines)
 
 
 def _extract_section_paragraph(lines: list[str], heading: str) -> str:
@@ -163,19 +119,15 @@ def _read_md_info(md_path: str) -> dict:
     except Exception:  # noqa: BLE001
         return info
 
-    fm = _read_md_frontmatter(md_path)
+    fm, body = split_frontmatter(content)
     info.update(_parse_frontmatter_info(fm))
     info["cast_layer"] = fm.get("cast_layer", "").strip().lower()
     info["cast_scope"] = fm.get("cast_scope", "").strip().lower()
     info["cast_source"] = fm.get("cast_source", "").strip()
     info["cast_parents"] = _parse_list_field(fm.get("cast_parents", ""))
 
-    body = _strip_frontmatter(content)
-    if body is None:
-        return info
-
     lines = body.split("\n")
-    info["description"] = _extract_description(lines)
+    info["description"] = extract_description(lines)
     info["session_context"] = _extract_section_paragraph(lines, "## Session Context")
     info["deps"] = _extract_deps(lines)
 
@@ -388,7 +340,7 @@ def _collect_bucket_rows(buckets: list[dict]) -> list[tuple[str, str, str, str]]
         md_path = os.path.join(BASE_DIR, file_path + ".md")
         if not os.path.exists(md_path):
             continue
-        fm = _read_md_frontmatter(md_path)
+        fm = read_frontmatter(md_path)
         uri = fm.get("uri", b["uri"])
         scanned = fm.get("scanned", "")
         if scanned and "T" in scanned:
