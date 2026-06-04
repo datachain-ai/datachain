@@ -522,7 +522,11 @@ def scan_bucket(
         signal.alarm(timeout)
 
     parts = parse_uri(uri)
-    status_kwargs = {"account_name": account_name} if account_name else {}
+    status_kwargs = (
+        {"account_name": account_name}
+        if account_name and parts["scheme"] == "az"
+        else {}
+    )
     status = bucket_status(f"{parts['scheme']}://{parts['bucket']}/", **status_kwargs)
     if not status.exists or status.access == "denied":
         print(json.dumps({"error": status.error, "uri": uri}), file=sys.stderr)
