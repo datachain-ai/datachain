@@ -223,10 +223,14 @@ def test_source_to_https_gs():
     assert source_to_https("gs://demo") == "https://storage.googleapis.com/demo"
 
 
-def test_source_to_https_az():
+def test_source_to_https_az_without_account_returns_none():
+    assert source_to_https("az://container/data") is None
+
+
+def test_source_to_https_az_with_account():
     assert (
-        source_to_https("az://account/container")
-        == "https://account.blob.core.windows.net/container"
+        source_to_https("az://container/data", account_name="myacct")
+        == "https://myacct.blob.core.windows.net/container"
     )
 
 

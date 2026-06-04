@@ -9,6 +9,7 @@ Usage:
 
 import argparse
 import json
+import os
 import signal
 import sys
 from datetime import datetime, timezone
@@ -443,6 +444,7 @@ def compute_bucket_metadata(
     is_anon: bool,
     sampled: bool = False,
     dataset_name: str | None = None,
+    account_name: str | None = None,
 ) -> dict:
     """Aggregate metadata + samples from a File-shape DataChain into a bucket JSON dict.
 
@@ -475,7 +477,7 @@ def compute_bucket_metadata(
     size_distribution = compute_size_distribution(chain)
     time_range = compute_time_range(chain)
     samples = sample_files(chain, extensions)
-    url_prefix = source_to_https(uri)
+    url_prefix = source_to_https(uri, account_name)
 
     result = {
         "uri": uri,
@@ -502,15 +504,26 @@ def compute_bucket_metadata(
     return result
 
 
-def scan_bucket(uri: str, output: str | None = None, timeout: int = 0):
-    """Full bucket scan: list via read_storage and emit a bucket JSON."""
+def scan_bucket(
+    uri: str,
+    output: str | None = None,
+    timeout: int = 0,
+    account_name: str | None = None,
+):
+    """Full bucket scan: list via read_storage and emit a bucket JSON.
+
+    `account_name` (Azure only) enables the az anonymous-access probe and the
+    `https://<account>.blob.core.windows.net/<container>` file-link prefix — the
+    account isn't part of the `az://` URI, so it must be passed explicitly.
+    """
 
     if timeout > 0:
         signal.signal(signal.SIGALRM, _alarm_handler)
         signal.alarm(timeout)
 
     parts = parse_uri(uri)
-    status = bucket_status(f"{parts['scheme']}://{parts['bucket']}/")
+    status_kwargs = {"account_name": account_name} if account_name else {}
+    status = bucket_status(f"{parts['scheme']}://{parts['bucket']}/", **status_kwargs)
     if not status.exists or status.access == "denied":
         print(json.dumps({"error": status.error, "uri": uri}), file=sys.stderr)
         sys.exit(1)
@@ -520,9 +533,16 @@ def scan_bucket(uri: str, output: str | None = None, timeout: int = 0):
         dc = dc_import()
         # Never pass update=True. Listing is already cached from a prior
         # read_storage() call. Pass anon=True for public buckets so listing
-        # doesn't hang on credential lookup.
-        chain = dc.read_storage(uri, anon=True) if is_anon else dc.read_storage(uri)
-        result = compute_bucket_metadata(chain, uri, is_anon)
+        # doesn't hang on credential lookup. For az://, the account isn't in
+        # the URI — thread account_name through client_config so adlfs can
+        # resolve the storage account (the probe alone getting it isn't enough).
+        read_kwargs: dict = {}
+        if is_anon:
+            read_kwargs["anon"] = True
+        if account_name and parts["scheme"] == "az":
+            read_kwargs["client_config"] = {"account_name": account_name}
+        chain = dc.read_storage(uri, **read_kwargs)
+        result = compute_bucket_metadata(chain, uri, is_anon, account_name=account_name)
 
         if timeout > 0:
             signal.alarm(0)
@@ -551,8 +571,15 @@ def main():
         default=0,
         help="Timeout in seconds (0 = no timeout). Exit code 124 on timeout.",
     )
+    parser.add_argument(
+        "--account-name",
+        # az:// URIs don't carry the storage account; fall back to the adlfs
+        # env var so a configured environment yields clickable az file links.
+        default=os.environ.get("AZURE_STORAGE_ACCOUNT_NAME"),
+        help="Azure storage account name (for az:// link prefixes + anon probe).",
+    )
     args = parser.parse_args()
-    scan_bucket(args.uri, args.output, args.timeout)
+    scan_bucket(args.uri, args.output, args.timeout, args.account_name)
 
 
 if __name__ == "__main__":
