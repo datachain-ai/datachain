@@ -18,7 +18,9 @@ from schema import parse_dataset_name, type_name  # noqa: E402
 from utils import (  # noqa: E402
     bucket_file_path,
     dataset_file_path,
+    extract_description,
     human_size,
+    is_sys_column,
     parse_semver,
     parse_uri,
     read_frontmatter,
@@ -27,6 +29,7 @@ from utils import (  # noqa: E402
     read_json_versions,
     serialize,
     source_to_https,
+    split_frontmatter,
 )
 
 # ---------------------------------------------------------------------------
@@ -38,16 +41,39 @@ def test_parse_semver_valid():
     assert parse_semver("1.2.3") == (1, 2, 3)
 
 
-def test_parse_semver_two_part():
-    assert parse_semver("1.0") == (1, 0)
+def test_parse_semver_normalizes_length():
+    assert parse_semver("1") == (1, 0, 0)
+    assert parse_semver("1.0") == (1, 0, 0)
+    assert parse_semver("1.0") == parse_semver("1.0.0")
 
 
 def test_parse_semver_invalid_string():
-    assert parse_semver("bad") == (0, 0, 0)
+    assert parse_semver("bad") == (-1, -1, -1)
 
 
 def test_parse_semver_none():
-    assert parse_semver(None) == (0, 0, 0)
+    assert parse_semver(None) == (-1, -1, -1)
+
+
+def test_parse_semver_garbage_sorts_below_zero():
+    assert parse_semver("bad") < parse_semver("0.0.0")
+
+
+def test_extract_description_paragraph_after_heading():
+    body = "# Title\n\nFirst paragraph.\nSecond line.\n\n## Schema\nignored"
+    assert extract_description(body.split("\n")) == "First paragraph. Second line."
+
+
+def test_extract_description_no_heading():
+    assert extract_description(["no heading here", "just text"]) == ""
+
+
+def test_is_sys_column():
+    assert is_sys_column("sys")
+    assert is_sys_column("sys.id")
+    assert is_sys_column("sys__rand")
+    assert not is_sys_column("file")
+    assert not is_sys_column("system")
 
 
 def test_read_frontmatter_normal(tmp_path):
@@ -86,6 +112,60 @@ def test_read_frontmatter_quoted_value(tmp_path):
     p.write_text('---\nname: "quoted"\n---\n')
     fm = read_frontmatter(str(p))
     assert fm["name"] == "quoted"
+
+
+def test_split_frontmatter_returns_dict_and_body():
+    fm, body = split_frontmatter("---\nname: foo\n---\n# Heading\n\nProse.")
+    assert fm == {"name": "foo"}
+    assert body == "# Heading\n\nProse."
+
+
+def test_split_frontmatter_no_frontmatter():
+    fm, body = split_frontmatter("# Just prose\n")
+    assert fm == {}
+    assert body == "# Just prose"
+
+
+def test_split_frontmatter_strips_outer_markdown_fence():
+    fm, body = split_frontmatter("```markdown\n---\nname: foo\n---\n# Heading\n```")
+    assert fm == {"name": "foo"}
+    assert body == "# Heading"
+
+
+def test_split_frontmatter_strips_fence_without_frontmatter():
+    fm, body = split_frontmatter("```markdown\n# Heading\n\nProse.\n```")
+    assert fm == {}
+    assert body == "# Heading\n\nProse."
+
+
+def test_split_frontmatter_empty():
+    assert split_frontmatter("") == ({}, "")
+
+
+def test_split_frontmatter_keeps_leading_code_block():
+    # A document that legitimately starts with a language-tagged code fence
+    # is NOT a wrapper — it must be left intact, language tag and all.
+    content = "```python\nprint(1)\n```"
+    assert split_frontmatter(content) == ({}, content)
+
+
+def test_split_frontmatter_keeps_inner_code_block_when_outer_fence_omitted():
+    # Wrapped doc whose body ends in a fenced code block, with the outer
+    # closing fence omitted: the code block's own ``` must survive intact.
+    fm, body = split_frontmatter(
+        "```markdown\n---\nname: foo\n---\n# T\n\n```python\nprint(1)\n```"
+    )
+    assert fm == {"name": "foo"}
+    assert body == "# T\n\n```python\nprint(1)\n```"
+
+
+def test_split_frontmatter_strips_outer_fence_around_code_block():
+    # Same body, but the outer wrapper close is present: strip only it.
+    fm, body = split_frontmatter(
+        "```markdown\n---\nname: foo\n---\n# T\n\n```python\nprint(1)\n```\n```"
+    )
+    assert fm == {"name": "foo"}
+    assert body == "# T\n\n```python\nprint(1)\n```"
 
 
 def test_parse_uri_s3():
