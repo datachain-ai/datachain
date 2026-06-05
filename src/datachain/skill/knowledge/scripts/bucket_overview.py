@@ -29,10 +29,9 @@ def _open(uri: str, anon: bool):
     scheme = urlparse(uri).scheme
     if scheme in REMOTE:
         path = uri.split("://", 1)[1].rstrip("/") + "/"
+        kw: dict[str, str | bool] = {}
         if anon:
             kw = {"token": "anon"} if scheme == "gs" else {"anon": True}
-        else:
-            kw = {}
         return fsspec.filesystem(scheme, **kw), path, scheme
     raw = uri.removeprefix("file://") if scheme == "file" else uri
     return (
