@@ -385,22 +385,25 @@ def test_remove_dataset_with_multiple_versions(test_session, saved_dataset):
     updated_dataset, _ = catalog.create_dataset_version(
         saved_dataset, "2.0.0", columns=columns
     )
+    catalog.metastore.update_dataset_version(
+        updated_dataset, "2.0.0", status=DatasetStatus.COMPLETE
+    )
     updated_dataset = catalog.get_dataset(saved_dataset.name, versions=None)
     assert updated_dataset.has_version("2.0.0")
     assert updated_dataset.has_version("1.0.0")
 
     catalog.remove_dataset(updated_dataset.name, saved_dataset.project, force=True)
 
-    # The COMPLETE v1.0.0 becomes a REMOVED record, the CREATED v2.0.0
-    # (no rows ever published) is fully dropped. Dataset row stays alive
-    # thanks to the surviving REMOVED version.
+    # Both COMPLETE versions become REMOVED tombstones; dataset row stays.
     ds = catalog.get_dataset(
         updated_dataset.name, versions=None, include_incomplete=True
     )
     assert not ds._live_versions
-    removed = [v for v in ds.versions if v.status == DatasetStatus.REMOVED]
-    assert len(removed) == 1
-    assert removed[0].version == "1.0.0"
+    removed = sorted(
+        (v for v in ds.versions if v.status == DatasetStatus.REMOVED),
+        key=lambda v: v.version,
+    )
+    assert [v.version for v in removed] == ["1.0.0", "2.0.0"]
 
 
 def test_remove_dataset_dataset_not_found(test_session, project):

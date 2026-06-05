@@ -61,7 +61,6 @@ from datachain.error import (
     CheckpointNotFoundError,
     DataChainError,
     DatasetNotFoundError,
-    DatasetVersionNotFoundError,
     NamespaceDeleteNotAllowedError,
     NamespaceNotFoundError,
     ProjectDeleteNotAllowedError,
@@ -330,26 +329,6 @@ class AbstractMetastore(ABC, Serializable):
         """Updates dataset version fields. When ``expected_status`` is given
         the UPDATE only applies if the row's current status equals that value;
         returns None if no row matched."""
-
-    @abstractmethod
-    def claim_remove_dataset_version(
-        self,
-        dataset: DatasetRecord,
-        version: str,
-        *,
-        keep_metadata: bool,
-        expected_status: int,
-    ) -> bool:
-        """Atomically transition the version to REMOVING (``keep_metadata=True``)
-        or REMOVING_TOTAL (``keep_metadata=False``).
-
-        The transition only applies if the row's current status equals
-        ``expected_status`` (the status the caller read before deciding to
-        attempt the transition).
-
-        Returns True iff this caller is the one that landed the transition.
-        Other concurrent callers see False and should abort.
-        """
 
     @abstractmethod
     def remove_dataset_version(
@@ -1535,60 +1514,6 @@ class AbstractDBMetastore(AbstractMetastore):
             bool(getattr(version_obj, "_preview_data", None)),
         )
         return version_obj
-
-    def _try_transition_version_with_uuid(
-        self,
-        dataset: DatasetRecord,
-        version: str,
-        *,
-        target_status: int,
-        expected_status: int,
-    ) -> bool:
-        """Atomically transition a version's status and signal win/loss.
-
-        Writes a fresh ``op_uuid`` together with the new status; the caller
-        wins iff that UUID is the one stored after the UPDATE. This decouples
-        the won/lost signal from the status enum so the same mechanism can be
-        reused for other transitions.
-        """
-        my_uuid = str(uuid4())
-        dv = self._datasets_versions
-        self.db.execute(
-            self._datasets_versions_update()
-            .where(dv.c.dataset_id == dataset.id, dv.c.version == version)
-            .where(dv.c.status == expected_status)
-            .values(status=target_status, op_uuid=my_uuid)
-        )
-        try:
-            refreshed = self.get_dataset(
-                dataset.name,
-                namespace_name=dataset.project.namespace.name,
-                project_name=dataset.project.name,
-                versions=[version],
-                include_incomplete=True,
-            )
-            return refreshed.get_version(version).op_uuid == my_uuid
-        except (DatasetNotFoundError, DatasetVersionNotFoundError):
-            # Row was wiped by a concurrent caller, we lost.
-            return False
-
-    def claim_remove_dataset_version(
-        self,
-        dataset: DatasetRecord,
-        version: str,
-        *,
-        keep_metadata: bool,
-        expected_status: int,
-    ) -> bool:
-        target_status = (
-            DatasetStatus.REMOVING if keep_metadata else DatasetStatus.REMOVING_TOTAL
-        )
-        return self._try_transition_version_with_uuid(
-            dataset,
-            version,
-            target_status=target_status,
-            expected_status=expected_status,
-        )
 
     def _parse_dataset(
         self,
