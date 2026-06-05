@@ -282,7 +282,10 @@ class Session:
                     prefix, include_incomplete=True
                 )
             ):
-                self.catalog.remove_dataset(dataset.name, dataset.project, force=True)
+                # Session datasets are always wiped — never soft-deleted.
+                self.catalog.remove_dataset(
+                    dataset.name, dataset.project, force=True, keep_metadata=False
+                )
         # suppress error when metastore has been reset during testing
         except TableMissingError:
             pass

@@ -414,7 +414,7 @@ def test_remove_keeps_version_row_and_drops_rows_table(test_session, dataset_com
     rows_table = warehouse.dataset_table_name(dataset_complete, version)
     assert warehouse.db.has_table(rows_table)
 
-    catalog.remove_dataset_version(dataset_complete, version)
+    catalog.remove_dataset_version(dataset_complete, version, keep_metadata=True)
 
     ds = catalog.get_dataset(
         dataset_complete.name, versions=None, include_incomplete=True
@@ -439,7 +439,7 @@ def test_remove_preserves_dependencies(test_session, dataset_complete):
     dep_version = dep_ds.latest_version
     assert len(metastore.get_direct_dataset_dependencies(dep_ds, dep_version)) == 1
 
-    catalog.remove_dataset_version(dataset_complete, src_version)
+    catalog.remove_dataset_version(dataset_complete, src_version, keep_metadata=True)
 
     deps = metastore.get_direct_dataset_dependencies(dep_ds, dep_version)
     assert len(deps) == 1
@@ -450,7 +450,7 @@ def test_remove_is_idempotent_on_already_removed(test_session, dataset_complete)
     catalog = test_session.catalog
     version = dataset_complete.latest_version
 
-    catalog.remove_dataset_version(dataset_complete, version)
+    catalog.remove_dataset_version(dataset_complete, version, keep_metadata=True)
     ds = catalog.get_dataset(
         dataset_complete.name, versions=None, include_incomplete=True
     )
@@ -459,7 +459,7 @@ def test_remove_is_idempotent_on_already_removed(test_session, dataset_complete)
     first_removed_at = first.removed_at
 
     # Second call finds the same row already REMOVED → no-op.
-    catalog.remove_dataset_version(ds, version)
+    catalog.remove_dataset_version(ds, version, keep_metadata=True)
     ds = catalog.get_dataset(
         dataset_complete.name, versions=None, include_incomplete=True
     )
@@ -474,7 +474,7 @@ def test_save_after_remove_skips_removed_version(test_session, dataset_complete)
     name = dataset_complete.name
     first_version = dataset_complete.latest_version
 
-    catalog.remove_dataset_version(dataset_complete, first_version)
+    catalog.remove_dataset_version(dataset_complete, first_version, keep_metadata=True)
 
     new_chain = dc.read_values(value=["new1"], session=test_session).save(name)
     assert new_chain.dataset is not None
@@ -495,7 +495,7 @@ def test_remove_keep_metadata_false_wipes_already_removed_version(
     name = dataset_complete.name
     version = dataset_complete.latest_version
 
-    catalog.remove_dataset_version(dataset_complete, version)
+    catalog.remove_dataset_version(dataset_complete, version, keep_metadata=True)
     ds = catalog.get_dataset(name, versions=None, include_incomplete=True)
     assert _find_removed(ds, version) is not None
 
@@ -525,7 +525,7 @@ def test_save_explicit_removed_version_rejected(test_session, dataset_complete):
     name = dataset_complete.name
     version = dataset_complete.latest_version
 
-    catalog.remove_dataset_version(dataset_complete, version)
+    catalog.remove_dataset_version(dataset_complete, version, keep_metadata=True)
 
     with pytest.raises(RuntimeError, match=f"already has version {version}"):
         dc.read_values(value=["new1"], session=test_session).save(name, version=version)
@@ -541,7 +541,7 @@ def test_latest_version_skips_removed(test_session, dataset_complete):
     v2 = ds.latest_version
     assert v2 != v1
 
-    catalog.remove_dataset_version(ds, v2)
+    catalog.remove_dataset_version(ds, v2, keep_metadata=True)
 
     ds = catalog.get_dataset(name, versions=None, include_incomplete=True)
     assert ds.latest_version == v1
@@ -551,7 +551,9 @@ def test_listing_excludes_removed_only_dataset(test_session, dataset_complete):
     catalog = test_session.catalog
     name = dataset_complete.name
 
-    catalog.remove_dataset_version(dataset_complete, dataset_complete.latest_version)
+    catalog.remove_dataset_version(
+        dataset_complete, dataset_complete.latest_version, keep_metadata=True
+    )
 
     ds_chain = datasets(session=test_session, column="dataset")
     assert name not in {ds.name for (ds,) in ds_chain.to_iter("dataset")}
@@ -563,7 +565,9 @@ def test_read_dataset_after_remove_raises(
     catalog = test_session.catalog
     name = dataset_complete.name
 
-    catalog.remove_dataset_version(dataset_complete, dataset_complete.latest_version)
+    catalog.remove_dataset_version(
+        dataset_complete, dataset_complete.latest_version, keep_metadata=True
+    )
 
     with pytest.raises(DatasetNotFoundError):
         read_dataset(name, session=test_session)
@@ -643,15 +647,15 @@ def _force_status(catalog, dataset: DatasetRecord, version: str, status: int):
     return catalog.get_dataset(dataset.name, versions=None, include_incomplete=True)
 
 
-def test_remove_resumes_stuck_removing(test_session, dataset_complete):
-    """A version stuck in REMOVING (previous keep-removal crashed mid-flight)
-    is resumed to REMOVED on the next remove call, regardless of the caller's
-    keep_metadata flag."""
+def test_remove_resumes_stuck_removing_via_inference(test_session, dataset_complete):
+    """A version stuck in REMOVING (previous soft-delete crashed mid-flight)
+    is resumed to REMOVED when the caller passes no explicit flag — inference
+    picks the soft path from the current status."""
     catalog = test_session.catalog
     version = dataset_complete.latest_version
     ds = _force_status(catalog, dataset_complete, version, DatasetStatus.REMOVING)
 
-    catalog.remove_dataset_version(ds, version, keep_metadata=False)
+    catalog.remove_dataset_version(ds, version)
 
     ds = catalog.get_dataset(
         dataset_complete.name, versions=None, include_incomplete=True
@@ -659,48 +663,42 @@ def test_remove_resumes_stuck_removing(test_session, dataset_complete):
     assert _find_removed(ds, version) is not None
 
 
-def test_remove_resumes_stuck_removing_total(test_session, dataset_complete):
-    """A version stuck in REMOVING_TOTAL is resumed to a full wipe on the
-    next remove call, regardless of the caller's keep_metadata flag."""
+def test_remove_resumes_stuck_removing_total_via_inference(
+    test_session, dataset_complete
+):
+    """A version stuck in REMOVING_TOTAL is resumed to a full wipe when the
+    caller passes no explicit flag — inference picks the wipe path."""
     catalog = test_session.catalog
     version = dataset_complete.latest_version
     name = dataset_complete.name
     ds = _force_status(catalog, dataset_complete, version, DatasetStatus.REMOVING_TOTAL)
 
-    catalog.remove_dataset_version(ds, version, keep_metadata=True)
+    catalog.remove_dataset_version(ds, version)
 
     with pytest.raises(DatasetNotFoundError):
         catalog.get_dataset(name, include_incomplete=True)
 
 
-def test_remove_keep_loses_to_inflight_wipe(test_session, dataset_complete):
-    """If a wipe is already in flight (REMOVING_TOTAL) and a keep caller
-    arrives, the in-flight wipe wins — caller's keep flag is overridden."""
+def test_remove_explicit_keep_on_inflight_wipe_raises(test_session, dataset_complete):
+    """If a wipe is in flight (REMOVING_TOTAL) and a caller explicitly asks
+    to keep metadata, raise — don't silently downgrade the in-flight wipe."""
     catalog = test_session.catalog
     version = dataset_complete.latest_version
-    name = dataset_complete.name
     ds = _force_status(catalog, dataset_complete, version, DatasetStatus.REMOVING_TOTAL)
 
-    catalog.remove_dataset_version(ds, version, keep_metadata=True)
-
-    with pytest.raises(DatasetNotFoundError):
-        catalog.get_dataset(name, include_incomplete=True)
+    with pytest.raises(DataChainError, match="Cannot soft-delete"):
+        catalog.remove_dataset_version(ds, version, keep_metadata=True)
 
 
-def test_remove_wipe_loses_to_inflight_keep(test_session, dataset_complete):
-    """If a keep-metadata removal is already in flight (REMOVING) and a
-    wipe caller arrives, the in-flight keep wins — caller's wipe flag is
-    overridden by the resume routing."""
+def test_remove_explicit_wipe_on_inflight_keep_raises(test_session, dataset_complete):
+    """If a soft delete is in flight (REMOVING) and a caller explicitly asks
+    to wipe, raise — don't silently escalate the in-flight soft delete."""
     catalog = test_session.catalog
     version = dataset_complete.latest_version
     ds = _force_status(catalog, dataset_complete, version, DatasetStatus.REMOVING)
 
-    catalog.remove_dataset_version(ds, version, keep_metadata=False)
-
-    ds = catalog.get_dataset(
-        dataset_complete.name, versions=None, include_incomplete=True
-    )
-    assert _find_removed(ds, version) is not None
+    with pytest.raises(DataChainError, match="Cannot wipe"):
+        catalog.remove_dataset_version(ds, version, keep_metadata=False)
 
 
 def test_complete_raises_when_version_removed_concurrently(

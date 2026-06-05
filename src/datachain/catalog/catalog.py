@@ -1099,15 +1099,21 @@ class Catalog:
         return dataset_updated
 
     def remove_dataset_version(
-        self, dataset: DatasetRecord, version: str, keep_metadata: bool = True
+        self,
+        dataset: DatasetRecord,
+        version: str,
+        keep_metadata: bool | None = None,
     ) -> None:
         """Remove a single dataset version.
 
-        With ``keep_metadata=True`` (default), COMPLETE user-named versions
-        keep a REMOVED record so the semver stays reserved and dependents can
-        resolve lineage; the rows table is always dropped. Non-COMPLETE
-        versions and internal datasets (`lst__*`, `session_*`) are always
-        fully removed. ``keep_metadata=False`` forces a full wipe.
+        ``keep_metadata=True`` keeps a REMOVED tombstone (the rows table is
+        dropped). ``keep_metadata=False`` fully wipes the version row. When
+        explicit, the call raises if the version's current status is not
+        compatible with the requested mode.
+
+        ``keep_metadata=None`` (default) infers the mode from the version's
+        current status: in-progress removals resume in their existing mode,
+        incomplete or internal-dataset rows are wiped.
         """
         from datachain.query.session import Session
 
@@ -1115,25 +1121,34 @@ class Catalog:
             return
         v = dataset.get_version(version)
 
-        # Resume routing. REMOVING / REMOVING_TOTAL each have a single next
-        # transition, so the current status fully determines the path —
-        # caller's flag is overridden. Internal datasets and incomplete /
-        # failed versions are always wiped.
-        if v.status == DatasetStatus.REMOVING:
-            keep_metadata = True
-        elif (
-            is_listing_dataset(dataset.name)
-            or dataset.name.startswith(Session.DATASET_PREFIX)
-            or v.status
-            in (
-                DatasetStatus.CREATED,
-                DatasetStatus.PENDING,
-                DatasetStatus.FAILED,
-                DatasetStatus.STALE,
-                DatasetStatus.REMOVING_TOTAL,
-            )
-        ):
-            keep_metadata = False
+        is_internal = is_listing_dataset(dataset.name) or dataset.name.startswith(
+            Session.DATASET_PREFIX
+        )
+
+        if keep_metadata is None:
+            # Inferred mode (used by GC/cleanup paths): REMOVING resumes soft,
+            # everything else gets wiped.
+            keep_metadata = v.status == DatasetStatus.REMOVING
+        else:
+            # Explicit mode: validate against current status / dataset kind.
+            if keep_metadata and is_internal:
+                raise DataChainError(
+                    f"Cannot soft-delete internal dataset {dataset.name}"
+                )
+            if keep_metadata and v.status not in (
+                DatasetStatus.COMPLETE,
+                DatasetStatus.REMOVING,
+                DatasetStatus.REMOVED,
+            ):
+                raise DataChainError(
+                    f"Cannot soft-delete {dataset.name}@{version}: "
+                    f"current status is {v.status}, expected COMPLETE or REMOVING"
+                )
+            if not keep_metadata and v.status == DatasetStatus.REMOVING:
+                raise DataChainError(
+                    f"Cannot wipe {dataset.name}@{version}: "
+                    "a soft delete is already in progress"
+                )
 
         if keep_metadata and v.status == DatasetStatus.REMOVED:
             return
