@@ -324,11 +324,11 @@ class AbstractMetastore(ABC, Serializable):
         dataset: DatasetRecord,
         version: str,
         *,
-        where_status: list[int] | None = None,
+        expected_status: int | None = None,
         **kwargs,
     ) -> DatasetVersion | None:
-        """Updates dataset version fields. When ``where_status`` is given the
-        UPDATE only applies if the row's current status is in that list;
+        """Updates dataset version fields. When ``expected_status`` is given
+        the UPDATE only applies if the row's current status equals that value;
         returns None if no row matched."""
 
     @abstractmethod
@@ -462,11 +462,11 @@ class AbstractMetastore(ABC, Serializable):
         error_message="",
         error_stack="",
         script_output="",
-        where_version_status: list[int] | None = None,
+        expected_version_status: int | None = None,
     ) -> DatasetRecord:
         """Updates dataset status and appropriate fields related to status.
-        When ``where_version_status`` is given the version-level UPDATE is
-        guarded by ``status IN (...)``; if no version row matches, raises
+        When ``expected_version_status`` is given the version-level UPDATE is
+        guarded by ``status = :expected``; if no version row matches, raises
         :class:`DataChainError` before touching the dataset-level row."""
 
     @abstractmethod
@@ -1438,7 +1438,7 @@ class AbstractDBMetastore(AbstractMetastore):
         dataset: DatasetRecord,
         version: str,
         *,
-        where_status: list[int] | None = None,
+        expected_status: int | None = None,
         **kwargs,
     ) -> DatasetVersion | None:
         """Updates dataset version fields."""
@@ -1518,10 +1518,10 @@ class AbstractDBMetastore(AbstractMetastore):
         update_stmt = self._datasets_versions_update().where(
             dv.c.dataset_id == dataset.id, dv.c.version == version
         )
-        if where_status is not None:
-            update_stmt = update_stmt.where(dv.c.status.in_(where_status))
+        if expected_status is not None:
+            update_stmt = update_stmt.where(dv.c.status == expected_status)
         result = self.db.execute(update_stmt.values(values))  # type: ignore [attr-defined]
-        if where_status is not None and result.rowcount == 0:  # type: ignore [attr-defined]
+        if expected_status is not None and result.rowcount == 0:  # type: ignore [attr-defined]
             return None
 
         version_obj.update(**version_values)
@@ -2006,7 +2006,7 @@ class AbstractDBMetastore(AbstractMetastore):
         error_message="",
         error_stack="",
         script_output="",
-        where_version_status: list[int] | None = None,
+        expected_version_status: int | None = None,
     ) -> DatasetRecord:
         """
         Updates dataset status and appropriate fields related to status
@@ -2030,13 +2030,13 @@ class AbstractDBMetastore(AbstractMetastore):
             updated = self.update_dataset_version(
                 dataset,
                 version,
-                where_status=where_version_status,
+                expected_status=expected_version_status,
                 **update_data,
             )
-            if where_version_status is not None and updated is None:
+            if expected_version_status is not None and updated is None:
                 raise DataChainError(
                     f"Could not update status of {dataset.name}@{version}: "
-                    f"current status not in {where_version_status} "
+                    f"current status is not {expected_version_status}"
                 )
 
         return self.update_dataset(dataset, **update_data)

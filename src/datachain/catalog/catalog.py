@@ -1089,7 +1089,7 @@ class Catalog:
             error_message=error_message,
             error_stack=error_stack,
             script_output=script_output,
-            where_version_status=[DatasetStatus.CREATED, DatasetStatus.PENDING],
+            expected_version_status=DatasetStatus.CREATED,
         )
 
     def update_dataset(self, dataset: DatasetRecord, **kwargs) -> DatasetRecord:

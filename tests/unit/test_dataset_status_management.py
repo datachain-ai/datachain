@@ -718,5 +718,5 @@ def test_complete_raises_when_version_removed_concurrently(
             ds,
             DatasetStatus.COMPLETE,
             version=version,
-            where_version_status=[DatasetStatus.CREATED, DatasetStatus.PENDING],
+            expected_version_status=DatasetStatus.CREATED,
         )
