@@ -57,7 +57,7 @@ def test_studio_login_token_check_failed(mocker):
         "dvc_studio_client.auth.get_access_token",
         side_effect=AuthorizationExpiredError,
     )
-    assert main(["auth", "login", "--all-teams"]) == 1
+    assert main(["auth", "login"]) == 1
 
 
 def test_studio_login_success(mocker):
@@ -66,7 +66,7 @@ def test_studio_login_success(mocker):
         return_value=("token_name", "isat_access_token"),
     )
 
-    assert main(["auth", "login", "--all-teams"]) == 0
+    assert main(["auth", "login"]) == 0
 
     config = Config().read()
     token = config["studio"]["token"]
@@ -85,7 +85,6 @@ def test_studio_login_arguments(mocker):
             [
                 "auth",
                 "login",
-                "--all-teams",
                 "--name",
                 "token_name",
                 "--hostname",
@@ -103,9 +102,7 @@ def test_studio_login_arguments(mocker):
         hostname="https://example.com",
         scopes="experiments",
         team_names=None,
-        all_teams=True,
         expires_in_days=365,
-        never_expires=False,
         client_name="DataChain",
         open_browser=False,
         post_login_message=POST_LOGIN_MESSAGE,
@@ -140,9 +137,7 @@ def test_studio_login_with_team_scoping(mocker):
         hostname=STUDIO_URL,
         scopes=None,
         team_names=["ml-team", "data-team"],  # Multiple teams
-        all_teams=False,
         expires_in_days=90,  # Custom expiration
-        never_expires=False,
         client_name="DataChain",
         open_browser=True,
         post_login_message=POST_LOGIN_MESSAGE,
@@ -160,16 +155,14 @@ def test_studio_login_with_all_teams(mocker):
         return_value=("token_name", "isat_access_token"),
     )
 
-    assert main(["auth", "login", "--all-teams", "--local"]) == 0
+    assert main(["auth", "login", "--local"]) == 0
 
     mock.assert_called_with(
         token_name=None,
         hostname=STUDIO_URL,
         scopes=None,
         team_names=None,  # All teams access
-        all_teams=True,
         expires_in_days=365,
-        never_expires=False,
         client_name="DataChain",
         open_browser=True,
         post_login_message=POST_LOGIN_MESSAGE,
@@ -182,16 +175,14 @@ def test_studio_login_default_expiration(mocker):
         return_value=("token_name", "isat_access_token"),
     )
 
-    assert main(["auth", "login", "--all-teams", "--local"]) == 0
+    assert main(["auth", "login", "--local"]) == 0
 
     mock.assert_called_with(
         token_name=None,
         hostname=STUDIO_URL,
         scopes=None,
         team_names=None,
-        all_teams=True,
         expires_in_days=365,  # Default expiration
-        never_expires=False,
         client_name="DataChain",
         open_browser=True,
         post_login_message=POST_LOGIN_MESSAGE,
@@ -201,11 +192,6 @@ def test_studio_login_default_expiration(mocker):
     config = Config(level=ConfigLevel.LOCAL).read()
     token = config["studio"]["token"]
     assert token == "isat_access_token"  # noqa: S105
-
-
-def test_studio_login_conflicting_team_args():
-    result = main(["auth", "login", "--team", "ml-team", "--all-teams"])
-    assert result == 1  # Should fail
 
 
 def test_studio_logout():
@@ -1530,17 +1516,11 @@ def test_unpacker_hook_unknown_ext_type():
     assert result.data == b"\x01\x02\x03"
 
 
-def test_studio_login_missing_team_specification(capsys):
-    assert main(["auth", "login"]) == 1
-    captured = capsys.readouterr()
-    assert "Must specify either --team or --all-teams" in captured.err
-
-
 def test_studio_login_token_already_exists(capsys):
     with Config(ConfigLevel.LOCAL).edit() as conf:
         conf["studio"] = {"token": "existing_token", "url": STUDIO_URL}
 
-    assert main(["auth", "login", "--all-teams", "--local"]) == 1
+    assert main(["auth", "login", "--local"]) == 1
     captured = capsys.readouterr()
     assert "Token already exists" in captured.err
     assert "logout using" in captured.err
@@ -1574,7 +1554,7 @@ def test_studio_login_http_error_400(mocker, capsys):
         side_effect=http_error,
     )
 
-    assert main(["auth", "login", "--all-teams"]) == 1
+    assert main(["auth", "login"]) == 1
     captured = capsys.readouterr()
     assert "Failed to authenticate with Studio: Invalid token scope" in captured.err
 
@@ -1591,7 +1571,7 @@ def test_studio_login_http_error_other(mocker, capsys):
         side_effect=http_error,
     )
 
-    assert main(["auth", "login", "--all-teams"]) == 1
+    assert main(["auth", "login"]) == 1
     captured = capsys.readouterr()
     assert "Failed to authenticate with Studio: Server error" in captured.err
 

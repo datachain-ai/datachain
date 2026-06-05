@@ -76,12 +76,6 @@ def add_auth_parser(subparsers, parent_parser) -> None:
         action="append",
         help="Scope token to specific teams (can specify multiple)",
     )
-    login_parser.add_argument(
-        "--all-teams",
-        action="store_true",
-        default=False,
-        help="Grant access to all teams",
-    )
 
     # Expiration arguments
     login_parser.add_argument(

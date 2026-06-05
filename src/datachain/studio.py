@@ -23,7 +23,6 @@ from datachain.utils import flatten
 
 logger = logging.getLogger("datachain")
 
-
 if TYPE_CHECKING:
     from argparse import Namespace
 
@@ -176,12 +175,6 @@ def login(args: "Namespace"):
 
     # Parse team arguments
     team_names = args.team
-    all_teams = args.all_teams
-
-    if all_teams and team_names:
-        raise DataChainError("Cannot specify both --team and --all-teams")
-    if not all_teams and not team_names:
-        raise DataChainError("Must specify either --team or --all-teams")
 
     expires_in_days = args.expires_in
 
@@ -204,17 +197,15 @@ def login(args: "Namespace"):
             scopes=scopes,
             team_names=team_names,
             expires_in_days=expires_in_days,
-            never_expires=False,
             open_browser=open_browser,
             client_name="DataChain",
             post_login_message=POST_LOGIN_MESSAGE,
-            all_teams=all_teams,
         )
     except StudioAuthError as exc:
         raise DataChainError(f"Failed to authenticate with Studio: {exc}") from exc
     except requests.HTTPError as exc:
         response = exc.response
-        if response.status_code == 400:
+        if response and response.status_code == 400:
             message = response.json().get("detail", "Unknown error")
             raise DataChainError(
                 f"Failed to authenticate with Studio: {message}"
