@@ -75,7 +75,7 @@ for info in dc.datasets().collect("dataset"):
 
 # Inspect a specific dataset
 ds = dc.read_dataset("image_embeddings")
-ds.print_schema()
+print(ds.schema)
 print(ds.name, ds.version)
 ```
 

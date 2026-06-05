@@ -63,6 +63,10 @@ C("file.size") // 1024
 ```
 
 
+::: datachain.lib.dc.DataChainSchema
+
+
+
 ::: datachain.lib.dc.DataChain
 
 
