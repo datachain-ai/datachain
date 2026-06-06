@@ -134,7 +134,8 @@ def _first_prose_paragraph(lines: list[str]) -> str:
                 break
             continue
         is_list = line.startswith(("- ", "* ", "+ ")) or _ORDERED_LIST_RE.match(line)
-        if line.startswith(("#", "|", "---")) or is_list:
+        is_hr = line == "---"
+        if line.startswith(("#", "|")) or is_hr or is_list:
             if paragraph:
                 break
             continue
