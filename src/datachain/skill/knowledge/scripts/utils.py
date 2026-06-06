@@ -107,10 +107,16 @@ def read_frontmatter(path: str) -> dict[str, str]:
     return split_frontmatter(content)[0]
 
 
-def _first_prose_paragraph(lines: list[str]) -> str:
-    """First contiguous block of prose lines.
+_ORDERED_LIST_RE = re.compile(
+    r"\d+[.)]\s"
+)  # ordered-list markers: "1. ", "2) ", "10. ", etc.
 
-    Skips headings, tables, code fences and list items.
+
+def _first_prose_paragraph(lines: list[str]) -> str:
+    """First contiguous block of prose lines in the body.
+
+    Skips headings, tables, code fences, and list items (both unordered
+    `-`/`*`/`+` and ordered `1.`/`1)`) — anything that isn't plain prose.
     """
     paragraph: list[str] = []
     in_fence = False
@@ -127,7 +133,8 @@ def _first_prose_paragraph(lines: list[str]) -> str:
             if paragraph:
                 break
             continue
-        if line.startswith(("#", "|", "---", "- ", "* ", "+ ")):
+        is_list = line.startswith(("- ", "* ", "+ ")) or _ORDERED_LIST_RE.match(line)
+        if line.startswith(("#", "|", "---")) or is_list:
             if paragraph:
                 break
             continue

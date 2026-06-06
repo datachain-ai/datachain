@@ -77,6 +77,13 @@ def test_extract_description_h1_without_prose_skips_tables():
     assert extract_description(lines) == ""
 
 
+def test_extract_description_fallback_skips_ordered_list():
+    # No H1, so it falls back to the first prose paragraph. Ordered list
+    # items must be skipped just like unordered ones.
+    lines = ["1. first step", "2) second step", "", "Actual prose summary."]
+    assert extract_description(lines) == "Actual prose summary."
+
+
 def test_escape_table_cell():
     assert escape_table_cell("a | b") == "a \\| b"
     assert escape_table_cell("line1\nline2") == "line1 line2"
@@ -618,3 +625,28 @@ def test_render_index_all_metadata_from_md(tmp_path, monkeypatch):
     # CAST metadata propagated to the table
     assert "onetime" in result
     assert "12000" in result
+
+
+def test_render_index_escapes_pipe_in_table_cell(tmp_path, monkeypatch):
+    import render_index as ri
+
+    monkeypatch.setattr(ri, "BASE_DIR", str(tmp_path))
+    ds_dir = tmp_path / "datasets"
+    ds_dir.mkdir()
+    (ds_dir / "piped.md").write_text(
+        "---\nname: piped\ncast_parents: [a | b]\n---\n\n"
+        "# piped\n\n"
+        "Columns a | b | c split by pipes.\n\n"
+        "## Schema\n"
+    )
+    plan = {
+        "datasets": [
+            {"name": "piped", "source": "local", "file_path": "datasets/piped"},
+        ],
+        "buckets": [],
+    }
+    result = ri.render_index(plan)
+    # Pipes in description and parents are escaped so they don't break columns.
+    assert "Columns a \\| b \\| c split by pipes." in result
+    assert "Columns a | b | c" not in result
+    assert "a \\| b" in result
