@@ -183,6 +183,13 @@ def e2e_subprocess_env(catalog: Catalog) -> dict[str, str]:
     env = {k: v for k, v in os.environ.items() if not k.startswith("AWS_")}
     env["DATACHAIN__METASTORE"] = catalog.metastore.serialize()
     env["DATACHAIN__WAREHOUSE"] = catalog.warehouse.serialize()
+    # Silence google-api-core's Python-version-deprecation FutureWarning so it does
+    # not pollute subprocess stderr (it only appears on older Python versions and
+    # would otherwise trip e2e assertions that check stderr for warnings).
+    python_warnings = "ignore::FutureWarning:google.api_core._python_version_support"
+    if existing := env.get("PYTHONWARNINGS"):
+        python_warnings = f"{existing},{python_warnings}"
+    env["PYTHONWARNINGS"] = python_warnings
     return env
 
 
