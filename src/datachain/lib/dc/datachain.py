@@ -271,7 +271,7 @@ class DataChain:
 
     @property
     def empty(self) -> bool:
-        """Returns True if chain has zero number of rows."""
+        """Return True if the chain has zero rows."""
         return not bool(self.count())
 
     @property
