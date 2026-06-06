@@ -1,3 +1,5 @@
+"""Public DataChain API: the ``DataChain`` class and ``read_*`` constructors."""
+
 from .csv import read_csv
 from .database import read_database
 from .datachain import C, Column, ColumnExpr, DataChain, DataChainSchema
