@@ -276,7 +276,7 @@ class DataChain:
 
     @property
     def delta(self) -> bool:
-        """Returns True if this chain is ran in "delta" update mode."""
+        """Return True if this chain is running in "delta" update mode."""
         return self._query.delta_spec is not None or bool(self._query.delta_sources())
 
     @property
