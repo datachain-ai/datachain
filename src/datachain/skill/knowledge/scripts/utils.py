@@ -148,7 +148,7 @@ def extract_description(lines: list[str]) -> str:
 
     The intro paragraph after the `# ` H1 heading (up to the first `##`); if the
     document has no H1 or no prose under it, the first prose paragraph anywhere
-    (skipping headings, tables and code fences). `lines` is the markdown body
+    (skipping headings, tables, list items, and code fences). `lines` is the markdown body
     split on newlines (frontmatter already removed, e.g. via `split_frontmatter`).
     Returns "" when there's no prose at all.
     """
