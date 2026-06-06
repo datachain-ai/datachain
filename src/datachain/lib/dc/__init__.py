@@ -1,6 +1,6 @@
 from .csv import read_csv
 from .database import read_database
-from .datachain import C, Column, ColumnExpr, DataChain
+from .datachain import C, Column, ColumnExpr, DataChain, DataChainSchema
 from .datasets import datasets, delete_dataset, move_dataset, read_dataset
 from .hf import read_hf
 from .json import read_json
@@ -18,6 +18,7 @@ __all__ = [
     "Column",
     "ColumnExpr",
     "DataChain",
+    "DataChainSchema",
     "DatasetMergeError",
     "DatasetPrepareError",
     "Sys",
