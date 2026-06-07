@@ -1,4 +1,5 @@
 import datetime
+import io
 import json
 import math
 import os
@@ -3332,6 +3333,77 @@ def test_column(test_session):
 
     with pytest.raises(ValueError):
         c = ds.column("missing")
+
+
+def test_schema_flatten(test_session):
+    ds = dc.read_values(
+        file=[File(path="a"), File(path="b")],
+        nested=features_nested[:2],
+        session=test_session,
+    )
+
+    assert ds.schema == {"file": File, "nested": MyNested}
+    assert ds.schema.flatten(include_hidden=False) == {
+        "file.path": str,
+        "file.size": int,
+        "nested.label": str,
+        "nested.fr.nnn": str,
+        "nested.fr.count": int,
+    }
+    assert ds.schema.flatten() == {
+        "file.source": str,
+        "file.path": str,
+        "file.size": int,
+        "file.version": str,
+        "file.etag": str,
+        "file.is_latest": bool,
+        "file.last_modified": datetime.datetime,
+        "file.location": File.model_fields["location"].annotation,
+        "nested.label": str,
+        "nested.fr.nnn": str,
+        "nested.fr.count": int,
+    }
+    expected_schema = (
+        "file: File@v1\n"
+        "  source: str\n"
+        "  path: str\n"
+        "  size: int\n"
+        "  version: str\n"
+        "  etag: str\n"
+        "  is_latest: bool\n"
+        "  last_modified: datetime\n"
+        "  location: Union[dict, list[dict], NoneType]\n"
+        "nested: MyNested\n"
+        "  label: str\n"
+        "  fr: MyFr\n"
+        "    nnn: str\n"
+        "    count: int"
+    )
+    expected_schema_without_hidden = (
+        "file: File@v1\n"
+        "  path: str\n"
+        "  size: int\n"
+        "nested: MyNested\n"
+        "  label: str\n"
+        "  fr: MyFr\n"
+        "    nnn: str\n"
+        "    count: int"
+    )
+
+    assert ds.schema.to_string() == expected_schema
+    assert ds.schema.to_string(include_hidden=False) == expected_schema_without_hidden
+    assert str(ds.schema) == ds.schema.to_string()
+    assert not str(ds.schema).endswith("\n")
+
+    ds_sys = ds.settings(sys=True)
+    assert ds_sys.schema["sys"] == Sys
+    assert "sys:" in str(ds_sys.schema)
+    assert {"sys.id", "sys.rand"} <= ds_sys.schema.flatten().keys()
+
+    file = io.StringIO()
+    with pytest.warns(DeprecationWarning, match=r"print\(chain\.schema\)"):
+        ds.print_schema(file=file)
+    assert file.getvalue() == f"{ds.schema}\n"
 
 
 def test_mutate_with_subtraction(test_session):
