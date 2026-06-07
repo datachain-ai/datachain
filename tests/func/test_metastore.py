@@ -1013,6 +1013,52 @@ def test_update_job(metastore):
     assert updated.metrics == {"acc": 0.5, "hist": [1, 2]}
 
 
+def test_job_params_metrics_stored_as_json_object(metastore):
+    """params/metrics must be stored as JSON objects, not pre-serialized strings.
+
+    create_job/update_job pass dicts straight to the JSON columns so each
+    backend serializes once. Pre-``json.dumps``-ing the value double-encodes it
+    on JSONB backends (PostgreSQL stores a ``"{}"`` string scalar instead of an
+    object), which breaks consumers that read the column as a dict. The stored
+    text must decode to the original mapping in a single pass.
+    """
+    job_id = metastore.create_job(
+        name="json_shape_job",
+        query="SELECT 1",
+        query_type=JobQueryType.PYTHON,
+        status=JobStatus.CREATED,
+        workers=1,
+        params={"foo": "bar"},
+    )
+    metastore.update_job(job_id, metrics={"acc": 0.5, "nested": {"x": 1}})
+
+    def stored(job_id, *columns):
+        # Read the raw stored JSON, bypassing Job.parse's dict normalization.
+        jobs = metastore._jobs
+        query = metastore._jobs_select(*columns).where(jobs.c.id == job_id)
+        return next(metastore.db.execute(query))
+
+    raw_params, raw_metrics = stored(
+        job_id, metastore._jobs.c.params, metastore._jobs.c.metrics
+    )
+
+    # A single decode yields the mapping (not a string that needs decoding again).
+    assert json.loads(raw_params) == {"foo": "bar"}
+    assert json.loads(raw_metrics) == {"acc": 0.5, "nested": {"x": 1}}
+
+    # And an empty-metrics job stores an empty object, not a quoted scalar.
+    empty_id = metastore.create_job(
+        name="empty_metrics_job",
+        query="SELECT 1",
+        query_type=JobQueryType.PYTHON,
+        status=JobStatus.CREATED,
+        workers=1,
+    )
+    (raw_empty,) = stored(empty_id, metastore._jobs.c.metrics)
+    assert json.loads(raw_empty) == {}
+    assert metastore.get_job(empty_id).metrics == {}
+
+
 def test_set_job_status(metastore):
     job_id = metastore.create_job(
         name="status_job",

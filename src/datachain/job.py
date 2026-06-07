@@ -8,6 +8,27 @@ from datachain import json
 J = TypeVar("J", bound="Job")
 
 
+def _as_dict(value: "str | dict | None") -> dict:
+    """Normalize a JSON column value to a dict.
+
+    A JSON column can hand back either a ``str`` or an already-decoded
+    ``dict`` depending on the backend and how the row was written:
+
+    - SQLite always returns the raw string.
+    - PostgreSQL/JSONB returns a ``dict`` for rows stored as a JSON object,
+      but a ``str`` for legacy rows that were double-encoded into a JSON
+      string scalar (e.g. ``"{}"``) by a previous ``json.dumps``-on-write.
+
+    Decoding only when we still have a string keeps both the current and the
+    legacy on-disk formats readable, so no data migration is required.
+    """
+    if value is None or value == "":
+        return {}
+    if isinstance(value, str):
+        return json.loads(value)
+    return value
+
+
 @dataclass
 class Job:
     id: str
@@ -42,8 +63,8 @@ class Job:
         python_version: str | None,
         error_message: str,
         error_stack: str,
-        params: str,
-        metrics: str,
+        params: "str | dict[str, str] | None",
+        metrics: "str | dict[str, Any] | None",
         parent_job_id: str | None,
         rerun_from_job_id: str | None,
         run_group_id: str | None,
@@ -57,8 +78,8 @@ class Job:
             query,
             query_type,
             workers,
-            json.loads(params),
-            json.loads(metrics),
+            _as_dict(params),
+            _as_dict(metrics),
             finished_at,
             python_version,
             error_message,
