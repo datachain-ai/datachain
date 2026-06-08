@@ -260,10 +260,8 @@ class DatasetDependency:
 
 class DatasetStatus:
     CREATED = 1
-    PENDING = 2
     FAILED = 3
     COMPLETE = 4
-    STALE = 6
     REMOVING = 7
 
 
@@ -371,7 +369,6 @@ class DatasetVersion:
         return self.status in [
             DatasetStatus.FAILED,
             DatasetStatus.COMPLETE,
-            DatasetStatus.STALE,
             DatasetStatus.REMOVING,
         ]
 

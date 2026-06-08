@@ -343,7 +343,7 @@ class AbstractMetastore(ABC, Serializable):
         job (used during job failure cleanup).
 
         When job_id is None, returns all versions that are safe to delete:
-        - Status CREATED, FAILED, STALE where either:
+        - Status CREATED, FAILED where either:
           - the associated job has finished, or
           - there is no associated job (job_id is NULL) and the version is
             older than STALE_CREATED_THRESHOLD_HOURS
@@ -1831,13 +1831,12 @@ class AbstractDBMetastore(AbstractMetastore):
             )
             .where(
                 or_(
-                    # Incomplete/failed/stale versions from finished jobs
+                    # Incomplete/failed versions from finished jobs
                     and_(
                         dv.c.status.in_(
                             [
                                 DatasetStatus.CREATED,
                                 DatasetStatus.FAILED,
-                                DatasetStatus.STALE,
                                 DatasetStatus.REMOVING,
                             ]
                         ),
