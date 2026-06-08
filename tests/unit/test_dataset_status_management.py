@@ -716,5 +716,23 @@ def test_complete_raises_when_version_removed_concurrently(
             ds,
             DatasetStatus.COMPLETE,
             version=version,
-            expected_version_status=DatasetStatus.CREATED,
+            expected_status=DatasetStatus.CREATED,
         )
+
+
+def test_complete_dataset_version_raises_friendly_when_removed_concurrently(
+    test_session, dataset_complete
+):
+    """End-to-end: when a version is flipped to REMOVING mid-save (e.g. by GC),
+    catalog.complete_dataset_version surfaces a user-friendly DataChainError
+    that explains the concurrent removal and suggests a retry."""
+    catalog = test_session.catalog
+    version = dataset_complete.latest_version
+    ds = _force_status(catalog, dataset_complete, version, DatasetStatus.REMOVING)
+
+    with pytest.raises(DataChainError, match="deleted concurrently") as exc_info:
+        catalog.complete_dataset_version(ds, version)
+
+    # original guard error is chained as the cause
+    assert isinstance(exc_info.value.__cause__, DataChainError)
+    assert "Could not update status" in str(exc_info.value.__cause__)

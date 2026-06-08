@@ -441,10 +441,10 @@ class AbstractMetastore(ABC, Serializable):
         error_message="",
         error_stack="",
         script_output="",
-        expected_version_status: int | None = None,
+        expected_status: int | None = None,
     ) -> DatasetRecord:
         """Updates dataset status and appropriate fields related to status.
-        When ``expected_version_status`` is given the version-level UPDATE is
+        When ``expected_status`` is given the version-level UPDATE is
         guarded by ``status = :expected``; if no version row matches, raises
         :class:`DataChainError` before touching the dataset-level row."""
 
@@ -1931,7 +1931,7 @@ class AbstractDBMetastore(AbstractMetastore):
         error_message="",
         error_stack="",
         script_output="",
-        expected_version_status: int | None = None,
+        expected_status: int | None = None,
     ) -> DatasetRecord:
         """
         Updates dataset status and appropriate fields related to status
@@ -1955,13 +1955,13 @@ class AbstractDBMetastore(AbstractMetastore):
             updated = self.update_dataset_version(
                 dataset,
                 version,
-                expected_status=expected_version_status,
+                expected_status=expected_status,
                 **update_data,
             )
-            if expected_version_status is not None and updated is None:
+            if expected_status is not None and updated is None:
                 raise DataChainError(
                     f"Could not update status of {dataset.name}@{version}: "
-                    f"current status is not {expected_version_status}"
+                    f"current status is not {expected_status}"
                 )
 
         return self.update_dataset(dataset, **update_data)

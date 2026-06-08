@@ -1082,15 +1082,22 @@ class Catalog:
         # Guard the version-level write: only flip to COMPLETE if the
         # version is still in a saveable state. Prevents a late-arriving
         # completion from stomping a concurrent removal.
-        self.metastore.update_dataset_status(
-            dataset,
-            DatasetStatus.COMPLETE,
-            version=version,
-            error_message=error_message,
-            error_stack=error_stack,
-            script_output=script_output,
-            expected_version_status=DatasetStatus.CREATED,
-        )
+        try:
+            self.metastore.update_dataset_status(
+                dataset,
+                DatasetStatus.COMPLETE,
+                version=version,
+                error_message=error_message,
+                error_stack=error_stack,
+                script_output=script_output,
+                expected_status=DatasetStatus.CREATED,
+            )
+        except DataChainError as e:
+            raise DataChainError(
+                f"Could not finalize {dataset.name}@{version}: "
+                "the version was removed or modified before save completed. "
+                "This usually means it was deleted concurrently - please retry."
+            ) from e
 
     def update_dataset(self, dataset: DatasetRecord, **kwargs) -> DatasetRecord:
         """Updates dataset fields."""
