@@ -1,4 +1,5 @@
 import hashlib
+import inspect
 import logging
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import closing, nullcontext
@@ -483,6 +484,50 @@ class Mapper(UDFBase):
                 yield output
 
         self.teardown()
+
+
+class _MultiSignalMapper(Mapper):
+    """Mapper that runs N user functions per row, yielding N output signals.
+
+    Implements `.map(a=f1, b=f2, ...)` as a single UDF stage: each row is
+    iterated once, both functions run, and no intermediate column is
+    materialized between them.
+    """
+
+    def __init__(self, signal_map: dict[str, Callable]):
+        super().__init__()
+        self._signal_map = signal_map
+        # per-function param names (positional order from signature)
+        self._per_func_params: dict[str, list[str]] = {}
+        # union of all functions' params, deduped, positional order
+        seen: set[str] = set()
+        self._combined_params: list[str] = []
+        for name, fn in signal_map.items():
+            param_names = list(inspect.signature(fn).parameters.keys())
+            self._per_func_params[name] = param_names
+            for p in param_names:
+                if p not in seen:
+                    seen.add(p)
+                    self._combined_params.append(p)
+
+    def process(self, *args):
+        kwargs = dict(zip(self._combined_params, args, strict=True))
+        return tuple(
+            fn(**{p: kwargs[p] for p in self._per_func_params[name]})
+            for name, fn in self._signal_map.items()
+        )
+
+    def hash(self, include_body: bool = True) -> str:
+        # cache key must vary with the wrapped functions; the base
+        # implementation would hash this class's process method, which is
+        # identical across instances.
+        parts = [
+            hash_callable(fn, include_body=include_body)
+            for fn in self._signal_map.values()
+        ]
+        parts.append(self.params.hash() if self.params else "")
+        parts.append(self.output.hash())
+        return hashlib.sha256(b"".join([bytes.fromhex(p) for p in parts])).hexdigest()
 
 
 class Generator(UDFBase):

@@ -912,6 +912,67 @@ def test_map(test_session):
         assert x.my_name == test_fr.my_name
 
 
+def test_map_multiple_signals(test_session):
+    chain = dc.read_values(name=["foo.txt", "bar.md"], session=test_session).map(
+        stem=lambda name: name.rsplit(".", 1)[0],
+        ext=lambda name: name.rsplit(".", 1)[1],
+    )
+    rows = sorted(chain.to_iter("name", "stem", "ext"))
+    assert rows == [("bar.md", "bar", "md"), ("foo.txt", "foo", "txt")]
+
+
+def test_map_multiple_signals_typed_returns(test_session):
+    def stem(name: str) -> str:
+        return name.rsplit(".", 1)[0]
+
+    def count_chars(name: str) -> int:
+        return len(name)
+
+    chain = dc.read_values(name=["foo.txt", "bar.md"], session=test_session).map(
+        stem=stem, n=count_chars
+    )
+    rows = sorted(chain.to_iter("name", "stem", "n"))
+    assert rows == [("bar.md", "bar", 6), ("foo.txt", "foo", 7)]
+
+
+def test_map_multiple_signals_disjoint_params(test_session):
+    chain = dc.read_values(
+        name=["foo", "bar"], ext=["txt", "md"], session=test_session
+    ).map(
+        upper=lambda name: name.upper(),
+        full=lambda name, ext: f"{name}.{ext}",
+    )
+    rows = sorted(chain.to_iter("name", "ext", "upper", "full"))
+    assert rows == [
+        ("bar", "md", "BAR", "bar.md"),
+        ("foo", "txt", "FOO", "foo.txt"),
+    ]
+
+
+def test_map_multiple_signals_rejects_func(test_session):
+    chain = dc.read_values(name=["x"], session=test_session)
+    with pytest.raises(DataChainParamsError, match="can't combine 'func'"):
+        chain.map(lambda n: n, a=lambda n: n, b=lambda n: n)
+
+
+def test_map_multiple_signals_rejects_output(test_session):
+    chain = dc.read_values(name=["x"], session=test_session)
+    with pytest.raises(DataChainParamsError, match="can't combine 'output'"):
+        chain.map(a=lambda n: n, b=lambda n: n, output={"a": str, "b": str})
+
+
+def test_map_multiple_signals_single_stage(test_session):
+    """Verify multi-kwarg map adds exactly one UDF stage, not N chained ones."""
+    base = dc.read_values(name=["foo.txt"], session=test_session)
+    before = len(base._query.steps)
+    chain = base.map(
+        stem=lambda name: name[:-4],
+        ext=lambda name: name[-3:],
+    )
+    after = len(chain._query.steps)
+    assert after - before == 1
+
+
 def test_map_existing_column_after_step(test_session):
     chain = dc.read_values(t1=features, session=test_session).map(
         x=lambda _: "test",
