@@ -30,6 +30,7 @@ class AzureClient(Client):
             "tenant_id",
         }
     )
+    _ANON_FALLBACK = True
 
     @classmethod
     def bucket_status(cls, name: str, **kwargs) -> BucketStatus:
