@@ -47,31 +47,139 @@ def studio_available() -> bool:
         return False
 
 
-def parse_semver(v):
-    """Parse version string into a tuple for sorting."""
+def parse_semver(v: object) -> tuple[int, int, int]:
+    """Parse a dotted version into a fixed (major, minor, patch) tuple for sorting.
+
+    The fixed length keeps ordering total and length-independent: "1", "1.0" and
+    "1.0.0" all normalize to (1, 0, 0), so a 2-part version no longer sorts below
+    its 3-part equal. Components past patch are dropped. Unparsable input sorts
+    strictly below every real version — and below a literal "0.0.0" — via a
+    (-1, -1, -1) sentinel, so garbage is never mistaken for (or tied with) 0.0.0.
+    """
     try:
-        return tuple(int(x) for x in str(v).split("."))
+        parts = [int(x) for x in str(v).split(".")]
     except (ValueError, AttributeError):
-        return (0, 0, 0)
+        return -1, -1, -1
+    parts = [*parts, 0, 0, 0][:3]
+    return parts[0], parts[1], parts[2]
 
 
-def read_frontmatter(path):
+def split_frontmatter(content: str) -> tuple[dict[str, str], str]:
+    """Split YAML-lite frontmatter from markdown text into (frontmatter, body).
+
+    Tolerates a single outer ```/```markdown ... ``` fence — the enrichment
+    prompt's Output Format section shows the document inside such a fence, and
+    some models echo it. Only a *bare* wrapper fence is stripped: a document
+    that legitimately begins with a language-tagged code block (e.g. ```python)
+    is left intact. Returns ({}, body) when there's no frontmatter block.
+    """
+    text = (content or "").strip()
+    first_line, _, rest = text.partition("\n")
+    if first_line.strip().lower() in ("```", "```markdown", "```md"):
+        lines = rest.rstrip().splitlines()
+        # Strip the wrapper's closing fence, but only when it's an unmatched
+        # *standalone* fence line (a line that is only ```).
+        fence_lines = sum(1 for ln in lines if ln.lstrip().startswith("```"))
+        if lines and lines[-1].strip() == "```" and fence_lines % 2 == 1:
+            lines = lines[:-1]
+        text = "\n".join(lines).rstrip()
+    if not text.startswith("---"):
+        return {}, text
+    try:
+        end = text.index("\n---", 3)
+    except ValueError:
+        return {}, text
+    result: dict[str, str] = {}
+    for line in text[4:end].splitlines():  # skip first "---\n"
+        if ":" in line:
+            key, _, val = line.partition(":")
+            result[key.strip()] = val.strip().strip('"').strip("'")
+    return result, text[end + 4 :].strip()
+
+
+def read_frontmatter(path: str) -> dict[str, str]:
     """Read YAML frontmatter from a markdown file. Returns dict or {}."""
     try:
         with open(path) as f:
             content = f.read()
-        if not content.startswith("---"):
-            return {}
-        end = content.index("\n---", 3)
-        fm_text = content[4:end]  # skip first "---\n"
-        result = {}
-        for line in fm_text.splitlines():
-            if ":" in line:
-                key, _, val = line.partition(":")
-                result[key.strip()] = val.strip().strip('"').strip("'")
-        return result
     except Exception:  # noqa: BLE001
         return {}
+    return split_frontmatter(content)[0]
+
+
+_ORDERED_LIST_RE = re.compile(
+    r"\d+[.)]\s"
+)  # ordered-list markers: "1. ", "2) ", "10. ", etc.
+
+
+def _first_prose_paragraph(lines: list[str]) -> str:
+    """First contiguous block of prose lines in the body.
+
+    Skips headings, tables, code fences, and list items (both unordered
+    `-`/`*`/`+` and ordered `1.`/`1)`) — anything that isn't plain prose.
+    """
+    paragraph: list[str] = []
+    in_fence = False
+    for raw in lines:
+        line = raw.strip()
+        if line.startswith("```"):
+            in_fence = not in_fence
+            if paragraph:
+                break
+            continue
+        if in_fence:
+            continue
+        if not line:
+            if paragraph:
+                break
+            continue
+        is_list = line.startswith(("- ", "* ", "+ ")) or _ORDERED_LIST_RE.match(line)
+        is_hr = line == "---"
+        if line.startswith(("#", "|")) or is_hr or is_list:
+            if paragraph:
+                break
+            continue
+        paragraph.append(line)
+    return " ".join(paragraph)
+
+
+def extract_description(lines: list[str]) -> str:
+    """Short description of an enriched document.
+
+    The intro paragraph after the `# ` H1 heading (up to the first `##`); if the
+    document has no H1 or no prose under it, the first prose paragraph anywhere
+    (skipping headings, tables, list items, and code fences). `lines` is the
+    markdown body split on newlines (frontmatter already removed, e.g. via
+    `split_frontmatter`). Returns "" when there's no prose at all.
+    """
+    desc_lines: list[str] = []
+    past_heading = False
+    for line in lines:
+        if not past_heading:
+            if line.startswith("# "):
+                past_heading = True
+            continue
+        if line.startswith("##"):
+            break
+        stripped = line.strip()
+        if not stripped and desc_lines:
+            break
+        if stripped:
+            desc_lines.append(stripped)
+    return " ".join(desc_lines) or _first_prose_paragraph(lines)
+
+
+def is_sys_column(col: str) -> bool:
+    """True for DataChain system columns — the whole `sys` signal namespace."""
+    return col == "sys" or col.startswith(("sys.", "sys__"))
+
+
+def escape_table_cell(value: object) -> str:
+    """Escape a value for a markdown table cell.
+
+    `|` breaks columns and newlines break rows.
+    """
+    return str(value).replace("|", "\\|").replace("\n", " ").replace("\r", " ")
 
 
 def read_json_versions(path):

@@ -28,6 +28,8 @@ for examples of how to create a chain.
 
 ::: datachain.lib.dc.storage.read_storage
 
+::: datachain.lib.dc.zarr.read_zarr
+
 ::: datachain.lib.dc.values.read_values
 
 ::: datachain.lib.dc.database.read_database
@@ -59,6 +61,10 @@ C("width") * C("height")
 C("file.size") // 1024
 (C("score") > 0.5) | (C("label") == "positive")
 ```
+
+
+::: datachain.lib.dc.DataChainSchema
+
 
 
 ::: datachain.lib.dc.DataChain

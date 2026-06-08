@@ -76,7 +76,7 @@ to this skill.
 - **No `from __future__ import annotations` in UDF modules.** It stringifies type hints and DataChain's signal-schema resolution rejects the string-vs-class mismatch.
 - **Type the UDF return precisely.** `Iterator[object]` / `Iterator[Any]` / bare `dict` fail schema resolution. Return a specific `Iterator[T]`, a Pydantic `BaseModel`, or a primitive.
 - **Generators aren't subscriptable.** Iterators returned by file APIs do not support `[:N]`. Use `enumerate` + `break`, or `list(...)` only when the result is genuinely small.
-- **`datachain.__version__` does not exist.** Use `from importlib.metadata import version; version("datachain")`.
+- **Use `datachain.__version__` to get the package version** (e.g. `dc.__version__`).
 
 ---
 

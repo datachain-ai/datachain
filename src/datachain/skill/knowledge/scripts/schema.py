@@ -4,7 +4,7 @@ import inspect
 import types
 import typing
 
-from utils import serialize, source_to_https
+from utils import is_sys_column, serialize, source_to_https
 
 
 def get_catalog():
@@ -69,7 +69,7 @@ def extract_schema(chain) -> dict:
     return {
         col: expand_signal(typ)
         for col, typ in chain.schema.items()
-        if col != "sys" and not col.startswith("sys.")
+        if not is_sys_column(col)
     }
 
 

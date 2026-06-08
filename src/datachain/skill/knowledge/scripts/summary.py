@@ -47,21 +47,38 @@ def _is_file_subclass(typ):
         return False
 
 
-def _classify_columns(schema_tree):
-    """Classify leaf columns from get_flat_tree into categories.
+def _file_parent_paths(schema):
+    """Return dot paths whose type is a DataChain File model."""
+    file_paths = set()
 
-    Returns dict of {dot_path: {"type": py_type, "category": str, "depth": int}}.
+    def visit(path, typ):
+        if _is_file_subclass(typ):
+            file_paths.add(".".join(path))
+            return
+
+        fields = getattr(typ, "model_fields", None)
+        if not fields:
+            return
+
+        for name, field in fields.items():
+            visit([*path, name], field.annotation)
+
+    for name, typ in schema.items():
+        visit([name], typ)
+
+    return file_paths
+
+
+def _classify_columns(flat_schema, schema):
+    """Classify flattened schema columns into categories.
+
+    Returns dict of {dot_path: {"type": py_type, "category": str}}.
     """
     columns = {}
-    file_parents = set()
+    file_parents = _file_parent_paths(schema)
 
-    for path, typ, has_subtree, depth in schema_tree:
-        dot_path = ".".join(path)
-        if has_subtree:
-            if _is_file_subclass(typ):
-                file_parents.add(dot_path)
-            continue
-
+    for dot_path, typ in flat_schema.items():
+        path = dot_path.split(".")
         parent = ".".join(path[:-1]) if len(path) > 1 else None
         field_name = path[-1]
         is_file_field = parent in file_parents if parent else False
@@ -70,7 +87,6 @@ def _classify_columns(schema_tree):
         columns[dot_path] = {
             "type": typ,
             "category": category,
-            "depth": depth,
         }
 
     return columns
@@ -526,13 +542,12 @@ def dataset_summary_from_chain(chain) -> dict:
 
     # Phase 0 -- Schema and classification
     schema = extract_schema(chain)
-    flat_tree = list(
-        chain.signals_schema.get_flat_tree(
-            include_hidden=False,
-            include_sys=False,
-        )
-    )
-    columns_info = _classify_columns(flat_tree)
+    flat_schema = {
+        col: typ
+        for col, typ in chain.schema.flatten(include_hidden=False).items()
+        if not col.startswith("sys.")
+    }
+    columns_info = _classify_columns(flat_schema, chain.schema)
 
     try:
         total_rows = chain.count()

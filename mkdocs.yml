@@ -124,6 +124,7 @@ nav:
               - AudioFile: references/data-types/audiofile.md
               - TarVFile: references/data-types/tarvfile.md
               - ArrowRow: references/data-types/arrowrow.md
+              - ZarrStore: references/data-types/zarrstore.md
               - BBox: references/data-types/bbox.md
               - Pose: references/data-types/pose.md
               - Segment: references/data-types/segment.md

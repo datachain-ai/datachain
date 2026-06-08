@@ -29,7 +29,7 @@ except datachain.error.DatasetNotFoundError:
         .save(name)
     )
 
-wds.print_schema()
+print(wds.schema)
 
 # Now, use the created dataset with metadata to do some filtering:
 filtered = (
