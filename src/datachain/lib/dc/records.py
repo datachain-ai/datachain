@@ -82,7 +82,8 @@ def create_records_dataset(
     """Create a temp dataset from pre-flattened records with caller-supplied
     ``content_hash``. Pass ``content_hash=None`` to anchor identity on UUID
     only (used by ``read_values`` and the listing chain to opt out of
-    content-derived hashing)."""
+    content-derived hashing).
+    """
     from datachain.query.dataset import adjust_outputs, get_col_types
     from datachain.sql.types import SQLType
 

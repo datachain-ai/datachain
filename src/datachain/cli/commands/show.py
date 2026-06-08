@@ -45,4 +45,4 @@ def show(
 
     if schema:
         print("\nSchema:")
-        dc.print_schema()
+        print(dc.schema)

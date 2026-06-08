@@ -161,7 +161,7 @@ DataChain uses Pydantic to define the shape of every column. The return type of 
 [Limited by 5 rows]
 ```
 
-`.print_schema()` renders it's schema:
+`print(ds.schema)` renders its schema:
 ```bash
 file: File@v1
   source: str

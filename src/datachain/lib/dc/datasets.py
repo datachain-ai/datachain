@@ -275,7 +275,6 @@ def datasets(
             print(f"{ds.name}@v{ds.version}")
         ```
     """
-
     session = Session.get(session, in_memory=in_memory)
     catalog = session.catalog
 
