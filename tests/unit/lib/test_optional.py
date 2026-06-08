@@ -33,9 +33,6 @@ def restore_model_store():
         ModelStore.store = snapshot
 
 
-# -- unwrap_optional -------------------------------------------------------
-
-
 class _Sample(BaseModel):
     x: int
 
@@ -71,9 +68,6 @@ def test_unwrap_optional_collapses_nested():
     assert inner is int
 
 
-# -- is_chain_type with Optional ------------------------------------------
-
-
 def test_is_chain_type_optional_basic():
     assert is_chain_type(Optional[int])
     assert is_chain_type(int | None)
@@ -96,9 +90,6 @@ def test_is_chain_type_optional_collections():
     assert is_chain_type(Optional[dict[str, int]])
     assert is_chain_type(list[int | None])  # nulls inside list (defer support)
     assert is_chain_type(dict[str, int | None])
-
-
-# -- promote_default_none: `x: T = None` -> `Optional[T]` ----------------
 
 
 def test_default_none_promoted_to_optional():
@@ -153,9 +144,6 @@ def test_default_none_promotes_only_the_none_field():
     assert count_opt is True and name_opt is False
 
 
-# -- sentinel name does not collide with user fields ---------------------
-
-
 def test_is_null_field_name_allowed():
     # `is_null` is a normal user field now; the sentinel uses the internal
     # `_is_null` name, which pydantic forbids users from declaring.
@@ -178,11 +166,6 @@ def test_optional_datamodel_sentinel_does_not_collide_with_is_null_field():
     ]
     assert "m__is_null" in leaves  # the user's field
     assert "m___is_null" in leaves  # the internal sentinel, no collision
-
-
-# ---------------------------------------------------------------------------
-# Optional[DataModel] round-trip via sentinel column.
-# ---------------------------------------------------------------------------
 
 
 class _Addr(DataModel):

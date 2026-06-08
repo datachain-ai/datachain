@@ -16,6 +16,9 @@ from .func import Func, _SentinelAwareFunc
 if TYPE_CHECKING:
     from sqlalchemy import TableClause
 
+    from datachain import DataType
+    from datachain.lib.signal_schema import SignalSchema
+
 CaseT = int | float | complex | bool | str | Func | ColumnExpr
 
 
@@ -25,7 +28,11 @@ class _IsNoneFunc(_SentinelAwareFunc):
     column (including ``Optional[basic]``) keeps the plain ``col IS NULL`` check.
     """
 
-    def is_nullable_result(self, signals_schema=None, col_type=None) -> bool:
+    def is_nullable_result(
+        self,
+        signals_schema: "SignalSchema | None",
+        col_type: "DataType | None" = None,
+    ) -> bool:
         # isnone always returns True/False (never NULL), so its column stays bool.
         return False
 
@@ -221,11 +228,6 @@ def ifelse(condition: ColumnExpr | Func, if_val: CaseT, else_val: CaseT) -> Func
 
 def isnone(col: str | ColumnExpr) -> Func:
     """
-    Returns a function that checks if the column value is `None` (NULL in DB).
-
-    Works for an `Optional[DataModel]` column too — it checks the model's absence
-    rather than a raw column.
-
     Args:
         col (str | Column): Column to check if it's None or not.
             If a string is provided, it is assumed to be the name of the column.

@@ -150,9 +150,9 @@ NULLABLE_SCALARS: "tuple[type, ...]" = (int, str, bool, bytes, datetime)
 def promote_default_none(model: type[BaseModel]) -> None:
     """Auto-promote non-Optional fields with `default=None` to `Optional[...]`.
 
-    `x: int = None` is treated as `x: Optional[int] = None` so the column is
-    genuinely nullable and None round-trips instead of coercing to the type
-    default on ClickHouse.
+    `x: int = None` is treated as `x: Optional[int] = None`, so the column is
+    nullable and `x=None` round-trips as `None`. Without this it would read back
+    as the type default (`0`/`""`) on backends with non-nullable columns.
 
     Skipped under `skip_dc_validation()` for internally-generated models, whose
     `default=None` on non-Optional fields must not be promoted (it breaks the

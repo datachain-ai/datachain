@@ -12,6 +12,9 @@ from .func import ColT, Func, _SentinelAwareFunc
 if TYPE_CHECKING:
     from sqlalchemy import TableClause
 
+    from datachain import DataType
+    from datachain.lib.signal_schema import SignalSchema
+
 
 AggColT = str | Column | ColumnExpr | Func
 
@@ -23,7 +26,11 @@ class _CountFunc(_SentinelAwareFunc):
     (``SUM(1 - {prefix}__is_null)``) to agree across backends.
     """
 
-    def is_nullable_result(self, signals_schema=None, col_type=None) -> bool:
+    def is_nullable_result(
+        self,
+        signals_schema: "SignalSchema | None",
+        col_type: "DataType | None" = None,
+    ) -> bool:
         # COUNT never returns NULL (0 for an empty group), so its column stays int.
         return False
 
@@ -108,7 +115,8 @@ def sum(col: AggColT) -> Func:
     Notes:
         - The `sum` function should be used on numeric columns or expressions.
         - The result column type will be inferred from the input expression type.
-        - Skips rows where the value's ``Optional[DataModel]`` parent is absent.
+        - When summing a leaf of an ``Optional[DataModel]`` column, rows whose
+          parent object is absent (NULL) are skipped, like any other NULL value.
     """
     return Func("sum", inner=sa_func.sum, cols=[col])
 
