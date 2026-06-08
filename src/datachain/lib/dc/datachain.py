@@ -140,7 +140,8 @@ def _collapse_absent_optionals(
     nested: dict[str, Any], optional_paths: list[list[str]]
 ) -> None:
     """In a flat-export nested dict, replace an absent Optional[DataModel] (all
-    leaves NULL) with None at each path in ``optional_paths`` (deepest first)."""
+    leaves NULL) with None at each path in ``optional_paths`` (deepest first).
+    """
     for path in optional_paths:
         parent: Any = nested
         for key in path[:-1]:
@@ -151,6 +152,8 @@ def _collapse_absent_optionals(
             leaf = path[-1]
             if leaf in parent and _is_all_none(parent[leaf]):
                 parent[leaf] = None
+
+
 class DataChainSchema(dict[str, DataType]):
     """Dict-like public view of a DataChain schema.
 

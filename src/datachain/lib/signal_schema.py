@@ -1281,7 +1281,9 @@ class SignalSchema:
         *,
         include_hidden: bool = True,
     ):
-        for path, type_, _, depth in self.get_flat_tree(include_hidden=include_hidden, include_sentinels=False):
+        for path, type_, _, depth in self.get_flat_tree(
+            include_hidden=include_hidden, include_sentinels=False
+        ):
             total_indent = start_at + depth * indent
             col_name = " " * total_indent + path[-1]
             col_type = SignalSchema._type_to_str(type_)
