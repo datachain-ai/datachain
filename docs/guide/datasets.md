@@ -147,7 +147,7 @@ for info in dc.datasets().collect("dataset"):
 
 # Inspect schema
 ds = dc.read_dataset("image_embeddings")
-ds.print_schema()
+print(ds.schema)
 
 # Delete, move
 dc.delete_dataset("old_experiment")

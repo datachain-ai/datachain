@@ -1273,8 +1273,15 @@ class SignalSchema:
                     include_sentinels,
                 )
 
-    def print_tree(self, indent: int = 2, start_at: int = 0, file: IO | None = None):
-        for path, type_, _, depth in self.get_flat_tree(include_sentinels=False):
+    def print_tree(
+        self,
+        indent: int = 2,
+        start_at: int = 0,
+        file: IO | None = None,
+        *,
+        include_hidden: bool = True,
+    ):
+        for path, type_, _, depth in self.get_flat_tree(include_hidden=include_hidden, include_sentinels=False):
             total_indent = start_at + depth * indent
             col_name = " " * total_indent + path[-1]
             col_type = SignalSchema._type_to_str(type_)
@@ -1285,7 +1292,10 @@ class SignalSchema:
                 if len(args) > 0 and ModelStore.is_pydantic(args[0]):
                     sub_schema = SignalSchema({"* list of": args[0]})
                     sub_schema.print_tree(
-                        indent=indent, start_at=total_indent + indent, file=file
+                        indent=indent,
+                        start_at=total_indent + indent,
+                        include_hidden=include_hidden,
+                        file=file,
                     )
 
     def get_headers_with_length(self, include_hidden: bool = True):

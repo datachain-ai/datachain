@@ -18,7 +18,10 @@ from schema import parse_dataset_name, type_name  # noqa: E402
 from utils import (  # noqa: E402
     bucket_file_path,
     dataset_file_path,
+    escape_table_cell,
+    extract_description,
     human_size,
+    is_sys_column,
     parse_semver,
     parse_uri,
     read_frontmatter,
@@ -27,6 +30,7 @@ from utils import (  # noqa: E402
     read_json_versions,
     serialize,
     source_to_https,
+    split_frontmatter,
 )
 
 # ---------------------------------------------------------------------------
@@ -38,16 +42,60 @@ def test_parse_semver_valid():
     assert parse_semver("1.2.3") == (1, 2, 3)
 
 
-def test_parse_semver_two_part():
-    assert parse_semver("1.0") == (1, 0)
+def test_parse_semver_normalizes_length():
+    assert parse_semver("1") == (1, 0, 0)
+    assert parse_semver("1.0") == (1, 0, 0)
+    assert parse_semver("1.0") == parse_semver("1.0.0")
 
 
 def test_parse_semver_invalid_string():
-    assert parse_semver("bad") == (0, 0, 0)
+    assert parse_semver("bad") == (-1, -1, -1)
 
 
 def test_parse_semver_none():
-    assert parse_semver(None) == (0, 0, 0)
+    assert parse_semver(None) == (-1, -1, -1)
+
+
+def test_parse_semver_garbage_sorts_below_zero():
+    assert parse_semver("bad") < parse_semver("0.0.0")
+
+
+def test_extract_description_paragraph_after_heading():
+    body = "# Title\n\nFirst paragraph.\nSecond line.\n\n## Schema\nignored"
+    assert extract_description(body.split("\n")) == "First paragraph. Second line."
+
+
+def test_extract_description_no_heading_falls_back_to_first_prose():
+    assert (
+        extract_description(["no heading here", "just text"])
+        == "no heading here just text"
+    )
+
+
+def test_extract_description_h1_without_prose_skips_tables():
+    lines = ["# Title", "", "## Schema", "| a | b |", "| 1 | 2 |"]
+    assert extract_description(lines) == ""
+
+
+def test_extract_description_fallback_skips_ordered_list():
+    # No H1, so it falls back to the first prose paragraph. Ordered list
+    # items must be skipped just like unordered ones.
+    lines = ["1. first step", "2) second step", "", "Actual prose summary."]
+    assert extract_description(lines) == "Actual prose summary."
+
+
+def test_escape_table_cell():
+    assert escape_table_cell("a | b") == "a \\| b"
+    assert escape_table_cell("line1\nline2") == "line1 line2"
+    assert escape_table_cell(42) == "42"
+
+
+def test_is_sys_column():
+    assert is_sys_column("sys")
+    assert is_sys_column("sys.id")
+    assert is_sys_column("sys__rand")
+    assert not is_sys_column("file")
+    assert not is_sys_column("system")
 
 
 def test_read_frontmatter_normal(tmp_path):
@@ -86,6 +134,70 @@ def test_read_frontmatter_quoted_value(tmp_path):
     p.write_text('---\nname: "quoted"\n---\n')
     fm = read_frontmatter(str(p))
     assert fm["name"] == "quoted"
+
+
+def test_split_frontmatter_returns_dict_and_body():
+    fm, body = split_frontmatter("---\nname: foo\n---\n# Heading\n\nProse.")
+    assert fm == {"name": "foo"}
+    assert body == "# Heading\n\nProse."
+
+
+def test_split_frontmatter_no_frontmatter():
+    fm, body = split_frontmatter("# Just prose\n")
+    assert fm == {}
+    assert body == "# Just prose"
+
+
+def test_split_frontmatter_strips_outer_markdown_fence():
+    fm, body = split_frontmatter("```markdown\n---\nname: foo\n---\n# Heading\n```")
+    assert fm == {"name": "foo"}
+    assert body == "# Heading"
+
+
+def test_split_frontmatter_strips_fence_without_frontmatter():
+    fm, body = split_frontmatter("```markdown\n# Heading\n\nProse.\n```")
+    assert fm == {}
+    assert body == "# Heading\n\nProse."
+
+
+def test_split_frontmatter_empty():
+    assert split_frontmatter("") == ({}, "")
+
+
+def test_split_frontmatter_keeps_leading_code_block():
+    # A document that legitimately starts with a language-tagged code fence
+    # is NOT a wrapper — it must be left intact, language tag and all.
+    content = "```python\nprint(1)\n```"
+    assert split_frontmatter(content) == ({}, content)
+
+
+def test_split_frontmatter_keeps_inner_code_block_when_outer_fence_omitted():
+    # Wrapped doc whose body ends in a fenced code block, with the outer
+    # closing fence omitted: the code block's own ``` must survive intact.
+    fm, body = split_frontmatter(
+        "```markdown\n---\nname: foo\n---\n# T\n\n```python\nprint(1)\n```"
+    )
+    assert fm == {"name": "foo"}
+    assert body == "# T\n\n```python\nprint(1)\n```"
+
+
+def test_split_frontmatter_strips_outer_fence_around_code_block():
+    # Same body, but the outer wrapper close is present: strip only it.
+    fm, body = split_frontmatter(
+        "```markdown\n---\nname: foo\n---\n# T\n\n```python\nprint(1)\n```\n```"
+    )
+    assert fm == {"name": "foo"}
+    assert body == "# T\n\n```python\nprint(1)\n```"
+
+
+def test_split_frontmatter_keeps_glued_closing_backticks():
+    # The body's last line glues ``` to text (not a standalone closing fence):
+    # it must NOT be chopped, even with an odd wrapper-fence count.
+    fm, body = split_frontmatter(
+        "```markdown\n---\nname: foo\n---\n# T\n\n```python\nx = 1```"
+    )
+    assert fm == {"name": "foo"}
+    assert body == "# T\n\n```python\nx = 1```"
 
 
 def test_parse_uri_s3():
@@ -513,3 +625,28 @@ def test_render_index_all_metadata_from_md(tmp_path, monkeypatch):
     # CAST metadata propagated to the table
     assert "onetime" in result
     assert "12000" in result
+
+
+def test_render_index_escapes_pipe_in_table_cell(tmp_path, monkeypatch):
+    import render_index as ri
+
+    monkeypatch.setattr(ri, "BASE_DIR", str(tmp_path))
+    ds_dir = tmp_path / "datasets"
+    ds_dir.mkdir()
+    (ds_dir / "piped.md").write_text(
+        "---\nname: piped\ncast_parents: [a | b]\n---\n\n"
+        "# piped\n\n"
+        "Columns a | b | c split by pipes.\n\n"
+        "## Schema\n"
+    )
+    plan = {
+        "datasets": [
+            {"name": "piped", "source": "local", "file_path": "datasets/piped"},
+        ],
+        "buckets": [],
+    }
+    result = ri.render_index(plan)
+    # Pipes in description and parents are escaped so they don't break columns.
+    assert "Columns a \\| b \\| c split by pipes." in result
+    assert "Columns a | b | c" not in result
+    assert "a \\| b" in result

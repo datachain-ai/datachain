@@ -136,6 +136,16 @@ def process_auth_cli_args(args: "Namespace"):
     raise DataChainError(f"Unknown command '{args.cmd}'.")
 
 
+def _save_default_team(team_name: str, level: ConfigLevel):
+    config = Config(level)
+    with config.edit() as conf:
+        studio_conf = conf.get("studio", {})
+        studio_conf["team"] = team_name
+        conf["studio"] = studio_conf
+
+    return config.config_file()
+
+
 def set_team(args: "Namespace"):
     if args.team_name is None:
         config = Config().read().get("studio", {})
@@ -149,13 +159,8 @@ def set_team(args: "Namespace"):
         )
 
     level = ConfigLevel.LOCAL if args.local else ConfigLevel.GLOBAL
-    config = Config(level)
-    with config.edit() as conf:
-        studio_conf = conf.get("studio", {})
-        studio_conf["team"] = args.team_name
-        conf["studio"] = studio_conf
-
-    print(f"Set default team to '{args.team_name}' in {config.config_file()}")
+    file_path = _save_default_team(args.team_name, level)
+    print(f"Set default team to '{args.team_name}' in {file_path}")
 
 
 def login(args: "Namespace"):
@@ -167,6 +172,15 @@ def login(args: "Namespace"):
     name = args.name
     hostname = args.hostname or get_studio_url(config)
     scopes = args.scopes
+
+    # Parse team arguments
+    team_names = args.team
+
+    expires_in_days = args.expires_in
+
+    # Set default expiration if not specified
+    if expires_in_days is None:
+        expires_in_days = 365
 
     if config.get("url", hostname) == hostname and "token" in config:
         raise DataChainError(
@@ -181,17 +195,35 @@ def login(args: "Namespace"):
             token_name=name,
             hostname=hostname,
             scopes=scopes,
+            team_names=team_names,
+            expires_in_days=expires_in_days,
             open_browser=open_browser,
             client_name="DataChain",
             post_login_message=POST_LOGIN_MESSAGE,
         )
     except StudioAuthError as exc:
         raise DataChainError(f"Failed to authenticate with Studio: {exc}") from exc
+    except requests.HTTPError as exc:
+        response = exc.response
+        if response and response.status_code == 400:
+            message = response.json().get("detail", "Unknown error")
+            raise DataChainError(
+                f"Failed to authenticate with Studio: {message}"
+            ) from exc
+        raise DataChainError(f"Failed to authenticate with Studio: {exc}") from exc
 
     level = ConfigLevel.LOCAL if args.local else ConfigLevel.GLOBAL
     config_path = save_config(hostname, access_token, level=level)
     print(f"Authentication complete. Saved token to {config_path}.")
-    print("You can now use 'datachain auth team' to set the default team.")
+    if team_names:
+        print(f"Token is scoped to teams: {', '.join(team_names)}")
+    print(f"Token will expire in {expires_in_days} days.")
+
+    if team_names and len(team_names) == 1:
+        file_path = _save_default_team(team_names[0], level)
+        print(f"Set default team to '{team_names[0]}' in {file_path}")
+    else:
+        print("You can now use 'datachain auth team' to set the default team.")
     return 0
 
 

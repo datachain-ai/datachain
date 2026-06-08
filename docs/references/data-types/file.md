@@ -8,7 +8,7 @@ such as in [`dc.read_storage`](../datachain.md#datachain.lib.dc.storage.read_sto
 import datachain as dc
 
 chain = dc.read_storage("gs://datachain-demo/dogs-and-cats")
-chain.print_schema()
+print(chain.schema)
 ```
 
 Output:

@@ -1,9 +1,11 @@
 import copy
 import hashlib
+import io
 import logging
 import os
 import os.path
 import sys
+import warnings
 from collections.abc import Callable, Iterator, Sequence
 from collections.abc import Generator as IteratorGenerator
 from contextlib import closing
@@ -149,6 +151,51 @@ def _collapse_absent_optionals(
             leaf = path[-1]
             if leaf in parent and _is_all_none(parent[leaf]):
                 parent[leaf] = None
+class DataChainSchema(dict[str, DataType]):
+    """Dict-like public view of a DataChain schema.
+
+    Top-level schema fields are available through the standard ``dict`` API.
+    Use :meth:`flatten` for leaf columns and :meth:`to_string` for the printable
+    tree format.
+    """
+
+    def __init__(self, signal_schema: SignalSchema) -> None:
+        """Build the view from a ``SignalSchema``."""
+        self._signal_schema = signal_schema
+        super().__init__(signal_schema.values)
+
+    def __str__(self) -> str:
+        """Return the printable schema tree."""
+        return self.to_string()
+
+    def flatten(self, include_hidden: bool = True) -> dict[str, DataType]:
+        """Return flattened leaf column names and their types.
+
+        Parameters:
+            include_hidden: Whether to include hidden fields from complex signals.
+        """
+        return {
+            ".".join(path): type_
+            for path, type_, has_subtree, _ in self._signal_schema.get_flat_tree(
+                include_hidden=include_hidden
+            )
+            if not has_subtree
+        }
+
+    def to_string(self, include_hidden: bool = True, indent: int = 2) -> str:
+        """Return the schema as an indented tree.
+
+        Parameters:
+            include_hidden: Whether to include hidden fields from complex signals.
+            indent: Number of spaces to indent nested fields.
+        """
+        file = io.StringIO()
+        self._signal_schema.print_tree(
+            indent=indent,
+            include_hidden=include_hidden,
+            file=file,
+        )
+        return file.getvalue().removesuffix("\n")
 
 
 class DataChain:
@@ -245,24 +292,21 @@ class DataChain:
         if not self._effective_signals_schema.values:
             return f"Empty {classname}"
 
-        import io
-
-        file = io.StringIO()
-        self.print_schema(file=file)
-        return file.getvalue()
+        return f"{self.schema}\n"
 
     @property
     def empty(self) -> bool:
-        """Returns True if chain has zero number of rows"""
+        """Return True if the chain has zero rows."""
         return not bool(self.count())
 
     @property
     def delta(self) -> bool:
-        """Returns True if this chain is ran in "delta" update mode"""
+        """Return True if this chain is running in "delta" update mode."""
         return self._query.delta_spec is not None or bool(self._query.delta_sources())
 
     @property
     def delta_unsafe(self) -> bool:
+        """Returns True if the chain runs in unsafe "delta" update mode."""
         if self._query.delta_spec is not None:
             return self._query.delta_spec.delta_unsafe
         delta_sources = self._query.delta_sources()
@@ -272,9 +316,19 @@ class DataChain:
         )
 
     @property
-    def schema(self) -> dict[str, DataType]:
-        """Get schema of the chain."""
-        return self._effective_signals_schema.values
+    def schema(self) -> DataChainSchema:
+        """Get a dict-like schema view of the chain.
+
+        The returned object maps top-level signal names to Python types and can
+        also produce leaf-column views:
+
+        ```py
+        ds.schema                 # {"file": File, "score": float}
+        ds.schema.flatten()       # {"file.path": str, "file.size": int, ...}
+        print(ds.schema)          # printable nested schema tree
+        ```
+        """
+        return DataChainSchema(self._effective_signals_schema)
 
     def column(self, name: str) -> Column:
         """Returns Column instance with a type if name is found in current schema,
@@ -334,8 +388,10 @@ class DataChain:
 
     @property
     def job(self) -> Job:
-        """
-        Get existing job if running in SaaS, or creating new one if running locally.
+        """Get the job for this chain.
+
+        Returns the existing job if running in SaaS, or creates a new one if
+        running locally.
         """
         if self._settings.ephemeral:
             raise RuntimeError(
@@ -372,8 +428,13 @@ class DataChain:
         return self.union(other)
 
     def print_schema(self, file: IO | None = None) -> None:
-        """Print schema of the chain."""
-        self._effective_signals_schema.print_tree(file=file)
+        """Deprecated. Use ``print(chain.schema)``."""
+        warnings.warn(
+            "DataChain.print_schema() is deprecated; use print(chain.schema) instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        print(self.schema, file=file)
 
     def clone(self) -> "Self":
         """Make a copy of the chain in a new table."""
@@ -416,8 +477,7 @@ class DataChain:
         sys: bool | None = None,
         ephemeral: bool | None = None,
     ) -> "Self":
-        """
-        Set chain execution parameters. Returns the chain itself, allowing method
+        """Set chain execution parameters. Returns the chain itself, allowing method
         chaining for subsequent operations. To restore all settings to their default
         values, use `reset_settings()`.
 
@@ -533,7 +593,7 @@ class DataChain:
 
     @property
     def namespace_name(self) -> str:
-        """Current namespace name in which the chain is running"""
+        """Current namespace name in which the chain is running."""
         return (
             self._settings.namespace
             or self.session.catalog.metastore.default_namespace_name
@@ -541,7 +601,7 @@ class DataChain:
 
     @property
     def project_name(self) -> str:
-        """Current project name in which the chain is running"""
+        """Current project name in which the chain is running."""
         return (
             self._settings.project
             or self.session.catalog.metastore.default_project_name
@@ -590,7 +650,6 @@ class DataChain:
             update_version: which part of the dataset version to automatically increase.
                 Available values: `major`, `minor` or `patch`. Default is `patch`.
         """
-
         if self._settings.ephemeral:
             raise RuntimeError(
                 "Cannot save datasets in ephemeral mode. "
@@ -809,6 +868,7 @@ class DataChain:
         kwargs: dict,
     ) -> "DataChain | None":
         """Try to save as a delta dataset.
+
         Returns:
             A DataChain if delta logic could handle it, otherwise None to fall back
             to the regular save path (e.g., on first dataset creation).
@@ -1617,6 +1677,7 @@ class DataChain:
     def results(self, *, include_hidden: bool) -> list[tuple[Any, ...]]: ...
 
     def results(self, *, row_factory=None, include_hidden=True):
+        """Return all rows, optionally built via ``row_factory``."""
         if row_factory is None:
             return list(self._leaf_values(include_hidden=include_hidden))
         return list(
@@ -2450,6 +2511,7 @@ class DataChain:
             fs_kwargs: Optional kwargs forwarded to the underlying fsspec filesystem
                 when writing (e.g., s3://, gs://, hf://), fsspec-specific options
                 are supported.
+
         Returns:
             File: The stored file with refreshed metadata (version, etag, size).
         """
@@ -2485,6 +2547,7 @@ class DataChain:
             include_outer_list: Sets whether to include an outer list for all rows.
                 Setting this to True makes the file valid JSON, while False instead
                 writes in the JSON lines format.
+
         Returns:
             File: The stored file with refreshed metadata (version, etag, size).
         """
@@ -2535,6 +2598,7 @@ class DataChain:
             fs_kwargs: Optional kwargs forwarded to the underlying fsspec filesystem
                 when writing (e.g., s3://, gs://, hf://), fsspec-specific options
                 are supported.
+
         Returns:
             File: The stored file with refreshed metadata (version, etag, size).
         """

@@ -81,8 +81,7 @@ def to_database(
     conflict_columns: list[str] | None = None,
     column_mapping: dict[str, str | None] | None = None,
 ) -> int:
-    """
-    Implementation function for exporting DataChain to database tables.
+    """Implementation function for exporting DataChain to database tables.
 
     This is the core implementation that handles the actual database operations.
     For user-facing documentation, see DataChain.to_database() method.
@@ -155,8 +154,7 @@ def to_database(
 def _normalize_column_mapping(
     column_mapping: dict[str, str | None],
 ) -> dict[str, str | None]:
-    """
-    Convert column mapping keys from DataChain format (dots) to database format
+    """Convert column mapping keys from DataChain format (dots) to database format
     (double underscores).
 
     This allows users to specify column mappings using the intuitive DataChain
@@ -194,8 +192,7 @@ def _normalize_column_mapping(
 def _normalize_conflict_columns(
     conflict_columns: list[str] | None, column_mapping: dict[str, str | None]
 ) -> list[str] | None:
-    """
-    Normalize conflict_columns by converting DataChain format to database format
+    """Normalize conflict_columns by converting DataChain format to database format
     and applying column mapping.
     """
     if not conflict_columns:
@@ -310,8 +307,7 @@ def read_database(
     in_memory: bool = False,
     infer_schema_length: int | None = 100,
 ) -> "DataChain":
-    """
-    Read the results of a SQL query into a DataChain, using a given database connection.
+    """Read the results of a SQL query into a DataChain.
 
     Args:
         query:
