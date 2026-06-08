@@ -1140,7 +1140,8 @@ class Catalog:
             # Explicit mode: validate against current status / dataset kind.
             if keep_metadata and is_internal:
                 raise DataChainError(
-                    f"Cannot soft-delete internal dataset {dataset.name}"
+                    f"Internal dataset {dataset.name} cannot be removed "
+                    "while keeping metadata"
                 )
             if keep_metadata and v.status not in (
                 DatasetStatus.COMPLETE,
@@ -1148,17 +1149,15 @@ class Catalog:
                 DatasetStatus.REMOVED,
             ):
                 raise DataChainError(
-                    f"Cannot soft-delete {dataset.name}@{version}: "
-                    f"current status is {v.status}, expected COMPLETE or REMOVING"
+                    f"Cannot remove {dataset.name}@{version} while keeping "
+                    f"metadata: current status is {v.status}, expected "
+                    "COMPLETE or REMOVING"
                 )
             if not keep_metadata and v.status == DatasetStatus.REMOVING:
                 raise DataChainError(
-                    f"Cannot wipe {dataset.name}@{version}: "
-                    "a soft delete is already in progress"
+                    f"Cannot remove {dataset.name}@{version} entirely: "
+                    "a removal that keeps metadata is already in progress"
                 )
-
-        if keep_metadata and v.status == DatasetStatus.REMOVED:
-            return
 
         if keep_metadata:
             self._remove_version_keep_metadata(dataset, version, v.status)
@@ -1203,6 +1202,8 @@ class Catalog:
         self, dataset: DatasetRecord, version: str, expected_status: int
     ) -> None:
         """Drop rows table, mark version REMOVED (keeps semver + lineage)."""
+        if expected_status == DatasetStatus.REMOVED:
+            return
         if not self._try_claim_transition(
             dataset,
             version,

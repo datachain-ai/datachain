@@ -686,7 +686,7 @@ def test_remove_explicit_keep_on_inflight_wipe_raises(test_session, dataset_comp
     version = dataset_complete.latest_version
     ds = _force_status(catalog, dataset_complete, version, DatasetStatus.REMOVING_TOTAL)
 
-    with pytest.raises(DataChainError, match="Cannot soft-delete"):
+    with pytest.raises(DataChainError, match="while keeping metadata"):
         catalog.remove_dataset_version(ds, version, keep_metadata=True)
 
 
@@ -697,7 +697,7 @@ def test_remove_explicit_wipe_on_inflight_keep_raises(test_session, dataset_comp
     version = dataset_complete.latest_version
     ds = _force_status(catalog, dataset_complete, version, DatasetStatus.REMOVING)
 
-    with pytest.raises(DataChainError, match="Cannot wipe"):
+    with pytest.raises(DataChainError, match="entirely"):
         catalog.remove_dataset_version(ds, version, keep_metadata=False)
 
 
