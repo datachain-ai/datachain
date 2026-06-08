@@ -196,6 +196,28 @@ def test_udf_parallel(cloud_test_catalog_tmpfile):
     assert count == 7
 
 
+@pytest.mark.xdist_group(name="tmpfile")
+def test_udf_parallel_multi_signal_map(test_session_tmpfile):
+    """Multi-signal `.map(a=f1, b=f2)` runs each function per row in a single
+    UDF stage and survives pickling to parallel workers."""
+
+    def name_len(name: str) -> int:
+        return len(name)
+
+    def name_upper(name: str) -> str:
+        return name.upper()
+
+    names = ["foo.txt", "bar.md", "baz.csv", "qux.json"]
+    chain = (
+        dc.read_values(name=names, session=test_session_tmpfile)
+        .settings(parallel=True)
+        .map(n=name_len, upper=name_upper)
+    )
+
+    rows = sorted(chain.to_iter("name", "n", "upper"))
+    assert rows == [(n, len(n), n.upper()) for n in sorted(names)]
+
+
 @pytest.mark.parametrize(
     "cloud_type,version_aware",
     [("s3", True)],

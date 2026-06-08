@@ -969,7 +969,7 @@ class DataChain:
             ```
         """
         if len(signal_map) > 1:
-            udf_obj = self._build_multi_signal_mapper(func, output, signal_map)
+            udf_obj = self._build_multi_signal_mapper(func, params, output, signal_map)
         else:
             udf_obj = self._udf_to_obj(Mapper, func, params, output, signal_map)
         if (prefetch := self._settings.prefetch) is not None:
@@ -987,6 +987,7 @@ class DataChain:
     def _build_multi_signal_mapper(
         self,
         func: Callable | None,
+        params: str | Sequence[str] | None,
         output: OutputType,
         signal_map: dict[str, Callable],
     ) -> "Mapper":
@@ -999,6 +1000,13 @@ class DataChain:
             raise DataChainParamsError(
                 "map() can't combine 'output' with multiple signal kwargs; "
                 "use function return-type annotations instead"
+            )
+        if params is not None:
+            raise DataChainParamsError(
+                "map() can't combine 'params' with multiple signal kwargs; "
+                "each function's parameter names are matched to chain columns "
+                "individually. For nested columns (e.g. 'file.path'), extract "
+                "to a top-level column with a single .map() first."
             )
 
         multi_mapper = _MultiSignalMapper(signal_map)
@@ -1013,7 +1021,7 @@ class DataChain:
         return self._udf_to_obj(
             Mapper,
             multi_mapper,
-            params=multi_mapper._combined_params,
+            params=multi_mapper.combined_params,
             output=output_dict,
             signal_map={},
         )

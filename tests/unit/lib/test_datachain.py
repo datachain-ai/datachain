@@ -961,6 +961,12 @@ def test_map_multiple_signals_rejects_output(test_session):
         chain.map(a=lambda n: n, b=lambda n: n, output={"a": str, "b": str})
 
 
+def test_map_multiple_signals_rejects_params(test_session):
+    chain = dc.read_values(name=["x"], session=test_session)
+    with pytest.raises(DataChainParamsError, match="can't combine 'params'"):
+        chain.map(a=lambda n: n, b=lambda n: n, params=["name"])
+
+
 def test_map_multiple_signals_single_stage(test_session):
     """Verify multi-kwarg map adds exactly one UDF stage, not N chained ones."""
     base = dc.read_values(name=["foo.txt"], session=test_session)

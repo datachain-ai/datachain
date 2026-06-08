@@ -501,17 +501,17 @@ class _MultiSignalMapper(Mapper):
         self._per_func_params: dict[str, list[str]] = {}
         # union of all functions' params, deduped, positional order
         seen: set[str] = set()
-        self._combined_params: list[str] = []
+        self.combined_params: list[str] = []
         for name, fn in signal_map.items():
             param_names = list(inspect.signature(fn).parameters.keys())
             self._per_func_params[name] = param_names
             for p in param_names:
                 if p not in seen:
                     seen.add(p)
-                    self._combined_params.append(p)
+                    self.combined_params.append(p)
 
     def process(self, *args):
-        kwargs = dict(zip(self._combined_params, args, strict=True))
+        kwargs = dict(zip(self.combined_params, args, strict=True))
         return tuple(
             fn(**{p: kwargs[p] for p in self._per_func_params[name]})
             for name, fn in self._signal_map.items()
