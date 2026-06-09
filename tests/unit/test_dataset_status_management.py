@@ -588,7 +588,9 @@ def test_janitor_still_hard_deletes_created_version(test_session, job, dataset_c
 def test_remove_non_complete_version_is_hard_delete(test_session, dataset_failed):
     catalog = test_session.catalog
     name = dataset_failed.name
-    catalog.remove_dataset_version(dataset_failed, dataset_failed.latest_version)
+    catalog.remove_dataset_version(
+        dataset_failed, dataset_failed.latest_version, keep_metadata=False
+    )
     with pytest.raises(DatasetNotFoundError):
         catalog.get_dataset(name, include_incomplete=True)
 
@@ -624,7 +626,10 @@ def test_listing_dataset_never_keeps_metadata(test_session):
     name = f"{LISTING_PREFIX}internal_test"
     ds = _make_completed_dataset(catalog, name, project=listing_project)
 
-    catalog.remove_dataset_version(ds, ds.latest_version)
+    with pytest.raises(DataChainError, match="while keeping metadata"):
+        catalog.remove_dataset_version(ds, ds.latest_version, keep_metadata=True)
+
+    catalog.remove_dataset_version(ds, ds.latest_version, keep_metadata=False)
     with pytest.raises(DatasetNotFoundError):
         catalog.get_dataset(name, include_incomplete=True)
 
@@ -635,7 +640,10 @@ def test_session_dataset_never_keeps_metadata(test_session):
     name = f"{Session.DATASET_PREFIX}internal_test"
     ds = _make_completed_dataset(catalog, name)
 
-    catalog.remove_dataset_version(ds, ds.latest_version)
+    with pytest.raises(DataChainError, match="while keeping metadata"):
+        catalog.remove_dataset_version(ds, ds.latest_version, keep_metadata=True)
+
+    catalog.remove_dataset_version(ds, ds.latest_version, keep_metadata=False)
     with pytest.raises(DatasetNotFoundError):
         catalog.get_dataset(name, include_incomplete=True)
 
@@ -647,15 +655,16 @@ def _force_status(catalog, dataset: DatasetRecord, version: str, status: int):
     return catalog.get_dataset(dataset.name, versions=None, include_incomplete=True)
 
 
-def test_remove_resumes_stuck_removing_via_inference(test_session, dataset_complete):
+def test_gc_resumes_stuck_removing(test_session, dataset_complete):
     """A version stuck in REMOVING (previous soft-delete crashed mid-flight)
-    is resumed to REMOVED when the caller passes no explicit flag — inference
-    picks the soft path from the current status."""
+    is resumed to REMOVED by the GC path — _remove_versions picks the soft
+    path from the current status."""
     catalog = test_session.catalog
     version = dataset_complete.latest_version
     ds = _force_status(catalog, dataset_complete, version, DatasetStatus.REMOVING)
+    vid = ds.get_version(version).id
 
-    catalog.remove_dataset_version(ds, version)
+    catalog.remove_dataset_versions(version_ids=[vid])
 
     ds = catalog.get_dataset(
         dataset_complete.name, versions=None, include_incomplete=True
@@ -663,17 +672,16 @@ def test_remove_resumes_stuck_removing_via_inference(test_session, dataset_compl
     assert _find_removed(ds, version) is not None
 
 
-def test_remove_resumes_stuck_removing_total_via_inference(
-    test_session, dataset_complete
-):
-    """A version stuck in REMOVING_TOTAL is resumed to a full wipe when the
-    caller passes no explicit flag — inference picks the wipe path."""
+def test_gc_resumes_stuck_removing_total(test_session, dataset_complete):
+    """A version stuck in REMOVING_TOTAL is resumed to a full wipe by the GC
+    path — _remove_versions picks the wipe path."""
     catalog = test_session.catalog
     version = dataset_complete.latest_version
     name = dataset_complete.name
     ds = _force_status(catalog, dataset_complete, version, DatasetStatus.REMOVING_TOTAL)
+    vid = ds.get_version(version).id
 
-    catalog.remove_dataset_version(ds, version)
+    catalog.remove_dataset_versions(version_ids=[vid])
 
     with pytest.raises(DatasetNotFoundError):
         catalog.get_dataset(name, include_incomplete=True)

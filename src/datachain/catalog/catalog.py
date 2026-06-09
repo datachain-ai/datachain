@@ -1109,18 +1109,14 @@ class Catalog:
         self,
         dataset: DatasetRecord,
         version: str,
-        keep_metadata: bool | None = None,
+        keep_metadata: bool,
     ) -> None:
         """Remove a single dataset version.
 
         ``keep_metadata=True`` keeps a REMOVED tombstone (the rows table is
-        dropped). ``keep_metadata=False`` fully wipes the version row. When
-        explicit, the call raises if the version's current status is not
-        compatible with the requested mode.
-
-        ``keep_metadata=None`` (default) infers the mode from the version's
-        current status: in-progress removals resume in their existing mode,
-        incomplete or internal-dataset rows are wiped.
+        dropped). ``keep_metadata=False`` fully wipes the version row. The
+        call raises if the version's current status is not compatible with
+        the requested mode.
         """
         from datachain.query.session import Session
 
@@ -1132,32 +1128,26 @@ class Catalog:
             Session.DATASET_PREFIX
         )
 
-        if keep_metadata is None:
-            # Inferred mode (used by GC/cleanup paths): REMOVING resumes soft,
-            # everything else gets wiped.
-            keep_metadata = v.status == DatasetStatus.REMOVING
-        else:
-            # Explicit mode: validate against current status / dataset kind.
-            if keep_metadata and is_internal:
-                raise DataChainError(
-                    f"Internal dataset {dataset.name} cannot be removed "
-                    "while keeping metadata"
-                )
-            if keep_metadata and v.status not in (
-                DatasetStatus.COMPLETE,
-                DatasetStatus.REMOVING,
-                DatasetStatus.REMOVED,
-            ):
-                raise DataChainError(
-                    f"Cannot remove {dataset.name}@{version} while keeping "
-                    f"metadata: current status is {v.status}, expected "
-                    "COMPLETE or REMOVING"
-                )
-            if not keep_metadata and v.status == DatasetStatus.REMOVING:
-                raise DataChainError(
-                    f"Cannot remove {dataset.name}@{version} entirely: "
-                    "a removal that keeps metadata is already in progress"
-                )
+        if keep_metadata and is_internal:
+            raise DataChainError(
+                f"Internal dataset {dataset.name} cannot be removed "
+                "while keeping metadata"
+            )
+        if keep_metadata and v.status not in (
+            DatasetStatus.COMPLETE,
+            DatasetStatus.REMOVING,
+            DatasetStatus.REMOVED,
+        ):
+            raise DataChainError(
+                f"Cannot remove {dataset.name}@{version} while keeping "
+                f"metadata: current status is {v.status}, expected "
+                "COMPLETE or REMOVING"
+            )
+        if not keep_metadata and v.status == DatasetStatus.REMOVING:
+            raise DataChainError(
+                f"Cannot remove {dataset.name}@{version} entirely: "
+                "a removal that keeps metadata is already in progress"
+            )
 
         if keep_metadata:
             self._remove_version_keep_metadata(dataset, version, v.status)
@@ -1249,7 +1239,14 @@ class Catalog:
         num_removed = 0
         for dataset, version in pairs:
             try:
-                self.remove_dataset_version(dataset, version)
+                # GC policy: resume a soft delete already in progress; wipe
+                # everything else (incomplete, stale, internal, wipe-in-progress).
+                keep_metadata = (
+                    dataset.get_version(version).status == DatasetStatus.REMOVING
+                )
+                self.remove_dataset_version(
+                    dataset, version, keep_metadata=keep_metadata
+                )
                 num_removed += 1
             except Exception as e:  # noqa: BLE001
                 logger.warning(
@@ -1936,7 +1933,7 @@ class Catalog:
                     return
 
                 print("Cleaning up stale existing dataset version")
-                self.remove_dataset_version(ds, ver.version)
+                self.remove_dataset_version(ds, ver.version, keep_metadata=False)
             except DatasetNotFoundError:
                 pass
 
@@ -1978,7 +1975,9 @@ class Catalog:
                             "Cleaning up stale incomplete version "
                             f"(uuid={local_ver.uuid})"
                         )
-                        self.remove_dataset_version(local_dataset, local_ds_version)
+                        self.remove_dataset_version(
+                            local_dataset, local_ds_version, keep_metadata=False
+                        )
                     else:
                         raise DataChainError(
                             f"Local dataset {local_ds_uri} already exists with"

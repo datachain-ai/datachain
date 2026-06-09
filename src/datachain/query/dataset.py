@@ -3464,7 +3464,7 @@ class DatasetQuery:
         if old_fp != new_fp:
             return None
 
-        self.catalog.remove_dataset_version(full_dataset, version)
+        self.catalog.remove_dataset_version(full_dataset, version, keep_metadata=False)
         # updating TTL of a bucket listing
         self.catalog.metastore.update_dataset_version(
             full_dataset, prev_version, finished_at=datetime.now(timezone.utc)
