@@ -1300,11 +1300,15 @@ class SignalSchema:
                         file=file,
                     )
 
-    def get_headers_with_length(self, include_hidden: bool = True):
+    def get_headers_with_length(
+        self, include_hidden: bool = True, include_sentinels: bool | None = None
+    ):
+        if include_sentinels is None:
+            include_sentinels = include_hidden
         paths = [
             path
             for path, _, has_subtree, _ in self.get_flat_tree(
-                include_hidden=include_hidden, include_sentinels=False
+                include_hidden=include_hidden, include_sentinels=include_sentinels
             )
             if not has_subtree
         ]

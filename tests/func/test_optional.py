@@ -672,6 +672,44 @@ def test_flat_export_optional_datamodel_leaf_none(test_session):
     assert pd.isna(label[1])
 
 
+def test_is_null_sentinel_follows_include_hidden(test_session, tmp_path):
+    """The `_is_null` sentinel follows ``include_hidden`` in tabular/columnar
+    exports, stays out of ``to_json``, and round-trips through parquet."""
+    presents = {1: _Inner(score=10, label="a")}
+
+    def pick(id: int) -> _Inner | None:
+        return presents.get(id)
+
+    chain = (
+        dc.read_values(id=[1, 2], session=test_session).map(item=pick).order_by("id")
+    )
+
+    recs = {r["id"]: bool(r["item___is_null"]) for r in chain.to_records()}
+    assert recs == {1: False, 2: True}
+
+    assert ("item", "_is_null") in list(chain.to_pandas().columns)
+    assert ("item", "_is_null") not in list(
+        chain.to_pandas(include_hidden=False).columns
+    )
+
+    import json
+
+    pj = str(tmp_path / "out.json")
+    chain.to_json(pj)
+    with open(pj) as f:
+        by_id = {r["id"]: r["item"] for r in json.load(f)}
+    assert by_id[1] == {"score": 10, "label": "a"}
+    assert by_id[2] is None
+
+    pp = str(tmp_path / "out.parquet")
+    chain.to_parquet(pp)
+    got = dict(
+        dc.read_parquet(pp, session=test_session).order_by("id").to_list("id", "item")
+    )
+    assert got[1] == _Inner(score=10, label="a")
+    assert got[2] is None
+
+
 def test_count_optional_datamodel_uses_sentinel(test_session):
     """``func.count("opt_model")`` returns the number of rows whose parent is
     present — same value on SQLite and ClickHouse, regardless of how CH

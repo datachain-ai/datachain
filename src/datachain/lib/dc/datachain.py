@@ -1386,6 +1386,12 @@ class DataChain:
                 if not columns:
                     raise SignalResolvingError([col], "is not found")
                 partition_by_columns.extend(cast("list[Column]", columns))
+                # GROUP BY the ancestor sentinel too, so the aggregated table keeps
+                # the `_is_null` column the result schema expects.
+                for leaf in cast("list[Column]", columns):
+                    sentinel = self.signals_schema.optional_parent_sentinel(leaf.name)
+                    if sentinel:
+                        partition_by_columns.append(Column(sentinel))
 
                 # For nested field references (e.g., "nested.level1.name"),
                 # we need to distinguish between:
@@ -1604,22 +1610,22 @@ class DataChain:
     def _leaf_values(self) -> Iterator[tuple[Any, ...]]: ...
 
     @overload
-    def _leaf_values(self, *, include_hidden: bool) -> Iterator[tuple[Any, ...]]: ...
-
-    @overload
     def _leaf_values(
-        self, *, row_factory: Callable[[list[str], tuple[Any, ...]], _T]
-    ) -> Iterator[_T]: ...
+        self, *, include_hidden: bool = ..., include_sentinels: bool | None = ...
+    ) -> Iterator[tuple[Any, ...]]: ...
 
     @overload
     def _leaf_values(
         self,
         *,
         row_factory: Callable[[list[str], tuple[Any, ...]], _T],
-        include_hidden: bool,
+        include_hidden: bool = ...,
+        include_sentinels: bool | None = ...,
     ) -> Iterator[_T]: ...
 
-    def _leaf_values(self, *, row_factory=None, include_hidden: bool = True):
+    def _leaf_values(
+        self, *, row_factory=None, include_hidden: bool = True, include_sentinels=None
+    ):
         """Yields flattened rows of values as a tuple.
 
         Args:
@@ -1627,10 +1633,14 @@ class DataChain:
                 It should accept two arguments: a list of column names and
                 a tuple of row values.
             include_hidden: Whether to include hidden signals from the schema.
+            include_sentinels: Whether to select the `_is_null` sentinel column.
+                Defaults to ``include_hidden``.
         """
         schema = self._effective_signals_schema
+        if include_sentinels is None:
+            include_sentinels = include_hidden
         db_signals = schema.db_signals(
-            include_hidden=include_hidden, include_sentinels=False
+            include_hidden=include_hidden, include_sentinels=include_sentinels
         )
         with self._query.ordered_select(*db_signals).as_iterable() as rows:
             if row_factory:
@@ -2555,7 +2565,10 @@ class DataChain:
             File: The stored file with refreshed metadata (version, etag, size).
         """
         target = File.at(path, session=self.session)
-        headers, _ = self._effective_signals_schema.get_headers_with_length()
+        # Exclude the sentinel so an absent Optional[DataModel] collapses to null.
+        headers, _ = self._effective_signals_schema.get_headers_with_length(
+            include_sentinels=False
+        )
         headers = [list(filter(None, h)) for h in headers]
         with target.open("wb", client_config=fs_kwargs) as f:
             self._write_json_stream(f, headers, include_outer_list)
@@ -2572,7 +2585,7 @@ class DataChain:
         is_first = True
         if include_outer_list:
             f.write(b"[\n")
-        for row in self._leaf_values():
+        for row in self._leaf_values(include_sentinels=False):
             nested = row_to_nested_dict(headers, row)
             _collapse_absent_optionals(nested, optional_paths)
             if not is_first:
