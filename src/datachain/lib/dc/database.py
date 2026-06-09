@@ -125,7 +125,7 @@ def to_database(
 
                 table.create(conn, checkfirst=True)
 
-                rows_iter = chain._leaf_values()
+                rows_iter = chain._leaf_values(include_sentinels=False)
                 for batch in batched(rows_iter, batch_size):
                     rows_affected = _process_batch(
                         conn,
