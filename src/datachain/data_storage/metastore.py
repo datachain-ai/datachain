@@ -866,7 +866,6 @@ class AbstractDBMetastore(AbstractMetastore):
             Column("job_id", Text, nullable=True),
             Column("content_hash", Text, nullable=True),
             Column("removed_at", DateTime(timezone=True), nullable=True),
-            Column("op_uuid", Text, nullable=True),
             UniqueConstraint("dataset_id", "version"),
         ]
 

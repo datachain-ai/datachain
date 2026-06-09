@@ -1154,52 +1154,19 @@ class Catalog:
         else:
             self._remove_version_wipe_metadata(dataset, version, v.status)
 
-    def _try_claim_transition(
-        self,
-        dataset: DatasetRecord,
-        version: str,
-        *,
-        target_status: int,
-        expected_status: int,
-    ) -> bool:
-        """Atomically transition a version's status; signal win/lost via UUID.
-
-        Two callers matching the same source can both UPDATE; the second one's
-        ``op_uuid`` overwrites the first's. Re-reading after the write reveals
-        which UUID landed - matching ours means we won.
-        """
-        my_uuid = str(uuid4())
-        self.metastore.update_dataset_version(
-            dataset,
-            version,
-            expected_status=expected_status,
-            status=target_status,
-            op_uuid=my_uuid,
-        )
-        try:
-            fresh = self.metastore.get_dataset(
-                dataset.name,
-                namespace_name=dataset.project.namespace.name,
-                project_name=dataset.project.name,
-                versions=[version],
-                include_incomplete=True,
-            )
-            return fresh.get_version(version).op_uuid == my_uuid
-        except (DatasetNotFoundError, DatasetVersionNotFoundError):
-            return False
-
     def _remove_version_keep_metadata(
         self, dataset: DatasetRecord, version: str, expected_status: int
     ) -> None:
         """Drop rows table, mark version REMOVED (keeps semver + lineage)."""
         if expected_status == DatasetStatus.REMOVED:
             return
-        if not self._try_claim_transition(
+        claimed = self.metastore.update_dataset_version(
             dataset,
             version,
-            target_status=DatasetStatus.REMOVING,
             expected_status=expected_status,
-        ):
+            status=DatasetStatus.REMOVING,
+        )
+        if claimed is None:
             logger.debug(
                 "Skipped remove of %s@%s: another caller is already handling it",
                 dataset.name,
@@ -1219,12 +1186,13 @@ class Catalog:
         self, dataset: DatasetRecord, version: str, expected_status: int
     ) -> None:
         """Drop rows table and delete the version row entirely."""
-        if not self._try_claim_transition(
+        claimed = self.metastore.update_dataset_version(
             dataset,
             version,
-            target_status=DatasetStatus.REMOVING_TOTAL,
             expected_status=expected_status,
-        ):
+            status=DatasetStatus.REMOVING_TOTAL,
+        )
+        if claimed is None:
             logger.debug(
                 "Skipped remove of %s@%s: another caller is already handling it",
                 dataset.name,
