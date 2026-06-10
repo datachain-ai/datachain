@@ -673,6 +673,17 @@ class DatasetRecord:
     def full_name(self) -> str:
         return f"{self.project.namespace.name}.{self.project.name}.{self.name}"
 
+    @property
+    def is_internal(self) -> bool:
+        """True for non-user-facing datasets (listing ``lst__*`` and
+        session ``session_*`` intermediates)."""
+        from datachain.lib.listing import is_listing_dataset
+        from datachain.query.session import Session
+
+        return is_listing_dataset(self.name) or self.name.startswith(
+            Session.DATASET_PREFIX
+        )
+
     def get_schema(self, version: str) -> dict[str, SQLType | type[SQLType]]:
         return self.get_version(version).schema if version else self.schema
 

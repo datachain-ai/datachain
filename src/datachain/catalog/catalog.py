@@ -1113,22 +1113,18 @@ class Catalog:
     ) -> None:
         """Remove a single dataset version.
 
-        ``keep_metadata=True`` keeps a REMOVED tombstone (the rows table is
-        dropped). ``keep_metadata=False`` fully wipes the version row. The
-        call raises if the version's current status is not compatible with
-        the requested mode.
-        """
-        from datachain.query.session import Session
+        ``keep_metadata=True``: drop rows table, mark REMOVED (semver +
+        lineage kept). Requires user-facing dataset (not ``lst__*`` /
+        ``session_*``) and status in COMPLETE/REMOVING/REMOVED.
 
+        ``keep_metadata=False``: drop rows table, delete the version row.
+        Allowed from any status except REMOVING.
+        """
         if not dataset.has_version(version):
             return
         v = dataset.get_version(version)
 
-        is_internal = is_listing_dataset(dataset.name) or dataset.name.startswith(
-            Session.DATASET_PREFIX
-        )
-
-        if keep_metadata and is_internal:
+        if keep_metadata and dataset.is_internal:
             raise DataChainError(
                 f"Internal dataset {dataset.name} cannot be removed "
                 "while keeping metadata"
@@ -1363,7 +1359,6 @@ class Catalog:
         include_incomplete: bool = True,
         include_preview: bool = False,
     ) -> DatasetRecord:
-        from datachain.lib.listing import is_listing_dataset
 
         namespace_name = namespace_name or self.metastore.default_namespace_name
         project_name = project_name or self.metastore.default_project_name
@@ -1610,7 +1605,7 @@ class Catalog:
         Returns list of ListingInfo objects which are representing specific
         storage listing datasets
         """
-        from datachain.lib.listing import LISTING_PREFIX, is_listing_dataset
+        from datachain.lib.listing import LISTING_PREFIX
         from datachain.lib.listing_info import ListingInfo
 
         if prefix and not prefix.startswith(LISTING_PREFIX):

@@ -454,6 +454,21 @@ def test_latest_version_all_removed_raises(dataset_record):
         _ = record.latest_version
 
 
+@pytest.mark.parametrize(
+    "name,expected",
+    [
+        ("lst__s3://bucket/", True),
+        ("session_abc_123", True),
+        ("my_dataset", False),
+        ("ds_session_lookalike", False),
+        ("lst_no_double_underscore", False),
+    ],
+)
+def test_is_internal(dataset_record, name, expected):
+    record = replace(dataset_record, name=name)
+    assert record.is_internal is expected
+
+
 def _versions_from_pairs(dataset_record, pairs):
     return [
         replace(
