@@ -1,12 +1,16 @@
 import glob
+import inspect
 import itertools
 import logging
+import math
 import posixpath
 import secrets
 import string
 import sys
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
+from datetime import datetime, timezone
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Union, cast
 from urllib.parse import urlparse
 
@@ -25,7 +29,7 @@ from datachain.client import Client
 from datachain.data_storage.schema import convert_rows_custom_column_types
 from datachain.data_storage.serializer import Serializable
 from datachain.dataset import DatasetRecord, StorageURI
-from datachain.error import TableRenameError
+from datachain.error import TableMissingError, TableRenameError
 from datachain.lib.file import File
 from datachain.lib.model_store import ModelStore
 from datachain.lib.signal_schema import SignalSchema
@@ -56,6 +60,31 @@ logger = logging.getLogger("datachain")
 
 SELECT_BATCH_SIZE = 100_000  # number of rows to fetch at a time
 
+# Max characters kept for a single categorical value in stats top-K lists,
+# to keep the stored stats blob bounded.
+STATS_VALUE_MAX_LEN = 256
+
+
+def _stats_number(value: Any) -> Any:
+    """Coerce a numeric aggregate result into a JSON-friendly number."""
+    if value is None:
+        return None
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, bool):
+        return int(value)
+    return value
+
+
+def _stats_stringify(value: Any) -> str | None:
+    """Render a categorical value as a bounded-length string for stats."""
+    if value is None:
+        return None
+    text = value if isinstance(value, str) else str(value)
+    if len(text) > STATS_VALUE_MAX_LEN:
+        return text[:STATS_VALUE_MAX_LEN] + "…"
+    return text
+
 
 class AbstractWarehouse(ABC, Serializable):
     """
@@ -73,6 +102,13 @@ class AbstractWarehouse(ABC, Serializable):
     DATASET_SOURCE_TABLE_PREFIX = "src_"
     UDF_TABLE_NAME_PREFIX = "udf_"
     TMP_TABLE_NAME_PREFIX = "tmp_"
+
+    # Per-dataset statistics (see ``compute_dataset_stats``).
+    STATS_VERSION = 1
+    STATS_TOP_K = 20  # categorical: number of most-frequent values to keep
+    STATS_HISTOGRAM_BINS = 20  # numeric: number of equal-width histogram buckets
+    STATS_MAX_COLUMNS = 200  # cap analyzed leaf columns; the rest are skipped
+    STATS_AGG_BATCH = 40  # scalar columns aggregated per SELECT pass
     INSERT_BATCH_SIZE: int = 10_000
     INSERT_FLUSH_INTERVAL: float = 60.0
 
@@ -509,6 +545,307 @@ class AbstractWarehouse(ABC, Serializable):
         query = sa.select(*expressions)
         ((nrows, *rest),) = self.db.execute(query)
         return nrows, rest[0] if rest else 0
+
+    #
+    # Per-column distribution statistics
+    #
+
+    def stats_compute_is_cheap(self) -> bool:
+        """Whether per-dataset stats are cheap enough to compute eagerly on save.
+
+        Backends with native approximate aggregates (e.g. ClickHouse ``uniq`` /
+        ``topK`` / ``quantile``) override this to return ``True`` so stats are
+        filled in when a dataset version is finalized.  Row-by-row backends such
+        as SQLite keep it ``False`` and compute stats lazily on first access.
+        """
+        return False
+
+    @staticmethod
+    def _stats_column_kind(col_type: Any) -> str | None:
+        """Classify a column's SQL type into a stats kind, or ``None`` to skip.
+
+        ``None`` is returned for complex/opaque columns (arrays, JSON, binary,
+        embeddings, ...) that don't have a meaningful scalar distribution.
+        """
+        from datachain.sql.types import Boolean, DateTime, Float, Int, String
+
+        col_type = col_type() if inspect.isclass(col_type) else col_type
+        # ``bool`` is a subclass of ``int`` in Python, so check Boolean first.
+        if isinstance(col_type, Boolean):
+            return "boolean"
+        if isinstance(col_type, (Int, Float)):
+            return "numeric"
+        if isinstance(col_type, DateTime):
+            return "temporal"
+        if isinstance(col_type, String):
+            return "categorical"
+        return None
+
+    def compute_dataset_stats(  # noqa: PLR0912, PLR0915, C901
+        self,
+        dataset: DatasetRecord,
+        version: str,
+        *,
+        columns: list[str] | None = None,
+        top_k: int | None = None,
+        bins: int | None = None,
+        max_columns: int | None = None,
+        sample: int | None = None,
+    ) -> dict[str, Any]:
+        """Compute per-column distribution statistics for a dataset version.
+
+        Returns a JSON-serializable dict with this shape (``stats_version=1``)::
+
+            {
+              "stats_version": 1,
+              "computed_at": "<iso8601>",
+              "row_count": <int>,
+              "sampled": false | {"rows": <int>, "fraction": <float>},
+              "columns": {
+                "<dotted.name>": {
+                  "type": "<python type>", "kind": "numeric|categorical|...",
+                  "null_count": <int>, "non_null_count": <int>,
+                  # numeric: min, max, avg, stddev, histogram{edges, counts}
+                  # categorical: distinct_count, distinct_approx, top_k[{value,count}]
+                  # boolean: true_count, false_count
+                  # temporal: min, max
+                },
+                ...
+              },
+              "skipped_columns": {"<name>": "<reason>"},
+            }
+
+        Aggregations use portable SQLAlchemy so both backends inherit this.
+        Backends override the small ``_stats_*`` hooks below to use native,
+        more efficient primitives.
+        """
+        from datachain.data_storage.schema import DEFAULT_DELIMITER
+
+        top_k = self.STATS_TOP_K if top_k is None else top_k
+        bins = self.STATS_HISTOGRAM_BINS if bins is None else bins
+        max_columns = self.STATS_MAX_COLUMNS if max_columns is None else max_columns
+
+        table_name = self.dataset_table_name(dataset, version)
+        if not self.db.has_table(table_name):
+            raise TableMissingError(
+                f"Table {table_name} for dataset {dataset.name}@{version} not found"
+            )
+
+        table = self.dataset_rows(dataset, version).get_table()
+
+        # Optional random sample (mostly useful on slow backends).
+        if sample is not None:
+            sub = sa.select(table)
+            rand_col = table.c.get("sys__rand")
+            if rand_col is not None:
+                sub = sub.order_by(rand_col)
+            base: Any = sub.limit(sample).subquery()
+        else:
+            base = table
+
+        # Classify leaf columns from the real table types.
+        analyzed: list[tuple[str, str, str, Any]] = []  # display, db, kind, sqltype
+        skipped: dict[str, str] = {}
+        for c in table.columns:
+            name = c.name
+            if name.startswith("sys__"):
+                continue
+            display = name.replace(DEFAULT_DELIMITER, ".")
+            if columns is not None and name not in columns and display not in columns:
+                continue
+            kind = self._stats_column_kind(c.type)
+            if kind is None:
+                skipped[display] = type(c.type).__name__
+                continue
+            analyzed.append((display, name, kind, c.type))
+
+        if len(analyzed) > max_columns:
+            for display, _name, _kind, _t in analyzed[max_columns:]:
+                skipped[display] = "max_columns_exceeded"
+            analyzed = analyzed[:max_columns]
+
+        row_count = self.table_rows_count(base if sample is not None else table)
+        if sample is not None:
+            full_count = self.table_rows_count(table)
+            n_rows = row_count
+            sampled: Any = {
+                "rows": n_rows,
+                "fraction": (n_rows / full_count) if full_count else 0.0,
+            }
+            row_count = full_count
+        else:
+            n_rows = row_count
+            sampled = False
+
+        # Scalar aggregate passes (batched to keep each SELECT narrow).
+        columns_out: dict[str, dict[str, Any]] = {}
+        numeric_cols: list[tuple[str, str]] = []
+        categorical_cols: list[tuple[str, str]] = []
+
+        for start in range(0, len(analyzed), self.STATS_AGG_BATCH):
+            batch = analyzed[start : start + self.STATS_AGG_BATCH]
+            exprs: list[Any] = []
+            specs: list[tuple[str, str, str, list[str]]] = []
+            for display, name, kind, _t in batch:
+                col = base.c[name]
+                keys = ["nn"]
+                exprs.append(sa.func.count(col))
+                if kind == "numeric":
+                    keys += ["min", "max", "avg", "avgsq"]
+                    exprs += [
+                        sa.func.min(col),
+                        sa.func.max(col),
+                        sa.func.avg(col),
+                        sa.func.avg(col * col),
+                    ]
+                elif kind == "temporal":
+                    keys += ["min", "max"]
+                    exprs += [sa.func.min(col), sa.func.max(col)]
+                elif kind == "boolean":
+                    keys += ["true"]
+                    exprs.append(sa.func.sum(sa.cast(col, sa.Integer)))
+                specs.append((display, name, kind, keys))
+
+            row = list(next(iter(self.db.execute(sa.select(*exprs).select_from(base)))))
+            idx = 0
+            for display, name, kind, keys in specs:
+                agg = {}
+                for key in keys:
+                    agg[key] = row[idx]
+                    idx += 1
+                non_null = int(agg["nn"] or 0)
+                entry: dict[str, Any] = {
+                    "type": None,  # filled in after the aggregate passes
+                    "kind": kind,
+                    "non_null_count": non_null,
+                    "null_count": max(0, n_rows - non_null),
+                }
+                if kind == "numeric":
+                    entry["min"] = _stats_number(agg["min"])
+                    entry["max"] = _stats_number(agg["max"])
+                    avg = agg["avg"]
+                    entry["avg"] = float(avg) if avg is not None else None
+                    avgsq = agg["avgsq"]
+                    if avg is not None and avgsq is not None:
+                        var = float(avgsq) - float(avg) ** 2
+                        entry["stddev"] = math.sqrt(var) if var > 0 else 0.0
+                    else:
+                        entry["stddev"] = None
+                    numeric_cols.append((display, name))
+                elif kind == "temporal":
+                    entry["min"] = agg["min"]
+                    entry["max"] = agg["max"]
+                elif kind == "boolean":
+                    true_count = int(agg["true"] or 0)
+                    entry["true_count"] = true_count
+                    entry["false_count"] = max(0, non_null - true_count)
+                elif kind == "categorical":
+                    categorical_cols.append((display, name))
+                columns_out[display] = entry
+
+        # Attach the python type name for each analyzed column.
+        for display, _name, _kind, sqltype in analyzed:
+            try:
+                py = sqltype.python_type
+                columns_out[display]["type"] = getattr(py, "__name__", str(py))
+            except (NotImplementedError, AttributeError):
+                columns_out[display]["type"] = type(sqltype).__name__
+
+        # Numeric histograms (per column, reusing the min/max computed above).
+        for display, name in numeric_cols:
+            entry = columns_out[display]
+            if entry["non_null_count"] == 0 or entry["min"] is None:
+                entry["histogram"] = None
+                continue
+            edges, counts = self._stats_numeric_histogram(
+                base, base.c[name], entry["min"], entry["max"], bins
+            )
+            entry["histogram"] = {"edges": edges, "counts": counts} if edges else None
+
+        # Categorical distinct count + top-K (per column).
+        for display, name in categorical_cols:
+            entry = columns_out[display]
+            distinct, approx = self._stats_distinct_count(base, base.c[name])
+            entry["distinct_count"] = distinct
+            entry["distinct_approx"] = approx
+            entry["top_k"] = self._stats_top_k(base, base.c[name], top_k)
+
+        return {
+            "stats_version": self.STATS_VERSION,
+            "computed_at": datetime.now(timezone.utc).isoformat(),
+            "row_count": int(row_count),
+            "sampled": sampled,
+            "columns": columns_out,
+            "skipped_columns": skipped,
+        }
+
+    def _stats_distinct_count(self, base: Any, col: Any) -> tuple[int, bool]:
+        """Return ``(distinct_count, is_approximate)`` for a column.
+
+        Default is an exact ``COUNT(DISTINCT)``; backends with cheap approximate
+        cardinality (ClickHouse ``uniq``) override this and return ``True``.
+        """
+        query = sa.select(sa.func.count(col.distinct())).select_from(base)
+        return int(next(iter(self.db.execute(query)))[0]), False
+
+    def _stats_top_k(self, base: Any, col: Any, k: int) -> list[dict[str, Any]]:
+        """Return the ``k`` most frequent non-null values as ``{value, count}``."""
+        cnt = sa.func.count().label("n")
+        query = (
+            sa.select(col, cnt)
+            .select_from(base)
+            .where(col.isnot(None))
+            .group_by(col)
+            .order_by(cnt.desc())
+            .limit(k)
+        )
+        out: list[dict[str, Any]] = []
+        for value, n in self.db.execute(query):
+            out.append({"value": _stats_stringify(value), "count": int(n)})
+        return out
+
+    def _stats_numeric_histogram(
+        self,
+        base: Any,
+        col: Any,
+        min_val: float | None,
+        max_val: float | None,
+        bins: int,
+    ) -> tuple[list[float], list[int]]:
+        """Equal-width histogram over ``[min_val, max_val]`` with ``bins`` buckets."""
+        if min_val is None or max_val is None:
+            return [], []
+        min_f, max_f = float(min_val), float(max_val)
+        if max_f <= min_f:
+            count = int(
+                next(
+                    iter(
+                        self.db.execute(
+                            sa.select(sa.func.count(col))
+                            .select_from(base)
+                            .where(col.isnot(None))
+                        )
+                    )
+                )[0]
+            )
+            return [min_f, max_f], [count]
+
+        width = (max_f - min_f) / bins
+        raw = sa.cast((col - min_f) / sa.literal(width), sa.Integer)
+        bucket = sa.case((raw >= bins, bins - 1), else_=raw)
+        query = (
+            sa.select(bucket.label("b"), sa.func.count().label("n"))
+            .select_from(base)
+            .where(col.isnot(None))
+            .group_by(bucket)
+        )
+        counts = [0] * bins
+        for b, n in self.db.execute(query):
+            bi = max(0, min(bins - 1, int(b)))
+            counts[bi] = int(n)
+        edges = [min_f + i * width for i in range(bins + 1)]
+        edges[-1] = max_f
+        return edges, counts
 
     @abstractmethod
     def prepare_entries(self, entries: "Iterable[File]") -> Iterable[dict[str, Any]]:

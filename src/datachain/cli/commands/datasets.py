@@ -213,3 +213,73 @@ def edit_dataset(
             raise DataChainError(
                 "Not logged in to Studio. Log in with 'datachain auth login'."
             )
+
+
+def _format_stats_value(kind: str, info: dict) -> str:
+    if kind == "numeric":
+        mn, mx, avg = info.get("min"), info.get("max"), info.get("avg")
+        avg_str = f"{avg:.4g}" if isinstance(avg, (int, float)) else "—"
+        return f"min={mn}  max={mx}  avg={avg_str}"
+    if kind == "boolean":
+        return f"true={info.get('true_count', 0)}  false={info.get('false_count', 0)}"
+    if kind == "temporal":
+        return f"min={info.get('min')}  max={info.get('max')}"
+    if kind == "categorical":
+        distinct = info.get("distinct_count")
+        prefix = "~" if info.get("distinct_approx") else ""
+        top = info.get("top_k") or []
+        top_str = ", ".join(f"{t['value']}({t['count']})" for t in top[:3])
+        return f"distinct={prefix}{distinct}  top: {top_str}"
+    return ""
+
+
+def dataset_stats(
+    catalog: "Catalog",
+    name: str,
+    version: str | None = None,
+    force: bool = False,
+    as_json: bool = False,
+) -> None:
+    from datachain.dataset import parse_dataset_with_version
+
+    name, name_version = parse_dataset_with_version(name)
+    version = version or name_version
+
+    try:
+        stats = catalog.get_dataset_stats(name, version, force=force)
+    except DatasetNotFoundError:
+        print("Dataset not found in local", file=sys.stderr)
+        return
+
+    if as_json:
+        from datachain import json
+
+        print(json.dumps(stats, indent=2))
+        return
+
+    sampled = stats.get("sampled")
+    sample_note = f" (sampled {sampled['rows']} rows)" if sampled else ""
+    print(f"rows: {stats['row_count']}{sample_note}")
+
+    rows = [
+        [
+            col,
+            info.get("type", ""),
+            info.get("null_count", 0),
+            _format_stats_value(info.get("kind", ""), info),
+        ]
+        for col, info in stats.get("columns", {}).items()
+    ]
+    if rows:
+        print(
+            tabulate(
+                rows,
+                headers=["column", "type", "nulls", "distribution"],
+                disable_numparse=True,
+            )
+        )
+
+    skipped = stats.get("skipped_columns") or {}
+    if skipped:
+        skipped_str = ", ".join(f"{c} ({reason})" for c, reason in skipped.items())
+        print(f"\nskipped: {skipped_str}")

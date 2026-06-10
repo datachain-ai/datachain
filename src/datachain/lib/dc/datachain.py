@@ -398,6 +398,31 @@ class DataChain:
             include_incomplete=False,
         )
 
+    def stats(self, *, force: bool = False, **kwargs) -> dict:
+        """Per-column distribution statistics for the underlying dataset.
+
+        Returns a dict with the dataset row count and, per leaf column, value
+        distribution info (numeric min/max/avg/histogram, categorical top
+        values, boolean counts, ...).  Results are cached on the dataset
+        version; pass ``force=True`` to recompute.
+
+        Example:
+            ```py
+            stats = dc.read_dataset("cats").stats()
+            print(stats["row_count"], stats["columns"]["label"]["top_k"])
+            ```
+        """
+        if not self.name:
+            raise ValueError("Cannot compute stats for a chain without a saved dataset")
+        return self.session.catalog.get_dataset_stats(
+            self.name,
+            self.version,
+            namespace_name=self._query.project.namespace.name,
+            project_name=self._query.project.name,
+            force=force,
+            **kwargs,
+        )
+
     def __or__(self, other: "Self") -> "Self":
         """Return `self.union(other)`."""
         return self.union(other)
