@@ -383,6 +383,15 @@ class DatasetVersion:
             DatasetStatus.REMOVED,
         ]
 
+    @property
+    def is_soft_deletable(self) -> bool:
+        """True if status allows ``keep_metadata=True`` removal."""
+        return self.status in (
+            DatasetStatus.COMPLETE,
+            DatasetStatus.REMOVING,
+            DatasetStatus.REMOVED,
+        )
+
     def update(self, **kwargs):
         for key, value in kwargs.items():
             if hasattr(self, key):

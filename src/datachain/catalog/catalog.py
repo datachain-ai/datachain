@@ -1129,17 +1129,17 @@ class Catalog:
                 f"Internal dataset {dataset.name} cannot be removed "
                 "while keeping metadata"
             )
-        if keep_metadata and v.status not in (
-            DatasetStatus.COMPLETE,
-            DatasetStatus.REMOVING,
-            DatasetStatus.REMOVED,
-        ):
+        if keep_metadata and not v.is_soft_deletable:
             raise DataChainError(
                 f"Cannot remove {dataset.name}@{version} while keeping "
                 f"metadata: current status is {v.status}, expected "
                 "COMPLETE or REMOVING"
             )
-        if not keep_metadata and v.status == DatasetStatus.REMOVING:
+        if (
+            not keep_metadata
+            and v.status == DatasetStatus.REMOVING
+            and not dataset.is_internal
+        ):
             raise DataChainError(
                 f"Cannot remove {dataset.name}@{version} entirely: "
                 "a removal that keeps metadata is already in progress"
@@ -1200,13 +1200,19 @@ class Catalog:
         self.metastore.remove_dataset_version(dataset, version)
 
     def _remove_versions(self, pairs: Iterable[tuple[DatasetRecord, str]]) -> int:
+        """Bulk remove orphaned versions (GC, session cleanup, CLI cleanup,
+        job cleanup). Infers ``keep_metadata`` per version from status:
+        resume soft delete if REMOVING, else wipe. Explicit single-version
+        removes go through ``remove_dataset_version`` directly.
+        """
         num_removed = 0
         for dataset, version in pairs:
             try:
-                # GC policy: resume a soft delete already in progress; wipe
-                # everything else (incomplete, stale, internal, wipe-in-progress).
+                v = dataset.get_version(version)
+                if v.status == DatasetStatus.REMOVED:
+                    continue
                 keep_metadata = (
-                    dataset.get_version(version).status == DatasetStatus.REMOVING
+                    not dataset.is_internal and v.status == DatasetStatus.REMOVING
                 )
                 self.remove_dataset_version(
                     dataset, version, keep_metadata=keep_metadata
@@ -1719,11 +1725,24 @@ class Catalog:
             self.remove_dataset_version(dataset, version, keep_metadata=keep_metadata)
             return
 
+        if keep_metadata:
+            bad = [v.version for v in dataset.versions if not v.is_soft_deletable]
+            if dataset.is_internal or bad:
+                reason = (
+                    "internal datasets must be fully removed"
+                    if dataset.is_internal
+                    else f"versions {bad} are not in a soft-deletable state"
+                )
+                raise DataChainError(
+                    f"Cannot remove dataset {name} while keeping metadata: "
+                    f"{reason}. Use keep_metadata=False, or remove eligible "
+                    "versions individually."
+                )
+
         for v in dataset.versions:
-            version = v.version
             self.remove_dataset_version(
                 dataset,
-                version,
+                v.version,
                 keep_metadata=keep_metadata,
             )
 

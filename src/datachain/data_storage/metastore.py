@@ -2077,12 +2077,7 @@ class AbstractDBMetastore(AbstractMetastore):
             dd.c.source_dataset_version_id == dataset_version.id
         )
         if not include_removed:
-            # Hide deps whose target version has been soft-removed; rows where
-            # the FK is dangling (status is NULL on outer join) stay surfaced
-            # so callers can still see broken lineage.
-            where_clause = where_clause & (
-                (dv.c.status != DatasetStatus.REMOVED) | (dv.c.status.is_(None))
-            )
+            where_clause = where_clause & (dv.c.status != DatasetStatus.REMOVED)
 
         query = (
             self._datasets_dependencies_select(*select_cols)

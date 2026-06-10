@@ -651,6 +651,53 @@ def test_session_dataset_never_keeps_metadata(test_session):
         catalog.get_dataset(name, include_incomplete=True)
 
 
+def test_remove_dataset_force_keep_metadata_refuses_bad_versions(
+    test_session, dataset_complete
+):
+    """`remove_dataset(force=True, keep_metadata=True)` must refuse upfront if
+    any version is not soft-deletable, instead of silently downgrading or
+    leaving partial state."""
+    catalog = test_session.catalog
+    columns = tuple(
+        sa.Column(name, typ) for name, typ in dataset_complete.schema.items()
+    )
+    updated, _ = catalog.create_dataset_version(
+        dataset_complete, "2.0.0", columns=columns
+    )
+    catalog.metastore.update_dataset_version(
+        updated, "2.0.0", status=DatasetStatus.FAILED
+    )
+
+    with pytest.raises(DataChainError, match="not in a soft-deletable state"):
+        catalog.remove_dataset(dataset_complete.name, force=True, keep_metadata=True)
+
+    # Nothing was mutated - both versions still present with original statuses.
+    ds = catalog.get_dataset(
+        dataset_complete.name, versions=None, include_incomplete=True
+    )
+    assert ds.get_version("1.0.0").status == DatasetStatus.COMPLETE
+    assert ds.get_version("2.0.0").status == DatasetStatus.FAILED
+
+
+def test_remove_dataset_force_keep_metadata_refuses_internal(test_session):
+    """Internal datasets (`lst__*`, `session_*`) can't keep metadata even with
+    force=True - pre-flight should refuse."""
+    catalog = test_session.catalog
+    name = f"{SESSION_DATASET_PREFIX}force_test"
+    ds = _make_completed_dataset(catalog, name)
+
+    with pytest.raises(DataChainError, match="internal datasets must be fully removed"):
+        catalog.remove_dataset(ds.name, force=True, keep_metadata=True)
+
+    # Still present, untouched.
+    assert (
+        catalog.get_dataset(ds.name, versions=None, include_incomplete=True)
+        .get_version("1.0.0")
+        .status
+        == DatasetStatus.COMPLETE
+    )
+
+
 def _force_status(catalog, dataset: DatasetRecord, version: str, status: int):
     """Put a version into a specific status directly. Simulates a mid-flight
     removal that crashed, or another caller having claimed the transition."""
@@ -673,6 +720,40 @@ def test_gc_resumes_stuck_removing(test_session, dataset_complete):
         dataset_complete.name, versions=None, include_incomplete=True
     )
     assert _find_removed(ds, version) is not None
+
+
+def test_gc_skips_removed_tombstones(test_session, dataset_complete):
+    """A REMOVED version handed to the GC path must be a no-op - the
+    tombstone has to be preserved, not wiped through inferred
+    keep_metadata=False."""
+    catalog = test_session.catalog
+    version = dataset_complete.latest_version
+    ds = _force_status(catalog, dataset_complete, version, DatasetStatus.REMOVED)
+    vid = ds.get_version(version).id
+
+    catalog.remove_dataset_versions(version_ids=[vid])
+
+    ds = catalog.get_dataset(
+        dataset_complete.name, versions=None, include_incomplete=True
+    )
+    assert _find_removed(ds, version) is not None
+
+
+def test_gc_wipes_internal_stuck_in_removing(test_session):
+    """An internal `session_*` dataset stuck in REMOVING (crashed mid-flight)
+    must be wiped by the GC path - inference must not pick the soft path
+    for internal datasets, since they can't be kept as metadata tombstones."""
+    catalog = test_session.catalog
+    name = f"{SESSION_DATASET_PREFIX}gc_stuck_test"
+    ds = _make_completed_dataset(catalog, name)
+    version = ds.latest_version
+    ds = _force_status(catalog, ds, version, DatasetStatus.REMOVING)
+    vid = ds.get_version(version).id
+
+    catalog.remove_dataset_versions(version_ids=[vid])
+
+    with pytest.raises(DatasetNotFoundError):
+        catalog.get_dataset(name, include_incomplete=True)
 
 
 def test_gc_resumes_stuck_removing_total(test_session, dataset_complete):
