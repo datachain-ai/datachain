@@ -86,6 +86,20 @@ def _stats_stringify(value: Any) -> str | None:
     return text
 
 
+def _stats_isoformat(value: Any) -> str | None:
+    """Coerce a temporal aggregate result into a JSON-friendly string.
+
+    Backends may return ``datetime`` objects (which aren't stdlib-JSON
+    serializable) or already-formatted strings; normalize both so the
+    freshly computed dict and the value reloaded from the DB match.
+    """
+    if value is None:
+        return None
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return str(value)
+
+
 class AbstractWarehouse(ABC, Serializable):
     """
     Abstract Warehouse class, to be implemented by any Database Adapters
@@ -590,7 +604,6 @@ class AbstractWarehouse(ABC, Serializable):
         top_k: int | None = None,
         bins: int | None = None,
         max_columns: int | None = None,
-        sample: int | None = None,
     ) -> dict[str, Any]:
         """Compute per-column distribution statistics for a dataset version.
 
@@ -600,7 +613,7 @@ class AbstractWarehouse(ABC, Serializable):
               "stats_version": 1,
               "computed_at": "<iso8601>",
               "row_count": <int>,
-              "sampled": false | {"rows": <int>, "fraction": <float>},
+              "sampled": false,   # reserved for future sampling support
               "columns": {
                 "<dotted.name>": {
                   "type": "<python type>", "kind": "numeric|categorical|...",
@@ -621,9 +634,11 @@ class AbstractWarehouse(ABC, Serializable):
         """
         from datachain.data_storage.schema import DEFAULT_DELIMITER
 
-        top_k = self.STATS_TOP_K if top_k is None else top_k
-        bins = self.STATS_HISTOGRAM_BINS if bins is None else bins
-        max_columns = self.STATS_MAX_COLUMNS if max_columns is None else max_columns
+        top_k = max(1, self.STATS_TOP_K if top_k is None else top_k)
+        bins = max(1, self.STATS_HISTOGRAM_BINS if bins is None else bins)
+        max_columns = max(
+            1, self.STATS_MAX_COLUMNS if max_columns is None else max_columns
+        )
 
         table_name = self.dataset_table_name(dataset, version)
         if not self.db.has_table(table_name):
@@ -632,16 +647,7 @@ class AbstractWarehouse(ABC, Serializable):
             )
 
         table = self.dataset_rows(dataset, version).get_table()
-
-        # Optional random sample (mostly useful on slow backends).
-        if sample is not None:
-            sub = sa.select(table)
-            rand_col = table.c.get("sys__rand")
-            if rand_col is not None:
-                sub = sub.order_by(rand_col)
-            base: Any = sub.limit(sample).subquery()
-        else:
-            base = table
+        base = table
 
         # Classify leaf columns from the real table types.
         analyzed: list[tuple[str, str, str, Any]] = []  # display, db, kind, sqltype
@@ -664,23 +670,11 @@ class AbstractWarehouse(ABC, Serializable):
                 skipped[display] = "max_columns_exceeded"
             analyzed = analyzed[:max_columns]
 
-        row_count = self.table_rows_count(base if sample is not None else table)
-        if sample is not None:
-            full_count = self.table_rows_count(table)
-            n_rows = row_count
-            sampled: Any = {
-                "rows": n_rows,
-                "fraction": (n_rows / full_count) if full_count else 0.0,
-            }
-            row_count = full_count
-        else:
-            n_rows = row_count
-            sampled = False
+        row_count = self.table_rows_count(table)
+        n_rows = row_count
 
         # Scalar aggregate passes (batched to keep each SELECT narrow).
         columns_out: dict[str, dict[str, Any]] = {}
-        numeric_cols: list[tuple[str, str]] = []
-        categorical_cols: list[tuple[str, str]] = []
 
         for start in range(0, len(analyzed), self.STATS_AGG_BATCH):
             batch = analyzed[start : start + self.STATS_AGG_BATCH]
@@ -708,7 +702,7 @@ class AbstractWarehouse(ABC, Serializable):
 
             row = list(next(iter(self.db.execute(sa.select(*exprs).select_from(base)))))
             idx = 0
-            for display, name, kind, keys in specs:
+            for display, _name, kind, keys in specs:
                 agg = {}
                 for key in keys:
                     agg[key] = row[idx]
@@ -731,16 +725,13 @@ class AbstractWarehouse(ABC, Serializable):
                         entry["stddev"] = math.sqrt(var) if var > 0 else 0.0
                     else:
                         entry["stddev"] = None
-                    numeric_cols.append((display, name))
                 elif kind == "temporal":
-                    entry["min"] = agg["min"]
-                    entry["max"] = agg["max"]
+                    entry["min"] = _stats_isoformat(agg["min"])
+                    entry["max"] = _stats_isoformat(agg["max"])
                 elif kind == "boolean":
                     true_count = int(agg["true"] or 0)
                     entry["true_count"] = true_count
                     entry["false_count"] = max(0, non_null - true_count)
-                elif kind == "categorical":
-                    categorical_cols.append((display, name))
                 columns_out[display] = entry
 
         # Attach the python type name for each analyzed column.
@@ -752,7 +743,9 @@ class AbstractWarehouse(ABC, Serializable):
                 columns_out[display]["type"] = type(sqltype).__name__
 
         # Numeric histograms (per column, reusing the min/max computed above).
-        for display, name in numeric_cols:
+        for display, name, kind, _t in analyzed:
+            if kind != "numeric":
+                continue
             entry = columns_out[display]
             if entry["non_null_count"] == 0 or entry["min"] is None:
                 entry["histogram"] = None
@@ -763,7 +756,9 @@ class AbstractWarehouse(ABC, Serializable):
             entry["histogram"] = {"edges": edges, "counts": counts} if edges else None
 
         # Categorical distinct count + top-K (per column).
-        for display, name in categorical_cols:
+        for display, name, kind, _t in analyzed:
+            if kind != "categorical":
+                continue
             entry = columns_out[display]
             distinct, approx = self._stats_distinct_count(base, base.c[name])
             entry["distinct_count"] = distinct
@@ -774,7 +769,7 @@ class AbstractWarehouse(ABC, Serializable):
             "stats_version": self.STATS_VERSION,
             "computed_at": datetime.now(timezone.utc).isoformat(),
             "row_count": int(row_count),
-            "sampled": sampled,
+            "sampled": False,
             "columns": columns_out,
             "skipped_columns": skipped,
         }

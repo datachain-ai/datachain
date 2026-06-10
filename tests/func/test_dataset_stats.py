@@ -178,3 +178,98 @@ def test_cli_dataset_stats_table_and_json(test_session, capsys):
     out = capsys.readouterr().out
     assert '"stats_version": 1' in out
     assert '"row_count": 3' in out
+
+
+def test_stats_empty_dataset(test_session):
+    chain = (
+        dc.read_values(x=[1, 2, 3], y=[1.0, 2.0, 3.0], session=test_session)
+        .filter(dc.C("x") > 100)
+        .save(uuid.uuid4().hex)
+    )
+    catalog = test_session.catalog
+    dataset, _ = _dataset_version(catalog, chain)
+
+    stats = catalog.warehouse.compute_dataset_stats(dataset, chain.version)
+    assert stats["row_count"] == 0
+    assert stats["columns"]["x"]["non_null_count"] == 0
+    assert stats["columns"]["x"]["null_count"] == 0
+    assert stats["columns"]["x"]["min"] is None
+    assert stats["columns"]["y"]["histogram"] is None
+
+
+def test_stats_numeric_with_nulls(test_session):
+    chain = _save(test_session, num=[10, None, 30, None])
+    catalog = test_session.catalog
+    dataset, _ = _dataset_version(catalog, chain)
+
+    col = catalog.warehouse.compute_dataset_stats(dataset, chain.version)["columns"][
+        "num"
+    ]
+    assert col["null_count"] == 2
+    assert col["non_null_count"] == 2
+    assert col["min"] == 10
+    assert col["max"] == 30
+
+
+def test_stats_single_value_histogram(test_session):
+    chain = _save(test_session, num=[5, 5, 5])
+    catalog = test_session.catalog
+    dataset, _ = _dataset_version(catalog, chain)
+
+    hist = catalog.warehouse.compute_dataset_stats(dataset, chain.version)["columns"][
+        "num"
+    ]["histogram"]
+    assert sum(hist["counts"]) == 3
+    assert len(hist["edges"]) == len(hist["counts"]) + 1
+
+
+def test_stats_bins_zero_is_clamped(test_session):
+    chain = _save(test_session, num=[1, 2, 3, 4])
+    catalog = test_session.catalog
+    dataset, _ = _dataset_version(catalog, chain)
+
+    # bins=0 must be clamped, not raise ZeroDivisionError
+    stats = catalog.warehouse.compute_dataset_stats(dataset, chain.version, bins=0)
+    assert stats["columns"]["num"]["histogram"] is not None
+
+
+def test_stats_max_columns_truncation(test_session):
+    chain = _save(test_session, a=[1], b=[2], c=[3])
+    catalog = test_session.catalog
+    dataset, _ = _dataset_version(catalog, chain)
+
+    stats = catalog.warehouse.compute_dataset_stats(
+        dataset, chain.version, max_columns=1
+    )
+    assert len(stats["columns"]) == 1
+    assert len(stats["skipped_columns"]) == 2
+    assert "max_columns_exceeded" in stats["skipped_columns"].values()
+
+
+def test_stats_columns_filter(test_session):
+    chain = _save(test_session, a=[1, 2], b=[3, 4])
+    catalog = test_session.catalog
+    dataset, _ = _dataset_version(catalog, chain)
+
+    stats = catalog.warehouse.compute_dataset_stats(
+        dataset, chain.version, columns=["a"]
+    )
+    assert set(stats["columns"]) == {"a"}
+
+
+def test_stats_temporal_json_serializable(test_session):
+    import json as stdlib_json
+
+    a = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    b = datetime(2021, 1, 1, tzinfo=timezone.utc)
+    chain = _save(test_session, ts=[a, b])
+    catalog = test_session.catalog
+    dataset, _ = _dataset_version(catalog, chain)
+
+    stats = catalog.warehouse.compute_dataset_stats(dataset, chain.version)
+    col = stats["columns"]["ts"]
+    assert isinstance(col["min"], str)
+    assert isinstance(col["max"], str)
+    # Regression: temporal values must be coerced so the result is stdlib-JSON
+    # serializable and consistent with the value reloaded from the DB.
+    stdlib_json.dumps(stats)

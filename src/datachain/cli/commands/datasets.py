@@ -8,7 +8,11 @@ from datachain import semver
 from datachain.catalog import is_namespace_local
 from datachain.cli.utils import determine_flavors
 from datachain.config import Config
-from datachain.error import DataChainError, DatasetNotFoundError
+from datachain.error import (
+    DataChainError,
+    DatasetNotFoundError,
+    DatasetVersionNotFoundError,
+)
 from datachain.studio import list_datasets as list_datasets_studio
 
 if TYPE_CHECKING:
@@ -247,8 +251,8 @@ def dataset_stats(
 
     try:
         stats = catalog.get_dataset_stats(name, version, force=force)
-    except DatasetNotFoundError:
-        print("Dataset not found in local", file=sys.stderr)
+    except (DatasetNotFoundError, DatasetVersionNotFoundError) as e:
+        print(str(e) or "Dataset not found in local", file=sys.stderr)
         return
 
     if as_json:
