@@ -11,6 +11,7 @@ from weakref import WeakSet
 
 from datachain.catalog import get_catalog
 from datachain.data_storage import JobQueryType, JobStatus
+from datachain.dataset import SESSION_DATASET_PREFIX
 from datachain.error import DataChainError, JobNotFoundError, TableMissingError
 
 if TYPE_CHECKING:
@@ -67,7 +68,6 @@ class Session:
     _JOB_HOOKS_REGISTERED: ClassVar[bool] = False
     _JOB_FINALIZE_HOOK: ClassVar[Callable[[], None] | None] = None
 
-    DATASET_PREFIX = "session_"
     GLOBAL_SESSION_NAME = "global"
     SESSION_UUID_LEN = 6
     TEMP_TABLE_UUID_LEN = 6
@@ -268,11 +268,11 @@ class Session:
         return self.get_temp_prefix() + uuid4().hex[: self.TEMP_TABLE_UUID_LEN]
 
     def get_temp_prefix(self) -> str:
-        return f"{self.DATASET_PREFIX}{self.name}_"
+        return f"{SESSION_DATASET_PREFIX}{self.name}_"
 
     @classmethod
     def is_temp_dataset(cls, name) -> bool:
-        return name.startswith(cls.DATASET_PREFIX)
+        return name.startswith(SESSION_DATASET_PREFIX)
 
     def _cleanup_temp_datasets(self) -> None:
         prefix = self.get_temp_prefix()

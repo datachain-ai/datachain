@@ -31,6 +31,7 @@ DD = TypeVar("DD", bound="DatasetDependency")
 DATASET_PREFIX = "ds://"
 QUERY_DATASET_PREFIX = "ds_query_"
 LISTING_PREFIX = "lst__"
+SESSION_DATASET_PREFIX = "session_"
 
 DEFAULT_DATASET_VERSION = "1.0.0"
 DATASET_NAME_RESERVED_CHARS = [".", "@"]
@@ -677,11 +678,8 @@ class DatasetRecord:
     def is_internal(self) -> bool:
         """True for non-user-facing datasets (listing ``lst__*`` and
         session ``session_*`` intermediates)."""
-        from datachain.lib.listing import is_listing_dataset
-        from datachain.query.session import Session
-
-        return is_listing_dataset(self.name) or self.name.startswith(
-            Session.DATASET_PREFIX
+        return self.name.startswith(LISTING_PREFIX) or self.name.startswith(
+            SESSION_DATASET_PREFIX
         )
 
     def get_schema(self, version: str) -> dict[str, SQLType | type[SQLType]]:

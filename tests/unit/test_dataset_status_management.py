@@ -8,7 +8,11 @@ import sqlalchemy as sa
 import datachain as dc
 from datachain import semver
 from datachain.data_storage import JobStatus
-from datachain.dataset import DatasetRecord, DatasetStatus
+from datachain.dataset import (
+    SESSION_DATASET_PREFIX,
+    DatasetRecord,
+    DatasetStatus,
+)
 from datachain.error import DataChainError, DatasetNotFoundError
 from datachain.job import Job
 from datachain.lib.dc.datasets import (
@@ -18,7 +22,6 @@ from datachain.lib.dc.datasets import (
     read_dataset,
 )
 from datachain.lib.listing import LISTING_PREFIX
-from datachain.query.session import Session
 from datachain.sql.types import String
 
 
@@ -637,7 +640,7 @@ def test_listing_dataset_never_keeps_metadata(test_session):
 def test_session_dataset_never_keeps_metadata(test_session):
     """`session_*` intermediates are throwaway too — always fully removed."""
     catalog = test_session.catalog
-    name = f"{Session.DATASET_PREFIX}internal_test"
+    name = f"{SESSION_DATASET_PREFIX}internal_test"
     ds = _make_completed_dataset(catalog, name)
 
     with pytest.raises(DataChainError, match="while keeping metadata"):
