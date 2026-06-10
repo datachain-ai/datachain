@@ -124,18 +124,31 @@ def test_stats_computed_eagerly_when_backend_is_cheap(test_session, monkeypatch)
     assert version.stats["columns"]["num"]["max"] == 3
 
 
-def test_python_accessor_computes_and_caches(test_session):
+def test_python_accessor_returns_chain_and_caches(test_session):
     chain = _save(test_session, num=[1, 2, 3], label=["x", "y", "x"])
     catalog = test_session.catalog
 
-    stats = chain.stats()
-    assert stats["row_count"] == 3
-    assert stats["columns"]["label"]["distinct_count"] == 2
+    stats_chain = chain.stats()
+    assert isinstance(stats_chain, dc.DataChain)
+    recs = {r["column_name"]: r for r in stats_chain.to_records()}
+    assert recs["label"]["kind"] == "categorical"
+    assert recs["label"]["distinct_count"] == 2
+    assert recs["num"]["row_count"] == 3
 
     # The result was persisted on the version and is loaded on a fresh read.
     _, version = _dataset_version(catalog, chain)
     assert version.stats is not None
     assert version.stats["columns"]["num"]["max"] == 3
+
+
+def test_stats_on_transformed_chain(test_session):
+    name = _save(test_session, num=[1, 2, 3, 4, 100]).name
+    filtered = dc.read_dataset(name, session=test_session).filter(dc.C("num") < 50)
+
+    recs = {r["column_name"]: r for r in filtered.stats().to_records()}
+    # Stats reflect the filtered result (1,2,3,4), not the full dataset.
+    assert recs["num"]["non_null_count"] == 4
+    assert recs["num"]["row_count"] == 4
 
 
 def test_get_dataset_stats_uses_cache(test_session):
