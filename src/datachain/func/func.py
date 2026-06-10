@@ -580,7 +580,7 @@ class Func(Function):  # noqa: PLW1641
 class _SentinelAwareFunc(Func):
     """A ``Func`` whose first argument may be an ``Optional[DataModel]``, which
     has no real column on disk. When it is, the column resolves to that model's
-    ``_is_null`` sentinel; otherwise it falls back to the plain ``Func`` column."""
+    ``_tag`` discriminator; otherwise it falls back to the plain ``Func`` column."""
 
     def get_column(
         self,

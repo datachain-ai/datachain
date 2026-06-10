@@ -1,7 +1,7 @@
 """Unit tests for ``Optional[X]`` / nullable-object support.
 
 Covers the type helpers (``unwrap_optional``, ``is_chain_type`` over Optional),
-the ``x: T = None`` validation rule, the ``_is_null`` sentinel (collision-safety,
+the ``x: T = None`` validation rule, the ``_tag`` discriminator (collision-safety,
 schema emission), and flatten/unflatten round-trips of ``Optional[DataModel]``.
 
 Extracted from ``test_data_model.py`` and ``test_feature.py`` to keep
@@ -145,8 +145,8 @@ def test_default_none_promotes_only_the_none_field():
 
 
 def test_is_null_field_name_allowed():
-    # `is_null` is a normal user field now; the sentinel uses the internal
-    # `_is_null` name, which pydantic forbids users from declaring.
+    # `is_null` is a normal user field now; the discriminator uses the internal
+    # `_tag` name, which pydantic forbids users from declaring.
     class HasIsNull(DataModel):
         is_null: bool = False
         value: int = 0
@@ -165,7 +165,7 @@ def test_optional_datamodel_sentinel_does_not_collide_with_is_null_field():
         if not has_subtree
     ]
     assert "m__is_null" in leaves  # the user's field
-    assert "m___is_null" in leaves  # the internal sentinel, no collision
+    assert "m___tag" in leaves  # the internal discriminator, no collision
 
 
 class _Addr(DataModel):
@@ -180,16 +180,16 @@ class _Outer(DataModel):
 
 def test_flatten_optional_datamodel_present():
     out = _Outer(name="Alice", addr=_Addr(city="Berlin", zip="10115"))
-    assert flatten(out) == ("Alice", False, "Berlin", "10115")
+    assert flatten(out) == ("Alice", 0, "Berlin", "10115")
 
 
 def test_flatten_optional_datamodel_absent():
     out = _Outer(name="Bob", addr=None)
-    assert flatten(out) == ("Bob", True, None, None)
+    assert flatten(out) == ("Bob", 1, None, None)
 
 
 def test_unflatten_optional_datamodel_present():
-    row = ("Alice", False, "Berlin", "10115")
+    row = ("Alice", 0, "Berlin", "10115")
     j = unflatten_to_json(_Outer, row)
     assert j == {
         "name": "Alice",
@@ -200,15 +200,15 @@ def test_unflatten_optional_datamodel_present():
 
 
 def test_unflatten_optional_datamodel_absent():
-    row = ("Bob", True, None, None)
+    row = ("Bob", 1, None, None)
     j = unflatten_to_json(_Outer, row)
     assert j == {"name": "Bob", "addr": None}
     assert _Outer(**j).addr is None
 
 
-def test_unflatten_ignores_leaf_garbage_when_sentinel_true():
-    # sentinel=True hydrates the parent as None even when the leaves hold values.
-    row = ("Bob", True, "garbage-city", "garbage-zip")
+def test_unflatten_ignores_leaf_garbage_when_sentinel_absent():
+    # tag=1 (None arm) hydrates the parent as None even when the leaves hold values.
+    row = ("Bob", 1, "garbage-city", "garbage-zip")
     j = unflatten_to_json(_Outer, row)
     assert j == {"name": "Bob", "addr": None}
 
@@ -221,7 +221,7 @@ def test_signal_schema_emits_sentinel_column_for_optional_datamodel():
         if not has_subtree
     ]
     assert "out.name" in leaves
-    assert "out.addr._is_null" in leaves
+    assert "out.addr._tag" in leaves
     assert "out.addr.city" in leaves
     assert "out.addr.zip" in leaves
 
@@ -231,17 +231,17 @@ def test_signal_schema_emits_sentinel_column_for_optional_datamodel():
         for p, _, has_subtree, _ in schema.get_flat_tree(include_sentinels=False)
         if not has_subtree
     ]
-    assert "out.addr._is_null" not in visible
+    assert "out.addr._tag" not in visible
     assert "out.addr.city" in visible
 
 
 def test_print_schema_hides_optional_sentinel():
-    # print_schema()/print_tree() must not expose the internal _is_null sentinel
+    # print_schema()/print_tree() must not expose the internal _tag discriminator
     # of an Optional[DataModel] (consistent with to_pandas/to_records output).
     buf = io.StringIO()
     SignalSchema({"out": _Outer}).print_tree(file=buf)
     out = buf.getvalue()
-    assert "_is_null" not in out
+    assert "_tag" not in out
     assert "city" in out and "addr" in out  # real fields still shown
 
 
@@ -257,16 +257,16 @@ def test_get_signals_recognizes_optional_file():
 
 def test_to_udf_spec_includes_sentinel_for_optional_datamodel():
     spec = SignalSchema({"out": _Outer}).to_udf_spec()
-    assert "out__addr___is_null" in spec
+    assert "out__addr___tag" in spec
     assert "out__addr__city" in spec
 
 
 def test_user_signals_hides_optional_sentinel():
     """user_signals() is the user-facing leaf list, so it must not leak the
-    internal _is_null sentinel — otherwise select_except/compare_signals seed it
+    internal _tag discriminator — otherwise select_except/compare_signals seed it
     and to_partial asserts it against the model's real fields."""
     signals = SignalSchema({"out": _Outer}).user_signals()
-    assert not any(s.endswith("_is_null") for s in signals), signals
+    assert not any(s.endswith("_tag") for s in signals), signals
     assert "out.addr.city" in signals
 
 
@@ -279,7 +279,7 @@ def test_select_except_on_optional_datamodel():
     leaves = result.user_signals()
     assert "out.addr.city" not in leaves
     assert "out.addr.zip" in leaves
-    assert not any(s.endswith("_is_null") for s in leaves)
+    assert not any(s.endswith("_tag") for s in leaves)
 
 
 def test_compare_signals_ignores_optional_sentinel():
@@ -288,12 +288,12 @@ def test_compare_signals_ignores_optional_sentinel():
     b = SignalSchema({"out": _Outer, "extra": int})
     added, removed = b.compare_signals(a)
     assert added == {"extra"}
-    assert all(not s.endswith("_is_null") for s in added | removed)
+    assert all(not s.endswith("_tag") for s in added | removed)
 
 
 def test_create_model_does_not_promote_non_optional_fields():
     """SignalSchema.create_model() replays a schema, so its default=None fields
-    must not be promoted to Optional (which would add _is_null sentinels the
+    must not be promoted to Optional (which would add _tag discriminators the
     source schema never had). It must behave like create_feature_model."""
     schema = SignalSchema({"id": int, "addr": _Addr, "name": str})
     model = schema.create_model("Probe")
@@ -301,7 +301,7 @@ def test_create_model_does_not_promote_non_optional_fields():
     assert annotations == {"id": int, "addr": _Addr, "name": str}
     # the rebuilt schema must not have gained an Optional[DataModel] sentinel.
     leaves = SignalSchema({"probe": model}).user_signals()
-    assert not any(s.endswith("_is_null") for s in leaves), leaves
+    assert not any(s.endswith("_tag") for s in leaves), leaves
 
 
 def test_infer_optional_datamodel_from_nones():
@@ -320,11 +320,11 @@ def test_optional_datamodel_roundtrip_at_top_level():
         for p, _, has_subtree, _ in schema.get_flat_tree()
         if not has_subtree
     ]
-    assert "item._is_null" in flat
+    assert "item._tag" in flat
     assert "item.city" in flat
-    # row_to_objs with sentinel=True returns None for top-level Optional[Model].
-    assert schema.row_to_objs((True, None, None)) == [None]
-    assert schema.row_to_objs((False, "Paris", "75001")) == [
+    # row_to_objs with tag=1 (None arm) returns None for top-level Optional[Model].
+    assert schema.row_to_objs((1, None, None)) == [None]
+    assert schema.row_to_objs((0, "Paris", "75001")) == [
         _Addr(city="Paris", zip="75001")
     ]
 
@@ -340,16 +340,16 @@ def test_nested_optional_datamodel_roundtrip():
     # Outer present, inner absent
     obj = Top(mid=Mid(addr=None, tag="x"))
     flat = flatten(obj)
-    # mid_is_null=False, mid_addr_is_null=True, addr_city=None, addr_zip=None, tag="x"
-    assert flat == (False, True, None, None, "x")
+    # mid_tag=0 (present), mid_addr_tag=1 (None), addr_city=None, addr_zip=None, tag="x"
+    assert flat == (0, 1, None, None, "x")
     rec = unflatten_to_json(Top, flat)
     assert rec == {"mid": {"addr": None, "tag": "x"}}
 
     # Both absent
     obj2 = Top(mid=None)
     flat2 = flatten(obj2)
-    # mid_is_null=True, then 4 placeholder values for the (absent) inner subtree
-    assert flat2[0] is True
+    # mid_tag=1 (None arm), then 4 placeholder values for the (absent) inner subtree
+    assert flat2[0] == 1
     assert (
         len(flat2) == 5
     )  # sentinel + (inner sentinel + 2 addr leaves + tag) placeholders

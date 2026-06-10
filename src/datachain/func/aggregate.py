@@ -23,7 +23,7 @@ class _CountFunc(_SentinelAwareFunc):
     """``count(<Optional[DataModel]>)`` counts rows where the parent is present.
 
     The parent isn't a real column on disk, so it counts via the sentinel
-    (``SUM(1 - {prefix}__is_null)``) to agree across backends.
+    (``SUM(1 - {prefix}___tag)``) to agree across backends.
     """
 
     def is_nullable_result(

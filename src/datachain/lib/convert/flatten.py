@@ -22,7 +22,7 @@ def classify_field(annotation: Any) -> FieldKind:
 
 class FlatColumn(NamedTuple):
     """One column a model emits, in DB-column order. ``is_sentinel`` marks the
-    ``_is_null`` boolean prepended for an ``Optional[DataModel]`` node; otherwise
+    ``_tag`` discriminator prepended for an ``Optional[DataModel]`` node; otherwise
     it is a scalar/list/dict leaf."""
 
     path: tuple[str, ...]
@@ -58,7 +58,7 @@ def is_optional_model(anno) -> bool:
 def flatten_value(value, anno) -> tuple:
     """Flatten ``value`` for one column declared with annotation ``anno``.
 
-    ``Optional[DataModel]`` emits a leading ``_is_null`` sentinel before its leaves.
+    ``Optional[DataModel]`` emits a leading ``_tag`` discriminator before its leaves.
     ``Optional[basic]`` is a plain nullable column. Nulls inside collections
     (``list[Optional[T]]``) and bare ``Union[A, B]`` are not represented.
     """
@@ -66,8 +66,8 @@ def flatten_value(value, anno) -> tuple:
     if kind.is_model:
         if kind.is_optional:
             if value is None:
-                return (True, *_emit_absent(kind.inner))
-            return (False, *flatten(value))
+                return (1, *_emit_absent(kind.inner))
+            return (0, *flatten(value))
         if value is None:
             # None for a non-Optional model (e.g. an unmatched outer-merge side):
             # no sentinel column, so emit a placeholder per leaf to keep the width.
@@ -102,7 +102,7 @@ def _emit_absent(model: type[BaseModel]) -> Generator:
     """Placeholder values shaped like ``model``'s flat columns, used when an
     ``Optional[DataModel]`` parent is None and the leaves still need a slot."""
     for col in iter_flat_columns(model):
-        yield True if col.is_sentinel else None
+        yield 1 if col.is_sentinel else None
 
 
 def _flatten_fields_values(fields: dict, obj: BaseModel) -> Generator:
@@ -120,10 +120,10 @@ def _flatten_fields_values(fields: dict, obj: BaseModel) -> Generator:
         elif kind.is_model:
             if kind.is_optional:
                 if value is None:
-                    yield True
+                    yield 1
                     yield from _emit_absent(kind.inner)
                 else:
-                    yield False
+                    yield 0
                     yield from _flatten_fields_values(kind.inner.model_fields, value)
             else:
                 yield from _flatten_fields_values(kind.inner.model_fields, value)

@@ -24,7 +24,7 @@ CaseT = int | float | complex | bool | str | Func | ColumnExpr
 
 class _IsNoneFunc(_SentinelAwareFunc):
     """``isnone`` is None-aware for ``Optional[DataModel]``: that column isn't a
-    real column on disk, so it reads the model's ``_is_null`` sentinel. Any other
+    real column on disk, so it reads the model's ``_tag`` discriminator. Any other
     column (including ``Optional[basic]``) keeps the plain ``col IS NULL`` check.
     """
 
