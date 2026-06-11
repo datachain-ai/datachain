@@ -9,6 +9,7 @@ ClickHouse (via ``scripts/run-clickhouse-tests.sh``).
 Extracted from ``test_udf.py`` to keep nullable-object coverage in one place.
 """
 
+import json
 from typing import Optional
 
 import pandas as pd
@@ -20,6 +21,16 @@ from datachain.lib.data_model import DataModel, unwrap_optional
 class _Inner(DataModel):
     score: int = 0
     label: str = ""
+
+
+class _WithFloat(DataModel):
+    a: int = 0
+    x: float = 0.0
+
+
+class _WithList(DataModel):
+    a: int = 0
+    tags: list[str] = []  # noqa: RUF012
 
 
 class _ServerToolUsage(DataModel):
@@ -286,6 +297,69 @@ def test_optional_datamodel_parquet_roundtrip_nested(test_session, tmp_path):
     assert got == {1: ("x", (5, "z")), 2: ("y", None), 3: None}
 
 
+def test_optional_datamodel_parquet_roundtrip_only_signal(test_session, tmp_path):
+    """Regression: an Optional[DataModel] as the chain's only signal round-trips
+    through parquet. The `_type_tag` is consumed on read instead of shifting into
+    a leaf column (previously raised UdfError)."""
+    path = str(tmp_path / "only.parquet")
+    dc.read_values(
+        m=[_Inner(score=1, label="a"), None],
+        output={"m": Optional[_Inner]},
+        session=test_session,
+    ).to_parquet(path)
+    got = [
+        None if m is None else (m.score, m.label)
+        for (m,) in dc.read_parquet(path, session=test_session).to_list("m")
+    ]
+    assert (1, "a") in got and None in got and len(got) == 2
+
+
+def test_optional_datamodel_float_leaf_roundtrip(test_session, tmp_path):
+    """Optional[DataModel] with a float leaf: the absent parent round-trips as
+    None through parquet (NaN is no longer read as 'present'), and to_json emits
+    null instead of literal NaN (which is invalid JSON)."""
+    chain = dc.read_values(
+        id=[1, 2],
+        m=[_WithFloat(a=1, x=1.5), None],
+        output={"id": int, "m": Optional[_WithFloat]},
+        session=test_session,
+    ).order_by("id")
+
+    pq = str(tmp_path / "f.parquet")
+    chain.to_parquet(pq)
+    got = {
+        i: (None if m is None else (m.a, m.x))
+        for i, m in dc.read_parquet(pq, session=test_session).to_list("id", "m")
+    }
+    assert got == {1: (1, 1.5), 2: None}
+
+    pj = str(tmp_path / "f.json")
+    chain.to_json(pj)
+    with open(pj) as fh:
+        raw = fh.read()
+    assert "NaN" not in raw  # RFC-valid JSON
+    by_id = {r["id"]: r["m"] for r in json.loads(raw)}
+    assert by_id[1] == {"a": 1, "x": 1.5}
+    assert by_id[2] is None
+
+
+def test_optional_datamodel_list_leaf_to_json_null(test_session, tmp_path):
+    """Optional[DataModel] with a list leaf collapses to null in to_json for the
+    absent parent (the `_type_tag` decides, not the leaf value)."""
+    pj = str(tmp_path / "l.json")
+    dc.read_values(
+        id=[1, 2],
+        m=[_WithList(a=1, tags=["x"]), None],
+        output={"id": int, "m": Optional[_WithList]},
+        session=test_session,
+    ).order_by("id").to_json(pj)
+
+    with open(pj) as fh:
+        by_id = {r["id"]: r["m"] for r in json.loads(fh.read())}
+    assert by_id[1] == {"a": 1, "tags": ["x"]}
+    assert by_id[2] is None
+
+
 def test_union_optional_and_plain_datamodel(test_session):
     """union of an Optional[DataModel] chain with a plain DataModel chain yields
     Optional[DataModel]: the plain side is promoted (a present sentinel is added)
@@ -331,8 +405,6 @@ def test_to_json_absent_optional_datamodel_is_null(test_session, tmp_path):
     """to_json/to_jsonl serialize an absent Optional[DataModel] as null (not an
     object of nulls), consistent with hydration. A present object whose leaves
     are the type defaults (0/"") is kept — only an all-NULL parent collapses."""
-    import json
-
     presents = {
         0: _Inner(score=0, label=""),
         1: _Inner(score=10, label="a"),
@@ -691,8 +763,6 @@ def test_is_null_sentinel_follows_include_hidden(test_session, tmp_path):
     assert ("item", "_type_tag") not in list(
         chain.to_pandas(include_hidden=False).columns
     )
-
-    import json
 
     pj = str(tmp_path / "out.json")
     chain.to_json(pj)

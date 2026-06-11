@@ -1,3 +1,4 @@
+import math
 from collections.abc import Sequence
 from itertools import islice
 from typing import TYPE_CHECKING, Any
@@ -283,16 +284,34 @@ def _get_datachain_schema(schema: "pa.Schema") -> SignalSchema | None:
 def _subtree_all_none(
     column_values: dict[str, Any], model: type["BaseModel"], prefix: str
 ) -> bool:
-    """True when every scalar leaf under ``model`` (at ``prefix``) is None — i.e.
-    an absent ``Optional[DataModel]`` parent. Exports drop the ``_type_tag``
-    sentinel, so absence is recovered from the leaves being NULL."""
+    """True when every scalar leaf under ``model`` (at ``prefix``) is None — the
+    fallback "absent parent" check for files written without the ``_type_tag``
+    discriminator. Treats NaN / [] / {} as None-ish so type defaults don't read
+    as present."""
     for col in iter_flat_columns(model):
         if col.is_sentinel:
             continue
-        cur_path = f"{prefix}." + ".".join(col.path)
-        if column_values.get(cur_path) is not None:
+        val = column_values.get(f"{prefix}." + ".".join(col.path))
+        if val is not None and not _is_nan(val) and val not in ([], {}):
             return False
     return True
+
+
+def _is_nan(val: Any) -> bool:
+    return isinstance(val, float) and math.isnan(val)
+
+
+def _optional_absent(
+    column_values: dict[str, Any], inner: type["BaseModel"], prefix: str
+) -> bool:
+    """Whether the ``Optional[DataModel]`` at ``prefix`` is absent. Prefers the
+    ``_type_tag`` discriminator (authoritative: present arm is 0); falls back to
+    the all-leaves-None heuristic for files written without it."""
+    tag_key = f"{prefix}.{SignalSchema._OPTIONAL_SENTINEL_FIELD}"
+    if tag_key in column_values:
+        tag = column_values[tag_key]
+        return tag is None or tag != 0
+    return _subtree_all_none(column_values, inner, prefix)
 
 
 def _nested_model_instantiate(
@@ -305,10 +324,10 @@ def _nested_model_instantiate(
         kind = classify_field(field_info.annotation)
         cur_path = f"{prefix}.{field}" if prefix else field
         if kind.is_model:
-            if kind.is_optional and _subtree_all_none(
+            if kind.is_optional and _optional_absent(
                 column_values, kind.inner, cur_path
             ):
-                # Absent Optional[DataModel] parent (all leaves NULL) -> None.
+                # Absent Optional[DataModel] parent -> None.
                 vals_dict[field] = None
             else:
                 vals_dict[field] = _nested_model_instantiate(

@@ -127,31 +127,24 @@ if TYPE_CHECKING:
 T = TypeVar("T", bound="DataChain")
 
 
-def _is_all_none(value: Any) -> bool:
-    """True for None or a (non-empty) dict whose every value is recursively None."""
-    if value is None:
-        return True
-    if isinstance(value, dict):
-        return bool(value) and all(_is_all_none(v) for v in value.values())
-    return False
+_MISSING = object()
 
 
-def _collapse_absent_optionals(
-    nested: dict[str, Any], optional_paths: list[list[str]]
-) -> None:
-    """In a flat-export nested dict, replace an absent Optional[DataModel] (all
-    leaves NULL) with None at each path in ``optional_paths`` (deepest first).
+def _collapse_by_tag(node: Any) -> Any:
+    """In a flat-export nested dict, use the hidden ``_type_tag`` discriminator to
+    collapse an absent ``Optional[DataModel]`` to ``None`` and strip the tag from
+    the output. Recurses deepest-first so nested optionals resolve before parents.
     """
-    for path in optional_paths:
-        parent: Any = nested
-        for key in path[:-1]:
-            parent = parent.get(key) if isinstance(parent, dict) else None
-            if parent is None:
-                break
-        if isinstance(parent, dict):
-            leaf = path[-1]
-            if leaf in parent and _is_all_none(parent[leaf]):
-                parent[leaf] = None
+    if isinstance(node, list):
+        return [_collapse_by_tag(v) for v in node]
+    if not isinstance(node, dict):
+        return node
+    for key, val in list(node.items()):
+        node[key] = _collapse_by_tag(val)
+    tag = node.pop(SignalSchema._OPTIONAL_SENTINEL_FIELD, _MISSING)
+    if tag is not _MISSING and (tag is None or tag != 0):
+        return None
+    return node
 
 
 class DataChainSchema(dict[str, DataType]):
@@ -2565,9 +2558,10 @@ class DataChain:
             File: The stored file with refreshed metadata (version, etag, size).
         """
         target = File.at(path, session=self.session)
-        # Exclude the sentinel so an absent Optional[DataModel] collapses to null.
+        # Select the `_type_tag` so an absent Optional[DataModel] can be collapsed
+        # to null (the tag is stripped from the output by _collapse_by_tag).
         headers, _ = self._effective_signals_schema.get_headers_with_length(
-            include_sentinels=False
+            include_sentinels=True
         )
         headers = [list(filter(None, h)) for h in headers]
         with target.open("wb", client_config=fs_kwargs) as f:
@@ -2580,14 +2574,11 @@ class DataChain:
         headers: list[list[str]],
         include_outer_list: bool,
     ) -> None:
-        # Collapse an absent parent to null instead of an object of nulls.
-        optional_paths = self._effective_signals_schema.optional_model_paths()
         is_first = True
         if include_outer_list:
             f.write(b"[\n")
-        for row in self._leaf_values(include_sentinels=False):
-            nested = row_to_nested_dict(headers, row)
-            _collapse_absent_optionals(nested, optional_paths)
+        for row in self._leaf_values(include_sentinels=True):
+            nested = _collapse_by_tag(row_to_nested_dict(headers, row))
             if not is_first:
                 f.write(b",\n" if include_outer_list else b"\n")
             else:

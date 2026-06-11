@@ -13,7 +13,12 @@ from datachain.asyn import AsyncMapper
 from datachain.cache import temporary_cache
 from datachain.dataset import RowDict
 from datachain.hash_utils import hash_callable
-from datachain.lib.convert.flatten import flatten, flatten_value, is_optional_model
+from datachain.lib.convert.flatten import (
+    classify_field,
+    flatten,
+    flatten_value,
+    is_optional_model,
+)
 from datachain.lib.file import DataModel, File, FileError
 from datachain.lib.utils import AbstractUDF, DataChainParamsError
 from datachain.query.batch import (
@@ -319,12 +324,15 @@ class UDFBase(AbstractUDF):
 
     def _flatten_row(self, row):
         if len(self.output.values) > 1 and not isinstance(row, BaseModel):
-            # An Optional[DataModel] output needs flatten_value to emit its
-            # sentinel; other outputs (incl. auto-wrapper models typed as a leaf)
-            # flatten by object shape via _obj_to_list, not the declared type.
             flat: list[Any] = []
             for obj, anno in zip(row, self.output.values.values(), strict=False):
-                if is_optional_model(anno):
+                # flatten_value adds the `_type_tag` only when obj is the
+                # Optional[DataModel] value itself (the model instance or None).
+                # A wrapper model (e.g. the Arrow reader's row object) carries the
+                # tag through its own field, so flatten it by object shape instead.
+                if is_optional_model(anno) and (
+                    obj is None or isinstance(obj, classify_field(anno).inner)
+                ):
                     flat.extend(flatten_value(obj, anno))
                 else:
                     flat.extend(self._obj_to_list(obj))

@@ -968,19 +968,6 @@ class SignalSchema:
             return f"{db_col}{DEFAULT_DELIMITER}{self._OPTIONAL_SENTINEL_FIELD}"
         return None
 
-    def optional_model_paths(self) -> "list[list[str]]":
-        """Field-name paths of every ``Optional[DataModel]`` node, deepest first
-        so nested optionals collapse before their parents."""
-        paths = [
-            list(path)
-            for path, type_, has_subtree, _ in self.get_flat_tree(
-                include_sentinels=False
-            )
-            if has_subtree and is_optional_model(type_)
-        ]
-        paths.sort(key=len, reverse=True)
-        return paths
-
     def model_sentinel(self, db_col: str) -> "str | None":
         """DB name of the sentinel for ``db_col`` when it is itself an
         ``Optional[DataModel]``, else None."""
