@@ -16,6 +16,7 @@ import pandas as pd
 
 import datachain as dc
 from datachain.lib.data_model import DataModel, unwrap_optional
+from datachain.lib.file import File
 
 
 class _Inner(DataModel):
@@ -358,6 +359,24 @@ def test_optional_datamodel_list_leaf_to_json_null(test_session, tmp_path):
         by_id = {r["id"]: r["m"] for r in json.loads(fh.read())}
     assert by_id[1] == {"a": 1, "tags": ["x"]}
     assert by_id[2] is None
+
+
+def test_optional_file_sets_catalog(test_session, tmp_path):
+    """A File under Optional[...] gets its catalog/stream set on hydration, so
+    .read_text() works. Regression: _set_file_stream skipped Optional[File] fields
+    (the annotation is a Union, not a bare pydantic model) -> 'catalog is not set'."""
+    (tmp_path / "a.txt").write_text("hello")
+
+    class _Wrap(DataModel):
+        f: Optional[File] = None
+
+    chain = dc.read_values(
+        w=[_Wrap(f=File(path="a.txt", source=tmp_path.as_uri()))],
+        output={"w": _Wrap},
+        session=test_session,
+    )
+    w = chain.to_values("w")[0]
+    assert w.f.read_text() == "hello"
 
 
 def test_union_optional_and_plain_datamodel(test_session):

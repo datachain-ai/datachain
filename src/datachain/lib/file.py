@@ -73,14 +73,16 @@ class FileExporter(NodesThreadPool):
         for task in done:
             task.result()
 
-    def do_task(self, file: "File"):
-        file.export(
-            self.output,
-            self.placement,
-            self.use_cache,
-            link_type=self.link_type,
-            client_config=self.client_config,
-        )
+    def do_task(self, file: "File | None"):
+        # An absent Optional[File] row has nothing to export.
+        if file is not None:
+            file.export(
+                self.output,
+                self.placement,
+                self.use_cache,
+                link_type=self.link_type,
+                client_config=self.client_config,
+            )
         self.increase_counter(1)
 
 
