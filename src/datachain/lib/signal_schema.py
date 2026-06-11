@@ -7,6 +7,7 @@ import warnings
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from functools import cached_property
 from inspect import isclass
 from typing import (
     IO,
@@ -961,14 +962,20 @@ class SignalSchema:
 
         return curr_type
 
+    @cached_property
+    def _optional_model_db_cols(self) -> "set[str]":
+        return {
+            DEFAULT_DELIMITER.join(path)
+            for path, type_, has_subtree, _ in self.get_flat_tree(
+                include_sentinels=False
+            )
+            if has_subtree and is_optional_model(type_)
+        }
+
     def _optional_sentinel_at(self, db_col: str) -> "str | None":
         """Sentinel db-name for ``db_col`` when it is itself an
         ``Optional[DataModel]`` node, else None."""
-        try:
-            anno = self.get_column_type(db_col, with_subtree=True)
-        except SignalResolvingError:
-            return None
-        if is_optional_model(anno):
+        if db_col in self._optional_model_db_cols:
             return f"{db_col}{DEFAULT_DELIMITER}{self._OPTIONAL_SENTINEL_FIELD}"
         return None
 
