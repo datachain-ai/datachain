@@ -1,7 +1,7 @@
 """Functional tests for ``Optional[X]`` / nullable-object support.
 
 Covers ``Optional[DataModel]`` and ``Optional[basic]`` end to end: the #1055
-regression, save round-trips, the ``_tag`` discriminator, mutate/filter/order_by/
+regression, save round-trips, the ``_type_tag`` discriminator, mutate/filter/order_by/
 group_by/select on optional leaves, parquet/JSON export, union of optional and
 plain models, and aggregates over absent groups. These run on both SQLite and
 ClickHouse (via ``scripts/run-clickhouse-tests.sh``).
@@ -290,7 +290,7 @@ def test_union_optional_and_plain_datamodel(test_session):
     """union of an Optional[DataModel] chain with a plain DataModel chain yields
     Optional[DataModel]: the plain side is promoted (a present sentinel is added)
     so the column sets align. Regression: it raised UnionSchemaMismatchError and
-    leaked the internal _tag discriminator name."""
+    leaked the internal _type_tag discriminator name."""
 
     def optional_chain():
         return dc.read_values(
@@ -673,7 +673,7 @@ def test_flat_export_optional_datamodel_leaf_none(test_session):
 
 
 def test_is_null_sentinel_follows_include_hidden(test_session, tmp_path):
-    """The `_tag` discriminator follows ``include_hidden`` in tabular/columnar
+    """The `_type_tag` discriminator follows ``include_hidden`` in tabular/columnar
     exports, stays out of ``to_json``, and round-trips through parquet."""
     presents = {1: _Inner(score=10, label="a")}
 
@@ -684,11 +684,13 @@ def test_is_null_sentinel_follows_include_hidden(test_session, tmp_path):
         dc.read_values(id=[1, 2], session=test_session).map(item=pick).order_by("id")
     )
 
-    recs = {r["id"]: r["item___tag"] for r in chain.to_records()}
+    recs = {r["id"]: r["item___type_tag"] for r in chain.to_records()}
     assert recs == {1: 0, 2: 1}  # present arm = 0, None arm = 1
 
-    assert ("item", "_tag") in list(chain.to_pandas().columns)
-    assert ("item", "_tag") not in list(chain.to_pandas(include_hidden=False).columns)
+    assert ("item", "_type_tag") in list(chain.to_pandas().columns)
+    assert ("item", "_type_tag") not in list(
+        chain.to_pandas(include_hidden=False).columns
+    )
 
     import json
 

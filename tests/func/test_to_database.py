@@ -539,7 +539,7 @@ def test_to_database_empty_chain(connection, test_session):
 def test_to_database_optional_datamodel_excludes_sentinel(
     sqlite_connection, test_session
 ):
-    """An Optional[DataModel] signal must not leak its hidden ``_tag``
+    """An Optional[DataModel] signal must not leak its hidden ``_type_tag``
     sentinel into the target table, and the leaf values must stay aligned with
     their columns. Regression: db_signals(as_columns=True) used to include the
     sentinel column while the row values (from _leaf_values) excluded it, so every
@@ -559,7 +559,7 @@ def test_to_database_optional_datamodel_excludes_sentinel(
     chain.to_database("opt_model_table", sqlite_connection)
 
     columns = _get_table_columns(sqlite_connection, "opt_model_table")
-    assert not any(c.endswith("_tag") for c in columns), columns
+    assert not any(c.endswith("_type_tag") for c in columns), columns
     assert columns == ["id", "addr__city", "addr__score"]
 
     rows = _fetch_all_rows(sqlite_connection, "opt_model_table")

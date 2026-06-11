@@ -1387,7 +1387,7 @@ class DataChain:
                     raise SignalResolvingError([col], "is not found")
                 partition_by_columns.extend(cast("list[Column]", columns))
                 # GROUP BY the ancestor sentinel too, so the aggregated table keeps
-                # the `_tag` column the result schema expects.
+                # the `_type_tag` column the result schema expects.
                 for leaf in cast("list[Column]", columns):
                     sentinel = self.signals_schema.optional_parent_sentinel(leaf.name)
                     if sentinel:
@@ -1633,7 +1633,7 @@ class DataChain:
                 It should accept two arguments: a list of column names and
                 a tuple of row values.
             include_hidden: Whether to include hidden signals from the schema.
-            include_sentinels: Whether to select the `_tag` discriminator column.
+            include_sentinels: Whether to select the `_type_tag` discriminator column.
                 Defaults to ``include_hidden``.
         """
         schema = self._effective_signals_schema
@@ -1919,7 +1919,7 @@ class DataChain:
         signal across the two sides of a union.
 
         A union of ``Optional[M]`` with ``M`` should yield ``Optional[M]``. The
-        plain side lacks the ``_tag`` discriminator column, so it is promoted: a
+        plain side lacks the ``_type_tag`` discriminator column, so it is promoted: a
         ``present`` (0) tag is added and its schema signal becomes
         ``Optional[M]``. Without this the column sets mismatch and the union
         fails (leaking the internal sentinel name). Sides already matching are
@@ -1939,7 +1939,7 @@ class DataChain:
 
         def _present_sentinel() -> Any:
             # present = the first arm (index 0); read_optional_sentinel treats
-            # NULL/non-zero as absent. Typed to match the optional side's _tag.
+            # NULL/non-zero as absent. Typed to match the optional side's _type_tag.
             col = literal(0)
             col.type = python_to_sql(int)()
             return col

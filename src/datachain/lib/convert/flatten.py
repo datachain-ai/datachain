@@ -22,7 +22,7 @@ def classify_field(annotation: Any) -> FieldKind:
 
 class FlatColumn(NamedTuple):
     """One column a model emits, in DB-column order. ``is_sentinel`` marks the
-    ``_tag`` discriminator prepended for an ``Optional[DataModel]`` node; otherwise
+    ``_type_tag`` discriminator prepended for an ``Optional[DataModel]`` node; otherwise
     it is a scalar/list/dict leaf."""
 
     path: tuple[str, ...]
@@ -58,7 +58,7 @@ def is_optional_model(anno) -> bool:
 def flatten_value(value, anno) -> tuple:
     """Flatten ``value`` for one column declared with annotation ``anno``.
 
-    ``Optional[DataModel]`` emits a leading ``_tag`` discriminator before its leaves.
+    ``Optional[DataModel]`` emits a leading ``_type_tag`` before its leaves.
     ``Optional[basic]`` is a plain nullable column. Nulls inside collections
     (``list[Optional[T]]``) and bare ``Union[A, B]`` are not represented.
     """

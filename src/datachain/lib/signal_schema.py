@@ -987,9 +987,9 @@ class SignalSchema:
         return self._optional_sentinel_at(db_col)
 
     def optional_parent_sentinel(self, db_col: str) -> "str | None":
-        """DB name of the ``_tag`` discriminator for the closest ``Optional[DataModel]``
-        ancestor of leaf ``db_col``, or None when ``db_col`` is not such a leaf (or
-        is itself a sentinel).
+        """DB name of the ``_type_tag`` discriminator for the closest
+        ``Optional[DataModel]`` ancestor of leaf ``db_col``, or None when ``db_col``
+        is not such a leaf (or is itself a discriminator).
         """
         parts = db_col.split(DEFAULT_DELIMITER)
         for i in range(len(parts), 0, -1):
@@ -1249,7 +1249,7 @@ class SignalSchema:
             new_prefix = prefix + suffix
             if not include_sys and new_prefix and new_prefix[0] == "sys":
                 continue
-            # The `_tag` discriminator (leading underscore) is kept for storage and
+            # The `_type_tag` discriminator (leading underscore) is kept for storage and
             # hydration but dropped from user-facing output.
             if not include_sentinels and name.startswith("_"):
                 continue
@@ -1366,14 +1366,14 @@ class SignalSchema:
     # present=0, None=1. Leading underscore makes it an internal column (pydantic
     # forbids user fields starting with "_"); int | None so a NULL padded by an
     # outer join reads back as the None arm ("absent").
-    _OPTIONAL_SENTINEL_FIELD = "_tag"
+    _OPTIONAL_SENTINEL_FIELD = "_type_tag"
     _OPTIONAL_SENTINEL_TYPE = int | None  # type: ignore[valid-type]
 
     @staticmethod
     def _model_subtree(
         fr: type[BaseModel], is_optional: bool
     ) -> dict[str, tuple[DataType, dict | None]]:
-        """Flat tree for a model, prepending the ``_tag`` discriminator when the
+        """Flat tree for a model, prepending the ``_type_tag`` discriminator when the
         field is ``Optional[DataModel]``."""
         subtree = SignalSchema._build_tree_for_model(fr) or {}
         if is_optional:

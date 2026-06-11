@@ -284,7 +284,7 @@ def _subtree_all_none(
     column_values: dict[str, Any], model: type["BaseModel"], prefix: str
 ) -> bool:
     """True when every scalar leaf under ``model`` (at ``prefix``) is None — i.e.
-    an absent ``Optional[DataModel]`` parent. Exports drop the ``_tag``
+    an absent ``Optional[DataModel]`` parent. Exports drop the ``_type_tag``
     sentinel, so absence is recovered from the leaves being NULL."""
     for col in iter_flat_columns(model):
         if col.is_sentinel:
