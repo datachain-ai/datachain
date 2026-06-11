@@ -978,3 +978,49 @@ def test_count_over_optional_scalar_stays_non_nullable(test_session):
     assert not is_optional, "count column must be plain int, not Optional[int]"
     rows = {r["g"]: r["c"] for r in grouped.to_records()}
     assert rows == {1: 1, 2: 0}  # g=2 has no non-NULL x -> 0, never None
+
+
+def test_union_plain_left_optional_right_nullable_leaves(test_session):
+    """union(plain, Optional[M]) keeps absent-row leaves NULL on CH (no phantom
+    0/"" matches)."""
+    from datachain import C
+
+    plain = dc.read_values(
+        item=[_Inner(score=1, label="a")],
+        output={"item": _Inner},
+        session=test_session,
+    )
+    opt = dc.read_values(
+        item=[_Inner(score=2, label="b"), None],
+        output={"item": Optional[_Inner]},
+        session=test_session,
+    )
+    plain.union(opt).save("u_plain_left")
+    back = dc.read_dataset("u_plain_left", session=test_session)
+    assert back.count() == 3
+    assert back.filter(C("item.label") == "").count() == 0
+    assert back.filter(C("item.score") == 0).count() == 0
+
+
+def test_union_does_not_mutate_input_chains(test_session):
+    """union() must not mutate its operands: a chain used as LEFT in one union can
+    still be used as RIGHT in another."""
+
+    def mk_plain():
+        return dc.read_values(
+            item=[_Inner(score=1, label="a")],
+            output={"item": _Inner},
+            session=test_session,
+        )
+
+    def mk_opt():
+        return dc.read_values(
+            item=[_Inner(score=2, label="b"), None],
+            output={"item": Optional[_Inner]},
+            session=test_session,
+        )
+
+    opt = mk_opt()
+    opt.union(mk_plain()).save("u_reuse_1")
+    mk_plain().union(opt).save("u_reuse_2")  # opt reused -> must not raise
+    assert dc.read_dataset("u_reuse_2", session=test_session).count() == 3

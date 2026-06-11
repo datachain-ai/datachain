@@ -1937,6 +1937,23 @@ class DataChain:
             col.type = python_to_sql(int)()
             return col
 
+        def _nullable_leaf_casts(name: str, promoted: dict[str, Any]) -> dict[str, Any]:
+            # Re-cast leaves to nullable so the UNION keeps NULLs on CH instead of
+            # default-filling them (0/"").
+            from datachain.lib.signal_schema import SignalSchema
+
+            casts: dict[str, Any] = {}
+            sub = SignalSchema({name: promoted[name]})
+            cols = cast(
+                "list[Column]",
+                sub.db_signals(as_columns=True, include_sentinels=False),
+            )
+            for col in cols:
+                ref = Column(col.name)
+                ref.type = col.type
+                casts[col.name] = ref
+            return casts
+
         for name in lvals:
             l_inner, l_opt = unwrap_optional(lvals[name])
             r_inner, r_opt = unwrap_optional(rvals[name])
@@ -1948,11 +1965,13 @@ class DataChain:
                 continue
             sentinel = f"{name}{DEFAULT_DELIMITER}{sentinel_field}"
             if not l_opt:
-                left_add[sentinel] = _present_sentinel()
                 lprom[name] = l_inner | None
+                left_add[sentinel] = _present_sentinel()
+                left_add.update(_nullable_leaf_casts(name, lprom))
             if not r_opt:
-                right_add[sentinel] = _present_sentinel()
                 rprom[name] = r_inner | None
+                right_add[sentinel] = _present_sentinel()
+                right_add.update(_nullable_leaf_casts(name, rprom))
 
         left, right = self, other
         if left_add:
@@ -1986,8 +2005,11 @@ class DataChain:
                 missing_right,
             )
 
-        left.signals_schema = self_schema.clone_without_sys_signals()
-        return left._evolve(query=left._query.union(right._query))
+        # Evolve, don't mutate `left` in place — it may be the caller's own chain.
+        return left._evolve(
+            query=left._query.union(right._query),
+            signal_schema=self_schema.clone_without_sys_signals(),
+        )
 
     @delta_disabled
     def subtract(  # type: ignore[override]
