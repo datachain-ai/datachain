@@ -326,10 +326,8 @@ class UDFBase(AbstractUDF):
         if len(self.output.values) > 1 and not isinstance(row, BaseModel):
             flat: list[Any] = []
             for obj, anno in zip(row, self.output.values.values(), strict=False):
-                # flatten_value adds the `_type_tag` only when obj is the
-                # Optional[DataModel] value itself (the model instance or None).
-                # A wrapper model (e.g. the Arrow reader's row object) carries the
-                # tag through its own field, so flatten it by object shape instead.
+                # flatten_value emits the tag only when obj IS the Optional value
+                # (model/None); a wrapper model carries the tag via its own field.
                 if is_optional_model(anno) and (
                     obj is None or isinstance(obj, classify_field(anno).inner)
                 ):

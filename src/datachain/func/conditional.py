@@ -23,17 +23,15 @@ CaseT = int | float | complex | bool | str | Func | ColumnExpr
 
 
 class _IsNoneFunc(_SentinelAwareFunc):
-    """``isnone`` is None-aware for ``Optional[DataModel]``: that column isn't a
-    real column on disk, so it reads the model's ``_type_tag`` discriminator. Any other
-    column (including ``Optional[basic]``) keeps the plain ``col IS NULL`` check.
-    """
+    """``isnone`` reads the ``_type_tag`` discriminator for an
+    ``Optional[DataModel]``; for any other column it is plain ``col IS NULL``."""
 
     def is_nullable_result(
         self,
         signals_schema: "SignalSchema | None",
         col_type: "DataType | None" = None,
     ) -> bool:
-        # isnone always returns True/False (never NULL), so its column stays bool.
+        # isnone is always True/False, never NULL.
         return False
 
     def _sentinel_column(

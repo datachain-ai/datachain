@@ -157,9 +157,8 @@ class SQLType(TypeDecorator):
     impl: type[types.TypeEngine[Any]] = types.TypeEngine
     cache_ok = True
 
-    # Marks a column whose source annotation was an explicit Optional[scalar], so
-    # backends with non-nullable leaves emit a nullable type and None round-trips
-    # as NULL rather than the type default.
+    # Optional[scalar] marker: backends without nullable-by-default emit a nullable
+    # column so None round-trips instead of the type default.
     dc_nullable: bool = False
 
     def load_dialect_impl(self, dialect):
@@ -177,8 +176,6 @@ class SQLType(TypeDecorator):
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {"type": self.__class__.__name__}
-        # Persist the Optional[scalar] marker so a None field round-trips as NULL
-        # (not the type default) after the dataset schema is serialized and reloaded.
         if self.dc_nullable:
             d["dc_nullable"] = True
         return d

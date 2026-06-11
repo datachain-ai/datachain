@@ -115,8 +115,7 @@ def sum(col: AggColT) -> Func:
     Notes:
         - The `sum` function should be used on numeric columns or expressions.
         - The result column type will be inferred from the input expression type.
-        - When summing a leaf of an ``Optional[DataModel]`` column, rows whose
-          parent object is absent (NULL) are skipped, like any other NULL value.
+        - Skips rows where the value's ``Optional[DataModel]`` parent is absent.
     """
     return Func("sum", inner=sa_func.sum, cols=[col])
 

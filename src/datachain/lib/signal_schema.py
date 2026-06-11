@@ -593,7 +593,7 @@ class SignalSchema:
 
         return hidden_fields
 
-    def to_udf_spec(self) -> "dict[str, type[SQLType] | SQLType]":
+    def to_udf_spec(self) -> dict[str, type[SQLType] | SQLType]:
         res = {}
         for path, type_, has_subtree, _ in self.get_flat_tree():
             if path[0] in self.setup_func:
@@ -843,7 +843,7 @@ class SignalSchema:
                 return _type
         raise SignalResolvingError([col_name], "is not found")
 
-    def is_nullable_column(self, db_col: str, anno: "DataType") -> bool:
+    def is_nullable_column(self, db_col: str, anno: DataType) -> bool:
         """Whether a scalar leaf stores real NULL (``dc_nullable``) instead of the
         type default: its base type is in ``NULLABLE_SCALARS`` and it is either an
         ``Optional[scalar]`` or sits under an ``Optional[DataModel]`` ancestor."""
@@ -852,7 +852,7 @@ class SignalSchema:
             return False
         return is_optional or self.optional_parent_sentinel(db_col) is not None
 
-    def _db_leaf_sql_type(self, path: "list[str]", anno: "DataType") -> Any:
+    def _db_leaf_sql_type(self, path: list[str], anno: DataType) -> Any:
         """SQL type for a leaf at ``path``, marked ``dc_nullable`` per
         ``is_nullable_column`` so the backend stores real NULL, not the type
         default."""
@@ -972,33 +972,28 @@ class SignalSchema:
             if has_subtree and is_optional_model(type_)
         }
 
-    def _optional_sentinel_at(self, db_col: str) -> "str | None":
+    def model_sentinel(self, db_col: str) -> str | None:
         """Sentinel db-name for ``db_col`` when it is itself an
         ``Optional[DataModel]`` node, else None."""
         if db_col in self._optional_model_db_cols:
             return f"{db_col}{DEFAULT_DELIMITER}{self._OPTIONAL_SENTINEL_FIELD}"
         return None
 
-    def model_sentinel(self, db_col: str) -> "str | None":
-        """DB name of the sentinel for ``db_col`` when it is itself an
-        ``Optional[DataModel]``, else None."""
-        return self._optional_sentinel_at(db_col)
-
-    def optional_parent_sentinel(self, db_col: str) -> "str | None":
+    def optional_parent_sentinel(self, db_col: str) -> str | None:
         """DB name of the ``_type_tag`` discriminator for the closest
         ``Optional[DataModel]`` ancestor of leaf ``db_col``, or None when ``db_col``
         is not such a leaf (or is itself a discriminator).
         """
         parts = db_col.split(DEFAULT_DELIMITER)
         for i in range(len(parts), 0, -1):
-            sentinel = self._optional_sentinel_at(DEFAULT_DELIMITER.join(parts[:i]))
+            sentinel = self.model_sentinel(DEFAULT_DELIMITER.join(parts[:i]))
             if sentinel is not None:
                 return None if sentinel == db_col else sentinel
         return None
 
     def order_by_column(
         self, db_col: str, *, descending: bool = False
-    ) -> "ColumnExpr | None":
+    ) -> ColumnExpr | None:
         """Order-by expression for a nullable column (a leaf under
         ``Optional[DataModel]`` or a top-level ``Optional[basic]``), with explicit
         ``NULLS LAST`` so a NULL row sorts last on every backend (SQLite would
@@ -1040,7 +1035,7 @@ class SignalSchema:
         return rebuild(expr)
 
     @staticmethod
-    def _optionalize(py_type: "DataType", nullable: bool) -> "DataType":
+    def _optionalize(py_type: DataType, nullable: bool) -> DataType:
         """Wrap a derived/result column type as ``Optional[T]`` when it may hold
         NULL, so the persisted schema stays nullable and None round-trips."""
         return (py_type | None) if nullable else py_type  # type: ignore[return-value]
