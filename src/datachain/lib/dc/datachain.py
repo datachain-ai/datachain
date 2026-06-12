@@ -75,7 +75,6 @@ from datachain.utils import (
     checkpoints_enabled,
     env2bool,
     inside_notebook,
-    row_to_nested_dict,
 )
 
 from .database import DEFAULT_DATABASE_BATCH_SIZE
@@ -125,26 +124,6 @@ if TYPE_CHECKING:
 
 
 T = TypeVar("T", bound="DataChain")
-
-
-_MISSING = object()
-
-
-def _collapse_by_tag(node: Any) -> Any:
-    """In a flat-export nested dict, use the hidden ``_type_tag`` discriminator to
-    collapse an absent ``Optional[DataModel]`` to ``None`` and strip the tag from
-    the output. Recurses deepest-first so nested optionals resolve before parents.
-    """
-    if isinstance(node, list):
-        return [_collapse_by_tag(v) for v in node]
-    if not isinstance(node, dict):
-        return node
-    for key, val in list(node.items()):
-        node[key] = _collapse_by_tag(val)
-    tag = node.pop(SignalSchema._OPTIONAL_SENTINEL_FIELD, _MISSING)
-    if tag is not _MISSING and (tag is None or tag != 0):
-        return None
-    return node
 
 
 class DataChainSchema(dict[str, DataType]):
@@ -2577,36 +2556,25 @@ class DataChain:
             File: The stored file with refreshed metadata (version, etag, size).
         """
         target = File.at(path, session=self.session)
-        # Select _type_tag to collapse absent parents to null (then stripped).
-        headers, _ = self._effective_signals_schema.get_headers_with_length(
-            include_sentinels=True
-        )
-        headers = [list(filter(None, h)) for h in headers]
         with target.open("wb", client_config=fs_kwargs) as f:
-            self._write_json_stream(f, headers, include_outer_list)
+            self._write_json_stream(f, include_outer_list)
         return target
 
-    def _write_json_stream(
-        self,
-        f: IO[bytes],
-        headers: list[list[str]],
-        include_outer_list: bool,
-    ) -> None:
+    def _write_json_stream(self, f: IO[bytes], include_outer_list: bool) -> None:
+        names = list(self._effective_signals_schema.values)
         is_first = True
         if include_outer_list:
             f.write(b"[\n")
-        for row in self._leaf_values(include_sentinels=True):
-            nested = _collapse_by_tag(row_to_nested_dict(headers, row))
+        for row in self.to_iter():
+            nested = {
+                name: obj.model_dump(mode="json") if isinstance(obj, BaseModel) else obj
+                for name, obj in zip(names, row, strict=False)
+            }
             if not is_first:
                 f.write(b",\n" if include_outer_list else b"\n")
             else:
                 is_first = False
-            f.write(
-                json.dumps(
-                    nested,
-                    ensure_ascii=False,
-                ).encode("utf-8")
-            )
+            f.write(json.dumps(nested, ensure_ascii=False).encode("utf-8"))
         if include_outer_list:
             f.write(b"\n]\n")
 
