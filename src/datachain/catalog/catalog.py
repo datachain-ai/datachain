@@ -1199,11 +1199,16 @@ class Catalog:
         self.warehouse.drop_dataset_rows_table(dataset, version)
         self.metastore.remove_dataset_version(dataset, version)
 
-    def _remove_versions(self, pairs: Iterable[tuple[DatasetRecord, str]]) -> int:
-        """Bulk remove orphaned versions (GC, session cleanup, CLI cleanup,
-        job cleanup). Infers ``keep_metadata`` per version from status:
-        resume soft delete if REMOVING, else wipe. Explicit single-version
-        removes go through ``remove_dataset_version`` directly.
+    def _remove_versions(
+        self,
+        pairs: Iterable[tuple[DatasetRecord, str]],
+        *,
+        keep_metadata: bool | None = None,
+    ) -> int:
+        """Bulk remove versions (GC, session cleanup, CLI cleanup, job cleanup,
+        user-facing bulk delete). When ``keep_metadata`` is None, infers per
+        version: resume soft delete if REMOVING, else wipe. When given
+        explicitly, honors the caller's intent for every version.
         """
         num_removed = 0
         for dataset, version in pairs:
@@ -1211,12 +1216,13 @@ class Catalog:
                 v = dataset.get_version(version)
                 if v.status == DatasetStatus.REMOVED:
                     continue
-                keep_metadata = (
-                    not dataset.is_internal and v.status == DatasetStatus.REMOVING
-                )
-                self.remove_dataset_version(
-                    dataset, version, keep_metadata=keep_metadata
-                )
+                if keep_metadata is None:
+                    keep = (
+                        not dataset.is_internal and v.status == DatasetStatus.REMOVING
+                    )
+                else:
+                    keep = keep_metadata
+                self.remove_dataset_version(dataset, version, keep_metadata=keep)
                 num_removed += 1
             except Exception as e:  # noqa: BLE001
                 logger.warning(
@@ -1228,13 +1234,17 @@ class Catalog:
         return num_removed
 
     def remove_dataset_versions(
-        self, job_id: str | None = None, version_ids: list[int] | None = None
+        self,
+        job_id: str | None = None,
+        version_ids: list[int] | None = None,
+        *,
+        keep_metadata: bool | None = None,
     ) -> int:
         versions_to_remove = self.metastore.get_dataset_versions(
             job_id=job_id,
             version_ids=version_ids,
         )
-        return self._remove_versions(versions_to_remove)
+        return self._remove_versions(versions_to_remove, keep_metadata=keep_metadata)
 
     def get_temp_table_names(self) -> list[str]:
         return self.warehouse.get_temp_table_names()

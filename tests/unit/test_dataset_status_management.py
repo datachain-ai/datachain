@@ -205,6 +205,25 @@ def test_remove_dataset_versions_bulk(
         test_session.catalog.get_dataset(dataset_failed.name)
 
 
+def test_remove_dataset_versions_explicit_keep_metadata_tombstones(
+    test_session, dataset_complete
+):
+    """User-facing bulk delete (``keep_metadata=True``) must tombstone COMPLETE
+    versions, not wipe them — overrides the GC inference path."""
+    catalog = test_session.catalog
+    version = dataset_complete.latest_version
+    ds = catalog.get_dataset(dataset_complete.name, versions=None)
+    vid = ds.get_version(version).id
+
+    n = catalog.remove_dataset_versions(version_ids=[vid], keep_metadata=True)
+    assert n == 1
+
+    ds = catalog.get_dataset(
+        dataset_complete.name, versions=None, include_incomplete=True
+    )
+    assert _find_removed(ds, version) is not None
+
+
 def test_remove_dataset_versions_job_id_filter(test_session, job, dataset_created):
     test_session.catalog.metastore.set_job_status(job.id, JobStatus.FAILED)
     ds = test_session.catalog.get_dataset(dataset_created.name, versions=None)
