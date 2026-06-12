@@ -93,6 +93,32 @@ def test_mark_job_dataset_versions_as_failed_skips_complete(
     assert dataset_version.status == DatasetStatus.COMPLETE
 
 
+def test_mark_job_dataset_versions_as_failed_preserves_tombstones(
+    test_session, job, dataset_complete
+):
+    """A REMOVED tombstone from a soft delete issued inside the failing job
+    must survive `mark_job_dataset_versions_as_failed` - otherwise the
+    tombstone gets flipped to FAILED and then wiped by GC, breaking the
+    soft-delete permanence guarantee."""
+    catalog = test_session.catalog
+    version = dataset_complete.latest_version
+    catalog.remove_dataset(dataset_complete.name, version=version, keep_metadata=True)
+
+    ds = catalog.get_dataset(
+        dataset_complete.name, versions=None, include_incomplete=True
+    )
+    assert _find_removed(ds, version) is not None
+
+    catalog.metastore.mark_job_dataset_versions_as_failed(job.id)
+
+    ds = catalog.get_dataset(
+        dataset_complete.name, versions=None, include_incomplete=True
+    )
+    tombstone = _find_removed(ds, version)
+    assert tombstone is not None
+    assert tombstone.status == DatasetStatus.REMOVED
+
+
 def test_finalize_job_as_failed_removes_incomplete_dataset_versions(
     test_session, job, dataset_created, dataset_failed, dataset_complete
 ):
@@ -668,6 +694,26 @@ def test_session_dataset_never_keeps_metadata(test_session):
     catalog.remove_dataset_version(ds, ds.latest_version, keep_metadata=False)
     with pytest.raises(DatasetNotFoundError):
         catalog.get_dataset(name, include_incomplete=True)
+
+
+def test_rename_dataset_across_tombstone(test_session, dataset_complete):
+    """Renaming a dataset that has a REMOVED tombstone version must succeed:
+    the tombstone has no rows table, so its rename is skipped, and live
+    versions are renamed normally."""
+    catalog = test_session.catalog
+    second = dc.read_values(value=["v2a", "v2b"], session=test_session).save(
+        dataset_complete.name
+    )
+    live_version = second.dataset.latest_version
+
+    catalog.remove_dataset(dataset_complete.name, version="1.0.0", keep_metadata=True)
+
+    catalog.edit_dataset(dataset_complete.name, new_name="ds_complete_renamed")
+
+    renamed = dc.read_dataset(
+        "ds_complete_renamed", version=live_version, session=test_session
+    )
+    assert sorted(renamed.to_values("value")) == ["v2a", "v2b"]
 
 
 def test_remove_dataset_force_keep_metadata_mixed_versions(

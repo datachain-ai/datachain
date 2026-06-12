@@ -1967,20 +1967,22 @@ class AbstractDBMetastore(AbstractMetastore):
 
     def mark_job_dataset_versions_as_failed(self, job_id: str) -> None:
         """
-        Mark all non-COMPLETE dataset versions created by a job as FAILED.
+        Finalize dataset versions still in CREATED for a failed job as FAILED.
 
-        This is called when a job fails to ensure that any dataset versions
-        it was creating are marked as failed rather than left in CREATED state.
+        Only flips the in-flight CREATED state. Terminal and removal states
+        (COMPLETE, FAILED, REMOVING, REMOVED, REMOVING_TOTAL) must not be
+        overwritten - otherwise tombstones from a user-issued soft delete
+        inside the failing job would be resurrected as FAILED and then
+        wiped by GC.
 
         Args:
             job_id: ID of the failed job whose dataset versions should be marked
         """
         dv = self._datasets_versions
 
-        # Update status to FAILED for all non-COMPLETE versions with this job_id
         update_stmt = (
             dv.update()
-            .where((dv.c.job_id == job_id) & (dv.c.status != DatasetStatus.COMPLETE))
+            .where((dv.c.job_id == job_id) & (dv.c.status == DatasetStatus.CREATED))
             .values(
                 status=DatasetStatus.FAILED,
                 finished_at=datetime.now(timezone.utc),
