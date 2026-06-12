@@ -315,9 +315,8 @@ def test_optional_datamodel_parquet_roundtrip_nested(test_session, tmp_path):
 
 
 def test_optional_datamodel_parquet_roundtrip_only_signal(test_session, tmp_path):
-    """Regression: an Optional[DataModel] as the chain's only signal round-trips
-    through parquet. The `_type_tag` is consumed on read instead of shifting into
-    a leaf column (previously raised UdfError)."""
+    """An Optional[DataModel] as the chain's only signal round-trips through
+    parquet (the absent parent reads back as None via the heuristic)."""
     path = str(tmp_path / "only.parquet")
     dc.read_values(
         m=[_Inner(score=1, label="a"), None],
@@ -522,8 +521,6 @@ def test_select_partial_optional_datamodel_leaf(test_session):
 
 
 def test_udf_returns_optional_datamodel_mixed_none(test_session):
-    """Regression for #1055: UDF returning Optional[DataModel] across rows."""
-
     def maybe(score: int) -> _Inner | None:
         return _Inner(score=score, label="ok") if score > 0 else None
 
@@ -615,8 +612,6 @@ def test_multi_output_map_optional_datamodel(test_session):
 
 
 def test_nested_optional_datamodel_in_outer_model(test_session):
-    """Optional[DataModel] inside another DataModel returned by a UDF."""
-
     class Outer(DataModel):
         name: str
         inner: _Inner | None = None
@@ -641,7 +636,6 @@ def test_nested_optional_datamodel_in_outer_model(test_session):
 
 
 def test_isnone_filters_optional_datamodel(test_session):
-    """func.isnone selects rows where an Optional[DataModel] is None."""
     from datachain import func
 
     def maybe(score: int) -> _Inner | None:
@@ -779,9 +773,9 @@ def test_flat_export_optional_datamodel_leaf_none(test_session):
     assert pd.isna(label[1])
 
 
-def test_is_null_sentinel_follows_include_hidden(test_session, tmp_path):
-    """The `_type_tag` discriminator follows ``include_hidden`` in tabular/columnar
-    exports, stays out of ``to_json``, and round-trips through parquet."""
+def test_type_tag_excluded_from_exports(test_session, tmp_path):
+    """The `_type_tag` discriminator never appears in exports; absent parents
+    round-trip to None via the all-leaves-None heuristic."""
     presents = {1: _Inner(score=10, label="a")}
 
     def pick(id: int) -> _Inner | None:
@@ -791,13 +785,10 @@ def test_is_null_sentinel_follows_include_hidden(test_session, tmp_path):
         dc.read_values(id=[1, 2], session=test_session).map(item=pick).order_by("id")
     )
 
-    recs = {r["id"]: r["item___type_tag"] for r in chain.to_records()}
-    assert recs == {1: 0, 2: 1}  # present arm = 0, None arm = 1
-
-    assert ("item", "_type_tag") in list(chain.to_pandas().columns)
-    assert ("item", "_type_tag") not in list(
-        chain.to_pandas(include_hidden=False).columns
-    )
+    assert all("_type_tag" not in k for k in chain.to_records()[0])
+    assert not any("_type_tag" in c for c in chain.to_pandas().columns)
+    cols = chain.to_pandas(include_hidden=True).columns
+    assert not any("_type_tag" in c for c in cols)
 
     pj = str(tmp_path / "out.json")
     chain.to_json(pj)

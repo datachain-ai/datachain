@@ -284,10 +284,8 @@ def _get_datachain_schema(schema: "pa.Schema") -> SignalSchema | None:
 def _subtree_all_none(
     column_values: dict[str, Any], model: type["BaseModel"], prefix: str
 ) -> bool:
-    """True when every scalar leaf under ``model`` (at ``prefix``) is None — the
-    fallback "absent parent" check for files written without the ``_type_tag``
-    discriminator. Treats NaN / [] / {} as None-ish so type defaults don't read
-    as present."""
+    """True when every scalar leaf under ``model`` (at ``prefix``) is None. NaN /
+    [] / {} count as None-ish so type defaults don't read as present."""
     for col in iter_flat_columns(model):
         if col.is_sentinel:
             continue
@@ -304,9 +302,9 @@ def _is_nan(val: Any) -> bool:
 def _optional_absent(
     column_values: dict[str, Any], inner: type["BaseModel"], prefix: str
 ) -> bool:
-    """Whether the ``Optional[DataModel]`` at ``prefix`` is absent. Prefers the
-    ``_type_tag`` discriminator (authoritative: present arm is 0); falls back to
-    the all-leaves-None heuristic for files written without it."""
+    """Whether the ``Optional[DataModel]`` at ``prefix`` is absent. Uses the
+    ``_type_tag`` discriminator when present (0 = present arm), else the
+    all-leaves-None heuristic."""
     tag_key = f"{prefix}.{SignalSchema._OPTIONAL_SENTINEL_FIELD}"
     if tag_key in column_values:
         tag = column_values[tag_key]

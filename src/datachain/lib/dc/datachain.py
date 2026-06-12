@@ -1582,7 +1582,7 @@ class DataChain:
 
     @overload
     def _leaf_values(
-        self, *, include_hidden: bool = ..., include_sentinels: bool | None = ...
+        self, *, include_hidden: bool = ..., include_sentinels: bool = ...
     ) -> Iterator[tuple[Any, ...]]: ...
 
     @overload
@@ -1591,11 +1591,15 @@ class DataChain:
         *,
         row_factory: Callable[[list[str], tuple[Any, ...]], _T],
         include_hidden: bool = ...,
-        include_sentinels: bool | None = ...,
+        include_sentinels: bool = ...,
     ) -> Iterator[_T]: ...
 
     def _leaf_values(
-        self, *, row_factory=None, include_hidden: bool = True, include_sentinels=None
+        self,
+        *,
+        row_factory=None,
+        include_hidden: bool = True,
+        include_sentinels: bool = False,
     ):
         """Yields flattened rows of values as a tuple.
 
@@ -1604,12 +1608,10 @@ class DataChain:
                 It should accept two arguments: a list of column names and
                 a tuple of row values.
             include_hidden: Whether to include hidden signals from the schema.
-            include_sentinels: Whether to select the `_type_tag` discriminator column.
-                Defaults to ``include_hidden``.
+            include_sentinels: Whether to select the `_type_tag` discriminator
+                column. Off by default; read reconstructs it from the leaf values.
         """
         schema = self._effective_signals_schema
-        if include_sentinels is None:
-            include_sentinels = include_hidden
         db_signals = schema.db_signals(
             include_hidden=include_hidden, include_sentinels=include_sentinels
         )

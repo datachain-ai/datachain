@@ -1288,10 +1288,8 @@ class SignalSchema:
                     )
 
     def get_headers_with_length(
-        self, include_hidden: bool = True, include_sentinels: bool | None = None
+        self, include_hidden: bool = True, include_sentinels: bool = False
     ):
-        if include_sentinels is None:
-            include_sentinels = include_hidden
         paths = [
             path
             for path, _, has_subtree, _ in self.get_flat_tree(
