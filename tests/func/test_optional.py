@@ -820,6 +820,26 @@ def test_count_optional_datamodel_uses_sentinel(test_session):
     assert rows == [{"grp": 1, "present": 3, "total": 5}]
 
 
+def test_label_preserves_sentinel_aware_func(test_session):
+    """func.isnone and func.count over an Optional[DataModel] resolve via the
+    model's hidden _type_tag (the model itself has no real column on disk)."""
+    from datachain import func
+
+    chain = dc.read_values(
+        id=[1, 2],
+        item=[_Inner(score=5, label="abc"), None],
+        output={"id": int, "item": Optional[_Inner]},
+        session=test_session,
+    )
+    got = sorted(chain.mutate(x=func.isnone("item").label("x")).to_values("x"))
+    assert got == [False, True]
+
+    rows = chain.group_by(
+        c=func.count("item").label("c"), partition_by="id"
+    ).to_records()
+    assert sorted((r["id"], r["c"]) for r in rows) == [(1, 1), (2, 0)]
+
+
 def test_count_optional_datamodel_empty_is_zero(test_session):
     """A global ``func.count("opt_model")`` over an empty chain returns 0, not
     NULL. The sentinel-based count uses SUM, which is NULL over zero rows; a

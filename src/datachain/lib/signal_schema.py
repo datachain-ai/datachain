@@ -962,7 +962,7 @@ class SignalSchema:
         return curr_type
 
     @cached_property
-    def _optional_model_db_cols(self) -> "set[str]":
+    def _optional_model_db_cols(self) -> set[str]:
         return {
             DEFAULT_DELIMITER.join(path)
             for path, type_, has_subtree, _ in self.get_flat_tree(

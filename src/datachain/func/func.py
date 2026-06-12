@@ -1,3 +1,4 @@
+import copy
 import inspect
 from collections.abc import Callable, Sequence
 from datetime import datetime
@@ -381,20 +382,9 @@ class Func(Function):  # noqa: PLW1641
         return Func("ge", lambda a1, a2: a1 >= a2, [self, other], result_type=bool)
 
     def label(self, label: str) -> "Func":
-        return Func(
-            self.name,
-            self.inner,
-            self.cols,
-            self.args,
-            self.kwargs,
-            self.result_type,
-            self.type_from_args,
-            self.is_array,
-            self.from_array,
-            self.is_window,
-            self.window,
-            label,
-        )
+        new = copy.copy(self)
+        new.col_label = label
+        return new
 
     def get_col_name(self, label: str | None = None) -> str:
         if label:
