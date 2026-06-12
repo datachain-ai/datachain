@@ -11,6 +11,8 @@ general: task-specific findings and postmortems belong with the code or the PR, 
   every dataset version.
 - One user-facing API runs over several SQL **warehouse backends**, and user-visible
   behavior must be identical across all of them.
+- Chain operations return a new chain and **never mutate the receiver** (its schema or
+  query) in place — chains get reused, so mutating `self` corrupts later use.
 
 ## Two schemas, and the mapping between them
 
@@ -51,7 +53,8 @@ expression evaluates over a join. Two consequences:
 The canonical example is **nullability**: most warehouses are nullable-by-default and
 cheap, but ClickHouse is NOT NULL by default with an explicit, costly `Nullable(T)`. Treat
 nullability the standard way in the logical schema and make the NOT-NULL tradeoff a
-ClickHouse-converter concern.
+ClickHouse-converter concern. A derived or composed expression over a nullable input is
+itself nullable — propagate nullability through `Func` composition, not per leaf only.
 
 ## Serialization is a boundary
 
