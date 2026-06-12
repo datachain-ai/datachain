@@ -10,30 +10,17 @@ import os
 import re
 from datetime import datetime, timezone
 
-from utils import bucket_file_path, dataset_file_path, write_text
+from utils import (
+    bucket_file_path,
+    dataset_file_path,
+    escape_table_cell,
+    extract_description,
+    read_frontmatter,
+    split_frontmatter,
+    write_text,
+)
 
 BASE_DIR = "dc-knowledge"
-
-
-def _read_md_frontmatter(md_path: str) -> dict:
-    """Read YAML frontmatter from a markdown file. Returns dict or {}."""
-    try:
-        with open(md_path) as f:
-            content = f.read()
-    except Exception:  # noqa: BLE001
-        return {}
-    if not content.startswith("---"):
-        return {}
-    try:
-        end = content.index("\n---", 3)
-    except ValueError:
-        return {}
-    result = {}
-    for line in content[4:end].splitlines():
-        if ":" in line:
-            key, _, val = line.partition(":")
-            result[key.strip()] = val.strip().strip('"').strip("'")
-    return result
 
 
 def _parse_frontmatter_info(fm: dict) -> dict:
@@ -51,36 +38,6 @@ def _parse_frontmatter_info(fm: dict) -> dict:
         "num_versions": str(len(versions_list)) if versions_list else "",
         "updated": updated,
     }
-
-
-def _strip_frontmatter(content: str) -> str | None:
-    """Strip YAML frontmatter from markdown content. Returns None if malformed."""
-    if not content.startswith("---"):
-        return content
-    try:
-        end = content.index("\n---", 3)
-    except ValueError:
-        return None
-    return content[end + 4 :].strip()
-
-
-def _extract_description(lines: list[str]) -> str:
-    """Paragraph between `# heading` and the first `##` heading."""
-    desc_lines: list[str] = []
-    past_heading = False
-    for line in lines:
-        if not past_heading:
-            if line.startswith("# "):
-                past_heading = True
-            continue
-        if line.startswith("##"):
-            break
-        stripped = line.strip()
-        if not stripped and desc_lines:
-            break
-        if stripped:
-            desc_lines.append(stripped)
-    return " ".join(desc_lines)
 
 
 def _extract_section_paragraph(lines: list[str], heading: str) -> str:
@@ -163,19 +120,15 @@ def _read_md_info(md_path: str) -> dict:
     except Exception:  # noqa: BLE001
         return info
 
-    fm = _read_md_frontmatter(md_path)
+    fm, body = split_frontmatter(content)
     info.update(_parse_frontmatter_info(fm))
     info["cast_layer"] = fm.get("cast_layer", "").strip().lower()
     info["cast_scope"] = fm.get("cast_scope", "").strip().lower()
     info["cast_source"] = fm.get("cast_source", "").strip()
     info["cast_parents"] = _parse_list_field(fm.get("cast_parents", ""))
 
-    body = _strip_frontmatter(content)
-    if body is None:
-        return info
-
     lines = body.split("\n")
-    info["description"] = _extract_description(lines)
+    info["description"] = extract_description(lines)
     info["session_context"] = _extract_section_paragraph(lines, "## Session Context")
     info["deps"] = _extract_deps(lines)
 
@@ -221,7 +174,10 @@ def _render_dataset_table(
         updated = info["updated"]
         deps_str = ", ".join(info["deps"]) if info["deps"] else ""
         summary = info["description"]
-        lines.append(f"| {enriched['link']} | {updated} | {deps_str} | {summary} |")
+        lines.append(
+            f"| {escape_table_cell(enriched['link'])} | {updated} "
+            f"| {escape_table_cell(deps_str)} | {escape_table_cell(summary)} |"
+        )
 
     return lines
 
@@ -266,13 +222,13 @@ def _render_cast_table(rows: list[tuple[dict, dict]], layer: str) -> list[str]:
     for enriched, info in sorted(rows, key=lambda r: r[0]["name"]):
         parents = ", ".join(info["cast_parents"]) if info["cast_parents"] else ""
         lines.append(
-            f"| {enriched['link']} "
-            f"| {info['cast_scope']} "
-            f"| {info['cast_source']} "
-            f"| {parents} "
+            f"| {escape_table_cell(enriched['link'])} "
+            f"| {escape_table_cell(info['cast_scope'])} "
+            f"| {escape_table_cell(info['cast_source'])} "
+            f"| {escape_table_cell(parents)} "
             f"| {info['updated']} "
             f"| {info['records']} "
-            f"| {info['description']} |"
+            f"| {escape_table_cell(info['description'])} |"
         )
     return lines
 
@@ -368,7 +324,9 @@ def render_index(plan: dict) -> str:
         lines.append("| Listing | Files | Size | Scanned |")
         lines.append("|---------|------:|-----:|---------|")
         for link, files_val, size_val, scanned in bucket_rows:
-            lines.append(f"| {link} | {files_val} | {size_val} | {scanned} |")
+            lines.append(
+                f"| {escape_table_cell(link)} | {files_val} | {size_val} | {scanned} |"
+            )
         lines.append("")
 
     return "\n".join(lines)
@@ -388,7 +346,7 @@ def _collect_bucket_rows(buckets: list[dict]) -> list[tuple[str, str, str, str]]
         md_path = os.path.join(BASE_DIR, file_path + ".md")
         if not os.path.exists(md_path):
             continue
-        fm = _read_md_frontmatter(md_path)
+        fm = read_frontmatter(md_path)
         uri = fm.get("uri", b["uri"])
         scanned = fm.get("scanned", "")
         if scanned and "T" in scanned:

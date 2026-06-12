@@ -1,6 +1,8 @@
 import datetime as dt
 import io
+import sys
 
+import numpy as np
 import pytest
 from pydantic import BaseModel
 
@@ -67,3 +69,77 @@ def test_datetime_serialization_matches_pydantic_json_mode() -> None:
         )
         == expected
     )
+
+
+def test_numpy_serialization_is_opt_in() -> None:
+    with pytest.raises(TypeError, match="ndarray"):
+        json.dumps({"payload": np.array([1, 2])})
+
+
+def test_numpy_serialization_handles_nested_values() -> None:
+    payload = np.empty(2, dtype=object)
+    payload[0] = np.array([1, 2], dtype=np.int64)
+    payload[1] = {np.int64(7): np.float32(0.5)}
+
+    assert json.loads(
+        json.dumps({"payload": payload}, serialize_bytes=True, serialize_numpy=True)
+    ) == {"payload": [[1, 2], {"7": 0.5}]}
+
+
+def test_numpy_serialization_does_not_import_numpy_for_other_values(
+    monkeypatch,
+) -> None:
+    monkeypatch.delitem(sys.modules, "numpy", raising=False)
+
+    with pytest.raises(TypeError, match="Unexpected"):
+        json.dumps({"payload": Unexpected()}, serialize_numpy=True)
+
+    assert "numpy" not in sys.modules
+
+
+def test_numpy_serialization_preserves_tuple_dict_keys_for_encoder() -> None:
+    payload = np.empty(1, dtype=object)
+    payload[0] = {(np.int64(1), np.int64(2)): "value"}
+
+    with pytest.raises(TypeError, match="keys must be"):
+        json.dumps({"payload": payload}, serialize_bytes=True, serialize_numpy=True)
+
+
+def test_numpy_serialization_handles_scalars_and_fast_array_path() -> None:
+    encoded = json.loads(
+        json.dumps(
+            {
+                "score": np.float32(0.5),
+                "values": np.array([1, 2], dtype=np.int64),
+            },
+            serialize_numpy=True,
+        )
+    )
+
+    assert encoded == {"score": 0.5, "values": [1, 2]}
+
+
+def test_numpy_serialization_preserves_user_default() -> None:
+    def default(value):
+        if isinstance(value, Unexpected):
+            return "handled"
+        raise TypeError
+
+    encoded = json.loads(
+        json.dumps(
+            {"payload": [np.array([1, 2], dtype=np.int64), Unexpected()]},
+            default=default,
+            serialize_numpy=True,
+        )
+    )
+
+    assert encoded == {"payload": [[1, 2], "handled"]}
+
+
+def test_dump_serialize_numpy_writes_expected_stream() -> None:
+    buffer = io.StringIO()
+    json.dump(
+        {"payload": np.array([1, 2], dtype=np.int64)}, buffer, serialize_numpy=True
+    )
+    buffer.seek(0)
+    assert json.loads(buffer.read()) == {"payload": [1, 2]}

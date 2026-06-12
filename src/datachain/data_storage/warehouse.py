@@ -107,7 +107,11 @@ class AbstractWarehouse(ABC, Serializable):
             out: dict[str, Any] = {}
             for k, v in obj.items():
                 if not isinstance(k, str):
-                    key_str = json.dumps(self._to_jsonable(k), ensure_ascii=False)
+                    key_str = json.dumps(
+                        self._to_jsonable(k),
+                        ensure_ascii=False,
+                        serialize_numpy=True,
+                    )
                 else:
                     key_str = k
                 out[key_str] = self._to_jsonable(v)
@@ -170,7 +174,7 @@ class AbstractWarehouse(ABC, Serializable):
                 return val
             json_ready = self._to_jsonable(val)
             try:
-                return json.dumps(json_ready, ensure_ascii=False)
+                return json.dumps(json_ready, ensure_ascii=False, serialize_numpy=True)
             except TypeError as e:
                 raise JsonSerializationError(
                     f"JSON serialization error: {e}",
