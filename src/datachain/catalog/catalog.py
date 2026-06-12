@@ -1731,29 +1731,19 @@ class Catalog:
                 f"Dataset {name} doesn't have version {version}"
             )
 
-        if version:
-            self.remove_dataset_version(dataset, version, keep_metadata=keep_metadata)
-            return
-
-        if keep_metadata:
-            bad = [v.version for v in dataset.versions if not v.is_soft_deletable]
-            if dataset.is_internal or bad:
-                reason = (
-                    "internal datasets must be fully removed"
-                    if dataset.is_internal
-                    else f"versions {bad} are not in a soft-deletable state"
-                )
-                raise DataChainError(
-                    f"Cannot remove dataset {name} while keeping metadata: "
-                    f"{reason}. Use keep_metadata=False, or remove eligible "
-                    "versions individually."
-                )
-
-        for v in dataset.versions:
+        versions = [version] if version else [v.version for v in dataset.versions]
+        for ver in versions:
+            v = dataset.get_version(ver)
+            # keep_metadata only has meaning for user-facing datasets with
+            # soft-deletable versions; elsewhere there's no semver/lineage to
+            # preserve, so downgrade to wipe transparently.
+            effective_keep = (
+                keep_metadata and not dataset.is_internal and v.is_soft_deletable
+            )
             self.remove_dataset_version(
                 dataset,
-                v.version,
-                keep_metadata=keep_metadata,
+                ver,
+                keep_metadata=effective_keep,
             )
 
     def edit_dataset(

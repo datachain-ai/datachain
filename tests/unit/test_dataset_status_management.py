@@ -670,12 +670,13 @@ def test_session_dataset_never_keeps_metadata(test_session):
         catalog.get_dataset(name, include_incomplete=True)
 
 
-def test_remove_dataset_force_keep_metadata_refuses_bad_versions(
+def test_remove_dataset_force_keep_metadata_mixed_versions(
     test_session, dataset_complete
 ):
-    """`remove_dataset(force=True, keep_metadata=True)` must refuse upfront if
-    any version is not soft-deletable, instead of silently downgrading or
-    leaving partial state."""
+    """`remove_dataset(force=True, keep_metadata=True)` on a mixed-state
+    dataset tombstones soft-deletable versions and transparently wipes the
+    rest - keep_metadata is meaningful only where there is semver/lineage
+    worth preserving."""
     catalog = test_session.catalog
     columns = tuple(
         sa.Column(name, typ) for name, typ in dataset_complete.schema.items()
@@ -687,34 +688,28 @@ def test_remove_dataset_force_keep_metadata_refuses_bad_versions(
         updated, "2.0.0", status=DatasetStatus.FAILED
     )
 
-    with pytest.raises(DataChainError, match="not in a soft-deletable state"):
-        catalog.remove_dataset(dataset_complete.name, force=True, keep_metadata=True)
+    catalog.remove_dataset(dataset_complete.name, force=True, keep_metadata=True)
 
-    # Nothing was mutated - both versions still present with original statuses.
     ds = catalog.get_dataset(
         dataset_complete.name, versions=None, include_incomplete=True
     )
-    assert ds.get_version("1.0.0").status == DatasetStatus.COMPLETE
-    assert ds.get_version("2.0.0").status == DatasetStatus.FAILED
+    # COMPLETE version -> tombstoned; FAILED version -> wiped.
+    assert _find_removed(ds, "1.0.0") is not None
+    assert not ds.has_version("2.0.0")
 
 
-def test_remove_dataset_force_keep_metadata_refuses_internal(test_session):
-    """Internal datasets (`lst__*`, `session_*`) can't keep metadata even with
-    force=True - pre-flight should refuse."""
+def test_remove_dataset_force_keep_metadata_internal_downgrades_to_wipe(test_session):
+    """Internal datasets (`lst__*`, `session_*`) have no semver/lineage to
+    preserve, so `keep_metadata=True` transparently downgrades to a full wipe.
+    """
     catalog = test_session.catalog
     name = f"{SESSION_DATASET_PREFIX}force_test"
     ds = _make_completed_dataset(catalog, name)
 
-    with pytest.raises(DataChainError, match="internal datasets must be fully removed"):
-        catalog.remove_dataset(ds.name, force=True, keep_metadata=True)
+    catalog.remove_dataset(ds.name, force=True, keep_metadata=True)
 
-    # Still present, untouched.
-    assert (
-        catalog.get_dataset(ds.name, versions=None, include_incomplete=True)
-        .get_version("1.0.0")
-        .status
-        == DatasetStatus.COMPLETE
-    )
+    with pytest.raises(DatasetNotFoundError):
+        catalog.get_dataset(ds.name, include_incomplete=True)
 
 
 def _force_status(catalog, dataset: DatasetRecord, version: str, status: int):
