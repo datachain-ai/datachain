@@ -696,6 +696,42 @@ def test_session_dataset_never_keeps_metadata(test_session):
         catalog.get_dataset(name, include_incomplete=True)
 
 
+def test_bulk_wipe_does_not_cascade_dataset_row(test_session, dataset_complete):
+    """A GC-shaped wipe of a single version (whose in-memory DatasetRecord
+    only carries that one version) must not delete the dataset row when
+    other versions still exist in DB - otherwise FK cascade takes REMOVED
+    tombstones and live versions down with it."""
+    catalog = test_session.catalog
+    # Add a second version, then mark it FAILED so GC will pick it up.
+    columns = tuple(
+        sa.Column(name, typ) for name, typ in dataset_complete.schema.items()
+    )
+    second, _ = catalog.create_dataset_version(
+        dataset_complete, "2.0.0", columns=columns
+    )
+    catalog.metastore.update_dataset_version(
+        second, "2.0.0", status=DatasetStatus.FAILED
+    )
+
+    # Soft-delete v1.0.0 to get a tombstone we expect to survive.
+    catalog.remove_dataset(dataset_complete.name, version="1.0.0", keep_metadata=True)
+
+    # GC wipes v2.0.0 via the bulk path - this builds a single-version
+    # DatasetRecord per row internally.
+    ds = catalog.get_dataset(
+        dataset_complete.name, versions=None, include_incomplete=True
+    )
+    v2_id = ds.get_version("2.0.0").id
+    catalog.remove_dataset_versions(version_ids=[v2_id])
+
+    # Dataset row must survive; tombstone must survive.
+    ds = catalog.get_dataset(
+        dataset_complete.name, versions=None, include_incomplete=True
+    )
+    assert _find_removed(ds, "1.0.0") is not None
+    assert not ds.has_version("2.0.0")
+
+
 def test_rename_dataset_across_tombstone(test_session, dataset_complete):
     """Renaming a dataset that has a REMOVED tombstone version must succeed:
     the tombstone has no rows table, so its rename is skipped, and live

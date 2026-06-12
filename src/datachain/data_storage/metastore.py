@@ -1797,8 +1797,19 @@ class AbstractDBMetastore(AbstractMetastore):
                 )
             )
 
-            if dataset.versions and len(dataset.versions) == 1:
-                # had only one version, fully deleting dataset
+            # Count in DB, not in the in-memory record: GC-shaped paths
+            # build single-version records via _fetch_version_pairs, so the
+            # in-memory length is always 1 even when the dataset has many
+            # versions. Trusting that would cascade-delete the dataset row
+            # (and any REMOVED tombstones with it) on any GC wipe.
+            remaining = next(
+                self.db.execute(
+                    select(f.count())
+                    .select_from(dv)
+                    .where(dv.c.dataset_id == dataset.id)
+                )
+            )[0]
+            if remaining == 0:
                 self.db.execute(self._datasets_delete().where(d.c.id == dataset.id))
 
         dataset.remove_version(version)
