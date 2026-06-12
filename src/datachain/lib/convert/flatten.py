@@ -69,8 +69,7 @@ def flatten_value(value, anno) -> tuple:
                 return (1, *_emit_absent(kind.inner))
             return (0, *flatten(value))
         if value is None:
-            # None for a non-Optional model (e.g. an unmatched outer-merge side):
-            # no sentinel column, so emit a placeholder per leaf to keep the width.
+            # Non-Optional model None (outer-merge pad): per-leaf placeholders.
             return tuple(_emit_absent(kind.inner))
         return flatten(value)
     return (value,)

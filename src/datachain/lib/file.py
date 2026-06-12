@@ -74,7 +74,6 @@ class FileExporter(NodesThreadPool):
             task.result()
 
     def do_task(self, file: "File | None"):
-        # An absent Optional[File] row has nothing to export.
         if file is not None:
             file.export(
                 self.output,

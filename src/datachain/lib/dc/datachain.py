@@ -1379,8 +1379,7 @@ class DataChain:
                 if not columns:
                     raise SignalResolvingError([col], "is not found")
                 partition_by_columns.extend(cast("list[Column]", columns))
-                # GROUP BY the ancestor sentinel too, so the aggregated table keeps
-                # the `_type_tag` column the result schema expects.
+                # GROUP BY the ancestor sentinel so the result keeps _type_tag.
                 for leaf in cast("list[Column]", columns):
                     sentinel = self.signals_schema.optional_parent_sentinel(leaf.name)
                     if sentinel:
@@ -1931,15 +1930,13 @@ class DataChain:
         sentinel_field = SignalSchema._OPTIONAL_SENTINEL_FIELD
 
         def _present_sentinel() -> Any:
-            # present = the first arm (index 0); read_optional_sentinel treats
-            # NULL/non-zero as absent. Typed to match the optional side's _type_tag.
+            # present = arm 0 (NULL/non-zero reads as absent).
             col = literal(0)
             col.type = python_to_sql(int)()
             return col
 
         def _nullable_leaf_casts(name: str, promoted: dict[str, Any]) -> dict[str, Any]:
-            # Re-cast leaves to nullable so the UNION keeps NULLs on CH instead of
-            # default-filling them (0/"").
+            # Re-cast leaves to nullable so the UNION keeps NULLs on CH (not 0/"").
             from datachain.lib.signal_schema import SignalSchema
 
             casts: dict[str, Any] = {}
@@ -2580,8 +2577,7 @@ class DataChain:
             File: The stored file with refreshed metadata (version, etag, size).
         """
         target = File.at(path, session=self.session)
-        # Select the `_type_tag` so an absent Optional[DataModel] can be collapsed
-        # to null (the tag is stripped from the output by _collapse_by_tag).
+        # Select _type_tag to collapse absent parents to null (then stripped).
         headers, _ = self._effective_signals_schema.get_headers_with_length(
             include_sentinels=True
         )

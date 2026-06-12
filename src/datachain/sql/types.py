@@ -157,8 +157,7 @@ class SQLType(TypeDecorator):
     impl: type[types.TypeEngine[Any]] = types.TypeEngine
     cache_ok = True
 
-    # Optional[scalar] marker: backends without nullable-by-default emit a nullable
-    # column so None round-trips instead of the type default.
+    # Optional[scalar] marker -> backend emits a nullable column so None round-trips.
     dc_nullable: bool = False
 
     def load_dialect_impl(self, dialect):

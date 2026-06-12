@@ -246,8 +246,7 @@ def create_feature_model(
     base_name, parsed_version = ModelStore.parse_name_version(name)
     class_name = f"{base_name}_v{parsed_version}" if parsed_version > 0 else base_name
     model_name = class_name.replace("@", "_")
-    # Generated models replay existing schemas, so their field defaults aren't
-    # user input — skip the strict-Optional validators.
+    # Generated models replay stored schemas; skip the strict-Optional validators.
     with skip_dc_validation():
         model = create_model(
             model_name,
@@ -1200,8 +1199,7 @@ class SignalSchema:
     def create_model(self, name: str) -> type[DataModel]:
         fields = {key: (value, None) for key, value in self.values.items()}
 
-        # default=None here replays the schema, not user intent — skip
-        # promote_default_none or every field becomes Optional with a sentinel.
+        # Replayed schema, not user intent -> skip promote_default_none.
         with skip_dc_validation():
             return create_model(
                 name,
@@ -1242,8 +1240,6 @@ class SignalSchema:
             new_prefix = prefix + suffix
             if not include_sys and new_prefix and new_prefix[0] == "sys":
                 continue
-            # The `_type_tag` discriminator (leading underscore) is kept for storage and
-            # hydration but dropped from user-facing output.
             if not include_sentinels and name.startswith("_"):
                 continue
             hidden_fields = getattr(type_, "_hidden_fields", None)
@@ -1354,11 +1350,8 @@ class SignalSchema:
             register_pydantic=True,
         )
 
-    # Variant discriminator for Optional[DataModel] (and, later, wider unions):
-    # the 0-based index of the active arm. Optional[X] == Union[X, None], so
-    # present=0, None=1. Leading underscore makes it an internal column (pydantic
-    # forbids user fields starting with "_"); int | None so a NULL padded by an
-    # outer join reads back as the None arm ("absent").
+    # `_type_tag` = 0-based index of the active arm (Optional[X] == Union[X, None]:
+    # present=0, None=1). Leading-underscore internal column, int | None.
     _OPTIONAL_SENTINEL_FIELD = "_type_tag"
     _OPTIONAL_SENTINEL_TYPE = int | None  # type: ignore[valid-type]
 
