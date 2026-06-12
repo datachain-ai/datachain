@@ -34,8 +34,13 @@ ColT = Union[str, tuple, Column, ColumnExpr, "Func"]
 
 def _source_is_nullable(col: ColT, signals_schema: "SignalSchema | None") -> bool:
     """True when ``col`` resolves to a column that may hold NULL — a leaf under an
-    ``Optional[DataModel]`` or an ``Optional[basic]`` column."""
-    if signals_schema is None or not isinstance(col, str):
+    ``Optional[DataModel]`` or an ``Optional[basic]`` column, or a nullable
+    ``Func`` operand (so nullability propagates through composed expressions)."""
+    if signals_schema is None:
+        return False
+    if isinstance(col, Func):
+        return col.is_nullable_result(signals_schema)
+    if not isinstance(col, str):
         return False
     db_col = ColumnMeta.to_db_name(col)
     if signals_schema.optional_parent_sentinel(db_col) is not None:

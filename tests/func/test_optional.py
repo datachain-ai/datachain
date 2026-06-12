@@ -239,6 +239,22 @@ def test_mutate_func_over_absent_leaf_is_none(test_session):
     assert saved == {1: 2, 2: None, 3: 3}  # None survives save() on both backends
 
 
+def test_composed_func_over_absent_leaf_is_none(test_session):
+    from datachain import func
+
+    chain = (
+        dc.read_values(
+            id=[1, 2],
+            item=[_Inner(score=1, label="aa"), None],
+            output={"id": int, "item": Optional[_Inner]},
+            session=test_session,
+        )
+        .mutate(ln2=func.string.length("item.label") + 1)
+        .order_by("id")
+    )
+    assert chain.to_values("ln2") == [3, None]
+
+
 class _Deep(DataModel):
     name: str = ""
     inner: Optional[_Inner] = None
