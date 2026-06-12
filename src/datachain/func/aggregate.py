@@ -20,18 +20,14 @@ AggColT = str | Column | ColumnExpr | Func
 
 
 class _CountFunc(_SentinelAwareFunc):
-    """``count(<Optional[DataModel]>)`` counts rows where the parent is present.
-
-    The parent isn't a real column on disk, so it counts via the sentinel
-    (``SUM(1 - {prefix}___type_tag)``) to agree across backends.
-    """
+    """``count(Optional[DataModel])`` counts present-parent rows via the
+    ``_type_tag`` (the parent has no real column): ``SUM(1 - _type_tag)``."""
 
     def is_nullable_result(
         self,
         signals_schema: "SignalSchema | None",
         col_type: "DataType | None" = None,
     ) -> bool:
-        # COUNT never returns NULL (0 for an empty group), so its column stays int.
         return False
 
     def _sentinel_column(

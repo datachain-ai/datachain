@@ -993,10 +993,8 @@ class SignalSchema:
     def order_by_column(
         self, db_col: str, *, descending: bool = False
     ) -> ColumnExpr | None:
-        """Order-by expression for a nullable column (a leaf under
-        ``Optional[DataModel]`` or a top-level ``Optional[basic]``), with explicit
-        ``NULLS LAST`` so a NULL row sorts last on every backend (SQLite would
-        otherwise sort NULLs first). None when ``db_col`` is not nullable."""
+        """Order-by expression for a nullable column with explicit ``NULLS LAST``
+        (SQLite sorts NULLs first otherwise). None when ``db_col`` isn't nullable."""
         try:
             anno = self.get_column_type(db_col)
         except SignalResolvingError:

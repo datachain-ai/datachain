@@ -107,8 +107,6 @@ def test_add_column_not_null_with_existing_rows(catalog):
 
 @skip_if_not_sqlite
 def test_add_column_idempotent(catalog):
-    """Re-adding the same column is swallowed silently (mirrors CH's
-    ALTER TABLE ADD COLUMN IF NOT EXISTS contract)."""
     db = catalog.metastore.db
     table_name = "test_idempotent_add"
 

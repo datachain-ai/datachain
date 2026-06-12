@@ -283,7 +283,6 @@ def test_select_except_on_optional_datamodel():
 
 
 def test_compare_signals_ignores_optional_sentinel():
-    """compare_signals() (delta/diff) must not surface the internal sentinel."""
     a = SignalSchema({"out": _Outer})
     b = SignalSchema({"out": _Outer, "extra": int})
     added, removed = b.compare_signals(a)
@@ -292,9 +291,8 @@ def test_compare_signals_ignores_optional_sentinel():
 
 
 def test_create_model_does_not_promote_non_optional_fields():
-    """SignalSchema.create_model() replays a schema, so its default=None fields
-    must not be promoted to Optional (which would add _type_tag discriminators the
-    source schema never had). It must behave like create_feature_model."""
+    """Replayed schemas keep `default=None` fields non-Optional (no promotion, no
+    _type_tag added)."""
     schema = SignalSchema({"id": int, "addr": _Addr, "name": str})
     model = schema.create_model("Probe")
     annotations = {f: fi.annotation for f, fi in model.model_fields.items()}
@@ -305,9 +303,6 @@ def test_create_model_does_not_promote_non_optional_fields():
 
 
 def test_infer_optional_datamodel_from_nones():
-    # A DataModel column with some None values is inferred as Optional[DataModel]
-    # (so the sentinel is emitted) rather than the bare model type. This is the
-    # pure-inference half of the func read_values round-trip test.
     seq = [_Addr(city="a"), None, _Addr(city="c")]
     inner, is_optional = unwrap_optional(_infer_type_from_sequence(seq, "item", "ds"))
     assert is_optional and inner is _Addr
