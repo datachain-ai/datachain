@@ -392,6 +392,17 @@ class DatasetVersion:
             DatasetStatus.REMOVED,
         )
 
+    @property
+    def is_removed(self) -> bool:
+        """True if the version is in any removal state (in-flight or
+        terminal): REMOVING, REMOVED, REMOVING_TOTAL. The rows table is
+        gone or being dropped in all three cases."""
+        return self.status in (
+            DatasetStatus.REMOVING,
+            DatasetStatus.REMOVED,
+            DatasetStatus.REMOVING_TOTAL,
+        )
+
     def update(self, **kwargs):
         for key, value in kwargs.items():
             if hasattr(self, key):

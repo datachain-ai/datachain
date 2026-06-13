@@ -1950,6 +1950,13 @@ class Catalog:
                 )
                 if local_dataset.has_version(local_ds_version):
                     local_ver = local_dataset.get_version(local_ds_version)
+                    if local_ver.is_removed:
+                        raise DataChainError(
+                            f"Local dataset {local_ds_uri} was removed; "
+                            "the version number is reserved. Pull into a "
+                            "different version or remove the tombstone "
+                            "explicitly first."
+                        )
                     if local_ver.status != DatasetStatus.COMPLETE:
                         # Stale incomplete version from a different UUID —
                         # clean it up so this pull can proceed.

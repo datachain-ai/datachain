@@ -2090,7 +2090,10 @@ class AbstractDBMetastore(AbstractMetastore):
             dd.c.source_dataset_version_id == dataset_version.id
         )
         if not include_removed:
-            where_clause = where_clause & (dv.c.status != DatasetStatus.REMOVED)
+            # Only COMPLETE dep versions are readable; everything else
+            # (in-flight, broken, or in a removal state) should look like
+            # the dep is gone so delta fallback can trigger a rebuild.
+            where_clause = where_clause & (dv.c.status == DatasetStatus.COMPLETE)
 
         query = (
             self._datasets_dependencies_select(*select_cols)

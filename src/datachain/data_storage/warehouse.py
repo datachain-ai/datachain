@@ -24,7 +24,7 @@ from datachain import json
 from datachain.client import Client
 from datachain.data_storage.schema import convert_rows_custom_column_types
 from datachain.data_storage.serializer import Serializable
-from datachain.dataset import DatasetRecord, DatasetStatus, StorageURI
+from datachain.dataset import DatasetRecord, StorageURI
 from datachain.error import TableRenameError
 from datachain.lib.file import File
 from datachain.lib.model_store import ModelStore
@@ -469,14 +469,10 @@ class AbstractWarehouse(ABC, Serializable):
         for version in [v.version for v in dataset_updated.versions]:
             if not dataset.has_version(version):
                 continue
-            # Removal-state versions have no rows table (dropped at soft/hard
-            # delete time), so renaming would raise mid-loop and strand the
-            # rest of the dataset in a half-renamed state.
-            if dataset_updated.get_version(version).status in (
-                DatasetStatus.REMOVING,
-                DatasetStatus.REMOVED,
-                DatasetStatus.REMOVING_TOTAL,
-            ):
+            # Removed versions have no rows table (dropped at soft/hard delete
+            # time), so renaming would raise mid-loop and strand the rest of
+            # the dataset in a half-renamed state.
+            if dataset_updated.get_version(version).is_removed:
                 continue
             src = self.dataset_table_name(dataset, version)
             dest = self.dataset_table_name(dataset_updated, version)

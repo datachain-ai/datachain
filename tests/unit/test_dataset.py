@@ -487,6 +487,24 @@ def test_is_soft_deletable(dataset_record, status, expected):
     assert version.is_soft_deletable is expected
 
 
+@pytest.mark.parametrize(
+    "status,expected",
+    [
+        (DatasetStatus.REMOVING, True),
+        (DatasetStatus.REMOVED, True),
+        (DatasetStatus.REMOVING_TOTAL, True),
+        (DatasetStatus.COMPLETE, False),
+        (DatasetStatus.CREATED, False),
+        (DatasetStatus.FAILED, False),
+        (DatasetStatus.STALE, False),
+        (DatasetStatus.PENDING, False),
+    ],
+)
+def test_is_removed(dataset_record, status, expected):
+    version = replace(dataset_record.versions[0], status=status)
+    assert version.is_removed is expected
+
+
 def _versions_from_pairs(dataset_record, pairs):
     return [
         replace(
