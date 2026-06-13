@@ -6,9 +6,9 @@ general: task-specific findings and postmortems belong with the code or the PR, 
 
 ## Core model
 
-- A signal is a typed pydantic `DataModel`. Nested fields **flatten** into DB columns
-  joined by `__`. The `SignalSchema` (the model tree) is serialized and travels with
-  every dataset version.
+- A signal is a typed column — a basic type (e.g. `int`, `str`) or a pydantic
+  `DataModel`. A `DataModel`'s nested fields **flatten** into DB columns joined by `__`.
+  The `SignalSchema` (the model tree) is serialized and travels with every dataset version.
 - One user-facing API runs over several SQL **warehouse backends**, and user-visible
   behavior must be identical across all of them.
 - Chain operations return a new chain and **never mutate the receiver** (its schema or
