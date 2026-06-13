@@ -1051,3 +1051,66 @@ def test_union_does_not_mutate_input_chains(test_session):
     opt.union(mk_plain()).save("u_reuse_1")
     mk_plain().union(opt).save("u_reuse_2")  # opt reused -> must not raise
     assert dc.read_dataset("u_reuse_2", session=test_session).count() == 3
+
+
+def _none_last(values):
+    return sorted(values, key=lambda v: (v is None, v))
+
+
+def test_union_scalar_promotes_to_optional_both_orders(test_session):
+    """union of plain ``int`` with ``Optional[int]`` is ``Optional[int]`` in
+    either order, and None survives the round-trip on both backends."""
+    plain = dc.read_values(x=[1, 2], output={"x": int}, session=test_session)
+    opt = dc.read_values(x=[3, None], output={"x": Optional[int]}, session=test_session)
+
+    for i, merged in enumerate((plain.union(opt), opt.union(plain))):
+        _, is_optional = unwrap_optional(merged.signals_schema.values["x"])
+        assert is_optional
+        merged.save(f"u_scalar_{i}")
+        back = dc.read_dataset(f"u_scalar_{i}", session=test_session)
+        assert _none_last(back.to_values("x")) == [1, 2, 3, None]
+
+
+def test_union_float_and_collection_promote_schema(test_session):
+    """float and collection signals promote to Optional too, so the schema never
+    claims a non-null type (faithful CH round-trip for these is out of scope)."""
+    fplain = dc.read_values(x=[1.0], output={"x": float}, session=test_session)
+    fopt = dc.read_values(x=[None], output={"x": Optional[float]}, session=test_session)
+    _, f_opt = unwrap_optional(fplain.union(fopt).signals_schema.values["x"])
+    assert f_opt
+
+    lplain = dc.read_values(x=[[1, 2]], output={"x": list[int]}, session=test_session)
+    lopt = dc.read_values(
+        x=[None], output={"x": Optional[list[int]]}, session=test_session
+    )
+    _, l_opt = unwrap_optional(lplain.union(lopt).signals_schema.values["x"])
+    assert l_opt
+
+
+def test_union_optional_datamodel_schema_both_orders(test_session):
+    """union of Optional[M] with M is Optional[M] in either operand order and
+    round-trips, with a nullable _type_tag on both sides."""
+
+    def mk_plain():
+        return dc.read_values(
+            item=[_Inner(score=1, label="a")],
+            output={"item": _Inner},
+            session=test_session,
+        )
+
+    def mk_opt():
+        return dc.read_values(
+            item=[_Inner(score=2, label="b"), None],
+            output={"item": Optional[_Inner]},
+            session=test_session,
+        )
+
+    for i, merged in enumerate(
+        (mk_plain().union(mk_opt()), mk_opt().union(mk_plain()))
+    ):
+        _, is_optional = unwrap_optional(merged.signals_schema.values["item"])
+        assert is_optional
+        merged.save(f"u_dm_order_{i}")
+        back = dc.read_dataset(f"u_dm_order_{i}", session=test_session)
+        assert back.count() == 3
+        assert sum(1 for v in back.to_values("item") if v is None) == 1

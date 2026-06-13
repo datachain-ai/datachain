@@ -1888,15 +1888,10 @@ class DataChain:
         return ds
 
     def _align_optional_for_union(self, other: "Self") -> "tuple[Self, Self]":
-        """Reconcile ``Optional[DataModel]`` vs plain ``DataModel`` for the same
-        signal across the two sides of a union.
-
-        A union of ``Optional[M]`` with ``M`` should yield ``Optional[M]``. The
-        plain side lacks the ``_type_tag`` discriminator column, so it is promoted: a
-        ``present`` (0) tag is added and its schema signal becomes
-        ``Optional[M]``. Without this the column sets mismatch and the union
-        fails (leaking the internal sentinel name). Sides already matching are
-        returned unchanged.
+        """Promote a plain ``T`` to ``Optional[T]`` when unioned with an
+        ``Optional[T]`` side, so the result schema doesn't claim ``T`` while the
+        rows hold ``None``. The plain side gets nullable leaves and, for an
+        ``Optional[DataModel]``, a ``present`` ``_type_tag``.
         """
         from datachain.lib.signal_schema import SignalSchema
 
@@ -1911,15 +1906,15 @@ class DataChain:
         sentinel_field = SignalSchema._OPTIONAL_SENTINEL_FIELD
 
         def _present_sentinel() -> Any:
-            # present = arm 0 (NULL/non-zero reads as absent).
+            # nullable to match the natural side's _type_tag column type.
             col = literal(0)
-            col.type = python_to_sql(int)()
+            sql_type = python_to_sql(int)()
+            sql_type.dc_nullable = True
+            col.type = sql_type
             return col
 
         def _nullable_leaf_casts(name: str, promoted: dict[str, Any]) -> dict[str, Any]:
             # Re-cast leaves to nullable so the UNION keeps NULLs on CH (not 0/"").
-            from datachain.lib.signal_schema import SignalSchema
-
             casts: dict[str, Any] = {}
             sub = SignalSchema({name: promoted[name]})
             cols = cast(
@@ -1932,24 +1927,23 @@ class DataChain:
                 casts[col.name] = ref
             return casts
 
+        def _promote(
+            name: str, inner: Any, prom: dict[str, Any], add: dict[str, Any]
+        ) -> None:
+            prom[name] = inner | None
+            add.update(_nullable_leaf_casts(name, prom))
+            if ModelStore.is_pydantic(inner):
+                add[f"{name}{DEFAULT_DELIMITER}{sentinel_field}"] = _present_sentinel()
+
         for name in lvals:
             l_inner, l_opt = unwrap_optional(lvals[name])
             r_inner, r_opt = unwrap_optional(rvals[name])
-            if not ModelStore.is_pydantic(l_inner):
+            if l_inner != r_inner or l_opt == r_opt:
                 continue
-            if not ModelStore.is_pydantic(r_inner):
-                continue
-            if l_opt == r_opt:
-                continue
-            sentinel = f"{name}{DEFAULT_DELIMITER}{sentinel_field}"
             if not l_opt:
-                lprom[name] = l_inner | None
-                left_add[sentinel] = _present_sentinel()
-                left_add.update(_nullable_leaf_casts(name, lprom))
+                _promote(name, l_inner, lprom, left_add)
             if not r_opt:
-                rprom[name] = r_inner | None
-                right_add[sentinel] = _present_sentinel()
-                right_add.update(_nullable_leaf_casts(name, rprom))
+                _promote(name, r_inner, rprom, right_add)
 
         left, right = self, other
         if left_add:
