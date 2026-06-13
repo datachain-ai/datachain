@@ -1,5 +1,11 @@
 from .bucket import bucket_status_cmd
-from .datasets import edit_dataset, list_datasets, list_datasets_local, rm_dataset
+from .datasets import (
+    dataset_stats,
+    edit_dataset,
+    list_datasets,
+    list_datasets_local,
+    rm_dataset,
+)
 from .du import du
 from .index import index
 from .ls import ls
@@ -11,6 +17,7 @@ __all__ = [
     "bucket_status_cmd",
     "clear_cache",
     "completion",
+    "dataset_stats",
     "du",
     "edit_dataset",
     "garbage_collect",

@@ -125,6 +125,70 @@ if TYPE_CHECKING:
 
 T = TypeVar("T", bound="DataChain")
 
+# Schema of the describe-style chain returned by ``DataChain.stats()`` —
+# one row per leaf column. ``min``/``max`` are stringified so a single column
+# can hold both numeric and temporal ranges; richer numbers live in ``avg`` /
+# ``stddev`` and the JSON ``top_k`` / ``histogram`` columns.
+_STATS_CHAIN_SCHEMA: dict[str, Any] = {
+    "column_name": str,
+    "kind": str,
+    "type": str | None,
+    "row_count": int,
+    "null_count": int | None,
+    "non_null_count": int | None,
+    "distinct_count": int | None,
+    "min": str | None,
+    "max": str | None,
+    "avg": float | None,
+    "stddev": float | None,
+    "true_count": int | None,
+    "false_count": int | None,
+    "top_k": list[dict] | None,
+    "histogram": dict | None,
+    "skipped_reason": str | None,
+}
+
+
+def _stats_to_chain(stats: dict[str, Any], session: Any) -> "DataChain":
+    """Build the describe-style stats chain (one row per column) from a dict."""
+    from datachain.lib.dc.values import read_values
+
+    data: dict[str, Any] = {key: [] for key in _STATS_CHAIN_SCHEMA}
+    row_count = stats.get("row_count", 0)
+
+    def add(**values: Any) -> None:
+        for key in _STATS_CHAIN_SCHEMA:
+            data[key].append(values.get(key))
+
+    for name, info in stats.get("columns", {}).items():
+        mn, mx = info.get("min"), info.get("max")
+        add(
+            column_name=name,
+            kind=info.get("kind"),
+            type=info.get("type"),
+            row_count=row_count,
+            null_count=info.get("null_count"),
+            non_null_count=info.get("non_null_count"),
+            distinct_count=info.get("distinct_count"),
+            min=None if mn is None else str(mn),
+            max=None if mx is None else str(mx),
+            avg=info.get("avg"),
+            stddev=info.get("stddev"),
+            true_count=info.get("true_count"),
+            false_count=info.get("false_count"),
+            top_k=info.get("top_k"),
+            histogram=info.get("histogram"),
+        )
+    for name, reason in stats.get("skipped_columns", {}).items():
+        add(
+            column_name=name,
+            kind="skipped",
+            row_count=row_count,
+            skipped_reason=reason,
+        )
+
+    return read_values(**data, output=_STATS_CHAIN_SCHEMA, session=session)
+
 
 class DataChainSchema(dict[str, DataType]):
     """Dict-like public view of a DataChain schema.
@@ -397,6 +461,47 @@ class DataChain:
             versions=[self.version] if self.version else None,
             include_incomplete=False,
         )
+
+    def stats(self, *, force: bool = False, **kwargs) -> "DataChain":
+        """Per-column distribution statistics, as a new chain (one row per column).
+
+        Each row describes a leaf column: ``kind``/``type``, null and non-null
+        counts, and kind-specific stats — numeric ``min``/``max``/``avg``/
+        ``stddev``/``histogram``, categorical ``distinct_count``/``top_k``, and
+        boolean ``true_count``/``false_count``. Use ``.to_pandas()`` /
+        ``.to_records()`` / ``.show()`` to view them.
+
+        Works on any chain. For a plain saved dataset the result is computed
+        once and cached on the dataset version (``force=True`` recomputes); a
+        transformed chain (filters, maps, ...) is materialized and profiled
+        without caching.
+
+        Example:
+            ```py
+            dc.read_dataset("cats").stats().to_pandas()
+            dc.read_dataset("cats").filter(C("size") > 0).stats().show()
+            ```
+        """
+        catalog = self.session.catalog
+        if self.name and not self._query.steps:
+            stats = catalog.get_dataset_stats(
+                self.name,
+                self.version,
+                namespace_name=self._query.project.namespace.name,
+                project_name=self._query.project.name,
+                force=force,
+                **kwargs,
+            )
+        else:
+            # Transformed or unsaved chain: materialize and profile uncached.
+            materialized = self.persist()
+            dataset = materialized.dataset
+            if dataset is None or materialized.version is None:
+                raise ValueError("Cannot compute stats: chain has no rows table")
+            stats = catalog.warehouse.compute_dataset_stats(
+                dataset, materialized.version, **kwargs
+            )
+        return _stats_to_chain(stats, self.session)
 
     def __or__(self, other: "Self") -> "Self":
         """Return `self.union(other)`."""

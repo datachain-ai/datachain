@@ -11,6 +11,7 @@ from .commands import (
     bucket_status_cmd,
     clear_cache,
     completion,
+    dataset_stats,
     du,
     edit_dataset,
     garbage_collect,
@@ -206,6 +207,13 @@ def handle_dataset_command(args, catalog):
             force=args.force,
             studio=args.studio,
             team=args.team,
+        ),
+        "stats": lambda: dataset_stats(
+            catalog,
+            args.name,
+            version=args.version,
+            force=args.force,
+            as_json=args.as_json,
         ),
     }
 

@@ -296,6 +296,8 @@ class DatasetVersion:
     query_script: str = ""
     job_id: str | None = None
     content_hash: str | None = None
+    # Per-column distribution statistics, or ``None`` when not computed yet.
+    stats: dict | None = None
 
     @classmethod
     def parse(  # noqa: PLR0913
@@ -319,6 +321,7 @@ class DatasetVersion:
         query_script: str = "",
         job_id: str | None = None,
         content_hash: str | None = None,
+        stats: str | dict | None = None,
         *,
         preview_loaded: bool = True,
     ):
@@ -326,6 +329,8 @@ class DatasetVersion:
             schema_parsed = parse_schema(json.loads(schema) if schema else {})
         else:
             schema_parsed = schema
+
+        stats_parsed = json.loads(stats) if isinstance(stats, str) else stats
 
         return cls(
             id=id,
@@ -347,6 +352,7 @@ class DatasetVersion:
             query_script=query_script,
             job_id=job_id,
             content_hash=content_hash,
+            stats=stats_parsed,
             _preview_loaded=preview_loaded,
         )
 
@@ -577,6 +583,7 @@ class DatasetRecord:
         version_schema: str | None = None,
         version_job_id: str | None = None,
         version_content_hash: str | None = None,
+        version_stats: str | dict | None = None,
         *,
         versions_loaded: bool = True,
         preview_loaded: bool = True,
@@ -635,6 +642,7 @@ class DatasetRecord:
                 version_query_script or "",
                 version_job_id,
                 version_content_hash,
+                version_stats,
                 preview_loaded=preview_loaded,
             )
             versions_list = [dataset_version]
