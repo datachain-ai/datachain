@@ -2,10 +2,11 @@ import copy
 import inspect
 import re
 from collections.abc import Sequence
-from typing import Any, get_origin
+from typing import Any
 
 from pydantic import BaseModel
 
+from datachain.lib.convert.flatten import _leaf_count, classify_field
 from datachain.query.schema import DEFAULT_DELIMITER
 
 
@@ -13,19 +14,33 @@ def unflatten_to_json(model: type[BaseModel], row: Sequence[Any], pos: int = 0) 
     return unflatten_to_json_pos(model, row, pos)[0]
 
 
+def read_optional_sentinel(
+    inner: type[BaseModel], row: Sequence[Any], pos: int
+) -> tuple[bool, int]:
+    """Consume the leading ``_type_tag`` discriminator of an ``Optional[DataModel]``
+    subtree, returning ``(absent, next_pos)``. A NULL sentinel (e.g. outer-join
+    padding) counts as absent.
+    """
+    sentinel = row[pos]
+    pos += 1
+    if sentinel is None or sentinel:
+        return True, pos + _leaf_count(inner)
+    return False, pos
+
+
 def unflatten_to_json_pos(
     model: type[BaseModel], row: Sequence[Any], pos: int = 0
 ) -> tuple[dict, int]:
-    res = {}
+    res: dict[str, Any] = {}
     for name, f_info in model.model_fields.items():
-        anno = f_info.annotation
-        origin = get_origin(anno)
-        if (
-            origin not in (list, dict)
-            and inspect.isclass(anno)
-            and issubclass(anno, BaseModel)
-        ):
-            res[name], pos = unflatten_to_json_pos(anno, row, pos)
+        kind = classify_field(f_info.annotation)
+        if kind.is_model:
+            if kind.is_optional:
+                absent, pos = read_optional_sentinel(kind.inner, row, pos)
+                if absent:
+                    res[name] = None
+                    continue
+            res[name], pos = unflatten_to_json_pos(kind.inner, row, pos)
         else:
             res[name] = row[pos]
             pos += 1

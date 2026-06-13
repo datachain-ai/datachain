@@ -1,3 +1,4 @@
+import copy
 import inspect
 from collections.abc import Callable, Sequence
 from datetime import datetime
@@ -10,6 +11,7 @@ from sqlalchemy.sql.elements import ColumnElement
 
 from datachain.lib.convert.python_to_sql import python_to_sql
 from datachain.lib.convert.sql_to_python import sql_to_python
+from datachain.lib.data_model import NULLABLE_SCALARS, unwrap_optional
 from datachain.lib.model_store import ModelStore
 from datachain.lib.utils import DataChainColumnError, DataChainParamsError
 from datachain.query.schema import Column, ColumnExpr, ColumnMeta
@@ -28,6 +30,29 @@ if TYPE_CHECKING:
 
 
 ColT = Union[str, tuple, Column, ColumnExpr, "Func"]
+
+
+def _source_is_nullable(col: ColT, signals_schema: "SignalSchema | None") -> bool:
+    """True when ``col`` resolves to a column that may hold NULL — a leaf under an
+    ``Optional[DataModel]`` or an ``Optional[basic]`` column, or a nullable
+    ``Func`` operand (so nullability propagates through composed expressions)."""
+    if signals_schema is None:
+        return False
+    if isinstance(col, Func):
+        return col.is_nullable_result(signals_schema)
+    if not isinstance(col, str):
+        return False
+    db_col = ColumnMeta.to_db_name(col)
+    if signals_schema.optional_parent_sentinel(db_col) is not None:
+        return True
+    from datachain.lib.signal_schema import SignalResolvingError
+
+    try:
+        anno = signals_schema.get_column_type(db_col)
+    except SignalResolvingError:
+        return False
+    _, is_optional = unwrap_optional(anno)
+    return is_optional
 
 
 class Func(Function):  # noqa: PLW1641
@@ -362,20 +387,9 @@ class Func(Function):  # noqa: PLW1641
         return Func("ge", lambda a1, a2: a1 >= a2, [self, other], result_type=bool)
 
     def label(self, label: str) -> "Func":
-        return Func(
-            self.name,
-            self.inner,
-            self.cols,
-            self.args,
-            self.kwargs,
-            self.result_type,
-            self.type_from_args,
-            self.is_array,
-            self.from_array,
-            self.is_window,
-            self.window,
-            label,
-        )
+        new = copy.copy(self)
+        new.col_label = label
+        return new
 
     def get_col_name(self, label: str | None = None) -> str:
         if label:
@@ -389,6 +403,22 @@ class Func(Function):  # noqa: PLW1641
             if isinstance(first_col, Func):
                 return first_col.get_col_name()
         return self.name
+
+    def is_nullable_result(
+        self,
+        signals_schema: "SignalSchema | None",
+        col_type: "DataType | None" = None,
+    ) -> bool:
+        """Whether this func's result column may hold NULL: a nullable scalar
+        result (float excluded) over a nullable source."""
+        if signals_schema is None:
+            return False
+        if col_type is None:
+            col_type = self.get_result_type(signals_schema)
+        inner, _ = unwrap_optional(col_type)
+        return inner in NULLABLE_SCALARS and any(
+            _source_is_nullable(c, signals_schema) for c in self._db_cols
+        )
 
     def get_result_type(
         self, signals_schema: "SignalSchema | None" = None
@@ -519,6 +549,10 @@ class Func(Function):  # noqa: PLW1641
         col_type = self.get_result_type(signals_schema)
         sql_type = python_to_sql(col_type)
 
+        if self.is_nullable_result(signals_schema, col_type):
+            sql_type = sql_type() if inspect.isclass(sql_type) else sql_type
+            sql_type.dc_nullable = True
+
         cols = [
             self._resolve_col(col, sql_type, signals_schema, table)
             for col in self._db_cols
@@ -536,6 +570,33 @@ class Func(Function):  # noqa: PLW1641
         }
         func_col = self.inner(*cols, *self.args, **kwargs)
         return self._finalize_column(func_col, sql_type, label)
+
+
+class _SentinelAwareFunc(Func):
+    """A ``Func`` whose first argument may be an ``Optional[DataModel]``, which
+    has no real column on disk. When it is, the column resolves to that model's
+    ``_type_tag`` discriminator; otherwise it falls back to the plain column."""
+
+    def get_column(
+        self,
+        signals_schema: "SignalSchema | None" = None,
+        label: str | None = None,
+        table: "TableClause | None" = None,
+    ) -> Column:
+        col = self._db_cols[0] if self._db_cols else None
+        if signals_schema is not None and isinstance(col, str):
+            sentinel_path = signals_schema.model_sentinel(col)
+            if sentinel_path is not None:
+                return self._sentinel_column(sentinel_path, label, table)
+        return super().get_column(signals_schema, label, table)
+
+    def _sentinel_column(
+        self,
+        sentinel_path: str,
+        label: str | None,
+        table: "TableClause | None",
+    ) -> Column:
+        raise NotImplementedError
 
 
 class CastFunc(Func):

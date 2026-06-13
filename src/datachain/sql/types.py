@@ -157,15 +157,34 @@ class SQLType(TypeDecorator):
     impl: type[types.TypeEngine[Any]] = types.TypeEngine
     cache_ok = True
 
+    # Optional[scalar] marker -> backend emits a nullable column so None round-trips.
+    dc_nullable: bool = False
+
+    def load_dialect_impl(self, dialect):
+        impl = self._load_dialect_impl(dialect)
+        if self.dc_nullable:
+            return converter(dialect).nullable(impl)
+        return impl
+
+    def _load_dialect_impl(self, dialect):
+        return super().load_dialect_impl(dialect)
+
     @property
     def python_type(self) -> StandardType:
         raise NotImplementedError
 
     def to_dict(self) -> dict[str, Any]:
-        return {"type": self.__class__.__name__}
+        d: dict[str, Any] = {"type": self.__class__.__name__}
+        if self.dc_nullable:
+            d["dc_nullable"] = True
+        return d
 
     @classmethod
-    def from_dict(cls, _: dict[str, Any]) -> Union[type["SQLType"], "SQLType"]:
+    def from_dict(cls, d: dict[str, Any]) -> Union[type["SQLType"], "SQLType"]:
+        if d.get("dc_nullable"):
+            inst = cls()
+            inst.dc_nullable = True
+            return inst
         return cls
 
 
@@ -176,7 +195,7 @@ class String(SQLType):
     def python_type(self) -> StandardType:
         return str
 
-    def load_dialect_impl(self, dialect):
+    def _load_dialect_impl(self, dialect):
         return converter(dialect).string()
 
     @staticmethod
@@ -198,7 +217,7 @@ class Boolean(SQLType):
     def python_type(self) -> StandardType:
         return bool
 
-    def load_dialect_impl(self, dialect):
+    def _load_dialect_impl(self, dialect):
         return converter(dialect).boolean()
 
     @staticmethod
@@ -220,7 +239,7 @@ class Int(SQLType):
     def python_type(self) -> StandardType:
         return int
 
-    def load_dialect_impl(self, dialect):
+    def _load_dialect_impl(self, dialect):
         return converter(dialect).int()
 
     @staticmethod
@@ -236,7 +255,7 @@ class Int(SQLType):
 
 
 class Int32(Int):
-    def load_dialect_impl(self, dialect):
+    def _load_dialect_impl(self, dialect):
         return converter(dialect).int32()
 
     @staticmethod
@@ -252,7 +271,7 @@ class Int32(Int):
 
 
 class UInt32(Int):
-    def load_dialect_impl(self, dialect):
+    def _load_dialect_impl(self, dialect):
         return converter(dialect).uint32()
 
     @staticmethod
@@ -268,7 +287,7 @@ class UInt32(Int):
 
 
 class Int64(Int):
-    def load_dialect_impl(self, dialect):
+    def _load_dialect_impl(self, dialect):
         return converter(dialect).int64()
 
     @staticmethod
@@ -284,7 +303,7 @@ class Int64(Int):
 
 
 class UInt64(Int):
-    def load_dialect_impl(self, dialect):
+    def _load_dialect_impl(self, dialect):
         return converter(dialect).uint64()
 
     @staticmethod
@@ -306,7 +325,7 @@ class Float(SQLType):
     def python_type(self) -> StandardType:
         return float
 
-    def load_dialect_impl(self, dialect):
+    def _load_dialect_impl(self, dialect):
         return converter(dialect).float()
 
     @staticmethod
@@ -322,7 +341,7 @@ class Float(SQLType):
 
 
 class Float32(Float):
-    def load_dialect_impl(self, dialect):
+    def _load_dialect_impl(self, dialect):
         return converter(dialect).float32()
 
     @staticmethod
@@ -338,7 +357,7 @@ class Float32(Float):
 
 
 class Float64(Float):
-    def load_dialect_impl(self, dialect):
+    def _load_dialect_impl(self, dialect):
         return converter(dialect).float64()
 
     @staticmethod
@@ -360,7 +379,7 @@ class Array(SQLType):
     def python_type(self) -> StandardType:
         return list
 
-    def load_dialect_impl(self, dialect):
+    def _load_dialect_impl(self, dialect):
         return converter(dialect).array(self.item_type)
 
     def to_dict(self) -> dict[str, Any]:
@@ -421,7 +440,7 @@ class JSON(SQLType):
     def python_type(self) -> StandardType:
         return dict
 
-    def load_dialect_impl(self, dialect):
+    def _load_dialect_impl(self, dialect):
         return converter(dialect).json()
 
     @staticmethod
@@ -443,7 +462,7 @@ class DateTime(SQLType):
     def python_type(self) -> StandardType:
         return datetime
 
-    def load_dialect_impl(self, dialect):
+    def _load_dialect_impl(self, dialect):
         return converter(dialect).datetime()
 
     @staticmethod
@@ -465,7 +484,7 @@ class Binary(SQLType):
     def python_type(self) -> StandardType:
         return bytes
 
-    def load_dialect_impl(self, dialect):
+    def _load_dialect_impl(self, dialect):
         return converter(dialect).binary()
 
     @staticmethod
@@ -561,6 +580,9 @@ class TypeReadConverter:
 
 
 class TypeConverter:
+    def nullable(self, inner):
+        return inner
+
     def string(self):
         return types.String()
 

@@ -541,7 +541,9 @@ def get_col_types(
             col_type_inst := col_type() if inspect.isclass(col_type) else col_type,
             warehouse.python_type(col_type_inst),
             type(col_type_inst).__name__,
-            col_type.default_value(dialect),
+            None
+            if getattr(col_type_inst, "dc_nullable", False)
+            else col_type.default_value(dialect),
         )
         for col_name, col_type in output.items()
     ]

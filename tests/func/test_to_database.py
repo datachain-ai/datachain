@@ -536,6 +536,37 @@ def test_to_database_empty_chain(connection, test_session):
     assert rows_affected == 0  # Check that empty chain returns 0
 
 
+def test_to_database_optional_datamodel_excludes_sentinel(
+    sqlite_connection, test_session
+):
+    """An Optional[DataModel] signal must not leak its hidden ``_type_tag``
+    sentinel into the target table, and the leaf values must stay aligned with
+    their columns. Regression: db_signals(as_columns=True) used to include the
+    sentinel column while the row values (from _leaf_values) excluded it, so every
+    column after the sentinel was written shifted (or the insert raised)."""
+    from datachain.lib.data_model import DataModel
+
+    class _Addr(DataModel):
+        city: str = ""
+        score: int = 0
+
+    def pick(id: int) -> "_Addr | None":
+        return _Addr(city=f"c{id}", score=id) if id else None
+
+    chain = dc.read_values(id=[0, 1], session=test_session).map(
+        addr=pick, output={"addr": _Addr | None}
+    )
+    chain.to_database("opt_model_table", sqlite_connection)
+
+    columns = _get_table_columns(sqlite_connection, "opt_model_table")
+    assert not any(c.endswith("_type_tag") for c in columns), columns
+    assert columns == ["id", "addr__city", "addr__score"]
+
+    rows = _fetch_all_rows(sqlite_connection, "opt_model_table")
+    assert rows[0] == (0, None, None)  # absent parent -> NULL leaves
+    assert rows[1] == (1, "c1", 1)
+
+
 def test_to_database_column_mapping(connection, test_session):
     """Test to_database with column mapping functionality."""
     chain = dc.read_values(

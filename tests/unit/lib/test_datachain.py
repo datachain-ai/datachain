@@ -1238,10 +1238,6 @@ def test_parse_nested_json(tmp_dir, test_session):
     # E.g. nAmE -> name, l--as@t -> l_as_t, etc
     df1 = chain.select("na_me", "age", "city").to_pandas()
 
-    # In CH we replace None with '' for peforance reasons,
-    # have to handle it here
-    string_default = String.default_value(test_session.catalog.warehouse.db.dialect)
-
     assert sorted(df1["na_me"]["first_select"].to_list()) == sorted(
         d["first-SELECT"] for d in df["nA-mE"].to_list()
     )
@@ -1250,14 +1246,13 @@ def test_parse_nested_json(tmp_dir, test_session):
     def normalize_null(x):
         return None if pd.isna(x) else x
 
+    # ``l_as_t`` is inferred Optional[str]; a missing value now round-trips as None
+    # on both backends (previously the ClickHouse type default "").
     assert sorted(
         [normalize_null(x) for x in df1["na_me"]["l_as_t"].to_list()],
         key=lambda x: (x is None, "" if x is None else x),
     ) == sorted(
-        [
-            normalize_null(d.get("l--as@t", string_default))
-            for d in df["nA-mE"].to_list()
-        ],
+        [normalize_null(d.get("l--as@t")) for d in df["nA-mE"].to_list()],
         key=lambda x: (x is None, "" if x is None else x),
     )
 
@@ -1576,10 +1571,9 @@ def test_explode(tmp_dir, test_session, column_type, column, model_name):
     column = column or "content_expl"
     model_name = model_name or "ContentExplodedModel"
 
-    # In CH we have (atm at least) None converted to ''
-    # for performance reasons, so we need to handle this case
-    string_default = String.default_value(test_session.catalog.warehouse.db.dialect)
-
+    # ``city`` is inferred Optional[str] (Charlie's row omits it); a missing value
+    # now round-trips as None on both backends (previously the ClickHouse type
+    # default "" for the non-nullable column).
     assert set(
         chain.to_list(
             f"{column}.na_me.first_select",
@@ -1589,7 +1583,7 @@ def test_explode(tmp_dir, test_session, column_type, column, model_name):
     ) == {
         ("Alice", 25, "New York"),
         ("Bob", 30, "Los Angeles"),
-        ("Charlie", 35, string_default),
+        ("Charlie", 35, None),
         ("David", 40, "Houston"),
         ("Eva", 45, "Phoenix"),
         ("Ivan", 41, "San Francisco"),

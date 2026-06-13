@@ -7,6 +7,7 @@ import warnings
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from functools import cached_property
 from inspect import isclass
 from typing import (
     IO,
@@ -20,20 +21,27 @@ from typing import (
 )
 
 from pydantic import BaseModel, Field, ValidationError, create_model
-from sqlalchemy import Cast, cast
+from sqlalchemy import Cast, asc, cast, desc, nulls_last
 from sqlalchemy.sql.elements import BinaryExpression, Grouping, Label
 
 from datachain import json
 from datachain.func import literal
 from datachain.func.func import Func
+from datachain.lib.convert.flatten import is_optional_model
 from datachain.lib.convert.python_to_sql import python_to_sql
 from datachain.lib.convert.sql_to_python import sql_to_python
-from datachain.lib.convert.unflatten import unflatten_to_json_pos
+from datachain.lib.convert.unflatten import (
+    read_optional_sentinel,
+    unflatten_to_json_pos,
+)
 from datachain.lib.data_model import (
+    NULLABLE_SCALARS,
     DataModel,
     DataType,
     DataValue,
     compute_model_fingerprint,
+    skip_dc_validation,
+    unwrap_optional,
 )
 from datachain.lib.file import File
 from datachain.lib.model_store import ModelStore
@@ -238,15 +246,16 @@ def create_feature_model(
     base_name, parsed_version = ModelStore.parse_name_version(name)
     class_name = f"{base_name}_v{parsed_version}" if parsed_version > 0 else base_name
     model_name = class_name.replace("@", "_")
-    model = create_model(
-        model_name,
-        __base__=base or DataModel,  # type: ignore[call-overload]
-        # These are tuples for each field of: annotation, default (if any)
-        **{
-            field_name: anno if isinstance(anno, tuple) else (anno, None)
-            for field_name, anno in fields.items()
-        },  # type: ignore[arg-type]
-    )
+    # Generated models replay stored schemas; skip the strict-Optional validators.
+    with skip_dc_validation():
+        model = create_model(
+            model_name,
+            __base__=base or DataModel,  # type: ignore[call-overload]
+            **{
+                field_name: anno if isinstance(anno, tuple) else (anno, None)
+                for field_name, anno in fields.items()
+            },  # type: ignore[arg-type]
+        )
 
     model._version = parsed_version  # type: ignore[attr-defined]
     model._modelstore_base_name = base_name  # type: ignore[attr-defined]
@@ -583,14 +592,14 @@ class SignalSchema:
 
         return hidden_fields
 
-    def to_udf_spec(self) -> dict[str, type]:
+    def to_udf_spec(self) -> dict[str, type[SQLType] | SQLType]:
         res = {}
         for path, type_, has_subtree, _ in self.get_flat_tree():
             if path[0] in self.setup_func:
                 continue
             if not has_subtree:
                 db_name = DEFAULT_DELIMITER.join(path)
-                res[db_name] = python_to_sql(type_)
+                res[db_name] = self._db_leaf_sql_type(path, type_)
         return res
 
     def row_to_objs(self, row: Sequence[Any]) -> list[Any]:
@@ -599,9 +608,15 @@ class SignalSchema:
         objs: list[Any] = []
         pos = 0
         for name, fr_type in self.values.items():
+            inner_type, is_optional = unwrap_optional(fr_type)
             if self.setup_values and name in self.setup_values:
                 objs.append(self.setup_values.get(name))
-            elif (fr := ModelStore.to_pydantic(fr_type)) is not None:
+            elif (fr := ModelStore.to_pydantic(inner_type)) is not None:
+                if is_optional:
+                    absent, pos = read_optional_sentinel(fr, row, pos)
+                    if absent:
+                        objs.append(None)
+                        continue
                 j, pos = unflatten_to_json_pos(fr, row, pos)
                 try:
                     obj = fr(**j)
@@ -705,12 +720,18 @@ class SignalSchema:
         res = []
         pos = 0
         for fr_cls in self.values.values():
-            if (fr := ModelStore.to_pydantic(fr_cls)) is None:
+            inner_cls, is_optional = unwrap_optional(fr_cls)
+            if (fr := ModelStore.to_pydantic(inner_cls)) is None:
                 value = row[pos]
                 pos += 1
                 converted = self._convert_feature_value(fr_cls, value, catalog, cache)
                 res.append(converted)
             else:
+                if is_optional:
+                    absent, pos = read_optional_sentinel(fr, row, pos)
+                    if absent:
+                        res.append(None)
+                        continue
                 json, pos = unflatten_to_json_pos(fr, row, pos)  # type: ignore[union-attr]
                 try:
                     obj = fr(**json)
@@ -797,8 +818,12 @@ class SignalSchema:
         if isinstance(obj, File):
             obj._set_stream(catalog, caching_enabled=cache)
         for field, finfo in type(obj).model_fields.items():
-            if ModelStore.is_pydantic(finfo.annotation):
-                SignalSchema._set_file_stream(getattr(obj, field), catalog, cache)
+            # Unwrap Optional so a File under Optional[...] still gets its stream.
+            inner, _ = unwrap_optional(finfo.annotation)
+            if ModelStore.is_pydantic(inner):
+                value = getattr(obj, field)
+                if value is not None:
+                    SignalSchema._set_file_stream(value, catalog, cache)
 
     def get_column_type(self, col_name: str, with_subtree: bool = False) -> DataType:
         """
@@ -817,19 +842,45 @@ class SignalSchema:
                 return _type
         raise SignalResolvingError([col_name], "is not found")
 
+    def is_nullable_column(self, db_col: str, anno: DataType) -> bool:
+        """Whether a scalar leaf stores real NULL (``dc_nullable``) instead of the
+        type default: its base type is in ``NULLABLE_SCALARS`` and it is either an
+        ``Optional[scalar]`` or sits under an ``Optional[DataModel]`` ancestor."""
+        inner, is_optional = unwrap_optional(anno)
+        if inner not in NULLABLE_SCALARS:
+            return False
+        return is_optional or self.optional_parent_sentinel(db_col) is not None
+
+    def _db_leaf_sql_type(self, path: list[str], anno: DataType) -> Any:
+        """SQL type for a leaf at ``path``, marked ``dc_nullable`` per
+        ``is_nullable_column`` so the backend stores real NULL, not the type
+        default."""
+        sql_type = python_to_sql(anno)
+        if self.is_nullable_column(DEFAULT_DELIMITER.join(path), anno):
+            sql_type = sql_type() if isclass(sql_type) else sql_type
+            sql_type.dc_nullable = True
+        return sql_type
+
     def db_signals(
-        self, name: str | None = None, as_columns=False, include_hidden: bool = True
+        self,
+        name: str | None = None,
+        as_columns=False,
+        include_hidden: bool = True,
+        include_sentinels: bool = True,
     ) -> list[str] | list[Column]:
         """
         Returns DB columns as strings or Column objects with proper types
         Optionally, it can filter results by specific object, returning only his signals
         """
+
         signals = [
             DEFAULT_DELIMITER.join(path)
             if not as_columns
-            else Column(DEFAULT_DELIMITER.join(path), python_to_sql(_type))
+            else Column(
+                DEFAULT_DELIMITER.join(path), self._db_leaf_sql_type(path, _type)
+            )
             for path, _type, has_subtree, _ in self.get_flat_tree(
-                include_hidden=include_hidden
+                include_hidden=include_hidden, include_sentinels=include_sentinels
             )
             if not has_subtree
         ]
@@ -855,7 +906,9 @@ class SignalSchema:
         return [
             ".".join(path)
             for path, _, has_subtree, _ in self.get_flat_tree(
-                include_hidden=include_hidden, include_sys=include_sys
+                include_hidden=include_hidden,
+                include_sys=include_sys,
+                include_sentinels=False,
             )
             if not has_subtree
         ]
@@ -908,6 +961,49 @@ class SignalSchema:
 
         return curr_type
 
+    @cached_property
+    def _optional_model_db_cols(self) -> set[str]:
+        return {
+            DEFAULT_DELIMITER.join(path)
+            for path, type_, has_subtree, _ in self.get_flat_tree(
+                include_sentinels=False
+            )
+            if has_subtree and is_optional_model(type_)
+        }
+
+    def model_sentinel(self, db_col: str) -> str | None:
+        """Sentinel db-name for ``db_col`` when it is itself an
+        ``Optional[DataModel]`` node, else None."""
+        if db_col in self._optional_model_db_cols:
+            return f"{db_col}{DEFAULT_DELIMITER}{self._OPTIONAL_SENTINEL_FIELD}"
+        return None
+
+    def optional_parent_sentinel(self, db_col: str) -> str | None:
+        """DB name of the ``_type_tag`` discriminator for the closest
+        ``Optional[DataModel]`` ancestor of leaf ``db_col``, or None when ``db_col``
+        is not such a leaf (or is itself a discriminator).
+        """
+        parts = db_col.split(DEFAULT_DELIMITER)
+        for i in range(len(parts), 0, -1):
+            sentinel = self.model_sentinel(DEFAULT_DELIMITER.join(parts[:i]))
+            if sentinel is not None:
+                return None if sentinel == db_col else sentinel
+        return None
+
+    def order_by_column(
+        self, db_col: str, *, descending: bool = False
+    ) -> ColumnExpr | None:
+        """Order-by expression for a nullable column with explicit ``NULLS LAST``
+        (SQLite sorts NULLs first otherwise). None when ``db_col`` isn't nullable."""
+        try:
+            anno = self.get_column_type(db_col)
+        except SignalResolvingError:
+            return None
+        if not self.is_nullable_column(db_col, anno):
+            return None
+        col = Column(db_col)
+        return nulls_last(desc(col) if descending else asc(col))
+
     def enrich_expr_types(self, expr: "ColumnExpr") -> "ColumnExpr":
         """Rebuild a ColumnExpr expression with typed columns from the schema.
 
@@ -935,13 +1031,24 @@ class SignalSchema:
 
         return rebuild(expr)
 
+    @staticmethod
+    def _optionalize(py_type: DataType, nullable: bool) -> DataType:
+        """Wrap a derived/result column type as ``Optional[T]`` when it may hold
+        NULL, so the persisted schema stays nullable and None round-trips."""
+        return (py_type | None) if nullable else py_type  # type: ignore[return-value]
+
     def group_by(
         self, partition_by: Sequence[str], new_column: Sequence[Column]
     ) -> "SignalSchema":
         orig_schema = SignalSchema(copy.deepcopy(self.values))
         schema = orig_schema.to_partial(*partition_by)
 
-        vals = {c.name: sql_to_python(c) for c in new_column}
+        vals = {
+            c.name: self._optionalize(
+                sql_to_python(c), getattr(c.type, "dc_nullable", False)
+            )
+            for c in new_column
+        }
         return SignalSchema(schema.values | vals)
 
     def select_except_signals(self, *args: str) -> "SignalSchema":
@@ -1012,7 +1119,10 @@ class SignalSchema:
                 new_values[name] = self.get_column_type(value.name, with_subtree=True)
             elif isinstance(value, Func):
                 # adding new signal with function
-                new_values[name] = value.get_result_type(self)
+                result_type = value.get_result_type(self)
+                new_values[name] = self._optionalize(
+                    result_type, value.is_nullable_result(self, result_type)
+                )
             elif isinstance(value, primitives):
                 # For primitives, store the type, not the value
                 val = literal(value)
@@ -1079,17 +1189,21 @@ class SignalSchema:
 
     def get_signals(self, target_type: type[DataModel]) -> Iterator[str]:
         for path, type_, has_subtree, _ in self.get_flat_tree():
-            if has_subtree and issubclass(type_, target_type):
+            # isclass guards issubclass against a Union; unwrap keeps Optional[File].
+            inner, _ = unwrap_optional(type_)
+            if has_subtree and isclass(inner) and issubclass(inner, target_type):
                 yield ".".join(path)
 
     def create_model(self, name: str) -> type[DataModel]:
         fields = {key: (value, None) for key, value in self.values.items()}
 
-        return create_model(
-            name,
-            __base__=(DataModel,),  # type: ignore[call-overload]
-            **fields,  # type: ignore[arg-type]
-        )
+        # Replayed schema, not user intent -> skip promote_default_none.
+        with skip_dc_validation():
+            return create_model(
+                name,
+                __base__=(DataModel,),  # type: ignore[call-overload]
+                **fields,  # type: ignore[arg-type]
+            )
 
     @staticmethod
     def _build_tree(
@@ -1104,8 +1218,11 @@ class SignalSchema:
         self,
         include_hidden: bool = True,
         include_sys: bool = True,
+        include_sentinels: bool = True,
     ) -> Iterator[tuple[list[str], DataType, bool, int]]:
-        yield from self._get_flat_tree(self.tree, [], 0, include_hidden, include_sys)
+        yield from self._get_flat_tree(
+            self.tree, [], 0, include_hidden, include_sys, include_sentinels
+        )
 
     def _get_flat_tree(
         self,
@@ -1114,11 +1231,14 @@ class SignalSchema:
         depth: int,
         include_hidden: bool,
         include_sys: bool,
+        include_sentinels: bool,
     ) -> Iterator[tuple[list[str], DataType, bool, int]]:
         for name, (type_, substree) in tree.items():
             suffix = name.split(".")
             new_prefix = prefix + suffix
             if not include_sys and new_prefix and new_prefix[0] == "sys":
+                continue
+            if not include_sentinels and name.startswith("_"):
                 continue
             hidden_fields = getattr(type_, "_hidden_fields", None)
             if hidden_fields and substree and not include_hidden:
@@ -1132,7 +1252,12 @@ class SignalSchema:
             yield new_prefix, type_, has_subtree, depth
             if substree is not None:
                 yield from self._get_flat_tree(
-                    substree, new_prefix, depth + 1, include_hidden, include_sys
+                    substree,
+                    new_prefix,
+                    depth + 1,
+                    include_hidden,
+                    include_sys,
+                    include_sentinels,
                 )
 
     def print_tree(
@@ -1143,7 +1268,9 @@ class SignalSchema:
         *,
         include_hidden: bool = True,
     ):
-        for path, type_, _, depth in self.get_flat_tree(include_hidden=include_hidden):
+        for path, type_, _, depth in self.get_flat_tree(
+            include_hidden=include_hidden, include_sentinels=False
+        ):
             total_indent = start_at + depth * indent
             col_name = " " * total_indent + path[-1]
             col_type = SignalSchema._type_to_str(type_)
@@ -1160,11 +1287,13 @@ class SignalSchema:
                         file=file,
                     )
 
-    def get_headers_with_length(self, include_hidden: bool = True):
+    def get_headers_with_length(
+        self, include_hidden: bool = True, include_sentinels: bool = False
+    ):
         paths = [
             path
             for path, _, has_subtree, _ in self.get_flat_tree(
-                include_hidden=include_hidden
+                include_hidden=include_hidden, include_sentinels=include_sentinels
             )
             if not has_subtree
         ]
@@ -1217,12 +1346,30 @@ class SignalSchema:
             register_pydantic=True,
         )
 
+    # `_type_tag` = 0-based index of the active arm (Optional[X] == Union[X, None]:
+    # present=0, None=1). Leading-underscore internal column, int | None.
+    _OPTIONAL_SENTINEL_FIELD = "_type_tag"
+    _OPTIONAL_SENTINEL_TYPE = int | None  # type: ignore[valid-type]
+
+    @staticmethod
+    def _model_subtree(
+        fr: type[BaseModel], is_optional: bool
+    ) -> dict[str, tuple[DataType, dict | None]]:
+        """Flat tree for a model, prepending the ``_type_tag`` discriminator when the
+        field is ``Optional[DataModel]``."""
+        subtree = SignalSchema._build_tree_for_model(fr) or {}
+        if is_optional:
+            sentinel: tuple[Any, Any] = (SignalSchema._OPTIONAL_SENTINEL_TYPE, None)
+            subtree = {SignalSchema._OPTIONAL_SENTINEL_FIELD: sentinel, **subtree}
+        return subtree
+
     @staticmethod
     def _build_tree_for_type(
         model: DataType,
     ) -> dict[str, tuple[DataType, dict | None]] | None:
-        if (fr := ModelStore.to_pydantic(model)) is not None:
-            return SignalSchema._build_tree_for_model(fr)
+        inner, is_optional = unwrap_optional(model)
+        if (fr := ModelStore.to_pydantic(inner)) is not None:
+            return SignalSchema._model_subtree(fr, is_optional)
         return None
 
     @staticmethod
@@ -1233,8 +1380,9 @@ class SignalSchema:
 
         for name, f_info in model.model_fields.items():
             anno = f_info.annotation
-            if (fr := ModelStore.to_pydantic(anno)) is not None:
-                subtree = SignalSchema._build_tree_for_model(fr)
+            inner, is_optional = unwrap_optional(anno)
+            if (fr := ModelStore.to_pydantic(inner)) is not None:
+                subtree: dict | None = SignalSchema._model_subtree(fr, is_optional)
             else:
                 subtree = None
             res[name] = (anno, subtree)  # type: ignore[assignment]
@@ -1349,7 +1497,10 @@ class SignalSchema:
                     f"empty selection for '{'.'.join(path)}'"
                 )
 
-            model = ModelStore.to_pydantic(base_type)
+            # The base may be Optional[Model]; resolve from the inner type and
+            # re-wrap the partial as Optional below.
+            inner_type, is_optional = unwrap_optional(base_type)
+            model = ModelStore.to_pydantic(inner_type)
             assert model is not None, "Expected complex type to be a Pydantic model"
 
             # Check if all signals under this model are covered by requested columns
@@ -1405,7 +1556,7 @@ class SignalSchema:
                     "with a different fingerprint"
                 )
                 raise SignalSchemaError(msg)
-            return partial_model
+            return (partial_model | None) if is_optional else partial_model
 
         new_values: dict[str, DataType] = {}
         for signal, selection in selections.items():

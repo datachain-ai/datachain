@@ -330,6 +330,8 @@ max-complexity = 15
 "tests/**" = ["DTZ"]
 "tests/examples/wds_data.py" = ["E501"]
 "tests/unit/lib/test_signal_schema.py" = ["UP006", "UP007", "UP035", "UP045"]
+"tests/unit/lib/test_optional.py" = ["UP007", "UP045"]
+"tests/func/test_optional.py" = ["UP007", "UP045"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
