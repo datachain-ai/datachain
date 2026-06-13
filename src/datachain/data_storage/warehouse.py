@@ -469,6 +469,11 @@ class AbstractWarehouse(ABC, Serializable):
         for version in [v.version for v in dataset_updated.versions]:
             if not dataset.has_version(version):
                 continue
+            # Removed versions have no rows table (dropped at soft/hard delete
+            # time), so renaming would raise mid-loop and strand the rest of
+            # the dataset in a half-renamed state.
+            if dataset_updated.get_version(version).is_removed:
+                continue
             src = self.dataset_table_name(dataset, version)
             dest = self.dataset_table_name(dataset_updated, version)
             if src == dest:

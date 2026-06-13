@@ -399,6 +399,7 @@ def delta_retry_update(
         namespace_name=namespace_name,
         project_name=project_name,
         indirect=False,
+        include_removed=False,
     )
     latest_dataset = datachain.read_dataset(
         name,

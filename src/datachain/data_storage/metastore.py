@@ -319,9 +319,16 @@ class AbstractMetastore(ABC, Serializable):
 
     @abstractmethod
     def update_dataset_version(
-        self, dataset: DatasetRecord, version: str, **kwargs
-    ) -> DatasetVersion:
-        """Updates dataset version fields."""
+        self,
+        dataset: DatasetRecord,
+        version: str,
+        *,
+        expected_status: int | None = None,
+        **kwargs,
+    ) -> DatasetVersion | None:
+        """Updates dataset version fields. When ``expected_status`` is given
+        the UPDATE only applies if the row's current status equals that value;
+        returns None if no row matched."""
 
     @abstractmethod
     def remove_dataset_version(
@@ -347,7 +354,8 @@ class AbstractMetastore(ABC, Serializable):
           - the associated job has finished, or
           - there is no associated job (job_id is NULL) and the version is
             older than STALE_CREATED_THRESHOLD_HOURS
-        - Status REMOVING: marked for deletion
+        - Status REMOVING / REMOVING_TOTAL: removal in progress
+          (GC resumes to REMOVED or to full row deletion respectively)
 
         Returns:
             List of (DatasetRecord, version_string) tuples. Each DatasetRecord
@@ -433,8 +441,12 @@ class AbstractMetastore(ABC, Serializable):
         error_message="",
         error_stack="",
         script_output="",
+        expected_status: int | None = None,
     ) -> DatasetRecord:
-        """Updates dataset status and appropriate fields related to status."""
+        """Updates dataset status and appropriate fields related to status.
+        When ``expected_status`` is given the version-level UPDATE is
+        guarded by ``status = :expected``; if no version row matches, raises
+        :class:`DataChainError` before touching the dataset-level row."""
 
     @abstractmethod
     def mark_job_dataset_versions_as_failed(self, job_id: str) -> None:
@@ -474,9 +486,14 @@ class AbstractMetastore(ABC, Serializable):
 
     @abstractmethod
     def get_direct_dataset_dependencies(
-        self, dataset: DatasetRecord, version: str
+        self,
+        dataset: DatasetRecord,
+        version: str,
+        include_removed: bool = True,
     ) -> list[DatasetDependency | None]:
-        """Gets direct dataset dependencies."""
+        """Gets direct dataset dependencies. Deps pointing at soft-removed
+        versions are surfaced by default so lineage views can show them; pass
+        ``include_removed=False`` to filter them out."""
 
     @abstractmethod
     def get_dataset_dependency_nodes(
@@ -848,6 +865,7 @@ class AbstractDBMetastore(AbstractMetastore):
             Column("schema", JSON, nullable=True),
             Column("job_id", Text, nullable=True),
             Column("content_hash", Text, nullable=True),
+            Column("removed_at", DateTime(timezone=True), nullable=True),
             UniqueConstraint("dataset_id", "version"),
         ]
 
@@ -1394,9 +1412,14 @@ class AbstractDBMetastore(AbstractMetastore):
         return result_ds
 
     def update_dataset_version(
-        self, dataset: DatasetRecord, version: str, **kwargs
-    ) -> DatasetVersion:
-        """Updates dataset fields."""
+        self,
+        dataset: DatasetRecord,
+        version: str,
+        *,
+        expected_status: int | None = None,
+        **kwargs,
+    ) -> DatasetVersion | None:
+        """Updates dataset version fields."""
         logger.debug(
             "Metastore.update_dataset_version called for %s@%s: "
             "num_objects=%s, size=%s, preview_len=%s, all_fields=%s",
@@ -1453,10 +1476,10 @@ class AbstractDBMetastore(AbstractMetastore):
                 values[field] = value
                 version_values[field] = value
 
-        dataset_version = dataset.get_version(version)
+        version_obj = dataset.get_version(version)
 
         if not values:
-            return dataset_version
+            return version_obj
 
         logger.debug(
             "Writing to database for %s@%s: num_objects=%s, size=%s, "
@@ -1470,23 +1493,26 @@ class AbstractDBMetastore(AbstractMetastore):
         )
 
         dv = self._datasets_versions
-        self.db.execute(
-            self._datasets_versions_update()
-            .where(dv.c.dataset_id == dataset.id, dv.c.version == version)
-            .values(values),
-        )  # type: ignore [attr-defined]
+        update_stmt = self._datasets_versions_update().where(
+            dv.c.dataset_id == dataset.id, dv.c.version == version
+        )
+        if expected_status is not None:
+            update_stmt = update_stmt.where(dv.c.status == expected_status)
+        result = self.db.execute(update_stmt.values(values))  # type: ignore [attr-defined]
+        if expected_status is not None and result.rowcount == 0:  # type: ignore [attr-defined]
+            return None
 
-        dataset_version.update(**version_values)
+        version_obj.update(**version_values)
         logger.debug(
             "Dataset version updated successfully: %s@%s, "
             "final_num_objects=%s, final_size=%s, has_preview=%s",
             dataset.name,
             version,
-            dataset_version.num_objects,
-            dataset_version.size,
-            bool(getattr(dataset_version, "_preview_data", None)),
+            version_obj.num_objects,
+            version_obj.size,
+            bool(getattr(version_obj, "_preview_data", None)),
         )
-        return dataset_version
+        return version_obj
 
     def _parse_dataset(
         self,
@@ -1771,8 +1797,19 @@ class AbstractDBMetastore(AbstractMetastore):
                 )
             )
 
-            if dataset.versions and len(dataset.versions) == 1:
-                # had only one version, fully deleting dataset
+            # Count in DB, not in the in-memory record: GC-shaped paths
+            # build single-version records via _fetch_version_pairs, so the
+            # in-memory length is always 1 even when the dataset has many
+            # versions. Trusting that would cascade-delete the dataset row
+            # (and any REMOVED tombstones with it) on any GC wipe.
+            remaining = next(
+                self.db.execute(
+                    select(f.count())
+                    .select_from(dv)
+                    .where(dv.c.dataset_id == dataset.id)
+                )
+            )[0]
+            if remaining == 0:
                 self.db.execute(self._datasets_delete().where(d.c.id == dataset.id))
 
         dataset.remove_version(version)
@@ -1839,6 +1876,7 @@ class AbstractDBMetastore(AbstractMetastore):
                                 DatasetStatus.FAILED,
                                 DatasetStatus.STALE,
                                 DatasetStatus.REMOVING,
+                                DatasetStatus.REMOVING_TOTAL,
                             ]
                         ),
                         or_(
@@ -1903,6 +1941,7 @@ class AbstractDBMetastore(AbstractMetastore):
         error_message="",
         error_stack="",
         script_output="",
+        expected_status: int | None = None,
     ) -> DatasetRecord:
         """
         Updates dataset status and appropriate fields related to status
@@ -1919,29 +1958,42 @@ class AbstractDBMetastore(AbstractMetastore):
             update_data["error_message"] = error_message
             update_data["error_stack"] = error_stack
 
-        dataset = self.update_dataset(dataset, **update_data)
-
         if version:
-            self.update_dataset_version(dataset, version, **update_data)
+            # Update the version row first. If a status guard was requested
+            # and the row's status no longer matches, abort before touching
+            # the dataset-level (denormalized) row.
+            updated = self.update_dataset_version(
+                dataset,
+                version,
+                expected_status=expected_status,
+                **update_data,
+            )
+            if expected_status is not None and updated is None:
+                raise DataChainError(
+                    f"Could not update status of {dataset.name}@{version}: "
+                    f"current status is not {expected_status}"
+                )
 
-        return dataset
+        return self.update_dataset(dataset, **update_data)
 
     def mark_job_dataset_versions_as_failed(self, job_id: str) -> None:
         """
-        Mark all non-COMPLETE dataset versions created by a job as FAILED.
+        Finalize dataset versions still in CREATED for a failed job as FAILED.
 
-        This is called when a job fails to ensure that any dataset versions
-        it was creating are marked as failed rather than left in CREATED state.
+        Only flips the in-flight CREATED state. Terminal and removal states
+        (COMPLETE, FAILED, REMOVING, REMOVED, REMOVING_TOTAL) must not be
+        overwritten - otherwise tombstones from a user-issued soft delete
+        inside the failing job would be resurrected as FAILED and then
+        wiped by GC.
 
         Args:
             job_id: ID of the failed job whose dataset versions should be marked
         """
         dv = self._datasets_versions
 
-        # Update status to FAILED for all non-COMPLETE versions with this job_id
         update_stmt = (
             dv.update()
-            .where((dv.c.job_id == job_id) & (dv.c.status != DatasetStatus.COMPLETE))
+            .where((dv.c.job_id == job_id) & (dv.c.status == DatasetStatus.CREATED))
             .values(
                 status=DatasetStatus.FAILED,
                 finished_at=datetime.now(timezone.utc),
@@ -2019,7 +2071,10 @@ class AbstractDBMetastore(AbstractMetastore):
         """
 
     def get_direct_dataset_dependencies(
-        self, dataset: DatasetRecord, version: str
+        self,
+        dataset: DatasetRecord,
+        version: str,
+        include_removed: bool = True,
     ) -> list[DatasetDependency | None]:
         n = self._namespaces
         p = self._projects
@@ -2031,6 +2086,15 @@ class AbstractDBMetastore(AbstractMetastore):
 
         select_cols = self._dataset_dependencies_select_columns()
 
+        where_clause = (dd.c.source_dataset_id == dataset.id) & (
+            dd.c.source_dataset_version_id == dataset_version.id
+        )
+        if not include_removed:
+            # Only COMPLETE dep versions are readable; everything else
+            # (in-flight, broken, or in a removal state) should look like
+            # the dep is gone so delta fallback can trigger a rebuild.
+            where_clause = where_clause & (dv.c.status == DatasetStatus.COMPLETE)
+
         query = (
             self._datasets_dependencies_select(*select_cols)
             .select_from(
@@ -2039,10 +2103,7 @@ class AbstractDBMetastore(AbstractMetastore):
                 .join(p, d.c.project_id == p.c.id, isouter=True)
                 .join(n, p.c.namespace_id == n.c.id, isouter=True)
             )
-            .where(
-                (dd.c.source_dataset_id == dataset.id)
-                & (dd.c.source_dataset_version_id == dataset_version.id)
-            )
+            .where(where_clause)
         )
 
         return [self.dependency_class.parse(*r) for r in self.db.execute(query)]
@@ -2843,6 +2904,7 @@ class AbstractDBMetastore(AbstractMetastore):
                 self._projects.c.name == project_name,
                 self._dataset_version_jobs.c.job_id.in_(job_ancestry),
                 self._dataset_version_jobs.c.is_creator.is_(True),
+                self._datasets_versions.c.status == DatasetStatus.COMPLETE,
             )
             .order_by(desc(self._dataset_version_jobs.c.created_at))
             .limit(1)
