@@ -1958,23 +1958,24 @@ class AbstractDBMetastore(AbstractMetastore):
             update_data["error_message"] = error_message
             update_data["error_stack"] = error_stack
 
-        if version:
-            # Update the version row first. If a status guard was requested
-            # and the row's status no longer matches, abort before touching
-            # the dataset-level (denormalized) row.
-            updated = self.update_dataset_version(
-                dataset,
-                version,
-                expected_status=expected_status,
-                **update_data,
-            )
-            if expected_status is not None and updated is None:
-                raise DataChainError(
-                    f"Could not update status of {dataset.name}@{version}: "
-                    f"current status is not {expected_status}"
+        with self.db.transaction():
+            if version:
+                # Update the version row first. If a status guard was requested
+                # and the row's status no longer matches, abort before touching
+                # the dataset-level (denormalized) row.
+                updated = self.update_dataset_version(
+                    dataset,
+                    version,
+                    expected_status=expected_status,
+                    **update_data,
                 )
+                if expected_status is not None and updated is None:
+                    raise DataChainError(
+                        f"Could not update status of {dataset.name}@{version}: "
+                        f"current status is not {expected_status}"
+                    )
 
-        return self.update_dataset(dataset, **update_data)
+            return self.update_dataset(dataset, **update_data)
 
     def mark_job_dataset_versions_as_failed(self, job_id: str) -> None:
         """
