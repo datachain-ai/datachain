@@ -17,6 +17,7 @@ import pandas as pd
 import datachain as dc
 from datachain.lib.data_model import DataModel, unwrap_optional
 from datachain.lib.file import File
+from tests.utils import skip_if_not_sqlite
 
 
 class _Inner(DataModel):
@@ -118,8 +119,7 @@ def test_issue_1055_anthropic_usage_roundtrip(test_session):
 
 def test_optional_basic_scalar_roundtrips_none(test_session):
     """An explicit Optional[scalar] column stores/reads None as NULL on both
-    backends (without it, ClickHouse coerces None to the type default 0/"").
-    float is excluded — NaN and NULL are indistinguishable on SQLite."""
+    backends (without it, ClickHouse coerces None to the type default 0/"")."""
 
     def num(id: int) -> Optional[int]:
         return None if id == 2 else id * 10
@@ -130,16 +130,65 @@ def test_optional_basic_scalar_roundtrips_none(test_session):
     def flag(id: int) -> Optional[bool]:
         return None if id == 2 else id % 2 == 0
 
+    def score(id: int) -> Optional[float]:
+        return None if id == 2 else id * 1.5
+
     chain = (
         dc.read_values(id=[1, 2, 3], session=test_session)
         .map(num=num)
         .map(txt=txt)
         .map(flag=flag)
+        .map(score=score)
     )
-    rows = {r["id"]: (r["num"], r["txt"], r["flag"]) for r in chain.to_records()}
-    assert rows[1] == (10, "n1", False)
-    assert rows[2] == (None, None, None)
-    assert rows[3] == (30, "n3", False)
+    rows = {
+        r["id"]: (r["num"], r["txt"], r["flag"], r["score"]) for r in chain.to_records()
+    }
+    assert rows[1] == (10, "n1", False, 1.5)
+    assert rows[2] == (None, None, None, None)
+    assert rows[3] == (30, "n3", False, 4.5)
+
+
+def test_optional_float_none_consistent_across_backends(test_session):
+    """isnone/count/sum over an Optional[float] None agree on every backend (the
+    same SQL null semantics as Optional[int]), now that float is a nullable
+    scalar. Without it, ClickHouse kept the None as NaN and diverged from SQLite."""
+    from datachain import func
+
+    chain = dc.read_values(
+        id=[1, 2, 3],
+        score=[0.97, None, 0.55],
+        output={"id": int, "score": Optional[float]},
+        session=test_session,
+    )
+    assert chain.filter(func.isnone("score")).count() == 1
+    assert chain.filter(func.not_(func.isnone("score"))).count() == 2
+    assert sorted(chain.to_values("score"), key=lambda v: (v is None, v)) == [
+        0.55,
+        0.97,
+        None,
+    ]
+    agg = (
+        chain.mutate(g=1)
+        .group_by(s_sum=func.sum("score"), s_cnt=func.count("score"), partition_by="g")
+        .to_records()
+    )
+    assert agg == [{"g": 1, "s_sum": 1.52, "s_cnt": 2}]
+
+
+@skip_if_not_sqlite
+def test_optional_float_stored_nan_collapses_to_none_on_sqlite():
+    """SQLite stores NaN as NULL, so a stored NaN reads back as None and counts as
+    null. The other backends keep NaN distinct (IEEE) — an inherent SQLite limit,
+    not a DataChain bug."""
+    from datachain import func
+
+    chain = dc.read_values(
+        id=[1, 2],
+        score=[float("nan"), 0.5],
+        output={"id": int, "score": Optional[float]},
+    )
+    assert chain.filter(func.isnone("score")).count() == 1
+    assert sorted(chain.to_values("score"), key=lambda v: (v is None, v)) == [0.5, None]
 
 
 def test_optional_basic_scalar_roundtrips_none_through_save(test_session):
@@ -332,8 +381,7 @@ def test_optional_datamodel_parquet_roundtrip_only_signal(test_session, tmp_path
 
 def test_optional_datamodel_float_leaf_roundtrip(test_session, tmp_path):
     """Optional[DataModel] with a float leaf: the absent parent round-trips as
-    None through parquet (NaN is no longer read as 'present'), and to_json emits
-    null instead of literal NaN (which is invalid JSON)."""
+    None through parquet, and to_json emits null (not literal NaN, invalid JSON)."""
     chain = dc.read_values(
         id=[1, 2],
         m=[_WithFloat(a=1, x=1.5), None],
@@ -1071,14 +1119,9 @@ def test_union_scalar_promotes_to_optional_both_orders(test_session):
         assert _none_last(back.to_values("x")) == [1, 2, 3, None]
 
 
-def test_union_float_and_collection_promote_schema(test_session):
-    """float and collection signals promote to Optional too, so the schema never
-    claims a non-null type (faithful CH round-trip for these is out of scope)."""
-    fplain = dc.read_values(x=[1.0], output={"x": float}, session=test_session)
-    fopt = dc.read_values(x=[None], output={"x": Optional[float]}, session=test_session)
-    _, f_opt = unwrap_optional(fplain.union(fopt).signals_schema.values["x"])
-    assert f_opt
-
+def test_union_collection_promotes_schema(test_session):
+    """A collection signal promotes to Optional too, so the schema never claims a
+    non-null type (faithful CH round-trip for collections is out of scope)."""
     lplain = dc.read_values(x=[[1, 2]], output={"x": list[int]}, session=test_session)
     lopt = dc.read_values(
         x=[None], output={"x": Optional[list[int]]}, session=test_session

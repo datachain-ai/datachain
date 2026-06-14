@@ -56,6 +56,12 @@ nullability the standard way in the logical schema and make the NOT-NULL tradeof
 ClickHouse-converter concern. A derived or composed expression over a nullable input is
 itself nullable — propagate nullability through `Func` composition, not per leaf only.
 
+The outlier is per-axis, not global: on the NaN axis SQLite is the odd one. It stores
+`NaN` as `NULL`, so an `Optional[float]` `NaN` reads back as `None` and counts as null
+there, while every other backend keeps them distinct (IEEE). `None` itself round-trips
+consistently everywhere. Conform to the standard/majority; document the lone backend's
+limit rather than contorting the others to match it.
+
 ## Serialization is a boundary
 
 Both schema and data cross serialization boundaries — the `SignalSchema` and its SQL types

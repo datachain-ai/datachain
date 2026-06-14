@@ -141,10 +141,10 @@ def unwrap_optional(t: Any) -> tuple[Any, bool]:
     return t, False
 
 
-# Scalars whose Optional form maps to a nullable column. ``float`` is excluded:
-# backends that store NaN as NULL reconstitute it on read, so a nullable float
-# could not tell NaN from None.
-NULLABLE_SCALARS: "tuple[type, ...]" = (int, str, bool, bytes, datetime)
+# Scalars whose Optional form maps to a nullable column, so None round-trips as a
+# real NULL. SQLite stores NaN as NULL, so a stored NaN reads back as None there
+# (the other backends keep them distinct); None itself is consistent everywhere.
+NULLABLE_SCALARS: "tuple[type, ...]" = (int, float, str, bool, bytes, datetime)
 
 
 def promote_default_none(model: type[BaseModel]) -> None:
