@@ -18,6 +18,9 @@ from schema import parse_dataset_name, type_name  # noqa: E402
 from utils import (  # noqa: E402
     bucket_file_path,
     dataset_file_path,
+    dedupe_previous_scripts,
+    dep_entry,
+    drop_unchanged_scripts,
     escape_table_cell,
     extract_description,
     human_size,
@@ -96,6 +99,49 @@ def test_is_sys_column():
     assert is_sys_column("sys__rand")
     assert not is_sys_column("file")
     assert not is_sys_column("system")
+
+
+def test_dedupe_previous_scripts():
+    versions = [
+        {"query_script": "s0", "changes": None},
+        {"query_script": "s1", "changes": {"previous_script": "s0"}},
+        {"query_script": None, "changes": {"previous_script": "s1"}},
+        {"query_script": "s3", "changes": {"previous_script": "s2"}},
+    ]
+    dedupe_previous_scripts(versions)
+    # Nulled: the previous entry already renders its own query_script.
+    assert versions[1]["changes"]["previous_script"] is None
+    assert versions[2]["changes"]["previous_script"] is None
+    # Kept: the previous entry (v2) omitted its script, so the diff would be lost.
+    assert versions[3]["changes"]["previous_script"] == "s2"
+
+
+def test_drop_unchanged_scripts():
+    versions = [
+        {"query_script": "s0", "changes": None},
+        {"query_script": "s1", "changes": {"script_changed": True}},
+        {"query_script": "s1", "changes": {"script_changed": False}},
+        {"query_script": "s2", "changes": {"script_changed": False}},
+    ]
+    drop_unchanged_scripts(versions)
+    # Initial (changes None) and the script-changed version keep their script.
+    assert versions[0]["query_script"] == "s0"
+    assert versions[1]["query_script"] == "s1"
+    # An unchanged older version drops its script (prompt renders no code block).
+    assert versions[2]["query_script"] is None
+    # The latest entry keeps its script even when unchanged.
+    assert versions[3]["query_script"] == "s2"
+
+
+def test_dep_entry_storage_uri_without_trailing_slash():
+    # A legacy bare-URI listing name (no trailing slash) still routes to a bucket doc.
+    entry = dep_entry("s3://my-bucket", "1.0.0", "storage")
+    assert entry["file_path"] == "buckets/s3/my_bucket"
+
+
+def test_dep_entry_dataset_links_to_dataset_doc():
+    entry = dep_entry("ns.proj.my_ds", "1.0.0", "dataset")
+    assert entry["file_path"] == "datasets/ns/proj/my_ds"
 
 
 def test_read_frontmatter_normal(tmp_path):
@@ -423,6 +469,22 @@ def test_build_changes_script_unchanged():
     )
     assert result["script_changed"] is False
     assert result["previous_script"] is None
+
+
+# ---------------------------------------------------------------------------
+# dataset_all.py
+# ---------------------------------------------------------------------------
+
+
+def test_merge_versions_no_duplicates():
+    from dataset_all import _merge_versions
+
+    existing = [{"version": "1.0.0"}, {"version": "1.0.1"}]
+    # The fetch returns every version; only 1.0.2 is in the plan. A version present in
+    # both the file and the fetch must not be duplicated.
+    new = [{"version": "1.0.0"}, {"version": "1.0.1"}, {"version": "1.0.2"}]
+    merged = _merge_versions(existing, new, versions_to_fetch=["1.0.2"])
+    assert [v["version"] for v in merged] == ["1.0.0", "1.0.1", "1.0.2"]
 
 
 # ---------------------------------------------------------------------------

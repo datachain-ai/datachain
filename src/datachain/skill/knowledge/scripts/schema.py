@@ -3,8 +3,14 @@
 import inspect
 import types
 import typing
+from typing import TYPE_CHECKING, Any
 
 from utils import is_sys_column, serialize, source_to_https
+
+if TYPE_CHECKING:
+    from datachain import DataChain
+    from datachain.lib.data_model import DataType
+    from datachain.skill.knowledge.types import PreviewData, SchemaEntry
 
 
 def get_catalog():
@@ -14,7 +20,7 @@ def get_catalog():
     return Session.get().catalog
 
 
-def type_name(tp):
+def type_name(tp: Any) -> str:
     """Convert a Python type to a human-readable string."""
     if tp is type(None):
         return "None"
@@ -31,7 +37,7 @@ def type_name(tp):
     return getattr(tp, "__name__", str(tp))
 
 
-def expand_signal(typ):
+def expand_signal(typ: "DataType") -> "SchemaEntry":
     """Return {"type": name, "fields": {name: type_str} | None}.
     Fields is None for File subclasses (well-known) and primitives."""
     from datachain.lib.data_model import DataModel
@@ -64,7 +70,7 @@ def parse_dataset_name(name: str) -> tuple:
     return None, None, name
 
 
-def extract_schema(chain) -> dict:
+def extract_schema(chain: "DataChain") -> "dict[str, SchemaEntry]":
     """Extract schema dict from a DataChain, filtering sys columns."""
     return {
         col: expand_signal(typ)
@@ -73,7 +79,7 @@ def extract_schema(chain) -> dict:
     }
 
 
-def _file_url_prefix(chain) -> str | None:
+def _file_url_prefix(chain: "DataChain") -> str | None:
     """Return an HTTPS URL prefix for file paths, if the chain has a File column."""
     from datachain.lib.file import File
 
@@ -94,11 +100,11 @@ def _file_url_prefix(chain) -> str | None:
     return None
 
 
-def extract_preview(chain) -> dict | None:
+def extract_preview(chain: "DataChain") -> "PreviewData | None":
     """Extract preview (columns + rows) from a DataChain. Returns None on failure."""
     try:
         df = chain.limit(10).to_pandas(flatten=True, include_hidden=False)
-        result: dict[str, typing.Any] = {
+        result: PreviewData = {
             "columns": list(df.columns),
             "rows": [[serialize(v) for v in row] for row in df.itertuples(index=False)],
         }

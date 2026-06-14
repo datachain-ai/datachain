@@ -3,14 +3,30 @@
 import argparse
 import json
 import sys
+from typing import TYPE_CHECKING
 
-from changes import build_changes, dep_to_dict
+from changes import build_changes
 from dataset import fetch_version_data
 from schema import extract_preview, extract_schema, get_catalog
-from utils import collect_datasets, dc_import, parse_semver, write_json
+from utils import (
+    collect_datasets,
+    dc_import,
+    dedupe_previous_scripts,
+    dep_entry,
+    drop_unchanged_scripts,
+    parse_semver,
+    write_json,
+)
+
+if TYPE_CHECKING:
+    from datachain.skill.knowledge.types import (
+        DatasetSnapshot,
+        DatasetVersionEntry,
+        DependencyEntry,
+    )
 
 
-def _fetch_all_versions(name: str) -> dict:  # noqa: C901, PLR0912, PLR0915
+def _fetch_all_versions(name: str) -> "DatasetSnapshot":  # noqa: C901, PLR0912, PLR0915
     """Fetch data for all versions of a dataset. Returns result dict."""
     dc = dc_import()
 
@@ -32,7 +48,7 @@ def _fetch_all_versions(name: str) -> dict:  # noqa: C901, PLR0912, PLR0915
             [e["version"] for e in version_entries if e["version"]],
             key=parse_semver,
         )
-        versions_out = []
+        versions_out: list[DatasetVersionEntry] = []
         ds_attrs: list[str] = []
         ds_description: str | None = None
         for idx, version in enumerate(versions_sorted):
@@ -58,16 +74,20 @@ def _fetch_all_versions(name: str) -> dict:  # noqa: C901, PLR0912, PLR0915
                     "version": version,
                     "uuid": data.get("uuid"),
                     "records": version_entry.get("records") if version_entry else None,
-                    "updated": version_entry.get("updated") if version_entry else None,
-                    "schema": data.get("schema"),
-                    "preview": data.get("preview"),
+                    "updated": (
+                        (version_entry.get("finished") or version_entry.get("created"))
+                        if version_entry
+                        else None
+                    ),
+                    "schema": data.get("schema") if is_latest else {},
+                    "preview": data.get("preview") if is_latest else None,
                     "summary": ver_summary,
                     "query_script": data.get("query_script"),
                     "changes": data.get("changes"),
                     "dependencies": data.get("dependencies", []),
                 }
             )
-        result = {
+        result: DatasetSnapshot = {
             "name": name,
             "source": source,
             "attrs": ds_attrs,
@@ -143,9 +163,13 @@ def _fetch_all_versions(name: str) -> dict:  # noqa: C901, PLR0912, PLR0915
                     "version": version,
                     "uuid": data.get("uuid"),
                     "records": version_entry.get("records") if version_entry else None,
-                    "updated": version_entry.get("updated") if version_entry else None,
-                    "schema": data.get("schema"),
-                    "preview": data.get("preview"),
+                    "updated": (
+                        (version_entry.get("finished") or version_entry.get("created"))
+                        if version_entry
+                        else None
+                    ),
+                    "schema": data.get("schema") if is_latest else {},
+                    "preview": data.get("preview") if is_latest else None,
                     "summary": fb_summary,
                     "query_script": data.get("query_script"),
                     "changes": data.get("changes"),
@@ -193,18 +217,18 @@ def _fetch_all_versions(name: str) -> dict:  # noqa: C901, PLR0912, PLR0915
             warnings_list.append(f"summary: {e}")
 
     # 4. Fetch deps once per version — cache to avoid fetching prev-version deps twice.
-    deps_by_version: dict[str, list[dict]] = {}
+    deps_by_version: dict[str, list[DependencyEntry]] = {}
     for ver_obj in versions_sorted_obj:
         v_str = ver_obj.version
-        deps: list[dict] = []
+        deps: list[DependencyEntry] = []
         try:
             raw_deps = (
                 catalog.get_dataset_dependencies(  # type: ignore[union-attr]
-                    name=bare_name, version=v_str, indirect=True
+                    name=bare_name, version=v_str, indirect=False
                 )
                 or []
             )
-            deps = [dep_to_dict(d) for d in raw_deps if d]
+            deps = [dep_entry(d.name, d.version, d.type) for d in raw_deps if d]
         except Exception as e:  # noqa: BLE001
             warnings_list.append(f"deps {v_str}: {e}")
         deps_by_version[v_str] = deps
@@ -229,7 +253,6 @@ def _fetch_all_versions(name: str) -> dict:  # noqa: C901, PLR0912, PLR0915
                 prev_script,
                 ver_deps,
                 prev_deps,
-                catalog=catalog,
             )
 
         is_latest = i == len(versions_sorted_obj) - 1
@@ -263,11 +286,18 @@ def _fetch_all_versions(name: str) -> dict:  # noqa: C901, PLR0912, PLR0915
 def _merge_versions(existing_versions, new_versions, versions_to_fetch):
     """Merge existing and new version lists.
 
-    Keep existing versions not in versions_to_fetch,
-    replace/add versions from new data.
+    Drop existing versions that are being refetched (in versions_to_fetch) or already
+    present in new_versions — the new entries replace them. The `new_versions` guard
+    prevents a version in both lists from appearing twice (the fetch returns every
+    version, not just the planned ones).
     """
     fetch_set = set(versions_to_fetch)
-    merged = [v for v in existing_versions if v.get("version") not in fetch_set]
+    new_set = {v.get("version") for v in new_versions}
+    merged = [
+        v
+        for v in existing_versions
+        if v.get("version") not in fetch_set and v.get("version") not in new_set
+    ]
     merged.extend(new_versions)
     merged.sort(key=lambda v: parse_semver(v.get("version", "0.0.0")))
     return merged
@@ -278,6 +308,8 @@ def cmd_dataset_all(
 ):
     """Fetch all versions of a dataset, optionally merge and save to file."""
     new_data = _fetch_all_versions(name)
+    drop_unchanged_scripts(new_data["versions"])
+    dedupe_previous_scripts(new_data["versions"])
 
     if not plan_path or not output_path:
         # No plan/output — just print JSON to stdout.
@@ -304,8 +336,11 @@ def cmd_dataset_all(
     merged_versions = _merge_versions(
         existing_versions, new_data.get("versions", []), versions_to_fetch
     )
+    # Merge can reorder entries and change which version is latest — re-run both passes.
+    drop_unchanged_scripts(merged_versions)
+    dedupe_previous_scripts(merged_versions)
 
-    result = {
+    result: DatasetSnapshot = {
         "name": name,
         "source": new_data.get("source", "local"),
         "attrs": new_data.get("attrs", []),

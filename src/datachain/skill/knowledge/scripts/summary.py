@@ -10,10 +10,13 @@ import json
 import math
 from collections import Counter
 from datetime import datetime
-from typing import get_origin
+from typing import TYPE_CHECKING, get_origin
 
 from schema import extract_schema
 from utils import dc_import, human_size, write_json
+
+if TYPE_CHECKING:
+    from datachain import DataChain
 
 
 def _hs(nbytes):
@@ -533,7 +536,7 @@ def _build_overview(total_rows, columns_info, col_results, schema):
 # ---------------------------------------------------------------------------
 
 
-def dataset_summary_from_chain(chain) -> dict:
+def dataset_summary_from_chain(chain: "DataChain") -> dict:
     """Compute per-field stats and overview from an open DataChain.
 
     Calls chain.persist() internally for efficient multi-query execution.

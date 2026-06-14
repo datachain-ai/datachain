@@ -4,7 +4,11 @@ import json
 import os
 import re
 import sys
+from typing import TYPE_CHECKING
 from urllib.parse import urlparse
+
+if TYPE_CHECKING:
+    from datachain.skill.knowledge.types import DatasetVersionEntry, DependencyEntry
 
 
 def write_text(path: str, content: str) -> None:
@@ -294,6 +298,11 @@ def collect_datasets(dc, studio: bool) -> list[dict]:
                         if getattr(info, "created_at", None) is not None
                         else None
                     ),
+                    "finished": (
+                        info.finished_at.isoformat()
+                        if getattr(info, "finished_at", None) is not None
+                        else None
+                    ),
                     "updated": (
                         info.updated_at.isoformat()
                         if getattr(info, "updated_at", None) is not None
@@ -356,6 +365,74 @@ def bucket_file_path(uri: str) -> str:
     return f"buckets/{parts['scheme']}/{bucket_slug}"
 
 
+def clean_dep_name(name: str) -> str:
+    """Convert listing dataset names (lst__...) to clean URIs."""
+    try:
+        from datachain.lib.listing import is_listing_dataset, listing_uri_from_name
+
+        if is_listing_dataset(name):
+            return listing_uri_from_name(name)
+    except Exception:  # noqa: BLE001, S110
+        pass
+    return name
+
+
+def dep_entry(
+    raw_name: str | None,
+    version: str | None,
+    type: str | None,
+) -> "DependencyEntry":
+    """Assemble one dependency entry from primitives — the single source of truth for
+    dependency shape, shared by the cluster scan and the Studio-side collector.
+
+    `raw_name` is the source-side name (a `lst__…` listing name or a dataset name),
+    cleaned to a URI for listings. `file_path` is the relative path of the dependency's
+    own knowledge doc, so the graph is followable by link: a storage URI maps to its
+    bucket doc, a dataset name to its dataset doc."""
+    name = clean_dep_name(raw_name) if raw_name is not None else None
+    entry: DependencyEntry = {
+        "name": name,
+        "version": str(version) if version is not None else None,
+        "type": str(type) if type is not None else None,
+    }
+    if name is not None:
+        if "://" in name:
+            # A storage URI (cleaned listing names and legacy bare URIs alike) maps to a
+            # bucket doc — `bucket_file_path` handles a missing trailing slash.
+            entry["file_path"] = bucket_file_path(name)
+        else:
+            # 3-part dotted name ⇒ Studio dataset layout (the only thing `source`
+            # changes in `dataset_file_path`); anything else ⇒ flat local layout.
+            source = "studio" if len(name.split(".", 2)) == 3 else "local"
+            entry["file_path"] = dataset_file_path(name, source)
+    return entry
+
+
+def drop_unchanged_scripts(versions: "list[DatasetVersionEntry]") -> None:
+    """Null `query_script` on older versions whose script didn't change — the prompt
+    renders no code block for them, so an identical script would be dead weight. The
+    latest version (last entry) and the initial version (`changes is None`) keep their
+    script. `versions` must be oldest-first; entries are mutated in place. Run before
+    `dedupe_previous_scripts`, which keys off the previous entry's `query_script`."""
+    last = len(versions) - 1
+    for i, version in enumerate(versions):
+        changes = version["changes"]
+        if i != last and changes is not None and not changes["script_changed"]:
+            version["query_script"] = None
+
+
+def dedupe_previous_scripts(versions: "list[DatasetVersionEntry]") -> None:
+    """Null each version's `changes.previous_script` when the previous entry already
+    carries that script as its own `query_script` — the prompt would otherwise render
+    the same script twice. `versions` must be oldest-first; entries are mutated in
+    place. A `previous_script` is kept only when the previous entry omitted its script
+    (an unchanged-older version), so the diff isn't lost."""
+    for i in range(1, len(versions)):
+        changes = versions[i]["changes"]
+        if changes and versions[i - 1]["query_script"] is not None:
+            changes["previous_script"] = None
+
+
 def read_json_data(path: str) -> dict | None:
     """Read a JSON data file. Returns dict or None."""
     try:
@@ -374,26 +451,6 @@ def human_size(nbytes: float) -> str:
         if nbytes < 1024:
             return f"{nbytes:.1f} {unit}"
     return f"{nbytes:.1f} PB"
-
-
-def get_listing_finished_at(uri: str) -> str | None:
-    """Get the listing finished_at timestamp for a URI."""
-    try:
-        from datachain.query import Session
-
-        session = Session.get()
-        catalog = session.catalog
-        listings = catalog.listings()
-
-        for listing in listings:
-            uri_match = listing.uri.rstrip("/") == uri.rstrip("/") or uri.rstrip(
-                "/"
-            ).startswith(listing.uri.rstrip("/"))
-            if uri_match and listing.finished_at:
-                return listing.finished_at.isoformat()
-        return None
-    except Exception:  # noqa: BLE001
-        return None
 
 
 def source_to_https(source: str) -> str | None:
