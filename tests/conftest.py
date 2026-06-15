@@ -497,7 +497,9 @@ def version_aware(request):
     return request.param
 
 
-_CLOUD_MATRIX_DEFAULTS = {
+# Defaults applied per-test below, not as fixture `params`: pytest 9.1 forbids
+# `params` plus an indirect override of the same arg (pytest #13974).
+PARAMETRIZED_FIXTURE_DEFAULTS = {
     "cloud_type": ["file", *cloud_types],
     "version_aware": [False, True],
     "tree": [DEFAULT_TREE],
@@ -505,17 +507,17 @@ _CLOUD_MATRIX_DEFAULTS = {
 
 
 def pytest_generate_tests(metafunc):
-    explicit = {
-        argname
-        for marker in metafunc.definition.iter_markers("parametrize")
-        for argname in (
-            marker.args[0]
-            if isinstance(marker.args[0], (list, tuple))
-            else marker.args[0].split(",")
+    explicit = set()
+    for marker in metafunc.definition.iter_markers(name="parametrize"):
+        argnames = marker.args[0]
+        names = (
+            [n.strip() for n in argnames.split(",")]
+            if isinstance(argnames, str)
+            else list(argnames)
         )
-    }
-    explicit = {name.strip() for name in explicit}
-    for name, params in _CLOUD_MATRIX_DEFAULTS.items():
+        explicit.update(name for name in names if name)
+
+    for name, params in PARAMETRIZED_FIXTURE_DEFAULTS.items():
         if name in metafunc.fixturenames and name not in explicit:
             metafunc.parametrize(name, params, indirect=True, scope="session")
 
