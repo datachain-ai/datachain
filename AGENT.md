@@ -84,6 +84,10 @@ works end-to-end — check before assuming the whole story is in this tree.
 DataChain keeps comments **sparse**. Prefer code that reads clearly on its own; add a
 comment only for the genuinely non-obvious (an unusual invariant, a subtle workaround).
 Do not narrate *why a choice was made in the moment* or restate what the code already says.
+Write every comment as a standalone, timeless fact about current behavior — a reader
+months later on `main` has no notion of "this change". Watch for change-narrative tells:
+*"now that", "without it", "previously", "used to", "we decided", "regression",
+"this PR"*, and before/after framing. Git history records why it changed.
 
 - **Tests:** name the test so its intent is obvious, and skip the docstring/comment — a
   good name makes it redundant.
