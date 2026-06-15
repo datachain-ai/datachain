@@ -320,6 +320,23 @@ def test_mutate_expr_over_optional_scalar_is_nullable(test_session):
     assert {r["id"]: r["sa"] for r in saved.to_records()} == {1: 11, 2: None, 3: 31}
 
 
+def test_cast_optional_scalar(test_session):
+    """func.cast over an Optional column keeps None (casts to the Nullable target,
+    so ClickHouse doesn't fail casting NULL to a non-Nullable type)."""
+    from datachain import func
+
+    chain = dc.read_values(
+        id=[1, 2, 3],
+        x=[1, None, 3],
+        output={"id": int, "x": Optional[int]},
+        session=test_session,
+    )
+    mutated = chain.mutate(y=func.cast("x", str))
+    _, is_optional = unwrap_optional(mutated.signals_schema.values["y"])
+    assert is_optional
+    assert dict(mutated.order_by("id").to_list("id", "y")) == {1: "1", 2: None, 3: "3"}
+
+
 def test_composed_func_over_absent_leaf_is_none(test_session):
     from datachain import func
 

@@ -635,14 +635,20 @@ class CastFunc(Func):
             table,
         )
         source_type = infer_col_type(signals_schema, source_col)
-        func_col: ColumnElement[Any]
 
+        # Cast to the Nullable variant when the source can be NULL, otherwise
+        # ClickHouse fails casting a NULL to a non-Nullable target.
+        target = sql_type()
+        if self.is_nullable_result(signals_schema):
+            target.dc_nullable = True
+
+        func_col: ColumnElement[Any]
         if self.result_type is str and source_type is datetime:
             func_col = datetime_to_string(value)
         else:
-            func_col = sa_cast(value, sql_type())
+            func_col = sa_cast(value, target)
 
-        return self._finalize_column(func_col, sql_type, label)
+        return self._finalize_column(func_col, target, label)
 
 
 def infer_col_type(
