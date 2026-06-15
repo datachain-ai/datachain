@@ -416,7 +416,7 @@ def pytest_configure(config):
     )
 
 
-@pytest.fixture(scope="session", params=[DEFAULT_TREE])
+@pytest.fixture(scope="session")
 def tree(request):
     return request.param
 
@@ -487,14 +487,39 @@ class CloudTestCatalog:
 cloud_types = ["s3", "gs", "azure"]
 
 
-@pytest.fixture(scope="session", params=["file", *cloud_types])
+@pytest.fixture(scope="session")
 def cloud_type(request):
     return request.param
 
 
-@pytest.fixture(scope="session", params=[False, True])
+@pytest.fixture(scope="session")
 def version_aware(request):
     return request.param
+
+
+# Defaults applied per-test below, not as fixture `params`: pytest 9.1 forbids
+# `params` plus an indirect override of the same arg (pytest #13974).
+PARAMETRIZED_FIXTURE_DEFAULTS = {
+    "cloud_type": ["file", *cloud_types],
+    "version_aware": [False, True],
+    "tree": [DEFAULT_TREE],
+}
+
+
+def pytest_generate_tests(metafunc):
+    explicit = set()
+    for marker in metafunc.definition.iter_markers(name="parametrize"):
+        argnames = marker.args[0]
+        names = (
+            [n.strip() for n in argnames.split(",")]
+            if isinstance(argnames, str)
+            else list(argnames)
+        )
+        explicit.update(name for name in names if name)
+
+    for name, params in PARAMETRIZED_FIXTURE_DEFAULTS.items():
+        if name in metafunc.fixturenames and name not in explicit:
+            metafunc.parametrize(name, params, indirect=True, scope="session")
 
 
 def pytest_collection_modifyitems(config, items):
