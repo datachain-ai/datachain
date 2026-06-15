@@ -153,7 +153,6 @@ def rm_dataset(
     name: str,
     version: str | None = None,
     force: bool | None = False,
-    keep_metadata: bool = True,
     studio: bool | None = False,
     team: str | None = None,
 ) -> None:
@@ -179,13 +178,7 @@ def rm_dataset(
     else:
         try:
             project = catalog.metastore.get_project(project_name, namespace_name)
-            catalog.remove_dataset(
-                name,
-                project,
-                version=version,
-                force=force,
-                keep_metadata=keep_metadata,
-            )
+            catalog.remove_dataset(name, project, version=version, force=force)
         except DatasetNotFoundError:
             print("Dataset not found in local", file=sys.stderr)
 

@@ -325,13 +325,15 @@ def delete_dataset(
     project: str | None = None,
     version: str | None = None,
     force: bool | None = False,
-    keep_metadata: bool = True,
     studio: bool | None = False,
     session: Session | None = None,
     in_memory: bool = False,
 ) -> None:
     """Removes specific dataset version or all dataset versions, depending on
     a force flag.
+
+    The rows table is dropped but the version metadata is kept so the semver
+    stays reserved and dependents can still resolve lineage.
 
     Args:
         name: The dataset name, which can be a fully qualified name including the
@@ -342,10 +344,6 @@ def delete_dataset(
         project: optional name of project in which dataset to delete is created
         version: Optional dataset version
         force: If true, all datasets versions will be removed. Defaults to False.
-        keep_metadata: If True (default), drops the rows table but keeps the
-            version metadata so the semver stays reserved and dependents can
-            still resolve lineage. If False, fully wipes the version (rows,
-            dependencies, version row, and the dataset row if it was the last).
         studio: If True, removes dataset from Studio only, otherwise removes local
             dataset. Defaults to False.
         session: Optional session instance. If not provided, uses default session.
@@ -362,11 +360,6 @@ def delete_dataset(
         ```py
         import datachain as dc
         dc.delete_dataset("cats", version="1.0.0")
-        ```
-
-        ```py
-        import datachain as dc
-        dc.delete_dataset("cats", version="1.0.0", keep_metadata=False)
         ```
     """
     from datachain.studio import remove_studio_dataset
@@ -410,9 +403,7 @@ def delete_dataset(
         )
     else:
         version = None
-    catalog.remove_dataset(
-        name, ds_project, version=version, force=force, keep_metadata=keep_metadata
-    )
+    catalog.remove_dataset(name, ds_project, version=version, force=force)
 
 
 def move_dataset(
