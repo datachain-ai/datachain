@@ -40,7 +40,7 @@ from datachain.lib.data_model import (
     DataType,
     DataValue,
     compute_model_fingerprint,
-    skip_dc_validation,
+    skip_optional_promotion,
     unwrap_optional,
 )
 from datachain.lib.file import File
@@ -247,7 +247,7 @@ def create_feature_model(
     class_name = f"{base_name}_v{parsed_version}" if parsed_version > 0 else base_name
     model_name = class_name.replace("@", "_")
     # Generated models replay stored schemas; skip the strict-Optional validators.
-    with skip_dc_validation():
+    with skip_optional_promotion():
         model = create_model(
             model_name,
             __base__=base or DataModel,  # type: ignore[call-overload]
@@ -1198,7 +1198,7 @@ class SignalSchema:
         fields = {key: (value, None) for key, value in self.values.items()}
 
         # Replayed schema, not user intent -> skip promote_default_none.
-        with skip_dc_validation():
+        with skip_optional_promotion():
             return create_model(
                 name,
                 __base__=(DataModel,),  # type: ignore[call-overload]

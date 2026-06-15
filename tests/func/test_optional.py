@@ -149,9 +149,8 @@ def test_optional_basic_scalar_roundtrips_none(test_session):
 
 
 def test_optional_float_none_consistent_across_backends(test_session):
-    """isnone/count/sum over an Optional[float] None agree on every backend (the
-    same SQL null semantics as Optional[int]), now that float is a nullable
-    scalar. Without it, ClickHouse kept the None as NaN and diverged from SQLite."""
+    """isnone/count/sum over an Optional[float] None agree on every backend, with
+    the same SQL null semantics as Optional[int]."""
     from datachain import func
 
     chain = dc.read_values(

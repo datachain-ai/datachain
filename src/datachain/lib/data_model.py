@@ -15,19 +15,23 @@ from datachain import json
 from datachain.lib.model_store import ModelStore
 from datachain.lib.utils import normalize_col_names, type_to_str
 
-_skip_dc_validation: ContextVar[bool] = ContextVar("_skip_dc_validation", default=False)
+_skip_optional_promotion: ContextVar[bool] = ContextVar(
+    "_skip_optional_promotion", default=False
+)
 
 
 @contextmanager
-def skip_dc_validation() -> Iterator[None]:
-    """Suppress the strict DataModel field validators for internally-generated
-    models, whose fields are derived from existing schemas rather than user input.
+def skip_optional_promotion() -> Iterator[None]:
+    """Disable ``default=None`` -> ``Optional`` promotion while building a model
+    DataChain reconstructs from a stored schema (e.g. reading a dataset whose
+    original model code isn't importable). Such fields already carry the exact
+    annotation from the schema, so promoting them would corrupt the replayed type.
     """
-    token = _skip_dc_validation.set(True)
+    token = _skip_optional_promotion.set(True)
     try:
         yield
     finally:
-        _skip_dc_validation.reset(token)
+        _skip_optional_promotion.reset(token)
 
 
 StandardType = (
@@ -154,11 +158,11 @@ def promote_default_none(model: type[BaseModel]) -> None:
     nullable and `x=None` round-trips as `None`. Without this it would read back
     as the type default (`0`/`""`) on backends with non-nullable columns.
 
-    Skipped under `skip_dc_validation()` for internally-generated models, whose
-    `default=None` on non-Optional fields must not be promoted (it breaks the
-    partial-model tree walker).
+    Skipped under `skip_optional_promotion()` for models reconstructed from a
+    stored schema, whose fields already carry their exact annotation (promoting
+    `default=None` there breaks the partial-model tree walker).
     """
-    if _skip_dc_validation.get():
+    if _skip_optional_promotion.get():
         return
     promoted = False
     for finfo in model.model_fields.values():
