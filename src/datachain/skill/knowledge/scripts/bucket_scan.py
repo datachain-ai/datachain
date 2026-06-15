@@ -12,14 +12,14 @@ import json
 import signal
 import sys
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from utils import dc_import, parse_uri, source_to_https, write_json
 
 from datachain import bucket_status
 
 if TYPE_CHECKING:
-    from datachain import DataChain
+    from datachain import DataChain, File
     from datachain.skill.knowledge.types import (
         BucketSnapshot,
         DirStat,
@@ -233,10 +233,10 @@ def compute_size_distribution(chain: "DataChain") -> "SizeDistribution":
     # Percentiles via Python (DataChain lacks percentile funcs)
     try:
         if total <= 10000:
-            sizes = sorted(v for (v,) in chain.to_iter("file.size"))
+            sizes = sorted(cast("int", v) for (v,) in chain.to_iter("file.size"))
         else:
             sizes = sorted(
-                v
+                cast("int", v)
                 for (v,) in chain.mutate(rnd=func.rand())
                 .order_by("rnd")
                 .limit(10000)
@@ -314,14 +314,14 @@ def sample_files(chain: "DataChain", extensions: "list[ExtensionStat]") -> dict:
             ext_bare = ext.lstrip(".")
             ext_chain = chain.filter(C("file.path").glob(f"*.{ext_bare}"))
 
-            sample_rows = []
+            sample_rows: list[File] = []
             for row in (
                 ext_chain.mutate(rnd=func.rand())
                 .order_by("rnd")
                 .limit(SAMPLES_PER_EXT)
                 .to_iter()
             ):
-                sample_rows.append(row[0])
+                sample_rows.append(cast("File", row[0]))
 
             if not sample_rows:
                 continue
