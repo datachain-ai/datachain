@@ -881,12 +881,16 @@ def test_subtract_optional_multikey_null_safe(test_session):
     """Multi-key subtract is NULL-safe per key: a row matches only when every key
     is equal (NULLs included), so (1, None) survives."""
     a = dc.read_values(
-        x=[1, 1, None], y=["a", None, "c"],
-        output={"x": Optional[int], "y": Optional[str]}, session=test_session,
+        x=[1, 1, None],
+        y=["a", None, "c"],
+        output={"x": Optional[int], "y": Optional[str]},
+        session=test_session,
     )
     b = dc.read_values(
-        x=[1, None], y=["a", "c"],
-        output={"x": Optional[int], "y": Optional[str]}, session=test_session,
+        x=[1, None],
+        y=["a", "c"],
+        output={"x": Optional[int], "y": Optional[str]},
+        session=test_session,
     )
     assert sorted(str(t) for t in a.subtract(b, on=["x", "y"]).to_list("x", "y")) == [
         "(1, None)"
