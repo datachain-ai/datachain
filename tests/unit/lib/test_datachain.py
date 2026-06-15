@@ -1490,9 +1490,8 @@ def test_read_csv_null_collect(tmp_dir, test_session):
     df.to_csv(path, index=False)
     chain = dc.read_csv(path.as_uri(), column="csv", session=test_session)
     for i, row in enumerate(chain.to_list()):
-        # None value in numeric column will get converted to nan.
         if not height[i]:
-            assert math.isnan(row[1].height)
+            assert row[1].height is None or math.isnan(row[1].height)
         else:
             assert row[1].height == height[i]
         assert row[1].gender == gender[i]
@@ -3564,9 +3563,10 @@ def test_read_parquet_nan_inf(tmp_dir, test_session):
 
     res = list(chain.to_values("vals"))
     assert len(res) == 3
-    assert any(r for r in res if np.isnan(r))
-    assert any(r for r in res if np.isposinf(r))
-    assert any(r for r in res if np.isneginf(r))
+    # NaN reads back as None on SQLite (stores NaN as NULL), as NaN on ClickHouse.
+    assert any(r is None or (isinstance(r, float) and math.isnan(r)) for r in res)
+    assert any(r == float("inf") for r in res)
+    assert any(r == float("-inf") for r in res)
 
 
 def test_read_csv_nan_inf(tmp_dir, test_session):
@@ -3578,9 +3578,9 @@ def test_read_csv_nan_inf(tmp_dir, test_session):
 
     res = chain.to_values("vals")
     assert len(res) == 3
-    assert any(r for r in res if np.isnan(r))
-    assert any(r for r in res if np.isposinf(r))
-    assert any(r for r in res if np.isneginf(r))
+    assert any(r is None or (isinstance(r, float) and math.isnan(r)) for r in res)
+    assert any(r == float("inf") for r in res)
+    assert any(r == float("-inf") for r in res)
 
 
 def test_dicts_nan_inf(test_session):

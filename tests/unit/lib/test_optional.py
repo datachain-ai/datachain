@@ -38,6 +38,28 @@ class _Sample(BaseModel):
 
 
 @pytest.mark.parametrize(
+    ("anno", "expected"),
+    [
+        (Optional[float], True),
+        (Optional[int], True),
+        (Optional[str], True),
+        (float, False),
+        (Optional[list[int]], False),
+    ],
+)
+def test_is_nullable_column_scalar(anno, expected):
+    assert SignalSchema({"x": anno}).is_nullable_column("x", anno) is expected
+
+
+def test_is_nullable_column_float_leaf_under_optional_model():
+    class M(DataModel):
+        x: float = 0.0
+
+    schema = SignalSchema({"m": Optional[M]})
+    assert schema.is_nullable_column("m__x", float) is True
+
+
+@pytest.mark.parametrize(
     ("annotation", "expected_inner", "expected_is_optional"),
     [
         (Optional[int], int, True),
