@@ -696,6 +696,22 @@ def test_session_dataset_never_keeps_metadata(test_session):
         catalog.get_dataset(name, include_incomplete=True)
 
 
+def test_export_dataset_table_refuses_tombstone(test_session, dataset_complete):
+    """Exporting a REMOVED tombstone must raise upfront instead of running
+    and crashing later against the dropped rows table."""
+    catalog = test_session.catalog
+    version = dataset_complete.latest_version
+    catalog.remove_dataset(dataset_complete.name, version=version, keep_metadata=True)
+
+    with pytest.raises(DatasetNotFoundError):
+        catalog.export_dataset_table(
+            bucket="s3://does-not-matter",
+            name=dataset_complete.name,
+            version=version,
+            base_file_name="export",
+        )
+
+
 def test_bulk_wipe_does_not_cascade_dataset_row(test_session, dataset_complete):
     """A GC-shaped wipe of a single version (whose in-memory DatasetRecord
     only carries that one version) must not delete the dataset row when

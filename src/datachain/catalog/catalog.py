@@ -1699,6 +1699,7 @@ class Catalog:
             namespace_name=project.namespace.name if project else None,
             project_name=project.name if project else None,
             versions=[version],
+            include_incomplete=False,
         )
 
         self.warehouse.export_dataset_table(
