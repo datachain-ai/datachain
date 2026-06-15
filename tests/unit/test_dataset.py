@@ -631,10 +631,12 @@ def test_next_version_empty(dataset_record, prop, expected):
 
 
 def test_next_version_skips_removed(dataset_record):
-    # Existing semvers: 1.0.0 (REMOVED), 2.0.0 (COMPLETE). Removed slot must
-    # stay reserved, so bumps go off of 2.0.0, not 1.0.0.
+    # Existing semvers: 1.0.0 (COMPLETE), 2.0.0 (REMOVED). The REMOVED slot is
+    # the highest one - bumps must skip it. Counter-example mutation that
+    # ignores REMOVED would compute bumps off the live max (1.0.0) and return
+    # 2.0.0 / 1.1.0 / 1.0.1; the assertions below force the real reservation.
     versions = _versions_with_statuses(
-        dataset_record, [DatasetStatus.REMOVED, DatasetStatus.COMPLETE]
+        dataset_record, [DatasetStatus.COMPLETE, DatasetStatus.REMOVED]
     )
     record = replace(dataset_record, _versions=versions, _versions_loaded=True)
     assert record.next_version_major == "3.0.0"

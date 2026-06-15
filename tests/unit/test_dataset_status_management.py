@@ -696,6 +696,21 @@ def test_session_dataset_never_keeps_metadata(test_session):
         catalog.get_dataset(name, include_incomplete=True)
 
 
+def test_save_skips_reserved_semver_after_delete(test_session):
+    """After save -> save -> soft delete latest -> save, the new save must
+    skip the REMOVED slot and auto-bump past it (semver permanently
+    reserved)."""
+    catalog = test_session.catalog
+    dc.read_values(value=["a"], session=test_session).save("reserve_test")
+    second = dc.read_values(value=["b"], session=test_session).save("reserve_test")
+    removed_version = second.dataset.latest_version
+    catalog.remove_dataset("reserve_test", version=removed_version, keep_metadata=True)
+
+    third = dc.read_values(value=["c"], session=test_session).save("reserve_test")
+    assert third.dataset.latest_version != removed_version
+    assert semver.value(third.dataset.latest_version) > semver.value(removed_version)
+
+
 def test_dependency_removed_flag(test_session):
     """A dataset dependency pointing at a soft-deleted version is returned
     with ``removed=True`` so delta-style consumers can filter it without a
@@ -710,6 +725,20 @@ def test_dependency_removed_flag(test_session):
     assert deps[0] is not None
     assert deps[0].name == "dep_source"
     assert deps[0].removed is True
+
+
+def test_dependency_after_wipe_returns_none(test_session):
+    """When the source version is fully wiped (``keep_metadata=False``), the
+    dependency row is left with a broken reference and the lineage view
+    surfaces it as ``None`` - contrasts with the tombstone path covered by
+    [[test_dependency_removed_flag]]."""
+    catalog = test_session.catalog
+    source = dc.read_values(value=["a", "b"], session=test_session).save("wipe_source")
+    dc.read_dataset("wipe_source", session=test_session).save("wipe_target")
+    catalog.remove_dataset(source.dataset.name, version="1.0.0", keep_metadata=False)
+
+    deps = catalog.get_dataset_dependencies("wipe_target", "1.0.0")
+    assert deps == [None]
 
 
 def test_export_dataset_table_refuses_tombstone(test_session, dataset_complete):
