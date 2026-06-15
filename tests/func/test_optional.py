@@ -813,6 +813,25 @@ def test_order_by_optional_basic_nulls_last(test_session):
     assert order(descending=True) == [1, 4, 3, 2]
 
 
+def test_window_order_by_optional_nulls_last(test_session):
+    """row_number().over(order_by=Optional) ranks NULL rows last on both backends
+    (SQLite orders NULLs first by default, ClickHouse last)."""
+    from datachain import func
+
+    chain = dc.read_values(
+        id=[1, 2, 3, 4],
+        g=[1, 1, 1, 1],
+        s=[3, None, 1, None],
+        output={"id": int, "g": int, "s": Optional[int]},
+        session=test_session,
+    )
+    win = func.window(partition_by="g", order_by="s")
+    rn = dict(chain.mutate(rn=func.row_number().over(win)).to_list("id", "rn"))
+    # present rows (s=1,3) ranked first; the two NULL rows (ids 2, 4) last.
+    assert rn[3] == 1 and rn[1] == 2
+    assert {rn[2], rn[4]} == {3, 4}
+
+
 def test_flat_export_optional_datamodel_leaf_none(test_session):
     """Flat exports (to_records/to_pandas/...) return None for an absent-parent
     row's nested leaf cells on both backends. The leaves are genuinely Nullable,
