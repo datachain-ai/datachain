@@ -337,6 +337,20 @@ def test_cast_optional_scalar(test_session):
     assert dict(mutated.order_by("id").to_list("id", "y")) == {1: "1", 2: None, 3: "3"}
 
 
+def test_list_optional_element_roundtrip(test_session):
+    """A list with None elements (list[Optional[int]]) round-trips on both
+    backends — the Array element is nullable (ClickHouse: Array(Nullable(T)))."""
+    chain = dc.read_values(
+        id=[1, 2],
+        x=[[1, None, 3], [4]],
+        output={"id": int, "x": list[Optional[int]]},
+        session=test_session,
+    )
+    chain.save("list_opt_elem")
+    saved = dc.read_dataset("list_opt_elem", session=test_session)
+    assert dict(saved.order_by("id").to_list("id", "x")) == {1: [1, None, 3], 2: [4]}
+
+
 def test_composed_func_over_absent_leaf_is_none(test_session):
     from datachain import func
 
