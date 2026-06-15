@@ -588,3 +588,21 @@ def test_multiple_diffs(test_session):
         ("A", 4, "Matt"),
         ("A", 5, "Rick"),
     ]
+
+
+def test_diff_compare_optional_detects_null_changes(test_session):
+    base = dc.read_values(
+        id=[1, 2, 3],
+        x=[1, None, 3],
+        output={"id": int, "x": int | None},
+        session=test_session,
+    ).save("diff_null_base")
+    new = dc.read_values(
+        id=[1, 2, 3],
+        x=[1, 5, None],
+        output={"id": int, "x": int | None},
+        session=test_session,
+    ).save("diff_null_new")
+
+    modified = new.diff(base, on=["id"], compare=["x"]).to_values("id")
+    assert sorted(modified) == [2, 3]  # None->5 and 3->None
