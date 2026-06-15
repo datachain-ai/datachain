@@ -4,7 +4,7 @@ from collections.abc import Callable, Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Union, get_args, get_origin
 
-from sqlalchemy import Integer, desc, nulls_last
+from sqlalchemy import Integer, asc, desc, nulls_last
 from sqlalchemy import cast as sa_cast
 from sqlalchemy.sql import func as sa_func
 from sqlalchemy.sql.elements import ColumnElement
@@ -523,7 +523,9 @@ class Func(Function):  # noqa: PLW1641
                     f"Window function {self} requires over() clause with a window spec",
                 )
             ordering = (
-                desc(self.window.order_by) if self.window.desc else self.window.order_by
+                desc(self.window.order_by)
+                if self.window.desc
+                else asc(self.window.order_by)
             )
             # NULLS LAST so window ordering matches across backends (SQLite
             # orders NULLs first by default, ClickHouse last).
