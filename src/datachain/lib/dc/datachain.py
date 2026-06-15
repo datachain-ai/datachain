@@ -1557,7 +1557,11 @@ class DataChain:
                     val.type = python_to_sql(type(value))()
                     mutated[name] = val  # type: ignore[assignment]
                 else:
-                    # adding new signal
+                    # nullable physical type so ClickHouse keeps the NULL
+                    if schema._expr_references_nullable(value):
+                        sql_type = python_to_sql(sql_to_python(value))()
+                        sql_type.dc_nullable = True
+                        value = sqlalchemy.type_coerce(value, sql_type)
                     mutated[name] = value
 
             new_schema = schema.mutate(kwargs)

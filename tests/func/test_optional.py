@@ -287,6 +287,27 @@ def test_mutate_func_over_absent_leaf_is_none(test_session):
     assert saved == {1: 2, 2: None, 3: 3}  # None survives save() on both backends
 
 
+def test_mutate_expr_over_optional_scalar_is_nullable(test_session):
+    from datachain import C
+
+    chain = dc.read_values(
+        id=[1, 2, 3],
+        a=[10, None, 30],
+        b=[1, 2, 3],
+        output={"id": int, "a": Optional[int], "b": int},
+        session=test_session,
+    )
+
+    mutated = chain.mutate(sa=C("a") + 1, sb=C("b") + 1)
+    _, sa_opt = unwrap_optional(mutated.signals_schema.values["sa"])
+    _, sb_opt = unwrap_optional(mutated.signals_schema.values["sb"])
+    assert sa_opt and not sb_opt
+
+    mutated.save("mutate_expr_optional")
+    saved = dc.read_dataset("mutate_expr_optional", session=test_session)
+    assert {r["id"]: r["sa"] for r in saved.to_records()} == {1: 11, 2: None, 3: 31}
+
+
 def test_composed_func_over_absent_leaf_is_none(test_session):
     from datachain import func
 

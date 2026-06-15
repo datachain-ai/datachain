@@ -1037,6 +1037,21 @@ class SignalSchema:
         NULL, so the persisted schema stays nullable and None round-trips."""
         return (py_type | None) if nullable else py_type  # type: ignore[return-value]
 
+    @staticmethod
+    def _expr_references_nullable(expr: "ColumnExpr") -> bool:
+        def walk(node: Any) -> bool:
+            if isinstance(node, Column):
+                return getattr(node.type, "dc_nullable", False)
+            if isinstance(node, (Label, Grouping)):
+                return walk(node.element)
+            if isinstance(node, BinaryExpression):
+                return walk(node.left) or walk(node.right)
+            if isinstance(node, Cast):
+                return walk(node.clause)
+            return False
+
+        return walk(expr)
+
     def group_by(
         self, partition_by: Sequence[str], new_column: Sequence[Column]
     ) -> "SignalSchema":
@@ -1130,7 +1145,11 @@ class SignalSchema:
                 new_values[name] = sql_to_python(val)
             elif isinstance(value, ColumnExpr):
                 # adding new signal
-                new_values[name] = sql_to_python(self.enrich_expr_types(value))
+                enriched = self.enrich_expr_types(value)
+                new_values[name] = self._optionalize(
+                    sql_to_python(enriched),
+                    self._expr_references_nullable(enriched),
+                )
             else:
                 new_values[name] = value
 
