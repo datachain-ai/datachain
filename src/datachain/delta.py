@@ -393,14 +393,17 @@ def delta_retry_update(
     for source in delta_sources:
         source.resolve_listing()
 
-    dependencies = catalog.get_dataset_dependencies(
-        name,
-        latest_version,
-        namespace_name=namespace_name,
-        project_name=project_name,
-        indirect=False,
-        include_removed=False,
-    )
+    dependencies: list[DatasetDependency | None] = [
+        d
+        for d in catalog.get_dataset_dependencies(
+            name,
+            latest_version,
+            namespace_name=namespace_name,
+            project_name=project_name,
+            indirect=False,
+        )
+        if d is None or not d.removed
+    ]
     latest_dataset = datachain.read_dataset(
         name,
         namespace=namespace_name,

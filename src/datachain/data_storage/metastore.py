@@ -489,11 +489,10 @@ class AbstractMetastore(ABC, Serializable):
         self,
         dataset: DatasetRecord,
         version: str,
-        include_removed: bool = True,
     ) -> list[DatasetDependency | None]:
-        """Gets direct dataset dependencies. Deps pointing at soft-removed
-        versions are surfaced by default so lineage views can show them; pass
-        ``include_removed=False`` to filter them out."""
+        """Gets direct dataset dependencies. Each returned ``DatasetDependency``
+        carries a ``removed`` flag so callers can filter or badge tombstoned
+        deps without a separate query."""
 
     @abstractmethod
     def get_dataset_dependency_nodes(
@@ -2075,7 +2074,6 @@ class AbstractDBMetastore(AbstractMetastore):
         self,
         dataset: DatasetRecord,
         version: str,
-        include_removed: bool = True,
     ) -> list[DatasetDependency | None]:
         n = self._namespaces
         p = self._projects
@@ -2090,11 +2088,6 @@ class AbstractDBMetastore(AbstractMetastore):
         where_clause = (dd.c.source_dataset_id == dataset.id) & (
             dd.c.source_dataset_version_id == dataset_version.id
         )
-        if not include_removed:
-            # Only COMPLETE dep versions are readable; everything else
-            # (in-flight, broken, or in a removal state) should look like
-            # the dep is gone so delta fallback can trigger a rebuild.
-            where_clause = where_clause & (dv.c.status == DatasetStatus.COMPLETE)
 
         query = (
             self._datasets_dependencies_select(*select_cols)

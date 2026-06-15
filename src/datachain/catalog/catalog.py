@@ -1513,7 +1513,6 @@ class Catalog:
         namespace_name: str | None = None,
         project_name: str | None = None,
         indirect=False,
-        include_removed: bool = True,
     ) -> list[DatasetDependency | None]:
         dataset = self.get_dataset(
             name,
@@ -1527,11 +1526,7 @@ class Catalog:
         dataset_version_id = dataset_version.id
 
         if not indirect:
-            return self.metastore.get_direct_dataset_dependencies(
-                dataset,
-                version,
-                include_removed=include_removed,
-            )
+            return self.metastore.get_direct_dataset_dependencies(dataset, version)
 
         return self.get_dataset_dependencies_by_ids(
             dataset_id,

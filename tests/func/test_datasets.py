@@ -911,5 +911,6 @@ def test_dataset_storage_dependencies(cloud_test_catalog, cloud_type, indirect):
             "version": "1.0.0",
             "created_at": lst_dataset.get_version("1.0.0").created_at,
             "dependencies": [],
+            "removed": False,
         }
     ]

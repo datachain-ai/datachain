@@ -184,6 +184,7 @@ class DatasetDependency:
     version: str
     created_at: datetime
     dependencies: list["DatasetDependency | None"]
+    removed: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -218,6 +219,7 @@ class DatasetDependency:
         dataset_name: str | None,
         dataset_version: str | None,
         dataset_version_created_at: datetime | None,
+        dataset_version_status: int | None = None,
     ) -> "DatasetDependency | None":
         from datachain.lib.listing import is_listing_dataset
 
@@ -239,6 +241,12 @@ class DatasetDependency:
             dataset_version,  # type: ignore[arg-type]
             dataset_version_created_at,  # type: ignore[arg-type]
             [],
+            removed=dataset_version_status
+            in (
+                DatasetStatus.REMOVING,
+                DatasetStatus.REMOVED,
+                DatasetStatus.REMOVING_TOTAL,
+            ),
         )
 
     @property

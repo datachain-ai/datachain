@@ -696,6 +696,22 @@ def test_session_dataset_never_keeps_metadata(test_session):
         catalog.get_dataset(name, include_incomplete=True)
 
 
+def test_dependency_removed_flag(test_session):
+    """A dataset dependency pointing at a soft-deleted version is returned
+    with ``removed=True`` so delta-style consumers can filter it without a
+    separate query."""
+    catalog = test_session.catalog
+    source = dc.read_values(value=["a", "b"], session=test_session).save("dep_source")
+    dc.read_dataset("dep_source", session=test_session).save("dep_target")
+    catalog.remove_dataset(source.dataset.name, version="1.0.0", keep_metadata=True)
+
+    deps = catalog.get_dataset_dependencies("dep_target", "1.0.0")
+    assert len(deps) == 1
+    assert deps[0] is not None
+    assert deps[0].name == "dep_source"
+    assert deps[0].removed is True
+
+
 def test_export_dataset_table_refuses_tombstone(test_session, dataset_complete):
     """Exporting a REMOVED tombstone must raise upfront instead of running
     and crashing later against the dropped rows table."""
