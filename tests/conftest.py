@@ -416,7 +416,7 @@ def pytest_configure(config):
     )
 
 
-@pytest.fixture(scope="session", params=[DEFAULT_TREE])
+@pytest.fixture(scope="session")
 def tree(request):
     return request.param
 
@@ -487,14 +487,37 @@ class CloudTestCatalog:
 cloud_types = ["s3", "gs", "azure"]
 
 
-@pytest.fixture(scope="session", params=["file", *cloud_types])
+@pytest.fixture(scope="session")
 def cloud_type(request):
     return request.param
 
 
-@pytest.fixture(scope="session", params=[False, True])
+@pytest.fixture(scope="session")
 def version_aware(request):
     return request.param
+
+
+_CLOUD_MATRIX_DEFAULTS = {
+    "cloud_type": ["file", *cloud_types],
+    "version_aware": [False, True],
+    "tree": [DEFAULT_TREE],
+}
+
+
+def pytest_generate_tests(metafunc):
+    explicit = {
+        argname
+        for marker in metafunc.definition.iter_markers("parametrize")
+        for argname in (
+            marker.args[0]
+            if isinstance(marker.args[0], (list, tuple))
+            else marker.args[0].split(",")
+        )
+    }
+    explicit = {name.strip() for name in explicit}
+    for name, params in _CLOUD_MATRIX_DEFAULTS.items():
+        if name in metafunc.fixturenames and name not in explicit:
+            metafunc.parametrize(name, params, indirect=True, scope="session")
 
 
 def pytest_collection_modifyitems(config, items):

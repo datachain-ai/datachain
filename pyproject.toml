@@ -102,9 +102,7 @@ zarr = [
 ]
 tests = [
   "datachain[torch,audio,remote,vector,hf,video,postgres,zarr]",
-  # <9.1: 9.1.0 rejects indirect re-parametrization of params'd fixtures
-  # (cloud_type/version_aware/tree) as "duplicate parametrization".
-  "pytest>=8,<9.1",
+  "pytest>=8,<10",
   "pytest-asyncio",
   "pytest-sugar>=0.9.6",
   "pytest-cov>=4.1.0",
