@@ -867,6 +867,32 @@ def test_merge_unmatched_right_is_none(test_session):
     assert not inner_opt
 
 
+def test_subtract_optional_key_null_safe(test_session):
+    """subtract treats NULL keys as equal (NULL == NULL) on both backends, so a
+    None-key row present in both is removed."""
+    a = dc.read_values(
+        k=[1, None, 3], output={"k": Optional[int]}, session=test_session
+    )
+    b = dc.read_values(k=[None], output={"k": Optional[int]}, session=test_session)
+    assert sorted(str(v) for v in a.subtract(b, on=["k"]).to_values("k")) == ["1", "3"]
+
+
+def test_subtract_optional_multikey_null_safe(test_session):
+    """Multi-key subtract is NULL-safe per key: a row matches only when every key
+    is equal (NULLs included), so (1, None) survives."""
+    a = dc.read_values(
+        x=[1, 1, None], y=["a", None, "c"],
+        output={"x": Optional[int], "y": Optional[str]}, session=test_session,
+    )
+    b = dc.read_values(
+        x=[1, None], y=["a", "c"],
+        output={"x": Optional[int], "y": Optional[str]}, session=test_session,
+    )
+    assert sorted(str(t) for t in a.subtract(b, on=["x", "y"]).to_list("x", "y")) == [
+        "(1, None)"
+    ]
+
+
 def test_window_order_by_optional_nulls_last(test_session):
     """row_number().over(order_by=Optional) ranks NULL rows last on both backends
     (SQLite orders NULLs first by default, ClickHouse last)."""
