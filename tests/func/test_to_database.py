@@ -861,10 +861,8 @@ def test_to_database_invalid_on_conflict_value(connection, test_session):
         chain.to_database("test_table", connection, on_conflict="invalid")
 
 
-def test_to_database_with_null_values(connection, test_session, warehouse):
+def test_to_database_with_null_values(connection, test_session):
     """Test to_database handles NULL values correctly."""
-    from datachain.data_storage.sqlite import SQLiteWarehouse
-
     chain = dc.read_values(
         id=[1, 2, 3, 4],
         name=["Alice", None, "Charlie", "Diana"],
@@ -876,14 +874,12 @@ def test_to_database_with_null_values(connection, test_session, warehouse):
 
     rows = _fetch_all_rows(connection, "null_table")
 
-    # Different warehouse implementations handle NULL values differently
-    default_str_value = None if isinstance(warehouse, SQLiteWarehouse) else ""
-    default_int_value = None if isinstance(warehouse, SQLiteWarehouse) else 0
-
+    # name/age are inferred Optional (they contain None), so None round-trips as
+    # NULL on both backends instead of the type default.
     assert len(rows) == 4
     assert rows[0] == (1, "Alice", 25)
-    assert rows[1] == (2, default_str_value, 30)
-    assert rows[2] == (3, "Charlie", default_int_value)
+    assert rows[1] == (2, None, 30)
+    assert rows[2] == (3, "Charlie", None)
     assert rows[3] == (4, "Diana", 28)
 
 
