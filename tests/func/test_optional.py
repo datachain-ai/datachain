@@ -120,9 +120,9 @@ def test_issue_1055_anthropic_usage_roundtrip(test_session):
 def test_read_values_infers_optional_scalar_from_none(test_session):
     """read_values infers Optional[scalar] from a None in the sequence, so the
     None round-trips as NULL instead of the type default."""
-    chain = dc.read_values(
-        id=[1, 2, 3], a=[10, None, 30], session=test_session
-    ).save("infer_opt_scalar")
+    chain = dc.read_values(id=[1, 2, 3], a=[10, None, 30], session=test_session).save(
+        "infer_opt_scalar"
+    )
     _, is_optional = unwrap_optional(chain.signals_schema.values["a"])
     assert is_optional
     saved = dc.read_dataset("infer_opt_scalar", session=test_session)
