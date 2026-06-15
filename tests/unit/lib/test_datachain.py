@@ -837,7 +837,8 @@ def test_from_features_more_simple_types(test_session):
         dict[str, int],  # from dd2
         list[str],  # from ll1 (starts with empty list)
         list[int],  # from ll
-        str,  # from nn and ss
+        str,  # from nn (all None -> defaults to str)
+        str | None,  # from ss (has a None -> inferred Optional)
         datetime.datetime,
         float,
     }
