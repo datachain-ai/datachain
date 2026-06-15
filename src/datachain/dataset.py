@@ -241,12 +241,7 @@ class DatasetDependency:
             dataset_version,  # type: ignore[arg-type]
             dataset_version_created_at,  # type: ignore[arg-type]
             [],
-            removed=dataset_version_status
-            in (
-                DatasetStatus.REMOVING,
-                DatasetStatus.REMOVED,
-                DatasetStatus.REMOVING_TOTAL,
-            ),
+            removed=dataset_version_status in REMOVED_STATUSES,
         )
 
     @property
@@ -276,6 +271,11 @@ class DatasetStatus:
     REMOVING = 7  # keep-metadata removal in progress; resumes to REMOVED
     REMOVED = 8
     REMOVING_TOTAL = 9  # wipe in progress; resumes to row deletion
+
+
+REMOVED_STATUSES: frozenset[int] = frozenset(
+    {DatasetStatus.REMOVING, DatasetStatus.REMOVED, DatasetStatus.REMOVING_TOTAL}
+)
 
 
 @dataclass
@@ -405,11 +405,7 @@ class DatasetVersion:
         """True if the version is in any removal state (in-flight or
         terminal): REMOVING, REMOVED, REMOVING_TOTAL. The rows table is
         gone or being dropped in all three cases."""
-        return self.status in (
-            DatasetStatus.REMOVING,
-            DatasetStatus.REMOVED,
-            DatasetStatus.REMOVING_TOTAL,
-        )
+        return self.status in REMOVED_STATUSES
 
     def update(self, **kwargs):
         for key, value in kwargs.items():
