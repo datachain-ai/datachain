@@ -21,13 +21,13 @@ if TYPE_CHECKING:
 
 
 class ReadOnlyQueryStep(QueryStep):
-    """
-    This step is used to read the dataset in read-only mode.
+    """This step is used to read the dataset in read-only mode.
     It is used to avoid the need to read the table metadata from the warehouse.
     This is useful when we want to list the files in the dataset.
     """
 
     def apply(self) -> "StepResult":
+        """Build a read-only ``StepResult`` over the listing columns."""
         import sqlalchemy as sa
 
         def q(*columns):
