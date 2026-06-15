@@ -3,7 +3,6 @@ from collections.abc import Sequence
 from typing import Any
 
 from datachain.lib.data_model import DataType, DataTypeNames, DataValue, is_chain_type
-from datachain.lib.model_store import ModelStore
 from datachain.lib.utils import DataChainParamsError
 
 
@@ -107,19 +106,16 @@ def _infer_type_from_sequence(
 
     if isinstance(first_element, list):
         item_type = _infer_list_item_type(first_element)
-        return list[item_type]  # type: ignore[valid-type, return-value]
-
-    if isinstance(first_element, dict):
-        # If the first dict is empty, use str as default key/value types
+        typ = list[item_type]  # type: ignore[valid-type, assignment]
+    elif isinstance(first_element, dict):
         if len(first_element) == 0:
-            return dict[str, str]  # type: ignore[return-value]
-        first_key = next(iter(first_element.keys()))
-        value_type = _infer_dict_value_type(first_element)
-        return dict[type(first_key), value_type]  # type: ignore[misc, return-value]
+            typ = dict[str, str]  # type: ignore[assignment]
+        else:
+            first_key = next(iter(first_element.keys()))
+            value_type = _infer_dict_value_type(first_element)
+            typ = dict[type(first_key), value_type]  # type: ignore[misc, assignment]
 
-    # A model column with some None values needs the sentinel, which only
-    # an Optional[DataModel] emits. Basic/list/dict inference is left untouched.
-    if ModelStore.is_pydantic(typ) and any(v is None for v in sequence):
+    if any(v is None for v in sequence):
         return typ | None  # type: ignore[return-value]
 
     return typ

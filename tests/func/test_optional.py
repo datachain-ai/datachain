@@ -117,6 +117,18 @@ def test_issue_1055_anthropic_usage_roundtrip(test_session):
     assert u2.service_tier is None
 
 
+def test_read_values_infers_optional_scalar_from_none(test_session):
+    """read_values infers Optional[scalar] from a None in the sequence, so the
+    None round-trips as NULL instead of the type default."""
+    chain = dc.read_values(
+        id=[1, 2, 3], a=[10, None, 30], session=test_session
+    ).save("infer_opt_scalar")
+    _, is_optional = unwrap_optional(chain.signals_schema.values["a"])
+    assert is_optional
+    saved = dc.read_dataset("infer_opt_scalar", session=test_session)
+    assert {r["id"]: r["a"] for r in saved.to_records()} == {1: 10, 2: None, 3: 30}
+
+
 def test_optional_basic_scalar_roundtrips_none(test_session):
     """An explicit Optional[scalar] column stores/reads None as NULL on both
     backends (without it, ClickHouse coerces None to the type default 0/"")."""

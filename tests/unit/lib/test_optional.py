@@ -330,6 +330,25 @@ def test_infer_optional_datamodel_from_nones():
     assert is_optional and inner is _Addr
 
 
+@pytest.mark.parametrize(
+    ("seq", "expected_inner"),
+    [
+        ([10, None, 30], int),
+        (["x", None, "z"], str),
+        ([[1, 2], None], list[int]),
+    ],
+)
+def test_infer_optional_scalar_and_collection_from_nones(seq, expected_inner):
+    inner, is_optional = unwrap_optional(_infer_type_from_sequence(seq, "c", "ds"))
+    assert is_optional and inner == expected_inner
+
+
+def test_infer_non_optional_when_no_none():
+    typ = _infer_type_from_sequence([1, 2, 3], "c", "ds")
+    inner, is_optional = unwrap_optional(typ)
+    assert not is_optional and inner is int
+
+
 def test_optional_datamodel_roundtrip_at_top_level():
     schema = SignalSchema({"item": Optional[_Addr]})
     flat = [
