@@ -249,7 +249,8 @@ def test_merge_nested_key_without_collision_matches_schema(test_session):
     assert resolved.values["id"] is int
     assert resolved.values["item.score"] is float
     assert resolved.values["metadata.score"] is float
-    assert resolved.values["right_id"] is int
+    # right side of a left join widens to Optional (unmatched rows would be NULL)
+    assert resolved.values["right_id"] == int | None
 
     with pytest.raises(SignalResolvingError):
         schema.resolve("right_metadata.score")
@@ -302,7 +303,8 @@ def test_merge_prefixed_root_suffix_matches_schema(test_session):
     assert resolved.values["right_item.score"] is float
     assert resolved.values["right_item_1.score"] is int
     assert resolved.values["right_item_1.confidence"] is int
-    assert resolved.values["right_id"] is int
+    # right side of a left join widens to Optional (unmatched rows would be NULL)
+    assert resolved.values["right_id"] == int | None
 
     rows = (
         merged.select(
@@ -359,7 +361,8 @@ def test_merge_rename_collides_with_existing_column_matches_schema(test_session)
     assert resolved.values["item.score"] is float
     assert resolved.values["right_item.score"] is str
     assert resolved.values["right_item_1.score"] is int
-    assert resolved.values["right_id"] is int
+    # right side of a left join widens to Optional (unmatched rows would be NULL)
+    assert resolved.values["right_id"] == int | None
 
     rows = (
         merged.select(

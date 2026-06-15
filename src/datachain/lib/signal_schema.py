@@ -1173,8 +1173,17 @@ class SignalSchema:
         self,
         right_schema: "SignalSchema",
         rname: str,
+        left_nullable: bool = False,
+        right_nullable: bool = False,
     ) -> "SignalSchema":
-        merged_values = dict(self.values)
+        def _nullable(type_: DataType, nullable: bool) -> DataType:
+            # widen scalars to Optional (collections/models can't be Nullable on CH)
+            inner, is_optional = unwrap_optional(type_)
+            if not nullable or is_optional or inner not in NULLABLE_SCALARS:
+                return type_
+            return type_ | None  # type: ignore[return-value]
+
+        merged_values = {k: _nullable(t, left_nullable) for k, t in self.values.items()}
 
         right_names = list(right_schema.values.keys())
         root_mapping = generate_merge_root_mapping(
@@ -1189,7 +1198,7 @@ class SignalSchema:
             tail = key.partition(".")[2]
             mapped_root = root_mapping[root]
             new_name = mapped_root if not tail else f"{mapped_root}.{tail}"
-            merged_values[new_name] = type_
+            merged_values[new_name] = _nullable(type_, right_nullable)
 
         return SignalSchema(merged_values)
 

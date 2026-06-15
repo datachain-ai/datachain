@@ -1887,7 +1887,12 @@ class DataChain:
         signals_schema = self.signals_schema.clone_without_sys_signals()
         right_signals_schema = right_ds.signals_schema.clone_without_sys_signals()
 
-        ds.signals_schema = signals_schema.merge(right_signals_schema, rname)
+        ds.signals_schema = signals_schema.merge(
+            right_signals_schema,
+            rname,
+            left_nullable=full,
+            right_nullable=not inner,
+        )
 
         return ds
 

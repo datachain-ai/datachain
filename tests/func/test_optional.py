@@ -813,6 +813,29 @@ def test_order_by_optional_basic_nulls_last(test_session):
     assert order(descending=True) == [1, 4, 3, 2]
 
 
+def test_merge_unmatched_right_is_none(test_session):
+    """A left merge widens the right side to Optional and reads unmatched rows as
+    None on both backends (ClickHouse must not coerce the NULL to 0); an inner
+    join leaves the right side non-optional."""
+    left = dc.read_values(k=[1, 2, 3], output={"k": int}, session=test_session)
+    right = dc.read_values(
+        k=[1], rv=[99], output={"k": int, "rv": int}, session=test_session
+    )
+
+    merged = left.merge(right, on="k", rname="r_")
+    _, is_optional = unwrap_optional(merged.signals_schema.values["rv"])
+    assert is_optional
+
+    merged.save("merge_unmatched")
+    saved = dc.read_dataset("merge_unmatched", session=test_session)
+    assert {r["k"]: r["rv"] for r in saved.to_records()} == {1: 99, 2: None, 3: None}
+
+    _, inner_opt = unwrap_optional(
+        left.merge(right, on="k", rname="r_", inner=True).signals_schema.values["rv"]
+    )
+    assert not inner_opt
+
+
 def test_window_order_by_optional_nulls_last(test_session):
     """row_number().over(order_by=Optional) ranks NULL rows last on both backends
     (SQLite orders NULLs first by default, ClickHouse last)."""
