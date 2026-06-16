@@ -32,16 +32,39 @@ if TYPE_CHECKING:
 ColT = Union[str, tuple, Column, ColumnExpr, "Func"]
 
 
+def _referenced_column_names(expr: Any) -> list[str]:
+    """Column names referenced anywhere in a ``ColumnExpr`` / SQL expression tree,
+    e.g. ``["a"]`` for ``C("a") > 5``."""
+    names: list[str] = []
+
+    def _walk(node: Any) -> None:
+        if isinstance(node, Column) and getattr(node, "name", None):
+            names.append(node.name)
+        get_children = getattr(node, "get_children", None)
+        if get_children is not None:
+            for child in get_children():
+                _walk(child)
+
+    _walk(expr)
+    return names
+
+
 def _source_is_nullable(col: ColT, signals_schema: "SignalSchema | None") -> bool:
     """True when ``col`` resolves to a column that may hold NULL — a leaf under an
-    ``Optional[DataModel]`` or an ``Optional[basic]`` column, or a nullable
-    ``Func`` operand (so nullability propagates through composed expressions)."""
+    ``Optional[DataModel]`` or an ``Optional[basic]`` column, a nullable ``Func``
+    operand, or a ``ColumnExpr`` referencing a nullable column (so nullability
+    propagates through composed expressions and comparisons)."""
     if signals_schema is None:
         return False
     if isinstance(col, Func):
         return col.is_nullable_result(signals_schema)
     if not isinstance(col, str):
-        return False
+        # A ColumnExpr operand such as ``C("a") > 5``: nullable when any column it
+        # references is nullable.
+        return any(
+            _source_is_nullable(name, signals_schema)
+            for name in _referenced_column_names(col)
+        )
     db_col = ColumnMeta.to_db_name(col)
     if signals_schema.optional_parent_sentinel(db_col) is not None:
         return True

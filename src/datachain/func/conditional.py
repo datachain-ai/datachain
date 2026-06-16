@@ -11,7 +11,7 @@ from datachain.lib.utils import DataChainParamsError
 from datachain.query.schema import Column, ColumnExpr
 from datachain.sql.functions import conditional
 
-from .func import Func, _SentinelAwareFunc
+from .func import Func, _SentinelAwareFunc, _source_is_nullable
 
 if TYPE_CHECKING:
     from sqlalchemy import TableClause
@@ -46,6 +46,40 @@ class _IsNoneFunc(_SentinelAwareFunc):
             (sql_or(sentinel.is_(None), sentinel != 0), True), else_=False
         )
         return self._finalize_column(func_col, python_to_sql(bool), label)
+
+
+class _CaseFunc(Func):
+    """``case`` with no ``else_`` yields NULL for unmatched rows, so its result
+    column must allow NULL — otherwise ClickHouse coerces the implicit NULL-else to
+    the column's backend default (0/'') instead of matching SQLite's NULL."""
+
+    def is_nullable_result(
+        self,
+        signals_schema: "SignalSchema | None",
+        col_type: "DataType | None" = None,
+    ) -> bool:
+        if self.kwargs.get("else_") is None:
+            return True
+        return super().is_nullable_result(signals_schema, col_type)
+
+
+class _LogicalFunc(Func):
+    """``and_``/``or_``/``not_`` follow SQL three-valued logic: a NULL operand can
+    make the boolean result NULL. The result column must allow NULL so ClickHouse
+    matches SQLite instead of collapsing NULL to False. Operands may be passed as
+    ``ColumnExpr`` (stored in ``args``), so check both ``cols`` and ``args``."""
+
+    def is_nullable_result(
+        self,
+        signals_schema: "SignalSchema | None",
+        col_type: "DataType | None" = None,
+    ) -> bool:
+        if signals_schema is None:
+            return False
+        return any(
+            _source_is_nullable(op, signals_schema)
+            for op in (*self.cols, *self.args)
+        )
 
 
 def greatest(*args: str | Column | Func | float) -> Func:
@@ -193,7 +227,7 @@ def case(
 
     kwargs = {"else_": else_}
 
-    return Func("case", inner=sql_case, cols=args, kwargs=kwargs, result_type=type_)
+    return _CaseFunc("case", inner=sql_case, cols=args, kwargs=kwargs, result_type=type_)
 
 
 def ifelse(condition: ColumnExpr | Func, if_val: CaseT, else_val: CaseT) -> Func:
@@ -289,7 +323,7 @@ def or_(*args: ColumnExpr | Func) -> Func:
         else:
             func_args.append(arg)
 
-    return Func("or", inner=sql_or, cols=cols, args=func_args, result_type=bool)
+    return _LogicalFunc("or", inner=sql_or, cols=cols, args=func_args, result_type=bool)
 
 
 def and_(*args: ColumnExpr | Func) -> Func:
@@ -324,7 +358,7 @@ def and_(*args: ColumnExpr | Func) -> Func:
         else:
             func_args.append(arg)
 
-    return Func("and", inner=sql_and, cols=cols, args=func_args, result_type=bool)
+    return _LogicalFunc("and", inner=sql_and, cols=cols, args=func_args, result_type=bool)
 
 
 def not_(arg: ColumnExpr | Func) -> Func:
@@ -357,4 +391,4 @@ def not_(arg: ColumnExpr | Func) -> Func:
     else:
         func_args.append(arg)
 
-    return Func("not", inner=sql_not, cols=cols, args=func_args, result_type=bool)
+    return _LogicalFunc("not", inner=sql_not, cols=cols, args=func_args, result_type=bool)

@@ -1346,3 +1346,49 @@ def test_greatest_least_over_optional_propagate_none(test_session):
     assert rows[1] == (10, 5, 10)
     assert rows[2] == (None, None, None)  # n is NULL
     assert rows[3] == (None, None, 7)  # m is NULL (gl ignores m → 7)
+
+
+def test_case_no_else_is_nullable(test_session):
+    """func.case with no else_ yields None for unmatched rows on both backends.
+    The result column is marked nullable so ClickHouse keeps NULL instead of
+    coercing the implicit NULL-else to the backend default (0)."""
+    from datachain import C, func
+
+    chain = dc.read_values(
+        id=[1, 2, 3], a=[10, None, 3],
+        output={"id": int, "a": Optional[int]}, session=test_session,
+    )
+    # unmatched (a<=5 or a is NULL) -> None, not 0
+    no_else = chain.mutate(x=func.case((C("a") > 5, 100))).order_by("id")
+    assert [r["x"] for r in no_else.to_records()] == [100, None, None]
+    # an explicit else still fills every row
+    with_else = chain.mutate(x=func.case((C("a") > 5, 100), else_=-1)).order_by("id")
+    assert [r["x"] for r in with_else.to_records()] == [100, -1, -1]
+
+
+def test_boolean_logic_over_optional_preserves_none(test_session):
+    """and_/or_/not_ follow SQL three-valued logic: a NULL operand makes the
+    boolean result NULL. The result column is marked nullable so ClickHouse keeps
+    NULL instead of collapsing it to False (1/0 vs True/False is an unrelated
+    bool-representation difference, so compare via bool()/None)."""
+    from datachain import C, func
+
+    chain = dc.read_values(
+        id=[1, 2, 3], a=[10, None, 3], b=[1, 2, None],
+        output={"id": int, "a": Optional[int], "b": Optional[int]}, session=test_session,
+    )
+    out = chain.mutate(
+        an=func.and_(C("a") > 5, C("b") > 0),
+        orr=func.or_(C("a") > 5, C("b") > 0),
+        nt=func.not_(C("a") > 5),
+    ).order_by("id")
+
+    def norm(v):
+        return None if v is None else bool(v)
+
+    rows = {r["id"]: (norm(r["an"]), norm(r["orr"]), norm(r["nt"])) for r in out.to_records()}
+    # row2: a is NULL -> a>5 is NULL. NULL AND True=NULL, NULL OR True=True, NOT NULL=NULL
+    # row3: b is NULL -> b>0 is NULL. False AND NULL=False, False OR NULL=NULL, NOT False=True
+    assert rows[1] == (True, True, False)
+    assert rows[2] == (None, True, None)
+    assert rows[3] == (False, None, True)
