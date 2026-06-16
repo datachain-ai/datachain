@@ -437,9 +437,7 @@ def test_diff_right_compare_defined_but_not_compare(test_session):
 
 @pytest.mark.parametrize("status_col", ("diff", None))
 @pytest.mark.parametrize("right_on", ("file2", None))
-def test_file_diff(
-    test_session, model_leaf_str_default, status_col, right_on
-):
+def test_file_diff(test_session, model_leaf_str_default, status_col, right_on):
     fs1 = File(source="s1://", path="p1", version="2", etag="e2")
     fs1_updated = File(source="s1://", path="p1", version="1", etag="e1")
     fs2 = File(source="s2://", path="p2", version="1", etag="e1")
