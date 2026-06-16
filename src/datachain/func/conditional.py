@@ -49,9 +49,7 @@ class _IsNoneFunc(_SentinelAwareFunc):
 
 
 class _CaseFunc(Func):
-    """``case`` with no ``else_`` yields NULL for unmatched rows, so its result
-    column must allow NULL — otherwise ClickHouse coerces the implicit NULL-else to
-    the column's backend default (0/'') instead of matching SQLite's NULL."""
+    """``case`` with no ``else_`` is nullable (unmatched rows are NULL)."""
 
     def is_nullable_result(
         self,
@@ -64,10 +62,8 @@ class _CaseFunc(Func):
 
 
 class _LogicalFunc(Func):
-    """``and_``/``or_``/``not_`` follow SQL three-valued logic: a NULL operand can
-    make the boolean result NULL. The result column must allow NULL so ClickHouse
-    matches SQLite instead of collapsing NULL to False. Operands may be passed as
-    ``ColumnExpr`` (stored in ``args``), so check both ``cols`` and ``args``."""
+    """``and_``/``or_``/``not_`` are nullable when any operand is (three-valued
+    logic). Operands may be ``ColumnExpr`` in ``args``, so check ``cols`` too."""
 
     def is_nullable_result(
         self,

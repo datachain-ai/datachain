@@ -33,8 +33,8 @@ ColT = Union[str, tuple, Column, ColumnExpr, "Func"]
 
 
 def _referenced_column_names(expr: Any) -> list[str]:
-    """Column names referenced anywhere in a ``ColumnExpr`` / SQL expression tree,
-    e.g. ``["a"]`` for ``C("a") > 5``."""
+    """Column names referenced in a ``ColumnExpr`` tree, e.g. ``["a"]`` for
+    ``C("a") > 5``."""
     names: list[str] = []
 
     def _walk(node: Any) -> None:
@@ -59,8 +59,7 @@ def _source_is_nullable(col: ColT, signals_schema: "SignalSchema | None") -> boo
     if isinstance(col, Func):
         return col.is_nullable_result(signals_schema)
     if not isinstance(col, str):
-        # A ColumnExpr operand such as ``C("a") > 5``: nullable when any column it
-        # references is nullable.
+        # ColumnExpr operand: nullable if any referenced column is.
         return any(
             _source_is_nullable(name, signals_schema)
             for name in _referenced_column_names(col)

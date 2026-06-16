@@ -1323,10 +1323,8 @@ def test_sqlite_udf_funcs_none_safe():
 
 
 def test_greatest_least_over_optional_propagate_none(test_session):
-    """greatest/least propagate None on a NULL argument, consistently across
-    backends. ClickHouse natively ignores NULL (greatest(NULL, 5) == 5); a
-    custom compile wraps it so a NULL arg yields NULL, matching SQLite's
-    max/min."""
+    """greatest/least yield None on a NULL argument on both backends (CH natively
+    ignores NULL, so a custom compile wraps it)."""
     from datachain import func
 
     chain = dc.read_values(
@@ -1349,9 +1347,8 @@ def test_greatest_least_over_optional_propagate_none(test_session):
 
 
 def test_case_no_else_is_nullable(test_session):
-    """func.case with no else_ yields None for unmatched rows on both backends.
-    The result column is marked nullable so ClickHouse keeps NULL instead of
-    coercing the implicit NULL-else to the backend default (0)."""
+    """func.case with no else_ yields None for unmatched rows on both backends
+    (not 0 on CH)."""
     from datachain import C, func
 
     chain = dc.read_values(
@@ -1367,10 +1364,8 @@ def test_case_no_else_is_nullable(test_session):
 
 
 def test_boolean_logic_over_optional_preserves_none(test_session):
-    """and_/or_/not_ follow SQL three-valued logic: a NULL operand makes the
-    boolean result NULL. The result column is marked nullable so ClickHouse keeps
-    NULL instead of collapsing it to False (1/0 vs True/False is an unrelated
-    bool-representation difference, so compare via bool()/None)."""
+    """and_/or_/not_ keep NULL on both backends (three-valued logic; not False on
+    CH). 1/0 vs True/False is an unrelated repr difference, so compare via bool()."""
     from datachain import C, func
 
     chain = dc.read_values(
@@ -1387,8 +1382,24 @@ def test_boolean_logic_over_optional_preserves_none(test_session):
         return None if v is None else bool(v)
 
     rows = {r["id"]: (norm(r["an"]), norm(r["orr"]), norm(r["nt"])) for r in out.to_records()}
-    # row2: a is NULL -> a>5 is NULL. NULL AND True=NULL, NULL OR True=True, NOT NULL=NULL
-    # row3: b is NULL -> b>0 is NULL. False AND NULL=False, False OR NULL=NULL, NOT False=True
+    # a NULL operand -> NULL unless the other operand decides the result
     assert rows[1] == (True, True, False)
     assert rows[2] == (None, True, None)
     assert rows[3] == (False, None, True)
+
+
+def test_collect_over_optional_preserves_none_elements(test_session):
+    """func.collect keeps NULL elements on both backends; collected order is
+    unspecified, so compare as multisets."""
+    from collections import Counter
+
+    from datachain import func
+
+    chain = dc.read_values(
+        id=[1, 2, 3], g=[1, 1, 1], a=[10, None, 30],
+        output={"id": int, "g": int, "a": Optional[int]}, session=test_session,
+    )
+    rows = chain.group_by(c=func.collect("a"), partition_by="g").to_records()
+    assert len(rows) == 1
+    # the None element is preserved (length 3, not 2)
+    assert Counter(rows[0]["c"]) == Counter([10, None, 30])
