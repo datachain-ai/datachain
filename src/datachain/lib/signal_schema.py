@@ -654,6 +654,7 @@ class SignalSchema:
         try:
             obj = fr(**j)
             if set_stream:
+                assert catalog is not None
                 SignalSchema._set_file_stream(obj, catalog, cache)
         except ValidationError as e:
             if not self._all_values_none(j):

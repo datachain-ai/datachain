@@ -12,7 +12,6 @@ for sqlite we can use `sqlite.register_converter`
 ( https://docs.python.org/3/library/sqlite3.html#sqlite3.register_converter )
 """
 
-import inspect
 import numbers
 import re
 from copy import copy
@@ -184,7 +183,7 @@ class SQLType(TypeDecorator):
     @staticmethod
     def as_nullable(t: Union[type["SQLType"], "SQLType"]) -> "SQLType":
         """A nullable instance of ``t`` (given either a class or an instance)."""
-        inst = t() if inspect.isclass(t) else copy(t)
+        inst = copy(t) if isinstance(t, SQLType) else t()
         inst.dc_nullable = True
         return inst
 
