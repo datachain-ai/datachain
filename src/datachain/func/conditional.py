@@ -73,8 +73,7 @@ class _LogicalFunc(Func):
         if signals_schema is None:
             return False
         return any(
-            _source_is_nullable(op, signals_schema)
-            for op in (*self.cols, *self.args)
+            _source_is_nullable(op, signals_schema) for op in (*self.cols, *self.args)
         )
 
 
@@ -241,7 +240,9 @@ def case(
 
     kwargs = {"else_": else_}
 
-    return _CaseFunc("case", inner=sql_case, cols=args, kwargs=kwargs, result_type=type_)
+    return _CaseFunc(
+        "case", inner=sql_case, cols=args, kwargs=kwargs, result_type=type_
+    )
 
 
 def ifelse(condition: ColumnExpr | Func, if_val: CaseT, else_val: CaseT) -> Func:
@@ -372,7 +373,9 @@ def and_(*args: ColumnExpr | Func) -> Func:
         else:
             func_args.append(arg)
 
-    return _LogicalFunc("and", inner=sql_and, cols=cols, args=func_args, result_type=bool)
+    return _LogicalFunc(
+        "and", inner=sql_and, cols=cols, args=func_args, result_type=bool
+    )
 
 
 def not_(arg: ColumnExpr | Func) -> Func:
@@ -405,4 +408,6 @@ def not_(arg: ColumnExpr | Func) -> Func:
     else:
         func_args.append(arg)
 
-    return _LogicalFunc("not", inner=sql_not, cols=cols, args=func_args, result_type=bool)
+    return _LogicalFunc(
+        "not", inner=sql_not, cols=cols, args=func_args, result_type=bool
+    )

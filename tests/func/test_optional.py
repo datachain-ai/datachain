@@ -1352,8 +1352,10 @@ def test_case_no_else_is_nullable(test_session):
     from datachain import C, func
 
     chain = dc.read_values(
-        id=[1, 2, 3], a=[10, None, 3],
-        output={"id": int, "a": Optional[int]}, session=test_session,
+        id=[1, 2, 3],
+        a=[10, None, 3],
+        output={"id": int, "a": Optional[int]},
+        session=test_session,
     )
     # unmatched (a<=5 or a is NULL) -> None, not 0
     no_else = chain.mutate(x=func.case((C("a") > 5, 100))).order_by("id")
@@ -1369,8 +1371,11 @@ def test_boolean_logic_over_optional_preserves_none(test_session):
     from datachain import C, func
 
     chain = dc.read_values(
-        id=[1, 2, 3], a=[10, None, 3], b=[1, 2, None],
-        output={"id": int, "a": Optional[int], "b": Optional[int]}, session=test_session,
+        id=[1, 2, 3],
+        a=[10, None, 3],
+        b=[1, 2, None],
+        output={"id": int, "a": Optional[int], "b": Optional[int]},
+        session=test_session,
     )
     out = chain.mutate(
         an=func.and_(C("a") > 5, C("b") > 0),
@@ -1381,7 +1386,10 @@ def test_boolean_logic_over_optional_preserves_none(test_session):
     def norm(v):
         return None if v is None else bool(v)
 
-    rows = {r["id"]: (norm(r["an"]), norm(r["orr"]), norm(r["nt"])) for r in out.to_records()}
+    rows = {
+        r["id"]: (norm(r["an"]), norm(r["orr"]), norm(r["nt"]))
+        for r in out.to_records()
+    }
     # a NULL operand -> NULL unless the other operand decides the result
     assert rows[1] == (True, True, False)
     assert rows[2] == (None, True, None)
@@ -1396,8 +1404,11 @@ def test_collect_over_optional_preserves_none_elements(test_session):
     from datachain import func
 
     chain = dc.read_values(
-        id=[1, 2, 3], g=[1, 1, 1], a=[10, None, 30],
-        output={"id": int, "g": int, "a": Optional[int]}, session=test_session,
+        id=[1, 2, 3],
+        g=[1, 1, 1],
+        a=[10, None, 30],
+        output={"id": int, "g": int, "a": Optional[int]},
+        session=test_session,
     )
     rows = chain.group_by(c=func.collect("a"), partition_by="g").to_records()
     assert len(rows) == 1
