@@ -52,13 +52,11 @@ def studio_available() -> bool:
 
 
 def parse_semver(v: object) -> tuple[int, int, int]:
-    """Parse a dotted version into a fixed (major, minor, patch) tuple for sorting.
+    """Parse a dotted version into a (major, minor, patch) tuple for sorting.
 
-    The fixed length keeps ordering total and length-independent: "1", "1.0" and
-    "1.0.0" all normalize to (1, 0, 0), so a 2-part version no longer sorts below
-    its 3-part equal. Components past patch are dropped. Unparsable input sorts
-    strictly below every real version — and below a literal "0.0.0" — via a
-    (-1, -1, -1) sentinel, so garbage is never mistaken for (or tied with) 0.0.0.
+    Short versions pad with zeros, so "1", "1.0" and "1.0.0" all sort equal.
+    Anything past patch is dropped. Unparsable input returns (-1, -1, -1) so it
+    sorts below every real version, including "0.0.0".
     """
     try:
         parts = [int(x) for x in str(v).split(".")]
@@ -73,7 +71,7 @@ def split_frontmatter(content: str) -> tuple[dict[str, str], str]:
 
     Tolerates a single outer ```/```markdown ... ``` fence — the enrichment
     prompt's Output Format section shows the document inside such a fence, and
-    some models echo it. Only a *bare* wrapper fence is stripped: a document
+    some models echo it. Only a bare wrapper fence is stripped: a document
     that legitimately begins with a language-tagged code block (e.g. ```python)
     is left intact. Returns ({}, body) when there's no frontmatter block.
     """
@@ -82,7 +80,7 @@ def split_frontmatter(content: str) -> tuple[dict[str, str], str]:
     if first_line.strip().lower() in ("```", "```markdown", "```md"):
         lines = rest.rstrip().splitlines()
         # Strip the wrapper's closing fence, but only when it's an unmatched
-        # *standalone* fence line (a line that is only ```).
+        # standalone fence line (a line that is only ```).
         fence_lines = sum(1 for ln in lines if ln.lstrip().startswith("```"))
         if lines and lines[-1].strip() == "```" and fence_lines % 2 == 1:
             lines = lines[:-1]
@@ -275,9 +273,7 @@ def collect_datasets(dc, studio: bool) -> list[dict]:
                 continue
             namespace = getattr(info, "namespace", None)
             project = getattr(info, "project", None)
-            # Fully-qualify Studio dataset names using
-            # dot-notation (namespace.project.name).
-            # Dots in human-visible content; / for file paths.
+            # Fully-qualify Studio dataset names as namespace.project.name.
             if studio and namespace and project:
                 full_name = f"{namespace}.{project}.{info.name}"
             else:
@@ -316,11 +312,6 @@ def collect_datasets(dc, studio: bool) -> list[dict]:
             file=sys.stderr,
         )
     return results
-
-
-# ---------------------------------------------------------------------------
-# Bucket helpers
-# ---------------------------------------------------------------------------
 
 
 def parse_uri(uri: str) -> dict:
@@ -382,13 +373,13 @@ def dep_entry(
     version: str | None,
     type: str | None,
 ) -> "DependencyEntry":
-    """Assemble one dependency entry from primitives — the single source of truth for
-    dependency shape, shared by the cluster scan and the Studio-side collector.
+    """Assemble one dependency entry from primitives, shared by the cluster scan and
+    the Studio-side collector.
 
-    `raw_name` is the source-side name (a `lst__…` listing name or a dataset name),
-    cleaned to a URI for listings. `file_path` is the relative path of the dependency's
-    own knowledge doc, so the graph is followable by link: a storage URI maps to its
-    bucket doc, a dataset name to its dataset doc."""
+    `raw_name` is the source-side name (a `lst__...` listing name or a dataset name),
+    cleaned to a URI for listings. `file_path` points at the dependency's own
+    knowledge doc so links resolve: a storage URI maps to its bucket doc, a dataset
+    name to its dataset doc."""
     name = clean_dep_name(raw_name) if raw_name is not None else None
     entry: DependencyEntry = {
         "name": name,
@@ -397,12 +388,12 @@ def dep_entry(
     }
     if name is not None:
         if "://" in name:
-            # A storage URI (cleaned listing names and legacy bare URIs alike) maps to a
-            # bucket doc — `bucket_file_path` handles a missing trailing slash.
+            # Storage URIs map to a bucket doc; `bucket_file_path` tolerates a
+            # missing trailing slash.
             entry["file_path"] = bucket_file_path(name)
         else:
-            # 3-part dotted name ⇒ Studio dataset layout (the only thing `source`
-            # changes in `dataset_file_path`); anything else ⇒ flat local layout.
+            # A 3-part dotted name means a Studio dataset; anything else is a flat
+            # local dataset. That's all `source` controls in `dataset_file_path`.
             source = "studio" if len(name.split(".", 2)) == 3 else "local"
             entry["file_path"] = dataset_file_path(name, source)
     return entry
@@ -475,7 +466,7 @@ def source_to_https(source: str) -> str | None:
     if scheme == "gs":
         return f"https://storage.googleapis.com/{bucket}"
     if scheme == "az":
-        # az://account/container/... → bucket=account, prefix=container/...
+        # az://account/container/... -> bucket=account, prefix=container/...
         # Azure needs account + container in the URL
         prefix = parts["prefix"].rstrip("/")
         container = prefix.split("/", 1)[0] if prefix else None

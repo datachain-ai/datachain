@@ -26,7 +26,6 @@ def fetch_version_data(name_version: str) -> dict:  # noqa: C901, PLR0912, PLR09
     _namespace, _project, _bare_name = parse_dataset_name(name)
     is_studio_dataset = bool(_namespace and _project)
 
-    # --- Schema and Preview: requires live data access ---
     chain = None
     try:
         chain = dc.read_dataset(name_version)
@@ -44,7 +43,6 @@ def fetch_version_data(name_version: str) -> dict:  # noqa: C901, PLR0912, PLR09
     if chain is not None:
         preview = extract_preview(chain)
 
-    # --- Metadata: query_script, uuid, version history ---
     query_script = None
     uuid = None
     attrs: list[str] = []
@@ -53,7 +51,6 @@ def fetch_version_data(name_version: str) -> dict:  # noqa: C901, PLR0912, PLR09
     dependencies = []
 
     if is_studio_dataset:
-        # Fetch full dataset record directly from Studio API.
         try:
             from datachain.dataset import DatasetRecord
             from datachain.remote.studio import StudioClient
@@ -84,7 +81,6 @@ def fetch_version_data(name_version: str) -> dict:  # noqa: C901, PLR0912, PLR09
         except Exception as e:  # noqa: BLE001
             _warn(f"Studio dataset_info({name}): {e}")
     else:
-        # Get catalog independently.
         catalog = None
         if chain is not None:
             catalog = chain.session.catalog
@@ -94,7 +90,6 @@ def fetch_version_data(name_version: str) -> dict:  # noqa: C901, PLR0912, PLR09
             except Exception as e:  # noqa: BLE001
                 _warn(f"get_catalog(): {e}")
 
-        # Resolve version for local datasets
         if version is None and catalog is not None:
             try:
                 ds = catalog.get_dataset(_bare_name, include_incomplete=False)
@@ -108,7 +103,6 @@ def fetch_version_data(name_version: str) -> dict:  # noqa: C901, PLR0912, PLR09
                     version = str(info.version)
                     break
 
-        # Fetch from local catalog
         try:
             if catalog is not None:
                 dataset = catalog.get_dataset(_bare_name, include_incomplete=False)
@@ -132,7 +126,6 @@ def fetch_version_data(name_version: str) -> dict:  # noqa: C901, PLR0912, PLR09
         except Exception as e:  # noqa: BLE001
             _warn(f"local catalog metadata for {_bare_name}: {e}")
 
-        # Dependencies (local metastore only)
         try:
             if catalog is not None and version:
                 deps = catalog.get_dataset_dependencies(
@@ -145,11 +138,9 @@ def fetch_version_data(name_version: str) -> dict:  # noqa: C901, PLR0912, PLR09
         except Exception as e:  # noqa: BLE001
             _warn(f"dependencies for {_bare_name}@{version}: {e}")
 
-    # --- Changes section ---
     changes = None
     if _prev_version_info is not None:
         prev_version_str, prev_script = _prev_version_info
-        # For local datasets, fetch previous deps for diffing
         prev_deps = []
         if not is_studio_dataset:
             try:
