@@ -24,24 +24,13 @@ def _hs(nbytes):
     return human_size(nbytes).replace(" ", "")
 
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
 SAMPLE_THRESHOLD = 50_000
 SAMPLE_SIZE = 20_000
 
-# Separator used in formatted lines
 SEP = ", "
 
 
-# ---------------------------------------------------------------------------
-# Column classification
-# ---------------------------------------------------------------------------
-
-
 def _is_file_subclass(typ):
-    """Check if typ is a subclass of datachain File."""
     try:
         from datachain.lib.file import File
 
@@ -96,7 +85,6 @@ def _classify_columns(flat_schema, schema):
 
 
 def _classify_type(typ, field_name, is_file_field):  # noqa: PLR0911
-    """Return category string for a column type."""
     if field_name == "size" and is_file_field and typ in (int, float):
         return "file_size"
     if typ in (int, float):
@@ -111,11 +99,6 @@ def _classify_type(typ, field_name, is_file_field):  # noqa: PLR0911
     if origin is list:
         return "list"
     return "unknown"
-
-
-# ---------------------------------------------------------------------------
-# Statistics computation
-# ---------------------------------------------------------------------------
 
 
 def _compute_aggregates(working, columns):
@@ -182,16 +165,10 @@ def _percentiles(values, *quantiles):
 
 
 def _null_pct(values):
-    """Compute null percentage from a list of values."""
     if not values:
         return 0.0
     n_null = sum(1 for v in values if v is None)
     return round(n_null / len(values) * 100, 1)
-
-
-# ---------------------------------------------------------------------------
-# Per-column summarizers
-# ---------------------------------------------------------------------------
 
 
 def _summarize_numeric(col_path, agg_data, values):
@@ -454,11 +431,6 @@ def _summarize_list(values):
     }
 
 
-# ---------------------------------------------------------------------------
-# Formatting helpers
-# ---------------------------------------------------------------------------
-
-
 def _sig(val, n=3):  # noqa: PLR0911
     """Round to n significant digits for display."""
     if val is None:
@@ -485,11 +457,6 @@ def _format_count(count):
     if count >= 1_000:
         return f"{count / 1_000:.1f}K"
     return str(count)
-
-
-# ---------------------------------------------------------------------------
-# Overview line
-# ---------------------------------------------------------------------------
 
 
 def _build_overview(total_rows, columns_info, col_results, schema):
@@ -531,11 +498,6 @@ def _build_overview(total_rows, columns_info, col_results, schema):
     return SEP.join(parts)
 
 
-# ---------------------------------------------------------------------------
-# Main entry points
-# ---------------------------------------------------------------------------
-
-
 def dataset_summary_from_chain(chain: "DataChain") -> dict:
     """Compute per-field stats and overview from an open DataChain.
 
@@ -543,7 +505,6 @@ def dataset_summary_from_chain(chain: "DataChain") -> dict:
     """
     warnings_list: list[str] = []
 
-    # Phase 0 -- Schema and classification
     schema = extract_schema(chain)
     flat_schema = {
         col: typ
@@ -567,7 +528,6 @@ def dataset_summary_from_chain(chain: "DataChain") -> dict:
             "warnings": warnings_list,
         }
 
-    # Phase 0.5 -- Sample + Persist
     sampled = False
     sample_size = total_rows
     try:
@@ -589,10 +549,8 @@ def dataset_summary_from_chain(chain: "DataChain") -> dict:
             "warnings": warnings_list,
         }
 
-    # Phase 1 -- SQL aggregates (single group_by)
     agg_data = _compute_aggregates(working, columns_info)
 
-    # Phase 2 -- Fetch all column values in one to_list call
     numeric_cols = [
         c for c, i in columns_info.items() if i["category"] in ("numeric", "file_size")
     ]
@@ -603,7 +561,6 @@ def dataset_summary_from_chain(chain: "DataChain") -> dict:
     all_fetch_cols = numeric_cols + string_cols + bool_cols + list_cols
     all_values = _fetch_column_values(working, all_fetch_cols) if all_fetch_cols else {}
 
-    # Phase 3 -- Per-column summaries
     col_results = _build_column_results(
         columns_info,
         agg_data,
@@ -611,7 +568,6 @@ def dataset_summary_from_chain(chain: "DataChain") -> dict:
         warnings_list,
     )
 
-    # Phase 4 -- Overview
     overview = _build_overview(
         total_rows,
         columns_info,
@@ -633,7 +589,6 @@ def dataset_summary_from_chain(chain: "DataChain") -> dict:
 
 
 def _build_column_results(columns_info, agg_data, all_values, warnings_list):
-    """Compute per-column summary dicts."""
     col_results = {}
 
     for col_path, info in columns_info.items():
@@ -684,11 +639,6 @@ def dataset_summary(name_version: str) -> dict:
     dc = dc_import()
     chain = dc.read_dataset(name_version)
     return dataset_summary_from_chain(chain)
-
-
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
 
 
 def main():

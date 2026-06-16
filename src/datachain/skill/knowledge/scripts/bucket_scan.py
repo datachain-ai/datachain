@@ -38,10 +38,6 @@ def _alarm_handler(signum, frame):
     raise ScanTimeoutError
 
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
 MAX_EXTENSIONS = 20
 MAX_DIRECTORIES = 100
 SAMPLES_PER_EXT = 5
@@ -89,11 +85,6 @@ def get_listing_info(uri: str) -> "ListingMeta":
         "listing_expires": None,
         "listing_expired": None,
     }
-
-
-# ---------------------------------------------------------------------------
-# Metadata aggregation (all use DataChain operations)
-# ---------------------------------------------------------------------------
 
 
 def compute_extensions(chain: "DataChain") -> "list[ExtensionStat]":
@@ -297,11 +288,6 @@ def compute_time_range(chain: "DataChain") -> "TimeRange":
         return {}
 
 
-# ---------------------------------------------------------------------------
-# Sampling
-# ---------------------------------------------------------------------------
-
-
 def sample_files(chain: "DataChain", extensions: "list[ExtensionStat]") -> dict:
     """Sample files per extension for content type detection."""
     from datachain import C, func
@@ -441,11 +427,6 @@ def _enrich_text(file_obj, info):
         info["snippet"] = file_obj.read_text()[:500]
     except Exception:  # noqa: BLE001, S110
         pass
-
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
 
 
 def compute_bucket_metadata(
