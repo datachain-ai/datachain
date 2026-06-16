@@ -104,9 +104,7 @@ def _emit_absent(model: type[BaseModel]) -> Generator[int | None, None, None]:
         yield 1 if col.is_sentinel else None
 
 
-def _flatten_fields_values(
-    fields: dict, obj: BaseModel
-) -> Generator[Any, None, None]:
+def _flatten_fields_values(fields: dict, obj: BaseModel) -> Generator[Any, None, None]:
     for name, f_info in fields.items():
         kind = classify_field(f_info.annotation)
         # Direct attribute access skips Pydantic's model_dump().
