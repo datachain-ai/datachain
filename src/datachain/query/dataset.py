@@ -2195,7 +2195,11 @@ class SQLUnion(Step):
 
 def _as_nullable_scalar(column: Any) -> Any:
     """Re-type a join column nullable so an outer-join NULL survives instead of
-    coercing to the type default. Only ClickHouse-``Nullable``-able scalars qualify."""
+    coercing to the type default. Only top-level (non-model-leaf) scalars that
+    ClickHouse can store as ``Nullable`` qualify — a model's leaves stay as-is
+    so its non-Optional fields don't get NULLs they can't validate."""
+    if DEFAULT_DELIMITER in getattr(column, "name", ""):
+        return column
     col_type = getattr(column, "type", None)
     if not isinstance(col_type, SQLType) or getattr(col_type, "dc_nullable", False):
         return column

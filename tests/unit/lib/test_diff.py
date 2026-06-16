@@ -6,7 +6,7 @@ from pydantic import BaseModel
 import datachain as dc
 from datachain.diff import CompareStatus, compare_and_split
 from datachain.lib.file import File
-from datachain.sql.types import Int, String
+from datachain.sql.types import String
 from tests.utils import sorted_dicts
 
 
@@ -15,20 +15,16 @@ def _as_utc(d):
 
 
 @pytest.fixture
-def str_default(test_session):
+def model_leaf_str_default(test_session):
+    # model leaves coerce to the backend default on an outer join, not None
     return String.default_value(test_session.catalog.warehouse.db.dialect)
-
-
-@pytest.fixture
-def int_default(test_session):
-    return Int.default_value(test_session.catalog.warehouse.db.dialect)
 
 
 @pytest.mark.parametrize("added", (True, False))
 @pytest.mark.parametrize("deleted", (True, False))
 @pytest.mark.parametrize("modified", (True, False))
 @pytest.mark.parametrize("same", (True, False))
-def test_diff(test_session, str_default, added, deleted, modified, same):
+def test_diff(test_session, added, deleted, modified, same):
     ds1 = dc.read_values(
         id=[1, 2, 4],
         name=["John1", "Doe", "Andy"],
@@ -86,7 +82,7 @@ def test_diff(test_session, str_default, added, deleted, modified, same):
 
     if deleted:
         assert "diff" not in chains[CompareStatus.DELETED].signals_schema.db_signals()
-        expected.append((CompareStatus.DELETED, 3, str_default))
+        expected.append((CompareStatus.DELETED, 3, None))
 
     if same:
         assert "diff" not in chains[CompareStatus.SAME].signals_schema.db_signals()
@@ -95,7 +91,7 @@ def test_diff(test_session, str_default, added, deleted, modified, same):
     assert diff.order_by("id").to_list("diff", "id", "name") == expected
 
 
-def test_diff_no_status_col(test_session, str_default):
+def test_diff_no_status_col(test_session):
     ds1 = dc.read_values(
         id=[1, 2, 4],
         name=["John1", "Doe", "Andy"],
@@ -118,14 +114,14 @@ def test_diff_no_status_col(test_session, str_default):
     expected = [
         (1, "John1"),
         (2, "Doe"),
-        (3, str_default),
+        (3, None),
         (4, "Andy"),
     ]
 
     assert diff.order_by("id").to_list() == expected
 
 
-def test_diff_read_dataset(test_session, str_default):
+def test_diff_read_dataset(test_session):
     ds1 = dc.read_values(
         id=[1, 2, 4],
         name=["John1", "Doe", "Andy"],
@@ -147,13 +143,13 @@ def test_diff_read_dataset(test_session, str_default):
     assert diff.order_by("id").to_list("diff", "id", "name") == [
         (CompareStatus.MODIFIED, 1, "John1"),
         (CompareStatus.ADDED, 2, "Doe"),
-        (CompareStatus.DELETED, 3, str_default),
+        (CompareStatus.DELETED, 3, None),
         (CompareStatus.SAME, 4, "Andy"),
     ]
 
 
 @pytest.mark.parametrize("right_name", ("other_name", "name"))
-def test_diff_with_explicit_compare_fields(test_session, str_default, right_name):
+def test_diff_with_explicit_compare_fields(test_session, right_name):
     ds1 = dc.read_values(
         id=[1, 2, 4],
         name=["John1", "Doe", "Andy"],
@@ -182,7 +178,7 @@ def test_diff_with_explicit_compare_fields(test_session, str_default, right_name
     expected = [
         (CompareStatus.MODIFIED, 1, "John1", "New York"),
         (CompareStatus.ADDED, 2, "Doe", "Boston"),
-        (CompareStatus.DELETED, 3, str_default, str_default),
+        (CompareStatus.DELETED, 3, None, None),
         (CompareStatus.SAME, 4, "Andy", "San Francisco"),
     ]
 
@@ -190,7 +186,7 @@ def test_diff_with_explicit_compare_fields(test_session, str_default, right_name
     assert diff.order_by("id").to_list(*collect_fields) == expected
 
 
-def test_diff_different_left_right_on_columns(test_session, str_default):
+def test_diff_different_left_right_on_columns(test_session):
     ds1 = dc.read_values(
         id=[1, 2, 4],
         name=["John1", "Doe", "Andy"],
@@ -214,7 +210,7 @@ def test_diff_different_left_right_on_columns(test_session, str_default):
     expected = [
         (CompareStatus.MODIFIED, 1, "John1"),
         (CompareStatus.ADDED, 2, "Doe"),
-        (CompareStatus.DELETED, 3, str_default),
+        (CompareStatus.DELETED, 3, None),
         (CompareStatus.SAME, 4, "Andy"),
     ]
 
@@ -274,7 +270,7 @@ def test_diff_only_on_columns_treated_as_same(test_session):
     ]
 
 
-def test_diff_multiple_columns(test_session, str_default):
+def test_diff_multiple_columns(test_session):
     ds1 = dc.read_values(
         id=[1, 2, 4],
         name=["John", "Doe", "Andy"],
@@ -297,8 +293,8 @@ def test_diff_multiple_columns(test_session, str_default):
             {
                 "diff": CompareStatus.DELETED,
                 "id": 3,
-                "name": str_default,
-                "city": str_default,
+                "name": None,
+                "city": None,
             },
             {"diff": CompareStatus.SAME, "id": 4, "name": "Andy", "city": "Tokyo"},
         ],
@@ -306,7 +302,7 @@ def test_diff_multiple_columns(test_session, str_default):
     )
 
 
-def test_diff_multiple_match_columns(test_session, str_default):
+def test_diff_multiple_match_columns(test_session):
     ds1 = dc.read_values(
         id=[1, 2, 4],
         name=["John", "Doe", "Andy"],
@@ -330,7 +326,7 @@ def test_diff_multiple_match_columns(test_session, str_default):
                 "diff": CompareStatus.DELETED,
                 "id": 3,
                 "name": "John",
-                "city": str_default,
+                "city": None,
             },
             {"diff": CompareStatus.SAME, "id": 4, "name": "Andy", "city": "Tokyo"},
         ],
@@ -338,7 +334,7 @@ def test_diff_multiple_match_columns(test_session, str_default):
     )
 
 
-def test_diff_additional_column_on_left(test_session, str_default):
+def test_diff_additional_column_on_left(test_session):
     ds1 = dc.read_values(
         id=[1, 2, 4],
         name=["John", "Doe", "Andy"],
@@ -360,8 +356,8 @@ def test_diff_additional_column_on_left(test_session, str_default):
             {
                 "diff": CompareStatus.DELETED,
                 "id": 3,
-                "name": str_default,
-                "city": str_default,
+                "name": None,
+                "city": None,
             },
             {"diff": CompareStatus.MODIFIED, "id": 4, "name": "Andy", "city": "Tokyo"},
         ],
@@ -369,7 +365,7 @@ def test_diff_additional_column_on_left(test_session, str_default):
     )
 
 
-def test_diff_additional_column_on_right(test_session, str_default):
+def test_diff_additional_column_on_right(test_session):
     ds1 = dc.read_values(
         id=[1, 2, 4],
         name=["John", "Doe", "Andy"],
@@ -388,7 +384,7 @@ def test_diff_additional_column_on_right(test_session, str_default):
         [
             {"diff": CompareStatus.MODIFIED, "id": 1, "name": "John"},
             {"diff": CompareStatus.ADDED, "id": 2, "name": "Doe"},
-            {"diff": CompareStatus.DELETED, "id": 3, "name": str_default},
+            {"diff": CompareStatus.DELETED, "id": 3, "name": None},
             {"diff": CompareStatus.MODIFIED, "id": 4, "name": "Andy"},
         ],
         "id",
@@ -441,7 +437,9 @@ def test_diff_right_compare_defined_but_not_compare(test_session):
 
 @pytest.mark.parametrize("status_col", ("diff", None))
 @pytest.mark.parametrize("right_on", ("file2", None))
-def test_file_diff(test_session, str_default, int_default, status_col, right_on):
+def test_file_diff(
+    test_session, model_leaf_str_default, status_col, right_on
+):
     fs1 = File(source="s1://", path="p1", version="2", etag="e2")
     fs1_updated = File(source="s1://", path="p1", version="1", etag="e1")
     fs2 = File(source="s2://", path="p2", version="1", etag="e1")
@@ -475,7 +473,14 @@ def test_file_diff(test_session, str_default, int_default, status_col, right_on)
     expected = [
         (CompareStatus.MODIFIED, "s1://", "p1", "1", "e1", 1),
         (CompareStatus.ADDED, "s2://", "p2", "1", "e1", 2),
-        (CompareStatus.DELETED, "s3://", "p3", str_default, str_default, int_default),
+        (
+            CompareStatus.DELETED,
+            "s3://",
+            "p3",
+            model_leaf_str_default,
+            model_leaf_str_default,
+            None,
+        ),
         (CompareStatus.SAME, "s4://", "p4", "1", "e1", 4),
     ]
 
@@ -495,7 +500,7 @@ def test_file_diff(test_session, str_default, int_default, status_col, right_on)
 
 
 @pytest.mark.parametrize("status_col", ("diff", None))
-def test_file_diff_nested(test_session, str_default, int_default, status_col):
+def test_file_diff_nested(test_session, model_leaf_str_default, status_col):
     class Nested(BaseModel):
         file: File
 
@@ -530,7 +535,14 @@ def test_file_diff_nested(test_session, str_default, int_default, status_col):
     expected = [
         (CompareStatus.MODIFIED, "s1://", "p1", "1", "e1", 1),
         (CompareStatus.ADDED, "s2://", "p2", "1", "e1", 2),
-        (CompareStatus.DELETED, "s3://", "p3", str_default, str_default, int_default),
+        (
+            CompareStatus.DELETED,
+            "s3://",
+            "p3",
+            model_leaf_str_default,
+            model_leaf_str_default,
+            None,
+        ),
         (CompareStatus.SAME, "s4://", "p4", "1", "e1", 4),
     ]
 
