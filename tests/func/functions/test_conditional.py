@@ -179,6 +179,23 @@ def test_conditional_greatest_least(test_session):
     ]
 
 
+def test_conditional_greatest_least_str_result_type(test_session):
+    """greatest/least over string columns return str, not bytes (the result type
+    follows the input columns instead of a hardcoded int)."""
+    ds = list(
+        dc.read_values(
+            id=(1, 2),
+            a=("m", "p"),
+            b=("z", "q"),
+            session=test_session,
+        )
+        .mutate(g=func.greatest("a", "b"), ls=func.least("a", "b"))
+        .order_by("id")
+        .to_list("g", "ls")
+    )
+    assert ds == [("z", "m"), ("q", "p")]
+
+
 def test_conditional_funcs_disallow_complex_object_greatest(test_session):
     class Rec(dc.DataModel):
         i: int

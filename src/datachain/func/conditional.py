@@ -78,6 +78,20 @@ class _LogicalFunc(Func):
         )
 
 
+class _GreatestLeastFunc(Func):
+    """Result type follows the input columns when a schema is available, so a
+    string result isn't mis-declared as int (returned as bytes on ClickHouse)."""
+
+    def get_result_type(
+        self, signals_schema: "SignalSchema | None" = None
+    ) -> "DataType":
+        if signals_schema is not None and self._db_cols:
+            inferred = self._result_type_from_db_cols(signals_schema)
+            if inferred is not None:
+                return inferred
+        return super().get_result_type(signals_schema)
+
+
 def greatest(*args: str | Column | Func | float) -> Func:
     """
     Returns the greatest (largest) value from the given input values.
@@ -110,7 +124,7 @@ def greatest(*args: str | Column | Func | float) -> Func:
         else:
             func_args.append(arg)
 
-    return Func(
+    return _GreatestLeastFunc(
         "greatest",
         inner=conditional.greatest,
         cols=cols,
@@ -151,8 +165,12 @@ def least(*args: str | Column | Func | float) -> Func:
         else:
             func_args.append(arg)
 
-    return Func(
-        "least", inner=conditional.least, cols=cols, args=func_args, result_type=int
+    return _GreatestLeastFunc(
+        "least",
+        inner=conditional.least,
+        cols=cols,
+        args=func_args,
+        result_type=int,
     )
 
 
