@@ -1292,3 +1292,31 @@ def test_union_optional_datamodel_schema_both_orders(test_session):
         back = dc.read_dataset(f"u_dm_order_{i}", session=test_session)
         assert back.count() == 3
         assert sum(1 for v in back.to_values("item") if v is None) == 1
+
+
+@skip_if_not_sqlite
+def test_sqlite_udf_funcs_none_safe():
+    """SQLite Python-UDF funcs return None on a None input instead of crashing
+    ("user-defined function raised exception")."""
+    from datachain import func
+
+    chain = dc.read_values(
+        id=[1, 2],
+        t=["a-b", None],
+        n=[10, None],
+        a=[[1, 2], None],
+        output={
+            "id": int,
+            "t": Optional[str],
+            "n": Optional[int],
+            "a": Optional[list[int]],
+        },
+    )
+    out = chain.mutate(
+        sp=func.string.split("t", "-"),
+        h=func.int_hash_64("n"),
+        ln=func.array.length("a"),
+    ).order_by("id")
+    rows = {r["id"]: (r["sp"], r["h"], r["ln"]) for r in out.to_records()}
+    assert rows[1] == (["a", "b"], rows[1][1], 2)
+    assert rows[2] == (None, None, None)
