@@ -188,8 +188,7 @@ def functions_exist(
 
 
 def _null_safe(fn):
-    # SQL scalar semantics: NULL in -> NULL out, instead of crashing the Python
-    # UDF on a None coming from an Optional column.
+    # NULL in -> NULL out, so a None from an Optional column can't crash the UDF.
     def wrapper(*args):
         if any(a is None for a in args):
             return None

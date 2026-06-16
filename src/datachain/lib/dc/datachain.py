@@ -70,6 +70,7 @@ from datachain.query.dataset import (
 )
 from datachain.query.schema import DEFAULT_DELIMITER, Column, ColumnExpr
 from datachain.sql.functions import path as pathfunc
+from datachain.sql.types import SQLType
 from datachain.utils import (
     batched_it,
     checkpoints_enabled,
@@ -1559,8 +1560,9 @@ class DataChain:
                 else:
                     # nullable physical type so ClickHouse keeps the NULL
                     if schema._expr_references_nullable(value):
-                        sql_type = python_to_sql(sql_to_python(value))()
-                        sql_type.dc_nullable = True
+                        sql_type = SQLType.as_nullable(
+                            python_to_sql(sql_to_python(value))
+                        )
                         value = sqlalchemy.type_coerce(value, sql_type)
                     mutated[name] = value
 
@@ -1917,9 +1919,7 @@ class DataChain:
         def _present_sentinel() -> Any:
             # nullable to match the natural side's _type_tag column type.
             col = literal(0)
-            sql_type = python_to_sql(int)()
-            sql_type.dc_nullable = True
-            col.type = sql_type
+            col.type = SQLType.as_nullable(python_to_sql(int))
             return col
 
         def _nullable_leaf_casts(name: str, promoted: dict[str, Any]) -> dict[str, Any]:

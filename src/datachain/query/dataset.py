@@ -2209,8 +2209,7 @@ def _as_nullable_scalar(column: Any) -> Any:
         return column
     if py_type not in NULLABLE_SCALARS:
         return column
-    nullable_type = copy(col_type)
-    nullable_type.dc_nullable = True
+    nullable_type = SQLType.as_nullable(col_type)
     return sqlalchemy.type_coerce(column, nullable_type).label(column.name)
 
 

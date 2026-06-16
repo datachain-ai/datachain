@@ -89,8 +89,7 @@ def _list_to_array(typ, args):
     # (ClickHouse: Array(Nullable(T))).
     inner, is_optional = unwrap_optional(args0)
     if is_optional and inner in NULLABLE_SCALARS:
-        list_type = list_type() if inspect.isclass(list_type) else list_type
-        list_type.dc_nullable = True
+        list_type = SQLType.as_nullable(list_type)
     return Array(list_type)
 
 

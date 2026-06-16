@@ -228,9 +228,8 @@ def test_optional_basic_scalar_roundtrips_none_through_save(test_session):
 
 
 def test_optional_datamodel_leaf_null_through_save(test_session):
-    """SPIKE: a scalar leaf under an Optional[DataModel] is Nullable, so an
-    absent-parent row stores/reads real NULL (not 0/"") through save() on both
-    backends."""
+    """A scalar leaf under an Optional[DataModel] is Nullable, so an absent-parent
+    row stores/reads real NULL (not 0/"") through save() on both backends."""
     items = [_Inner(score=1, label="a"), None, _Inner(score=3, label="c")]
     (
         dc.read_values(
@@ -254,9 +253,8 @@ def test_optional_datamodel_leaf_null_through_save(test_session):
 
 
 def test_optional_datamodel_mutate_leaf(test_session):
-    """SPIKE: mutate of a leaf under Optional[DataModel] reads NULL for the
-    absent-parent row. Previously unfixable via sentinel-CASE on ClickHouse;
-    genuine Nullable leaves remove the CASE entirely."""
+    """mutate of a leaf under Optional[DataModel] reads NULL for the absent-parent
+    row on both backends."""
     from datachain import C
 
     items = [_Inner(score=1, label="a"), None, _Inner(score=3, label="c")]
@@ -373,10 +371,8 @@ class _Deep(DataModel):
 
 
 def test_optional_datamodel_parquet_roundtrip(test_session, tmp_path):
-    """to_parquet/read_parquet of an Optional[DataModel] preserves present
-    objects and reads an absent parent back as None. Regression: read mapped the
-    whole Optional[Model] field to None for every row (the Optional annotation
-    isn't a bare pydantic model, so the nested instantiate skipped it)."""
+    """to_parquet/read_parquet of an Optional[DataModel] preserves present objects
+    and reads an absent parent back as None."""
     presents = {
         0: _Inner(score=0, label=""),
         1: _Inner(score=10, label="a"),
@@ -489,8 +485,7 @@ def test_optional_datamodel_list_leaf_to_json_null(test_session, tmp_path):
 
 def test_optional_file_sets_catalog(test_session, tmp_path):
     """A File under Optional[...] gets its catalog/stream set on hydration, so
-    .read_text() works. Regression: _set_file_stream skipped Optional[File] fields
-    (the annotation is a Union, not a bare pydantic model) -> 'catalog is not set'."""
+    .read_text() works."""
     (tmp_path / "a.txt").write_text("hello")
 
     class _Wrap(DataModel):
@@ -508,8 +503,7 @@ def test_optional_file_sets_catalog(test_session, tmp_path):
 def test_union_optional_and_plain_datamodel(test_session):
     """union of an Optional[DataModel] chain with a plain DataModel chain yields
     Optional[DataModel]: the plain side is promoted (a present sentinel is added)
-    so the column sets align. Regression: it raised UnionSchemaMismatchError and
-    leaked the internal _type_tag discriminator name."""
+    so the column sets align."""
 
     def optional_chain():
         return dc.read_values(
@@ -594,9 +588,7 @@ def test_to_json_absent_optional_datamodel_is_null(test_session, tmp_path):
 
 
 def test_group_by_partition_optional_datamodel_leaf(test_session):
-    """group_by partitioning on a leaf under Optional[DataModel] works.
-    Regression: to_partial/_build_partial_type asserted the base was a pydantic
-    model but got Optional[Model] (a Union) un-unwrapped and crashed."""
+    """group_by partitioning on a leaf under Optional[DataModel] works."""
     from datachain import func
 
     items = [
@@ -1136,10 +1128,7 @@ def test_aggregates_over_all_absent_partition_return_none(test_session):
 
 def test_aggregates_over_top_level_optional_scalar_keep_none(test_session):
     """sum/min/max over a top-level Optional[scalar] keep None for an all-NULL
-    group, with the result column typed Optional. Regression: the func result
-    type is the Union (int | None), so is_nullable_result must unwrap before the
-    NULLABLE_SCALARS check; otherwise the column is downgraded to plain int and
-    ClickHouse reads the NULL aggregate back as 0."""
+    group, with the result column typed Optional."""
     from datachain import func
 
     # group g=2 has only NULL x values.

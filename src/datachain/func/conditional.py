@@ -7,6 +7,7 @@ from sqlalchemy import or_ as sql_or
 from sqlalchemy import true as sql_true
 
 from datachain.lib.convert.python_to_sql import python_to_sql
+from datachain.lib.data_model import OPTIONAL_PRESENT_TAG
 from datachain.lib.utils import DataChainParamsError
 from datachain.query.schema import Column, ColumnExpr
 from datachain.sql.functions import conditional
@@ -43,7 +44,8 @@ class _IsNoneFunc(_SentinelAwareFunc):
         sentinel = Column(sentinel_path)
         sentinel.table = table
         func_col = sql_case(
-            (sql_or(sentinel.is_(None), sentinel != 0), True), else_=False
+            (sql_or(sentinel.is_(None), sentinel != OPTIONAL_PRESENT_TAG), True),
+            else_=False,
         )
         return self._finalize_column(func_col, python_to_sql(bool), label)
 
@@ -368,7 +370,7 @@ def and_(*args: ColumnExpr | Func) -> Func:
     cols, func_args = [], []
 
     for arg in args:
-        if isinstance(arg, (str, Func)):
+        if isinstance(arg, (str, Column, Func)):
             cols.append(arg)
         else:
             func_args.append(arg)
@@ -403,7 +405,7 @@ def not_(arg: ColumnExpr | Func) -> Func:
     """
     cols, func_args = [], []
 
-    if isinstance(arg, (str, Func)):
+    if isinstance(arg, (str, Column, Func)):
         cols.append(arg)
     else:
         func_args.append(arg)

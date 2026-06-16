@@ -50,12 +50,12 @@ def flatten(obj: BaseModel) -> tuple:
     return tuple(_flatten_fields_values(type(obj).model_fields, obj))
 
 
-def is_optional_model(anno) -> bool:
+def is_optional_model(anno: Any) -> bool:
     kind = classify_field(anno)
     return kind.is_optional and kind.is_model
 
 
-def flatten_value(value, anno) -> tuple:
+def flatten_value(value: Any, anno: Any) -> tuple:
     """Flatten ``value`` for one column declared with annotation ``anno``.
 
     ``Optional[DataModel]`` emits a leading ``_type_tag`` before its leaves.
@@ -97,14 +97,16 @@ def _leaf_count(model: type[BaseModel]) -> int:
     return sum(1 for _ in iter_flat_columns(model))
 
 
-def _emit_absent(model: type[BaseModel]) -> Generator:
+def _emit_absent(model: type[BaseModel]) -> Generator[int | None, None, None]:
     """Placeholder values shaped like ``model``'s flat columns, used when an
     ``Optional[DataModel]`` parent is None and the leaves still need a slot."""
     for col in iter_flat_columns(model):
         yield 1 if col.is_sentinel else None
 
 
-def _flatten_fields_values(fields: dict, obj: BaseModel) -> Generator:
+def _flatten_fields_values(
+    fields: dict, obj: BaseModel
+) -> Generator[Any, None, None]:
     for name, f_info in fields.items():
         kind = classify_field(f_info.annotation)
         # Direct attribute access skips Pydantic's model_dump().
@@ -128,7 +130,3 @@ def _flatten_fields_values(fields: dict, obj: BaseModel) -> Generator:
                 yield from _flatten_fields_values(kind.inner.model_fields, value)
         else:
             yield value
-
-
-def _flatten(obj: BaseModel) -> tuple:
-    return tuple(_flatten_fields_values(type(obj).model_fields, obj))

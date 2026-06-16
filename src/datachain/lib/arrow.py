@@ -10,7 +10,7 @@ from pyarrow.dataset import CsvFileFormat, dataset
 from datachain import json
 from datachain.fs.reference import ReferenceFileSystem
 from datachain.lib.convert.flatten import classify_field, iter_flat_columns
-from datachain.lib.data_model import dict_to_data_model
+from datachain.lib.data_model import dict_to_data_model, optional_tag_is_absent
 from datachain.lib.file import ArrowRow, File
 from datachain.lib.model_store import ModelStore
 from datachain.lib.signal_schema import SignalSchema
@@ -307,8 +307,7 @@ def _optional_absent(
     all-leaves-None heuristic."""
     tag_key = f"{prefix}.{SignalSchema._OPTIONAL_SENTINEL_FIELD}"
     if tag_key in column_values:
-        tag = column_values[tag_key]
-        return tag is None or tag != 0
+        return optional_tag_is_absent(column_values[tag_key])
     return _subtree_all_none(column_values, inner, prefix)
 
 

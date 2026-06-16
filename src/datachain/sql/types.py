@@ -12,8 +12,10 @@ for sqlite we can use `sqlite.register_converter`
 ( https://docs.python.org/3/library/sqlite3.html#sqlite3.register_converter )
 """
 
+import inspect
 import numbers
 import re
+from copy import copy
 from datetime import date, datetime
 from types import MappingProxyType
 from typing import Any, Union
@@ -179,12 +181,17 @@ class SQLType(TypeDecorator):
             d["dc_nullable"] = True
         return d
 
+    @staticmethod
+    def as_nullable(t: Union[type["SQLType"], "SQLType"]) -> "SQLType":
+        """A nullable instance of ``t`` (given either a class or an instance)."""
+        inst = t() if inspect.isclass(t) else copy(t)
+        inst.dc_nullable = True
+        return inst
+
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> Union[type["SQLType"], "SQLType"]:
         if d.get("dc_nullable"):
-            inst = cls()
-            inst.dc_nullable = True
-            return inst
+            return cls.as_nullable(cls)
         return cls
 
 
@@ -388,10 +395,13 @@ class Array(SQLType):
             if isinstance(self.item_type, SQLType)
             else self.item_type().to_dict()
         )
-        return {
+        d: dict[str, Any] = {
             "type": self.__class__.__name__,
             "item_type": item_type_dict,
         }
+        if self.dc_nullable:
+            d["dc_nullable"] = True
+        return d
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> Union[type["SQLType"], "SQLType"]:
@@ -414,9 +424,12 @@ class Array(SQLType):
             raise ValueError(f"Array item type '{item_type}' is not supported") from e
 
         try:
-            return cls(sub_t.from_dict(d["item_type"]))  # type: ignore [attr-defined]
+            inst = cls(sub_t.from_dict(d["item_type"]))  # type: ignore [attr-defined]
         except KeyError as e:
             raise ValueError(f"Array item type '{item_type}' is not supported") from e
+        if d.get("dc_nullable"):
+            inst.dc_nullable = True
+        return inst
 
     @staticmethod
     def default_value(dialect):

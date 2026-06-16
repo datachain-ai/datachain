@@ -612,20 +612,7 @@ class SignalSchema:
             if self.setup_values and name in self.setup_values:
                 objs.append(self.setup_values.get(name))
             elif (fr := ModelStore.to_pydantic(inner_type)) is not None:
-                if is_optional:
-                    absent, pos = read_optional_sentinel(fr, row, pos)
-                    if absent:
-                        objs.append(None)
-                        continue
-                j, pos = unflatten_to_json_pos(fr, row, pos)
-                try:
-                    obj = fr(**j)
-                except ValidationError as e:
-                    if self._all_values_none(j):
-                        logger.debug("Failed to create input for %s: %s", name, e)
-                        obj = None
-                    else:
-                        raise
+                obj, pos = self._hydrate_model(fr, is_optional, row, pos, label=name)
                 objs.append(obj)
             else:
                 objs.append(row[pos])
@@ -643,6 +630,37 @@ class SignalSchema:
             # Since SQLite does not have a separate NULL type, we need to check for NaN
             return math.isnan(value) or value is None
         return value is None
+
+    def _hydrate_model(
+        self,
+        fr: type[BaseModel],
+        is_optional: bool,
+        row: Sequence[Any],
+        pos: int,
+        *,
+        catalog: "Catalog | None" = None,
+        cache: bool = False,
+        set_stream: bool = False,
+        label: str = "",
+    ) -> tuple[Any, int]:
+        """Build a (possibly optional) model instance from the flat row at ``pos``,
+        returning ``(obj_or_None, next_pos)``. An absent optional or an all-None row
+        yields None."""
+        if is_optional:
+            absent, pos = read_optional_sentinel(fr, row, pos)
+            if absent:
+                return None, pos
+        j, pos = unflatten_to_json_pos(fr, row, pos)
+        try:
+            obj = fr(**j)
+            if set_stream:
+                SignalSchema._set_file_stream(obj, catalog, cache)
+        except ValidationError as e:
+            if not self._all_values_none(j):
+                raise
+            logger.debug("Failed to create %s: %s", label, e)
+            obj = None
+        return obj, pos
 
     def get_file_signal(self) -> str | None:
         for signal_name, signal_type in self.values.items():
@@ -676,17 +694,14 @@ class SignalSchema:
                 schema[param] = schema_type
                 continue
 
-            schema_origin = get_origin(schema_type)
             param_origin = get_origin(param_type)
 
-            if schema_origin in (Union, types.UnionType) and type(None) in get_args(
-                schema_type
-            ):
-                schema_type = get_args(schema_type)[0]
-                if param_origin in (Union, types.UnionType) and type(None) in get_args(
-                    param_type
-                ):
-                    param_type = get_args(param_type)[0]
+            schema_inner, schema_is_optional = unwrap_optional(schema_type)
+            if schema_is_optional:
+                schema_type = schema_inner
+                param_inner, param_is_optional = unwrap_optional(param_type)
+                if param_is_optional:
+                    param_type = param_inner
 
             if is_batch:
                 if param_type is list:
@@ -727,21 +742,16 @@ class SignalSchema:
                 converted = self._convert_feature_value(fr_cls, value, catalog, cache)
                 res.append(converted)
             else:
-                if is_optional:
-                    absent, pos = read_optional_sentinel(fr, row, pos)
-                    if absent:
-                        res.append(None)
-                        continue
-                json, pos = unflatten_to_json_pos(fr, row, pos)  # type: ignore[union-attr]
-                try:
-                    obj = fr(**json)
-                    SignalSchema._set_file_stream(obj, catalog, cache)
-                except ValidationError as e:
-                    if self._all_values_none(json):
-                        logger.debug("Failed to create feature for %s: %s", fr_cls, e)
-                        obj = None
-                    else:
-                        raise
+                obj, pos = self._hydrate_model(
+                    fr,
+                    is_optional,
+                    row,
+                    pos,
+                    catalog=catalog,
+                    cache=cache,
+                    set_stream=True,
+                    label=str(fr_cls),
+                )
                 res.append(obj)
         return res
 
@@ -760,14 +770,12 @@ class SignalSchema:
         origin = get_origin(annotation)
 
         if origin in (Union, types.UnionType):
-            non_none_args = [
-                arg for arg in get_args(annotation) if arg is not type(None)
-            ]
-            if len(non_none_args) == 1:
-                annotation = non_none_args[0]
-                origin = get_origin(annotation)
-            else:
+            inner, has_none = unwrap_optional(annotation)
+            # a None-free or multi-arm Union isn't converted to a single type
+            if not has_none or get_origin(inner) in (Union, types.UnionType):
                 return result
+            annotation = inner
+            origin = get_origin(annotation)
 
         if ModelStore.is_pydantic(annotation):
             if isinstance(value, annotation):
@@ -857,8 +865,7 @@ class SignalSchema:
         default."""
         sql_type = python_to_sql(anno)
         if self.is_nullable_column(DEFAULT_DELIMITER.join(path), anno):
-            sql_type = sql_type() if isclass(sql_type) else sql_type
-            sql_type.dc_nullable = True
+            sql_type = SQLType.as_nullable(sql_type)
         return sql_type
 
     def db_signals(
@@ -1266,7 +1273,10 @@ class SignalSchema:
             new_prefix = prefix + suffix
             if not include_sys and new_prefix and new_prefix[0] == "sys":
                 continue
-            if not include_sentinels and name.startswith("_"):
+            if (
+                not include_sentinels
+                and name.split(".")[-1] == SignalSchema._OPTIONAL_SENTINEL_FIELD
+            ):
                 continue
             hidden_fields = getattr(type_, "_hidden_fields", None)
             if hidden_fields and substree and not include_hidden:
@@ -1471,7 +1481,8 @@ class SignalSchema:
 
                 node = curr_tree.get(part)
                 if node is None:
-                    parent_model = ModelStore.to_pydantic(curr_type)
+                    inner, _ = unwrap_optional(curr_type)
+                    parent_model = ModelStore.to_pydantic(inner)
                     if parent_model is not None:
                         raise SignalSchemaError(
                             f"Field {part} not found in custom type "

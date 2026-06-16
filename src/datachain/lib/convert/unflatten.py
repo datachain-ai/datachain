@@ -7,6 +7,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from datachain.lib.convert.flatten import _leaf_count, classify_field
+from datachain.lib.data_model import optional_tag_is_absent
 from datachain.query.schema import DEFAULT_DELIMITER
 
 
@@ -23,7 +24,7 @@ def read_optional_sentinel(
     """
     sentinel = row[pos]
     pos += 1
-    if sentinel is None or sentinel:
+    if optional_tag_is_absent(sentinel):
         return True, pos + _leaf_count(inner)
     return False, pos
 
@@ -61,7 +62,9 @@ def _to_snake_case(name: str) -> str:
     return re.sub("([a-z0-9])([A-Z])", r"\1_\2", s1).lower()
 
 
-def _unflatten_with_path(model: type[BaseModel], dump, name_path: list[str]):
+def _unflatten_with_path(
+    model: type[BaseModel], dump: dict[str, Any], name_path: list[str]
+) -> BaseModel:
     res = {}
     for name, f_info in model.model_fields.items():
         anno = f_info.annotation
@@ -79,5 +82,5 @@ def _unflatten_with_path(model: type[BaseModel], dump, name_path: list[str]):
     return model(**res)
 
 
-def unflatten(model: type[BaseModel], dump):
+def unflatten(model: type[BaseModel], dump: dict[str, Any]) -> BaseModel:
     return _unflatten_with_path(model, dump, [])

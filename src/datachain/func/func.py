@@ -17,6 +17,7 @@ from datachain.lib.utils import DataChainColumnError, DataChainParamsError
 from datachain.query.schema import Column, ColumnExpr, ColumnMeta
 from datachain.sql.functions import numeric
 from datachain.sql.functions.conversion import datetime_to_string
+from datachain.sql.types import SQLType
 
 from .base import Function
 
@@ -431,8 +432,8 @@ class Func(Function):  # noqa: PLW1641
         signals_schema: "SignalSchema | None",
         col_type: "DataType | None" = None,
     ) -> bool:
-        """Whether this func's result column may hold NULL: a nullable scalar
-        result (float excluded) over a nullable source."""
+        """Whether this func's result column may hold NULL: a result type in
+        NULLABLE_SCALARS over a nullable source."""
         if signals_schema is None:
             return False
         if col_type is None:
@@ -575,8 +576,7 @@ class Func(Function):  # noqa: PLW1641
         sql_type = python_to_sql(col_type)
 
         if self.is_nullable_result(signals_schema, col_type):
-            sql_type = sql_type() if inspect.isclass(sql_type) else sql_type
-            sql_type.dc_nullable = True
+            sql_type = SQLType.as_nullable(sql_type)
 
         cols = [
             self._resolve_col(col, sql_type, signals_schema, table)
@@ -662,7 +662,7 @@ class CastFunc(Func):
         # ClickHouse fails casting a NULL to a non-Nullable target.
         target = sql_type()
         if self.is_nullable_result(signals_schema):
-            target.dc_nullable = True
+            target = SQLType.as_nullable(target)
 
         func_col: ColumnElement[Any]
         if self.result_type is str and source_type is datetime:
