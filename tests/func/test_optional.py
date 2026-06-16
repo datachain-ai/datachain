@@ -1320,3 +1320,29 @@ def test_sqlite_udf_funcs_none_safe():
     rows = {r["id"]: (r["sp"], r["h"], r["ln"]) for r in out.to_records()}
     assert rows[1] == (["a", "b"], rows[1][1], 2)
     assert rows[2] == (None, None, None)
+
+
+def test_greatest_least_over_optional_propagate_none(test_session):
+    """greatest/least propagate None on a NULL argument, consistently across
+    backends. ClickHouse natively ignores NULL (greatest(NULL, 5) == 5); a
+    custom compile wraps it so a NULL arg yields NULL, matching SQLite's
+    max/min."""
+    from datachain import func
+
+    chain = dc.read_values(
+        id=[1, 2, 3],
+        n=[10, None, 3],
+        m=[5, 5, None],
+        output={"id": int, "n": Optional[int], "m": Optional[int]},
+        session=test_session,
+    )
+    out = chain.mutate(
+        g=func.greatest("n", "m"),
+        ls=func.least("n", "m"),
+        # literal args never go NULL; only the column drives propagation
+        gl=func.greatest("n", 7),
+    ).order_by("id")
+    rows = {r["id"]: (r["g"], r["ls"], r["gl"]) for r in out.to_records()}
+    assert rows[1] == (10, 5, 10)
+    assert rows[2] == (None, None, None)  # n is NULL
+    assert rows[3] == (None, None, 7)  # m is NULL (gl ignores m → 7)
