@@ -6,7 +6,6 @@ from pydantic import BaseModel
 import datachain as dc
 from datachain.diff import CompareStatus, compare_and_split
 from datachain.lib.file import File
-from datachain.sql.types import String
 from tests.utils import sorted_dicts
 
 
@@ -15,9 +14,9 @@ def _as_utc(d):
 
 
 @pytest.fixture
-def model_leaf_str_default(test_session):
-    # model leaves coerce to the backend default on an outer join, not None
-    return String.default_value(test_session.catalog.warehouse.db.dialect)
+def model_leaf_str_default():
+    # an unmatched model on an outer join hydrates as None on both backends
+    return None
 
 
 @pytest.mark.parametrize("added", (True, False))
