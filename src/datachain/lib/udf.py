@@ -324,8 +324,17 @@ class UDFBase(AbstractUDF):
 
     def _flatten_row(self, row):
         if len(self.output.values) > 1 and not isinstance(row, BaseModel):
+            annos = self.output.values
+            # The row may be shorter than the declared outputs (the arrow/parquet
+            # reader omits trailing signals) but not longer.
+            if len(row) > len(annos):
+                raise ValueError(
+                    f"UDF returned {len(row)} values but {len(annos)} are declared "
+                    "in output"
+                )
             flat: list[Any] = []
-            for obj, anno in zip(row, self.output.values.values(), strict=False):
+            # strict=False as shorter row is allowed for arrow/parquet (guarded above)
+            for obj, anno in zip(row, annos.values(), strict=False):
                 # tag is added only when obj IS the Optional value, not a wrapper.
                 if is_optional_model(anno) and (
                     obj is None or isinstance(obj, classify_field(anno).inner)
