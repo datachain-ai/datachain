@@ -1403,3 +1403,34 @@ def test_collect_over_optional_preserves_none_elements(test_session):
     assert len(rows) == 1
     # the None element is preserved (length 3, not 2)
     assert Counter(rows[0]["c"]) == Counter([10, None, 30])
+
+
+def test_array_funcs_over_optional_list_no_crash(test_session):
+    """array.* funcs accept an Optional[list] column (the result type unwraps the
+    Optional) — previously mutate() raised 'Array column must be of type list'."""
+    from datachain import func
+
+    chain = dc.read_values(
+        id=[1, 2], x=[[10, 20, 30], None],
+        output={"id": int, "x": Optional[list[int]]}, session=test_session,
+    )
+    out = chain.mutate(
+        el=func.array.get_element("x", 0),
+        sl=func.array.slice("x", 0, 2),
+    ).order_by("id")
+    rows = {r["id"]: (r["el"], r["sl"]) for r in out.to_records()}
+    assert rows[1] == (10, [10, 20])
+
+
+def test_array_contains_over_null_array_no_crash(test_session):
+    """array.contains over a NULL whole-array returns a value instead of crashing
+    the SQLite UDF (json.loads(None))."""
+    from datachain import func
+
+    chain = dc.read_values(
+        a=[["x", "y"], None], id=[1, 2],
+        output={"a": Optional[list[str]], "id": int}, session=test_session,
+    )
+    out = chain.mutate(c=func.array.contains("a", "x")).order_by("id")
+    by_id = {r["id"]: r["c"] for r in out.to_records()}
+    assert by_id[1]  # present array contains "x"

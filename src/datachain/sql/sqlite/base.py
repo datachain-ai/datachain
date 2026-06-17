@@ -592,6 +592,9 @@ def py_json_array_length(arr):
 
 
 def py_json_array_contains(arr, value, is_json):
+    # a NULL array contains nothing; the search value itself may legitimately be None
+    if arr is None:
+        return None
     if is_json:
         value = json.loads(value)
     return value in json.loads(arr)

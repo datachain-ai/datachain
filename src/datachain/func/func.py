@@ -170,14 +170,16 @@ class Func(Function):  # noqa: PLW1641
                 )
 
         if self.from_array:
-            if get_origin(col_type) is not list:
+            # an Optional[list] column is still an array source
+            inner_type, _ = unwrap_optional(col_type)
+            if get_origin(inner_type) is not list:
                 raise DataChainColumnError(
                     str(self),
                     "Array column must be of type list",
                 )
             if self.is_array:
-                return col_type
-            col_args = get_args(col_type)
+                return inner_type
+            col_args = get_args(inner_type)
             if len(col_args) != 1:
                 raise DataChainColumnError(
                     str(self),
