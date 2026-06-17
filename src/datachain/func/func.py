@@ -68,13 +68,7 @@ def _source_is_nullable(col: ColT, signals_schema: "SignalSchema | None") -> boo
     db_col = ColumnMeta.to_db_name(col)
     if signals_schema.optional_parent_sentinel(db_col) is not None:
         return True
-    from datachain.lib.signal_schema import SignalResolvingError
-
-    try:
-        anno = signals_schema.get_column_type(db_col)
-    except SignalResolvingError:
-        return False
-    _, is_optional = unwrap_optional(anno)
+    _, is_optional = unwrap_optional(signals_schema.get_column_type(db_col))
     return is_optional
 
 
