@@ -1411,8 +1411,10 @@ def test_array_funcs_over_optional_list_no_crash(test_session):
     from datachain import func
 
     chain = dc.read_values(
-        id=[1, 2], x=[[10, 20, 30], None],
-        output={"id": int, "x": Optional[list[int]]}, session=test_session,
+        id=[1, 2],
+        x=[[10, 20, 30], None],
+        output={"id": int, "x": Optional[list[int]]},
+        session=test_session,
     )
     out = chain.mutate(
         el=func.array.get_element("x", 0),
@@ -1428,8 +1430,10 @@ def test_array_contains_over_null_array_no_crash(test_session):
     from datachain import func
 
     chain = dc.read_values(
-        a=[["x", "y"], None], id=[1, 2],
-        output={"a": Optional[list[str]], "id": int}, session=test_session,
+        a=[["x", "y"], None],
+        id=[1, 2],
+        output={"a": Optional[list[str]], "id": int},
+        session=test_session,
     )
     out = chain.mutate(c=func.array.contains("a", "x")).order_by("id")
     by_id = {r["id"]: r["c"] for r in out.to_records()}
@@ -1442,8 +1446,10 @@ def test_string_hash_of_none_is_none(test_session):
     from datachain import func
 
     chain = dc.read_values(
-        id=[1, 2], s=["a", None],
-        output={"id": int, "s": Optional[str]}, session=test_session,
+        id=[1, 2],
+        s=["a", None],
+        output={"id": int, "s": Optional[str]},
+        session=test_session,
     )
     by_id = {
         r["id"]: r["h"]
@@ -1459,8 +1465,10 @@ def test_concat_all_null_group_is_none(test_session):
 
     rows = dict(
         dc.read_values(
-            g=[1, 1, 2, 2], v=[None, None, "a", "b"],
-            output={"g": int, "v": Optional[str]}, session=test_session,
+            g=[1, 1, 2, 2],
+            v=[None, None, "a", "b"],
+            output={"g": int, "v": Optional[str]},
+            session=test_session,
         )
         .group_by(c=func.concat("v", ","), partition_by="g")
         .order_by("g")
@@ -1476,8 +1484,10 @@ def test_outer_merge_unmatched_model_is_none(test_session):
     nullable, so the all-NULL row hydrates as None)."""
     left = dc.read_values(k=[1], session=test_session, output={"k": int})
     right = dc.read_values(
-        k=[2], m=[_Inner(score=9, label="x")],
-        output={"k": int, "m": _Inner}, session=test_session,
+        k=[2],
+        m=[_Inner(score=9, label="x")],
+        output={"k": int, "m": _Inner},
+        session=test_session,
     )
     got = left.merge(right, on="k", full=True).order_by("k").to_values("m")
     assert got == [None, _Inner(score=9, label="x")]
