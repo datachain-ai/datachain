@@ -1434,3 +1434,37 @@ def test_array_contains_over_null_array_no_crash(test_session):
     out = chain.mutate(c=func.array.contains("a", "x")).order_by("id")
     by_id = {r["id"]: r["c"] for r in out.to_records()}
     assert by_id[1]  # present array contains "x"
+
+
+def test_string_hash_of_none_is_none(test_session):
+    """string_hash(None) returns None on both backends (NULL in -> NULL out),
+    instead of SQLite hashing the empty string."""
+    from datachain import func
+
+    chain = dc.read_values(
+        id=[1, 2], s=["a", None],
+        output={"id": int, "s": Optional[str]}, session=test_session,
+    )
+    by_id = {
+        r["id"]: r["h"]
+        for r in chain.mutate(h=func.string.string_hash("s")).to_records()
+    }
+    assert by_id[1] is not None
+    assert by_id[2] is None
+
+
+def test_concat_all_null_group_is_none(test_session):
+    """concat over an all-NULL group is None on both backends (not '')."""
+    from datachain import func
+
+    rows = dict(
+        dc.read_values(
+            g=[1, 1, 2, 2], v=[None, None, "a", "b"],
+            output={"g": int, "v": Optional[str]}, session=test_session,
+        )
+        .group_by(c=func.concat("v", ","), partition_by="g")
+        .order_by("g")
+        .to_list("g", "c")
+    )
+    assert rows[1] is None  # all-NULL group
+    assert set(rows[2].split(",")) == {"a", "b"}  # order unspecified

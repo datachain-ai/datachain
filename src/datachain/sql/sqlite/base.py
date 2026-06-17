@@ -234,9 +234,12 @@ def sqlite_int_hash_64(x: int) -> int:
     return x if x < 1 << 63 else (x & MAX_INT64) - (1 << 64)
 
 
-def sqlite_string_hash(*args) -> int:
-    """Hash one or more values into a signed 64-bit integer."""
-    s = "|".join(str(a) if a is not None else "" for a in args)
+def sqlite_string_hash(*args) -> int | None:
+    """Hash one or more values into a signed 64-bit integer; NULL in -> NULL out
+    (matches ClickHouse)."""
+    if any(a is None for a in args):
+        return None
+    s = "|".join(str(a) for a in args)
     h = int.from_bytes(hashlib.sha256(s.encode()).digest()[:8], "big")
     return h if h < 1 << 63 else h - (1 << 64)
 
