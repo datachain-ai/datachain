@@ -629,6 +629,9 @@ class SignalSchema:
             # NaN is used to represent NULL and NaN float values in datachain
             # Since SQLite does not have a separate NULL type, we need to check for NaN
             return math.isnan(value) or value is None
+        if isinstance(value, (str, bytes)):
+            # a NULL list/dict leaf degrades to '' on ClickHouse; treat it as absent
+            return len(value) == 0
         return value is None
 
     def _hydrate_model(
