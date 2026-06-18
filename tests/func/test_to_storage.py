@@ -117,6 +117,19 @@ def test_export_images_files(test_session, tmp_dir, tmp_path, use_cache):
             assert images_equal(img["data"], exported_img)
 
 
+def test_to_storage_skips_none_optional_file(test_session, tmp_dir, tmp_path):
+    """to_storage on an Optional[File] signal skips absent (None) rows instead of
+    crashing with AttributeError: 'NoneType' object has no attribute 'export'."""
+    (tmp_path / "a.txt").write_text("hi")
+    dc.read_values(
+        file=[File(path="a.txt", source=tmp_path.as_uri()), None],
+        output={"file": File | None},
+        session=test_session,
+    ).to_storage(tmp_dir / "output", placement="filename")
+
+    assert (tmp_dir / "output" / "a.txt").read_text() == "hi"
+
+
 def test_read_storage_multiple_file_uris_and_directory(test_session, tmp_dir, tmp_path):
     images = [
         {"name": "img1.jpg", "data": Image.new(mode="RGB", size=(64, 64))},

@@ -108,9 +108,15 @@ def _compare(  # noqa: C901
     elif len(compare) == 0:
         modified_cond = False
     else:
+
+        def _differs(lc, rc):
+            right_col = C(f"{rname}{rc}") if lc == rc else C(rc)
+            # null-aware: ``a != b`` is NULL (not true) when either side is NULL
+            return or_(C(lc) != right_col, isnone(C(lc)) != isnone(right_col))
+
         modified_cond = or_(  # type: ignore[assignment]
             *[
-                C(c) != (C(f"{rname}{rc}") if c == rc else C(rc))
+                _differs(c, rc)
                 for c, rc in zip(compare, right_compare, strict=False)  # type: ignore[arg-type]
             ]
         )

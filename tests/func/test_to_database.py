@@ -536,6 +536,37 @@ def test_to_database_empty_chain(connection, test_session):
     assert rows_affected == 0  # Check that empty chain returns 0
 
 
+def test_to_database_optional_datamodel_excludes_sentinel(
+    sqlite_connection, test_session
+):
+    """An Optional[DataModel] signal must not leak its hidden ``_type_tag``
+    sentinel into the target table, and the leaf values must stay aligned with
+    their columns. Regression: db_signals(as_columns=True) used to include the
+    sentinel column while the row values (from _leaf_values) excluded it, so every
+    column after the sentinel was written shifted (or the insert raised)."""
+    from datachain.lib.data_model import DataModel
+
+    class _Addr(DataModel):
+        city: str = ""
+        score: int = 0
+
+    def pick(id: int) -> "_Addr | None":
+        return _Addr(city=f"c{id}", score=id) if id else None
+
+    chain = dc.read_values(id=[0, 1], session=test_session).map(
+        addr=pick, output={"addr": _Addr | None}
+    )
+    chain.to_database("opt_model_table", sqlite_connection)
+
+    columns = _get_table_columns(sqlite_connection, "opt_model_table")
+    assert not any(c.endswith("_type_tag") for c in columns), columns
+    assert columns == ["id", "addr__city", "addr__score"]
+
+    rows = _fetch_all_rows(sqlite_connection, "opt_model_table")
+    assert rows[0] == (0, None, None)  # absent parent -> NULL leaves
+    assert rows[1] == (1, "c1", 1)
+
+
 def test_to_database_column_mapping(connection, test_session):
     """Test to_database with column mapping functionality."""
     chain = dc.read_values(
@@ -830,10 +861,8 @@ def test_to_database_invalid_on_conflict_value(connection, test_session):
         chain.to_database("test_table", connection, on_conflict="invalid")
 
 
-def test_to_database_with_null_values(connection, test_session, warehouse):
+def test_to_database_with_null_values(connection, test_session):
     """Test to_database handles NULL values correctly."""
-    from datachain.data_storage.sqlite import SQLiteWarehouse
-
     chain = dc.read_values(
         id=[1, 2, 3, 4],
         name=["Alice", None, "Charlie", "Diana"],
@@ -845,14 +874,12 @@ def test_to_database_with_null_values(connection, test_session, warehouse):
 
     rows = _fetch_all_rows(connection, "null_table")
 
-    # Different warehouse implementations handle NULL values differently
-    default_str_value = None if isinstance(warehouse, SQLiteWarehouse) else ""
-    default_int_value = None if isinstance(warehouse, SQLiteWarehouse) else 0
-
+    # name/age are inferred Optional (they contain None), so None round-trips as
+    # NULL on both backends instead of the type default.
     assert len(rows) == 4
     assert rows[0] == (1, "Alice", 25)
-    assert rows[1] == (2, default_str_value, 30)
-    assert rows[2] == (3, "Charlie", default_int_value)
+    assert rows[1] == (2, None, 30)
+    assert rows[2] == (3, "Charlie", None)
     assert rows[3] == (4, "Diana", 28)
 
 

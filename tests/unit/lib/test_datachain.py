@@ -837,7 +837,8 @@ def test_from_features_more_simple_types(test_session):
         dict[str, int],  # from dd2
         list[str],  # from ll1 (starts with empty list)
         list[int],  # from ll
-        str,  # from nn and ss
+        str,  # from nn (all None -> defaults to str)
+        str | None,  # from ss (has a None -> inferred Optional)
         datetime.datetime,
         float,
     }
@@ -1238,10 +1239,6 @@ def test_parse_nested_json(tmp_dir, test_session):
     # E.g. nAmE -> name, l--as@t -> l_as_t, etc
     df1 = chain.select("na_me", "age", "city").to_pandas()
 
-    # In CH we replace None with '' for peforance reasons,
-    # have to handle it here
-    string_default = String.default_value(test_session.catalog.warehouse.db.dialect)
-
     assert sorted(df1["na_me"]["first_select"].to_list()) == sorted(
         d["first-SELECT"] for d in df["nA-mE"].to_list()
     )
@@ -1250,14 +1247,13 @@ def test_parse_nested_json(tmp_dir, test_session):
     def normalize_null(x):
         return None if pd.isna(x) else x
 
+    # ``l_as_t`` is inferred Optional[str]; a missing value now round-trips as None
+    # on both backends (previously the ClickHouse type default "").
     assert sorted(
         [normalize_null(x) for x in df1["na_me"]["l_as_t"].to_list()],
         key=lambda x: (x is None, "" if x is None else x),
     ) == sorted(
-        [
-            normalize_null(d.get("l--as@t", string_default))
-            for d in df["nA-mE"].to_list()
-        ],
+        [normalize_null(d.get("l--as@t")) for d in df["nA-mE"].to_list()],
         key=lambda x: (x is None, "" if x is None else x),
     )
 
@@ -1495,9 +1491,8 @@ def test_read_csv_null_collect(tmp_dir, test_session):
     df.to_csv(path, index=False)
     chain = dc.read_csv(path.as_uri(), column="csv", session=test_session)
     for i, row in enumerate(chain.to_list()):
-        # None value in numeric column will get converted to nan.
         if not height[i]:
-            assert math.isnan(row[1].height)
+            assert row[1].height is None or math.isnan(row[1].height)
         else:
             assert row[1].height == height[i]
         assert row[1].gender == gender[i]
@@ -1576,10 +1571,9 @@ def test_explode(tmp_dir, test_session, column_type, column, model_name):
     column = column or "content_expl"
     model_name = model_name or "ContentExplodedModel"
 
-    # In CH we have (atm at least) None converted to ''
-    # for performance reasons, so we need to handle this case
-    string_default = String.default_value(test_session.catalog.warehouse.db.dialect)
-
+    # ``city`` is inferred Optional[str] (Charlie's row omits it); a missing value
+    # now round-trips as None on both backends (previously the ClickHouse type
+    # default "" for the non-nullable column).
     assert set(
         chain.to_list(
             f"{column}.na_me.first_select",
@@ -1589,7 +1583,7 @@ def test_explode(tmp_dir, test_session, column_type, column, model_name):
     ) == {
         ("Alice", 25, "New York"),
         ("Bob", 30, "Los Angeles"),
-        ("Charlie", 35, string_default),
+        ("Charlie", 35, None),
         ("David", 40, "Houston"),
         ("Eva", 45, "Phoenix"),
         ("Ivan", 41, "San Francisco"),
@@ -3570,9 +3564,10 @@ def test_read_parquet_nan_inf(tmp_dir, test_session):
 
     res = list(chain.to_values("vals"))
     assert len(res) == 3
-    assert any(r for r in res if np.isnan(r))
-    assert any(r for r in res if np.isposinf(r))
-    assert any(r for r in res if np.isneginf(r))
+    # NaN reads back as None on SQLite (stores NaN as NULL), as NaN on ClickHouse.
+    assert any(r is None or (isinstance(r, float) and math.isnan(r)) for r in res)
+    assert any(r == float("inf") for r in res)
+    assert any(r == float("-inf") for r in res)
 
 
 def test_read_csv_nan_inf(tmp_dir, test_session):
@@ -3584,9 +3579,9 @@ def test_read_csv_nan_inf(tmp_dir, test_session):
 
     res = chain.to_values("vals")
     assert len(res) == 3
-    assert any(r for r in res if np.isnan(r))
-    assert any(r for r in res if np.isposinf(r))
-    assert any(r for r in res if np.isneginf(r))
+    assert any(r is None or (isinstance(r, float) and math.isnan(r)) for r in res)
+    assert any(r == float("inf") for r in res)
+    assert any(r == float("-inf") for r in res)
 
 
 def test_dicts_nan_inf(test_session):
