@@ -1,0 +1,357 @@
+"""Functional tests for multi-arm ``Union[...]`` support (tagged unions).
+
+Covers every union kind end to end — ``Union[basic, basic]``,
+``Union[Model, Model]``, mixed ``Union[basic, Model]`` and nullable
+``Union[..., None]`` — through ``read_values`` / ``map`` ingestion, ``save``
+round-trips, parquet/JSON export, and the query ops (filter / mutate / select /
+group_by / isnone / count / union). The active arm is stored under a ``_type_tag``
+discriminator; inactive arms are NULL. These run on both SQLite and ClickHouse
+(via ``scripts/run-clickhouse-tests.sh``).
+
+Rows are read with an explicit ``id`` column and ordered by it; ``sys.id`` order
+is not stable across backends for generated rows.
+"""
+
+import json
+from typing import Optional, Union
+
+import pytest
+
+import datachain as dc
+from datachain import C, func
+from datachain.lib.data_model import DataModel
+
+
+class _Foo(DataModel):
+    a: int = 0
+    b: str = ""
+
+
+class _Bar(DataModel):
+    x: float = 0.0
+
+
+class _Holder(DataModel):
+    id: int = 0
+    payload: Union[str, int] = 0
+
+
+def _ordered(chain, *cols):
+    return chain.order_by("id").to_list("id", *cols)
+
+
+# ---- save round-trips ------------------------------------------------------
+
+
+def test_scalar_union_roundtrip(test_session):
+    dc.read_values(
+        id=[1, 2, 3, 4],
+        value=["hello", 42, "world", 7],
+        output={"id": int, "value": Union[str, int]},
+        session=test_session,
+    ).save("u_scalar")
+    back = dc.read_dataset("u_scalar", session=test_session)
+    assert _ordered(back, "value") == [(1, "hello"), (2, 42), (3, "world"), (4, 7)]
+
+
+def test_model_union_roundtrip(test_session):
+    items = [_Foo(a=1, b="z"), _Bar(x=2.5), _Foo(a=9, b="q")]
+    dc.read_values(
+        id=[1, 2, 3],
+        item=items,
+        output={"id": int, "item": Union[_Foo, _Bar]},
+        session=test_session,
+    ).save("u_models")
+    back = dc.read_dataset("u_models", session=test_session)
+    assert [v for _, v in _ordered(back, "item")] == items
+
+
+def test_mixed_union_roundtrip(test_session):
+    items = ["txt", _Foo(a=2, b="m"), 5]
+    dc.read_values(
+        id=[1, 2, 3],
+        value=items,
+        output={"id": int, "value": Union[str, int, _Foo]},
+        session=test_session,
+    ).save("u_mixed")
+    back = dc.read_dataset("u_mixed", session=test_session)
+    assert [v for _, v in _ordered(back, "value")] == items
+
+
+def test_nullable_union_roundtrip(test_session):
+    dc.read_values(
+        id=[1, 2, 3, 4],
+        value=["a", 3, None, "c"],
+        output={"id": int, "value": Union[str, int, None]},
+        session=test_session,
+    ).save("u_nullable")
+    back = dc.read_dataset("u_nullable", session=test_session)
+    assert [v for _, v in _ordered(back, "value")] == ["a", 3, None, "c"]
+
+
+def test_union_float_arm_roundtrip(test_session):
+    # A float arm works in a multi-arm union (the _type_tag disambiguates it),
+    # unlike the single-arm Optional[float].
+    items = [1.5, "txt", 2.0]
+    dc.read_values(
+        id=[1, 2, 3],
+        value=items,
+        output={"id": int, "value": Union[str, float]},
+        session=test_session,
+    ).save("u_float")
+    back = dc.read_dataset("u_float", session=test_session)
+    assert [v for _, v in _ordered(back, "value")] == items
+
+
+def test_union_nested_in_model_roundtrip(test_session):
+    holders = [_Holder(id=1, payload="x"), _Holder(id=2, payload=99)]
+    dc.read_values(
+        id=[1, 2],
+        h=holders,
+        output={"id": int, "h": _Holder},
+        session=test_session,
+    ).save("u_nested")
+    back = dc.read_dataset("u_nested", session=test_session)
+    assert [v for _, v in _ordered(back, "h")] == holders
+
+
+# ---- ingestion via map -----------------------------------------------------
+
+
+def test_map_returns_union(test_session):
+    base = dc.read_values(id=[1, 2, 3, 4], session=test_session)
+
+    def f(id) -> Union[str, int]:
+        return "even" if id % 2 == 0 else id
+
+    base.map(r=f, output={"r": Union[str, int]}).save("u_map")
+    back = dc.read_dataset("u_map", session=test_session)
+    assert _ordered(back, "r") == [(1, 1), (2, "even"), (3, 3), (4, "even")]
+
+
+# ---- export round-trips ----------------------------------------------------
+
+
+def test_union_parquet_roundtrip(test_session, tmp_path):
+    items = [_Foo(a=1, b="z"), _Bar(x=2.5)]
+    path = str(tmp_path / "u.parquet")
+    dc.read_values(
+        id=[1, 2],
+        item=items,
+        output={"id": int, "item": Union[_Foo, _Bar]},
+        session=test_session,
+    ).order_by("id").to_parquet(path)
+    back = dc.read_parquet(path, session=test_session)
+    assert [v for _, v in _ordered(back, "item")] == items
+
+
+def test_union_jsonl_export(test_session, tmp_path):
+    path = str(tmp_path / "u.jsonl")
+    dc.read_values(
+        id=[1, 2],
+        value=["hello", 42],
+        output={"id": int, "value": Union[str, int]},
+        session=test_session,
+    ).order_by("id").to_jsonl(path)
+    with open(path) as f:
+        rows = [json.loads(line) for line in f.read().splitlines() if line]
+    rows.sort(key=lambda r: r["id"])
+    assert rows == [{"id": 1, "value": "hello"}, {"id": 2, "value": 42}]
+
+
+# ---- query ops -------------------------------------------------------------
+
+
+def _nullable_union(test_session):
+    return dc.read_values(
+        id=[1, 2, 3, 4, 5],
+        value=["hi", 42, "yo", 7, None],
+        output={"id": int, "value": Union[str, int, None]},
+        session=test_session,
+    )
+
+
+def test_union_isnone(test_session):
+    chain = _nullable_union(test_session)
+    assert chain.filter(func.isnone("value")).count() == 1
+    assert chain.filter(func.not_(func.isnone("value"))).count() == 4
+
+
+def test_union_count_present(test_session):
+    chain = _nullable_union(test_session)
+    assert chain.group_by(c=func.count("value")).to_values("c") == [4]
+
+
+def test_union_filter_on_arm(test_session):
+    chain = _nullable_union(test_session)
+    # int sorts before str, so value._0 is the int arm.
+    assert chain.filter(C("value._0") == 42).to_values("value") == [42]
+    assert chain.filter(C("value._1") == "hi").to_values("value") == ["hi"]
+
+
+def test_union_mutate_on_arm(test_session):
+    chain = _nullable_union(test_session)
+    # value._0 is the int arm: present only for int rows, NULL elsewhere.
+    assert _ordered(chain.mutate(z=C("value._0")), "z") == [
+        (1, None),
+        (2, 42),
+        (3, None),
+        (4, 7),
+        (5, None),
+    ]
+
+
+def test_union_select_keeps_whole_signal(test_session):
+    chain = _nullable_union(test_session)
+    # A union is atomic: selecting any part keeps the whole value.
+    assert [v for _, v in _ordered(chain.select("id", "value._0"), "value")] == [
+        "hi",
+        42,
+        "yo",
+        7,
+        None,
+    ]
+
+
+def test_union_distinct_on_arm(test_session):
+    chain = _nullable_union(test_session)
+    assert chain.distinct("value._1").count() == 3  # 'hi', 'yo', NULL
+
+
+def test_union_combination_same_type(test_session):
+    left = dc.read_values(
+        id=[1, 2],
+        value=["a", 1],
+        output={"id": int, "value": Union[str, int]},
+        session=test_session,
+    )
+    right = dc.read_values(
+        id=[3, 4],
+        value=[2, "b"],
+        output={"id": int, "value": Union[str, int]},
+        session=test_session,
+    )
+    left.union(right).save("u_union_op")
+    back = dc.read_dataset("u_union_op", session=test_session)
+    assert _ordered(back, "value") == [(1, "a"), (2, 1), (3, 2), (4, "b")]
+
+
+def test_union_optional_nested_in_model_roundtrip(test_session):
+    class H(DataModel):
+        v: Optional[Union[str, int]] = None
+
+    items = [H(v="a"), H(v=5), H(v=None)]
+    dc.read_values(
+        id=[1, 2, 3],
+        h=items,
+        output={"id": int, "h": H},
+        session=test_session,
+    ).save("u_opt_nested")
+    back = dc.read_dataset("u_opt_nested", session=test_session)
+    assert [h.v for _, h in _ordered(back, "h")] == ["a", 5, None]
+
+
+def test_union_schema_canonical_order_both_spellings(test_session):
+    # Union[str, int] and Union[int, str] are the same type; the persisted schema
+    # and values must match regardless of how the union is written.
+    a = dc.read_values(
+        id=[1, 2],
+        value=["x", 1],
+        output={"id": int, "value": Union[str, int]},
+        session=test_session,
+    )
+    b = dc.read_values(
+        id=[1, 2],
+        value=["x", 1],
+        output={"id": int, "value": Union[int, str]},
+        session=test_session,
+    )
+    assert a.signals_schema.db_signals() == b.signals_schema.db_signals()
+    assert _ordered(a, "value") == _ordered(b, "value") == [(1, "x"), (2, 1)]
+
+
+# ---- collection arms (list / dict) -----------------------------------------
+
+
+def test_scalar_list_union_roundtrip(test_session):
+    # A collection arm is stored in its own slot; the _type_tag disambiguates it
+    # from the scalar arm, so this round-trips on both backends.
+    dc.read_values(
+        id=[1, 2, 3, 4],
+        value=["hello", ["a", "b"], "world", ["x"]],
+        output={"id": int, "value": Union[str, list[str]]},
+        session=test_session,
+    ).save("u_collection")
+    back = dc.read_dataset("u_collection", session=test_session)
+    assert _ordered(back, "value") == [
+        (1, "hello"),
+        (2, ["a", "b"]),
+        (3, "world"),
+        (4, ["x"]),
+    ]
+
+
+def test_scalar_dict_union_roundtrip(test_session):
+    dc.read_values(
+        id=[1, 2, 3],
+        value=[42, {"k": "v"}, 7],
+        output={"id": int, "value": Union[int, dict[str, str]]},
+        session=test_session,
+    ).save("u_dict")
+    back = dc.read_dataset("u_dict", session=test_session)
+    assert _ordered(back, "value") == [(1, 42), (2, {"k": "v"}), (3, 7)]
+
+
+def test_collection_union_nullable_and_variant_type(test_session):
+    chain = dc.read_values(
+        id=[1, 2, 3, 4],
+        value=["hi", ["a", "b"], None, ["x"]],
+        output={"id": int, "value": Union[str, list[str], None]},
+        session=test_session,
+    )
+    assert chain.filter(func.isnone("value")).count() == 1
+    assert _ordered(chain.mutate(t=func.variant_type("value")), "t") == [
+        (1, "str"),
+        (2, "list[str]"),
+        (3, None),
+        (4, "list[str]"),
+    ]
+
+
+def test_collection_union_parquet_roundtrip(test_session, tmp_path):
+    path = str(tmp_path / "u.parquet")
+    dc.read_values(
+        id=[1, 2, 3],
+        value=["hi", ["a", "b"], "yo"],
+        output={"id": int, "value": Union[str, list[str]]},
+        session=test_session,
+    ).order_by("id").to_parquet(path)
+    back = dc.read_parquet(path, session=test_session)
+    assert _ordered(back, "value") == [(1, "hi"), (2, ["a", "b"]), (3, "yo")]
+
+
+def test_model_collection_arm_roundtrip(test_session):
+    # A list-of-models arm is re-hydrated into model instances on read.
+    items = [_Foo(a=1, b="z"), [_Foo(a=2), _Foo(a=3)]]
+    dc.read_values(
+        id=[1, 2],
+        value=items,
+        output={"id": int, "value": Union[_Foo, list[_Foo]]},
+        session=test_session,
+    ).save("u_model_list")
+    back = dc.read_dataset("u_model_list", session=test_session)
+    assert [v for _, v in _ordered(back, "value")] == items
+
+
+def test_same_family_collection_arms_rejected(test_session):
+    # Two list arms can't be told apart by value (``["a"]`` fits list[str] AND
+    # list[int]), so the union is rejected up front rather than mis-stored.
+    from datachain.lib.udf_signature import UdfSignatureError
+
+    with pytest.raises(UdfSignatureError):
+        dc.read_values(
+            id=[1],
+            value=[["a"]],
+            output={"id": int, "value": Union[list[str], list[int]]},
+            session=test_session,
+        ).save("u_ambig")

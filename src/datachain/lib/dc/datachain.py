@@ -68,7 +68,7 @@ from datachain.query.dataset import (
     RegenerateSystemColumns,
     UnionSchemaMismatchError,
 )
-from datachain.query.schema import DEFAULT_DELIMITER, Column, ColumnExpr
+from datachain.query.schema import DEFAULT_DELIMITER, Column, ColumnExpr, ColumnMeta
 from datachain.sql.functions import path as pathfunc
 from datachain.sql.types import SQLType
 from datachain.utils import (
@@ -1355,6 +1355,10 @@ class DataChain:
 
         for col in partition_by:
             if isinstance(col, str):
+                # a union is atomic: partition by the whole union, not one arm
+                union_root = self.signals_schema.multiarm_union_root(col)
+                if union_root is not None:
+                    col = union_root
                 columns = self.signals_schema.db_signals(name=col, as_columns=True)
                 if not columns:
                     raise SignalResolvingError([col], "is not found")
@@ -1456,6 +1460,15 @@ class DataChain:
             schema_partition_by, signal_columns
         )
 
+        # dedupe: a union's _type_tag is appended once per arm slot above
+        seen: set[str] = set()
+        deduped: list[Column] = []
+        for c in partition_by_columns:
+            if c.name not in seen:
+                seen.add(c.name)
+                deduped.append(c)
+        partition_by_columns = deduped
+
         return self._evolve(
             query=self._query.group_by(signal_columns, partition_by_columns),
             signal_schema=signal_schema,
@@ -1522,6 +1535,15 @@ class DataChain:
         primitives = (bool, str, int, float)
 
         try:
+            # readable arm Column (C("block.name")) -> positional column
+            for col_name, expr in kwargs.items():
+                if (
+                    isinstance(expr, Column)
+                    and (resolved := self.signals_schema.resolve_arm_path(expr.name))
+                    is not None
+                ):
+                    kwargs[col_name] = Column(ColumnMeta.to_db_name(resolved))
+
             for col_name, expr in kwargs.items():
                 if not isinstance(expr, (*primitives, Column, Func)):
                     if not isinstance(expr, ColumnExpr):
@@ -1627,17 +1649,24 @@ class DataChain:
             yield from rows
 
     def to_columnar_data_with_names(
-        self, chunk_size: int = DEFAULT_PARQUET_CHUNK_SIZE
+        self,
+        chunk_size: int = DEFAULT_PARQUET_CHUNK_SIZE,
+        include_sentinels: bool = False,
     ) -> tuple[list[str], Iterator[list[list[Any]]]]:
         """Returns column names and the results as an iterator that provides chunks,
         with each chunk containing a list of columns, where each column contains a
         list of the row values for that column in that chunk. Useful for columnar data
         formats, such as parquet or other OLAP databases.
+
+        ``include_sentinels`` keeps the ``_type_tag`` discriminator, which round-trip
+        formats (parquet) need to reconstruct a multi-arm union.
         """
-        headers, _ = self._effective_signals_schema.get_headers_with_length()
+        headers, _ = self._effective_signals_schema.get_headers_with_length(
+            include_sentinels=include_sentinels
+        )
         column_names = [".".join(filter(None, header)) for header in headers]
 
-        results_iter = self._leaf_values()
+        results_iter = self._leaf_values(include_sentinels=include_sentinels)
 
         def column_chunks() -> Iterator[list[list[Any]]]:
             for chunk_iter in batched_it(results_iter, chunk_size):
@@ -1979,6 +2008,20 @@ class DataChain:
         left, right = self._align_optional_for_union(other)
         self_schema = left.signals_schema
         other_schema = right.signals_schema
+        # report a union-vs-other mismatch by signal name, not leaked arm columns
+        from datachain.lib.data_model import union_layout
+
+        lv, rv = self_schema.values, other_schema.values
+        for name in set(lv) & set(rv):
+            if lv[name] != rv[name] and (
+                union_layout(lv[name]) is not None or union_layout(rv[name]) is not None
+            ):
+                raise DataChainColumnError(
+                    name,
+                    f"cannot union a '{SignalSchema._type_to_str(lv[name])}' signal "
+                    f"with a '{SignalSchema._type_to_str(rv[name])}' signal; align "
+                    "the column types before union()",
+                )
         missing_left, missing_right = self_schema.compare_signals(other_schema)
         if missing_left or missing_right:
             raise UnionSchemaMismatchError.from_column_sets(
@@ -2222,7 +2265,7 @@ class DataChain:
         import pandas as pd
 
         headers, max_length = self._effective_signals_schema.get_headers_with_length(
-            include_hidden=include_hidden
+            include_hidden=include_hidden, readable=True
         )
 
         columns: list[str] | pd.MultiIndex
@@ -2457,7 +2500,9 @@ class DataChain:
             self._effective_signals_schema.serialize(), ensure_ascii=False
         ).encode("utf-8")
 
-        column_names, column_chunks = self.to_columnar_data_with_names(chunk_size)
+        column_names, column_chunks = self.to_columnar_data_with_names(
+            chunk_size, include_sentinels=True
+        )
 
         parquet_schema = None
         parquet_writer = None
@@ -2528,7 +2573,9 @@ class DataChain:
 
         target = File.at(path, session=self.session)
 
-        headers, _ = self._effective_signals_schema.get_headers_with_length()
+        headers, _ = self._effective_signals_schema.get_headers_with_length(
+            readable=True
+        )
         column_names = [".".join(filter(None, header)) for header in headers]
 
         with target.open("w", newline="", client_config=fs_kwargs) as f:

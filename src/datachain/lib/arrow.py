@@ -10,7 +10,8 @@ from pyarrow.dataset import CsvFileFormat, dataset
 from datachain import json
 from datachain.fs.reference import ReferenceFileSystem
 from datachain.lib.convert.flatten import classify_field, iter_flat_columns
-from datachain.lib.data_model import dict_to_data_model, optional_tag_is_absent
+from datachain.lib.convert.unflatten import _read_scalar_arm
+from datachain.lib.data_model import dict_to_data_model, union_layout
 from datachain.lib.file import ArrowRow, File
 from datachain.lib.model_store import ModelStore
 from datachain.lib.signal_schema import SignalSchema
@@ -22,7 +23,7 @@ if TYPE_CHECKING:
     from datasets.features.features import Features
     from pydantic import BaseModel
 
-    from datachain.lib.data_model import DataType
+    from datachain.lib.data_model import DataType, UnionLayout
     from datachain.lib.dc import DataChain
 
 
@@ -299,16 +300,39 @@ def _is_nan(val: Any) -> bool:
     return isinstance(val, float) and math.isnan(val)
 
 
-def _optional_absent(
-    column_values: dict[str, Any], inner: type["BaseModel"], prefix: str
-) -> bool:
-    """Whether the ``Optional[DataModel]`` at ``prefix`` is absent. Uses the
-    ``_type_tag`` discriminator when present (0 = present arm), else the
-    all-leaves-None heuristic."""
+def _infer_active_arm(
+    column_values: dict[str, Any], layout: "UnionLayout", prefix: str
+) -> int | None:
+    """Active arm inferred from non-null columns when the _type_tag is absent."""
+    for i, arm in enumerate(layout.arms):
+        arm_prefix = f"{prefix}._{i}" if layout.use_slots else prefix
+        if (fr := ModelStore.to_pydantic(arm)) is not None:
+            if not _subtree_all_none(column_values, fr, arm_prefix):
+                return i
+        else:
+            val = column_values.get(arm_prefix)
+            if val is not None and not _is_nan(val) and val not in ([], {}):
+                return i
+    return None
+
+
+def _union_value(
+    column_values: dict[str, Any], layout: "UnionLayout", prefix: str
+) -> Any:
+    """Reconstruct a tagged-union value from flat columns, hydrating the active arm."""
     tag_key = f"{prefix}.{SignalSchema._OPTIONAL_SENTINEL_FIELD}"
     if tag_key in column_values:
-        return optional_tag_is_absent(column_values[tag_key])
-    return _subtree_all_none(column_values, inner, prefix)
+        tag = column_values[tag_key]
+        active = None if tag is None or tag >= len(layout.arms) else tag
+    else:
+        active = _infer_active_arm(column_values, layout, prefix)
+    if active is None:
+        return None
+    arm = layout.arms[active]
+    arm_prefix = f"{prefix}._{active}" if layout.use_slots else prefix
+    if (fr := ModelStore.to_pydantic(arm)) is not None:
+        return _nested_model_instantiate(column_values, fr, arm_prefix)
+    return _read_scalar_arm(arm, column_values.get(arm_prefix))
 
 
 def _nested_model_instantiate(
@@ -318,20 +342,18 @@ def _nested_model_instantiate(
     column values."""
     vals_dict: dict[str, Any] = {}
     for field, field_info in model.model_fields.items():
-        kind = classify_field(field_info.annotation)
+        anno = field_info.annotation
         cur_path = f"{prefix}.{field}" if prefix else field
+        if (layout := union_layout(anno)) is not None:
+            vals_dict[field] = _union_value(column_values, layout, cur_path)
+            continue
+        kind = classify_field(anno)
         if kind.is_model:
-            if kind.is_optional and _optional_absent(
-                column_values, kind.inner, cur_path
-            ):
-                # Absent Optional[DataModel] parent -> None.
-                vals_dict[field] = None
-            else:
-                vals_dict[field] = _nested_model_instantiate(
-                    column_values,
-                    kind.inner,
-                    prefix=cur_path,
-                )
+            vals_dict[field] = _nested_model_instantiate(
+                column_values,
+                kind.inner,
+                prefix=cur_path,
+            )
         elif cur_path in column_values:
             vals_dict[field] = column_values[cur_path]
     return model(**vals_dict)

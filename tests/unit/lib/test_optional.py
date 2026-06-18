@@ -207,7 +207,8 @@ def test_flatten_optional_datamodel_present():
 
 def test_flatten_optional_datamodel_absent():
     out = _Outer(name="Bob", addr=None)
-    assert flatten(out) == ("Bob", 1, None, None)
+    # _type_tag is NULL for the absent (None) arm.
+    assert flatten(out) == ("Bob", None, None, None)
 
 
 def test_unflatten_optional_datamodel_present():
@@ -376,16 +377,16 @@ def test_nested_optional_datamodel_roundtrip():
     # Outer present, inner absent
     obj = Top(mid=Mid(addr=None, tag="x"))
     flat = flatten(obj)
-    # tags: mid=0 (present), addr=1 (None); then city=None, zip=None, tag="x"
-    assert flat == (0, 1, None, None, "x")
+    # tags: mid=0 (present), addr=NULL (None arm); then city=None, zip=None, tag="x"
+    assert flat == (0, None, None, None, "x")
     rec = unflatten_to_json(Top, flat)
     assert rec == {"mid": {"addr": None, "tag": "x"}}
 
     # Both absent
     obj2 = Top(mid=None)
     flat2 = flatten(obj2)
-    # mid tag=1 (None arm), then 4 placeholder values for the absent inner subtree
-    assert flat2[0] == 1
+    # mid tag=NULL (None arm), then 4 placeholder values for the absent inner subtree
+    assert flat2[0] is None
     assert (
         len(flat2) == 5
     )  # sentinel + (inner sentinel + 2 addr leaves + tag) placeholders

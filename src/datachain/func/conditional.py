@@ -7,8 +7,7 @@ from sqlalchemy import or_ as sql_or
 from sqlalchemy import true as sql_true
 
 from datachain.lib.convert.python_to_sql import python_to_sql
-from datachain.lib.data_model import OPTIONAL_PRESENT_TAG
-from datachain.lib.utils import DataChainParamsError
+from datachain.lib.utils import DataChainColumnError, DataChainParamsError
 from datachain.query.schema import Column, ColumnExpr
 from datachain.sql.functions import conditional
 
@@ -24,8 +23,8 @@ CaseT = int | float | complex | bool | str | Func | ColumnExpr
 
 
 class _IsNoneFunc(_SentinelAwareFunc):
-    """``isnone`` reads the ``_type_tag`` discriminator for an
-    ``Optional[DataModel]``; for any other column it is plain ``col IS NULL``."""
+    """``isnone``: a tagged union is None when its ``_type_tag`` is NULL; any other
+    column is plain ``col IS NULL``."""
 
     def is_nullable_result(
         self,
@@ -43,10 +42,7 @@ class _IsNoneFunc(_SentinelAwareFunc):
     ) -> Column:
         sentinel = Column(sentinel_path)
         sentinel.table = table
-        func_col = sql_case(
-            (sql_or(sentinel.is_(None), sentinel != OPTIONAL_PRESENT_TAG), True),
-            else_=False,
-        )
+        func_col = sql_case((sentinel.is_(None), True), else_=False)
         return self._finalize_column(func_col, python_to_sql(bool), label)
 
 
@@ -91,6 +87,47 @@ class _GreatestLeastFunc(Func):
             if inferred is not None:
                 return inferred
         return super().get_result_type(signals_schema)
+
+
+class _VariantTypeFunc(Func):
+    """``variant_type`` maps a union's ``_type_tag`` to the active arm's type name
+    (NULL for the None arm), like ClickHouse ``variantType`` / DuckDB ``union_tag``."""
+
+    def get_column(
+        self,
+        signals_schema: "SignalSchema | None" = None,
+        label: str | None = None,
+        table: "TableClause | None" = None,
+    ) -> Column:
+        col = self._db_cols[0] if self._db_cols else None
+        if signals_schema is not None and isinstance(col, str):
+            tag_path = signals_schema.model_sentinel(col)
+            names = signals_schema.union_arm_names(col)
+            if tag_path is not None and names is not None:
+                tag = Column(tag_path)
+                tag.table = table
+                func_col = sql_case(
+                    *((tag == i, name) for i, name in enumerate(names)), else_=None
+                )
+                sql_type = python_to_sql(str)()
+                sql_type.dc_nullable = True
+                return self._finalize_column(func_col, sql_type, label)
+        raise DataChainColumnError(str(col), "variant_type() requires a Union signal")
+
+
+def variant_type(col: str) -> Func:
+    """Return the active arm's type name of a ``Union`` signal, NULL for the ``None``
+    arm. Useful to group or filter by which arm a row holds.
+
+    Example:
+        ```py
+        dc.group_by(n=func.count(), partition_by=func.variant_type("block"))
+        ```
+    """
+    # inner is unused: _VariantTypeFunc.get_column builds the CASE itself.
+    return _VariantTypeFunc(
+        "variant_type", inner=lambda c: c, cols=[col], result_type=str
+    )
 
 
 def greatest(*args: str | Column | Func | float) -> Func:

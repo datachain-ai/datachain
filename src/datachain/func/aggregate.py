@@ -20,8 +20,7 @@ AggColT = str | Column | ColumnExpr | Func
 
 
 class _CountFunc(_SentinelAwareFunc):
-    """``count(Optional[DataModel])`` counts present-parent rows via the
-    ``_type_tag`` (the parent has no real column): ``SUM(1 - _type_tag)``."""
+    """``count`` of a tagged union counts present rows (``_type_tag`` not NULL)."""
 
     def is_nullable_result(
         self,
@@ -38,8 +37,10 @@ class _CountFunc(_SentinelAwareFunc):
     ) -> Column:
         sentinel = Column(sentinel_path)
         sentinel.table = table
-        # COALESCE keeps count()'s 0-for-empty contract: SUM over zero rows is NULL.
-        func_col = sa_func.coalesce(sa_func.sum(1 - sa_cast(sentinel, Integer)), 0)
+        # COALESCE keeps count()'s 0-for-empty contract (SUM over zero rows is NULL).
+        func_col = sa_func.coalesce(
+            sa_func.sum(sa_cast(sentinel.isnot(None), Integer)), 0
+        )
         return self._finalize_column(func_col, Integer, label)
 
 

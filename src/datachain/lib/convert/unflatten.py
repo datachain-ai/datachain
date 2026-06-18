@@ -1,32 +1,73 @@
 import copy
 import inspect
 import re
-from collections.abc import Sequence
-from typing import Any
+from collections.abc import Callable, Sequence
+from functools import cache
+from typing import Any, get_args
 
-from pydantic import BaseModel
+from pydantic import BaseModel, TypeAdapter
 
-from datachain.lib.convert.flatten import _leaf_count, classify_field
-from datachain.lib.data_model import optional_tag_is_absent
+from datachain.lib.convert.flatten import _leaf_count
+from datachain.lib.data_model import UnionLayout, union_layout, unwrap_optional
+from datachain.lib.model_store import ModelStore
 from datachain.query.schema import DEFAULT_DELIMITER
+
+# Hydrates one model arm of a union: (arm_model, row, pos) -> (value, next_pos).
+ModelReader = Callable[[type[BaseModel], Sequence[Any], int], tuple[Any, int]]
 
 
 def unflatten_to_json(model: type[BaseModel], row: Sequence[Any], pos: int = 0) -> dict:
     return unflatten_to_json_pos(model, row, pos)[0]
 
 
-def read_optional_sentinel(
-    inner: type[BaseModel], row: Sequence[Any], pos: int
-) -> tuple[bool, int]:
-    """Consume the leading ``_type_tag`` discriminator of an ``Optional[DataModel]``
-    subtree, returning ``(absent, next_pos)``. A NULL sentinel (e.g. outer-join
-    padding) counts as absent.
-    """
-    sentinel = row[pos]
+def _arm_width(arm: Any) -> int:
+    if (fr := ModelStore.to_pydantic(arm)) is not None:
+        return _leaf_count(fr)
+    return 1
+
+
+def _arm_contains_model(arm: Any) -> bool:
+    """Whether ``arm`` is or nests a DataModel (e.g. ``list[Foo]``, ``dict[str, Foo]``),
+    so its stored JSON elements need re-hydrating into model instances on read."""
+    if ModelStore.is_pydantic(arm):
+        return True
+    return any(_arm_contains_model(a) for a in get_args(arm))
+
+
+@cache
+def _arm_adapter(arm: Any) -> TypeAdapter:
+    return TypeAdapter(arm)
+
+
+def _read_scalar_arm(arm: Any, value: Any) -> Any:
+    """A non-model arm's stored value. A scalar/scalar-collection is returned as is;
+    a collection of models is validated back into model instances."""
+    if value is None or not _arm_contains_model(arm):
+        return value
+    return _arm_adapter(arm).validate_python(value)
+
+
+def read_union(
+    layout: UnionLayout,
+    row: Sequence[Any],
+    pos: int,
+    read_model: ModelReader,
+) -> tuple[Any, int]:
+    """Read a tagged-union value: the ``_type_tag`` then every arm's columns,
+    hydrating only the active arm. NULL/out-of-range tag reads back as None."""
+    tag = row[pos]
     pos += 1
-    if optional_tag_is_absent(sentinel):
-        return True, pos + _leaf_count(inner)
-    return False, pos
+    active = None if tag is None or tag >= len(layout.arms) else tag
+    result: Any = None
+    for i, arm in enumerate(layout.arms):
+        if i == active:
+            if (fr := ModelStore.to_pydantic(arm)) is not None:
+                result, pos = read_model(fr, row, pos)
+            else:
+                result, pos = _read_scalar_arm(arm, row[pos]), pos + 1
+        else:
+            pos += _arm_width(arm)
+    return result, pos
 
 
 def unflatten_to_json_pos(
@@ -34,14 +75,13 @@ def unflatten_to_json_pos(
 ) -> tuple[dict, int]:
     res: dict[str, Any] = {}
     for name, f_info in model.model_fields.items():
-        kind = classify_field(f_info.annotation)
-        if kind.is_model:
-            if kind.is_optional:
-                absent, pos = read_optional_sentinel(kind.inner, row, pos)
-                if absent:
-                    res[name] = None
-                    continue
-            res[name], pos = unflatten_to_json_pos(kind.inner, row, pos)
+        anno = f_info.annotation
+        if (layout := union_layout(anno)) is not None:
+            res[name], pos = read_union(layout, row, pos, unflatten_to_json_pos)
+            continue
+        inner, _ = unwrap_optional(anno)
+        if ModelStore.is_pydantic(inner):
+            res[name], pos = unflatten_to_json_pos(inner, row, pos)
         else:
             res[name] = row[pos]
             pos += 1

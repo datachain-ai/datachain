@@ -65,7 +65,8 @@ def _source_is_nullable(col: ColT, signals_schema: "SignalSchema | None") -> boo
             _source_is_nullable(name, signals_schema)
             for name in _referenced_column_names(col)
         )
-    db_col = ColumnMeta.to_db_name(col)
+    resolved = signals_schema.resolve_arm_path(col)
+    db_col = ColumnMeta.to_db_name(resolved if resolved is not None else col)
     if signals_schema.optional_parent_sentinel(db_col) is not None:
         return True
     _, is_optional = unwrap_optional(signals_schema.get_column_type(db_col))
@@ -515,6 +516,11 @@ class Func(Function):  # noqa: PLW1641
             return col.get_column(signals_schema, table=table)
 
         if isinstance(col, str) and not string_as_literal:
+            if (
+                signals_schema is not None
+                and (resolved := signals_schema.resolve_arm_path(col)) is not None
+            ):
+                col = ColumnMeta.to_db_name(resolved)
             column_sql_type = (
                 python_to_sql(signals_schema.get_column_type(col))
                 if signals_schema
@@ -594,9 +600,8 @@ class Func(Function):  # noqa: PLW1641
 
 
 class _SentinelAwareFunc(Func):
-    """A ``Func`` whose first argument may be an ``Optional[DataModel]``, which
-    has no real column on disk. When it is, the column resolves to that model's
-    ``_type_tag`` discriminator; otherwise it falls back to the plain column."""
+    """A ``Func`` whose first argument may be a tagged union (no single real column);
+    it then resolves to that node's ``_type_tag``, else the plain column."""
 
     def get_column(
         self,
