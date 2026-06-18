@@ -1599,6 +1599,77 @@ def test_explode_raises_on_wrong_column_type(test_session):
         chain.explode("f1.count")
 
 
+def test_unnest_scalar_list(test_session):
+    chain = dc.read_values(
+        id=[1, 2, 3],
+        items=[["a", "b"], ["c"], []],
+        session=test_session,
+    )
+    rows = sorted(chain.unnest("items").to_list("id", "items"))
+    assert rows == [(1, "a"), (1, "b"), (2, "c")]
+
+
+def test_unnest_drops_none(test_session):
+    chain = dc.read_values(
+        id=[1, 2],
+        items=[["a"], None],
+        session=test_session,
+    )
+    rows = sorted(chain.unnest("items").to_list("id", "items"))
+    assert rows == [(1, "a")]
+
+
+def test_unnest_pydantic_elements(test_session):
+    class Item(BaseModel):
+        kind: str
+        weight: int
+
+    chain = dc.read_values(
+        id=[1, 2],
+        items=[
+            [Item(kind="x", weight=1), Item(kind="y", weight=2)],
+            [Item(kind="z", weight=3)],
+        ],
+        session=test_session,
+    )
+    rows = sorted(chain.unnest("items").to_list("id", "items.kind", "items.weight"))
+    assert rows == [(1, "x", 1), (1, "y", 2), (2, "z", 3)]
+
+
+def test_unnest_preserves_multiple_siblings(test_session):
+    chain = dc.read_values(
+        id=[1, 2],
+        name=["a", "b"],
+        items=[[10, 20], [30]],
+        session=test_session,
+    )
+    rows = sorted(chain.unnest("items").to_list("id", "name", "items"))
+    assert rows == [(1, "a", 10), (1, "a", 20), (2, "b", 30)]
+
+
+def test_unnest_no_siblings(test_session):
+    chain = dc.read_values(
+        items=[[1, 2], [3]],
+        session=test_session,
+    )
+    rows = sorted(chain.unnest("items").to_values("items"))
+    assert rows == [1, 2, 3]
+
+
+def test_unnest_raises_on_unknown_column(test_session):
+    chain = dc.read_values(id=[1, 2], session=test_session)
+
+    with pytest.raises(SignalResolvingError):
+        chain.unnest("missing")
+
+
+def test_unnest_raises_on_scalar_column(test_session):
+    chain = dc.read_values(id=[1, 2], session=test_session)
+
+    with pytest.raises(TypeError):
+        chain.unnest("id")
+
+
 def test_to_json_features(tmp_dir, test_session):
     dc_to = dc.read_values(f1=features, num=range(len(features)), session=test_session)
     path = tmp_dir / "test.json"
