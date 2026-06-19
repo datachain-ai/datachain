@@ -877,7 +877,7 @@ class SignalSchema:
         inner, is_optional = unwrap_optional(anno)
         if inner not in NULLABLE_SCALARS:
             return False
-        return is_optional or self.optional_parent_sentinel(db_col) is not None
+        return is_optional or self.enclosing_type_tag(db_col) is not None
 
     def _db_leaf_sql_type(self, path: list[str], anno: DataType) -> Any:
         """SQL type for a leaf at ``path``, marked ``dc_nullable`` per
@@ -1003,11 +1003,11 @@ class SignalSchema:
             if has_subtree and (layout := union_layout(type_)) is not None
         }
 
-    def model_sentinel(self, db_col: str) -> str | None:
+    def type_tag_column(self, db_col: str) -> str | None:
         """DB name of the ``_type_tag`` discriminator when ``db_col`` is itself a
         tagged-union node (``Optional[DataModel]`` or a multi-arm union), else None."""
         if db_col in self._tagged_db_cols:
-            return f"{db_col}{DEFAULT_DELIMITER}{self._OPTIONAL_SENTINEL_FIELD}"
+            return f"{db_col}{DEFAULT_DELIMITER}{self._TYPE_TAG_FIELD}"
         return None
 
     def union_arm_names(self, db_col: str) -> list[str] | None:
@@ -1015,14 +1015,14 @@ class SignalSchema:
         layout = self._tagged_db_cols.get(db_col)
         return None if layout is None else [self._arm_selector(a) for a in layout.arms]
 
-    def optional_parent_sentinel(self, db_col: str) -> str | None:
+    def enclosing_type_tag(self, db_col: str) -> str | None:
         """DB name of the ``_type_tag`` discriminator for the closest
         ``Optional[DataModel]`` ancestor of leaf ``db_col``, or None when ``db_col``
         is not such a leaf (or is itself a discriminator).
         """
         parts = db_col.split(DEFAULT_DELIMITER)
         for i in range(len(parts), 0, -1):
-            sentinel = self.model_sentinel(DEFAULT_DELIMITER.join(parts[:i]))
+            sentinel = self.type_tag_column(DEFAULT_DELIMITER.join(parts[:i]))
             if sentinel is not None:
                 return None if sentinel == db_col else sentinel
         return None
@@ -1416,7 +1416,7 @@ class SignalSchema:
             new_prefix = prefix + suffix
             if not include_sys and new_prefix and new_prefix[0] == "sys":
                 continue
-            if not include_sentinels and name == self._OPTIONAL_SENTINEL_FIELD:
+            if not include_sentinels and name == self._TYPE_TAG_FIELD:
                 continue
             hidden_fields = getattr(type_, "_hidden_fields", None)
             if hidden_fields and substree and not include_hidden:
@@ -1529,8 +1529,8 @@ class SignalSchema:
 
     # `_type_tag` = 0-based index of the active arm (Optional[X] == Union[X, None]:
     # present=0, None=1). Leading-underscore internal column, int | None.
-    _OPTIONAL_SENTINEL_FIELD = "_type_tag"
-    _OPTIONAL_SENTINEL_TYPE = int | None  # type: ignore[valid-type]
+    _TYPE_TAG_FIELD = "_type_tag"
+    _TYPE_TAG_TYPE = int | None  # type: ignore[valid-type]
 
     @staticmethod
     def _model_subtree(
@@ -1540,8 +1540,8 @@ class SignalSchema:
         field is ``Optional[DataModel]``."""
         subtree = SignalSchema._build_tree_for_model(fr) or {}
         if is_optional:
-            sentinel: tuple[Any, Any] = (SignalSchema._OPTIONAL_SENTINEL_TYPE, None)
-            subtree = {SignalSchema._OPTIONAL_SENTINEL_FIELD: sentinel, **subtree}
+            sentinel: tuple[Any, Any] = (SignalSchema._TYPE_TAG_TYPE, None)
+            subtree = {SignalSchema._TYPE_TAG_FIELD: sentinel, **subtree}
         return subtree
 
     @staticmethod
@@ -1549,9 +1549,9 @@ class SignalSchema:
         layout: "UnionLayout",
     ) -> dict[str, tuple[DataType, dict | None]]:
         """Subtree for a multi-arm union: ``_type_tag`` plus one slot per arm."""
-        sentinel: tuple[Any, Any] = (SignalSchema._OPTIONAL_SENTINEL_TYPE, None)
+        sentinel: tuple[Any, Any] = (SignalSchema._TYPE_TAG_TYPE, None)
         subtree: dict[str, tuple[DataType, dict | None]] = {
-            SignalSchema._OPTIONAL_SENTINEL_FIELD: sentinel
+            SignalSchema._TYPE_TAG_FIELD: sentinel
         }
         for i, arm in enumerate(layout.arms):
             arm_sub = (

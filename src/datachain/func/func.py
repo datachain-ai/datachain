@@ -67,7 +67,7 @@ def _source_is_nullable(col: ColT, signals_schema: "SignalSchema | None") -> boo
         )
     resolved = signals_schema.resolve_arm_path(col)
     db_col = ColumnMeta.to_db_name(resolved if resolved is not None else col)
-    if signals_schema.optional_parent_sentinel(db_col) is not None:
+    if signals_schema.enclosing_type_tag(db_col) is not None:
         return True
     _, is_optional = unwrap_optional(signals_schema.get_column_type(db_col))
     return is_optional
@@ -599,7 +599,7 @@ class Func(Function):  # noqa: PLW1641
         return self._finalize_column(func_col, sql_type, label)
 
 
-class _SentinelAwareFunc(Func):
+class _TagAwareFunc(Func):
     """A ``Func`` whose first argument may be a tagged union (no single real column);
     it then resolves to that node's ``_type_tag``, else the plain column."""
 
@@ -611,14 +611,14 @@ class _SentinelAwareFunc(Func):
     ) -> Column:
         col = self._db_cols[0] if self._db_cols else None
         if signals_schema is not None and isinstance(col, str):
-            sentinel_path = signals_schema.model_sentinel(col)
-            if sentinel_path is not None:
-                return self._sentinel_column(sentinel_path, label, table)
+            tag_path = signals_schema.type_tag_column(col)
+            if tag_path is not None:
+                return self._tag_column(tag_path, label, table)
         return super().get_column(signals_schema, label, table)
 
-    def _sentinel_column(
+    def _tag_column(
         self,
-        sentinel_path: str,
+        tag_path: str,
         label: str | None,
         table: "TableClause | None",
     ) -> Column:

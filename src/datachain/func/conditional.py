@@ -11,7 +11,7 @@ from datachain.lib.utils import DataChainColumnError, DataChainParamsError
 from datachain.query.schema import Column, ColumnExpr
 from datachain.sql.functions import conditional
 
-from .func import Func, _SentinelAwareFunc, _source_is_nullable
+from .func import Func, _source_is_nullable, _TagAwareFunc
 
 if TYPE_CHECKING:
     from sqlalchemy import TableClause
@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 CaseT = int | float | complex | bool | str | Func | ColumnExpr
 
 
-class _IsNoneFunc(_SentinelAwareFunc):
+class _IsNoneFunc(_TagAwareFunc):
     """``isnone``: a tagged union is None when its ``_type_tag`` is NULL; any other
     column is plain ``col IS NULL``."""
 
@@ -34,15 +34,15 @@ class _IsNoneFunc(_SentinelAwareFunc):
         # isnone is always True/False, never NULL.
         return False
 
-    def _sentinel_column(
+    def _tag_column(
         self,
-        sentinel_path: str,
+        tag_path: str,
         label: str | None,
         table: "TableClause | None",
     ) -> Column:
-        sentinel = Column(sentinel_path)
-        sentinel.table = table
-        func_col = sql_case((sentinel.is_(None), True), else_=False)
+        tag = Column(tag_path)
+        tag.table = table
+        func_col = sql_case((tag.is_(None), True), else_=False)
         return self._finalize_column(func_col, python_to_sql(bool), label)
 
 
@@ -101,7 +101,7 @@ class _VariantTypeFunc(Func):
     ) -> Column:
         col = self._db_cols[0] if self._db_cols else None
         if signals_schema is not None and isinstance(col, str):
-            tag_path = signals_schema.model_sentinel(col)
+            tag_path = signals_schema.type_tag_column(col)
             names = signals_schema.union_arm_names(col)
             if tag_path is not None and names is not None:
                 tag = Column(tag_path)

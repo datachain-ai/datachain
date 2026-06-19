@@ -1365,7 +1365,7 @@ class DataChain:
                 partition_by_columns.extend(cast("list[Column]", columns))
                 # GROUP BY the ancestor sentinel so the result keeps _type_tag.
                 for leaf in cast("list[Column]", columns):
-                    sentinel = self.signals_schema.optional_parent_sentinel(leaf.name)
+                    sentinel = self.signals_schema.enclosing_type_tag(leaf.name)
                     if sentinel:
                         partition_by_columns.append(Column(sentinel))
 
@@ -1707,11 +1707,11 @@ class DataChain:
 
     def to_records(self) -> list[dict[str, Any]]:
         """Convert every row to a dictionary."""
-
-        def to_dict(cols: list[str], row: tuple[Any, ...]) -> dict[str, Any]:
-            return dict(zip(cols, row, strict=False))
-
-        return self.results(row_factory=to_dict)
+        headers, _ = self._effective_signals_schema.get_headers_with_length(
+            readable=True
+        )
+        column_names = [DEFAULT_DELIMITER.join(filter(None, h)) for h in headers]
+        return [dict(zip(column_names, row, strict=False)) for row in self.results()]
 
     def to_iter(
         self, *cols: str | Column
@@ -1943,7 +1943,7 @@ class DataChain:
         lprom, rprom = dict(lvals), dict(rvals)
         left_add: dict[str, Any] = {}
         right_add: dict[str, Any] = {}
-        sentinel_field = SignalSchema._OPTIONAL_SENTINEL_FIELD
+        sentinel_field = SignalSchema._TYPE_TAG_FIELD
 
         def _present_sentinel() -> Any:
             # nullable to match the natural side's _type_tag column type.
@@ -2023,6 +2023,11 @@ class DataChain:
                     "the column types before union()",
                 )
         missing_left, missing_right = self_schema.compare_signals(other_schema)
+        # collapse a union's arm-slot leaves back to the signal name
+        missing_left = {self_schema.multiarm_union_root(c) or c for c in missing_left}
+        missing_right = {
+            other_schema.multiarm_union_root(c) or c for c in missing_right
+        }
         if missing_left or missing_right:
             raise UnionSchemaMismatchError.from_column_sets(
                 missing_left,

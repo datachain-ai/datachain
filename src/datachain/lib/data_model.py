@@ -150,15 +150,6 @@ def unwrap_optional(t: Any) -> tuple[Any, bool]:
 # (the other backends keep them distinct); None itself is consistent everywhere.
 NULLABLE_SCALARS: "tuple[type, ...]" = (int, float, str, bool, bytes, datetime)
 
-# _type_tag discriminator for Optional[DataModel]: this value marks the present arm.
-OPTIONAL_PRESENT_TAG = 0
-
-
-def optional_tag_is_absent(tag: "Any") -> bool:
-    """An Optional[DataModel] subtree is absent when its ``_type_tag`` is NULL
-    (outer-join padding) or not the present-arm value."""
-    return tag is None or tag != OPTIONAL_PRESENT_TAG
-
 
 def union_arms(anno: Any) -> tuple[list[Any], bool]:
     """``(non_none_arms, has_none)``, arms sorted by type string so the ``_type_tag``

@@ -320,7 +320,7 @@ def _union_value(
     column_values: dict[str, Any], layout: "UnionLayout", prefix: str
 ) -> Any:
     """Reconstruct a tagged-union value from flat columns, hydrating the active arm."""
-    tag_key = f"{prefix}.{SignalSchema._OPTIONAL_SENTINEL_FIELD}"
+    tag_key = f"{prefix}.{SignalSchema._TYPE_TAG_FIELD}"
     if tag_key in column_values:
         tag = column_values[tag_key]
         active = None if tag is None or tag >= len(layout.arms) else tag

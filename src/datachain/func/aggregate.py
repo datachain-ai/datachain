@@ -7,7 +7,7 @@ from sqlalchemy import func as sa_func
 from datachain.query.schema import Column, ColumnExpr
 from datachain.sql.functions import aggregate
 
-from .func import ColT, Func, _SentinelAwareFunc
+from .func import ColT, Func, _TagAwareFunc
 
 if TYPE_CHECKING:
     from sqlalchemy import TableClause
@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 AggColT = str | Column | ColumnExpr | Func
 
 
-class _CountFunc(_SentinelAwareFunc):
+class _CountFunc(_TagAwareFunc):
     """``count`` of a tagged union counts present rows (``_type_tag`` not NULL)."""
 
     def is_nullable_result(
@@ -29,18 +29,16 @@ class _CountFunc(_SentinelAwareFunc):
     ) -> bool:
         return False
 
-    def _sentinel_column(
+    def _tag_column(
         self,
-        sentinel_path: str,
+        tag_path: str,
         label: str | None,
         table: "TableClause | None",
     ) -> Column:
-        sentinel = Column(sentinel_path)
-        sentinel.table = table
+        tag = Column(tag_path)
+        tag.table = table
         # COALESCE keeps count()'s 0-for-empty contract (SUM over zero rows is NULL).
-        func_col = sa_func.coalesce(
-            sa_func.sum(sa_cast(sentinel.isnot(None), Integer)), 0
-        )
+        func_col = sa_func.coalesce(sa_func.sum(sa_cast(tag.isnot(None), Integer)), 0)
         return self._finalize_column(func_col, Integer, label)
 
 
@@ -51,8 +49,8 @@ def count(col: AggColT | None = None) -> Func:
     The COUNT function returns the number of rows. If a column or expression is
     provided, it counts the rows where that input evaluates to a non-NULL value.
 
-    For an ``Optional[DataModel]`` column, counts rows where the parent is
-    present.
+    For a tagged-union column (``Optional[DataModel]`` or a multi-arm ``Union``),
+    counts rows whose value is present (the ``_type_tag`` is not NULL).
 
     Args:
         col (str | Column | ColumnExpr | Func, optional): The column,
@@ -112,7 +110,7 @@ def sum(col: AggColT) -> Func:
     Notes:
         - The `sum` function should be used on numeric columns or expressions.
         - The result column type will be inferred from the input expression type.
-        - Skips rows where the value's ``Optional[DataModel]`` parent is absent.
+        - Skips rows where the value is absent (its tagged-union arm is inactive).
     """
     return Func("sum", inner=sa_func.sum, cols=[col])
 
@@ -146,7 +144,7 @@ def avg(col: AggColT) -> Func:
     Notes:
         - The `avg` function should be used on numeric columns or expressions.
         - The result column will always be of type float.
-        - Skips rows where the value's ``Optional[DataModel]`` parent is absent.
+        - Skips rows where the value is absent (its tagged-union arm is inactive).
     """
     return Func("avg", inner=aggregate.avg, cols=[col], result_type=float)
 
@@ -178,7 +176,7 @@ def min(col: AggColT) -> Func:
     Notes:
         - The `min` function can be used with numeric, date, and string inputs.
         - The result column will have the same type as the input expression.
-        - Skips rows where the value's ``Optional[DataModel]`` parent is absent.
+        - Skips rows where the value is absent (its tagged-union arm is inactive).
     """
     return Func("min", inner=sa_func.min, cols=[col])
 
@@ -210,7 +208,7 @@ def max(col: AggColT) -> Func:
     Notes:
         - The `max` function can be used with numeric, date, and string inputs.
         - The result column will have the same type as the input expression.
-        - Skips rows where the value's ``Optional[DataModel]`` parent is absent.
+        - Skips rows where the value is absent (its tagged-union arm is inactive).
     """
     return Func("max", inner=sa_func.max, cols=[col])
 
@@ -246,7 +244,7 @@ def any_value(col: AggColT) -> Func:
         - The result column will have the same type as the input expression.
         - The result of `any_value` is non-deterministic,
           meaning it may return different values for different executions.
-        - Skips rows where the value's ``Optional[DataModel]`` parent is absent.
+        - Skips rows where the value is absent (its tagged-union arm is inactive).
     """
     return Func("any_value", inner=aggregate.any_value, cols=[col])
 
@@ -316,7 +314,7 @@ def concat(col: AggColT, separator="") -> Func:
     Notes:
         - The `concat` function should be used with string-valued inputs.
         - The result column will have a string type.
-        - Skips rows where the value's ``Optional[DataModel]`` parent is absent.
+        - Skips rows where the value is absent (its tagged-union arm is inactive).
     """
 
     def inner(arg):
@@ -347,7 +345,7 @@ def xor_agg(col: str | Column | ColT) -> Func:
         ```
 
     Notes:
-        - Skips rows where the value's ``Optional[DataModel]`` parent is absent.
+        - Skips rows where the value is absent (its tagged-union arm is inactive).
     """
     return Func("xor_agg", inner=aggregate.xor_agg, cols=[col], result_type=int)
 

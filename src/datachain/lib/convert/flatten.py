@@ -38,7 +38,7 @@ def iter_flat_columns(
     model: type[BaseModel], _prefix: tuple[str, ...] = ()
 ) -> Iterator[FlatColumn]:
     """Flat columns ``model`` emits, in storage order; a tagged-union node yields a
-    leading sentinel then its arms."""
+    leading _type_tag then its arms."""
     for name, f_info in model.model_fields.items():
         yield from _iter_field_columns(f_info.annotation, (*_prefix, name))
 
@@ -62,11 +62,6 @@ def _iter_field_columns(anno: Any, path: tuple[str, ...]) -> Iterator[FlatColumn
 
 def flatten(obj: BaseModel) -> tuple:
     return tuple(_flatten_fields_values(type(obj).model_fields, obj))
-
-
-def is_optional_model(anno: Any) -> bool:
-    kind = classify_field(anno)
-    return kind.is_optional and kind.is_model
 
 
 def union_value_match(obj, anno) -> bool:
@@ -179,7 +174,3 @@ def _emit_absent(model: type[BaseModel]) -> Generator:
 def _flatten_fields_values(fields: dict, obj: BaseModel) -> Generator[Any, None, None]:
     for name, f_info in fields.items():
         yield from flatten_value(getattr(obj, name), f_info.annotation)
-
-
-def _flatten(obj: BaseModel) -> tuple:
-    return tuple(_flatten_fields_values(type(obj).model_fields, obj))
