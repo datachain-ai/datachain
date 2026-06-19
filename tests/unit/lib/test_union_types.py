@@ -115,31 +115,6 @@ def test_is_chain_type_multiarm_union():
     assert is_chain_type(Union[str, int, None])
 
 
-def test_union_layout_collection_arms_tagged():
-    # A collection arm (list/dict) is taggable when paired with an arm of a
-    # different shape — the _type_tag tells them apart.
-    layout = union_layout(Union[str, list[str]])
-    assert layout is not None and layout.use_slots
-    assert list[str] in layout.arms
-    assert is_chain_type(Union[str, list[str]])
-    assert is_chain_type(Union[int, dict[str, str]])
-    assert is_chain_type(Union[Foo, list[Foo]])
-    # list and dict are different families, so both can be tagged together
-    assert union_layout(Union[list[str], dict[str, int]]) is not None
-
-
-def test_union_layout_ambiguous_collection_arms_rejected():
-    # Two arms of the same collection family are indistinguishable by value, so
-    # the union is not tagged (and is rejected downstream).
-    assert union_layout(Union[list[str], list[int]]) is None
-    assert union_layout(Union[dict[str, int], dict[str, str]]) is None
-    assert union_layout(Union[list[str], tuple[int]]) is None
-    assert not is_chain_type(Union[list[str], list[int]])
-
-
-# ---- schema / db columns ---------------------------------------------------
-
-
 def test_schema_scalar_union_columns():
     schema = SignalSchema({"value": Union[str, int]})
     # int sorts before str, so _0 = int, _1 = str.
@@ -161,8 +136,8 @@ def test_schema_model_union_columns():
 
 def test_arm_selector_stable_across_reload():
     # Reading a dataset in a process without the model code rebuilds the model with a
-    # versioned __name__ but a preserved logical base name; the user-facing arm name
-    # (variant_type output, readable C("u.Block.x") path) must use the stable name.
+    # versioned __name__ but a preserved logical base name; the readable arm path
+    # (C("u.Block.x") -> the Block arm) must resolve via the stable name.
     class Reloaded(DataModel):
         a: int = 0
 

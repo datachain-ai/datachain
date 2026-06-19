@@ -590,36 +590,3 @@ def test_union_display_is_readable_not_positional(test_session):
     assert ("item", "UFoo", "a") in cols
     assert ("item", "UBar", "x") in cols
     assert not any("_0" in str(c) or "_1" in str(c) for c in cols)
-
-
-def test_variant_type(test_session):
-    blocks = _exploded_blocks(test_session)  # Text x2, Thinking x1, ToolUse x3
-    assert sorted(blocks.mutate(t=func.variant_type("block")).to_values("t")) == [
-        "_TextBlock",
-        "_TextBlock",
-        "_ThinkingBlock",
-        "_ToolUseBlock",
-        "_ToolUseBlock",
-        "_ToolUseBlock",
-    ]
-    # count blocks by arm type in one group_by
-    by_arm = blocks.group_by(
-        n=func.count(), partition_by=func.variant_type("block").label("kind")
-    ).to_list("kind", "n")
-    assert sorted(by_arm) == [
-        ("_TextBlock", 2),
-        ("_ThinkingBlock", 1),
-        ("_ToolUseBlock", 3),
-    ]
-
-
-def test_variant_type_nullable_and_errors(test_session):
-    import pytest
-
-    from datachain.lib.utils import DataChainColumnError
-
-    chain = _si(test_session, [1, 2, 3], ["a", 1, None], none=True)
-    vals = chain.mutate(t=func.variant_type("value")).to_values("t")
-    assert sorted(vals, key=lambda x: (x is None, x)) == ["int", "str", None]
-    with pytest.raises(DataChainColumnError):
-        chain.mutate(t=func.variant_type("id")).to_values("t")  # not a union

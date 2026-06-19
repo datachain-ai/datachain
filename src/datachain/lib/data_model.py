@@ -161,45 +161,12 @@ def union_arms(anno: Any) -> tuple[list[Any], bool]:
     return [anno], False
 
 
-# Arm types a tagged union stores as its own column(s): scalars, DataModels, and
-# collections (``list``/``dict``, each a single slot column). The tag identifies the
-# active arm, so an inactive collection slot's default value is simply never read.
+# Arm types a tagged union stores as its own column(s): scalars and DataModels.
 _TAGGABLE_SCALARS: "tuple[type, ...]" = (*NULLABLE_SCALARS, float)
 
 
 def _is_taggable_arm(arm: Any) -> bool:
-    return (
-        ModelStore.is_pydantic(arm)
-        or arm in _TAGGABLE_SCALARS
-        or get_origin(arm) in (list, tuple, dict)
-    )
-
-
-def _is_json_collection_union(arms: list[Any]) -> bool:
-    """``dict | list[dict]`` — both arms serialize to one self-describing JSON
-    column, so there is nothing to discriminate; kept untagged (a single JSON
-    column) rather than split into slots."""
-    if len(arms) != 2:
-        return False
-    non_dict = [a for a in arms if a is not dict]
-    return len(non_dict) == 1 and non_dict[0] == list[dict]
-
-
-def _collection_family(arm: Any) -> str | None:
-    """The shape a collection arm is matched by at write time: sequences and maps.
-    Two arms of the same family are indistinguishable by value (``['a']`` fits both
-    ``list[str]`` and ``list[int]``), so such a union can't be tagged."""
-    origin = get_origin(arm)
-    if origin in (list, tuple):
-        return "seq"
-    if origin is dict:
-        return "map"
-    return None
-
-
-def _has_ambiguous_collection_arms(arms: list[Any]) -> bool:
-    families = [f for arm in arms if (f := _collection_family(arm)) is not None]
-    return len(families) != len(set(families))
+    return ModelStore.is_pydantic(arm) or arm in _TAGGABLE_SCALARS
 
 
 class UnionLayout(NamedTuple):
@@ -218,8 +185,6 @@ def union_layout(anno: Any) -> "UnionLayout | None":
     arms, has_none = union_arms(anno)
     if not all(_is_taggable_arm(arm) for arm in arms):
         return None
-    if _is_json_collection_union(arms) or _has_ambiguous_collection_arms(arms):
-        return None
     if len(arms) >= 2:
         return UnionLayout(arms, has_none, use_slots=True)
     if len(arms) == 1 and has_none and ModelStore.is_pydantic(arms[0]):
@@ -232,13 +197,10 @@ def union_slot_key(index: int) -> str:
 
 
 def arm_selector(arm: Any) -> str:
-    """User-facing name of a union arm: a model's stable logical name (reload-safe), a
-    scalar type name, or the full type string for a parameterized collection (so
-    ``list[str]`` and ``list[int]`` stay distinct rather than colliding on ``list``)."""
+    """User-facing name of a union arm: a model's stable logical name (reload-safe,
+    survives reading a dataset without the model code) or a scalar type name."""
     if (fr := ModelStore.to_pydantic(arm)) is not None:
         return ModelStore._base_name(fr)
-    if get_origin(arm) is not None:
-        return type_to_str(arm)
     return getattr(arm, "__name__", None) or type_to_str(arm)
 
 

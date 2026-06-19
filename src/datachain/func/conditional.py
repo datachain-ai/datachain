@@ -7,7 +7,7 @@ from sqlalchemy import or_ as sql_or
 from sqlalchemy import true as sql_true
 
 from datachain.lib.convert.python_to_sql import python_to_sql
-from datachain.lib.utils import DataChainColumnError, DataChainParamsError
+from datachain.lib.utils import DataChainParamsError
 from datachain.query.schema import Column, ColumnExpr
 from datachain.sql.functions import conditional
 
@@ -87,65 +87,6 @@ class _GreatestLeastFunc(Func):
             if inferred is not None:
                 return inferred
         return super().get_result_type(signals_schema)
-
-
-class _VariantTypeFunc(Func):  # noqa: PLW1641
-    """``variant_type`` maps a union's ``_type_tag`` to the active arm's type name
-    (NULL for the None arm), like ClickHouse ``variantType`` / DuckDB ``union_tag``."""
-
-    @staticmethod
-    def _arm_name(other) -> str:
-        if not isinstance(other, str):
-            raise DataChainColumnError(
-                "variant_type", "compare against the arm name, e.g. == 'TextBlock'"
-            )
-        return other
-
-    def __eq__(self, other):
-        name = self._arm_name(other)
-        return Func("eq", lambda a: a == name, [self], result_type=bool)
-
-    def __ne__(self, other):
-        name = self._arm_name(other)
-        return Func("ne", lambda a: a != name, [self], result_type=bool)
-
-    def get_column(
-        self,
-        signals_schema: "SignalSchema | None" = None,
-        label: str | None = None,
-        table: "TableClause | None" = None,
-    ) -> Column:
-        col = self._db_cols[0] if self._db_cols else None
-        if signals_schema is not None and isinstance(col, str):
-            tag_path = signals_schema.type_tag_column(col)
-            names = signals_schema.union_arm_names(col)
-            if tag_path is not None and names is not None:
-                tag = Column(tag_path)
-                tag.table = table
-                func_col = sql_case(
-                    *((tag == i, name) for i, name in enumerate(names)), else_=None
-                )
-                sql_type = python_to_sql(str)()
-                sql_type.dc_nullable = True
-                return self._finalize_column(func_col, sql_type, label)
-        raise DataChainColumnError(str(col), "variant_type() requires a Union signal")
-
-
-def variant_type(col: str) -> Func:
-    """Return the active arm's type name of a ``Union`` signal, NULL for the ``None``
-    arm. Compare it against an arm name to filter, group, or order by which arm a row
-    holds.
-
-    Example:
-        ```py
-        chain.filter(func.variant_type("block") == "ToolUseBlock")
-        dc.group_by(n=func.count(), partition_by=func.variant_type("block"))
-        ```
-    """
-    # inner is unused: _VariantTypeFunc.get_column builds the CASE itself.
-    return _VariantTypeFunc(
-        "variant_type", inner=lambda c: c, cols=[col], result_type=str
-    )
 
 
 def greatest(*args: str | Column | Func | float) -> Func:

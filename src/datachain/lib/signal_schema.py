@@ -1011,11 +1011,6 @@ class SignalSchema:
             return f"{db_col}{DEFAULT_DELIMITER}{self._TYPE_TAG_FIELD}"
         return None
 
-    def union_arm_names(self, db_col: str) -> list[str] | None:
-        """Arm type names (by ``_type_tag`` index) for a tagged union, else None."""
-        layout = self._tagged_db_cols.get(db_col)
-        return None if layout is None else [self._arm_selector(a) for a in layout.arms]
-
     def enclosing_type_tag(self, db_col: str) -> str | None:
         """DB name of the ``_type_tag`` discriminator for the closest
         ``Optional[DataModel]`` ancestor of leaf ``db_col``, or None when ``db_col``
@@ -1041,6 +1036,15 @@ class SignalSchema:
     @staticmethod
     def _arm_selector(arm: DataType) -> str:
         return arm_selector(arm)
+
+    @staticmethod
+    def _field_type(cur: DataType, name: str) -> "DataType | None":
+        """Annotation of model field ``name`` on ``cur`` (unwrapping Optional), or
+        None when ``cur`` is not a model or has no such field."""
+        fr = ModelStore.to_pydantic(unwrap_optional(cur)[0])
+        if fr is None or name not in fr.model_fields:
+            return None
+        return fr.model_fields[name].annotation  # type: ignore[return-value]
 
     def _select_union_arm(
         self, layout: "UnionLayout", segment: str
@@ -1091,12 +1095,11 @@ class SignalSchema:
                 rewrote = True
                 i += consumed
             else:
-                inner, _ = unwrap_optional(cur)
-                fr = ModelStore.to_pydantic(inner)
-                if fr is None or parts[i] not in fr.model_fields:
+                nxt = self._field_type(cur, parts[i])
+                if nxt is None:
                     return None
                 out.append(parts[i])
-                cur = fr.model_fields[parts[i]].annotation  # type: ignore[assignment]
+                cur = nxt
                 i += 1
         return ".".join(out) if rewrote else None
 
@@ -1121,13 +1124,7 @@ class SignalSchema:
                 out.append(self._arm_selector(cur))
             else:
                 out.append(seg)
-                inner, _ = unwrap_optional(cur)
-                fr = ModelStore.to_pydantic(inner)
-                cur = (
-                    fr.model_fields[seg].annotation
-                    if fr is not None and seg in fr.model_fields
-                    else None  # type: ignore[assignment]
-                )
+                cur = self._field_type(cur, seg)  # type: ignore[assignment]
         return out
 
     def order_by_column(

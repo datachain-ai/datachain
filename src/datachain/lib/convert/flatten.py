@@ -1,6 +1,6 @@
 import inspect
 from collections.abc import Generator, Iterator
-from typing import Any, NamedTuple, get_origin
+from typing import Any, NamedTuple
 
 from pydantic import BaseModel
 
@@ -120,11 +120,6 @@ def _match_union_arm(value, layout: UnionLayout) -> int | None:
 
 
 def _arm_matches(value, arm, *, exact: bool) -> bool:
-    origin = get_origin(arm)
-    if origin in (list, tuple):
-        return isinstance(value, (list, tuple))
-    if origin is dict:
-        return isinstance(value, dict)
     if ModelStore.is_pydantic(arm):
         return isinstance(value, arm)
     if not inspect.isclass(arm):

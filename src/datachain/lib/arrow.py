@@ -10,7 +10,6 @@ from pyarrow.dataset import CsvFileFormat, dataset
 from datachain import json
 from datachain.fs.reference import ReferenceFileSystem
 from datachain.lib.convert.flatten import classify_field, iter_flat_columns
-from datachain.lib.convert.unflatten import _read_scalar_arm
 from datachain.lib.data_model import dict_to_data_model, union_layout
 from datachain.lib.file import ArrowRow, File
 from datachain.lib.model_store import ModelStore
@@ -311,7 +310,7 @@ def _infer_active_arm(
                 return i
         else:
             val = column_values.get(arm_prefix)
-            if val is not None and not _is_nan(val) and val not in ([], {}):
+            if val is not None and not _is_nan(val):
                 return i
     return None
 
@@ -331,7 +330,7 @@ def _union_value(
     arm_prefix = f"{prefix}._{active}" if layout.use_slots else prefix
     if (fr := ModelStore.to_pydantic(arm)) is not None:
         return _nested_model_instantiate(column_values, fr, arm_prefix)
-    return _read_scalar_arm(arm, column_values.get(arm_prefix))
+    return column_values.get(arm_prefix)
 
 
 def _nested_model_instantiate(

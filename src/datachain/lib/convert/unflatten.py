@@ -2,10 +2,9 @@ import copy
 import inspect
 import re
 from collections.abc import Callable, Sequence
-from functools import cache
-from typing import Any, get_args
+from typing import Any
 
-from pydantic import BaseModel, TypeAdapter
+from pydantic import BaseModel
 
 from datachain.lib.convert.flatten import _leaf_count
 from datachain.lib.data_model import UnionLayout, union_layout, unwrap_optional
@@ -26,27 +25,6 @@ def _arm_width(arm: Any) -> int:
     return 1
 
 
-def _arm_contains_model(arm: Any) -> bool:
-    """Whether ``arm`` is or nests a DataModel (e.g. ``list[Foo]``, ``dict[str, Foo]``),
-    so its stored JSON elements need re-hydrating into model instances on read."""
-    if ModelStore.is_pydantic(arm):
-        return True
-    return any(_arm_contains_model(a) for a in get_args(arm))
-
-
-@cache
-def _arm_adapter(arm: Any) -> TypeAdapter:
-    return TypeAdapter(arm)
-
-
-def _read_scalar_arm(arm: Any, value: Any) -> Any:
-    """A non-model arm's stored value. A scalar/scalar-collection is returned as is;
-    a collection of models is validated back into model instances."""
-    if value is None or not _arm_contains_model(arm):
-        return value
-    return _arm_adapter(arm).validate_python(value)
-
-
 def read_union(
     layout: UnionLayout,
     row: Sequence[Any],
@@ -63,7 +41,7 @@ def read_union(
             if (fr := ModelStore.to_pydantic(arm)) is not None:
                 result, pos = read_model(fr, row, pos)
             else:
-                result, pos = _read_scalar_arm(arm, row[pos]), pos + 1
+                result, pos = row[pos], pos + 1
         else:
             pos += _arm_width(arm)
     return result, pos
