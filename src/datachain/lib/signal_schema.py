@@ -1619,8 +1619,11 @@ class SignalSchema:
         if not columns:
             return SignalSchema({})
 
-        # readable union-arm path (value.int) -> positional slot (value._0)
-        columns = tuple(self.resolve_arm_path(c) or c for c in columns)
+        # readable union-arm path (value.int) -> positional slot (value._0); leave
+        # non-str args for the validation below to reject with a clear error
+        columns = tuple(
+            self.resolve_arm_path(c) or c if isinstance(c, str) else c for c in columns
+        )
 
         selections: dict[str, dict[str, Any] | None] = {}
 
