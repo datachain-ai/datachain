@@ -59,16 +59,12 @@ class _SeekLandedAfterStartError(Exception):
 
 def _display_matrix_rotation(frame) -> int:
     """
-    Clockwise display rotation in degrees for a decoded frame.
+    Clockwise display rotation from a frame's DISPLAYMATRIX side data, snapped
+    to ``0``/``90``/``180``/``270`` (matching FFmpeg ``autorotate`` and OpenCV).
 
-    Reads the stream's DISPLAYMATRIX side data and returns the rotation the
-    player must apply for correct display, snapped to ``0``/``90``/``180``/
-    ``270`` (matching FFmpeg's ``autorotate`` and OpenCV). PyAV decodes the
-    coded orientation and does not autorotate, so callers apply this rotation
-    themselves. Returns ``0`` when no rotation metadata is present.
-
-    Only the rotation component is applied; like OpenCV, mirrored (flipped)
-    display matrices are reduced to their nearest rotation.
+    PyAV decodes the coded orientation without autorotating, so callers apply
+    this. Like OpenCV, only the rotation component is used (mirrored matrices
+    are reduced to their nearest rotation). Returns ``0`` when absent.
     """
     if _DISPLAYMATRIX is None:
         return 0

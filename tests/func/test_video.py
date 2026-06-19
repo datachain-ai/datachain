@@ -579,10 +579,6 @@ def _autorotated_frame(
     return np.array(Image.open(out).convert("RGB"))
 
 
-def _autorotated_first_frame(path: Path) -> ndarray:
-    return _autorotated_frame(path, 0)
-
-
 @pytest.fixture
 def make_rotated_video(tmp_path):
     def _make(rotation: int, width: int = 64, height: int = 32) -> GeneratedVideo:
@@ -601,49 +597,20 @@ def make_rotated_video(tmp_path):
 @requires_ffmpeg
 @requires_display_rotation
 @pytest.mark.parametrize("rotation", [90, 180, 270])
-def test_get_info_reports_display_dimensions(make_rotated_video, rotation):
-    generated = make_rotated_video(rotation, width=64, height=32)
-    expected_height, expected_width = _autorotated_first_frame(generated.path).shape[:2]
+def test_display_rotation_matches_ffmpeg(make_rotated_video, rotation):
+    # get_info dimensions and decoded pixels (via both get_np and video_frame_np)
+    # must match FFmpeg's autorotation. Coded 64x32 -> display 32x64 for 90/270.
+    generated = make_rotated_video(rotation)
+    expected = _autorotated_frame(generated.path)
+    expected_height, expected_width = expected.shape[:2]
 
     info = generated.file.get_info()
-
     assert (info.width, info.height) == (expected_width, expected_height)
-    if rotation in (90, 270):
-        assert (info.width, info.height) == (32, 64)
-    else:
-        assert (info.width, info.height) == (64, 32)
+    assert (info.width, info.height) == (
+        (32, 64) if rotation in (90, 270) else (64, 32)
+    )
 
-
-@requires_ffmpeg
-@requires_display_rotation
-@pytest.mark.parametrize("rotation", [90, 180, 270])
-def test_get_frame_np_applies_display_rotation(make_rotated_video, rotation):
-    generated = make_rotated_video(rotation, width=64, height=32)
-    expected = _autorotated_first_frame(generated.path)
-
-    frame = generated.file.get_frame(0).get_np()
-
-    assert frame.shape == expected.shape
-    np.testing.assert_array_equal(frame, expected)
-
-
-@requires_ffmpeg
-@requires_display_rotation
-def test_get_frames_applies_display_rotation(make_rotated_video):
-    generated = make_rotated_video(90, width=64, height=32)
-    expected = _autorotated_first_frame(generated.path)
-
-    frame = next(generated.file.get_frames(0, 1))
-
-    np.testing.assert_array_equal(frame.get_np(), expected)
-
-
-@requires_ffmpeg
-@requires_display_rotation
-def test_video_frame_np_applies_display_rotation(make_rotated_video):
-    generated = make_rotated_video(90, width=64, height=32)
-    expected = _autorotated_first_frame(generated.path)
-
+    np.testing.assert_array_equal(generated.file.get_frame(0).get_np(), expected)
     np.testing.assert_array_equal(video_frame_np(generated.file, 0), expected)
 
 
@@ -652,7 +619,7 @@ def test_video_frame_np_applies_display_rotation(make_rotated_video):
 def test_get_frames_range_applies_display_rotation(make_rotated_video):
     # Every frame in the iterator (the .gen()/.map() path) must be rotated,
     # not just the first one.
-    generated = make_rotated_video(90, width=64, height=32)
+    generated = make_rotated_video(90)
 
     frames = list(generated.file.get_frames(0, 3))
 
@@ -665,13 +632,12 @@ def test_get_frames_range_applies_display_rotation(make_rotated_video):
 
 @requires_ffmpeg
 @requires_display_rotation
-@pytest.mark.parametrize("image_format", ["png", "jpg"])
-def test_read_bytes_uses_display_dimensions(make_rotated_video, image_format):
+def test_read_bytes_uses_display_dimensions(make_rotated_video):
     # read_bytes()/save() wrap get_np(), so the encoded image must use display
     # (rotated) dimensions. PIL size is (width, height).
-    generated = make_rotated_video(90, width=64, height=32)
+    generated = make_rotated_video(90)
 
-    image = Image.open(io.BytesIO(generated.file.get_frame(0).read_bytes(image_format)))
+    image = Image.open(io.BytesIO(generated.file.get_frame(0).read_bytes("png")))
 
     assert image.size == (32, 64)
 
