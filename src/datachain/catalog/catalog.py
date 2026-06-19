@@ -1124,16 +1124,21 @@ class Catalog:
         ``keep_metadata=False``: drop rows table, delete the version row.
         Allowed from any status except REMOVING.
         """
-        if not dataset.has_version(version):
+        try:
+            v = dataset.get_version(version)
+        except DatasetVersionNotFoundError:
             return
-        v = dataset.get_version(version)
 
         if keep_metadata and dataset.is_internal:
             raise DataChainError(
                 f"Internal dataset {dataset.name} cannot be removed "
                 "while keeping metadata"
             )
-        if keep_metadata and not v.is_soft_deletable:
+        if keep_metadata and v.status not in (
+            DatasetStatus.COMPLETE,
+            DatasetStatus.REMOVING,
+            DatasetStatus.REMOVED,
+        ):
             raise DataChainError(
                 f"Cannot remove {dataset.name}@{version} while keeping "
                 f"metadata: current status is {v.status}, expected "
@@ -1730,11 +1735,18 @@ class Catalog:
         versions = [version] if version else [v.version for v in dataset.versions]
         for ver in versions:
             v = dataset.get_version(ver)
-            # keep_metadata only has meaning for user-facing datasets with
-            # soft-deletable versions; elsewhere there's no semver/lineage to
-            # preserve, so downgrade to wipe transparently.
+            # keep_metadata only has meaning for user-facing datasets whose
+            # version reached COMPLETE; elsewhere there's no semver/lineage
+            # to preserve, so downgrade to wipe transparently.
             effective_keep = (
-                keep_metadata and not dataset.is_internal and v.is_soft_deletable
+                keep_metadata
+                and not dataset.is_internal
+                and v.status
+                in (
+                    DatasetStatus.COMPLETE,
+                    DatasetStatus.REMOVING,
+                    DatasetStatus.REMOVED,
+                )
             )
             self.remove_dataset_version(
                 dataset,

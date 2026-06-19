@@ -392,15 +392,6 @@ class DatasetVersion:
         ]
 
     @property
-    def is_soft_deletable(self) -> bool:
-        """True if status allows ``keep_metadata=True`` removal."""
-        return self.status in (
-            DatasetStatus.COMPLETE,
-            DatasetStatus.REMOVING,
-            DatasetStatus.REMOVED,
-        )
-
-    @property
     def is_removed(self) -> bool:
         """True if the version is in any removal state (in-flight or
         terminal): REMOVING, REMOVED, REMOVING_TOTAL. The rows table is

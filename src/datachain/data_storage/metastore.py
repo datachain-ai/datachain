@@ -1796,11 +1796,9 @@ class AbstractDBMetastore(AbstractMetastore):
                 )
             )
 
-            # Count in DB, not in the in-memory record: GC-shaped paths
-            # build single-version records via _fetch_version_pairs, so the
-            # in-memory length is always 1 even when the dataset has many
-            # versions. Trusting that would cascade-delete the dataset row
-            # (and any REMOVED tombstones with it) on any GC wipe.
+            # Count in DB: in-memory dataset.versions may hold only this
+            # version (GC fetches versions one-by-one), so its length is
+            # unreliable.
             remaining = next(
                 self.db.execute(
                     select(f.count())
