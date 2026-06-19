@@ -218,6 +218,26 @@ def test_union_distinct_on_arm(test_session):
     assert chain.distinct("value._1").count() == 3  # 'hi', 'yo', NULL
 
 
+def test_readable_arm_access_across_ops(test_session):
+    # A readable arm path (value.int) must work in every op, not only filter/mutate.
+    chain = dc.read_values(
+        id=[1, 2, 3, 4],
+        value=["hi", 42, "yo", 7],
+        output={"id": int, "value": Union[str, int]},
+        session=test_session,
+    )
+    assert chain.filter(C("value.int") == 42).to_values("id") == [2]
+    assert chain.distinct("value.int").count() == 3  # 42, 7, NULL (str rows)
+    assert chain.order_by("value.int").to_values("value") == [7, 42, "hi", "yo"]
+    # selecting an arm field keeps the whole (atomic) union
+    assert _ordered(chain.select("id", "value.int"), "value") == [
+        (1, "hi"),
+        (2, 42),
+        (3, "yo"),
+        (4, 7),
+    ]
+
+
 def test_union_combination_same_type(test_session):
     left = dc.read_values(
         id=[1, 2],

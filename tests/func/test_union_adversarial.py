@@ -66,6 +66,14 @@ def test_arithmetic_over_inactive_arm_is_none(test_session):
     assert got == [None, 43, 8]
 
 
+def test_cast_over_inactive_arm_is_none(test_session):
+    # func.cast over the int arm: int rows cast to str; str rows (inactive int arm,
+    # NULL) stay None — must not coerce to "" on ClickHouse (cast targets Nullable).
+    chain = _si(test_session, [1, 2, 3], ["hi", 42, "yo"])
+    got = _vals(chain.mutate(c=func.cast("value._0", str)), "c")
+    assert got == [None, "42", None]
+
+
 def test_sum_over_arm_leaf(test_session):
     chain = _si(test_session, [1, 2, 3, 4], ["hi", 42, "yo", 7])
     assert chain.group_by(s=func.sum("value._0")).to_values("s") == [49]

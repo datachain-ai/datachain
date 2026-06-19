@@ -964,6 +964,8 @@ class SignalSchema:
         for field in names:
             if not isinstance(field, str):
                 raise SignalResolvingTypeError("select()", field)
+            # readable union-arm path (value.int) -> positional slot (value._0)
+            field = self.resolve_arm_path(field) or field
             schema[field] = self._find_in_tree(field.split("."))
 
         return SignalSchema(schema)
@@ -1616,6 +1618,9 @@ class SignalSchema:
         """
         if not columns:
             return SignalSchema({})
+
+        # readable union-arm path (value.int) -> positional slot (value._0)
+        columns = tuple(self.resolve_arm_path(c) or c for c in columns)
 
         selections: dict[str, dict[str, Any] | None] = {}
 
