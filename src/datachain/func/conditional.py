@@ -1,5 +1,4 @@
-import inspect
-from typing import TYPE_CHECKING, Any, get_origin
+from typing import TYPE_CHECKING
 
 from sqlalchemy import and_ as sql_and
 from sqlalchemy import case as sql_case
@@ -8,7 +7,6 @@ from sqlalchemy import or_ as sql_or
 from sqlalchemy import true as sql_true
 
 from datachain.lib.convert.python_to_sql import python_to_sql
-from datachain.lib.data_model import arm_selector
 from datachain.lib.utils import DataChainColumnError, DataChainParamsError
 from datachain.query.schema import Column, ColumnExpr
 from datachain.sql.functions import conditional
@@ -96,14 +94,12 @@ class _VariantTypeFunc(Func):  # noqa: PLW1641
     (NULL for the None arm), like ClickHouse ``variantType`` / DuckDB ``union_tag``."""
 
     @staticmethod
-    def _arm_name(other: Any) -> str:
-        if isinstance(other, str):
-            return other
-        if inspect.isclass(other) or get_origin(other) is not None:
-            return arm_selector(other)
-        raise DataChainColumnError(
-            "variant_type", "compare against an arm type or its name"
-        )
+    def _arm_name(other) -> str:
+        if not isinstance(other, str):
+            raise DataChainColumnError(
+                "variant_type", "compare against the arm name, e.g. == 'TextBlock'"
+            )
+        return other
 
     def __eq__(self, other):
         name = self._arm_name(other)
@@ -137,13 +133,12 @@ class _VariantTypeFunc(Func):  # noqa: PLW1641
 
 def variant_type(col: str) -> Func:
     """Return the active arm's type name of a ``Union`` signal, NULL for the ``None``
-    arm. Compare it against an arm type (or its name) to filter, group, or order by
-    which arm a row holds.
+    arm. Compare it against an arm name to filter, group, or order by which arm a row
+    holds.
 
     Example:
         ```py
-        chain.filter(func.variant_type("block") == ToolUseBlock)
-        chain.filter(func.variant_type("value") == str)
+        chain.filter(func.variant_type("block") == "ToolUseBlock")
         dc.group_by(n=func.count(), partition_by=func.variant_type("block"))
         ```
     """

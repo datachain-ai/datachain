@@ -381,19 +381,17 @@ def test_variant_type_filter(test_session):
         output={"id": int, "value": Union[str, int]},
         session=test_session,
     )
-    # compare against the arm type, its name, or with != (== type is the DSL, not
-    # a type-identity check, so E721 does not apply)
-    assert scalar.filter(func.variant_type("value") == str).count() == 2  # noqa: E721
+    # compare against the arm name, and with !=
     assert scalar.filter(func.variant_type("value") == "int").count() == 2
-    assert scalar.filter(func.variant_type("value") != str).count() == 2  # noqa: E721
-    # model arms compare by class
+    assert scalar.filter(func.variant_type("value") != "int").count() == 2
+    # model arms are named by their class name
     models = dc.read_values(
         id=[1, 2, 3],
         item=[_Foo(a=1, b="z"), _Bar(x=2.0), _Foo(a=9, b="q")],
         output={"id": int, "item": Union[_Foo, _Bar]},
         session=test_session,
     )
-    assert models.filter(func.variant_type("item") == _Foo).count() == 2
+    assert models.filter(func.variant_type("item") == "_Foo").count() == 2
 
 
 def test_collection_union_parquet_roundtrip(test_session, tmp_path):
