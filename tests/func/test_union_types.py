@@ -236,6 +236,62 @@ def test_union_combination_same_type(test_session):
     assert _ordered(back, "value") == [(1, "a"), (2, 1), (3, 2), (4, "b")]
 
 
+def test_merge_keeps_union_on_unmatched_rows(test_session):
+    # An outer-join unmatched row pads the right columns with NULL; the union on the
+    # left must survive (the _type_tag is nullable precisely for this).
+    left = dc.read_values(
+        id=[1, 2, 3],
+        value=["a", 1, "b"],
+        output={"id": int, "value": Union[str, int]},
+        session=test_session,
+    )
+    right = dc.read_values(
+        id=[1, 2], k=["x", "y"], output={"id": int, "k": str}, session=test_session
+    )
+    merged = left.merge(right, on="id", inner=False)
+    assert _ordered(merged, "value") == [(1, "a"), (2, 1), (3, "b")]
+    assert _ordered(merged.mutate(t=func.variant_type("value")), "t") == [
+        (1, "str"),
+        (2, "int"),
+        (3, "str"),
+    ]
+
+
+def test_union_with_missing_signal_names_the_signal(test_session):
+    # The mismatch error reports the signal name, not internal arm-slot columns.
+    from datachain.query.dataset import UnionSchemaMismatchError
+
+    left = dc.read_values(
+        id=[1],
+        value=["a"],
+        output={"id": int, "value": Union[str, int]},
+        session=test_session,
+    )
+    right = dc.read_values(
+        id=[2], other=["z"], output={"id": int, "other": str}, session=test_session
+    )
+    with pytest.raises(UnionSchemaMismatchError) as exc:
+        left.union(right).count()
+    msg = str(exc.value)
+    assert "value" in msg and "_0" not in msg and "_1" not in msg
+
+
+def test_to_database_readable_arm_columns(test_session):
+    import sqlite3
+
+    conn = sqlite3.connect(":memory:")
+    dc.read_values(
+        id=[1, 2, 3],
+        value=["a", 1, "b"],
+        output={"id": int, "value": Union[str, int]},
+        session=test_session,
+    ).to_database("t", conn)
+    cols = [d[0] for d in conn.execute("SELECT * FROM t").description]
+    # readable arm names, no internal slots or discriminator
+    assert {"value__int", "value__str"} <= set(cols)
+    assert not any("_0" in c or "_1" in c or "_type_tag" in c for c in cols)
+
+
 def test_union_optional_nested_in_model_roundtrip(test_session):
     class H(DataModel):
         v: Optional[Union[str, int]] = None
@@ -318,28 +374,26 @@ def test_collection_union_nullable_and_variant_type(test_session):
     ]
 
 
-def test_variant_type_filter_by_type(test_session):
-    chain = dc.read_values(
+def test_variant_type_filter(test_session):
+    scalar = dc.read_values(
         id=[1, 2, 3, 4],
         value=["a", 1, "b", 2],
         output={"id": int, "value": Union[str, int]},
         session=test_session,
     )
-    # compare against the arm type or its name (both forms)
-    assert chain.filter(func.variant_type("value") == str).count() == 2
-    assert chain.filter(func.variant_type("value") == "int").count() == 2
-    assert chain.filter(func.variant_type("value") != str).count() == 2
-
-
-def test_variant_type_filter_by_model_arm(test_session):
-    chain = dc.read_values(
+    # compare against the arm type, its name, or with != (== type is the DSL, not
+    # a type-identity check, so E721 does not apply)
+    assert scalar.filter(func.variant_type("value") == str).count() == 2  # noqa: E721
+    assert scalar.filter(func.variant_type("value") == "int").count() == 2
+    assert scalar.filter(func.variant_type("value") != str).count() == 2  # noqa: E721
+    # model arms compare by class
+    models = dc.read_values(
         id=[1, 2, 3],
         item=[_Foo(a=1, b="z"), _Bar(x=2.0), _Foo(a=9, b="q")],
         output={"id": int, "item": Union[_Foo, _Bar]},
         session=test_session,
     )
-    assert chain.filter(func.variant_type("item") == _Foo).count() == 2
-    assert chain.filter(func.variant_type("item") == _Bar).count() == 1
+    assert models.filter(func.variant_type("item") == _Foo).count() == 2
 
 
 def test_collection_union_parquet_roundtrip(test_session, tmp_path):

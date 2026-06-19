@@ -116,10 +116,13 @@ def test_print_schema_no_type_tag_leak(test_session):
     assert "_type_tag" not in str(chain.schema)
 
 
-def test_to_records_no_type_tag(test_session):
+def test_to_records_no_internal_columns(test_session):
     chain = _si(test_session, [1, 2], ["hi", 42])
     keys = set().union(*(r.keys() for r in chain.to_records()))
-    assert not any("_type_tag" in k for k in keys)
+    # neither the _type_tag discriminator nor positional arm slots (_0/_1) leak
+    assert not any("_type_tag" in k or "_0" in k or "_1" in k for k in keys)
+    # arms appear under readable type names instead
+    assert {"value__int", "value__str"} <= keys
 
 
 # ---- JSON / parquet reconstruction -----------------------------------------

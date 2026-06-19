@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 import sqlalchemy
 
-from datachain.query.schema import ColumnMeta
+from datachain.query.schema import DEFAULT_DELIMITER, ColumnMeta
 from datachain.utils import batched
 
 DEFAULT_DATABASE_BATCH_SIZE = 10_000
@@ -96,7 +96,15 @@ def to_database(
 
     signals_schema = chain.signals_schema.clone_without_sys_signals()
     all_columns = [
-        sqlalchemy.Column(c.name, c.type)  # type: ignore[union-attr]
+        # readable arm names (value__int), not internal slot indices (value___0)
+        sqlalchemy.Column(
+            DEFAULT_DELIMITER.join(
+                signals_schema.arm_display_path(
+                    c.name.split(DEFAULT_DELIMITER)  # type: ignore[union-attr]
+                )
+            ),
+            c.type,  # type: ignore[union-attr]
+        )
         for c in signals_schema.db_signals(as_columns=True, include_sentinels=False)
     ]
 
