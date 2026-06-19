@@ -159,6 +159,18 @@ def test_schema_model_union_columns():
     ]
 
 
+def test_arm_selector_stable_across_reload():
+    # Reading a dataset in a process without the model code rebuilds the model with a
+    # versioned __name__ but a preserved logical base name; the user-facing arm name
+    # (variant_type output, readable C("u.Block.x") path) must use the stable name.
+    class Reloaded(DataModel):
+        a: int = 0
+
+    Reloaded._modelstore_base_name = "Block"
+    assert SignalSchema._arm_selector(Reloaded) == "Block"
+    assert SignalSchema._arm_selector(Reloaded) != Reloaded.__name__
+
+
 def test_union_arm_leaves_are_nullable():
     cols = SignalSchema({"value": Union[str, int]}).db_signals(as_columns=True)
     by_name = {c.name: c for c in cols}

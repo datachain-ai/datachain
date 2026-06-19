@@ -1039,9 +1039,12 @@ class SignalSchema:
 
     @staticmethod
     def _arm_selector(arm: DataType) -> str:
-        """How a user names an arm: its class name or scalar type name; the full
-        type string for a parameterized collection so ``list[str]`` and
-        ``list[int]`` stay distinct rather than colliding on ``list``."""
+        """How a user names an arm: a model's stable logical name (reload-safe, so it
+        survives reading a dataset in a process without the model code), a scalar type
+        name, or the full type string for a parameterized collection so ``list[str]``
+        and ``list[int]`` stay distinct rather than colliding on ``list``."""
+        if (fr := ModelStore.to_pydantic(arm)) is not None:
+            return ModelStore._base_name(fr)
         if get_origin(arm) is not None:
             return type_to_str(arm)
         return getattr(arm, "__name__", None) or type_to_str(arm)

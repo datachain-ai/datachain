@@ -117,11 +117,19 @@ class _VariantTypeFunc(Func):
 
 def variant_type(col: str) -> Func:
     """Return the active arm's type name of a ``Union`` signal, NULL for the ``None``
-    arm. Useful to group or filter by which arm a row holds.
+    arm. Useful to group or order by which arm a row holds.
 
     Example:
         ```py
         dc.group_by(n=func.count(), partition_by=func.variant_type("block"))
+        ```
+
+    To filter by arm type, materialize the result first: a string compared
+    directly (``func.variant_type("x") == "Foo"``) is read as a column reference,
+    so use ``mutate`` then ``filter``:
+
+        ```py
+        chain.mutate(kind=func.variant_type("block")).filter(C("kind") == "Image")
         ```
     """
     # inner is unused: _VariantTypeFunc.get_column builds the CASE itself.
