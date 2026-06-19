@@ -1,7 +1,14 @@
+from types import SimpleNamespace
+from unittest.mock import Mock
+
 import numpy as np
 import pytest
 
-from datachain.lib.video import _display_matrix_rotation, _frame_to_ndarray
+from datachain.lib.video import (
+    _display_matrix_rotation,
+    _frame_to_ndarray,
+    _video_stream_rotation,
+)
 
 # Valid DISPLAYMATRIX affine matrices per angle (end-to-end direction is checked
 # against FFmpeg in tests/func/test_video.py).
@@ -110,3 +117,13 @@ def test_frame_to_ndarray_applies_clockwise_rotation(rotation, expected_k):
         assert result.shape == (3, 2, 3)
     else:
         assert result.shape == array.shape
+
+
+def test_video_stream_rotation_no_frames():
+    container = SimpleNamespace(decode=lambda _stream: iter(()))
+    assert _video_stream_rotation(container, object()) == 0
+
+
+def test_video_stream_rotation_decode_error():
+    container = SimpleNamespace(decode=Mock(side_effect=RuntimeError))
+    assert _video_stream_rotation(container, object()) == 0
