@@ -1,4 +1,5 @@
-from typing import TYPE_CHECKING
+import inspect
+from typing import TYPE_CHECKING, Any, get_origin
 
 from sqlalchemy import and_ as sql_and
 from sqlalchemy import case as sql_case
@@ -7,6 +8,7 @@ from sqlalchemy import or_ as sql_or
 from sqlalchemy import true as sql_true
 
 from datachain.lib.convert.python_to_sql import python_to_sql
+from datachain.lib.data_model import arm_selector
 from datachain.lib.utils import DataChainColumnError, DataChainParamsError
 from datachain.query.schema import Column, ColumnExpr
 from datachain.sql.functions import conditional
@@ -89,9 +91,27 @@ class _GreatestLeastFunc(Func):
         return super().get_result_type(signals_schema)
 
 
-class _VariantTypeFunc(Func):
+class _VariantTypeFunc(Func):  # noqa: PLW1641
     """``variant_type`` maps a union's ``_type_tag`` to the active arm's type name
     (NULL for the None arm), like ClickHouse ``variantType`` / DuckDB ``union_tag``."""
+
+    @staticmethod
+    def _arm_name(other: Any) -> str:
+        if isinstance(other, str):
+            return other
+        if inspect.isclass(other) or get_origin(other) is not None:
+            return arm_selector(other)
+        raise DataChainColumnError(
+            "variant_type", "compare against an arm type or its name"
+        )
+
+    def __eq__(self, other):
+        name = self._arm_name(other)
+        return Func("eq", lambda a: a == name, [self], result_type=bool)
+
+    def __ne__(self, other):
+        name = self._arm_name(other)
+        return Func("ne", lambda a: a != name, [self], result_type=bool)
 
     def get_column(
         self,
@@ -117,19 +137,14 @@ class _VariantTypeFunc(Func):
 
 def variant_type(col: str) -> Func:
     """Return the active arm's type name of a ``Union`` signal, NULL for the ``None``
-    arm. Useful to group or order by which arm a row holds.
+    arm. Compare it against an arm type (or its name) to filter, group, or order by
+    which arm a row holds.
 
     Example:
         ```py
+        chain.filter(func.variant_type("block") == ToolUseBlock)
+        chain.filter(func.variant_type("value") == str)
         dc.group_by(n=func.count(), partition_by=func.variant_type("block"))
-        ```
-
-    To filter by arm type, materialize the result first: a string compared
-    directly (``func.variant_type("x") == "Foo"``) is read as a column reference,
-    so use ``mutate`` then ``filter``:
-
-        ```py
-        chain.mutate(kind=func.variant_type("block")).filter(C("kind") == "Image")
         ```
     """
     # inner is unused: _VariantTypeFunc.get_column builds the CASE itself.

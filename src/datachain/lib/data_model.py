@@ -231,6 +231,17 @@ def union_slot_key(index: int) -> str:
     return f"_{index}"
 
 
+def arm_selector(arm: Any) -> str:
+    """User-facing name of a union arm: a model's stable logical name (reload-safe), a
+    scalar type name, or the full type string for a parameterized collection (so
+    ``list[str]`` and ``list[int]`` stay distinct rather than colliding on ``list``)."""
+    if (fr := ModelStore.to_pydantic(arm)) is not None:
+        return ModelStore._base_name(fr)
+    if get_origin(arm) is not None:
+        return type_to_str(arm)
+    return getattr(arm, "__name__", None) or type_to_str(arm)
+
+
 def promote_default_none(model: type[BaseModel]) -> None:
     """Auto-promote non-Optional fields with `default=None` to `Optional[...]`.
 

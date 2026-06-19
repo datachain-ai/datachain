@@ -318,6 +318,30 @@ def test_collection_union_nullable_and_variant_type(test_session):
     ]
 
 
+def test_variant_type_filter_by_type(test_session):
+    chain = dc.read_values(
+        id=[1, 2, 3, 4],
+        value=["a", 1, "b", 2],
+        output={"id": int, "value": Union[str, int]},
+        session=test_session,
+    )
+    # compare against the arm type or its name (both forms)
+    assert chain.filter(func.variant_type("value") == str).count() == 2
+    assert chain.filter(func.variant_type("value") == "int").count() == 2
+    assert chain.filter(func.variant_type("value") != str).count() == 2
+
+
+def test_variant_type_filter_by_model_arm(test_session):
+    chain = dc.read_values(
+        id=[1, 2, 3],
+        item=[_Foo(a=1, b="z"), _Bar(x=2.0), _Foo(a=9, b="q")],
+        output={"id": int, "item": Union[_Foo, _Bar]},
+        session=test_session,
+    )
+    assert chain.filter(func.variant_type("item") == _Foo).count() == 2
+    assert chain.filter(func.variant_type("item") == _Bar).count() == 1
+
+
 def test_collection_union_parquet_roundtrip(test_session, tmp_path):
     path = str(tmp_path / "u.parquet")
     dc.read_values(
