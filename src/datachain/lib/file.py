@@ -1555,10 +1555,9 @@ class VideoFrame(DataModel):
         without a second decode pass regardless of whether the frame came
         from ``VideoFile.get_frames()`` or ``VideoFile.get_frame()``.
 
-        The stream's display rotation is applied (matching FFmpeg/OpenCV), so
-        a 90/270 rotation swaps the array's width and height relative to the
-        coded frame. Channels are in RGB order; consumers expecting BGR (e.g.
-        OpenCV, Ultralytics) must convert.
+        Display rotation is applied (matching FFmpeg/OpenCV), so a 90/270
+        rotation swaps width and height. Channels are RGB; consumers expecting
+        BGR (e.g. OpenCV, Ultralytics) must convert.
 
         Returns:
             ndarray: A NumPy array representing the video frame,

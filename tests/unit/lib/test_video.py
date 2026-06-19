@@ -3,10 +3,8 @@ import pytest
 
 from datachain.lib.video import _display_matrix_rotation, _frame_to_ndarray
 
-# DISPLAYMATRIX matrices that exercise the math in isolation. These are valid
-# affine matrices for each angle; they are not byte-identical to what a given
-# FFmpeg `-display_rotation N` call emits (which encodes the inverse transform) -
-# the end-to-end direction is checked against FFmpeg in tests/func/test_video.py.
+# Valid DISPLAYMATRIX affine matrices per angle (end-to-end direction is checked
+# against FFmpeg in tests/func/test_video.py).
 _FP = 1 << 16
 _W = 1 << 30
 DISPLAY_MATRICES = {
@@ -65,7 +63,6 @@ def test_display_matrix_rotation_no_side_data():
 
 
 def test_display_matrix_rotation_degenerate_matrix():
-    # A zero matrix has no defined rotation; degrade to no rotation.
     frame = _frame(np.zeros((2, 3, 3), dtype=np.uint8), [0] * 9)
     assert _display_matrix_rotation(frame) == 0
 
@@ -94,8 +91,7 @@ def test_frame_to_ndarray_no_rotation_returns_decoded_array():
 @pytest.mark.parametrize(
     "rotation,expected_k",
     [
-        # np.rot90 rotates counter-clockwise; a clockwise display rotation of
-        # 90/270 degrees corresponds to k=3/k=1 (verified against FFmpeg).
+        # Clockwise 90/270 == np.rot90 k=3/k=1 (verified against FFmpeg).
         (90, 3),
         (180, 2),
         (270, 1),

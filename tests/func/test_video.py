@@ -579,6 +579,14 @@ def _autorotated_frame(
     return np.array(Image.open(out).convert("RGB"))
 
 
+def _assert_matches_autorotated(frame: ndarray, expected: ndarray) -> None:
+    # PyAV's libav and the system ffmpeg CLI differ by a few levels per pixel
+    # (decode rounding); a wrong rotation differs by ~100+.
+    assert frame.shape == expected.shape
+    mean_abs_diff = np.abs(frame.astype(np.int32) - expected.astype(np.int32)).mean()
+    assert mean_abs_diff < 5, f"mean abs diff {mean_abs_diff:.2f} too large"
+
+
 @pytest.fixture
 def make_rotated_video(tmp_path):
     def _make(rotation: int, width: int = 64, height: int = 32) -> GeneratedVideo:
@@ -598,8 +606,7 @@ def make_rotated_video(tmp_path):
 @requires_display_rotation
 @pytest.mark.parametrize("rotation", [90, 180, 270])
 def test_display_rotation_matches_ffmpeg(make_rotated_video, rotation):
-    # get_info dimensions and decoded pixels (via both get_np and video_frame_np)
-    # must match FFmpeg's autorotation. Coded 64x32 -> display 32x64 for 90/270.
+    # Dimensions and pixels must match FFmpeg autorotation (coded 64x32 -> 32x64).
     generated = make_rotated_video(rotation)
     expected = _autorotated_frame(generated.path)
     expected_height, expected_width = expected.shape[:2]
@@ -610,15 +617,14 @@ def test_display_rotation_matches_ffmpeg(make_rotated_video, rotation):
         (32, 64) if rotation in (90, 270) else (64, 32)
     )
 
-    np.testing.assert_array_equal(generated.file.get_frame(0).get_np(), expected)
-    np.testing.assert_array_equal(video_frame_np(generated.file, 0), expected)
+    _assert_matches_autorotated(generated.file.get_frame(0).get_np(), expected)
+    _assert_matches_autorotated(video_frame_np(generated.file, 0), expected)
 
 
 @requires_ffmpeg
 @requires_display_rotation
 def test_get_frames_range_applies_display_rotation(make_rotated_video):
-    # Every frame in the iterator (the .gen()/.map() path) must be rotated,
-    # not just the first one.
+    # Every frame in the iterator path must be rotated, not just the first.
     generated = make_rotated_video(90)
 
     frames = list(generated.file.get_frames(0, 3))
@@ -626,15 +632,13 @@ def test_get_frames_range_applies_display_rotation(make_rotated_video):
     assert len(frames) == 3
     for video_frame in frames:
         expected = _autorotated_frame(generated.path, video_frame.frame)
-        assert video_frame.get_np().shape == (64, 32, 3)
-        np.testing.assert_array_equal(video_frame.get_np(), expected)
+        _assert_matches_autorotated(video_frame.get_np(), expected)
 
 
 @requires_ffmpeg
 @requires_display_rotation
 def test_read_bytes_uses_display_dimensions(make_rotated_video):
-    # read_bytes()/save() wrap get_np(), so the encoded image must use display
-    # (rotated) dimensions. PIL size is (width, height).
+    # read_bytes()/save() wrap get_np(); the image must use display dimensions.
     generated = make_rotated_video(90)
 
     image = Image.open(io.BytesIO(generated.file.get_frame(0).read_bytes("png")))
@@ -644,8 +648,7 @@ def test_read_bytes_uses_display_dimensions(make_rotated_video):
 
 @pytest.fixture
 def multi_stream_rotated_video(tmp_path) -> GeneratedVideo:
-    # Two video streams: stream 0 unrotated (48x24), stream 1 rotated 90 (64x32
-    # coded -> 32x64 display). Exercises per-stream rotation lookup.
+    # Stream 0 unrotated (48x24); stream 1 rotated 90 (64x32 coded -> 32x64).
     plain = tmp_path / "plain_stream.mp4"
     _write_distinct_video(plain, width=48, height=24)
     coded = tmp_path / "rotated_coded.mp4"
@@ -676,7 +679,7 @@ def test_rotation_is_read_per_video_stream(multi_stream_rotated_video):
 
     frame1 = video.get_frame(0, video_stream_index=1).get_np()
     assert frame1.shape == (64, 32, 3)
-    np.testing.assert_array_equal(
+    _assert_matches_autorotated(
         frame1,
         _autorotated_frame(multi_stream_rotated_video.path, 0, video_stream_index=1),
     )
