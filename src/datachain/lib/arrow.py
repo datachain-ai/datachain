@@ -322,8 +322,7 @@ def _union_value(
     """Reconstruct a tagged-union value from flat columns, hydrating the active arm."""
     tag_key = f"{prefix}.{SignalSchema._TYPE_TAG_FIELD}"
     if tag_key in column_values:
-        tag = column_values[tag_key]
-        active = None if tag is None or tag >= len(layout.arms) else tag
+        active = column_values[tag_key]
     else:
         active = _infer_active_arm(column_values, layout, prefix)
     if active is None:

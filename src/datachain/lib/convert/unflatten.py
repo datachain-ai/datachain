@@ -54,13 +54,12 @@ def read_union(
     read_model: ModelReader,
 ) -> tuple[Any, int]:
     """Read a tagged-union value: the ``_type_tag`` then every arm's columns,
-    hydrating only the active arm. NULL/out-of-range tag reads back as None."""
+    hydrating only the active arm. A NULL ``_type_tag`` reads back as None."""
     tag = row[pos]
     pos += 1
-    active = None if tag is None or tag >= len(layout.arms) else tag
     result: Any = None
     for i, arm in enumerate(layout.arms):
-        if i == active:
+        if i == tag:
             if (fr := ModelStore.to_pydantic(arm)) is not None:
                 result, pos = read_model(fr, row, pos)
             else:
