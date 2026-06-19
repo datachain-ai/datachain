@@ -3,8 +3,10 @@ import pytest
 
 from datachain.lib.video import _display_matrix_rotation, _frame_to_ndarray
 
-# DISPLAYMATRIX side data (9 int32, 16.16 fixed point) captured from real files
-# rewrapped by FFmpeg. The last entry is in 2.30 fixed point and is unused here.
+# DISPLAYMATRIX matrices that exercise the math in isolation. These are valid
+# affine matrices for each angle; they are not byte-identical to what a given
+# FFmpeg `-display_rotation N` call emits (which encodes the inverse transform) -
+# the end-to-end direction is checked against FFmpeg in tests/func/test_video.py.
 _FP = 1 << 16
 _W = 1 << 30
 DISPLAY_MATRICES = {
@@ -23,42 +25,69 @@ class _FakeSideData:
         return self._bytes
 
 
+class _RawSideData:
+    """Side data wrapping arbitrary bytes (for malformed-buffer tests)."""
+
+    def __init__(self, raw: bytes):
+        self._bytes = raw
+
+    def __bytes__(self) -> bytes:
+        return self._bytes
+
+
 class _FakeFrame:
     """Minimal stand-in for av.VideoFrame for rotation tests."""
 
-    def __init__(self, array: np.ndarray, matrix: list[int] | None = None):
+    def __init__(self, array: np.ndarray, side_data=None):
         from datachain.lib.video import _DISPLAYMATRIX
 
         self._array = array
-        self.side_data = (
-            {} if matrix is None else {_DISPLAYMATRIX: _FakeSideData(matrix)}
-        )
+        self.side_data = {} if side_data is None else {_DISPLAYMATRIX: side_data}
 
     def to_ndarray(self, format: str) -> np.ndarray:
         assert format == "rgb24"
         return self._array
 
 
+def _frame(array: np.ndarray, matrix: list[int] | None = None) -> _FakeFrame:
+    return _FakeFrame(array, None if matrix is None else _FakeSideData(matrix))
+
+
 @pytest.mark.parametrize("rotation", [0, 90, 180, 270])
 def test_display_matrix_rotation(rotation):
-    frame = _FakeFrame(np.zeros((2, 3, 3), dtype=np.uint8), DISPLAY_MATRICES[rotation])
+    frame = _frame(np.zeros((2, 3, 3), dtype=np.uint8), DISPLAY_MATRICES[rotation])
     assert _display_matrix_rotation(frame) == rotation
 
 
 def test_display_matrix_rotation_no_side_data():
-    frame = _FakeFrame(np.zeros((2, 3, 3), dtype=np.uint8))
+    frame = _frame(np.zeros((2, 3, 3), dtype=np.uint8))
     assert _display_matrix_rotation(frame) == 0
 
 
 def test_display_matrix_rotation_degenerate_matrix():
     # A zero matrix has no defined rotation; degrade to no rotation.
-    frame = _FakeFrame(np.zeros((2, 3, 3), dtype=np.uint8), [0] * 9)
+    frame = _frame(np.zeros((2, 3, 3), dtype=np.uint8), [0] * 9)
+    assert _display_matrix_rotation(frame) == 0
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        b"",  # empty
+        b"\x00" * 10,  # length not a multiple of int32 size
+        b"\x01" * 35,  # one byte short of a full matrix
+        b"\x00" * 16,  # well-formed int32 stream but fewer than 9 entries
+    ],
+)
+def test_display_matrix_rotation_malformed_buffer(raw):
+    # A truncated/odd-length side-data buffer must never crash get_np()/get_info().
+    frame = _FakeFrame(np.zeros((2, 3, 3), dtype=np.uint8), _RawSideData(raw))
     assert _display_matrix_rotation(frame) == 0
 
 
 def test_frame_to_ndarray_no_rotation_returns_decoded_array():
     array = np.arange(2 * 3 * 3, dtype=np.uint8).reshape(2, 3, 3)
-    frame = _FakeFrame(array, DISPLAY_MATRICES[0])
+    frame = _frame(array, DISPLAY_MATRICES[0])
     np.testing.assert_array_equal(_frame_to_ndarray(frame), array)
 
 
@@ -74,7 +103,7 @@ def test_frame_to_ndarray_no_rotation_returns_decoded_array():
 )
 def test_frame_to_ndarray_applies_clockwise_rotation(rotation, expected_k):
     array = np.arange(2 * 3 * 3, dtype=np.uint8).reshape(2, 3, 3)
-    frame = _FakeFrame(array, DISPLAY_MATRICES[rotation])
+    frame = _frame(array, DISPLAY_MATRICES[rotation])
 
     result = _frame_to_ndarray(frame)
 

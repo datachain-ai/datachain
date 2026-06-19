@@ -38,7 +38,7 @@ try:
     from av.sidedata.sidedata import Type as _SideDataType
 
     _DISPLAYMATRIX = _SideDataType.DISPLAYMATRIX
-except Exception:  # noqa: BLE001  # older/newer PyAV without this enum
+except Exception:  # noqa: BLE001, S110  # older/newer PyAV without this enum
     pass
 
 
@@ -66,18 +66,20 @@ def _display_matrix_rotation(frame) -> int:
     ``270`` (matching FFmpeg's ``autorotate`` and OpenCV). PyAV decodes the
     coded orientation and does not autorotate, so callers apply this rotation
     themselves. Returns ``0`` when no rotation metadata is present.
+
+    Only the rotation component is applied; like OpenCV, mirrored (flipped)
+    display matrices are reduced to their nearest rotation.
     """
     if _DISPLAYMATRIX is None:
         return 0
     try:
         side_data = frame.side_data.get(_DISPLAYMATRIX)
-    except Exception:  # noqa: BLE001  # tolerate PyAV side-data API differences
+        if side_data is None:
+            return 0
+        # DISPLAYMATRIX is int32 in native byte order (FFmpeg display matrix).
+        matrix = np.frombuffer(bytes(side_data), dtype=np.int32)
+    except Exception:  # noqa: BLE001  # tolerate malformed or unexpected side data
         return 0
-    if side_data is None:
-        return 0
-
-    # DISPLAYMATRIX is int32 in native byte order (FFmpeg av_display_rotation_set).
-    matrix = np.frombuffer(bytes(side_data), dtype=np.int32)
     if matrix.size < 9:
         return 0
 
