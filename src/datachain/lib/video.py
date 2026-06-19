@@ -25,6 +25,7 @@ from datachain.lib.file import (
 try:
     import av
     import ffmpeg
+    from av.sidedata.sidedata import Type as _SideDataType
 except ImportError as exc:
     raise ImportError(
         "Missing dependencies for processing video.\n"
@@ -32,14 +33,7 @@ except ImportError as exc:
         "  pip install 'datachain[video]'\n"
     ) from exc
 
-_DISPLAYMATRIX: Any = None
-try:
-    from av.sidedata.sidedata import Type as _SideDataType
-
-    _DISPLAYMATRIX = _SideDataType.DISPLAYMATRIX
-except Exception:  # noqa: BLE001, S110  # PyAV without this enum -> no rotation
-    pass
-
+_DISPLAYMATRIX = _SideDataType.DISPLAYMATRIX
 
 VIDEO_TIME_BASE = 1_000_000
 # DISPLAYMATRIX rotation entries are 16.16 fixed point (FFmpeg libavutil/display.h).
@@ -58,11 +52,12 @@ class _SeekLandedAfterStartError(Exception):
 def _display_matrix_rotation(frame) -> int:
     """
     Clockwise display rotation (0/90/180/270) from a frame's DISPLAYMATRIX,
-    matching FFmpeg ``autorotate``/OpenCV (PyAV does not autorotate). Mirrored
-    matrices reduce to their nearest rotation; returns 0 when absent.
+    matching what FFmpeg/OpenCV apply on playback (PyAV does not autorotate).
+
+    Only right-angle rotation is applied: scale is normalized out and any
+    flipped or off-axis matrix is snapped to the nearest 0/90/180/270, as
+    OpenCV does. Returns 0 when there is no rotation metadata.
     """
-    if _DISPLAYMATRIX is None:
-        return 0
     try:
         side_data = frame.side_data.get(_DISPLAYMATRIX)
         if side_data is None:
@@ -73,7 +68,7 @@ def _display_matrix_rotation(frame) -> int:
     if matrix.size < 9:
         return 0
 
-    # Angle from the normalized matrix (FFmpeg av_display_rotation_get).
+    # Rotation angle, normalizing out scale (FFmpeg av_display_rotation_get).
     a = matrix[0] / DISPLAY_MATRIX_FIXED_POINT
     b = matrix[1] / DISPLAY_MATRIX_FIXED_POINT
     c = matrix[3] / DISPLAY_MATRIX_FIXED_POINT
@@ -98,10 +93,9 @@ def _frame_to_ndarray(frame) -> ndarray:
 
 
 def _video_stream_rotation(container, video_stream) -> int:
-    """Stream display rotation; decodes one frame (PyAV exposes the DISPLAYMATRIX
-    only on frames). Decode failure or absence -> 0, never blocks metadata."""
-    if _DISPLAYMATRIX is None:
-        return 0
+    """Stream display rotation. Rotation is a per-stream property, but PyAV
+    exposes the DISPLAYMATRIX only on frames, so the first frame is decoded.
+    Decode failure or absence -> 0, never blocks metadata."""
     try:
         frame = next(container.decode(video_stream), None)
     except Exception:  # noqa: BLE001
