@@ -46,6 +46,12 @@ from datachain.utils import (
 
 from .utils import DEFAULT_TREE, instantiate_tree, reset_session_job_state
 
+# gcsfs 2026.3+ turns on HNS/zonal support by default, so every gs op probes the
+# Storage Control API over gRPC. The mock gcs server can't answer that, so the
+# probe retries for ~60s and the tests crawl. Opt out (gcsfs's own escape hatch);
+# gcsfs reads this at import time, so it has to be set here at module load.
+os.environ.setdefault("GCSFS_EXPERIMENTAL_ZB_HNS_SUPPORT", "false")
+
 DEFAULT_DATACHAIN_BIN = "datachain"
 DEFAULT_DATACHAIN_GIT_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
