@@ -1,3 +1,4 @@
+import math
 from collections.abc import Sequence
 from itertools import islice
 from typing import TYPE_CHECKING, Any
@@ -8,7 +9,8 @@ from pyarrow.dataset import CsvFileFormat, dataset
 
 from datachain import json
 from datachain.fs.reference import ReferenceFileSystem
-from datachain.lib.data_model import dict_to_data_model
+from datachain.lib.convert.flatten import classify_field, iter_flat_columns
+from datachain.lib.data_model import dict_to_data_model, optional_tag_is_absent
 from datachain.lib.file import ArrowRow, File
 from datachain.lib.model_store import ModelStore
 from datachain.lib.signal_schema import SignalSchema
@@ -279,21 +281,57 @@ def _get_datachain_schema(schema: "pa.Schema") -> SignalSchema | None:
     return None
 
 
+def _subtree_all_none(
+    column_values: dict[str, Any], model: type["BaseModel"], prefix: str
+) -> bool:
+    """True when every scalar leaf under ``model`` (at ``prefix``) is None. NaN /
+    [] / {} count as None-ish so type defaults don't read as present."""
+    for col in iter_flat_columns(model):
+        if col.is_sentinel:
+            continue
+        val = column_values.get(f"{prefix}." + ".".join(col.path))
+        if val is not None and not _is_nan(val) and val not in ([], {}):
+            return False
+    return True
+
+
+def _is_nan(val: Any) -> bool:
+    return isinstance(val, float) and math.isnan(val)
+
+
+def _optional_absent(
+    column_values: dict[str, Any], inner: type["BaseModel"], prefix: str
+) -> bool:
+    """Whether the ``Optional[DataModel]`` at ``prefix`` is absent. Uses the
+    ``_type_tag`` discriminator when present (0 = present arm), else the
+    all-leaves-None heuristic."""
+    tag_key = f"{prefix}.{SignalSchema._OPTIONAL_SENTINEL_FIELD}"
+    if tag_key in column_values:
+        return optional_tag_is_absent(column_values[tag_key])
+    return _subtree_all_none(column_values, inner, prefix)
+
+
 def _nested_model_instantiate(
     column_values: dict[str, Any], model: type["BaseModel"], prefix: str = ""
 ) -> "BaseModel":
     """Instantiate the given model and all sub-models/fields based on the provided
     column values."""
-    vals_dict = {}
+    vals_dict: dict[str, Any] = {}
     for field, field_info in model.model_fields.items():
-        anno = field_info.annotation
+        kind = classify_field(field_info.annotation)
         cur_path = f"{prefix}.{field}" if prefix else field
-        if ModelStore.is_pydantic(anno):
-            vals_dict[field] = _nested_model_instantiate(
-                column_values,
-                anno,  # type: ignore[arg-type]
-                prefix=cur_path,
-            )
+        if kind.is_model:
+            if kind.is_optional and _optional_absent(
+                column_values, kind.inner, cur_path
+            ):
+                # Absent Optional[DataModel] parent -> None.
+                vals_dict[field] = None
+            else:
+                vals_dict[field] = _nested_model_instantiate(
+                    column_values,
+                    kind.inner,
+                    prefix=cur_path,
+                )
         elif cur_path in column_values:
             vals_dict[field] = column_values[cur_path]
     return model(**vals_dict)

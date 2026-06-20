@@ -103,3 +103,21 @@ def test_add_column_not_null_with_existing_rows(catalog):
     assert "uuid" in column_names
 
     db.execute_str(f"DROP TABLE {table_name}")
+
+
+@skip_if_not_sqlite
+def test_add_column_idempotent(catalog):
+    db = catalog.metastore.db
+    table_name = "test_idempotent_add"
+
+    db.execute_str(f"DROP TABLE IF EXISTS {table_name}")
+    db.execute_str(f"CREATE TABLE {table_name} (id INTEGER PRIMARY KEY)")
+
+    col = Column("tag", String(50), default="x", nullable=True)
+    db.add_column(table_name, col)
+    db.add_column(table_name, col)
+
+    columns = db.execute_str(f"PRAGMA table_info({table_name})").fetchall()
+    assert sum(1 for c in columns if c[1] == "tag") == 1
+
+    db.execute_str(f"DROP TABLE {table_name}")

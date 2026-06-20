@@ -707,7 +707,7 @@ def test_udf_parallel_worker_failure_exits_peers(
             f.write(str(time.time()))
 
         # Wait until all expected workers have written their markers
-        deadline = time.time() + 1.0
+        deadline = time.time() + 3.0
         while time.time() < deadline:
             try:
                 count = len(

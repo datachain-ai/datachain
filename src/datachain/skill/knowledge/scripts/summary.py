@@ -543,9 +543,11 @@ def dataset_summary_from_chain(chain) -> dict:
     # Phase 0 -- Schema and classification
     schema = extract_schema(chain)
     flat_schema = {
-        col: typ
-        for col, typ in chain.schema.flatten(include_hidden=False).items()
-        if not col.startswith("sys.")
+        ".".join(path): typ
+        for path, typ, has_subtree, _ in chain.signals_schema.get_flat_tree(
+            include_hidden=False, include_sys=False, include_sentinels=False
+        )
+        if not has_subtree
     }
     columns_info = _classify_columns(flat_schema, chain.schema)
 

@@ -2,9 +2,11 @@ import hashlib
 import inspect
 import types
 import uuid
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime
-from typing import ClassVar, Union, get_args, get_origin
+from typing import Any, ClassVar, Union, get_args, get_origin
 
 from pydantic import AliasChoices, BaseModel, Field, create_model
 from pydantic.fields import FieldInfo
@@ -12,6 +14,25 @@ from pydantic.fields import FieldInfo
 from datachain import json
 from datachain.lib.model_store import ModelStore
 from datachain.lib.utils import normalize_col_names, type_to_str
+
+_skip_optional_promotion: ContextVar[bool] = ContextVar(
+    "_skip_optional_promotion", default=False
+)
+
+
+@contextmanager
+def skip_optional_promotion() -> Iterator[None]:
+    """Disable ``default=None`` -> ``Optional`` promotion while building a model
+    DataChain reconstructs from a stored schema (e.g. reading a dataset whose
+    original model code isn't importable). Such fields already carry the exact
+    annotation from the schema, so promoting them would corrupt the replayed type.
+    """
+    token = _skip_optional_promotion.set(True)
+    try:
+        yield
+    finally:
+        _skip_optional_promotion.reset(token)
+
 
 StandardType = (
     type[int]
@@ -37,6 +58,7 @@ class DataModel(BaseModel):
     @classmethod
     def __pydantic_init_subclass__(cls):
         """It automatically registers every declared DataModel child class."""
+        promote_default_none(cls)
         ModelStore.register(cls)
 
     @staticmethod
@@ -83,7 +105,8 @@ def compute_model_fingerprint(
                 "default": None if required else repr(finfo.default),
             }
 
-            child_model = ModelStore.to_pydantic(field_type)
+            inner_type, _ = unwrap_optional(field_type)
+            child_model = ModelStore.to_pydantic(inner_type)
             if sub_sel is not None:
                 if child_model is None:
                     raise ValueError(
@@ -105,12 +128,77 @@ def compute_model_fingerprint(
     return hashlib.sha256(json_str.encode("utf-8")).hexdigest()
 
 
+def unwrap_optional(t: Any) -> tuple[Any, bool]:
+    """Unwrap a type that includes `None` to `(non_none, True)`.
+
+    Handles `Optional[X]`, `Union[X, None]`, and PEP-604 `X | None`. Multi-arg
+    unions like `Union[A, B, None]` return `(Union[A, B], True)`; non-Optional and
+    None-free unions return `(t, False)`.
+    """
+    orig = get_origin(t)
+    args = get_args(t)
+    if orig in (Union, types.UnionType) and type(None) in args:
+        non_none = tuple(a for a in args if a is not type(None))
+        if len(non_none) == 1:
+            return non_none[0], True
+        return Union[non_none], True  # type: ignore[return-value]  # noqa: UP007
+    return t, False
+
+
+# Scalars whose Optional form maps to a nullable column, so None round-trips as a
+# real NULL. SQLite stores NaN as NULL, so a stored NaN reads back as None there
+# (the other backends keep them distinct); None itself is consistent everywhere.
+NULLABLE_SCALARS: "tuple[type, ...]" = (int, float, str, bool, bytes, datetime)
+
+# _type_tag discriminator for Optional[DataModel]: this value marks the present arm.
+OPTIONAL_PRESENT_TAG = 0
+
+
+def optional_tag_is_absent(tag: "Any") -> bool:
+    """An Optional[DataModel] subtree is absent when its ``_type_tag`` is NULL
+    (outer-join padding) or not the present-arm value."""
+    return tag is None or tag != OPTIONAL_PRESENT_TAG
+
+
+def promote_default_none(model: type[BaseModel]) -> None:
+    """Auto-promote non-Optional fields with `default=None` to `Optional[...]`.
+
+    `x: int = None` is treated as `x: Optional[int] = None`, so the column is
+    nullable and `x=None` round-trips as `None`. Without this it would read back
+    as the type default (`0`/`""`) on backends with non-nullable columns.
+
+    Skipped under `skip_optional_promotion()` for models reconstructed from a
+    stored schema, whose fields already carry their exact annotation (promoting
+    `default=None` there breaks the partial-model tree walker).
+    """
+    if _skip_optional_promotion.get():
+        return
+    promoted = False
+    for finfo in model.model_fields.values():
+        if finfo.default is not None or finfo.is_required():
+            continue
+        anno = finfo.annotation
+        if anno is None:
+            continue
+        _, is_optional = unwrap_optional(anno)
+        if is_optional:
+            continue
+        finfo.annotation = anno | None  # type: ignore[assignment]
+        promoted = True
+    if promoted:
+        model.model_rebuild(force=True)
+
+
 def is_chain_type(t: type) -> bool:
     """Return true if type is supported by `DataChain`."""
     if ModelStore.is_pydantic(t):
         return True
     if any(t is ft or t is get_args(ft)[0] for ft in get_args(StandardType)):
         return True
+
+    inner, is_optional = unwrap_optional(t)
+    if is_optional:
+        return is_chain_type(inner)
 
     orig = get_origin(t)
     args = get_args(t)
@@ -119,9 +207,6 @@ def is_chain_type(t: type) -> bool:
 
     if orig is dict and len(args) == 2:
         return is_chain_type(args[0]) and is_chain_type(args[1])
-
-    if orig in (Union, types.UnionType) and len(args) == 2 and (type(None) in args):
-        return is_chain_type(args[0] if args[1] is type(None) else args[1])
 
     return False
 
