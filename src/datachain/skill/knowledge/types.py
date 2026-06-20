@@ -48,8 +48,6 @@ class ListingMeta(TypedDict):
     listing_uuid: str | None
     listing_created: str | None
     listing_finished: str | None
-    listing_expires: str | None
-    listing_expired: bool | None
 
 
 class BucketSnapshot(TypedDict):
@@ -63,8 +61,6 @@ class BucketSnapshot(TypedDict):
     listing_uuid: NotRequired[str | None]
     listing_created: NotRequired[str | None]
     listing_finished: NotRequired[str | None]
-    listing_expires: NotRequired[str | None]
-    listing_expired: NotRequired[bool | None]
     total_files: int | None
     total_size_bytes: int | None
     max_depth: int | None

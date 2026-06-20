@@ -7,7 +7,7 @@ Generate a human-readable markdown overview for a cloud storage bucket from its 
 JSON fields:
 
 - Identity: `uri`, `scheme`, `bucket`, `prefix`, `anon` (true/false/null)
-- Listing: `scanned`, `listing_uuid`, `listing_created`, `listing_expires`, `listing_expired`
+- Listing: `scanned`, `listing_uuid`, `listing_created`, `listing_finished`
 - Aggregates: `total_files`, `total_size_bytes`, `max_depth`
 - `extensions[]`: file-type breakdown with counts, bytes, percentages
 - `directories[]`: per-dir path, file count, bytes, depth
@@ -50,10 +50,9 @@ Name the modalities and likely use case.}
 - **Access:** {"Public (use `anon=True`)" if anon=true; "Authenticated" if anon=false; omit if null}
 - **Listing:** {freshness message — see below}
 
-Listing freshness message (check top to bottom; the keys are absent on sampled overviews):
-- `listing_created` missing or null → "Listing timestamp unavailable"
-- `listing_expired: false` → "Bucket listing from {listing_created} (valid until {listing_expires})"
-- `listing_expired: true` → "Bucket listing from {listing_created} (**expired** — refresh with `dc.read_storage(\"{uri}\", update=True)`)"
+Listing freshness message (the keys are absent on sampled overviews):
+- `listing_finished` missing or null → "Listing timestamp unavailable"
+- otherwise → "bucket file list as of {listing_finished}; may be stale (new/changed files since then aren't included). Re-scan with `dc.read_storage(\"{uri}\", update=True)`"
 
 ## Directory Structure
 

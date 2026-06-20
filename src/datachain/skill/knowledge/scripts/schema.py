@@ -1,15 +1,14 @@
-"""Type introspection, schema extraction, and preview generation."""
+"""Schema extraction and preview generation for a live DataChain."""
 
 import inspect
-import types
-import typing
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from utils import is_sys_column, serialize, source_to_https
 
+from datachain.skill.knowledge.snapshot import expand_signal, type_name  # noqa: F401
+
 if TYPE_CHECKING:
     from datachain import DataChain
-    from datachain.lib.data_model import DataType
     from datachain.skill.knowledge.types import PreviewData, SchemaEntry
 
 
@@ -18,40 +17,6 @@ def get_catalog():
     from datachain import Session
 
     return Session.get().catalog
-
-
-def type_name(tp: Any) -> str:
-    """Convert a Python type to a human-readable string."""
-    if tp is type(None):
-        return "None"
-    if isinstance(tp, types.UnionType):  # Python 3.10+ X | Y
-        return " | ".join(type_name(a) for a in tp.__args__)
-    origin = getattr(tp, "__origin__", None)
-    if origin is typing.Union:
-        return " | ".join(type_name(a) for a in tp.__args__)
-    if origin is list:
-        args = getattr(tp, "__args__", ())
-        return f"list[{type_name(args[0])}]" if args else "list"
-    if origin is dict:
-        return "dict"
-    return getattr(tp, "__name__", str(tp))
-
-
-def expand_signal(typ: "DataType") -> "SchemaEntry":
-    """Return {"type": name, "fields": {name: type_str} | None}.
-    Fields is None for File subclasses (well-known) and primitives."""
-    from datachain.lib.data_model import DataModel
-    from datachain.lib.file import File
-
-    tn = type_name(typ)
-    if not (inspect.isclass(typ) and issubclass(typ, DataModel)):
-        return {"type": tn, "fields": None}
-    if issubclass(typ, File):
-        return {"type": tn, "fields": None}  # skip — covered by dc-core
-    fields = {
-        fname: type_name(finfo.annotation) for fname, finfo in typ.model_fields.items()
-    }
-    return {"type": tn, "fields": fields}
 
 
 def parse_dataset_name(name: str) -> tuple:

@@ -70,10 +70,6 @@ def get_listing_info(uri: str) -> "ListingMeta":
                     "listing_finished": (
                         listing.finished_at.isoformat() if listing.finished_at else None
                     ),
-                    "listing_expires": (
-                        listing.expires.isoformat() if listing.expires else None
-                    ),
-                    "listing_expired": listing.is_expired,
                 }
     except Exception as e:  # noqa: BLE001
         print(f"[dc-knowledge warning] listing info: {e}", file=sys.stderr)
@@ -82,8 +78,6 @@ def get_listing_info(uri: str) -> "ListingMeta":
         "listing_uuid": None,
         "listing_created": None,
         "listing_finished": None,
-        "listing_expires": None,
-        "listing_expired": None,
     }
 
 
