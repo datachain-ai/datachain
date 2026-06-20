@@ -172,7 +172,7 @@ class AsyncMapper(Generic[InputT, ResultT]):
 
     def iterate(self, timeout=None) -> Generator[ResultT, None, None]:
         init = asyncio.run_coroutine_threadsafe(self.init(), self.loop)
-        init.result(timeout=1)
+        init.result()
         async_run = asyncio.run_coroutine_threadsafe(self.run(), self.loop)
         try:
             while True:
