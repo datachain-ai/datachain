@@ -1790,6 +1790,14 @@ class AbstractDBMetastore(AbstractMetastore):
             self.remove_dataset_dependencies(dataset, version)
             self.remove_dataset_dependants(dataset, version)
 
+            # Lock the parent dataset row so concurrent saves of a new
+            # version can't sneak in between the count and the delete-
+            # if-empty below. No-op on SQLite (writes are already
+            # serialized at the database level).
+            self.db.execute(
+                select(d.c.id).where(d.c.id == dataset.id).with_for_update()
+            )
+
             self.db.execute(
                 self._datasets_versions_delete().where(
                     (dv.c.dataset_id == dataset.id) & (dv.c.version == version)
