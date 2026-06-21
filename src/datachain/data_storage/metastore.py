@@ -1957,9 +1957,9 @@ class AbstractDBMetastore(AbstractMetastore):
 
         with self.db.transaction():
             if version:
-                # Update the version row first. If a status guard was requested
-                # and the row's status no longer matches, abort before touching
-                # the dataset-level (denormalized) row.
+                # Two-step write: first the version row (with the optional
+                # status guard), then the parent dataset row below. If the
+                # guard fails, abort before the second step.
                 updated = self.update_dataset_version(
                     dataset,
                     version,
@@ -1972,6 +1972,7 @@ class AbstractDBMetastore(AbstractMetastore):
                         f"current status is not {expected_status}"
                     )
 
+            # Step 2: mirror the same fields onto the parent dataset row.
             return self.update_dataset(dataset, **update_data)
 
     def mark_job_dataset_versions_as_failed(self, job_id: str) -> None:
