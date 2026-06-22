@@ -126,8 +126,8 @@ def detach(
     @wraps(method)
     def _inner(self: T, *args: "P.args", **kwargs: "P.kwargs") -> T:
         cloned = method(self, *args, **kwargs)
-        cloned.name = None
-        cloned.version = None
+        cloned._identity.name = None
+        cloned._identity.version = None
         return cloned
 
     return _inner
@@ -2565,6 +2565,54 @@ class ResultIter:
             self._row_iter.close()  # type: ignore[attr-defined]
 
 
+def _get_table() -> "TableClause":
+    table_name = "".join(secrets.choice(string.ascii_letters) for _ in range(16))
+    return sqlalchemy.table(table_name)
+
+
+@attrs.define
+class _Backend:
+    session: "Session"
+    catalog: "Catalog"
+
+    @property
+    def dialect(self) -> str:
+        return self.catalog.warehouse.db.dialect
+
+
+@attrs.define
+class _Identity:
+    name: str | None = None
+    version: str | None = None
+    table: "TableClause" = attrs.field(factory=_get_table)
+    list_ds_name: str | None = None
+    project: "Project | None" = None
+
+
+@attrs.define
+class _Schema:
+    feature_schema: dict | None = None
+    column_types: dict[str, Any] | None = None
+
+
+@attrs.define
+class _Pipeline:
+    steps: list["Step"] = attrs.field(factory=list)
+    starting_step: "QueryStep | None" = None
+    delta_spec: "DeltaSpec | None" = None
+    dependencies: set["DatasetDependencyType"] = attrs.field(factory=set)
+    temp_table_names: list[str] = attrs.field(factory=list)
+    listing_fn: "Callable | None" = None
+
+
+@attrs.define
+class _Config:
+    update: bool = False
+    checkpoints_enabled: bool = True
+    _chunk_index: int | None = None
+    _chunk_total: int | None = None
+
+
 class DatasetQuery:
     def __init__(
         self,
@@ -2580,27 +2628,16 @@ class DatasetQuery:
         steps: Sequence[Step] = (),
         checkpoints_enabled: bool = True,
     ) -> None:
-        self.session = Session.get(session, catalog=catalog, in_memory=in_memory)
-        self.catalog = catalog or self.session.catalog
-        self.steps: list[Step] = list(steps)
-        self._chunk_index: int | None = None
-        self._chunk_total: int | None = None
-        self.temp_table_names: list[str] = []
-        self.dependencies: set[DatasetDependencyType] = set()
-        self.table = self.get_table()
-        self.starting_step: QueryStep | None = None
-        self.delta_spec: DeltaSpec | None = None
-        self.name: str | None = None
-        self.version: str | None = None
-        self.feature_schema: dict | None = None
-        self.column_types: dict[str, Any] | None = None
-        self.before_steps: list[Callable] = []
-        self.listing_fn: Callable | None = None
-        self.update = update
-        self.checkpoints_enabled = checkpoints_enabled
-
-        self.list_ds_name: str | None = None
-        self.dialect = self.catalog.warehouse.db.dialect
+        session_obj = Session.get(session, catalog=catalog, in_memory=in_memory)
+        catalog_obj = catalog or session_obj.catalog
+        self._backend = _Backend(session=session_obj, catalog=catalog_obj)
+        self._identity = _Identity()
+        self._schema = _Schema()
+        self._pipeline = _Pipeline(steps=list(steps))
+        self._config = _Config(
+            update=update,
+            checkpoints_enabled=checkpoints_enabled,
+        )
 
         if name is None:
             return
@@ -2614,6 +2651,102 @@ class DatasetQuery:
             include_incomplete=include_incomplete,
         )
 
+    @property
+    def catalog(self) -> "Catalog":
+        return self._backend.catalog
+
+    @property
+    def session(self) -> "Session":
+        return self._backend.session
+
+    @property
+    def dialect(self) -> str:
+        return self._backend.dialect
+
+    @property
+    def name(self) -> str | None:
+        return self._identity.name
+
+    @property
+    def version(self) -> str | None:
+        return self._identity.version
+
+    @version.setter
+    def version(self, value: str | None) -> None:
+        self._identity.version = value
+
+    @property
+    def table(self) -> "TableClause":
+        return self._identity.table
+
+    @property
+    def list_ds_name(self) -> str | None:
+        return self._identity.list_ds_name
+
+    @property
+    def project(self) -> "Project | None":
+        return self._identity.project
+
+    @property
+    def feature_schema(self) -> dict | None:
+        return self._schema.feature_schema
+
+    @feature_schema.setter
+    def feature_schema(self, value: dict | None) -> None:
+        self._schema.feature_schema = value
+
+    @property
+    def column_types(self) -> dict[str, Any] | None:
+        return self._schema.column_types
+
+    @property
+    def steps(self) -> list["Step"]:
+        return self._pipeline.steps
+
+    @property
+    def starting_step(self) -> "QueryStep | None":
+        return self._pipeline.starting_step
+
+    @starting_step.setter
+    def starting_step(self, value: "QueryStep | None") -> None:
+        self._pipeline.starting_step = value
+
+    @property
+    def delta_spec(self) -> "DeltaSpec | None":
+        return self._pipeline.delta_spec
+
+    @delta_spec.setter
+    def delta_spec(self, value: "DeltaSpec | None") -> None:
+        self._pipeline.delta_spec = value
+
+    @property
+    def dependencies(self) -> set["DatasetDependencyType"]:
+        return self._pipeline.dependencies
+
+    @property
+    def temp_table_names(self) -> list[str]:
+        return self._pipeline.temp_table_names
+
+    @property
+    def listing_fn(self) -> "Callable | None":
+        return self._pipeline.listing_fn
+
+    @property
+    def update(self) -> bool:
+        return self._config.update
+
+    @update.setter
+    def update(self, value: bool) -> None:
+        self._config.update = value
+
+    @property
+    def checkpoints_enabled(self) -> bool:
+        return self._config.checkpoints_enabled
+
+    @checkpoints_enabled.setter
+    def checkpoints_enabled(self, value: bool) -> None:
+        self._config.checkpoints_enabled = value
+
     def _init_rooted_query(
         self,
         name: str,
@@ -2623,22 +2756,20 @@ class DatasetQuery:
         update: bool = False,
         include_incomplete: bool = False,
     ) -> None:
-        self.name = name
+        self._identity.name = name
         if version:
-            self.version = version
+            self._identity.version = version
 
         if namespace_name is None:
-            namespace_name = self.catalog.metastore.default_namespace_name
+            namespace_name = self._backend.catalog.metastore.default_namespace_name
         if project_name is None:
-            project_name = self.catalog.metastore.default_project_name
+            project_name = self._backend.catalog.metastore.default_project_name
 
         if is_listing_dataset(name) and not version:
-            # not setting query step yet as listing dataset might not exist at
-            # this point
-            self.list_ds_name = name
+            self._identity.list_ds_name = name
         else:
             self._set_starting_step(
-                self.catalog.get_dataset_with_remote_fallback(
+                self._backend.catalog.get_dataset_with_remote_fallback(
                     name,
                     namespace_name=namespace_name,
                     project_name=project_name,
@@ -2650,17 +2781,21 @@ class DatasetQuery:
             )
 
     def _set_starting_step(self, ds: "DatasetRecord") -> None:
-        if not self.version:
-            self.version = ds.latest_version
+        if not self._identity.version:
+            self._identity.version = ds.latest_version
 
-        self.starting_step = QueryStep(self.catalog, ds, self.version)
+        self._pipeline.starting_step = QueryStep(
+            self._backend.catalog, ds, self._identity.version
+        )
 
         # at this point we know our starting dataset so setting up schemas
-        self.feature_schema = ds.get_version(self.version).feature_schema
-        self.column_types = copy(ds.schema)
-        if "sys__id" in self.column_types:
-            self.column_types.pop("sys__id")
-        self.project = ds.project
+        self._schema.feature_schema = (
+            ds.get_version(self._identity.version).feature_schema
+        )
+        self._schema.column_types = copy(ds.schema)
+        if "sys__id" in self._schema.column_types:
+            self._schema.column_types.pop("sys__id")
+        self._identity.project = ds.project
 
     @property
     def _starting_step_hash(self) -> str:
@@ -2695,11 +2830,6 @@ class DatasetQuery:
 
         return hasher.hexdigest()
 
-    @staticmethod
-    def get_table() -> "TableClause":
-        table_name = "".join(secrets.choice(string.ascii_letters) for _ in range(16))
-        return sqlalchemy.table(table_name)
-
     @property
     def attached(self) -> bool:
         """
@@ -2724,8 +2854,7 @@ class DatasetQuery:
         return col
 
     def set_listing_fn(self, fn: Callable) -> None:
-        """Setting listing function to be run if needed"""
-        self.listing_fn = fn
+        self._pipeline.listing_fn = fn
 
     def resolve_listing(self) -> None:
         """Runs listing pre-step if needed"""
@@ -2773,8 +2902,8 @@ class DatasetQuery:
 
         query = self.clone()
 
-        index = os.getenv("DATACHAIN_QUERY_CHUNK_INDEX", self._chunk_index)
-        total = os.getenv("DATACHAIN_QUERY_CHUNK_TOTAL", self._chunk_total)
+        index = os.getenv("DATACHAIN_QUERY_CHUNK_INDEX", self._config._chunk_index)
+        total = os.getenv("DATACHAIN_QUERY_CHUNK_TOTAL", self._config._chunk_total)
 
         if index is not None and total is not None:
             index, total = int(index), int(total)  # os.getenv returns str
@@ -2782,12 +2911,10 @@ class DatasetQuery:
             if not (0 <= index < total):
                 raise ValueError("chunk index must be between 0 and total")
 
-            # Respect limit in chunks
-            query.steps = self._chunk_limit(query.steps, index, total)
+            query._pipeline.steps = self._chunk_limit(query._pipeline.steps, index, total)
 
-            # Prepend the chunk filter to the step chain.
             query = query.filter(C.sys__rand % total == index)
-            query.steps = query.steps[-1:] + query.steps[:-1]
+            query._pipeline.steps = query._pipeline.steps[-1:] + query._pipeline.steps[:-1]
 
         if query.starting_step is not None:
             result = query.starting_step.apply()
@@ -2861,7 +2988,7 @@ class DatasetQuery:
             metastore.cleanup_tables(self.temp_table_names)
         with self.catalog.warehouse.clone(use_new_connection=True) as warehouse:
             warehouse.cleanup_tables(self.temp_table_names)
-        self.temp_table_names = []
+        self._pipeline.temp_table_names = []
 
     def db_results(self, row_factory=None, **kwargs):
         with self.as_iterable(**kwargs) as result:
@@ -2947,11 +3074,15 @@ class DatasetQuery:
 
     def clone(self, new_table=True) -> "Self":
         obj = copy(self)
-        obj.steps = self.steps.copy()
+        obj._identity = copy(self._identity)
+        obj._schema = copy(self._schema)
+        obj._pipeline = copy(self._pipeline)
+        obj._config = copy(self._config)
+        obj._pipeline.steps = self._pipeline.steps.copy()
         if new_table:
-            obj.table = self.get_table()
-        obj.dependencies = set()
-        obj.temp_table_names = []
+            obj._identity.table = _get_table()
+        obj._pipeline.dependencies = set()
+        obj._pipeline.temp_table_names = []
         return obj
 
     def delta_sources(self) -> list["DatasetQuery"]:
@@ -2971,16 +3102,16 @@ class DatasetQuery:
     ) -> "Self":
         if self is source:
             rewritten = replacement.clone(new_table=False)
-            rewritten.table = self.table
-            rewritten_steps = rewritten.steps.copy()
+            rewritten._identity.table = self._identity.table
+            rewritten_steps = rewritten._pipeline.steps.copy()
         else:
             rewritten = self.clone(new_table=False)
             rewritten_steps = []
 
         rewritten_steps.extend(
-            step.replace_source(source, replacement) for step in self.steps
+            step.replace_source(source, replacement) for step in self._pipeline.steps
         )
-        rewritten.steps = rewritten_steps
+        rewritten._pipeline.steps = rewritten_steps
         return cast("Self", rewritten)
 
     @detach
@@ -3198,7 +3329,8 @@ class DatasetQuery:
             Use 0/3, 1/3 and 2/3, not 1/3, 2/3 and 3/3.
         """
         query = self.clone()
-        query._chunk_index, query._chunk_total = index, total
+        query._config._chunk_index = index
+        query._config._chunk_total = total
         return query
 
     @detach
@@ -3444,10 +3576,9 @@ class DatasetQuery:
                 )
 
             if dependencies:
-                # overriding dependencies
-                self.dependencies = set()
+                self._pipeline.dependencies = set()
                 for dep in dependencies:
-                    self.dependencies.add(
+                    self._pipeline.dependencies.add(
                         (
                             self.catalog.get_dataset(
                                 dep.name,
