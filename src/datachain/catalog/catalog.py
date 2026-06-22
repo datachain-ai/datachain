@@ -899,6 +899,11 @@ class Catalog:
 
         for attempt in range(1 + max_retries):
             if dataset.has_version(target_version):
+                if dataset.get_version(target_version).is_removed:
+                    raise DatasetInvalidVersionError(
+                        f"Version {target_version} of dataset {name} was "
+                        "removed; the version number is permanently reserved."
+                    )
                 raise DatasetInvalidVersionError(
                     f"Version {target_version} already exists in dataset {name}"
                 )

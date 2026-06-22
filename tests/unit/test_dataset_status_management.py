@@ -590,7 +590,7 @@ def test_save_explicit_removed_version_rejected(test_session, dataset_complete):
 
     catalog.remove_dataset_version(dataset_complete, version, keep_metadata=True)
 
-    with pytest.raises(RuntimeError, match=f"already has version {version}"):
+    with pytest.raises(RuntimeError, match=r"was removed.*permanently reserved"):
         dc.read_values(value=["new1"], session=test_session).save(name, version=version)
 
 

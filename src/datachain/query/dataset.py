@@ -3353,18 +3353,21 @@ class DatasetQuery:
 
         project = project or self.catalog.metastore.default_project
         try:
-            if (
-                name
-                and version
-                and self.catalog.get_dataset(
+            if name and version:
+                existing = self.catalog.get_dataset(
                     name,
                     namespace_name=project.namespace.name,
                     project_name=project.name,
                     versions=[version],
                     include_incomplete=True,
-                ).has_version(version)
-            ):
-                raise RuntimeError(f"Dataset {name} already has version {version}")
+                )
+                if existing.has_version(version):
+                    if existing.get_version(version).is_removed:
+                        raise RuntimeError(
+                            f"Version {version} of dataset {name} was removed; "
+                            "the version number is permanently reserved."
+                        )
+                    raise RuntimeError(f"Dataset {name} already has version {version}")
         except DatasetNotFoundError:
             pass
         if not name and version:
