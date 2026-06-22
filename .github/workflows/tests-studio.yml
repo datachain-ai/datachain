@@ -68,7 +68,7 @@ jobs:
           echo "Studio branch: $STUDIO_BRANCH"
 
       - name: Check out Studio
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 1
           repository: datachain-ai/studio
@@ -76,7 +76,7 @@ jobs:
           token: ${{ secrets.ITERATIVE_STUDIO_READ_ACCESS_TOKEN }}
 
       - name: Check out DataChain
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           path: './datachain'
           fetch-depth: 1
