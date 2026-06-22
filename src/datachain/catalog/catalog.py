@@ -1922,6 +1922,20 @@ class Catalog:
                         self._instantiate_dataset(ds_uri, output, force, client_config)
                     return
 
+                if ver.is_removed:
+                    ds_uri = create_dataset_uri(
+                        ds.name,
+                        ds.project.namespace.name,
+                        ds.project.name,
+                        ver.version,
+                    )
+                    raise DataChainError(
+                        f"Local dataset {ds_uri} was previously pulled and "
+                        "removed; the version number is reserved. Pull into "
+                        "a different version or remove the tombstone "
+                        "explicitly first."
+                    )
+
                 print("Cleaning up stale existing dataset version")
                 self.remove_dataset_version(ds, ver.version, keep_metadata=False)
             except DatasetNotFoundError:
