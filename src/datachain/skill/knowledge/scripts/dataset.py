@@ -13,8 +13,7 @@ def _warn(msg: str) -> None:
     print(f"[dc-knowledge warning] {msg}", file=sys.stderr)
 
 
-def _try_read_chain(name_version: str):
-    dc = dc_import()
+def _try_read_chain(dc, name_version: str):
     try:
         return dc.read_dataset(name_version)
     except Exception as e:
@@ -100,8 +99,7 @@ def _resolve_catalog(chain):
     return catalog
 
 
-def _resolve_local_version(catalog, bare_name, version):
-    dc = dc_import()
+def _resolve_local_version(dc, catalog, bare_name, version):
     if version is None and catalog is not None:
         try:
             ds = catalog.get_dataset(bare_name, include_incomplete=False)
@@ -221,7 +219,7 @@ def fetch_version_data(name_version: str) -> dict:
     _namespace, _project, _bare_name = parse_dataset_name(name)
     is_studio_dataset = bool(_namespace and _project)
 
-    chain = _try_read_chain(name_version)
+    chain = _try_read_chain(dc, name_version)
     schema = _try_extract_schema(chain, name)
     preview = _try_extract_preview(chain)
 
@@ -243,7 +241,7 @@ def fetch_version_data(name_version: str) -> dict:
         prev_version_info = meta["prev_version_info"]
     else:
         catalog = _resolve_catalog(chain)
-        version = _resolve_local_version(catalog, _bare_name, version)
+        version = _resolve_local_version(dc, catalog, _bare_name, version)
         meta = _fetch_local_dataset_info(catalog, _bare_name, version)
         query_script = meta["query_script"]
         uuid = meta["uuid"]
