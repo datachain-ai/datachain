@@ -250,6 +250,21 @@ def test_remove_dataset_versions_explicit_keep_metadata_tombstones(
     assert _find_removed(ds, version) is not None
 
 
+def test_remove_dataset_version_already_tombstoned_returns_false(
+    test_session, dataset_complete
+):
+    """A keep_metadata=True remove on an already-REMOVED version is a no-op
+    and must return False so bulk callers don't inflate the removed count."""
+    catalog = test_session.catalog
+    version = dataset_complete.latest_version
+    catalog.remove_dataset(dataset_complete.name, version=version, keep_metadata=True)
+
+    ds = catalog.get_dataset(
+        dataset_complete.name, versions=None, include_incomplete=True
+    )
+    assert catalog.remove_dataset_version(ds, version, keep_metadata=True) is False
+
+
 def test_remove_dataset_versions_job_id_filter(test_session, job, dataset_created):
     test_session.catalog.metastore.set_job_status(job.id, JobStatus.FAILED)
     ds = test_session.catalog.get_dataset(dataset_created.name, versions=None)
