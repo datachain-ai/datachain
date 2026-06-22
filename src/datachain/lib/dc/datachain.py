@@ -584,7 +584,7 @@ class DataChain:
             ```
 
         Args:
-            col: name of a top-level column whose type is ``list[T]`` or ``tuple[T]``.
+            col: name of a top-level column whose type is ``list[T]``.
 
         Returns:
             DataChain: A new DataChain with one row per element of ``col``.
@@ -595,9 +595,9 @@ class DataChain:
 
         col_type, _ = unwrap_optional(schema.values[col])
         origin = get_origin(col_type)
-        if origin not in (list, tuple):
+        if origin is not list:
             raise TypeError(
-                f"unnest() expects a list/tuple column; column {col!r} has type "
+                f"unnest() expects a list column; column {col!r} has type "
                 f"{schema.values[col]!r}"
             )
         type_args = get_args(col_type)
@@ -608,19 +608,26 @@ class DataChain:
         elem_type = type_args[0]
         elem_is_model = isinstance(elem_type, type) and issubclass(elem_type, BaseModel)
 
-        params = [name for name in schema.values if name != col]
-        output = {name: schema.values[name] for name in params}
-        params.append(col)
+        siblings = [name for name in schema.values if name != col]
+        params = [*siblings, col]
+        output = {name: schema.values[name] for name in siblings}
         output[col] = elem_type
+
+        def _coerce(item):
+            if elem_is_model and isinstance(item, dict):
+                return elem_type(**item)
+            return item
 
         def _unnest(*args):
             items = args[-1]
             if not items:
                 return
-            for item in items:
-                if elem_is_model and isinstance(item, dict):
-                    item = elem_type(**item)
-                yield (*args[:-1], item)
+            if siblings:
+                for item in items:
+                    yield (*args[:-1], _coerce(item))
+            else:
+                for item in items:
+                    yield _coerce(item)
 
         return self.gen(_unnest, params=params, output=output)
 

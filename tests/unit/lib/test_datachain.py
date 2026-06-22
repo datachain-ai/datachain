@@ -1656,6 +1656,19 @@ def test_unnest_no_siblings(test_session):
     assert rows == [1, 2, 3]
 
 
+def test_unnest_pydantic_only_column(test_session):
+    class Item(BaseModel):
+        kind: str
+        weight: int
+
+    chain = dc.read_values(
+        items=[[Item(kind="x", weight=1), Item(kind="y", weight=2)]],
+        session=test_session,
+    )
+    rows = sorted(chain.unnest("items").to_list("items.kind", "items.weight"))
+    assert rows == [("x", 1), ("y", 2)]
+
+
 def test_unnest_raises_on_unknown_column(test_session):
     chain = dc.read_values(id=[1, 2], session=test_session)
 
