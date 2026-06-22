@@ -1,6 +1,7 @@
 import contextlib
 import traceback
 from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
 from itertools import chain
 from multiprocessing import cpu_count
 from queue import Empty
@@ -109,19 +110,8 @@ class UDFDispatcher:
     done_queue: MultiprocessQueue | None = None
 
     def __init__(self, udf_info: UdfInfo, buffer_size: int = DEFAULT_BATCH_SIZE):
-        self.udf_data = udf_info["udf_data"]
-        self.catalog_init_params = udf_info["catalog_init"]
-        self.metastore_clone_params = udf_info["metastore_clone_params"]
-        self.warehouse_clone_params = udf_info["warehouse_clone_params"]
-        self.query = udf_info["query"]
-        self.table = udf_info["table"]
-        self.udf_fields = udf_info["udf_fields"]
-        self.cache = udf_info["cache"]
-        self.is_generator = udf_info["is_generator"]
+        self.udf_info = udf_info
         self.is_batching = udf_info["batching"].is_batching
-        self.processes = udf_info["processes"]
-        self.rows_total = udf_info["rows_total"]
-        self.batch_size = udf_info["batch_size"]
         self.buffer_size = buffer_size
         self.task_queue = None
         self.done_queue = None
@@ -130,29 +120,30 @@ class UDFDispatcher:
     @property
     def catalog(self) -> "Catalog":
         if not self._catalog:
-            ms_cls, ms_args, ms_kwargs = self.metastore_clone_params
+            ms_cls, ms_args, ms_kwargs = self.udf_info["metastore_clone_params"]
             metastore: AbstractMetastore = ms_cls(*ms_args, **ms_kwargs)
-            ws_cls, ws_args, ws_kwargs = self.warehouse_clone_params
+            ws_cls, ws_args, ws_kwargs = self.udf_info["warehouse_clone_params"]
             warehouse: AbstractWarehouse = ws_cls(*ws_args, **ws_kwargs)
-            self._catalog = Catalog(metastore, warehouse, **self.catalog_init_params)
+            self._catalog = Catalog(metastore, warehouse, **self.udf_info["catalog_init"])
         return self._catalog
 
     def _create_worker(self) -> "UDFWorker":
-        udf: UDFAdapter = loads(self.udf_data)
+        udf: UDFAdapter = loads(self.udf_info["udf_data"])
         # Ensure all registered DataModels have rebuilt schemas in worker processes.
         ModelStore.rebuild_all()
-        return UDFWorker(
-            self.catalog,
-            udf,
-            self.task_queue,
-            self.done_queue,
-            self.query,
-            self.table,
-            self.cache,
-            self.is_batching,
-            self.batch_size,
-            self.udf_fields,
+        config = UDFWorkerConfig(
+            catalog=self.catalog,
+            udf=udf,
+            task_queue=self.task_queue,
+            done_queue=self.done_queue,
+            query=self.udf_info["query"],
+            table=self.udf_info["table"],
+            cache=self.udf_info["cache"],
+            is_batching=self.is_batching,
+            batch_size=self.udf_info["batch_size"],
+            udf_fields=self.udf_info["udf_fields"],
         )
+        return UDFWorker(config)
 
     def _run_worker(self) -> None:
         try:
@@ -182,7 +173,7 @@ class UDFDispatcher:
         processed_cb: Callback = DEFAULT_CALLBACK,
         generated_cb: Callback = DEFAULT_CALLBACK,
     ) -> None:
-        n_workers = self.processes
+        n_workers = self.udf_info["processes"]
         if n_workers is True:
             n_workers = None  # Use default number of CPUs (cores)
         elif not n_workers or n_workers < 1:
@@ -210,7 +201,7 @@ class UDFDispatcher:
         processed_cb: Callback = DEFAULT_CALLBACK,
         generated_cb: Callback = DEFAULT_CALLBACK,
     ) -> None:
-        udf: UDFAdapter = loads(self.udf_data)
+        udf: UDFAdapter = loads(self.udf_info["udf_data"])
         # Rebuild schemas in single process too for consistency (cheap, idempotent).
         ModelStore.rebuild_all()
 
@@ -221,38 +212,38 @@ class UDFDispatcher:
             warehouse = self.catalog.warehouse.clone()
             for ids in batched(input_rows, DEFAULT_BATCH_SIZE):
                 yield from warehouse.dataset_rows_select_from_ids(
-                    self.query, ids, self.is_batching
+                    self.udf_info["query"], ids, self.is_batching
                 )
 
         prefetch = udf.prefetch
-        with _get_cache(self.catalog.cache, prefetch, use_cache=self.cache) as _cache:
+        with _get_cache(self.catalog.cache, prefetch, use_cache=self.udf_info["cache"]) as _cache:
             udf_results = udf.run(
-                self.udf_fields,
+                self.udf_info["udf_fields"],
                 get_inputs(),
                 self.catalog,
-                self.cache,
+                self.udf_info["cache"],
                 download_cb=download_cb,
                 processed_cb=processed_cb,
             )
             with safe_closing(udf_results):
                 process_udf_outputs(
                     self.catalog.warehouse.clone(),
-                    self.table,
+                    self.udf_info["table"],
                     udf_results,
                     udf,
                     cb=generated_cb,
-                    batch_size=self.batch_size,
+                    batch_size=self.udf_info["batch_size"],
                 )
 
     def input_batch_size(self, n_workers: int) -> int:
-        input_batch_size = self.rows_total // n_workers
+        input_batch_size = self.udf_info["rows_total"] // n_workers
         if input_batch_size == 0:
             input_batch_size = 1
         elif input_batch_size > DEFAULT_BATCH_SIZE:
             input_batch_size = DEFAULT_BATCH_SIZE
         return input_batch_size
 
-    def run_udf_parallel(  # noqa: C901, PLR0912
+    def run_udf_parallel(
         self,
         n_workers: int,
         input_rows: Iterable["RowsOutput"],
@@ -271,71 +262,107 @@ class UDFDispatcher:
             p.start()
 
         try:
-            # Will be set to True when the input is exhausted
-            input_finished = False
+            input_data = self._prepare_input_data(n_workers, input_rows)
+            input_finished = self._fill_initial_buffer(input_data)
+            self._process_loop(
+                pool, n_workers, input_data, input_finished,
+                download_cb, processed_cb, generated_cb,
+            )
+        finally:
+            self._shutdown_workers(pool)
 
-            input_rows = batched(
-                input_rows if self.is_batching else flatten(input_rows),
-                self.input_batch_size(n_workers),
+    def _prepare_input_data(
+        self, n_workers: int, input_rows: Iterable["RowsOutput"]
+    ) -> Iterable:
+        input_rows = batched(
+            input_rows if self.is_batching else flatten(input_rows),
+            self.input_batch_size(n_workers),
+        )
+        return chain(input_rows, [STOP_SIGNAL] * n_workers)
+
+    def _fill_initial_buffer(self, input_data: Iterable) -> bool:
+        input_finished = False
+        for _ in range(self.buffer_size):
+            try:
+                put_into_queue(self.task_queue, next(input_data))
+            except StopIteration:
+                input_finished = True
+                break
+        return input_finished
+
+    def _process_loop(
+        self,
+        pool: list[Process],
+        n_workers: int,
+        input_data: Iterable,
+        input_finished: bool,
+        download_cb: Callback = DEFAULT_CALLBACK,
+        processed_cb: Callback = DEFAULT_CALLBACK,
+        generated_cb: Callback = DEFAULT_CALLBACK,
+    ) -> None:
+        while n_workers > 0:
+            result = self._get_result_from_queue(pool)
+            self._update_callbacks(result, download_cb, processed_cb, generated_cb)
+            n_workers, input_finished = self._handle_result(
+                result, n_workers, input_finished, input_data
             )
 
-            # Stop all workers after the input rows have finished processing
-            input_data = chain(input_rows, [STOP_SIGNAL] * n_workers)
+    def _get_result_from_queue(self, pool: list[Process]) -> dict:
+        while True:
+            try:
+                return self.done_queue.get_nowait()
+            except Empty:
+                for p in pool:
+                    exitcode = p.exitcode
+                    if exitcode not in (None, 0):
+                        message = (
+                            f"Worker {p.name} exited unexpectedly with "
+                            f"code {exitcode}"
+                        )
+                        raise RuntimeError(message) from None
+                sleep(0.01)
 
-            # Add initial buffer of tasks
-            for _ in range(self.buffer_size):
+    def _update_callbacks(
+        self,
+        result: dict,
+        download_cb: Callback = DEFAULT_CALLBACK,
+        processed_cb: Callback = DEFAULT_CALLBACK,
+        generated_cb: Callback = DEFAULT_CALLBACK,
+    ) -> None:
+        if bytes_downloaded := result.get("bytes_downloaded"):
+            download_cb.relative_update(bytes_downloaded)
+        if downloaded := result.get("downloaded"):
+            download_cb.increment_file_count(downloaded)
+        if processed := result.get("processed"):
+            processed_cb.relative_update(processed)
+        if generated := result.get("generated"):
+            generated_cb.relative_update(generated)
+
+    def _handle_result(
+        self,
+        result: dict,
+        n_workers: int,
+        input_finished: bool,
+        input_data: Iterable,
+    ) -> tuple[int, bool]:
+        status = result["status"]
+        if status in (OK_STATUS, NOTIFY_STATUS):
+            if status == OK_STATUS and not input_finished:
                 try:
                     put_into_queue(self.task_queue, next(input_data))
                 except StopIteration:
                     input_finished = True
-                    break
+        elif status == FINISHED_STATUS:
+            n_workers -= 1
+        else:  # Failed / error
+            n_workers -= 1
+            if exc := result.get("exception"):
+                if isinstance(exc, KeyboardInterrupt):
+                    raise exc
+                raise UdfRunError(exc, stacktrace=result.get("stacktrace"))
+            raise RuntimeError("Internal error: Parallel UDF execution failed")
 
-            # Process all tasks
-            while n_workers > 0:
-                while True:
-                    try:
-                        result = self.done_queue.get_nowait()
-                        break
-                    except Empty:
-                        for p in pool:
-                            exitcode = p.exitcode
-                            if exitcode not in (None, 0):
-                                message = (
-                                    f"Worker {p.name} exited unexpectedly with "
-                                    f"code {exitcode}"
-                                )
-                                raise RuntimeError(message) from None
-                        sleep(0.01)
-
-                if bytes_downloaded := result.get("bytes_downloaded"):
-                    download_cb.relative_update(bytes_downloaded)
-                if downloaded := result.get("downloaded"):
-                    download_cb.increment_file_count(downloaded)
-                if processed := result.get("processed"):
-                    processed_cb.relative_update(processed)
-                if generated := result.get("generated"):
-                    generated_cb.relative_update(generated)
-
-                status = result["status"]
-                if status in (OK_STATUS, NOTIFY_STATUS):
-                    pass  # Do nothing here
-                elif status == FINISHED_STATUS:
-                    n_workers -= 1  # Worker finished
-                else:  # Failed / error
-                    n_workers -= 1
-                    if exc := result.get("exception"):
-                        if isinstance(exc, KeyboardInterrupt):
-                            raise exc
-                        raise UdfRunError(exc, stacktrace=result.get("stacktrace"))
-                    raise RuntimeError("Internal error: Parallel UDF execution failed")
-
-                if status == OK_STATUS and not input_finished:
-                    try:
-                        put_into_queue(self.task_queue, next(input_data))
-                    except StopIteration:
-                        input_finished = True
-        finally:
-            self._shutdown_workers(pool)
+        return n_workers, input_finished
 
     def _shutdown_workers(self, pool: list[Process]) -> None:
         self._terminate_pool(pool)
@@ -402,67 +429,59 @@ class ProcessedCallback(Callback):
         put_into_queue(self.queue, {"status": NOTIFY_STATUS, self.name: inc})
 
 
-class UDFWorker:
-    def __init__(
-        self,
-        catalog: "Catalog",
-        udf: "UDFAdapter",
-        task_queue: MultiprocessQueue,
-        done_queue: MultiprocessQueue,
-        query: "Select",
-        table: "Table",
-        cache: bool,
-        is_batching: bool,
-        batch_size: int | None,
-        udf_fields: Sequence[str],
-    ) -> None:
-        self.catalog = catalog
-        self.udf = udf
-        self.task_queue = task_queue
-        self.done_queue = done_queue
-        self.query = query
-        self.table = table
-        self.cache = cache
-        self.is_batching = is_batching
-        self.batch_size = batch_size
-        self.udf_fields = udf_fields
+@dataclass
+class UDFWorkerConfig:
+    catalog: "Catalog"
+    udf: "UDFAdapter"
+    task_queue: MultiprocessQueue
+    done_queue: MultiprocessQueue
+    query: "Select"
+    table: "Table"
+    cache: bool
+    is_batching: bool
+    batch_size: int | None
+    udf_fields: Sequence[str]
 
-        self.download_cb = DownloadCallback(self.done_queue)
-        self.processed_cb = ProcessedCallback("processed", self.done_queue)
-        self.generated_cb = ProcessedCallback("generated", self.done_queue)
+
+class UDFWorker:
+    def __init__(self, config: UDFWorkerConfig) -> None:
+        self.config = config
+        self.download_cb = DownloadCallback(self.config.done_queue)
+        self.processed_cb = ProcessedCallback("processed", self.config.done_queue)
+        self.generated_cb = ProcessedCallback("generated", self.config.done_queue)
 
     def run(self) -> None:
-        prefetch = self.udf.prefetch
-        with _get_cache(self.catalog.cache, prefetch, use_cache=self.cache) as _cache:
-            catalog = clone_catalog_with_cache(self.catalog, _cache)
-            udf_results = self.udf.run(
-                self.udf_fields,
+        prefetch = self.config.udf.prefetch
+        with _get_cache(self.config.catalog.cache, prefetch, use_cache=self.config.cache) as _cache:
+            catalog = clone_catalog_with_cache(self.config.catalog, _cache)
+            udf_results = self.config.udf.run(
+                self.config.udf_fields,
                 self.get_inputs(),
                 catalog,
-                self.cache,
+                self.config.cache,
                 download_cb=self.download_cb,
                 processed_cb=self.processed_cb,
             )
             with safe_closing(udf_results):
                 process_udf_outputs(
                     catalog.warehouse,
-                    self.table,
+                    self.config.table,
                     self.notify_and_process(udf_results),
-                    self.udf,
+                    self.config.udf,
                     cb=self.generated_cb,
-                    batch_size=self.batch_size,
+                    batch_size=self.config.batch_size,
                 )
-        put_into_queue(self.done_queue, {"status": FINISHED_STATUS})
+        put_into_queue(self.config.done_queue, {"status": FINISHED_STATUS})
 
     def notify_and_process(self, udf_results):
         for row in udf_results:
-            put_into_queue(self.done_queue, {"status": OK_STATUS})
+            put_into_queue(self.config.done_queue, {"status": OK_STATUS})
             yield row
 
     def get_inputs(self) -> Iterable["RowsOutput"]:
-        warehouse = self.catalog.warehouse.clone()
-        while (batch := get_from_queue(self.task_queue)) != STOP_SIGNAL:
+        warehouse = self.config.catalog.warehouse.clone()
+        while (batch := get_from_queue(self.config.task_queue)) != STOP_SIGNAL:
             for ids in batched(batch, DEFAULT_BATCH_SIZE):
                 yield from warehouse.dataset_rows_select_from_ids(
-                    self.query, ids, self.is_batching
+                    self.config.query, ids, self.config.is_batching
                 )

@@ -173,15 +173,8 @@ def _enrich_job(client, job: dict) -> dict:
     return job
 
 
-def cmd_fetch(days: int, limit: int, enrich: bool):  # noqa: C901
-    """Fetch jobs from Studio and output JSON."""
-    from datachain.remote.studio import StudioClient
-
-    client = StudioClient()
-    now = datetime.now(tz=timezone.utc)
-    cutoff = now - timedelta(days=days)
-
-    # Fetch clusters for name reference
+def _fetch_clusters(client):
+    """Fetch clusters and build lookup dicts. Returns (clusters_list, clusters_by_id)."""
     clusters_by_id = {}
     clusters_list = []
     try:
@@ -203,61 +196,56 @@ def cmd_fetch(days: int, limit: int, enrich: bool):  # noqa: C901
                     clusters_by_id[c["name"]] = c["name"]
     except Exception:  # noqa: BLE001, S110
         pass
+    return clusters_list, clusters_by_id
 
-    # Fetch jobs
-    response = client.get_jobs(limit=limit)
-    if not response.ok:
-        print(
-            json.dumps({"error": response.message or "Failed to fetch jobs"}),
-            file=sys.stderr,
-        )
-        sys.exit(1)
 
-    raw_jobs = response.data or []
-    fetched_count = len(raw_jobs)
-    truncated = fetched_count >= limit
-
-    # Filter by date window (client-side — API has no date filter)
+def _filter_jobs_by_date(raw_jobs, cutoff):
+    """Filter jobs to those within the date window (client-side)."""
     filtered = []
     for j in raw_jobs:
         created_dt = _parse_dt(j.get("created_at"))
         if created_dt and created_dt >= cutoff:
             filtered.append(j)
         elif created_dt is None:
-            filtered.append(j)  # include if we can't parse date
+            filtered.append(j)
+    return filtered
 
-    # Optionally enrich terminal-state jobs
-    to_enrich = []
-    if enrich:
-        to_enrich = [
-            j
-            for j in filtered
-            if _normalize_status(j.get("status")) in TERMINAL_STATUSES
-        ]
-        n = min(len(to_enrich), ENRICH_LIMIT)
-        if len(to_enrich) > ENRICH_LIMIT:
-            print(
-                f"Warning: {len(to_enrich)} terminal jobs found,"
-                f" enriching first {ENRICH_LIMIT} only.",
-                file=sys.stderr,
-            )
-            to_enrich = to_enrich[:ENRICH_LIMIT]
-        elif n > 100:
-            print(
-                f"Enriching {n} jobs with per-job API calls...",
-                file=sys.stderr,
-            )
-        to_enrich_ids = {j.get("id") for j in to_enrich}
-        enriched_map = {}
-        for j in to_enrich:
-            enriched_j = _enrich_job(client, dict(j))
-            enriched_map[j.get("id")] = enriched_j
-        filtered = [
-            enriched_map.get(j.get("id"), j) if j.get("id") in to_enrich_ids else j
-            for j in filtered
-        ]
 
-    # Normalize each job
+def _enrich_jobs(client, filtered, enrich):
+    """Optionally enrich terminal-state jobs with per-job details."""
+    if not enrich:
+        return filtered
+    to_enrich = [
+        j
+        for j in filtered
+        if _normalize_status(j.get("status")) in TERMINAL_STATUSES
+    ]
+    n = min(len(to_enrich), ENRICH_LIMIT)
+    if len(to_enrich) > ENRICH_LIMIT:
+        print(
+            f"Warning: {len(to_enrich)} terminal jobs found,"
+            f" enriching first {ENRICH_LIMIT} only.",
+            file=sys.stderr,
+        )
+        to_enrich = to_enrich[:ENRICH_LIMIT]
+    elif n > 100:
+        print(
+            f"Enriching {n} jobs with per-job API calls...",
+            file=sys.stderr,
+        )
+    to_enrich_ids = {j.get("id") for j in to_enrich}
+    enriched_map = {}
+    for j in to_enrich:
+        enriched_j = _enrich_job(client, dict(j))
+        enriched_map[j.get("id")] = enriched_j
+    return [
+        enriched_map.get(j.get("id"), j) if j.get("id") in to_enrich_ids else j
+        for j in filtered
+    ]
+
+
+def _normalize_jobs(filtered, clusters_by_id):
+    """Normalize each job dict to the output format, preserving original 'created'."""
     jobs_out = []
     for j in filtered:
         created_dt = _parse_dt(j.get("created_at"))
@@ -269,7 +257,6 @@ def cmd_fetch(days: int, limit: int, enrich: bool):  # noqa: C901
             if dur >= 0:
                 duration_seconds = dur
 
-        # Resolve cluster name: try multiple field names the API might use
         cluster_name = (
             j.get("cluster_name")
             or j.get("compute_cluster_name")
@@ -277,11 +264,9 @@ def cmd_fetch(days: int, limit: int, enrich: bool):  # noqa: C901
             or j.get("cluster")
         )
 
-        # Strip ordinal suffixes (e.g. " (3rd)") from ID
         raw_id = j.get("id") or ""
         job_id = _strip_ordinal(raw_id) if raw_id else None
 
-        # Format created as "YYYY-MM-DD HH:MM" for display
         created_display = (
             created_dt.strftime("%Y-%m-%d %H:%M") if created_dt else j.get("created_at")
         )
@@ -304,14 +289,43 @@ def cmd_fetch(days: int, limit: int, enrich: bool):  # noqa: C901
                 "python_version": j.get("python_version"),
             }
         )
+    return jobs_out
 
-    # Sort newest-first
+
+def _compute_status_counts(jobs):
+    """Compute status-based counts from normalized jobs list."""
+    failed = sum(1 for j in jobs if j["status"] == "failed")
+    complete = sum(1 for j in jobs if j["status"] == "complete")
+    running = sum(1 for j in jobs if j["status"] == "running")
+    return failed, complete, running
+
+
+def cmd_fetch(days: int, limit: int, enrich: bool):
+    """Fetch jobs from Studio and output JSON."""
+    from datachain.remote.studio import StudioClient
+
+    client = StudioClient()
+    now = datetime.now(tz=timezone.utc)
+    cutoff = now - timedelta(days=days)
+
+    clusters_list, clusters_by_id = _fetch_clusters(client)
+
+    resp = client.get_jobs(limit=limit)
+    if not resp.ok:
+        print(
+            json.dumps({"error": resp.message or "Failed to fetch jobs"}),
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    fetched_count = len(resp.data or [])
+
+    filtered = _filter_jobs_by_date(resp.data or [], cutoff)
+    filtered = _enrich_jobs(client, filtered, enrich)
+    jobs_out = _normalize_jobs(filtered, clusters_by_id)
     jobs_out.sort(key=lambda j: j.get("created") or "", reverse=True)
 
-    # Compute status counts
-    failed_count = sum(1 for j in jobs_out if j["status"] == "failed")
-    complete_count = sum(1 for j in jobs_out if j["status"] == "complete")
-    running_count = sum(1 for j in jobs_out if j["status"] == "running")
+    counts = _compute_status_counts(jobs_out)
 
     print(
         json.dumps(
@@ -320,15 +334,12 @@ def cmd_fetch(days: int, limit: int, enrich: bool):  # noqa: C901
                 "days_covered": days,
                 "fetched_count": fetched_count,
                 "filtered_count": len(jobs_out),
-                "truncated": truncated,
+                "truncated": fetched_count >= limit,
                 "enriched": enrich,
-                "failed_count": failed_count,
-                "complete_count": complete_count,
-                "running_count": running_count,
-                "other_count": len(jobs_out)
-                - failed_count
-                - complete_count
-                - running_count,
+                "failed_count": counts[0],
+                "complete_count": counts[1],
+                "running_count": counts[2],
+                "other_count": len(jobs_out) - counts[0] - counts[1] - counts[2],
                 "clusters": clusters_list,
                 "jobs": jobs_out,
             }

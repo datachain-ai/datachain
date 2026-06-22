@@ -211,7 +211,7 @@ def case(
 
         if isinstance(val, Func):
             # nested functions
-            return val.result_type
+            return val.config.result_type
         if isinstance(val, Column):
             # at this point we cannot know what is the type of a column
             return None

@@ -3,7 +3,8 @@ import os
 import weakref
 from collections.abc import Callable, Generator, Iterable, Iterator
 from contextlib import closing
-from typing import TYPE_CHECKING, Any
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from PIL import Image
 from torch import float32
@@ -37,8 +38,24 @@ def label_to_int(value: str, classes: list) -> int:
     return classes.index(value)
 
 
-class PytorchDataset(IterableDataset):
+@dataclass
+class _PytorchDatasetConfig:
+    name: str
+    transform: "Transform | None" = None
+    tokenizer: Callable | None = None
+    tokenizer_kwargs: dict[str, Any] = field(default_factory=dict)
+    num_samples: int = 0
+    cache: bool = False
     prefetch: int = 2
+
+
+class _CatalogParams(NamedTuple):
+    ms_params: tuple
+    wh_params: tuple
+    catalog_params: dict[str, Any]
+
+
+class PytorchDataset(IterableDataset):
 
     def __init__(
         self,
@@ -68,26 +85,27 @@ class PytorchDataset(IterableDataset):
             num_samples (int): Number of random samples to draw for each epoch.
                 This argument is ignored if `num_samples=0` (the default).
         """
-        self.name = name
+        dc_settings = dc_settings or Settings()
+        self._config = _PytorchDatasetConfig(
+            name=name,
+            transform=transform or DEFAULT_TRANSFORM,
+            tokenizer=tokenizer,
+            tokenizer_kwargs=tokenizer_kwargs or {},
+            num_samples=num_samples,
+            cache=dc_settings.cache,
+            prefetch=dc_settings.prefetch if dc_settings.prefetch is not None else 2,
+        )
+
         self.version = version
-        self.transform = transform or DEFAULT_TRANSFORM
-        self.tokenizer = tokenizer
-        self.tokenizer_kwargs = tokenizer_kwargs or {}
-        self.num_samples = num_samples
         owns_catalog = catalog is None
         if catalog is None:
             catalog = get_catalog()
         self._init_catalog(catalog)
 
-        dc_settings = dc_settings or Settings()
-        self.cache = dc_settings.cache
-        if (prefetch := dc_settings.prefetch) is not None:
-            self.prefetch = prefetch
-
         self._cache = catalog.cache
         self._prefetch_cache: Cache | None = None
         self._remove_prefetched = remove_prefetched
-        if prefetch and not self.cache:
+        if self._config.prefetch and not self._config.cache:
             tmp_dir = catalog.cache.tmp_dir
             assert tmp_dir
             self._prefetch_cache = get_temp_cache(tmp_dir, prefix="prefetch-")
@@ -106,17 +124,18 @@ class PytorchDataset(IterableDataset):
         # For compatibility with multiprocessing,
         # we can only store params in __init__(), as Catalog isn't picklable
         # see https://github.com/iterative/dvcx/issues/954
-        self._ms_params = catalog.metastore.clone_params()
-        self._wh_params = catalog.warehouse.clone_params()
-        self._catalog_params = catalog.get_init_params()
-        self.catalog: Catalog | None = None
+        self._catalog_params = _CatalogParams(
+            ms_params=catalog.metastore.clone_params(),
+            wh_params=catalog.warehouse.clone_params(),
+            catalog_params=catalog.get_init_params(),
+        )
 
     def _get_catalog(self) -> "Catalog":
-        ms_cls, ms_args, ms_kwargs = self._ms_params
+        ms_cls, ms_args, ms_kwargs = self._catalog_params.ms_params
         ms = ms_cls(*ms_args, **ms_kwargs)
-        wh_cls, wh_args, wh_kwargs = self._wh_params
+        wh_cls, wh_args, wh_kwargs = self._catalog_params.wh_params
         wh = wh_cls(*wh_args, **wh_kwargs)
-        catalog = Catalog(ms, wh, **self._catalog_params)
+        catalog = Catalog(ms, wh, **self._catalog_params.catalog_params)
         catalog.cache = self._cache
         return catalog
 
@@ -129,15 +148,15 @@ class PytorchDataset(IterableDataset):
         try:
             session = Session("PyTorch", catalog=catalog)
             ds = read_dataset(
-                name=self.name, version=self.version, session=session
-            ).settings(cache=self.cache, prefetch=self.prefetch)
+                name=self._config.name, version=self.version, session=session
+            ).settings(cache=self._config.cache, prefetch=self._config.prefetch)
 
             # remove file signals from dataset
             schema = ds.signals_schema.clone_without_file_signals()
             ds = ds.select(*schema.values.keys())
 
-            if self.num_samples > 0:
-                ds = ds.sample(self.num_samples)
+            if self._config.num_samples > 0:
+                ds = ds.sample(self._config.num_samples)
             ds = ds.chunk(total_rank, total_workers)
             yield from ds.to_iter()
         finally:
@@ -158,7 +177,7 @@ class PytorchDataset(IterableDataset):
         rows = self._row_iter(total_rank, total_workers)
         rows = _prefetch_inputs(
             rows,
-            self.prefetch,
+            self._config.prefetch,
             download_cb=download_cb,
             remove_prefetched=self._remove_prefetched,
         )
@@ -170,6 +189,14 @@ class PytorchDataset(IterableDataset):
         with closing(self._iter_with_prefetch()) as rows:
             yield from map(self._process_row, rows)
 
+    @property
+    def cache(self) -> bool:
+        return self._config.cache
+
+    @property
+    def prefetch(self) -> int:
+        return self._config.prefetch
+
     def _process_row(self, row_features: Iterable[Any]) -> list[Any]:
         row = []
         for fr in row_features:
@@ -178,23 +205,23 @@ class PytorchDataset(IterableDataset):
             else:
                 row.append(fr)
         # Apply transforms
-        if self.transform:
+        if self._config.transform:
             try:
-                if isinstance(self.transform, v2.Transform):
-                    row = self.transform(row)
+                if isinstance(self._config.transform, v2.Transform):
+                    row = self._config.transform(row)
                 for i, val in enumerate(row):
                     if isinstance(val, Image.Image):
-                        row[i] = self.transform(val)
+                        row[i] = self._config.transform(val)
             except ValueError:
                 logger.warning("Skipping transform due to unsupported data types.")
-                self.transform = None
-        if self.tokenizer:
+                self._config.transform = None
+        if self._config.tokenizer:
             for i, val in enumerate(row):
                 if isinstance(val, str) or (
                     isinstance(val, list) and isinstance(val[0], str)
                 ):
                     row[i] = convert_text(
-                        val, self.tokenizer, self.tokenizer_kwargs
+                        val, self._config.tokenizer, self._config.tokenizer_kwargs
                     ).squeeze(0)  # type: ignore[union-attr]
         return row
 

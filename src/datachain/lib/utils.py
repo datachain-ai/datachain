@@ -170,7 +170,155 @@ def rebase_path(
     return str(PurePosixPath(_to_posix(new_base)) / new_relative_path)
 
 
-def type_to_str(  # noqa: C901, PLR0911, PLR0912
+def _type_to_str_union(
+    type_: type,
+    subtypes: list | None,
+    warn_with: Callable[[str], None] | None,
+    register_pydantic: bool,
+) -> str:
+    args = get_args(type_)
+    if len(args) == 2 and type(None) in args:
+        non_none_type = args[0] if args[1] is type(None) else args[1]
+        type_str = type_to_str(
+            non_none_type,
+            subtypes,
+            warn_with=warn_with,
+            register_pydantic=register_pydantic,
+        )
+        return f"Optional[{type_str}]"
+    formatted_types = ", ".join(
+        type_to_str(
+            arg,
+            subtypes,
+            warn_with=warn_with,
+            register_pydantic=register_pydantic,
+        )
+        for arg in args
+    )
+    return f"Union[{formatted_types}]"
+
+
+def _type_to_str_list(
+    type_: type,
+    subtypes: list | None,
+    warn_with: Callable[[str], None] | None,
+    register_pydantic: bool,
+) -> str:
+    args = get_args(type_)
+    if len(args) == 0:
+        return "list"
+    type_str = type_to_str(
+        args[0],
+        subtypes,
+        warn_with=warn_with,
+        register_pydantic=register_pydantic,
+    )
+    return f"list[{type_str}]"
+
+
+def _type_to_str_dict(
+    type_: type,
+    subtypes: list | None,
+    warn_with: Callable[[str], None] | None,
+    register_pydantic: bool,
+) -> str:
+    args = get_args(type_)
+    if len(args) == 0:
+        return "dict"
+    key_type = type_to_str(
+        args[0],
+        subtypes,
+        warn_with=warn_with,
+        register_pydantic=register_pydantic,
+    )
+    if len(args) == 1:
+        return f"dict[{key_type}, Any]"
+    val_type = type_to_str(
+        args[1],
+        subtypes,
+        warn_with=warn_with,
+        register_pydantic=register_pydantic,
+    )
+    return f"dict[{key_type}, {val_type}]"
+
+
+def _type_to_str_tuple(
+    type_: type,
+    subtypes: list | None,
+    warn_with: Callable[[str], None] | None,
+    register_pydantic: bool,
+) -> str:
+    args = get_args(type_)
+    if len(args) == 0:
+        return "tuple"
+    if len(args) == 2 and args[1] is Ellipsis:
+        inner = type_to_str(
+            args[0],
+            subtypes,
+            warn_with=warn_with,
+            register_pydantic=register_pydantic,
+        )
+        return f"tuple[{inner}, ...]"
+    formatted_types = ", ".join(
+        type_to_str(
+            arg,
+            subtypes,
+            warn_with=warn_with,
+            register_pydantic=register_pydantic,
+        )
+        for arg in args
+    )
+    return f"tuple[{formatted_types}]"
+
+
+def _type_to_str_annotated(
+    type_: type,
+    subtypes: list | None,
+    warn_with: Callable[[str], None] | None,
+    register_pydantic: bool,
+) -> str:
+    args = get_args(type_)
+    return type_to_str(
+        args[0],
+        subtypes,
+        warn_with=warn_with,
+        register_pydantic=register_pydantic,
+    )
+
+
+def _type_to_str_simple(origin: Any, type_: type) -> str | None:
+    if origin in (Literal, LiteralEx) or type_ in (Literal, LiteralEx):
+        return "Literal"
+    if Any in (origin, type_):
+        return "Any"
+    if Final in (origin, type_):
+        return "Final"
+    return None
+
+
+def _type_to_str_fallback(
+    type_: type,
+    subtypes: list | None,
+    warn_with: Callable[[str], None] | None,
+    register_pydantic: bool,
+) -> str:
+    if subtypes is not None:
+        subtypes.append(type_)
+    if not hasattr(type_, "__name__"):
+        msg = f"Unable to determine name of type '{type_}'."
+        if warn_with is not None:
+            warn_with(msg)
+        else:
+            warnings.warn(msg, RuntimeWarning, stacklevel=2)
+        return "Any"
+    if ModelStore.is_pydantic(type_):
+        if register_pydantic:
+            ModelStore.register(type_)
+        return ModelStore.get_name(type_)
+    return type_.__name__
+
+
+def type_to_str(
     type_: type | None | types.EllipsisType,
     subtypes: list | None = None,
     *,
@@ -187,103 +335,18 @@ def type_to_str(  # noqa: C901, PLR0911, PLR0912
     origin = get_origin(type_)
 
     if origin in (Union, types.UnionType):
-        args = get_args(type_)
-        if len(args) == 2 and type(None) in args:
-            non_none_type = args[0] if args[1] is type(None) else args[1]
-            type_str = type_to_str(
-                non_none_type,
-                subtypes,
-                warn_with=warn_with,
-                register_pydantic=register_pydantic,
-            )
-            return f"Optional[{type_str}]"
-        formatted_types = ", ".join(
-            type_to_str(
-                arg,
-                subtypes,
-                warn_with=warn_with,
-                register_pydantic=register_pydantic,
-            )
-            for arg in args
-        )
-        return f"Union[{formatted_types}]"
+        return _type_to_str_union(type_, subtypes, warn_with, register_pydantic)
     if origin is list:
-        args = get_args(type_)
-        if len(args) == 0:
-            return "list"
-        type_str = type_to_str(
-            args[0],
-            subtypes,
-            warn_with=warn_with,
-            register_pydantic=register_pydantic,
-        )
-        return f"list[{type_str}]"
+        return _type_to_str_list(type_, subtypes, warn_with, register_pydantic)
     if origin is dict:
-        args = get_args(type_)
-        if len(args) == 0:
-            return "dict"
-        key_type = type_to_str(
-            args[0],
-            subtypes,
-            warn_with=warn_with,
-            register_pydantic=register_pydantic,
-        )
-        if len(args) == 1:
-            return f"dict[{key_type}, Any]"
-        val_type = type_to_str(
-            args[1],
-            subtypes,
-            warn_with=warn_with,
-            register_pydantic=register_pydantic,
-        )
-        return f"dict[{key_type}, {val_type}]"
+        return _type_to_str_dict(type_, subtypes, warn_with, register_pydantic)
     if origin is tuple:
-        args = get_args(type_)
-        if len(args) == 0:
-            return "tuple"
-        if len(args) == 2 and args[1] is Ellipsis:
-            inner = type_to_str(
-                args[0],
-                subtypes,
-                warn_with=warn_with,
-                register_pydantic=register_pydantic,
-            )
-            return f"tuple[{inner}, ...]"
-        formatted_types = ", ".join(
-            type_to_str(
-                arg,
-                subtypes,
-                warn_with=warn_with,
-                register_pydantic=register_pydantic,
-            )
-            for arg in args
-        )
-        return f"tuple[{formatted_types}]"
+        return _type_to_str_tuple(type_, subtypes, warn_with, register_pydantic)
     if origin is Annotated:
-        args = get_args(type_)
-        return type_to_str(
-            args[0],
-            subtypes,
-            warn_with=warn_with,
-            register_pydantic=register_pydantic,
-        )
-    if origin in (Literal, LiteralEx) or type_ in (Literal, LiteralEx):
-        return "Literal"
-    if Any in (origin, type_):
-        return "Any"
-    if Final in (origin, type_):
-        return "Final"
-    if subtypes is not None:
-        subtypes.append(type_)
-    if not hasattr(type_, "__name__"):
-        msg = f"Unable to determine name of type '{type_}'."
-        if warn_with is not None:
-            warn_with(msg)
-        else:
-            warnings.warn(msg, RuntimeWarning, stacklevel=2)
-        return "Any"
-    if ModelStore.is_pydantic(type_):
-        if register_pydantic:
-            ModelStore.register(type_)
-        return ModelStore.get_name(type_)
-    return type_.__name__
+        return _type_to_str_annotated(type_, subtypes, warn_with, register_pydantic)
+
+    simple = _type_to_str_simple(origin, type_)
+    if simple is not None:
+        return simple
+
+    return _type_to_str_fallback(type_, subtypes, warn_with, register_pydantic)

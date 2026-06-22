@@ -47,11 +47,11 @@ def test_db_cols():
 
 def test_label():
     rnd = rand()
-    assert rnd.col_label is None
+    assert rnd.config.col_label is None
     assert rnd.label("test2") == "test2"
 
     f = rnd.label("test")
-    assert f.col_label == "test"
+    assert f.config.col_label == "test"
     assert f.label("test2") == "test2"
 
 

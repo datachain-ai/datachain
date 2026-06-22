@@ -174,6 +174,27 @@ class DataChainSchema(dict[str, DataType]):
         return file.getvalue().removesuffix("\n")
 
 
+def _normalize_subtract_keys(
+    param: str | Sequence[str] | None,
+    name: str,
+) -> list[str] | None:
+    """Validate and normalize an 'on' / 'right_on' param for subtract.
+
+    Converts a bare string to a one-element list and validates that strings
+    and sequences are non-empty.  Returns None and unknown types as-is so the
+    caller can dispatch and raise appropriate errors.
+    """
+    if isinstance(param, str):
+        if not param:
+            raise DataChainParamsError(f"'{name}' cannot be an empty string")
+        return [param]
+    if isinstance(param, Sequence):
+        if not param or any(not col for col in param):
+            raise DataChainParamsError(f"'{name}' cannot contain empty strings")
+        return list(param)
+    return param  # type: ignore[return-value]
+
+
 class DataChain:
     """DataChain - a data structure for batch data processing and evaluation.
 
@@ -1293,7 +1314,7 @@ class DataChain:
         )
 
     @delta_disabled  # type: ignore[arg-type]
-    def group_by(  # noqa: C901, PLR0912, PLR0915
+    def group_by(
         self,
         *args: Any,
         partition_by: (
@@ -1333,94 +1354,44 @@ class DataChain:
                 "`partition_by=` and aggregate expressions as keyword arguments"
             )
 
-        if partition_by is None:
-            partition_by = []
-        elif isinstance(partition_by, (str, Func, ColumnExpr)):
-            partition_by = [partition_by]
+        partition_by = self._normalize_partition_by(partition_by)
 
         partition_by_columns: list[Column] = []
         signal_columns: list[Column] = []
         schema_fields: dict[str, DataType] = {}
         keep_columns: list[str] = []
-        partial_fields: list[str] = []  # Track specific fields for partial creation
+        partial_fields: list[str] = []
         schema_partition_by: list[str] = []
-        # Start counter past any existing gr_N columns and kwargs to avoid collisions
-        partition_counter = 0
-        for name in (*self.signals_schema.values, *kwargs):
-            if name.startswith("gr_"):
-                try:
-                    partition_counter = max(partition_counter, int(name[3:]) + 1)
-                except ValueError:
-                    pass
+        partition_counter = self._init_partition_counter(
+            (*self.signals_schema.values, *kwargs)
+        )
 
         for col in partition_by:
             if isinstance(col, str):
-                columns = self.signals_schema.db_signals(name=col, as_columns=True)
-                if not columns:
-                    raise SignalResolvingError([col], "is not found")
-                partition_by_columns.extend(cast("list[Column]", columns))
-                # GROUP BY the ancestor sentinel so the result keeps _type_tag.
-                for leaf in cast("list[Column]", columns):
-                    sentinel = self.signals_schema.optional_parent_sentinel(leaf.name)
-                    if sentinel:
-                        partition_by_columns.append(Column(sentinel))
-
-                # For nested field references (e.g., "nested.level1.name"),
-                # we need to distinguish between:
-                # 1. References to fields within a complex signal (create partials)
-                # 2. Deep nested references that should be flattened
-                if "." in col:
-                    # Split the column reference to analyze it
-                    parts = col.split(".")
-                    parent_signal = parts[0]
-                    parent_type = self.signals_schema.values.get(parent_signal)
-
-                    if ModelStore.is_partial(parent_type):
-                        if parent_signal not in keep_columns:
-                            keep_columns.append(parent_signal)
-                        partial_fields.append(col)
-                        schema_partition_by.append(col)
-                    else:
-                        # BaseModel or other - add flattened columns directly
-                        for column in cast("list[Column]", columns):
-                            col_type = self.signals_schema.get_column_type(column.name)
-                            schema_fields[column.name] = col_type
-                        schema_partition_by.append(col)
-                else:
-                    # simple signal - but we need to check if it's a complex signal
-                    # complex signal - only include the columns used for partitioning
-                    col_type = self.signals_schema.get_column_type(
-                        col, with_subtree=True
-                    )
-                    if isinstance(col_type, type) and issubclass(col_type, BaseModel):
-                        # Complex signal - add only the partitioning columns
-                        for column in cast("list[Column]", columns):
-                            col_type = self.signals_schema.get_column_type(column.name)
-                            schema_fields[column.name] = col_type
-                        schema_partition_by.append(col)
-                    # Simple signal - keep the entire signal
-                    else:
-                        if col not in keep_columns:
-                            keep_columns.append(col)
-                        schema_partition_by.append(col)
+                self._process_partition_by_str(
+                    col,
+                    partition_by_columns,
+                    schema_fields,
+                    keep_columns,
+                    partial_fields,
+                    schema_partition_by,
+                )
             elif isinstance(col, Function):
-                label = col.col_label
-                if not label:
-                    label = f"gr_{partition_counter}"
-                    partition_counter += 1
-                column = col.get_column(self.signals_schema, label=label)
-                partition_by_columns.append(column)
-                signal_columns.append(column)
-                schema_fields[column.name] = column.type.python_type
+                partition_counter = self._process_partition_by_func(
+                    col,
+                    partition_by_columns,
+                    signal_columns,
+                    schema_fields,
+                    partition_counter,
+                )
             elif isinstance(col, ColumnExpr):
-                col_label = f"gr_{partition_counter}"
-                partition_counter += 1
-                enriched = self.signals_schema.enrich_expr_types(col)
-                labeled = cast("Column", enriched.label(col_label))
-                inferred = sql_to_python(enriched)
-                partition_by_columns.append(labeled)
-                signal_columns.append(labeled)
-                schema_fields[col_label] = inferred
+                partition_counter = self._process_partition_by_expr(
+                    col,
+                    partition_by_columns,
+                    signal_columns,
+                    schema_fields,
+                    partition_counter,
+                )
             else:
                 raise DataChainColumnError(
                     col,
@@ -1430,6 +1401,156 @@ class DataChain:
                     ),
                 )
 
+        self._validate_and_process_kwargs(
+            kwargs, self.signals_schema, signal_columns, schema_fields,
+        )
+
+        signal_schema = self.signals_schema.group_by(
+            schema_partition_by, signal_columns
+        )
+
+        return self._evolve(
+            query=self._query.group_by(signal_columns, partition_by_columns),
+            signal_schema=signal_schema,
+        )
+
+    @staticmethod
+    def _normalize_partition_by(partition_by):
+        if partition_by is None:
+            return []
+        if isinstance(partition_by, (str, Func, ColumnExpr)):
+            return [partition_by]
+        return partition_by
+
+    @staticmethod
+    def _init_partition_counter(names):
+        counter = 0
+        for name in names:
+            if name.startswith("gr_"):
+                try:
+                    counter = max(counter, int(name[3:]) + 1)
+                except ValueError:
+                    pass
+        return counter
+
+    def _process_partition_by_str(
+        self,
+        col,
+        partition_by_columns,
+        schema_fields,
+        keep_columns,
+        partial_fields,
+        schema_partition_by,
+    ):
+        columns = self.signals_schema.db_signals(name=col, as_columns=True)
+        if not columns:
+            raise SignalResolvingError([col], "is not found")
+        partition_by_columns.extend(cast("list[Column]", columns))
+        for leaf in cast("list[Column]", columns):
+            sentinel = self.signals_schema.optional_parent_sentinel(leaf.name)
+            if sentinel:
+                partition_by_columns.append(Column(sentinel))
+
+        if "." in col:
+            self._process_partition_by_str_nested(
+                col,
+                columns,
+                schema_fields,
+                keep_columns,
+                partial_fields,
+                schema_partition_by,
+            )
+        else:
+            self._process_partition_by_str_simple(
+                col, columns, schema_fields, keep_columns, schema_partition_by,
+            )
+
+    def _process_partition_by_str_nested(
+        self,
+        col,
+        columns,
+        schema_fields,
+        keep_columns,
+        partial_fields,
+        schema_partition_by,
+    ):
+        parts = col.split(".")
+        parent_signal = parts[0]
+        parent_type = self.signals_schema.values.get(parent_signal)
+
+        if ModelStore.is_partial(parent_type):
+            if parent_signal not in keep_columns:
+                keep_columns.append(parent_signal)
+            partial_fields.append(col)
+            schema_partition_by.append(col)
+        else:
+            for column in cast("list[Column]", columns):
+                col_type = self.signals_schema.get_column_type(column.name)
+                schema_fields[column.name] = col_type
+            schema_partition_by.append(col)
+
+    def _process_partition_by_str_simple(
+        self,
+        col,
+        columns,
+        schema_fields,
+        keep_columns,
+        schema_partition_by,
+    ):
+        col_type = self.signals_schema.get_column_type(col, with_subtree=True)
+        if isinstance(col_type, type) and issubclass(col_type, BaseModel):
+            for column in cast("list[Column]", columns):
+                col_type = self.signals_schema.get_column_type(column.name)
+                schema_fields[column.name] = col_type
+            schema_partition_by.append(col)
+        else:
+            if col not in keep_columns:
+                keep_columns.append(col)
+            schema_partition_by.append(col)
+
+    def _process_partition_by_func(
+        self,
+        col,
+        partition_by_columns,
+        signal_columns,
+        schema_fields,
+        partition_counter,
+    ):
+        label = col.config.col_label
+        if not label:
+            label = f"gr_{partition_counter}"
+            partition_counter += 1
+        column = col.get_column(self.signals_schema, label=label)
+        partition_by_columns.append(column)
+        signal_columns.append(column)
+        schema_fields[column.name] = column.type.python_type
+        return partition_counter
+
+    def _process_partition_by_expr(
+        self,
+        col,
+        partition_by_columns,
+        signal_columns,
+        schema_fields,
+        partition_counter,
+    ):
+        col_label = f"gr_{partition_counter}"
+        partition_counter += 1
+        enriched = self.signals_schema.enrich_expr_types(col)
+        labeled = cast("Column", enriched.label(col_label))
+        inferred = sql_to_python(enriched)
+        partition_by_columns.append(labeled)
+        signal_columns.append(labeled)
+        schema_fields[col_label] = inferred
+        return partition_counter
+
+    def _validate_and_process_kwargs(
+        self,
+        kwargs,
+        signals_schema,
+        signal_columns,
+        schema_fields,
+    ):
         if not kwargs:
             raise ValueError("At least one column should be provided for group_by")
 
@@ -1448,18 +1569,9 @@ class DataChain:
                     col_name,
                     f"Column {col_name} has type {type(func)} but expected Func object",
                 )
-            column = func.get_column(self.signals_schema, label=col_name)
+            column = func.get_column(signals_schema, label=col_name)
             signal_columns.append(column)
-            schema_fields[col_name] = func.get_result_type(self.signals_schema)
-
-        signal_schema = self.signals_schema.group_by(
-            schema_partition_by, signal_columns
-        )
-
-        return self._evolve(
-            query=self._query.group_by(signal_columns, partition_by_columns),
-            signal_schema=signal_schema,
-        )
+            schema_fields[col_name] = func.get_result_type(signals_schema)
 
     def mutate(self, *args, **kwargs) -> "Self":
         """Create or modify signals based on existing signals.
@@ -2009,21 +2121,8 @@ class DataChain:
             right_on: columns to consider for determining row equality in `other`.
                 If unspecified, defaults to the same values as `on`.
         """
-        if isinstance(on, str):
-            if not on:
-                raise DataChainParamsError("'on' cannot be an empty string")
-            on = [on]
-        elif isinstance(on, Sequence):
-            if not on or any(not col for col in on):
-                raise DataChainParamsError("'on' cannot contain empty strings")
-
-        if isinstance(right_on, str):
-            if not right_on:
-                raise DataChainParamsError("'right_on' cannot be an empty string")
-            right_on = [right_on]
-        elif isinstance(right_on, Sequence):
-            if not right_on or any(not col for col in right_on):
-                raise DataChainParamsError("'right_on' cannot contain empty strings")
+        on = _normalize_subtract_keys(on, "on")
+        right_on = _normalize_subtract_keys(right_on, "right_on")
 
         if on is None and right_on is None:
             other_columns = set(other._effective_signals_schema.db_signals())

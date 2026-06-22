@@ -1,6 +1,7 @@
 import copy
 import inspect
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Union, get_args, get_origin
 
@@ -72,6 +73,17 @@ def _source_is_nullable(col: ColT, signals_schema: "SignalSchema | None") -> boo
     return is_optional
 
 
+@dataclass(frozen=True)
+class FuncConfig:
+    result_type: "DataType | None" = None
+    type_from_args: Callable[..., "DataType"] | None = None
+    is_array: bool = False
+    from_array: bool = False
+    is_window: bool = False
+    window: "Window | None" = None
+    col_label: str | None = None
+
+
 class Func(Function):  # noqa: PLW1641
     """A built-in function applied to dataset columns, created by calling functions
     from the `func` module.
@@ -113,19 +125,21 @@ class Func(Function):  # noqa: PLW1641
         self.cols = cols or []
         self.args = args or []
         self.kwargs = kwargs or {}
-        self.result_type = result_type
-        self.type_from_args = type_from_args
-        self.is_array = is_array
-        self.from_array = from_array
-        self.is_window = is_window
-        self.window = window
-        self.col_label = label
+        self.config = FuncConfig(
+            result_type=result_type,
+            type_from_args=type_from_args,
+            is_array=is_array,
+            from_array=from_array,
+            is_window=is_window,
+            window=window,
+            col_label=label,
+        )
 
     def __str__(self) -> str:
         return self.name + "()"
 
     def over(self, window: "Window") -> "Func":
-        if not self.is_window:
+        if not self.config.is_window:
             raise DataChainParamsError(f"{self} doesn't support window (over())")
 
         return Func(
@@ -134,13 +148,13 @@ class Func(Function):  # noqa: PLW1641
             self.cols,
             self.args,
             self.kwargs,
-            self.result_type,
-            self.type_from_args,
-            self.is_array,
-            self.from_array,
-            self.is_window,
+            self.config.result_type,
+            self.config.type_from_args,
+            self.config.is_array,
+            self.config.from_array,
+            self.config.is_window,
             window,
-            self.col_label,
+            self.config.col_label,
         )
 
     @property
@@ -169,7 +183,7 @@ class Func(Function):  # noqa: PLW1641
                     "Columns must have the same type to infer result type",
                 )
 
-        if self.from_array:
+        if self.config.from_array:
             # an Optional[list] column is still an array source
             inner_type, _ = unwrap_optional(col_type)
             if get_origin(inner_type) is not list:
@@ -177,7 +191,7 @@ class Func(Function):  # noqa: PLW1641
                     str(self),
                     "Array column must be of type list",
                 )
-            if self.is_array:
+            if self.config.is_array:
                 return inner_type
             col_args = get_args(inner_type)
             if len(col_args) != 1:
@@ -187,7 +201,7 @@ class Func(Function):  # noqa: PLW1641
                 )
             return col_args[0]
 
-        return list[col_type] if self.is_array else col_type  # type: ignore[valid-type]
+        return list[col_type] if self.config.is_array else col_type  # type: ignore[valid-type]
 
     def __add__(self, other: ColT | float) -> "Func":
         if isinstance(other, (int, float)):
@@ -407,14 +421,14 @@ class Func(Function):  # noqa: PLW1641
 
     def label(self, label: str) -> "Func":
         new = copy.copy(self)
-        new.col_label = label
+        new.config = replace(self.config, col_label=label)
         return new
 
     def get_col_name(self, label: str | None = None) -> str:
         if label:
             return label
-        if self.col_label:
-            return self.col_label
+        if self.config.col_label:
+            return self.config.col_label
         if (db_cols := self._db_cols) and len(db_cols) == 1:
             first_col = db_cols[0]
             if isinstance(first_col, str):
@@ -442,8 +456,8 @@ class Func(Function):  # noqa: PLW1641
     def get_result_type(
         self, signals_schema: "SignalSchema | None" = None
     ) -> "DataType":
-        if self.result_type:
-            return self.result_type
+        if self.config.result_type:
+            return self.config.result_type
 
         if (
             signals_schema is not None
@@ -458,8 +472,8 @@ class Func(Function):  # noqa: PLW1641
                 "A dataset context is required to infer result type",
             )
 
-        if self.type_from_args and not self.cols and self.args:
-            inferred_result_type = self.type_from_args(*self.args)
+        if self.config.type_from_args and not self.cols and self.args:
+            inferred_result_type = self.config.type_from_args(*self.args)
             if inferred_result_type is not None:
                 return inferred_result_type
 
@@ -536,20 +550,20 @@ class Func(Function):  # noqa: PLW1641
     ) -> Any:
         result: Any = func_col
 
-        if self.is_window:
-            if not self.window:
+        if self.config.is_window:
+            if not self.config.window:
                 raise DataChainParamsError(
                     f"Window function {self} requires over() clause with a window spec",
                 )
             ordering = (
-                desc(self.window.order_by)
-                if self.window.desc
-                else asc(self.window.order_by)
+                desc(self.config.window.order_by)
+                if self.config.window.desc
+                else asc(self.config.window.order_by)
             )
             # NULLS LAST so window ordering matches across backends (SQLite
             # orders NULLs first by default, ClickHouse last).
             result = result.over(
-                partition_by=self.window.partition_by,
+                partition_by=self.config.window.partition_by,
                 order_by=nulls_last(ordering),
             )
 
@@ -661,7 +675,7 @@ class CastFunc(Func):
             target = SQLType.as_nullable(target)
 
         func_col: ColumnElement[Any]
-        if self.result_type is str and source_type is datetime:
+        if self.config.result_type is str and source_type is datetime:
             func_col = datetime_to_string(value)
         else:
             func_col = sa_cast(value, target)

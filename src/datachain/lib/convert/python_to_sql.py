@@ -64,15 +64,9 @@ def python_to_sql(typ):  # noqa: PLR0911
         return JSON
 
     if orig in (Union, UnionType):
-        if len(args) == 2 and (type(None) in args):
-            non_none_arg = args[0] if args[0] is not type(None) else args[1]
-            return python_to_sql(non_none_arg)
-
-        if all(arg is str or get_origin(arg) in (Literal, LiteralEx) for arg in args):
-            return String
-
-        if _is_json_inside_union(orig, args):
-            return JSON
+        result = _python_to_sql_union(orig, args)
+        if result is not None:
+            return result
 
     raise TypeError(f"Cannot recognize type {typ}")
 
@@ -103,6 +97,20 @@ def list_of_args_to_type(args) -> SQLType:
         except TypeError:
             return JSON()
     return first_type
+
+
+def _python_to_sql_union(orig, args):
+    if len(args) == 2 and (type(None) in args):
+        non_none_arg = args[0] if args[0] is not type(None) else args[1]
+        return python_to_sql(non_none_arg)
+
+    if all(arg is str or get_origin(arg) in (Literal, LiteralEx) for arg in args):
+        return String
+
+    if _is_json_inside_union(orig, args):
+        return JSON
+
+    return None
 
 
 def _is_json_inside_union(orig, args) -> bool:
