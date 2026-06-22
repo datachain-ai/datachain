@@ -451,10 +451,13 @@ class AbstractMetastore(ABC, Serializable):
     @abstractmethod
     def mark_job_dataset_versions_as_failed(self, job_id: str) -> None:
         """
-        Mark all non-COMPLETE dataset versions created by a job as FAILED.
+        Flip CREATED dataset versions belonging to a failed job to FAILED.
 
-        This is called when a job fails to ensure that any dataset versions
-        it was creating are marked as failed rather than left in CREATED state.
+        Only the in-flight CREATED state is touched. Terminal and removal
+        states (COMPLETE, FAILED, REMOVING, REMOVED, REMOVING_TOTAL) are
+        left as-is - otherwise tombstones from a user-issued soft delete
+        inside the failing job would be resurrected as FAILED and then
+        wiped by GC.
 
         Args:
             job_id: ID of the failed job whose dataset versions should be marked

@@ -1151,7 +1151,7 @@ class Catalog:
             raise DataChainError(
                 f"Cannot remove {dataset.name}@{version} while keeping "
                 f"metadata: current status is {v.status}, expected "
-                "COMPLETE or REMOVING"
+                "COMPLETE, REMOVING, or REMOVED"
             )
         if (
             not keep_metadata

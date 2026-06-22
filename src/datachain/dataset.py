@@ -764,7 +764,8 @@ class DatasetRecord:
     def next_version_major(self) -> str:
         """
         Returns the next auto-incremented version if the major part is being bumped.
-        Skips past REMOVED versions so deleted semvers are never reclaimed.
+        Bumps past the highest semver ever used, including REMOVED ones,
+        so deleted semvers are never reclaimed.
         """
         if not self.versions:
             return "1.0.0"
@@ -776,7 +777,8 @@ class DatasetRecord:
     def next_version_minor(self) -> str:
         """
         Returns the next auto-incremented version if the minor part is being bumped.
-        Skips past REMOVED versions so deleted semvers are never reclaimed.
+        Bumps past the highest semver ever used, including REMOVED ones,
+        so deleted semvers are never reclaimed.
         """
         if not self.versions:
             return "1.0.0"
@@ -788,7 +790,8 @@ class DatasetRecord:
     def next_version_patch(self) -> str:
         """
         Returns the next auto-incremented version if the patch part is being bumped.
-        Skips past REMOVED versions so deleted semvers are never reclaimed.
+        Bumps past the highest semver ever used, including REMOVED ones,
+        so deleted semvers are never reclaimed.
         """
         if not self.versions:
             return "1.0.0"
