@@ -1114,7 +1114,7 @@ class Catalog:
         dataset: DatasetRecord,
         version: str,
         keep_metadata: bool,
-    ) -> None:
+    ) -> bool:
         """Remove a single dataset version.
 
         ``keep_metadata=True``: drop rows table, mark REMOVED (semver +
@@ -1123,11 +1123,15 @@ class Catalog:
 
         ``keep_metadata=False``: drop rows table, delete the version row.
         Allowed from any status except REMOVING.
+
+        Returns True if a state change happened (tombstone written or row
+        deleted), False if the call was a no-op (missing version, lost
+        claim, or already-tombstoned soft delete).
         """
         try:
             v = dataset.get_version(version)
         except DatasetVersionNotFoundError:
-            return
+            return False
 
         if keep_metadata and dataset.is_internal:
             raise DataChainError(
@@ -1154,7 +1158,7 @@ class Catalog:
                 "a removal that keeps metadata is already in progress"
             )
 
-        self._claim_and_remove(
+        return self._claim_and_remove(
             dataset, version, expected_status=v.status, keep_metadata=keep_metadata
         )
 
@@ -1165,15 +1169,17 @@ class Catalog:
         *,
         expected_status: int,
         keep_metadata: bool,
-    ) -> None:
+    ) -> bool:
         """Claim the version with a transient status, drop its rows table,
         then finalize. ``keep_metadata=True`` finalizes as a REMOVED tombstone
         (semver + lineage preserved); ``False`` deletes the version row.
         A REMOVED-to-REMOVED keep is a no-op since the tombstone is already
-        the final state.
+        the final state. Returns True if a state change happened, False if
+        the call was a no-op (already-tombstoned or claim lost to another
+        caller).
         """
         if keep_metadata and expected_status == DatasetStatus.REMOVED:
-            return
+            return False
 
         transient = (
             DatasetStatus.REMOVING if keep_metadata else DatasetStatus.REMOVING_TOTAL
@@ -1190,7 +1196,7 @@ class Catalog:
                 dataset.name,
                 version,
             )
-            return
+            return False
 
         self.warehouse.drop_dataset_rows_table(dataset, version)
 
@@ -1203,6 +1209,7 @@ class Catalog:
             )
         else:
             self.metastore.remove_dataset_version(dataset, version)
+        return True
 
     def _remove_versions(
         self,
@@ -1227,8 +1234,8 @@ class Catalog:
                     )
                 else:
                     keep = keep_metadata
-                self.remove_dataset_version(dataset, version, keep_metadata=keep)
-                num_removed += 1
+                if self.remove_dataset_version(dataset, version, keep_metadata=keep):
+                    num_removed += 1
             except Exception as e:  # noqa: BLE001
                 logger.warning(
                     "Failed to remove dataset %s version %s: %s",
