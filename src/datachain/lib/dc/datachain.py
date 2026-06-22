@@ -174,6 +174,27 @@ class DataChainSchema(dict[str, DataType]):
         return file.getvalue().removesuffix("\n")
 
 
+def _normalize_subtract_keys(
+    param: str | Sequence[str] | None,
+    name: str,
+) -> list[str] | None:
+    """Validate and normalize an 'on' / 'right_on' param for subtract.
+
+    Converts a bare string to a one-element list and validates that strings
+    and sequences are non-empty.  Returns None and unknown types as-is so the
+    caller can dispatch and raise appropriate errors.
+    """
+    if isinstance(param, str):
+        if not param:
+            raise DataChainParamsError(f"'{name}' cannot be an empty string")
+        return [param]
+    if isinstance(param, Sequence):
+        if not param or any(not col for col in param):
+            raise DataChainParamsError(f"'{name}' cannot contain empty strings")
+        return list(param)
+    return param  # type: ignore[return-value]
+
+
 class DataChain:
     """DataChain - a data structure for batch data processing and evaluation.
 
@@ -2100,21 +2121,8 @@ class DataChain:
             right_on: columns to consider for determining row equality in `other`.
                 If unspecified, defaults to the same values as `on`.
         """
-        if isinstance(on, str):
-            if not on:
-                raise DataChainParamsError("'on' cannot be an empty string")
-            on = [on]
-        elif isinstance(on, Sequence):
-            if not on or any(not col for col in on):
-                raise DataChainParamsError("'on' cannot contain empty strings")
-
-        if isinstance(right_on, str):
-            if not right_on:
-                raise DataChainParamsError("'right_on' cannot be an empty string")
-            right_on = [right_on]
-        elif isinstance(right_on, Sequence):
-            if not right_on or any(not col for col in right_on):
-                raise DataChainParamsError("'right_on' cannot contain empty strings")
+        on = _normalize_subtract_keys(on, "on")
+        right_on = _normalize_subtract_keys(right_on, "right_on")
 
         if on is None and right_on is None:
             other_columns = set(other._effective_signals_schema.db_signals())
