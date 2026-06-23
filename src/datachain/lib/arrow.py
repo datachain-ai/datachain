@@ -221,34 +221,49 @@ def schema_to_output(
     return output, list(normalized_col_dict.values())
 
 
-def arrow_type_mapper(col_type: pa.DataType, column: str = "") -> type:  # noqa: PLR0911
+def _arrow_struct_type_mapper(col_type: pa.StructType, column: str) -> type:
+    type_dict = {}
+    for field in col_type:
+        dtype = arrow_type_mapper(field.type, field.name)
+        if field.nullable and not ModelStore.is_pydantic(dtype):
+            dtype = dtype | None  # type: ignore[assignment]
+        type_dict[field.name] = dtype
+    return dict_to_data_model(f"ArrowDataModel_{column}", type_dict)
+
+
+def arrow_type_mapper(col_type: pa.DataType, column: str = "") -> type:
     """Convert pyarrow types to basic types."""
     from datetime import datetime
 
-    if pa.types.is_timestamp(col_type):
-        return datetime
-    if pa.types.is_binary(col_type):
-        return bytes
-    if pa.types.is_floating(col_type):
-        return float
-    if pa.types.is_integer(col_type):
-        return int
-    if pa.types.is_boolean(col_type):
-        return bool
-    if pa.types.is_date(col_type):
-        return datetime
-    if pa.types.is_string(col_type) or pa.types.is_large_string(col_type):
-        return str
+    _simple_types: dict[pa.Type, type] = {
+        pa.Type.TIMESTAMP: datetime,
+        pa.Type.DATE32: datetime,
+        pa.Type.DATE64: datetime,
+        pa.Type.BINARY: bytes,
+        pa.Type.FIXED_SIZE_BINARY: bytes,
+        pa.Type.LARGE_BINARY: bytes,
+        pa.Type.HALF_FLOAT: float,
+        pa.Type.FLOAT: float,
+        pa.Type.DOUBLE: float,
+        pa.Type.INT8: int,
+        pa.Type.INT16: int,
+        pa.Type.INT32: int,
+        pa.Type.INT64: int,
+        pa.Type.UINT8: int,
+        pa.Type.UINT16: int,
+        pa.Type.UINT32: int,
+        pa.Type.UINT64: int,
+        pa.Type.BOOL: bool,
+        pa.Type.STRING: str,
+        pa.Type.LARGE_STRING: str,
+    }
+
+    if pytype := _simple_types.get(col_type.id):
+        return pytype
     if pa.types.is_list(col_type):
         return list[arrow_type_mapper(col_type.value_type)]  # type: ignore[return-value, misc]
     if pa.types.is_struct(col_type):
-        type_dict = {}
-        for field in col_type:
-            dtype = arrow_type_mapper(field.type, field.name)
-            if field.nullable and not ModelStore.is_pydantic(dtype):
-                dtype = dtype | None  # type: ignore[assignment]
-            type_dict[field.name] = dtype
-        return dict_to_data_model(f"ArrowDataModel_{column}", type_dict)
+        return _arrow_struct_type_mapper(col_type, column)
     if pa.types.is_map(col_type):
         return dict
     if isinstance(col_type, pa.lib.DictionaryType):
