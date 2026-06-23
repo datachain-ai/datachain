@@ -2,7 +2,6 @@ import pytest
 
 import datachain as dc
 from datachain import File
-from datachain.sql.types import Int
 
 
 @pytest.mark.parametrize(
@@ -12,7 +11,6 @@ from datachain.sql.types import Int
 )
 @pytest.mark.parametrize("inner", [True, False])
 def test_merge_union(cloud_test_catalog, inner, cloud_type):
-    catalog = cloud_test_catalog.catalog
     session = cloud_test_catalog.session
 
     src = cloud_test_catalog.src_uri
@@ -20,7 +18,7 @@ def test_merge_union(cloud_test_catalog, inner, cloud_type):
     dogs = dc.read_storage(f"{src}/dogs/", session=session)
     cats = dc.read_storage(f"{src}/cats/", session=session)
 
-    signal_default_value = Int.default_value(catalog.warehouse.db.dialect)
+    signal_default_value = None  # unmatched merge rows are NULL on all backends
 
     dogs1 = dogs.map(sig1=lambda: 1, output={"sig1": int})
     dogs2 = dogs.map(sig2=lambda: 2, output={"sig2": int})
@@ -56,7 +54,6 @@ def test_merge_union(cloud_test_catalog, inner, cloud_type):
 @pytest.mark.parametrize("inner2", [True, False])
 @pytest.mark.parametrize("inner3", [True, False])
 def test_merge_multiple(cloud_test_catalog, inner1, inner2, inner3):
-    catalog = cloud_test_catalog.catalog
     session = cloud_test_catalog.session
 
     src = cloud_test_catalog.src_uri
@@ -64,7 +61,7 @@ def test_merge_multiple(cloud_test_catalog, inner1, inner2, inner3):
     dogs = dc.read_storage(f"{src}/dogs/", session=session)
     cats = dc.read_storage(f"{src}/cats/", session=session)
 
-    signal_default_value = Int.default_value(catalog.warehouse.db.dialect)
+    signal_default_value = None  # unmatched merge rows are NULL on all backends
 
     dogs_and_cats = dogs | cats
     dogs1 = dogs.map(sig1=lambda: 1, output={"sig1": int})

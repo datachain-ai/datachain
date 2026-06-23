@@ -1,6 +1,7 @@
 import io
 import os
 import shutil
+import subprocess
 import tarfile
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -524,6 +525,164 @@ def test_get_frame_np_matches_sequential_decode_after_seek(video_file):
         )
 
     np.testing.assert_array_equal(image, expected)
+
+
+def _ffmpeg_supports_display_rotation() -> bool:
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-h", "full"],  # noqa: S607
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return False
+    return "-display_rotation" in (result.stdout + result.stderr)
+
+
+requires_display_rotation = pytest.mark.skipif(
+    not (shutil.which("ffmpeg") and _ffmpeg_supports_display_rotation()),
+    reason="ffmpeg does not support -display_rotation",
+)
+
+
+def _write_distinct_video(path: Path, width: int, height: int, frame_count: int = 3):
+    """Write a video whose frames vary along both axes, so a rotation is visible."""
+    container = av.open(str(path), "w")
+    stream = _add_video_stream(container, "libx264", 30, width=width, height=height)
+    rows, cols = np.mgrid[0:height, 0:width]
+    try:
+        for frame_index in range(frame_count):
+            image = np.empty((height, width, 3), dtype=np.uint8)
+            image[..., 0] = (cols * 4).astype(np.uint8)
+            image[..., 1] = (rows * 8).astype(np.uint8)
+            image[..., 2] = np.uint8(frame_index * 40)
+            frame = av.VideoFrame.from_ndarray(image, format="rgb24")
+            frame.pts = frame_index
+            frame.time_base = Fraction(1, 30)
+            for packet in stream.encode(frame):
+                container.mux(packet)
+        _flush_video_stream(container, stream)
+    finally:
+        container.close()
+
+
+def _autorotated_frame(
+    path: Path, index: int = 0, video_stream_index: int = 0
+) -> ndarray:
+    """Decode frame `index` with FFmpeg's default autorotation, as ground truth."""
+    out = path.parent / f"ground_truth_{video_stream_index}_{index}.png"
+    cmd = ["ffmpeg", "-y", "-v", "error", "-i", str(path)]
+    cmd += ["-map", f"0:v:{video_stream_index}"]
+    cmd += ["-vf", f"select=eq(n\\,{index})", "-frames:v", "1", str(out)]
+    subprocess.run(cmd, check=True)  # noqa: S603
+    return np.array(Image.open(out).convert("RGB"))
+
+
+def _assert_matches_autorotated(frame: ndarray, expected: ndarray) -> None:
+    # PyAV's libav and the system ffmpeg CLI differ by a few levels per pixel
+    # (decode rounding); a wrong rotation differs by ~100+.
+    assert frame.shape == expected.shape
+    mean_abs_diff = np.abs(frame.astype(np.int32) - expected.astype(np.int32)).mean()
+    assert mean_abs_diff < 5, f"mean abs diff {mean_abs_diff:.2f} too large"
+
+
+@pytest.fixture
+def make_rotated_video(tmp_path):
+    def _make(rotation: int, width: int = 64, height: int = 32) -> GeneratedVideo:
+        coded = tmp_path / "coded.mp4"
+        _write_distinct_video(coded, width=width, height=height)
+        rotated = tmp_path / f"rotated_{rotation}.mp4"
+        # -display_rotation writes the DISPLAYMATRIX; -c copy keeps coded frames.
+        cmd = ["ffmpeg", "-y", "-v", "error", "-display_rotation", str(rotation)]
+        cmd += ["-i", str(coded), "-c", "copy", str(rotated)]
+        subprocess.run(cmd, check=True)  # noqa: S603
+        return _generated_video(rotated)
+
+    return _make
+
+
+@requires_ffmpeg
+@requires_display_rotation
+@pytest.mark.parametrize("rotation", [90, 180, 270])
+def test_display_rotation_matches_ffmpeg(make_rotated_video, rotation):
+    # Dimensions and pixels must match FFmpeg autorotation (coded 64x32 -> 32x64).
+    generated = make_rotated_video(rotation)
+    expected = _autorotated_frame(generated.path)
+    expected_height, expected_width = expected.shape[:2]
+
+    info = generated.file.get_info()
+    assert (info.width, info.height) == (expected_width, expected_height)
+    assert (info.width, info.height) == (
+        (32, 64) if rotation in (90, 270) else (64, 32)
+    )
+
+    _assert_matches_autorotated(generated.file.get_frame(0).get_np(), expected)
+    _assert_matches_autorotated(video_frame_np(generated.file, 0), expected)
+
+
+@requires_ffmpeg
+@requires_display_rotation
+def test_get_frames_range_applies_display_rotation(make_rotated_video):
+    # Every frame in the iterator path must be rotated, not just the first.
+    generated = make_rotated_video(90)
+
+    frames = list(generated.file.get_frames(0, 3))
+
+    assert len(frames) == 3
+    for video_frame in frames:
+        expected = _autorotated_frame(generated.path, video_frame.frame)
+        _assert_matches_autorotated(video_frame.get_np(), expected)
+
+
+@requires_ffmpeg
+@requires_display_rotation
+def test_read_bytes_uses_display_dimensions(make_rotated_video):
+    # read_bytes()/save() wrap get_np(); the image must use display dimensions.
+    generated = make_rotated_video(90)
+
+    image = Image.open(io.BytesIO(generated.file.get_frame(0).read_bytes("png")))
+
+    assert image.size == (32, 64)
+
+
+@pytest.fixture
+def multi_stream_rotated_video(tmp_path) -> GeneratedVideo:
+    # Stream 0 unrotated (48x24); stream 1 rotated 90 (64x32 coded -> 32x64).
+    plain = tmp_path / "plain_stream.mp4"
+    _write_distinct_video(plain, width=48, height=24)
+    coded = tmp_path / "rotated_coded.mp4"
+    _write_distinct_video(coded, width=64, height=32)
+    rotated = tmp_path / "rotated_stream.mp4"
+    cmd = ["ffmpeg", "-y", "-v", "error", "-display_rotation", "90"]
+    cmd += ["-i", str(coded), "-c", "copy", str(rotated)]
+    subprocess.run(cmd, check=True)  # noqa: S603
+
+    combined = tmp_path / "multi_stream_rotated.mp4"
+    cmd = ["ffmpeg", "-y", "-v", "error", "-i", str(plain), "-i", str(rotated)]
+    cmd += ["-map", "0:v:0", "-map", "1:v:0", "-c", "copy", str(combined)]
+    subprocess.run(cmd, check=True)  # noqa: S603
+    return _generated_video(combined)
+
+
+@requires_ffmpeg
+@requires_display_rotation
+def test_rotation_is_read_per_video_stream(multi_stream_rotated_video):
+    video = multi_stream_rotated_video.file
+
+    info0 = video.get_info(video_stream_index=0)
+    info1 = video.get_info(video_stream_index=1)
+
+    assert (info0.width, info0.height) == (48, 24)
+    assert (info1.width, info1.height) == (32, 64)
+    assert video.get_frame(0, video_stream_index=0).get_np().shape == (24, 48, 3)
+
+    frame1 = video.get_frame(0, video_stream_index=1).get_np()
+    assert frame1.shape == (64, 32, 3)
+    _assert_matches_autorotated(
+        frame1,
+        _autorotated_frame(multi_stream_rotated_video.path, 0, video_stream_index=1),
+    )
 
 
 def test_get_frame_np_decodes_non_seekable_stream(video_file, monkeypatch):

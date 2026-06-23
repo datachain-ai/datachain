@@ -5,9 +5,10 @@ import subprocess
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
-from math import ceil, floor
+from math import atan2, ceil, degrees, floor, hypot
 from typing import Any, cast
 
+import numpy as np
 from fsspec.utils import stringify_path
 from numpy import ndarray
 from PIL import Image as PilImage
@@ -24,6 +25,7 @@ from datachain.lib.file import (
 try:
     import av
     import ffmpeg
+    from av.sidedata.sidedata import Type as _SideDataType
 except ImportError as exc:
     raise ImportError(
         "Missing dependencies for processing video.\n"
@@ -31,8 +33,11 @@ except ImportError as exc:
         "  pip install 'datachain[video]'\n"
     ) from exc
 
+_DISPLAYMATRIX = _SideDataType.DISPLAYMATRIX
 
 VIDEO_TIME_BASE = 1_000_000
+# DISPLAYMATRIX rotation entries are 16.16 fixed point (FFmpeg libavutil/display.h).
+DISPLAY_MATRIX_FIXED_POINT = 1 << 16
 FFMPEG_FRAGMENT_TIMEOUT_MIN = 60.0
 FFMPEG_FRAGMENT_TIMEOUT_FACTOR = 10.0
 FFMPEG_FRAGMENT_EXECUTABLE = "ffmpeg"
@@ -42,6 +47,62 @@ FRAME_INDEX_EPSILON = 1e-9
 
 class _SeekLandedAfterStartError(Exception):
     pass
+
+
+def _display_matrix_rotation(frame) -> int:
+    """
+    Clockwise display rotation (0/90/180/270) from a frame's DISPLAYMATRIX,
+    matching what FFmpeg/OpenCV apply on playback (PyAV does not autorotate).
+
+    Only right-angle rotation is applied: scale is normalized out and any
+    flipped or off-axis matrix is snapped to the nearest 0/90/180/270, as
+    OpenCV does. Returns 0 when there is no rotation metadata.
+    """
+    try:
+        side_data = frame.side_data.get(_DISPLAYMATRIX)
+        if side_data is None:
+            return 0
+        matrix = np.frombuffer(bytes(side_data), dtype=np.int32)  # native int32
+    except Exception:  # noqa: BLE001  # malformed side data -> no rotation
+        return 0
+    if matrix.size < 9:
+        return 0
+
+    # Rotation angle, normalizing out scale (FFmpeg av_display_rotation_get).
+    a = matrix[0] / DISPLAY_MATRIX_FIXED_POINT
+    b = matrix[1] / DISPLAY_MATRIX_FIXED_POINT
+    c = matrix[3] / DISPLAY_MATRIX_FIXED_POINT
+    d = matrix[4] / DISPLAY_MATRIX_FIXED_POINT
+    scale_x = hypot(a, c)
+    scale_y = hypot(b, d)
+    if scale_x == 0 or scale_y == 0:
+        return 0
+
+    theta = degrees(atan2(b / scale_y, a / scale_x))
+    return round(theta / 90) % 4 * 90
+
+
+def _frame_to_ndarray(frame) -> ndarray:
+    """Decode a frame to an RGB array, applying display-matrix rotation."""
+    array = frame.to_ndarray(format="rgb24")
+    rotation = _display_matrix_rotation(frame)
+    if rotation == 0:
+        return array
+    # np.rot90 is counter-clockwise; negate k for clockwise.
+    return np.ascontiguousarray(np.rot90(array, k=-(rotation // 90) % 4))
+
+
+def _video_stream_rotation(container, video_stream) -> int:
+    """Stream display rotation. Rotation is a per-stream property, but PyAV
+    exposes the DISPLAYMATRIX only on frames, so the first frame is decoded.
+    Decode failure or absence -> 0, never blocks metadata."""
+    try:
+        frame = next(container.decode(video_stream), None)
+    except Exception:  # noqa: BLE001
+        return 0
+    if frame is None:
+        return 0
+    return _display_matrix_rotation(frame)
 
 
 def video_info(file: File | VideoFile, video_stream_index: int = 0) -> Video:
@@ -73,6 +134,9 @@ def video_info(file: File | VideoFile, video_stream_index: int = 0) -> Video:
 
                 width = int(video_stream.width or 0)
                 height = int(video_stream.height or 0)
+                # 90/270 rotation swaps the display dimensions, as get_np() does.
+                if _video_stream_rotation(container, video_stream) in (90, 270):
+                    width, height = height, width
                 frames = int(video_stream.frames or 0)
                 if frames <= 0 and duration > 0 and fps > 0:
                     frames = ceil(duration * fps)
@@ -251,6 +315,8 @@ def video_frame_np(
     """
     Reads video frame from a file and returns as numpy array.
 
+    Display rotation is applied, matching FFmpeg/OpenCV; channels are RGB.
+
     Args:
         video (VideoFile): Video file object.
         frame (int): Frame index.
@@ -263,7 +329,7 @@ def video_frame_np(
         raise ValueError("frame must be a non-negative integer")
 
     decoded_frame, _ = _decode_video_frame(video, frame, video_stream_index)
-    return decoded_frame.to_ndarray(format="rgb24")
+    return _frame_to_ndarray(decoded_frame)
 
 
 def validate_frame_range(
