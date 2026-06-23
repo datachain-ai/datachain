@@ -11,6 +11,7 @@ from collections.abc import (
 )
 from concurrent.futures import ThreadPoolExecutor, wait
 from heapq import heappop, heappush
+from dataclasses import dataclass, field
 from typing import Any, Generic, TypeVar
 
 from fsspec.asyn import get_loop
@@ -22,6 +23,19 @@ ASYNC_WORKERS = 20
 InputT = TypeVar("InputT", contravariant=True)  # noqa: PLC0105
 ResultT = TypeVar("ResultT", covariant=True)  # noqa: PLC0105
 T = TypeVar("T")
+
+
+@dataclass
+class _ThreadState:
+    pool: ThreadPoolExecutor
+    shutdown: threading.Event = field(default_factory=threading.Event)
+    is_shutdown: threading.Event = field(default_factory=threading.Event)
+
+
+@dataclass
+class _QueueState:
+    work: Any = None
+    result: Any = None
 
 
 class AsyncMapper(Generic[InputT, ResultT]):
@@ -41,7 +55,6 @@ class AsyncMapper(Generic[InputT, ResultT]):
     """
 
     order_preserving = False
-    work_queue: "asyncio.Queue[InputT]"
     loop: asyncio.AbstractEventLoop
 
     def __init__(
@@ -56,10 +69,8 @@ class AsyncMapper(Generic[InputT, ResultT]):
         self.iterable = iterable
         self.workers = workers
         self.loop = get_loop() if loop is None else loop
-        self.pool = ThreadPoolExecutor(workers)
+        self._thread = _ThreadState(pool=ThreadPoolExecutor(workers))
         self._tasks: set[asyncio.Task] = set()
-        self._shutdown_producer = threading.Event()
-        self._producer_is_shutdown = threading.Event()
 
     def start_task(self, coro: Coroutine) -> asyncio.Task:
         task = self.loop.create_task(coro)
@@ -71,13 +82,13 @@ class AsyncMapper(Generic[InputT, ResultT]):
         try:
             with safe_closing(self.iterable):
                 for item in self.iterable:
-                    if self._shutdown_producer.is_set():
+                    if self._thread.shutdown.is_set():
                         return
-                    coro = self.work_queue.put(item)
+                    coro = self._queues.work.put(item)
                     fut = asyncio.run_coroutine_threadsafe(coro, self.loop)
                     fut.result()  # wait until the item is in the queue
         finally:
-            self._producer_is_shutdown.set()
+            self._thread.is_shutdown.set()
 
     async def produce(self) -> None:
         await self.to_thread(self._produce)
@@ -92,23 +103,25 @@ class AsyncMapper(Generic[InputT, ResultT]):
         currently in the queue, clearing it so that the event can be checked without
         delay.
         """
-        self._shutdown_producer.set()
-        q = self.work_queue
+        self._thread.shutdown.set()
+        q = self._queues.work
         while not q.empty():
             q.get_nowait()
             q.task_done()
 
     async def worker(self) -> None:
-        while (item := await self.work_queue.get()) is not None:
+        while (item := await self._queues.work.get()) is not None:
             try:
                 result = await self.func(item)
-                await self.result_queue.put(result)
+                await self._queues.result.put(result)
             finally:
-                self.work_queue.task_done()
+                self._queues.work.task_done()
 
     async def init(self) -> None:
-        self.work_queue = asyncio.Queue(2 * self.workers)
-        self.result_queue: asyncio.Queue[ResultT | None] = asyncio.Queue(self.workers)
+        self._queues = _QueueState(
+            work=asyncio.Queue(2 * self.workers),
+            result=asyncio.Queue(self.workers),
+        )
 
     async def run(self) -> None:
         producer = self.start_task(self.produce())
@@ -120,7 +133,7 @@ class AsyncMapper(Generic[InputT, ResultT]):
             )
             self.gather_exceptions(done)
             assert producer.done()
-            join = self.start_task(self.work_queue.join())
+            join = self.start_task(self._queues.work.join())
             done, _pending = await asyncio.wait(
                 self._tasks, return_when=asyncio.FIRST_COMPLETED
             )
@@ -149,7 +162,7 @@ class AsyncMapper(Generic[InputT, ResultT]):
                 raise exc
 
     async def _pop_result(self) -> ResultT | None:
-        return await self.result_queue.get()
+        return await self._queues.result.get()
 
     def next_result(self, timeout=None) -> ResultT | None:
         """
@@ -162,13 +175,13 @@ class AsyncMapper(Generic[InputT, ResultT]):
 
     async def _end_iteration(self) -> None:
         """Signal successful end of iteration."""
-        await self.result_queue.put(None)
+        await self._queues.result.put(None)
 
     async def _break_iteration(self) -> None:
         """Signal that iteration must stop ASAP."""
-        while not self.result_queue.empty():
-            self.result_queue.get_nowait()
-        await self.result_queue.put(None)
+        while not self._queues.result.empty():
+            self._queues.result.get_nowait()
+        await self._queues.result.put(None)
 
     def iterate(self, timeout=None) -> Generator[ResultT, None, None]:
         init = asyncio.run_coroutine_threadsafe(self.init(), self.loop)
@@ -187,13 +200,23 @@ class AsyncMapper(Generic[InputT, ResultT]):
             if not async_run.done():
                 async_run.cancel()
                 wait([async_run])
-            self._producer_is_shutdown.wait()
+            self._thread.is_shutdown.wait()
 
     def __iter__(self):
         return self.iterate()
 
     async def to_thread(self, func, *args):
-        return await self.loop.run_in_executor(self.pool, func, *args)
+        return await self.loop.run_in_executor(self._thread.pool, func, *args)
+
+
+@dataclass
+class _OrderState:
+    waiters: dict[int, Any] = field(default_factory=dict)
+    getters: dict[int, Any] = field(default_factory=dict)
+    heap: list = field(default_factory=list)
+    next_yield: int = 0
+    items_seen: int = 0
+    window: int = 0
 
 
 class OrderedMapper(AsyncMapper[InputT, ResultT]):
@@ -214,52 +237,47 @@ class OrderedMapper(AsyncMapper[InputT, ResultT]):
         loop: asyncio.AbstractEventLoop | None = None,
     ):
         super().__init__(func, iterable, workers=workers, loop=loop)
-        self._waiters: dict[int, Any] = {}
-        self._getters: dict[int, asyncio.Future[ResultT | None]] = {}
-        self.heap: list[tuple[int, ResultT | None]] = []
-        self._next_yield = 0
-        self._items_seen = 0
-        self._window = 2 * workers
+        self._order = _OrderState(window=2 * workers)
 
     def _push_result(self, i: int, result: ResultT | None) -> None:
-        if i in self._getters:
-            future = self._getters.pop(i)
+        if i in self._order.getters:
+            future = self._order.getters.pop(i)
             future.set_result(result)
         else:
-            heappush(self.heap, (i, result))
+            heappush(self._order.heap, (i, result))
 
     async def worker(self) -> None:
-        while (item := await self.work_queue.get()) is not None:
-            i = self._items_seen
-            self._items_seen += 1
-            if i >= self._next_yield + self._window:
-                event = self._waiters[i - self._window] = asyncio.Event()
+        while (item := await self._queues.work.get()) is not None:
+            i = self._order.items_seen
+            self._order.items_seen += 1
+            if i >= self._order.next_yield + self._order.window:
+                event = self._order.waiters[i - self._order.window] = asyncio.Event()
                 await event.wait()
             result = await self.func(item)
             self._push_result(i, result)
-            self.work_queue.task_done()
+            self._queues.work.task_done()
 
     async def init(self) -> None:
-        self.work_queue = asyncio.Queue(2 * self.workers)
+        self._queues = _QueueState(work=asyncio.Queue(2 * self.workers))
 
     async def _pop_result(self) -> ResultT | None:
-        if self.heap and self.heap[0][0] == self._next_yield:
-            _i, out = heappop(self.heap)
+        if self._order.heap and self._order.heap[0][0] == self._order.next_yield:
+            _i, out = heappop(self._order.heap)
         else:
-            self._getters[self._next_yield] = get_value = self.loop.create_future()
+            self._order.getters[self._order.next_yield] = get_value = self.loop.create_future()
             out = await get_value
-        if self._next_yield in self._waiters:
-            event = self._waiters.pop(self._next_yield)
+        if self._order.next_yield in self._order.waiters:
+            event = self._order.waiters.pop(self._order.next_yield)
             event.set()
-        self._next_yield += 1
+        self._order.next_yield += 1
         return out
 
     async def _end_iteration(self) -> None:
-        self._push_result(self._next_yield + len(self.heap), None)
+        self._push_result(self._order.next_yield + len(self._order.heap), None)
 
     async def _break_iteration(self) -> None:
-        self.heap = []
-        self._push_result(self._next_yield, None)
+        self._order.heap = []
+        self._push_result(self._order.next_yield, None)
 
 
 def iter_over_async(ait: AsyncIterable[T], loop) -> Iterator[T]:
