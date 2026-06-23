@@ -24,15 +24,34 @@ class CompareStatus(str, Enum):
     SAME = "S"
 
 
-def _to_list(obj: str | Sequence[str] | None) -> list[str] | None:
-    if obj is None:
-        return None
-    return [obj] if isinstance(obj, str) else list(obj)
+def _compare(  # noqa: C901
+    left: "DataChain",
+    right: "DataChain",
+    on: str | Sequence[str],
+    right_on: str | Sequence[str] | None = None,
+    compare: str | Sequence[str] | None = None,
+    right_compare: str | Sequence[str] | None = None,
+    added: bool = True,
+    deleted: bool = True,
+    modified: bool = True,
+    same: bool = True,
+    status_col: str | None = None,
+) -> "DataChain":
+    """Comparing two chains by identifying rows that are added, deleted, modified
+    or same"""
+    rname = "right_"
+    schema = left.signals_schema  # final chain must have schema from left chain
 
+    def _to_list(obj: str | Sequence[str] | None) -> list[str] | None:
+        if obj is None:
+            return None
+        return [obj] if isinstance(obj, str) else list(obj)
 
-def _validate_inputs(
-    on, right_on, compare, right_compare, added, deleted, modified, same
-):
+    on = _to_list(on)  # type: ignore[assignment]
+    right_on = _to_list(right_on)
+    compare = _to_list(compare)
+    right_compare = _to_list(right_compare)
+
     if not any([added, deleted, modified, same]):
         raise ValueError(
             "At least one of added, deleted, modified, same flags must be set"
@@ -46,171 +65,108 @@ def _validate_inputs(
     if compare and right_compare and len(compare) != len(right_compare):
         raise ValueError("'compare' and 'right_compare' must have the same length")
 
-
-def _resolve_compare_cols(compare, right_compare, left, right, cols, right_cols, on):
-    if compare:
-        compare_ = compare
-        compare = left.signals_schema.resolve(*compare).db_signals()
-        right_compare = right.signals_schema.resolve(
-            *(right_compare or compare_)
-        ).db_signals()
-    elif len(cols) != len(right_cols):
-        compare = None
-        right_compare = None
-    else:
-        compare = right_compare = [c for c in cols if c in right_cols and c not in on]
-    return compare, right_compare
-
-
-def _build_modified_cond(compare, right_compare, rname):
-    if compare is None:
-        return True
-    if len(compare) == 0:
-        return False
-    return or_(
-        *[
-            C(c) != (C(f"{rname}{rc}") if c == rc else C(rc))
-            for c, rc in zip(compare, right_compare, strict=False)
-        ]
-    )
-
-
-def _normalize_lists(
-    on, right_on, compare, right_compare, added, deleted, modified, same,
-):
-    on = _to_list(on)
-    right_on = _to_list(right_on)
-    compare = _to_list(compare)
-    right_compare = _to_list(right_compare)
-    _validate_inputs(
-        on, right_on, compare, right_compare, added, deleted, modified, same
-    )
-    return on, right_on, compare, right_compare
-
-
-def _resolve_schemas(on, right_on, compare, right_compare, left, right):
+    # all left and right columns
     cols = left.signals_schema.clone_without_sys_signals().db_signals()
     right_cols = right.signals_schema.clone_without_sys_signals().db_signals()
     cols_select = list(left.signals_schema.clone_without_sys_signals().values.keys())
-    right_on = right.signals_schema.resolve(*(right_on or on)).db_signals()
-    on = left.signals_schema.resolve(*on).db_signals()
-    compare, right_compare = _resolve_compare_cols(
-        compare, right_compare, left, right, cols, right_cols, on
-    )
-    return on, right_on, compare, right_compare, cols_select
 
+    # getting correct on and right_on column names
+    on_ = on
+    on = left.signals_schema.resolve(*on).db_signals()  # type: ignore[assignment]
+    right_on = right.signals_schema.resolve(*(right_on or on_)).db_signals()  # type: ignore[assignment]
 
-def _build_diff_dataset(left, right, on, right_on, compare, right_compare, status_col):
+    # getting correct compare and right_compare column names if they are defined
+    if compare:
+        compare_ = compare
+        compare = left.signals_schema.resolve(*compare).db_signals()  # type: ignore[assignment]
+        right_compare = right.signals_schema.resolve(
+            *(right_compare or compare_)
+        ).db_signals()  # type: ignore[assignment]
+    elif not compare and len(cols) != len(right_cols):
+        # here we will mark all rows that are not added or deleted as modified since
+        # there was no explicit list of compare columns provided (meaning we need
+        # to check all columns to determine if row is modified or same), but
+        # the number of columns on left and right is not the same (one of the chains
+        # have additional column)
+        compare = None
+        right_compare = None
+    else:
+        # we are checking all columns as explicit compare is not defined
+        compare = right_compare = [c for c in cols if c in right_cols and c not in on]  # type: ignore[misc]
+
+    # get diff column names
     diff_col = status_col or STATUS_COL_NAME
-    left = left.mutate(**{LEFT_DIFF_COL_NAME: 1})
-    right = right.mutate(**{RIGHT_DIFF_COL_NAME: 1})
+    ldiff_col = LEFT_DIFF_COL_NAME
+    rdiff_col = RIGHT_DIFF_COL_NAME
+
+    # adding helper diff columns, which will be removed after
+    left = left.mutate(**{ldiff_col: 1})
+    right = right.mutate(**{rdiff_col: 1})
+
+    if compare is None:
+        modified_cond = True
+    elif len(compare) == 0:
+        modified_cond = False
+    else:
+
+        def _differs(lc, rc):
+            right_col = C(f"{rname}{rc}") if lc == rc else C(rc)
+            # null-aware: ``a != b`` is NULL (not true) when either side is NULL
+            return or_(C(lc) != right_col, isnone(C(lc)) != isnone(right_col))
+
+        modified_cond = or_(  # type: ignore[assignment]
+            *[
+                _differs(c, rc)
+                for c, rc in zip(compare, right_compare, strict=False)  # type: ignore[arg-type]
+            ]
+        )
 
     dc_diff = (
-        left.merge(right, on=on, right_on=right_on, rname="right_", full=True)
+        left.merge(right, on=on, right_on=right_on, rname=rname, full=True)
         .mutate(
             **{
                 diff_col: case(
-                    (isnone(LEFT_DIFF_COL_NAME), CompareStatus.DELETED),
-                    (isnone(RIGHT_DIFF_COL_NAME), CompareStatus.ADDED),
-                    (
-                        _build_modified_cond(compare, right_compare, "right_"),
-                        CompareStatus.MODIFIED,
-                    ),
+                    (isnone(ldiff_col), CompareStatus.DELETED),
+                    (isnone(rdiff_col), CompareStatus.ADDED),
+                    (modified_cond, CompareStatus.MODIFIED),
                     else_=CompareStatus.SAME,
                 )
             }
         )
+        # when the row is deleted, we need to take column values from the right chain
         .mutate(
             **{
                 f"{l_on}": ifelse(
                     C(diff_col) == CompareStatus.DELETED,
-                    C(f"{'right_' + l_on if on == right_on else r_on}"),
+                    C(f"{rname + l_on if on == right_on else r_on}"),
                     C(l_on),
                 )
-                for l_on, r_on in zip(on, right_on, strict=False)
+                for l_on, r_on in zip(on, right_on, strict=False)  # type: ignore[arg-type]
             }
         )
-        .select_except(LEFT_DIFF_COL_NAME, RIGHT_DIFF_COL_NAME)
+        .select_except(ldiff_col, rdiff_col)
     )
-    return dc_diff, diff_col
 
+    if not added:
+        dc_diff = dc_diff.filter(C(diff_col) != CompareStatus.ADDED)
+    if not modified:
+        dc_diff = dc_diff.filter(C(diff_col) != CompareStatus.MODIFIED)
+    if not same:
+        dc_diff = dc_diff.filter(C(diff_col) != CompareStatus.SAME)
+    if not deleted:
+        dc_diff = dc_diff.filter(C(diff_col) != CompareStatus.DELETED)
 
-def _apply_status_filters(dc_diff, diff_col, added, deleted, modified, same):
-    for status, flag in (
-        (CompareStatus.ADDED, added),
-        (CompareStatus.MODIFIED, modified),
-        (CompareStatus.SAME, same),
-        (CompareStatus.DELETED, deleted),
-    ):
-        if not flag:
-            dc_diff = dc_diff.filter(C(diff_col) != status)
-    return dc_diff
-
-
-def _finalize_schema(dc_diff, cols_select, diff_col, status_col, schema):
     if status_col:
         cols_select.append(diff_col)
 
     dc_diff = dc_diff.select(*cols_select)
 
+    # final schema is schema from the left chain with status column added if needed
     dc_diff.signals_schema = (
         schema if not status_col else SignalSchema({status_col: str}) | schema
     )
 
     return dc_diff
-
-
-def _compare(
-    left: "DataChain",
-    right: "DataChain",
-    on: str | Sequence[str],
-    right_on: str | Sequence[str] | None = None,
-    compare: str | Sequence[str] | None = None,
-    right_compare: str | Sequence[str] | None = None,
-    added: bool = True,
-    deleted: bool = True,
-    modified: bool = True,
-    same: bool = True,
-    status_col: str | None = None,
-) -> "DataChain":
-    schema = left.signals_schema
-
-    on, right_on, compare, right_compare = _normalize_lists(
-        on, right_on, compare, right_compare, added, deleted, modified, same,
-    )
-    on, right_on, compare, right_compare, cols_select = _resolve_schemas(
-        on, right_on, compare, right_compare, left, right,
-    )
-
-    dc_diff, diff_col = _build_diff_dataset(
-        left, right, on, right_on, compare, right_compare, status_col
-    )
-
-    dc_diff = _apply_status_filters(dc_diff, diff_col, added, deleted, modified, same)
-
-    return _finalize_schema(dc_diff, cols_select, diff_col, status_col, schema)
-
-
-def _to_status_dict(res, status_col, added, deleted, modified, same):
-    chains = {}
-    if added:
-        chains[CompareStatus.ADDED.value] = (
-            res.filter(C(status_col) == CompareStatus.ADDED).select_except(status_col)
-        )
-    if deleted:
-        chains[CompareStatus.DELETED.value] = (
-            res.filter(C(status_col) == CompareStatus.DELETED).select_except(status_col)
-        )
-    if modified:
-        chains[CompareStatus.MODIFIED.value] = (
-            res.filter(C(status_col) == CompareStatus.MODIFIED)
-            .select_except(status_col)
-        )
-    if same:
-        chains[CompareStatus.SAME.value] = (
-            res.filter(C(status_col) == CompareStatus.SAME).select_except(status_col)
-        )
-    return chains
 
 
 def compare_and_split(
@@ -285,4 +241,18 @@ def compare_and_split(
         status_col=status_col,
     )
 
-    return _to_status_dict(res, status_col, added, deleted, modified, same)
+    chains = {}
+
+    def filter_by_status(compare_status) -> "DataChain":
+        return res.filter(C(status_col) == compare_status).select_except(status_col)
+
+    if added:
+        chains[CompareStatus.ADDED.value] = filter_by_status(CompareStatus.ADDED)
+    if deleted:
+        chains[CompareStatus.DELETED.value] = filter_by_status(CompareStatus.DELETED)
+    if modified:
+        chains[CompareStatus.MODIFIED.value] = filter_by_status(CompareStatus.MODIFIED)
+    if same:
+        chains[CompareStatus.SAME.value] = filter_by_status(CompareStatus.SAME)
+
+    return chains

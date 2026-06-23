@@ -1,20 +1,24 @@
+import copy
 import inspect
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Union, get_args, get_origin
 
-from sqlalchemy import Integer, desc
+from sqlalchemy import Integer, asc, desc, nulls_last
 from sqlalchemy import cast as sa_cast
 from sqlalchemy.sql import func as sa_func
 from sqlalchemy.sql.elements import ColumnElement
 
 from datachain.lib.convert.python_to_sql import python_to_sql
 from datachain.lib.convert.sql_to_python import sql_to_python
+from datachain.lib.data_model import NULLABLE_SCALARS, unwrap_optional
 from datachain.lib.model_store import ModelStore
 from datachain.lib.utils import DataChainColumnError, DataChainParamsError
 from datachain.query.schema import Column, ColumnExpr, ColumnMeta
 from datachain.sql.functions import numeric
 from datachain.sql.functions.conversion import datetime_to_string
+from datachain.sql.types import SQLType
 
 from .base import Function
 
@@ -28,6 +32,56 @@ if TYPE_CHECKING:
 
 
 ColT = Union[str, tuple, Column, ColumnExpr, "Func"]
+
+
+def _referenced_column_names(expr: Any) -> list[str]:
+    """Column names referenced in a ``ColumnExpr`` tree, e.g. ``["a"]`` for
+    ``C("a") > 5``."""
+    names: list[str] = []
+
+    def _walk(node: Any) -> None:
+        if isinstance(node, Column) and getattr(node, "name", None):
+            names.append(node.name)
+        get_children = getattr(node, "get_children", None)
+        if get_children is not None:
+            for child in get_children():
+                _walk(child)
+
+    _walk(expr)
+    return names
+
+
+def _source_is_nullable(col: ColT, signals_schema: "SignalSchema | None") -> bool:
+    """True when ``col`` resolves to a column that may hold NULL — a leaf under an
+    ``Optional[DataModel]`` or an ``Optional[basic]`` column, a nullable ``Func``
+    operand, or a ``ColumnExpr`` referencing a nullable column (so nullability
+    propagates through composed expressions and comparisons)."""
+    if signals_schema is None:
+        return False
+    if isinstance(col, Func):
+        return col.is_nullable_result(signals_schema)
+    if not isinstance(col, str):
+        # ColumnExpr operand: nullable if any referenced column is.
+        return any(
+            _source_is_nullable(name, signals_schema)
+            for name in _referenced_column_names(col)
+        )
+    db_col = ColumnMeta.to_db_name(col)
+    if signals_schema.optional_parent_sentinel(db_col) is not None:
+        return True
+    _, is_optional = unwrap_optional(signals_schema.get_column_type(db_col))
+    return is_optional
+
+
+@dataclass(frozen=True)
+class FuncConfig:
+    result_type: "DataType | None" = None
+    type_from_args: Callable[..., "DataType"] | None = None
+    is_array: bool = False
+    from_array: bool = False
+    is_window: bool = False
+    window: "Window | None" = None
+    col_label: str | None = None
 
 
 class Func(Function):  # noqa: PLW1641
@@ -71,19 +125,21 @@ class Func(Function):  # noqa: PLW1641
         self.cols = cols or []
         self.args = args or []
         self.kwargs = kwargs or {}
-        self.result_type = result_type
-        self.type_from_args = type_from_args
-        self.is_array = is_array
-        self.from_array = from_array
-        self.is_window = is_window
-        self.window = window
-        self.col_label = label
+        self.config = FuncConfig(
+            result_type=result_type,
+            type_from_args=type_from_args,
+            is_array=is_array,
+            from_array=from_array,
+            is_window=is_window,
+            window=window,
+            col_label=label,
+        )
 
     def __str__(self) -> str:
         return self.name + "()"
 
     def over(self, window: "Window") -> "Func":
-        if not self.is_window:
+        if not self.config.is_window:
             raise DataChainParamsError(f"{self} doesn't support window (over())")
 
         return Func(
@@ -92,13 +148,13 @@ class Func(Function):  # noqa: PLW1641
             self.cols,
             self.args,
             self.kwargs,
-            self.result_type,
-            self.type_from_args,
-            self.is_array,
-            self.from_array,
-            self.is_window,
+            self.config.result_type,
+            self.config.type_from_args,
+            self.config.is_array,
+            self.config.from_array,
+            self.config.is_window,
             window,
-            self.col_label,
+            self.config.col_label,
         )
 
     @property
@@ -127,15 +183,17 @@ class Func(Function):  # noqa: PLW1641
                     "Columns must have the same type to infer result type",
                 )
 
-        if self.from_array:
-            if get_origin(col_type) is not list:
+        if self.config.from_array:
+            # an Optional[list] column is still an array source
+            inner_type, _ = unwrap_optional(col_type)
+            if get_origin(inner_type) is not list:
                 raise DataChainColumnError(
                     str(self),
                     "Array column must be of type list",
                 )
-            if self.is_array:
-                return col_type
-            col_args = get_args(col_type)
+            if self.config.is_array:
+                return inner_type
+            col_args = get_args(inner_type)
             if len(col_args) != 1:
                 raise DataChainColumnError(
                     str(self),
@@ -143,7 +201,7 @@ class Func(Function):  # noqa: PLW1641
                 )
             return col_args[0]
 
-        return list[col_type] if self.is_array else col_type  # type: ignore[valid-type]
+        return list[col_type] if self.config.is_array else col_type  # type: ignore[valid-type]
 
     def __add__(self, other: ColT | float) -> "Func":
         if isinstance(other, (int, float)):
@@ -362,26 +420,15 @@ class Func(Function):  # noqa: PLW1641
         return Func("ge", lambda a1, a2: a1 >= a2, [self, other], result_type=bool)
 
     def label(self, label: str) -> "Func":
-        return Func(
-            self.name,
-            self.inner,
-            self.cols,
-            self.args,
-            self.kwargs,
-            self.result_type,
-            self.type_from_args,
-            self.is_array,
-            self.from_array,
-            self.is_window,
-            self.window,
-            label,
-        )
+        new = copy.copy(self)
+        new.config = replace(self.config, col_label=label)
+        return new
 
     def get_col_name(self, label: str | None = None) -> str:
         if label:
             return label
-        if self.col_label:
-            return self.col_label
+        if self.config.col_label:
+            return self.config.col_label
         if (db_cols := self._db_cols) and len(db_cols) == 1:
             first_col = db_cols[0]
             if isinstance(first_col, str):
@@ -390,11 +437,27 @@ class Func(Function):  # noqa: PLW1641
                 return first_col.get_col_name()
         return self.name
 
+    def is_nullable_result(
+        self,
+        signals_schema: "SignalSchema | None",
+        col_type: "DataType | None" = None,
+    ) -> bool:
+        """Whether this func's result column may hold NULL: a result type in
+        NULLABLE_SCALARS over a nullable source."""
+        if signals_schema is None:
+            return False
+        if col_type is None:
+            col_type = self.get_result_type(signals_schema)
+        inner, _ = unwrap_optional(col_type)
+        return inner in NULLABLE_SCALARS and any(
+            _source_is_nullable(c, signals_schema) for c in self._db_cols
+        )
+
     def get_result_type(
         self, signals_schema: "SignalSchema | None" = None
     ) -> "DataType":
-        if self.result_type:
-            return self.result_type
+        if self.config.result_type:
+            return self.config.result_type
 
         if (
             signals_schema is not None
@@ -409,8 +472,8 @@ class Func(Function):  # noqa: PLW1641
                 "A dataset context is required to infer result type",
             )
 
-        if self.type_from_args and not self.cols and self.args:
-            inferred_result_type = self.type_from_args(*self.args)
+        if self.config.type_from_args and not self.cols and self.args:
+            inferred_result_type = self.config.type_from_args(*self.args)
             if inferred_result_type is not None:
                 return inferred_result_type
 
@@ -487,18 +550,21 @@ class Func(Function):  # noqa: PLW1641
     ) -> Any:
         result: Any = func_col
 
-        if self.is_window:
-            if not self.window:
+        if self.config.is_window:
+            if not self.config.window:
                 raise DataChainParamsError(
                     f"Window function {self} requires over() clause with a window spec",
                 )
+            ordering = (
+                desc(self.config.window.order_by)
+                if self.config.window.desc
+                else asc(self.config.window.order_by)
+            )
+            # NULLS LAST so window ordering matches across backends (SQLite
+            # orders NULLs first by default, ClickHouse last).
             result = result.over(
-                partition_by=self.window.partition_by,
-                order_by=(
-                    desc(self.window.order_by)
-                    if self.window.desc
-                    else self.window.order_by
-                ),
+                partition_by=self.config.window.partition_by,
+                order_by=nulls_last(ordering),
             )
 
         result.type = sql_type() if inspect.isclass(sql_type) else sql_type
@@ -519,6 +585,9 @@ class Func(Function):  # noqa: PLW1641
         col_type = self.get_result_type(signals_schema)
         sql_type = python_to_sql(col_type)
 
+        if self.is_nullable_result(signals_schema, col_type):
+            sql_type = SQLType.as_nullable(sql_type)
+
         cols = [
             self._resolve_col(col, sql_type, signals_schema, table)
             for col in self._db_cols
@@ -536,6 +605,33 @@ class Func(Function):  # noqa: PLW1641
         }
         func_col = self.inner(*cols, *self.args, **kwargs)
         return self._finalize_column(func_col, sql_type, label)
+
+
+class _SentinelAwareFunc(Func):
+    """A ``Func`` whose first argument may be an ``Optional[DataModel]``, which
+    has no real column on disk. When it is, the column resolves to that model's
+    ``_type_tag`` discriminator; otherwise it falls back to the plain column."""
+
+    def get_column(
+        self,
+        signals_schema: "SignalSchema | None" = None,
+        label: str | None = None,
+        table: "TableClause | None" = None,
+    ) -> Column:
+        col = self._db_cols[0] if self._db_cols else None
+        if signals_schema is not None and isinstance(col, str):
+            sentinel_path = signals_schema.model_sentinel(col)
+            if sentinel_path is not None:
+                return self._sentinel_column(sentinel_path, label, table)
+        return super().get_column(signals_schema, label, table)
+
+    def _sentinel_column(
+        self,
+        sentinel_path: str,
+        label: str | None,
+        table: "TableClause | None",
+    ) -> Column:
+        raise NotImplementedError
 
 
 class CastFunc(Func):
@@ -571,14 +667,20 @@ class CastFunc(Func):
             table,
         )
         source_type = infer_col_type(signals_schema, source_col)
-        func_col: ColumnElement[Any]
 
-        if self.result_type is str and source_type is datetime:
+        # Cast to the Nullable variant when the source can be NULL, otherwise
+        # ClickHouse fails casting a NULL to a non-Nullable target.
+        target = sql_type()
+        if self.is_nullable_result(signals_schema):
+            target = SQLType.as_nullable(target)
+
+        func_col: ColumnElement[Any]
+        if self.config.result_type is str and source_type is datetime:
             func_col = datetime_to_string(value)
         else:
-            func_col = sa_cast(value, sql_type())
+            func_col = sa_cast(value, target)
 
-        return self._finalize_column(func_col, sql_type, label)
+        return self._finalize_column(func_col, target, label)
 
 
 def infer_col_type(

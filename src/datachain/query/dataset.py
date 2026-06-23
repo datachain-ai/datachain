@@ -51,6 +51,7 @@ from datachain.error import (
 from datachain.func.base import Function
 from datachain.hash_utils import hash_column_elements
 from datachain.job import Job
+from datachain.lib.data_model import NULLABLE_SCALARS
 from datachain.lib.listing import is_listing_dataset, listing_dataset_expired
 from datachain.lib.signal_schema import SignalSchema, generate_merge_root_mapping
 from datachain.lib.udf import JsonSerializationError, UdfError, _get_cache
@@ -125,8 +126,8 @@ def detach(
     @wraps(method)
     def _inner(self: T, *args: "P.args", **kwargs: "P.kwargs") -> T:
         cloned = method(self, *args, **kwargs)
-        cloned.name = None
-        cloned.version = None
+        cloned._identity.name = None
+        cloned._identity.version = None
         return cloned
 
     return _inner
@@ -323,8 +324,9 @@ class QueryStep:
 
     def hash(self) -> str:
         version = self.dataset.get_version(self.dataset_version)
-        content_hash = version.execution.content_hash
-        anchor = content_hash if content_hash is not None else version.uuid
+        anchor = (
+            version.content_hash if version.content_hash is not None else version.uuid
+        )
         return hashlib.sha256(anchor.encode()).hexdigest()
 
 
@@ -540,7 +542,9 @@ def get_col_types(
             col_type_inst := col_type() if inspect.isclass(col_type) else col_type,
             warehouse.python_type(col_type_inst),
             type(col_type_inst).__name__,
-            col_type.default_value(dialect),
+            None
+            if getattr(col_type_inst, "dc_nullable", False)
+            else col_type.default_value(dialect),
         )
         for col_name, col_type in output.items()
     ]
@@ -623,18 +627,22 @@ def get_generated_callback(is_generator: bool = False) -> Callback:
 
 
 @frozen
+class UDFExecutionConfig:
+    cache: bool = False
+    parallel: int | None = None
+    workers: bool | int = False
+    min_task_size: int | None = None
+    batch_size: int | None = None
+
+
+@frozen
 class UDFStep(Step, ABC):
     udf: "UDFAdapter"
     session: "Session"
     partition_by: PartitionByType | None = None
     is_generator = False
     is_aggregator = False
-    # Parameters from Settings
-    cache: bool = False
-    parallel: int | None = None
-    workers: bool | int = False
-    min_task_size: int | None = None
-    batch_size: int | None = None
+    execution: UDFExecutionConfig = UDFExecutionConfig()
 
     @property
     def is_single_partition_aggregator(self) -> bool:
@@ -733,7 +741,110 @@ class UDFStep(Step, ABC):
         to select
         """
 
-    def populate_udf_output_table(  # noqa: PLR0915
+    def _process_parallel_udf(
+        self,
+        udf_table: "Table",
+        query: Select,
+        catalog: "Catalog",
+        batching,
+        udf_fields: list[str],
+        processes: bool | int,
+        rows_to_process: int,
+    ) -> None:
+        from datachain.catalog import (
+            QUERY_SCRIPT_ABORTED_EXIT_CODE,
+            QUERY_SCRIPT_CANCELED_EXIT_CODE,
+        )
+
+        if catalog.in_memory:
+            raise RuntimeError(
+                "In-memory databases cannot be used "
+                "with parallel processing."
+            )
+
+        udf_info = UdfInfo(
+            udf_data=filtered_cloudpickle_dumps(self.udf),
+            catalog_init=catalog.get_init_params(),
+            metastore_clone_params=catalog.metastore.clone_params(),
+            warehouse_clone_params=catalog.warehouse.clone_params(),
+            table=udf_table,
+            query=query,
+            udf_fields=udf_fields,
+            batching=batching,
+            processes=processes,
+            is_generator=self.is_generator,
+            cache=self.execution.cache,
+            rows_total=rows_to_process,
+            batch_size=self.execution.batch_size,
+        )
+
+        exec_cmd = get_datachain_executable()
+        cmd = [*exec_cmd, "internal-run-udf"]
+        envs = dict(os.environ)
+        envs["PYTHONPATH"] = os.getcwd()
+        process_data = filtered_cloudpickle_dumps(udf_info)
+
+        with subprocess.Popen(  # noqa: S603
+            cmd, env=envs, stdin=subprocess.PIPE
+        ) as process:
+            try:
+                process.communicate(process_data)
+            except KeyboardInterrupt:
+                raise QueryScriptCancelError(
+                    "UDF execution was canceled by the user."
+                ) from None
+            if retval := process.poll():
+                if retval == QUERY_SCRIPT_CANCELED_EXIT_CODE:
+                    raise QueryScriptCancelError(
+                        "UDF execution was canceled by the user."
+                    )
+                if retval == QUERY_SCRIPT_ABORTED_EXIT_CODE:
+                    raise QueryScriptAbortError(
+                        "UDF execution aborted: job already terminated."
+                    )
+                raise RuntimeError(
+                    f"UDF Execution Failed! Exit code: {retval}"
+                )
+
+    def _process_single_threaded_udf(
+        self,
+        udf_table: "Table",
+        query: Select,
+        catalog: "Catalog",
+        batching,
+        udf_fields: list[str],
+    ) -> None:
+        warehouse = catalog.warehouse
+
+        udf_inputs = batching(warehouse.dataset_select_paginated, query)
+        download_cb = get_download_callback()
+        processed_cb = get_processed_callback()
+        generated_cb = get_generated_callback(self.is_generator)
+
+        try:
+            udf_results = self.udf.run(
+                udf_fields,
+                udf_inputs,
+                catalog,
+                self.execution.cache,
+                download_cb,
+                processed_cb,
+            )
+            with safe_closing(udf_results):
+                process_udf_outputs(
+                    warehouse,
+                    udf_table,
+                    udf_results,
+                    self.udf,
+                    cb=generated_cb,
+                    batch_size=self.execution.batch_size,
+                )
+        finally:
+            download_cb.close()
+            processed_cb.close()
+            generated_cb.close()
+
+    def populate_udf_output_table(
         self,
         udf_table: "Table",
         query: Select,
@@ -760,15 +871,15 @@ class UDFStep(Step, ABC):
             get_udf_distributor_class,
         )
 
-        workers = determine_workers(self.workers, rows_total=rows_to_process)
-        processes = determine_processes(self.parallel, rows_total=rows_to_process)
+        workers = determine_workers(self.execution.workers, rows_total=rows_to_process)
+        processes = determine_processes(self.execution.parallel, rows_total=rows_to_process)
         logger.debug(
             "UDF(%s): Processing %d rows (workers=%s, processes=%s, batch_size=%s)",
             self._udf_name,
             rows_to_process,
             workers,
             processes,
-            self.batch_size,
+            self.execution.batch_size,
         )
 
         use_partitioning = self.partition_by is not None
@@ -777,12 +888,11 @@ class UDFStep(Step, ABC):
         udf_distributor_class = get_udf_distributor_class()
 
         prefetch = self.udf.prefetch
-        with _get_cache(catalog.cache, prefetch, use_cache=self.cache) as _cache:
+        with _get_cache(catalog.cache, prefetch, use_cache=self.execution.cache) as _cache:
             catalog = clone_catalog_with_cache(catalog, _cache)
 
             try:
-                if udf_distributor_class and not catalog.config.in_memory:
-                    # Use the UDF distributor if available (running in SaaS)
+                if udf_distributor_class and not catalog.in_memory:
                     udf_distributor = udf_distributor_class(
                         catalog=catalog,
                         table=udf_table,
@@ -794,10 +904,10 @@ class UDFStep(Step, ABC):
                         udf_fields=udf_fields,
                         rows_to_process=rows_to_process,
                         rows_total=rows_total,
-                        use_cache=self.cache,
+                        use_cache=self.execution.cache,
                         is_generator=self.is_generator,
-                        min_task_size=self.min_task_size,
-                        batch_size=self.batch_size,
+                        min_task_size=self.execution.min_task_size,
+                        batch_size=self.execution.batch_size,
                         continued=continued,
                         rows_reused=rows_reused,
                         output_rows_reused=output_rows_reused,
@@ -806,100 +916,25 @@ class UDFStep(Step, ABC):
                     return
 
                 if workers:
-                    if catalog.config.in_memory:
+                    if catalog.in_memory:
                         raise RuntimeError(
                             "In-memory databases cannot be used with "
                             "distributed processing."
                         )
-
                     raise RuntimeError(
                         f"{DISTRIBUTED_IMPORT_PATH} import path is required "
                         "for distributed UDF processing."
                     )
+
                 if processes:
-                    # Parallel processing (faster for more CPU-heavy UDFs)
-                    if catalog.config.in_memory:
-                        raise RuntimeError(
-                            "In-memory databases cannot be used "
-                            "with parallel processing."
-                        )
-
-                    udf_info = UdfInfo(
-                        udf_data=filtered_cloudpickle_dumps(self.udf),
-                        catalog_init=catalog.get_init_params(),
-                        metastore_clone_params=catalog.metastore.clone_params(),
-                        warehouse_clone_params=catalog.warehouse.clone_params(),
-                        table=udf_table,
-                        query=query,
-                        udf_fields=udf_fields,
-                        batching=batching,
-                        processes=processes,
-                        is_generator=self.is_generator,
-                        cache=self.cache,
-                        rows_total=rows_to_process,
-                        batch_size=self.batch_size,
+                    self._process_parallel_udf(
+                        udf_table, query, catalog, batching,
+                        udf_fields, processes, rows_to_process,
                     )
-
-                    # Run the UDFDispatcher in another process to avoid needing
-                    # if __name__ == '__main__': in user scripts
-                    exec_cmd = get_datachain_executable()
-                    cmd = [*exec_cmd, "internal-run-udf"]
-                    envs = dict(os.environ)
-                    envs["PYTHONPATH"] = os.getcwd()
-                    process_data = filtered_cloudpickle_dumps(udf_info)
-
-                    with subprocess.Popen(  # noqa: S603
-                        cmd, env=envs, stdin=subprocess.PIPE
-                    ) as process:
-                        try:
-                            process.communicate(process_data)
-                        except KeyboardInterrupt:
-                            raise QueryScriptCancelError(
-                                "UDF execution was canceled by the user."
-                            ) from None
-                        if retval := process.poll():
-                            if retval == QUERY_SCRIPT_CANCELED_EXIT_CODE:
-                                raise QueryScriptCancelError(
-                                    "UDF execution was canceled by the user."
-                                )
-                            if retval == QUERY_SCRIPT_ABORTED_EXIT_CODE:
-                                raise QueryScriptAbortError(
-                                    "UDF execution aborted: job already terminated."
-                                )
-                            raise RuntimeError(
-                                f"UDF Execution Failed! Exit code: {retval}"
-                            )
                 else:
-                    # Otherwise process single-threaded (faster for smaller UDFs)
-                    warehouse = catalog.warehouse
-
-                    udf_inputs = batching(warehouse.dataset_select_paginated, query)
-                    download_cb = get_download_callback()
-                    processed_cb = get_processed_callback()
-                    generated_cb = get_generated_callback(self.is_generator)
-
-                    try:
-                        udf_results = self.udf.run(
-                            udf_fields,
-                            udf_inputs,
-                            catalog,
-                            self.cache,
-                            download_cb,
-                            processed_cb,
-                        )
-                        with safe_closing(udf_results):
-                            process_udf_outputs(
-                                warehouse,
-                                udf_table,
-                                udf_results,
-                                self.udf,
-                                cb=generated_cb,
-                                batch_size=self.batch_size,
-                            )
-                    finally:
-                        download_cb.close()
-                        processed_cb.close()
-                        generated_cb.close()
+                    self._process_single_threaded_udf(
+                        udf_table, query, catalog, batching, udf_fields,
+                    )
 
             except QueryScriptAbortError:
                 catalog.warehouse.close()
@@ -908,7 +943,6 @@ class UDFStep(Step, ABC):
                 catalog.warehouse.close()
                 sys.exit(QUERY_SCRIPT_CANCELED_EXIT_CODE)
             except (Exception, KeyboardInterrupt):
-                # Close any open database connections if an error is encountered
                 catalog.warehouse.close()
                 raise
 
@@ -967,10 +1001,7 @@ class UDFStep(Step, ABC):
                 self.udf,
                 self.session,
                 partition_by=partition_by,
-                parallel=self.parallel,
-                workers=self.workers,
-                min_task_size=self.min_task_size,
-                batch_size=self.batch_size,
+                execution=self.execution,
             )
         return self.__class__(self.udf, self.session)
 
@@ -1670,16 +1701,6 @@ class UDFStep(Step, ABC):
 
 @frozen
 class UDFSignal(UDFStep):
-    udf: "UDFAdapter"
-    session: "Session"
-    partition_by: PartitionByType | None = None
-    is_generator = False
-    # Parameters from Settings
-    cache: bool = False
-    parallel: int | None = None
-    workers: bool | int = False
-    min_task_size: int | None = None
-    batch_size: int | None = None
 
     @property
     def _step_type(self) -> CheckpointStepType:
@@ -1780,17 +1801,8 @@ class UDFSignal(UDFStep):
 class RowGenerator(UDFStep):
     """Extend dataset with new rows."""
 
-    udf: "UDFAdapter"
-    session: "Session"
-    partition_by: PartitionByType | None = None
     is_generator = True
     is_aggregator: bool = False
-    # Parameters from Settings
-    cache: bool = False
-    parallel: int | None = None
-    workers: bool | int = False
-    min_task_size: int | None = None
-    batch_size: int | None = None
 
     @property
     def _step_type(self) -> CheckpointStepType:
@@ -2189,6 +2201,24 @@ class SQLUnion(Step):
         )
 
 
+def _as_nullable_scalar(column: Any) -> Any:
+    """Re-type a join column nullable so an outer-join NULL survives instead of
+    coercing to the type default. This applies to a model's leaves too: an
+    unmatched row's leaves then read back NULL, so the model hydrates as None
+    (via the all-values-None fallback) rather than a default-filled instance."""
+    col_type = getattr(column, "type", None)
+    if not isinstance(col_type, SQLType) or getattr(col_type, "dc_nullable", False):
+        return column
+    try:
+        py_type = col_type.python_type
+    except NotImplementedError:
+        return column
+    if py_type not in NULLABLE_SCALARS:
+        return column
+    nullable_type = SQLType.as_nullable(col_type)
+    return sqlalchemy.type_coerce(column, nullable_type).label(column.name)
+
+
 @frozen
 class SQLJoin(Step):
     catalog: "Catalog"
@@ -2311,6 +2341,29 @@ class SQLJoin(Step):
         assert isinstance(bound, ColumnElement)
         return bound
 
+    def _map_right_columns(
+        self,
+        right_columns: "list[KeyedColumnElement[Any]]",
+        root_mapping: dict[str, str],
+        nullable: bool,
+    ) -> "list[KeyedColumnElement[Any]]":
+        mapped: list[KeyedColumnElement[Any]] = []
+        for column in right_columns:
+            original_name = column.name
+            column_root, column_tail = self._split_db_name(original_name)
+            mapped_root = root_mapping[column_root]
+            new_name = (
+                mapped_root
+                if not column_tail
+                else DEFAULT_DELIMITER.join([mapped_root, column_tail])
+            )
+            if nullable:
+                column = _as_nullable_scalar(column)
+            if column.name != new_name:
+                column = column.label(new_name)
+            mapped.append(column)
+        return mapped
+
     def apply(
         self,
         query_generator: QueryGenerator,
@@ -2338,22 +2391,12 @@ class SQLJoin(Step):
             prefix=self.rname,
         )
 
-        q2_columns: list[KeyedColumnElement[Any]] = []
-        for column in right_columns:
-            original_name = column.name
-            column_root, column_tail = self._split_db_name(original_name)
-            mapped_root = root_mapping[column_root]
-
-            new_name = (
-                mapped_root
-                if not column_tail
-                else DEFAULT_DELIMITER.join([mapped_root, column_tail])
-            )
-
-            if new_name != original_name:
-                column = column.label(new_name)
-
-            q2_columns.append(column)
+        # right side nullable for a left join, both sides for a full join
+        q2_columns = self._map_right_columns(
+            right_columns, root_mapping, nullable=not self.inner
+        )
+        if self.full:
+            q1_columns = [_as_nullable_scalar(c) for c in q1_columns]
 
         res_columns = q1_columns + q2_columns
         predicates = (
@@ -2522,6 +2565,54 @@ class ResultIter:
             self._row_iter.close()  # type: ignore[attr-defined]
 
 
+def _get_table() -> "TableClause":
+    table_name = "".join(secrets.choice(string.ascii_letters) for _ in range(16))
+    return sqlalchemy.table(table_name)
+
+
+@attrs.define
+class _Backend:
+    session: "Session"
+    catalog: "Catalog"
+
+    @property
+    def dialect(self) -> str:
+        return self.catalog.warehouse.db.dialect
+
+
+@attrs.define
+class _Identity:
+    name: str | None = None
+    version: str | None = None
+    table: "TableClause" = attrs.field(factory=_get_table)
+    list_ds_name: str | None = None
+    project: "Project | None" = None
+
+
+@attrs.define
+class _Schema:
+    feature_schema: dict | None = None
+    column_types: dict[str, Any] | None = None
+
+
+@attrs.define
+class _Pipeline:
+    steps: list["Step"] = attrs.field(factory=list)
+    starting_step: "QueryStep | None" = None
+    delta_spec: "DeltaSpec | None" = None
+    dependencies: set["DatasetDependencyType"] = attrs.field(factory=set)
+    temp_table_names: list[str] = attrs.field(factory=list)
+    listing_fn: "Callable | None" = None
+
+
+@attrs.define
+class _Config:
+    update: bool = False
+    checkpoints_enabled: bool = True
+    _chunk_index: int | None = None
+    _chunk_total: int | None = None
+
+
 class DatasetQuery:
     def __init__(
         self,
@@ -2537,27 +2628,16 @@ class DatasetQuery:
         steps: Sequence[Step] = (),
         checkpoints_enabled: bool = True,
     ) -> None:
-        self.session = Session.get(session, catalog=catalog, in_memory=in_memory)
-        self.catalog = catalog or self.session.catalog
-        self.steps: list[Step] = list(steps)
-        self._chunk_index: int | None = None
-        self._chunk_total: int | None = None
-        self.temp_table_names: list[str] = []
-        self.dependencies: set[DatasetDependencyType] = set()
-        self.table = self.get_table()
-        self.starting_step: QueryStep | None = None
-        self.delta_spec: DeltaSpec | None = None
-        self.name: str | None = None
-        self.version: str | None = None
-        self.feature_schema: dict | None = None
-        self.column_types: dict[str, Any] | None = None
-        self.before_steps: list[Callable] = []
-        self.listing_fn: Callable | None = None
-        self.update = update
-        self.checkpoints_enabled = checkpoints_enabled
-
-        self.list_ds_name: str | None = None
-        self.dialect = self.catalog.warehouse.db.dialect
+        session_obj = Session.get(session, catalog=catalog, in_memory=in_memory)
+        catalog_obj = catalog or session_obj.catalog
+        self._backend = _Backend(session=session_obj, catalog=catalog_obj)
+        self._identity = _Identity()
+        self._schema = _Schema()
+        self._pipeline = _Pipeline(steps=list(steps))
+        self._config = _Config(
+            update=update,
+            checkpoints_enabled=checkpoints_enabled,
+        )
 
         if name is None:
             return
@@ -2571,6 +2651,102 @@ class DatasetQuery:
             include_incomplete=include_incomplete,
         )
 
+    @property
+    def catalog(self) -> "Catalog":
+        return self._backend.catalog
+
+    @property
+    def session(self) -> "Session":
+        return self._backend.session
+
+    @property
+    def dialect(self) -> str:
+        return self._backend.dialect
+
+    @property
+    def name(self) -> str | None:
+        return self._identity.name
+
+    @property
+    def version(self) -> str | None:
+        return self._identity.version
+
+    @version.setter
+    def version(self, value: str | None) -> None:
+        self._identity.version = value
+
+    @property
+    def table(self) -> "TableClause":
+        return self._identity.table
+
+    @property
+    def list_ds_name(self) -> str | None:
+        return self._identity.list_ds_name
+
+    @property
+    def project(self) -> "Project | None":
+        return self._identity.project
+
+    @property
+    def feature_schema(self) -> dict | None:
+        return self._schema.feature_schema
+
+    @feature_schema.setter
+    def feature_schema(self, value: dict | None) -> None:
+        self._schema.feature_schema = value
+
+    @property
+    def column_types(self) -> dict[str, Any] | None:
+        return self._schema.column_types
+
+    @property
+    def steps(self) -> list["Step"]:
+        return self._pipeline.steps
+
+    @property
+    def starting_step(self) -> "QueryStep | None":
+        return self._pipeline.starting_step
+
+    @starting_step.setter
+    def starting_step(self, value: "QueryStep | None") -> None:
+        self._pipeline.starting_step = value
+
+    @property
+    def delta_spec(self) -> "DeltaSpec | None":
+        return self._pipeline.delta_spec
+
+    @delta_spec.setter
+    def delta_spec(self, value: "DeltaSpec | None") -> None:
+        self._pipeline.delta_spec = value
+
+    @property
+    def dependencies(self) -> set["DatasetDependencyType"]:
+        return self._pipeline.dependencies
+
+    @property
+    def temp_table_names(self) -> list[str]:
+        return self._pipeline.temp_table_names
+
+    @property
+    def listing_fn(self) -> "Callable | None":
+        return self._pipeline.listing_fn
+
+    @property
+    def update(self) -> bool:
+        return self._config.update
+
+    @update.setter
+    def update(self, value: bool) -> None:
+        self._config.update = value
+
+    @property
+    def checkpoints_enabled(self) -> bool:
+        return self._config.checkpoints_enabled
+
+    @checkpoints_enabled.setter
+    def checkpoints_enabled(self, value: bool) -> None:
+        self._config.checkpoints_enabled = value
+
     def _init_rooted_query(
         self,
         name: str,
@@ -2580,22 +2756,20 @@ class DatasetQuery:
         update: bool = False,
         include_incomplete: bool = False,
     ) -> None:
-        self.name = name
+        self._identity.name = name
         if version:
-            self.version = version
+            self._identity.version = version
 
         if namespace_name is None:
-            namespace_name = self.catalog.metastore.default_namespace_name
+            namespace_name = self._backend.catalog.metastore.default_namespace_name
         if project_name is None:
-            project_name = self.catalog.metastore.default_project_name
+            project_name = self._backend.catalog.metastore.default_project_name
 
         if is_listing_dataset(name) and not version:
-            # not setting query step yet as listing dataset might not exist at
-            # this point
-            self.list_ds_name = name
+            self._identity.list_ds_name = name
         else:
             self._set_starting_step(
-                self.catalog.get_dataset_with_remote_fallback(
+                self._backend.catalog.get_dataset_with_remote_fallback(
                     name,
                     namespace_name=namespace_name,
                     project_name=project_name,
@@ -2607,17 +2781,21 @@ class DatasetQuery:
             )
 
     def _set_starting_step(self, ds: "DatasetRecord") -> None:
-        if not self.version:
-            self.version = ds.latest_version
+        if not self._identity.version:
+            self._identity.version = ds.latest_version
 
-        self.starting_step = QueryStep(self.catalog, ds, self.version)
+        self._pipeline.starting_step = QueryStep(
+            self._backend.catalog, ds, self._identity.version
+        )
 
         # at this point we know our starting dataset so setting up schemas
-        self.feature_schema = ds.get_version(self.version).schema_info.feature_schema
-        self.column_types = copy(ds.schema_info.schema)
-        if "sys__id" in self.column_types:
-            self.column_types.pop("sys__id")
-        self.project = ds.project
+        self._schema.feature_schema = (
+            ds.get_version(self._identity.version).feature_schema
+        )
+        self._schema.column_types = copy(ds.schema)
+        if "sys__id" in self._schema.column_types:
+            self._schema.column_types.pop("sys__id")
+        self._identity.project = ds.project
 
     @property
     def _starting_step_hash(self) -> str:
@@ -2652,11 +2830,6 @@ class DatasetQuery:
 
         return hasher.hexdigest()
 
-    @staticmethod
-    def get_table() -> "TableClause":
-        table_name = "".join(secrets.choice(string.ascii_letters) for _ in range(16))
-        return sqlalchemy.table(table_name)
-
     @property
     def attached(self) -> bool:
         """
@@ -2681,8 +2854,7 @@ class DatasetQuery:
         return col
 
     def set_listing_fn(self, fn: Callable) -> None:
-        """Setting listing function to be run if needed"""
-        self.listing_fn = fn
+        self._pipeline.listing_fn = fn
 
     def resolve_listing(self) -> None:
         """Runs listing pre-step if needed"""
@@ -2730,8 +2902,8 @@ class DatasetQuery:
 
         query = self.clone()
 
-        index = os.getenv("DATACHAIN_QUERY_CHUNK_INDEX", self._chunk_index)
-        total = os.getenv("DATACHAIN_QUERY_CHUNK_TOTAL", self._chunk_total)
+        index = os.getenv("DATACHAIN_QUERY_CHUNK_INDEX", self._config._chunk_index)
+        total = os.getenv("DATACHAIN_QUERY_CHUNK_TOTAL", self._config._chunk_total)
 
         if index is not None and total is not None:
             index, total = int(index), int(total)  # os.getenv returns str
@@ -2739,12 +2911,10 @@ class DatasetQuery:
             if not (0 <= index < total):
                 raise ValueError("chunk index must be between 0 and total")
 
-            # Respect limit in chunks
-            query.steps = self._chunk_limit(query.steps, index, total)
+            query._pipeline.steps = self._chunk_limit(query._pipeline.steps, index, total)
 
-            # Prepend the chunk filter to the step chain.
             query = query.filter(C.sys__rand % total == index)
-            query.steps = query.steps[-1:] + query.steps[:-1]
+            query._pipeline.steps = query._pipeline.steps[-1:] + query._pipeline.steps[:-1]
 
         if query.starting_step is not None:
             result = query.starting_step.apply()
@@ -2818,7 +2988,7 @@ class DatasetQuery:
             metastore.cleanup_tables(self.temp_table_names)
         with self.catalog.warehouse.clone(use_new_connection=True) as warehouse:
             warehouse.cleanup_tables(self.temp_table_names)
-        self.temp_table_names = []
+        self._pipeline.temp_table_names = []
 
     def db_results(self, row_factory=None, **kwargs):
         with self.as_iterable(**kwargs) as result:
@@ -2904,11 +3074,15 @@ class DatasetQuery:
 
     def clone(self, new_table=True) -> "Self":
         obj = copy(self)
-        obj.steps = self.steps.copy()
+        obj._identity = copy(self._identity)
+        obj._schema = copy(self._schema)
+        obj._pipeline = copy(self._pipeline)
+        obj._config = copy(self._config)
+        obj._pipeline.steps = self._pipeline.steps.copy()
         if new_table:
-            obj.table = self.get_table()
-        obj.dependencies = set()
-        obj.temp_table_names = []
+            obj._identity.table = _get_table()
+        obj._pipeline.dependencies = set()
+        obj._pipeline.temp_table_names = []
         return obj
 
     def delta_sources(self) -> list["DatasetQuery"]:
@@ -2928,16 +3102,16 @@ class DatasetQuery:
     ) -> "Self":
         if self is source:
             rewritten = replacement.clone(new_table=False)
-            rewritten.table = self.table
-            rewritten_steps = rewritten.steps.copy()
+            rewritten._identity.table = self._identity.table
+            rewritten_steps = rewritten._pipeline.steps.copy()
         else:
             rewritten = self.clone(new_table=False)
             rewritten_steps = []
 
         rewritten_steps.extend(
-            step.replace_source(source, replacement) for step in self.steps
+            step.replace_source(source, replacement) for step in self._pipeline.steps
         )
-        rewritten.steps = rewritten_steps
+        rewritten._pipeline.steps = rewritten_steps
         return cast("Self", rewritten)
 
     @detach
@@ -3155,7 +3329,8 @@ class DatasetQuery:
             Use 0/3, 1/3 and 2/3, not 1/3, 2/3 and 3/3.
         """
         query = self.clone()
-        query._chunk_index, query._chunk_total = index, total
+        query._config._chunk_index = index
+        query._config._chunk_total = total
         return query
 
     @detach
@@ -3195,11 +3370,13 @@ class DatasetQuery:
                 udf,
                 self.session,
                 partition_by=partition_by,
-                parallel=parallel,
-                workers=workers,
-                min_task_size=min_task_size,
-                cache=cache,
-                batch_size=batch_size,
+                execution=UDFExecutionConfig(
+                    cache=cache,
+                    parallel=parallel,
+                    workers=workers,
+                    min_task_size=min_task_size,
+                    batch_size=batch_size,
+                ),
             )
         )
         return query
@@ -3236,11 +3413,13 @@ class DatasetQuery:
                 self.session,
                 partition_by=partition_by,
                 is_aggregator=is_aggregator,
-                parallel=parallel,
-                workers=workers,
-                min_task_size=min_task_size,
-                cache=cache,
-                batch_size=batch_size,
+                execution=UDFExecutionConfig(
+                    cache=cache,
+                    parallel=parallel,
+                    workers=workers,
+                    min_task_size=min_task_size,
+                    batch_size=batch_size,
+                ),
             )
         )
         return query
@@ -3292,31 +3471,26 @@ class DatasetQuery:
             query.cleanup()
         return query
 
-    def save(
+    def _resolve_job(
         self,
-        name: str | None = None,
-        version: str | None = None,
-        project: Project | None = None,
-        feature_schema: dict | None = None,
-        dependencies: list[DatasetDependency] | None = None,
-        description: str | None = None,
-        attrs: list[str] | None = None,
-        update_version: str | None = "patch",
-        query_script: str | None = None,
-        **kwargs,
-    ) -> "Self":
-        """Save the query as a dataset."""
+        query_script: str | None,
+        kwargs: dict,
+    ) -> tuple[str | None, str]:
         if kwargs.get("listing"):
-            # Listing saves are internal — use existing job if present,
-            # but don't create one (e.g. Studio backend `datachain ls`).
             job = self.session.get_job()
         else:
             job = self.session.get_or_create_job()
         job_id = job.id if job else None
         if query_script is None:
             query_script = job.query if job else ""
+        return job_id, query_script
 
-        project = project or self.catalog.metastore.default_project
+    def _validate_save_version(
+        self,
+        name: str | None,
+        version: str | None,
+        project: Project,
+    ) -> None:
         try:
             if (
                 name
@@ -3332,6 +3506,45 @@ class DatasetQuery:
                 raise RuntimeError(f"Dataset {name} already has version {version}")
         except DatasetNotFoundError:
             pass
+
+    def _process_dependencies(
+        self,
+        dependencies: list["DatasetDependency"] | None,
+    ) -> None:
+        if dependencies:
+            self._pipeline.dependencies = set()
+            for dep in dependencies:
+                self._pipeline.dependencies.add(
+                    (
+                        self.catalog.get_dataset(
+                            dep.name,
+                            namespace_name=dep.namespace,
+                            project_name=dep.project,
+                            versions=[dep.version],
+                            include_incomplete=False,
+                        ),
+                        dep.version,
+                    )
+                )
+
+    def save(
+        self,
+        name: str | None = None,
+        version: str | None = None,
+        project: Project | None = None,
+        feature_schema: dict | None = None,
+        dependencies: list[DatasetDependency] | None = None,
+        description: str | None = None,
+        attrs: list[str] | None = None,
+        update_version: str | None = "patch",
+        query_script: str | None = None,
+        **kwargs,
+    ) -> "Self":
+        """Save the query as a dataset."""
+        job_id, query_script = self._resolve_job(query_script, kwargs)
+        project = project or self.catalog.metastore.default_project
+        self._validate_save_version(name, version, project)
+
         if not name and version:
             raise RuntimeError("Cannot set version for temporary datasets")
 
@@ -3352,8 +3565,6 @@ class DatasetQuery:
                 )
 
             # Phase 1: Create a temp staging table and populate it.
-            # If the process dies here, only an orphaned tmp_ table remains,
-            # cleaned up by 'datachain gc'.
             temp_table_name: str = self.catalog.warehouse.temp_table_name()
             self.catalog.warehouse.create_dataset_rows_table(
                 temp_table_name, columns=columns
@@ -3396,23 +3607,7 @@ class DatasetQuery:
                     dataset.get_version(version).id, job_id, is_creator=True
                 )
 
-            if dependencies:
-                # overriding dependencies
-                self.dependencies = set()
-                for dep in dependencies:
-                    self.dependencies.add(
-                        (
-                            self.catalog.get_dataset(
-                                dep.name,
-                                namespace_name=dep.namespace,
-                                project_name=dep.project,
-                                versions=[dep.version],
-                                include_incomplete=False,
-                            ),
-                            dep.version,
-                        )
-                    )
-
+            self._process_dependencies(dependencies)
             self._add_dependencies(dataset, version)  # type: ignore [arg-type]
 
             if kwargs.get("listing"):

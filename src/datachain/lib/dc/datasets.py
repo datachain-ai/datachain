@@ -25,6 +25,44 @@ if TYPE_CHECKING:
     P = ParamSpec("P")
 
 
+def _resolve_dataset_version(
+    name: str,
+    namespace_name: str,
+    project_name: str,
+    version: str | int | None,
+    update: bool,
+    catalog,
+) -> str | int | None:
+    if version is None:
+        return None
+
+    dataset = catalog.get_dataset_with_remote_fallback(
+        name,
+        namespace_name,
+        project_name,
+        update=update,
+        include_incomplete=False,
+    )
+
+    if isinstance(version, int):
+        version_spec = f">={version}.0.0,<{version + 1}.0.0"
+    else:
+        version_spec = str(version)
+
+    from packaging.specifiers import InvalidSpecifier, SpecifierSet
+
+    try:
+        SpecifierSet(version_spec)
+        latest_compatible = dataset.latest_compatible_version(version_spec)
+        if not latest_compatible:
+            raise DatasetVersionNotFoundError(
+                f"No dataset {name} version matching specifier {version_spec}"
+            )
+        return latest_compatible
+    except InvalidSpecifier:
+        return version
+
+
 def read_dataset(
     name: str,
     namespace: str | None = None,
@@ -161,43 +199,9 @@ def read_dataset(
         namespace_name=namespace,
     )
 
-    if version is not None:
-        dataset = session.catalog.get_dataset_with_remote_fallback(
-            name,
-            namespace_name,
-            project_name,
-            update=update,
-            include_incomplete=False,  # Never include incomplete datasets
-        )
-
-        # Convert legacy integer versions to version specifiers
-        # For backward compatibility we still allow users to put version as integer
-        # in which case we convert it to a version specifier that finds the latest
-        # version where major part is equal to that input version.
-        # For example if user sets version=2, we convert it to ">=2.0.0,<3.0.0"
-        # which will find something like 2.4.3 (assuming 2.4.3 is the biggest among
-        # all 2.* dataset versions)
-        if isinstance(version, int):
-            version_spec = f">={version}.0.0,<{version + 1}.0.0"
-        else:
-            version_spec = str(version)
-
-        from packaging.specifiers import InvalidSpecifier, SpecifierSet
-
-        try:
-            # Try to parse as version specifier
-            SpecifierSet(version_spec)
-            # If it's a valid specifier set, find the latest compatible version
-            latest_compatible = dataset.latest_compatible_version(version_spec)
-            if not latest_compatible:
-                raise DatasetVersionNotFoundError(
-                    f"No dataset {name} version matching specifier {version_spec}"
-                )
-            version = latest_compatible
-        except InvalidSpecifier:
-            # If not a valid specifier, treat as exact version string
-            # This handles cases like "1.2.3" which are exact versions, not specifiers
-            pass
+    version = _resolve_dataset_version(
+        name, namespace_name, project_name, version, update, session.catalog
+    )
 
     if settings:
         _settings = Settings(**settings)

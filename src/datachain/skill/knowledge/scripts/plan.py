@@ -45,20 +45,81 @@ def _is_calibration(entry: dict) -> bool:
     return any(a in _CALIB_ATTRS for a in attrs)
 
 
+def _process_dataset_entry(name: str, entries: list[dict]) -> dict | None:
+    source = entries[0]["source"]
+    versions_sorted = sorted(
+        [e["version"] for e in entries if e["version"]],
+        key=parse_semver,
+    )
+    if not versions_sorted:
+        return None
+    latest_version = versions_sorted[-1]
+
+    latest_entry = next(
+        (e for e in entries if e["version"] == latest_version), entries[-1]
+    )
+
+    file_path = dataset_file_path(name, source)
+    abs_json_path = os.path.join("dc-knowledge", file_path + ".json")
+    abs_md_path = os.path.join("dc-knowledge", file_path + ".md")
+
+    if os.path.exists(abs_json_path):
+        file_versions = read_json_versions(abs_json_path)
+        file_fm = read_json_metadata(abs_json_path)
+    elif os.path.exists(abs_md_path):
+        file_versions = read_md_versions(abs_md_path)
+        file_fm = read_md_metadata(abs_md_path)
+    else:
+        file_versions = []
+        file_fm = {}
+
+    file_exists = bool(file_versions)
+
+    file_versions_set = set(file_versions)
+    versions_to_fetch = [v for v in versions_sorted if v not in file_versions_set]
+
+    if latest_version not in versions_to_fetch:
+        file_latest = file_fm.get("last_version", "")
+        file_records = file_fm.get("records", "")
+        latest_records = str(latest_entry.get("records") or "")
+        if file_latest != latest_version or file_records != latest_records:
+            versions_to_fetch.append(latest_version)
+
+    if not file_exists:
+        status = "new"
+    elif versions_to_fetch:
+        status = "stale"
+    else:
+        status = "ok"
+
+    history_complete = versions_sorted[0] == "1.0.0"
+
+    return {
+        "name": name,
+        "source": source,
+        "file_path": file_path,
+        "status": status,
+        "last_version": latest_version,
+        "records": latest_entry.get("records"),
+        "updated": latest_entry.get("updated"),
+        "known_versions": versions_sorted,
+        "file_versions": file_versions,
+        "versions_to_fetch": versions_to_fetch,
+        "history_complete": history_complete,
+    }
+
+
 def plan_datasets(
     dc, db_last_updated: str, studio: bool = False
 ) -> tuple[list[dict], bool]:
     """Plan dataset updates. Returns (datasets_out, up_to_date)."""
-    # Read existing index.md to check timestamp
     index_path = "dc-knowledge/index.md"
     index_fm = read_frontmatter(index_path)
     index_db_updated = index_fm.get("db_last_updated", "")
 
-    # Early exit if timestamps match
     if db_last_updated and db_last_updated == index_db_updated:
         return [], True
 
-    # Collect datasets
     all_datasets = list(collect_datasets(dc, studio=False))
     if studio:
         seen_keys = {(e["name"], e["version"]) for e in all_datasets}
@@ -68,81 +129,17 @@ def plan_datasets(
                 seen_keys.add(key)
                 all_datasets.append(entry)
 
-    # Drop calibration artifacts (see _is_calibration definition above).
     all_datasets = [e for e in all_datasets if not _is_calibration(e)]
 
-    # Group by name
     by_name: dict[str, list[dict]] = {}
     for entry in all_datasets:
         by_name.setdefault(entry["name"], []).append(entry)
 
     datasets_out = []
     for name in sorted(by_name):
-        entries = by_name[name]
-        source = entries[0]["source"]
-
-        versions_sorted = sorted(
-            [e["version"] for e in entries if e["version"]],
-            key=parse_semver,
-        )
-        if not versions_sorted:
-            continue
-        latest_version = versions_sorted[-1]
-
-        latest_entry = next(
-            (e for e in entries if e["version"] == latest_version), entries[-1]
-        )
-
-        file_path = dataset_file_path(name, source)
-        abs_json_path = os.path.join("dc-knowledge", file_path + ".json")
-        abs_md_path = os.path.join("dc-knowledge", file_path + ".md")
-
-        if os.path.exists(abs_json_path):
-            file_versions = read_json_versions(abs_json_path)
-            file_fm = read_json_metadata(abs_json_path)
-        elif os.path.exists(abs_md_path):
-            file_versions = read_md_versions(abs_md_path)
-            file_fm = read_md_metadata(abs_md_path)
-        else:
-            file_versions = []
-            file_fm = {}
-
-        file_exists = bool(file_versions)
-
-        file_versions_set = set(file_versions)
-        versions_to_fetch = [v for v in versions_sorted if v not in file_versions_set]
-
-        if latest_version not in versions_to_fetch:
-            file_latest = file_fm.get("last_version", "")
-            file_records = file_fm.get("records", "")
-            latest_records = str(latest_entry.get("records") or "")
-            if file_latest != latest_version or file_records != latest_records:
-                versions_to_fetch.append(latest_version)
-
-        if not file_exists:
-            status = "new"
-        elif versions_to_fetch:
-            status = "stale"
-        else:
-            status = "ok"
-
-        history_complete = versions_sorted[0] == "1.0.0"
-
-        datasets_out.append(
-            {
-                "name": name,
-                "source": source,
-                "file_path": file_path,
-                "status": status,
-                "last_version": latest_version,
-                "records": latest_entry.get("records"),
-                "updated": latest_entry.get("updated"),
-                "known_versions": versions_sorted,
-                "file_versions": file_versions,
-                "versions_to_fetch": versions_to_fetch,
-                "history_complete": history_complete,
-            }
-        )
+        result = _process_dataset_entry(name, by_name[name])
+        if result is not None:
+            datasets_out.append(result)
 
     up_to_date = bool(datasets_out) and all(d["status"] == "ok" for d in datasets_out)
     return datasets_out, up_to_date

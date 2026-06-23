@@ -9,15 +9,20 @@ DDN = TypeVar("DDN", bound="DatasetDependencyNode")
 
 
 @dataclass
-class DatasetDependencyNode:
-    namespace: str
-    project: str
-    id: int
+class DatasetRef:
     dataset_id: int | None
     dataset_version_id: int | None
     dataset_name: str | None
     dataset_version: str | None
     created_at: datetime
+
+
+@dataclass
+class DatasetDependencyNode:
+    namespace: str
+    project: str
+    id: int
+    dataset: DatasetRef
     source_dataset_id: int
     source_dataset_version_id: int | None
     depth: int
@@ -38,17 +43,19 @@ class DatasetDependencyNode:
         depth: int,
     ) -> "DatasetDependencyNode | None":
         return cls(
-            namespace,
-            project,
-            id,
-            dataset_id,
-            dataset_version_id,
-            dataset_name,
-            dataset_version,
-            created_at,
-            source_dataset_id,
-            source_dataset_version_id,
-            depth,
+            namespace=namespace,
+            project=project,
+            id=id,
+            dataset=DatasetRef(
+                dataset_id=dataset_id,
+                dataset_version_id=dataset_version_id,
+                dataset_name=dataset_name,
+                dataset_version=dataset_version,
+                created_at=created_at,
+            ),
+            source_dataset_id=source_dataset_id,
+            source_dataset_version_id=source_dataset_version_id,
+            depth=depth,
         )
 
     def to_dependency(self) -> "DatasetDependency | None":
@@ -56,11 +63,11 @@ class DatasetDependencyNode:
             namespace_name=self.namespace,
             project_name=self.project,
             id=self.id,
-            dataset_id=self.dataset_id,
-            dataset_version_id=self.dataset_version_id,
-            dataset_name=self.dataset_name,
-            dataset_version=self.dataset_version,
-            dataset_version_created_at=self.created_at,
+            dataset_id=self.dataset.dataset_id,
+            dataset_version_id=self.dataset.dataset_version_id,
+            dataset_name=self.dataset.dataset_name,
+            dataset_version=self.dataset.dataset_version,
+            dataset_version_created_at=self.dataset.created_at,
         )
 
 
@@ -160,5 +167,5 @@ def find_target_dataset_version(
     """
     for node in dependency_nodes:
         if node is not None and node.id == dependency.id:
-            return node.dataset_id, node.dataset_version_id
+            return node.dataset.dataset_id, node.dataset.dataset_version_id
     return None, None
