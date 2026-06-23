@@ -323,9 +323,8 @@ class QueryStep:
 
     def hash(self) -> str:
         version = self.dataset.get_version(self.dataset_version)
-        anchor = (
-            version.content_hash if version.content_hash is not None else version.uuid
-        )
+        content_hash = version.execution.content_hash
+        anchor = content_hash if content_hash is not None else version.uuid
         return hashlib.sha256(anchor.encode()).hexdigest()
 
 
@@ -782,7 +781,7 @@ class UDFStep(Step, ABC):
             catalog = clone_catalog_with_cache(catalog, _cache)
 
             try:
-                if udf_distributor_class and not catalog.in_memory:
+                if udf_distributor_class and not catalog.config.in_memory:
                     # Use the UDF distributor if available (running in SaaS)
                     udf_distributor = udf_distributor_class(
                         catalog=catalog,
@@ -807,7 +806,7 @@ class UDFStep(Step, ABC):
                     return
 
                 if workers:
-                    if catalog.in_memory:
+                    if catalog.config.in_memory:
                         raise RuntimeError(
                             "In-memory databases cannot be used with "
                             "distributed processing."
@@ -819,7 +818,7 @@ class UDFStep(Step, ABC):
                     )
                 if processes:
                     # Parallel processing (faster for more CPU-heavy UDFs)
-                    if catalog.in_memory:
+                    if catalog.config.in_memory:
                         raise RuntimeError(
                             "In-memory databases cannot be used "
                             "with parallel processing."
@@ -2614,8 +2613,8 @@ class DatasetQuery:
         self.starting_step = QueryStep(self.catalog, ds, self.version)
 
         # at this point we know our starting dataset so setting up schemas
-        self.feature_schema = ds.get_version(self.version).feature_schema
-        self.column_types = copy(ds.schema)
+        self.feature_schema = ds.get_version(self.version).schema_info.feature_schema
+        self.column_types = copy(ds.schema_info.schema)
         if "sys__id" in self.column_types:
             self.column_types.pop("sys__id")
         self.project = ds.project
