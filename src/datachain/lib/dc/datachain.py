@@ -2322,7 +2322,7 @@ class DataChain:
             from datachain.client.fsspec import Client
 
             fs_kwargs = {
-                **self._query.catalog.client_config,
+                **self._query.catalog.config.client_config,
                 **(fs_kwargs or {}),
             }
 
