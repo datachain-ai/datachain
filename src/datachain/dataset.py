@@ -241,7 +241,7 @@ class DatasetDependency:
             dataset_version,  # type: ignore[arg-type]
             dataset_version_created_at,  # type: ignore[arg-type]
             [],
-            removed=dataset_version_status in REMOVED_STATUSES,
+            removed=dataset_version_status == DatasetStatus.REMOVED,
         )
 
     @property
@@ -268,14 +268,8 @@ class DatasetStatus:
     FAILED = 3
     COMPLETE = 4
     STALE = 6
-    REMOVING = 7  # keep-metadata removal in progress; resumes to REMOVED
+    # 7 and 9 were transient REMOVING/REMOVING_TOTAL; reserved, do not reuse
     REMOVED = 8
-    REMOVING_TOTAL = 9  # wipe in progress; resumes to row deletion
-
-
-REMOVED_STATUSES: frozenset[int] = frozenset(
-    {DatasetStatus.REMOVING, DatasetStatus.REMOVED, DatasetStatus.REMOVING_TOTAL}
-)
 
 
 @dataclass
@@ -308,6 +302,7 @@ class DatasetVersion:
     job_id: str | None = None
     content_hash: str | None = None
     removed_at: datetime | None = None
+    pending_metadata_drop: bool = False
 
     @classmethod
     def parse(  # noqa: PLR0913
@@ -332,6 +327,7 @@ class DatasetVersion:
         job_id: str | None = None,
         content_hash: str | None = None,
         removed_at: datetime | None = None,
+        pending_metadata_drop: bool = False,
         *,
         preview_loaded: bool = True,
     ):
@@ -361,6 +357,7 @@ class DatasetVersion:
             job_id=job_id,
             content_hash=content_hash,
             removed_at=removed_at,
+            pending_metadata_drop=pending_metadata_drop,
             _preview_loaded=preview_loaded,
         )
 
@@ -386,17 +383,12 @@ class DatasetVersion:
             DatasetStatus.FAILED,
             DatasetStatus.COMPLETE,
             DatasetStatus.STALE,
-            DatasetStatus.REMOVING,
-            DatasetStatus.REMOVING_TOTAL,
             DatasetStatus.REMOVED,
         ]
 
     @property
     def is_removed(self) -> bool:
-        """True if the version is in any removal state (in-flight or
-        terminal): REMOVING, REMOVED, REMOVING_TOTAL. The rows table is
-        gone or being dropped in all three cases."""
-        return self.status in REMOVED_STATUSES
+        return self.status == DatasetStatus.REMOVED
 
     def update(self, **kwargs):
         for key, value in kwargs.items():
@@ -601,6 +593,7 @@ class DatasetRecord:
         version_job_id: str | None = None,
         version_content_hash: str | None = None,
         version_removed_at: datetime | None = None,
+        version_pending_metadata_drop: bool = False,
         *,
         versions_loaded: bool = True,
         preview_loaded: bool = True,
@@ -660,6 +653,7 @@ class DatasetRecord:
                 version_job_id,
                 version_content_hash,
                 version_removed_at,
+                version_pending_metadata_drop,
                 preview_loaded=preview_loaded,
             )
             versions_list = [dataset_version]

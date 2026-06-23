@@ -354,8 +354,10 @@ class AbstractMetastore(ABC, Serializable):
           - the associated job has finished, or
           - there is no associated job (job_id is NULL) and the version is
             older than STALE_CREATED_THRESHOLD_HOURS
-        - Status REMOVING / REMOVING_TOTAL: removal in progress
-          (GC resumes to REMOVED or to full row deletion respectively)
+        - Status REMOVED with pending_metadata_drop=True: a wipe was
+          interrupted mid-way; GC finishes by dropping the version row
+        - Status REMOVED in general: GC also retries the rows-table drop
+          in case the original removal call crashed mid-drop
 
         Returns:
             List of (DatasetRecord, version_string) tuples. Each DatasetRecord
@@ -453,11 +455,10 @@ class AbstractMetastore(ABC, Serializable):
         """
         Flip CREATED dataset versions belonging to a failed job to FAILED.
 
-        Only the in-flight CREATED state is touched. Terminal and removal
-        states (COMPLETE, FAILED, REMOVING, REMOVED, REMOVING_TOTAL) are
-        left as-is - otherwise tombstones from a user-issued soft delete
-        inside the failing job would be resurrected as FAILED and then
-        wiped by GC.
+        Only the in-flight CREATED state is touched. Terminal states
+        (COMPLETE, FAILED, REMOVED) are left as-is - otherwise tombstones
+        from a user-issued delete inside the failing job would be
+        resurrected as FAILED and then wiped by GC.
 
         Args:
             job_id: ID of the failed job whose dataset versions should be marked
@@ -868,6 +869,7 @@ class AbstractDBMetastore(AbstractMetastore):
             Column("job_id", Text, nullable=True),
             Column("content_hash", Text, nullable=True),
             Column("removed_at", DateTime(timezone=True), nullable=True),
+            Column("pending_metadata_drop", Boolean, nullable=False, default=False),
             UniqueConstraint("dataset_id", "version"),
         ]
 
@@ -1332,6 +1334,7 @@ class AbstractDBMetastore(AbstractMetastore):
             preview=json.dumps(preview or []),
             job_id=job_id or os.getenv("DATACHAIN_JOB_ID"),
             content_hash=content_hash,
+            pending_metadata_drop=False,
         )
         if ignore_if_exists:
             query = query.on_conflict_do_nothing(  # type: ignore[attr-defined]
@@ -1876,16 +1879,16 @@ class AbstractDBMetastore(AbstractMetastore):
             )
             .where(
                 or_(
-                    # Incomplete/failed/stale versions from finished jobs
                     and_(
-                        dv.c.status.in_(
-                            [
-                                DatasetStatus.CREATED,
-                                DatasetStatus.FAILED,
-                                DatasetStatus.STALE,
-                                DatasetStatus.REMOVING,
-                                DatasetStatus.REMOVING_TOTAL,
-                            ]
+                        or_(
+                            dv.c.status.in_(
+                                [
+                                    DatasetStatus.CREATED,
+                                    DatasetStatus.FAILED,
+                                    DatasetStatus.STALE,
+                                ]
+                            ),
+                            dv.c.status == DatasetStatus.REMOVED,
                         ),
                         or_(
                             j.c.status.in_(
@@ -1990,11 +1993,10 @@ class AbstractDBMetastore(AbstractMetastore):
         """
         Finalize dataset versions still in CREATED for a failed job as FAILED.
 
-        Only flips the in-flight CREATED state. Terminal and removal states
-        (COMPLETE, FAILED, REMOVING, REMOVED, REMOVING_TOTAL) must not be
-        overwritten - otherwise tombstones from a user-issued soft delete
-        inside the failing job would be resurrected as FAILED and then
-        wiped by GC.
+        Only flips the in-flight CREATED state. Terminal states
+        (COMPLETE, FAILED, REMOVED) must not be overwritten - otherwise
+        tombstones from a user-issued delete inside the failing job
+        would be resurrected as FAILED and then wiped by GC.
 
         Args:
             job_id: ID of the failed job whose dataset versions should be marked

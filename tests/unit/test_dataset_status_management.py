@@ -435,7 +435,7 @@ def dataset_marked_for_removal(test_session, job) -> DatasetRecord:
     test_session.catalog.metastore.db.execute(
         dv.update()
         .where(dv.c.dataset_id == dataset.id)
-        .values(status=DatasetStatus.REMOVING_TOTAL)
+        .values(status=DatasetStatus.REMOVED, pending_metadata_drop=True)
     )
     return test_session.catalog.get_dataset(dataset.name, include_incomplete=True)
 
@@ -870,34 +870,17 @@ def test_remove_dataset_force_keep_metadata_internal_downgrades_to_wipe(test_ses
         catalog.get_dataset(ds.name, include_incomplete=True)
 
 
-def _force_status(catalog, dataset: DatasetRecord, version: str, status: int):
+def _force_status(catalog, dataset: DatasetRecord, version: str, status: int, **extra):
     """Put a version into a specific status directly. Simulates a mid-flight
     removal that crashed, or another caller having claimed the transition."""
-    catalog.metastore.update_dataset_version(dataset, version, status=status)
+    catalog.metastore.update_dataset_version(dataset, version, status=status, **extra)
     return catalog.get_dataset(dataset.name, versions=None, include_incomplete=True)
 
 
-def test_gc_resumes_stuck_removing(test_session, dataset_complete):
-    """A version stuck in REMOVING (previous soft-delete crashed mid-flight)
-    is resumed to REMOVED by the GC path — _remove_versions picks the soft
-    path from the current status."""
-    catalog = test_session.catalog
-    version = dataset_complete.latest_version
-    ds = _force_status(catalog, dataset_complete, version, DatasetStatus.REMOVING)
-    vid = ds.get_version(version).id
-
-    catalog.remove_dataset_versions(version_ids=[vid])
-
-    ds = catalog.get_dataset(
-        dataset_complete.name, versions=None, include_incomplete=True
-    )
-    assert _find_removed(ds, version) is not None
-
-
-def test_gc_skips_removed_tombstones(test_session, dataset_complete):
-    """A REMOVED version handed to the GC path must be a no-op - the
-    tombstone has to be preserved, not wiped through inferred
-    keep_metadata=False."""
+def test_gc_skips_finished_soft_delete_tombstones(test_session, dataset_complete):
+    """A REMOVED + pending_metadata_drop=False version handed to the GC path
+    must keep the tombstone - the soft delete is finished and the metadata
+    should not be wiped."""
     catalog = test_session.catalog
     version = dataset_complete.latest_version
     ds = _force_status(catalog, dataset_complete, version, DatasetStatus.REMOVED)
@@ -911,30 +894,19 @@ def test_gc_skips_removed_tombstones(test_session, dataset_complete):
     assert _find_removed(ds, version) is not None
 
 
-def test_gc_wipes_internal_stuck_in_removing(test_session):
-    """An internal `session_*` dataset stuck in REMOVING (crashed mid-flight)
-    must be wiped by the GC path - inference must not pick the soft path
-    for internal datasets, since they can't be kept as metadata tombstones."""
-    catalog = test_session.catalog
-    name = f"{SESSION_DATASET_PREFIX}gc_stuck_test"
-    ds = _make_completed_dataset(catalog, name)
-    version = ds.latest_version
-    ds = _force_status(catalog, ds, version, DatasetStatus.REMOVING)
-    vid = ds.get_version(version).id
-
-    catalog.remove_dataset_versions(version_ids=[vid])
-
-    with pytest.raises(DatasetNotFoundError):
-        catalog.get_dataset(name, include_incomplete=True)
-
-
-def test_gc_resumes_stuck_removing_total(test_session, dataset_complete):
-    """A version stuck in REMOVING_TOTAL is resumed to a full wipe by the GC
-    path — _remove_versions picks the wipe path."""
+def test_gc_resumes_interrupted_wipe(test_session, dataset_complete):
+    """A version stuck in REMOVED + pending_metadata_drop=True (a wipe that
+    crashed before the version row was dropped) is finished by the GC path."""
     catalog = test_session.catalog
     version = dataset_complete.latest_version
     name = dataset_complete.name
-    ds = _force_status(catalog, dataset_complete, version, DatasetStatus.REMOVING_TOTAL)
+    ds = _force_status(
+        catalog,
+        dataset_complete,
+        version,
+        DatasetStatus.REMOVED,
+        pending_metadata_drop=True,
+    )
     vid = ds.get_version(version).id
 
     catalog.remove_dataset_versions(version_ids=[vid])
@@ -943,26 +915,44 @@ def test_gc_resumes_stuck_removing_total(test_session, dataset_complete):
         catalog.get_dataset(name, include_incomplete=True)
 
 
-def test_remove_explicit_keep_on_inflight_wipe_raises(test_session, dataset_complete):
-    """If a wipe is in flight (REMOVING_TOTAL) and a caller explicitly asks
-    to keep metadata, raise — don't silently downgrade the in-flight wipe."""
+def test_gc_retries_orphaned_rows_table_drop(test_session, dataset_complete):
+    """A REMOVED + pending_metadata_drop=False version with the rows table
+    still present (a soft delete that crashed mid-drop) gets the rows table
+    cleaned up by the GC path, while the tombstone is preserved."""
+    catalog = test_session.catalog
+    warehouse = catalog.warehouse
+    version = dataset_complete.latest_version
+    rows_table = warehouse.dataset_table_name(dataset_complete, version)
+    assert warehouse.db.has_table(rows_table)
+
+    ds = _force_status(catalog, dataset_complete, version, DatasetStatus.REMOVED)
+    vid = ds.get_version(version).id
+
+    catalog.remove_dataset_versions(version_ids=[vid])
+
+    assert not warehouse.db.has_table(rows_table)
+    ds = catalog.get_dataset(
+        dataset_complete.name, versions=None, include_incomplete=True
+    )
+    assert _find_removed(ds, version) is not None
+
+
+def test_soft_then_wipe_escalates(test_session, dataset_complete):
+    """Calling wipe on an already-soft-deleted version flips
+    pending_metadata_drop from False to True and drops the version row."""
     catalog = test_session.catalog
     version = dataset_complete.latest_version
-    ds = _force_status(catalog, dataset_complete, version, DatasetStatus.REMOVING_TOTAL)
+    name = dataset_complete.name
 
-    with pytest.raises(DataChainError, match="while keeping metadata"):
-        catalog.remove_dataset_version(ds, version, keep_metadata=True)
+    catalog.remove_dataset_version(dataset_complete, version, keep_metadata=True)
+    ds = catalog.get_dataset(name, versions=None, include_incomplete=True)
+    removed = _find_removed(ds, version)
+    assert removed is not None
+    assert not removed.pending_metadata_drop
 
-
-def test_remove_explicit_wipe_on_inflight_keep_raises(test_session, dataset_complete):
-    """If a soft delete is in flight (REMOVING) and a caller explicitly asks
-    to wipe, raise — don't silently escalate the in-flight soft delete."""
-    catalog = test_session.catalog
-    version = dataset_complete.latest_version
-    ds = _force_status(catalog, dataset_complete, version, DatasetStatus.REMOVING)
-
-    with pytest.raises(DataChainError, match="entirely"):
-        catalog.remove_dataset_version(ds, version, keep_metadata=False)
+    catalog.remove_dataset_version(ds, version, keep_metadata=False)
+    with pytest.raises(DatasetNotFoundError):
+        catalog.get_dataset(name, include_incomplete=True)
 
 
 def test_complete_raises_when_version_removed_concurrently(
@@ -987,12 +977,12 @@ def test_complete_raises_when_version_removed_concurrently(
 def test_complete_dataset_version_raises_friendly_when_removed_concurrently(
     test_session, dataset_complete
 ):
-    """End-to-end: when a version is flipped to REMOVING mid-save (e.g. by GC),
+    """End-to-end: when a version is flipped to REMOVED mid-save (e.g. by GC),
     catalog.complete_dataset_version surfaces a user-friendly DataChainError
     that explains the concurrent removal and suggests a retry."""
     catalog = test_session.catalog
     version = dataset_complete.latest_version
-    ds = _force_status(catalog, dataset_complete, version, DatasetStatus.REMOVING)
+    ds = _force_status(catalog, dataset_complete, version, DatasetStatus.REMOVED)
 
     with pytest.raises(DataChainError, match="deleted concurrently") as exc_info:
         catalog.complete_dataset_version(ds, version)

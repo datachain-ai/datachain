@@ -472,9 +472,7 @@ def test_is_internal(dataset_record, name, expected):
 @pytest.mark.parametrize(
     "status,expected",
     [
-        (DatasetStatus.REMOVING, True),
         (DatasetStatus.REMOVED, True),
-        (DatasetStatus.REMOVING_TOTAL, True),
         (DatasetStatus.COMPLETE, False),
         (DatasetStatus.CREATED, False),
         (DatasetStatus.FAILED, False),
