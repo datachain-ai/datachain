@@ -1095,7 +1095,11 @@ class Catalog:
     def update_dataset(self, dataset: DatasetRecord, **kwargs) -> DatasetRecord:
         """Updates dataset fields."""
         dataset_updated = self.metastore.update_dataset(dataset, **kwargs)
-        self.warehouse.rename_dataset_tables(dataset, dataset_updated)
+        # Renaming dataset tables touches (and may wake) the warehouse, so only
+        # do it when a field that feeds the table name changes. See
+        # AbstractWarehouse._construct_dataset_table_name for those fields.
+        if kwargs.keys() & {"name", "project_id"}:
+            self.warehouse.rename_dataset_tables(dataset, dataset_updated)
         return dataset_updated
 
     def remove_dataset_version(

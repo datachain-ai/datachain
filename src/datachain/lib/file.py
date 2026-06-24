@@ -1555,21 +1555,23 @@ class VideoFrame(DataModel):
         without a second decode pass regardless of whether the frame came
         from ``VideoFile.get_frames()`` or ``VideoFile.get_frame()``.
 
+        Display rotation is applied (matching FFmpeg/OpenCV), so a 90/270
+        rotation swaps width and height. Channels are RGB; consumers expecting
+        BGR (e.g. OpenCV, Ultralytics) must convert.
+
         Returns:
             ndarray: A NumPy array representing the video frame,
                      in the shape (height, width, channels).
         """
-        if self._decoded is not None:
-            return self._decoded.to_ndarray(format="rgb24")
+        from .video import _decode_video_frame, _frame_to_ndarray
 
-        from .video import _decode_video_frame
-
-        self._decoded, _ = _decode_video_frame(
-            self.video,
-            self.frame,
-            self.video_stream_index,
-        )
-        return self._decoded.to_ndarray(format="rgb24")
+        if self._decoded is None:
+            self._decoded, _ = _decode_video_frame(
+                self.video,
+                self.frame,
+                self.video_stream_index,
+            )
+        return _frame_to_ndarray(self._decoded)
 
     def read_bytes(self, format: str = "jpg") -> bytes:
         """
@@ -1696,8 +1698,10 @@ class Video(DataModel):
     A data model representing metadata for a video file.
 
     Attributes:
-        width (int): The width of the video in pixels. Defaults to -1 if unknown.
-        height (int): The height of the video in pixels. Defaults to -1 if unknown.
+        width (int): Display width in pixels (after stream rotation).
+                     Defaults to -1 if unknown.
+        height (int): Display height in pixels (after stream rotation).
+                      Defaults to -1 if unknown.
         fps (float): The frame rate of the video (frames per second).
                      Defaults to -1.0 if unknown.
         duration (float): The total duration of the video in seconds.

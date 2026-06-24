@@ -14,7 +14,7 @@ from datachain.lib.convert.sql_to_python import sql_to_python
 from datachain.lib.data_model import NULLABLE_SCALARS, unwrap_optional
 from datachain.lib.model_store import ModelStore
 from datachain.lib.utils import DataChainColumnError, DataChainParamsError
-from datachain.query.schema import Column, ColumnExpr, ColumnMeta
+from datachain.query.schema import DEFAULT_DELIMITER, Column, ColumnExpr, ColumnMeta
 from datachain.sql.functions import numeric
 from datachain.sql.functions.conversion import datetime_to_string
 from datachain.sql.types import SQLType
@@ -480,10 +480,11 @@ class Func(Function):  # noqa: PLW1641
                 continue
             t_with_sub = signals_schema.get_column_type(arg, with_subtree=True)
             if ModelStore.is_pydantic(t_with_sub):
+                user_col = arg.replace(DEFAULT_DELIMITER, ".")
                 raise DataChainParamsError(
                     f"Function {self.name} doesn't support complex object "
-                    f"columns like '{arg}'. Use a leaf field (e.g., "
-                    f"'{arg}.path') or use UDFs to operate on complex objects."
+                    f"columns like '{user_col}'. Use a leaf field (e.g., "
+                    f"'{user_col}.path') or use UDFs to operate on complex objects."
                 )
 
     def _resolve_col(
