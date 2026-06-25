@@ -5,7 +5,6 @@ import json
 import sys
 from typing import TYPE_CHECKING
 
-from changes import build_changes
 from dataset import fetch_version_data
 from schema import extract_preview, extract_schema, get_catalog
 from utils import (
@@ -18,11 +17,12 @@ from utils import (
     write_json,
 )
 
+from datachain.skill.knowledge.snapshot import build_dataset_snapshot
+
 if TYPE_CHECKING:
     from datachain.skill.knowledge.types import (
         DatasetSnapshot,
         DatasetVersionEntry,
-        DependencyEntry,
     )
 
 
@@ -208,69 +208,38 @@ def _fetch_all_versions(name: str) -> "DatasetSnapshot":  # noqa: C901, PLR0912,
         except Exception as e:  # noqa: BLE001
             warnings_list.append(f"summary: {e}")
 
-    # Cache deps per version to avoid fetching prev-version deps twice.
-    deps_by_version: dict[str, list[DependencyEntry]] = {}
-    for ver_obj in versions_sorted_obj:
-        v_str = ver_obj.version
-        deps: list[DependencyEntry] = []
+    def deps_provider(ver_obj):
         try:
             raw_deps = (
                 catalog.get_dataset_dependencies(  # type: ignore[union-attr]
-                    name=bare_name, version=v_str, indirect=False
+                    name=bare_name, version=ver_obj.version, indirect=False
                 )
                 or []
             )
-            deps = [dep_entry(d.name, d.version, d.type) for d in raw_deps if d]
         except Exception as e:  # noqa: BLE001
-            warnings_list.append(f"deps {v_str}: {e}")
-        deps_by_version[v_str] = deps
+            warnings_list.append(f"deps {ver_obj.version}: {e}")
+            return []
+        return [dep_entry(d.name, d.version, d.type) for d in raw_deps if d]
 
-    versions_out = []
-    for i, ver_obj in enumerate(versions_sorted_obj):
-        v_str = ver_obj.version
-        query_script = ver_obj.query_script or None
-        ver_deps = deps_by_version.get(v_str, [])
+    result = build_dataset_snapshot(
+        name=bare_name,
+        source=source,
+        attrs=ds_attrs_main,
+        description=ds_description_main,
+        versions=versions_sorted_obj,
+        deps_provider=deps_provider,
+    )
 
-        # Changes vs previous version — reuse cached deps, no extra queries.
-        changes = None
-        if i > 0:
-            prev_ver_obj = versions_sorted_obj[i - 1]
-            prev_v_str = prev_ver_obj.version
-            prev_script = prev_ver_obj.query_script or None
-            prev_deps = deps_by_version.get(prev_v_str, [])
-            changes = build_changes(
-                query_script,
-                prev_v_str,
-                prev_script,
-                ver_deps,
-                prev_deps,
-            )
+    # The builder reads schema/preview from stored fields and omits summary; overlay
+    # the live-read values onto the latest version (the only one that carries them).
+    if result["versions"]:
+        latest_entry = result["versions"][-1]
+        latest_entry["schema"] = schema
+        latest_entry["preview"] = preview
+        latest_entry["summary"] = summary
 
-        is_latest = i == len(versions_sorted_obj) - 1
-        versions_out.append(
-            {
-                "version": v_str,
-                "uuid": getattr(ver_obj, "uuid", None),
-                "records": ver_obj.num_objects,
-                "updated": (ver_obj.finished_at or ver_obj.created_at).isoformat(),
-                "schema": schema if is_latest else {},
-                "preview": preview if is_latest else None,
-                "summary": summary if is_latest else None,
-                "query_script": query_script,
-                "changes": changes,
-                "dependencies": ver_deps,
-            }
-        )
-
-    result = {
-        "name": bare_name,
-        "source": source,
-        "attrs": ds_attrs_main,
-        "description": ds_description_main,
-        "versions": versions_out,
-    }
     if warnings_list:
-        result["warnings"] = warnings_list
+        result["warnings"] = [*result.get("warnings", []), *warnings_list]
     return result
 
 

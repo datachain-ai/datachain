@@ -4,6 +4,7 @@ import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 # Insert the scripts directory so bare imports work (matches runtime behavior).
 SCRIPTS_DIR = str(
@@ -485,6 +486,72 @@ def test_merge_versions_no_duplicates():
     new = [{"version": "1.0.0"}, {"version": "1.0.1"}, {"version": "1.0.2"}]
     merged = _merge_versions(existing, new, versions_to_fetch=["1.0.2"])
     assert [v["version"] for v in merged] == ["1.0.0", "1.0.1", "1.0.2"]
+
+
+def _ds_version(version, version_value, *, query_script=""):
+    return SimpleNamespace(
+        version=version,
+        version_value=version_value,
+        uuid=f"uuid-{version}",
+        num_objects=1,
+        size=1,
+        created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        finished_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+        query_script=query_script,
+        schema={},
+        feature_schema=None,
+        preview=None,
+    )
+
+
+def test_fetch_all_versions_overlays_live_enrichment_on_latest(monkeypatch):
+    # The shared builder fills schema/preview from stored fields and omits summary;
+    # the local path must overlay the live-read values onto the latest version only.
+    import dataset_all
+    import summary
+
+    record = SimpleNamespace(
+        attrs=["cast:l1"],
+        description="pets",
+        versions=[_ds_version("1.0.1", 2, query_script="b"), _ds_version("1.0.0", 1)],
+    )
+    catalog = SimpleNamespace(
+        get_dataset=lambda *a, **k: record,
+        get_dataset_dependencies=lambda **k: [],
+    )
+    monkeypatch.setattr(dataset_all, "get_catalog", lambda: catalog)
+    monkeypatch.setattr(
+        dataset_all,
+        "dc_import",
+        lambda: SimpleNamespace(read_dataset=lambda name: object()),
+    )
+    monkeypatch.setattr(
+        dataset_all,
+        "extract_schema",
+        lambda chain: {"col": {"type": "str", "fields": None}},
+    )
+    monkeypatch.setattr(
+        dataset_all,
+        "extract_preview",
+        lambda chain: {"columns": ["col"], "rows": [["v"]]},
+    )
+    monkeypatch.setattr(
+        summary, "dataset_summary_from_chain", lambda chain: {"overview": "1 items"}
+    )
+
+    snap = dataset_all._fetch_all_versions("my_ds")
+
+    assert snap["name"] == "my_ds"
+    assert snap["source"] == "local"
+    oldest, latest = snap["versions"]  # oldest-first
+    assert latest["version"] == "1.0.1"
+    assert latest["schema"] == {"col": {"type": "str", "fields": None}}
+    assert latest["preview"] == {"columns": ["col"], "rows": [["v"]]}
+    assert latest["summary"] == {"overview": "1 items"}
+    # Non-latest versions carry no live enrichment.
+    assert oldest["schema"] == {}
+    assert oldest["preview"] is None
+    assert oldest["summary"] is None
 
 
 # ---------------------------------------------------------------------------

@@ -45,6 +45,7 @@ from datachain.lib.data_model import (
     DataValue,
     StandardType,
     dict_to_data_model,
+    unwrap_optional,
 )
 from datachain.lib.file import EXPORT_FILES_MAX_THREADS, ArrowRow, File, FileExporter
 from datachain.lib.file import ExportPlacement as FileExportPlacement
@@ -69,12 +70,12 @@ from datachain.query.dataset import (
 )
 from datachain.query.schema import DEFAULT_DELIMITER, Column, ColumnExpr
 from datachain.sql.functions import path as pathfunc
+from datachain.sql.types import SQLType
 from datachain.utils import (
     batched_it,
     checkpoints_enabled,
     env2bool,
     inside_notebook,
-    row_to_nested_dict,
 )
 
 from .database import DEFAULT_DATABASE_BATCH_SIZE
@@ -1192,10 +1193,27 @@ class DataChain:
             See https://github.com/datachain-ai/datachain/issues/477
             for further details.
         """
-        if descending:
-            args = tuple(sqlalchemy.desc(a) for a in args)
+        resolved: list[Any] = []
+        for arg in args:
+            if isinstance(arg, str):
+                name = arg
+            elif isinstance(arg, Column):
+                name = arg.name
+            else:
+                name = None
+            wrapped = (
+                self.signals_schema.order_by_column(name, descending=descending)
+                if name is not None
+                else None
+            )
+            if wrapped is not None:
+                resolved.append(wrapped)
+            elif descending:
+                resolved.append(sqlalchemy.desc(arg))
+            else:
+                resolved.append(arg)
 
-        return self._evolve(query=self._query.order_by(*args))
+        return self._evolve(query=self._query.order_by(*resolved))
 
     @delta_disabled
     def distinct(  # type: ignore[override]
@@ -1341,6 +1359,11 @@ class DataChain:
                 if not columns:
                     raise SignalResolvingError([col], "is not found")
                 partition_by_columns.extend(cast("list[Column]", columns))
+                # GROUP BY the ancestor sentinel so the result keeps _type_tag.
+                for leaf in cast("list[Column]", columns):
+                    sentinel = self.signals_schema.optional_parent_sentinel(leaf.name)
+                    if sentinel:
+                        partition_by_columns.append(Column(sentinel))
 
                 # For nested field references (e.g., "nested.level1.name"),
                 # we need to distinguish between:
@@ -1535,7 +1558,12 @@ class DataChain:
                     val.type = python_to_sql(type(value))()
                     mutated[name] = val  # type: ignore[assignment]
                 else:
-                    # adding new signal
+                    # nullable physical type so ClickHouse keeps the NULL
+                    if schema._expr_references_nullable(value):
+                        sql_type = SQLType.as_nullable(
+                            python_to_sql(sql_to_python(value))
+                        )
+                        value = sqlalchemy.type_coerce(value, sql_type)
                     mutated[name] = value
 
             new_schema = schema.mutate(kwargs)
@@ -1559,22 +1587,26 @@ class DataChain:
     def _leaf_values(self) -> Iterator[tuple[Any, ...]]: ...
 
     @overload
-    def _leaf_values(self, *, include_hidden: bool) -> Iterator[tuple[Any, ...]]: ...
-
-    @overload
     def _leaf_values(
-        self, *, row_factory: Callable[[list[str], tuple[Any, ...]], _T]
-    ) -> Iterator[_T]: ...
+        self, *, include_hidden: bool = ..., include_sentinels: bool = ...
+    ) -> Iterator[tuple[Any, ...]]: ...
 
     @overload
     def _leaf_values(
         self,
         *,
         row_factory: Callable[[list[str], tuple[Any, ...]], _T],
-        include_hidden: bool,
+        include_hidden: bool = ...,
+        include_sentinels: bool = ...,
     ) -> Iterator[_T]: ...
 
-    def _leaf_values(self, *, row_factory=None, include_hidden: bool = True):
+    def _leaf_values(
+        self,
+        *,
+        row_factory=None,
+        include_hidden: bool = True,
+        include_sentinels: bool = False,
+    ):
         """Yields flattened rows of values as a tuple.
 
         Args:
@@ -1582,11 +1614,13 @@ class DataChain:
                 It should accept two arguments: a list of column names and
                 a tuple of row values.
             include_hidden: Whether to include hidden signals from the schema.
+            include_sentinels: Whether to select the `_type_tag` discriminator
+                column. Off by default; read reconstructs it from the leaf values.
         """
-        db_signals = self._effective_signals_schema.db_signals(
-            include_hidden=include_hidden
+        schema = self._effective_signals_schema
+        db_signals = schema.db_signals(
+            include_hidden=include_hidden, include_sentinels=include_sentinels
         )
-
         with self._query.ordered_select(*db_signals).as_iterable() as rows:
             if row_factory:
                 rows = (row_factory(db_signals, r) for r in rows)  # type: ignore[assignment]
@@ -1855,9 +1889,85 @@ class DataChain:
         signals_schema = self.signals_schema.clone_without_sys_signals()
         right_signals_schema = right_ds.signals_schema.clone_without_sys_signals()
 
-        ds.signals_schema = signals_schema.merge(right_signals_schema, rname)
+        ds.signals_schema = signals_schema.merge(
+            right_signals_schema,
+            rname,
+            left_nullable=full,
+            right_nullable=not inner,
+        )
 
         return ds
+
+    def _align_optional_for_union(self, other: "Self") -> "tuple[Self, Self]":
+        """Promote a plain ``T`` to ``Optional[T]`` when unioned with an
+        ``Optional[T]`` side, so the result schema doesn't claim ``T`` while the
+        rows hold ``None``. The plain side gets nullable leaves and, for an
+        ``Optional[DataModel]``, a ``present`` ``_type_tag``.
+        """
+        from datachain.lib.signal_schema import SignalSchema
+
+        lvals = self.signals_schema.values
+        rvals = other.signals_schema.values
+        if set(lvals) != set(rvals):
+            return self, other  # genuinely different signals -> let union error
+
+        lprom, rprom = dict(lvals), dict(rvals)
+        left_add: dict[str, Any] = {}
+        right_add: dict[str, Any] = {}
+        sentinel_field = SignalSchema._OPTIONAL_SENTINEL_FIELD
+
+        def _present_sentinel() -> Any:
+            # nullable to match the natural side's _type_tag column type.
+            col = literal(0)
+            col.type = SQLType.as_nullable(python_to_sql(int))
+            return col
+
+        def _nullable_leaf_casts(name: str, promoted: dict[str, Any]) -> dict[str, Any]:
+            # Re-cast leaves to nullable so the UNION keeps NULLs on CH (not 0/"").
+            casts: dict[str, Any] = {}
+            sub = SignalSchema({name: promoted[name]})
+            cols = cast(
+                "list[Column]",
+                sub.db_signals(as_columns=True, include_sentinels=False),
+            )
+            for col in cols:
+                ref = Column(col.name)
+                ref.type = col.type
+                casts[col.name] = ref
+            return casts
+
+        def _promote(
+            name: str, inner: Any, prom: dict[str, Any], add: dict[str, Any]
+        ) -> None:
+            prom[name] = inner | None
+            add.update(_nullable_leaf_casts(name, prom))
+            if ModelStore.is_pydantic(inner):
+                add[f"{name}{DEFAULT_DELIMITER}{sentinel_field}"] = _present_sentinel()
+
+        for name in lvals:
+            l_inner, l_opt = unwrap_optional(lvals[name])
+            r_inner, r_opt = unwrap_optional(rvals[name])
+            if l_inner != r_inner or l_opt == r_opt:
+                continue
+            if not l_opt:
+                _promote(name, l_inner, lprom, left_add)
+            if not r_opt:
+                _promote(name, r_inner, rprom, right_add)
+
+        left, right = self, other
+        if left_add:
+            schema = SignalSchema(lprom)
+            left = self._evolve(
+                query=self._query.mutate(new_schema=schema, **left_add),
+                signal_schema=schema,
+            )
+        if right_add:
+            schema = SignalSchema(rprom)
+            right = other._evolve(
+                query=other._query.mutate(new_schema=schema, **right_add),
+                signal_schema=schema,
+            )
+        return left, right
 
     @delta_disabled
     def union(self, other: "Self") -> "Self":
@@ -1866,8 +1976,9 @@ class DataChain:
         Parameters:
             other: chain whose rows will be added to `self`.
         """
-        self_schema = self.signals_schema
-        other_schema = other.signals_schema
+        left, right = self._align_optional_for_union(other)
+        self_schema = left.signals_schema
+        other_schema = right.signals_schema
         missing_left, missing_right = self_schema.compare_signals(other_schema)
         if missing_left or missing_right:
             raise UnionSchemaMismatchError.from_column_sets(
@@ -1875,8 +1986,11 @@ class DataChain:
                 missing_right,
             )
 
-        self.signals_schema = self_schema.clone_without_sys_signals()
-        return self._evolve(query=self._query.union(other._query))
+        # Evolve, don't mutate `left` in place — it may be the caller's own chain.
+        return left._evolve(
+            query=left._query.union(right._query),
+            signal_schema=self_schema.clone_without_sys_signals(),
+        )
 
     @delta_disabled
     def subtract(  # type: ignore[override]
@@ -2447,32 +2561,25 @@ class DataChain:
             File: The stored file with refreshed metadata (version, etag, size).
         """
         target = File.at(path, session=self.session)
-        headers, _ = self._effective_signals_schema.get_headers_with_length()
-        headers = [list(filter(None, h)) for h in headers]
         with target.open("wb", client_config=fs_kwargs) as f:
-            self._write_json_stream(f, headers, include_outer_list)
+            self._write_json_stream(f, include_outer_list)
         return target
 
-    def _write_json_stream(
-        self,
-        f: IO[bytes],
-        headers: list[list[str]],
-        include_outer_list: bool,
-    ) -> None:
+    def _write_json_stream(self, f: IO[bytes], include_outer_list: bool) -> None:
+        names = list(self._effective_signals_schema.values)
         is_first = True
         if include_outer_list:
             f.write(b"[\n")
-        for row in self._leaf_values():
+        for row in self.to_iter():
+            nested = {
+                name: obj.model_dump(mode="json") if isinstance(obj, BaseModel) else obj
+                for name, obj in zip(names, row, strict=False)
+            }
             if not is_first:
                 f.write(b",\n" if include_outer_list else b"\n")
             else:
                 is_first = False
-            f.write(
-                json.dumps(
-                    row_to_nested_dict(headers, row),
-                    ensure_ascii=False,
-                ).encode("utf-8")
-            )
+            f.write(json.dumps(nested, ensure_ascii=False).encode("utf-8"))
         if include_outer_list:
             f.write(b"\n]\n")
 
