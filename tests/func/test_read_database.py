@@ -84,7 +84,7 @@ def test(sqlite3_connection, connection, test_session):
     ]
 
 
-def test_nullable(sqlite3_connection, test_session, warehouse):
+def test_nullable(sqlite3_connection, test_session):
     """
     Verify that a column containing a sequence of NULL values is handled correctly
     when the number of leading NULLs is less than `infer_schema_length`.
@@ -97,10 +97,10 @@ def test_nullable(sqlite3_connection, test_session, warehouse):
     sqlite3_connection.commit()
 
     chain = read_database("select * from tbl", sqlite3_connection, session=test_session)
-    assert chain.schema == {"id": int, "value": str}
-    default_value = None if isinstance(warehouse, SQLiteWarehouse) else ""
+    # the NULLs make `value` an inferred Optional[str], so None round-trips as NULL.
+    assert chain.schema == {"id": int, "value": str | None}
     assert sorted(chain.to_records(), key=lambda r: r["id"]) == [
-        {"id": i, "value": default_value if i < 50 else str(i)} for i in range(1, 1000)
+        {"id": i, "value": None if i < 50 else str(i)} for i in range(1, 1000)
     ]
 
 

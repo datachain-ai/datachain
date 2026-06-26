@@ -14,6 +14,7 @@ for sqlite we can use `sqlite.register_converter`
 
 import numbers
 import re
+from copy import copy
 from datetime import date, datetime
 from types import MappingProxyType
 from typing import Any, Union
@@ -157,15 +158,39 @@ class SQLType(TypeDecorator):
     impl: type[types.TypeEngine[Any]] = types.TypeEngine
     cache_ok = True
 
+    # Optional[scalar] marker -> backend emits a nullable column so None round-trips.
+    dc_nullable: bool = False
+
+    def load_dialect_impl(self, dialect):
+        impl = self._load_dialect_impl(dialect)
+        if self.dc_nullable:
+            return converter(dialect).nullable(impl)
+        return impl
+
+    def _load_dialect_impl(self, dialect):
+        return super().load_dialect_impl(dialect)
+
     @property
     def python_type(self) -> StandardType:
         raise NotImplementedError
 
     def to_dict(self) -> dict[str, Any]:
-        return {"type": self.__class__.__name__}
+        d: dict[str, Any] = {"type": self.__class__.__name__}
+        if self.dc_nullable:
+            d["dc_nullable"] = True
+        return d
+
+    @staticmethod
+    def as_nullable(t: Union[type["SQLType"], "SQLType"]) -> "SQLType":
+        """A nullable instance of ``t`` (given either a class or an instance)."""
+        inst = copy(t) if isinstance(t, SQLType) else t()
+        inst.dc_nullable = True
+        return inst
 
     @classmethod
-    def from_dict(cls, _: dict[str, Any]) -> Union[type["SQLType"], "SQLType"]:
+    def from_dict(cls, d: dict[str, Any]) -> Union[type["SQLType"], "SQLType"]:
+        if d.get("dc_nullable"):
+            return cls.as_nullable(cls)
         return cls
 
 
@@ -176,7 +201,7 @@ class String(SQLType):
     def python_type(self) -> StandardType:
         return str
 
-    def load_dialect_impl(self, dialect):
+    def _load_dialect_impl(self, dialect):
         return converter(dialect).string()
 
     @staticmethod
@@ -198,7 +223,7 @@ class Boolean(SQLType):
     def python_type(self) -> StandardType:
         return bool
 
-    def load_dialect_impl(self, dialect):
+    def _load_dialect_impl(self, dialect):
         return converter(dialect).boolean()
 
     @staticmethod
@@ -220,7 +245,7 @@ class Int(SQLType):
     def python_type(self) -> StandardType:
         return int
 
-    def load_dialect_impl(self, dialect):
+    def _load_dialect_impl(self, dialect):
         return converter(dialect).int()
 
     @staticmethod
@@ -236,7 +261,7 @@ class Int(SQLType):
 
 
 class Int32(Int):
-    def load_dialect_impl(self, dialect):
+    def _load_dialect_impl(self, dialect):
         return converter(dialect).int32()
 
     @staticmethod
@@ -252,7 +277,7 @@ class Int32(Int):
 
 
 class UInt32(Int):
-    def load_dialect_impl(self, dialect):
+    def _load_dialect_impl(self, dialect):
         return converter(dialect).uint32()
 
     @staticmethod
@@ -268,7 +293,7 @@ class UInt32(Int):
 
 
 class Int64(Int):
-    def load_dialect_impl(self, dialect):
+    def _load_dialect_impl(self, dialect):
         return converter(dialect).int64()
 
     @staticmethod
@@ -284,7 +309,7 @@ class Int64(Int):
 
 
 class UInt64(Int):
-    def load_dialect_impl(self, dialect):
+    def _load_dialect_impl(self, dialect):
         return converter(dialect).uint64()
 
     @staticmethod
@@ -306,7 +331,7 @@ class Float(SQLType):
     def python_type(self) -> StandardType:
         return float
 
-    def load_dialect_impl(self, dialect):
+    def _load_dialect_impl(self, dialect):
         return converter(dialect).float()
 
     @staticmethod
@@ -322,7 +347,7 @@ class Float(SQLType):
 
 
 class Float32(Float):
-    def load_dialect_impl(self, dialect):
+    def _load_dialect_impl(self, dialect):
         return converter(dialect).float32()
 
     @staticmethod
@@ -338,7 +363,7 @@ class Float32(Float):
 
 
 class Float64(Float):
-    def load_dialect_impl(self, dialect):
+    def _load_dialect_impl(self, dialect):
         return converter(dialect).float64()
 
     @staticmethod
@@ -360,7 +385,7 @@ class Array(SQLType):
     def python_type(self) -> StandardType:
         return list
 
-    def load_dialect_impl(self, dialect):
+    def _load_dialect_impl(self, dialect):
         return converter(dialect).array(self.item_type)
 
     def to_dict(self) -> dict[str, Any]:
@@ -369,10 +394,13 @@ class Array(SQLType):
             if isinstance(self.item_type, SQLType)
             else self.item_type().to_dict()
         )
-        return {
+        d: dict[str, Any] = {
             "type": self.__class__.__name__,
             "item_type": item_type_dict,
         }
+        if self.dc_nullable:
+            d["dc_nullable"] = True
+        return d
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> Union[type["SQLType"], "SQLType"]:
@@ -395,9 +423,12 @@ class Array(SQLType):
             raise ValueError(f"Array item type '{item_type}' is not supported") from e
 
         try:
-            return cls(sub_t.from_dict(d["item_type"]))  # type: ignore [attr-defined]
+            inst = cls(sub_t.from_dict(d["item_type"]))  # type: ignore [attr-defined]
         except KeyError as e:
             raise ValueError(f"Array item type '{item_type}' is not supported") from e
+        if d.get("dc_nullable"):
+            inst.dc_nullable = True
+        return inst
 
     @staticmethod
     def default_value(dialect):
@@ -421,7 +452,7 @@ class JSON(SQLType):
     def python_type(self) -> StandardType:
         return dict
 
-    def load_dialect_impl(self, dialect):
+    def _load_dialect_impl(self, dialect):
         return converter(dialect).json()
 
     @staticmethod
@@ -443,7 +474,7 @@ class DateTime(SQLType):
     def python_type(self) -> StandardType:
         return datetime
 
-    def load_dialect_impl(self, dialect):
+    def _load_dialect_impl(self, dialect):
         return converter(dialect).datetime()
 
     @staticmethod
@@ -465,7 +496,7 @@ class Binary(SQLType):
     def python_type(self) -> StandardType:
         return bytes
 
-    def load_dialect_impl(self, dialect):
+    def _load_dialect_impl(self, dialect):
         return converter(dialect).binary()
 
     @staticmethod
@@ -561,6 +592,9 @@ class TypeReadConverter:
 
 
 class TypeConverter:
+    def nullable(self, inner):
+        return inner
+
     def string(self):
         return types.String()
 

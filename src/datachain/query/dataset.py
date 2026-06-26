@@ -51,6 +51,7 @@ from datachain.error import (
 from datachain.func.base import Function
 from datachain.hash_utils import hash_column_elements
 from datachain.job import Job
+from datachain.lib.data_model import NULLABLE_SCALARS
 from datachain.lib.listing import is_listing_dataset, listing_dataset_expired
 from datachain.lib.signal_schema import SignalSchema, generate_merge_root_mapping
 from datachain.lib.udf import JsonSerializationError, UdfError, _get_cache
@@ -541,7 +542,9 @@ def get_col_types(
             col_type_inst := col_type() if inspect.isclass(col_type) else col_type,
             warehouse.python_type(col_type_inst),
             type(col_type_inst).__name__,
-            col_type.default_value(dialect),
+            None
+            if getattr(col_type_inst, "dc_nullable", False)
+            else col_type.default_value(dialect),
         )
         for col_name, col_type in output.items()
     ]
@@ -2190,6 +2193,24 @@ class SQLUnion(Step):
         )
 
 
+def _as_nullable_scalar(column: Any) -> Any:
+    """Re-type a join column nullable so an outer-join NULL survives instead of
+    coercing to the type default. This applies to a model's leaves too: an
+    unmatched row's leaves then read back NULL, so the model hydrates as None
+    (via the all-values-None fallback) rather than a default-filled instance."""
+    col_type = getattr(column, "type", None)
+    if not isinstance(col_type, SQLType) or getattr(col_type, "dc_nullable", False):
+        return column
+    try:
+        py_type = col_type.python_type
+    except NotImplementedError:
+        return column
+    if py_type not in NULLABLE_SCALARS:
+        return column
+    nullable_type = SQLType.as_nullable(col_type)
+    return sqlalchemy.type_coerce(column, nullable_type).label(column.name)
+
+
 @frozen
 class SQLJoin(Step):
     catalog: "Catalog"
@@ -2312,6 +2333,29 @@ class SQLJoin(Step):
         assert isinstance(bound, ColumnElement)
         return bound
 
+    def _map_right_columns(
+        self,
+        right_columns: "list[KeyedColumnElement[Any]]",
+        root_mapping: dict[str, str],
+        nullable: bool,
+    ) -> "list[KeyedColumnElement[Any]]":
+        mapped: list[KeyedColumnElement[Any]] = []
+        for column in right_columns:
+            original_name = column.name
+            column_root, column_tail = self._split_db_name(original_name)
+            mapped_root = root_mapping[column_root]
+            new_name = (
+                mapped_root
+                if not column_tail
+                else DEFAULT_DELIMITER.join([mapped_root, column_tail])
+            )
+            if nullable:
+                column = _as_nullable_scalar(column)
+            if column.name != new_name:
+                column = column.label(new_name)
+            mapped.append(column)
+        return mapped
+
     def apply(
         self,
         query_generator: QueryGenerator,
@@ -2339,22 +2383,12 @@ class SQLJoin(Step):
             prefix=self.rname,
         )
 
-        q2_columns: list[KeyedColumnElement[Any]] = []
-        for column in right_columns:
-            original_name = column.name
-            column_root, column_tail = self._split_db_name(original_name)
-            mapped_root = root_mapping[column_root]
-
-            new_name = (
-                mapped_root
-                if not column_tail
-                else DEFAULT_DELIMITER.join([mapped_root, column_tail])
-            )
-
-            if new_name != original_name:
-                column = column.label(new_name)
-
-            q2_columns.append(column)
+        # right side nullable for a left join, both sides for a full join
+        q2_columns = self._map_right_columns(
+            right_columns, root_mapping, nullable=not self.inner
+        )
+        if self.full:
+            q1_columns = [_as_nullable_scalar(c) for c in q1_columns]
 
         res_columns = q1_columns + q2_columns
         predicates = (
