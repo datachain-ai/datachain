@@ -20,7 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        pyv: ['3.12']
+        pyv: ['3.13']
         group: [1, 2, 3, 4, 5, 6]
     services:
       postgres:
