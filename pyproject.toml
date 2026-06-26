@@ -107,10 +107,9 @@ tests = [
   "pytest-sugar>=0.9.6",
   "pytest-cov>=4.1.0",
   "pytest-mock>=3.12.0",
-  "pytest-servers[all]>=0.5.14",  # >=0.5.14 runs Azurite with --skipApiVersionCheck
+  "pytest-servers[all]>=0.5.14",
   "pytest-benchmark[histogram]",
   "pytest-xdist>=3.3.1",
-  "azure-storage-blob<12.31",  # newer SDKs send 2026+ x-ms-version; Azurite accepts via --skipApiVersionCheck (pytest-servers>=0.5.14)
   "pytest-dotenv",
   "virtualenv",
   "dulwich",
