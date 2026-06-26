@@ -13,7 +13,11 @@ from datachain.dataset import (
     DatasetRecord,
     DatasetStatus,
 )
-from datachain.error import DataChainError, DatasetNotFoundError
+from datachain.error import (
+    DataChainError,
+    DatasetInvalidVersionError,
+    DatasetNotFoundError,
+)
 from datachain.job import Job
 from datachain.lib.dc.datasets import (
     datasets,
@@ -263,6 +267,35 @@ def test_remove_dataset_version_already_tombstoned_returns_false(
         dataset_complete.name, versions=None, include_incomplete=True
     )
     assert catalog.remove_dataset_version(ds, version, keep_metadata=True) is False
+
+
+def test_create_dataset_explicit_removed_version_rejected(
+    test_session, dataset_complete
+):
+    """The catalog-level guard must reject an explicit version that matches
+    a REMOVED tombstone, independently of the higher-level dc.save check."""
+    catalog = test_session.catalog
+    name = dataset_complete.name
+    version = dataset_complete.latest_version
+
+    catalog.remove_dataset_version(dataset_complete, version, keep_metadata=True)
+
+    with pytest.raises(
+        DatasetInvalidVersionError, match=r"was removed.*permanently reserved"
+    ):
+        catalog.create_dataset(
+            name, version=version, columns=(sa.Column("name", String),)
+        )
+
+
+def test_remove_dataset_version_missing_returns_false(test_session, dataset_complete):
+    """remove_dataset_version on a non-existent version is a no-op (False),
+    not an error."""
+    catalog = test_session.catalog
+    assert (
+        catalog.remove_dataset_version(dataset_complete, "99.0.0", keep_metadata=True)
+        is False
+    )
 
 
 def test_remove_dataset_versions_job_id_filter(test_session, job, dataset_created):
