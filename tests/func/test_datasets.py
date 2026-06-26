@@ -54,6 +54,20 @@ def saved_dataset(test_session):
     )
 
 
+@pytest.fixture
+def warehouse_access_forbidden(test_session):
+    catalog = test_session.catalog
+    original = catalog.warehouse
+
+    class ForbiddenWarehouse:
+        def __getattr__(self, name):
+            raise AssertionError(f"warehouse accessed via {name!r}")
+
+    catalog.warehouse = ForbiddenWarehouse()
+    yield
+    catalog.warehouse = original
+
+
 def test_create_dataset_no_version_specified(test_session, project):
     catalog = test_session.catalog
 
@@ -91,6 +105,8 @@ def test_create_dataset_with_explicit_version(test_session, project):
         query_script="script",
         columns=[sa.Column("similarity", Float32)],
     )
+
+    assert [v.version for v in dataset.versions] == ["1.0.0"]
 
     dataset_version = dataset.get_version("1.0.0")
 
@@ -146,7 +162,10 @@ def test_create_dataset_already_exist(test_session, saved_dataset):
         columns=[sa.Column("similarity", Float32)],
     )
 
-    assert sorted([v.version for v in dataset.versions]) == sorted(["1.0.0", "1.0.1"])
+    assert [v.version for v in dataset.versions] == ["1.0.1"]
+
+    full_dataset = catalog.get_dataset(saved_dataset.name, versions=None)
+    assert sorted(v.version for v in full_dataset.versions) == ["1.0.0", "1.0.1"]
 
     dataset_version = dataset.get_version("1.0.1")
 
@@ -379,6 +398,7 @@ def test_remove_dataset_with_multiple_versions(test_session, saved_dataset):
     updated_dataset, _ = catalog.create_dataset_version(
         saved_dataset, "2.0.0", columns=columns
     )
+    updated_dataset = catalog.get_dataset(saved_dataset.name, versions=None)
     assert updated_dataset.has_version("2.0.0")
     assert updated_dataset.has_version("1.0.0")
 
@@ -437,6 +457,22 @@ def test_edit_dataset(test_session, saved_dataset):
     )
     assert expected_table_row_count
     assert dataset.get_version("1.0.0").num_objects == expected_table_row_count
+
+
+def test_edit_dataset_metadata_only_does_not_touch_warehouse(
+    test_session, saved_dataset, warehouse_access_forbidden
+):
+    catalog = test_session.catalog
+    catalog.edit_dataset(
+        saved_dataset.name,
+        saved_dataset.project,
+        description="new description",
+        attrs=["cats", "birds"],
+    )
+
+    dataset = catalog.get_dataset(saved_dataset.name, versions=["1.0.0"])
+    assert dataset.description == "new description"
+    assert dataset.attrs == ["cats", "birds"]
 
 
 @pytest.mark.parametrize("is_studio", [True])

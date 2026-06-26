@@ -3,6 +3,7 @@ from collections.abc import Sequence
 from functools import reduce
 from typing import TYPE_CHECKING
 
+from datachain.client import Client
 from datachain.lib.dc.storage_pattern import (
     apply_glob_filter,
     expand_brace_pattern,
@@ -16,6 +17,46 @@ from datachain.query import Session
 
 if TYPE_CHECKING:
     from .datachain import DataChain
+
+
+def _backends_have_credentials(uris, client_config: dict | None) -> bool:
+    """True if any backend behind ``uris`` sees credentials in client_config."""
+    if not client_config:
+        return False
+    seen: set[type[Client]] = set()
+    for uri in uris:
+        try:
+            seen.add(Client.get_implementation(str(uri)))
+        except NotImplementedError:
+            return True
+    return any(c.has_explicit_credentials(client_config) for c in seen)
+
+
+def _all_buckets_anonymous(uris, client_config: dict | None) -> bool:
+    """Probe each unique bucket; True iff all probe as anonymous."""
+    to_probe: set[tuple[type[Client], str]] = set()
+    for uri in uris:
+        try:
+            client_cls = Client.get_implementation(str(uri))
+        except NotImplementedError:
+            return False
+        name, _ = client_cls.split_url(str(uri))
+        if not name:
+            return False
+        to_probe.add((client_cls, name))
+
+    if not to_probe:
+        return False
+
+    for client_cls, name in to_probe:
+        try:
+            status = client_cls.bucket_status(name, **(client_config or {}))
+        except NotImplementedError:
+            # Backend doesn't support bucket_status (e.g. local files).
+            return False
+        if status.access != "anonymous":
+            return False
+    return True
 
 
 def read_storage(
@@ -123,10 +164,28 @@ def read_storage(
         ```
     """
     from .datasets import read_dataset
-    from .records import read_records
-    from .values import read_values
+    from .records import create_records_dataset, read_records
 
     file_type = get_file_type(type)
+
+    uris = uri if isinstance(uri, (list, tuple)) else [uri]
+
+    if not uris:
+        raise ValueError("No URIs provided")
+
+    for single_uri in uris:
+        validate_cloud_bucket_name(str(single_uri))
+
+    probe_config = client_config or (
+        session.catalog.client_config if session is not None else None
+    )
+
+    if (
+        anon is None
+        and not _backends_have_credentials(uris, probe_config)
+        and _all_buckets_anonymous(uris, probe_config)
+    ):
+        anon = True
 
     if anon is not None:
         client_config = (client_config or {}) | {"anon": anon}
@@ -134,19 +193,18 @@ def read_storage(
     catalog = session.catalog
     cache = catalog.cache
     client_config = session.catalog.client_config
+    if anon is not None:
+        # Session.get discards our client_config when an existing session is
+        # passed. Re-apply anon locally for the listing path without mutating
+        # the caller's session.
+        client_config = client_config | {"anon": anon}
     listing_namespace_name = catalog.metastore.system_namespace_name
     listing_project_name = catalog.metastore.listing_project_name
-
-    uris = uri if isinstance(uri, (list, tuple)) else [uri]
-
-    if not uris:
-        raise ValueError("No URIs provided")
 
     # Then expand all URIs that contain brace patterns
     expanded_uris = []
     for single_uri in uris:
         uri_str = str(single_uri)
-        validate_cloud_bucket_name(uri_str)
         expanded_uris.extend(expand_brace_pattern(uri_str))
 
     # Now process each expanded URI
@@ -170,7 +228,7 @@ def read_storage(
             updated_uris.add(list_uri_to_use)
             update_single_uri = True
 
-        list_ds_name, list_uri, list_path, list_ds_exists = get_listing(
+        list_ds_name, list_uri, list_path, _ = get_listing(
             list_uri_to_use, session, update=update_single_uri
         )
 
@@ -198,35 +256,37 @@ def read_storage(
         dc._query.update = update
         dc.signals_schema = dc.signals_schema.mutate({f"{column}": file_type})
 
-        if update or not list_ds_exists:
-
-            def lst_fn(ds_name, lst_uri):
-                # Start with a single dummy record so gen() has one row to iterate over.
-                # Disable prefetch=0 to prevent downloading files during listing.
-                (
-                    read_records(
-                        [{"seed": 0}],
-                        schema={"seed": int},
-                        session=session,
-                        settings=settings,
-                        in_memory=in_memory,
-                    )
-                    .settings(
-                        prefetch=0,
-                        namespace=listing_namespace_name,
-                        project=listing_project_name,
-                    )
-                    .gen(
-                        list_bucket(lst_uri, cache, client_config=client_config),
-                        output={f"{column}": file_type},
-                    )
-                    # for internal listing datasets, we always bump major version
-                    .save(ds_name, listing=True, update_version="major")
+        def lst_fn(ds_name, lst_uri):
+            # Seed for .gen() iteration. content_hash=None because hash_callable
+            # doesn't capture list_func's closure (which holds `lst_uri`, `cache`,
+            # `client_config`) -- auto-hashing the seed would let the UDF
+            # checkpoint cache return a stale listing across URIs/runs.
+            (
+                create_records_dataset(
+                    [{"seed": 0}],
+                    schema={"seed": int},
+                    content_hash=None,
+                    session=session,
+                    settings=settings,
+                    in_memory=in_memory,
                 )
-
-            dc._query.set_listing_fn(
-                lambda ds_name=list_ds_name, lst_uri=list_uri: lst_fn(ds_name, lst_uri)
+                .settings(
+                    prefetch=0,
+                    namespace=listing_namespace_name,
+                    project=listing_project_name,
+                )
+                .gen(
+                    list_bucket(lst_uri, cache, client_config=client_config),
+                    output={f"{column}": file_type},
+                )
+                # for internal listing datasets, we always bump major version
+                .save(ds_name, listing=True, update_version="major")
             )
+
+        # Always attach listing_fn so resolve_listing can refresh stale listings.
+        dc._query.set_listing_fn(
+            lambda ds_name=list_ds_name, lst_uri=list_uri: lst_fn(ds_name, lst_uri)
+        )
 
         # If a glob pattern was detected, use it for filtering
         # Otherwise, use the original list_path from get_listing
@@ -248,11 +308,16 @@ def read_storage(
     storage_chain = None if not chains else reduce(lambda x, y: x.union(y), chains)
 
     if file_values:
-        file_chain = read_values(
+        # Use read_records directly (not read_values) so the chain hash is
+        # derived from the flattened File records (deterministic across runs) —
+        # needed for checkpoint reuse on single-file read_storage /
+        # read_csv / read_parquet.
+        file_chain = read_records(
+            [{"file": f} for f in file_values],
+            schema={"file": file_type},
             session=session,
             settings=settings,
             in_memory=in_memory,
-            file=file_values,
         )
         file_chain.signals_schema = file_chain.signals_schema.mutate(
             {f"{column}": file_type}

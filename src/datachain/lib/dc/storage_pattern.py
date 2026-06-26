@@ -9,8 +9,7 @@ if TYPE_CHECKING:
 
 
 def validate_cloud_bucket_name(uri: str) -> None:
-    """
-    Validate that cloud storage bucket names don't contain glob patterns.
+    """Validate that cloud storage bucket names don't contain glob patterns.
 
     Raises:
         ValueError: If a cloud storage bucket name contains glob patterns
@@ -80,6 +79,7 @@ def split_uri_pattern(uri: str) -> tuple[str, str | None]:
 
 
 def should_use_recursion(pattern: str, user_recursive: bool) -> bool:
+    """Return whether listing should recurse for the given glob pattern."""
     if not user_recursive:
         return False
 
@@ -90,8 +90,8 @@ def should_use_recursion(pattern: str, user_recursive: bool) -> bool:
 
 
 def expand_brace_pattern(pattern: str) -> list[str]:
-    """
-    Recursively expand brace patterns into multiple glob patterns.
+    """Recursively expand brace patterns into multiple glob patterns.
+
     Supports:
     - Comma-separated lists: *.{mp3,wav}
     - Numeric ranges: file{1..10}
@@ -182,6 +182,7 @@ def _expand_range(range_spec: str) -> list[str]:  # noqa: PLR0911
 
 
 def convert_globstar_to_glob(filter_pattern: str) -> str:
+    """Convert a ``**`` globstar pattern into an equivalent GLOB pattern."""
     if "**" not in filter_pattern:
         return filter_pattern
 
@@ -237,6 +238,7 @@ def apply_glob_filter(
     use_recursive: bool,
     column: str,
 ) -> "DataChain":
+    """List ``list_path`` and filter the resulting chain by the glob ``pattern``."""
     from datachain.query.schema import Column
 
     chain = ls(dc, list_path, recursive=use_recursive, column=column)

@@ -51,6 +51,7 @@ from datachain.error import (
 from datachain.func.base import Function
 from datachain.hash_utils import hash_column_elements
 from datachain.job import Job
+from datachain.lib.data_model import NULLABLE_SCALARS
 from datachain.lib.listing import is_listing_dataset, listing_dataset_expired
 from datachain.lib.signal_schema import SignalSchema, generate_merge_root_mapping
 from datachain.lib.udf import JsonSerializationError, UdfError, _get_cache
@@ -323,7 +324,10 @@ class QueryStep:
 
     def hash(self) -> str:
         version = self.dataset.get_version(self.dataset_version)
-        return hashlib.sha256(version.uuid.encode()).hexdigest()
+        anchor = (
+            version.content_hash if version.content_hash is not None else version.uuid
+        )
+        return hashlib.sha256(anchor.encode()).hexdigest()
 
 
 def generator_then_call(generator, func: Callable):
@@ -538,7 +542,9 @@ def get_col_types(
             col_type_inst := col_type() if inspect.isclass(col_type) else col_type,
             warehouse.python_type(col_type_inst),
             type(col_type_inst).__name__,
-            col_type.default_value(dialect),
+            None
+            if getattr(col_type_inst, "dc_nullable", False)
+            else col_type.default_value(dialect),
         )
         for col_name, col_type in output.items()
     ]
@@ -843,14 +849,7 @@ class UDFStep(Step, ABC):
                     exec_cmd = get_datachain_executable()
                     cmd = [*exec_cmd, "internal-run-udf"]
                     envs = dict(os.environ)
-                    envs.update(
-                        {
-                            "PYTHONPATH": os.getcwd(),
-                            # Mark as DataChain-controlled subprocess to enable
-                            # checkpoints
-                            "DATACHAIN_SUBPROCESS": "1",
-                        }
-                    )
+                    envs["PYTHONPATH"] = os.getcwd()
                     process_data = filtered_cloudpickle_dumps(udf_info)
 
                     with subprocess.Popen(  # noqa: S603
@@ -1034,7 +1033,7 @@ class UDFStep(Step, ABC):
             rerun_from_job_id=rerun_from_job_id,
             details=details,
         )
-        logger.info(
+        logger.debug(
             "UDF(%s) [job=%s run_group=%s]: %s - "
             "input=%s, processed=%s, output=%s, input_reused=%s, output_reused=%s",
             self._udf_name,
@@ -1289,11 +1288,7 @@ class UDFStep(Step, ABC):
         record. "Done" checkpoints act as a cache keyed by hash.
         Returns (output_table, input_table).
         """
-        print(
-            f"UDF '{self._udf_name}': Skipped, reusing output from checkpoint",
-            file=sys.stderr,
-        )
-        logger.info(
+        logger.debug(
             "UDF(%s) [job=%s run_group=%s]: Skipping execution, "
             "reusing output from job_id=%s",
             self._udf_name,
@@ -1361,7 +1356,7 @@ class UDFStep(Step, ABC):
         """Execute UDF from scratch. Returns (output_table, input_table)."""
         run_id = job.id if job else str(uuid4())  # unique ID for table naming
 
-        logger.info(
+        logger.debug(
             "UDF(%s) [job=%s run_group=%s]: Running from scratch",
             self._udf_name,
             self._job_id_short(job),
@@ -1454,8 +1449,7 @@ class UDFStep(Step, ABC):
         """
         is_same_job = checkpoint.job_id == job.id
 
-        print(f"UDF '{self._udf_name}': Continuing from checkpoint", file=sys.stderr)
-        logger.info(
+        logger.debug(
             "UDF(%s) [job=%s run_group=%s]: Continuing from partial checkpoint, "
             "source_job_id=%s%s",
             self._udf_name,
@@ -2199,6 +2193,24 @@ class SQLUnion(Step):
         )
 
 
+def _as_nullable_scalar(column: Any) -> Any:
+    """Re-type a join column nullable so an outer-join NULL survives instead of
+    coercing to the type default. This applies to a model's leaves too: an
+    unmatched row's leaves then read back NULL, so the model hydrates as None
+    (via the all-values-None fallback) rather than a default-filled instance."""
+    col_type = getattr(column, "type", None)
+    if not isinstance(col_type, SQLType) or getattr(col_type, "dc_nullable", False):
+        return column
+    try:
+        py_type = col_type.python_type
+    except NotImplementedError:
+        return column
+    if py_type not in NULLABLE_SCALARS:
+        return column
+    nullable_type = SQLType.as_nullable(col_type)
+    return sqlalchemy.type_coerce(column, nullable_type).label(column.name)
+
+
 @frozen
 class SQLJoin(Step):
     catalog: "Catalog"
@@ -2321,6 +2333,29 @@ class SQLJoin(Step):
         assert isinstance(bound, ColumnElement)
         return bound
 
+    def _map_right_columns(
+        self,
+        right_columns: "list[KeyedColumnElement[Any]]",
+        root_mapping: dict[str, str],
+        nullable: bool,
+    ) -> "list[KeyedColumnElement[Any]]":
+        mapped: list[KeyedColumnElement[Any]] = []
+        for column in right_columns:
+            original_name = column.name
+            column_root, column_tail = self._split_db_name(original_name)
+            mapped_root = root_mapping[column_root]
+            new_name = (
+                mapped_root
+                if not column_tail
+                else DEFAULT_DELIMITER.join([mapped_root, column_tail])
+            )
+            if nullable:
+                column = _as_nullable_scalar(column)
+            if column.name != new_name:
+                column = column.label(new_name)
+            mapped.append(column)
+        return mapped
+
     def apply(
         self,
         query_generator: QueryGenerator,
@@ -2348,22 +2383,12 @@ class SQLJoin(Step):
             prefix=self.rname,
         )
 
-        q2_columns: list[KeyedColumnElement[Any]] = []
-        for column in right_columns:
-            original_name = column.name
-            column_root, column_tail = self._split_db_name(original_name)
-            mapped_root = root_mapping[column_root]
-
-            new_name = (
-                mapped_root
-                if not column_tail
-                else DEFAULT_DELIMITER.join([mapped_root, column_tail])
-            )
-
-            if new_name != original_name:
-                column = column.label(new_name)
-
-            q2_columns.append(column)
+        # right side nullable for a left join, both sides for a full join
+        q2_columns = self._map_right_columns(
+            right_columns, root_mapping, nullable=not self.inner
+        )
+        if self.full:
+            q1_columns = [_as_nullable_scalar(c) for c in q1_columns]
 
         res_columns = q1_columns + q2_columns
         predicates = (
@@ -3387,7 +3412,11 @@ class DatasetQuery:
                 **kwargs,
             )
 
-            version = version or dataset.latest_version
+            assert len(dataset.versions) == 1
+            dataset_version = (
+                dataset.get_version(version) if version else dataset.versions[0]
+            )
+            version = dataset_version.version
 
             # Phase 3: Rename staging table to the final dataset table name.
             final_table_name = self.catalog.warehouse.dataset_table_name(
@@ -3454,19 +3483,25 @@ class DatasetQuery:
         """
         from datachain.lib.listing import calc_fingerprint
 
-        prev_version = dataset.latest_complete_version
+        full_dataset = self.catalog.get_dataset(
+            name,
+            namespace_name=project.namespace.name,
+            project_name=project.name,
+            versions=None,
+        )
+        prev_version = full_dataset.latest_complete_version
         if not prev_version:
             return None
 
-        old_fp = calc_fingerprint(self.session, dataset, prev_version)
-        new_fp = calc_fingerprint(self.session, dataset, version)
+        old_fp = calc_fingerprint(self.session, full_dataset, prev_version)
+        new_fp = calc_fingerprint(self.session, full_dataset, version)
         if old_fp != new_fp:
             return None
 
-        self.catalog.remove_dataset_version(dataset, version)
+        self.catalog.remove_dataset_version(full_dataset, version)
         # updating TTL of a bucket listing
         self.catalog.metastore.update_dataset_version(
-            dataset, prev_version, finished_at=datetime.now(timezone.utc)
+            full_dataset, prev_version, finished_at=datetime.now(timezone.utc)
         )
         return self.__class__(
             name=name,

@@ -77,6 +77,7 @@ def test_create_dataset(metastore):
         attrs=["test", "dataset"],
     )
     assert ds.id is not None
+    assert ds.uuid
     assert ds.name == "test_dataset"
     assert ds.status == DatasetStatus.COMPLETE
     assert ds.sources == "gs://test_source"
@@ -86,6 +87,77 @@ def test_create_dataset(metastore):
     assert ds.description == "test dataset"
     assert ds.attrs == ["test", "dataset"]
     assert ds.created_at is not None
+
+
+def test_create_dataset_uuid_is_unique_per_create(metastore):
+    a = metastore.create_dataset(name="a")
+    b = metastore.create_dataset(name="b")
+    assert a.uuid
+    assert b.uuid
+    assert a.uuid != b.uuid
+
+
+def test_create_dataset_explicit_uuid_is_preserved(metastore):
+    explicit = "11111111-2222-3333-4444-555555555555"
+    ds = metastore.create_dataset(name="with_uuid", uuid=explicit)
+    assert ds.uuid == explicit
+
+
+def test_create_dataset_invalid_uuid_raises_error(metastore):
+    with pytest.raises(ValueError, match="Invalid UUID format"):
+        metastore.create_dataset(name="bad_uuid_format", uuid="not-a-uuid")
+
+    with pytest.raises(ValueError, match="Invalid UUID format"):
+        metastore.create_dataset(name="bad_uuid_short", uuid="123")
+
+
+def test_create_dataset_duplicate_uuid_constraint(metastore):
+    duplicate_uuid = "11111111-2222-3333-4444-555555555555"
+
+    metastore.create_dataset(name="first", uuid=duplicate_uuid)
+
+    with pytest.raises(Exception, match="constraint"):
+        metastore.create_dataset(name="second", uuid=duplicate_uuid)
+
+
+def test_dataset_uuid_backfilled_on_upgrade(tmp_path):
+    from datachain.data_storage.sqlite import SQLiteMetastore
+
+    db_file = str(tmp_path / "upgrade.db")
+
+    old = SQLiteMetastore(db_file=db_file)
+    for name in ("a", "b", "c"):
+        ds = old.create_dataset(name=name)
+        old.create_dataset_version(ds, "1.0.0", DatasetStatus.COMPLETE)
+    indexes = old.db.execute_str(
+        "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='datasets'"
+        " AND name NOT LIKE 'sqlite_%'"
+    ).fetchall()
+    for (idx_name,) in indexes:
+        old.db.execute_str(f"DROP INDEX {idx_name}")
+    old.db.execute_str("ALTER TABLE datasets DROP COLUMN uuid")
+    old.close()
+
+    upgraded = SQLiteMetastore(db_file=db_file)
+    try:
+        listed = [d for d in upgraded.list_datasets() if d.name in ("a", "b", "c")]
+        uuids = {d.uuid for d in listed}
+        fetched = [
+            upgraded.get_dataset(
+                name=name,
+                namespace_name=listed[0].project.namespace.name,
+                project_name=listed[0].project.name,
+                versions=None,
+            ).uuid
+            for name in ("a", "b", "c")
+        ]
+    finally:
+        upgraded.close()
+
+    assert len(listed) == 3
+    assert len(uuids) == 3
+    assert all(uuids)
+    assert set(fetched) == uuids
 
 
 @pytest.mark.parametrize("ignore_if_exists", [True, False])
@@ -197,14 +269,17 @@ def test_create_dataset_version_finished_at(metastore):
         status=DatasetStatus.COMPLETE,
         finished_at=now.isoformat(),
     )
-    assert len(ds.versions) == 2
-    assert ds.versions[1].finished_at == now
+    assert len(ds.versions) == 1
+    assert ds.versions[0].finished_at == now
 
     ds, _ = metastore.create_dataset_version(
         dataset=ds, version="1.2.5", status=DatasetStatus.FAILED
     )
-    assert len(ds.versions) == 3
-    assert ds.versions[2].finished_at is not None
+    assert len(ds.versions) == 1
+    assert ds.versions[0].finished_at is not None
+
+    full_ds = metastore.get_dataset("test_dataset", versions=None)
+    assert len(full_ds.versions) == 3
 
 
 @pytest.mark.parametrize("ignore_if_exists", [True, False])
@@ -699,6 +774,7 @@ def test_remove_dataset_version(metastore):
     ds, _ = metastore.create_dataset_version(
         dataset=ds, version="2.0.0", status=DatasetStatus.COMPLETE
     )
+    ds = metastore.get_dataset("ds", versions=None)
     assert len(ds.versions) == 2
 
     # Removing non-existent version should raise an exception
@@ -729,6 +805,7 @@ def test_remove_dataset_version_cleans_dependencies(metastore):
     ds1, _ = metastore.create_dataset_version(
         dataset=ds1, version="2.0.0", status=DatasetStatus.COMPLETE
     )
+    ds1 = metastore.get_dataset("ds1", versions=None)
 
     ds2 = metastore.create_dataset(name="ds2")
     ds2, _ = metastore.create_dataset_version(
@@ -826,6 +903,7 @@ def test_update_dataset_dependency_source_default_new_source(metastore):
     src, _ = metastore.create_dataset_version(
         dataset=src, version="2.0.0", status=DatasetStatus.COMPLETE
     )
+    src = metastore.get_dataset("src", versions=None)
     tgt = metastore.create_dataset(name="tgt")
     tgt, _ = metastore.create_dataset_version(
         dataset=tgt, version="1.0.0", status=DatasetStatus.COMPLETE
@@ -926,13 +1004,13 @@ def test_update_job(metastore):
         error_message="err",
         error_stack="stack",
         finished_at=datetime.now(timezone.utc),
-        metrics={"acc": 0.99},
+        metrics={"acc": 0.5, "hist": [1, 2]},
     )
     assert updated.status == JobStatus.FAILED
     assert updated.error_message == "err"
     assert updated.error_stack == "stack"
     assert updated.finished_at is not None
-    assert updated.metrics == {"acc": 0.99}
+    assert updated.metrics == {"acc": 0.5, "hist": [1, 2]}
 
 
 def test_set_job_status(metastore):

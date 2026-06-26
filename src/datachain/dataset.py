@@ -7,6 +7,7 @@ from typing import (
     NewType,
     TypeVar,
 )
+from uuid import uuid4
 
 from packaging.specifiers import SpecifierSet
 from packaging.version import Version
@@ -294,6 +295,7 @@ class DatasetVersion:
     sources: str = ""
     query_script: str = ""
     job_id: str | None = None
+    content_hash: str | None = None
 
     @classmethod
     def parse(  # noqa: PLR0913
@@ -316,6 +318,7 @@ class DatasetVersion:
         sources: str = "",
         query_script: str = "",
         job_id: str | None = None,
+        content_hash: str | None = None,
         *,
         preview_loaded: bool = True,
     ):
@@ -343,6 +346,7 @@ class DatasetVersion:
             sources=sources,
             query_script=query_script,
             job_id=job_id,
+            content_hash=content_hash,
             _preview_loaded=preview_loaded,
         )
 
@@ -484,6 +488,7 @@ class DatasetRecord:
     attrs: list[str]
     schema: dict[str, SQLType | type[SQLType]]
     feature_schema: dict
+    uuid: str = field(kw_only=True, default_factory=lambda: str(uuid4()))
     _versions: list[DatasetVersion] = field(
         default_factory=list, metadata={"alias": "versions"}
     )
@@ -538,6 +543,7 @@ class DatasetRecord:
         project_created_at: datetime,
         project_namespace_id: int,
         dataset_id: int,
+        dataset_uuid: str,
         dataset_project_id: int,
         name: str,
         description: str | None,
@@ -570,6 +576,7 @@ class DatasetRecord:
         version_query_script: str | None = None,
         version_schema: str | None = None,
         version_job_id: str | None = None,
+        version_content_hash: str | None = None,
         *,
         versions_loaded: bool = True,
         preview_loaded: bool = True,
@@ -627,12 +634,14 @@ class DatasetRecord:
                 version_sources or "",
                 version_query_script or "",
                 version_job_id,
+                version_content_hash,
                 preview_loaded=preview_loaded,
             )
             versions_list = [dataset_version]
 
         return cls(
             id=dataset_id,
+            uuid=dataset_uuid,
             name=name,
             project=project,
             description=description,
@@ -854,6 +863,7 @@ class DatasetListRecord:
     attrs: list[str]
     versions: list[DatasetListVersion]
     created_at: datetime | None = None
+    uuid: str = field(kw_only=True)
 
     @classmethod
     def parse(  # noqa: PLR0913
@@ -870,6 +880,7 @@ class DatasetListRecord:
         project_created_at: datetime,
         project_namespace_id: int,
         dataset_id: int,
+        dataset_uuid: str,
         name: str,
         description: str | None,
         attrs: str,
@@ -924,13 +935,14 @@ class DatasetListRecord:
         )
 
         return cls(
-            dataset_id,
-            name,
-            project,
-            description,
-            attrs_lst,
-            [dataset_version],
-            created_at,
+            id=dataset_id,
+            uuid=dataset_uuid,
+            name=name,
+            project=project,
+            description=description,
+            attrs=attrs_lst,
+            versions=[dataset_version],
+            created_at=created_at,
         )
 
     @property

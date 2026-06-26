@@ -46,6 +46,12 @@ from datachain.utils import (
 
 from .utils import DEFAULT_TREE, instantiate_tree, reset_session_job_state
 
+# gcsfs 2026.3+ turns on HNS/zonal support by default, so every gs op probes the
+# Storage Control API over gRPC. The mock gcs server can't answer that, so the
+# probe retries for ~60s and the tests crawl. Opt out (gcsfs's own escape hatch);
+# gcsfs reads this at import time, so it has to be set here at module load.
+os.environ.setdefault("GCSFS_EXPERIMENTAL_ZB_HNS_SUPPORT", "false")
+
 DEFAULT_DATACHAIN_BIN = "datachain"
 DEFAULT_DATACHAIN_GIT_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -416,7 +422,7 @@ def pytest_configure(config):
     )
 
 
-@pytest.fixture(scope="session", params=[DEFAULT_TREE])
+@pytest.fixture(scope="session")
 def tree(request):
     return request.param
 
@@ -437,8 +443,16 @@ class CloudServer:
 def make_cloud_server(src_path, cloud_type, tree):
     fs = src_path.fs
     if cloud_type == "s3":
-        endpoint_url = fs.client_kwargs["endpoint_url"]
-        client_config = {"aws_endpoint_url": endpoint_url}
+        client_kwargs = fs.client_kwargs
+        # The mock S3 server allows anonymous bucket-HEAD but rejects anon
+        # object access, which would mislead the auto-anon probe. Pass creds
+        # explicitly so has_explicit_credentials() short-circuits the probe.
+        client_config = {
+            "aws_endpoint_url": client_kwargs["endpoint_url"],
+            "aws_key": client_kwargs["aws_access_key_id"],
+            "aws_secret": client_kwargs["aws_secret_access_key"],
+            "aws_token": client_kwargs["aws_session_token"],
+        }
     elif cloud_type in ("gs", "gcs"):
         endpoint_url = fs._endpoint
         client_config = {"endpoint_url": endpoint_url}
@@ -479,14 +493,39 @@ class CloudTestCatalog:
 cloud_types = ["s3", "gs", "azure"]
 
 
-@pytest.fixture(scope="session", params=["file", *cloud_types])
+@pytest.fixture(scope="session")
 def cloud_type(request):
     return request.param
 
 
-@pytest.fixture(scope="session", params=[False, True])
+@pytest.fixture(scope="session")
 def version_aware(request):
     return request.param
+
+
+# Defaults applied per-test below, not as fixture `params`: pytest 9.1 forbids
+# `params` plus an indirect override of the same arg (pytest #13974).
+PARAMETRIZED_FIXTURE_DEFAULTS = {
+    "cloud_type": ["file", *cloud_types],
+    "version_aware": [False, True],
+    "tree": [DEFAULT_TREE],
+}
+
+
+def pytest_generate_tests(metafunc):
+    explicit = set()
+    for marker in metafunc.definition.iter_markers(name="parametrize"):
+        argnames = marker.args[0]
+        names = (
+            [n.strip() for n in argnames.split(",")]
+            if isinstance(argnames, str)
+            else list(argnames)
+        )
+        explicit.update(name for name in names if name)
+
+    for name, params in PARAMETRIZED_FIXTURE_DEFAULTS.items():
+        if name in metafunc.fixturenames and name not in explicit:
+            metafunc.parametrize(name, params, indirect=True, scope="session")
 
 
 def pytest_collection_modifyitems(config, items):
@@ -530,17 +569,16 @@ def datachain_job_id(test_session, monkeypatch):
 
 
 @pytest.fixture(scope="session")
-def cloud_server_credentials(cloud_server):
+def cloud_server_credentials(cloud_server, monkeypatch_session):
     if cloud_server.kind == "s3":
         cfg = cloud_server.src.fs.client_kwargs
-        try:
-            os.environ.pop("AWS_PROFILE")
-        except KeyError:
-            pass
-        os.environ["AWS_ACCESS_KEY_ID"] = cfg.get("aws_access_key_id")
-        os.environ["AWS_SECRET_ACCESS_KEY"] = cfg.get("aws_secret_access_key")
-        os.environ["AWS_SESSION_TOKEN"] = cfg.get("aws_session_token")
-        os.environ["AWS_DEFAULT_REGION"] = cfg.get("region_name")
+        monkeypatch_session.delenv("AWS_PROFILE", raising=False)
+        monkeypatch_session.setenv("AWS_ACCESS_KEY_ID", cfg["aws_access_key_id"])
+        monkeypatch_session.setenv(
+            "AWS_SECRET_ACCESS_KEY", cfg["aws_secret_access_key"]
+        )
+        monkeypatch_session.setenv("AWS_SESSION_TOKEN", cfg["aws_session_token"])
+        monkeypatch_session.setenv("AWS_DEFAULT_REGION", cfg["region_name"])
 
 
 def get_cloud_test_catalog(cloud_server, tmp_path, metastore, warehouse):
@@ -728,6 +766,7 @@ def cats_dataset(listed_bucket, cloud_test_catalog):
 def dataset_record():
     return DatasetRecord(
         id=1,
+        uuid=str(uuid.uuid4()),
         name=f"ds_{uuid.uuid4().hex}",
         description="",
         attrs=[],
@@ -776,6 +815,7 @@ def dataset_record():
 def dataset_list_record():
     return DatasetListRecord(
         id=1,
+        uuid=str(uuid.uuid4()),
         name=f"ds_{uuid.uuid4().hex}",
         project=Project(
             id=1,
@@ -902,6 +942,7 @@ def studio_datasets(requests_mock, studio_token):
         "description": "dogs dataset",
         "attrs": ["dogs", "dataset"],
         "project": project,
+        "uuid": str(uuid.uuid4()),
         "versions": [
             {
                 "version": "1.0.0",
@@ -928,6 +969,7 @@ def studio_datasets(requests_mock, studio_token):
             "description": "cats dataset",
             "attrs": ["cats", "dataset"],
             "project": project,
+            "uuid": str(uuid.uuid4()),
             "versions": [
                 {
                     "version": "1.0.0",
@@ -944,6 +986,7 @@ def studio_datasets(requests_mock, studio_token):
             "description": "both dataset",
             "attrs": ["both", "dataset"],
             "project": project,
+            "uuid": str(uuid.uuid4()),
             "versions": [
                 {
                     "version": "1.0.0",
@@ -1028,7 +1071,7 @@ def run_datachain_worker(monkeypatch):
         worker_cmd = [
             "celery",
             "-A",
-            "datachain_worker.tasks",
+            "compute.tasks",
             "worker",
             "--loglevel=INFO",
             f"--hostname=tests-datachain-worker-udf-runner-{i}",
@@ -1048,7 +1091,7 @@ def run_datachain_worker(monkeypatch):
         )
         workers.append(worker_proc)
     try:
-        from datachain_worker.utils.celery import celery_app
+        from compute.utils.celery import celery_app
 
         inspect = celery_app.control.inspect()
         attempts = 0

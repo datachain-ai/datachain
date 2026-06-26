@@ -1,9 +1,11 @@
 import copy
 import hashlib
+import io
 import logging
 import os
 import os.path
 import sys
+import warnings
 from collections.abc import Callable, Iterator, Sequence
 from collections.abc import Generator as IteratorGenerator
 from contextlib import closing
@@ -31,6 +33,7 @@ from datachain.error import (
     ProjectNotFoundError,
 )
 from datachain.func import literal
+from datachain.func.array import cosine_distance, euclidean_distance
 from datachain.func.base import Function
 from datachain.func.func import Func
 from datachain.job import Job
@@ -42,6 +45,7 @@ from datachain.lib.data_model import (
     DataValue,
     StandardType,
     dict_to_data_model,
+    unwrap_optional,
 )
 from datachain.lib.file import EXPORT_FILES_MAX_THREADS, ArrowRow, File, FileExporter
 from datachain.lib.file import ExportPlacement as FileExportPlacement
@@ -49,6 +53,7 @@ from datachain.lib.model_store import ModelStore
 from datachain.lib.settings import Settings
 from datachain.lib.signal_schema import (
     SignalResolvingError,
+    SignalResolvingTypeError,
     SignalSchema,
 )
 from datachain.lib.udf import Aggregator, Generator, Mapper, UDFBase
@@ -65,12 +70,12 @@ from datachain.query.dataset import (
 )
 from datachain.query.schema import DEFAULT_DELIMITER, Column, ColumnExpr
 from datachain.sql.functions import path as pathfunc
+from datachain.sql.types import SQLType
 from datachain.utils import (
     batched_it,
     checkpoints_enabled,
     env2bool,
     inside_notebook,
-    row_to_nested_dict,
 )
 
 from .database import DEFAULT_DATABASE_BATCH_SIZE
@@ -95,6 +100,10 @@ UDFObjT = TypeVar("UDFObjT", bound=UDFBase)
 
 DEFAULT_PARQUET_CHUNK_SIZE = 100_000
 
+# Frozen name for the temp similarity-score column (must be deterministic
+# across runs so chain hashes stay stable for checkpoint reuse).
+SIMILARITY_SCORE_COL_NAME = "sim_a4f74e9a"
+
 if TYPE_CHECKING:
     import sqlite3
 
@@ -116,6 +125,53 @@ if TYPE_CHECKING:
 
 
 T = TypeVar("T", bound="DataChain")
+
+
+class DataChainSchema(dict[str, DataType]):
+    """Dict-like public view of a DataChain schema.
+
+    Top-level schema fields are available through the standard ``dict`` API.
+    Use :meth:`flatten` for leaf columns and :meth:`to_string` for the printable
+    tree format.
+    """
+
+    def __init__(self, signal_schema: SignalSchema) -> None:
+        """Build the view from a ``SignalSchema``."""
+        self._signal_schema = signal_schema
+        super().__init__(signal_schema.values)
+
+    def __str__(self) -> str:
+        """Return the printable schema tree."""
+        return self.to_string()
+
+    def flatten(self, include_hidden: bool = True) -> dict[str, DataType]:
+        """Return flattened leaf column names and their types.
+
+        Parameters:
+            include_hidden: Whether to include hidden fields from complex signals.
+        """
+        return {
+            ".".join(path): type_
+            for path, type_, has_subtree, _ in self._signal_schema.get_flat_tree(
+                include_hidden=include_hidden
+            )
+            if not has_subtree
+        }
+
+    def to_string(self, include_hidden: bool = True, indent: int = 2) -> str:
+        """Return the schema as an indented tree.
+
+        Parameters:
+            include_hidden: Whether to include hidden fields from complex signals.
+            indent: Number of spaces to indent nested fields.
+        """
+        file = io.StringIO()
+        self._signal_schema.print_tree(
+            indent=indent,
+            include_hidden=include_hidden,
+            file=file,
+        )
+        return file.getvalue().removesuffix("\n")
 
 
 class DataChain:
@@ -212,24 +268,21 @@ class DataChain:
         if not self._effective_signals_schema.values:
             return f"Empty {classname}"
 
-        import io
-
-        file = io.StringIO()
-        self.print_schema(file=file)
-        return file.getvalue()
+        return f"{self.schema}\n"
 
     @property
     def empty(self) -> bool:
-        """Returns True if chain has zero number of rows"""
+        """Return True if the chain has zero rows."""
         return not bool(self.count())
 
     @property
     def delta(self) -> bool:
-        """Returns True if this chain is ran in "delta" update mode"""
+        """Return True if this chain is running in "delta" update mode."""
         return self._query.delta_spec is not None or bool(self._query.delta_sources())
 
     @property
     def delta_unsafe(self) -> bool:
+        """Returns True if the chain runs in unsafe "delta" update mode."""
         if self._query.delta_spec is not None:
             return self._query.delta_spec.delta_unsafe
         delta_sources = self._query.delta_sources()
@@ -239,9 +292,19 @@ class DataChain:
         )
 
     @property
-    def schema(self) -> dict[str, DataType]:
-        """Get schema of the chain."""
-        return self._effective_signals_schema.values
+    def schema(self) -> DataChainSchema:
+        """Get a dict-like schema view of the chain.
+
+        The returned object maps top-level signal names to Python types and can
+        also produce leaf-column views:
+
+        ```py
+        ds.schema                 # {"file": File, "score": float}
+        ds.schema.flatten()       # {"file.path": str, "file.size": int, ...}
+        print(ds.schema)          # printable nested schema tree
+        ```
+        """
+        return DataChainSchema(self._effective_signals_schema)
 
     def column(self, name: str) -> Column:
         """Returns Column instance with a type if name is found in current schema,
@@ -265,6 +328,31 @@ class DataChain:
         c.table = self._query.table
         return c
 
+    @staticmethod
+    def _named_expression_error(method: str, expr: object) -> DataChainParamsError:
+        example = method.replace("()", "(name=expr)")
+        return DataChainParamsError(
+            f"{method} cannot infer a name for positional expression "
+            f"of type {type(expr).__name__}; pass it as a keyword argument, "
+            f"e.g. `{example}`"
+        )
+
+    @staticmethod
+    def _signal_names(
+        names: Sequence[object], method: str, *, named_expressions: bool = False
+    ) -> tuple[str, ...]:
+        signal_names: list[str] = []
+        for name in names:
+            if isinstance(name, Column):
+                signal_names.append(name.name.replace(DEFAULT_DELIMITER, "."))
+            elif isinstance(name, str):
+                signal_names.append(name)
+            elif named_expressions and isinstance(name, (Func, ColumnExpr)):
+                raise DataChain._named_expression_error(method, name)
+            else:
+                raise SignalResolvingTypeError(method, name, "`str` or `Column` type")
+        return tuple(signal_names)
+
     @property
     def session(self) -> Session:
         """Session of the chain."""
@@ -276,8 +364,10 @@ class DataChain:
 
     @property
     def job(self) -> Job:
-        """
-        Get existing job if running in SaaS, or creating new one if running locally.
+        """Get the job for this chain.
+
+        Returns the existing job if running in SaaS, or creates a new one if
+        running locally.
         """
         if self._settings.ephemeral:
             raise RuntimeError(
@@ -314,8 +404,13 @@ class DataChain:
         return self.union(other)
 
     def print_schema(self, file: IO | None = None) -> None:
-        """Print schema of the chain."""
-        self._effective_signals_schema.print_tree(file=file)
+        """Deprecated. Use ``print(chain.schema)``."""
+        warnings.warn(
+            "DataChain.print_schema() is deprecated; use print(chain.schema) instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        print(self.schema, file=file)
 
     def clone(self) -> "Self":
         """Make a copy of the chain in a new table."""
@@ -358,8 +453,7 @@ class DataChain:
         sys: bool | None = None,
         ephemeral: bool | None = None,
     ) -> "Self":
-        """
-        Set chain execution parameters. Returns the chain itself, allowing method
+        """Set chain execution parameters. Returns the chain itself, allowing method
         chaining for subsequent operations. To restore all settings to their default
         values, use `reset_settings()`.
 
@@ -475,7 +569,7 @@ class DataChain:
 
     @property
     def namespace_name(self) -> str:
-        """Current namespace name in which the chain is running"""
+        """Current namespace name in which the chain is running."""
         return (
             self._settings.namespace
             or self.session.catalog.metastore.default_namespace_name
@@ -483,7 +577,7 @@ class DataChain:
 
     @property
     def project_name(self) -> str:
-        """Current project name in which the chain is running"""
+        """Current project name in which the chain is running."""
         return (
             self._settings.project
             or self.session.catalog.metastore.default_project_name
@@ -532,7 +626,6 @@ class DataChain:
             update_version: which part of the dataset version to automatically increase.
                 Available values: `major`, `minor` or `patch`. Default is `patch`.
         """
-
         if self._settings.ephemeral:
             raise RuntimeError(
                 "Cannot save datasets in ephemeral mode. "
@@ -560,14 +653,13 @@ class DataChain:
         # Calculate hash including dataset name and job context to avoid conflicts
 
         base_hash = self._query.hash()
-        _hash = hashlib.sha256(
-            (base_hash + f"{namespace_name}/{project_name}/{name}").encode("utf-8")
-        ).hexdigest()
+        name_salt = f"{namespace_name}/{project_name}/{name}"
+        if version is not None:
+            name_salt += f"/{version}"
+        _hash = hashlib.sha256((base_hash + name_salt).encode("utf-8")).hexdigest()
 
-        # Checkpoint handling
         result = self._resolve_checkpoint(name, project, _hash, kwargs)
         if bool(result):
-            # Checkpoint was found and reused
             print(
                 f"Checkpoint found for dataset '{name}', skipping creation",
                 file=sys.stderr,
@@ -752,6 +844,7 @@ class DataChain:
         kwargs: dict,
     ) -> "DataChain | None":
         """Try to save as a delta dataset.
+
         Returns:
             A DataChain if delta logic could handle it, otherwise None to fall back
             to the regular save path (e.g., on first dataset creation).
@@ -1100,13 +1193,32 @@ class DataChain:
             See https://github.com/datachain-ai/datachain/issues/477
             for further details.
         """
-        if descending:
-            args = tuple(sqlalchemy.desc(a) for a in args)
+        resolved: list[Any] = []
+        for arg in args:
+            if isinstance(arg, str):
+                name = arg
+            elif isinstance(arg, Column):
+                name = arg.name
+            else:
+                name = None
+            wrapped = (
+                self.signals_schema.order_by_column(name, descending=descending)
+                if name is not None
+                else None
+            )
+            if wrapped is not None:
+                resolved.append(wrapped)
+            elif descending:
+                resolved.append(sqlalchemy.desc(arg))
+            else:
+                resolved.append(arg)
 
-        return self._evolve(query=self._query.order_by(*args))
+        return self._evolve(query=self._query.order_by(*resolved))
 
     @delta_disabled
-    def distinct(self, arg: str, *args: str) -> "Self":  # type: ignore[override]
+    def distinct(  # type: ignore[override]
+        self, *args: str | Column, **kwargs
+    ) -> "Self":
         """Removes duplicate rows based on uniqueness of some input column(s)
         i.e if rows are found with the same value of input column(s), only one
         row is left in the result set.
@@ -1114,20 +1226,34 @@ class DataChain:
         Example:
             ```py
             dc.distinct("file.path")
+            dc.distinct(file_name=func.path.name(C("file.path")))
             ```
         """
+        args = self._signal_names(args, "distinct()", named_expressions=True)
+        if kwargs:
+            return self._mutate("distinct()", **kwargs).distinct(*args, *kwargs)
+        if not args:
+            raise TypeError("distinct() expected at least 1 argument, got 0")
+
         return self._evolve(
-            query=self._query.distinct(
-                *self.signals_schema.resolve(arg, *args).db_signals()
-            )
+            query=self._query.distinct(*self.signals_schema.resolve(*args).db_signals())
         )
 
-    def select(self, *args: str) -> "Self":
+    def select(self, *args: str | Column, **kwargs) -> "Self":
         """Select only a specified set of signals.
 
         Nested selections (e.g. ``"file.path"``) preserve the parent object by
         generating partial models rather than flattening into standalone fields.
+
+        Example:
+            ```py
+            dc.select("file.path", "score")
+            dc.select("file.path", file_name=func.path.name(C("file.path")))
+            ```
         """
+        args = self._signal_names(args, "select()", named_expressions=True)
+        if kwargs:
+            return self._mutate("select()", **kwargs).select(*args, *kwargs)
         if not args:
             return self
         new_schema = self.signals_schema.to_partial(*args)
@@ -1143,15 +1269,21 @@ class DataChain:
             signal_schema=new_schema,
         )
 
-    def select_except(self, *args: str) -> "Self":
+    def select_except(self, *args: str | Column) -> "Self":
         """Select all signals except the specified ones.
 
         Supports excluding nested fields (e.g. ``"file.path"``), in which case a
         partial model is generated for the parent signal.
+
+        Example:
+            ```py
+            dc.select_except("tmp_score")
+            ```
         """
         if not args:
             return self
 
+        args = self._signal_names(args, "select_except()")
         new_schema = self.signals_schema.select_except_signals(*args)
 
         columns = new_schema.db_signals()
@@ -1163,7 +1295,7 @@ class DataChain:
     @delta_disabled  # type: ignore[arg-type]
     def group_by(  # noqa: C901, PLR0912, PLR0915
         self,
-        *,
+        *args: Any,
         partition_by: (
             str | Func | ColumnExpr | Sequence[str | Func | ColumnExpr] | None
         ) = None,
@@ -1192,6 +1324,15 @@ class DataChain:
             )
             ```
         """
+        if args:
+            if isinstance(args[0], Func):
+                raise self._named_expression_error("group_by()", args[0])
+            raise DataChainParamsError(
+                "group_by() does not accept positional arguments "
+                f"of type {type(args[0]).__name__}; pass grouping columns with "
+                "`partition_by=` and aggregate expressions as keyword arguments"
+            )
+
         if partition_by is None:
             partition_by = []
         elif isinstance(partition_by, (str, Func, ColumnExpr)):
@@ -1218,6 +1359,11 @@ class DataChain:
                 if not columns:
                     raise SignalResolvingError([col], "is not found")
                 partition_by_columns.extend(cast("list[Column]", columns))
+                # GROUP BY the ancestor sentinel so the result keeps _type_tag.
+                for leaf in cast("list[Column]", columns):
+                    sentinel = self.signals_schema.optional_parent_sentinel(leaf.name)
+                    if sentinel:
+                        partition_by_columns.append(Column(sentinel))
 
                 # For nested field references (e.g., "nested.level1.name"),
                 # we need to distinguish between:
@@ -1315,7 +1461,7 @@ class DataChain:
             signal_schema=signal_schema,
         )
 
-    def mutate(self, **kwargs) -> "Self":
+    def mutate(self, *args, **kwargs) -> "Self":
         """Create or modify signals based on existing signals.
 
         This method is vectorized and more efficient compared to map(), and it does not
@@ -1366,40 +1512,64 @@ class DataChain:
         )
         ```
         """
+        if args:
+            raise self._named_expression_error("mutate()", args[0])
+        return self._mutate("mutate()", **kwargs)
+
+    def _mutate(self, method: str, **kwargs) -> "Self":
         from sqlalchemy.sql.sqltypes import NullType
 
         primitives = (bool, str, int, float)
 
-        for col_name, expr in kwargs.items():
-            if not isinstance(expr, (*primitives, Column, Func)):
-                if isinstance(expr, ColumnExpr):
+        try:
+            for col_name, expr in kwargs.items():
+                if not isinstance(expr, (*primitives, Column, Func)):
+                    if not isinstance(expr, ColumnExpr):
+                        raise DataChainColumnError(
+                            col_name,
+                            f"{method} value has type {type(expr)} but expected "
+                            "bool, str, int, float, Column, Func, or ColumnExpr",
+                        )
                     expr = self.signals_schema.enrich_expr_types(expr)
-                if isinstance(expr.type, NullType):
-                    raise DataChainColumnError(
-                        col_name, f"Cannot infer type for expression {expr}"
+                    if isinstance(expr.type, NullType):
+                        raise DataChainColumnError(
+                            col_name,
+                            f"{method} cannot infer type for expression {expr}",
+                        )
+                    kwargs[col_name] = expr
+
+            mutated = {}
+            schema = self.signals_schema
+            for name, value in kwargs.items():
+                if isinstance(value, Column):
+                    # renaming existing column
+                    signals = cast(
+                        "list[Column]",
+                        schema.db_signals(name=value.name, as_columns=True),
                     )
-                kwargs[col_name] = expr
+                    for signal in signals:
+                        mutated_name = signal.name.replace(value.name, name, 1)
+                        mutated[mutated_name] = signal
+                elif isinstance(value, Func):
+                    # adding new signal
+                    mutated[name] = value.get_column(schema)
+                elif isinstance(value, primitives):
+                    val = literal(value)
+                    val.type = python_to_sql(type(value))()
+                    mutated[name] = val  # type: ignore[assignment]
+                else:
+                    # nullable physical type so ClickHouse keeps the NULL
+                    if schema._expr_references_nullable(value):
+                        sql_type = SQLType.as_nullable(
+                            python_to_sql(sql_to_python(value))
+                        )
+                        value = sqlalchemy.type_coerce(value, sql_type)
+                    mutated[name] = value
 
-        mutated = {}
-        schema = self.signals_schema
-        for name, value in kwargs.items():
-            if isinstance(value, Column):
-                # renaming existing column
-                for signal in schema.db_signals(name=value.name, as_columns=True):
-                    mutated[signal.name.replace(value.name, name, 1)] = signal  # type: ignore[union-attr]
-            elif isinstance(value, Func):
-                # adding new signal
-                mutated[name] = value.get_column(schema)
-            elif isinstance(value, primitives):
-                # adding simple python constant primitives like str, int, float, bool
-                val = literal(value)
-                val.type = python_to_sql(type(value))()
-                mutated[name] = val  # type: ignore[assignment]
-            else:
-                # adding new signal
-                mutated[name] = value
+            new_schema = schema.mutate(kwargs)
+        except SignalResolvingError as err:
+            raise SignalResolvingError(None, f"{method} error - {err}") from err
 
-        new_schema = schema.mutate(kwargs)
         return self._evolve(
             query=self._query.mutate(new_schema=new_schema, **mutated),
             signal_schema=new_schema,
@@ -1417,22 +1587,26 @@ class DataChain:
     def _leaf_values(self) -> Iterator[tuple[Any, ...]]: ...
 
     @overload
-    def _leaf_values(self, *, include_hidden: bool) -> Iterator[tuple[Any, ...]]: ...
-
-    @overload
     def _leaf_values(
-        self, *, row_factory: Callable[[list[str], tuple[Any, ...]], _T]
-    ) -> Iterator[_T]: ...
+        self, *, include_hidden: bool = ..., include_sentinels: bool = ...
+    ) -> Iterator[tuple[Any, ...]]: ...
 
     @overload
     def _leaf_values(
         self,
         *,
         row_factory: Callable[[list[str], tuple[Any, ...]], _T],
-        include_hidden: bool,
+        include_hidden: bool = ...,
+        include_sentinels: bool = ...,
     ) -> Iterator[_T]: ...
 
-    def _leaf_values(self, *, row_factory=None, include_hidden: bool = True):
+    def _leaf_values(
+        self,
+        *,
+        row_factory=None,
+        include_hidden: bool = True,
+        include_sentinels: bool = False,
+    ):
         """Yields flattened rows of values as a tuple.
 
         Args:
@@ -1440,11 +1614,13 @@ class DataChain:
                 It should accept two arguments: a list of column names and
                 a tuple of row values.
             include_hidden: Whether to include hidden signals from the schema.
+            include_sentinels: Whether to select the `_type_tag` discriminator
+                column. Off by default; read reconstructs it from the leaf values.
         """
-        db_signals = self._effective_signals_schema.db_signals(
-            include_hidden=include_hidden
+        schema = self._effective_signals_schema
+        db_signals = schema.db_signals(
+            include_hidden=include_hidden, include_sentinels=include_sentinels
         )
-
         with self._query.ordered_select(*db_signals).as_iterable() as rows:
             if row_factory:
                 rows = (row_factory(db_signals, r) for r in rows)  # type: ignore[assignment]
@@ -1493,6 +1669,7 @@ class DataChain:
     def results(self, *, include_hidden: bool) -> list[tuple[Any, ...]]: ...
 
     def results(self, *, row_factory=None, include_hidden=True):
+        """Return all rows, optionally built via ``row_factory``."""
         if row_factory is None:
             return list(self._leaf_values(include_hidden=include_hidden))
         return list(
@@ -1508,12 +1685,14 @@ class DataChain:
         return self.results(row_factory=to_dict)
 
     def to_iter(
-        self, *cols: str
+        self, *cols: str | Column
     ) -> IteratorGenerator[tuple[DataValue, ...], None, None]:
         """Yields rows of values, optionally limited to the specified columns.
 
         Args:
-            *cols: Limit to the specified columns. By default, all columns are selected.
+            *cols: Limit to the specified columns. String names and plain
+                ``C("...")`` column references are supported. By default, all
+                columns are selected.
 
         Yields:
             (tuple[DataType, ...]): Yields a tuple of items for each row.
@@ -1544,6 +1723,7 @@ class DataChain:
                 print(file)
             ```
         """
+        cols = self._signal_names(cols, "to_iter()")
         signals_schema = (
             self.signals_schema.resolve(*cols)
             if cols
@@ -1709,9 +1889,85 @@ class DataChain:
         signals_schema = self.signals_schema.clone_without_sys_signals()
         right_signals_schema = right_ds.signals_schema.clone_without_sys_signals()
 
-        ds.signals_schema = signals_schema.merge(right_signals_schema, rname)
+        ds.signals_schema = signals_schema.merge(
+            right_signals_schema,
+            rname,
+            left_nullable=full,
+            right_nullable=not inner,
+        )
 
         return ds
+
+    def _align_optional_for_union(self, other: "Self") -> "tuple[Self, Self]":
+        """Promote a plain ``T`` to ``Optional[T]`` when unioned with an
+        ``Optional[T]`` side, so the result schema doesn't claim ``T`` while the
+        rows hold ``None``. The plain side gets nullable leaves and, for an
+        ``Optional[DataModel]``, a ``present`` ``_type_tag``.
+        """
+        from datachain.lib.signal_schema import SignalSchema
+
+        lvals = self.signals_schema.values
+        rvals = other.signals_schema.values
+        if set(lvals) != set(rvals):
+            return self, other  # genuinely different signals -> let union error
+
+        lprom, rprom = dict(lvals), dict(rvals)
+        left_add: dict[str, Any] = {}
+        right_add: dict[str, Any] = {}
+        sentinel_field = SignalSchema._OPTIONAL_SENTINEL_FIELD
+
+        def _present_sentinel() -> Any:
+            # nullable to match the natural side's _type_tag column type.
+            col = literal(0)
+            col.type = SQLType.as_nullable(python_to_sql(int))
+            return col
+
+        def _nullable_leaf_casts(name: str, promoted: dict[str, Any]) -> dict[str, Any]:
+            # Re-cast leaves to nullable so the UNION keeps NULLs on CH (not 0/"").
+            casts: dict[str, Any] = {}
+            sub = SignalSchema({name: promoted[name]})
+            cols = cast(
+                "list[Column]",
+                sub.db_signals(as_columns=True, include_sentinels=False),
+            )
+            for col in cols:
+                ref = Column(col.name)
+                ref.type = col.type
+                casts[col.name] = ref
+            return casts
+
+        def _promote(
+            name: str, inner: Any, prom: dict[str, Any], add: dict[str, Any]
+        ) -> None:
+            prom[name] = inner | None
+            add.update(_nullable_leaf_casts(name, prom))
+            if ModelStore.is_pydantic(inner):
+                add[f"{name}{DEFAULT_DELIMITER}{sentinel_field}"] = _present_sentinel()
+
+        for name in lvals:
+            l_inner, l_opt = unwrap_optional(lvals[name])
+            r_inner, r_opt = unwrap_optional(rvals[name])
+            if l_inner != r_inner or l_opt == r_opt:
+                continue
+            if not l_opt:
+                _promote(name, l_inner, lprom, left_add)
+            if not r_opt:
+                _promote(name, r_inner, rprom, right_add)
+
+        left, right = self, other
+        if left_add:
+            schema = SignalSchema(lprom)
+            left = self._evolve(
+                query=self._query.mutate(new_schema=schema, **left_add),
+                signal_schema=schema,
+            )
+        if right_add:
+            schema = SignalSchema(rprom)
+            right = other._evolve(
+                query=other._query.mutate(new_schema=schema, **right_add),
+                signal_schema=schema,
+            )
+        return left, right
 
     @delta_disabled
     def union(self, other: "Self") -> "Self":
@@ -1720,8 +1976,9 @@ class DataChain:
         Parameters:
             other: chain whose rows will be added to `self`.
         """
-        self_schema = self.signals_schema
-        other_schema = other.signals_schema
+        left, right = self._align_optional_for_union(other)
+        self_schema = left.signals_schema
+        other_schema = right.signals_schema
         missing_left, missing_right = self_schema.compare_signals(other_schema)
         if missing_left or missing_right:
             raise UnionSchemaMismatchError.from_column_sets(
@@ -1729,8 +1986,11 @@ class DataChain:
                 missing_right,
             )
 
-        self.signals_schema = self_schema.clone_without_sys_signals()
-        return self._evolve(query=self._query.union(other._query))
+        # Evolve, don't mutate `left` in place — it may be the caller's own chain.
+        return left._evolve(
+            query=left._query.union(right._query),
+            signal_schema=self_schema.clone_without_sys_signals(),
+        )
 
     @delta_disabled
     def subtract(  # type: ignore[override]
@@ -2260,6 +2520,7 @@ class DataChain:
             fs_kwargs: Optional kwargs forwarded to the underlying fsspec filesystem
                 when writing (e.g., s3://, gs://, hf://), fsspec-specific options
                 are supported.
+
         Returns:
             File: The stored file with refreshed metadata (version, etag, size).
         """
@@ -2295,36 +2556,30 @@ class DataChain:
             include_outer_list: Sets whether to include an outer list for all rows.
                 Setting this to True makes the file valid JSON, while False instead
                 writes in the JSON lines format.
+
         Returns:
             File: The stored file with refreshed metadata (version, etag, size).
         """
         target = File.at(path, session=self.session)
-        headers, _ = self._effective_signals_schema.get_headers_with_length()
-        headers = [list(filter(None, h)) for h in headers]
         with target.open("wb", client_config=fs_kwargs) as f:
-            self._write_json_stream(f, headers, include_outer_list)
+            self._write_json_stream(f, include_outer_list)
         return target
 
-    def _write_json_stream(
-        self,
-        f: IO[bytes],
-        headers: list[list[str]],
-        include_outer_list: bool,
-    ) -> None:
+    def _write_json_stream(self, f: IO[bytes], include_outer_list: bool) -> None:
+        names = list(self._effective_signals_schema.values)
         is_first = True
         if include_outer_list:
             f.write(b"[\n")
-        for row in self._leaf_values():
+        for row in self.to_iter():
+            nested = {
+                name: obj.model_dump(mode="json") if isinstance(obj, BaseModel) else obj
+                for name, obj in zip(names, row, strict=False)
+            }
             if not is_first:
                 f.write(b",\n" if include_outer_list else b"\n")
             else:
                 is_first = False
-            f.write(
-                json.dumps(
-                    row_to_nested_dict(headers, row),
-                    ensure_ascii=False,
-                ).encode("utf-8")
-            )
+            f.write(json.dumps(nested, ensure_ascii=False).encode("utf-8"))
         if include_outer_list:
             f.write(b"\n]\n")
 
@@ -2341,6 +2596,7 @@ class DataChain:
             fs_kwargs: Optional kwargs forwarded to the underlying fsspec filesystem
                 when writing (e.g., s3://, gs://, hf://), fsspec-specific options
                 are supported.
+
         Returns:
             File: The stored file with refreshed metadata (version, etag, size).
         """
@@ -2789,6 +3045,60 @@ class DataChain:
         """
         return self._evolve(query=self._query.limit(n))
 
+    def similarity_search(
+        self,
+        column: str,
+        query: Sequence[float],
+        *,
+        k: int | None = 10,
+        metric: str = "cosine",
+        score_column: str | None = None,
+    ) -> "Self":
+        """Return rows whose ``column`` embedding is closest to ``query``.
+
+        Shortcut for ``.mutate(...).order_by(...).limit(k)``.
+
+        Parameters:
+            column: name of the embedding column on each row.
+            query: reference embedding (the vector to compare against).
+            k: how many closest rows to return. ``None`` skips the limit and
+                annotates/sorts every row.
+            metric: ``"cosine"``, ``"euclidean"`` or ``"l2"``
+                (``"l2"`` is an alias for ``"euclidean"``).
+            score_column: name to store the distance under. If ``None``
+                (default) the score is not included in the result.
+
+        Example:
+            ```py
+            query = [0.1, 0.2, 0.3]
+            top5 = chain.similarity_search("emb", query, k=5)
+
+            with_score = chain.similarity_search(
+                "emb", query, k=5, score_column="dist"
+            )
+            ```
+        """
+        metric_funcs = {
+            "cosine": cosine_distance,
+            "euclidean": euclidean_distance,
+            "l2": euclidean_distance,
+        }
+        if metric not in metric_funcs:
+            raise ValueError(
+                f"Unsupported metric '{metric}'. Choose one of: {sorted(metric_funcs)}"
+            )
+
+        col_name: str = score_column or SIMILARITY_SCORE_COL_NAME
+
+        chain = self.mutate(
+            **{col_name: metric_funcs[metric](column, list(query))}
+        ).order_by(col_name)
+        if k is not None:
+            chain = chain.limit(k)
+        if score_column is None:
+            chain = chain.select_except(col_name)
+        return chain
+
     def offset(self, offset: int) -> "Self":
         """Return the results starting with the offset row.
 
@@ -2830,12 +3140,14 @@ class DataChain:
         """
         return self._evolve(query=self._query.chunk(index, total))
 
-    def to_list(self, *cols: str) -> list[tuple[DataValue, ...]]:
+    def to_list(self, *cols: str | Column) -> list[tuple[DataValue, ...]]:
         """Returns a list of rows of values, optionally limited to the specified
         columns.
 
         Parameters:
-            *cols: Limit to the specified columns. By default, all columns are selected.
+            *cols: Limit to the specified columns. String names and plain
+                ``C("...")`` column references are supported. By default, all
+                columns are selected.
 
         Returns:
             list[tuple[DataType, ...]]: Returns a list of tuples of items for each row.
@@ -2859,13 +3171,14 @@ class DataChain:
             print(files)  # Returns list of 1-tuples
             ```
         """
-        return list(self.to_iter(*cols))
+        return list(self.to_iter(*self._signal_names(cols, "to_list()")))
 
-    def to_values(self, col: str) -> list[DataValue]:
+    def to_values(self, col: str | Column) -> list[DataValue]:
         """Returns a flat list of values from a single column.
 
         Parameters:
-            col: The name of the column to extract values from.
+            col: The column to extract values from. String names and plain
+                ``C("...")`` column references are supported.
 
         Returns:
             list[DataValue]: Returns a flat list of values from the specified column.
@@ -2883,7 +3196,9 @@ class DataChain:
             print(sizes)  # Returns list of integers
             ```
         """
-        return [row[0] for row in self.to_list(col)]
+        return [
+            row[0] for row in self.to_list(*self._signal_names((col,), "to_values()"))
+        ]
 
     def __iter__(self) -> Iterator[tuple[DataValue, ...]]:
         """Make DataChain objects iterable.

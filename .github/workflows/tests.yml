@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha || github.ref }}
@@ -76,7 +76,7 @@ jobs:
 
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha || github.ref }}
@@ -156,7 +156,7 @@ jobs:
         shell: bash
 
       - name: Upload coverage report
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: coverage.xml
@@ -175,19 +175,19 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        pyv: ['3.10', '3.13']
+        pyv: ['3.11', '3.13']
         group: ['get_started', 'computer_vision', 'multimodal']
         exclude:
-          - {os: ubuntu-latest, pyv: '3.10', group: 'multimodal'}
+          - {os: ubuntu-latest, pyv: '3.11', group: 'multimodal'}
           - {os: ubuntu-latest, pyv: '3.13', group: 'multimodal'}
         include:
           # HF runs against actual API - thus run it only once
           - {os: ubuntu-latest, pyv: "3.13", group: llm_and_nlp}
-          - {os: ubuntu-latest-4-cores, pyv: "3.10", group: multimodal}
+          - {os: ubuntu-latest-4-cores, pyv: "3.11", group: multimodal}
           - {os: ubuntu-latest-4-cores, pyv: "3.13", group: multimodal}
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha || github.ref }}
 
@@ -228,7 +228,10 @@ jobs:
 
       - name: Run examples
         env:
-          HF_TOKEN: ${{ matrix.group == 'llm_and_nlp' && secrets.HF_TOKEN || '' }}
+          # Pass HF_TOKEN to all example groups: several groups download public
+          # models/datasets from the HF Hub anonymously (transformers, open_clip),
+          # which now hits HTTP 429 rate limits. Authenticating raises the limit.
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
           ANTHROPIC_API_KEY: ${{ matrix.group == 'llm_and_nlp' && secrets.ANTHROPIC_API_KEY || '' }}
           OPENAI_API_KEY: ${{ matrix.group == 'multimodal' && secrets.OPENAI_API_KEY || '' }}
         run: nox -s examples -p ${{ matrix.pyv }} -- -m "${{ matrix.group }}"

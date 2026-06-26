@@ -1,18 +1,361 @@
 import io
 import os
 import shutil
+import subprocess
+import tarfile
+from collections.abc import Callable
+from dataclasses import dataclass
+from fractions import Fraction
+from pathlib import Path
+from types import SimpleNamespace
+from typing import cast
 
+import av
+import ffmpeg
+import numpy as np
 import pytest
 from numpy import ndarray
 from PIL import Image
 
 from datachain import VideoFragment, VideoFrame
 from datachain.lib.file import File, FileError, ImageFile, VideoFile
+from datachain.lib.tar import process_tar
 from datachain.lib.video import save_video_fragment, video_frame_np
 
 requires_ffmpeg = pytest.mark.skipif(
     not shutil.which("ffmpeg"), reason="ffmpeg not installed"
 )
+requires_posix = pytest.mark.skipif(
+    os.name == "nt", reason="fake ffmpeg executable uses a POSIX shell script"
+)
+
+
+@dataclass(frozen=True)
+class GeneratedVideo:
+    path: Path
+    file: VideoFile
+
+
+class NonSeekableBytesIO(io.BytesIO):
+    def seekable(self):
+        return False
+
+
+class SeekTellReader:
+    def __init__(self, data: bytes):
+        self._buffer = io.BytesIO(data)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def read(self, size=-1):
+        return self._buffer.read(size)
+
+    def seek(self, offset, whence=0):
+        return self._buffer.seek(offset, whence)
+
+    def tell(self):
+        return self._buffer.tell()
+
+
+class SeekAheadContainer:
+    def __init__(self, container, start_frame: int):
+        self._container = container
+        self._start_frame = start_frame
+        self._seek_landed_after_start = False
+        self.streams = container.streams
+
+    def __enter__(self):
+        self._container.__enter__()
+        return self
+
+    def __exit__(self, *args):
+        return self._container.__exit__(*args)
+
+    def seek(self, offset, *, backward=True, any_frame=False, stream=None):
+        result = self._container.seek(
+            offset,
+            backward=backward,
+            any_frame=any_frame,
+            stream=stream,
+        )
+        self._seek_landed_after_start = bool(
+            stream is not None and offset != (stream.start_time or 0)
+        )
+        return result
+
+    def decode(self, stream):
+        frames = self._container.decode(stream)
+        if self._seek_landed_after_start:
+            self._seek_landed_after_start = False
+            yield self._frame_after_start(stream)
+            return
+        yield from frames
+
+    def _frame_after_start(self, stream):
+        fps = float(stream.average_rate or stream.base_rate or stream.guessed_rate)
+        timestamp = (self._start_frame + 1) / fps
+        pts = (stream.start_time or 0) + int(timestamp / stream.time_base)
+        return SimpleNamespace(pts=pts, time_base=stream.time_base, time=timestamp)
+
+
+def _install_fake_ffmpeg(tmp_path, monkeypatch, script: str) -> None:
+    fake_ffmpeg = tmp_path / "ffmpeg"
+    fake_ffmpeg.write_text(script)
+    fake_ffmpeg.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ.get('PATH', '')}")
+
+
+def _fake_ffmpeg_write_output_script(record_args: bool = False) -> str:
+    record = 'printf \'%s\n\' "$0" "$@" > "$FFMPEG_ARGS_FILE"\n' if record_args else ""
+    return (
+        "#!/bin/sh\n"
+        f"{record}"
+        'out=""\n'
+        'for arg do out="$arg"; done\n'
+        'printf fake-video > "$out"\n'
+    )
+
+
+def _add_video_stream(
+    container,
+    codec: str,
+    fps: int,
+    *,
+    width: int = 16,
+    height: int = 16,
+    set_time_base: bool = True,
+):
+    stream = cast("av.VideoStream", container.add_stream(codec, rate=fps))
+    stream.width = width
+    stream.height = height
+    stream.pix_fmt = "yuv420p"
+    if set_time_base:
+        stream.time_base = Fraction(1, fps)
+    return stream
+
+
+def _mux_video_frame(container, stream, pixel_value: int, pts: int | None, fps: int):
+    image = np.full((stream.height, stream.width, 3), pixel_value, dtype=np.uint8)
+    frame = av.VideoFrame.from_ndarray(image, format="rgb24")
+    if pts is not None:
+        frame.pts = pts
+        frame.time_base = Fraction(1, fps)
+    for packet in stream.encode(frame):
+        container.mux(packet)
+
+
+def _flush_video_stream(container, stream) -> None:
+    for packet in stream.encode():
+        container.mux(packet)
+
+
+def _default_pixel_value(frame_index: int) -> int:
+    return frame_index * 40
+
+
+def _write_single_stream_video(
+    path: Path,
+    *,
+    codec: str,
+    fps: int,
+    frame_count: int,
+    container_format: str | None = None,
+    set_stream_time_base: bool = True,
+    set_frame_timestamps: bool = True,
+    pts: list[int] | None = None,
+    pixel_value: Callable[[int], int] | None = None,
+) -> None:
+    if container_format:
+        container = av.open(str(path), "w", format=container_format)
+    else:
+        container = av.open(str(path), "w")
+    stream = _add_video_stream(
+        container,
+        codec,
+        fps,
+        set_time_base=set_stream_time_base,
+    )
+    if pixel_value is None:
+        pixel_value = _default_pixel_value
+
+    try:
+        for frame_index in range(frame_count):
+            if pts is not None:
+                frame_pts = pts[frame_index]
+            elif set_frame_timestamps:
+                frame_pts = frame_index
+            else:
+                frame_pts = None
+            _mux_video_frame(
+                container,
+                stream,
+                pixel_value(frame_index),
+                frame_pts,
+                fps,
+            )
+
+        _flush_video_stream(container, stream)
+    finally:
+        container.close()
+
+
+def _generated_video(path: Path) -> GeneratedVideo:
+    return GeneratedVideo(
+        path=path,
+        file=VideoFile.upload(path.read_bytes(), path.name),
+    )
+
+
+@pytest.fixture
+def variable_timestamp_video(tmp_path) -> GeneratedVideo:
+    path = tmp_path / "variable_timestamp.mp4"
+    frame_pts = [0, 1, 5, 6]
+    _write_single_stream_video(
+        path,
+        codec="mpeg4",
+        fps=30,
+        frame_count=len(frame_pts),
+        pts=frame_pts,
+    )
+    return _generated_video(path)
+
+
+@pytest.fixture
+def raw_h264_video(tmp_path) -> GeneratedVideo:
+    path = tmp_path / "raw.h264"
+    _write_single_stream_video(
+        path,
+        codec="h264",
+        fps=30,
+        frame_count=4,
+        container_format="h264",
+        set_stream_time_base=False,
+        set_frame_timestamps=False,
+        pts=None,
+    )
+    return _generated_video(path)
+
+
+@pytest.fixture
+def mkv_video_without_frame_count(tmp_path) -> GeneratedVideo:
+    path = tmp_path / "inferred_frames.mkv"
+    _write_single_stream_video(
+        path,
+        codec="mpeg4",
+        fps=3,
+        frame_count=7,
+        pixel_value=lambda frame_index: frame_index * 20,
+    )
+    return _generated_video(path)
+
+
+@pytest.fixture
+def mpegts_video(tmp_path) -> GeneratedVideo:
+    path = tmp_path / "start_time.ts"
+    _write_single_stream_video(
+        path,
+        codec="mpeg2video",
+        fps=24,
+        frame_count=10,
+        container_format="mpegts",
+        pixel_value=lambda frame_index: frame_index * 20,
+    )
+    return _generated_video(path)
+
+
+@pytest.fixture
+def nut_video_without_average_rate(tmp_path) -> GeneratedVideo:
+    path = tmp_path / "no_average_rate.nut"
+    _write_single_stream_video(
+        path,
+        codec="mpeg4",
+        fps=5,
+        frame_count=6,
+        container_format="nut",
+        pixel_value=lambda frame_index: frame_index * 20,
+    )
+    return _generated_video(path)
+
+
+@pytest.fixture
+def multi_stream_video(tmp_path) -> GeneratedVideo:
+    path = tmp_path / "multi_stream.mp4"
+    container = av.open(str(path), "w")
+    fps = 30
+    streams = [
+        _add_video_stream(container, "mpeg4", fps, width=16, height=16),
+        _add_video_stream(container, "mpeg4", fps, width=32, height=24),
+    ]
+
+    try:
+        for frame_index in range(2):
+            for video_stream_index, stream in enumerate(streams):
+                _mux_video_frame(
+                    container,
+                    stream,
+                    video_stream_index * 80 + frame_index * 20,
+                    frame_index,
+                    fps,
+                )
+
+        for stream in streams:
+            _flush_video_stream(container, stream)
+    finally:
+        container.close()
+
+    return _generated_video(path)
+
+
+@pytest.fixture
+def audio_first_video(tmp_path) -> GeneratedVideo:
+    path = tmp_path / "audio_first.mp4"
+    container = av.open(str(path), "w")
+    sample_rate = 44100
+    audio_stream = container.add_stream("aac", rate=sample_rate)
+    audio_stream.layout = "mono"
+
+    fps = 2
+    video_stream = _add_video_stream(container, "mpeg4", fps)
+
+    try:
+        audio_frame_samples = 1024
+        for sample_offset in range(0, sample_rate, audio_frame_samples):
+            samples = min(audio_frame_samples, sample_rate - sample_offset)
+            timeline = np.arange(sample_offset, sample_offset + samples)
+            tone = (
+                np.sin(2 * np.pi * 1000 * timeline / sample_rate)
+                * 0.2
+                * np.iinfo(np.int16).max
+            ).astype(np.int16)
+            audio_frame = av.AudioFrame(format="s16", layout="mono", samples=samples)
+            audio_frame.sample_rate = sample_rate
+            audio_frame.pts = sample_offset
+            audio_frame.time_base = Fraction(1, sample_rate)
+            audio_frame.planes[0].update(tone.tobytes())
+            for packet in audio_stream.encode(audio_frame):
+                container.mux(packet)
+
+        for packet in audio_stream.encode():
+            container.mux(packet)
+
+        for frame_index in range(2):
+            _mux_video_frame(
+                container,
+                video_stream,
+                frame_index * 40,
+                frame_index,
+                fps,
+            )
+
+        _flush_video_stream(container, video_stream)
+    finally:
+        container.close()
+
+    return _generated_video(path)
 
 
 @pytest.fixture(autouse=True)
@@ -21,10 +364,33 @@ def video_file(catalog) -> File:
     file_name = "Big_Buck_Bunny_360_10s_1MB.mp4"
 
     with open(os.path.join(data_path, file_name), "rb") as f:
-        file = File.upload(f.read(), file_name)
+        return File.upload(f.read(), file_name)
 
-    file.ensure_cached()
-    return file
+
+@pytest.fixture
+def make_tar_member_file(tmp_path, test_session):
+    def make_tar_member_file(
+        member_name: str,
+        contents: bytes | str | os.PathLike[str],
+        *,
+        caching_enabled: bool = False,
+    ) -> tuple[File, File]:
+        archive_path = tmp_path / "archive.tar"
+
+        with tarfile.open(archive_path, mode="w") as archive:
+            if isinstance(contents, bytes):
+                info = tarfile.TarInfo(member_name)
+                info.size = len(contents)
+                archive.addfile(info, io.BytesIO(contents))
+            else:
+                archive.add(str(contents), arcname=member_name)
+
+        archive_file = File.at(archive_path, session=test_session)
+        member_file = next(process_tar(archive_file))
+        member_file._set_stream(test_session.catalog, caching_enabled=caching_enabled)
+        return archive_file, member_file
+
+    return make_tar_member_file
 
 
 @requires_ffmpeg
@@ -46,20 +412,96 @@ def test_get_info_error():
     with open(__file__, "rb") as f:
         file = VideoFile.upload(f.read(), "test.mp4")
 
-    file.ensure_cached()
     with pytest.raises(FileError):
         file.get_info()
+
+
+def test_get_info_handles_raw_video_without_duration(raw_h264_video):
+    info = raw_h264_video.file.get_info()
+
+    assert info.fps > 0
+    assert info.duration == -1.0
+    assert info.frames == 0
+
+
+def test_get_frame_uses_raw_video_fps_for_timestamp(raw_h264_video):
+    info = raw_h264_video.file.get_info()
+    frame = raw_h264_video.file.get_frame(3)
+
+    assert frame.timestamp == pytest.approx(3 / info.fps)
+
+
+def test_get_info_ceil_inferred_frame_count(mkv_video_without_frame_count):
+    info = mkv_video_without_frame_count.file.get_info()
+
+    assert info.frames == 7
+
+
+def test_get_info_uses_base_rate_when_average_rate_is_missing(
+    nut_video_without_average_rate,
+):
+    with av.open(str(nut_video_without_average_rate.path)) as container:
+        stream = container.streams.video[0]
+        assert stream.average_rate is None
+        assert stream.base_rate == 5
+
+    info = nut_video_without_average_rate.file.get_info()
+
+    assert info.fps == 5.0
 
 
 def test_get_frame(video_file):
     frame = video_file.as_video_file().get_frame(37)
     assert isinstance(frame, VideoFrame)
     assert frame.frame == 37
+    assert frame.video_stream_index == 0
+    assert frame.timestamp == pytest.approx(37 / 30)
+
+
+def test_get_frames_uses_frame_index_when_timestamps_are_missing(raw_h264_video):
+    file = raw_h264_video.file
+    info = file.get_info()
+
+    frames = list(file.get_frames(0, 4))
+
+    assert [frame.timestamp for frame in frames] == pytest.approx(
+        [frame.frame / info.fps for frame in frames]
+    )
+
+
+def test_get_frame_np_handles_raw_video_without_timestamps(raw_h264_video):
+    frame = raw_h264_video.file.get_frame(3).get_np()
+
+    assert frame.shape == (16, 16, 3)
 
 
 def test_get_frame_error(video_file):
     with pytest.raises(ValueError):
         video_file.as_video_file().get_frame(-1)
+
+
+def test_get_frame_returns_reference_without_decoding(video_file):
+    video = video_file.as_video_file()
+
+    frame = video.get_frame(10_000)
+
+    assert frame.frame == 10_000
+    assert frame.timestamp == pytest.approx(10_000 / 30)
+
+
+def test_get_frame_reuses_metadata(video_file, monkeypatch):
+    video = video_file.as_video_file()
+    frame = video.get_frame(37)
+    assert frame.timestamp == pytest.approx(37 / 30)
+
+    def fail_open(self, *args, **kwargs):
+        raise AssertionError("get_frame should reuse cached video metadata")
+
+    monkeypatch.setattr(VideoFile, "open", fail_open)
+
+    frame = video.get_frame(38)
+
+    assert frame.timestamp == pytest.approx(38 / 30)
 
 
 def test_get_frame_np(video_file):
@@ -68,17 +510,262 @@ def test_get_frame_np(video_file):
     assert frame.shape == (360, 640, 3)
 
 
+def test_get_frame_np_matches_sequential_decode_after_seek(video_file):
+    frame_index = 250
+    image = video_file.as_video_file().get_frame(frame_index).get_np()
+
+    data_path = os.path.join(os.path.dirname(__file__), "data")
+    video_path = os.path.join(data_path, "Big_Buck_Bunny_360_10s_1MB.mp4")
+    with av.open(video_path) as container:
+        stream = container.streams.video[0]
+        expected = next(
+            frame.to_ndarray(format="rgb24")
+            for index, frame in enumerate(container.decode(stream))
+            if index == frame_index
+        )
+
+    np.testing.assert_array_equal(image, expected)
+
+
+def _ffmpeg_supports_display_rotation() -> bool:
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-h", "full"],  # noqa: S607
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return False
+    return "-display_rotation" in (result.stdout + result.stderr)
+
+
+requires_display_rotation = pytest.mark.skipif(
+    not (shutil.which("ffmpeg") and _ffmpeg_supports_display_rotation()),
+    reason="ffmpeg does not support -display_rotation",
+)
+
+
+def _write_distinct_video(path: Path, width: int, height: int, frame_count: int = 3):
+    """Write a video whose frames vary along both axes, so a rotation is visible."""
+    container = av.open(str(path), "w")
+    stream = _add_video_stream(container, "libx264", 30, width=width, height=height)
+    rows, cols = np.mgrid[0:height, 0:width]
+    try:
+        for frame_index in range(frame_count):
+            image = np.empty((height, width, 3), dtype=np.uint8)
+            image[..., 0] = (cols * 4).astype(np.uint8)
+            image[..., 1] = (rows * 8).astype(np.uint8)
+            image[..., 2] = np.uint8(frame_index * 40)
+            frame = av.VideoFrame.from_ndarray(image, format="rgb24")
+            frame.pts = frame_index
+            frame.time_base = Fraction(1, 30)
+            for packet in stream.encode(frame):
+                container.mux(packet)
+        _flush_video_stream(container, stream)
+    finally:
+        container.close()
+
+
+def _autorotated_frame(
+    path: Path, index: int = 0, video_stream_index: int = 0
+) -> ndarray:
+    """Decode frame `index` with FFmpeg's default autorotation, as ground truth."""
+    out = path.parent / f"ground_truth_{video_stream_index}_{index}.png"
+    cmd = ["ffmpeg", "-y", "-v", "error", "-i", str(path)]
+    cmd += ["-map", f"0:v:{video_stream_index}"]
+    cmd += ["-vf", f"select=eq(n\\,{index})", "-frames:v", "1", str(out)]
+    subprocess.run(cmd, check=True)  # noqa: S603
+    return np.array(Image.open(out).convert("RGB"))
+
+
+def _assert_matches_autorotated(frame: ndarray, expected: ndarray) -> None:
+    # PyAV's libav and the system ffmpeg CLI differ by a few levels per pixel
+    # (decode rounding); a wrong rotation differs by ~100+.
+    assert frame.shape == expected.shape
+    mean_abs_diff = np.abs(frame.astype(np.int32) - expected.astype(np.int32)).mean()
+    assert mean_abs_diff < 5, f"mean abs diff {mean_abs_diff:.2f} too large"
+
+
+@pytest.fixture
+def make_rotated_video(tmp_path):
+    def _make(rotation: int, width: int = 64, height: int = 32) -> GeneratedVideo:
+        coded = tmp_path / "coded.mp4"
+        _write_distinct_video(coded, width=width, height=height)
+        rotated = tmp_path / f"rotated_{rotation}.mp4"
+        # -display_rotation writes the DISPLAYMATRIX; -c copy keeps coded frames.
+        cmd = ["ffmpeg", "-y", "-v", "error", "-display_rotation", str(rotation)]
+        cmd += ["-i", str(coded), "-c", "copy", str(rotated)]
+        subprocess.run(cmd, check=True)  # noqa: S603
+        return _generated_video(rotated)
+
+    return _make
+
+
+@requires_ffmpeg
+@requires_display_rotation
+@pytest.mark.parametrize("rotation", [90, 180, 270])
+def test_display_rotation_matches_ffmpeg(make_rotated_video, rotation):
+    # Dimensions and pixels must match FFmpeg autorotation (coded 64x32 -> 32x64).
+    generated = make_rotated_video(rotation)
+    expected = _autorotated_frame(generated.path)
+    expected_height, expected_width = expected.shape[:2]
+
+    info = generated.file.get_info()
+    assert (info.width, info.height) == (expected_width, expected_height)
+    assert (info.width, info.height) == (
+        (32, 64) if rotation in (90, 270) else (64, 32)
+    )
+
+    _assert_matches_autorotated(generated.file.get_frame(0).get_np(), expected)
+    _assert_matches_autorotated(video_frame_np(generated.file, 0), expected)
+
+
+@requires_ffmpeg
+@requires_display_rotation
+def test_get_frames_range_applies_display_rotation(make_rotated_video):
+    # Every frame in the iterator path must be rotated, not just the first.
+    generated = make_rotated_video(90)
+
+    frames = list(generated.file.get_frames(0, 3))
+
+    assert len(frames) == 3
+    for video_frame in frames:
+        expected = _autorotated_frame(generated.path, video_frame.frame)
+        _assert_matches_autorotated(video_frame.get_np(), expected)
+
+
+@requires_ffmpeg
+@requires_display_rotation
+def test_read_bytes_uses_display_dimensions(make_rotated_video):
+    # read_bytes()/save() wrap get_np(); the image must use display dimensions.
+    generated = make_rotated_video(90)
+
+    image = Image.open(io.BytesIO(generated.file.get_frame(0).read_bytes("png")))
+
+    assert image.size == (32, 64)
+
+
+@pytest.fixture
+def multi_stream_rotated_video(tmp_path) -> GeneratedVideo:
+    # Stream 0 unrotated (48x24); stream 1 rotated 90 (64x32 coded -> 32x64).
+    plain = tmp_path / "plain_stream.mp4"
+    _write_distinct_video(plain, width=48, height=24)
+    coded = tmp_path / "rotated_coded.mp4"
+    _write_distinct_video(coded, width=64, height=32)
+    rotated = tmp_path / "rotated_stream.mp4"
+    cmd = ["ffmpeg", "-y", "-v", "error", "-display_rotation", "90"]
+    cmd += ["-i", str(coded), "-c", "copy", str(rotated)]
+    subprocess.run(cmd, check=True)  # noqa: S603
+
+    combined = tmp_path / "multi_stream_rotated.mp4"
+    cmd = ["ffmpeg", "-y", "-v", "error", "-i", str(plain), "-i", str(rotated)]
+    cmd += ["-map", "0:v:0", "-map", "1:v:0", "-c", "copy", str(combined)]
+    subprocess.run(cmd, check=True)  # noqa: S603
+    return _generated_video(combined)
+
+
+@requires_ffmpeg
+@requires_display_rotation
+def test_rotation_is_read_per_video_stream(multi_stream_rotated_video):
+    video = multi_stream_rotated_video.file
+
+    info0 = video.get_info(video_stream_index=0)
+    info1 = video.get_info(video_stream_index=1)
+
+    assert (info0.width, info0.height) == (48, 24)
+    assert (info1.width, info1.height) == (32, 64)
+    assert video.get_frame(0, video_stream_index=0).get_np().shape == (24, 48, 3)
+
+    frame1 = video.get_frame(0, video_stream_index=1).get_np()
+    assert frame1.shape == (64, 32, 3)
+    _assert_matches_autorotated(
+        frame1,
+        _autorotated_frame(multi_stream_rotated_video.path, 0, video_stream_index=1),
+    )
+
+
+def test_get_frame_np_decodes_non_seekable_stream(video_file, monkeypatch):
+    data = video_file.read()
+
+    def open_non_seekable(self, *args, **kwargs):
+        return NonSeekableBytesIO(data)
+
+    monkeypatch.setattr(VideoFile, "open", open_non_seekable)
+
+    image = video_file.as_video_file().get_frame(3).get_np()
+
+    assert image.shape == (360, 640, 3)
+
+
+def test_get_frame_np_decodes_seek_tell_stream(video_file, monkeypatch):
+    data = video_file.read()
+
+    def open_seek_tell(self, *args, **kwargs):
+        return SeekTellReader(data)
+
+    monkeypatch.setattr(VideoFile, "open", open_seek_tell)
+
+    image = video_file.as_video_file().get_frame(3).get_np()
+
+    assert image.shape == (360, 640, 3)
+
+
+def test_get_frame_np_handles_stream_start_time_without_seek(mpegts_video):
+    video_path = mpegts_video.path
+    file = mpegts_video.file
+    frame_index = 5
+
+    image = file.get_frame(frame_index).get_np()
+
+    with av.open(str(video_path)) as container:
+        stream = container.streams.video[0]
+        assert stream.start_time not in (None, 0)
+        expected = next(
+            frame.to_ndarray(format="rgb24")
+            for index, frame in enumerate(container.decode(stream))
+            if index == frame_index
+        )
+
+    np.testing.assert_array_equal(image, expected)
+
+
 def test_get_frame_np_error(video_file):
     with pytest.raises(ValueError):
         video_frame_np(video_file.as_video_file(), -1)
+
+
+def test_get_frame_np_missing_frame_error(video_file):
+    with pytest.raises(FileError, match="unable to read video frame"):
+        video_frame_np(video_file.as_video_file(), 10_000)
+
+
+def test_get_frame_np_missing_raw_frame_error(raw_h264_video):
+    with pytest.raises(FileError, match="unable to read video frame"):
+        video_frame_np(raw_h264_video.file, 10_000)
+
+
+def test_get_frame_np_video_stream_index_error(video_file):
+    with pytest.raises(FileError, match="video_stream_index 1 is out of range"):
+        video_frame_np(video_file.as_video_file(), 0, video_stream_index=1)
+
+
+def test_get_frame_np_wraps_decode_errors():
+    file = VideoFile.upload(b"not a video", "broken.mp4")
+
+    with pytest.raises(FileError, match="unable to read video frame"):
+        video_frame_np(file, 0)
 
 
 @pytest.mark.parametrize(
     "format,img_format,header",
     [
         ("jpg", "JPEG", [b"\xff\xd8\xff\xe0"]),
+        (".jpg", "JPEG", [b"\xff\xd8\xff\xe0"]),
         ("png", "PNG", [b"\x89PNG\r\n\x1a\n"]),
         ("gif", "GIF", [b"GIF87a", b"GIF89a"]),
+        ("tif", "TIFF", [b"II*\x00", b"MM\x00*"]),
+        ("JPEG2000", "JPEG2000", [b"\x00\x00\x00\x0cjP"]),
     ],
 )
 def test_get_frame_bytes(video_file, format, img_format, header):
@@ -91,25 +778,185 @@ def test_get_frame_bytes(video_file, format, img_format, header):
         assert img.size == (640, 360)
 
 
-@pytest.mark.parametrize("use_format", [True, False])
-def test_save_frame(tmp_path, video_file, use_format):
+@pytest.mark.parametrize("format", [None, "jpg", ".jpg"])
+def test_save_frame(tmp_path, video_file, format):
     frame = video_file.as_video_file().get_frame(3)
-    if use_format:
-        frame_file = frame.save(str(tmp_path), format="jpg")
+    if format is not None:
+        frame_file = frame.save(str(tmp_path), format=format)
     else:
         frame_file = frame.save(str(tmp_path))
     assert isinstance(frame_file, ImageFile)
+    assert frame_file.path.endswith("_0003.jpg")
+    assert "..jpg" not in frame_file.path
 
     frame_file.ensure_cached()
-    with Image.open(frame_file.get_local_path()) as img:
+    frame_path = frame_file.get_local_path()
+    assert frame_path is not None
+    with Image.open(frame_path) as img:
         assert img.format == "JPEG"
         assert img.size == (640, 360)
+
+
+def test_video_frame_save_requires_catalog(tmp_path):
+    video = VideoFile(source="file:///tmp", path="video.mp4")
+    frame = VideoFrame(video=video, frame=0, timestamp=0)
+
+    with pytest.raises(RuntimeError, match="catalog is not set"):
+        frame.save(str(tmp_path))
 
 
 def test_get_frames(video_file):
     frames = list(video_file.as_video_file().get_frames(10, 200, 5))
     assert len(frames) == 38
     assert all(isinstance(frame, VideoFrame) for frame in frames)
+    assert [frame.timestamp for frame in frames[:3]] == pytest.approx(
+        [10 / 30, 15 / 30, 20 / 30]
+    )
+
+
+def test_get_frames_get_np_no_double_decode(video_file, monkeypatch):
+    open_call_count = 0
+    real_open = VideoFile.open
+
+    def counting_open(self, *args, **kwargs):
+        nonlocal open_call_count
+        open_call_count += 1
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(VideoFile, "open", counting_open)
+
+    frames = list(video_file.as_video_file().get_frames(0, 5))
+    assert open_call_count == 1, "get_frames() should open the file exactly once"
+
+    open_call_count = 0
+    arrays = [frame.get_np() for frame in frames]
+    assert open_call_count == 0, (
+        "get_np() should not re-open the file for frames from get_frames()"
+    )
+    assert all(isinstance(arr, ndarray) for arr in arrays)
+    assert all(arr.shape == (360, 640, 3) for arr in arrays)
+
+
+def test_get_frames_get_np_matches_direct_decode(video_file):
+    frames = list(video_file.as_video_file().get_frames(10, 13))
+    for frame in frames:
+        via_get_np = frame.get_np()
+        via_direct = video_frame_np(frame.video, frame.frame)
+        np.testing.assert_array_equal(via_get_np, via_direct)
+
+
+def test_get_frames_decoded_not_pickled(video_file):
+    import pickle
+
+    frames = list(video_file.as_video_file().get_frames(0, 2))
+    assert frames[0]._decoded is not None
+
+    restored = pickle.loads(pickle.dumps(frames[0]))  # noqa: S301
+    assert restored._decoded is None
+
+
+def test_get_frames_uses_seek_for_large_start(video_file):
+    start = 250
+    frames = list(video_file.as_video_file().get_frames(start, 256, 2))
+
+    assert [frame.frame for frame in frames] == [250, 252, 254]
+    assert [frame.timestamp for frame in frames] == pytest.approx(
+        [250 / 30, 252 / 30, 254 / 30]
+    )
+
+
+def test_get_frames_retries_when_seek_lands_after_start(video_file, monkeypatch):
+    start = 250
+    real_av_open = av.open
+
+    def open_with_seek_ahead(*args, **kwargs):
+        return SeekAheadContainer(real_av_open(*args, **kwargs), start)
+
+    monkeypatch.setattr(av, "open", open_with_seek_ahead)
+
+    frames = list(video_file.as_video_file().get_frames(start, start + 3))
+
+    assert [frame.frame for frame in frames] == [250, 251, 252]
+    assert [frame.timestamp for frame in frames] == pytest.approx(
+        [250 / 30, 251 / 30, 252 / 30]
+    )
+
+
+def test_get_frames_handles_stream_start_time_without_seek(mpegts_video):
+    start = 5
+    frames = list(mpegts_video.file.get_frames(start, 8))
+
+    assert [frame.frame for frame in frames] == [5, 6, 7]
+
+    with av.open(str(mpegts_video.path)) as container:
+        stream = container.streams.video[0]
+        assert stream.start_time not in (None, 0)
+        expected = [
+            frame.time
+            for index, frame in enumerate(container.decode(stream))
+            if start <= index < 8
+        ]
+
+    assert [frame.timestamp for frame in frames] == pytest.approx(expected)
+
+
+def test_get_frames_uses_presentation_timestamps(variable_timestamp_video):
+    file = variable_timestamp_video.file
+
+    frames = list(file.get_frames(0, 4))
+    assert [frame.frame for frame in frames] == [0, 1, 2, 3]
+    assert [frame.timestamp for frame in frames] == pytest.approx(
+        [0, 1 / 30, 5 / 30, 6 / 30]
+    )
+
+
+def test_video_stream_index_selects_video_stream(multi_stream_video):
+    file = multi_stream_video.file
+
+    info = file.get_info(video_stream_index=1)
+    assert info.width == 32
+    assert info.height == 24
+    assert info.frames == 2
+
+    frame = file.get_frame(0, video_stream_index=1)
+    assert frame.frame == 0
+    assert frame.video_stream_index == 1
+    assert frame.get_np().shape == (24, 32, 3)
+
+    frames = list(file.get_frames(0, 2, video_stream_index=1))
+    assert [frame.video_stream_index for frame in frames] == [1, 1]
+    assert [frame.timestamp for frame in frames] == pytest.approx([0, 1 / 30])
+
+
+def test_video_stream_index_is_relative_to_video_streams(audio_first_video):
+    video_path = audio_first_video.path
+
+    with av.open(str(video_path)) as container:
+        assert next(iter(container.streams)).type == "audio"
+        assert container.streams.video[0].index == 1
+
+    file = audio_first_video.file
+    info = file.get_info(video_stream_index=0)
+    assert info.width == 16
+    assert info.height == 16
+
+
+def test_video_stream_index_error(video_file):
+    with pytest.raises(ValueError):
+        video_file.as_video_file().get_frame(0, video_stream_index=-1)
+
+    with pytest.raises(FileError):
+        video_file.as_video_file().get_info(video_stream_index=1)
+
+    with pytest.raises(FileError):
+        list(video_file.as_video_file().get_frames(0, 1, video_stream_index=1))
+
+
+def test_get_frames_wraps_decode_errors():
+    file = VideoFile.upload(b"not a video", "broken.mp4")
+
+    with pytest.raises(FileError, match="unable to read video frames"):
+        list(file.get_frames(0, 1))
 
 
 @requires_ffmpeg
@@ -140,7 +987,9 @@ def test_save_frames(tmp_path, video_file):
 
     for frame_file in frame_files:
         frame_file.ensure_cached()
-        with Image.open(frame_file.get_local_path()) as img:
+        frame_path = frame_file.get_local_path()
+        assert frame_path is not None
+        with Image.open(frame_path) as img:
             assert img.format == "JPEG"
             assert img.size == (640, 360)
 
@@ -211,6 +1060,118 @@ def test_save_fragment(tmp_path, video_file):
     }
 
 
+@requires_ffmpeg
+def test_save_video_fragment_uses_cached_input(tmp_path, video_file):
+    video = video_file.as_video_file()
+    video.ensure_cached()
+    cached_path = video.get_local_path()
+    source_path = video.get_fs_path()
+    assert cached_path
+
+    if source_path != cached_path:
+        os.remove(source_path)
+
+    fragment = save_video_fragment(video, 2.5, 5, str(tmp_path))
+
+    fragment.ensure_cached()
+    assert fragment.get_info().duration == 2.5
+
+
+@requires_ffmpeg
+def test_save_video_fragment_uses_cache_after_ensure_cached(
+    tmp_path, monkeypatch, video_file
+):
+    video = video_file.as_video_file()
+    real_cached_path = video.get_fs_path()
+    video.source = "gs://bucket"
+    video._caching_enabled = True
+    calls = []
+
+    def fake_get_local_path(self):
+        calls.append("get_local_path")
+        return real_cached_path if "ensure_cached" in calls else None
+
+    def fake_ensure_cached(self):
+        calls.append("ensure_cached")
+
+    monkeypatch.setattr(VideoFile, "get_local_path", fake_get_local_path)
+    monkeypatch.setattr(VideoFile, "ensure_cached", fake_ensure_cached)
+
+    fragment = save_video_fragment(video, 0, 1, str(tmp_path / "out"))
+
+    assert calls == ["get_local_path", "ensure_cached", "get_local_path"]
+    fragment.ensure_cached()
+    assert fragment.get_info().duration == 1
+
+
+@requires_ffmpeg
+@pytest.mark.parametrize("caching_enabled", [False, True])
+def test_save_video_fragment_remote_input_uses_temp_file_when_cache_is_unavailable(
+    tmp_path, monkeypatch, video_file, caching_enabled
+):
+    video = video_file.as_video_file()
+    source_path = video.get_fs_path()
+    video.source = "gs://bucket"
+    video._caching_enabled = caching_enabled
+    calls = []
+
+    def fake_get_local_path(self):
+        calls.append("get_local_path")
+
+    def fake_ensure_cached(self):
+        calls.append("ensure_cached")
+
+    def fake_save(self, destination, client_config=None):
+        calls.append("save")
+        shutil.copyfile(source_path, destination)
+
+    monkeypatch.setattr(VideoFile, "get_local_path", fake_get_local_path)
+    monkeypatch.setattr(VideoFile, "ensure_cached", fake_ensure_cached)
+    monkeypatch.setattr(VideoFile, "save", fake_save)
+
+    fragment = save_video_fragment(video, 0, 1, str(tmp_path / "out"))
+
+    if caching_enabled:
+        assert calls == ["get_local_path", "ensure_cached", "get_local_path", "save"]
+    else:
+        assert calls == ["get_local_path", "save"]
+    fragment.ensure_cached()
+    assert fragment.get_info().duration == 1
+
+
+@requires_ffmpeg
+def test_save_video_fragment_temp_input_uses_original_name_on_error(
+    tmp_path, make_tar_member_file
+):
+    _, video = make_tar_member_file("original video.mp4", b"not a video")
+    video = video.as_video_file()
+
+    with pytest.raises(ffmpeg.Error) as exc_info:
+        save_video_fragment(video, 1, 2, str(tmp_path))
+
+    stderr = exc_info.value.stderr.decode("utf-8", errors="ignore")
+    assert "original video.mp4" in stderr
+
+
+@requires_ffmpeg
+def test_save_video_fragment_caches_virtual_parent(tmp_path, make_tar_member_file):
+    data_path = os.path.join(os.path.dirname(__file__), "data")
+    video_name = "Big_Buck_Bunny_360_10s_1MB.mp4"
+    archive, video = make_tar_member_file(
+        "original.mp4",
+        os.path.join(data_path, video_name),
+        caching_enabled=True,
+    )
+    assert archive.get_local_path() is None
+    video = video.as_video_file()
+
+    fragment = save_video_fragment(video, 2.5, 5, str(tmp_path / "fragments"))
+
+    assert archive.get_local_path() is not None
+    fragment.ensure_cached()
+    assert fragment.get_info().duration == 2.5
+
+
 @pytest.mark.parametrize(
     "start,end",
     [
@@ -222,6 +1183,110 @@ def test_save_fragment(tmp_path, video_file):
 def test_save_video_fragment_error(video_file, start, end):
     with pytest.raises(ValueError):
         save_video_fragment(video_file.as_video_file(), start, end, ".")
+
+
+def test_save_video_fragment_requires_format_without_source_extension(tmp_path):
+    video = VideoFile.upload(b"not a video", "video")
+
+    with pytest.raises(ValueError, match="output format must be specified"):
+        save_video_fragment(video, 0, 1, str(tmp_path))
+
+
+def test_save_video_fragment_requires_catalog(tmp_path):
+    video = VideoFile(source="file:///tmp", path="video.mp4")
+
+    with pytest.raises(RuntimeError, match="catalog is not set"):
+        save_video_fragment(video, 0, 1, str(tmp_path))
+
+
+def test_save_video_fragment_requires_ffmpeg_executable(
+    tmp_path, monkeypatch, video_file
+):
+    monkeypatch.setenv("PATH", "")
+
+    with pytest.raises(FileError, match="ffmpeg executable not found"):
+        save_video_fragment(video_file.as_video_file(), 0, 1, str(tmp_path / "out"))
+
+
+def test_save_video_fragment_rejects_negative_timeout(tmp_path, video_file):
+    with pytest.raises(ValueError, match="non-negative"):
+        save_video_fragment(video_file.as_video_file(), 0, 1, str(tmp_path), timeout=-1)
+
+
+@requires_ffmpeg
+def test_save_video_fragment_accepts_zero_timeout(tmp_path, video_file):
+    fragment = save_video_fragment(
+        video_file.as_video_file(), 0, 1, str(tmp_path / "out"), timeout=0
+    )
+
+    fragment.ensure_cached()
+    assert fragment.get_info().duration == 1
+
+
+@requires_ffmpeg
+@pytest.mark.parametrize("format", ["avi", ".avi", ".AVI"])
+def test_save_video_fragment_uses_explicit_format(tmp_path, video_file, format):
+    fragment = save_video_fragment(
+        video_file.as_video_file(), 0, 1, str(tmp_path / "out"), format=format
+    )
+
+    assert fragment.path.endswith(".avi")
+    assert "..avi" not in fragment.path
+    fragment.ensure_cached()
+    assert fragment.get_info().format == "avi"
+
+
+@requires_posix
+def test_save_video_fragment_invokes_ffmpeg_non_interactively(
+    tmp_path, monkeypatch, video_file
+):
+    args_file = tmp_path / "ffmpeg.args"
+    monkeypatch.setenv("FFMPEG_ARGS_FILE", str(args_file))
+    _install_fake_ffmpeg(
+        tmp_path,
+        monkeypatch,
+        _fake_ffmpeg_write_output_script(record_args=True),
+    )
+
+    save_video_fragment(video_file.as_video_file(), 0, 1, str(tmp_path / "out"))
+
+    args = args_file.read_text().splitlines()
+    assert os.path.isabs(args[0])
+    assert os.path.basename(args[0]) == "ffmpeg"
+    assert args[1:5] == ["-nostdin", "-hide_banner", "-loglevel", "error"]
+    assert "pipe:1" not in args
+    assert args[-1].endswith(".mp4")
+
+
+@requires_posix
+def test_save_video_fragment_drops_stdout_on_ffmpeg_error(
+    tmp_path, monkeypatch, video_file
+):
+    _install_fake_ffmpeg(
+        tmp_path,
+        monkeypatch,
+        "#!/bin/sh\nprintf stdout-noise\nprintf stderr-detail >&2\nexit 1\n",
+    )
+
+    with pytest.raises(ffmpeg.Error) as exc_info:
+        save_video_fragment(video_file.as_video_file(), 0, 1, str(tmp_path / "out"))
+
+    assert exc_info.value.stdout == b""
+    assert exc_info.value.stderr == b"stderr-detail"
+
+
+@requires_posix
+def test_save_video_fragment_times_out_ffmpeg(tmp_path, monkeypatch, video_file):
+    _install_fake_ffmpeg(
+        tmp_path,
+        monkeypatch,
+        "#!/bin/sh\nexec sleep 10\n",
+    )
+
+    with pytest.raises(FileError, match="ffmpeg timed out"):
+        save_video_fragment(
+            video_file.as_video_file(), 0, 1, str(tmp_path / "out"), timeout=0.01
+        )
 
 
 @requires_ffmpeg

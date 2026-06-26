@@ -1,15 +1,96 @@
+from typing import TYPE_CHECKING
+
 from sqlalchemy import and_ as sql_and
 from sqlalchemy import case as sql_case
 from sqlalchemy import not_ as sql_not
 from sqlalchemy import or_ as sql_or
+from sqlalchemy import true as sql_true
 
+from datachain.lib.convert.python_to_sql import python_to_sql
+from datachain.lib.data_model import OPTIONAL_PRESENT_TAG
 from datachain.lib.utils import DataChainParamsError
 from datachain.query.schema import Column, ColumnExpr
 from datachain.sql.functions import conditional
 
-from .func import Func
+from .func import Func, _SentinelAwareFunc, _source_is_nullable
+
+if TYPE_CHECKING:
+    from sqlalchemy import TableClause
+
+    from datachain import DataType
+    from datachain.lib.signal_schema import SignalSchema
 
 CaseT = int | float | complex | bool | str | Func | ColumnExpr
+
+
+class _IsNoneFunc(_SentinelAwareFunc):
+    """``isnone`` reads the ``_type_tag`` discriminator for an
+    ``Optional[DataModel]``; for any other column it is plain ``col IS NULL``."""
+
+    def is_nullable_result(
+        self,
+        signals_schema: "SignalSchema | None",
+        col_type: "DataType | None" = None,
+    ) -> bool:
+        # isnone is always True/False, never NULL.
+        return False
+
+    def _sentinel_column(
+        self,
+        sentinel_path: str,
+        label: str | None,
+        table: "TableClause | None",
+    ) -> Column:
+        sentinel = Column(sentinel_path)
+        sentinel.table = table
+        func_col = sql_case(
+            (sql_or(sentinel.is_(None), sentinel != OPTIONAL_PRESENT_TAG), True),
+            else_=False,
+        )
+        return self._finalize_column(func_col, python_to_sql(bool), label)
+
+
+class _CaseFunc(Func):
+    """``case`` with no ``else_`` is nullable (unmatched rows are NULL)."""
+
+    def is_nullable_result(
+        self,
+        signals_schema: "SignalSchema | None",
+        col_type: "DataType | None" = None,
+    ) -> bool:
+        if self.kwargs.get("else_") is None:
+            return True
+        return super().is_nullable_result(signals_schema, col_type)
+
+
+class _LogicalFunc(Func):
+    """``and_``/``or_``/``not_`` are nullable when any operand is (three-valued
+    logic). Operands may be ``ColumnExpr`` in ``args``, so check ``cols`` too."""
+
+    def is_nullable_result(
+        self,
+        signals_schema: "SignalSchema | None",
+        col_type: "DataType | None" = None,
+    ) -> bool:
+        if signals_schema is None:
+            return False
+        return any(
+            _source_is_nullable(op, signals_schema) for op in (*self.cols, *self.args)
+        )
+
+
+class _GreatestLeastFunc(Func):
+    """Result type follows the input columns when a schema is available, so a
+    string result isn't mis-declared as int (returned as bytes on ClickHouse)."""
+
+    def get_result_type(
+        self, signals_schema: "SignalSchema | None" = None
+    ) -> "DataType":
+        if signals_schema is not None and self._db_cols:
+            inferred = self._result_type_from_db_cols(signals_schema)
+            if inferred is not None:
+                return inferred
+        return super().get_result_type(signals_schema)
 
 
 def greatest(*args: str | Column | Func | float) -> Func:
@@ -44,7 +125,7 @@ def greatest(*args: str | Column | Func | float) -> Func:
         else:
             func_args.append(arg)
 
-    return Func(
+    return _GreatestLeastFunc(
         "greatest",
         inner=conditional.greatest,
         cols=cols,
@@ -85,8 +166,12 @@ def least(*args: str | Column | Func | float) -> Func:
         else:
             func_args.append(arg)
 
-    return Func(
-        "least", inner=conditional.least, cols=cols, args=func_args, result_type=int
+    return _GreatestLeastFunc(
+        "least",
+        inner=conditional.least,
+        cols=cols,
+        args=func_args,
+        result_type=int,
     )
 
 
@@ -157,7 +242,9 @@ def case(
 
     kwargs = {"else_": else_}
 
-    return Func("case", inner=sql_case, cols=args, kwargs=kwargs, result_type=type_)
+    return _CaseFunc(
+        "case", inner=sql_case, cols=args, kwargs=kwargs, result_type=type_
+    )
 
 
 def ifelse(condition: ColumnExpr | Func, if_val: CaseT, else_val: CaseT) -> Func:
@@ -190,8 +277,6 @@ def ifelse(condition: ColumnExpr | Func, if_val: CaseT, else_val: CaseT) -> Func
 
 def isnone(col: str | ColumnExpr) -> Func:
     """
-    Returns a function that checks if the column value is `None` (NULL in DB).
-
     Args:
         col (str | Column): Column to check if it's None or not.
             If a string is provided, it is assumed to be the name of the column.
@@ -204,16 +289,23 @@ def isnone(col: str | ColumnExpr) -> Func:
     Example:
         ```py
         dc.mutate(test=ifelse(isnone("col"), "EMPTY", "NOT_EMPTY"))
+        dc.filter(isnone("address"))  # address: Optional[Address]
         ```
 
     Notes:
         - The result column will always be of type bool.
     """
     if isinstance(col, str):
-        # if string is provided, it is assumed to be the name of the column
         col = Column(col)
 
-    return case((col.is_(None) if col is not None else True, True), else_=False)
+    return _IsNoneFunc(
+        "isnone",
+        inner=lambda c: sql_case(
+            (c.is_(None) if c is not None else sql_true(), True), else_=False
+        ),
+        cols=[col],
+        result_type=bool,
+    )
 
 
 def or_(*args: ColumnExpr | Func) -> Func:
@@ -248,7 +340,7 @@ def or_(*args: ColumnExpr | Func) -> Func:
         else:
             func_args.append(arg)
 
-    return Func("or", inner=sql_or, cols=cols, args=func_args, result_type=bool)
+    return _LogicalFunc("or", inner=sql_or, cols=cols, args=func_args, result_type=bool)
 
 
 def and_(*args: ColumnExpr | Func) -> Func:
@@ -278,12 +370,14 @@ def and_(*args: ColumnExpr | Func) -> Func:
     cols, func_args = [], []
 
     for arg in args:
-        if isinstance(arg, (str, Func)):
+        if isinstance(arg, (str, Column, Func)):
             cols.append(arg)
         else:
             func_args.append(arg)
 
-    return Func("and", inner=sql_and, cols=cols, args=func_args, result_type=bool)
+    return _LogicalFunc(
+        "and", inner=sql_and, cols=cols, args=func_args, result_type=bool
+    )
 
 
 def not_(arg: ColumnExpr | Func) -> Func:
@@ -311,9 +405,11 @@ def not_(arg: ColumnExpr | Func) -> Func:
     """
     cols, func_args = [], []
 
-    if isinstance(arg, (str, Func)):
+    if isinstance(arg, (str, Column, Func)):
         cols.append(arg)
     else:
         func_args.append(arg)
 
-    return Func("not", inner=sql_not, cols=cols, args=func_args, result_type=bool)
+    return _LogicalFunc(
+        "not", inner=sql_not, cols=cols, args=func_args, result_type=bool
+    )

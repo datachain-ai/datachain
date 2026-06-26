@@ -73,14 +73,15 @@ class FileExporter(NodesThreadPool):
         for task in done:
             task.result()
 
-    def do_task(self, file: "File"):
-        file.export(
-            self.output,
-            self.placement,
-            self.use_cache,
-            link_type=self.link_type,
-            client_config=self.client_config,
-        )
+    def do_task(self, file: "File | None"):
+        if file is not None:
+            file.export(
+                self.output,
+                self.placement,
+                self.use_cache,
+                link_type=self.link_type,
+                client_config=self.client_config,
+            )
         self.increase_counter(1)
 
 
@@ -130,7 +131,11 @@ class TarVFile(VFile):
 
     @classmethod
     def open(cls, file: "File", location: list[dict]):
-        """Stream file from tar archive based on location in archive."""
+        """Stream file from tar archive based on location in archive.
+
+        Reads always consult the cache (hit → local, miss → remote stream);
+        ``_caching_enabled`` only governs whether a miss is also persisted.
+        """
         tar_file = cls.parent(file, location)
 
         loc = location[0]
@@ -142,7 +147,7 @@ class TarVFile(VFile):
             raise VFileError("'size' is not specified", file.source, file.path)
 
         client = file._catalog.get_client(tar_file.source)
-        fd = client.open_object(tar_file, use_cache=file._caching_enabled)
+        fd = client.open_object(tar_file, use_cache=True)
         return FileSlice(fd, offset, size, file.name)
 
     @classmethod
@@ -492,6 +497,9 @@ class File(DataModel):
 
         Supports both read ("rb", "r") and write modes (e.g. "wb", "w", "ab").
         When opened in a write mode, metadata is refreshed after closing.
+
+        Reads always consult the cache (hit → local, miss → remote stream);
+        ``_caching_enabled`` only governs whether a miss is also persisted.
         """
         writing = any(ch in mode for ch in "wax+")
         if self.location and writing:
@@ -516,9 +524,7 @@ class File(DataModel):
                 return
             if self._caching_enabled:
                 self.ensure_cached()
-            with client.open_object(
-                self, use_cache=self._caching_enabled, cb=self._download_cb
-            ) as f:
+            with client.open_object(self, use_cache=True, cb=self._download_cb) as f:
                 with self._wrap_text(f, mode, open_kwargs=open_kwargs) as wrapped:
                     yield wrapped
             return
@@ -1126,11 +1132,27 @@ class VideoFile(File):
     This model inherits from the `File` model and provides additional functionality
     for reading video files, extracting video frames, and splitting videos into
     fragments.
+
+    The ``video_stream_index`` argument used by video methods is the zero-based
+    index among video streams, matching FFmpeg ``v:N`` and PyAV
+    ``container.streams.video[N]`` selectors.
     """
 
-    def get_info(self) -> "Video":
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._video_info_cache: dict[int, Any] = {}
+
+    def get_info(self, video_stream_index: int = 0) -> "Video":
         """
         Retrieves metadata and information about the video file.
+
+        Metadata is read through ``File.open()``, so it can stream when caching
+        is disabled. When caching is enabled, opening the file may populate the
+        local cache first.
+
+        Args:
+            video_stream_index: Zero-based index among video streams to inspect.
+                Defaults to 0.
 
         Returns:
             Video: A Model containing video metadata such as duration,
@@ -1138,14 +1160,25 @@ class VideoFile(File):
         """
         from .video import video_info
 
-        return video_info(self)
+        if video_stream_index not in self._video_info_cache:
+            self._video_info_cache[video_stream_index] = video_info(
+                self, video_stream_index=video_stream_index
+            )
+        return self._video_info_cache[video_stream_index]
 
-    def get_frame(self, frame: int) -> "VideoFrame":
+    def get_frame(self, frame: int, video_stream_index: int = 0) -> "VideoFrame":
         """
         Returns a specific video frame by its frame number.
 
+        This returns a frame reference without decoding or validating that the
+        frame exists. The returned timestamp is estimated from FPS metadata.
+        Pixel access methods decode the requested frame; use ``get_frames()``
+        for sequential access and decoded frame timestamps when available.
+
         Args:
             frame (int): The frame number to read.
+            video_stream_index: Zero-based index among video streams to read.
+                Defaults to 0.
 
         Returns:
             VideoFrame: Video frame model.
@@ -1153,13 +1186,16 @@ class VideoFile(File):
         if frame < 0:
             raise ValueError("frame must be a non-negative integer")
 
-        return VideoFrame(video=self, frame=frame)
+        from .video import video_frame
+
+        return video_frame(self, frame, video_stream_index=video_stream_index)
 
     def get_frames(
         self,
         start: int = 0,
         end: int | None = None,
         step: int = 1,
+        video_stream_index: int = 0,
     ) -> "Iterator[VideoFrame]":
         """
         Returns video frames from the specified range in the video.
@@ -1170,20 +1206,25 @@ class VideoFile(File):
                                  frames are read until the end of the video
                                  (default: None).
             step (int): The interval between frames to read (default: 1).
+            video_stream_index: Zero-based index among video streams to read.
+                Defaults to 0.
 
         Returns:
             Iterator[VideoFrame]: An iterator yielding video frames.
 
         Note:
             If end is not specified, number of frames will be taken from the video file,
-            this means video file needs to be downloaded.
+            this means video metadata needs to be read.
         """
-        from .video import validate_frame_range
+        from .video import validate_frame_range, video_frames
 
-        start, end, step = validate_frame_range(self, start, end, step)
+        start, end, step = validate_frame_range(
+            self, start, end, step, video_stream_index=video_stream_index
+        )
 
-        for frame in range(start, end, step):
-            yield self.get_frame(frame)
+        yield from video_frames(
+            self, start, end, step, video_stream_index=video_stream_index
+        )
 
     def get_fragment(self, start: float, end: float) -> "VideoFragment":
         """
@@ -1223,8 +1264,8 @@ class VideoFile(File):
             Iterator[VideoFragment]: An iterator yielding video fragments.
 
         Note:
-            If end is not specified, number of frames will be taken from the video file,
-            this means video file needs to be downloaded.
+            If end is not specified, duration will be taken from the video file,
+            which means video metadata needs to be read.
         """
         if duration <= 0:
             raise ValueError("duration must be a positive float")
@@ -1266,10 +1307,12 @@ class AudioFile(File):
 
     def get_info(self) -> "Audio":
         """
-        Retrieves metadata and information about the audio file. It does not
-        download the file if possible, only reads its header. It is thus might be
-        a good idea to disable caching and prefetching for UDF if you only need
-        audio metadata.
+        Retrieves metadata and information about the audio file.
+
+        Metadata is read through ``File.open()``, so it can stream when caching
+        is disabled. When caching is enabled, opening the file may populate the
+        local cache first. For UDFs that only need audio metadata, it can be
+        useful to disable caching and prefetching.
 
         Returns:
             Audio: A Model containing audio metadata such as duration,
@@ -1321,7 +1364,7 @@ class AudioFile(File):
 
         Note:
             If end is not specified, number of samples will be taken from the
-            audio file, this means audio file needs to be downloaded.
+            audio file, this means audio metadata needs to be read.
         """
         if duration <= 0:
             raise ValueError("duration must be a positive float")
@@ -1468,26 +1511,75 @@ class VideoFrame(DataModel):
     Attributes:
         video (VideoFile): The video file containing the video frame.
         frame (int): The frame number referencing a specific frame in the video file.
+        video_stream_index (int): Zero-based index among video streams containing
+            the frame.
+        timestamp (float): Frame timestamp in seconds. Frames returned by
+            ``VideoFile.get_frame()`` use FPS metadata. Frames yielded by
+            ``VideoFile.get_frames()`` use decoded frame timestamps when
+            available.
+
+    Note:
+        The decoded ``av.VideoFrame`` is cached in the ``_decoded`` instance
+        attribute the first time any of ``get_np()``, ``read_bytes()``, or
+        ``save()`` is called.  Frames yielded by ``VideoFile.get_frames()``
+        are pre-populated with the decoded frame, so the first call to any of
+        those methods requires no I/O.  The cache is held for the lifetime of
+        the ``VideoFrame`` object; when many frames are kept in memory at once
+        (e.g. ``list(video.get_frames())``) the cached pixel buffers can
+        create significant memory pressure (~3 MB each for 1080p video).  The
+        cache is excluded from pickling so cross-process serialisation (e.g.
+        DataChain ``.gen()`` workers) is unaffected.
     """
 
     video: VideoFile
     frame: int
+    video_stream_index: int = 0
+    timestamp: float
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._decoded = None
+
+    def __getstate__(self):
+        state = super().__getstate__()
+        state["__dict__"] = state["__dict__"].copy()
+        state["__dict__"]["_decoded"] = None
+        return state
 
     def get_np(self) -> "ndarray":
         """
         Returns a video frame from the video file as a NumPy array.
 
+        The decoded ``av.VideoFrame`` is cached in ``_decoded`` on the first
+        call, so repeated calls to ``get_np()`` return the cached pixels
+        without a second decode pass regardless of whether the frame came
+        from ``VideoFile.get_frames()`` or ``VideoFile.get_frame()``.
+
+        Display rotation is applied (matching FFmpeg/OpenCV), so a 90/270
+        rotation swaps width and height. Channels are RGB; consumers expecting
+        BGR (e.g. OpenCV, Ultralytics) must convert.
+
         Returns:
             ndarray: A NumPy array representing the video frame,
                      in the shape (height, width, channels).
         """
-        from .video import video_frame_np
+        from .video import _decode_video_frame, _frame_to_ndarray
 
-        return video_frame_np(self.video, self.frame)
+        if self._decoded is None:
+            self._decoded, _ = _decode_video_frame(
+                self.video,
+                self.frame,
+                self.video_stream_index,
+            )
+        return _frame_to_ndarray(self._decoded)
 
     def read_bytes(self, format: str = "jpg") -> bytes:
         """
         Returns a video frame from the video file as image bytes.
+
+        Uses the cached decoded frame when available (e.g. after ``get_np()``
+        or for frames yielded by ``VideoFile.get_frames()``), avoiding a second
+        decode pass.
 
         Args:
             format (str): The desired image format (e.g., 'jpg', 'png').
@@ -1496,18 +1588,26 @@ class VideoFrame(DataModel):
         Returns:
             bytes: The encoded video frame as image bytes.
         """
-        from .video import video_frame_bytes
+        from PIL import Image as PilImage
 
-        return video_frame_bytes(self.video, self.frame, format)
+        from .video import _image_format
+
+        buf = BytesIO()
+        PilImage.fromarray(self.get_np()).save(buf, format=_image_format(format))
+        return buf.getvalue()
 
     def save(
         self,
-        destination: str,
+        destination: str | os.PathLike[str],
         format: str = "jpg",
         client_config: dict | None = None,
     ) -> "ImageFile":
         """
         Saves the current video frame as an image file.
+
+        Uses the cached decoded frame when available (e.g. after ``get_np()``
+        or for frames yielded by ``VideoFile.get_frames()``), avoiding a second
+        decode pass.
 
         If ``destination`` is a remote path, the image file will be uploaded
         to remote storage.
@@ -1520,11 +1620,21 @@ class VideoFrame(DataModel):
         Returns:
             ImageFile: A Model representing the saved image file.
         """
-        from .video import save_video_frame
+        catalog = self.video._catalog
+        if catalog is None:
+            raise RuntimeError("Cannot save video frame: catalog is not set")
 
-        return save_video_frame(
-            self.video, self.frame, destination, format, client_config=client_config
+        destination = stringify_path(destination)
+        image_bytes = self.read_bytes(format)
+        extension = format.removeprefix(".")
+        output_file = posixpath.join(
+            destination, f"{self.video.get_file_stem()}_{self.frame:04d}.{extension}"
         )
+        client, rel_path = self.video._resolve_destination(output_file, client_config)
+        result = client.upload(image_bytes, rel_path)
+        image = ImageFile(**result.model_dump())
+        image._set_stream(catalog)
+        return image
 
 
 class VideoFragment(DataModel):
@@ -1551,6 +1661,7 @@ class VideoFragment(DataModel):
         destination: str,
         format: str | None = None,
         client_config: dict | None = None,
+        timeout: float | None = None,
     ) -> "VideoFile":
         """
         Saves the video fragment as a new video file.
@@ -1563,6 +1674,8 @@ class VideoFragment(DataModel):
             format: Output video format (e.g., 'mp4', 'avi').
                     If None, inferred from the file extension.
             client_config: Optional client configuration (e.g. credentials).
+            timeout: FFmpeg subprocess timeout in seconds. If None, a timeout is
+                computed from the fragment duration. Set to 0 to disable.
 
         Returns:
             VideoFile: A Model representing the saved video file.
@@ -1576,6 +1689,7 @@ class VideoFragment(DataModel):
             destination,
             format,
             client_config=client_config,
+            timeout=timeout,
         )
 
 
@@ -1584,8 +1698,10 @@ class Video(DataModel):
     A data model representing metadata for a video file.
 
     Attributes:
-        width (int): The width of the video in pixels. Defaults to -1 if unknown.
-        height (int): The height of the video in pixels. Defaults to -1 if unknown.
+        width (int): Display width in pixels (after stream rotation).
+                     Defaults to -1 if unknown.
+        height (int): Display height in pixels (after stream rotation).
+                      Defaults to -1 if unknown.
         fps (float): The frame rate of the video (frames per second).
                      Defaults to -1.0 if unknown.
         duration (float): The total duration of the video in seconds.
@@ -1668,7 +1784,6 @@ class ArrowRow(DataModel):
             self.file.ensure_cached()
             path = self.file.get_local_path()
             ds = dataset(path, **self.kwargs)
-
         else:
             path = self.file.get_fs_path()
             ds = dataset(path, filesystem=self.file.get_fs(), **self.kwargs)

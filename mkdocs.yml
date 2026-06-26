@@ -78,7 +78,7 @@ nav:
           - Overview: concepts/index.md
           - Architecture: architecture.md
           - Data Harness: harness.md
-          - Data Memory: concepts/data-memory.md
+          - Dataset DB: concepts/dataset-db.md
           - Datasets: concepts/datasets.md
           - Chain: concepts/chain.md
           - Files and Types: concepts/files-and-types.md
@@ -124,6 +124,7 @@ nav:
               - AudioFile: references/data-types/audiofile.md
               - TarVFile: references/data-types/tarvfile.md
               - ArrowRow: references/data-types/arrowrow.md
+              - ZarrStore: references/data-types/zarrstore.md
               - BBox: references/data-types/bbox.md
               - Pose: references/data-types/pose.md
               - Segment: references/data-types/segment.md

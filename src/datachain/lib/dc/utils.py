@@ -102,14 +102,20 @@ def resolve_columns(
 
 
 class DatasetPrepareError(DataChainParamsError):
+    """Raised when preparing a dataset for processing fails."""
+
     def __init__(self, name, msg, output=None):
+        """Build the error from the dataset name, message, and optional output."""
         name = f" '{name}'" if name else ""
         output = f" output '{output}'" if output else ""
         super().__init__(f"Dataset{name}{output} processing prepare error: {msg}")
 
 
 class DatasetFromValuesError(DataChainParamsError):
+    """Raised when building a dataset from in-memory values fails."""
+
     def __init__(self, name, msg):
+        """Build the error from the dataset name and message."""
         name = f" '{name}'" if name else ""
         super().__init__(f"Dataset{name} from values error: {msg}")
 
@@ -147,12 +153,16 @@ def _get_merge_error_str(col: MergeColType) -> str:
 
 
 class DatasetMergeError(DataChainParamsError):
+    """Raised when merging two chains fails."""
+
     def __init__(
         self,
         on: MergeColType | Sequence[MergeColType],
         right_on: MergeColType | Sequence[MergeColType] | None,
         msg: str,
     ):
+        """Build the error from the merge keys and the failure reason."""
+
         def _get_str(
             on: MergeColType | Sequence[MergeColType],
         ) -> str:

@@ -10,7 +10,7 @@ A coding agent over a folder of files starts every session from the same place: 
 
 ## With DataChain
 
-Every chain you run deposits its result as a versioned typed dataset into Data Memory. The next session reads that dataset by name with full schema and lineage, and starts from the conclusion the last session reached. Capability over your data rises with usage rather than staying flat.
+Every chain you run deposits its result as a versioned typed dataset into the Dataset DB. The next session reads that dataset by name with full schema and lineage, and starts from the conclusion the last session reached. Capability over your data rises with usage rather than staying flat.
 
 Below, three sessions build on each other. Each session saves a named dataset; the next session reads it as a premise.
 
@@ -63,6 +63,6 @@ Sessions 2 and 3 do not re-list the bucket and do not re-decode the JPEGs. They 
 
 ## See also
 
-- [Data Memory](../concepts/data-memory.md): why persistent typed datasets are the layer agents reason over
+- [Dataset DB](../concepts/dataset-db.md): why persistent typed datasets are the layer agents reason over
 - [Knowledge Base](../concepts/knowledge-base.md): how saved datasets become agent-readable context
 - [Datasets](../concepts/datasets.md): the unit of persistence

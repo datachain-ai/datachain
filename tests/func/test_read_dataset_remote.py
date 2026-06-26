@@ -121,6 +121,7 @@ def remote_dataset_single_version(
         "created_by_id": 1,
         "versions": [remote_dataset_version_v1],
         "_versions_loaded": True,
+        "uuid": REMOTE_DATASET_UUID,
     }
 
 
@@ -154,6 +155,7 @@ def remote_dataset_multi_version(
         "created_by_id": 1,
         "versions": [remote_dataset_version_v1, remote_dataset_version_v2],
         "_versions_loaded": True,
+        "uuid": REMOTE_DATASET_UUID,
     }
 
 

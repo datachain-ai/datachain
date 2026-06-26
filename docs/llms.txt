@@ -1,6 +1,6 @@
 # DataChain
 
-> DataChain is memory for data agents. It chains Python functions and warehouse-speed data operations into composable queries, and every query deposits its result into Data Memory as a versioned, typed dataset with automatic lineage. The next query (human or agent) starts from prior conclusions instead of raw bytes. The Python Data Engine produces; the Query Engine recalls; the Knowledge Base compiles datasets into agent-readable knowledge.
+> DataChain is the Data Context Layer for unstructured data. It chains Python functions and warehouse-speed data operations into composable queries, and every query deposits its result into the Dataset DB as a versioned, typed dataset with automatic lineage. The next query (human or agent) starts from prior conclusions instead of raw bytes. The Compute Engine produces; the Dataset DB recalls; the Knowledge Base compiles datasets into agent-readable knowledge.
 
 ## Import Convention
 
@@ -55,7 +55,7 @@ Never use: `from datachain import File, C, func`
 ## Documentation Sections
 
 - Getting Started: /getting-started/
-- Core Concepts: /concepts/ (data memory, datasets, chain, execution model, files and types)
+- Core Concepts: /concepts/ (dataset db, datasets, chain, execution model, files and types)
 - Guides: /guide/ (reading data, operations, Python operations, exporting, datasets, functions, scaling, best practices)
 - API Reference: /references/ (auto-generated from docstrings)
 - CLI Reference: /commands/

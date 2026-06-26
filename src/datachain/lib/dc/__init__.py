@@ -1,6 +1,8 @@
+"""Public DataChain API: the ``DataChain`` class and ``read_*`` constructors."""
+
 from .csv import read_csv
 from .database import read_database
-from .datachain import C, Column, ColumnExpr, DataChain
+from .datachain import C, Column, ColumnExpr, DataChain, DataChainSchema
 from .datasets import datasets, delete_dataset, move_dataset, read_dataset
 from .hf import read_hf
 from .json import read_json
@@ -11,12 +13,14 @@ from .records import read_records
 from .storage import read_storage
 from .utils import DatasetMergeError, DatasetPrepareError, Sys, is_local, is_studio
 from .values import read_values
+from .zarr import read_zarr
 
 __all__ = [
     "C",
     "Column",
     "ColumnExpr",
     "DataChain",
+    "DataChainSchema",
     "DatasetMergeError",
     "DatasetPrepareError",
     "Sys",
@@ -36,4 +40,5 @@ __all__ = [
     "read_records",
     "read_storage",
     "read_values",
+    "read_zarr",
 ]

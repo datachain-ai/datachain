@@ -240,23 +240,21 @@ def test_udf_output_type_error_message_agg_returning_tuple(monkeypatch, test_ses
     assert "usually use yield" in msg
 
 
-def test_udf_extra_return_values_are_ignored(monkeypatch, test_session):
+def test_udf_extra_return_values_raise(monkeypatch, test_session):
     monkeypatch.delenv("DATACHAIN_DISTRIBUTED", raising=False)
 
     chain = dc.read_values(a=["ok"], session=test_session)
 
-    # Current behavior: extra values are truncated by zip(strict=False).
-    out = list(
-        chain.map(
-            lambda a: (1, 2, 3),
-            params="a",
-            output={"x": int, "y": int},
-        ).to_list()
-    )
-
-    assert len(out) == 1
-    # to_list() returns all columns; new columns are appended after inputs.
-    assert out[0][1:] == (1, 2)
+    # A UDF returning more values than declared outputs is a misalignment, not a
+    # silent truncation.
+    with pytest.raises((ValueError, DataChainError), match="declared in output"):
+        list(
+            chain.map(
+                lambda a: (1, 2, 3),
+                params="a",
+                output={"x": int, "y": int},
+            ).to_list()
+        )
 
 
 def test_udf_output_type_error_message_json_serialization_failure(

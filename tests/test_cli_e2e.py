@@ -1,4 +1,3 @@
-import os
 import os.path
 import subprocess
 from textwrap import dedent
@@ -6,7 +5,7 @@ from textwrap import dedent
 import pytest
 import tabulate
 
-from tests.utils import skip_if_not_sqlite
+from tests.utils import e2e_subprocess_env, skip_if_not_sqlite
 
 
 def _tabulated_datasets(name, version):
@@ -227,11 +226,7 @@ def run_step(step, catalog):
         capture_output=True,
         check=True,
         encoding="utf-8",
-        env={
-            **os.environ,
-            "DATACHAIN__METASTORE": catalog.metastore.serialize(),
-            "DATACHAIN__WAREHOUSE": catalog.warehouse.serialize(),
-        },
+        env=e2e_subprocess_env(catalog),
     )
 
     if step.get("sort_expected_lines"):

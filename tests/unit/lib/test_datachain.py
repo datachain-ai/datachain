@@ -1,4 +1,5 @@
 import datetime
+import io
 import json
 import math
 import os
@@ -836,7 +837,8 @@ def test_from_features_more_simple_types(test_session):
         dict[str, int],  # from dd2
         list[str],  # from ll1 (starts with empty list)
         list[int],  # from ll
-        str,  # from nn and ss
+        str,  # from nn (all None -> defaults to str)
+        str | None,  # from ss (has a None -> inferred Optional)
         datetime.datetime,
         float,
     }
@@ -1237,10 +1239,6 @@ def test_parse_nested_json(tmp_dir, test_session):
     # E.g. nAmE -> name, l--as@t -> l_as_t, etc
     df1 = chain.select("na_me", "age", "city").to_pandas()
 
-    # In CH we replace None with '' for peforance reasons,
-    # have to handle it here
-    string_default = String.default_value(test_session.catalog.warehouse.db.dialect)
-
     assert sorted(df1["na_me"]["first_select"].to_list()) == sorted(
         d["first-SELECT"] for d in df["nA-mE"].to_list()
     )
@@ -1249,14 +1247,13 @@ def test_parse_nested_json(tmp_dir, test_session):
     def normalize_null(x):
         return None if pd.isna(x) else x
 
+    # ``l_as_t`` is inferred Optional[str]; a missing value now round-trips as None
+    # on both backends (previously the ClickHouse type default "").
     assert sorted(
         [normalize_null(x) for x in df1["na_me"]["l_as_t"].to_list()],
         key=lambda x: (x is None, "" if x is None else x),
     ) == sorted(
-        [
-            normalize_null(d.get("l--as@t", string_default))
-            for d in df["nA-mE"].to_list()
-        ],
+        [normalize_null(d.get("l--as@t")) for d in df["nA-mE"].to_list()],
         key=lambda x: (x is None, "" if x is None else x),
     )
 
@@ -1494,9 +1491,8 @@ def test_read_csv_null_collect(tmp_dir, test_session):
     df.to_csv(path, index=False)
     chain = dc.read_csv(path.as_uri(), column="csv", session=test_session)
     for i, row in enumerate(chain.to_list()):
-        # None value in numeric column will get converted to nan.
         if not height[i]:
-            assert math.isnan(row[1].height)
+            assert row[1].height is None or math.isnan(row[1].height)
         else:
             assert row[1].height == height[i]
         assert row[1].gender == gender[i]
@@ -1575,10 +1571,9 @@ def test_explode(tmp_dir, test_session, column_type, column, model_name):
     column = column or "content_expl"
     model_name = model_name or "ContentExplodedModel"
 
-    # In CH we have (atm at least) None converted to ''
-    # for performance reasons, so we need to handle this case
-    string_default = String.default_value(test_session.catalog.warehouse.db.dialect)
-
+    # ``city`` is inferred Optional[str] (Charlie's row omits it); a missing value
+    # now round-trips as None on both backends (previously the ClickHouse type
+    # default "" for the non-nullable column).
     assert set(
         chain.to_list(
             f"{column}.na_me.first_select",
@@ -1588,7 +1583,7 @@ def test_explode(tmp_dir, test_session, column_type, column, model_name):
     ) == {
         ("Alice", 25, "New York"),
         ("Bob", 30, "Los Angeles"),
-        ("Charlie", 35, string_default),
+        ("Charlie", 35, None),
         ("David", 40, "Houston"),
         ("Eva", 45, "Phoenix"),
         ("Ivan", 41, "San Francisco"),
@@ -2602,9 +2597,13 @@ def test_distinct_basic(test_session):
 
     # Test with duplicates
     chain = dc.read_values(numbers=[1, 2, 2, 3, 3, 3, 4], session=test_session)
-    distinct_chain = chain.distinct("numbers")
+    distinct_chain = chain.distinct(C("numbers"))
     assert distinct_chain.count() == 4
     assert sorted(distinct_chain.to_values("numbers")) == [1, 2, 3, 4]
+
+    distinct_named = chain.distinct(doubled=C("numbers") * 2)
+    assert distinct_named.count() == 4
+    assert sorted(distinct_named.to_values("doubled")) == [2, 4, 6, 8]
 
     # Test with strings
     chain = dc.read_values(
@@ -2767,12 +2766,33 @@ def test_distinct_error_handling(test_session):
         chain.distinct("")
 
     # Test with invalid type
-    with pytest.raises(SignalResolvingTypeError):
+    with pytest.raises(
+        SignalResolvingTypeError,
+        match=r"distinct\(\) supports only `str` or `Column`",
+    ):
         chain.distinct(42)
 
     # Test with invalid nested field
     with pytest.raises(SignalResolvingError):
         chain.distinct("numbers.invalid_field")
+
+    with pytest.raises(SignalResolvingError, match=r"distinct\(\) error.*missing"):
+        chain.distinct(missing=C("missing"))
+
+
+@pytest.mark.parametrize(
+    "expr_fn",
+    [lambda: C("numbers") + 1, lambda: func.sum("numbers")],
+    ids=["column-expr", "func"],
+)
+def test_distinct_expression_without_name_error(test_session, expr_fn):
+    chain = dc.read_values(numbers=[1, 2, 3], session=test_session)
+
+    with pytest.raises(
+        DataChainParamsError,
+        match=r"distinct\(\) cannot infer a name.*distinct\(name=expr\)",
+    ):
+        chain.distinct(expr_fn())
 
 
 def test_filter_basic(test_session):
@@ -3309,6 +3329,77 @@ def test_column(test_session):
         c = ds.column("missing")
 
 
+def test_schema_flatten(test_session):
+    ds = dc.read_values(
+        file=[File(path="a"), File(path="b")],
+        nested=features_nested[:2],
+        session=test_session,
+    )
+
+    assert ds.schema == {"file": File, "nested": MyNested}
+    assert ds.schema.flatten(include_hidden=False) == {
+        "file.path": str,
+        "file.size": int,
+        "nested.label": str,
+        "nested.fr.nnn": str,
+        "nested.fr.count": int,
+    }
+    assert ds.schema.flatten() == {
+        "file.source": str,
+        "file.path": str,
+        "file.size": int,
+        "file.version": str,
+        "file.etag": str,
+        "file.is_latest": bool,
+        "file.last_modified": datetime.datetime,
+        "file.location": File.model_fields["location"].annotation,
+        "nested.label": str,
+        "nested.fr.nnn": str,
+        "nested.fr.count": int,
+    }
+    expected_schema = (
+        "file: File@v1\n"
+        "  source: str\n"
+        "  path: str\n"
+        "  size: int\n"
+        "  version: str\n"
+        "  etag: str\n"
+        "  is_latest: bool\n"
+        "  last_modified: datetime\n"
+        "  location: Union[dict, list[dict], NoneType]\n"
+        "nested: MyNested\n"
+        "  label: str\n"
+        "  fr: MyFr\n"
+        "    nnn: str\n"
+        "    count: int"
+    )
+    expected_schema_without_hidden = (
+        "file: File@v1\n"
+        "  path: str\n"
+        "  size: int\n"
+        "nested: MyNested\n"
+        "  label: str\n"
+        "  fr: MyFr\n"
+        "    nnn: str\n"
+        "    count: int"
+    )
+
+    assert ds.schema.to_string() == expected_schema
+    assert ds.schema.to_string(include_hidden=False) == expected_schema_without_hidden
+    assert str(ds.schema) == ds.schema.to_string()
+    assert not str(ds.schema).endswith("\n")
+
+    ds_sys = ds.settings(sys=True)
+    assert ds_sys.schema["sys"] == Sys
+    assert "sys:" in str(ds_sys.schema)
+    assert {"sys.id", "sys.rand"} <= ds_sys.schema.flatten().keys()
+
+    file = io.StringIO()
+    with pytest.warns(DeprecationWarning, match=r"print\(chain\.schema\)"):
+        ds.print_schema(file=file)
+    assert file.getvalue() == f"{ds.schema}\n"
+
+
 def test_mutate_with_subtraction(test_session):
     ds = dc.read_values(id=[1, 2], session=test_session)
     assert ds.mutate(new=dc.C("id") - 1).signals_schema.values["new"] is int
@@ -3418,6 +3509,31 @@ def test_mutate_with_nonexistent_column_expression(test_session):
         dc.read_values(id=[1, 2], session=test_session).mutate(new=(Column("nope") - 1))
 
 
+@pytest.mark.parametrize(
+    "expr_fn",
+    [lambda: C("id") + 1, lambda: string.length(C("name"))],
+    ids=["column-expr", "func"],
+)
+def test_mutate_expression_without_name_error(test_session, expr_fn):
+    chain = dc.read_values(id=[1], name=["a"], session=test_session)
+
+    with pytest.raises(
+        DataChainParamsError,
+        match=r"mutate\(\) cannot infer a name.*mutate\(name=expr\)",
+    ):
+        chain.mutate(expr_fn())
+
+
+def test_mutate_error_messages_use_mutate_name(test_session):
+    chain = dc.read_values(id=[1], session=test_session)
+
+    with pytest.raises(SignalResolvingError, match=r"mutate\(\) error.*missing"):
+        chain.mutate(new=Column("missing"))
+
+    with pytest.raises(DataChainColumnError, match=r"mutate\(\) value has type"):
+        chain.mutate(new=object())
+
+
 def test_read_values_nan_inf(test_session):
     vals = [float("nan"), float("inf"), float("-inf")]
     chain = dc.read_values(vals=vals, session=test_session)
@@ -3448,9 +3564,10 @@ def test_read_parquet_nan_inf(tmp_dir, test_session):
 
     res = list(chain.to_values("vals"))
     assert len(res) == 3
-    assert any(r for r in res if np.isnan(r))
-    assert any(r for r in res if np.isposinf(r))
-    assert any(r for r in res if np.isneginf(r))
+    # NaN reads back as None on SQLite (stores NaN as NULL), as NaN on ClickHouse.
+    assert any(r is None or (isinstance(r, float) and math.isnan(r)) for r in res)
+    assert any(r == float("inf") for r in res)
+    assert any(r == float("-inf") for r in res)
 
 
 def test_read_csv_nan_inf(tmp_dir, test_session):
@@ -3462,9 +3579,9 @@ def test_read_csv_nan_inf(tmp_dir, test_session):
 
     res = chain.to_values("vals")
     assert len(res) == 3
-    assert any(r for r in res if np.isnan(r))
-    assert any(r for r in res if np.isposinf(r))
-    assert any(r for r in res if np.isneginf(r))
+    assert any(r is None or (isinstance(r, float) and math.isnan(r)) for r in res)
+    assert any(r == float("inf") for r in res)
+    assert any(r == float("-inf") for r in res)
 
 
 def test_dicts_nan_inf(test_session):
@@ -4029,6 +4146,31 @@ def test_group_by_error(test_session):
         SignalResolvingError, match="cannot resolve signal name 'col3': is not found"
     ):
         chain.group_by(foo=func.sum("col2"), partition_by="col3")
+
+
+def test_group_by_expression_without_name_error(test_session):
+    chain = dc.read_values(col2=[1, 2], session=test_session)
+
+    with pytest.raises(
+        DataChainParamsError,
+        match=r"group_by\(\) cannot infer a name.*group_by\(name=expr\)",
+    ):
+        chain.group_by(func.sum("col2"))
+
+
+@pytest.mark.parametrize(
+    "arg",
+    ["col2", C("col2"), C("col2") + 1, object()],
+    ids=["str", "column", "column-expr", "object"],
+)
+def test_group_by_positional_argument_error(test_session, arg):
+    chain = dc.read_values(col2=[1, 2], session=test_session)
+
+    with pytest.raises(
+        DataChainParamsError,
+        match=r"group_by\(\) does not accept positional arguments.*partition_by=",
+    ):
+        chain.group_by(arg)
 
 
 def test_group_by_case(test_session):

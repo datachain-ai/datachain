@@ -19,6 +19,17 @@ class AzureClient(Client):
     FS_CLASS = AzureBlobFileSystem
     PREFIX = "az://"
     protocol = "az"
+    CREDENTIAL_KEYS = frozenset(
+        {
+            "account_key",
+            "sas_token",
+            "connection_string",
+            "credential",
+            "client_id",
+            "client_secret",
+            "tenant_id",
+        }
+    )
 
     @classmethod
     def bucket_status(cls, name: str, **kwargs) -> BucketStatus:
