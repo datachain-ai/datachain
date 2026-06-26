@@ -9,7 +9,6 @@ import datachain as dc
 from datachain import DataModel
 from datachain.lib.dc import C, DatasetMergeError
 from datachain.lib.signal_schema import SignalResolvingError
-from datachain.sql.types import Int, String
 from tests.utils import skip_if_not_sqlite
 
 
@@ -54,8 +53,6 @@ def test_merge_objects(test_session):
     ch2 = dc.read_values(team=team, session=test_session)
     ch = ch1.merge(ch2, "emp.person.name", "team.player")
 
-    str_default = String.default_value(test_session.catalog.warehouse.db.dialect)
-
     i = 0
     j = 0
     for items in ch.order_by("emp.person.name", "team.player"):
@@ -74,8 +71,10 @@ def test_merge_objects(test_session):
             assert math.isclose(player.height, team[j].height, rel_tol=1e-7)
             j += 1
         else:
-            assert player.player == str_default
-            assert player.sport == str_default
+            # unmatched outer-join row: the Optional fields hydrate as None on
+            # both backends (Optional[float] stays NaN — float is excluded).
+            assert player.player is None
+            assert player.sport is None
             assert pd.isnull(player.weight)
             assert pd.isnull(player.height)
 
@@ -97,9 +96,6 @@ def test_merge_objects_full_join(test_session, multiple_predicates):
     else:
         ch = ch1.merge(ch2, "emp.person.name", "team.player", full=True)
 
-    str_default = String.default_value(test_session.catalog.warehouse.db.dialect)
-    int_default = Int.default_value(test_session.catalog.warehouse.db.dialect)
-
     i = 0
     for items in ch.order_by("emp.person.name", "team.player"):
         assert len(items) == 2
@@ -109,13 +105,14 @@ def test_merge_objects_full_join(test_session, multiple_predicates):
         assert isinstance(player, TeamMember)
 
         if player.player == "John":
-            assert empl.person.name == str_default
-            assert empl.person.age == int_default
+            # unmatched emp side -> Optional fields are None on both backends.
+            assert empl.person.name is None
+            assert empl.person.age is None
             continue
 
         if empl.person.name == "Bob":
-            assert player.player == str_default
-            assert player.sport == str_default
+            assert player.player is None
+            assert player.sport is None
             assert pd.isnull(player.weight)
             assert pd.isnull(player.height)
             continue
@@ -252,7 +249,8 @@ def test_merge_nested_key_without_collision_matches_schema(test_session):
     assert resolved.values["id"] is int
     assert resolved.values["item.score"] is float
     assert resolved.values["metadata.score"] is float
-    assert resolved.values["right_id"] is int
+    # right side of a left join widens to Optional (unmatched rows would be NULL)
+    assert resolved.values["right_id"] == int | None
 
     with pytest.raises(SignalResolvingError):
         schema.resolve("right_metadata.score")
@@ -305,7 +303,8 @@ def test_merge_prefixed_root_suffix_matches_schema(test_session):
     assert resolved.values["right_item.score"] is float
     assert resolved.values["right_item_1.score"] is int
     assert resolved.values["right_item_1.confidence"] is int
-    assert resolved.values["right_id"] is int
+    # right side of a left join widens to Optional (unmatched rows would be NULL)
+    assert resolved.values["right_id"] == int | None
 
     rows = (
         merged.select(
@@ -362,7 +361,8 @@ def test_merge_rename_collides_with_existing_column_matches_schema(test_session)
     assert resolved.values["item.score"] is float
     assert resolved.values["right_item.score"] is str
     assert resolved.values["right_item_1.score"] is int
-    assert resolved.values["right_id"] is int
+    # right side of a left join widens to Optional (unmatched rows would be NULL)
+    assert resolved.values["right_id"] == int | None
 
     rows = (
         merged.select(

@@ -187,6 +187,20 @@ def functions_exist(
             connection.close()
 
 
+def _null_safe(fn):
+    # NULL in -> NULL out, so a None from an Optional column can't crash the UDF.
+    def wrapper(*args):
+        if any(a is None for a in args):
+            return None
+        return fn(*args)
+
+    return wrapper
+
+
+def _create_function(conn, name, narg, fn, **kwargs):
+    conn.create_function(name, narg, _null_safe(fn), **kwargs)
+
+
 def create_user_defined_sql_functions(connection):
     for function_creator in registered_function_creators.values():
         function_creator(connection)
@@ -220,9 +234,12 @@ def sqlite_int_hash_64(x: int) -> int:
     return x if x < 1 << 63 else (x & MAX_INT64) - (1 << 64)
 
 
-def sqlite_string_hash(*args) -> int:
-    """Hash one or more values into a signed 64-bit integer."""
-    s = "|".join(str(a) if a is not None else "" for a in args)
+def sqlite_string_hash(*args) -> int | None:
+    """Hash one or more values into a signed 64-bit integer; NULL in -> NULL out
+    (matches ClickHouse)."""
+    if any(a is None for a in args):
+        return None
+    s = "|".join(str(a) for a in args)
     h = int.from_bytes(hashlib.sha256(s.encode()).digest()[:8], "big")
     return h if h < 1 << 63 else h - (1 << 64)
 
@@ -324,27 +341,33 @@ def register_user_defined_sql_functions() -> None:
         _compiler_hooks["euclidean_distance"] = euclidean_distance
 
     def create_vector_functions(conn):
-        conn.create_function("cosine_distance", 2, cosine_distance, deterministic=True)
-        conn.create_function(
-            "euclidean_distance", 2, euclidean_distance, deterministic=True
+        _create_function(
+            conn, "cosine_distance", 2, cosine_distance, deterministic=True
+        )
+        _create_function(
+            conn, "euclidean_distance", 2, euclidean_distance, deterministic=True
         )
 
     _registered_function_creators["vector_functions"] = create_vector_functions
 
     def create_numeric_functions(conn):
-        conn.create_function("divide", 2, lambda a, b: a / b, deterministic=True)
-        conn.create_function("bitwise_and", 2, lambda a, b: a & b, deterministic=True)
-        conn.create_function("bitwise_or", 2, lambda a, b: a | b, deterministic=True)
-        conn.create_function("bitwise_xor", 2, lambda a, b: a ^ b, deterministic=True)
-        conn.create_function(
-            "bitwise_rshift", 2, lambda a, b: a >> b, deterministic=True
+        _create_function(conn, "divide", 2, lambda a, b: a / b, deterministic=True)
+        _create_function(conn, "bitwise_and", 2, lambda a, b: a & b, deterministic=True)
+        _create_function(conn, "bitwise_or", 2, lambda a, b: a | b, deterministic=True)
+        _create_function(conn, "bitwise_xor", 2, lambda a, b: a ^ b, deterministic=True)
+        _create_function(
+            conn, "bitwise_rshift", 2, lambda a, b: a >> b, deterministic=True
         )
-        conn.create_function(
-            "bitwise_lshift", 2, lambda a, b: a << b, deterministic=True
+        _create_function(
+            conn, "bitwise_lshift", 2, lambda a, b: a << b, deterministic=True
         )
-        conn.create_function("int_hash_64", 1, sqlite_int_hash_64, deterministic=True)
-        conn.create_function(
-            "bit_hamming_distance", 2, sqlite_bit_hamming_distance, deterministic=True
+        _create_function(conn, "int_hash_64", 1, sqlite_int_hash_64, deterministic=True)
+        _create_function(
+            conn,
+            "bit_hamming_distance",
+            2,
+            sqlite_bit_hamming_distance,
+            deterministic=True,
         )
 
     _registered_function_creators["numeric_functions"] = create_numeric_functions
@@ -353,15 +376,19 @@ def register_user_defined_sql_functions() -> None:
         return re.sub(pattern, replacement, string)
 
     def create_string_functions(conn):
-        conn.create_function("split", 2, sqlite_string_split, deterministic=True)
-        conn.create_function("split", 3, sqlite_string_split, deterministic=True)
-        conn.create_function(
-            "regexp_replace", 3, sqlite_regexp_replace, deterministic=True
+        _create_function(conn, "split", 2, sqlite_string_split, deterministic=True)
+        _create_function(conn, "split", 3, sqlite_string_split, deterministic=True)
+        _create_function(
+            conn, "regexp_replace", 3, sqlite_regexp_replace, deterministic=True
         )
-        conn.create_function(
-            "byte_hamming_distance", 2, sqlite_byte_hamming_distance, deterministic=True
+        _create_function(
+            conn,
+            "byte_hamming_distance",
+            2,
+            sqlite_byte_hamming_distance,
+            deterministic=True,
         )
-        conn.create_function("dt_cast", 1, sqlite_datetime_cast, deterministic=True)
+        _create_function(conn, "dt_cast", 1, sqlite_datetime_cast, deterministic=True)
 
     _registered_function_creators["string_functions"] = create_string_functions
 
@@ -372,17 +399,21 @@ def register_user_defined_sql_functions() -> None:
     _registered_function_creators["hash_functions"] = create_hash_functions
 
     def create_array_functions(conn):
-        conn.create_function(
-            "json_array_get_element", 2, py_json_array_get_element, deterministic=True
+        _create_function(
+            conn,
+            "json_array_get_element",
+            2,
+            py_json_array_get_element,
+            deterministic=True,
         )
-        conn.create_function(
-            "json_array_slice", 2, py_json_array_slice, deterministic=True
+        _create_function(
+            conn, "json_array_slice", 2, py_json_array_slice, deterministic=True
         )
-        conn.create_function(
-            "json_array_slice", 3, py_json_array_slice, deterministic=True
+        _create_function(
+            conn, "json_array_slice", 3, py_json_array_slice, deterministic=True
         )
-        conn.create_function(
-            "json_array_join", 2, py_json_array_join, deterministic=True
+        _create_function(
+            conn, "json_array_join", 2, py_json_array_join, deterministic=True
         )
 
     _registered_function_creators["array_functions"] = create_array_functions
@@ -391,11 +422,15 @@ def register_user_defined_sql_functions() -> None:
     if not has_json_extension:
 
         def create_json_functions(conn):
-            conn.create_function(
-                "json_array_length", 1, py_json_array_length, deterministic=True
+            _create_function(
+                conn, "json_array_length", 1, py_json_array_length, deterministic=True
             )
+            # not null-safe-wrapped: None is a valid search value / array element
             conn.create_function(
-                "json_array_contains", 3, py_json_array_contains, deterministic=True
+                "json_array_contains",
+                3,
+                py_json_array_contains,
+                deterministic=True,
             )
 
         _registered_function_creators["json_functions"] = create_json_functions
@@ -560,6 +595,9 @@ def py_json_array_length(arr):
 
 
 def py_json_array_contains(arr, value, is_json):
+    # a NULL array contains nothing; the search value itself may legitimately be None
+    if arr is None:
+        return None
     if is_json:
         value = json.loads(value)
     return value in json.loads(arr)

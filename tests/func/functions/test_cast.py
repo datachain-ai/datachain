@@ -6,6 +6,7 @@ from sqlalchemy.exc import CompileError
 import datachain as dc
 from datachain import C, func
 from datachain.lib.file import File
+from datachain.lib.utils import DataChainParamsError
 
 
 def test_cast_in_mutate_filter_and_order_by(test_session):
@@ -108,6 +109,29 @@ def test_cast_nested_string_column_in_mutate(test_session):
     )
 
     assert rows == [("a.txt", "2"), ("b.txt", "10"), ("c.txt", "1")]
+
+
+def test_cast_complex_object_error_uses_user_column_name(test_session):
+    class Foo(dc.DataModel):
+        path: str
+
+    foo_type = Foo
+
+    class Item(dc.DataModel):
+        Foo: foo_type
+
+    chain = dc.read_values(
+        item=[Item(Foo=Foo(path="a.txt"))],
+        session=test_session,
+    )
+
+    with pytest.raises(DataChainParamsError) as exc_info:
+        chain.mutate(value=func.cast("item.Foo", str))
+
+    message = str(exc_info.value)
+    assert "columns like 'item.Foo'" in message
+    assert "'item.Foo.path'" in message
+    assert "item__Foo" not in message
 
 
 def test_cast_datetime_in_mutate_and_order_by(test_session):

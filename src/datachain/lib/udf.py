@@ -13,7 +13,12 @@ from datachain.asyn import AsyncMapper
 from datachain.cache import temporary_cache
 from datachain.dataset import RowDict
 from datachain.hash_utils import hash_callable
-from datachain.lib.convert.flatten import flatten
+from datachain.lib.convert.flatten import (
+    classify_field,
+    flatten,
+    flatten_value,
+    is_optional_model,
+)
 from datachain.lib.file import DataModel, File, FileError
 from datachain.lib.utils import AbstractUDF, DataChainParamsError
 from datachain.query.batch import (
@@ -319,11 +324,31 @@ class UDFBase(AbstractUDF):
 
     def _flatten_row(self, row):
         if len(self.output.values) > 1 and not isinstance(row, BaseModel):
-            flat = []
-            for obj in row:
-                flat.extend(self._obj_to_list(obj))
+            annos = self.output.values
+            # The row may be shorter than the declared outputs (the arrow/parquet
+            # reader omits trailing signals) but not longer.
+            if len(row) > len(annos):
+                raise ValueError(
+                    f"UDF returned {len(row)} values but {len(annos)} are declared "
+                    "in output"
+                )
+            flat: list[Any] = []
+            # strict=False as shorter row is allowed for arrow/parquet (guarded above)
+            for obj, anno in zip(row, annos.values(), strict=False):
+                # tag is added only when obj IS the Optional value, not a wrapper.
+                if is_optional_model(anno) and (
+                    obj is None or isinstance(obj, classify_field(anno).inner)
+                ):
+                    flat.extend(flatten_value(obj, anno))
+                else:
+                    flat.extend(self._obj_to_list(obj))
             return tuple(flat)
-        return row if isinstance(row, tuple) else tuple(self._obj_to_list(row))
+        if isinstance(row, tuple):
+            return row
+        if len(self.output.values) == 1:
+            single_type = next(iter(self.output.values.values()))
+            return flatten_value(row, single_type)
+        return tuple(self._obj_to_list(row))
 
     @staticmethod
     def _obj_to_list(obj):

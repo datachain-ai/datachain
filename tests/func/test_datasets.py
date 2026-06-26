@@ -54,6 +54,20 @@ def saved_dataset(test_session):
     )
 
 
+@pytest.fixture
+def warehouse_access_forbidden(test_session):
+    catalog = test_session.catalog
+    original = catalog.warehouse
+
+    class ForbiddenWarehouse:
+        def __getattr__(self, name):
+            raise AssertionError(f"warehouse accessed via {name!r}")
+
+    catalog.warehouse = ForbiddenWarehouse()
+    yield
+    catalog.warehouse = original
+
+
 def test_create_dataset_no_version_specified(test_session, project):
     catalog = test_session.catalog
 
@@ -443,6 +457,22 @@ def test_edit_dataset(test_session, saved_dataset):
     )
     assert expected_table_row_count
     assert dataset.get_version("1.0.0").num_objects == expected_table_row_count
+
+
+def test_edit_dataset_metadata_only_does_not_touch_warehouse(
+    test_session, saved_dataset, warehouse_access_forbidden
+):
+    catalog = test_session.catalog
+    catalog.edit_dataset(
+        saved_dataset.name,
+        saved_dataset.project,
+        description="new description",
+        attrs=["cats", "birds"],
+    )
+
+    dataset = catalog.get_dataset(saved_dataset.name, versions=["1.0.0"])
+    assert dataset.description == "new description"
+    assert dataset.attrs == ["cats", "birds"]
 
 
 @pytest.mark.parametrize("is_studio", [True])

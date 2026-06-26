@@ -7,6 +7,7 @@ from typing import Annotated, Literal, Union, get_args, get_origin
 from pydantic import BaseModel
 from typing_extensions import Literal as LiteralEx
 
+from datachain.lib.data_model import NULLABLE_SCALARS, unwrap_optional
 from datachain.lib.model_store import ModelStore
 from datachain.sql.types import (
     JSON,
@@ -53,15 +54,7 @@ def python_to_sql(typ):  # noqa: PLR0911
 
     args = get_args(typ)
     if inspect.isclass(orig) and (issubclass(list, orig) or issubclass(tuple, orig)):
-        if args is None:
-            raise TypeError(f"Cannot resolve type '{typ}' for flattening features")
-
-        args0 = args[0]
-        if ModelStore.is_pydantic(args0):
-            return Array(JSON())
-
-        list_type = list_of_args_to_type(args)
-        return Array(list_type)
+        return _list_to_array(typ, args)
 
     if orig is Annotated:
         # Ignoring annotations
@@ -82,6 +75,22 @@ def python_to_sql(typ):  # noqa: PLR0911
             return JSON
 
     raise TypeError(f"Cannot recognize type {typ}")
+
+
+def _list_to_array(typ, args):
+    if args is None:
+        raise TypeError(f"Cannot resolve type '{typ}' for flattening features")
+    args0 = args[0]
+    if ModelStore.is_pydantic(args0):
+        return Array(JSON())
+
+    list_type = list_of_args_to_type(args)
+    # Optional[scalar] elements map to a nullable Array element so None survives
+    # (ClickHouse: Array(Nullable(T))).
+    inner, is_optional = unwrap_optional(args0)
+    if is_optional and inner in NULLABLE_SCALARS:
+        list_type = SQLType.as_nullable(list_type)
+    return Array(list_type)
 
 
 def list_of_args_to_type(args) -> SQLType:
