@@ -378,11 +378,15 @@ def test_merge_on_union_signal_errors(test_session):
     from datachain.lib.utils import DataChainColumnError
 
     left = dc.read_values(
-        id=[1, 2], value=["a", 1], output={"id": int, "value": Union[str, int]},
+        id=[1, 2],
+        value=["a", 1],
+        output={"id": int, "value": Union[str, int]},
         session=test_session,
     )
     right = dc.read_values(
-        rid=[9], rvalue=["a"], output={"rid": int, "rvalue": Union[str, int]},
+        rid=[9],
+        rvalue=["a"],
+        output={"rid": int, "rvalue": Union[str, int]},
         session=test_session,
     )
     with pytest.raises(DataChainColumnError, match="Union signal"):
@@ -399,6 +403,8 @@ def test_union_indistinguishable_arms_rejected(test_session):
     model_a, model_b = _make("pkg_a"), _make("pkg_b")
     with pytest.raises(DataChainParamsError, match="indistinguishable arms"):
         dc.read_values(
-            id=[1], v=[model_a(x=1)], output={"id": int, "v": Union[model_a, model_b]},
+            id=[1],
+            v=[model_a(x=1)],
+            output={"id": int, "v": Union[model_a, model_b]},
             session=test_session,
         ).save("u_dup")
