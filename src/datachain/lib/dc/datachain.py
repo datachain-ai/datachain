@@ -45,6 +45,7 @@ from datachain.lib.data_model import (
     DataValue,
     StandardType,
     dict_to_data_model,
+    union_layout,
     unwrap_optional,
 )
 from datachain.lib.file import EXPORT_FILES_MAX_THREADS, ArrowRow, File, FileExporter
@@ -318,6 +319,12 @@ class DataChain:
             name_path = [name]
         for path, type_, _, _ in self.signals_schema.get_flat_tree():
             if path == name_path:
+                if union_layout(type_) is not None:
+                    raise DataChainColumnError(
+                        name,
+                        "a multi-arm Union signal has no single column; reference a "
+                        "specific arm (e.g. C('col.int')) or a scalar key instead",
+                    )
                 return Column(name, python_to_sql(type_))
 
         raise ValueError(f"Column with name {name} not found in the schema")

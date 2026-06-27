@@ -84,6 +84,13 @@ def _list_to_array(typ, args):
     if ModelStore.is_pydantic(args0):
         return Array(JSON())
 
+    # a multi-arm Union element has no uniform Array element type -> store as JSON
+    # (Optional[scalar], one non-None arm, stays a nullable Array)
+    if get_origin(args0) in (Union, UnionType) and (
+        len([a for a in get_args(args0) if a is not type(None)]) > 1
+    ):
+        return JSON()
+
     list_type = list_of_args_to_type(args)
     # Optional[scalar] elements map to a nullable Array element so None survives
     # (ClickHouse: Array(Nullable(T))).

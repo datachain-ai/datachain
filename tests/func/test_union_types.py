@@ -228,7 +228,8 @@ def test_readable_arm_access_across_ops(test_session):
     )
     assert chain.filter(C("value.int") == 42).to_values("id") == [2]
     assert chain.distinct("value.int").count() == 3  # 42, 7, NULL (str rows)
-    assert chain.order_by("value.int").to_values("value") == [7, 42, "hi", "yo"]
+    # id breaks the tie between the two str rows (NULL int arm), undefined otherwise
+    assert chain.order_by("value.int", "id").to_values("value") == [7, 42, "hi", "yo"]
     # selecting an arm field keeps the whole (atomic) union
     assert _ordered(chain.select("id", "value.int"), "value") == [
         (1, "hi"),
@@ -342,4 +343,62 @@ def test_union_schema_canonical_order_both_spellings(test_session):
     assert _ordered(a, "value") == _ordered(b, "value") == [(1, "x"), (2, 1)]
 
 
-# ---- collection arms (list / dict) -----------------------------------------
+class _Animal(DataModel):
+    legs: int = 0
+
+
+class _Zebra(_Animal):
+    stripes: int = 0
+
+
+def test_union_model_subclass_arm_preserves_fields(test_session):
+    dc.read_values(
+        id=[1, 2],
+        item=[_Animal(legs=4), _Zebra(legs=4, stripes=20)],
+        output={"id": int, "item": Union[_Animal, _Zebra]},
+        session=test_session,
+    ).save("u_subclass")
+    back = _ordered(dc.read_dataset("u_subclass", session=test_session), "item")
+    assert [type(it).__name__ for _, it in back] == ["_Animal", "_Zebra"]
+    assert back[1][1].stripes == 20
+
+
+def test_list_of_union_roundtrip(test_session):
+    dc.read_values(
+        id=[1, 2],
+        xs=[["a", 1, "b"], [2, "c"]],
+        output={"id": int, "xs": list[Union[str, int]]},
+        session=test_session,
+    ).save("u_list")
+    back = _ordered(dc.read_dataset("u_list", session=test_session), "xs")
+    assert [xs for _, xs in back] == [["a", 1, "b"], [2, "c"]]
+
+
+def test_merge_on_union_signal_errors(test_session):
+    from datachain.lib.utils import DataChainColumnError
+
+    left = dc.read_values(
+        id=[1, 2], value=["a", 1], output={"id": int, "value": Union[str, int]},
+        session=test_session,
+    )
+    right = dc.read_values(
+        rid=[9], rvalue=["a"], output={"rid": int, "rvalue": Union[str, int]},
+        session=test_session,
+    )
+    with pytest.raises(DataChainColumnError, match="Union signal"):
+        left.merge(right, on="value", right_on="rvalue").save("u_merge")
+
+
+def test_union_indistinguishable_arms_rejected(test_session):
+    from datachain.lib.utils import DataChainParamsError
+
+    def _make(module):
+        ns = {"__module__": module, "__annotations__": {"x": int}, "x": 0}
+        return type("Thing", (DataModel,), ns)
+
+    model_a, model_b = _make("pkg_a"), _make("pkg_b")
+    with pytest.raises(DataChainParamsError, match="indistinguishable arms"):
+        dc.read_values(
+            id=[1], v=[model_a(x=1)], output={"id": int, "v": Union[model_a, model_b]},
+            session=test_session,
+        ).save("u_dup")

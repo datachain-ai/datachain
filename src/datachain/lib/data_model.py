@@ -13,7 +13,11 @@ from pydantic.fields import FieldInfo
 
 from datachain import json
 from datachain.lib.model_store import ModelStore
-from datachain.lib.utils import normalize_col_names, type_to_str
+from datachain.lib.utils import (
+    DataChainParamsError,
+    normalize_col_names,
+    type_to_str,
+)
 
 _skip_optional_promotion: ContextVar[bool] = ContextVar(
     "_skip_optional_promotion", default=False
@@ -186,6 +190,15 @@ def union_layout(anno: Any) -> "UnionLayout | None":
     if not all(_is_taggable_arm(arm) for arm in arms):
         return None
     if len(arms) >= 2:
+        # arms sharing a type string collapse into one on reload (it is their
+        # storage identity), so reject indistinguishable arms up front
+        keys = [type_to_str(arm) for arm in arms]
+        if len(set(keys)) != len(keys):
+            dup = next(k for k in keys if keys.count(k) > 1)
+            raise DataChainParamsError(
+                f"Union has indistinguishable arms named {dup!r}; arms must have "
+                "distinct type names (rename one of the models)"
+            )
         return UnionLayout(arms, has_none, use_slots=True)
     if len(arms) == 1 and has_none and ModelStore.is_pydantic(arms[0]):
         return UnionLayout(arms, has_none=True, use_slots=False)

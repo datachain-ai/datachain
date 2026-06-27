@@ -120,8 +120,7 @@ def _match_union_arm(value, layout: UnionLayout) -> int | None:
 
 
 def _arm_matches(value, arm, *, exact: bool) -> bool:
-    if ModelStore.is_pydantic(arm):
-        return isinstance(value, arm)
+    # exact match (incl. models) so a subclass isn't swallowed by a base-class arm
     if not inspect.isclass(arm):
         return False
     return type(value) is arm if exact else isinstance(value, arm)
