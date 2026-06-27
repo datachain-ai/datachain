@@ -293,18 +293,19 @@ def test_union_with_missing_signal_names_the_signal(test_session):
 
 def test_to_database_readable_arm_columns(test_session):
     import sqlite3
+    from contextlib import closing
 
-    conn = sqlite3.connect(":memory:")
-    dc.read_values(
-        id=[1, 2, 3],
-        value=["a", 1, "b"],
-        output={"id": int, "value": Union[str, int]},
-        session=test_session,
-    ).to_database("t", conn)
-    cols = [d[0] for d in conn.execute("SELECT * FROM t").description]
-    # readable arm names, no internal slots or discriminator
-    assert {"value__int", "value__str"} <= set(cols)
-    assert not any("_0" in c or "_1" in c or "_type_tag" in c for c in cols)
+    with closing(sqlite3.connect(":memory:")) as conn:
+        dc.read_values(
+            id=[1, 2, 3],
+            value=["a", 1, "b"],
+            output={"id": int, "value": Union[str, int]},
+            session=test_session,
+        ).to_database("t", conn)
+        cols = [d[0] for d in conn.execute("SELECT * FROM t").description]
+        # readable arm names, no internal slots or discriminator
+        assert {"value__int", "value__str"} <= set(cols)
+        assert not any("_0" in c or "_1" in c or "_type_tag" in c for c in cols)
 
 
 def test_union_optional_nested_in_model_roundtrip(test_session):
