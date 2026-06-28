@@ -252,6 +252,13 @@ def test_union_value_out_of_range_tag_returns_none():
     assert _union_value({"v._type_tag": 1}, layout, "v") is None
 
 
+def test_signal_schema_union_path_edges():
+    schema = SignalSchema({"v": Union[int, str]})
+    assert schema.arm_display_path([]) == []
+    assert schema.arm_display_path(["unknown"]) == ["unknown"]
+    assert schema.order_by_column("nonexistent") is None
+
+
 def test_union_value_infers_arm_when_tag_absent():
     layout = union_layout(Union[Foo, int])
     fi, ii = layout.arms.index(Foo), layout.arms.index(int)
