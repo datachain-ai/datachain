@@ -868,11 +868,9 @@ class SignalSchema:
                 path
             ) == col_name:
                 return _type
-        resolved = self.resolve_arm_path(col_name)
-        if resolved is not None:
-            db = ColumnMeta.to_db_name(resolved)
-            if db != col_name:
-                return self.get_column_type(db, with_subtree=with_subtree)
+        db = self.to_db_col(col_name)
+        if db != col_name:
+            return self.get_column_type(db, with_subtree=with_subtree)
         raise SignalResolvingError([col_name], "is not found")
 
     def is_nullable_column(self, db_col: str, anno: DataType) -> bool:
@@ -918,11 +916,7 @@ class SignalSchema:
         ]
 
         if name:
-            resolved = self.resolve_arm_path(name)
-            if resolved is not None:
-                name = ColumnMeta.to_db_name(resolved)
-            elif "." in name:
-                name = ColumnMeta.to_db_name(name)
+            name = self.to_db_col(name)
 
             signals = [
                 s
@@ -1109,6 +1103,11 @@ class SignalSchema:
                 i += 1
         return ".".join(out) if rewrote else None
 
+    def to_db_col(self, name: str) -> str:
+        """Readable signal/arm path -> positional DB column name: resolve a union arm
+        path (``block.name`` -> ``block._2.name``) then join to the ``__`` form."""
+        return ColumnMeta.to_db_name(self.resolve_arm_path(name) or name)
+
     def arm_display_path(self, path: list[str]) -> list[str]:
         """Positional union path -> readable: ``["block", "_2", "name"]`` ->
         ``["block", "ToolUseBlock", "name"]``. For display only; storage stays
@@ -1159,15 +1158,10 @@ class SignalSchema:
             c.name: c for c in self.db_signals(as_columns=True) if isinstance(c, Column)
         }
 
-        def rebuild(node):  # noqa: PLR0911
+        def rebuild(node):
             if isinstance(node, Column):
-                if node.name in typed_cols:
-                    return typed_cols[node.name]
                 # readable arm path (C("block.name")) -> positional slot column
-                resolved = self.resolve_arm_path(node.name)
-                if resolved is not None:
-                    return typed_cols.get(ColumnMeta.to_db_name(resolved), node)
-                return node
+                return typed_cols.get(self.to_db_col(node.name), node)
             if isinstance(node, Label):
                 return rebuild(node.element).label(node.name)
             if isinstance(node, Grouping):

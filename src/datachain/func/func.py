@@ -65,8 +65,7 @@ def _source_is_nullable(col: ColT, signals_schema: "SignalSchema | None") -> boo
             _source_is_nullable(name, signals_schema)
             for name in _referenced_column_names(col)
         )
-    resolved = signals_schema.resolve_arm_path(col)
-    db_col = ColumnMeta.to_db_name(resolved if resolved is not None else col)
+    db_col = signals_schema.to_db_col(col)
     if signals_schema.enclosing_type_tag(db_col) is not None:
         return True
     _, is_optional = unwrap_optional(signals_schema.get_column_type(db_col))
@@ -538,11 +537,9 @@ class Func(Function):  # noqa: PLW1641
     def _window_col(self, key, signals_schema):
         if not isinstance(key, str):
             return key
-        if signals_schema is not None:
-            resolved = signals_schema.resolve_arm_path(key)
-            if resolved is not None:
-                key = resolved
-        return ColumnMeta.to_db_name(key)
+        if signals_schema is None:
+            return ColumnMeta.to_db_name(key)
+        return signals_schema.to_db_col(key)
 
     def _finalize_column(
         self,
