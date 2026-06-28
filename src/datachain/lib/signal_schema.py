@@ -1000,9 +1000,7 @@ class SignalSchema:
             if has_subtree and (layout := union_layout(type_)) is not None
         }
 
-    def _tagged_ancestors(
-        self, db_col: str
-    ) -> "Iterator[tuple[str, UnionLayout]]":
+    def _tagged_ancestors(self, db_col: str) -> "Iterator[tuple[str, UnionLayout]]":
         """``(db_prefix, layout)`` for each ancestor of ``db_col`` (and itself) that is
         a tagged-union node, innermost (longest prefix) first."""
         parts = db_col.split(DEFAULT_DELIMITER)
