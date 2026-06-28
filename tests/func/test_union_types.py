@@ -413,7 +413,9 @@ def test_union_indistinguishable_arms_rejected(test_session):
 def test_union_no_arm_value_raises_multi_output(test_session):
     with pytest.raises(TypeError, match="does not match any arm"):
         dc.read_values(
-            id=[1], v=[5], output={"id": int, "v": Union[float, str]},
+            id=[1],
+            v=[5],
+            output={"id": int, "v": Union[float, str]},
             session=test_session,
         ).save("u_noarm")
 
@@ -428,10 +430,6 @@ def test_window_over_readable_arm_path(test_session):
 
     def row_numbers(arm_path):
         w = func.window(partition_by=arm_path, order_by="id")
-        return (
-            chain.mutate(rn=func.row_number().over(w))
-            .order_by("id")
-            .to_values("rn")
-        )
+        return chain.mutate(rn=func.row_number().over(w)).order_by("id").to_values("rn")
 
     assert row_numbers("value.int") == row_numbers("value._0")

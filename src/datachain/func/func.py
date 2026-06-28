@@ -563,9 +563,7 @@ class Func(Function):  # noqa: PLW1641
             # NULLS LAST so window ordering matches across backends (SQLite
             # orders NULLs first by default, ClickHouse last).
             result = result.over(
-                partition_by=self._window_col(
-                    self.window.partition_by, signals_schema
-                ),
+                partition_by=self._window_col(self.window.partition_by, signals_schema),
                 order_by=nulls_last(ordering),
             )
 
