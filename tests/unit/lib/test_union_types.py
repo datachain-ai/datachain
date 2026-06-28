@@ -250,3 +250,16 @@ def test_deserialize_union_with_unresolvable_arm_skips_signal():
 def test_union_value_out_of_range_tag_returns_none():
     layout = UnionLayout(arms=[Foo], has_none=True, use_slots=False)
     assert _union_value({"v._type_tag": 1}, layout, "v") is None
+
+
+def test_union_value_infers_arm_when_tag_absent():
+    layout = union_layout(Union[Foo, int])
+    fi, ii = layout.arms.index(Foo), layout.arms.index(int)
+
+    foo = _union_value({f"v._{fi}.a": 5, f"v._{fi}.b": "z"}, layout, "v")
+    assert (foo.a, foo.b) == (5, "z")
+
+    empty_foo = {f"v._{fi}.a": float("nan"), f"v._{fi}.b": None, f"v._{ii}": 9}
+    assert _union_value(empty_foo, layout, "v") == 9
+
+    assert _union_value({f"v._{fi}.a": None, f"v._{ii}": None}, layout, "v") is None
