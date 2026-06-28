@@ -1000,6 +1000,17 @@ class SignalSchema:
             if has_subtree and (layout := union_layout(type_)) is not None
         }
 
+    def _tagged_ancestors(
+        self, db_col: str
+    ) -> "Iterator[tuple[str, UnionLayout]]":
+        """``(db_prefix, layout)`` for each ancestor of ``db_col`` (and itself) that is
+        a tagged-union node, innermost (longest prefix) first."""
+        parts = db_col.split(DEFAULT_DELIMITER)
+        for i in range(len(parts), 0, -1):
+            prefix = DEFAULT_DELIMITER.join(parts[:i])
+            if (layout := self._tagged_db_cols.get(prefix)) is not None:
+                yield prefix, layout
+
     def type_tag_column(self, db_col: str) -> str | None:
         """DB name of the ``_type_tag`` discriminator when ``db_col`` is itself a
         tagged-union node (``Optional[DataModel]`` or a multi-arm union), else None."""
@@ -1008,26 +1019,21 @@ class SignalSchema:
         return None
 
     def enclosing_type_tag(self, db_col: str) -> str | None:
-        """DB name of the ``_type_tag`` discriminator for the closest
-        ``Optional[DataModel]`` ancestor of leaf ``db_col``, or None when ``db_col``
-        is not such a leaf (or is itself a discriminator).
+        """DB name of the ``_type_tag`` discriminator for the closest tagged-union
+        ancestor of leaf ``db_col``, or None when ``db_col`` is not such a leaf (or is
+        itself a discriminator).
         """
-        parts = db_col.split(DEFAULT_DELIMITER)
-        for i in range(len(parts), 0, -1):
-            sentinel = self.type_tag_column(DEFAULT_DELIMITER.join(parts[:i]))
-            if sentinel is not None:
-                return None if sentinel == db_col else sentinel
+        for prefix, _ in self._tagged_ancestors(db_col):
+            sentinel = f"{prefix}{DEFAULT_DELIMITER}{self._TYPE_TAG_FIELD}"
+            return None if sentinel == db_col else sentinel
         return None
 
     def multiarm_union_root(self, col: str) -> str | None:
-        """Dotted name of the multi-arm union enclosing ``col``, else None. A union is
-        atomic, so group_by/select must carry all its columns, not one arm."""
-        parts = ColumnMeta.to_db_name(col).split(DEFAULT_DELIMITER)
-        for i in range(1, len(parts) + 1):
-            layout = self._tagged_db_cols.get(DEFAULT_DELIMITER.join(parts[:i]))
-            if layout is not None and layout.use_slots:
-                return ".".join(parts[:i])
-        return None
+        """Dotted name of the outermost multi-arm union enclosing ``col``, else None. A
+        union is atomic, so group_by/select must carry all its columns, not one arm."""
+        db_col = ColumnMeta.to_db_name(col)
+        slots = [p for p, layout in self._tagged_ancestors(db_col) if layout.use_slots]
+        return ".".join(slots[-1].split(DEFAULT_DELIMITER)) if slots else None
 
     @staticmethod
     def _arm_selector(arm: DataType) -> str:
