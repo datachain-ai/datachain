@@ -324,7 +324,7 @@ def _union_value(
         active = column_values[tag_key]
     else:
         active = _infer_active_arm(column_values, layout, prefix)
-    if active is None:
+    if active is None or active >= len(layout.arms):
         return None
     arm = layout.arms[active]
     arm_prefix = f"{prefix}._{active}" if layout.use_slots else prefix

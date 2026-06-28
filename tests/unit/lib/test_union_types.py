@@ -13,17 +13,19 @@ from typing import Optional, Union
 
 import pytest
 
+from datachain.lib.arrow import _union_value
 from datachain.lib.convert.flatten import flatten_value
 from datachain.lib.convert.unflatten import unflatten_to_json_pos
 from datachain.lib.data_model import (
     DataModel,
+    UnionLayout,
     is_chain_type,
     union_arms,
     union_layout,
     union_slot_key,
 )
 from datachain.lib.model_store import ModelStore
-from datachain.lib.signal_schema import SignalSchema
+from datachain.lib.signal_schema import SignalSchema, SignalSchemaWarning
 
 
 @pytest.fixture(autouse=True)
@@ -223,3 +225,28 @@ def test_flatten_inactive_arms_are_none():
     assert flat[0] == 2  # Foo=0? no: arms sorted Foo,int,str -> str index 2
     # exactly one arm column is non-None (the active str slot).
     assert sum(1 for v in flat[1:] if v is not None) == 1
+
+
+def test_deserialize_union_with_unresolvable_arm_skips_signal():
+    ser = {
+        "kept": "int",
+        "v": "Union[KnownArm@v1, MissingArm@v1]",
+        "_custom_types": {
+            "KnownArm@v1": {
+                "schema_version": 2,
+                "name": "KnownArm@v1",
+                "fields": {"p": "int"},
+                "bases": [],
+                "hidden_fields": [],
+            }
+        },
+    }
+    with pytest.warns(SignalSchemaWarning):
+        schema = SignalSchema.deserialize(ser)
+    assert "v" not in schema.values
+    assert "kept" in schema.values
+
+
+def test_union_value_out_of_range_tag_returns_none():
+    layout = UnionLayout(arms=[Foo], has_none=True, use_slots=False)
+    assert _union_value({"v._type_tag": 1}, layout, "v") is None

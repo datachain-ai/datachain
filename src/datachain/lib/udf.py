@@ -16,8 +16,8 @@ from datachain.hash_utils import hash_callable
 from datachain.lib.convert.flatten import (
     flatten,
     flatten_value,
-    union_value_match,
 )
+from datachain.lib.data_model import union_layout
 from datachain.lib.file import DataModel, File, FileError
 from datachain.lib.utils import AbstractUDF, DataChainParamsError
 from datachain.query.batch import (
@@ -334,9 +334,7 @@ class UDFBase(AbstractUDF):
             flat: list[Any] = []
             # strict=False as shorter row is allowed for arrow/parquet (guarded above)
             for obj, anno in zip(row, annos.values(), strict=False):
-                # The _type_tag is added only when obj IS the union/optional value,
-                # not a wrapper object covering several outputs.
-                if union_value_match(obj, anno):
+                if union_layout(anno) is not None:
                     flat.extend(flatten_value(obj, anno))
                 else:
                     flat.extend(self._obj_to_list(obj))

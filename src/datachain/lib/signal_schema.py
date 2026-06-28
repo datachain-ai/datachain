@@ -546,7 +546,11 @@ class SignalSchema:
                 )
             try:
                 fr = SignalSchema._resolve_type(type_name, custom_types)
-                if fr is Any:
+                unresolved = fr is Any or (
+                    get_origin(fr) in (Union, types.UnionType)
+                    and any(a is Any for a in get_args(fr))
+                )
+                if unresolved:
                     # Skip if the type is not found, so all data can be displayed.
                     warnings.warn(
                         f"In signal '{signal}': "

@@ -64,16 +64,6 @@ def flatten(obj: BaseModel) -> tuple:
     return tuple(_flatten_fields_values(type(obj).model_fields, obj))
 
 
-def union_value_match(obj, anno) -> bool:
-    """Whether ``obj`` is a value of the tagged union ``anno`` — tells a union output
-    apart from a wrapper object in a multi-output UDF row."""
-    if (layout := union_layout(anno)) is None:
-        return False
-    if obj is None:
-        return layout.has_none
-    return any(_arm_matches(obj, arm, exact=False) for arm in layout.arms)
-
-
 def flatten_value(value, anno) -> tuple:
     """Flatten ``value`` for a column of type ``anno``. A tagged union emits its
     ``_type_tag`` then every arm's columns, only the active arm populated."""

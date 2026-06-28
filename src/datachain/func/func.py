@@ -535,11 +535,21 @@ class Func(Function):  # noqa: PLW1641
 
         return col
 
+    def _window_col(self, key, signals_schema):
+        if not isinstance(key, str):
+            return key
+        if signals_schema is not None:
+            resolved = signals_schema.resolve_arm_path(key)
+            if resolved is not None:
+                key = resolved
+        return ColumnMeta.to_db_name(key)
+
     def _finalize_column(
         self,
         func_col: Any,
         sql_type: Any,
         label: str | None,
+        signals_schema: "SignalSchema | None" = None,
     ) -> Any:
         result: Any = func_col
 
@@ -548,15 +558,14 @@ class Func(Function):  # noqa: PLW1641
                 raise DataChainParamsError(
                     f"Window function {self} requires over() clause with a window spec",
                 )
-            ordering = (
-                desc(self.window.order_by)
-                if self.window.desc
-                else asc(self.window.order_by)
-            )
+            order_by = self._window_col(self.window.order_by, signals_schema)
+            ordering = desc(order_by) if self.window.desc else asc(order_by)
             # NULLS LAST so window ordering matches across backends (SQLite
             # orders NULLs first by default, ClickHouse last).
             result = result.over(
-                partition_by=self.window.partition_by,
+                partition_by=self._window_col(
+                    self.window.partition_by, signals_schema
+                ),
                 order_by=nulls_last(ordering),
             )
 
@@ -597,7 +606,7 @@ class Func(Function):  # noqa: PLW1641
             for k, v in self.kwargs.items()
         }
         func_col = self.inner(*cols, *self.args, **kwargs)
-        return self._finalize_column(func_col, sql_type, label)
+        return self._finalize_column(func_col, sql_type, label, signals_schema)
 
 
 class _TagAwareFunc(Func):
