@@ -59,7 +59,11 @@ from datachain.lib.signal_schema import (
 )
 from datachain.lib.udf import Aggregator, Generator, Mapper, UDFBase
 from datachain.lib.udf_signature import UdfSignature
-from datachain.lib.utils import DataChainColumnError, DataChainParamsError
+from datachain.lib.utils import (
+    DataChainColumnError,
+    DataChainParamsError,
+    assert_unique_export_columns,
+)
 from datachain.progress import tqdm
 from datachain.project import Project
 from datachain.query import Session
@@ -1717,6 +1721,7 @@ class DataChain:
         headers, _ = self._effective_signals_schema.get_headers_with_length(
             readable=True
         )
+        assert_unique_export_columns(headers, DEFAULT_DELIMITER)
         column_names = [DEFAULT_DELIMITER.join(filter(None, h)) for h in headers]
         return [dict(zip(column_names, row, strict=False)) for row in self.results()]
 

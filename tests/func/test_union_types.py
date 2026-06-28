@@ -433,3 +433,23 @@ def test_window_over_readable_arm_path(test_session):
         return chain.mutate(rn=func.row_number().over(w)).order_by("id").to_values("rn")
 
     assert row_numbers("value.int") == row_numbers("value._0")
+
+
+def test_union_arm_name_collision_errors(test_session):
+    import sqlite3
+    from contextlib import closing
+
+    from datachain.lib.utils import DataChainColumnError
+
+    chain = dc.read_values(
+        id=[1, 2],
+        value=["a", 1],
+        value__int=[100, 200],
+        output={"id": int, "value": Union[str, int], "value__int": int},
+        session=test_session,
+    )
+    with pytest.raises(DataChainColumnError, match="same export column"):
+        chain.to_records()
+    with pytest.raises(DataChainColumnError, match="same export column"):
+        with closing(sqlite3.connect(":memory:")) as conn:
+            chain.to_database("t", conn)

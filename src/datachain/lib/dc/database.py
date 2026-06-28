@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 import sqlalchemy
 
+from datachain.lib.utils import assert_unique_export_columns
 from datachain.query.schema import DEFAULT_DELIMITER, ColumnMeta
 from datachain.utils import batched
 
@@ -95,17 +96,18 @@ def to_database(
         )
 
     signals_schema = chain.signals_schema.clone_without_sys_signals()
-    all_columns = [
-        # readable arm names (value__int), not internal slot indices (value___0)
-        sqlalchemy.Column(
-            DEFAULT_DELIMITER.join(
-                signals_schema.arm_display_path(
-                    c.name.split(DEFAULT_DELIMITER)  # type: ignore[union-attr]
-                )
-            ),
-            c.type,  # type: ignore[union-attr]
+    db_cols = signals_schema.db_signals(as_columns=True, include_sentinels=False)
+    # readable arm names (value.int), not internal slot indices (value._0)
+    display_paths = [
+        signals_schema.arm_display_path(
+            c.name.split(DEFAULT_DELIMITER)  # type: ignore[union-attr]
         )
-        for c in signals_schema.db_signals(as_columns=True, include_sentinels=False)
+        for c in db_cols
+    ]
+    assert_unique_export_columns(display_paths, DEFAULT_DELIMITER)
+    all_columns = [
+        sqlalchemy.Column(DEFAULT_DELIMITER.join(path), c.type)  # type: ignore[union-attr]
+        for c, path in zip(db_cols, display_paths, strict=True)
     ]
 
     column_mapping = column_mapping or {}
