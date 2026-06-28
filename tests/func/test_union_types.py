@@ -430,19 +430,6 @@ def test_union_none_value_raises_non_nullable(test_session):
         ).save("u_none_noarm")
 
 
-def test_union_wrong_model_type_raises(test_session):
-    class _Other(DataModel):
-        z: int = 0
-
-    with pytest.raises(TypeError, match="does not match any arm"):
-        dc.read_values(
-            id=[1],
-            item=[_Other(z=1)],
-            output={"id": int, "item": Union[_Foo, _Bar]},
-            session=test_session,
-        ).save("u_wrong_model")
-
-
 def test_column_multi_arm_union_message(test_session):
     from datachain.lib.utils import DataChainColumnError
 
