@@ -228,7 +228,7 @@ def test_flatten_inactive_arms_are_none():
 
 
 def test_deserialize_union_with_unresolvable_arm_skips_signal():
-    ser = {
+    serialized = {
         "kept": "int",
         "v": "Union[KnownArm@v1, MissingArm@v1]",
         "_custom_types": {
@@ -242,7 +242,7 @@ def test_deserialize_union_with_unresolvable_arm_skips_signal():
         },
     }
     with pytest.warns(SignalSchemaWarning):
-        schema = SignalSchema.deserialize(ser)
+        schema = SignalSchema.deserialize(serialized)
     assert "v" not in schema.values
     assert "kept" in schema.values
 
