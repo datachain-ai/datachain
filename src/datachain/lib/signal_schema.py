@@ -615,10 +615,12 @@ class SignalSchema:
         row: Sequence[Any],
         pos: int,
         build_model: Callable[[type[BaseModel], dict], Any],
+        convert_scalar: Callable[[DataType, Any], Any] | None = None,
     ) -> tuple[Any, int]:
         """Read one top-level signal value at ``pos``. A tagged union (including
         ``Optional[Model]``) hydrates only its active arm; ``build_model`` turns a
-        model arm's flat columns into an instance (or None)."""
+        model arm's flat columns into an instance (or None), and ``convert_scalar``
+        (if given) post-processes a plain scalar leaf."""
 
         def read_model(
             fr: type[BaseModel], r: Sequence[Any], p: int
@@ -631,7 +633,10 @@ class SignalSchema:
         inner, _ = unwrap_optional(anno)
         if (fr := ModelStore.to_pydantic(inner)) is not None:
             return read_model(fr, row, pos)
-        return row[pos], pos + 1
+        value = row[pos]
+        if convert_scalar is not None:
+            value = convert_scalar(anno, value)
+        return value, pos + 1
 
     def row_to_objs(self, row: Sequence[Any]) -> list[Any]:
         self._init_setup_values()
@@ -754,25 +759,16 @@ class SignalSchema:
                     return None
                 raise
 
-        def read_model(fr: type[BaseModel], r: Sequence, p: int) -> tuple[Any, int]:
-            j, p = unflatten_to_json_pos(fr, r, p)
-            return build_model(fr, j), p
+        def convert_scalar(anno: DataType, value: Any) -> Any:
+            return self._convert_feature_value(anno, value, catalog, cache)
 
         res = []
         pos = 0
         for fr_cls in self.values.values():
-            if (layout := union_layout(fr_cls)) is not None:
-                value, pos = read_union(layout, row, pos, read_model)
-                res.append(value)
-                continue
-            inner_cls, _ = unwrap_optional(fr_cls)
-            if (fr := ModelStore.to_pydantic(inner_cls)) is None:
-                value = row[pos]
-                pos += 1
-                res.append(self._convert_feature_value(fr_cls, value, catalog, cache))
-            else:
-                obj, pos = read_model(fr, row, pos)
-                res.append(obj)
+            value, pos = self._read_top_signal(
+                fr_cls, row, pos, build_model, convert_scalar
+            )
+            res.append(value)
         return res
 
     def _convert_feature_value(
