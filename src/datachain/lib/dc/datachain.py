@@ -1350,6 +1350,14 @@ class DataChain:
             partition_by = [partition_by]
 
         partition_by_columns: list[Column] = []
+        seen_partition_cols: set[str] = set()
+
+        def add_partition_col(column: Column) -> None:
+            # a union's leaves share one enclosing _type_tag; add each column once
+            if column.name not in seen_partition_cols:
+                seen_partition_cols.add(column.name)
+                partition_by_columns.append(column)
+
         signal_columns: list[Column] = []
         schema_fields: dict[str, DataType] = {}
         keep_columns: list[str] = []
@@ -1373,12 +1381,12 @@ class DataChain:
                 columns = self.signals_schema.db_signals(name=col, as_columns=True)
                 if not columns:
                     raise SignalResolvingError([col], "is not found")
-                partition_by_columns.extend(cast("list[Column]", columns))
-                # GROUP BY the ancestor sentinel so the result keeps _type_tag.
                 for leaf in cast("list[Column]", columns):
+                    add_partition_col(leaf)
+                    # GROUP BY the ancestor sentinel so the result keeps _type_tag.
                     sentinel = self.signals_schema.enclosing_type_tag(leaf.name)
                     if sentinel:
-                        partition_by_columns.append(Column(sentinel))
+                        add_partition_col(Column(sentinel))
 
                 # For nested field references (e.g., "nested.level1.name"),
                 # we need to distinguish between:
@@ -1424,7 +1432,7 @@ class DataChain:
                     label = f"gr_{partition_counter}"
                     partition_counter += 1
                 column = col.get_column(self.signals_schema, label=label)
-                partition_by_columns.append(column)
+                add_partition_col(column)
                 signal_columns.append(column)
                 schema_fields[column.name] = column.type.python_type
             elif isinstance(col, ColumnExpr):
@@ -1433,7 +1441,7 @@ class DataChain:
                 enriched = self.signals_schema.enrich_expr_types(col)
                 labeled = cast("Column", enriched.label(col_label))
                 inferred = sql_to_python(enriched)
-                partition_by_columns.append(labeled)
+                add_partition_col(labeled)
                 signal_columns.append(labeled)
                 schema_fields[col_label] = inferred
             else:
@@ -1470,15 +1478,6 @@ class DataChain:
         signal_schema = self.signals_schema.group_by(
             schema_partition_by, signal_columns
         )
-
-        # dedupe: a union's _type_tag is appended once per arm slot above
-        seen: set[str] = set()
-        deduped: list[Column] = []
-        for c in partition_by_columns:
-            if c.name not in seen:
-                seen.add(c.name)
-                deduped.append(c)
-        partition_by_columns = deduped
 
         return self._evolve(
             query=self._query.group_by(signal_columns, partition_by_columns),
