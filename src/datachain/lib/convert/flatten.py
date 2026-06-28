@@ -64,17 +64,6 @@ def flatten(obj: BaseModel) -> tuple:
     return tuple(_flatten_fields_values(type(obj).model_fields, obj))
 
 
-def union_value_match(obj, anno) -> bool:
-    layout = union_layout(anno)
-    if layout is None:
-        return False
-    if obj is None:
-        return layout.has_none
-    if any(_arm_matches(obj, arm, exact=False) for arm in layout.arms):
-        return True
-    return not isinstance(obj, BaseModel)
-
-
 def flatten_value(value, anno) -> tuple:
     """Flatten ``value`` for a column of type ``anno``. A tagged union emits its
     ``_type_tag`` then every arm's columns, only the active arm populated."""
@@ -112,6 +101,8 @@ def _match_union_arm(value, layout: UnionLayout) -> int | None:
     """Arm index for ``value`` (None for the None arm). Exact-type match beats
     ``isinstance`` so ``bool`` isn't swallowed by an ``int`` arm."""
     if value is None:
+        if not layout.has_none:
+            raise TypeError(f"value None does not match any arm of union {layout.arms}")
         return None
     for exact in (True, False):
         for i, arm in enumerate(layout.arms):

@@ -323,12 +323,18 @@ class DataChain:
             name_path = [name]
         for path, type_, _, _ in self.signals_schema.get_flat_tree():
             if path == name_path:
-                if union_layout(type_) is not None:
-                    raise DataChainColumnError(
-                        name,
-                        "a multi-arm Union signal has no single column; reference a "
-                        "specific arm (e.g. C('col.int')) or a scalar key instead",
-                    )
+                if (layout := union_layout(type_)) is not None:
+                    if layout.use_slots:
+                        hint = (
+                            "a multi-arm Union signal has no single column; reference "
+                            "a specific arm (e.g. C('col.int')) or a scalar key instead"
+                        )
+                    else:
+                        hint = (
+                            "an Optional model signal has no single column; reference "
+                            "a nested field (e.g. C('addr.city')) or use func.isnone"
+                        )
+                    raise DataChainColumnError(name, hint)
                 return Column(name, python_to_sql(type_))
 
         raise ValueError(f"Column with name {name} not found in the schema")

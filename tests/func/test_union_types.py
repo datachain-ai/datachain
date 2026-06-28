@@ -420,6 +420,55 @@ def test_union_no_arm_value_raises_multi_output(test_session):
         ).save("u_noarm")
 
 
+def test_union_none_value_raises_non_nullable(test_session):
+    with pytest.raises(TypeError, match="does not match any arm"):
+        dc.read_values(
+            id=[1],
+            v=[None],
+            output={"id": int, "v": Union[float, str]},
+            session=test_session,
+        ).save("u_none_noarm")
+
+
+def test_union_wrong_model_type_raises(test_session):
+    class _Other(DataModel):
+        z: int = 0
+
+    with pytest.raises(TypeError, match="does not match any arm"):
+        dc.read_values(
+            id=[1],
+            item=[_Other(z=1)],
+            output={"id": int, "item": Union[_Foo, _Bar]},
+            session=test_session,
+        ).save("u_wrong_model")
+
+
+def test_column_multi_arm_union_message(test_session):
+    from datachain.lib.utils import DataChainColumnError
+
+    chain = dc.read_values(
+        id=[1],
+        value=["x"],
+        output={"id": int, "value": Union[str, int]},
+        session=test_session,
+    )
+    with pytest.raises(DataChainColumnError, match="multi-arm Union"):
+        chain.c("value")
+
+
+def test_column_optional_model_message(test_session):
+    from datachain.lib.utils import DataChainColumnError
+
+    chain = dc.read_values(
+        id=[1],
+        addr=[_Foo(a=1, b="z")],
+        output={"id": int, "addr": Optional[_Foo]},
+        session=test_session,
+    )
+    with pytest.raises(DataChainColumnError, match="Optional model"):
+        chain.c("addr")
+
+
 def test_window_over_readable_arm_path(test_session):
     chain = dc.read_values(
         id=[1, 2, 3, 4, 5],
