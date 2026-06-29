@@ -924,7 +924,7 @@ def test_select_complex_names_custom_types():
     assert basic_signals["fr.deep.aa"] is float
     assert basic_signals["fr.deep.bb"] is bytes
     assert (
-        basic_signals["fr.deep.maybe_texts"] is Union[list[Any], dict[str, Any], None]
+        basic_signals["fr.deep.maybe_texts"] == Union[list[Any], dict[str, Any], None]
     )
     assert basic_signals["fr.deep.anything"] is Any
 
