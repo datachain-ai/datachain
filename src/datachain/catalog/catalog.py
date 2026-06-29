@@ -1087,11 +1087,12 @@ class Catalog:
         This refreshes warehouse-derived metadata first, then marks the version
         as COMPLETE.
         """
-        self.update_dataset_version_with_warehouse_info(dataset, version, **kwargs)
-        # Guard the version-level write: only flip to COMPLETE if the
-        # version is still in a saveable state. Prevents a late-arriving
-        # completion from stomping a concurrent removal.
+        # Guard against a concurrent removal: the warehouse-info read may
+        # hit a dropped rows table (TableMissingError) and the status flip
+        # has an expected_status=CREATED guard. Either one surfaces the
+        # same user-friendly error.
         try:
+            self.update_dataset_version_with_warehouse_info(dataset, version, **kwargs)
             self.metastore.update_dataset_status(
                 dataset,
                 DatasetStatus.COMPLETE,
@@ -1103,7 +1104,7 @@ class Catalog:
             )
         except DataChainError as e:
             raise DataChainError(
-                f"Could not finalize {dataset.name}@{version}: "
+                f"Could not save {dataset.name}@{version}: "
                 "the version was removed or modified before save completed. "
                 "This usually means it was deleted concurrently - please retry."
             ) from e
