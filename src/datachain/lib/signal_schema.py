@@ -21,7 +21,8 @@ from typing import (
 )
 
 from pydantic import BaseModel, Field, ValidationError, create_model
-from sqlalchemy import Cast, asc, cast, desc, nulls_last
+from sqlalchemy import Cast, and_, asc, cast, desc, nulls_last, or_
+from sqlalchemy.sql import operators as sa_operators
 from sqlalchemy.sql.elements import (
     BinaryExpression,
     BooleanClauseList,
@@ -1200,7 +1201,8 @@ class SignalSchema:
             if isinstance(node, BinaryExpression):
                 return rebuild(node.left).operate(node.operator, rebuild(node.right))
             if isinstance(node, BooleanClauseList):
-                return node.operator(*[rebuild(c) for c in node.clauses])
+                joiner = or_ if node.operator is sa_operators.or_ else and_
+                return joiner(*[rebuild(c) for c in node.clauses])
             if isinstance(node, Cast):
                 return cast(rebuild(node.clause), node.typeclause.type)
             return node

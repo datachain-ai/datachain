@@ -248,6 +248,10 @@ def test_union_filter_combined_arms(test_session):
     assert chain.filter((C("value.int") > 0) & (C("value.int") < 50)).order_by(
         "id"
     ).to_values("id") == [2, 4]
+    # 3+ clauses combine into one BooleanClauseList (variadic, not binary)
+    assert chain.filter(
+        (C("value.int") > 40) | (C("value.str") == "world") | (C("value.int") == 7)
+    ).order_by("id").to_values("id") == [2, 3, 4]
     assert chain.filter(
         func.or_(C("value.int") > 10, C("value.str") == "hello")
     ).order_by("id").to_values("id") == [1, 2]
