@@ -21,14 +21,17 @@ from typing import (
 )
 
 from pydantic import BaseModel, Field, ValidationError, create_model
-from sqlalchemy import Cast, and_, asc, cast, desc, nulls_last, or_
+from sqlalchemy import and_, asc, cast, desc, nulls_last, or_
 from sqlalchemy.sql import operators as sa_operators
 from sqlalchemy.sql.elements import (
     BinaryExpression,
     BooleanClauseList,
+    Cast,
     Grouping,
     Label,
+    UnaryExpression,
 )
+from sqlalchemy.sql.visitors import iterate, replacement_traverse
 
 from datachain import json
 from datachain.func import literal
@@ -1185,15 +1188,23 @@ class SignalSchema:
             c.name: c for c in self.db_signals(as_columns=True) if isinstance(c, Column)
         }
 
+        def replace_col(node, **_kw):
+            # readable arm path (C("block.name")) -> positional slot column
+            if not isinstance(node, Column):
+                return None
+            db_col = self.to_db_col(node.name)
+            if db_col in typed_cols:
+                return typed_cols[db_col]
+            if (err := self.multiarm_root_error(node.name)) is not None:
+                raise err
+            return None
+
+        # Reconstruct explicitly so SQLAlchemy recomputes node types from rewritten
+        # children (a plain clone would keep stale cached types).
         def rebuild(node):  # noqa: PLR0911
             if isinstance(node, Column):
-                # readable arm path (C("block.name")) -> positional slot column
-                db_col = self.to_db_col(node.name)
-                if db_col not in typed_cols:
-                    if (err := self.multiarm_root_error(node.name)) is not None:
-                        raise err
-                    return node
-                return typed_cols[db_col]
+                replaced = replace_col(node)
+                return node if replaced is None else replaced
             if isinstance(node, Label):
                 return rebuild(node.element).label(node.name)
             if isinstance(node, Grouping):
@@ -1203,9 +1214,11 @@ class SignalSchema:
             if isinstance(node, BooleanClauseList):
                 joiner = or_ if node.operator is sa_operators.or_ else and_
                 return joiner(*[rebuild(c) for c in node.clauses])
+            if isinstance(node, UnaryExpression) and node.operator is not None:
+                return rebuild(node.element).operate(node.operator)
             if isinstance(node, Cast):
                 return cast(rebuild(node.clause), node.typeclause.type)
-            return node
+            return replacement_traverse(node, {}, replace_col)
 
         return rebuild(expr)
 
@@ -1217,20 +1230,10 @@ class SignalSchema:
 
     @staticmethod
     def _expr_references_nullable(expr: "ColumnExpr") -> bool:
-        def walk(node: Any) -> bool:
-            if isinstance(node, Column):
-                return getattr(node.type, "dc_nullable", False)
-            if isinstance(node, (Label, Grouping)):
-                return walk(node.element)
-            if isinstance(node, BinaryExpression):
-                return walk(node.left) or walk(node.right)
-            if isinstance(node, BooleanClauseList):
-                return any(walk(c) for c in node.clauses)
-            if isinstance(node, Cast):
-                return walk(node.clause)
-            return False
-
-        return walk(expr)
+        return any(
+            isinstance(node, Column) and getattr(node.type, "dc_nullable", False)
+            for node in iterate(expr)
+        )
 
     def group_by(
         self, partition_by: Sequence[str], new_column: Sequence[Column]
