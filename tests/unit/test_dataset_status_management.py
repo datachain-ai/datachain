@@ -910,10 +910,10 @@ def _force_status(catalog, dataset: DatasetRecord, version: str, status: int, **
     return catalog.get_dataset(dataset.name, versions=None, include_incomplete=True)
 
 
-def test_gc_skips_finished_soft_delete_tombstones(test_session, dataset_complete):
+def test_gc_keeps_tombstone_when_metadata_was_kept(test_session, dataset_complete):
     """A REMOVED + pending_metadata_drop=False version handed to the GC path
-    must keep the tombstone - the soft delete is finished and the metadata
-    should not be wiped."""
+    must keep the tombstone - the removal kept metadata on purpose and GC
+    must not wipe it."""
     catalog = test_session.catalog
     version = dataset_complete.latest_version
     ds = _force_status(catalog, dataset_complete, version, DatasetStatus.REMOVED)
@@ -950,8 +950,8 @@ def test_gc_resumes_interrupted_wipe(test_session, dataset_complete):
 
 def test_gc_retries_orphaned_rows_table_drop(test_session, dataset_complete):
     """A REMOVED + pending_metadata_drop=False version with the rows table
-    still present (a soft delete that crashed mid-drop) gets the rows table
-    cleaned up by the GC path, while the tombstone is preserved."""
+    still present (a keep-metadata remove that crashed mid-drop) gets the
+    rows table cleaned up by the GC path, while the tombstone is preserved."""
     catalog = test_session.catalog
     warehouse = catalog.warehouse
     version = dataset_complete.latest_version
@@ -970,9 +970,29 @@ def test_gc_retries_orphaned_rows_table_drop(test_session, dataset_complete):
     assert _find_removed(ds, version) is not None
 
 
-def test_soft_then_wipe_escalates(test_session, dataset_complete):
-    """Calling wipe on an already-soft-deleted version flips
-    pending_metadata_drop from False to True and drops the version row."""
+def test_remove_keep_metadata_marks_rows_table_dropped(test_session, dataset_complete):
+    """A normal keep-metadata remove sets ``rows_table_dropped=True`` so the
+    finalized tombstone no longer shows up in the GC candidate set."""
+    catalog = test_session.catalog
+    version = dataset_complete.latest_version
+    name = dataset_complete.name
+
+    catalog.remove_dataset_version(dataset_complete, version, keep_metadata=True)
+
+    ds = catalog.get_dataset(name, versions=None, include_incomplete=True)
+    removed = _find_removed(ds, version)
+    assert removed is not None
+    assert bool(removed.rows_table_dropped) is True
+    assert bool(removed.pending_metadata_drop) is False
+
+    candidates = catalog.metastore.get_dataset_versions_to_clean()
+    assert all(d.name != name for d, _ in candidates)
+
+
+def test_tombstone_then_wipe_escalates(test_session, dataset_complete):
+    """Calling wipe on an already-tombstoned (REMOVED + metadata kept)
+    version flips pending_metadata_drop from False to True and drops
+    the version row."""
     catalog = test_session.catalog
     version = dataset_complete.latest_version
     name = dataset_complete.name

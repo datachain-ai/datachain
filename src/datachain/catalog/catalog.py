@@ -1174,15 +1174,16 @@ class Catalog:
     ) -> bool:
         """One guarded UPDATE flips the version to REMOVED with the
         appropriate ``pending_metadata_drop`` flag, then we drop the rows
-        table (best-effort, idempotent) and, on the wipe path, drop the
-        version row.
+        table (best-effort, idempotent). On the wipe path we also delete
+        the version row; on the keep-metadata path we set
+        ``rows_table_dropped=True`` so GC can stop sweeping the row.
 
-        Soft delete on an already-REMOVED version is a no-op (the
-        tombstone is already the final state). Wipe on REMOVED +
-        ``pending_metadata_drop=False`` escalates the soft delete to a
-        wipe; wipe on REMOVED + ``pending_metadata_drop=True`` finishes
-        an interrupted wipe (idempotent under concurrent callers).
-        Returns True if a state change happened.
+        Keep-metadata remove on an already-REMOVED version is a no-op
+        (the tombstone is already the final state). Wipe on REMOVED +
+        ``pending_metadata_drop=False`` escalates a previous keep-metadata
+        remove to a wipe; wipe on REMOVED + ``pending_metadata_drop=True``
+        finishes an interrupted wipe (idempotent under concurrent
+        callers). Returns True if a state change happened.
         """
         v = dataset.get_version(version)
 
@@ -1196,6 +1197,7 @@ class Catalog:
             status=DatasetStatus.REMOVED,
             removed_at=v.removed_at or datetime.now(timezone.utc),
             pending_metadata_drop=not keep_metadata,
+            rows_table_dropped=False,
         )
         if claimed is None:
             logger.debug(
@@ -1207,7 +1209,13 @@ class Catalog:
 
         self.warehouse.drop_dataset_rows_table(dataset, version)
 
-        if not keep_metadata:
+        if keep_metadata:
+            # Drop succeeded; mark cleanup as complete so GC ignores
+            # this row going forward.
+            self.metastore.update_dataset_version(
+                dataset, version, rows_table_dropped=True
+            )
+        else:
             self.metastore.remove_dataset_version(dataset, version)
         return True
 
@@ -1221,10 +1229,12 @@ class Catalog:
         user-facing bulk delete).
 
         When ``keep_metadata`` is None, infers per version:
-        - REMOVED + ``pending_metadata_drop=True``: finish the interrupted wipe.
-        - REMOVED + ``pending_metadata_drop=False``: just retry the rows-table
-          drop in case the original delete crashed mid-drop; metadata
-          stays.
+        - REMOVED + ``pending_metadata_drop=True``: finish the interrupted wipe
+          (retries rows-table drop, then deletes the version row).
+        - REMOVED + ``pending_metadata_drop=False`` + ``rows_table_dropped=False``:
+          retry the rows-table drop and mark cleanup complete; metadata stays.
+        - REMOVED + ``pending_metadata_drop=False`` + ``rows_table_dropped=True``:
+          finalized tombstone, nothing to do.
         - Anything else: wipe (incomplete/failed/stale versions to clean).
 
         When given explicitly, honors the caller's intent for every version.
@@ -1237,7 +1247,12 @@ class Catalog:
                     if v.pending_metadata_drop:
                         keep = False
                     elif keep_metadata is None:
+                        if v.rows_table_dropped:
+                            continue
                         self.warehouse.drop_dataset_rows_table(dataset, version)
+                        self.metastore.update_dataset_version(
+                            dataset, version, rows_table_dropped=True
+                        )
                         continue
                     else:
                         keep = keep_metadata
@@ -1288,7 +1303,8 @@ class Catalog:
         Removes dataset versions that:
         - Have status CREATED, FAILED, or STALE and belong to a finished job
         - Are REMOVED with ``pending_metadata_drop=True`` (interrupted wipe)
-        - Are REMOVED with an orphaned rows table (interrupted delete)
+        - Are REMOVED with ``rows_table_dropped=False`` (interrupted drop;
+          GC retries the drop and flips the flag)
         - Are session_* datasets from finished jobs (orphaned intermediates)
 
         Returns:

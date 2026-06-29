@@ -303,6 +303,7 @@ class DatasetVersion:
     content_hash: str | None = None
     removed_at: datetime | None = None
     pending_metadata_drop: bool = False
+    rows_table_dropped: bool = False
 
     @classmethod
     def parse(  # noqa: PLR0913
@@ -328,6 +329,7 @@ class DatasetVersion:
         content_hash: str | None = None,
         removed_at: datetime | None = None,
         pending_metadata_drop: bool = False,
+        rows_table_dropped: bool = False,
         *,
         preview_loaded: bool = True,
     ):
@@ -358,6 +360,7 @@ class DatasetVersion:
             content_hash=content_hash,
             removed_at=removed_at,
             pending_metadata_drop=pending_metadata_drop,
+            rows_table_dropped=rows_table_dropped,
             _preview_loaded=preview_loaded,
         )
 
@@ -594,6 +597,7 @@ class DatasetRecord:
         version_content_hash: str | None = None,
         version_removed_at: datetime | None = None,
         version_pending_metadata_drop: bool = False,
+        version_rows_table_dropped: bool = False,
         *,
         versions_loaded: bool = True,
         preview_loaded: bool = True,
@@ -654,6 +658,7 @@ class DatasetRecord:
                 version_content_hash,
                 version_removed_at,
                 version_pending_metadata_drop,
+                version_rows_table_dropped,
                 preview_loaded=preview_loaded,
             )
             versions_list = [dataset_version]
