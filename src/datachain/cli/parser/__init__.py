@@ -249,14 +249,14 @@ def get_parser() -> ArgumentParser:  # noqa: PLR0915
         "--studio",
         action="store_true",
         default=False,
-        help="List datasets from Studio only",
+        help="List the datasets in the Studio",
     )
     datasets_ls_parser.add_argument(
         "-L",
         "--local",
         action="store_true",
         default=False,
-        help="List local datasets only (default)",
+        help="List local datasets only",
     )
     datasets_ls_parser.add_argument(
         "-a",
@@ -326,14 +326,14 @@ def get_parser() -> ArgumentParser:  # noqa: PLR0915
         "--studio",
         action="store_true",
         default=False,
-        help="List files from Studio only",
+        help="List the files in the Studio",
     )
     parse_ls.add_argument(
         "-L",
         "--local",
         action="store_true",
         default=False,
-        help="List local files only (default)",
+        help="List local files only",
     )
     parse_ls.add_argument(
         "-a",
