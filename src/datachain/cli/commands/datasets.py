@@ -42,7 +42,7 @@ def list_datasets(
     catalog: "Catalog",
     studio: bool = False,
     local: bool = False,
-    all: bool = True,
+    all: bool = False,
     team: str | None = None,
     latest_only: bool = True,
     name: str | None = None,

@@ -1,5 +1,6 @@
 import posixpath
 import re
+import sys
 from datetime import datetime
 from struct import pack
 from time import sleep
@@ -238,6 +239,36 @@ def test_ls_remote_sources(cloud_type, capsys, monkeypatch, studio_config):
         ls([src, f"{src}/dogs/others", f"{src}/dogs"], studio=True)
     captured = capsys.readouterr()
     assert captured.out == ls_remote_sources_output.format(src=src)
+
+
+def test_ls_all_labels_local_and_studio_sections(capsys, monkeypatch, studio_config):
+    ls_module = sys.modules["datachain.cli.commands.ls"]
+    with monkeypatch.context() as m:
+        m.setattr(ls_module, "ls_local", lambda *a, **kw: print("local-data"))
+        m.setattr(ls_module, "ls_remote", lambda *a, **kw: print("studio-data"))
+        ls(["s3://x"], all=True)
+    assert capsys.readouterr().out == "Local:\nlocal-data\n\nStudio:\nstudio-data\n"
+
+
+def test_ls_default_only_local_when_logged_into_studio(
+    capsys, monkeypatch, studio_config
+):
+    ls_module = sys.modules["datachain.cli.commands.ls"]
+    called = {"local": 0, "remote": 0}
+    with monkeypatch.context() as m:
+        m.setattr(
+            ls_module,
+            "ls_local",
+            lambda *a, **kw: called.__setitem__("local", called["local"] + 1),
+        )
+        m.setattr(
+            ls_module,
+            "ls_remote",
+            lambda *a, **kw: called.__setitem__("remote", called["remote"] + 1),
+        )
+        ls(["s3://x"])
+    assert called == {"local": 1, "remote": 0}
+    assert "Local:" not in capsys.readouterr().out
 
 
 REMOTE_DATA: dict[str, list[dict[str, Any]]] = {
