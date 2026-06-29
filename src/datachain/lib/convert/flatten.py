@@ -2,6 +2,7 @@ import inspect
 from collections.abc import Generator, Iterator
 from typing import Any, NamedTuple
 
+import numpy as np
 from pydantic import BaseModel
 
 from datachain.lib.data_model import (
@@ -113,6 +114,8 @@ def _flatten_arm(value, arm) -> Generator:
 def _match_union_arm(value, layout: UnionLayout) -> int | None:
     """Arm index for ``value`` (None for the None arm). Exact-type match beats
     ``isinstance`` so ``bool`` isn't swallowed by an ``int`` arm."""
+    if isinstance(value, np.generic):
+        value = value.item()  # numpy scalar -> its native Python type
     if value is None:
         if not layout.has_none:
             raise TypeError(f"value None does not match any arm of union {layout.arms}")

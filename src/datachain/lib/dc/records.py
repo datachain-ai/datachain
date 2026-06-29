@@ -18,9 +18,8 @@ if TYPE_CHECKING:
 
 
 def _flatten_record(record: dict, signal_schema: SignalSchema) -> dict:
-    """Converts structured field values into their DB columns, e.g.
-    {"person": Person(...)} -> {"person__name": "Alice", "person__age": 30, ...} and a
-    union value into its tagged ``_type_tag`` + per-arm columns. Plain scalars and
+    """Flatten model and union field values into their DB columns, e.g.
+    {"person": Person(...)} -> {"person__name": "Alice", ...}. Plain scalars and
     already-flattened keys (e.g. "person__name") pass through unchanged.
     """
     flattened = {}

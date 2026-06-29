@@ -431,6 +431,20 @@ def test_union_indistinguishable_arms_rejected(test_session):
         ).save("u_dup")
 
 
+def test_union_numpy_scalar_matches_numeric_arm(test_session):
+    import numpy as np
+
+    chain = dc.read_values(x=[1, 2], session=test_session)
+    ints = chain.map(
+        r=lambda x: np.int64(x * 10), output={"r": Union[float, int]}
+    ).to_list("r")
+    assert [(v, type(v).__name__) for v, in ints] == [(10, "int"), (20, "int")]
+    floats = chain.map(
+        r=lambda x: np.float32(x) / 2, output={"r": Union[str, float]}
+    ).to_list("r")
+    assert [v for v, in floats] == [0.5, 1.0]
+
+
 def test_union_no_arm_value_raises_multi_output(test_session):
     with pytest.raises(TypeError, match="does not match any arm"):
         dc.read_values(
