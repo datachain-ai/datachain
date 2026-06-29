@@ -1237,7 +1237,10 @@ class Catalog:
           finalized tombstone, nothing to do.
         - Anything else: wipe (incomplete/failed/stale versions to clean).
 
-        When given explicitly, honors the caller's intent for every version.
+        When given explicitly, honors the caller's intent per version, with
+        a downgrade to wipe for cases that can't keep metadata (internal
+        datasets, non-COMPLETE/REMOVED versions) - mirrors
+        ``catalog.remove_dataset`` so batch callers don't have to filter.
         """
         num_removed = 0
         for dataset, version in pairs:
@@ -1260,6 +1263,11 @@ class Catalog:
                     keep = False
                 else:
                     keep = keep_metadata
+                if keep and (
+                    dataset.is_internal
+                    or v.status not in (DatasetStatus.COMPLETE, DatasetStatus.REMOVED)
+                ):
+                    keep = False
                 if self.remove_dataset_version(dataset, version, keep_metadata=keep):
                     num_removed += 1
             except Exception as e:  # noqa: BLE001

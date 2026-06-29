@@ -744,6 +744,31 @@ def test_session_dataset_never_keeps_metadata(test_session):
         catalog.get_dataset(name, include_incomplete=True)
 
 
+def test_remove_dataset_versions_keep_metadata_downgrades_for_internal(test_session):
+    """Bulk remove with `keep_metadata=True` silently wipes internal datasets
+    (`lst__*` / `session_*`) - they have no semver/lineage to preserve, so the
+    flag is meaningless there. User-facing versions in the same batch still
+    get the tombstone."""
+    catalog = test_session.catalog
+    user_ds = _make_completed_dataset(catalog, "user_ds")
+    internal_ds = _make_completed_dataset(
+        catalog, f"{SESSION_DATASET_PREFIX}internal_in_batch"
+    )
+
+    user_vid = user_ds.get_version(user_ds.latest_version).id
+    internal_vid = internal_ds.get_version(internal_ds.latest_version).id
+
+    catalog.remove_dataset_versions(
+        version_ids=[user_vid, internal_vid], keep_metadata=True
+    )
+
+    user_after = catalog.get_dataset("user_ds", versions=None, include_incomplete=True)
+    assert _find_removed(user_after, user_ds.latest_version) is not None
+
+    with pytest.raises(DatasetNotFoundError):
+        catalog.get_dataset(internal_ds.name, include_incomplete=True)
+
+
 def test_save_skips_reserved_semver_after_delete(test_session):
     """After save -> save -> soft delete latest -> save, the new save must
     skip the REMOVED slot and auto-bump past it (semver permanently
