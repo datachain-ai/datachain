@@ -1218,7 +1218,10 @@ class SignalSchema:
                 return rebuild(node.element).operate(node.operator)
             if isinstance(node, Cast):
                 return cast(rebuild(node.clause), node.typeclause.type)
-            return replacement_traverse(node, {}, replace_col)
+            # other node types: rewrite columns in place, leave literals untouched
+            if any(isinstance(n, Column) for n in iterate(node)):
+                return replacement_traverse(node, {}, replace_col)
+            return node
 
         return rebuild(expr)
 
