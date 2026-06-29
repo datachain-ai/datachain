@@ -243,6 +243,23 @@ def test_union_with_file_arm_roundtrip(test_session):
     assert got[1] == "plain"
 
 
+def test_file_arm_nested_in_model_gets_stream(test_session):
+    class Holder(DataModel):
+        label: str = ""
+        doc: Union[File, str] = ""
+
+    dc.read_values(
+        id=[1],
+        h=[Holder(label="r", doc=File(path="a.txt", source="s3://b"))],
+        output={"id": int, "h": Holder},
+        session=test_session,
+    ).save("u_nested_file_arm")
+    back = dc.read_dataset("u_nested_file_arm", session=test_session)
+    (h,) = back.to_list("h")[0]
+    assert isinstance(h.doc, File)
+    assert h.doc._catalog is not None
+
+
 # ---- arm-order stability across serialization -------------------------------
 
 

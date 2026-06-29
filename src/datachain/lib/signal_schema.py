@@ -841,13 +841,10 @@ class SignalSchema:
     ) -> None:
         if isinstance(obj, File):
             obj._set_stream(catalog, caching_enabled=cache)
-        for field, finfo in type(obj).model_fields.items():
-            # Unwrap Optional so a File under Optional[...] still gets its stream.
-            inner, _ = unwrap_optional(finfo.annotation)
-            if ModelStore.is_pydantic(inner):
-                value = getattr(obj, field)
-                if value is not None:
-                    SignalSchema._set_file_stream(value, catalog, cache)
+        for field in type(obj).model_fields:
+            value = getattr(obj, field)
+            if isinstance(value, BaseModel):
+                SignalSchema._set_file_stream(value, catalog, cache)
 
     def get_column_type(self, col_name: str, with_subtree: bool = False) -> DataType:
         """
