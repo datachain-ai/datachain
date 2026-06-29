@@ -168,8 +168,8 @@ def union_arms(anno: Any) -> tuple[list[Any], bool]:
     return [anno], False
 
 
-# Arm types a tagged union stores as its own column(s): scalars and DataModels.
-_TAGGABLE_SCALARS: "tuple[type, ...]" = (*NULLABLE_SCALARS, float)
+# Scalar arm types a tagged union stores as its own column (DataModels handled too).
+_TAGGABLE_SCALARS: "tuple[type, ...]" = NULLABLE_SCALARS
 
 
 def _is_taggable_arm(arm: Any) -> bool:
@@ -227,7 +227,7 @@ def arm_selector(arm: Any) -> str:
     survives reading a dataset without the model code) or a scalar type name."""
     if (fr := ModelStore.to_pydantic(arm)) is not None:
         return ModelStore._base_name(fr)
-    return getattr(arm, "__name__", None) or type_to_str(arm)
+    return arm.__name__
 
 
 def promote_default_none(model: type[BaseModel]) -> None:

@@ -19,6 +19,7 @@ from datachain.lib.convert.unflatten import unflatten_to_json_pos
 from datachain.lib.data_model import (
     DataModel,
     UnionLayout,
+    arm_selector,
     is_chain_type,
     union_arms,
     union_layout,
@@ -144,8 +145,8 @@ def test_arm_selector_stable_across_reload():
         a: int = 0
 
     Reloaded._modelstore_base_name = "Block"
-    assert SignalSchema._arm_selector(Reloaded) == "Block"
-    assert SignalSchema._arm_selector(Reloaded) != Reloaded.__name__
+    assert arm_selector(Reloaded) == "Block"
+    assert arm_selector(Reloaded) != Reloaded.__name__
 
 
 def test_union_arm_leaves_are_nullable():

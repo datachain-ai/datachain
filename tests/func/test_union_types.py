@@ -20,6 +20,7 @@ import pytest
 import datachain as dc
 from datachain import C, func
 from datachain.lib.data_model import DataModel
+from datachain.lib.utils import DataChainParamsError
 
 
 class _Foo(DataModel):
@@ -508,7 +509,7 @@ def test_union_numpy_scalar_matches_numeric_arm(test_session):
 
 
 def test_union_no_arm_value_raises_multi_output(test_session):
-    with pytest.raises(TypeError, match="does not match any arm"):
+    with pytest.raises(DataChainParamsError, match="does not match any arm"):
         dc.read_values(
             id=[1],
             v=[5],
@@ -518,7 +519,7 @@ def test_union_no_arm_value_raises_multi_output(test_session):
 
 
 def test_union_none_value_raises_non_nullable(test_session):
-    with pytest.raises(TypeError, match="does not match any arm"):
+    with pytest.raises(DataChainParamsError, match="does not match any arm"):
         dc.read_values(
             id=[1],
             v=[None],

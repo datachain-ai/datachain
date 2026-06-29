@@ -13,6 +13,7 @@ from datachain.lib.data_model import (
     unwrap_optional,
 )
 from datachain.lib.model_store import ModelStore
+from datachain.lib.utils import DataChainParamsError
 
 
 class FieldKind(NamedTuple):
@@ -119,13 +120,17 @@ def _match_union_arm(value, layout: UnionLayout) -> int | None:
         value = value.item()  # numpy scalar -> its native Python type
     if value is None:
         if not layout.has_none:
-            raise TypeError(f"value None does not match any arm of union {layout.arms}")
+            raise DataChainParamsError(
+                f"value None does not match any arm of union {layout.arms}"
+            )
         return None
     for exact in (True, False):
         for i, arm in enumerate(layout.arms):
             if _arm_matches(value, arm, exact=exact):
                 return i
-    raise TypeError(f"value {value!r} does not match any arm of union {layout.arms}")
+    raise DataChainParamsError(
+        f"value {value!r} does not match any arm of union {layout.arms}"
+    )
 
 
 def _arm_matches(value, arm, *, exact: bool) -> bool:

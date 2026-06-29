@@ -1037,10 +1037,6 @@ class SignalSchema:
         return ".".join(slots[-1].split(DEFAULT_DELIMITER)) if slots else None
 
     @staticmethod
-    def _arm_selector(arm: DataType) -> str:
-        return arm_selector(arm)
-
-    @staticmethod
     def _field_type(cur: DataType, name: str) -> "DataType | None":
         """Annotation of model field ``name`` on ``cur`` (unwrapping Optional), or
         None when ``cur`` is not a model or has no such field."""
@@ -1058,7 +1054,7 @@ class SignalSchema:
         matches = [
             (idx, arm, 1)
             for idx, arm in enumerate(layout.arms)
-            if self._arm_selector(arm) == segment
+            if arm_selector(arm) == segment
         ] + [
             (idx, arm, 0)
             for idx, arm in enumerate(layout.arms)
@@ -1066,7 +1062,7 @@ class SignalSchema:
             and segment in fr.model_fields
         ]
         if len(matches) > 1:
-            names = ", ".join(self._arm_selector(arm) for _, arm, _ in matches)
+            names = ", ".join(arm_selector(arm) for _, arm, _ in matches)
             raise SignalResolvingError(
                 [segment],
                 f"is ambiguous across union arms ({names}); reference it with a "
@@ -1156,7 +1152,7 @@ class SignalSchema:
                 and slot < len(layout.arms)
             ):
                 cur = layout.arms[slot]
-                out.append(self._arm_selector(cur))
+                out.append(arm_selector(cur))
             else:
                 out.append(seg)
                 cur = self._field_type(cur, seg)  # type: ignore[assignment]
