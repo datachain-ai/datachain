@@ -242,6 +242,22 @@ def test_union_with_file_arm_roundtrip(test_session):
     assert got[1] == "plain"
 
 
+def test_to_storage_union_file_arm_skips_non_file(test_session, tmp_path):
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.txt").write_text("hi")
+    f = File(source=src.as_uri(), path="a.txt")
+    out = tmp_path / "out"
+    dc.read_values(
+        id=[1, 2],
+        v=[f, "plain"],
+        output={"id": int, "v": Union[File, str]},
+        session=test_session,
+    ).to_storage(str(out), signal="v")
+    exported = [p.name for p in out.rglob("*") if p.is_file()]
+    assert exported == ["a.txt"]
+
+
 def test_file_arm_nested_in_model_gets_stream(test_session):
     class Holder(DataModel):
         label: str = ""
