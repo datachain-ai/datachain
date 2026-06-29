@@ -1,9 +1,9 @@
 import inspect
+import sys
 from collections.abc import Generator, Iterator
 from functools import lru_cache
 from typing import Any, NamedTuple
 
-import numpy as np
 from pydantic import BaseModel
 
 from datachain.lib.data_model import (
@@ -116,8 +116,9 @@ def _flatten_arm(value, arm) -> Generator:
 def _match_union_arm(value, layout: UnionLayout) -> int | None:
     """Arm index for ``value`` (None for the None arm). Exact-type match beats
     ``isinstance`` so ``bool`` isn't swallowed by an ``int`` arm."""
-    if isinstance(value, np.generic):
-        value = value.item()  # numpy scalar -> its native Python type
+    # numpy scalar -> native type; via sys.modules to keep numpy a lazy import
+    if (np := sys.modules.get("numpy")) is not None and isinstance(value, np.generic):
+        value = value.item()
     if value is None:
         if not layout.has_none:
             raise DataChainParamsError(
