@@ -62,7 +62,6 @@ def test_collect_dataset_snapshot_qualifies_name_and_fetches_complete():
     assert snap["attrs"] == ["cast:l1"]
     assert snap["description"] == "pets"
     assert [v["version"] for v in snap["versions"]] == ["1.0.0"]
-    # COMPLETE-only, all versions, with preview — so the latest's preview is available.
     _, ns, proj, kwargs = ms.get_dataset_calls[0]
     assert (ns, proj) == ("ns", "proj")
     assert kwargs["include_incomplete"] is False
@@ -109,8 +108,6 @@ def test_collect_dataset_snapshot_storage_dependency_cleans_listing_name():
 
 
 def test_collect_dataset_snapshot_deleted_dependency_dropped_and_warned():
-    # A deleted target surfaces as a None edge; it must drop from the rendered
-    # dependencies but still warn that the lineage is incomplete.
     ms = _StubMetastore(_record([_version("1.0.0")]), {"1.0.0": [None]})
 
     snap = collect_dataset_snapshot(ms, "pet_images", "ns", "proj")

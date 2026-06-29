@@ -230,8 +230,7 @@ def _fetch_all_versions(name: str) -> "DatasetSnapshot":  # noqa: C901, PLR0912,
         deps_provider=deps_provider,
     )
 
-    # The builder reads schema/preview from stored fields and omits summary; overlay
-    # the live-read values onto the latest version (the only one that carries them).
+    # overlay live-read schema/preview/summary onto the latest version
     if result["versions"]:
         latest_entry = result["versions"][-1]
         latest_entry["schema"] = schema

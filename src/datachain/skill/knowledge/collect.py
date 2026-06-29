@@ -1,5 +1,4 @@
-"""Build a dataset snapshot from any `AbstractMetastore` (local catalog, Studio's
-PostgreSQL, a worker's API client), so the acquisition isn't re-implemented per side."""
+"""Build a dataset snapshot from any `AbstractMetastore`."""
 
 from typing import TYPE_CHECKING
 
@@ -21,7 +20,7 @@ def collect_dataset_snapshot(
     *,
     source: str = "studio",
 ) -> "DatasetSnapshot":
-    """Build a dataset's snapshot from metastore reads alone (no warehouse access)."""
+    """Build a dataset's snapshot from metastore reads."""
     record = metastore.get_dataset(
         name,
         namespace,
@@ -33,7 +32,6 @@ def collect_dataset_snapshot(
 
     def deps_provider(version: "DatasetVersion") -> "list[DependencyEntry]":
         edges = metastore.get_direct_dataset_dependencies(record, version.version) or []
-        # A `None` edge is a deleted target — keep a name-less entry so it still warns.
         return [
             dep_entry(_dep_name(e), e.version, e.type)
             if e is not None
@@ -52,8 +50,6 @@ def collect_dataset_snapshot(
 
 
 def _dep_name(dep: "DatasetDependency") -> str:
-    # Storage edges carry the raw `lst__…` name (cleaned to a URI by `dep_entry`);
-    # dataset edges store namespace/project/name separately, so re-qualify them.
     if dep.type == DatasetDependencyType.STORAGE:
         return dep.name
     return f"{dep.namespace}.{dep.project}.{dep.name}"

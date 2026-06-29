@@ -505,8 +505,6 @@ def _ds_version(version, version_value, *, query_script=""):
 
 
 def test_fetch_all_versions_overlays_live_enrichment_on_latest(monkeypatch):
-    # The shared builder fills schema/preview from stored fields and omits summary;
-    # the local path must overlay the live-read values onto the latest version only.
     import dataset_all
     import summary
 
@@ -543,12 +541,11 @@ def test_fetch_all_versions_overlays_live_enrichment_on_latest(monkeypatch):
 
     assert snap["name"] == "my_ds"
     assert snap["source"] == "local"
-    oldest, latest = snap["versions"]  # oldest-first
+    oldest, latest = snap["versions"]
     assert latest["version"] == "1.0.1"
     assert latest["schema"] == {"col": {"type": "str", "fields": None}}
     assert latest["preview"] == {"columns": ["col"], "rows": [["v"]]}
     assert latest["summary"] == {"overview": "1 items"}
-    # Non-latest versions carry no live enrichment.
     assert oldest["schema"] == {}
     assert oldest["preview"] is None
     assert oldest["summary"] is None
