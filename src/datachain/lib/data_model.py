@@ -184,10 +184,14 @@ class UnionLayout(NamedTuple):
     use_slots: bool
 
 
-@lru_cache(maxsize=4096)
 def union_layout(anno: Any) -> "UnionLayout | None":
     """Tagged-union layout, or None when no ``_type_tag`` is needed (plain leaf,
     ``Optional[basic]``, plain model, or a union with a non-taggable arm)."""
+    return _union_layout(anno)
+
+
+@lru_cache(maxsize=4096)
+def _union_layout(anno: Any) -> "UnionLayout | None":
     arms, has_none = union_arms(anno)
     if not all(_is_taggable_arm(arm) for arm in arms):
         return None
