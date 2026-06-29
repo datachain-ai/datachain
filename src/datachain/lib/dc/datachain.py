@@ -2942,10 +2942,10 @@ class DataChain:
         chain = self.persist()
         count = chain.count()
 
-        if placement == "filename" and (
-            chain._query.distinct(pathfunc.name(C(f"{signal}__path"))).count() != count
-        ):
-            raise ValueError("Files with the same name found")
+        if placement == "filename":
+            path_col = chain.signals_schema.to_db_col(f"{signal}.path")
+            if chain._query.distinct(pathfunc.name(C(path_col))).count() != count:
+                raise ValueError("Files with the same name found")
 
         if anon is not None:
             client_config = (client_config or {}) | {"anon": anon}
