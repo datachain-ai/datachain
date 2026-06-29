@@ -289,9 +289,9 @@ def test_union_filter_negation_and_unary(test_session):
         session=test_session,
     )
     # ~ over a clause list and unary - over an arm path (UnaryExpression nodes)
-    assert chain.filter(
-        ~((C("value.int") == 10) | (C("value.int") == 20))
-    ).to_values("id") == [4]
+    assert chain.filter(~((C("value.int") == 10) | (C("value.int") == 20))).to_values(
+        "id"
+    ) == [4]
     assert chain.order_by(-C("value.int")).to_values("id") == [2, 4, 3, 1]
 
 
