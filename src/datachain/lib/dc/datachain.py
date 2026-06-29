@@ -111,6 +111,8 @@ if TYPE_CHECKING:
     from sqlalchemy.orm import Session as OrmSession
     from typing_extensions import ParamSpec, Self
 
+    from datachain.lib.settings import LLMParams
+
     P = ParamSpec("P")
 
     ConnectionType = (
@@ -452,6 +454,8 @@ class DataChain:
         batch_size: int | None = None,
         sys: bool | None = None,
         ephemeral: bool | None = None,
+        llm: str | None = None,
+        llm_params: "LLMParams | None" = None,
     ) -> "Self":
         """Set chain execution parameters. Returns the chain itself, allowing method
         chaining for subsequent operations. To restore all settings to their default
@@ -478,6 +482,13 @@ class DataChain:
                 (no jobs, checkpoints, or datasets). UDF execution still uses
                 temporary tables. Calling .save() in ephemeral mode will raise
                 an error.
+            llm: Provider-prefixed model string (e.g. `"anthropic/claude-haiku-4-5"`)
+                used by `datachain.llm` operations downstream in the chain. Inherited
+                by every `llm.*` call unless overridden by a per-call `llm=`.
+            llm_params: Extra parameters passed to the underlying model call (e.g.
+                credentials, `api_base`). Either a dict, or a no-argument callable
+                returning a dict that is resolved per-worker (so secrets are never
+                serialized into the task).
 
         Example:
             ```py
@@ -502,6 +513,8 @@ class DataChain:
                 min_task_size=min_task_size,
                 batch_size=batch_size,
                 ephemeral=ephemeral,
+                llm=llm,
+                llm_params=llm_params,
             )
         )
         return self._evolve(settings=settings, _sys=sys)
@@ -1156,6 +1169,9 @@ class DataChain:
         is_generator = target_class.is_output_batched
         name = self.name or ""
 
+        func = self._bind_udf_settings(func)
+        signal_map = {k: self._bind_udf_settings(v) for k, v in signal_map.items()}
+
         sign = UdfSignature.parse(name, signal_map, func, params, output, is_generator)
         DataModel.register(list(sign.output_schema.values.values()))
 
@@ -1164,6 +1180,16 @@ class DataChain:
         )
 
         return target_class._create(sign, params_schema)
+
+    def _bind_udf_settings(self, func):
+        """Resolve a settings-bindable UDF spec into a concrete callable.
+
+        Any object exposing ``__datachain_bind__(settings)`` (e.g. a `datachain.llm`
+        operation) is given the chain's settings so it can pick up chain-scoped
+        configuration such as ``settings(llm=...)``.
+        """
+        bind = getattr(func, "__datachain_bind__", None)
+        return bind(self._settings) if callable(bind) else func
 
     def _extend_to_data_model(self, method_name, *args, **kwargs):
         query_func = getattr(self._query, method_name)

@@ -101,8 +101,11 @@ postgres = [
 zarr = [
   "zarr>=3.0.0 ; python_version >= '3.11'"
 ]
+llm = [
+  "litellm>=1.50.0"
+]
 tests = [
-  "datachain[torch,audio,remote,vector,hf,video,postgres,zarr]",
+  "datachain[torch,audio,remote,vector,hf,video,postgres,zarr,llm]",
   "pytest>=8,<10",
   "pytest-asyncio",
   "pytest-sugar>=0.9.6",
