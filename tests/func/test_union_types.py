@@ -284,8 +284,21 @@ def test_union_select_keeps_whole_signal(test_session):
 
 
 def test_union_distinct_on_arm(test_session):
-    chain = _nullable_union(test_session)
-    assert chain.distinct("value._1").count() == 3  # 'hi', 'yo', NULL
+    # a union is atomic: distinct on an arm path dedups on the whole value, so
+    # other-arm rows are not collapsed into one shared NULL-slot row
+    chain = dc.read_values(
+        id=[1, 2, 3, 4, 5],
+        value=["a", "b", 1, 1, 2],
+        output={"id": int, "value": Union[str, int]},
+        session=test_session,
+    )
+    assert sorted(chain.distinct("value._1").to_values("value"), key=str) == [
+        1,
+        2,
+        "a",
+        "b",
+    ]
+    assert chain.distinct("value._1").count() == chain.distinct("value._0").count()
 
 
 def test_readable_arm_access_across_ops(test_session):
@@ -297,7 +310,7 @@ def test_readable_arm_access_across_ops(test_session):
         session=test_session,
     )
     assert chain.filter(C("value.int") == 42).to_values("id") == [2]
-    assert chain.distinct("value.int").count() == 3  # 42, 7, NULL (str rows)
+    assert chain.distinct("value.int").count() == 4  # atomic: hi, 42, yo, 7
     # id breaks the tie between the two str rows (NULL int arm), undefined otherwise
     assert chain.order_by("value.int", "id").to_values("value") == [7, 42, "hi", "yo"]
     # selecting an arm field keeps the whole (atomic) union

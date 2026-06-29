@@ -1242,8 +1242,10 @@ class DataChain:
         if not args:
             raise TypeError("distinct() expected at least 1 argument, got 0")
 
+        # a union is atomic: dedup on the whole union, not a single arm slot
+        roots = [self.signals_schema.multiarm_union_root(a) or a for a in args]
         return self._evolve(
-            query=self._query.distinct(*self.signals_schema.resolve(*args).db_signals())
+            query=self._query.distinct(*self.signals_schema.resolve(*roots).db_signals())
         )
 
     def select(self, *args: str | Column, **kwargs) -> "Self":
