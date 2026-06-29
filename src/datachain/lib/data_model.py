@@ -181,7 +181,7 @@ class UnionLayout(NamedTuple):
     (arms in indexed slots ``_0``, ``_1``, ...); False for ``Optional[Model]``, whose
     single model arm flattens directly under the signal."""
 
-    arms: list[Any]
+    arms: tuple[Any, ...]
     has_none: bool
     use_slots: bool
 
@@ -194,7 +194,8 @@ def union_layout(anno: Any) -> "UnionLayout | None":
 
 @lru_cache(maxsize=4096)
 def _union_layout(anno: Any) -> "UnionLayout | None":
-    arms, has_none = union_arms(anno)
+    arms_list, has_none = union_arms(anno)
+    arms = tuple(arms_list)  # immutable: a cached layout must not be mutable
     if not all(_is_taggable_arm(arm) for arm in arms):
         return None
     if len(arms) >= 2:
@@ -278,7 +279,19 @@ def is_chain_type(t: type) -> bool:  # noqa: PLR0911
     orig = get_origin(t)
     args = get_args(t)
     if orig is list and len(args) == 1:
-        return is_chain_type(get_args(t)[0])
+        layout = union_layout(args[0])
+        if (
+            layout is not None
+            and layout.use_slots
+            and any(ModelStore.is_pydantic(arm) for arm in layout.arms)
+        ):
+            # a model arm collapses to a dict on read; scalar arms round-trip via JSON
+            raise DataChainParamsError(
+                "list[Union[...]] with a DataModel arm is not supported: list "
+                "elements lose their model type. Put the Union inside a DataModel "
+                "field instead."
+            )
+        return is_chain_type(args[0])
 
     if orig is dict and len(args) == 2:
         return is_chain_type(args[0]) and is_chain_type(args[1])

@@ -7,7 +7,9 @@ import sqlalchemy
 from datachain.lib.convert.flatten import classify_field, flatten_value, union_layout
 from datachain.lib.data_model import DataType
 from datachain.lib.signal_schema import SignalSchema
+from datachain.lib.utils import DataChainParamsError
 from datachain.query import Session
+from datachain.query.schema import DEFAULT_DELIMITER
 
 if TYPE_CHECKING:
     from typing_extensions import ParamSpec
@@ -34,6 +36,14 @@ def _flatten_record(record: dict, signal_schema: SignalSchema) -> dict:
             flat_values = flatten_value(value, anno)
             flattened.update(dict(zip(db_columns, flat_values, strict=True)))
         else:
+            root = signal_schema.values.get(key.split(DEFAULT_DELIMITER)[0])
+            layout = union_layout(root) if root is not None else None
+            if layout is not None and layout.use_slots:
+                signal = key.split(DEFAULT_DELIMITER)[0]
+                raise DataChainParamsError(
+                    f"cannot pre-flatten a multi-arm Union; pass the value for "
+                    f"{signal!r} instead of a flattened key {key!r}"
+                )
             flattened[key] = value
 
     return flattened

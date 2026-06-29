@@ -65,6 +65,24 @@ def test_read_records_scalar_union(test_session):
     assert _ordered(back, "value") == [(1, "a"), (2, 7)]
 
 
+def test_list_of_model_union_rejected(test_session):
+    with pytest.raises(DataChainParamsError, match="DataModel arm is not supported"):
+        dc.read_values(
+            items=[[_Foo(a=1), _Bar(x=2.0)]],
+            output={"items": list[Union[_Foo, _Bar]]},
+            session=test_session,
+        )
+
+
+def test_read_records_preflattened_union_key_errors(test_session):
+    with pytest.raises(DataChainParamsError, match="pre-flatten a multi-arm Union"):
+        dc.read_records(
+            [{"v__int": 99}],
+            schema={"v": Union[int, str]},
+            session=test_session,
+        ).save("u_rec_pf")
+
+
 def test_read_records_model_union(test_session):
     items = [_Foo(a=1, b="z"), _Bar(x=2.5)]
     dc.read_records(

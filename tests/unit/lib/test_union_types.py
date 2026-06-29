@@ -88,7 +88,7 @@ def test_union_layout_multiarm_uses_slots():
     layout = union_layout(Union[str, int])
     assert layout is not None
     assert layout.use_slots
-    assert layout.arms == [int, str]
+    assert layout.arms == (int, str)
     assert not layout.has_none
 
 
