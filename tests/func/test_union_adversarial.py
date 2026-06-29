@@ -1,13 +1,13 @@
 """Adversarial / differential tests for multi-arm ``Union[...]`` support.
 
 Each probe asserts the *logically correct* value, so running this file on SQLite
-(reference) and ClickHouse surfaces backend divergences as failures. The probes
-mirror every bug class found during the Optional[X] work (PR #1791) — func/aggregate
-over an inactive leaf coercing to a type default on CH, NULL propagation through
-arithmetic, internal-column leaks into schema/export, NULLS ordering, group-by over
-all-absent partitions, parquet/JSON reconstruction — plus union-specific hazards
-(arm-order stability across serialization, bool/int and int/float arm matching, a
-union fed into a UDF, a File arm, issubclass-on-Union safety).
+(reference) and ClickHouse surfaces backend divergences as failures. Coverage:
+func/aggregate over an inactive leaf coercing to a type default on CH, NULL
+propagation through arithmetic, internal-column leaks into schema/export, NULLS
+ordering, group-by over all-absent partitions, parquet/JSON reconstruction, plus
+union-specific hazards (arm-order stability across serialization, bool/int and
+int/float arm matching, a union fed into a UDF, a File arm, issubclass-on-Union
+safety).
 
 Run: pytest tests/func/test_union_adversarial.py            # SQLite
      TEST_TARGET=.../test_union_adversarial.py scripts/run-clickhouse-tests.sh
@@ -222,8 +222,7 @@ def test_nullable_union_annotated_udf_param(test_session):
 
 def test_file_signal_coexists_with_union(test_session):
     chain = _si(test_session, [1, 2], ["hi", 42])
-    # Exercising schema introspection paths that historically did issubclass()
-    # on the signal type (raises on a Union under py<3.11).
+    # schema introspection must not issubclass() a Union (raises under py<3.11)
     assert chain.signals_schema.get_file_signal() is None
     assert "value" in chain.signals_schema.values
     assert chain.count() == 2
