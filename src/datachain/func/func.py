@@ -532,6 +532,10 @@ class Func(Function):  # noqa: PLW1641
             column.table = table
             return column
 
+        if isinstance(col, ColumnElement) and signals_schema is not None:
+            # resolve arm paths inside an expression operand (e.g. case/ifelse)
+            return signals_schema.enrich_expr_types(col)
+
         return col
 
     def _window_col(self, key, signals_schema):

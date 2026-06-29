@@ -277,6 +277,29 @@ def test_union_filter_negation_and_unary(test_session):
     assert chain.order_by(-C("value.int")).to_values("id") == [2, 4, 3, 1]
 
 
+def test_union_case_ifelse_over_arm(test_session):
+    chain = dc.read_values(
+        k=[1, 2, 3],
+        v=[10, "hi", 20],
+        output={"k": int, "v": Union[int, str]},
+        session=test_session,
+    )
+    out = chain.mutate(label=func.ifelse(C("v.int") > 15, "big", "small"))
+    assert sorted((r["k"], r["label"]) for r in out.to_records()) == [
+        (1, "small"),
+        (2, "small"),
+        (3, "big"),
+    ]
+    out2 = chain.mutate(
+        g=func.case((C("v.int") > 15, "big"), (C("v.int") > 5, "mid"), else_="lo")
+    )
+    assert sorted((r["k"], r["g"]) for r in out2.to_records()) == [
+        (1, "mid"),
+        (2, "lo"),
+        (3, "big"),
+    ]
+
+
 def test_union_root_reference_raises_guard(test_session):
     from datachain.lib.utils import DataChainColumnError
 
