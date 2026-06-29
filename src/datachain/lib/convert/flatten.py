@@ -1,5 +1,6 @@
 import inspect
 from collections.abc import Generator, Iterator
+from functools import lru_cache
 from typing import Any, NamedTuple
 
 import numpy as np
@@ -162,6 +163,7 @@ def _flatten_list_field(value: list) -> list:
     return value
 
 
+@lru_cache(maxsize=4096)
 def _leaf_count(model: type[BaseModel]) -> int:
     """Count of flat columns ``model`` emits (sentinels included)."""
     return sum(1 for _ in iter_flat_columns(model))

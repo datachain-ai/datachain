@@ -42,6 +42,7 @@ from datachain.lib.data_model import (
     compute_model_fingerprint,
     skip_optional_promotion,
     union_layout,
+    union_slot_index,
     union_slot_key,
     unwrap_optional,
 )
@@ -1118,11 +1119,10 @@ class SignalSchema:
             if (
                 layout is not None
                 and layout.use_slots
-                and seg.startswith("_")
-                and seg[1:].isdigit()
-                and int(seg[1:]) < len(layout.arms)
+                and (slot := union_slot_index(seg)) is not None
+                and slot < len(layout.arms)
             ):
-                cur = layout.arms[int(seg[1:])]
+                cur = layout.arms[slot]
                 out.append(self._arm_selector(cur))
             else:
                 out.append(seg)

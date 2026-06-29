@@ -6,6 +6,7 @@ from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime
+from functools import lru_cache
 from typing import Any, ClassVar, NamedTuple, Union, get_args, get_origin
 
 from pydantic import AliasChoices, BaseModel, Field, create_model
@@ -183,6 +184,7 @@ class UnionLayout(NamedTuple):
     use_slots: bool
 
 
+@lru_cache(maxsize=4096)
 def union_layout(anno: Any) -> "UnionLayout | None":
     """Tagged-union layout, or None when no ``_type_tag`` is needed (plain leaf,
     ``Optional[basic]``, plain model, or a union with a non-taggable arm)."""
@@ -207,6 +209,11 @@ def union_layout(anno: Any) -> "UnionLayout | None":
 
 def union_slot_key(index: int) -> str:
     return f"_{index}"
+
+
+def union_slot_index(seg: str) -> int | None:
+    """Inverse of ``union_slot_key``: the arm index a slot segment names, or None."""
+    return int(seg[1:]) if seg.startswith("_") and seg[1:].isdigit() else None
 
 
 def arm_selector(arm: Any) -> str:
