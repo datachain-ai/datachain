@@ -300,6 +300,22 @@ def test_union_case_ifelse_over_arm(test_session):
     ]
 
 
+def test_union_select_except_atomic(test_session):
+    from datachain.lib.signal_schema import SignalRemoveError
+
+    chain = dc.read_values(
+        id=[1, 2, 3],
+        value=["a", 1, 2],
+        name=["x", "y", "z"],
+        output={"id": int, "value": Union[str, int], "name": str},
+        session=test_session,
+    )
+    for arg in ("value.int", "value._0"):
+        with pytest.raises(SignalRemoveError, match="Union is atomic"):
+            chain.select_except(arg).to_records()
+    assert sorted(chain.select_except("value").to_records()[0]) == ["id", "name"]
+
+
 def test_union_root_reference_raises_guard(test_session):
     from datachain.lib.utils import DataChainColumnError
 

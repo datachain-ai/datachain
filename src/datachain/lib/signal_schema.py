@@ -1272,6 +1272,14 @@ class SignalSchema:
             if not isinstance(signal, str):
                 raise SignalResolvingTypeError("select_except()", signal)
 
+            root = self.multiarm_union_root(signal)
+            if root is not None and root != signal:
+                raise SignalRemoveError(
+                    signal.split("."),
+                    f"a Union is atomic; exclude the whole signal ({root!r}), "
+                    "not one of its arms",
+                )
+
             matches = {
                 s for s in leaf_signals if s == signal or s.startswith(f"{signal}.")
             }
