@@ -20,7 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        pyv: ['3.12']
+        pyv: ['3.13']
         group: [1, 2, 3, 4, 5, 6]
     services:
       postgres:
@@ -68,7 +68,7 @@ jobs:
           echo "Studio branch: $STUDIO_BRANCH"
 
       - name: Check out Studio
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 1
           repository: datachain-ai/studio
@@ -76,7 +76,7 @@ jobs:
           token: ${{ secrets.ITERATIVE_STUDIO_READ_ACCESS_TOKEN }}
 
       - name: Check out DataChain
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           path: './datachain'
           fetch-depth: 1
