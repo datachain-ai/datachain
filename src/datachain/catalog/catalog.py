@@ -1127,19 +1127,18 @@ class Catalog:
     ) -> bool:
         """Remove a single dataset version.
 
-        ``keep_metadata=True``: drop rows table, mark REMOVED (semver +
-        lineage kept). Requires user-facing dataset (not ``lst__*`` /
-        ``session_*``) and status COMPLETE or REMOVED.
+        If ``keep_metadata`` is True, drop the warehouse rows but keep the
+        version row so the version number stays reserved. Only allowed for
+        user-facing datasets in COMPLETE or REMOVED state; internal datasets
+        (``lst__*`` / ``session_*``) ignore the flag and are wiped entirely.
 
-        ``keep_metadata=False``: drop rows table, delete the version row.
-        Allowed from any status. When the version is already REMOVED with
-        ``pending_metadata_drop=False`` this escalates the delete with keeping
-        metadata to a full wipe.
+        If ``keep_metadata`` is False, drop the warehouse rows and the
+        version row. Allowed from any status. If the version was previously
+        removed with metadata kept, this wipes it.
 
-        Returns True if a state change happened (tombstone written, wipe
-        finished, or escalation flipped the flag), False if the call was
-        a no-op (missing version, already-tombstoned delete, or wipe
-        already in progress by another caller).
+        Returns True when a state change happened, False when the call was
+        a no-op (version already in target state, missing, or another caller
+        is handling it).
         """
         try:
             v = dataset.get_version(version)
@@ -1961,10 +1960,9 @@ class Catalog:
                         ver.version,
                     )
                     raise DataChainError(
-                        f"Local dataset {ds_uri} was previously pulled and "
-                        "removed; the version number is reserved. Pull into "
-                        "a different version or remove the tombstone "
-                        "explicitly first."
+                        f"Cannot pull into {ds_uri}: that version was "
+                        "previously removed locally. Pull into a different "
+                        "version."
                     )
 
                 print("Cleaning up stale existing dataset version")
@@ -2005,10 +2003,9 @@ class Catalog:
                     local_ver = local_dataset.get_version(local_ds_version)
                     if local_ver.is_removed:
                         raise DataChainError(
-                            f"Local dataset {local_ds_uri} was removed; "
-                            "the version number is reserved. Pull into a "
-                            "different version or remove the tombstone "
-                            "explicitly first."
+                            f"Cannot pull into {local_ds_uri}: that version "
+                            "was previously removed locally. Pull into a "
+                            "different version."
                         )
                     if local_ver.status != DatasetStatus.COMPLETE:
                         # Stale incomplete version from a different UUID —
