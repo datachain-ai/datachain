@@ -112,7 +112,9 @@ def compute_model_fingerprint(
 
             inner_type, _ = unwrap_optional(field_type)
             child_model = ModelStore.to_pydantic(inner_type)
-            if sub_sel is not None:
+            layout = union_layout(field_type)
+            atomic_union = layout is not None and layout.use_slots
+            if sub_sel is not None and not atomic_union:
                 if child_model is None:
                     raise ValueError(
                         f"Field {field_name} in {model_type.__name__} is not a model"

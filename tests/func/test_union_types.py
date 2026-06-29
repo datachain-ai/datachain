@@ -124,6 +124,19 @@ def test_union_float_arm_roundtrip(test_session):
     assert [v for _, v in _ordered(back, "value")] == items
 
 
+def test_select_arm_path_on_union_nested_in_model(test_session):
+    class Outer(DataModel):
+        name: str = ""
+        val: Union[int, str] = 0
+
+    s = dc.read_values(o=[Outer(name="x", val=10)], output={"o": Outer}).save("u_sel")
+    whole = s.select("o.val").to_records()
+    # selecting any arm/slot keeps the whole atomic union, same as select('o.val')
+    assert s.select("o.val.int").to_records() == whole
+    assert s.select("o.val.str").to_records() == whole
+    assert s.select("o.val._0").to_records() == whole
+
+
 def test_union_nested_in_model_roundtrip(test_session):
     holders = [_Holder(id=1, payload="x"), _Holder(id=2, payload=99)]
     dc.read_values(
