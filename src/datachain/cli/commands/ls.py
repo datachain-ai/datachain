@@ -24,7 +24,7 @@ def ls(
     all, local, studio = determine_flavors(studio, local, all, token)
 
     show_local = all or local
-    show_studio = (all or studio) and token
+    show_studio = (all or studio) and bool(token)
     label_sections = show_local and show_studio
 
     if show_local:

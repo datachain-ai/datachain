@@ -1,6 +1,6 @@
+import importlib
 import posixpath
 import re
-import sys
 from datetime import datetime
 from struct import pack
 from time import sleep
@@ -242,7 +242,7 @@ def test_ls_remote_sources(cloud_type, capsys, monkeypatch, studio_config):
 
 
 def test_ls_all_labels_local_and_studio_sections(capsys, monkeypatch, studio_config):
-    ls_module = sys.modules["datachain.cli.commands.ls"]
+    ls_module = importlib.import_module("datachain.cli.commands.ls")
     with monkeypatch.context() as m:
         m.setattr(ls_module, "ls_local", lambda *a, **kw: print("local-data"))
         m.setattr(ls_module, "ls_remote", lambda *a, **kw: print("studio-data"))
@@ -253,7 +253,7 @@ def test_ls_all_labels_local_and_studio_sections(capsys, monkeypatch, studio_con
 def test_ls_default_only_local_when_logged_into_studio(
     capsys, monkeypatch, studio_config
 ):
-    ls_module = sys.modules["datachain.cli.commands.ls"]
+    ls_module = importlib.import_module("datachain.cli.commands.ls")
     called = {"local": 0, "remote": 0}
     with monkeypatch.context() as m:
         m.setattr(
