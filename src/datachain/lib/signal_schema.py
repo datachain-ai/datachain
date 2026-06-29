@@ -22,7 +22,12 @@ from typing import (
 
 from pydantic import BaseModel, Field, ValidationError, create_model
 from sqlalchemy import Cast, asc, cast, desc, nulls_last
-from sqlalchemy.sql.elements import BinaryExpression, Grouping, Label
+from sqlalchemy.sql.elements import (
+    BinaryExpression,
+    BooleanClauseList,
+    Grouping,
+    Label,
+)
 
 from datachain import json
 from datachain.func import literal
@@ -1106,6 +1111,34 @@ class SignalSchema:
         path (``block.name`` -> ``block._2.name``) then join to the ``__`` form."""
         return ColumnMeta.to_db_name(self.resolve_arm_path(name) or name)
 
+    def multiarm_root_error(self, name: str) -> "DataChainColumnError | None":
+        """Error for referencing a signal that has no single column — a multi-arm
+        union or an Optional model — by its root name; None if ``name`` is fine."""
+        if "." in name:
+            name_path = name.split(".")
+        elif DEFAULT_DELIMITER in name:
+            name_path = name.split(DEFAULT_DELIMITER)
+        else:
+            name_path = [name]
+        for path, type_, _, _ in self.get_flat_tree():
+            if path != name_path:
+                continue
+            layout = union_layout(type_)
+            if layout is None:
+                return None
+            if layout.use_slots:
+                hint = (
+                    "a multi-arm Union signal has no single column; reference "
+                    "a specific arm (e.g. C('col.int')) or a scalar key instead"
+                )
+            else:
+                hint = (
+                    "an Optional model signal has no single column; reference "
+                    "a nested field (e.g. C('addr.city')) or use func.isnone"
+                )
+            return DataChainColumnError(name, hint)
+        return None
+
     def arm_display_path(self, path: list[str]) -> list[str]:
         """Positional union path -> readable: ``["block", "_2", "name"]`` ->
         ``["block", "ToolUseBlock", "name"]``. For display only; storage stays
@@ -1155,16 +1188,23 @@ class SignalSchema:
             c.name: c for c in self.db_signals(as_columns=True) if isinstance(c, Column)
         }
 
-        def rebuild(node):
+        def rebuild(node):  # noqa: PLR0911
             if isinstance(node, Column):
                 # readable arm path (C("block.name")) -> positional slot column
-                return typed_cols.get(self.to_db_col(node.name), node)
+                db_col = self.to_db_col(node.name)
+                if db_col not in typed_cols:
+                    if (err := self.multiarm_root_error(node.name)) is not None:
+                        raise err
+                    return node
+                return typed_cols[db_col]
             if isinstance(node, Label):
                 return rebuild(node.element).label(node.name)
             if isinstance(node, Grouping):
                 return Grouping(rebuild(node.element))
             if isinstance(node, BinaryExpression):
                 return rebuild(node.left).operate(node.operator, rebuild(node.right))
+            if isinstance(node, BooleanClauseList):
+                return node.operator(*[rebuild(c) for c in node.clauses])
             if isinstance(node, Cast):
                 return cast(rebuild(node.clause), node.typeclause.type)
             return node
@@ -1186,6 +1226,8 @@ class SignalSchema:
                 return walk(node.element)
             if isinstance(node, BinaryExpression):
                 return walk(node.left) or walk(node.right)
+            if isinstance(node, BooleanClauseList):
+                return any(walk(c) for c in node.clauses)
             if isinstance(node, Cast):
                 return walk(node.clause)
             return False

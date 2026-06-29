@@ -222,6 +222,42 @@ def test_union_mutate_on_arm(test_session):
     ]
 
 
+def test_union_filter_combined_arms(test_session):
+    chain = dc.read_values(
+        id=[1, 2, 3, 4],
+        value=["hello", 42, "world", 7],
+        output={"id": int, "value": Union[str, int]},
+        session=test_session,
+    )
+    expr = (C("value.int") > 10) | (C("value.str") == "hello")
+    assert chain.filter(expr).order_by("id").to_values("id") == [1, 2]
+    assert chain.filter(
+        (C("value.int") > 0) & (C("value.int") < 50)
+    ).order_by("id").to_values("id") == [2, 4]
+    assert chain.filter(
+        func.or_(C("value.int") > 10, C("value.str") == "hello")
+    ).order_by("id").to_values("id") == [1, 2]
+    assert _ordered(chain.mutate(z=(C("value.int") > 10)), "z") == [
+        (1, None),
+        (2, True),
+        (3, None),
+        (4, False),
+    ]
+
+
+def test_union_root_reference_raises_guard(test_session):
+    from datachain.lib.utils import DataChainColumnError
+
+    chain = dc.read_values(
+        id=[1, 2],
+        value=["x", 1],
+        output={"id": int, "value": Union[str, int]},
+        session=test_session,
+    )
+    with pytest.raises(DataChainColumnError, match="multi-arm Union"):
+        chain.filter(C("value") == 1).to_values("id")
+
+
 def test_union_select_keeps_whole_signal(test_session):
     chain = _nullable_union(test_session)
     # A union is atomic: selecting any part keeps the whole value.

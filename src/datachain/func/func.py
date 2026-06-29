@@ -600,7 +600,13 @@ class Func(Function):  # noqa: PLW1641
             )
             for k, v in self.kwargs.items()
         }
-        func_col = self.inner(*cols, *self.args, **kwargs)
+        args = [
+            signals_schema.enrich_expr_types(a)
+            if signals_schema is not None and isinstance(a, ColumnElement)
+            else a
+            for a in self.args
+        ]
+        func_col = self.inner(*cols, *args, **kwargs)
         return self._finalize_column(func_col, sql_type, label, signals_schema)
 
 
