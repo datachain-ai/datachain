@@ -3,11 +3,9 @@ from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
 import sqlalchemy
-from pydantic import BaseModel
 
-from datachain.lib.convert.flatten import flatten
+from datachain.lib.convert.flatten import classify_field, flatten_value, union_layout
 from datachain.lib.data_model import DataType
-from datachain.lib.model_store import ModelStore
 from datachain.lib.signal_schema import SignalSchema
 from datachain.query import Session
 
@@ -20,15 +18,21 @@ if TYPE_CHECKING:
 
 
 def _flatten_record(record: dict, signal_schema: SignalSchema) -> dict:
-    """Converts nested DataModel objects like {"person": Person(...)} into flattened
-    dictionaries like {"person__name": "Alice", "person__age": 30, ...}.
+    """Converts structured field values into their DB columns, e.g.
+    {"person": Person(...)} -> {"person__name": "Alice", "person__age": 30, ...} and a
+    union value into its tagged ``_type_tag`` + per-arm columns. Plain scalars and
+    already-flattened keys (e.g. "person__name") pass through unchanged.
     """
     flattened = {}
 
     for key, value in record.items():
-        if isinstance(value, BaseModel) and ModelStore.is_pydantic(type(value)):
+        anno = signal_schema.values.get(key)
+        needs_flatten = anno is not None and (
+            union_layout(anno) is not None or classify_field(anno).is_model
+        )
+        if needs_flatten:
             db_columns = signal_schema.db_signals(name=key)
-            flat_values = flatten(value)
+            flat_values = flatten_value(value, anno)
             flattened.update(dict(zip(db_columns, flat_values, strict=True)))
         else:
             flattened[key] = value

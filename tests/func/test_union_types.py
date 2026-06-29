@@ -54,6 +54,27 @@ def test_scalar_union_roundtrip(test_session):
     assert _ordered(back, "value") == [(1, "hello"), (2, 42), (3, "world"), (4, 7)]
 
 
+def test_read_records_scalar_union(test_session):
+    dc.read_records(
+        [{"id": 1, "value": "a"}, {"id": 2, "value": 7}],
+        schema={"id": int, "value": Union[str, int]},
+        session=test_session,
+    ).save("u_rec_scalar")
+    back = dc.read_dataset("u_rec_scalar", session=test_session)
+    assert _ordered(back, "value") == [(1, "a"), (2, 7)]
+
+
+def test_read_records_model_union(test_session):
+    items = [_Foo(a=1, b="z"), _Bar(x=2.5)]
+    dc.read_records(
+        [{"id": 1, "item": items[0]}, {"id": 2, "item": items[1]}],
+        schema={"id": int, "item": Union[_Foo, _Bar]},
+        session=test_session,
+    ).save("u_rec_models")
+    back = dc.read_dataset("u_rec_models", session=test_session)
+    assert [v for _, v in _ordered(back, "item")] == items
+
+
 def test_model_union_roundtrip(test_session):
     items = [_Foo(a=1, b="z"), _Bar(x=2.5), _Foo(a=9, b="q")]
     dc.read_values(
