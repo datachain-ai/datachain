@@ -3,6 +3,7 @@ from typing import Any
 from datachain.llm.content import Media
 from datachain.llm.engine import LLMError
 from datachain.llm.spec import LLMConfigError, LLMSpec
+from datachain.llm.types import Usage
 
 
 def complete(
@@ -15,6 +16,7 @@ def complete(
     llm: str | None = None,
     retries: int = 1,
     fallback: str | list[str] | None = None,
+    include_usage: bool = False,
     **params: Any,
 ) -> LLMSpec:
     """General generation or structured extraction over a column.
@@ -40,6 +42,10 @@ def complete(
         retries (int): Transient and schema-validation retry budget.
         fallback (str | list[str] | None): Model string(s) tried if the primary
             model fails.
+        include_usage (bool): When True, the call returns a tuple
+            ``(value, dc.llm.Usage)``, used with the multi-output form that names
+            both columns:
+            ``.map(llm.complete(...), output={"res": Scene, "tok": dc.llm.Usage})``.
         params (Any): Extra arguments forwarded to the underlying model call.
 
     Returns:
@@ -61,6 +67,7 @@ def complete(
         llm=llm,
         retries=retries,
         fallback=fallback,
+        include_usage=include_usage,
         params=params,
     )
 
@@ -75,6 +82,7 @@ def classify(
     llm: str | None = None,
     retries: int = 1,
     fallback: str | list[str] | None = None,
+    include_usage: bool = False,
     **params: Any,
 ) -> LLMSpec:
     """Categorize a column into exactly one of the given labels.
@@ -89,6 +97,7 @@ def classify(
         llm (str | None): Per-call model override.
         retries (int): Transient and schema-validation retry budget.
         fallback (str | list[str] | None): Model string(s) tried on failure.
+        include_usage (bool): Also emit a ``dc.llm.Usage`` column (see ``complete``).
         params (Any): Extra arguments forwarded to the underlying model call.
 
     Returns:
@@ -104,6 +113,7 @@ def classify(
         llm=llm,
         retries=retries,
         fallback=fallback,
+        include_usage=include_usage,
         params=params,
     )
 
@@ -117,6 +127,7 @@ def score(
     llm: str | None = None,
     retries: int = 1,
     fallback: str | list[str] | None = None,
+    include_usage: bool = False,
     **params: Any,
 ) -> LLMSpec:
     """Numeric scoring of a column against a prompt.
@@ -130,6 +141,7 @@ def score(
         llm (str | None): Per-call model override.
         retries (int): Transient and schema-validation retry budget.
         fallback (str | list[str] | None): Model string(s) tried on failure.
+        include_usage (bool): Also emit a ``dc.llm.Usage`` column (see ``complete``).
         params (Any): Extra arguments forwarded to the underlying model call.
 
     Returns:
@@ -144,6 +156,7 @@ def score(
         llm=llm,
         retries=retries,
         fallback=fallback,
+        include_usage=include_usage,
         params=params,
     )
 
@@ -154,6 +167,7 @@ def embed(
     llm: str | None = None,
     retries: int = 1,
     fallback: str | list[str] | None = None,
+    include_usage: bool = False,
     **params: Any,
 ) -> LLMSpec:
     """Embed a column into a vector.
@@ -163,6 +177,8 @@ def embed(
         llm (str | None): Per-call embedding-model override.
         retries (int): Transient retry budget.
         fallback (str | list[str] | None): Model string(s) tried on failure.
+        include_usage (bool): Also emit a ``dc.llm.Usage`` column (see ``complete``).
+            Embeddings report no output tokens, so ``output_tokens`` stays 0.
         params (Any): Extra arguments forwarded to the underlying model call.
 
     Returns:
@@ -174,6 +190,7 @@ def embed(
         llm=llm,
         retries=retries,
         fallback=fallback,
+        include_usage=include_usage,
         params=params,
     )
 
@@ -182,6 +199,7 @@ __all__ = [
     "LLMConfigError",
     "LLMError",
     "LLMSpec",
+    "Usage",
     "classify",
     "complete",
     "embed",

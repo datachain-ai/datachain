@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from datachain.llm import engine
 from datachain.llm.content import MEDIA_VALUES, Media, build_messages, to_text
+from datachain.llm.types import Usage
 
 if TYPE_CHECKING:
     from datachain.lib.settings import Settings
@@ -57,6 +58,7 @@ class LLMSpec:
     llm: str | None = None
     retries: int = 1
     fallback: str | list[str] | None = None
+    include_usage: bool = False
     params: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -104,12 +106,15 @@ class LLMSpec:
         return _element_type(self.schema)[0]
 
     def return_annotation(self) -> Any:
-        """Annotation seen by the verb: ``Iterator[T]`` for the 1:N (list) case."""
+        """Annotation seen by the verb. ``Iterator[T]`` for the 1:N (list) case;
+        ``include_usage`` pairs every value with a ``Usage`` (``tuple[T, Usage]``)."""
         if self.kind == "complete" and self.schema is not None:
             elem, is_list = _element_type(self.schema)
             if is_list:
-                return Iterator[elem]  # type: ignore[valid-type]
-        return self.output_type()
+                item = tuple[elem, Usage] if self.include_usage else elem  # type: ignore[valid-type]
+                return Iterator[item]  # type: ignore[valid-type]
+        out = self.output_type()
+        return tuple[out, Usage] if self.include_usage else out  # type: ignore[valid-type]
 
     def identity(self, model: str) -> tuple:
         """Cache key baked into the UDF hash; changes iff an output-affecting
@@ -129,6 +134,7 @@ class LLMSpec:
             self.media,
             self.retries,
             tuple(self.fallback) if isinstance(self.fallback, list) else self.fallback,
+            self.include_usage,
             _canonical(self.params),
         )
 
@@ -159,37 +165,49 @@ class LLMSpec:
         value: Any,
         context: Any,
     ) -> Any:
+        result, usage, is_list = self._call(model, params, value, context)
+        if not self.include_usage:
+            return result
+        if is_list:
+            return [(item, usage) for item in result]
+        return (result, usage)
+
+    def _call(
+        self, model: str, params: dict[str, Any], value: Any, context: Any
+    ) -> tuple[Any, Usage, bool]:
+        """Run the model call, returning the tuple ``(value, usage, is_list)``."""
+        result: Any
         if self.kind == "embed":
-            return engine.embed(
+            result, usage = engine.embed(
                 model, to_text(value), self.retries, self.fallback, params
             )
+            return result, usage, False
 
         messages = build_messages(self._build_prompt(), value, self.media, context)
-
         if self.kind == "classify":
-            return engine.classify(
-                model,
-                messages,
-                tuple(self.into or []),
-                self.retries,
-                self.fallback,
-                params,
+            result, usage = engine.classify(
+                model, messages, tuple(self.into or []), self.retries,
+                self.fallback, params,
             )
-        if self.kind == "score":
-            return engine.score(model, messages, self.retries, self.fallback, params)
-        # complete
-        if self.schema is None:
-            return engine.complete_text(
+        elif self.kind == "score":
+            result, usage = engine.score(
                 model, messages, self.retries, self.fallback, params
             )
-        elem, is_list = _element_type(self.schema)
-        if is_list:
-            return engine.complete_structured_list(
-                model, messages, elem, self.retries, self.fallback, params
+        elif self.schema is None:
+            result, usage = engine.complete_text(
+                model, messages, self.retries, self.fallback, params
             )
-        return engine.complete_structured(
-            model, messages, self.schema, self.retries, self.fallback, params
-        )
+        else:
+            elem, is_list = _element_type(self.schema)
+            if is_list:
+                items, usage = engine.complete_structured_list(
+                    model, messages, elem, self.retries, self.fallback, params
+                )
+                return items, usage, True
+            result, usage = engine.complete_structured(
+                model, messages, self.schema, self.retries, self.fallback, params
+            )
+        return result, usage, False
 
     def _validate_target(self, target: Any) -> None:
         """Reject cardinality mismatches: 1:N `complete` needs `.gen()`, the rest

@@ -4,6 +4,7 @@ from pydantic import BaseModel
 import datachain as dc
 from datachain import llm
 from datachain.llm import engine
+from datachain.llm.types import Usage
 from tests.llm_fakes import FakeLiteLLM
 
 
@@ -51,14 +52,42 @@ def test_map_materializes_typed_columns(fake_llm, test_session):
     assert chain.schema["scene"] is Scene
     assert chain.schema["summary"] is str
 
-    records = chain.to_records()
-    assert len(records) == 3
-    row = records[0]
-    assert row["topic"] in {"accident", "normal"}
-    assert isinstance(row["risk"], float)
-    assert row["scene__objects"] == ["x"]
-    assert row["vec"] == [0.5, 0.6]
-    assert row["summary"] == "summary"
+    rows = chain.to_list("topic", "risk", "scene", "vec", "summary")
+    assert len(rows) == 3
+    topic, risk, scene, vec, summary = rows[0]
+    assert topic in {"accident", "normal"}
+    assert isinstance(risk, float)
+    assert scene.objects == ["x"]
+    assert vec == [0.5, 0.6]
+    assert summary == "summary"
+
+
+def test_include_usage_multi_output_map(fake_llm, test_session):
+    chain = base(test_session).map(
+        llm.complete("text", schema=Scene, include_usage=True),
+        output={"res": Scene, "tok": Usage},
+    )
+    assert chain.schema["res"] is Scene
+    assert chain.schema["tok"] is Usage
+
+    assert all(s.risk == 0.5 for s in chain.to_values("res"))
+    toks = chain.to_values("tok")
+    assert all(t.input_tokens == 11 for t in toks)
+    assert all(t.output_tokens == 7 for t in toks)
+    assert all(t.retries == 0 for t in toks)
+
+
+def test_include_usage_gen_replicates_usage(fake_llm, test_session):
+    chain = base(test_session).gen(
+        llm.complete("text", schema=list[Chunk], include_usage=True),
+        output={"chunk": Chunk, "tok": Usage},
+    )
+    assert chain.schema["chunk"] is Chunk
+    assert chain.schema["tok"] is Usage
+
+    toks = chain.to_values("tok")
+    assert toks
+    assert all(t.input_tokens == 11 for t in toks)
 
 
 def test_save_and_reload_preserves_types(fake_llm, test_session):
@@ -66,8 +95,7 @@ def test_save_and_reload_preserves_types(fake_llm, test_session):
 
     reloaded = dc.read_dataset("scenes", session=test_session)
     assert reloaded.schema["scene"] is Scene
-    rows = reloaded.to_records()
-    assert all(r["scene__risk"] == 0.5 for r in rows)
+    assert all(s.risk == 0.5 for s in reloaded.to_values("scene"))
 
 
 def test_filter_on_nested_llm_field(fake_llm, test_session):
@@ -91,9 +119,9 @@ def test_llm_column_as_only_selected_signal(fake_llm, test_session):
         base(test_session)
         .map(label=llm.complete("text", "x"))
         .select("label")
-        .to_records()
+        .to_values("label")
     )
-    assert out == [{"label": "label"}] * 3
+    assert out == ["label"] * 3
 
 
 def test_gen_one_to_many(fake_llm, test_session):
@@ -107,8 +135,7 @@ def test_gen_one_to_many(fake_llm, test_session):
     )
 
     assert chain.schema["chunk"] is Chunk
-    records = chain.to_records()
-    assert [r["chunk__text"] for r in records] == ["one", "two"]
+    assert chain.to_values("chunk.text") == ["one", "two"]
 
 
 def test_list_schema_in_map_rejected(test_session):
@@ -140,9 +167,9 @@ def test_nested_column_input(fake_llm, test_session):
         dc.read_values(doc=[Doc(body="hello")], session=test_session)
         .settings(llm="m")
         .map(label=llm.complete("doc.body", "summarize"))
-        .to_records()
+        .to_list("doc.body", "label")
     )
-    assert out == [{"doc__body": "hello", "label": "ok"}]
+    assert out == [("hello", "ok")]
 
 
 @pytest.mark.parametrize("swap", [False, True])
@@ -162,7 +189,7 @@ def test_union_both_arm_orders(fake_llm, test_session, swap):
     a, b = (right, left) if swap else (left, right)
     unioned = a.union(b)
     assert unioned.count() == 3
-    assert {r["label"] for r in unioned.to_records()} == {"L"}
+    assert set(unioned.to_values("label")) == {"L"}
 
 
 def test_export_to_pandas_roundtrip(fake_llm, test_session):
@@ -178,7 +205,7 @@ def test_settings_inherited_by_all_downstream_ops(fake_llm, test_session):
         base(test_session)
         .map(a=llm.complete("text", "x"))
         .map(b=llm.classify("text", into=["p", "q"]))
-        .to_records()
+        .to_values("a")
     )
     assert all(c["model"] == "anthropic/claude-haiku-4-5" for c in fake_llm.calls)
 
@@ -186,7 +213,7 @@ def test_settings_inherited_by_all_downstream_ops(fake_llm, test_session):
 def test_per_call_model_overrides_chain_setting(fake_llm, test_session):
     base(test_session).map(
         a=llm.complete("text", "x", llm="openai/gpt-5-mini")
-    ).to_records()
+    ).to_values("a")
     assert fake_llm.calls[-1]["model"] == "openai/gpt-5-mini"
 
 

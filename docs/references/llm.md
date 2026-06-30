@@ -85,6 +85,33 @@ explicitly (including per-worker secret resolution) with `.settings(llm_params=.
 
 Install the optional dependency with `pip install 'datachain[llm]'`.
 
+## Token usage
+
+Pass `include_usage=True` to capture token counts for a call. The function then
+returns a tuple `(value, dc.llm.Usage)`, so you name both columns with the
+multi-output form (the value column keeps its plain type, no wrapper):
+
+```python
+.map(
+    llm.complete("file", schema=Scene, include_usage=True),
+    output={"res": Scene, "tok": dc.llm.Usage},
+)
+# res: Scene   (res.risk works),  tok: Usage
+```
+
+`Usage` has `input_tokens`, `output_tokens`, and `retries` (extra attempts beyond
+the first; 0 on a first-try success). Aggregate or filter on it afterwards:
+
+```python
+chain.agg(in_tok=dc.func.sum("tok.input_tokens"))
+chain.filter("tok.retries > 0")
+```
+
+Notes: `retries` counts `datachain.llm`'s own schema-validation reasks, not
+LiteLLM's internal transient retries; it is only ever above 0 for structured
+output. Embeddings report no output tokens, so `output_tokens` stays 0 there. In
+`.gen()` (1:N) the single call's usage is replicated onto every emitted row.
+
 ## Scaling and caching
 
 A model call is the most expensive step, and each worker processes rows

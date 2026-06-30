@@ -144,6 +144,21 @@ def check_context() -> None:
     print("context: ok")
 
 
+def check_usage() -> None:
+    toks = (
+        dc.read_values(review=[POSITIVE, NEGATIVE])
+        .settings(llm=CHAT, cache=True)
+        .map(
+            llm.complete("review", "Summarize in one word.", include_usage=True),
+            output={"out": str, "tok": llm.Usage},
+        )
+        .to_values("tok")
+    )
+    assert all(t.input_tokens > 0 for t in toks), toks
+    assert all(t.output_tokens > 0 for t in toks), toks
+    print("usage: ok", toks[0].input_tokens, toks[0].output_tokens)
+
+
 if __name__ == "__main__":
     check_text()
     check_structured()
@@ -151,4 +166,5 @@ if __name__ == "__main__":
     check_image()
     check_document()
     check_context()
+    check_usage()
     print("all datachain.llm live checks passed")

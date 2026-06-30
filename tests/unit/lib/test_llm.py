@@ -25,6 +25,7 @@ from datachain.llm.content import (
     to_text,
 )
 from datachain.llm.spec import MODEL_ENV_VAR, LLMConfigError
+from datachain.llm.types import Usage
 from tests.llm_fakes import FakeLiteLLM
 
 
@@ -550,6 +551,65 @@ def test_structured_accepts_fenced_json(fake_llm):
 def test_invalid_schema_rejected(bad):
     with pytest.raises(TypeError, match="pydantic model"):
         llm.complete("t", schema=bad)
+
+
+def test_usage_defaults():
+    u = Usage()
+    assert (u.input_tokens, u.output_tokens, u.retries) == (0, 0, 0)
+
+
+def test_include_usage_return_annotation():
+    text = llm.complete("c", include_usage=True).return_annotation()
+    assert text == tuple[str, Usage]
+    ann = llm.complete("c", schema=Scene, include_usage=True).return_annotation()
+    assert ann == tuple[Scene, Usage]
+
+
+def test_include_usage_list_return_annotation():
+    ann = llm.complete("c", schema=list[Scene], include_usage=True).return_annotation()
+    assert ann == Iterator[tuple[Scene, Usage]]
+
+
+def test_include_usage_runtime_pairs_value_and_usage(fake_llm):
+    fake_llm.text_response = "hi"
+    value, usage = bind(llm.complete("c", include_usage=True), llm="m")("x")
+    assert value == "hi"
+    assert isinstance(usage, Usage)
+    assert usage.input_tokens == 11
+    assert usage.output_tokens == 7
+    assert usage.retries == 0
+
+
+def test_without_usage_returns_bare_value(fake_llm):
+    fake_llm.text_response = "hi"
+    assert bind(llm.complete("c"), llm="m")("x") == "hi"
+
+
+def test_include_usage_list_yields_pairs(fake_llm):
+    rows = bind(llm.complete("c", schema=list[Scene], include_usage=True), llm="m")("x")
+    assert len(rows) >= 1
+    for item, usage in rows:
+        assert isinstance(item, Scene)
+        assert isinstance(usage, Usage)
+
+
+def test_include_usage_retries_counter(fake_llm):
+    fake_llm.invalid_json_attempts = 1  # one reask before success
+    spec = llm.complete("c", schema=Scene, retries=2, include_usage=True)
+    _, usage = bind(spec, llm="m")("x")
+    assert usage.retries == 1
+
+
+def test_embed_usage_has_no_output_tokens(fake_llm):
+    _, usage = bind(llm.embed("c", include_usage=True), llm="m")("x")
+    assert usage.input_tokens == 5
+    assert usage.output_tokens == 0
+
+
+def test_include_usage_in_identity():
+    a = llm.complete("c").identity("m")
+    b = llm.complete("c", include_usage=True).identity("m")
+    assert a != b
 
 
 def test_context_appended_to_message():

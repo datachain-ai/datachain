@@ -4,6 +4,7 @@ from typing import Any, Literal, TypeVar
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError, create_model
 
 from datachain.lib.utils import DataChainError
+from datachain.llm.types import Usage
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -96,6 +97,15 @@ def _finish_reason(response: Any) -> str:
     return getattr(response.choices[0], "finish_reason", "") or ""
 
 
+def _usage(response: Any, retries: int) -> Usage:
+    u = getattr(response, "usage", None)
+    return Usage(
+        input_tokens=getattr(u, "prompt_tokens", 0) or 0,
+        output_tokens=getattr(u, "completion_tokens", 0) or 0,
+        retries=retries,
+    )
+
+
 def _strip_fences(text: str) -> str:
     """Best-effort unwrap of a ```...``` markdown code fence around JSON."""
     t = text.strip()
@@ -153,10 +163,11 @@ def complete_text(
     retries: int,
     fallback: str | list[str] | None,
     params: dict[str, Any],
-) -> str:
+) -> tuple[str, Usage]:
     litellm = _litellm()
     kwargs = _completion_kwargs(model, messages, retries, fallback, params)
-    return _content(litellm.completion(**kwargs))
+    resp = litellm.completion(**kwargs)
+    return _content(resp), _usage(resp, 0)
 
 
 def complete_structured(
@@ -166,7 +177,7 @@ def complete_structured(
     retries: int,
     fallback: str | list[str] | None,
     params: dict[str, Any],
-) -> T:
+) -> tuple[T, Usage]:
     litellm = _litellm()
     kwargs = _completion_kwargs(model, messages, retries, fallback, params)
     kwargs["response_format"] = schema
@@ -174,10 +185,10 @@ def complete_structured(
     # Re-validate schema mismatches here; transient errors are LiteLLM's job above.
     attempts = max(retries, 0) + 1
     last_error: LLMError | None = None
-    for _ in range(attempts):
+    for attempt in range(attempts):
         resp = litellm.completion(**kwargs)
         try:
-            return parse_one(schema, _content(resp))
+            return parse_one(schema, _content(resp)), _usage(resp, attempt)
         except LLMError as exc:
             if _finish_reason(resp) == "length":
                 raise _truncated_error(schema.__name__) from exc
@@ -215,12 +226,12 @@ def classify(
     retries: int,
     fallback: str | list[str] | None,
     params: dict[str, Any],
-) -> str:
+) -> tuple[str, Usage]:
     schema = _classification_model(categories)
-    result: Any = complete_structured(
+    result, usage = complete_structured(
         model, messages, schema, retries, fallback, params
     )
-    return result.category
+    return result.category, usage  # type: ignore[attr-defined]
 
 
 def score(
@@ -229,12 +240,12 @@ def score(
     retries: int,
     fallback: str | list[str] | None,
     params: dict[str, Any],
-) -> float:
+) -> tuple[float, Usage]:
     schema = _score_model()
-    result: Any = complete_structured(
+    result, usage = complete_structured(
         model, messages, schema, retries, fallback, params
     )
-    return result.score
+    return result.score, usage  # type: ignore[attr-defined]
 
 
 def complete_structured_list(
@@ -244,17 +255,17 @@ def complete_structured_list(
     retries: int,
     fallback: str | list[str] | None,
     params: dict[str, Any],
-) -> list:
+) -> tuple[list, Usage]:
     litellm = _litellm()
     kwargs = _completion_kwargs(model, messages, retries, fallback, params)
     kwargs["response_format"] = _list_container(item_type)
 
     attempts = max(retries, 0) + 1
     last_error: LLMError | None = None
-    for _ in range(attempts):
+    for attempt in range(attempts):
         resp = litellm.completion(**kwargs)
         try:
-            return parse_list(item_type, _content(resp))
+            return parse_list(item_type, _content(resp)), _usage(resp, attempt)
         except LLMError as exc:
             if _finish_reason(resp) == "length":
                 raise _truncated_error(f"list[{item_type.__name__}]") from exc
@@ -271,7 +282,7 @@ def embed(
     retries: int,
     fallback: str | list[str] | None,
     params: dict[str, Any],
-) -> list[float]:
+) -> tuple[list[float], Usage]:
     litellm = _litellm()
     kwargs: dict[str, Any] = {
         **params,
@@ -281,8 +292,11 @@ def embed(
     }
     if (fallbacks := _fallbacks(fallback)) is not None:
         kwargs["fallbacks"] = fallbacks
-    data = litellm.embedding(**kwargs).data
+    resp = litellm.embedding(**kwargs)
+    data = resp.data
     if not data:
         raise LLMError("embedding response contained no data")
     item = data[0]
-    return list(item["embedding"] if isinstance(item, dict) else item.embedding)
+    vector = list(item["embedding"] if isinstance(item, dict) else item.embedding)
+    # Embeddings report no completion_tokens, so output_tokens stays 0.
+    return vector, _usage(resp, 0)

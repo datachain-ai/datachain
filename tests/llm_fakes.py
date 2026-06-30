@@ -32,7 +32,8 @@ def _structured_json(schema: type[BaseModel]) -> str:
 def _response(content: str, finish_reason: str = "stop"):
     message = types.SimpleNamespace(content=content)
     choice = types.SimpleNamespace(message=message, finish_reason=finish_reason)
-    return types.SimpleNamespace(choices=[choice])
+    usage = types.SimpleNamespace(prompt_tokens=11, completion_tokens=7)
+    return types.SimpleNamespace(choices=[choice], usage=usage)
 
 
 class FakeLiteLLM:
@@ -71,4 +72,6 @@ class FakeLiteLLM:
         if self.embedding_empty:
             return types.SimpleNamespace(data=[])
         vector = list(self.embedding_response)
-        return types.SimpleNamespace(data=[{"embedding": vector}])
+        # Embeddings report prompt tokens only (no completion_tokens).
+        usage = types.SimpleNamespace(prompt_tokens=5)
+        return types.SimpleNamespace(data=[{"embedding": vector}], usage=usage)
