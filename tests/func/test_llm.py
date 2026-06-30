@@ -23,6 +23,10 @@ class Chunk(BaseModel):
     text: str
 
 
+class Doc(BaseModel):
+    body: str
+
+
 def base(session):
     return dc.read_values(
         text=["a frame", "another frame", "third"], session=session
@@ -128,6 +132,17 @@ def test_one_to_one_op_in_gen_rejected(test_session):
 
     with pytest.raises(LLMConfigError, match="use .map"):
         base(test_session).gen(label=llm.complete("text", "x"))
+
+
+def test_nested_column_input(fake_llm, test_session):
+    fake_llm.text_response = "ok"
+    out = (
+        dc.read_values(doc=[Doc(body="hello")], session=test_session)
+        .settings(llm="m")
+        .map(label=llm.complete("doc.body", "summarize"))
+        .to_records()
+    )
+    assert out == [{"doc__body": "hello", "label": "ok"}]
 
 
 @pytest.mark.parametrize("swap", [False, True])

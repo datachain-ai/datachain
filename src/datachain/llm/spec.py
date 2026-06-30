@@ -183,31 +183,36 @@ class LLMSpec:
         identity = self.identity(model)
         spec = self
 
-        param = inspect.Parameter(self.col, inspect.Parameter.POSITIONAL_OR_KEYWORD)
         _call: Any
+        names: tuple[str, ...]
         if self.context_col:
 
             def _call_with_context(value, context, _identity=identity):
                 return spec._run(model, llm_params, value, context)
 
             _call = _call_with_context
-            parameters = [
-                param,
-                inspect.Parameter(
-                    self.context_col, inspect.Parameter.POSITIONAL_OR_KEYWORD
-                ),
-            ]
+            names = ("value", "context")
         else:
 
             def _call_value(value, _identity=identity):
                 return spec._run(model, llm_params, value, None)
 
             _call = _call_value
-            parameters = [param]
+            names = ("value",)
 
+        # Input columns travel through the explicit `params` channel (see
+        # DataChain._udf_to_obj), so they may be nested/dotted; the signature only
+        # carries the output type.
+        parameters = [
+            inspect.Parameter(n, inspect.Parameter.POSITIONAL_OR_KEYWORD) for n in names
+        ]
         _call.__signature__ = inspect.Signature(
             parameters, return_annotation=self.return_annotation()
         )
         _call.__name__ = f"llm_{self.kind}"
         _call.__qualname__ = _call.__name__
+        _call.__datachain_params__ = self.input_columns()
         return _call
+
+    def input_columns(self) -> list[str]:
+        return [self.col, self.context_col] if self.context_col else [self.col]
