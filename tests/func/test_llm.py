@@ -107,6 +107,29 @@ def test_gen_one_to_many(fake_llm, test_session):
     assert [r["chunk__text"] for r in records] == ["one", "two"]
 
 
+def test_list_schema_in_map_rejected(test_session):
+    from datachain.llm.spec import LLMConfigError
+
+    with pytest.raises(LLMConfigError, match="use .gen"):
+        base(test_session).map(chunk=llm.complete("text", schema=list[Chunk]))
+
+
+def test_list_schema_in_agg_rejected(test_session):
+    from datachain.llm.spec import LLMConfigError
+
+    with pytest.raises(LLMConfigError, match="use .gen"):
+        base(test_session).agg(
+            chunk=llm.complete("text", schema=list[Chunk]), partition_by="text"
+        )
+
+
+def test_one_to_one_op_in_gen_rejected(test_session):
+    from datachain.llm.spec import LLMConfigError
+
+    with pytest.raises(LLMConfigError, match="use .map"):
+        base(test_session).gen(label=llm.complete("text", "x"))
+
+
 @pytest.mark.parametrize("swap", [False, True])
 def test_union_both_arm_orders(fake_llm, test_session, swap):
     fake_llm.text_response = "L"

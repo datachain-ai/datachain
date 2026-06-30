@@ -4,6 +4,8 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, get_args, get_origin
 
+from pydantic import BaseModel
+
 from datachain.llm import engine
 from datachain.llm.content import build_messages, serialize_value
 
@@ -44,6 +46,15 @@ class LLMSpec:
     fallback: str | list[str] | None = None
     params: dict[str, Any] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        if self.schema is not None:
+            elem = _element_type(self.schema)[0]
+            if not (isinstance(elem, type) and issubclass(elem, BaseModel)):
+                raise TypeError(
+                    "llm schema must be a pydantic model or list[model], "
+                    f"got {self.schema!r}"
+                )
+
     def output_type(self) -> Any:
         if self.kind == "embed":
             return list[float]
@@ -65,8 +76,8 @@ class LLMSpec:
         return self.output_type()
 
     def identity(self, model: str) -> tuple:
-        """Stable identity baked into the UDF hash so the cache invalidates only
-        when the model, prompt, or schema actually changes."""
+        """Cache key baked into the UDF hash; changes iff an output-affecting
+        input (model, prompt, schema, categories, params, ...) changes."""
         schema_repr = None
         if self.schema is not None and hasattr(self.schema, "model_json_schema"):
             schema_repr = str(self.schema.model_json_schema())
@@ -81,7 +92,7 @@ class LLMSpec:
             self.context_col,
             self.retries,
             tuple(self.fallback) if isinstance(self.fallback, list) else self.fallback,
-            tuple(sorted(self.params)),
+            tuple(sorted((k, repr(v)) for k, v in self.params.items())),
         )
 
     def _resolve_model(self, settings: "Settings") -> str:
@@ -146,7 +157,27 @@ class LLMSpec:
             model, messages, self.schema, self.retries, self.fallback, params
         )
 
-    def __datachain_bind__(self, settings: "Settings") -> Callable:
+    def _validate_target(self, target: Any) -> None:
+        """Reject cardinality mismatches: 1:N `complete` needs `.gen()`, the rest
+        produce one value per row and need `.map()`."""
+        if target is None:
+            return
+        out_batched = getattr(target, "is_output_batched", False)
+        in_batched = getattr(target, "is_input_batched", False)
+        one_to_many = self.kind == "complete" and _element_type(self.schema)[1]
+        if one_to_many:
+            if not out_batched or in_batched:
+                raise LLMConfigError(
+                    "llm.complete(schema=list[...]) yields many rows per input; "
+                    "use .gen()"
+                )
+        elif out_batched:
+            raise LLMConfigError(
+                f"llm.{self.kind}() yields one value per row; use .map()"
+            )
+
+    def __datachain_bind__(self, settings: "Settings", target: Any = None) -> Callable:
+        self._validate_target(target)
         model = self._resolve_model(settings)
         llm_params = settings.llm_params
         identity = self.identity(model)

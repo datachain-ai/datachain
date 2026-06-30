@@ -6,7 +6,7 @@ import pytest
 from pydantic import BaseModel
 
 from datachain import llm
-from datachain.lib.file import ImageFile, TextFile, VideoFile, VideoFrame
+from datachain.lib.file import File, ImageFile, TextFile, VideoFile, VideoFrame
 from datachain.lib.settings import Settings
 from datachain.llm import engine
 from datachain.llm.content import build_messages, serialize_value, value_to_parts
@@ -128,15 +128,27 @@ def test_per_call_params_override_settings_params(fake_llm):
     assert fake_llm.calls[-1]["temperature"] == 0.0
 
 
-def test_fallback_and_retries_forwarded(fake_llm):
-    bind(llm.complete("t", fallback="openai/x", retries=3), llm="m")("hi")
+def test_fallback_forwarded(fake_llm):
+    bind(llm.complete("t", fallback="openai/x"), llm="m")("hi")
     assert fake_llm.calls[-1]["fallbacks"] == ["openai/x"]
-    assert fake_llm.calls[-1]["num_retries"] == 3
 
 
 def test_fallback_list_forwarded(fake_llm):
     bind(llm.complete("t", fallback=["a", "b"]), llm="m")("hi")
     assert fake_llm.calls[-1]["fallbacks"] == ["a", "b"]
+
+
+def test_retries_are_not_multiplied(fake_llm):
+    fake_llm.invalid_json_attempts = 99
+    with pytest.raises(engine.LLMError):
+        bind(llm.complete("t", schema=Scene, retries=3), llm="m")("hi")
+    assert len(fake_llm.calls) == 4  # retries + 1, never (retries + 1) ** 2
+
+
+def test_negative_retries_still_makes_one_attempt(fake_llm):
+    fake_llm.text_response = "ok"
+    assert bind(llm.complete("t", retries=-5), llm="m")("hi") == "ok"
+    assert len(fake_llm.calls) == 1
 
 
 def test_structured_retries_on_invalid_json_then_succeeds(fake_llm):
@@ -148,7 +160,7 @@ def test_structured_retries_on_invalid_json_then_succeeds(fake_llm):
 
 def test_structured_raises_after_exhausting_retries(fake_llm):
     fake_llm.invalid_json_attempts = 5
-    with pytest.raises(engine.LLMError, match="did not return output matching"):
+    with pytest.raises(engine.LLMError, match="failed after"):
         bind(llm.complete("t", schema=Scene, retries=1), llm="m")("hi")
 
 
@@ -235,6 +247,38 @@ def test_pydantic_value_serialized_as_json():
     assert result == '{"objects":["c"],"risk":0.1}'
 
 
+def test_serialize_text_file_returns_content_not_metadata():
+    tf = TextFile(path="a.txt", source="s3://x")
+    with mock.patch.object(TextFile, "read_text", return_value="hello world"):
+        assert serialize_value(tf) == "hello world"
+
+
+def test_binary_file_raises_clear_error():
+    err = UnicodeDecodeError("utf-8", b"\x89", 0, 1, "bad")
+    with mock.patch.object(File, "read_text", side_effect=err):
+        with pytest.raises(engine.LLMError, match="cannot read"):
+            value_to_parts(File(path="doc.pdf", source="s3://x"))
+
+
+def test_uncommon_image_extension_still_encoded():
+    with mock.patch.object(File, "read_bytes", return_value=b"<svg/>"):
+        parts = value_to_parts(File(path="x.svg", source="s3://x"))
+    assert parts[0]["type"] == "image_url"
+
+
+def test_embed_image_errors_instead_of_returning_metadata():
+    err = UnicodeDecodeError("utf-8", b"\x89", 0, 1, "bad")
+    with mock.patch.object(File, "read_text", side_effect=err):
+        with pytest.raises(engine.LLMError):
+            serialize_value(ImageFile(path="a.png", source="s3://x"))
+
+
+@pytest.mark.parametrize("bad", [list, dict, int, "Scene", list[int], Scene | None])
+def test_invalid_schema_rejected(bad):
+    with pytest.raises(TypeError, match="pydantic model"):
+        llm.complete("t", schema=bad)
+
+
 def test_context_appended_to_message():
     msgs = build_messages("p", "v", context=Scene(objects=["c"], risk=0.2))
     assert "Context:" in msgs[0]["content"]
@@ -266,6 +310,27 @@ def test_identity_stable_for_same_config():
     a = llm.complete("t", "p", schema=Scene).identity("m")
     b = llm.complete("t", "p", schema=Scene).identity("m")
     assert a == b
+
+
+def test_identity_changes_with_param_value():
+    a = llm.complete("t", "p", temperature=0.0).identity("m")
+    b = llm.complete("t", "p", temperature=1.0).identity("m")
+    assert a != b
+
+
+def test_param_value_changes_udf_hash():
+    from datachain.lib.signal_schema import SignalSchema
+    from datachain.lib.udf import Mapper
+    from datachain.lib.udf_signature import UdfSignature
+
+    def udf_hash(spec):
+        f = spec.__datachain_bind__(Settings(llm="m"))
+        sign = UdfSignature.parse("", {"x": f}, None, None, None, False)
+        return Mapper._create(sign, SignalSchema({"text": str})).hash()
+
+    cold = udf_hash(llm.complete("text", temperature=0.0))
+    hot = udf_hash(llm.complete("text", temperature=1.0))
+    assert cold != hot
 
 
 def test_bound_callable_is_picklable(fake_llm):

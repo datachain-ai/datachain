@@ -1,11 +1,13 @@
+from collections.abc import Callable
 from functools import cache
 from typing import Any, Literal, TypeVar
 
-from pydantic import BaseModel, ValidationError, create_model
+from pydantic import BaseModel, create_model
 
 from datachain.lib.utils import DataChainError
 
 T = TypeVar("T", bound=BaseModel)
+R = TypeVar("R")
 
 
 class LLMError(DataChainError):
@@ -29,19 +31,27 @@ def _fallbacks(fallback: str | list[str] | None) -> list[str] | None:
     return [fallback] if isinstance(fallback, str) else list(fallback)
 
 
+def _attempt(retries: int, describe: str, call: Callable[[], R]) -> R:
+    """Run `call`, retrying provider and schema-validation failures `retries` times."""
+    attempts = max(retries, 0) + 1
+    last_error: Exception | None = None
+    for _ in range(attempts):
+        try:
+            return call()
+        except Exception as exc:  # noqa: BLE001 - retry provider/validation failures
+            last_error = exc
+    raise LLMError(
+        f"llm call failed after {attempts} attempt(s) ({describe})"
+    ) from last_error
+
+
 def _completion_kwargs(
     model: str,
     messages: list[dict[str, Any]],
-    retries: int,
     fallback: str | list[str] | None,
     params: dict[str, Any],
 ) -> dict[str, Any]:
-    kwargs: dict[str, Any] = {
-        "model": model,
-        "messages": messages,
-        "num_retries": retries,
-        **params,
-    }
+    kwargs: dict[str, Any] = {"model": model, "messages": messages, **params}
     if (fallbacks := _fallbacks(fallback)) is not None:
         kwargs["fallbacks"] = fallbacks
     return kwargs
@@ -55,10 +65,13 @@ def complete_text(
     params: dict[str, Any],
 ) -> str:
     litellm = _litellm()
-    kwargs = _completion_kwargs(model, messages, retries, fallback, params)
-    response = litellm.completion(**kwargs)
-    content = response.choices[0].message.content
-    return content if content is not None else ""
+    kwargs = _completion_kwargs(model, messages, fallback, params)
+
+    def call() -> str:
+        content = litellm.completion(**kwargs).choices[0].message.content
+        return content if content is not None else ""
+
+    return _attempt(retries, "completion", call)
 
 
 def complete_structured(
@@ -69,27 +82,15 @@ def complete_structured(
     fallback: str | list[str] | None,
     params: dict[str, Any],
 ) -> T:
-    """Call the model with a Pydantic `response_format` and validate the result.
-
-    Pydantic validation doubles as the retry hook: providers vary in how strictly
-    they honor the schema, so an unparseable response is retried before failing.
-    """
     litellm = _litellm()
-    kwargs = _completion_kwargs(model, messages, retries, fallback, params)
+    kwargs = _completion_kwargs(model, messages, fallback, params)
     kwargs["response_format"] = schema
 
-    last_error: Exception | None = None
-    for _ in range(retries + 1):
-        response = litellm.completion(**kwargs)
-        content = response.choices[0].message.content or ""
-        try:
-            return schema.model_validate_json(content)
-        except ValidationError as exc:
-            last_error = exc
-    raise LLMError(
-        f"model '{model}' did not return output matching schema "
-        f"'{schema.__name__}' after {retries + 1} attempt(s)"
-    ) from last_error
+    def call() -> T:
+        content = litellm.completion(**kwargs).choices[0].message.content or ""
+        return schema.model_validate_json(content)
+
+    return _attempt(retries, f"schema '{schema.__name__}'", call)
 
 
 @cache
@@ -159,13 +160,13 @@ def embed(
     params: dict[str, Any],
 ) -> list[float]:
     litellm = _litellm()
-    kwargs: dict[str, Any] = {
-        "model": model,
-        "input": [text],
-        "num_retries": retries,
-        **params,
-    }
+    kwargs: dict[str, Any] = {"model": model, "input": [text], **params}
     if (fallbacks := _fallbacks(fallback)) is not None:
         kwargs["fallbacks"] = fallbacks
-    response = litellm.embedding(**kwargs)
-    return list(response.data[0]["embedding"])
+
+    def call() -> list[float]:
+        item = litellm.embedding(**kwargs).data[0]
+        vector = item["embedding"] if isinstance(item, dict) else item.embedding
+        return list(vector)
+
+    return _attempt(retries, "embedding", call)

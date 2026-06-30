@@ -1169,8 +1169,10 @@ class DataChain:
         is_generator = target_class.is_output_batched
         name = self.name or ""
 
-        func = self._bind_udf_settings(func)
-        signal_map = {k: self._bind_udf_settings(v) for k, v in signal_map.items()}
+        func = self._bind_udf_settings(func, target_class)
+        signal_map = {
+            k: self._bind_udf_settings(v, target_class) for k, v in signal_map.items()
+        }
 
         sign = UdfSignature.parse(name, signal_map, func, params, output, is_generator)
         DataModel.register(list(sign.output_schema.values.values()))
@@ -1181,15 +1183,16 @@ class DataChain:
 
         return target_class._create(sign, params_schema)
 
-    def _bind_udf_settings(self, func):
+    def _bind_udf_settings(self, func, target_class):
         """Resolve a settings-bindable UDF spec into a concrete callable.
 
-        Any object exposing ``__datachain_bind__(settings)`` (e.g. a `datachain.llm`
-        operation) is given the chain's settings so it can pick up chain-scoped
-        configuration such as ``settings(llm=...)``.
+        Any object exposing ``__datachain_bind__(settings, target)`` (e.g. a
+        `datachain.llm` operation) is given the chain's settings and the target UDF
+        class, so it can pick up ``settings(llm=...)`` and validate its cardinality
+        against the verb.
         """
         bind = getattr(func, "__datachain_bind__", None)
-        return bind(self._settings) if callable(bind) else func
+        return bind(self._settings, target_class) if callable(bind) else func
 
     def _extend_to_data_model(self, method_name, *args, **kwargs):
         query_func = getattr(self._query, method_name)

@@ -26,9 +26,16 @@ class Scene(BaseModel):
     .map(topic=llm.classify("file", into=["accident", "normal"]))  # -> str
     .map(risk=llm.score("file", "accident risk 0..1"))             # -> float
     .map(scene=llm.complete("file", schema=Scene))                 # -> Scene
-    .map(vec=llm.embed("file"))                                    # -> list[float]
     .save("frames")
 )
+```
+
+`classify`, `score`, and `complete` accept image and document files directly (encoded
+as multimodal input). `embed` operates on text — embed a text column or a caption you
+generated, then use it for vector search:
+
+```python
+.map(vec=llm.embed("caption"))  # -> list[float]
 ```
 
 ## Model selection
@@ -36,7 +43,7 @@ class Scene(BaseModel):
 The model is chosen once with `.settings(llm="provider/model")` and inherited by
 every operation below it. Resolution order:
 
-1. A per-call `model=` argument (override, rare).
+1. A per-call `llm=` argument (override, rare).
 2. `.settings(llm=...)`, the main set-once path.
 3. The `DATACHAIN_AI_MODEL` environment variable (final fallback).
 
