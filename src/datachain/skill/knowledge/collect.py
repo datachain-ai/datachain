@@ -8,7 +8,12 @@ from datachain.skill.knowledge.snapshot import build_dataset_snapshot
 
 if TYPE_CHECKING:
     from datachain.data_storage.metastore import AbstractMetastore
-    from datachain.dataset import DatasetDependency, DatasetRecord, DatasetVersion
+    from datachain.dataset import (
+        DatasetDependency,
+        DatasetRecord,
+        DatasetVersion,
+        Project,
+    )
     from datachain.skill.knowledge.types import DatasetSnapshot, DependencyEntry
 
 
@@ -56,5 +61,7 @@ def _dep_name(dep: "DatasetDependency") -> str:
 
 
 def _qualified_name(record: "DatasetRecord") -> str:
-    project = record.project
+    project: "Project | None" = record.project
+    if project is None:
+        return record.name
     return f"{project.namespace.name}.{project.name}.{record.name}"
