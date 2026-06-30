@@ -285,6 +285,23 @@ def test_text_file_reads_text():
     assert parts == [{"type": "text", "text": "contents"}]
 
 
+def test_image_bytes_column_sent_as_image():
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (4, 4), (1, 2, 3)).save(buf, format="PNG")
+    parts = value_to_parts(buf.getvalue())
+    assert parts[0]["type"] == "image_url"
+    assert parts[0]["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+def test_non_image_bytes_raise():
+    with pytest.raises(engine.LLMError, match="image format"):
+        value_to_parts(b"\x00\x01 definitely not an image \xff")
+
+
 def test_explicit_text_type_is_never_sent_as_image():
     # type="text" must win over an image-looking extension.
     tf = TextFile(path="report.png", source="s3://x")

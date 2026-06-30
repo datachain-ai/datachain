@@ -40,6 +40,7 @@ right `type=` and the encoding follows:
 | `str`, Pydantic model | text (a model is serialized to JSON) |
 | `TextFile` (`type="text"`) | the file's text, regardless of extension |
 | `ImageFile` (`type="image"`), video frame | an inline image (needs a vision model) |
+| `bytes` | an inline image if they are a known image format, else an error |
 | `File` (no `type=`) | by extension: image types → image, otherwise read as text |
 
 Two things to keep in mind:
