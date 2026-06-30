@@ -102,15 +102,17 @@ def _as_image(value: Any) -> Image:
     if isinstance(value, VideoFrame):
         return Image(value.read_bytes(format="jpg"), "image/jpeg")
     if isinstance(value, File):
-        return Image(value.read_bytes(), _path_image_mime(value) or "image/jpeg")
-    if isinstance(value, bytes):
-        mime = _sniff_image_mime(value)
-        if mime is None:
-            raise LLMError(
-                "media='image' was set but the value is not a recognized image format"
-            )
-        return Image(value, mime)
-    raise LLMError(f"cannot send {type(value).__name__} as an image")
+        data = value.read_bytes()
+    elif isinstance(value, bytes):
+        data = value
+    else:
+        raise LLMError(f"cannot send {type(value).__name__} as an image")
+    # Trust an image extension on the path; otherwise sniff and reject non-images.
+    mime = _path_image_mime(value) if isinstance(value, File) else None
+    mime = mime or _sniff_image_mime(data)
+    if mime is None:
+        raise LLMError("the value is not a recognized image format")
+    return Image(data, mime)
 
 
 def _as_document(value: Any) -> Document:

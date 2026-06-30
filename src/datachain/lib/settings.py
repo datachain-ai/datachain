@@ -179,7 +179,10 @@ class Settings:
                     "'llm_params' argument must be a dict or a callable returning a"
                     f" dict while {llm_params.__class__.__name__} was given"
                 )
-            self._llm_params = llm_params
+            # Copy the dict so later mutations of the caller's object don't leak in.
+            self._llm_params = (
+                dict(llm_params) if isinstance(llm_params, dict) else llm_params
+            )
 
     @property
     def cache(self) -> bool:

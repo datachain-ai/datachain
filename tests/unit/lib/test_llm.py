@@ -301,10 +301,17 @@ def test_image_file_resolves_to_image_with_mime():
     assert c.mime == "image/png"
 
 
-def test_image_file_without_extension_defaults_to_jpeg():
+def test_image_file_without_extension_sniffed_from_bytes():
+    img = ImageFile(path="snapshot", source="s3://x")
+    with mock.patch.object(ImageFile, "read_bytes", return_value=_png()):
+        assert resolve(img).mime == "image/png"
+
+
+def test_image_file_unrecognized_bytes_rejected():
     img = ImageFile(path="snapshot", source="s3://x")
     with mock.patch.object(ImageFile, "read_bytes", return_value=b"x"):
-        assert resolve(img).mime == "image/jpeg"
+        with pytest.raises(engine.LLMError, match="not a recognized image"):
+            resolve(img)
 
 
 def test_video_frame_resolves_to_jpeg_image():
@@ -371,12 +378,19 @@ def test_media_image_on_non_image_bytes_errors():
         resolve(b"\x00\x01 not an image", media="image")
 
 
-def test_media_image_on_untyped_file():
-    f = File(path="blob", source="s3://x")
-    with mock.patch.object(File, "read_bytes", return_value=b"raw"):
+def test_media_image_on_untyped_file_sniffs_bytes():
+    f = File(path="blob", source="s3://x")  # no image extension -> sniff bytes
+    with mock.patch.object(File, "read_bytes", return_value=_png()):
         c = resolve(f, media="image")
     assert isinstance(c, Image)
-    assert c.mime == "image/jpeg"  # no extension -> default
+    assert c.mime == "image/png"
+
+
+def test_media_image_on_untyped_file_rejects_non_image():
+    f = File(path="blob", source="s3://x")
+    with mock.patch.object(File, "read_bytes", return_value=b"raw"):
+        with pytest.raises(engine.LLMError, match="not a recognized image"):
+            resolve(f, media="image")
 
 
 # --- media="document" ---

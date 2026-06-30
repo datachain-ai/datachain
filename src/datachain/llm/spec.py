@@ -94,6 +94,10 @@ class LLMSpec:
                 f"{sorted(reserved)}"
             )
 
+    def _is_one_to_many(self) -> bool:
+        """A `complete(schema=list[...])` yields many rows per input (needs .gen)."""
+        return self.kind == "complete" and _element_type(self.schema)[1]
+
     def output_type(self) -> Any:
         if self.kind == "embed":
             return list[float]
@@ -109,11 +113,10 @@ class LLMSpec:
     def return_annotation(self) -> Any:
         """Annotation seen by the verb. ``Iterator[T]`` for the 1:N (list) case;
         ``include_usage`` pairs every value with a ``Usage`` (``tuple[T, Usage]``)."""
-        if self.kind == "complete" and self.schema is not None:
-            elem, is_list = _element_type(self.schema)
-            if is_list:
-                item = tuple[elem, Usage] if self.include_usage else elem  # type: ignore[valid-type]
-                return Iterator[item]  # type: ignore[valid-type]
+        if self._is_one_to_many():
+            elem = _element_type(self.schema)[0]
+            item = tuple[elem, Usage] if self.include_usage else elem  # type: ignore[valid-type]
+            return Iterator[item]  # type: ignore[valid-type]
         out = self.output_type()
         return tuple[out, Usage] if self.include_usage else out  # type: ignore[valid-type]
 
@@ -230,7 +233,7 @@ class LLMSpec:
             return
         out_batched = getattr(target, "is_output_batched", False)
         in_batched = getattr(target, "is_input_batched", False)
-        one_to_many = self.kind == "complete" and _element_type(self.schema)[1]
+        one_to_many = self._is_one_to_many()
         if one_to_many:
             if not out_batched or in_batched:
                 raise LLMConfigError(
