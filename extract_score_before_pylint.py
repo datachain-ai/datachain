@@ -1,8 +1,8 @@
-import subprocess
 import os
+import subprocess
 
 PROJETO = "datachain"
-PASTA   = "metrics-after-pylint"
+PASTA = "metrics-after-pylint"
 
 os.makedirs(PASTA, exist_ok=True)
 

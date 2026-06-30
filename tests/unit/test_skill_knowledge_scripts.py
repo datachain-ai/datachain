@@ -15,6 +15,7 @@ SCRIPTS_DIR = str(
 if SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, SCRIPTS_DIR)
 
+import dataset_all  # noqa: E402
 from changes import build_changes, compute_dep_changes  # noqa: E402
 from render_index import render_index  # noqa: E402
 from schema import parse_dataset_name, type_name  # noqa: E402
@@ -35,8 +36,6 @@ from utils import (  # noqa: E402
     source_to_https,
     split_frontmatter,
 )
-
-import dataset_all  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # utils.py
@@ -510,7 +509,9 @@ def test_is_calibration_empty():
 
 
 def test_plan_datasets_up_to_date(monkeypatch):
-    monkeypatch.setattr(_plan, "read_frontmatter", lambda _: {"db_last_updated": "2024-01-01T00:00:00Z"})
+    monkeypatch.setattr(
+        _plan, "read_frontmatter", lambda _: {"db_last_updated": "2024-01-01T00:00:00Z"}
+    )
     result, up_to_date = _plan.plan_datasets(None, "2024-01-01T00:00:00Z")
     assert result == []
     assert up_to_date is True
@@ -526,9 +527,19 @@ def test_plan_datasets_empty(monkeypatch):
 
 def test_plan_datasets_all_new(monkeypatch):
     monkeypatch.setattr(_plan, "read_frontmatter", lambda _: {"db_last_updated": "old"})
-    monkeypatch.setattr(_plan, "collect_datasets", lambda dc, studio=False: [
-        {"name": "ds1", "version": "1.0.0", "source": "local", "records": 100, "updated": "2024-01-01"},
-    ])
+    monkeypatch.setattr(
+        _plan,
+        "collect_datasets",
+        lambda dc, studio=False: [
+            {
+                "name": "ds1",
+                "version": "1.0.0",
+                "source": "local",
+                "records": 100,
+                "updated": "2024-01-01",
+            },
+        ],
+    )
     monkeypatch.setattr(_plan, "dataset_file_path", lambda n, s: "datasets/ds1")
     monkeypatch.setattr("os.path.exists", lambda p: False)
     result, up_to_date = _plan.plan_datasets(None, "2024-01-01T00:00:00Z")
@@ -542,13 +553,33 @@ def test_plan_datasets_all_new(monkeypatch):
 
 def test_plan_datasets_stale(monkeypatch):
     monkeypatch.setattr(_plan, "read_frontmatter", lambda _: {"db_last_updated": "old"})
-    monkeypatch.setattr(_plan, "collect_datasets", lambda dc, studio=False: [
-        {"name": "ds1", "version": "1.0.0", "source": "local", "records": 100, "updated": "2024-01-01"},
-        {"name": "ds1", "version": "2.0.0", "source": "local", "records": 200, "updated": "2024-02-01"},
-    ])
+    monkeypatch.setattr(
+        _plan,
+        "collect_datasets",
+        lambda dc, studio=False: [
+            {
+                "name": "ds1",
+                "version": "1.0.0",
+                "source": "local",
+                "records": 100,
+                "updated": "2024-01-01",
+            },
+            {
+                "name": "ds1",
+                "version": "2.0.0",
+                "source": "local",
+                "records": 200,
+                "updated": "2024-02-01",
+            },
+        ],
+    )
     monkeypatch.setattr(_plan, "dataset_file_path", lambda n, s: "datasets/ds1")
     monkeypatch.setattr(_plan, "read_json_versions", lambda p: ["1.0.0"])
-    monkeypatch.setattr(_plan, "read_json_metadata", lambda p: {"last_version": "1.0.0", "records": "100"})
+    monkeypatch.setattr(
+        _plan,
+        "read_json_metadata",
+        lambda p: {"last_version": "1.0.0", "records": "100"},
+    )
     monkeypatch.setattr("os.path.exists", lambda p: p.endswith(".json"))
     result, up_to_date = _plan.plan_datasets(None, "2024-01-01T00:00:00Z")
     assert len(result) == 1
@@ -559,12 +590,26 @@ def test_plan_datasets_stale(monkeypatch):
 
 def test_plan_datasets_ok(monkeypatch):
     monkeypatch.setattr(_plan, "read_frontmatter", lambda _: {"db_last_updated": "old"})
-    monkeypatch.setattr(_plan, "collect_datasets", lambda dc, studio=False: [
-        {"name": "ds1", "version": "1.0.0", "source": "local", "records": 100, "updated": "2024-01-01"},
-    ])
+    monkeypatch.setattr(
+        _plan,
+        "collect_datasets",
+        lambda dc, studio=False: [
+            {
+                "name": "ds1",
+                "version": "1.0.0",
+                "source": "local",
+                "records": 100,
+                "updated": "2024-01-01",
+            },
+        ],
+    )
     monkeypatch.setattr(_plan, "dataset_file_path", lambda n, s: "datasets/ds1")
     monkeypatch.setattr(_plan, "read_json_versions", lambda p: ["1.0.0"])
-    monkeypatch.setattr(_plan, "read_json_metadata", lambda p: {"last_version": "1.0.0", "records": "100"})
+    monkeypatch.setattr(
+        _plan,
+        "read_json_metadata",
+        lambda p: {"last_version": "1.0.0", "records": "100"},
+    )
     monkeypatch.setattr("os.path.exists", lambda p: p.endswith(".json"))
     result, up_to_date = _plan.plan_datasets(None, "2024-01-01T00:00:00Z")
     assert len(result) == 1
@@ -574,12 +619,26 @@ def test_plan_datasets_ok(monkeypatch):
 
 def test_plan_datasets_latest_mismatch(monkeypatch):
     monkeypatch.setattr(_plan, "read_frontmatter", lambda _: {"db_last_updated": "old"})
-    monkeypatch.setattr(_plan, "collect_datasets", lambda dc, studio=False: [
-        {"name": "ds1", "version": "2.0.0", "source": "local", "records": 200, "updated": "2024-02-01"},
-    ])
+    monkeypatch.setattr(
+        _plan,
+        "collect_datasets",
+        lambda dc, studio=False: [
+            {
+                "name": "ds1",
+                "version": "2.0.0",
+                "source": "local",
+                "records": 200,
+                "updated": "2024-02-01",
+            },
+        ],
+    )
     monkeypatch.setattr(_plan, "dataset_file_path", lambda n, s: "datasets/ds1")
     monkeypatch.setattr(_plan, "read_json_versions", lambda p: ["2.0.0"])
-    monkeypatch.setattr(_plan, "read_json_metadata", lambda p: {"last_version": "1.0.0", "records": "100"})
+    monkeypatch.setattr(
+        _plan,
+        "read_json_metadata",
+        lambda p: {"last_version": "1.0.0", "records": "100"},
+    )
     monkeypatch.setattr("os.path.exists", lambda p: p.endswith(".json"))
     result, up_to_date = _plan.plan_datasets(None, "2024-01-01T00:00:00Z")
     assert len(result) == 1
@@ -589,13 +648,27 @@ def test_plan_datasets_latest_mismatch(monkeypatch):
 
 def test_plan_datasets_md_fallback(monkeypatch):
     monkeypatch.setattr(_plan, "read_frontmatter", lambda _: {"db_last_updated": "old"})
-    monkeypatch.setattr(_plan, "collect_datasets", lambda dc, studio=False: [
-        {"name": "ds1", "version": "1.0.0", "source": "local", "records": 100, "updated": "2024-01-01"},
-    ])
+    monkeypatch.setattr(
+        _plan,
+        "collect_datasets",
+        lambda dc, studio=False: [
+            {
+                "name": "ds1",
+                "version": "1.0.0",
+                "source": "local",
+                "records": 100,
+                "updated": "2024-01-01",
+            },
+        ],
+    )
     monkeypatch.setattr(_plan, "dataset_file_path", lambda n, s: "datasets/ds1")
     monkeypatch.setattr(_plan, "read_md_versions", lambda p: ["1.0.0"])
-    monkeypatch.setattr(_plan, "read_md_metadata", lambda p: {"last_version": "1.0.0", "records": "100"})
-    monkeypatch.setattr("os.path.exists", lambda p: p.endswith(".md") and not p.endswith(".json"))
+    monkeypatch.setattr(
+        _plan, "read_md_metadata", lambda p: {"last_version": "1.0.0", "records": "100"}
+    )
+    monkeypatch.setattr(
+        "os.path.exists", lambda p: p.endswith(".md") and not p.endswith(".json")
+    )
     result, up_to_date = _plan.plan_datasets(None, "2024-01-01T00:00:00Z")
     assert len(result) == 1
     assert result[0]["status"] == "ok"
@@ -603,12 +676,36 @@ def test_plan_datasets_md_fallback(monkeypatch):
 
 def test_plan_datasets_studio_merge(monkeypatch):
     monkeypatch.setattr(_plan, "read_frontmatter", lambda _: {"db_last_updated": "old"})
-    local_ds = [{"name": "ds1", "version": "1.0.0", "source": "local", "records": 100, "updated": "2024-01-01"}]
-    studio_ds = [
-        {"name": "ds1", "version": "1.0.0", "source": "studio", "records": 100, "updated": "2024-01-01"},
-        {"name": "ds2", "version": "1.0.0", "source": "studio", "records": 50, "updated": "2024-03-01"},
+    local_ds = [
+        {
+            "name": "ds1",
+            "version": "1.0.0",
+            "source": "local",
+            "records": 100,
+            "updated": "2024-01-01",
+        }
     ]
-    monkeypatch.setattr(_plan, "collect_datasets", lambda dc, studio=False: local_ds if not studio else studio_ds)
+    studio_ds = [
+        {
+            "name": "ds1",
+            "version": "1.0.0",
+            "source": "studio",
+            "records": 100,
+            "updated": "2024-01-01",
+        },
+        {
+            "name": "ds2",
+            "version": "1.0.0",
+            "source": "studio",
+            "records": 50,
+            "updated": "2024-03-01",
+        },
+    ]
+    monkeypatch.setattr(
+        _plan,
+        "collect_datasets",
+        lambda dc, studio=False: local_ds if not studio else studio_ds,
+    )
     monkeypatch.setattr(_plan, "dataset_file_path", lambda n, s: f"datasets/{n}")
     monkeypatch.setattr("os.path.exists", lambda p: False)
     result, up_to_date = _plan.plan_datasets(None, "2024-01-01T00:00:00Z", studio=True)
@@ -619,10 +716,19 @@ def test_plan_datasets_studio_merge(monkeypatch):
 
 def test_plan_datasets_calibration_filtered(monkeypatch):
     monkeypatch.setattr(_plan, "read_frontmatter", lambda _: {"db_last_updated": "old"})
-    monkeypatch.setattr(_plan, "collect_datasets", lambda dc, studio=False: [
-        {"name": "calib_xyz", "version": "1.0.0", "source": "local", "records": 10},
-        {"name": "normal_ds", "version": "1.0.0", "source": "local", "records": 100},
-    ])
+    monkeypatch.setattr(
+        _plan,
+        "collect_datasets",
+        lambda dc, studio=False: [
+            {"name": "calib_xyz", "version": "1.0.0", "source": "local", "records": 10},
+            {
+                "name": "normal_ds",
+                "version": "1.0.0",
+                "source": "local",
+                "records": 100,
+            },
+        ],
+    )
     monkeypatch.setattr(_plan, "dataset_file_path", lambda n, s: f"datasets/{n}")
     monkeypatch.setattr("os.path.exists", lambda p: False)
     result, up_to_date = _plan.plan_datasets(None, "2024-01-01T00:00:00Z")
@@ -632,9 +738,13 @@ def test_plan_datasets_calibration_filtered(monkeypatch):
 
 def test_plan_datasets_no_versions(monkeypatch):
     monkeypatch.setattr(_plan, "read_frontmatter", lambda _: {"db_last_updated": "old"})
-    monkeypatch.setattr(_plan, "collect_datasets", lambda dc, studio=False: [
-        {"name": "ds1", "version": None, "source": "local"},
-    ])
+    monkeypatch.setattr(
+        _plan,
+        "collect_datasets",
+        lambda dc, studio=False: [
+            {"name": "ds1", "version": None, "source": "local"},
+        ],
+    )
     monkeypatch.setattr("os.path.exists", lambda p: False)
     result, up_to_date = _plan.plan_datasets(None, "2024-01-01T00:00:00Z")
     assert result == []
@@ -871,7 +981,11 @@ class TestBuildVersionEntries:
                 mock_summary.return_value = "summary"
                 warnings: list[str] = []
                 versions_out, attrs, desc = dataset_all._build_version_entries(
-                    "ds", version_entries, versions_sorted, dc, warnings,
+                    "ds",
+                    version_entries,
+                    versions_sorted,
+                    dc,
+                    warnings,
                 )
         assert len(versions_out) == 2
         assert attrs == ["col1"]
@@ -903,7 +1017,11 @@ class TestBuildVersionEntries:
             }
             warnings: list[str] = []
             dataset_all._build_version_entries(
-                "ds", version_entries, versions_sorted, dc, warnings,
+                "ds",
+                version_entries,
+                versions_sorted,
+                dc,
+                warnings,
             )
         assert warnings == ["summary: boom"]
 
@@ -913,8 +1031,18 @@ class TestFetchStudioVersions:
         dc = MagicMock()
         with patch("dataset_all.collect_datasets") as mock_cd:
             mock_cd.return_value = [
-                {"name": "org.ns.ds", "version": "1.0.0", "records": 10, "updated": "2024-01-01"},
-                {"name": "org.ns.ds", "version": "2.0.0", "records": 20, "updated": "2024-02-01"},
+                {
+                    "name": "org.ns.ds",
+                    "version": "1.0.0",
+                    "records": 10,
+                    "updated": "2024-01-01",
+                },
+                {
+                    "name": "org.ns.ds",
+                    "version": "2.0.0",
+                    "records": 20,
+                    "updated": "2024-02-01",
+                },
             ]
             with patch("dataset_all._build_version_entries") as mock_bve:
                 mock_bve.return_value = (
@@ -949,7 +1077,7 @@ class TestFetchLocalCatalogVersions:
         ver1.finished_at = None
         ver1.created_at = MagicMock()
         ver1.created_at.isoformat.return_value = "2024-01-01T00:00:00"
-        setattr(ver1, "uuid", "uuid1")
+        ver1.uuid = "uuid1"
 
         ver2 = MagicMock()
         ver2.version = "2.0.0"
@@ -958,7 +1086,7 @@ class TestFetchLocalCatalogVersions:
         ver2.finished_at = None
         ver2.created_at = MagicMock()
         ver2.created_at.isoformat.return_value = "2024-02-01T00:00:00"
-        setattr(ver2, "uuid", "uuid2")
+        ver2.uuid = "uuid2"
 
         versions_sorted = [ver1, ver2]
         catalog.get_dataset_dependencies.return_value = []
@@ -978,8 +1106,14 @@ class TestFetchLocalCatalogVersions:
 
             warnings: list[str] = []
             result = dataset_all._fetch_local_catalog_versions(
-                "ds", "local", catalog, versions_sorted,
-                ["col1"], "desc", dc, warnings,
+                "ds",
+                "local",
+                catalog,
+                versions_sorted,
+                ["col1"],
+                "desc",
+                dc,
+                warnings,
             )
         assert result["name"] == "ds"
         assert result["source"] == "local"
@@ -1000,7 +1134,7 @@ class TestFetchLocalCatalogVersions:
         ver.finished_at = None
         ver.created_at = MagicMock()
         ver.created_at.isoformat.return_value = "2024-01-01T00:00:00"
-        setattr(ver, "uuid", "uuid1")
+        ver.uuid = "uuid1"
 
         catalog.get_dataset_dependencies.return_value = []
 
@@ -1012,7 +1146,14 @@ class TestFetchLocalCatalogVersions:
             patch("dataset_all.build_changes"),
         ):
             dataset_all._fetch_local_catalog_versions(
-                "ds", "local", catalog, [ver], [], None, dc, warnings,
+                "ds",
+                "local",
+                catalog,
+                [ver],
+                [],
+                None,
+                dc,
+                warnings,
             )
         assert any("read failed" in w for w in warnings)
 
@@ -1041,11 +1182,18 @@ class TestFetchLocalVersions:
             mock_gc.side_effect = Exception("catalog fail")
             with patch("dataset_all.collect_datasets") as mock_cd:
                 mock_cd.return_value = [
-                    {"name": "ds", "version": "1.0.0", "records": 10, "updated": "2024-01-01"},
+                    {
+                        "name": "ds",
+                        "version": "1.0.0",
+                        "records": 10,
+                        "updated": "2024-01-01",
+                    },
                 ]
                 with patch("dataset_all._build_version_entries") as mock_bve:
                     mock_bve.return_value = (
-                        [{"version": "1.0.0"}], ["col1"], "desc",
+                        [{"version": "1.0.0"}],
+                        ["col1"],
+                        "desc",
                     )
                     result = dataset_all._fetch_local_versions("ds", "local", dc)
         assert result["source"] == "local"

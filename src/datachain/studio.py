@@ -66,43 +66,65 @@ def _dispatch(args, dispatch_map):
 
 
 def process_jobs_args(args: "Namespace"):
-    return _dispatch(args, {
-        "run": lambda a: create_job(
-            query_file=a.file, team_name=a.team, env_file=a.env_file,
-            env=a.env, workers=a.workers, files=a.files,
-            python_version=a.python_version, repository=a.repository,
-            req=a.req, req_file=a.req_file, priority=a.priority,
-            cluster=a.cluster, start_time=a.start_time, cron=a.cron,
-            no_wait=a.no_wait, credentials_name=a.credentials_name,
-            ignore_checkpoints=a.ignore_checkpoints, no_follow=a.no_follow,
-        ),
-        "cancel": lambda a: cancel_job(a.id, a.team),
-        "logs": lambda a: show_job_logs(a.id, a.team),
-        "ls": lambda a: list_jobs(a.status, a.team, a.limit),
-        "clusters": lambda a: list_clusters(a.team),
-    })
+    return _dispatch(
+        args,
+        {
+            "run": lambda a: create_job(
+                query_file=a.file,
+                team_name=a.team,
+                env_file=a.env_file,
+                env=a.env,
+                workers=a.workers,
+                files=a.files,
+                python_version=a.python_version,
+                repository=a.repository,
+                req=a.req,
+                req_file=a.req_file,
+                priority=a.priority,
+                cluster=a.cluster,
+                start_time=a.start_time,
+                cron=a.cron,
+                no_wait=a.no_wait,
+                credentials_name=a.credentials_name,
+                ignore_checkpoints=a.ignore_checkpoints,
+                no_follow=a.no_follow,
+            ),
+            "cancel": lambda a: cancel_job(a.id, a.team),
+            "logs": lambda a: show_job_logs(a.id, a.team),
+            "ls": lambda a: list_jobs(a.status, a.team, a.limit),
+            "clusters": lambda a: list_clusters(a.team),
+        },
+    )
 
 
 def process_pipeline_args(args: "Namespace", catalog: "Catalog"):
-    return _dispatch(args, {
-        "create": lambda a: create_pipeline(catalog, a.datasets, a.team),
-        "status": lambda a: get_pipeline_status(a.name, a.team),
-        "list": lambda a: list_pipelines(a.team, a.status, a.limit, a.search),
-        "pause": lambda a: pause_pipeline(a.name, a.team),
-        "resume": lambda a: resume_pipeline(a.name, a.team),
-        "remove-job": lambda a: remove_job_from_pipeline(
-            name=a.name, job_id=a.job_id, team_name=a.team,
-        ),
-    })
+    return _dispatch(
+        args,
+        {
+            "create": lambda a: create_pipeline(catalog, a.datasets, a.team),
+            "status": lambda a: get_pipeline_status(a.name, a.team),
+            "list": lambda a: list_pipelines(a.team, a.status, a.limit, a.search),
+            "pause": lambda a: pause_pipeline(a.name, a.team),
+            "resume": lambda a: resume_pipeline(a.name, a.team),
+            "remove-job": lambda a: remove_job_from_pipeline(
+                name=a.name,
+                job_id=a.job_id,
+                team_name=a.team,
+            ),
+        },
+    )
 
 
 def process_auth_cli_args(args: "Namespace"):
-    return _dispatch(args, {
-        "login": login,
-        "logout": lambda a: logout(a.local),
-        "token": lambda a: token(),
-        "team": set_team,
-    })
+    return _dispatch(
+        args,
+        {
+            "login": login,
+            "logout": lambda a: logout(a.local),
+            "token": lambda a: token(),
+            "team": set_team,
+        },
+    )
 
 
 def _save_default_team(team_name: str, level: ConfigLevel):
@@ -273,9 +295,7 @@ def token():
 
 
 def _ds_full_name(ds: dict) -> str:
-    return (
-        f"{ds['project']['namespace']['name']}.{ds['project']['name']}.{ds['name']}"
-    )
+    return f"{ds['project']['namespace']['name']}.{ds['project']['name']}.{ds['name']}"
 
 
 def _fetch_datasets(team: str | None):
@@ -444,8 +464,13 @@ def _process_logs_message(
 
 
 async def _handle_ws_messages(
-    client, job_id, no_follow,
-    last_log_id, processed_statuses, log_blobs_processed, reconnect_msg,
+    client,
+    job_id,
+    no_follow,
+    last_log_id,
+    processed_statuses,
+    log_blobs_processed,
+    reconnect_msg,
 ):
     received_streaming_data = False
     session_start_id = last_log_id
@@ -472,8 +497,11 @@ async def _handle_ws_messages(
             processed_statuses.add(latest_status)
             print(f"\n>>>> Job is now in {latest_status} status.")
     return (
-        received_streaming_data, last_log_id, latest_status,
-        log_blobs_processed, reconnect_msg,
+        received_streaming_data,
+        last_log_id,
+        latest_status,
+        log_blobs_processed,
+        reconnect_msg,
     )
 
 
@@ -542,11 +570,19 @@ async def _tail_job_logs(client, job_id, no_follow):
     log_blobs_processed, reconnect_msg = False, ""
     while True:
         (
-            received_streaming_data, last_log_id, msg_status,
-            log_blobs_processed, reconnect_msg,
+            received_streaming_data,
+            last_log_id,
+            msg_status,
+            log_blobs_processed,
+            reconnect_msg,
         ) = await _handle_ws_messages(
-            client, job_id, no_follow, last_log_id,
-            processed_statuses, log_blobs_processed, reconnect_msg,
+            client,
+            job_id,
+            no_follow,
+            last_log_id,
+            processed_statuses,
+            log_blobs_processed,
+            reconnect_msg,
         )
         if received_streaming_data:
             retry_count = 0
@@ -570,9 +606,7 @@ async def _tail_job_logs(client, job_id, no_follow):
     return latest_status
 
 
-def show_logs_from_client(
-    client, job_id: str, no_follow: bool = False
-):
+def show_logs_from_client(client, job_id: str, no_follow: bool = False):
     final_status = asyncio.run(_tail_job_logs(client, job_id, no_follow))
 
     if not _is_job_finished(final_status):
@@ -616,7 +650,11 @@ def _resolve_rerun(catalog, script_path: str) -> str | None:
 
 
 def _save_remote_job(
-    catalog, query: str, query_type: str, script_path: str, job_data: dict,
+    catalog,
+    query: str,
+    query_type: str,
+    script_path: str,
+    job_data: dict,
 ):
     query_type_value = (
         JobQueryType.PYTHON if query_type == "PYTHON" else JobQueryType.SHELL
@@ -759,8 +797,11 @@ def list_jobs(status: str | None, team_name: str | None, limit: int):
     _print_table(
         jobs,
         {
-            "ID": "id", "Name": "name", "Status": "status",
-            "Created at": "created_at", "Created by": "created_by",
+            "ID": "id",
+            "Name": "name",
+            "Status": "status",
+            "Created at": "created_at",
+            "Created by": "created_by",
         },
         "No jobs found",
     )

@@ -2,11 +2,11 @@ import json
 import os
 import subprocess
 import sys
-from collections import defaultdict, Counter
+from collections import Counter, defaultdict
 
 # ConfiguraÃ§Ã£o
-PROJETO = "datachain" # diretÃ³rio do cÃ³digo fonte
-PASTA   = "metrics-after-pylint" # NÃ£o altere o nome dessa pasta, os relatÃ³rios vÃ£o ser salvos nela.
+PROJETO = "datachain"  # diretÃ³rio do cÃ³digo fonte
+PASTA = "metrics-after-pylint"  # NÃ£o altere o nome dessa pasta, os relatÃ³rios vÃ£o ser salvos nela.
 
 os.makedirs(PASTA, exist_ok=True)
 
@@ -45,10 +45,10 @@ for msg in mensagens:
 
 tipos_nomes = {
     "convention": "pylint_convention_depois.json",
-    "refactor":   "pylint_refactor_depois.json",
-    "warning":    "pylint_warning_depois.json",
-    "error":      "pylint_error_depois.json",
-    "fatal":      "pylint_fatal_depois.json",
+    "refactor": "pylint_refactor_depois.json",
+    "warning": "pylint_warning_depois.json",
+    "error": "pylint_error_depois.json",
+    "fatal": "pylint_fatal_depois.json",
 }
 
 for tipo, nome_arquivo in tipos_nomes.items():
@@ -81,10 +81,7 @@ for msg in mensagens:
     por_arquivo[path]["total"] += 1
 
 arquivos_ordenados = sorted(
-    [
-        {"arquivo": path, **contagens}
-        for path, contagens in por_arquivo.items()
-    ],
+    [{"arquivo": path, **contagens} for path, contagens in por_arquivo.items()],
     key=lambda x: x["total"],
     reverse=True,
 )

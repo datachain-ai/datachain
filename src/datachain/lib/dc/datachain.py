@@ -1402,7 +1402,10 @@ class DataChain:
                 )
 
         self._validate_and_process_kwargs(
-            kwargs, self.signals_schema, signal_columns, schema_fields,
+            kwargs,
+            self.signals_schema,
+            signal_columns,
+            schema_fields,
         )
 
         signal_schema = self.signals_schema.group_by(
@@ -1462,7 +1465,11 @@ class DataChain:
             )
         else:
             self._process_partition_by_str_simple(
-                col, columns, schema_fields, keep_columns, schema_partition_by,
+                col,
+                columns,
+                schema_fields,
+                keep_columns,
+                schema_partition_by,
             )
 
     def _process_partition_by_str_nested(

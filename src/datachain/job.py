@@ -95,9 +95,7 @@ class Job:
             ),
             relations=JobRelations(
                 parent_job_id=str(parent_job_id) if parent_job_id else None,
-                rerun_from_job_id=str(rerun_from_job_id)
-                if rerun_from_job_id
-                else None,
+                rerun_from_job_id=str(rerun_from_job_id) if rerun_from_job_id else None,
                 run_group_id=str(run_group_id) if run_group_id else None,
             ),
             error=JobError(

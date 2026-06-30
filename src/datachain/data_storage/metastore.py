@@ -709,10 +709,17 @@ _SKIPPABLE_DATASET_FIELDS = frozenset({"id", "created_at"})
 _NON_NULL_DATASET_FIELDS = frozenset({"name", "status", "sources", "query_script"})
 
 _SKIPPABLE_VERSION_FIELDS = frozenset({"id", "created_at"})
-_NON_NULL_VERSION_FIELDS = frozenset({
-    "status", "sources", "query_script", "error_message",
-    "error_stack", "script_output", "uuid",
-})
+_NON_NULL_VERSION_FIELDS = frozenset(
+    {
+        "status",
+        "sources",
+        "query_script",
+        "error_message",
+        "error_stack",
+        "script_output",
+        "uuid",
+    }
+)
 
 
 class AbstractDBMetastore(AbstractMetastore):
@@ -826,8 +833,7 @@ class AbstractDBMetastore(AbstractMetastore):
         return [
             c.name
             for c in self._datasets_columns()
-            if isinstance(c, Column)
-            and c.name in self.dataset_list_class._db_fields
+            if isinstance(c, Column) and c.name in self.dataset_list_class._db_fields
         ]
 
     @classmethod

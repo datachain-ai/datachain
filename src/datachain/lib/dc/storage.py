@@ -88,7 +88,14 @@ def _resolve_session_and_config(uris, session, client_config, anon, in_memory):
         client_config = client_config | {"anon": anon}
     listing_namespace_name = catalog.metastore.system_namespace_name
     listing_project_name = catalog.metastore.listing_project_name
-    return session, catalog, cache, client_config, listing_namespace_name, listing_project_name
+    return (
+        session,
+        catalog,
+        cache,
+        client_config,
+        listing_namespace_name,
+        listing_project_name,
+    )
 
 
 def _expand_brace_patterns(uris):
@@ -183,7 +190,9 @@ def _process_expanded_uri(
 
     if glob_pattern:
         use_recursive = should_use_recursion(glob_pattern, recursive or False)
-        return apply_glob_filter(dc, glob_pattern, list_path, use_recursive, column), None
+        return apply_glob_filter(
+            dc, glob_pattern, list_path, use_recursive, column
+        ), None
     return ls(dc, list_path, recursive=recursive, column=column), None
 
 
@@ -308,11 +317,26 @@ def read_storage(
 
     for single_uri in expanded_uris:
         chain, file_value = _process_expanded_uri(
-            single_uri, session, catalog, cache, client_config,
-            listing_ns, listing_proj, file_type, column,
-            update, recursive, settings, in_memory,
-            delta, delta_on, delta_result_on, delta_compare,
-            delta_retry, delta_unsafe, updated_uris,
+            single_uri,
+            session,
+            catalog,
+            cache,
+            client_config,
+            listing_ns,
+            listing_proj,
+            file_type,
+            column,
+            update,
+            recursive,
+            settings,
+            in_memory,
+            delta,
+            delta_on,
+            delta_result_on,
+            delta_compare,
+            delta_retry,
+            delta_unsafe,
+            updated_uris,
         )
         if chain is not None:
             chains.append(chain)

@@ -56,7 +56,6 @@ class _CatalogParams(NamedTuple):
 
 
 class PytorchDataset(IterableDataset):
-
     def __init__(
         self,
         name: str,

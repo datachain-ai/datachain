@@ -124,7 +124,9 @@ class UDFDispatcher:
             metastore: AbstractMetastore = ms_cls(*ms_args, **ms_kwargs)
             ws_cls, ws_args, ws_kwargs = self.udf_info["warehouse_clone_params"]
             warehouse: AbstractWarehouse = ws_cls(*ws_args, **ws_kwargs)
-            self._catalog = Catalog(metastore, warehouse, **self.udf_info["catalog_init"])
+            self._catalog = Catalog(
+                metastore, warehouse, **self.udf_info["catalog_init"]
+            )
         return self._catalog
 
     def _create_worker(self) -> "UDFWorker":
@@ -216,7 +218,9 @@ class UDFDispatcher:
                 )
 
         prefetch = udf.prefetch
-        with _get_cache(self.catalog.cache, prefetch, use_cache=self.udf_info["cache"]) as _cache:
+        with _get_cache(
+            self.catalog.cache, prefetch, use_cache=self.udf_info["cache"]
+        ) as _cache:
             udf_results = udf.run(
                 self.udf_info["udf_fields"],
                 get_inputs(),
@@ -265,8 +269,13 @@ class UDFDispatcher:
             input_data = self._prepare_input_data(n_workers, input_rows)
             input_finished = self._fill_initial_buffer(input_data)
             self._process_loop(
-                pool, n_workers, input_data, input_finished,
-                download_cb, processed_cb, generated_cb,
+                pool,
+                n_workers,
+                input_data,
+                input_finished,
+                download_cb,
+                processed_cb,
+                generated_cb,
             )
         finally:
             self._shutdown_workers(pool)
@@ -316,8 +325,7 @@ class UDFDispatcher:
                     exitcode = p.exitcode
                     if exitcode not in (None, 0):
                         message = (
-                            f"Worker {p.name} exited unexpectedly with "
-                            f"code {exitcode}"
+                            f"Worker {p.name} exited unexpectedly with code {exitcode}"
                         )
                         raise RuntimeError(message) from None
                 sleep(0.01)
@@ -452,7 +460,9 @@ class UDFWorker:
 
     def run(self) -> None:
         prefetch = self.config.udf.prefetch
-        with _get_cache(self.config.catalog.cache, prefetch, use_cache=self.config.cache) as _cache:
+        with _get_cache(
+            self.config.catalog.cache, prefetch, use_cache=self.config.cache
+        ) as _cache:
             catalog = clone_catalog_with_cache(self.config.catalog, _cache)
             udf_results = self.config.udf.run(
                 self.config.udf_fields,

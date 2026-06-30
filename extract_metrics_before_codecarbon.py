@@ -1,20 +1,21 @@
-from codecarbon import EmissionsTracker
+import os
 import subprocess
 import sys
-import os
+
+from codecarbon import EmissionsTracker
 
 # ConfiguraÃ§Ã£o
 
 # Nome do projeto
-PROJETO  = "datachain"  # Use o nome do seu projeto, por exemplo: "meu-projeto"
+PROJETO = "datachain"  # Use o nome do seu projeto, por exemplo: "meu-projeto"
 
 # Ponto de entrada do projeto (define como o Python vai executar o projeto).
 # O projeto usa pacote instalável, então executamos via -m.
-SCRIPT   = "-m"
+SCRIPT = "-m"
 
 # Argumentos necessários para a execução do projeto.
 # "datachain" é o módulo principal; adicione subcomandos se desejar (ex: "ls", "ds ls").
-ARGS     = ["datachain", "ls"]
+ARGS = ["datachain", "ls"]
 
 
 # Tempo mÃ¡ximo que o CodeCarbon vai aguardar a execuÃ§Ã£o do projeto antes de encerrar a
@@ -24,12 +25,12 @@ ARGS     = ["datachain", "ls"]
 #
 #   60   -> encerra apÃ³s 60 segundos, mesmo que o projeto ainda esteja rodando.
 #         Use para servidores (Flask, FastAPI, Django) que ficam rodando continuamente e nunca terminariam sozinhos.
-TIMEOUT  = None
+TIMEOUT = None
 
 # NÃ£o altere o nome dessa pasta, os relatÃ³rios vÃ£o ser salvos nela.
-PASTA    = "metrics-after-codecarbon"
+PASTA = "metrics-after-codecarbon"
 
-# Executa com mediÃ§Ã£o 
+# Executa com mediÃ§Ã£o
 os.makedirs(PASTA, exist_ok=True)
 
 tracker = EmissionsTracker(
@@ -49,10 +50,7 @@ if TIMEOUT:
 tracker.start()
 
 try:
-    resultado = subprocess.run(
-        [sys.executable, SCRIPT] + ARGS,
-        timeout=TIMEOUT
-    )
+    resultado = subprocess.run([sys.executable, SCRIPT] + ARGS, timeout=TIMEOUT)
     exit_code = resultado.returncode
 except subprocess.TimeoutExpired:
     print("Tempo de mediÃ§Ã£o encerrado.")
@@ -60,7 +58,7 @@ except subprocess.TimeoutExpired:
 
 emissions = tracker.stop()
 
-print(f"\nResultados:")
+print("\nResultados:")
 print(f"  Exit code:         {exit_code}")
 print(f"  COâ‚‚ emitido:       {emissions * 1000:.6f} g COâ‚‚")
 print(f"  Arquivo salvo em:  {os.path.join(PASTA, 'emissions.csv')}")

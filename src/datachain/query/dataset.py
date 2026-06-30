@@ -758,8 +758,7 @@ class UDFStep(Step, ABC):
 
         if catalog.in_memory:
             raise RuntimeError(
-                "In-memory databases cannot be used "
-                "with parallel processing."
+                "In-memory databases cannot be used with parallel processing."
             )
 
         udf_info = UdfInfo(
@@ -802,9 +801,7 @@ class UDFStep(Step, ABC):
                     raise QueryScriptAbortError(
                         "UDF execution aborted: job already terminated."
                     )
-                raise RuntimeError(
-                    f"UDF Execution Failed! Exit code: {retval}"
-                )
+                raise RuntimeError(f"UDF Execution Failed! Exit code: {retval}")
 
     def _process_single_threaded_udf(
         self,
@@ -872,7 +869,9 @@ class UDFStep(Step, ABC):
         )
 
         workers = determine_workers(self.execution.workers, rows_total=rows_to_process)
-        processes = determine_processes(self.execution.parallel, rows_total=rows_to_process)
+        processes = determine_processes(
+            self.execution.parallel, rows_total=rows_to_process
+        )
         logger.debug(
             "UDF(%s): Processing %d rows (workers=%s, processes=%s, batch_size=%s)",
             self._udf_name,
@@ -888,7 +887,9 @@ class UDFStep(Step, ABC):
         udf_distributor_class = get_udf_distributor_class()
 
         prefetch = self.udf.prefetch
-        with _get_cache(catalog.cache, prefetch, use_cache=self.execution.cache) as _cache:
+        with _get_cache(
+            catalog.cache, prefetch, use_cache=self.execution.cache
+        ) as _cache:
             catalog = clone_catalog_with_cache(catalog, _cache)
 
             try:
@@ -928,12 +929,21 @@ class UDFStep(Step, ABC):
 
                 if processes:
                     self._process_parallel_udf(
-                        udf_table, query, catalog, batching,
-                        udf_fields, processes, rows_to_process,
+                        udf_table,
+                        query,
+                        catalog,
+                        batching,
+                        udf_fields,
+                        processes,
+                        rows_to_process,
                     )
                 else:
                     self._process_single_threaded_udf(
-                        udf_table, query, catalog, batching, udf_fields,
+                        udf_table,
+                        query,
+                        catalog,
+                        batching,
+                        udf_fields,
                     )
 
             except QueryScriptAbortError:
@@ -1701,7 +1711,6 @@ class UDFStep(Step, ABC):
 
 @frozen
 class UDFSignal(UDFStep):
-
     @property
     def _step_type(self) -> CheckpointStepType:
         return CheckpointStepType.UDF_MAP
@@ -2789,9 +2798,9 @@ class DatasetQuery:
         )
 
         # at this point we know our starting dataset so setting up schemas
-        self._schema.feature_schema = (
-            ds.get_version(self._identity.version).feature_schema
-        )
+        self._schema.feature_schema = ds.get_version(
+            self._identity.version
+        ).feature_schema
         self._schema.column_types = copy(ds.schema)
         if "sys__id" in self._schema.column_types:
             self._schema.column_types.pop("sys__id")
@@ -2911,10 +2920,14 @@ class DatasetQuery:
             if not (0 <= index < total):
                 raise ValueError("chunk index must be between 0 and total")
 
-            query._pipeline.steps = self._chunk_limit(query._pipeline.steps, index, total)
+            query._pipeline.steps = self._chunk_limit(
+                query._pipeline.steps, index, total
+            )
 
             query = query.filter(C.sys__rand % total == index)
-            query._pipeline.steps = query._pipeline.steps[-1:] + query._pipeline.steps[:-1]
+            query._pipeline.steps = (
+                query._pipeline.steps[-1:] + query._pipeline.steps[:-1]
+            )
 
         if query.starting_step is not None:
             result = query.starting_step.apply()

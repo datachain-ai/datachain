@@ -1,9 +1,9 @@
 import os
+from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 import attrs
-from dataclasses import dataclass
 
 from datachain.dataset import StorageURI
 from datachain.lib.file import File
@@ -46,7 +46,8 @@ class DirTypeGroup:
     DIR = (DirType.DIR,)
     SUBOBJ_FILE = (DirType.FILE,)
     SUBOBJ_DIR = (DirType.DIR, DirType.TAR_ARCHIVE)
-    
+
+
 @dataclass
 class FileMetadata:
     etag: str = ""
@@ -55,6 +56,7 @@ class FileMetadata:
     last_modified: datetime | None = None
     size: int = 0
     location: str | None = None
+
 
 @attrs.define
 class Node:

@@ -113,9 +113,7 @@ class UdfSignature:  # noqa: PLW1641
     ) -> dict[str, DataType | Any]:
         if params:
             return (
-                {params: Any}
-                if isinstance(params, str)
-                else dict.fromkeys(params, Any)
+                {params: Any} if isinstance(params, str) else dict.fromkeys(params, Any)
             )
         if func_params_map_sign:
             return {
@@ -147,8 +145,7 @@ class UdfSignature:  # noqa: PLW1641
             )
         if isinstance(func_outs_sign, tuple):
             return {
-                signal_name + f"_{num}": typ
-                for num, typ in enumerate(func_outs_sign)
+                signal_name + f"_{num}": typ for num, typ in enumerate(func_outs_sign)
             }
         return {signal_name: func_outs_sign[0]}
 

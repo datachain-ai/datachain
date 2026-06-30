@@ -31,7 +31,7 @@ class ProjectConfig:
 class Settings:
     """Settings for datachain."""
 
-    def __init__(  # noqa: C901, PLR0912, PLR0915
+    def __init__(  # noqa: C901, PLR0912
         self,
         cache: bool | None = None,
         prefetch: bool | int | None = None,

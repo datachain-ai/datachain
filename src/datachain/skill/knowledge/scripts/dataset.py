@@ -64,7 +64,10 @@ def _fetch_studio_metadata(namespace, project, bare_name, version):
                 default=None,
             )
             if prev_version is not None:
-                prev_version_info = (prev_version.version, prev_version.query_script or None)
+                prev_version_info = (
+                    prev_version.version,
+                    prev_version.query_script or None,
+                )
     except Exception as e:
         _warn(f"Studio dataset_info({namespace}.{project}.{bare_name}): {e}")
     return {
@@ -134,7 +137,10 @@ def _fetch_local_metadata(dc, chain, bare_name, version):
                 default=None,
             )
             if prev_version is not None:
-                prev_version_info = (prev_version.version, prev_version.query_script or None)
+                prev_version_info = (
+                    prev_version.version,
+                    prev_version.query_script or None,
+                )
     except Exception as e:
         _warn(f"local catalog metadata for {bare_name}: {e}")
 
@@ -143,9 +149,12 @@ def _fetch_local_metadata(dc, chain, bare_name, version):
         if catalog is not None and version:
             dependencies = [
                 dep_to_dict(d)
-                for d in (catalog.get_dataset_dependencies(
-                    name=bare_name, version=version, indirect=True
-                ) or [])
+                for d in (
+                    catalog.get_dataset_dependencies(
+                        name=bare_name, version=version, indirect=True
+                    )
+                    or []
+                )
                 if d
             ]
     except Exception as e:
@@ -170,11 +179,14 @@ def _compute_changes(query_script, prev_version_info, dependencies, catalog, bar
         prev_deps = []
         if catalog is not None:
             try:
-                prev_deps_raw = catalog.get_dataset_dependencies(
-                    name=bare_name,
-                    version=prev_version_str,
-                    indirect=True,
-                ) or []
+                prev_deps_raw = (
+                    catalog.get_dataset_dependencies(
+                        name=bare_name,
+                        version=prev_version_str,
+                        indirect=True,
+                    )
+                    or []
+                )
                 prev_deps = [dep_to_dict(d) for d in prev_deps_raw if d]
             except Exception as e:
                 _warn(f"prev dependencies for {bare_name}@{prev_version_str}: {e}")

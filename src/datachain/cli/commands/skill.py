@@ -216,9 +216,7 @@ def _remove_skill(
     return found
 
 
-def _check_skill_source(
-    skill_name: str, missing: list[str]
-) -> Path | None:
+def _check_skill_source(skill_name: str, missing: list[str]) -> Path | None:
     src = _skills_src() / skill_name
     if not src.exists():
         print(f"Warning: skill source not found: {src}", file=sys.stderr)
@@ -238,9 +236,7 @@ def _install_skill_files(
     shutil.copytree(src, dest, dirs_exist_ok=True, ignore=_COPYTREE_IGNORE)
     skill_md_dest = dest / "SKILL.md"
     if skill_md_dest.exists():
-        resolved = skill_md_dest.read_text().replace(
-            "{skill_dir}", str(dest.resolve())
-        )
+        resolved = skill_md_dest.read_text().replace("{skill_dir}", str(dest.resolve()))
         skill_md_dest.write_text(resolved)
     commands_dir and command_ext and _install_command_file(
         src, dest, commands_dir, command_ext, skill_name

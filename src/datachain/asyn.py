@@ -10,8 +10,8 @@ from collections.abc import (
     Iterator,
 )
 from concurrent.futures import ThreadPoolExecutor, wait
-from heapq import heappop, heappush
 from dataclasses import dataclass, field
+from heapq import heappop, heappush
 from typing import Any, Generic, TypeVar
 
 from fsspec.asyn import get_loop
@@ -264,7 +264,9 @@ class OrderedMapper(AsyncMapper[InputT, ResultT]):
         if self._order.heap and self._order.heap[0][0] == self._order.next_yield:
             _i, out = heappop(self._order.heap)
         else:
-            self._order.getters[self._order.next_yield] = get_value = self.loop.create_future()
+            self._order.getters[self._order.next_yield] = get_value = (
+                self.loop.create_future()
+            )
             out = await get_value
         if self._order.next_yield in self._order.waiters:
             event = self._order.waiters.pop(self._order.next_yield)

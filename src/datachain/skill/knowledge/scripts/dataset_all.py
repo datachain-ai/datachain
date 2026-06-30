@@ -74,7 +74,11 @@ def _fetch_studio_versions(
     )
     warnings_list: list[str] = []
     versions_out, ds_attrs, ds_description = _build_version_entries(
-        name, version_entries, versions_sorted, dc, warnings_list,
+        name,
+        version_entries,
+        versions_sorted,
+        dc,
+        warnings_list,
     )
     result = {
         "name": name,
@@ -236,7 +240,11 @@ def _fetch_local_versions(
             key=parse_semver,
         )
         versions_out, ds_attrs_fb, ds_description_fb = _build_version_entries(
-            name, version_entries, versions_sorted, dc, warnings_list,
+            name,
+            version_entries,
+            versions_sorted,
+            dc,
+            warnings_list,
         )
         result = {
             "name": bare_name,
@@ -250,8 +258,14 @@ def _fetch_local_versions(
         return result
 
     return _fetch_local_catalog_versions(
-        bare_name, source, catalog, versions_sorted_obj,
-        ds_attrs_main, ds_description_main, dc, warnings_list,
+        bare_name,
+        source,
+        catalog,
+        versions_sorted_obj,
+        ds_attrs_main,
+        ds_description_main,
+        dc,
+        warnings_list,
     )
 
 

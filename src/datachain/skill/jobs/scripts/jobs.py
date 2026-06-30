@@ -204,9 +204,7 @@ def _filter_jobs_by_date(raw_jobs, cutoff):
     filtered = []
     for j in raw_jobs:
         created_dt = _parse_dt(j.get("created_at"))
-        if created_dt and created_dt >= cutoff:
-            filtered.append(j)
-        elif created_dt is None:
+        if (created_dt and created_dt >= cutoff) or created_dt is None:
             filtered.append(j)
     return filtered
 
@@ -216,9 +214,7 @@ def _enrich_jobs(client, filtered, enrich):
     if not enrich:
         return filtered
     to_enrich = [
-        j
-        for j in filtered
-        if _normalize_status(j.get("status")) in TERMINAL_STATUSES
+        j for j in filtered if _normalize_status(j.get("status")) in TERMINAL_STATUSES
     ]
     n = min(len(to_enrich), ENRICH_LIMIT)
     if len(to_enrich) > ENRICH_LIMIT:
