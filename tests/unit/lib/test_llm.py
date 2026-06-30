@@ -176,8 +176,13 @@ def test_structured_retries_on_invalid_json_then_succeeds(fake_llm):
 
 def test_structured_raises_after_exhausting_retries(fake_llm):
     fake_llm.invalid_json_attempts = 5
-    with pytest.raises(engine.LLMError, match="failed after"):
+    with pytest.raises(engine.LLMError, match="did not match schema"):
         bind(llm.complete("t", schema=Scene, retries=1), llm="m")("hi")
+
+
+def test_retries_delegated_to_litellm(fake_llm):
+    bind(llm.complete("t", retries=4), llm="m")("hi")
+    assert fake_llm.calls[-1]["num_retries"] == 4
 
 
 def test_complete_text(fake_llm):

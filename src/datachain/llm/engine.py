@@ -1,4 +1,3 @@
-from collections.abc import Callable
 from functools import cache
 from typing import Any, Literal, TypeVar
 
@@ -7,7 +6,6 @@ from pydantic import BaseModel, Field, TypeAdapter, ValidationError, create_mode
 from datachain.lib.utils import DataChainError
 
 T = TypeVar("T", bound=BaseModel)
-R = TypeVar("R")
 
 
 class LLMError(DataChainError):
@@ -31,30 +29,29 @@ def _fallbacks(fallback: str | list[str] | None) -> list[str] | None:
     return [fallback] if isinstance(fallback, str) else list(fallback)
 
 
-def _attempt(retries: int, describe: str, call: Callable[[], R]) -> R:
-    """Run `call`, retrying provider and schema-validation failures `retries` times."""
-    attempts = max(retries, 0) + 1
-    last_error: Exception | None = None
-    for _ in range(attempts):
-        try:
-            return call()
-        except Exception as exc:  # noqa: BLE001 - retry provider/validation failures
-            last_error = exc
-    raise LLMError(
-        f"llm call failed after {attempts} attempt(s) ({describe})"
-    ) from last_error
-
-
 def _completion_kwargs(
     model: str,
     messages: list[dict[str, Any]],
+    retries: int,
     fallback: str | list[str] | None,
     params: dict[str, Any],
 ) -> dict[str, Any]:
-    kwargs: dict[str, Any] = {"model": model, "messages": messages, **params}
+    # LiteLLM owns transient retries, backoff, and rate-limit handling.
+    kwargs: dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "num_retries": max(retries, 0),
+        **params,
+    }
     if (fallbacks := _fallbacks(fallback)) is not None:
         kwargs["fallbacks"] = fallbacks
     return kwargs
+
+
+def _content(response: Any) -> str:
+    if not response.choices:
+        raise LLMError("model returned no choices")
+    return response.choices[0].message.content or ""
 
 
 def complete_text(
@@ -65,13 +62,8 @@ def complete_text(
     params: dict[str, Any],
 ) -> str:
     litellm = _litellm()
-    kwargs = _completion_kwargs(model, messages, fallback, params)
-
-    def call() -> str:
-        content = litellm.completion(**kwargs).choices[0].message.content
-        return content if content is not None else ""
-
-    return _attempt(retries, "completion", call)
+    kwargs = _completion_kwargs(model, messages, retries, fallback, params)
+    return _content(litellm.completion(**kwargs))
 
 
 def complete_structured(
@@ -83,19 +75,31 @@ def complete_structured(
     params: dict[str, Any],
 ) -> T:
     litellm = _litellm()
-    kwargs = _completion_kwargs(model, messages, fallback, params)
+    kwargs = _completion_kwargs(model, messages, retries, fallback, params)
     kwargs["response_format"] = schema
 
-    def call() -> T:
-        content = litellm.completion(**kwargs).choices[0].message.content or ""
-        return schema.model_validate_json(content)
-
-    return _attempt(retries, f"schema '{schema.__name__}'", call)
+    # Re-validate schema mismatches here; transient errors are LiteLLM's job above.
+    attempts = max(retries, 0) + 1
+    last_error: ValidationError | None = None
+    for _ in range(attempts):
+        try:
+            return schema.model_validate_json(_content(litellm.completion(**kwargs)))
+        except ValidationError as exc:
+            last_error = exc
+    raise LLMError(
+        f"model output did not match schema '{schema.__name__}' "
+        f"after {attempts} attempt(s)"
+    ) from last_error
 
 
 @cache
 def _list_container(item_type: type) -> type[BaseModel]:
     return create_model("LLMListOutput", items=(list[item_type], ...))  # type: ignore[valid-type]
+
+
+@cache
+def _list_adapter(item_type: type) -> "TypeAdapter[list[Any]]":
+    return TypeAdapter(list[item_type])  # type: ignore[valid-type]
 
 
 @cache
@@ -147,19 +151,26 @@ def complete_structured_list(
 ) -> list:
     litellm = _litellm()
     container = _list_container(item_type)
-    kwargs = _completion_kwargs(model, messages, fallback, params)
+    adapter = _list_adapter(item_type)
+    kwargs = _completion_kwargs(model, messages, retries, fallback, params)
     kwargs["response_format"] = container
-    items = TypeAdapter(list[item_type])  # type: ignore[valid-type]
 
-    def call() -> list:
-        content = litellm.completion(**kwargs).choices[0].message.content or ""
+    attempts = max(retries, 0) + 1
+    last_error: ValidationError | None = None
+    for _ in range(attempts):
+        content = _content(litellm.completion(**kwargs))
         try:
             wrapped: Any = container.model_validate_json(content)
             return wrapped.items
-        except ValidationError:
-            return items.validate_json(content)  # tolerate a bare top-level array
-
-    return _attempt(retries, f"list[{item_type.__name__}]", call)
+        except ValidationError as exc:
+            try:
+                return adapter.validate_json(content)  # tolerate a bare top-level array
+            except ValidationError:
+                last_error = exc
+    raise LLMError(
+        f"model output did not match list[{item_type.__name__}] "
+        f"after {attempts} attempt(s)"
+    ) from last_error
 
 
 def embed(
@@ -170,13 +181,13 @@ def embed(
     params: dict[str, Any],
 ) -> list[float]:
     litellm = _litellm()
-    kwargs: dict[str, Any] = {"model": model, "input": [text], **params}
+    kwargs: dict[str, Any] = {
+        "model": model,
+        "input": [text],
+        "num_retries": max(retries, 0),
+        **params,
+    }
     if (fallbacks := _fallbacks(fallback)) is not None:
         kwargs["fallbacks"] = fallbacks
-
-    def call() -> list[float]:
-        item = litellm.embedding(**kwargs).data[0]
-        vector = item["embedding"] if isinstance(item, dict) else item.embedding
-        return list(vector)
-
-    return _attempt(retries, "embedding", call)
+    item = litellm.embedding(**kwargs).data[0]
+    return list(item["embedding"] if isinstance(item, dict) else item.embedding)
