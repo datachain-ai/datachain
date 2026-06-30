@@ -27,6 +27,18 @@ def _element_type(schema: Any) -> tuple[Any, bool]:
     return schema, False
 
 
+def _canonical(value: Any) -> Any:
+    """Order-independent form of a value, so the cache key is stable across
+    processes (``repr`` of a ``set`` or unsorted ``dict`` is not)."""
+    if isinstance(value, dict):
+        return tuple(sorted((k, _canonical(v)) for k, v in value.items()))
+    if isinstance(value, (set, frozenset)):
+        return tuple(sorted((_canonical(v) for v in value), key=repr))
+    if isinstance(value, (list, tuple)):
+        return tuple(_canonical(v) for v in value)
+    return value
+
+
 @dataclass
 class LLMSpec:
     """A configured `datachain.llm` operation, used inside `.map()` / `.gen()`.
@@ -65,6 +77,18 @@ class LLMSpec:
         if self.media is not None and self.media not in MEDIA_VALUES:
             raise ValueError(
                 f"media must be one of {MEDIA_VALUES} or None, got {self.media!r}"
+            )
+        if not isinstance(self.retries, int) or isinstance(self.retries, bool):
+            raise ValueError(  # noqa: TRY004 - a config value error, not a type guard
+                f"retries must be an int, got {self.retries!r}"
+            )
+        if self.context_col is not None and self.context_col == self.col:
+            raise ValueError("col and context must be different columns")
+        reserved = engine.RESERVED_PARAMS & set(self.params)
+        if reserved:
+            raise ValueError(
+                "these are managed by datachain.llm and cannot be passed as params: "
+                f"{sorted(reserved)}"
             )
 
     def output_type(self) -> Any:
@@ -105,7 +129,7 @@ class LLMSpec:
             self.media,
             self.retries,
             tuple(self.fallback) if isinstance(self.fallback, list) else self.fallback,
-            tuple(sorted((k, repr(v)) for k, v in self.params.items())),
+            _canonical(self.params),
         )
 
     def _resolve_model(self, settings: "Settings") -> str:

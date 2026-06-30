@@ -12,6 +12,12 @@ class LLMError(DataChainError):
     """Raised when a `datachain.llm` operation cannot produce a valid result."""
 
 
+# Keys datachain.llm sets on the underlying call; users cannot pass them as params.
+RESERVED_PARAMS = frozenset(
+    {"model", "messages", "input", "num_retries", "fallbacks", "response_format"}
+)
+
+
 def _litellm():
     try:
         import litellm
@@ -24,7 +30,7 @@ def _litellm():
 
 
 def _fallbacks(fallback: str | list[str] | None) -> list[str] | None:
-    if fallback is None:
+    if not fallback:  # None, "", or []
         return None
     return [fallback] if isinstance(fallback, str) else list(fallback)
 
@@ -37,21 +43,24 @@ def _has_document(messages: list[dict[str, Any]]) -> bool:
     )
 
 
-def _check_document_support(model: str, messages: list[dict[str, Any]]) -> None:
+def _check_document_support(
+    model: str, fallback: str | list[str] | None, messages: list[dict[str, Any]]
+) -> None:
     if not _has_document(messages):
         return
     supports = getattr(_litellm(), "supports_pdf_input", None)
     if supports is None:
         return
-    try:
-        ok = supports(model=model)
-    except Exception:  # noqa: BLE001 - a capability probe must not block the call
-        return
-    if not ok:
-        raise LLMError(
-            f"model '{model}' does not accept document input; use a "
-            "document-capable model or extract the text first"
-        )
+    for m in [model, *(_fallbacks(fallback) or [])]:
+        try:
+            ok = supports(model=m)
+        except Exception:  # noqa: BLE001, S112 - a probe must not block the call
+            continue
+        if not ok:
+            raise LLMError(
+                f"model '{m}' does not accept document input; use "
+                "document-capable models or extract the text first"
+            )
 
 
 def _completion_kwargs(
@@ -61,13 +70,14 @@ def _completion_kwargs(
     fallback: str | list[str] | None,
     params: dict[str, Any],
 ) -> dict[str, Any]:
-    _check_document_support(model, messages)
-    # LiteLLM owns transient retries, backoff, and rate-limit handling.
+    _check_document_support(model, fallback, messages)
+    # `params` first so the keys datachain.llm owns always win (also guarded by
+    # RESERVED_PARAMS validation upstream). LiteLLM owns retries/backoff/rate limits.
     kwargs: dict[str, Any] = {
+        **params,
         "model": model,
         "messages": messages,
         "num_retries": max(retries, 0),
-        **params,
     }
     if (fallbacks := _fallbacks(fallback)) is not None:
         kwargs["fallbacks"] = fallbacks
@@ -208,12 +218,15 @@ def embed(
 ) -> list[float]:
     litellm = _litellm()
     kwargs: dict[str, Any] = {
+        **params,
         "model": model,
         "input": [text],
         "num_retries": max(retries, 0),
-        **params,
     }
     if (fallbacks := _fallbacks(fallback)) is not None:
         kwargs["fallbacks"] = fallbacks
-    item = litellm.embedding(**kwargs).data[0]
+    data = litellm.embedding(**kwargs).data
+    if not data:
+        raise LLMError("embedding response contained no data")
+    item = data[0]
     return list(item["embedding"] if isinstance(item, dict) else item.embedding)

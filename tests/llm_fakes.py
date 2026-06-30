@@ -45,9 +45,11 @@ class FakeLiteLLM:
         # Optional map of schema name -> JSON string overriding the auto-fill.
         self.structured_overrides: dict[str, str] = {}
         self.pdf_supported = True
+        self.no_pdf_models: set[str] = set()
+        self.embedding_empty = False
 
     def supports_pdf_input(self, model):
-        return self.pdf_supported
+        return self.pdf_supported and model not in self.no_pdf_models
 
     def completion(self, **kwargs):
         self.calls.append(kwargs)
@@ -63,5 +65,7 @@ class FakeLiteLLM:
 
     def embedding(self, **kwargs):
         self.embedding_calls.append(kwargs)
+        if self.embedding_empty:
+            return types.SimpleNamespace(data=[])
         vector = list(self.embedding_response)
         return types.SimpleNamespace(data=[{"embedding": vector}])

@@ -473,6 +473,64 @@ def test_document_rejected_when_model_lacks_support(fake_llm):
             runner(pdf)
 
 
+def test_document_gate_checks_fallback_models(fake_llm):
+    fake_llm.no_pdf_models = {"bad/fallback"}
+    pdf = File(path="r.pdf", source="s3://x")
+    with mock.patch.object(File, "read_bytes", return_value=b"%PDF-1.4 x"):
+        spec = llm.complete("file", "s", media="document", fallback="bad/fallback")
+        with pytest.raises(engine.LLMError, match="does not accept document"):
+            bind(spec, llm="good/primary")(pdf)
+
+
+@pytest.mark.parametrize("key", ["model", "messages", "num_retries", "response_format"])
+def test_reserved_params_rejected(key):
+    with pytest.raises(ValueError, match="managed by datachain.llm"):
+        llm.complete("c", **{key: "x"})
+
+
+def test_col_equal_context_rejected():
+    with pytest.raises(ValueError, match="different columns"):
+        llm.complete("text", context="text")
+
+
+def test_retries_must_be_int():
+    with pytest.raises(ValueError, match="retries must be an int"):
+        llm.complete("c", retries=1.5)
+
+
+def test_identity_stable_across_param_dict_order():
+    a = llm.complete("c", opt={"x": 1, "y": 2}).identity("m")
+    b = llm.complete("c", opt={"y": 2, "x": 1}).identity("m")
+    assert a == b
+
+
+def test_canonical_orders_sets_and_dicts():
+    from datachain.llm.spec import _canonical
+
+    assert _canonical({"a", "b", "c"}) == _canonical({"c", "b", "a"})
+    assert _canonical({"x": 1, "y": 2}) == _canonical({"y": 2, "x": 1})
+
+
+def test_param_clobber_is_blocked(fake_llm):
+    # A stray temperature is fine; reserved keys are rejected at construction,
+    # so the resolved model/prompt can never be overridden by params.
+    bind(llm.complete("t", "real prompt", temperature=0.0), llm="real/model")("hi")
+    call = fake_llm.calls[-1]
+    assert call["model"] == "real/model"
+    assert call["messages"][0]["content"] == "real prompt\n\nhi"
+
+
+def test_embed_empty_data_errors(fake_llm):
+    fake_llm.embedding_empty = True
+    with pytest.raises(engine.LLMError, match="no data"):
+        bind(llm.embed("t"), llm="m")("x")
+
+
+def test_empty_fallback_is_noop(fake_llm):
+    bind(llm.complete("t", fallback=[]), llm="m")("hi")
+    assert "fallbacks" not in fake_llm.calls[-1]
+
+
 @pytest.mark.parametrize("bad", [list, dict, int, "Scene", list[int], Scene | None])
 def test_invalid_schema_rejected(bad):
     with pytest.raises(TypeError, match="pydantic model"):
