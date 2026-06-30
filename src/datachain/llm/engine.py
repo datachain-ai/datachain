@@ -4,6 +4,7 @@ from typing import Any, Literal, TypeVar
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError, create_model
 
 from datachain.lib.utils import DataChainError
+from datachain.llm.types import Response
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -90,6 +91,63 @@ def _content(response: Any) -> str:
     return response.choices[0].message.content or ""
 
 
+def _finish_reason(response: Any) -> str:
+    if not response.choices:
+        return ""
+    return getattr(response.choices[0], "finish_reason", "") or ""
+
+
+def _strip_fences(text: str) -> str:
+    """Best-effort unwrap of a ```...``` markdown code fence around JSON."""
+    t = text.strip()
+    if not t.startswith("```"):
+        return t
+    t = t[3:]
+    newline = t.find("\n")
+    if newline != -1 and t[:newline].strip().isalpha():  # drop a ```json language tag
+        t = t[newline + 1 :]
+    if t.rstrip().endswith("```"):
+        t = t.rstrip()[:-3]
+    return t.strip()
+
+
+def _truncated_error(schema_name: str) -> LLMError:
+    return LLMError(
+        f"model output for '{schema_name}' was truncated "
+        "(finish_reason=length); increase max_tokens"
+    )
+
+
+def parse_one(schema: type[T], content: str) -> T:
+    """Validate stored text against a model offline (no model call)."""
+    last_error: ValidationError | None = None
+    for candidate in (content, _strip_fences(content)):
+        try:
+            return schema.model_validate_json(candidate)
+        except ValidationError as exc:
+            last_error = exc
+    raise LLMError(
+        f"stored output could not be parsed as '{schema.__name__}'"
+    ) from last_error
+
+
+def parse_list(item_type: type, content: str) -> list:
+    container = _list_container(item_type)
+    adapter = _list_adapter(item_type)
+    last_error: ValidationError | None = None
+    for candidate in (content, _strip_fences(content)):
+        try:
+            return container.model_validate_json(candidate).items  # type: ignore[attr-defined]
+        except ValidationError:
+            try:
+                return adapter.validate_json(candidate)  # bare top-level array
+            except ValidationError as exc:
+                last_error = exc
+    raise LLMError(
+        f"stored output could not be parsed as list[{item_type.__name__}]"
+    ) from last_error
+
+
 def complete_text(
     model: str,
     messages: list[dict[str, Any]],
@@ -100,6 +158,18 @@ def complete_text(
     litellm = _litellm()
     kwargs = _completion_kwargs(model, messages, retries, fallback, params)
     return _content(litellm.completion(**kwargs))
+
+
+def complete_raw(
+    model: str,
+    messages: list[dict[str, Any]],
+    retries: int,
+    fallback: str | list[str] | None,
+    params: dict[str, Any],
+) -> Response:
+    litellm = _litellm()
+    kwargs = _completion_kwargs(model, messages, retries, fallback, params)
+    return Response.from_litellm(litellm.completion(**kwargs))
 
 
 def complete_structured(
@@ -118,10 +188,17 @@ def complete_structured(
     attempts = max(retries, 0) + 1
     last_error: ValidationError | None = None
     for _ in range(attempts):
+        resp = litellm.completion(**kwargs)
+        content = _content(resp)
         try:
-            return schema.model_validate_json(_content(litellm.completion(**kwargs)))
+            return schema.model_validate_json(content)
         except ValidationError as exc:
-            last_error = exc
+            if _finish_reason(resp) == "length":
+                raise _truncated_error(schema.__name__) from exc
+            try:
+                return schema.model_validate_json(_strip_fences(content))
+            except ValidationError:
+                last_error = exc
     raise LLMError(
         f"model output did not match schema '{schema.__name__}' "
         f"after {attempts} attempt(s)"
@@ -187,21 +264,23 @@ def complete_structured_list(
 ) -> list:
     litellm = _litellm()
     container = _list_container(item_type)
-    adapter = _list_adapter(item_type)
     kwargs = _completion_kwargs(model, messages, retries, fallback, params)
     kwargs["response_format"] = container
 
     attempts = max(retries, 0) + 1
     last_error: ValidationError | None = None
     for _ in range(attempts):
-        content = _content(litellm.completion(**kwargs))
+        resp = litellm.completion(**kwargs)
+        content = _content(resp)
         try:
             wrapped: Any = container.model_validate_json(content)
             return wrapped.items
         except ValidationError as exc:
+            if _finish_reason(resp) == "length":
+                raise _truncated_error(f"list[{item_type.__name__}]") from exc
             try:
-                return adapter.validate_json(content)  # tolerate a bare top-level array
-            except ValidationError:
+                return parse_list(item_type, content)  # bare array / fenced fallback
+            except LLMError:
                 last_error = exc
     raise LLMError(
         f"model output did not match list[{item_type.__name__}] "

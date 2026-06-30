@@ -4,6 +4,7 @@ from pydantic import BaseModel
 import datachain as dc
 from datachain import llm
 from datachain.llm import engine
+from datachain.llm.types import Response
 from tests.llm_fakes import FakeLiteLLM
 
 
@@ -68,6 +69,54 @@ def test_save_and_reload_preserves_types(fake_llm, test_session):
     assert reloaded.schema["scene"] is Scene
     rows = reloaded.to_records()
     assert all(r["scene__risk"] == 0.5 for r in rows)
+
+
+def test_response_schema_materializes_full_output(fake_llm, test_session):
+    fake_llm.text_response = "full text"
+    chain = base(test_session).map(out=llm.complete("text", schema=Response))
+
+    assert chain.schema["out"] is Response
+
+    out = chain.to_values("out")[0]
+    assert isinstance(out, Response)
+    assert out.content == "full text"
+    assert out.usage.input_tokens == 11
+    assert out.raw
+
+
+def test_response_schema_save_and_reload(fake_llm, test_session):
+    fake_llm.text_response = "stored"
+    base(test_session).map(out=llm.complete("text", schema=Response)).save("raw_out")
+
+    reloaded = dc.read_dataset("raw_out", session=test_session)
+    assert reloaded.schema["out"] is Response
+    rows = reloaded.to_records()
+    assert all(r["out__content"] == "stored" for r in rows)
+    assert all(r["out__usage__output_tokens"] == 7 for r in rows)
+
+
+def test_response_then_parse_offline(fake_llm, test_session):
+    fake_llm.text_response = '{"objects": ["car"], "risk": 0.6}'
+    chain = (
+        base(test_session)
+        .map(out=llm.complete("text", schema=Response))
+        .map(scene=llm.parse("out", Scene))
+    )
+    assert chain.schema["scene"] is Scene
+
+    rows = chain.to_records()
+    assert all(r["scene__risk"] == 0.6 for r in rows)
+
+
+def test_parse_from_text_column(fake_llm, test_session):
+    fake_llm.text_response = '{"objects": [], "risk": 0.2}'
+    chain = (
+        base(test_session)
+        .map(raw=llm.complete("text"))  # plain str output
+        .map(scene=llm.parse("raw", Scene))
+    )
+    rows = chain.to_records()
+    assert all(r["scene__risk"] == 0.2 for r in rows)
 
 
 def test_filter_on_nested_llm_field(fake_llm, test_session):

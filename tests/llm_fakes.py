@@ -29,9 +29,20 @@ def _structured_json(schema: type[BaseModel]) -> str:
     )
 
 
-def _response(content: str):
-    message = types.SimpleNamespace(content=content)
-    return types.SimpleNamespace(choices=[types.SimpleNamespace(message=message)])
+def _response(content: str, model: str = "fake/model", finish_reason: str = "stop"):
+    message = types.SimpleNamespace(content=content, tool_calls=None)
+    choice = types.SimpleNamespace(message=message, finish_reason=finish_reason)
+    usage = types.SimpleNamespace(prompt_tokens=11, completion_tokens=7)
+    resp = types.SimpleNamespace(
+        choices=[choice],
+        model=model,
+        usage=usage,
+        id="resp-1",
+        created=123,
+        system_fingerprint="fp-1",
+    )
+    resp.model_dump_json = lambda: json.dumps({"content": content, "model": model})
+    return resp
 
 
 class FakeLiteLLM:
@@ -47,21 +58,24 @@ class FakeLiteLLM:
         self.pdf_supported = True
         self.no_pdf_models: set[str] = set()
         self.embedding_empty = False
+        self.finish_reason = "stop"
 
     def supports_pdf_input(self, model):
         return self.pdf_supported and model not in self.no_pdf_models
 
     def completion(self, **kwargs):
         self.calls.append(kwargs)
+        model = kwargs.get("model", "fake/model")
+        fr = self.finish_reason
         schema = kwargs.get("response_format")
         if schema is None:
-            return _response(self.text_response)
+            return _response(self.text_response, model, fr)
         if self.invalid_json_attempts > 0:
             self.invalid_json_attempts -= 1
-            return _response("not json")
+            return _response("not json", model, fr)
         if schema.__name__ in self.structured_overrides:
-            return _response(self.structured_overrides[schema.__name__])
-        return _response(_structured_json(schema))
+            return _response(self.structured_overrides[schema.__name__], model, fr)
+        return _response(_structured_json(schema), model, fr)
 
     def embedding(self, **kwargs):
         self.embedding_calls.append(kwargs)

@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from datachain.llm import engine
 from datachain.llm.content import MEDIA_VALUES, Media, build_messages, to_text
+from datachain.llm.types import Response
 
 if TYPE_CHECKING:
     from datachain.lib.settings import Settings
@@ -47,7 +48,7 @@ class LLMSpec:
     directly. The chain binds it to the active settings when the verb runs.
     """
 
-    kind: str  # "complete" | "classify" | "score" | "embed"
+    kind: str  # "complete" | "classify" | "score" | "embed" | "parse"
     col: str
     prompt: str | None = None
     schema: Any = None
@@ -60,12 +61,19 @@ class LLMSpec:
     params: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        if self.kind == "parse" and self.schema is None:
+            raise ValueError("llm.parse() requires a schema")
         if self.schema is not None:
-            elem = _element_type(self.schema)[0]
+            elem, is_list = _element_type(self.schema)
             if not (isinstance(elem, type) and issubclass(elem, BaseModel)):
                 raise TypeError(
                     "llm schema must be a pydantic model or list[model], "
                     f"got {self.schema!r}"
+                )
+            if elem is Response and is_list:
+                raise ValueError(
+                    "schema=list[Response] is not valid; one call yields one "
+                    "Response, so use schema=dc.llm.Response"
                 )
         if self.into is not None:
             if not self.into or not all(isinstance(c, str) for c in self.into):
@@ -105,7 +113,7 @@ class LLMSpec:
 
     def return_annotation(self) -> Any:
         """Annotation seen by the verb: ``Iterator[T]`` for the 1:N (list) case."""
-        if self.kind == "complete" and self.schema is not None:
+        if self.kind in ("complete", "parse") and self.schema is not None:
             elem, is_list = _element_type(self.schema)
             if is_list:
                 return Iterator[elem]  # type: ignore[valid-type]
@@ -177,9 +185,17 @@ class LLMSpec:
             )
         if self.kind == "score":
             return engine.score(model, messages, self.retries, self.fallback, params)
-        # complete
+        return self._run_complete(model, messages, params)
+
+    def _run_complete(
+        self, model: str, messages: list[dict[str, Any]], params: dict[str, Any]
+    ) -> Any:
         if self.schema is None:
             return engine.complete_text(
+                model, messages, self.retries, self.fallback, params
+            )
+        if self.schema is Response:
+            return engine.complete_raw(
                 model, messages, self.retries, self.fallback, params
             )
         elem, is_list = _element_type(self.schema)
@@ -198,11 +214,13 @@ class LLMSpec:
             return
         out_batched = getattr(target, "is_output_batched", False)
         in_batched = getattr(target, "is_input_batched", False)
-        one_to_many = self.kind == "complete" and _element_type(self.schema)[1]
+        one_to_many = (
+            self.kind in ("complete", "parse") and _element_type(self.schema)[1]
+        )
         if one_to_many:
             if not out_batched or in_batched:
                 raise LLMConfigError(
-                    "llm.complete(schema=list[...]) yields many rows per input; "
+                    f"llm.{self.kind}(schema=list[...]) yields many rows per input; "
                     "use .gen()"
                 )
         elif out_batched:
@@ -212,6 +230,8 @@ class LLMSpec:
 
     def __datachain_bind__(self, settings: "Settings", target: Any = None) -> Callable:
         self._validate_target(target)
+        if self.kind == "parse":
+            return self._bind_parse()
         model = self._resolve_model(settings)
         llm_params = settings.llm_params
         identity = self.identity(model)
@@ -256,6 +276,35 @@ class LLMSpec:
         _call.__qualname__ = _call.__name__
         _call.__datachain_params__ = self.input_columns()
         return _call
+
+    def _bind_parse(self) -> Callable:
+        spec = self
+        identity = self.identity("")
+
+        def _run(value, _identity=identity):
+            return spec._run_parse(value)
+
+        _call: Any = _run
+        _call.__signature__ = inspect.Signature(
+            [inspect.Parameter("value", inspect.Parameter.POSITIONAL_OR_KEYWORD)],
+            return_annotation=self.return_annotation(),
+        )
+        _call.__name__ = "llm_parse"
+        _call.__qualname__ = _call.__name__
+        _call.__datachain_params__ = self.input_columns()
+        return _call
+
+    def _run_parse(self, value: Any) -> Any:
+        if isinstance(value, Response):
+            text = value.content
+        elif isinstance(value, str):
+            text = value
+        else:
+            text = to_text(value)
+        elem, is_list = _element_type(self.schema)
+        if is_list:
+            return engine.parse_list(elem, text)
+        return engine.parse_one(self.schema, text)
 
     def input_columns(self) -> list[str]:
         return [self.col, self.context_col] if self.context_col else [self.col]
