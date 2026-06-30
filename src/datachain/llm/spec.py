@@ -186,8 +186,12 @@ class LLMSpec:
         messages = build_messages(self._build_prompt(), value, self.media, context)
         if self.kind == "classify":
             result, usage = engine.classify(
-                model, messages, tuple(self.into or []), self.retries,
-                self.fallback, params,
+                model,
+                messages,
+                tuple(self.into or []),
+                self.retries,
+                self.fallback,
+                params,
             )
         elif self.kind == "score":
             result, usage = engine.score(
