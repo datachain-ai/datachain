@@ -21,9 +21,9 @@ def complete(
 ) -> LLMSpec:
     """Generate text or extract a structured object from a column.
 
-    Output is ``str`` when no ``schema`` is given, the Pydantic ``schema`` model
-    when it is, and a 1:N stream meant for ``.gen()`` when ``schema`` is
-    ``list[Model]``.
+    Output is ``str`` when no ``schema`` is given and the Pydantic ``schema`` model
+    when it is. A ``list[Model]`` schema returns many items: use ``.gen()`` to fan
+    them out (one row each) or ``.map()`` to keep them as one ``list[Model]`` column.
 
     Args:
         col (str): Input column. Its type decides the encoding (text files and

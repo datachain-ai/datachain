@@ -137,11 +137,15 @@ def test_gen_one_to_many(fake_llm, test_session):
     assert chain.to_values("chunk.text") == ["one", "two"]
 
 
-def test_list_schema_in_map_rejected(test_session):
-    from datachain.llm.spec import LLMConfigError
+def test_list_schema_in_map_yields_list_column(fake_llm, test_session):
+    fake_llm.structured_overrides["LLMListOutput"] = (
+        '{"items": [{"text": "one"}, {"text": "two"}]}'
+    )
+    chain = base(test_session).map(chunks=llm.complete("text", schema=list[Chunk]))
 
-    with pytest.raises(LLMConfigError, match=r"use \.gen"):
-        base(test_session).map(chunk=llm.complete("text", schema=list[Chunk]))
+    assert chain.schema["chunks"] == list[Chunk]
+    first = chain.to_values("chunks")[0]
+    assert [c.text for c in first] == ["one", "two"]
 
 
 def test_list_schema_in_agg_rejected(test_session):

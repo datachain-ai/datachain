@@ -47,8 +47,11 @@ class Chunk(BaseModel):
     text: str
 
 
-def bind(spec, **settings_kwargs):
-    return spec.__datachain_bind__(Settings(**settings_kwargs))
+GEN = types.SimpleNamespace(is_output_batched=True, is_input_batched=False)  # .gen()
+
+
+def bind(spec, target=None, **settings_kwargs):
+    return spec.__datachain_bind__(Settings(**settings_kwargs), target)
 
 
 def test_complete_default_output_is_str():
@@ -59,10 +62,11 @@ def test_complete_schema_output_is_model():
     assert llm.complete("text", schema=Scene).output_type() is Scene
 
 
-def test_complete_list_schema_returns_iterator_annotation():
+def test_complete_list_schema_annotation_depends_on_verb():
     spec = llm.complete("text", schema=list[Chunk])
-    assert spec.output_type() is Chunk
-    assert spec.return_annotation() == Iterator[Chunk]
+    assert spec.output_type() == list[Chunk]
+    assert spec.return_annotation() == list[Chunk]  # .map(): one list-valued column
+    assert spec.return_annotation(to_many=True) == Iterator[Chunk]  # .gen(): fan out
 
 
 def test_classify_output_is_str():
@@ -566,8 +570,10 @@ def test_include_usage_return_annotation():
 
 
 def test_include_usage_list_return_annotation():
-    ann = llm.complete("c", schema=list[Scene], include_usage=True).return_annotation()
-    assert ann == Iterator[tuple[Scene, Usage]]
+    spec = llm.complete("c", schema=list[Scene], include_usage=True)
+    assert spec.return_annotation() == tuple[list[Scene], Usage]  # .map()
+    gen = spec.return_annotation(to_many=True)  # .gen()
+    assert gen == Iterator[tuple[Scene, Usage]]
 
 
 def test_include_usage_runtime_pairs_value_and_usage(fake_llm):
@@ -585,12 +591,19 @@ def test_without_usage_returns_bare_value(fake_llm):
     assert bind(llm.complete("c"), llm="m")("x") == "hi"
 
 
-def test_include_usage_list_yields_pairs(fake_llm):
-    rows = bind(llm.complete("c", schema=list[Scene], include_usage=True), llm="m")("x")
+def test_include_usage_list_yields_pairs_in_gen(fake_llm):
+    spec = llm.complete("c", schema=list[Scene], include_usage=True)
+    rows = bind(spec, target=GEN, llm="m")("x")  # .gen() fans out
     assert len(rows) >= 1
     for item, usage in rows:
         assert isinstance(item, Scene)
         assert isinstance(usage, Usage)
+
+
+def test_list_schema_in_map_returns_list_value(fake_llm):
+    value = bind(llm.complete("c", schema=list[Scene]), llm="m")("x")  # .map()
+    assert isinstance(value, list)
+    assert all(isinstance(s, Scene) for s in value)
 
 
 def test_include_usage_retries_counter(fake_llm):

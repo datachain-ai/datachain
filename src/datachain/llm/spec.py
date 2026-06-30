@@ -1,4 +1,3 @@
-import inspect
 import os
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
@@ -94,24 +93,27 @@ class LLMSpec:
                 f"{sorted(reserved)}"
             )
 
-    def _is_one_to_many(self) -> bool:
+    def _can_fan_out(self) -> bool:
+        """`complete(schema=list[...])` can produce many items from one input."""
         return self.kind == "complete" and _element_type(self.schema)[1]
 
     def output_type(self) -> Any:
+        """The value the call yields for one input (``list[Item]`` for a list
+        schema). The verb decides shape: ``.map()`` stores it, ``.gen()`` fans it
+        out into the element type."""
         if self.kind == "embed":
             return list[float]
         if self.kind == "score":
             return float
         if self.kind == "classify":
             return str
-        if self.schema is None:
-            return str
-        return _element_type(self.schema)[0]
+        return self.schema if self.schema is not None else str
 
-    def return_annotation(self) -> Any:
-        """Annotation seen by the verb. ``Iterator[T]`` for the 1:N (list) case;
-        ``include_usage`` pairs every value with a ``Usage`` (``tuple[T, Usage]``)."""
-        if self._is_one_to_many():
+    def return_annotation(self, to_many: bool = False) -> Any:
+        """Annotation seen by the verb. ``.gen()`` (``to_many``) fans a list schema
+        into ``Iterator[Item]``; ``.map()`` keeps the whole value (``list[Item]`` or
+        a scalar). ``include_usage`` pairs each value with a ``Usage``."""
+        if to_many and self._can_fan_out():
             elem = _element_type(self.schema)[0]
             item = tuple[elem, Usage] if self.include_usage else elem  # type: ignore[valid-type]
             return Iterator[item]  # type: ignore[valid-type]
@@ -180,28 +182,26 @@ class LLMSpec:
         params: dict[str, Any],
         value: Any,
         context: Any,
+        to_many: bool,
     ) -> Any:
-        result, usage, is_list = self._call(model, params, value, context)
-        if not self.include_usage:
-            return result
-        if is_list:
-            return [(item, usage) for item in result]
-        return (result, usage)
+        result, usage = self._call(model, params, value, context)
+        if to_many:  # .gen(): fan the list out, one row per item
+            return [(item, usage) for item in result] if self.include_usage else result
+        return (result, usage) if self.include_usage else result
 
     def _call(
         self, model: str, params: dict[str, Any], value: Any, context: Any
-    ) -> tuple[Any, Usage, bool]:
-        """Run the model call, returning the tuple ``(value, usage, is_list)``."""
-        result: Any
+    ) -> tuple[Any, Usage]:
+        """Run the model call, returning ``(value, usage)``; ``value`` is the whole
+        list for a list schema."""
         if self.kind == "embed":
-            result, usage = engine.embed(
+            return engine.embed(
                 model, to_text(value), self.retries, self.fallback, params
             )
-            return result, usage, False
 
         messages = build_messages(self._build_prompt(), value, self.media, context)
         if self.kind == "classify":
-            result, usage = engine.classify(
+            return engine.classify(
                 model,
                 messages,
                 tuple(self.into or []),
@@ -209,55 +209,49 @@ class LLMSpec:
                 self.fallback,
                 params,
             )
-        elif self.kind == "score":
-            result, usage = engine.score(
+        if self.kind == "score":
+            return engine.score(
                 model, messages, self.retries, self.fallback, params
             )
-        elif self.schema is None:
-            result, usage = engine.complete_text(
+        if self.schema is None:
+            return engine.complete_text(
                 model, messages, self.retries, self.fallback, params
             )
-        else:
-            elem, is_list = _element_type(self.schema)
-            if is_list:
-                items, usage = engine.complete_structured_list(
-                    model, messages, elem, self.retries, self.fallback, params
-                )
-                return items, usage, True
-            result, usage = engine.complete_structured(
-                model, messages, self.schema, self.retries, self.fallback, params
+        elem, is_list = _element_type(self.schema)
+        if is_list:
+            return engine.complete_structured_list(
+                model, messages, elem, self.retries, self.fallback, params
             )
-        return result, usage, False
+        return engine.complete_structured(
+            model, messages, self.schema, self.retries, self.fallback, params
+        )
 
     def _validate_target(self, target: Any) -> None:
-        """Reject cardinality mismatches: 1:N `complete` needs `.gen()`, the rest
-        produce one value per row and need `.map()`."""
+        """`.map()` always works (a list schema yields a list-valued column).
+        `.gen()` needs a fan-out-able op (`complete(schema=list[...])`); `.agg()`
+        is not supported."""
         if target is None:
             return
         out_batched = getattr(target, "is_output_batched", False)
         in_batched = getattr(target, "is_input_batched", False)
-        one_to_many = self._is_one_to_many()
-        if one_to_many:
-            if not out_batched or in_batched:
+        if not out_batched:
+            return  # .map(): 1:1
+        if self._can_fan_out():
+            if in_batched:  # aggregator
                 raise LLMConfigError(
-                    f"llm.{self.kind}(schema=list[...]) yields many rows per input; "
-                    "use .gen()"
+                    f"llm.{self.kind}() cannot aggregate; use .gen() (one row per "
+                    "item) or .map() (one list-valued column)"
                 )
         elif out_batched:
             raise LLMConfigError(
                 f"llm.{self.kind}() yields one value per row; use .map()"
             )
 
-    def _stamp(self, fn: Any, names: tuple[str, ...]) -> Callable:
-        # Input columns flow via __datachain_params__ (so they may be dotted); the
-        # signature only carries the output type.
-        fn.__signature__ = inspect.Signature(
-            [
-                inspect.Parameter(n, inspect.Parameter.POSITIONAL_OR_KEYWORD)
-                for n in names
-            ],
-            return_annotation=self.return_annotation(),
-        )
+    def _stamp(self, fn: Any, to_many: bool) -> Callable:
+        # Output type is declared as a normal return annotation; inputs flow via
+        # __datachain_params__ because column names may be dotted (e.g. "file.path"),
+        # which can't be function parameters.
+        fn.__annotations__["return"] = self.return_annotation(to_many)
         fn.__name__ = fn.__qualname__ = f"llm_{self.kind}"
         fn.__datachain_params__ = self.input_columns()
         return fn
@@ -265,6 +259,8 @@ class LLMSpec:
     def __datachain_bind__(self, settings: "Settings", target: Any = None) -> Callable:
         self._validate_target(target)
         spec = self
+        # .gen() fans a list schema into rows; .map() keeps the whole value.
+        to_many = getattr(target, "is_output_batched", False)
         model = self._resolve_model(settings)
         llm_params = settings.llm_params
         resolved: list[dict[str, Any]] = []
@@ -281,14 +277,14 @@ class LLMSpec:
         if self.context_col:
 
             def run_with_context(value, context, _id=_id):
-                return spec._run(model, params(), value, context)
+                return spec._run(model, params(), value, context, to_many)
 
-            return self._stamp(run_with_context, ("value", "context"))
+            return self._stamp(run_with_context, to_many)
 
         def run(value, _id=_id):
-            return spec._run(model, params(), value, None)
+            return spec._run(model, params(), value, None, to_many)
 
-        return self._stamp(run, ("value",))
+        return self._stamp(run, to_many)
 
     def input_columns(self) -> list[str]:
         return [self.col, self.context_col] if self.context_col else [self.col]

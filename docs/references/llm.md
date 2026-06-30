@@ -6,7 +6,9 @@ each operation runs one (expensive) model call per row and materializes the resu
 as a typed, cached, lineage-tracked column.
 
 Use each operation inside the matching verb (`.map()` for 1:1, `.gen()` for 1:N);
-the output column is typed automatically, with no `output=` needed.
+the output column is typed automatically, with no `output=` needed. A
+`schema=list[Model]` returns many items: fan them out with `.gen()` (one row each)
+or keep them as one `list[Model]` column with `.map()`.
 
 ## Quickstart
 
