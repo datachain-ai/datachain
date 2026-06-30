@@ -4,7 +4,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from datachain.lib.file import File, ImageFile, VideoFrame
+from datachain.lib.file import File, ImageFile, TextFile, VideoFrame
 from datachain.llm.engine import LLMError
 
 ContentPart = dict[str, Any]
@@ -46,13 +46,15 @@ def serialize_value(value: Any) -> str:
     return str(value)
 
 
-def value_to_parts(value: Any) -> ContentParts:
+def value_to_parts(value: Any) -> ContentParts:  # noqa: PLR0911
     """Encode a column value as message content parts (text or inline image)."""
     if isinstance(value, ImageFile):
         return [_image_part(value.read_bytes(), _mime(value) or "image/jpeg")]
     if isinstance(value, VideoFrame):
         return [_image_part(value.read_bytes(format="jpg"), "image/jpeg")]
-    if isinstance(value, File):
+    if isinstance(value, TextFile):  # explicit text type: never MIME-routed to image
+        return [_text_part(_read_text(value))]
+    if isinstance(value, File):  # ambiguous type: dispatch by MIME
         mime = _mime(value)
         if mime and mime.startswith("image/"):
             return [_image_part(value.read_bytes(), mime)]

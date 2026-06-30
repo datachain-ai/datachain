@@ -30,9 +30,27 @@ class Scene(BaseModel):
 )
 ```
 
-`classify`, `score`, and `complete` accept image and document files directly (encoded
-as multimodal input). `embed` operates on text — embed a text column or a caption you
-generated, then use it for vector search:
+## Inputs
+
+How a column is sent to the model is decided by its **type**, so read files with the
+right `type=` and the encoding follows:
+
+| Column type | Sent to the model as |
+|---|---|
+| `str`, Pydantic model | text (a model is serialized to JSON) |
+| `TextFile` (`type="text"`) | the file's text, regardless of extension |
+| `ImageFile` (`type="image"`), video frame | an inline image (needs a vision model) |
+| `File` (no `type=`) | by extension: image types → image, otherwise read as text |
+
+Two things to keep in mind:
+
+- A binary `File` that isn't an image (e.g. a PDF read with no `type=`) raises a clear
+  error rather than sending garbage; convert it first (extract frames, OCR, etc.).
+- A `str` is sent **verbatim**, so a column holding a *path* sends the path, not the
+  file's contents. Read it as a `File` (`read_storage(...)`) to send the content.
+
+`embed` takes text only (`str`, `TextFile`, or a model); embedding an image raises.
+Embed a text column or a caption you generated, then use it for vector search:
 
 ```python
 .map(vec=llm.embed("caption"))  # -> list[float]
@@ -54,6 +72,23 @@ Credentials are read from the environment / cloud IAM by default; pass them
 explicitly (including per-worker secret resolution) with `.settings(llm_params=...)`.
 
 Install the optional dependency with `pip install 'datachain[llm]'`.
+
+## Scaling and caching
+
+A model call is the most expensive step, and each worker processes rows
+sequentially, so throughput comes from more workers: `.settings(parallel=N)` for N
+processes on one machine, `.settings(workers=N)` to distribute.
+
+Reliability is layered:
+
+- **File data**: DataChain prefetches inputs (overlapping downloads with in-flight
+  calls), caches them, and retries transient fetch errors; tune with
+  `.settings(prefetch=N)` (default 2).
+- **Model calls**: guarded per call with `retries=` and `fallback=`.
+
+Materialized `llm.*` columns are cached and versioned, so re-running a chain reads
+the stored result instead of re-calling the model; the cache invalidates only when
+the model, prompt, schema, or parameters change.
 
 ## No fused predicate
 

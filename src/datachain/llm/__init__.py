@@ -22,7 +22,9 @@ def complete(
     ``list[Model]``.
 
     Args:
-        col (str): Input column passed to the model (text, image, or file/frame).
+        col (str): Input column. Encoding follows its type: text files and
+            strings as text, images/frames as vision input; a binary non-image
+            file errors. See the Inputs section.
         prompt (str | None): Instruction text added before the input.
         schema (type | None): Pydantic model (or ``list[Model]``) for structured
             output. When omitted, the output is plain ``str``.

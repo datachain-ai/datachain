@@ -285,6 +285,14 @@ def test_text_file_reads_text():
     assert parts == [{"type": "text", "text": "contents"}]
 
 
+def test_explicit_text_type_is_never_sent_as_image():
+    # type="text" must win over an image-looking extension.
+    tf = TextFile(path="report.png", source="s3://x")
+    with mock.patch.object(TextFile, "read_text", return_value="text body"):
+        parts = value_to_parts(tf)
+    assert parts == [{"type": "text", "text": "text body"}]
+
+
 def test_pydantic_value_serialized_as_json():
     result = serialize_value(Scene(objects=["c"], risk=0.1))
     assert result == '{"objects":["c"],"risk":0.1}'
