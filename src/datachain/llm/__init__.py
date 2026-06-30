@@ -68,48 +68,6 @@ def complete(
     )
 
 
-def extract(
-    col: str,
-    schema: Any,
-    prompt: str | None = None,
-    *,
-    context: str | None = None,
-    media: Media | None = None,
-    llm: str | None = None,
-    retries: int = 1,
-    fallback: str | list[str] | None = None,
-    **params: Any,
-) -> LLMSpec:
-    """Schema-driven extraction. Alias for ``complete`` with a required ``schema``.
-
-    Args:
-        col (str): Input column passed to the model.
-        schema (type): Pydantic model describing the fields to extract.
-        prompt (str | None): Optional extra instruction text.
-        context (str | None): Column whose value is serialized into the prompt.
-        media ("text" | "image" | "document" | None): Force how ``col`` is encoded
-            (see ``complete``).
-        llm (str | None): Per-call model override.
-        retries (int): Transient and schema-validation retry budget.
-        fallback (str | list[str] | None): Model string(s) tried on failure.
-        params (Any): Extra arguments forwarded to the underlying model call.
-
-    Returns:
-        LLMSpec: A spec whose output type is ``schema``.
-    """
-    return complete(
-        col,
-        prompt,
-        schema=schema,
-        context=context,
-        media=media,
-        llm=llm,
-        retries=retries,
-        fallback=fallback,
-        **params,
-    )
-
-
 def parse(col: str, schema: Any) -> LLMSpec:
     """Re-extract a typed object from stored model output, with no model call.
 
@@ -251,7 +209,6 @@ __all__ = [
     "classify",
     "complete",
     "embed",
-    "extract",
     "parse",
     "score",
 ]

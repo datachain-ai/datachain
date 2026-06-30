@@ -186,19 +186,15 @@ def complete_structured(
 
     # Re-validate schema mismatches here; transient errors are LiteLLM's job above.
     attempts = max(retries, 0) + 1
-    last_error: ValidationError | None = None
+    last_error: LLMError | None = None
     for _ in range(attempts):
         resp = litellm.completion(**kwargs)
-        content = _content(resp)
         try:
-            return schema.model_validate_json(content)
-        except ValidationError as exc:
+            return parse_one(schema, _content(resp))
+        except LLMError as exc:
             if _finish_reason(resp) == "length":
                 raise _truncated_error(schema.__name__) from exc
-            try:
-                return schema.model_validate_json(_strip_fences(content))
-            except ValidationError:
-                last_error = exc
+            last_error = exc
     raise LLMError(
         f"model output did not match schema '{schema.__name__}' "
         f"after {attempts} attempt(s)"
@@ -263,25 +259,19 @@ def complete_structured_list(
     params: dict[str, Any],
 ) -> list:
     litellm = _litellm()
-    container = _list_container(item_type)
     kwargs = _completion_kwargs(model, messages, retries, fallback, params)
-    kwargs["response_format"] = container
+    kwargs["response_format"] = _list_container(item_type)
 
     attempts = max(retries, 0) + 1
-    last_error: ValidationError | None = None
+    last_error: LLMError | None = None
     for _ in range(attempts):
         resp = litellm.completion(**kwargs)
-        content = _content(resp)
         try:
-            wrapped: Any = container.model_validate_json(content)
-            return wrapped.items
-        except ValidationError as exc:
+            return parse_list(item_type, _content(resp))
+        except LLMError as exc:
             if _finish_reason(resp) == "length":
                 raise _truncated_error(f"list[{item_type.__name__}]") from exc
-            try:
-                return parse_list(item_type, content)  # bare array / fenced fallback
-            except LLMError:
-                last_error = exc
+            last_error = exc
     raise LLMError(
         f"model output did not match list[{item_type.__name__}] "
         f"after {attempts} attempt(s)"

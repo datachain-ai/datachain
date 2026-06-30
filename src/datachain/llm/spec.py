@@ -44,8 +44,9 @@ def _canonical(value: Any) -> Any:
 class LLMSpec:
     """A configured `datachain.llm` operation, used inside `.map()` / `.gen()`.
 
-    Returned by `complete`, `classify`, `score`, and `embed`; not constructed
-    directly. The chain binds it to the active settings when the verb runs.
+    Returned by `complete`, `classify`, `score`, `embed`, and `parse`; not
+    constructed directly. The chain binds it to the active settings when the verb
+    runs.
     """
 
     kind: str  # "complete" | "classify" | "score" | "embed" | "parse"
@@ -84,7 +85,7 @@ class LLMSpec:
                 raise ValueError("llm.classify(into=...) categories must be distinct")
         if self.media is not None and self.media not in MEDIA_VALUES:
             raise ValueError(
-                f"media must be one of {MEDIA_VALUES} or None, got {self.media!r}"
+                f"media must be 'text', 'image', or 'document', got {self.media!r}"
             )
         if not isinstance(self.retries, int) or isinstance(self.retries, bool):
             raise ValueError(  # noqa: TRY004 - a config value error, not a type guard
@@ -228,14 +229,37 @@ class LLMSpec:
                 f"llm.{self.kind}() yields one value per row; use .map()"
             )
 
+    def _stamp(self, fn: Any, names: tuple[str, ...]) -> Callable:
+        # Input columns travel through the explicit `params` channel (see
+        # DataChain._udf_to_obj), so they may be nested/dotted; the signature only
+        # carries the output type.
+        fn.__signature__ = inspect.Signature(
+            [
+                inspect.Parameter(n, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+                for n in names
+            ],
+            return_annotation=self.return_annotation(),
+        )
+        fn.__name__ = fn.__qualname__ = f"llm_{self.kind}"
+        fn.__datachain_params__ = self.input_columns()
+        return fn
+
     def __datachain_bind__(self, settings: "Settings", target: Any = None) -> Callable:
         self._validate_target(target)
+        spec = self
+
+        # The `_id` default arg bakes the cache key into the closure, so the UDF
+        # hash (which folds in __defaults__) changes when an input does.
         if self.kind == "parse":
-            return self._bind_parse()
+            _id = self.identity("")
+
+            def run_parse(value, _id=_id):
+                return spec._run_parse(value)
+
+            return self._stamp(run_parse, ("value",))
+
         model = self._resolve_model(settings)
         llm_params = settings.llm_params
-        identity = self.identity(model)
-        spec = self
         resolved: list[dict[str, Any]] = []
 
         def params() -> dict[str, Any]:
@@ -246,53 +270,18 @@ class LLMSpec:
                 resolved.append({**base, **spec.params})
             return resolved[0]
 
-        _call: Any
-        names: tuple[str, ...]
+        _id = self.identity(model)
         if self.context_col:
 
-            def _call_with_context(value, context, _identity=identity):
+            def run_with_context(value, context, _id=_id):
                 return spec._run(model, params(), value, context)
 
-            _call = _call_with_context
-            names = ("value", "context")
-        else:
+            return self._stamp(run_with_context, ("value", "context"))
 
-            def _call_value(value, _identity=identity):
-                return spec._run(model, params(), value, None)
+        def run(value, _id=_id):
+            return spec._run(model, params(), value, None)
 
-            _call = _call_value
-            names = ("value",)
-
-        # Input columns travel through the explicit `params` channel (see
-        # DataChain._udf_to_obj), so they may be nested/dotted; the signature only
-        # carries the output type.
-        parameters = [
-            inspect.Parameter(n, inspect.Parameter.POSITIONAL_OR_KEYWORD) for n in names
-        ]
-        _call.__signature__ = inspect.Signature(
-            parameters, return_annotation=self.return_annotation()
-        )
-        _call.__name__ = f"llm_{self.kind}"
-        _call.__qualname__ = _call.__name__
-        _call.__datachain_params__ = self.input_columns()
-        return _call
-
-    def _bind_parse(self) -> Callable:
-        spec = self
-        identity = self.identity("")
-
-        def _run(value, _identity=identity):
-            return spec._run_parse(value)
-
-        _call: Any = _run
-        _call.__signature__ = inspect.Signature(
-            [inspect.Parameter("value", inspect.Parameter.POSITIONAL_OR_KEYWORD)],
-            return_annotation=self.return_annotation(),
-        )
-        _call.__name__ = "llm_parse"
-        _call.__qualname__ = _call.__name__
-        _call.__datachain_params__ = self.input_columns()
-        return _call
+        return self._stamp(run, ("value",))
 
     def _run_parse(self, value: Any) -> Any:
         if isinstance(value, Response):

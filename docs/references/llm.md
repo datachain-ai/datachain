@@ -142,10 +142,10 @@ hard boolean so re-thresholding stays free:
 
 ::: datachain.llm.complete
 
-::: datachain.llm.extract
-
 ::: datachain.llm.classify
 
 ::: datachain.llm.score
 
 ::: datachain.llm.embed
+
+::: datachain.llm.parse

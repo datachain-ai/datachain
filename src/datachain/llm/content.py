@@ -2,7 +2,7 @@ import base64
 import mimetypes
 from dataclasses import dataclass
 from io import BytesIO
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 from pydantic import BaseModel
 
@@ -10,7 +10,7 @@ from datachain.lib.file import AudioFile, File, ImageFile, VideoFile, VideoFrame
 from datachain.llm.engine import LLMError
 
 Media = Literal["text", "image", "document"]
-MEDIA_VALUES = ("text", "image", "document")
+MEDIA_VALUES = get_args(Media)
 
 ContentPart = dict[str, Any]
 

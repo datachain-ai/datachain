@@ -73,7 +73,9 @@ def check_structured() -> None:
     extracted = (
         dc.read_values(review=[NEGATIVE])
         .settings(llm=CHAT, cache=True)
-        .map(out=llm.extract("review", Review))
+        .map(
+            out=llm.complete("review", "Extract sentiment and summary.", schema=Review)
+        )
         .to_values("out")
     )
     assert isinstance(extracted[0], Review), extracted
@@ -91,7 +93,7 @@ def check_structured() -> None:
     assert len(sentences) >= 2, sentences
     assert all(isinstance(s, Sentence) and s.text for s in sentences), sentences
 
-    print("structured: extract + gen list ok", len(sentences))
+    print("structured: schema + gen list ok", len(sentences))
 
 
 def check_embed() -> None:

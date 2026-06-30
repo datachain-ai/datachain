@@ -258,8 +258,8 @@ def test_classify_rejects_duplicate_categories():
         llm.classify("t", into=["a", "a"])
 
 
-def test_extract_is_complete_with_schema():
-    spec = llm.extract("t", Scene)
+def test_complete_with_schema_kind():
+    spec = llm.complete("t", schema=Scene)
     assert spec.kind == "complete"
     assert spec.schema is Scene
 
@@ -412,7 +412,7 @@ def test_media_text_forces_model_json():
 
 
 def test_invalid_media_rejected_at_build_time():
-    with pytest.raises(ValueError, match="media must be one of"):
+    with pytest.raises(ValueError, match="media must be"):
         llm.complete("t", media="vidjo")
 
 
@@ -551,8 +551,8 @@ def test_response_schema_not_forwarded_as_response_format(fake_llm):
     assert out.raw
 
 
-def test_response_schema_via_extract(fake_llm):
-    out = bind(llm.extract("c", Response), llm="m")("hi")
+def test_response_schema_via_positional_schema(fake_llm):
+    out = bind(llm.complete("c", schema=Response), llm="m")("hi")
     assert isinstance(out, Response)
 
 
