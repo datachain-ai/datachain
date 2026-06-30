@@ -51,12 +51,17 @@ class FakeLiteLLM:
         self.embedding_empty = False
         self.embedding_as_object = False
         self.finish_reason = "stop"
+        # Models that "fail"; LiteLLM would route to a fallback if one is given.
+        self.fail_models: set[str] = set()
 
     def supports_pdf_input(self, model):
         return self.pdf_supported and model not in self.no_pdf_models
 
     def completion(self, **kwargs):
         self.calls.append(kwargs)
+        # LiteLLM transparently routes to a fallback; with none, the call errors.
+        if kwargs.get("model") in self.fail_models and not kwargs.get("fallbacks"):
+            raise RuntimeError(f"model {kwargs.get('model')} failed")
         fr = self.finish_reason
         schema = kwargs.get("response_format")
         if schema is None:

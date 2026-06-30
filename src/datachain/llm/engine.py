@@ -108,14 +108,31 @@ def _finish_reason(response: Any) -> str:
     return getattr(response.choices[0], "finish_reason", "") or ""
 
 
-def _usage(response: Any, attempt: int) -> Usage:
-    # `attempt` is the 0-based index of the succeeding call, i.e. the number of
-    # prior failed attempts; tokens reflect only this (successful) call.
+def _tokens(response: Any) -> tuple[int, int]:
     u = getattr(response, "usage", None)
-    return Usage(
-        input_tokens=getattr(u, "prompt_tokens", 0) or 0,
-        output_tokens=getattr(u, "completion_tokens", 0) or 0,
-        retries=attempt,
+    return (
+        getattr(u, "prompt_tokens", 0) or 0,
+        getattr(u, "completion_tokens", 0) or 0,
+    )
+
+
+def _usage(response: Any) -> Usage:
+    input_tokens, output_tokens = _tokens(response)
+    return Usage(input_tokens=input_tokens, output_tokens=output_tokens, retries=0)
+
+
+def _content_or_empty(response: Any) -> str:
+    try:
+        return _content(response)
+    except LLMError:
+        return ""
+
+
+def _reask_prompt(name: str, error: Exception) -> str:
+    detail = str(error.__cause__ or error)[:500]
+    return (
+        f"Your previous response could not be parsed as {name}: {detail}. "
+        "Return only valid JSON matching the schema, with no extra text."
     )
 
 
@@ -181,7 +198,7 @@ def complete_text(
     litellm = _litellm()
     kwargs = _completion_kwargs(model, messages, retries, fallback, params)
     resp = litellm.completion(**kwargs)
-    return _content(resp), _usage(resp, 0)
+    return _content(resp), _usage(resp)
 
 
 def _parse_with_retries(
@@ -190,20 +207,34 @@ def _parse_with_retries(
     parse: "Callable[[str], Any]",
     name: str,
 ) -> tuple[Any, Usage]:
-    # Re-validate schema mismatches here; transient errors are LiteLLM's job (via
-    # num_retries). A retry re-runs the same request, so it only helps when the
-    # model samples (temperature > 0); a `length` finish aborts immediately.
+    # On a schema mismatch, reask: feed the failed output and the error back as a
+    # follow-up turn so the next attempt can correct it. Transient errors are
+    # LiteLLM's job (num_retries); a `length` finish aborts (more tokens needed).
+    # Tokens accumulate across attempts; `retries` is the count of failed ones.
     litellm = _litellm()
+    messages: list[dict[str, Any]] = list(kwargs["messages"])
+    kwargs = {**kwargs, "messages": messages}
     attempts = max(retries, 0) + 1
+    total_in = total_out = 0
     last_error: LLMError | None = None
     for attempt in range(attempts):
         resp = litellm.completion(**kwargs)
+        tokens_in, tokens_out = _tokens(resp)
+        total_in += tokens_in
+        total_out += tokens_out
         try:
-            return parse(_content(resp)), _usage(resp, attempt)
+            value = parse(_content(resp))
+            usage = Usage(
+                input_tokens=total_in, output_tokens=total_out, retries=attempt
+            )
+            return value, usage
         except LLMError as exc:
             if _finish_reason(resp) == "length":
                 raise _truncated_error(name) from exc
             last_error = exc
+            if bad := _content_or_empty(resp):
+                messages.append({"role": "assistant", "content": bad})
+            messages.append({"role": "user", "content": _reask_prompt(name, exc)})
     raise LLMError(
         f"model output did not match {name} after {attempts} attempt(s)"
     ) from last_error
@@ -308,4 +339,4 @@ def embed(
     item = data[0]
     vector = list(item["embedding"] if isinstance(item, dict) else item.embedding)
     # Embeddings report no completion_tokens, so output_tokens stays 0.
-    return vector, _usage(resp, 0)
+    return vector, _usage(resp)

@@ -694,6 +694,37 @@ def test_embed_object_style_data_item(fake_llm):
     assert bind(llm.embed("c"), llm="m")("x") == [0.1, 0.2]
 
 
+def test_reask_feeds_failed_output_back(fake_llm):
+    fake_llm.invalid_json_attempts = 1  # first attempt invalid, then corrected
+    spec = llm.complete("c", schema=Scene, retries=2, include_usage=True)
+    value, usage = bind(spec, llm="m")("hi")
+
+    assert isinstance(value, Scene)
+    assert usage.retries == 1
+    # tokens accumulate across both attempts (11+11 in, 7+7 out)
+    assert usage.input_tokens == 22
+    assert usage.output_tokens == 14
+    # the second call carried the bad output + a correction turn
+    msgs = fake_llm.calls[-1]["messages"]
+    assert [m["role"] for m in msgs] == ["user", "assistant", "user"]
+    assert msgs[1]["content"] == "not json"
+    assert "could not be parsed" in msgs[2]["content"]
+
+
+def test_fallback_engages_on_primary_failure(fake_llm):
+    fake_llm.fail_models = {"primary/m"}
+    fake_llm.text_response = "ok"
+    out = bind(llm.complete("c", fallback="backup/m"), llm="primary/m")("x")
+    assert out == "ok"
+    assert fake_llm.calls[-1]["fallbacks"] == ["backup/m"]
+
+
+def test_primary_failure_without_fallback_propagates(fake_llm):
+    fake_llm.fail_models = {"primary/m"}
+    with pytest.raises(RuntimeError):
+        bind(llm.complete("c"), llm="primary/m")("x")
+
+
 def test_param_value_changes_udf_hash():
     from datachain.lib.signal_schema import SignalSchema
     from datachain.lib.udf import Mapper

@@ -107,12 +107,12 @@ chain.agg(in_tok=dc.func.sum("tok.input_tokens"))
 chain.filter("tok.retries > 0")
 ```
 
-Notes: `retries` counts `datachain.llm`'s own schema-validation retries, not
-LiteLLM's internal transient retries; it is only ever above 0 for structured
-output. Token counts reflect the successful call only (tokens spent on retried
-attempts are not added in). Embeddings report no output tokens, so `output_tokens`
-stays 0 there. In `.gen()` (1:N) the single call's usage is replicated onto every
-emitted row.
+Notes: `retries` counts `datachain.llm`'s own schema-validation reasks (it feeds
+the failed output back and asks again), not LiteLLM's internal transient retries;
+it is only ever above 0 for structured output. Token counts accumulate across all
+attempts, so reasked calls are billed in full. Embeddings report no output tokens,
+so `output_tokens` stays 0 there. In `.gen()` (1:N) the single call's usage is
+replicated onto every emitted row.
 
 ## Scaling and caching
 
