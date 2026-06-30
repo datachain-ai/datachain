@@ -662,25 +662,6 @@ def test_identity_changes_with_input_column():
     assert a != b
 
 
-def test_identity_captures_schema_validators():
-    # model_json_schema omits validator logic; the fingerprint must still cover it
-    # so that editing only a validator invalidates the cache.
-    from pydantic import field_validator
-
-    from datachain.llm.spec import _schema_fingerprint
-
-    class M(BaseModel):
-        x: int
-
-        @field_validator("x")
-        @classmethod
-        def nonneg(cls, v):
-            return v
-
-    fp = _schema_fingerprint(M)
-    assert any("field_validator" in part for part in fp)
-
-
 def test_identity_stable_for_same_config():
     a = llm.complete("t", "p", schema=Scene).identity("m")
     b = llm.complete("t", "p", schema=Scene).identity("m")

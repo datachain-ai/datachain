@@ -28,18 +28,6 @@ def _element_type(schema: Any) -> tuple[Any, bool]:
     return schema, False
 
 
-def _schema_fingerprint(model: Any) -> tuple:
-    """Cache-key fingerprint of a pydantic model. ``model_json_schema()`` captures
-    fields but not validator/serializer logic, so the class source is included when
-    available; dynamically created models have no source and fall back to the schema
-    alone."""
-    schema = str(model.model_json_schema())
-    try:
-        return (schema, inspect.getsource(model))
-    except (OSError, TypeError):
-        return (schema,)
-
-
 def _canonical(value: Any) -> Any:
     """Order-independent form of a value, so the cache key is stable across
     processes (``repr`` of a ``set`` or unsorted ``dict`` is not)."""
@@ -134,14 +122,17 @@ class LLMSpec:
 
     def identity(self, model: str, llm_params: Any = None) -> tuple:
         """Cache key baked into the UDF hash; changes iff an output-affecting
-        input (model, prompt, schema, params, llm_params, ...) changes."""
+        input (model, prompt, schema, params, llm_params, ...) changes.
+
+        The schema is keyed by its JSON schema (fields, types, constraints, name);
+        a pure validator/serializer-logic edit with unchanged fields will not
+        invalidate the cache.
+        """
         schema_repr: Any = None
         if self.schema is not None:
             elem, is_list = _element_type(self.schema)
-            # Fingerprint the model's fields and validators (not just its name) so
-            # editing a schema while keeping its class name invalidates the cache.
             if hasattr(elem, "model_json_schema"):
-                schema_repr = (_schema_fingerprint(elem), is_list)
+                schema_repr = (str(elem.model_json_schema()), is_list)
             else:
                 schema_repr = str(self.schema)
         # Only the dict form of settings(llm_params=) is output-affecting; the
