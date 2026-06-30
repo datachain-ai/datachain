@@ -29,6 +29,31 @@ def _fallbacks(fallback: str | list[str] | None) -> list[str] | None:
     return [fallback] if isinstance(fallback, str) else list(fallback)
 
 
+def _has_document(messages: list[dict[str, Any]]) -> bool:
+    return any(
+        isinstance(m.get("content"), list)
+        and any(p.get("type") == "file" for p in m["content"])
+        for m in messages
+    )
+
+
+def _check_document_support(model: str, messages: list[dict[str, Any]]) -> None:
+    if not _has_document(messages):
+        return
+    supports = getattr(_litellm(), "supports_pdf_input", None)
+    if supports is None:
+        return
+    try:
+        ok = supports(model=model)
+    except Exception:  # noqa: BLE001 - a capability probe must not block the call
+        return
+    if not ok:
+        raise LLMError(
+            f"model '{model}' does not accept document input; use a "
+            "document-capable model or extract the text first"
+        )
+
+
 def _completion_kwargs(
     model: str,
     messages: list[dict[str, Any]],
@@ -36,6 +61,7 @@ def _completion_kwargs(
     fallback: str | list[str] | None,
     params: dict[str, Any],
 ) -> dict[str, Any]:
+    _check_document_support(model, messages)
     # LiteLLM owns transient retries, backoff, and rate-limit handling.
     kwargs: dict[str, Any] = {
         "model": model,

@@ -44,6 +44,10 @@ class FakeLiteLLM:
         self.invalid_json_attempts = 0
         # Optional map of schema name -> JSON string overriding the auto-fill.
         self.structured_overrides: dict[str, str] = {}
+        self.pdf_supported = True
+
+    def supports_pdf_input(self, model):
+        return self.pdf_supported
 
     def completion(self, **kwargs):
         self.calls.append(kwargs)

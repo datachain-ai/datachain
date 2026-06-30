@@ -40,13 +40,16 @@ right `type=` and the encoding follows:
 | `str`, Pydantic model | text (a model is serialized to JSON) |
 | `TextFile` (`type="text"`) | the file's text, regardless of extension |
 | `ImageFile` (`type="image"`), video frame | an inline image (needs a vision model) |
-| `bytes` | an inline image if they are a known image format, else an error |
-| `File` (no `type=`) | by extension: image types → image, otherwise read as text |
+| PDF `File` / `bytes` | a document (on a document-capable model; errors otherwise) |
+| `bytes` | an inline image or document if a known image/PDF format, else an error |
+| `File` (no `type=`) | by extension: image → image, PDF → document, else read as text |
 
 Two things to keep in mind:
 
-- A binary `File` that isn't an image (e.g. a PDF read with no `type=`) raises a clear
-  error rather than sending garbage; convert it first (extract frames, OCR, etc.).
+- A binary `File` that is neither an image nor a PDF raises a clear error rather than
+  sending garbage; convert it first (extract frames, OCR, etc.). Document passthrough
+  covers "summarize/extract from this PDF"; heavy document work (chunk by section or
+  clause, pull embedded figures) is better done by decoding first, then `llm.*`.
 - A `str` is sent **verbatim**, so a column holding a *path* sends the path, not the
   file's contents. Read it as a `File` (`read_storage(...)`) to send the content.
 

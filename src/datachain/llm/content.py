@@ -24,6 +24,13 @@ def _text_part(text: str) -> ContentPart:
     return {"type": "text", "text": text}
 
 
+def _document_part(data: bytes, mime: str) -> ContentPart:
+    return {
+        "type": "file",
+        "file": {"file_data": _data_uri(data, mime), "format": mime},
+    }
+
+
 def _mime(file: File) -> str | None:
     return mimetypes.guess_type(file.path)[0]
 
@@ -37,6 +44,12 @@ def _image_bytes_mime(data: bytes) -> str | None:
     except (UnidentifiedImageError, OSError):
         return None
     return f"image/{fmt.lower()}" if fmt else None
+
+
+def _binary_mime(data: bytes) -> str | None:
+    if data[:5] == b"%PDF-":
+        return "application/pdf"
+    return _image_bytes_mime(data)
 
 
 def _read_text(file: File) -> str:
@@ -70,15 +83,19 @@ def value_to_parts(value: Any) -> ContentParts:  # noqa: PLR0911
         mime = _mime(value)
         if mime and mime.startswith("image/"):
             return [_image_part(value.read_bytes(), mime)]
+        if mime == "application/pdf":
+            return [_document_part(value.read_bytes(), mime)]
         return [_text_part(_read_text(value))]
     if isinstance(value, BaseModel):
         return [_text_part(value.model_dump_json())]
     if isinstance(value, bytes):
-        mime = _image_bytes_mime(value)
-        if mime:
+        mime = _binary_mime(value)
+        if mime and mime.startswith("image/"):
             return [_image_part(value, mime)]
+        if mime == "application/pdf":
+            return [_document_part(value, mime)]
         raise LLMError(
-            "raw bytes are only supported when they are a known image format"
+            "raw bytes are only supported when they are a known image or PDF format"
         )
     return [_text_part(str(value))]
 

@@ -298,8 +298,42 @@ def test_image_bytes_column_sent_as_image():
 
 
 def test_non_image_bytes_raise():
-    with pytest.raises(engine.LLMError, match="image format"):
-        value_to_parts(b"\x00\x01 definitely not an image \xff")
+    with pytest.raises(engine.LLMError, match="image or PDF"):
+        value_to_parts(b"\x00\x01 definitely not media \xff")
+
+
+def test_pdf_file_sent_as_document():
+    f = File(path="report.pdf", source="s3://x")
+    with mock.patch.object(File, "read_bytes", return_value=b"%PDF-1.4 fake"):
+        parts = value_to_parts(f)
+    assert parts[0]["type"] == "file"
+    assert parts[0]["file"]["format"] == "application/pdf"
+    assert parts[0]["file"]["file_data"].startswith("data:application/pdf;base64,")
+
+
+def test_pdf_bytes_sent_as_document():
+    parts = value_to_parts(b"%PDF-1.7\nbinary pdf body")
+    assert parts[0]["type"] == "file"
+    assert parts[0]["file"]["format"] == "application/pdf"
+
+
+def test_pdf_passthrough_when_model_supports_it(fake_llm):
+    fake_llm.text_response = "summary"
+    pdf = File(path="r.pdf", source="s3://x")
+    with mock.patch.object(File, "read_bytes", return_value=b"%PDF-1.4 x"):
+        out = bind(llm.complete("file", "summarize"), llm="m")(pdf)
+    assert out == "summary"
+    content = fake_llm.calls[-1]["messages"][0]["content"]
+    assert any(p["type"] == "file" for p in content)
+
+
+def test_pdf_rejected_when_model_lacks_support(fake_llm):
+    fake_llm.pdf_supported = False
+    pdf = File(path="r.pdf", source="s3://x")
+    with mock.patch.object(File, "read_bytes", return_value=b"%PDF-1.4 x"):
+        runner = bind(llm.complete("file", "summarize"), llm="m")
+        with pytest.raises(engine.LLMError, match="does not accept document"):
+            runner(pdf)
 
 
 def test_explicit_text_type_is_never_sent_as_image():
@@ -325,7 +359,7 @@ def test_binary_file_raises_clear_error():
     err = UnicodeDecodeError("utf-8", b"\x89", 0, 1, "bad")
     with mock.patch.object(File, "read_text", side_effect=err):
         with pytest.raises(engine.LLMError, match="cannot read"):
-            value_to_parts(File(path="doc.pdf", source="s3://x"))
+            value_to_parts(File(path="data.bin", source="s3://x"))
 
 
 def test_uncommon_image_extension_still_encoded():
