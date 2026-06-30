@@ -126,7 +126,10 @@ class LLMSpec:
 
         The schema is keyed by its JSON schema (fields, types, constraints, name);
         a pure validator/serializer-logic edit with unchanged fields will not
-        invalidate the cache.
+        invalidate the cache. A callable ``llm_params`` is resolved per worker at
+        runtime (e.g. credentials) and is not part of the key; put output-affecting
+        params in the dict form of ``llm_params`` or in per-call kwargs so they are
+        captured here.
         """
         schema_repr: Any = None
         if self.schema is not None:
@@ -135,8 +138,8 @@ class LLMSpec:
                 schema_repr = (str(elem.model_json_schema()), is_list)
             else:
                 schema_repr = str(self.schema)
-        # Only the dict form of settings(llm_params=) is output-affecting; the
-        # callable form resolves per-worker credentials and is left out.
+        # The dict form of settings(llm_params=) is folded in; the callable form is
+        # resolved per worker at runtime and is not cache-affecting (see docstring).
         params = self.params
         if isinstance(llm_params, dict):
             params = {**llm_params, **self.params}

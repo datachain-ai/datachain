@@ -53,12 +53,17 @@ class FakeLiteLLM:
         self.finish_reason = "stop"
         # Models that "fail"; LiteLLM would route to a fallback if one is given.
         self.fail_models: set[str] = set()
+        # Number of leading completion calls that raise a transient error.
+        self.transient_failures = 0
 
     def supports_pdf_input(self, model):
         return self.pdf_supported and model not in self.no_pdf_models
 
     def completion(self, **kwargs):
         self.calls.append(kwargs)
+        if self.transient_failures > 0:
+            self.transient_failures -= 1
+            raise RuntimeError("transient error")
         # LiteLLM transparently routes to a fallback; with none, the call errors.
         if kwargs.get("model") in self.fail_models and not kwargs.get("fallbacks"):
             raise RuntimeError(f"model {kwargs.get('model')} failed")

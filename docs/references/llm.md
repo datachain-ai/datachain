@@ -81,7 +81,9 @@ Routing is handled by [LiteLLM](https://docs.litellm.ai), so any provider-prefix
 string works: `anthropic/claude-haiku-4-5`, `openai/gpt-5-mini`,
 `bedrock/anthropic.claude-3-5-sonnet-v1:0`, `vertex_ai/gemini-2.0-flash`, etc.
 Credentials are read from the environment / cloud IAM by default; pass them
-explicitly (including per-worker secret resolution) with `.settings(llm_params=...)`.
+explicitly with `.settings(llm_params=...)`. A dict of params is part of the cache
+key; a callable (resolved per worker, e.g. for secrets) is not, so put
+output-affecting params in the dict form or in per-call keyword arguments.
 
 Install the optional dependency with `pip install 'datachain[llm]'`.
 

@@ -703,7 +703,9 @@ def test_identity_changes_with_dict_llm_params():
     )
 
 
-def test_identity_ignores_callable_llm_params():
+def test_callable_llm_params_not_in_identity():
+    # Callable llm_params is per-worker/runtime (e.g. credentials), not cache-keyed;
+    # output-affecting params belong in the dict form or per-call kwargs.
     spec = llm.complete("t", "p")
     assert spec.identity("m", lambda: {"k": "v"}) == spec.identity("m")
 
@@ -729,6 +731,25 @@ def test_reask_feeds_failed_output_back(fake_llm):
     assert [m["role"] for m in msgs] == ["user", "assistant", "user"]
     assert msgs[1]["content"] == "not json"
     assert "could not be parsed" in msgs[2]["content"]
+
+
+def test_structured_path_disables_litellm_retries(fake_llm):
+    # The reask loop owns the budget, so litellm num_retries is 0 (no multiplication).
+    bind(llm.complete("c", schema=Scene, retries=3), llm="m")("hi")
+    assert fake_llm.calls[-1]["num_retries"] == 0
+
+
+def test_transient_error_retried_by_reask_loop(fake_llm):
+    fake_llm.transient_failures = 1  # first call raises, second succeeds
+    out = bind(llm.complete("c", schema=Scene, retries=1), llm="m")("hi")
+    assert isinstance(out, Scene)
+    assert len(fake_llm.calls) == 2
+
+
+def test_transient_error_propagates_when_budget_exhausted(fake_llm):
+    fake_llm.transient_failures = 5
+    with pytest.raises(RuntimeError):
+        bind(llm.complete("c", schema=Scene, retries=1), llm="m")("hi")
 
 
 def test_fallback_engages_on_primary_failure(fake_llm):

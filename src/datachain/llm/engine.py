@@ -207,18 +207,24 @@ def _parse_with_retries(
     parse: "Callable[[str], Any]",
     name: str,
 ) -> tuple[Any, Usage]:
-    # On a schema mismatch, reask: feed the failed output and the error back as a
-    # follow-up turn so the next attempt can correct it. Transient errors are
-    # LiteLLM's job (num_retries); a `length` finish aborts (more tokens needed).
-    # Tokens accumulate across attempts; `retries` is the count of failed ones.
+    # This loop owns the retry budget for both failure modes, so LiteLLM's own
+    # num_retries is disabled (num_retries=0) to avoid the two multiplying. A
+    # transient error is retried as-is; a schema mismatch reasks (feeds the failed
+    # output and error back as a follow-up turn); a `length` finish aborts (more
+    # tokens needed). Tokens accumulate across attempts; `retries` is the count of
+    # extra attempts made.
     litellm = _litellm()
     messages: list[dict[str, Any]] = list(kwargs["messages"])
-    kwargs = {**kwargs, "messages": messages}
+    kwargs = {**kwargs, "messages": messages, "num_retries": 0}
     attempts = max(retries, 0) + 1
     total_in = total_out = 0
-    last_error: LLMError | None = None
+    last_error: Exception | None = None
     for attempt in range(attempts):
-        resp = litellm.completion(**kwargs)
+        try:
+            resp = litellm.completion(**kwargs)
+        except Exception as exc:  # noqa: BLE001 - transient/provider error; retry
+            last_error = exc
+            continue
         tokens_in, tokens_out = _tokens(resp)
         total_in += tokens_in
         total_out += tokens_out
@@ -235,9 +241,12 @@ def _parse_with_retries(
             if bad := _content_or_empty(resp):
                 messages.append({"role": "assistant", "content": bad})
             messages.append({"role": "user", "content": _reask_prompt(name, exc)})
-    raise LLMError(
-        f"model output did not match {name} after {attempts} attempt(s)"
-    ) from last_error
+    if isinstance(last_error, LLMError):
+        raise LLMError(
+            f"model output did not match {name} after {attempts} attempt(s)"
+        ) from last_error
+    assert last_error is not None  # attempts >= 1, so a failure was recorded
+    raise last_error
 
 
 def complete_structured(
