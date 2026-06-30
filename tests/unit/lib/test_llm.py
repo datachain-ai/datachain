@@ -794,7 +794,7 @@ _DOC_MSGS = [{"role": "user", "content": [{"type": "file", "file": {}}]}]
 
 def test_document_gate_skipped_when_probe_absent(monkeypatch):
     # A LiteLLM without supports_pdf_input must not block the call.
-    monkeypatch.setattr(engine, "_litellm", lambda: types.SimpleNamespace())
+    monkeypatch.setattr(engine, "_litellm", types.SimpleNamespace)
     engine._check_document_support("m", _DOC_MSGS)
 
 
