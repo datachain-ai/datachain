@@ -1,6 +1,7 @@
 """Build the dataset knowledge snapshot fed to the skill enrichment prompt."""
 
 import inspect
+import json
 import types
 import typing
 from typing import TYPE_CHECKING, Any
@@ -31,6 +32,9 @@ if TYPE_CHECKING:
 
 # Cap version history so the snapshot stays within the prompt budget.
 MAX_VERSION_ENTRIES = 20
+
+# Max chars per preview cell — stops one embedding/text value bloating the prompt.
+MAX_PREVIEW_CELL_CHARS = 200
 
 
 def build_dataset_snapshot(
@@ -118,7 +122,11 @@ def version_preview(version: Any) -> "PreviewData | None":
     if not raw:
         return None
     if isinstance(raw, dict):
-        return raw  # type: ignore[return-value]
+        rows = raw.get("rows")
+        if not isinstance(rows, list):
+            return raw  # type: ignore[return-value]
+        capped = [[_cap_cell(c) for c in r] if isinstance(r, list) else r for r in rows]
+        return {**raw, "rows": capped}  # type: ignore[return-value]
     columns: list[str] = []
     seen: set[str] = set()
     for row in raw:
@@ -129,7 +137,9 @@ def version_preview(version: Any) -> "PreviewData | None":
                 continue
             seen.add(col)
             columns.append(col)
-    rows = [[row.get(c) for c in columns] for row in raw if isinstance(row, dict)]
+    rows = [
+        [_cap_cell(row.get(c)) for c in columns] for row in raw if isinstance(row, dict)
+    ]
     return {"columns": columns, "rows": rows} if rows else None
 
 
@@ -206,3 +216,12 @@ def _updated(version: Any) -> str | None:
 
 def _flat_type(val: Any) -> str:
     return val if isinstance(val, str) else type_name(val)
+
+
+def _cap_cell(value: Any) -> Any:
+    if value is None or isinstance(value, int | float):
+        return value
+    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+    if len(text) <= MAX_PREVIEW_CELL_CHARS:
+        return value
+    return text[:MAX_PREVIEW_CELL_CHARS] + "…"

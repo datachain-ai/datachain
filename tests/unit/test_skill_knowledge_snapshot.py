@@ -7,6 +7,7 @@ from datachain.lib.file import File
 from datachain.lib.signal_schema import SignalSchema
 from datachain.skill.knowledge.scripts.utils import dep_entry
 from datachain.skill.knowledge.snapshot import (
+    MAX_PREVIEW_CELL_CHARS,
     MAX_VERSION_ENTRIES,
     build_dataset_snapshot,
     version_preview,
@@ -156,3 +157,21 @@ def test_version_preview_passthrough_dict():
 def test_version_preview_empty_returns_none():
     assert version_preview(SimpleNamespace(preview=None)) is None
     assert version_preview(SimpleNamespace(preview=[])) is None
+
+
+def test_version_preview_caps_large_cells():
+    rows = [{"emb": "x" * 10_000, "id": 1}]
+    result = version_preview(SimpleNamespace(preview=rows))
+    assert result["columns"] == ["emb", "id"]
+    cell = result["rows"][0][0]
+    assert len(cell) <= MAX_PREVIEW_CELL_CHARS + 1
+    assert cell.endswith("…")
+    assert result["rows"][0][1] == 1
+
+
+def test_version_preview_caps_large_cells_in_dict_shape():
+    shaped = {"columns": ["emb"], "rows": [["x" * 10_000]]}
+    result = version_preview(SimpleNamespace(preview=shaped))
+    cell = result["rows"][0][0]
+    assert len(cell) <= MAX_PREVIEW_CELL_CHARS + 1
+    assert cell.endswith("…")
