@@ -40,7 +40,7 @@ class FakeLiteLLM:
         self.embedding_calls: list[dict[str, Any]] = []
         self.text_response = "hello"
         self.embedding_response = [0.1, 0.2, 0.3]
-        # Number of leading completion calls that return unparseable content.
+        # Number of leading completion calls that return unparsable content.
         self.invalid_json_attempts = 0
         # Optional map of schema name -> JSON string overriding the auto-fill.
         self.structured_overrides: dict[str, str] = {}

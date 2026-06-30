@@ -484,7 +484,7 @@ def test_document_gate_checks_fallback_models(fake_llm):
 
 @pytest.mark.parametrize("key", ["model", "messages", "num_retries", "response_format"])
 def test_reserved_params_rejected(key):
-    with pytest.raises(ValueError, match="managed by datachain.llm"):
+    with pytest.raises(ValueError, match=r"managed by datachain\.llm"):
         llm.complete("c", **{key: "x"})
 
 
