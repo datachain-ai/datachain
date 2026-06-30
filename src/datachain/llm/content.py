@@ -107,7 +107,6 @@ def _as_image(value: Any) -> Image:
         data = value
     else:
         raise LLMError(f"cannot send {type(value).__name__} as an image")
-    # Trust an image extension on the path; otherwise sniff and reject non-images.
     mime = _path_image_mime(value) if isinstance(value, File) else None
     mime = mime or _sniff_image_mime(data)
     if mime is None:
@@ -155,7 +154,6 @@ def resolve(value: Any, media: Media | None = None) -> Content:
 
 
 def to_text(value: Any) -> str:
-    """Render a value as plain text (for embeddings and prompt context)."""
     return _as_text(value).text
 
 

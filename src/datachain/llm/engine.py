@@ -16,7 +16,6 @@ class LLMError(DataChainError):
     """Raised when a `datachain.llm` operation cannot produce a valid result."""
 
 
-# Keys datachain.llm sets on the underlying call; users cannot pass them as params.
 RESERVED_PARAMS = frozenset(
     {"model", "messages", "input", "num_retries", "fallbacks", "response_format"}
 )
@@ -48,8 +47,7 @@ def _has_document(messages: list[dict[str, Any]]) -> bool:
 
 
 def _check_document_support(model: str, messages: list[dict[str, Any]]) -> None:
-    # Gate only the primary model; fallbacks are alternatives that may not handle
-    # documents and would only run for unrelated transient failures.
+    # Gate only the primary; a fallback handles unrelated transient failures.
     if not _has_document(messages):
         return
     supports = getattr(_litellm(), "supports_pdf_input", None)
@@ -72,8 +70,7 @@ def _base_kwargs(
     fallback: str | list[str] | None,
     params: dict[str, Any],
 ) -> dict[str, Any]:
-    # `params` first so the keys datachain.llm owns always win (also guarded by
-    # RESERVED_PARAMS validation upstream). LiteLLM owns retries/backoff/rate limits.
+    # `params` first so datachain.llm's own keys always win.
     kwargs: dict[str, Any] = {**params, "model": model, "num_retries": max(retries, 0)}
     if (fallbacks := _fallbacks(fallback)) is not None:
         kwargs["fallbacks"] = fallbacks
@@ -158,7 +155,6 @@ def _truncated_error(name: str) -> LLMError:
 
 
 def parse_one(schema: type[T], content: str) -> T:
-    """Validate stored text against a model offline (no model call)."""
     last_error: ValidationError | None = None
     for candidate in (content, _strip_fences(content)):
         try:
@@ -171,7 +167,6 @@ def parse_one(schema: type[T], content: str) -> T:
 
 
 def parse_list(item_type: type, content: str) -> list:
-    """Validate stored text against ``list[item_type]`` offline (no model call)."""
     container = _list_container(item_type)
     adapter = _list_adapter(item_type)
     last_error: ValidationError | None = None
@@ -207,12 +202,9 @@ def _parse_with_retries(
     parse: "Callable[[str], Any]",
     name: str,
 ) -> tuple[Any, Usage]:
-    # This loop owns the retry budget for both failure modes, so LiteLLM's own
-    # num_retries is disabled (num_retries=0) to avoid the two multiplying. A
-    # transient error is retried as-is; a schema mismatch reasks (feeds the failed
-    # output and error back as a follow-up turn); a `length` finish aborts (more
-    # tokens needed). Tokens accumulate across attempts; `retries` is the count of
-    # extra attempts made.
+    # This loop owns the retry budget (num_retries=0) so it does not multiply with
+    # LiteLLM's. A schema mismatch reasks (feeds the failed output back); a `length`
+    # finish aborts; tokens accumulate across attempts.
     litellm = _litellm()
     messages: list[dict[str, Any]] = list(kwargs["messages"])
     kwargs = {**kwargs, "messages": messages, "num_retries": 0}
@@ -347,5 +339,4 @@ def embed(
         raise LLMError("embedding response contained no data")
     item = data[0]
     vector = list(item["embedding"] if isinstance(item, dict) else item.embedding)
-    # Embeddings report no completion_tokens, so output_tokens stays 0.
     return vector, _usage(resp)

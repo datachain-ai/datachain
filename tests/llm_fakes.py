@@ -42,18 +42,14 @@ class FakeLiteLLM:
         self.embedding_calls: list[dict[str, Any]] = []
         self.text_response = "hello"
         self.embedding_response = [0.1, 0.2, 0.3]
-        # Number of leading completion calls that return unparsable content.
         self.invalid_json_attempts = 0
-        # Optional map of schema name -> JSON string overriding the auto-fill.
         self.structured_overrides: dict[str, str] = {}
         self.pdf_supported = True
         self.no_pdf_models: set[str] = set()
         self.embedding_empty = False
         self.embedding_as_object = False
         self.finish_reason = "stop"
-        # Models that "fail"; LiteLLM would route to a fallback if one is given.
         self.fail_models: set[str] = set()
-        # Number of leading completion calls that raise a transient error.
         self.transient_failures = 0
 
     def supports_pdf_input(self, model):
@@ -83,7 +79,6 @@ class FakeLiteLLM:
         if self.embedding_empty:
             return types.SimpleNamespace(data=[])
         vector = list(self.embedding_response)
-        # Embeddings report prompt tokens only (no completion_tokens).
         usage = types.SimpleNamespace(prompt_tokens=5)
         item = (
             types.SimpleNamespace(embedding=vector)

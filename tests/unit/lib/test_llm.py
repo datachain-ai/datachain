@@ -208,7 +208,6 @@ def test_complete_text(fake_llm):
 def test_classify_returns_a_category(fake_llm):
     out = bind(llm.classify("t", into=["accident", "normal"]), llm="m")("x")
     assert out in {"accident", "normal"}
-    # response_format constrains output to the categories
     schema = fake_llm.calls[-1]["response_format"]
     assert schema.model_fields["category"].annotation.__args__ == ("accident", "normal")
 
@@ -530,8 +529,6 @@ def test_canonical_orders_sets_and_dicts():
 
 
 def test_param_clobber_is_blocked(fake_llm):
-    # A stray temperature is fine; reserved keys are rejected at construction,
-    # so the resolved model/prompt can never be overridden by params.
     bind(llm.complete("t", "real prompt", temperature=0.0), llm="real/model")("hi")
     call = fake_llm.calls[-1]
     assert call["model"] == "real/model"

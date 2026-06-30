@@ -108,7 +108,6 @@ def test_filter_on_nested_llm_field(fake_llm, test_session):
 def test_score_then_filter_recall_pattern(fake_llm, test_session):
     fake_llm.structured_overrides["LLMScore"] = '{"score": 0.7}'
     chain = base(test_session).map(spoiler=llm.score("text", "spoiler 0..1"))
-    # Re-thresholding is a cheap recall on the materialized column.
     assert chain.filter(dc.C("spoiler") > 0.5).count() == 3
     assert chain.filter(dc.C("spoiler") > 0.8).count() == 0
 
@@ -200,7 +199,6 @@ def test_export_to_pandas_roundtrip(fake_llm, test_session):
 
 
 def test_settings_inherited_by_all_downstream_ops(fake_llm, test_session):
-    # One settings(llm=) governs every llm.* below it.
     (
         base(test_session)
         .map(a=llm.complete("text", "x"))

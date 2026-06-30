@@ -95,7 +95,6 @@ class LLMSpec:
             )
 
     def _is_one_to_many(self) -> bool:
-        """A `complete(schema=list[...])` yields many rows per input (needs .gen)."""
         return self.kind == "complete" and _element_type(self.schema)[1]
 
     def output_type(self) -> Any:
@@ -105,7 +104,6 @@ class LLMSpec:
             return float
         if self.kind == "classify":
             return str
-        # complete
         if self.schema is None:
             return str
         return _element_type(self.schema)[0]
@@ -138,8 +136,6 @@ class LLMSpec:
                 schema_repr = (str(elem.model_json_schema()), is_list)
             else:
                 schema_repr = str(self.schema)
-        # The dict form of settings(llm_params=) is folded in; the callable form is
-        # resolved per worker at runtime and is not cache-affecting (see docstring).
         params = self.params
         if isinstance(llm_params, dict):
             params = {**llm_params, **self.params}
@@ -253,9 +249,8 @@ class LLMSpec:
             )
 
     def _stamp(self, fn: Any, names: tuple[str, ...]) -> Callable:
-        # Input columns travel through the explicit `params` channel (see
-        # DataChain._udf_to_obj), so they may be nested/dotted; the signature only
-        # carries the output type.
+        # Input columns flow via __datachain_params__ (so they may be dotted); the
+        # signature only carries the output type.
         fn.__signature__ = inspect.Signature(
             [
                 inspect.Parameter(n, inspect.Parameter.POSITIONAL_OR_KEYWORD)
@@ -275,15 +270,13 @@ class LLMSpec:
         resolved: list[dict[str, Any]] = []
 
         def params() -> dict[str, Any]:
-            # Resolve credentials once per worker (the closure is pickled fresh to
-            # each worker), then overlay the per-call params.
+            # Resolve credentials once per worker, then overlay per-call params.
             if not resolved:
                 base = llm_params() if callable(llm_params) else dict(llm_params or {})
                 resolved.append({**base, **spec.params})
             return resolved[0]
 
-        # The `_id` default arg bakes the cache key into the closure, so the UDF
-        # hash (which folds in __defaults__) changes when an input does.
+        # `_id` default arg bakes the cache key into the UDF hash (via __defaults__).
         _id = self.identity(model, llm_params)
         if self.context_col:
 
