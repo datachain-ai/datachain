@@ -57,6 +57,4 @@ def _dep_name(dep: "DatasetDependency") -> str:
 
 def _qualified_name(record: "DatasetRecord") -> str:
     project = record.project
-    if project is None:
-        return record.name
     return f"{project.namespace.name}.{project.name}.{record.name}"
