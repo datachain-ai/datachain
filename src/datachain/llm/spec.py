@@ -54,6 +54,13 @@ class LLMSpec:
                     "llm schema must be a pydantic model or list[model], "
                     f"got {self.schema!r}"
                 )
+        if self.into is not None:
+            if not self.into or not all(isinstance(c, str) for c in self.into):
+                raise ValueError(
+                    "llm.classify(into=...) must be a non-empty list of strings"
+                )
+            if len(set(self.into)) != len(self.into):
+                raise ValueError("llm.classify(into=...) categories must be distinct")
 
     def output_type(self) -> Any:
         if self.kind == "embed":

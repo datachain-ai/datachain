@@ -120,8 +120,6 @@ def classify(
     Returns:
         LLMSpec: A spec whose output type is ``str``.
     """
-    if not into:
-        raise ValueError("llm.classify() requires a non-empty 'into' list")
     return LLMSpec(
         kind="classify",
         col=col,

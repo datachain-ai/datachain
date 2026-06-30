@@ -198,8 +198,18 @@ def test_complete_list_schema_returns_list(fake_llm):
 
 
 def test_classify_requires_categories():
-    with pytest.raises(ValueError, match="non-empty 'into'"):
+    with pytest.raises(ValueError, match="non-empty list of strings"):
         llm.classify("t", into=[])
+
+
+def test_classify_rejects_non_string_categories():
+    with pytest.raises(ValueError, match="non-empty list of strings"):
+        llm.classify("t", into=[1, 2])
+
+
+def test_classify_rejects_duplicate_categories():
+    with pytest.raises(ValueError, match="distinct"):
+        llm.classify("t", into=["a", "a"])
 
 
 def test_extract_is_complete_with_schema():
