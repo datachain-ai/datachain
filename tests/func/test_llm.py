@@ -212,8 +212,7 @@ def test_per_call_model_overrides_chain_setting(fake_llm, test_session):
     assert fake_llm.calls[-1]["model"] == "openai/gpt-5-mini"
 
 
-def test_missing_model_raises_at_build_time(test_session, monkeypatch):
-    monkeypatch.delenv("DATACHAIN_AI_MODEL", raising=False)
+def test_missing_model_raises_at_build_time(test_session):
     from datachain.llm.spec import LLMConfigError
 
     with pytest.raises(LLMConfigError):

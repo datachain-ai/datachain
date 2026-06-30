@@ -26,7 +26,7 @@ from datachain.llm.content import (
     resolve,
     to_text,
 )
-from datachain.llm.spec import MODEL_ENV_VAR, LLMConfigError
+from datachain.llm.spec import LLMConfigError
 from datachain.llm.types import Usage
 from tests.llm_fakes import FakeLiteLLM
 
@@ -109,14 +109,7 @@ def test_settings_model_used(fake_llm):
     assert fake_llm.calls[-1]["model"] == "settings/m"
 
 
-def test_env_model_is_fallback(fake_llm, monkeypatch):
-    monkeypatch.setenv(MODEL_ENV_VAR, "env/m")
-    bind(llm.complete("t"))("hi")
-    assert fake_llm.calls[-1]["model"] == "env/m"
-
-
-def test_missing_model_raises(monkeypatch):
-    monkeypatch.delenv(MODEL_ENV_VAR, raising=False)
+def test_missing_model_raises():
     with pytest.raises(LLMConfigError, match="no model configured"):
         bind(llm.complete("t"))
 

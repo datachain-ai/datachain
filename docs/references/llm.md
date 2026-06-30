@@ -72,11 +72,7 @@ document raises. Embed a text column or a caption you generated, then vector-sea
 ## Model selection
 
 The model is chosen once with `.settings(llm="provider/model")` and inherited by
-every operation below it. Resolution order:
-
-1. A per-call `llm=` argument (override, rare).
-2. `.settings(llm=...)`, the main set-once path.
-3. The `DATACHAIN_AI_MODEL` environment variable (final fallback).
+every operation below it. A per-call `llm=` argument overrides it for that call.
 
 Routing is handled by [LiteLLM](https://docs.litellm.ai), so any provider-prefixed
 string works: `anthropic/claude-haiku-4-5`, `openai/gpt-5-mini`,

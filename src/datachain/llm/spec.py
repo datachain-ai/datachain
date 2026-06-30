@@ -1,4 +1,3 @@
-import os
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, get_args, get_origin
@@ -11,8 +10,6 @@ from datachain.llm.types import Usage
 
 if TYPE_CHECKING:
     from datachain.lib.settings import Settings
-
-MODEL_ENV_VAR = "DATACHAIN_AI_MODEL"
 
 
 class LLMConfigError(engine.LLMError):
@@ -157,12 +154,11 @@ class LLMSpec:
         )
 
     def _resolve_model(self, settings: "Settings") -> str:
-        model = self.llm or settings.llm or os.environ.get(MODEL_ENV_VAR)
+        model = self.llm or settings.llm
         if not model:
             raise LLMConfigError(
-                f"no model configured for llm.{self.kind}(). Set one with "
-                '.settings(llm="provider/model"), a per-call llm=, '
-                f"or the {MODEL_ENV_VAR} environment variable."
+                f"no model configured for llm.{self.kind}(); set one with "
+                '.settings(llm="provider/model") or a per-call llm=.'
             )
         return model
 
