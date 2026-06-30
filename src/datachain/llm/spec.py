@@ -210,9 +210,7 @@ class LLMSpec:
                 params,
             )
         if self.kind == "score":
-            return engine.score(
-                model, messages, self.retries, self.fallback, params
-            )
+            return engine.score(model, messages, self.retries, self.fallback, params)
         if self.schema is None:
             return engine.complete_text(
                 model, messages, self.retries, self.fallback, params
