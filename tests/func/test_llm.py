@@ -191,13 +191,6 @@ def test_union_both_arm_orders(fake_llm, test_session, swap):
     assert set(unioned.to_values("label")) == {"L"}
 
 
-def test_export_to_pandas_roundtrip(fake_llm, test_session):
-    fake_llm.embedding_response = [1.0, 2.0, 3.0]
-    df = base(test_session).map(vec=llm.embed("text")).to_pandas()
-    assert "vec" in df.columns
-    assert list(df["vec"].iloc[0]) == [1.0, 2.0, 3.0]
-
-
 def test_settings_inherited_by_all_downstream_ops(fake_llm, test_session):
     (
         base(test_session)

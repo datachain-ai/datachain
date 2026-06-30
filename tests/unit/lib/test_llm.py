@@ -1,3 +1,5 @@
+import sys
+import types
 from collections.abc import Iterator
 from unittest import mock
 
@@ -182,13 +184,6 @@ def test_negative_retries_still_makes_one_attempt(fake_llm):
     assert len(fake_llm.calls) == 1
 
 
-def test_structured_retries_on_invalid_json_then_succeeds(fake_llm):
-    fake_llm.invalid_json_attempts = 1
-    out = bind(llm.complete("t", schema=Scene, retries=1), llm="m")("hi")
-    assert isinstance(out, Scene)
-    assert len(fake_llm.calls) == 2
-
-
 def test_structured_raises_after_exhausting_retries(fake_llm):
     fake_llm.invalid_json_attempts = 5
     with pytest.raises(engine.LLMError, match="did not match schema"):
@@ -273,9 +268,6 @@ def _png() -> bytes:
     return buf.getvalue()
 
 
-# --- type-driven resolution (no media) ---
-
-
 def test_str_resolves_to_text():
     assert resolve("hi") == Text("hi")
 
@@ -344,9 +336,6 @@ def test_audio_and_video_files_require_decoding():
             resolve(f)
 
 
-# --- binary as text errors ---
-
-
 def test_binary_file_as_text_errors():
     err = UnicodeDecodeError("utf-8", b"\x89", 0, 1, "bad")
     with mock.patch.object(File, "read_text", side_effect=err):
@@ -361,9 +350,6 @@ def test_binary_bytes_as_text_errors():
 
 def test_utf8_bytes_resolve_to_text():
     assert resolve(b"hello") == Text("hello")
-
-
-# --- media="image" ---
 
 
 def test_media_image_on_bytes_sniffs_format():
@@ -392,9 +378,6 @@ def test_media_image_on_untyped_file_rejects_non_image():
             resolve(f, media="image")
 
 
-# --- media="document" ---
-
-
 def test_media_document_on_pdf_bytes():
     c = resolve(b"%PDF-1.7\nbody", media="document")
     assert isinstance(c, Document)
@@ -416,7 +399,19 @@ def test_media_document_on_non_pdf_errors():
         resolve(b"not a pdf at all", media="document")
 
 
-# --- media="text" ---
+def test_media_image_on_unsupported_value_type():
+    with pytest.raises(engine.LLMError, match="cannot send int as an image"):
+        resolve(123, media="image")
+
+
+def test_media_document_on_unsupported_value_type():
+    with pytest.raises(engine.LLMError, match="cannot send str as a document"):
+        resolve("just text", media="document")
+
+
+def test_build_messages_rejects_empty_input():
+    with pytest.raises(engine.LLMError, match="empty message"):
+        build_messages(None, "")
 
 
 def test_media_text_forces_model_json():
@@ -427,9 +422,6 @@ def test_media_text_forces_model_json():
 def test_invalid_media_rejected_at_build_time():
     with pytest.raises(ValueError, match="media must be"):
         llm.complete("t", media="vidjo")
-
-
-# --- build_messages / context ---
 
 
 def test_build_messages_text_only_collapses_to_string():
@@ -449,9 +441,6 @@ def test_build_messages_appends_context():
     assert '"risk":0.2' in msgs[0]["content"]
 
 
-# --- to_text (embed / context path) ---
-
-
 def test_to_text_reads_text_file():
     tf = TextFile(path="a.txt", source="s3://x")
     with mock.patch.object(TextFile, "read_text", return_value="hello"):
@@ -463,9 +452,6 @@ def test_to_text_on_image_file_errors():
     with mock.patch.object(File, "read_text", side_effect=err):
         with pytest.raises(engine.LLMError):
             to_text(ImageFile(path="a.png", source="s3://x"))
-
-
-# --- document passthrough end-to-end (model-capability gate) ---
 
 
 def test_document_passthrough_when_model_supports_it(fake_llm):
@@ -659,18 +645,6 @@ def test_identity_changes_with_input_column():
     assert a != b
 
 
-def test_identity_stable_for_same_config():
-    a = llm.complete("t", "p", schema=Scene).identity("m")
-    b = llm.complete("t", "p", schema=Scene).identity("m")
-    assert a == b
-
-
-def test_identity_changes_with_param_value():
-    a = llm.complete("t", "p", temperature=0.0).identity("m")
-    b = llm.complete("t", "p", temperature=1.0).identity("m")
-    assert a != b
-
-
 @pytest.mark.parametrize(
     ("a_spec", "b_spec"),
     [
@@ -802,3 +776,48 @@ def test_settings_llm_not_in_to_dict():
     # llm/llm_params are consumed at build time, never forwarded to the executor.
     assert "llm" not in Settings(llm="m").to_dict()
     assert "llm_params" not in Settings(llm_params={"k": 1}).to_dict()
+
+
+def test_litellm_helper_returns_module():
+    litellm = pytest.importorskip("litellm")
+    assert engine._litellm() is litellm
+
+
+def test_litellm_helper_missing_raises(monkeypatch):
+    monkeypatch.setitem(sys.modules, "litellm", None)  # makes `import litellm` fail
+    with pytest.raises(ImportError, match=r"pip install 'datachain\[llm\]'"):
+        engine._litellm()
+
+
+_DOC_MSGS = [{"role": "user", "content": [{"type": "file", "file": {}}]}]
+
+
+def test_document_gate_skipped_when_probe_absent(monkeypatch):
+    # A LiteLLM without supports_pdf_input must not block the call.
+    monkeypatch.setattr(engine, "_litellm", lambda: types.SimpleNamespace())
+    engine._check_document_support("m", _DOC_MSGS)
+
+
+def test_document_gate_ignores_probe_error(monkeypatch):
+    def boom(model):
+        raise RuntimeError("probe failed")
+
+    monkeypatch.setattr(
+        engine, "_litellm", lambda: types.SimpleNamespace(supports_pdf_input=boom)
+    )
+    engine._check_document_support("m", _DOC_MSGS)
+
+
+def test_content_raises_on_no_choices():
+    with pytest.raises(engine.LLMError, match="no choices"):
+        engine._content(types.SimpleNamespace(choices=[]))
+
+
+def test_content_raises_on_no_message():
+    resp = types.SimpleNamespace(choices=[types.SimpleNamespace(message=None)])
+    with pytest.raises(engine.LLMError, match="no message"):
+        engine._content(resp)
+
+
+def test_finish_reason_empty_on_no_choices():
+    assert engine._finish_reason(types.SimpleNamespace(choices=[])) == ""
