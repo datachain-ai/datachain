@@ -6,10 +6,24 @@ import pytest
 from pydantic import BaseModel
 
 from datachain import llm
-from datachain.lib.file import File, ImageFile, TextFile, VideoFile, VideoFrame
+from datachain.lib.file import (
+    AudioFile,
+    File,
+    ImageFile,
+    TextFile,
+    VideoFile,
+    VideoFrame,
+)
 from datachain.lib.settings import Settings
 from datachain.llm import engine
-from datachain.llm.content import build_messages, serialize_value, value_to_parts
+from datachain.llm.content import (
+    Document,
+    Image,
+    Text,
+    build_messages,
+    resolve,
+    to_text,
+)
 from datachain.llm.spec import MODEL_ENV_VAR, LLMConfigError
 from tests.llm_fakes import FakeLiteLLM
 
@@ -249,130 +263,214 @@ def test_extract_is_complete_with_schema():
     assert spec.schema is Scene
 
 
-def test_text_only_message_collapses_to_string():
-    msgs = build_messages("hi", "world")
-    assert msgs[0]["content"] == "hi\n\nworld"
+def _png() -> bytes:
+    import io
+
+    from PIL import Image as PILImage
+
+    buf = io.BytesIO()
+    PILImage.new("RGB", (2, 2), (1, 2, 3)).save(buf, format="PNG")
+    return buf.getvalue()
 
 
-def test_image_file_encodes_to_data_uri():
+# --- type-driven resolution (no media) ---
+
+
+def test_str_resolves_to_text():
+    assert resolve("hi") == Text("hi")
+
+
+def test_model_resolves_to_json_text():
+    assert resolve(Scene(objects=["c"], risk=0.1)) == Text(
+        '{"objects":["c"],"risk":0.1}'
+    )
+
+
+def test_text_file_resolves_to_text():
+    tf = TextFile(path="a.txt", source="s3://x")
+    with mock.patch.object(TextFile, "read_text", return_value="contents"):
+        assert resolve(tf) == Text("contents")
+
+
+def test_image_file_resolves_to_image_with_mime():
     img = ImageFile(path="a/pic.png", source="s3://x")
     with mock.patch.object(ImageFile, "read_bytes", return_value=b"PNGDATA"):
-        parts = value_to_parts(img)
-    assert parts[0]["type"] == "image_url"
-    assert parts[0]["image_url"]["url"].startswith("data:image/png;base64,")
+        c = resolve(img)
+    assert isinstance(c, Image)
+    assert c.mime == "image/png"
 
 
-def test_image_makes_message_content_a_list():
+def test_image_file_without_extension_defaults_to_jpeg():
+    img = ImageFile(path="snapshot", source="s3://x")
+    with mock.patch.object(ImageFile, "read_bytes", return_value=b"x"):
+        assert resolve(img).mime == "image/jpeg"
+
+
+def test_video_frame_resolves_to_jpeg_image():
+    frame = VideoFrame(
+        video=VideoFile(path="v.mp4", source="s3://x"), frame=0, timestamp=0.0
+    )
+    with mock.patch.object(VideoFrame, "read_bytes", return_value=b"JPG"):
+        c = resolve(frame)
+    assert isinstance(c, Image)
+    assert c.mime == "image/jpeg"
+
+
+def test_explicit_text_type_never_guessed_as_image():
+    tf = TextFile(path="report.png", source="s3://x")  # image-looking name, but text
+    with mock.patch.object(TextFile, "read_text", return_value="body"):
+        assert resolve(tf) == Text("body")
+
+
+def test_untyped_file_defaults_to_text_not_image():
+    f = File(path="x.png", source="s3://x")  # untyped: no image auto-detection
+    with mock.patch.object(File, "read_text", return_value="textual"):
+        assert resolve(f) == Text("textual")
+
+
+def test_audio_and_video_files_require_decoding():
+    for f in (
+        AudioFile(path="a.mp3", source="s3://x"),
+        VideoFile(path="v.mp4", source="s3://x"),
+    ):
+        with pytest.raises(engine.LLMError, match="decode it"):
+            resolve(f)
+
+
+# --- binary as text errors ---
+
+
+def test_binary_file_as_text_errors():
+    err = UnicodeDecodeError("utf-8", b"\x89", 0, 1, "bad")
+    with mock.patch.object(File, "read_text", side_effect=err):
+        with pytest.raises(engine.LLMError, match="looks binary"):
+            resolve(File(path="data.bin", source="s3://x"))
+
+
+def test_binary_bytes_as_text_errors():
+    with pytest.raises(engine.LLMError, match="binary"):
+        resolve(b"\x00\x01\xff not text")
+
+
+def test_utf8_bytes_resolve_to_text():
+    assert resolve(b"hello") == Text("hello")
+
+
+# --- media="image" ---
+
+
+def test_media_image_on_bytes_sniffs_format():
+    c = resolve(_png(), media="image")
+    assert isinstance(c, Image)
+    assert c.mime == "image/png"
+
+
+def test_media_image_on_non_image_bytes_errors():
+    with pytest.raises(engine.LLMError, match="not a recognized image"):
+        resolve(b"\x00\x01 not an image", media="image")
+
+
+def test_media_image_on_untyped_file():
+    f = File(path="blob", source="s3://x")
+    with mock.patch.object(File, "read_bytes", return_value=b"raw"):
+        c = resolve(f, media="image")
+    assert isinstance(c, Image)
+    assert c.mime == "image/jpeg"  # no extension -> default
+
+
+# --- media="document" ---
+
+
+def test_media_document_on_pdf_bytes():
+    c = resolve(b"%PDF-1.7\nbody", media="document")
+    assert isinstance(c, Document)
+    part = c.as_part()
+    assert part["type"] == "file"
+    assert part["file"]["format"] == "application/pdf"
+    assert part["file"]["file_data"].startswith("data:application/pdf;base64,")
+
+
+def test_media_document_on_pdf_file():
+    f = File(path="r.pdf", source="s3://x")
+    with mock.patch.object(File, "read_bytes", return_value=b"%PDF-1.4 x"):
+        c = resolve(f, media="document")
+    assert isinstance(c, Document)
+
+
+def test_media_document_on_non_pdf_errors():
+    with pytest.raises(engine.LLMError, match="expects a PDF"):
+        resolve(b"not a pdf at all", media="document")
+
+
+# --- media="text" ---
+
+
+def test_media_text_forces_model_json():
+    c = resolve(Scene(objects=[], risk=0.0), media="text")
+    assert c == Text('{"objects":[],"risk":0.0}')
+
+
+def test_invalid_media_rejected_at_build_time():
+    with pytest.raises(ValueError, match="media must be one of"):
+        llm.complete("t", media="vidjo")
+
+
+# --- build_messages / context ---
+
+
+def test_build_messages_text_only_collapses_to_string():
+    assert build_messages("hi", "world")[0]["content"] == "hi\n\nworld"
+
+
+def test_build_messages_with_image_is_a_list():
     img = ImageFile(path="a/pic.jpg", source="s3://x")
     with mock.patch.object(ImageFile, "read_bytes", return_value=b"JPG"):
         msgs = build_messages("describe", img)
     assert isinstance(msgs[0]["content"], list)
 
 
-def test_video_frame_encodes_as_image():
-    frame = VideoFrame(
-        video=VideoFile(path="v.mp4", source="s3://x"), frame=0, timestamp=0.0
-    )
-    with mock.patch.object(VideoFrame, "read_bytes", return_value=b"JPG"):
-        parts = value_to_parts(frame)
-    assert parts[0]["type"] == "image_url"
+def test_build_messages_appends_context():
+    msgs = build_messages("p", "v", context=Scene(objects=["c"], risk=0.2))
+    assert "Context:" in msgs[0]["content"]
+    assert '"risk":0.2' in msgs[0]["content"]
 
 
-def test_text_file_reads_text():
+# --- to_text (embed / context path) ---
+
+
+def test_to_text_reads_text_file():
     tf = TextFile(path="a.txt", source="s3://x")
-    with mock.patch.object(TextFile, "read_text", return_value="contents"):
-        parts = value_to_parts(tf)
-    assert parts == [{"type": "text", "text": "contents"}]
+    with mock.patch.object(TextFile, "read_text", return_value="hello"):
+        assert to_text(tf) == "hello"
 
 
-def test_image_bytes_column_sent_as_image():
-    import io
-
-    from PIL import Image
-
-    buf = io.BytesIO()
-    Image.new("RGB", (4, 4), (1, 2, 3)).save(buf, format="PNG")
-    parts = value_to_parts(buf.getvalue())
-    assert parts[0]["type"] == "image_url"
-    assert parts[0]["image_url"]["url"].startswith("data:image/png;base64,")
+def test_to_text_on_image_file_errors():
+    err = UnicodeDecodeError("utf-8", b"\x89", 0, 1, "bad")
+    with mock.patch.object(File, "read_text", side_effect=err):
+        with pytest.raises(engine.LLMError):
+            to_text(ImageFile(path="a.png", source="s3://x"))
 
 
-def test_non_image_bytes_raise():
-    with pytest.raises(engine.LLMError, match="image or PDF"):
-        value_to_parts(b"\x00\x01 definitely not media \xff")
+# --- document passthrough end-to-end (model-capability gate) ---
 
 
-def test_pdf_file_sent_as_document():
-    f = File(path="report.pdf", source="s3://x")
-    with mock.patch.object(File, "read_bytes", return_value=b"%PDF-1.4 fake"):
-        parts = value_to_parts(f)
-    assert parts[0]["type"] == "file"
-    assert parts[0]["file"]["format"] == "application/pdf"
-    assert parts[0]["file"]["file_data"].startswith("data:application/pdf;base64,")
-
-
-def test_pdf_bytes_sent_as_document():
-    parts = value_to_parts(b"%PDF-1.7\nbinary pdf body")
-    assert parts[0]["type"] == "file"
-    assert parts[0]["file"]["format"] == "application/pdf"
-
-
-def test_pdf_passthrough_when_model_supports_it(fake_llm):
+def test_document_passthrough_when_model_supports_it(fake_llm):
     fake_llm.text_response = "summary"
     pdf = File(path="r.pdf", source="s3://x")
     with mock.patch.object(File, "read_bytes", return_value=b"%PDF-1.4 x"):
-        out = bind(llm.complete("file", "summarize"), llm="m")(pdf)
+        out = bind(llm.complete("file", "summarize", media="document"), llm="m")(pdf)
     assert out == "summary"
     content = fake_llm.calls[-1]["messages"][0]["content"]
     assert any(p["type"] == "file" for p in content)
 
 
-def test_pdf_rejected_when_model_lacks_support(fake_llm):
+def test_document_rejected_when_model_lacks_support(fake_llm):
     fake_llm.pdf_supported = False
     pdf = File(path="r.pdf", source="s3://x")
     with mock.patch.object(File, "read_bytes", return_value=b"%PDF-1.4 x"):
-        runner = bind(llm.complete("file", "summarize"), llm="m")
+        runner = bind(llm.complete("file", "summarize", media="document"), llm="m")
         with pytest.raises(engine.LLMError, match="does not accept document"):
             runner(pdf)
-
-
-def test_explicit_text_type_is_never_sent_as_image():
-    # type="text" must win over an image-looking extension.
-    tf = TextFile(path="report.png", source="s3://x")
-    with mock.patch.object(TextFile, "read_text", return_value="text body"):
-        parts = value_to_parts(tf)
-    assert parts == [{"type": "text", "text": "text body"}]
-
-
-def test_pydantic_value_serialized_as_json():
-    result = serialize_value(Scene(objects=["c"], risk=0.1))
-    assert result == '{"objects":["c"],"risk":0.1}'
-
-
-def test_serialize_text_file_returns_content_not_metadata():
-    tf = TextFile(path="a.txt", source="s3://x")
-    with mock.patch.object(TextFile, "read_text", return_value="hello world"):
-        assert serialize_value(tf) == "hello world"
-
-
-def test_binary_file_raises_clear_error():
-    err = UnicodeDecodeError("utf-8", b"\x89", 0, 1, "bad")
-    with mock.patch.object(File, "read_text", side_effect=err):
-        with pytest.raises(engine.LLMError, match="cannot read"):
-            value_to_parts(File(path="data.bin", source="s3://x"))
-
-
-def test_uncommon_image_extension_still_encoded():
-    with mock.patch.object(File, "read_bytes", return_value=b"<svg/>"):
-        parts = value_to_parts(File(path="x.svg", source="s3://x"))
-    assert parts[0]["type"] == "image_url"
-
-
-def test_embed_image_errors_instead_of_returning_metadata():
-    err = UnicodeDecodeError("utf-8", b"\x89", 0, 1, "bad")
-    with mock.patch.object(File, "read_text", side_effect=err):
-        with pytest.raises(engine.LLMError):
-            serialize_value(ImageFile(path="a.png", source="s3://x"))
 
 
 @pytest.mark.parametrize("bad", [list, dict, int, "Scene", list[int], Scene | None])

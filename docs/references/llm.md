@@ -32,29 +32,37 @@ class Scene(BaseModel):
 
 ## Inputs
 
-How a column is sent to the model is decided by its **type**, so read files with the
-right `type=` and the encoding follows:
+A column value is sent to the model as **text**, an **image**, or a **document**.
+The column's **type** decides how it is encoded:
 
-| Column type | Sent to the model as |
+| Column type | Sent as |
 |---|---|
-| `str`, Pydantic model | text (a model is serialized to JSON) |
-| `TextFile` (`type="text"`) | the file's text, regardless of extension |
-| `ImageFile` (`type="image"`), video frame | an inline image (needs a vision model) |
-| PDF `File` / `bytes` | a document (on a document-capable model; errors otherwise) |
-| `bytes` | an inline image or document if a known image/PDF format, else an error |
-| `File` (no `type=`) | by extension: image → image, PDF → document, else read as text |
+| `str`, Pydantic model | text (a model → JSON) |
+| `TextFile` (`type="text"`) | text |
+| `ImageFile` (`type="image"`), video frame | image (needs a vision model) |
+| `File` (untyped) | text (`read_text`; errors if the bytes are binary) |
+| `bytes` | text (errors if not UTF-8) |
+| `AudioFile` / `VideoFile` | error; decode first (extract frames or a transcript) |
 
-Two things to keep in mind:
+For raw `bytes` or an untyped `File`, declare the modality with `media=`:
 
-- A binary `File` that is neither an image nor a PDF raises a clear error rather than
-  sending garbage; convert it first (extract frames, OCR, etc.). Document passthrough
-  covers "summarize/extract from this PDF"; heavy document work (chunk by section or
-  clause, pull embedded figures) is better done by decoding first, then `llm.*`.
+```python
+.map(cap=llm.complete("frames", media="image"))     # bytes / File -> image
+.map(ext=llm.complete("file",  media="document"))    # File / bytes -> PDF (document-capable model)
+```
+
+Rules to keep in mind:
+
+- `media` is validated up front: `media="image"` on non-image bytes, or
+  `media="document"` on a non-PDF, raises a clear error.
 - A `str` is sent **verbatim**, so a column holding a *path* sends the path, not the
-  file's contents. Read it as a `File` (`read_storage(...)`) to send the content.
+  file's contents; read it as a `File` (`read_storage(...)`) to send the content.
+- `media="document"` covers "summarize/extract from this PDF"; heavy document work
+  (chunk by section or clause, pull embedded figures) is better done by decoding
+  first, then `llm.*`.
 
-`embed` takes text only (`str`, `TextFile`, or a model); embedding an image raises.
-Embed a text column or a caption you generated, then use it for vector search:
+`embed` takes text only (`str`, `TextFile`, or a model); embedding an image or
+document raises. Embed a text column or a caption you generated, then vector-search:
 
 ```python
 .map(vec=llm.embed("caption"))  # -> list[float]

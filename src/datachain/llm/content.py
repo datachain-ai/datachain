@@ -1,55 +1,72 @@
 import base64
 import mimetypes
+from dataclasses import dataclass
 from io import BytesIO
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel
 
-from datachain.lib.file import File, ImageFile, TextFile, VideoFrame
+from datachain.lib.file import AudioFile, File, ImageFile, VideoFile, VideoFrame
 from datachain.llm.engine import LLMError
 
+Media = Literal["text", "image", "document"]
+MEDIA_VALUES = ("text", "image", "document")
+
 ContentPart = dict[str, Any]
-ContentParts = list[ContentPart]
 
 
 def _data_uri(data: bytes, mime: str) -> str:
     return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
 
 
-def _image_part(data: bytes, mime: str) -> ContentPart:
-    return {"type": "image_url", "image_url": {"url": _data_uri(data, mime)}}
+@dataclass(frozen=True)
+class Text:
+    text: str
+
+    def as_part(self) -> ContentPart:
+        return {"type": "text", "text": self.text}
 
 
-def _text_part(text: str) -> ContentPart:
-    return {"type": "text", "text": text}
+@dataclass(frozen=True)
+class Image:
+    data: bytes
+    mime: str
+
+    def as_part(self) -> ContentPart:
+        return {
+            "type": "image_url",
+            "image_url": {"url": _data_uri(self.data, self.mime)},
+        }
 
 
-def _document_part(data: bytes, mime: str) -> ContentPart:
-    return {
-        "type": "file",
-        "file": {"file_data": _data_uri(data, mime), "format": mime},
-    }
+@dataclass(frozen=True)
+class Document:
+    data: bytes
+    mime: str
+
+    def as_part(self) -> ContentPart:
+        uri = _data_uri(self.data, self.mime)
+        return {"type": "file", "file": {"file_data": uri, "format": self.mime}}
 
 
-def _mime(file: File) -> str | None:
-    return mimetypes.guess_type(file.path)[0]
+Content = Text | Image | Document
 
 
-def _image_bytes_mime(data: bytes) -> str | None:
-    from PIL import Image, UnidentifiedImageError
+def _path_image_mime(file: File) -> str | None:
+    mime = mimetypes.guess_type(file.path)[0]
+    return mime if mime and mime.startswith("image/") else None
+
+
+def _sniff_image_mime(data: bytes) -> str | None:
+    from PIL import Image as PILImage
+    from PIL import UnidentifiedImageError
 
     try:
-        with Image.open(BytesIO(data)) as img:
+        with PILImage.open(BytesIO(data)) as img:
             fmt = img.format
     except (UnidentifiedImageError, OSError):
         return None
     return f"image/{fmt.lower()}" if fmt else None
-
-
-def _binary_mime(data: bytes) -> str | None:
-    if data[:5] == b"%PDF-":
-        return "application/pdf"
-    return _image_bytes_mime(data)
 
 
 def _read_text(file: File) -> str:
@@ -57,62 +74,104 @@ def _read_text(file: File) -> str:
         return file.read_text()
     except UnicodeDecodeError as e:
         raise LLMError(
-            f"cannot read '{file.path}' as text; convert it first "
-            "(extract video frames, OCR a document, or pass an image column)"
+            f"cannot read '{file.path}' as text (it looks binary); if it is an "
+            "image or PDF set media='image'/'document', otherwise decode it first"
         ) from e
 
 
-def serialize_value(value: Any) -> str:
-    """Render a value as plain text (for context and text embeddings)."""
-    if isinstance(value, File):
-        return _read_text(value)
-    if isinstance(value, BaseModel):
-        return value.model_dump_json()
-    return str(value)
-
-
-def value_to_parts(value: Any) -> ContentParts:  # noqa: PLR0911
-    """Encode a column value as message content parts (text or inline image)."""
-    if isinstance(value, ImageFile):
-        return [_image_part(value.read_bytes(), _mime(value) or "image/jpeg")]
-    if isinstance(value, VideoFrame):
-        return [_image_part(value.read_bytes(format="jpg"), "image/jpeg")]
-    if isinstance(value, TextFile):  # explicit text type: never MIME-routed to image
-        return [_text_part(_read_text(value))]
-    if isinstance(value, File):  # ambiguous type: dispatch by MIME
-        mime = _mime(value)
-        if mime and mime.startswith("image/"):
-            return [_image_part(value.read_bytes(), mime)]
-        if mime == "application/pdf":
-            return [_document_part(value.read_bytes(), mime)]
-        return [_text_part(_read_text(value))]
-    if isinstance(value, BaseModel):
-        return [_text_part(value.model_dump_json())]
-    if isinstance(value, bytes):
-        mime = _binary_mime(value)
-        if mime and mime.startswith("image/"):
-            return [_image_part(value, mime)]
-        if mime == "application/pdf":
-            return [_document_part(value, mime)]
+def _decode(data: bytes) -> str:
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError as e:
         raise LLMError(
-            "raw bytes are only supported when they are a known image or PDF format"
+            "cannot read bytes as text (they look binary); if they are an image "
+            "or PDF set media='image'/'document', otherwise decode them first"
+        ) from e
+
+
+def _as_text(value: Any) -> Text:
+    if isinstance(value, File):
+        return Text(_read_text(value))
+    if isinstance(value, BaseModel):
+        return Text(value.model_dump_json())
+    if isinstance(value, bytes):
+        return Text(_decode(value))
+    return Text(str(value))
+
+
+def _as_image(value: Any) -> Image:
+    if isinstance(value, VideoFrame):
+        return Image(value.read_bytes(format="jpg"), "image/jpeg")
+    if isinstance(value, File):
+        return Image(value.read_bytes(), _path_image_mime(value) or "image/jpeg")
+    if isinstance(value, bytes):
+        mime = _sniff_image_mime(value)
+        if mime is None:
+            raise LLMError(
+                "media='image' was set but the value is not a recognized image format"
+            )
+        return Image(value, mime)
+    raise LLMError(f"cannot send {type(value).__name__} as an image")
+
+
+def _as_document(value: Any) -> Document:
+    if isinstance(value, File):
+        data = value.read_bytes()
+    elif isinstance(value, bytes):
+        data = value
+    else:
+        raise LLMError(f"cannot send {type(value).__name__} as a document")
+    if not data.startswith(b"%PDF-"):
+        raise LLMError(
+            "media='document' expects a PDF, but the value is not a PDF "
+            "(convert it to PDF, or extract its text first)"
         )
-    return [_text_part(str(value))]
+    return Document(data, "application/pdf")
+
+
+def resolve(value: Any, media: Media | None = None) -> Content:
+    """Resolve a column value to the modality the model receives.
+
+    With no ``media``, the value's type decides: image types become images and
+    everything else becomes text. ``media`` forces a modality for raw ``bytes``
+    or an untyped ``File``.
+    """
+    if media == "image":
+        return _as_image(value)
+    if media == "document":
+        return _as_document(value)
+    if media == "text":
+        return _as_text(value)
+    if isinstance(value, (ImageFile, VideoFrame)):
+        return _as_image(value)
+    if isinstance(value, (AudioFile, VideoFile)):
+        raise LLMError(
+            f"{type(value).__name__} cannot be sent to the model directly; decode it "
+            "first (e.g. extract video frames or an audio transcript) and pass that "
+            "column"
+        )
+    return _as_text(value)
+
+
+def to_text(value: Any) -> str:
+    """Render a value as plain text (for embeddings and prompt context)."""
+    return _as_text(value).text
 
 
 def build_messages(
     prompt: str | None,
     value: Any,
+    media: Media | None = None,
     context: Any = None,
 ) -> list[dict[str, Any]]:
     """Build a single-user-message chat payload, collapsing to plain text when
     nothing multimodal is present."""
-    parts: ContentParts = []
+    parts: list[ContentPart] = []
     if prompt:
-        parts.append(_text_part(prompt))
-    parts.extend(value_to_parts(value))
+        parts.append(Text(prompt).as_part())
+    parts.append(resolve(value, media).as_part())
     if context is not None:
-        parts.append(_text_part(f"Context:\n{serialize_value(context)}"))
+        parts.append(Text(f"Context:\n{to_text(context)}").as_part())
 
     if all(p["type"] == "text" for p in parts):
         content: Any = "\n\n".join(p["text"] for p in parts)

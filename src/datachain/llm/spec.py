@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any, get_args, get_origin
 from pydantic import BaseModel
 
 from datachain.llm import engine
-from datachain.llm.content import build_messages, serialize_value
+from datachain.llm.content import MEDIA_VALUES, Media, build_messages, to_text
 
 if TYPE_CHECKING:
     from datachain.lib.settings import Settings
@@ -41,6 +41,7 @@ class LLMSpec:
     schema: Any = None
     into: list[str] | None = None
     context_col: str | None = None
+    media: Media | None = None
     llm: str | None = None
     retries: int = 1
     fallback: str | list[str] | None = None
@@ -61,6 +62,10 @@ class LLMSpec:
                 )
             if len(set(self.into)) != len(self.into):
                 raise ValueError("llm.classify(into=...) categories must be distinct")
+        if self.media is not None and self.media not in MEDIA_VALUES:
+            raise ValueError(
+                f"media must be one of {MEDIA_VALUES} or None, got {self.media!r}"
+            )
 
     def output_type(self) -> Any:
         if self.kind == "embed":
@@ -97,6 +102,7 @@ class LLMSpec:
             schema_repr,
             tuple(self.into) if self.into else None,
             self.context_col,
+            self.media,
             self.retries,
             tuple(self.fallback) if isinstance(self.fallback, list) else self.fallback,
             tuple(sorted((k, repr(v)) for k, v in self.params.items())),
@@ -131,10 +137,10 @@ class LLMSpec:
     ) -> Any:
         if self.kind == "embed":
             return engine.embed(
-                model, serialize_value(value), self.retries, self.fallback, params
+                model, to_text(value), self.retries, self.fallback, params
             )
 
-        messages = build_messages(self._build_prompt(), value, context)
+        messages = build_messages(self._build_prompt(), value, self.media, context)
 
         if self.kind == "classify":
             return engine.classify(
@@ -190,7 +196,7 @@ class LLMSpec:
 
         def params() -> dict[str, Any]:
             # Resolve credentials once per worker (the closure is pickled fresh to
-            # each worker), not per row, then overlay the per-call params.
+            # each worker), then overlay the per-call params.
             if not resolved:
                 base = llm_params() if callable(llm_params) else dict(llm_params or {})
                 resolved.append({**base, **spec.params})
