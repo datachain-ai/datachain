@@ -59,12 +59,11 @@ def _path_image_mime(file: File) -> str | None:
 
 def _sniff_image_mime(data: bytes) -> str | None:
     from PIL import Image as PILImage
-    from PIL import UnidentifiedImageError
 
     try:
         with PILImage.open(BytesIO(data)) as img:
             fmt = img.format
-    except (UnidentifiedImageError, OSError):
+    except Exception:  # noqa: BLE001 - any open failure just means "not an image"
         return None
     return f"image/{fmt.lower()}" if fmt else None
 
