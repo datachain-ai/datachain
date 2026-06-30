@@ -125,13 +125,10 @@ class LLMSpec:
     def _run(
         self,
         model: str,
-        llm_params: Any,
+        params: dict[str, Any],
         value: Any,
         context: Any,
     ) -> Any:
-        params = dict(llm_params() if callable(llm_params) else (llm_params or {}))
-        params.update(self.params)
-
         if self.kind == "embed":
             return engine.embed(
                 model, serialize_value(value), self.retries, self.fallback, params
@@ -189,20 +186,29 @@ class LLMSpec:
         llm_params = settings.llm_params
         identity = self.identity(model)
         spec = self
+        resolved: list[dict[str, Any]] = []
+
+        def params() -> dict[str, Any]:
+            # Resolve credentials once per worker (the closure is pickled fresh to
+            # each worker), not per row, then overlay the per-call params.
+            if not resolved:
+                base = llm_params() if callable(llm_params) else dict(llm_params or {})
+                resolved.append({**base, **spec.params})
+            return resolved[0]
 
         _call: Any
         names: tuple[str, ...]
         if self.context_col:
 
             def _call_with_context(value, context, _identity=identity):
-                return spec._run(model, llm_params, value, context)
+                return spec._run(model, params(), value, context)
 
             _call = _call_with_context
             names = ("value", "context")
         else:
 
             def _call_value(value, _identity=identity):
-                return spec._run(model, llm_params, value, None)
+                return spec._run(model, params(), value, None)
 
             _call = _call_value
             names = ("value",)

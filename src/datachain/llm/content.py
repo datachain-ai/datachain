@@ -67,11 +67,8 @@ def build_messages(
     value: Any,
     context: Any = None,
 ) -> list[dict[str, Any]]:
-    """Build a single-user-message chat payload from a prompt, a value, and context.
-
-    Collapses to a plain string content when nothing multimodal is present so that
-    text-only providers receive the simplest possible payload.
-    """
+    """Build a single-user-message chat payload, collapsing to plain text when
+    nothing multimodal is present."""
     parts: ContentParts = []
     if prompt:
         parts.append(_text_part(prompt))

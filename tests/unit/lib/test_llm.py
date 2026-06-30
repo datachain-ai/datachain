@@ -120,6 +120,20 @@ def test_llm_params_callable_resolved_at_call_time(fake_llm):
     assert resolved == [1]
 
 
+def test_llm_params_callable_resolved_once_per_worker(fake_llm):
+    resolved = []
+
+    def factory():
+        resolved.append(1)
+        return {"api_key": "K"}
+
+    f = bind(llm.complete("t"), llm="m", llm_params=factory)
+    f("a")
+    f("b")
+    f("c")
+    assert resolved == [1]  # resolved once, not once per row
+
+
 def test_per_call_params_override_settings_params(fake_llm):
     f = bind(
         llm.complete("t", temperature=0.0),
@@ -184,6 +198,12 @@ def test_score_returns_float(fake_llm):
     assert isinstance(out, float)
 
 
+def test_score_rejects_non_finite(fake_llm):
+    fake_llm.structured_overrides["LLMScore"] = '{"score": "nan"}'
+    with pytest.raises(engine.LLMError):
+        bind(llm.score("t", "x"), llm="m")("v")
+
+
 def test_embed_returns_vector(fake_llm):
     fake_llm.embedding_response = [1.0, 2.0]
     out = bind(llm.embed("t"), llm="m")("x")
@@ -195,6 +215,12 @@ def test_complete_list_schema_returns_list(fake_llm):
     out = bind(llm.complete("t", schema=list[Chunk], prompt="split"), llm="m")("doc")
     assert isinstance(out, list)
     assert all(isinstance(c, Chunk) for c in out)
+
+
+def test_list_schema_tolerates_bare_array_response(fake_llm):
+    fake_llm.structured_overrides["LLMListOutput"] = '[{"text": "a"}, {"text": "b"}]'
+    out = bind(llm.complete("t", schema=list[Chunk]), llm="m")("doc")
+    assert [c.text for c in out] == ["a", "b"]
 
 
 def test_classify_requires_categories():

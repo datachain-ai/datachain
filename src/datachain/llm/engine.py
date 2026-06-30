@@ -2,7 +2,7 @@ from collections.abc import Callable
 from functools import cache
 from typing import Any, Literal, TypeVar
 
-from pydantic import BaseModel, create_model
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError, create_model
 
 from datachain.lib.utils import DataChainError
 
@@ -105,7 +105,7 @@ def _classification_model(categories: tuple[str, ...]) -> type[BaseModel]:
 
 @cache
 def _score_model() -> type[BaseModel]:
-    return create_model("LLMScore", score=(float, ...))
+    return create_model("LLMScore", score=(float, Field(allow_inf_nan=False)))
 
 
 def classify(
@@ -145,11 +145,21 @@ def complete_structured_list(
     fallback: str | list[str] | None,
     params: dict[str, Any],
 ) -> list:
+    litellm = _litellm()
     container = _list_container(item_type)
-    result: Any = complete_structured(
-        model, messages, container, retries, fallback, params
-    )
-    return result.items
+    kwargs = _completion_kwargs(model, messages, fallback, params)
+    kwargs["response_format"] = container
+    items = TypeAdapter(list[item_type])  # type: ignore[valid-type]
+
+    def call() -> list:
+        content = litellm.completion(**kwargs).choices[0].message.content or ""
+        try:
+            wrapped: Any = container.model_validate_json(content)
+            return wrapped.items
+        except ValidationError:
+            return items.validate_json(content)  # tolerate a bare top-level array
+
+    return _attempt(retries, f"list[{item_type.__name__}]", call)
 
 
 def embed(
