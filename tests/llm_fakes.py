@@ -49,6 +49,7 @@ class FakeLiteLLM:
         self.pdf_supported = True
         self.no_pdf_models: set[str] = set()
         self.embedding_empty = False
+        self.embedding_as_object = False
         self.finish_reason = "stop"
 
     def supports_pdf_input(self, model):
@@ -74,4 +75,9 @@ class FakeLiteLLM:
         vector = list(self.embedding_response)
         # Embeddings report prompt tokens only (no completion_tokens).
         usage = types.SimpleNamespace(prompt_tokens=5)
-        return types.SimpleNamespace(data=[{"embedding": vector}], usage=usage)
+        item = (
+            types.SimpleNamespace(embedding=vector)
+            if self.embedding_as_object
+            else {"embedding": vector}
+        )
+        return types.SimpleNamespace(data=[item], usage=usage)

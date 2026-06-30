@@ -169,11 +169,16 @@ def build_messages(
     if prompt:
         parts.append(Text(prompt).as_part())
     parts.append(resolve(value, media).as_part())
-    if context is not None:
-        parts.append(Text(f"Context:\n{to_text(context)}").as_part())
+    if context is not None and (ctx := to_text(context)):
+        parts.append(Text(f"Context:\n{ctx}").as_part())
 
     if all(p["type"] == "text" for p in parts):
         content: Any = "\n\n".join(p["text"] for p in parts)
+        if not content.strip():
+            raise LLMError(
+                "cannot send an empty message; the input column rendered to "
+                "empty text and there is no prompt"
+            )
     else:
         content = parts
     return [{"role": "user", "content": content}]

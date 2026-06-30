@@ -3,7 +3,7 @@ from unittest import mock
 
 import cloudpickle
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, create_model
 
 from datachain import llm
 from datachain.lib.file import (
@@ -474,16 +474,19 @@ def test_document_rejected_when_model_lacks_support(fake_llm):
             runner(pdf)
 
 
-def test_document_gate_checks_fallback_models(fake_llm):
+def test_document_gate_ignores_fallback_models(fake_llm):
+    # Only the primary is gated; a non-document fallback must not block the call.
     fake_llm.no_pdf_models = {"bad/fallback"}
     pdf = File(path="r.pdf", source="s3://x")
     with mock.patch.object(File, "read_bytes", return_value=b"%PDF-1.4 x"):
         spec = llm.complete("file", "s", media="document", fallback="bad/fallback")
-        with pytest.raises(engine.LLMError, match="does not accept document"):
-            bind(spec, llm="good/primary")(pdf)
+        out = bind(spec, llm="good/primary")(pdf)
+    assert isinstance(out, str)
 
 
-@pytest.mark.parametrize("key", ["model", "messages", "num_retries", "response_format"])
+@pytest.mark.parametrize(
+    "key", ["model", "messages", "input", "num_retries", "fallbacks", "response_format"]
+)
 def test_reserved_params_rejected(key):
     with pytest.raises(ValueError, match=r"managed by datachain\.llm"):
         llm.complete("c", **{key: "x"})
@@ -649,6 +652,46 @@ def test_identity_changes_with_param_value():
     a = llm.complete("t", "p", temperature=0.0).identity("m")
     b = llm.complete("t", "p", temperature=1.0).identity("m")
     assert a != b
+
+
+@pytest.mark.parametrize(
+    ("a_spec", "b_spec"),
+    [
+        (llm.complete("t", "p"), llm.complete("t", "p", fallback="x/y")),
+        (llm.complete("t", "p"), llm.complete("t", "p", media="image")),
+        (llm.complete("t", "p", retries=1), llm.complete("t", "p", retries=2)),
+        (llm.complete("t", "p"), llm.complete("t", "p", context="ctx")),
+    ],
+)
+def test_identity_changes_with_output_affecting_field(a_spec, b_spec):
+    assert a_spec.identity("m") != b_spec.identity("m")
+
+
+def test_identity_changes_with_list_schema_fields():
+    # Same class name, edited fields → must invalidate (the list[Model] path).
+    a_model = create_model("Same", x=(int, ...))
+    b_model = create_model("Same", x=(int, ...), y=(int, ...))
+    a = llm.complete("t", schema=list[a_model]).identity("m")
+    b = llm.complete("t", schema=list[b_model]).identity("m")
+    assert a != b
+
+
+def test_identity_changes_with_dict_llm_params():
+    spec = llm.complete("t", "p")
+    assert spec.identity("m", {"temperature": 0.0}) != spec.identity(
+        "m", {"temperature": 1.0}
+    )
+
+
+def test_identity_ignores_callable_llm_params():
+    spec = llm.complete("t", "p")
+    assert spec.identity("m", lambda: {"k": "v"}) == spec.identity("m")
+
+
+def test_embed_object_style_data_item(fake_llm):
+    fake_llm.embedding_as_object = True
+    fake_llm.embedding_response = [0.1, 0.2]
+    assert bind(llm.embed("c"), llm="m")("x") == [0.1, 0.2]
 
 
 def test_param_value_changes_udf_hash():

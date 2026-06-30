@@ -245,6 +245,9 @@ class Settings:
             res["batch_size"] = self.batch_size
         if self._ephemeral is not None:
             res["ephemeral"] = self.ephemeral
+        # `llm`/`llm_params` are intentionally omitted: a datachain.llm operation
+        # reads them at bind time (see LLMSpec.__datachain_bind__), so they never
+        # travel through this dict.
         return res
 
     def add(self, settings: "Settings") -> None:

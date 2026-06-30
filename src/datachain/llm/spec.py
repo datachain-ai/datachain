@@ -2,7 +2,7 @@ import inspect
 import os
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, get_args, get_origin
+from typing import TYPE_CHECKING, Any, Literal, get_args, get_origin
 
 from pydantic import BaseModel
 
@@ -32,7 +32,8 @@ def _canonical(value: Any) -> Any:
     """Order-independent form of a value, so the cache key is stable across
     processes (``repr`` of a ``set`` or unsorted ``dict`` is not)."""
     if isinstance(value, dict):
-        return tuple(sorted((k, _canonical(v)) for k, v in value.items()))
+        items = ((k, _canonical(v)) for k, v in value.items())
+        return tuple(sorted(items, key=lambda kv: repr(kv[0])))
     if isinstance(value, (set, frozenset)):
         return tuple(sorted((_canonical(v) for v in value), key=repr))
     if isinstance(value, (list, tuple)):
@@ -48,7 +49,7 @@ class LLMSpec:
     directly. The chain binds it to the active settings when the verb runs.
     """
 
-    kind: str  # "complete" | "classify" | "score" | "embed"
+    kind: Literal["complete", "classify", "score", "embed"]
     col: str
     prompt: str | None = None
     schema: Any = None
@@ -116,14 +117,23 @@ class LLMSpec:
         out = self.output_type()
         return tuple[out, Usage] if self.include_usage else out  # type: ignore[valid-type]
 
-    def identity(self, model: str) -> tuple:
+    def identity(self, model: str, llm_params: Any = None) -> tuple:
         """Cache key baked into the UDF hash; changes iff an output-affecting
-        input (model, prompt, schema, categories, params, ...) changes."""
-        schema_repr = None
-        if self.schema is not None and hasattr(self.schema, "model_json_schema"):
-            schema_repr = str(self.schema.model_json_schema())
-        elif self.schema is not None:
-            schema_repr = str(self.schema)
+        input (model, prompt, schema, params, llm_params, ...) changes."""
+        schema_repr: Any = None
+        if self.schema is not None:
+            elem, is_list = _element_type(self.schema)
+            # Hash the model's fields (not just its name) so editing a schema
+            # while keeping its class name still invalidates the cache.
+            if hasattr(elem, "model_json_schema"):
+                schema_repr = (str(elem.model_json_schema()), is_list)
+            else:
+                schema_repr = str(self.schema)
+        # Only the dict form of settings(llm_params=) is output-affecting; the
+        # callable form resolves per-worker credentials and is left out.
+        params = self.params
+        if isinstance(llm_params, dict):
+            params = {**llm_params, **self.params}
         return (
             self.kind,
             model,
@@ -135,7 +145,7 @@ class LLMSpec:
             self.retries,
             tuple(self.fallback) if isinstance(self.fallback, list) else self.fallback,
             self.include_usage,
-            _canonical(self.params),
+            _canonical(params),
         )
 
     def _resolve_model(self, settings: "Settings") -> str:
@@ -220,9 +230,7 @@ class LLMSpec:
             return
         out_batched = getattr(target, "is_output_batched", False)
         in_batched = getattr(target, "is_input_batched", False)
-        one_to_many = (
-            self.kind in ("complete", "parse") and _element_type(self.schema)[1]
-        )
+        one_to_many = self.kind == "complete" and _element_type(self.schema)[1]
         if one_to_many:
             if not out_batched or in_batched:
                 raise LLMConfigError(
@@ -266,7 +274,7 @@ class LLMSpec:
 
         # The `_id` default arg bakes the cache key into the closure, so the UDF
         # hash (which folds in __defaults__) changes when an input does.
-        _id = self.identity(model)
+        _id = self.identity(model, llm_params)
         if self.context_col:
 
             def run_with_context(value, context, _id=_id):

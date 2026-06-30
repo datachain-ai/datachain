@@ -1,10 +1,13 @@
 from functools import cache
-from typing import Any, Literal, TypeVar
+from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError, create_model
 
 from datachain.lib.utils import DataChainError
 from datachain.llm.types import Usage
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -44,24 +47,37 @@ def _has_document(messages: list[dict[str, Any]]) -> bool:
     )
 
 
-def _check_document_support(
-    model: str, fallback: str | list[str] | None, messages: list[dict[str, Any]]
-) -> None:
+def _check_document_support(model: str, messages: list[dict[str, Any]]) -> None:
+    # Gate only the primary model; fallbacks are alternatives that may not handle
+    # documents and would only run for unrelated transient failures.
     if not _has_document(messages):
         return
     supports = getattr(_litellm(), "supports_pdf_input", None)
     if supports is None:
         return
-    for m in [model, *(_fallbacks(fallback) or [])]:
-        try:
-            ok = supports(model=m)
-        except Exception:  # noqa: BLE001, S112 - a probe must not block the call
-            continue
-        if not ok:
-            raise LLMError(
-                f"model '{m}' does not accept document input; use "
-                "document-capable models or extract the text first"
-            )
+    try:
+        ok = supports(model=model)
+    except Exception:  # noqa: BLE001 - a capability probe must not block the call
+        return
+    if not ok:
+        raise LLMError(
+            f"model '{model}' does not accept document input; use "
+            "document-capable models or extract the text first"
+        )
+
+
+def _base_kwargs(
+    model: str,
+    retries: int,
+    fallback: str | list[str] | None,
+    params: dict[str, Any],
+) -> dict[str, Any]:
+    # `params` first so the keys datachain.llm owns always win (also guarded by
+    # RESERVED_PARAMS validation upstream). LiteLLM owns retries/backoff/rate limits.
+    kwargs: dict[str, Any] = {**params, "model": model, "num_retries": max(retries, 0)}
+    if (fallbacks := _fallbacks(fallback)) is not None:
+        kwargs["fallbacks"] = fallbacks
+    return kwargs
 
 
 def _completion_kwargs(
@@ -71,24 +87,19 @@ def _completion_kwargs(
     fallback: str | list[str] | None,
     params: dict[str, Any],
 ) -> dict[str, Any]:
-    _check_document_support(model, fallback, messages)
-    # `params` first so the keys datachain.llm owns always win (also guarded by
-    # RESERVED_PARAMS validation upstream). LiteLLM owns retries/backoff/rate limits.
-    kwargs: dict[str, Any] = {
-        **params,
-        "model": model,
-        "messages": messages,
-        "num_retries": max(retries, 0),
-    }
-    if (fallbacks := _fallbacks(fallback)) is not None:
-        kwargs["fallbacks"] = fallbacks
+    _check_document_support(model, messages)
+    kwargs = _base_kwargs(model, retries, fallback, params)
+    kwargs["messages"] = messages
     return kwargs
 
 
 def _content(response: Any) -> str:
     if not response.choices:
         raise LLMError("model returned no choices")
-    return response.choices[0].message.content or ""
+    message = getattr(response.choices[0], "message", None)
+    if message is None:
+        raise LLMError("model returned no message")
+    return message.content or ""
 
 
 def _finish_reason(response: Any) -> str:
@@ -97,12 +108,14 @@ def _finish_reason(response: Any) -> str:
     return getattr(response.choices[0], "finish_reason", "") or ""
 
 
-def _usage(response: Any, retries: int) -> Usage:
+def _usage(response: Any, attempt: int) -> Usage:
+    # `attempt` is the 0-based index of the succeeding call, i.e. the number of
+    # prior failed attempts; tokens reflect only this (successful) call.
     u = getattr(response, "usage", None)
     return Usage(
         input_tokens=getattr(u, "prompt_tokens", 0) or 0,
         output_tokens=getattr(u, "completion_tokens", 0) or 0,
-        retries=retries,
+        retries=attempt,
     )
 
 
@@ -113,16 +126,16 @@ def _strip_fences(text: str) -> str:
         return t
     t = t[3:]
     newline = t.find("\n")
-    if newline != -1 and t[:newline].strip().isalpha():  # drop a ```json language tag
+    if newline != -1 and t[:newline].strip().isidentifier():  # drop a ```json tag
         t = t[newline + 1 :]
     if t.rstrip().endswith("```"):
         t = t.rstrip()[:-3]
     return t.strip()
 
 
-def _truncated_error(schema_name: str) -> LLMError:
+def _truncated_error(name: str) -> LLMError:
     return LLMError(
-        f"model output for '{schema_name}' was truncated "
+        f"model output for {name} was truncated "
         "(finish_reason=length); increase max_tokens"
     )
 
@@ -141,6 +154,7 @@ def parse_one(schema: type[T], content: str) -> T:
 
 
 def parse_list(item_type: type, content: str) -> list:
+    """Validate stored text against ``list[item_type]`` offline (no model call)."""
     container = _list_container(item_type)
     adapter = _list_adapter(item_type)
     last_error: ValidationError | None = None
@@ -170,6 +184,31 @@ def complete_text(
     return _content(resp), _usage(resp, 0)
 
 
+def _parse_with_retries(
+    kwargs: dict[str, Any],
+    retries: int,
+    parse: "Callable[[str], Any]",
+    name: str,
+) -> tuple[Any, Usage]:
+    # Re-validate schema mismatches here; transient errors are LiteLLM's job (via
+    # num_retries). A retry re-runs the same request, so it only helps when the
+    # model samples (temperature > 0); a `length` finish aborts immediately.
+    litellm = _litellm()
+    attempts = max(retries, 0) + 1
+    last_error: LLMError | None = None
+    for attempt in range(attempts):
+        resp = litellm.completion(**kwargs)
+        try:
+            return parse(_content(resp)), _usage(resp, attempt)
+        except LLMError as exc:
+            if _finish_reason(resp) == "length":
+                raise _truncated_error(name) from exc
+            last_error = exc
+    raise LLMError(
+        f"model output did not match {name} after {attempts} attempt(s)"
+    ) from last_error
+
+
 def complete_structured(
     model: str,
     messages: list[dict[str, Any]],
@@ -178,25 +217,11 @@ def complete_structured(
     fallback: str | list[str] | None,
     params: dict[str, Any],
 ) -> tuple[T, Usage]:
-    litellm = _litellm()
     kwargs = _completion_kwargs(model, messages, retries, fallback, params)
     kwargs["response_format"] = schema
-
-    # Re-validate schema mismatches here; transient errors are LiteLLM's job above.
-    attempts = max(retries, 0) + 1
-    last_error: LLMError | None = None
-    for attempt in range(attempts):
-        resp = litellm.completion(**kwargs)
-        try:
-            return parse_one(schema, _content(resp)), _usage(resp, attempt)
-        except LLMError as exc:
-            if _finish_reason(resp) == "length":
-                raise _truncated_error(schema.__name__) from exc
-            last_error = exc
-    raise LLMError(
-        f"model output did not match schema '{schema.__name__}' "
-        f"after {attempts} attempt(s)"
-    ) from last_error
+    return _parse_with_retries(
+        kwargs, retries, lambda c: parse_one(schema, c), f"schema '{schema.__name__}'"
+    )
 
 
 @cache
@@ -256,24 +281,14 @@ def complete_structured_list(
     fallback: str | list[str] | None,
     params: dict[str, Any],
 ) -> tuple[list, Usage]:
-    litellm = _litellm()
     kwargs = _completion_kwargs(model, messages, retries, fallback, params)
     kwargs["response_format"] = _list_container(item_type)
-
-    attempts = max(retries, 0) + 1
-    last_error: LLMError | None = None
-    for attempt in range(attempts):
-        resp = litellm.completion(**kwargs)
-        try:
-            return parse_list(item_type, _content(resp)), _usage(resp, attempt)
-        except LLMError as exc:
-            if _finish_reason(resp) == "length":
-                raise _truncated_error(f"list[{item_type.__name__}]") from exc
-            last_error = exc
-    raise LLMError(
-        f"model output did not match list[{item_type.__name__}] "
-        f"after {attempts} attempt(s)"
-    ) from last_error
+    return _parse_with_retries(
+        kwargs,
+        retries,
+        lambda c: parse_list(item_type, c),
+        f"list[{item_type.__name__}]",
+    )
 
 
 def embed(
@@ -284,14 +299,8 @@ def embed(
     params: dict[str, Any],
 ) -> tuple[list[float], Usage]:
     litellm = _litellm()
-    kwargs: dict[str, Any] = {
-        **params,
-        "model": model,
-        "input": [text],
-        "num_retries": max(retries, 0),
-    }
-    if (fallbacks := _fallbacks(fallback)) is not None:
-        kwargs["fallbacks"] = fallbacks
+    kwargs = _base_kwargs(model, retries, fallback, params)
+    kwargs["input"] = [text]
     resp = litellm.embedding(**kwargs)
     data = resp.data
     if not data:
