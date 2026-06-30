@@ -19,7 +19,7 @@ def complete(
     include_usage: bool = False,
     **params: Any,
 ) -> LLMSpec:
-    """General generation or structured extraction over a column.
+    """Generate text or extract a structured object from a column.
 
     Output is ``str`` when no ``schema`` is given, the Pydantic ``schema`` model
     when it is, and a 1:N stream meant for ``.gen()`` when ``schema`` is

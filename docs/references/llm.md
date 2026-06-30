@@ -1,15 +1,14 @@
 # LLM Operations
 
 `datachain.llm` provides named LLM operations over chain columns, parallel to
-[`datachain.func`](func.md). Where `func` transpiles to SQL (the cheap, structural
-tier), `llm` runs models in the compute engine (the expensive tier). The import
-boundary is the cost boundary: when code reads `llm.`, an expensive model call
-happens whose result is materialized, typed, cached, and tracked by lineage.
+[`datachain.func`](func.md). Where `func` transpiles to SQL, `llm` calls a model:
+each operation runs one (expensive) model call per row and materializes the result
+as a typed, cached, lineage-tracked column.
 
-Each operation is used inside a cardinality-matching chain verb (`.map()` for
-1:1, `.gen()` for 1:N) and produces a typed column with no `output=` needed.
+Use each operation inside the matching verb (`.map()` for 1:1, `.gen()` for 1:N);
+the output column is typed automatically, with no `output=` needed.
 
-## Usage
+## Quickstart
 
 ```python
 import datachain as dc
@@ -109,12 +108,14 @@ chain.agg(in_tok=dc.func.sum("tok.input_tokens"))
 chain.filter("tok.retries > 0")
 ```
 
-Notes: `retries` counts `datachain.llm`'s own schema-validation reasks (it feeds
-the failed output back and asks again), not LiteLLM's internal transient retries;
-it is only ever above 0 for structured output. Token counts accumulate across all
-attempts, so reasked calls are billed in full. Embeddings report no output tokens,
-so `output_tokens` stays 0 there. In `.gen()` (1:N) the single call's usage is
-replicated onto every emitted row.
+Notes:
+
+- `retries` is the count of `datachain.llm`'s schema-validation reasks (it feeds
+  the failed output back and asks again), not LiteLLM's transient retries; only
+  structured output ever exceeds 0.
+- Token counts accumulate across all attempts, so reasked calls are billed in full.
+- Embeddings report no output tokens, so `output_tokens` stays 0.
+- In `.gen()` (1:N) the call's usage is replicated onto every emitted row.
 
 ## Scaling and caching
 
@@ -130,8 +131,9 @@ Reliability is layered:
 - **Model calls**: guarded per call with `retries=` and `fallback=`.
 
 Materialized `llm.*` columns are cached and versioned, so re-running a chain reads
-the stored result instead of re-calling the model; the cache invalidates only when
-the model, prompt, schema, or parameters change.
+the stored result instead of re-calling the model; the cache invalidates when any
+output-affecting input changes (model, prompt, schema, the input column, `media`,
+params, ...).
 
 ## No fused predicate
 
