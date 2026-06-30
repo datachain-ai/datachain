@@ -3,7 +3,6 @@ from typing import Any
 from datachain.llm.content import Media
 from datachain.llm.engine import LLMError
 from datachain.llm.spec import LLMConfigError, LLMSpec
-from datachain.llm.types import Response, ToolCall, Usage
 
 
 def complete(
@@ -30,9 +29,7 @@ def complete(
             an untyped ``File`` set ``media``. See the Inputs section.
         prompt (str | None): Instruction text added before the input.
         schema (type | None): Pydantic model (or ``list[Model]``) for structured
-            output. When omitted, the output is plain ``str``. Pass
-            ``dc.llm.Response`` to store the full model output (text plus
-            metadata and the raw envelope) instead of a parsed object.
+            output. When omitted, the output is plain ``str``.
         context (str | None): Column whose value is serialized into the prompt.
         media ("text" | "image" | "document" | None): Force how ``col`` is
             encoded. Needed for raw ``bytes`` or an untyped ``File``: e.g.
@@ -66,24 +63,6 @@ def complete(
         fallback=fallback,
         params=params,
     )
-
-
-def parse(col: str, schema: Any) -> LLMSpec:
-    """Re-extract a typed object from stored model output, with no model call.
-
-    Reads ``col`` (a ``dc.llm.Response`` column, in which case its ``content`` is
-    used, or a plain text column) and validates it against ``schema``. There is no
-    inference, cost, or ``settings(llm=...)``; it only recovers information already
-    present in the stored output, so genuinely new fields need a fresh ``complete``.
-
-    Args:
-        col (str): Column holding a ``Response`` or text to parse.
-        schema (type): Pydantic model (or ``list[Model]`` for a 1:N stream).
-
-    Returns:
-        LLMSpec: A spec used inside ``.map()`` (1:1) or ``.gen()`` (1:N).
-    """
-    return LLMSpec(kind="parse", col=col, schema=schema)
 
 
 def classify(
@@ -203,12 +182,8 @@ __all__ = [
     "LLMConfigError",
     "LLMError",
     "LLMSpec",
-    "Response",
-    "ToolCall",
-    "Usage",
     "classify",
     "complete",
     "embed",
-    "parse",
     "score",
 ]

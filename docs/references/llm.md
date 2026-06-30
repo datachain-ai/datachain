@@ -85,30 +85,6 @@ explicitly (including per-worker secret resolution) with `.settings(llm_params=.
 
 Install the optional dependency with `pip install 'datachain[llm]'`.
 
-## Full model output
-
-Pass `schema=dc.llm.Response` to store the complete output of a call instead of a
-parsed object. The materialized value is a `Response` with the assistant `content`,
-the `model` actually served, `finish_reason`, token `usage`, any `tool_calls`, and
-`raw` (the original provider envelope as JSON, so nothing is lost):
-
-```python
-.map(out=llm.complete("file", "summarize", schema=dc.llm.Response))
-# out.content, out.model, out.usage.total_tokens, out.raw
-```
-
-This is a single column like any other `llm.*` output; no extra signals are added.
-
-Recover a typed object from a stored `Response` (or any text column) later, with no
-further model call, using `llm.parse`:
-
-```python
-.map(scene=llm.parse("out", Scene))   # reads out.content, validates, no inference
-```
-
-`llm.parse` only recovers information already present in the stored output; genuinely
-new fields need a fresh `complete` call.
-
 ## Scaling and caching
 
 A model call is the most expensive step, and each worker processes rows
@@ -147,5 +123,3 @@ hard boolean so re-thresholding stays free:
 ::: datachain.llm.score
 
 ::: datachain.llm.embed
-
-::: datachain.llm.parse

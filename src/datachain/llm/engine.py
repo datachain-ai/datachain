@@ -4,7 +4,6 @@ from typing import Any, Literal, TypeVar
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError, create_model
 
 from datachain.lib.utils import DataChainError
-from datachain.llm.types import Response
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -158,18 +157,6 @@ def complete_text(
     litellm = _litellm()
     kwargs = _completion_kwargs(model, messages, retries, fallback, params)
     return _content(litellm.completion(**kwargs))
-
-
-def complete_raw(
-    model: str,
-    messages: list[dict[str, Any]],
-    retries: int,
-    fallback: str | list[str] | None,
-    params: dict[str, Any],
-) -> Response:
-    litellm = _litellm()
-    kwargs = _completion_kwargs(model, messages, retries, fallback, params)
-    return Response.from_litellm(litellm.completion(**kwargs))
 
 
 def complete_structured(

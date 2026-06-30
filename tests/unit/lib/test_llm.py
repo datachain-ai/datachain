@@ -25,7 +25,6 @@ from datachain.llm.content import (
     to_text,
 )
 from datachain.llm.spec import MODEL_ENV_VAR, LLMConfigError
-from datachain.llm.types import Response, ToolCall, Usage
 from tests.llm_fakes import FakeLiteLLM
 
 
@@ -530,117 +529,6 @@ def test_embed_empty_data_errors(fake_llm):
 def test_empty_fallback_is_noop(fake_llm):
     bind(llm.complete("t", fallback=[]), llm="m")("hi")
     assert "fallbacks" not in fake_llm.calls[-1]
-
-
-def test_response_schema_output_type():
-    assert llm.complete("c", schema=Response).output_type() is Response
-    assert llm.complete("c", schema=Response).return_annotation() is Response
-
-
-def test_response_schema_not_forwarded_as_response_format(fake_llm):
-    fake_llm.text_response = "the answer"
-    out = bind(llm.complete("c", "q", schema=Response), llm="prov/model")("hi")
-    assert isinstance(out, Response)
-    assert "response_format" not in fake_llm.calls[-1]
-    assert out.content == "the answer"
-    assert out.model == "prov/model"
-    assert out.finish_reason == "stop"
-    assert out.usage.input_tokens == 11
-    assert out.usage.output_tokens == 7
-    assert out.usage.total_tokens == 18
-    assert out.raw
-
-
-def test_response_schema_via_positional_schema(fake_llm):
-    out = bind(llm.complete("c", schema=Response), llm="m")("hi")
-    assert isinstance(out, Response)
-
-
-def test_list_response_schema_rejected():
-    with pytest.raises(ValueError, match="schema=list\\[Response\\] is not valid"):
-        llm.complete("c", schema=list[Response])
-
-
-def test_response_identity_differs_from_text_and_model():
-    text = llm.complete("c").identity("m")
-    raw = llm.complete("c", schema=Response).identity("m")
-    scene = llm.complete("c", schema=Scene).identity("m")
-    assert raw not in (text, scene)
-
-
-def test_response_from_litellm_tolerates_empty_envelope():
-    empty = Response.from_litellm(object())
-    assert empty.content == ""
-    assert empty.usage.total_tokens == 0
-    assert empty.tool_calls == []
-    assert empty.raw == ""
-
-
-def test_response_from_litellm_captures_tool_calls():
-    import types as _t
-
-    fn = _t.SimpleNamespace(name="search", arguments='{"q": "x"}')
-    tc = _t.SimpleNamespace(id="call_1", function=fn)
-    msg = _t.SimpleNamespace(content="", tool_calls=[tc])
-    resp = _t.SimpleNamespace(
-        choices=[_t.SimpleNamespace(message=msg, finish_reason="tool_calls")]
-    )
-    parsed = Response.from_litellm(resp)
-    assert parsed.tool_calls == [
-        ToolCall(id="call_1", name="search", arguments='{"q": "x"}')
-    ]
-    assert parsed.finish_reason == "tool_calls"
-
-
-def test_usage_total_tokens():
-    assert Usage(input_tokens=3, output_tokens=4).total_tokens == 7
-
-
-def test_parse_requires_schema():
-    with pytest.raises(ValueError, match="requires a schema"):
-        llm.parse("c", None)
-
-
-def test_parse_output_types():
-    assert llm.parse("c", Scene).output_type() is Scene
-    assert llm.parse("c", list[Scene]).return_annotation() == Iterator[Scene]
-
-
-def test_parse_from_str_offline():
-    out = bind(llm.parse("c", Scene))('{"objects": ["car"], "risk": 0.4}')
-    assert isinstance(out, Scene)
-    assert out.risk == 0.4
-
-
-def test_parse_from_response_uses_content():
-    resp = Response(content='{"objects": [], "risk": 0.1}')
-    out = bind(llm.parse("c", Scene))(resp)
-    assert isinstance(out, Scene)
-    assert out.objects == []
-
-
-def test_parse_makes_no_model_call(fake_llm):
-    bind(llm.parse("c", Scene))('{"objects": [], "risk": 0.0}')
-    assert fake_llm.calls == []
-    assert fake_llm.embedding_calls == []
-
-
-def test_parse_list_offline():
-    out = bind(llm.parse("c", list[Scene]))(
-        '[{"objects": ["a"], "risk": 0.1}, {"objects": ["b"], "risk": 0.2}]'
-    )
-    assert len(out) == 2
-    assert all(isinstance(s, Scene) for s in out)
-
-
-def test_parse_strips_code_fences():
-    out = bind(llm.parse("c", Scene))('```json\n{"objects": [], "risk": 0.5}\n```')
-    assert out.risk == 0.5
-
-
-def test_parse_invalid_raises():
-    with pytest.raises(engine.LLMError, match="could not be parsed"):
-        bind(llm.parse("c", Scene))("not json at all")
 
 
 def test_structured_truncation_raises(fake_llm):

@@ -8,7 +8,6 @@ from pydantic import BaseModel
 
 from datachain.llm import engine
 from datachain.llm.content import MEDIA_VALUES, Media, build_messages, to_text
-from datachain.llm.types import Response
 
 if TYPE_CHECKING:
     from datachain.lib.settings import Settings
@@ -44,12 +43,11 @@ def _canonical(value: Any) -> Any:
 class LLMSpec:
     """A configured `datachain.llm` operation, used inside `.map()` / `.gen()`.
 
-    Returned by `complete`, `classify`, `score`, `embed`, and `parse`; not
-    constructed directly. The chain binds it to the active settings when the verb
-    runs.
+    Returned by `complete`, `classify`, `score`, and `embed`; not constructed
+    directly. The chain binds it to the active settings when the verb runs.
     """
 
-    kind: str  # "complete" | "classify" | "score" | "embed" | "parse"
+    kind: str  # "complete" | "classify" | "score" | "embed"
     col: str
     prompt: str | None = None
     schema: Any = None
@@ -62,19 +60,12 @@ class LLMSpec:
     params: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if self.kind == "parse" and self.schema is None:
-            raise ValueError("llm.parse() requires a schema")
         if self.schema is not None:
-            elem, is_list = _element_type(self.schema)
+            elem = _element_type(self.schema)[0]
             if not (isinstance(elem, type) and issubclass(elem, BaseModel)):
                 raise TypeError(
                     "llm schema must be a pydantic model or list[model], "
                     f"got {self.schema!r}"
-                )
-            if elem is Response and is_list:
-                raise ValueError(
-                    "schema=list[Response] is not valid; one call yields one "
-                    "Response, so use schema=dc.llm.Response"
                 )
         if self.into is not None:
             if not self.into or not all(isinstance(c, str) for c in self.into):
@@ -114,7 +105,7 @@ class LLMSpec:
 
     def return_annotation(self) -> Any:
         """Annotation seen by the verb: ``Iterator[T]`` for the 1:N (list) case."""
-        if self.kind in ("complete", "parse") and self.schema is not None:
+        if self.kind == "complete" and self.schema is not None:
             elem, is_list = _element_type(self.schema)
             if is_list:
                 return Iterator[elem]  # type: ignore[valid-type]
@@ -186,17 +177,9 @@ class LLMSpec:
             )
         if self.kind == "score":
             return engine.score(model, messages, self.retries, self.fallback, params)
-        return self._run_complete(model, messages, params)
-
-    def _run_complete(
-        self, model: str, messages: list[dict[str, Any]], params: dict[str, Any]
-    ) -> Any:
+        # complete
         if self.schema is None:
             return engine.complete_text(
-                model, messages, self.retries, self.fallback, params
-            )
-        if self.schema is Response:
-            return engine.complete_raw(
                 model, messages, self.retries, self.fallback, params
             )
         elem, is_list = _element_type(self.schema)
@@ -247,17 +230,6 @@ class LLMSpec:
     def __datachain_bind__(self, settings: "Settings", target: Any = None) -> Callable:
         self._validate_target(target)
         spec = self
-
-        # The `_id` default arg bakes the cache key into the closure, so the UDF
-        # hash (which folds in __defaults__) changes when an input does.
-        if self.kind == "parse":
-            _id = self.identity("")
-
-            def run_parse(value, _id=_id):
-                return spec._run_parse(value)
-
-            return self._stamp(run_parse, ("value",))
-
         model = self._resolve_model(settings)
         llm_params = settings.llm_params
         resolved: list[dict[str, Any]] = []
@@ -270,6 +242,8 @@ class LLMSpec:
                 resolved.append({**base, **spec.params})
             return resolved[0]
 
+        # The `_id` default arg bakes the cache key into the closure, so the UDF
+        # hash (which folds in __defaults__) changes when an input does.
         _id = self.identity(model)
         if self.context_col:
 
@@ -282,18 +256,6 @@ class LLMSpec:
             return spec._run(model, params(), value, None)
 
         return self._stamp(run, ("value",))
-
-    def _run_parse(self, value: Any) -> Any:
-        if isinstance(value, Response):
-            text = value.content
-        elif isinstance(value, str):
-            text = value
-        else:
-            text = to_text(value)
-        elem, is_list = _element_type(self.schema)
-        if is_list:
-            return engine.parse_list(elem, text)
-        return engine.parse_one(self.schema, text)
 
     def input_columns(self) -> list[str]:
         return [self.col, self.context_col] if self.context_col else [self.col]

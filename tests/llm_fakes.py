@@ -29,20 +29,10 @@ def _structured_json(schema: type[BaseModel]) -> str:
     )
 
 
-def _response(content: str, model: str = "fake/model", finish_reason: str = "stop"):
-    message = types.SimpleNamespace(content=content, tool_calls=None)
+def _response(content: str, finish_reason: str = "stop"):
+    message = types.SimpleNamespace(content=content)
     choice = types.SimpleNamespace(message=message, finish_reason=finish_reason)
-    usage = types.SimpleNamespace(prompt_tokens=11, completion_tokens=7)
-    resp = types.SimpleNamespace(
-        choices=[choice],
-        model=model,
-        usage=usage,
-        id="resp-1",
-        created=123,
-        system_fingerprint="fp-1",
-    )
-    resp.model_dump_json = lambda: json.dumps({"content": content, "model": model})
-    return resp
+    return types.SimpleNamespace(choices=[choice])
 
 
 class FakeLiteLLM:
@@ -65,17 +55,16 @@ class FakeLiteLLM:
 
     def completion(self, **kwargs):
         self.calls.append(kwargs)
-        model = kwargs.get("model", "fake/model")
         fr = self.finish_reason
         schema = kwargs.get("response_format")
         if schema is None:
-            return _response(self.text_response, model, fr)
+            return _response(self.text_response, fr)
         if self.invalid_json_attempts > 0:
             self.invalid_json_attempts -= 1
-            return _response("not json", model, fr)
+            return _response("not json", fr)
         if schema.__name__ in self.structured_overrides:
-            return _response(self.structured_overrides[schema.__name__], model, fr)
-        return _response(_structured_json(schema), model, fr)
+            return _response(self.structured_overrides[schema.__name__], fr)
+        return _response(_structured_json(schema), fr)
 
     def embedding(self, **kwargs):
         self.embedding_calls.append(kwargs)
