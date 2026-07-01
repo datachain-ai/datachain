@@ -256,7 +256,7 @@ def get_parser() -> ArgumentParser:  # noqa: PLR0915
         "--local",
         action="store_true",
         default=False,
-        help="List local datasets only (default)",
+        help="List local datasets (default)",
     )
     datasets_ls_parser.add_argument(
         "-a",
@@ -333,7 +333,7 @@ def get_parser() -> ArgumentParser:  # noqa: PLR0915
         "--local",
         action="store_true",
         default=False,
-        help="List local files only (default)",
+        help="List local files (default)",
     )
     parse_ls.add_argument(
         "-a",

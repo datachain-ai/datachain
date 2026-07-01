@@ -120,9 +120,9 @@ def test_datasets_ls_flavor_defaults():
         # No flags defaults to local-only (regardless of token presence)
         (False, False, False, None, (False, True, False)),
         (False, False, False, "tok", (False, True, False)),
-        # Explicit --all keeps studio off unless a token is present (caller gates it)
+        # Explicit --all keeps both on with a token, downgrades to local without
         (False, False, True, "tok", (True, False, False)),
-        (False, False, True, None, (True, False, False)),
+        (False, False, True, None, (False, True, False)),
         # Explicit single-source flags clear --all
         (True, False, False, "tok", (False, False, True)),
         (False, True, False, None, (False, True, False)),

@@ -80,6 +80,10 @@ def determine_flavors(studio: bool, local: bool, all: bool, token: str | None):
     if local or studio:
         all = False
 
+    if all and not token:
+        all = False
+        local = True
+
     if not (studio or local or all):
         local = True
 
