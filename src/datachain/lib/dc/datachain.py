@@ -56,7 +56,14 @@ from datachain.lib.signal_schema import (
     SignalResolvingTypeError,
     SignalSchema,
 )
-from datachain.lib.udf import Aggregator, Generator, Mapper, UDFBase
+from datachain.lib.udf import (
+    Aggregator,
+    BindContext,
+    BoundSpec,
+    Generator,
+    Mapper,
+    UDFBase,
+)
 from datachain.lib.udf_signature import UdfSignature
 from datachain.lib.utils import DataChainColumnError, DataChainParamsError
 from datachain.progress import tqdm
@@ -1186,15 +1193,13 @@ class DataChain:
         return target_class._create(sign, params_schema)
 
     def _bind_udf_settings(self, func, target_class):
-        """Resolve a settings-bindable UDF spec into a concrete callable.
-
-        Any object exposing ``__datachain_bind__(settings, target)`` (e.g. a
-        `datachain.llm` operation) is given the chain's settings and the target UDF
-        class, so it can pick up ``settings(llm=...)`` and validate its cardinality
-        against the verb.
+        """Resolve a `BoundSpec` (e.g. a `datachain.llm` operation) into a concrete
+        callable, handing it the chain settings and target verb via a `BindContext`
+        so it can pick up `settings(llm=...)` and choose its shape from the verb.
         """
-        bind = getattr(func, "__datachain_bind__", None)
-        return bind(self._settings, target_class) if callable(bind) else func
+        if isinstance(func, BoundSpec):
+            return func.bind(BindContext(settings=self._settings, target=target_class))
+        return func
 
     @staticmethod
     def _bound_udf_params(func, signal_map) -> "Sequence[str] | None":

@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING, Any, Literal, get_args, get_origin
 
 from pydantic import BaseModel
 
+from datachain.lib.udf import BindContext, BoundSpec
 from datachain.llm import engine
 from datachain.llm.content import MEDIA_VALUES, Media, build_messages, to_text
 from datachain.llm.types import Usage
@@ -38,7 +39,7 @@ def _canonical(value: Any) -> Any:
 
 
 @dataclass
-class LLMSpec:
+class LLMSpec(BoundSpec):
     """A configured `datachain.llm` operation, used inside `.map()` / `.gen()`.
 
     Returned by `complete`, `classify`, `score`, and `embed`; not constructed
@@ -250,13 +251,13 @@ class LLMSpec:
         fn.__datachain_params__ = self.input_columns()
         return fn
 
-    def __datachain_bind__(self, settings: "Settings", target: Any = None) -> Callable:
-        self._validate_target(target)
+    def bind(self, ctx: BindContext) -> Callable:
+        self._validate_target(ctx.target)
         spec = self
         # .gen() fans a list schema into rows; .map() keeps the whole value.
-        to_many = getattr(target, "is_output_batched", False)
-        model = self._resolve_model(settings)
-        llm_params = settings.llm_params
+        to_many = getattr(ctx.target, "is_output_batched", False)
+        model = self._resolve_model(ctx.settings)
+        llm_params = ctx.settings.llm_params
         resolved: list[dict[str, Any]] = []
 
         def params() -> dict[str, Any]:

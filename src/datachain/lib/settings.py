@@ -249,7 +249,7 @@ class Settings:
         if self._ephemeral is not None:
             res["ephemeral"] = self.ephemeral
         # `llm`/`llm_params` are intentionally omitted: they are read at bind time
-        # (LLMSpec.__datachain_bind__), not round-tripped through this dict.
+        # (LLMSpec.bind), not round-tripped through this dict.
         return res
 
     def add(self, settings: "Settings") -> None:

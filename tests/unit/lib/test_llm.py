@@ -17,6 +17,7 @@ from datachain.lib.file import (
     VideoFrame,
 )
 from datachain.lib.settings import Settings
+from datachain.lib.udf import BindContext
 from datachain.llm import engine
 from datachain.llm.content import (
     Document,
@@ -51,7 +52,7 @@ GEN = types.SimpleNamespace(is_output_batched=True, is_input_batched=False)  # .
 
 
 def bind(spec, target=None, **settings_kwargs):
-    return spec.__datachain_bind__(Settings(**settings_kwargs), target)
+    return spec.bind(BindContext(settings=Settings(**settings_kwargs), target=target))
 
 
 def test_complete_default_output_is_str():
@@ -749,7 +750,7 @@ def test_param_value_changes_udf_hash():
     from datachain.lib.udf_signature import UdfSignature
 
     def udf_hash(spec):
-        f = spec.__datachain_bind__(Settings(llm="m"))
+        f = bind(spec, llm="m")
         sign = UdfSignature.parse("", {"x": f}, None, None, None, False)
         return Mapper._create(sign, SignalSchema({"text": str})).hash()
 
