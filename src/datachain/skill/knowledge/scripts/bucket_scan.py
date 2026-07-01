@@ -51,7 +51,7 @@ TEXT_EXTS = {"txt", "md", "log", "xml", "html", "yaml", "yml", "cfg", "ini"}
 
 
 def get_listing_info(uri: str) -> "ListingMeta":
-    """Get listing metadata (timestamps, expiration) from DataChain catalog."""
+    """Get listing metadata (timestamps) from DataChain catalog."""
     try:
         from datachain.query import Session
 
