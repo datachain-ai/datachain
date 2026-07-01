@@ -281,7 +281,8 @@ def test_create_dataset_explicit_removed_version_rejected(
     catalog.remove_dataset_version(dataset_complete, version, keep_metadata=True)
 
     with pytest.raises(
-        DatasetInvalidVersionError, match=r"was removed.*permanently reserved"
+        DatasetInvalidVersionError,
+        match=r"was removed\. Pick a different version",
     ):
         catalog.create_dataset(
             name, version=version, columns=(sa.Column("name", String),)
@@ -564,8 +565,8 @@ def test_remove_is_idempotent_on_already_removed(test_session, dataset_complete)
 
 
 def test_save_after_remove_skips_removed_version(test_session, dataset_complete):
-    """A removed semver is permanently reserved — the next save auto-bumps
-    past it instead of reclaiming the slot."""
+    """A removed semver stays reserved while its record is kept - the next
+    save auto-bumps past it instead of reclaiming the slot."""
     catalog = test_session.catalog
     name = dataset_complete.name
     first_version = dataset_complete.latest_version
@@ -623,7 +624,7 @@ def test_save_explicit_removed_version_rejected(test_session, dataset_complete):
 
     catalog.remove_dataset_version(dataset_complete, version, keep_metadata=True)
 
-    with pytest.raises(RuntimeError, match=r"was removed.*permanently reserved"):
+    with pytest.raises(RuntimeError, match=r"was removed\. Pick a different version"):
         dc.read_values(value=["new1"], session=test_session).save(name, version=version)
 
 

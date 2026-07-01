@@ -3364,8 +3364,8 @@ class DatasetQuery:
                 if existing.has_version(version):
                     if existing.get_version(version).is_removed:
                         raise RuntimeError(
-                            f"Version {version} of dataset {name} was removed; "
-                            "the version number is permanently reserved."
+                            f"Version {version} of dataset {name} was "
+                            "removed. Pick a different version."
                         )
                     raise RuntimeError(f"Dataset {name} already has version {version}")
         except DatasetNotFoundError:

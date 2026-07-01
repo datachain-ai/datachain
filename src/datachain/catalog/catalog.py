@@ -902,7 +902,7 @@ class Catalog:
                 if dataset.get_version(target_version).is_removed:
                     raise DatasetInvalidVersionError(
                         f"Version {target_version} of dataset {name} was "
-                        "removed; the version number is permanently reserved."
+                        "removed. Pick a different version."
                     )
                 raise DatasetInvalidVersionError(
                     f"Version {target_version} already exists in dataset {name}"

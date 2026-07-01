@@ -711,7 +711,7 @@ class DatasetRecord:
         """
         Checks if a number can be a valid next latest version for dataset.
         Compares against the highest version ever used, including REMOVED
-        ones — once a semver has been claimed it is permanently reserved.
+        ones - a claimed semver stays reserved while its record is kept.
         """
         if not self.versions:
             return True
