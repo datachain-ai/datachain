@@ -260,43 +260,47 @@ def promote_default_none(model: type[BaseModel]) -> None:
         model.model_rebuild(force=True)
 
 
-def is_chain_type(t: type) -> bool:  # noqa: PLR0911
+def is_chain_type(t: type) -> bool:
     """Return true if type is supported by `DataChain`."""
     if ModelStore.is_pydantic(t):
         return True
     if any(t is ft or t is get_args(ft)[0] for ft in get_args(StandardType)):
         return True
-
     inner, is_optional = unwrap_optional(t)
     if is_optional:
         return is_chain_type(inner)
+    return _is_chain_container_type(t)
 
+
+def _is_chain_container_type(t: type) -> bool:
+    """Whether a union / list / dict annotation is a supported DataChain type."""
     arms, _ = union_arms(t)
     if len(arms) >= 2:
         # multi-arm union: supported only as a tagged union (scalar/DataModel arms)
         return union_layout(t) is not None and all(is_chain_type(arm) for arm in arms)
 
-    orig = get_origin(t)
-    args = get_args(t)
+    orig, args = get_origin(t), get_args(t)
     if orig is list and len(args) == 1:
-        layout = union_layout(args[0])
-        if (
-            layout is not None
-            and layout.use_slots
-            and any(ModelStore.is_pydantic(arm) for arm in layout.arms)
-        ):
-            # a model arm collapses to a dict on read; scalar arms round-trip via JSON
-            raise DataChainParamsError(
-                "list[Union[...]] with a DataModel arm is not supported: list "
-                "elements lose their model type. Put the Union inside a DataModel "
-                "field instead."
-            )
+        _reject_list_of_model_union(args[0])
         return is_chain_type(args[0])
-
     if orig is dict and len(args) == 2:
         return is_chain_type(args[0]) and is_chain_type(args[1])
-
     return False
+
+
+def _reject_list_of_model_union(elem: Any) -> None:
+    """Reject a list of a union with a DataModel arm (model elements collapse to
+    dicts on read; scalar arms round-trip via JSON)."""
+    layout = union_layout(elem)
+    if (
+        layout is not None
+        and layout.use_slots
+        and any(ModelStore.is_pydantic(arm) for arm in layout.arms)
+    ):
+        raise DataChainParamsError(
+            "list[Union[...]] with a DataModel arm is not supported: list elements "
+            "lose their model type. Put the Union inside a DataModel field instead."
+        )
 
 
 def dict_to_data_model(

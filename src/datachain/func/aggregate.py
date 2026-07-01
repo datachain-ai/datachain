@@ -110,7 +110,7 @@ def sum(col: AggColT) -> Func:
     Notes:
         - The `sum` function should be used on numeric columns or expressions.
         - The result column type will be inferred from the input expression type.
-        - Skips rows where the value is absent (its tagged-union arm is inactive).
+        - Rows where the value is NULL are skipped (standard SQL aggregate behavior).
     """
     return Func("sum", inner=sa_func.sum, cols=[col])
 
@@ -144,7 +144,7 @@ def avg(col: AggColT) -> Func:
     Notes:
         - The `avg` function should be used on numeric columns or expressions.
         - The result column will always be of type float.
-        - Skips rows where the value is absent (its tagged-union arm is inactive).
+        - Rows where the value is NULL are skipped (standard SQL aggregate behavior).
     """
     return Func("avg", inner=aggregate.avg, cols=[col], result_type=float)
 
@@ -176,7 +176,7 @@ def min(col: AggColT) -> Func:
     Notes:
         - The `min` function can be used with numeric, date, and string inputs.
         - The result column will have the same type as the input expression.
-        - Skips rows where the value is absent (its tagged-union arm is inactive).
+        - Rows where the value is NULL are skipped (standard SQL aggregate behavior).
     """
     return Func("min", inner=sa_func.min, cols=[col])
 
@@ -208,7 +208,7 @@ def max(col: AggColT) -> Func:
     Notes:
         - The `max` function can be used with numeric, date, and string inputs.
         - The result column will have the same type as the input expression.
-        - Skips rows where the value is absent (its tagged-union arm is inactive).
+        - Rows where the value is NULL are skipped (standard SQL aggregate behavior).
     """
     return Func("max", inner=sa_func.max, cols=[col])
 
@@ -244,7 +244,7 @@ def any_value(col: AggColT) -> Func:
         - The result column will have the same type as the input expression.
         - The result of `any_value` is non-deterministic,
           meaning it may return different values for different executions.
-        - Skips rows where the value is absent (its tagged-union arm is inactive).
+        - Rows where the value is NULL are skipped (standard SQL aggregate behavior).
     """
     return Func("any_value", inner=aggregate.any_value, cols=[col])
 
@@ -314,7 +314,7 @@ def concat(col: AggColT, separator="") -> Func:
     Notes:
         - The `concat` function should be used with string-valued inputs.
         - The result column will have a string type.
-        - Skips rows where the value is absent (its tagged-union arm is inactive).
+        - Rows where the value is NULL are skipped (standard SQL aggregate behavior).
     """
 
     def inner(arg):
@@ -345,7 +345,7 @@ def xor_agg(col: str | Column | ColT) -> Func:
         ```
 
     Notes:
-        - Skips rows where the value is absent (its tagged-union arm is inactive).
+        - Rows where the value is NULL are skipped (standard SQL aggregate behavior).
     """
     return Func("xor_agg", inner=aggregate.xor_agg, cols=[col], result_type=int)
 
