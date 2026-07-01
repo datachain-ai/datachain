@@ -376,9 +376,9 @@ def test_studio_team_global():
 
 
 def test_studio_datasets(capsys, studio_datasets, mocker):
-    def list_datasets_local(_, __):
-        yield "local.local.local", "1.0.0"
-        yield "dev.animals.both", "1.0.0"
+    def list_datasets_local(_, __, include_removed=False):
+        yield "local.local.local", "1.0.0", False
+        yield "dev.animals.both", "1.0.0", False
 
     mocker.patch(
         "datachain.cli.commands.datasets.list_datasets_local",

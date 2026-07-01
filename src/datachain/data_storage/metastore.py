@@ -344,24 +344,22 @@ class AbstractMetastore(ABC, Serializable):
         self, job_id: str | None = None
     ) -> list[tuple[DatasetRecord, str]]:
         """
-        Get incomplete, stale, or removed dataset versions to clean up.
+        Get incomplete, stale, or in-progress removed dataset versions to
+        clean up.
 
         When job_id is provided, returns versions belonging to that specific
         job (used during job failure cleanup).
 
-        When job_id is None, returns all versions that are safe to delete:
+        When job_id is None, returns all versions that need cleanup:
         - Status CREATED, FAILED, STALE where either:
           - the associated job has finished, or
           - there is no associated job (job_id is NULL) and the version is
             older than STALE_CREATED_THRESHOLD_HOURS
-        - Status REMOVED with rows_table_dropped=False: cleanup was
-          interrupted before the warehouse rows table was dropped; GC
-          retries the drop.
-        - Status REMOVED with pending_metadata_drop=True: a wipe was
-          interrupted mid-way; GC finishes by dropping the version row.
-        - Finalized tombstones (REMOVED + rows_table_dropped=True +
-          pending_metadata_drop=False) are not returned - they have no
-          pending cleanup work.
+        - Status REMOVING: a remove that didn't finish. GC drops the rows
+          table and then either deletes the version row (if
+          pending_metadata_drop=True) or flips status to REMOVED.
+        - Finalized tombstones (status REMOVED) are not returned - they
+          have no pending cleanup work.
 
         Returns:
             List of (DatasetRecord, version_string) tuples. Each DatasetRecord
@@ -388,9 +386,15 @@ class AbstractMetastore(ABC, Serializable):
 
     @abstractmethod
     def list_datasets(
-        self, project_id: int | None = None
+        self,
+        project_id: int | None = None,
+        include_removed: bool = False,
     ) -> Iterator[DatasetListRecord]:
-        """Lists all datasets in some project or in all projects."""
+        """Lists all datasets in some project or in all projects.
+
+        When ``include_removed=True`` also returns finalized REMOVED
+        tombstones (used by ``dataset ls --include-removed``).
+        """
 
     @abstractmethod
     def count_datasets(self, project_id: int | None = None) -> int:
@@ -874,7 +878,6 @@ class AbstractDBMetastore(AbstractMetastore):
             Column("content_hash", Text, nullable=True),
             Column("removed_at", DateTime(timezone=True), nullable=True),
             Column("pending_metadata_drop", Boolean, nullable=False, default=False),
-            Column("rows_table_dropped", Boolean, nullable=False, default=False),
             UniqueConstraint("dataset_id", "version"),
         ]
 
@@ -1340,7 +1343,6 @@ class AbstractDBMetastore(AbstractMetastore):
             job_id=job_id or os.getenv("DATACHAIN_JOB_ID"),
             content_hash=content_hash,
             pending_metadata_drop=False,
-            rows_table_dropped=False,
         )
         if ignore_if_exists:
             query = query.on_conflict_do_nothing(  # type: ignore[attr-defined]
@@ -1586,6 +1588,7 @@ class AbstractDBMetastore(AbstractMetastore):
         include_incomplete: bool = True,
         include_preview: bool = False,
         versions: Sequence[str] | None = None,
+        include_removed: bool = False,
     ) -> "Select":
         if not (
             self.db.has_table(self._datasets.name)
@@ -1607,12 +1610,15 @@ class AbstractDBMetastore(AbstractMetastore):
             j = n.join(p, n.c.id == p.c.namespace_id).join(d, p.c.id == d.c.project_id)
             query = query.select_from(j)
             if not include_incomplete:
+                allowed = [DatasetStatus.COMPLETE]
+                if include_removed:
+                    allowed.append(DatasetStatus.REMOVED)
                 query = query.where(
                     select(literal(1))
                     .where(
                         and_(
                             dv.c.dataset_id == d.c.id,
-                            dv.c.status == DatasetStatus.COMPLETE,
+                            dv.c.status.in_(allowed),
                         )
                     )
                     .exists()
@@ -1636,8 +1642,12 @@ class AbstractDBMetastore(AbstractMetastore):
         # Build join condition with status filter
         join_condition = d.c.id == dv.c.dataset_id
         if not include_incomplete:
-            # Only include COMPLETE dataset versions (hide CREATED/FAILED)
-            join_condition = and_(join_condition, dv.c.status == DatasetStatus.COMPLETE)
+            # COMPLETE by default (hide CREATED/FAILED); include finalized
+            # REMOVED tombstones when explicitly requested.
+            allowed = [DatasetStatus.COMPLETE]
+            if include_removed:
+                allowed.append(DatasetStatus.REMOVED)
+            join_condition = and_(join_condition, dv.c.status.in_(allowed))
 
         j = (
             n.join(p, n.c.id == p.c.namespace_id)
@@ -1672,7 +1682,9 @@ class AbstractDBMetastore(AbstractMetastore):
             versions=versions,
         )
 
-    def _base_list_datasets_query(self, include_incomplete: bool = True) -> "Select":
+    def _base_list_datasets_query(
+        self, include_incomplete: bool = True, include_removed: bool = False
+    ) -> "Select":
         return self._get_dataset_query(
             self._namespaces_fields,
             self._projects_fields,
@@ -1680,24 +1692,41 @@ class AbstractDBMetastore(AbstractMetastore):
             self._dataset_list_version_fields,
             isouter=False,
             include_incomplete=include_incomplete,
+            include_removed=include_removed,
         )
 
     def list_datasets(
-        self, project_id: int | None = None
+        self,
+        project_id: int | None = None,
+        include_removed: bool = False,
     ) -> Iterator["DatasetListRecord"]:
         d = self._datasets
-        query = self._base_list_datasets_query(include_incomplete=False).order_by(
-            self._datasets.c.name, self._datasets_versions.c.version
-        )
+        query = self._base_list_datasets_query(
+            include_incomplete=False, include_removed=include_removed
+        ).order_by(self._datasets.c.name, self._datasets_versions.c.version)
         if project_id:
             query = query.where(d.c.project_id == project_id)
         yield from self._parse_dataset_list(self.db.execute(query))
 
     def count_datasets(self, project_id: int | None = None) -> int:
         d = self._datasets
+        dv = self._datasets_versions
         query = self._datasets_select()
         if project_id:
             query = query.where(d.c.project_id == project_id)
+
+        # Only count datasets that still have at least one non-removed
+        # version. Tombstones-only datasets are user-invisible and would
+        # otherwise block project deletion.
+        live_version_exists = (
+            select(1)
+            .where(
+                dv.c.dataset_id == d.c.id,
+                dv.c.status.notin_([DatasetStatus.REMOVING, DatasetStatus.REMOVED]),
+            )
+            .exists()
+        )
+        query = query.where(live_version_exists)
 
         query = select(f.count(1)).select_from(query.subquery())
 
@@ -1891,15 +1920,8 @@ class AbstractDBMetastore(AbstractMetastore):
                                 DatasetStatus.CREATED,
                                 DatasetStatus.FAILED,
                                 DatasetStatus.STALE,
-                                DatasetStatus.REMOVED,
+                                DatasetStatus.REMOVING,
                             ]
-                        ),
-                        # REMOVED rows only stay in scope while cleanup is
-                        # still pending; finalized tombstones drop out.
-                        or_(
-                            dv.c.status != DatasetStatus.REMOVED,
-                            dv.c.rows_table_dropped.is_(False),
-                            dv.c.pending_metadata_drop.is_(True),
                         ),
                         or_(
                             j.c.status.in_(

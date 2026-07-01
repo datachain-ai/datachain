@@ -468,7 +468,7 @@ def dataset_marked_for_removal(test_session, job) -> DatasetRecord:
     test_session.catalog.metastore.db.execute(
         dv.update()
         .where(dv.c.dataset_id == dataset.id)
-        .values(status=DatasetStatus.REMOVED, pending_metadata_drop=True)
+        .values(status=DatasetStatus.REMOVING, pending_metadata_drop=True)
     )
     return test_session.catalog.get_dataset(dataset.name, include_incomplete=True)
 
@@ -935,10 +935,9 @@ def _force_status(catalog, dataset: DatasetRecord, version: str, status: int, **
     return catalog.get_dataset(dataset.name, versions=None, include_incomplete=True)
 
 
-def test_gc_keeps_tombstone_when_metadata_was_kept(test_session, dataset_complete):
-    """A REMOVED + pending_metadata_drop=False version handed to the GC path
-    must keep the tombstone - the removal kept metadata on purpose and GC
-    must not wipe it."""
+def test_gc_skips_finalized_tombstones(test_session, dataset_complete):
+    """A finalized REMOVED tombstone is outside the GC sweep set entirely -
+    GC must not touch it."""
     catalog = test_session.catalog
     version = dataset_complete.latest_version
     ds = _force_status(catalog, dataset_complete, version, DatasetStatus.REMOVED)
@@ -953,7 +952,7 @@ def test_gc_keeps_tombstone_when_metadata_was_kept(test_session, dataset_complet
 
 
 def test_gc_resumes_interrupted_wipe(test_session, dataset_complete):
-    """A version stuck in REMOVED + pending_metadata_drop=True (a wipe that
+    """A version stuck in REMOVING + pending_metadata_drop=True (a wipe that
     crashed before the version row was dropped) is finished by the GC path."""
     catalog = test_session.catalog
     version = dataset_complete.latest_version
@@ -962,7 +961,7 @@ def test_gc_resumes_interrupted_wipe(test_session, dataset_complete):
         catalog,
         dataset_complete,
         version,
-        DatasetStatus.REMOVED,
+        DatasetStatus.REMOVING,
         pending_metadata_drop=True,
     )
     vid = ds.get_version(version).id
@@ -973,17 +972,17 @@ def test_gc_resumes_interrupted_wipe(test_session, dataset_complete):
         catalog.get_dataset(name, include_incomplete=True)
 
 
-def test_gc_retries_orphaned_rows_table_drop(test_session, dataset_complete):
-    """A REMOVED + pending_metadata_drop=False version with the rows table
-    still present (a keep-metadata remove that crashed mid-drop) gets the
-    rows table cleaned up by the GC path, while the tombstone is preserved."""
+def test_gc_resumes_interrupted_keep_metadata(test_session, dataset_complete):
+    """A version stuck in REMOVING + pending_metadata_drop=False (a
+    keep-metadata remove that crashed mid-drop) gets the rows table cleaned
+    up and the status flipped to REMOVED by the GC path."""
     catalog = test_session.catalog
     warehouse = catalog.warehouse
     version = dataset_complete.latest_version
     rows_table = warehouse.dataset_table_name(dataset_complete, version)
     assert warehouse.db.has_table(rows_table)
 
-    ds = _force_status(catalog, dataset_complete, version, DatasetStatus.REMOVED)
+    ds = _force_status(catalog, dataset_complete, version, DatasetStatus.REMOVING)
     vid = ds.get_version(version).id
 
     catalog.remove_dataset_versions(version_ids=[vid])
@@ -992,12 +991,37 @@ def test_gc_retries_orphaned_rows_table_drop(test_session, dataset_complete):
     ds = catalog.get_dataset(
         dataset_complete.name, versions=None, include_incomplete=True
     )
-    assert _find_removed(ds, version) is not None
+    finalized = _find_removed(ds, version)
+    assert finalized is not None
+    assert finalized.status == DatasetStatus.REMOVED
 
 
-def test_remove_keep_metadata_marks_rows_table_dropped(test_session, dataset_complete):
-    """A normal keep-metadata remove sets ``rows_table_dropped=True`` so the
-    finalized tombstone no longer shows up in the GC candidate set."""
+def test_dataset_ls_include_removed_marks_output(
+    capsys, test_session, dataset_complete
+):
+    """`dataset ls --include-removed` yields tombstoned versions and the
+    CLI output tags them with '(removed)'."""
+    from datachain.cli.commands.datasets import list_datasets, list_datasets_local
+
+    catalog = test_session.catalog
+    version = dataset_complete.latest_version
+    catalog.remove_dataset_version(dataset_complete, version, keep_metadata=True)
+
+    default = list(list_datasets_local(catalog))
+    assert all(not removed for _, _, removed in default)
+
+    with_removed = list(list_datasets_local(catalog, include_removed=True))
+    tomb = [row for row in with_removed if row[2]]
+    assert tomb, "expected at least one tombstoned version"
+
+    list_datasets(catalog, local=True, all=False, include_removed=True)
+    out = capsys.readouterr().out
+    assert "(removed)" in out
+
+
+def test_remove_keep_metadata_lands_on_removed(test_session, dataset_complete):
+    """A normal keep-metadata remove lands on status REMOVED, so the
+    finalized tombstone is outside the GC candidate set."""
     catalog = test_session.catalog
     version = dataset_complete.latest_version
     name = dataset_complete.name
@@ -1007,11 +1031,47 @@ def test_remove_keep_metadata_marks_rows_table_dropped(test_session, dataset_com
     ds = catalog.get_dataset(name, versions=None, include_incomplete=True)
     removed = _find_removed(ds, version)
     assert removed is not None
-    assert bool(removed.rows_table_dropped) is True
+    assert removed.status == DatasetStatus.REMOVED
     assert bool(removed.pending_metadata_drop) is False
 
     candidates = catalog.metastore.get_dataset_versions_to_clean()
     assert all(d.name != name for d, _ in candidates)
+
+
+def test_keep_metadata_refused_when_drop_in_progress(test_session, dataset_complete):
+    """keep_metadata=True must refuse when the version is already
+    REMOVING with pending_metadata_drop=True (a removal that drops
+    metadata is already in flight)."""
+    catalog = test_session.catalog
+    version = dataset_complete.latest_version
+    ds = _force_status(
+        catalog,
+        dataset_complete,
+        version,
+        DatasetStatus.REMOVING,
+        pending_metadata_drop=True,
+    )
+
+    with pytest.raises(DataChainError, match=r"keep_metadata=False.*in progress"):
+        catalog.remove_dataset_version(ds, version, keep_metadata=True)
+
+
+def test_drop_metadata_refused_when_keep_in_progress(test_session, dataset_complete):
+    """keep_metadata=False must refuse when the version is already
+    REMOVING with pending_metadata_drop=False (a removal that keeps
+    metadata is in flight). The user must wait for the tombstone."""
+    catalog = test_session.catalog
+    version = dataset_complete.latest_version
+    ds = _force_status(
+        catalog,
+        dataset_complete,
+        version,
+        DatasetStatus.REMOVING,
+        pending_metadata_drop=False,
+    )
+
+    with pytest.raises(DataChainError, match=r"keep_metadata=True.*in progress"):
+        catalog.remove_dataset_version(ds, version, keep_metadata=False)
 
 
 def test_tombstone_then_wipe_escalates(test_session, dataset_complete):

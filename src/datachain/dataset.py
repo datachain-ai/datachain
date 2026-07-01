@@ -241,7 +241,8 @@ class DatasetDependency:
             dataset_version,  # type: ignore[arg-type]
             dataset_version_created_at,  # type: ignore[arg-type]
             [],
-            removed=dataset_version_status == DatasetStatus.REMOVED,
+            removed=dataset_version_status
+            in (DatasetStatus.REMOVING, DatasetStatus.REMOVED),
         )
 
     @property
@@ -268,7 +269,7 @@ class DatasetStatus:
     FAILED = 3
     COMPLETE = 4
     STALE = 6
-    # 7 and 9 were transient REMOVING/REMOVING_TOTAL; reserved, do not reuse
+    REMOVING = 7
     REMOVED = 8
 
 
@@ -303,7 +304,6 @@ class DatasetVersion:
     content_hash: str | None = None
     removed_at: datetime | None = None
     pending_metadata_drop: bool = False
-    rows_table_dropped: bool = False
 
     @classmethod
     def parse(  # noqa: PLR0913
@@ -329,7 +329,6 @@ class DatasetVersion:
         content_hash: str | None = None,
         removed_at: datetime | None = None,
         pending_metadata_drop: bool = False,
-        rows_table_dropped: bool = False,
         *,
         preview_loaded: bool = True,
     ):
@@ -360,7 +359,6 @@ class DatasetVersion:
             content_hash=content_hash,
             removed_at=removed_at,
             pending_metadata_drop=pending_metadata_drop,
-            rows_table_dropped=rows_table_dropped,
             _preview_loaded=preview_loaded,
         )
 
@@ -391,7 +389,7 @@ class DatasetVersion:
 
     @property
     def is_removed(self) -> bool:
-        return self.status == DatasetStatus.REMOVED
+        return self.status in (DatasetStatus.REMOVING, DatasetStatus.REMOVED)
 
     def update(self, **kwargs):
         for key, value in kwargs.items():
@@ -496,6 +494,10 @@ class DatasetListVersion:
     def version_value(self) -> int:
         return semver.value(self.version)
 
+    @property
+    def is_removed(self) -> bool:
+        return self.status in (DatasetStatus.REMOVING, DatasetStatus.REMOVED)
+
 
 @dataclass
 class DatasetRecord:
@@ -597,7 +599,6 @@ class DatasetRecord:
         version_content_hash: str | None = None,
         version_removed_at: datetime | None = None,
         version_pending_metadata_drop: bool = False,
-        version_rows_table_dropped: bool = False,
         *,
         versions_loaded: bool = True,
         preview_loaded: bool = True,
@@ -658,7 +659,6 @@ class DatasetRecord:
                 version_content_hash,
                 version_removed_at,
                 version_pending_metadata_drop,
-                version_rows_table_dropped,
                 preview_loaded=preview_loaded,
             )
             versions_list = [dataset_version]
@@ -800,8 +800,8 @@ class DatasetRecord:
 
     @property
     def _live_versions(self) -> list[DatasetVersion]:
-        """Versions excluding REMOVED ones."""
-        return [v for v in self.versions if v.status != DatasetStatus.REMOVED]
+        """Versions excluding REMOVING/REMOVED ones."""
+        return [v for v in self.versions if not v.is_removed]
 
     @property
     def _max_version(self) -> str:
@@ -1007,7 +1007,7 @@ class DatasetListRecord:
         return f"{self.project.namespace.name}.{self.project.name}.{self.name}"
 
     def latest_version(self) -> DatasetListVersion:
-        live = [v for v in self.versions if v.status != DatasetStatus.REMOVED]
+        live = [v for v in self.versions if not v.is_removed]
         if not live:
             raise DatasetVersionNotFoundError(
                 f"Dataset {self.name} has no live versions"
