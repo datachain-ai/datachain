@@ -101,10 +101,9 @@ def test_mark_job_dataset_versions_as_failed_skips_complete(
 def test_mark_job_dataset_versions_as_failed_preserves_tombstones(
     test_session, job, dataset_complete
 ):
-    """A REMOVED tombstone from a soft delete issued inside the failing job
-    must survive `mark_job_dataset_versions_as_failed` - otherwise the
-    tombstone gets flipped to FAILED and then wiped by GC, breaking the
-    soft-delete permanence guarantee."""
+    """A REMOVED tombstone created inside the failing job must survive
+    `mark_job_dataset_versions_as_failed`. Otherwise the tombstone flips to
+    FAILED and later gets dropped by GC, losing the removed record."""
     catalog = test_session.catalog
     version = dataset_complete.latest_version
     catalog.remove_dataset(dataset_complete.name, version=version, keep_metadata=True)
@@ -239,8 +238,8 @@ def test_remove_dataset_versions_bulk(
 def test_remove_dataset_versions_explicit_keep_metadata_tombstones(
     test_session, dataset_complete
 ):
-    """User-facing bulk delete (``keep_metadata=True``) must tombstone COMPLETE
-    versions, not wipe them — overrides the GC inference path."""
+    """Bulk delete with ``keep_metadata=True`` must leave COMPLETE versions
+    as tombstones and not remove the row - overrides the GC inference path."""
     catalog = test_session.catalog
     version = dataset_complete.latest_version
     ds = catalog.get_dataset(dataset_complete.name, versions=None)
@@ -258,8 +257,8 @@ def test_remove_dataset_versions_explicit_keep_metadata_tombstones(
 def test_remove_dataset_version_already_tombstoned_returns_false(
     test_session, dataset_complete
 ):
-    """A keep_metadata=True remove on an already-REMOVED version is a no-op
-    and must return False so bulk callers don't inflate the removed count."""
+    """Returning False on a no-op lets bulk callers count only versions
+    they actually removed."""
     catalog = test_session.catalog
     version = dataset_complete.latest_version
     catalog.remove_dataset(dataset_complete.name, version=version, keep_metadata=True)
@@ -290,14 +289,14 @@ def test_create_dataset_explicit_removed_version_rejected(
         )
 
 
-def test_remove_dataset_version_missing_returns_false(test_session, dataset_complete):
-    """remove_dataset_version on a non-existent version is a no-op (False),
-    not an error."""
+def test_remove_dataset_version_missing_raises(test_session, dataset_complete):
+    """remove_dataset_version on a non-existent version raises
+    DatasetVersionNotFoundError so typos aren't silently swallowed."""
+    from datachain.error import DatasetVersionNotFoundError
+
     catalog = test_session.catalog
-    assert (
+    with pytest.raises(DatasetVersionNotFoundError):
         catalog.remove_dataset_version(dataset_complete, "99.0.0", keep_metadata=True)
-        is False
-    )
 
 
 def test_remove_dataset_versions_job_id_filter(test_session, job, dataset_created):
@@ -584,11 +583,11 @@ def test_save_after_remove_skips_removed_version(test_session, dataset_complete)
     assert _find_removed(ds, first_version) is not None
 
 
-def test_remove_keep_metadata_false_wipes_already_removed_version(
+def test_remove_keep_metadata_false_drops_already_removed_version(
     test_session, dataset_complete
 ):
-    """keep_metadata=False wipes a REMOVED record completely
-    (version row gone, dataset row gone if it was the last)."""
+    """keep_metadata=False on a REMOVED tombstone deletes the version row
+    (and the dataset row too if it was the last version)."""
     catalog = test_session.catalog
     name = dataset_complete.name
     version = dataset_complete.latest_version
@@ -603,10 +602,11 @@ def test_remove_keep_metadata_false_wipes_already_removed_version(
         catalog.get_dataset(name, include_incomplete=True)
 
 
-def test_remove_keep_metadata_false_wipes_live_complete_version(
+def test_remove_keep_metadata_false_drops_live_complete_version(
     test_session, dataset_complete
 ):
-    """keep_metadata=False wipes a fresh COMPLETE version without leaving a record."""
+    """keep_metadata=False on a fresh COMPLETE version removes it without
+    leaving a record behind."""
     catalog = test_session.catalog
     name = dataset_complete.name
     version = dataset_complete.latest_version
@@ -671,9 +671,9 @@ def test_read_dataset_after_remove_raises(
         read_dataset(name, session=test_session)
 
 
-def test_janitor_still_hard_deletes_created_version(test_session, job, dataset_created):
-    """The cleanup path must still hard-delete non-COMPLETE versions — we
-    don't want REMOVED rows piling up for failed/abandoned saves."""
+def test_janitor_fully_removes_created_version(test_session, job, dataset_created):
+    """The cleanup path must fully remove non-COMPLETE versions - we don't
+    want REMOVED rows piling up for failed or abandoned saves."""
     catalog = test_session.catalog
     catalog.metastore.set_job_status(job.id, JobStatus.FAILED)
 
@@ -683,7 +683,7 @@ def test_janitor_still_hard_deletes_created_version(test_session, job, dataset_c
         catalog.get_dataset(dataset_created.name, include_incomplete=True)
 
 
-def test_remove_non_complete_version_is_hard_delete(test_session, dataset_failed):
+def test_remove_non_complete_version_removes_row(test_session, dataset_failed):
     catalog = test_session.catalog
     name = dataset_failed.name
     catalog.remove_dataset_version(
@@ -747,10 +747,10 @@ def test_session_dataset_never_keeps_metadata(test_session):
 
 
 def test_remove_dataset_versions_keep_metadata_downgrades_for_internal(test_session):
-    """Bulk remove with `keep_metadata=True` silently wipes internal datasets
-    (`lst__*` / `session_*`) - they have no semver/lineage to preserve, so the
-    flag is meaningless there. User-facing versions in the same batch still
-    get the tombstone."""
+    """Bulk remove with `keep_metadata=True` silently fully removes internal
+    datasets (`lst__*` / `session_*`) - they have no semver/lineage to
+    preserve, so the flag is meaningless there. User-facing versions in the
+    same batch still get the tombstone."""
     catalog = test_session.catalog
     user_ds = _make_completed_dataset(catalog, "user_ds")
     internal_ds = _make_completed_dataset(
@@ -772,9 +772,9 @@ def test_remove_dataset_versions_keep_metadata_downgrades_for_internal(test_sess
 
 
 def test_save_skips_reserved_semver_after_delete(test_session):
-    """After save -> save -> soft delete latest -> save, the new save must
-    skip the REMOVED slot and auto-bump past it (semver permanently
-    reserved)."""
+    """After save -> save -> remove-with-keep-metadata latest -> save, the
+    new save must skip the REMOVED slot and auto-bump past it - the semver
+    stays reserved while its record is kept."""
     catalog = test_session.catalog
     dc.read_values(value=["a"], session=test_session).save("reserve_test")
     second = dc.read_values(value=["b"], session=test_session).save("reserve_test")
@@ -787,8 +787,8 @@ def test_save_skips_reserved_semver_after_delete(test_session):
 
 
 def test_dependency_removed_flag(test_session):
-    """A dataset dependency pointing at a soft-deleted version is returned
-    with ``removed=True`` so delta-style consumers can filter it without a
+    """A dataset dependency pointing at a REMOVED version is returned with
+    ``removed=True`` so delta-style consumers can filter it without a
     separate query."""
     catalog = test_session.catalog
     source = dc.read_values(value=["a", "b"], session=test_session).save("dep_source")
@@ -802,11 +802,11 @@ def test_dependency_removed_flag(test_session):
     assert deps[0].removed is True
 
 
-def test_dependency_after_wipe_returns_none(test_session):
-    """When the source version is fully wiped (``keep_metadata=False``), the
-    dependency row is left with a broken reference and the lineage view
-    surfaces it as ``None`` - contrasts with the tombstone path covered by
-    [[test_dependency_removed_flag]]."""
+def test_dependency_after_full_remove_returns_none(test_session):
+    """When the source version is fully removed (``keep_metadata=False``),
+    the dependency row is left with a broken reference and the lineage
+    view surfaces it as ``None`` - contrasts with the tombstone path covered
+    by [[test_dependency_removed_flag]]."""
     catalog = test_session.catalog
     source = dc.read_values(value=["a", "b"], session=test_session).save("wipe_source")
     dc.read_dataset("wipe_source", session=test_session).save("wipe_target")
@@ -832,8 +832,10 @@ def test_export_dataset_table_refuses_tombstone(test_session, dataset_complete):
         )
 
 
-def test_bulk_wipe_does_not_cascade_dataset_row(test_session, dataset_complete):
-    """A GC-shaped wipe of a single version (whose in-memory DatasetRecord
+def test_bulk_remove_single_version_does_not_cascade_dataset_row(
+    test_session, dataset_complete
+):
+    """A GC-shaped remove of a single version (whose in-memory DatasetRecord
     only carries that one version) must not delete the dataset row when
     other versions still exist in DB - otherwise FK cascade takes REMOVED
     tombstones and live versions down with it."""
@@ -849,10 +851,11 @@ def test_bulk_wipe_does_not_cascade_dataset_row(test_session, dataset_complete):
         second, "2.0.0", status=DatasetStatus.FAILED
     )
 
-    # Soft-delete v1.0.0 to get a tombstone we expect to survive.
+    # Remove v1.0.0 with keep_metadata=True so we have a tombstone we expect
+    # to survive.
     catalog.remove_dataset(dataset_complete.name, version="1.0.0", keep_metadata=True)
 
-    # GC wipes v2.0.0 via the bulk path - this builds a single-version
+    # GC removes v2.0.0 via the bulk path - this builds a single-version
     # DatasetRecord per row internally.
     ds = catalog.get_dataset(
         dataset_complete.name, versions=None, include_incomplete=True
@@ -891,8 +894,8 @@ def test_rename_dataset_across_tombstone(test_session, dataset_complete):
 def test_remove_dataset_force_keep_metadata_mixed_versions(
     test_session, dataset_complete
 ):
-    """`remove_dataset(force=True, keep_metadata=True)` on a mixed-state
-    dataset tombstones soft-deletable versions and transparently wipes the
+    """`remove_dataset(force=True, keep_metadata=True)` on a mixed-status
+    dataset leaves COMPLETE versions as tombstones and fully removes the
     rest - keep_metadata is meaningful only where there is semver/lineage
     worth preserving."""
     catalog = test_session.catalog
@@ -911,15 +914,15 @@ def test_remove_dataset_force_keep_metadata_mixed_versions(
     ds = catalog.get_dataset(
         dataset_complete.name, versions=None, include_incomplete=True
     )
-    # COMPLETE version -> tombstoned; FAILED version -> wiped.
+    # COMPLETE version -> tombstone; FAILED version -> row removed.
     assert _find_removed(ds, "1.0.0") is not None
     assert not ds.has_version("2.0.0")
 
 
-def test_remove_dataset_force_keep_metadata_internal_downgrades_to_wipe(test_session):
+def test_remove_dataset_force_keep_metadata_internal_downgrades(test_session):
     """Internal datasets (`lst__*`, `session_*`) have no semver/lineage to
-    preserve, so `keep_metadata=True` transparently downgrades to a full wipe.
-    """
+    preserve, so `keep_metadata=True` transparently downgrades to a full
+    remove."""
     catalog = test_session.catalog
     name = f"{SESSION_DATASET_PREFIX}force_test"
     ds = _make_completed_dataset(catalog, name)
@@ -953,9 +956,10 @@ def test_gc_skips_finalized_tombstones(test_session, dataset_complete):
     assert _find_removed(ds, version) is not None
 
 
-def test_gc_resumes_interrupted_wipe(test_session, dataset_complete):
-    """A version stuck in REMOVING + pending_metadata_drop=True (a wipe that
-    crashed before the version row was dropped) is finished by the GC path."""
+def test_gc_resumes_interrupted_full_remove(test_session, dataset_complete):
+    """A version stuck in REMOVING + pending_metadata_drop=True (a
+    keep_metadata=False remove that crashed before the version row was
+    dropped) is finished by the GC path."""
     catalog = test_session.catalog
     version = dataset_complete.latest_version
     name = dataset_complete.name
@@ -1076,10 +1080,10 @@ def test_drop_metadata_refused_when_keep_in_progress(test_session, dataset_compl
         catalog.remove_dataset_version(ds, version, keep_metadata=False)
 
 
-def test_tombstone_then_wipe_escalates(test_session, dataset_complete):
-    """Calling wipe on an already-tombstoned (REMOVED + metadata kept)
-    version flips pending_metadata_drop from False to True and drops
-    the version row."""
+def test_tombstone_then_full_remove_escalates(test_session, dataset_complete):
+    """Calling keep_metadata=False on an already-tombstoned (REMOVED)
+    version flips pending_metadata_drop from False to True and drops the
+    version row."""
     catalog = test_session.catalog
     version = dataset_complete.latest_version
     name = dataset_complete.name

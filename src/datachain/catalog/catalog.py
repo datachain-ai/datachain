@@ -1136,17 +1136,14 @@ class Catalog:
         are removed in full.
 
         If ``keep_metadata`` is False, drop the warehouse rows and the
-        version row. Allowed from any status. If the version was previously
-        removed with metadata kept, the row is also removed.
+        version row. If the version was previously removed with metadata
+        kept, the row is also removed.
 
         Returns True if this call actually removed the version, False if it
-        was a no-op (already removed, missing, or another caller is
-        handling it).
+        was a no-op (already removed, or another caller is handling it).
+        Raises ``DatasetVersionNotFoundError`` if the version does not exist.
         """
-        try:
-            v = dataset.get_version(version)
-        except DatasetVersionNotFoundError:
-            return False
+        v = dataset.get_version(version)
 
         if keep_metadata and dataset.is_internal:
             raise DataChainError(
