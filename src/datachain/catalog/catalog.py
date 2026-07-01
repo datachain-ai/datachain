@@ -41,12 +41,14 @@ from datachain.dataset import (
     parse_schema,
 )
 from datachain.error import (
+    ConcurrentDatasetModificationError,
     DataChainError,
     DatasetInvalidVersionError,
     DatasetNotFoundError,
     DatasetVersionNotFoundError,
     NamespaceNotFoundError,
     ProjectNotFoundError,
+    TableMissingError,
 )
 from datachain.lib.listing import get_listing, is_listing_dataset
 from datachain.node import DirType, Node, NodeWithPath
@@ -1087,10 +1089,10 @@ class Catalog:
         This refreshes warehouse-derived metadata first, then marks the version
         as COMPLETE.
         """
-        # Guard against a concurrent removal: the warehouse-info read may
-        # hit a dropped rows table (TableMissingError) and the status flip
-        # has an expected_status=CREATED guard. Either one surfaces the
-        # same user-friendly error.
+        # Guard against a concurrent removal. Two narrow signals reach here:
+        # TableMissingError (rows table dropped between save and finalize)
+        # and ConcurrentDatasetModificationError (expected_status guard
+        # lost to a concurrent state change). Anything else propagates.
         try:
             self.update_dataset_version_with_warehouse_info(dataset, version, **kwargs)
             self.metastore.update_dataset_status(
@@ -1102,8 +1104,8 @@ class Catalog:
                 script_output=script_output,
                 expected_status=DatasetStatus.CREATED,
             )
-        except DataChainError as e:
-            raise DataChainError(
+        except (TableMissingError, ConcurrentDatasetModificationError) as e:
+            raise ConcurrentDatasetModificationError(
                 f"Could not save {dataset.name}@{version}: "
                 "the version was removed or modified before save completed. "
                 "This usually means it was deleted concurrently - please retry."
@@ -1137,9 +1139,9 @@ class Catalog:
         version row. Allowed from any status. If the version was previously
         removed with metadata kept, the row is also removed.
 
-        Returns True when a state change happened, False when the call was
-        a no-op (version already in target state, missing, or another caller
-        is handling it).
+        Returns True if this call actually removed the version, False if it
+        was a no-op (already removed, missing, or another caller is
+        handling it).
         """
         try:
             v = dataset.get_version(version)

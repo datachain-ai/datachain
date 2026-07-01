@@ -59,6 +59,7 @@ from datachain.dataset import (
 )
 from datachain.error import (
     CheckpointNotFoundError,
+    ConcurrentDatasetModificationError,
     DataChainError,
     DatasetNotFoundError,
     NamespaceDeleteNotAllowedError,
@@ -2014,7 +2015,7 @@ class AbstractDBMetastore(AbstractMetastore):
                     **update_data,
                 )
                 if expected_status is not None and updated is None:
-                    raise DataChainError(
+                    raise ConcurrentDatasetModificationError(
                         f"Could not update status of {dataset.name}@{version}: "
                         f"current status is not {expected_status}"
                     )

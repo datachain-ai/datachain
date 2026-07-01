@@ -14,6 +14,7 @@ from datachain.dataset import (
     DatasetStatus,
 )
 from datachain.error import (
+    ConcurrentDatasetModificationError,
     DataChainError,
     DatasetInvalidVersionError,
     DatasetNotFoundError,
@@ -1104,7 +1105,9 @@ def test_complete_raises_when_version_removed_concurrently(
     version = dataset_complete.latest_version
     ds = _force_status(catalog, dataset_complete, version, DatasetStatus.REMOVED)
 
-    with pytest.raises(DataChainError, match="Could not update status"):
+    with pytest.raises(
+        ConcurrentDatasetModificationError, match="Could not update status"
+    ):
         catalog.metastore.update_dataset_status(
             ds,
             DatasetStatus.COMPLETE,
@@ -1117,15 +1120,17 @@ def test_complete_dataset_version_raises_friendly_when_removed_concurrently(
     test_session, dataset_complete
 ):
     """End-to-end: when a version is flipped to REMOVED mid-save (e.g. by GC),
-    catalog.complete_dataset_version surfaces a user-friendly DataChainError
-    that explains the concurrent removal and suggests a retry."""
+    catalog.complete_dataset_version surfaces a specific
+    ConcurrentDatasetModificationError with a user-friendly message and the
+    original guard error chained as the cause."""
     catalog = test_session.catalog
     version = dataset_complete.latest_version
     ds = _force_status(catalog, dataset_complete, version, DatasetStatus.REMOVED)
 
-    with pytest.raises(DataChainError, match="deleted concurrently") as exc_info:
+    with pytest.raises(
+        ConcurrentDatasetModificationError, match="deleted concurrently"
+    ) as exc_info:
         catalog.complete_dataset_version(ds, version)
 
-    # original guard error is chained as the cause
-    assert isinstance(exc_info.value.__cause__, DataChainError)
+    assert isinstance(exc_info.value.__cause__, ConcurrentDatasetModificationError)
     assert "Could not update status" in str(exc_info.value.__cause__)
