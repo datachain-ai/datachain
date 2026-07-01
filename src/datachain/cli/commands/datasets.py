@@ -46,13 +46,20 @@ def list_datasets(
     team: str | None = None,
     latest_only: bool = True,
     name: str | None = None,
+    include_removed: bool = False,
 ) -> None:
     token = Config().read().get("studio", {}).get("token")
     all, local, studio = determine_flavors(studio, local, all, token)
     if name:
         latest_only = False
 
-    local_datasets = set(list_datasets_local(catalog, name)) if all or local else set()
+    local_pairs = (
+        list(list_datasets_local(catalog, name, include_removed=include_removed))
+        if all or local
+        else []
+    )
+    local_datasets = {(n, v) for n, v, _ in local_pairs}
+    local_removed = {(n, v) for n, v, r in local_pairs if r}
     studio_datasets = (
         set(list_datasets_studio(team=team, name=name))
         if (all or studio) and token
@@ -99,6 +106,7 @@ def list_datasets(
             both=(all or (local and studio)) and token,
             local_version=local_version,
             studio_version=studio_version,
+            local_removed=local_removed,
         )
         for n, (local_version, studio_version) in datasets
     ]
@@ -107,43 +115,71 @@ def list_datasets(
 
 
 def list_datasets_local(
-    catalog: "Catalog", name: str | None = None
-) -> Iterator[tuple[str, str]]:
+    catalog: "Catalog", name: str | None = None, include_removed: bool = False
+) -> Iterator[tuple[str, str, bool]]:
     if name:
-        yield from list_datasets_local_versions(catalog, name)
+        yield from list_datasets_local_versions(
+            catalog, name, include_removed=include_removed
+        )
         return
 
-    for d in catalog.ls_datasets():
+    for d in catalog.ls_datasets(include_removed=include_removed):
         for v in d.versions:
-            yield d.full_name, v.version
+            yield d.full_name, v.version, v.is_removed
 
 
 def list_datasets_local_versions(
-    catalog: "Catalog", name: str
-) -> Iterator[tuple[str, str]]:
+    catalog: "Catalog", name: str, include_removed: bool = False
+) -> Iterator[tuple[str, str, bool]]:
+    from datachain.dataset import DatasetStatus
+
     namespace_name, project_name, name = catalog.get_full_dataset_name(name)
 
+    # include_incomplete=True lets the query return REMOVED tombstones too;
+    # we then keep COMPLETE (and REMOVED when the caller asked for it).
     ds = catalog.get_dataset(
         name,
         namespace_name=namespace_name,
         project_name=project_name,
         versions=None,
-        include_incomplete=False,
+        include_incomplete=include_removed,
     )
     for v in ds.versions:
-        yield name, v.version
+        if v.status == DatasetStatus.COMPLETE:
+            yield name, v.version, False
+        elif include_removed and v.status == DatasetStatus.REMOVED:
+            yield name, v.version, True
 
 
-def _datasets_tabulate_row(name, both, local_version, studio_version) -> dict[str, str]:
+def _mark_local_version(version, name: str, local_removed: set[tuple[str, str]]) -> str:
+    tag = " (removed)" if (name, str(version)) in local_removed else ""
+    return f"v{version}{tag}"
+
+
+def _datasets_tabulate_row(
+    name,
+    both,
+    local_version,
+    studio_version,
+    local_removed: set[tuple[str, str]] | None = None,
+) -> dict[str, str]:
+    local_removed = local_removed or set()
     row = {
         "Name": name,
     }
     if both:
         row["Studio"] = f"v{studio_version}" if studio_version else "\u2716"
-        row["Local"] = f"v{local_version}" if local_version else "\u2716"
+        row["Local"] = (
+            _mark_local_version(local_version, name, local_removed)
+            if local_version
+            else "\u2716"
+        )
+    elif local_version:
+        row["Latest Version"] = _mark_local_version(local_version, name, local_removed)
+    elif studio_version:
+        row["Latest Version"] = f"v{studio_version}"
     else:
-        latest_version = local_version or studio_version
-        row["Latest Version"] = f"v{latest_version}" if latest_version else "\u2716"
+        row["Latest Version"] = "\u2716"
 
     return row
 

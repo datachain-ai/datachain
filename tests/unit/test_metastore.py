@@ -220,3 +220,35 @@ def test_list_datasets_multiple_versions_sorted(metastore):
 
 def test_list_datasets_empty(metastore):
     assert list(metastore.list_datasets()) == []
+
+
+def test_list_datasets_hides_removed_by_default(metastore):
+    ds = metastore.create_dataset("list-removed")
+    metastore.create_dataset_version(ds, "1.0.0", DatasetStatus.COMPLETE)
+    metastore.create_dataset_version(ds, "1.0.1", DatasetStatus.REMOVED)
+
+    results = {d.name: d for d in metastore.list_datasets()}
+    assert [v.version for v in results["list-removed"].versions] == ["1.0.0"]
+
+
+def test_list_datasets_include_removed(metastore):
+    ds = metastore.create_dataset("list-with-removed")
+    metastore.create_dataset_version(ds, "1.0.0", DatasetStatus.COMPLETE)
+    metastore.create_dataset_version(ds, "1.0.1", DatasetStatus.REMOVED)
+
+    results = {d.name: d for d in metastore.list_datasets(include_removed=True)}
+    versions = results["list-with-removed"].versions
+    assert [v.version for v in versions] == ["1.0.0", "1.0.1"]
+    assert versions[1].is_removed
+
+
+def test_list_datasets_include_removed_only_tombstones(metastore):
+    """A dataset with only tombstoned versions still appears when
+    include_removed is True."""
+    ds = metastore.create_dataset("tombstoned-only")
+    metastore.create_dataset_version(ds, "1.0.0", DatasetStatus.REMOVED)
+
+    assert "tombstoned-only" not in {d.name for d in metastore.list_datasets()}
+    assert "tombstoned-only" in {
+        d.name for d in metastore.list_datasets(include_removed=True)
+    }

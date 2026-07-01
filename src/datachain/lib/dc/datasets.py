@@ -332,6 +332,9 @@ def delete_dataset(
     """Removes specific dataset version or all dataset versions, depending on
     a force flag.
 
+    The rows table is dropped but the version metadata is kept so the semver
+    stays reserved and dependents can still resolve lineage.
+
     Args:
         name: The dataset name, which can be a fully qualified name including the
             namespace and project. Alternatively, it can be a regular name, in which

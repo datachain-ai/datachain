@@ -411,8 +411,217 @@ def test_preview_raises_when_not_loaded(dataset_record):
 
 def test_latest_version_empty_raises(dataset_record):
     record = replace(dataset_record, _versions=[], _versions_loaded=True)
-    with pytest.raises(DatasetVersionNotFoundError, match="has no versions"):
+    with pytest.raises(DatasetVersionNotFoundError, match="has no live versions"):
         _ = record.latest_version
+
+
+def _versions_with_statuses(dataset_record, statuses):
+    return [
+        replace(
+            dataset_record.versions[0],
+            id=i + 1,
+            version=f"{i + 1}.0.0",
+            status=status,
+        )
+        for i, status in enumerate(statuses)
+    ]
+
+
+def test_latest_version_returns_max_live(dataset_record):
+    versions = _versions_with_statuses(
+        dataset_record,
+        [DatasetStatus.COMPLETE, DatasetStatus.COMPLETE, DatasetStatus.CREATED],
+    )
+    record = replace(dataset_record, _versions=versions, _versions_loaded=True)
+    assert record.latest_version == "3.0.0"
+
+
+def test_latest_version_skips_removed(dataset_record):
+    versions = _versions_with_statuses(
+        dataset_record,
+        [DatasetStatus.COMPLETE, DatasetStatus.COMPLETE, DatasetStatus.REMOVED],
+    )
+    record = replace(dataset_record, _versions=versions, _versions_loaded=True)
+    assert record.latest_version == "2.0.0"
+
+
+def test_latest_version_all_removed_raises(dataset_record):
+    versions = _versions_with_statuses(
+        dataset_record, [DatasetStatus.REMOVED, DatasetStatus.REMOVED]
+    )
+    record = replace(dataset_record, _versions=versions, _versions_loaded=True)
+    with pytest.raises(DatasetVersionNotFoundError, match="has no live versions"):
+        _ = record.latest_version
+
+
+@pytest.mark.parametrize(
+    "name,expected",
+    [
+        ("lst__s3://bucket/", True),
+        ("session_abc_123", True),
+        ("my_dataset", False),
+        ("ds_session_lookalike", False),
+        ("lst_no_double_underscore", False),
+    ],
+)
+def test_is_internal(dataset_record, name, expected):
+    record = replace(dataset_record, name=name)
+    assert record.is_internal is expected
+
+
+@pytest.mark.parametrize(
+    "status,expected",
+    [
+        (DatasetStatus.REMOVED, True),
+        (DatasetStatus.COMPLETE, False),
+        (DatasetStatus.CREATED, False),
+        (DatasetStatus.FAILED, False),
+        (DatasetStatus.STALE, False),
+        (DatasetStatus.PENDING, False),
+    ],
+)
+def test_is_removed(dataset_record, status, expected):
+    version = replace(dataset_record.versions[0], status=status)
+    assert version.is_removed is expected
+
+
+def _versions_from_pairs(dataset_record, pairs):
+    return [
+        replace(
+            dataset_record.versions[0],
+            id=i + 1,
+            version=version,
+            status=status,
+        )
+        for i, (version, status) in enumerate(pairs)
+    ]
+
+
+def test_latest_major_version_returns_max_within_major(dataset_record):
+    versions = _versions_from_pairs(
+        dataset_record,
+        [
+            ("1.4.1", DatasetStatus.COMPLETE),
+            ("2.0.1", DatasetStatus.COMPLETE),
+            ("2.1.1", DatasetStatus.COMPLETE),
+            ("2.4.0", DatasetStatus.COMPLETE),
+        ],
+    )
+    record = replace(dataset_record, _versions=versions, _versions_loaded=True)
+    assert record.latest_major_version(2) == "2.4.0"
+    assert record.latest_major_version(1) == "1.4.1"
+
+
+def test_latest_major_version_missing_returns_none(dataset_record):
+    versions = _versions_from_pairs(
+        dataset_record,
+        [("1.0.0", DatasetStatus.COMPLETE), ("2.0.0", DatasetStatus.COMPLETE)],
+    )
+    record = replace(dataset_record, _versions=versions, _versions_loaded=True)
+    assert record.latest_major_version(3) is None
+
+
+def test_latest_major_version_skips_removed(dataset_record):
+    versions = _versions_from_pairs(
+        dataset_record,
+        [
+            ("2.0.0", DatasetStatus.COMPLETE),
+            ("2.1.0", DatasetStatus.COMPLETE),
+            ("2.4.0", DatasetStatus.REMOVED),
+        ],
+    )
+    record = replace(dataset_record, _versions=versions, _versions_loaded=True)
+    assert record.latest_major_version(2) == "2.1.0"
+
+
+def test_latest_compatible_version_returns_max_matching(dataset_record):
+    versions = _versions_from_pairs(
+        dataset_record,
+        [
+            ("1.0.0", DatasetStatus.COMPLETE),
+            ("1.5.2", DatasetStatus.COMPLETE),
+            ("2.0.0", DatasetStatus.COMPLETE),
+            ("2.5.0", DatasetStatus.COMPLETE),
+        ],
+    )
+    record = replace(dataset_record, _versions=versions, _versions_loaded=True)
+    assert record.latest_compatible_version(">=1.0.0,<2.0.0") == "1.5.2"
+    assert record.latest_compatible_version(">=2.0.0") == "2.5.0"
+
+
+def test_latest_compatible_version_no_match_returns_none(dataset_record):
+    versions = _versions_from_pairs(
+        dataset_record,
+        [("1.0.0", DatasetStatus.COMPLETE), ("2.0.0", DatasetStatus.COMPLETE)],
+    )
+    record = replace(dataset_record, _versions=versions, _versions_loaded=True)
+    assert record.latest_compatible_version(">=3.0.0") is None
+
+
+def test_latest_compatible_version_skips_removed(dataset_record):
+    versions = _versions_from_pairs(
+        dataset_record,
+        [
+            ("1.0.0", DatasetStatus.COMPLETE),
+            ("1.5.0", DatasetStatus.REMOVED),
+        ],
+    )
+    record = replace(dataset_record, _versions=versions, _versions_loaded=True)
+    assert record.latest_compatible_version(">=1.0.0,<2.0.0") == "1.0.0"
+
+
+def test_dataset_list_record_latest_version_returns_max_live(dataset_list_record):
+    assert dataset_list_record.latest_version().version == "2.0.0"
+
+
+def test_dataset_list_record_latest_version_skips_removed(dataset_list_record):
+    v3 = replace(
+        dataset_list_record.versions[0],
+        id=3,
+        version="3.0.0",
+        status=DatasetStatus.REMOVED,
+    )
+    record = replace(
+        dataset_list_record,
+        versions=[*dataset_list_record.versions, v3],
+    )
+    assert record.latest_version().version == "2.0.0"
+
+
+def test_dataset_list_record_latest_version_all_removed_raises(dataset_list_record):
+    versions = [
+        replace(v, status=DatasetStatus.REMOVED) for v in dataset_list_record.versions
+    ]
+    record = replace(dataset_list_record, versions=versions)
+    with pytest.raises(DatasetVersionNotFoundError, match="has no live versions"):
+        record.latest_version()
+
+
+@pytest.mark.parametrize(
+    "prop,expected",
+    [
+        ("next_version_major", "1.0.0"),
+        ("next_version_minor", "1.0.0"),
+        ("next_version_patch", "1.0.0"),
+    ],
+)
+def test_next_version_empty(dataset_record, prop, expected):
+    record = replace(dataset_record, _versions=[], _versions_loaded=True)
+    assert getattr(record, prop) == expected
+
+
+def test_next_version_skips_removed(dataset_record):
+    # Existing semvers: 1.0.0 (COMPLETE), 2.0.0 (REMOVED). The REMOVED slot is
+    # the highest one - bumps must skip it. Counter-example mutation that
+    # ignores REMOVED would compute bumps off the live max (1.0.0) and return
+    # 2.0.0 / 1.1.0 / 1.0.1; the assertions below force the real reservation.
+    versions = _versions_with_statuses(
+        dataset_record, [DatasetStatus.COMPLETE, DatasetStatus.REMOVED]
+    )
+    record = replace(dataset_record, _versions=versions, _versions_loaded=True)
+    assert record.next_version_major == "3.0.0"
+    assert record.next_version_minor == "2.1.0"
+    assert record.next_version_patch == "2.0.1"
 
 
 @pytest.mark.parametrize(

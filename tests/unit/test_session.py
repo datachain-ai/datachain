@@ -3,7 +3,7 @@ import re
 import pytest
 
 import datachain as dc
-from datachain.dataset import DatasetStatus
+from datachain.dataset import SESSION_DATASET_PREFIX, DatasetStatus
 from datachain.error import DataChainError, DatasetNotFoundError
 from datachain.query.session import Session
 
@@ -31,7 +31,7 @@ def test_ephemeral_dataset_naming(catalog, project):
         session_uuid = f"[0-9a-fA-F]{{{Session.SESSION_UUID_LEN}}}"
         table_uuid = f"[0-9a-fA-F]{{{Session.TEMP_TABLE_UUID_LEN}}}"
 
-        name_prefix = f"{Session.DATASET_PREFIX}{session_name}"
+        name_prefix = f"{SESSION_DATASET_PREFIX}{session_name}"
         pattern = rf"^{name_prefix}_{session_uuid}_{table_uuid}$"
 
         assert re.match(pattern, ds_tmp.name) is not None
@@ -46,7 +46,7 @@ def test_global_session_naming(catalog, project):
     dc.read_values(name=["a"], session=global_session).save(fqn)
     tmp_name = global_session.generate_temp_dataset_name()
     ds_tmp = dc.read_dataset(fqn, session=global_session).save(tmp_name)
-    global_prefix = f"{Session.DATASET_PREFIX}{Session.GLOBAL_SESSION_NAME}"
+    global_prefix = f"{SESSION_DATASET_PREFIX}{Session.GLOBAL_SESSION_NAME}"
     pattern = rf"^{global_prefix}_{session_uuid}_{table_uuid}$"
     assert re.match(pattern, ds_tmp.name) is not None
 
@@ -79,7 +79,7 @@ def test_ephemeral_dataset_lifecycle(catalog, project):
 
         assert ds_tmp.name != "my_test_ds12"
         assert ds_tmp.name is not None
-        assert ds_tmp.name.startswith(Session.DATASET_PREFIX)
+        assert ds_tmp.name.startswith(SESSION_DATASET_PREFIX)
         assert session_name in ds_tmp.name
 
         ds = catalog.get_dataset(ds_tmp.name)

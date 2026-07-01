@@ -190,6 +190,7 @@ def handle_dataset_command(args, catalog):
             team=args.team,
             latest_only=not args.versions,
             name=args.name,
+            include_removed=args.include_removed,
         ),
         "rm": lambda: rm_dataset(
             catalog,

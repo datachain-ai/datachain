@@ -59,6 +59,7 @@ from datachain.dataset import (
 )
 from datachain.error import (
     CheckpointNotFoundError,
+    ConcurrentDatasetModificationError,
     DataChainError,
     DatasetNotFoundError,
     NamespaceDeleteNotAllowedError,
@@ -319,9 +320,16 @@ class AbstractMetastore(ABC, Serializable):
 
     @abstractmethod
     def update_dataset_version(
-        self, dataset: DatasetRecord, version: str, **kwargs
-    ) -> DatasetVersion:
-        """Updates dataset version fields."""
+        self,
+        dataset: DatasetRecord,
+        version: str,
+        *,
+        expected_status: int | None = None,
+        **kwargs,
+    ) -> DatasetVersion | None:
+        """Updates dataset version fields. When ``expected_status`` is given
+        the UPDATE only applies if the row's current status equals that value;
+        returns None if no row matched."""
 
     @abstractmethod
     def remove_dataset_version(
@@ -337,17 +345,22 @@ class AbstractMetastore(ABC, Serializable):
         self, job_id: str | None = None
     ) -> list[tuple[DatasetRecord, str]]:
         """
-        Get incomplete, stale, or removed dataset versions to clean up.
+        Get incomplete, stale, or in-progress removed dataset versions to
+        clean up.
 
         When job_id is provided, returns versions belonging to that specific
         job (used during job failure cleanup).
 
-        When job_id is None, returns all versions that are safe to delete:
+        When job_id is None, returns all versions that need cleanup:
         - Status CREATED, FAILED, STALE where either:
           - the associated job has finished, or
           - there is no associated job (job_id is NULL) and the version is
             older than STALE_CREATED_THRESHOLD_HOURS
-        - Status REMOVING: marked for deletion
+        - Status REMOVING: a remove that didn't finish. GC drops the rows
+          table and then either deletes the version row (if
+          pending_metadata_drop=True) or flips status to REMOVED.
+        - Finalized tombstones (status REMOVED) are not returned - they
+          have no pending cleanup work.
 
         Returns:
             List of (DatasetRecord, version_string) tuples. Each DatasetRecord
@@ -374,9 +387,15 @@ class AbstractMetastore(ABC, Serializable):
 
     @abstractmethod
     def list_datasets(
-        self, project_id: int | None = None
+        self,
+        project_id: int | None = None,
+        include_removed: bool = False,
     ) -> Iterator[DatasetListRecord]:
-        """Lists all datasets in some project or in all projects."""
+        """Lists all datasets in some project or in all projects.
+
+        When ``include_removed=True`` also returns finalized REMOVED
+        tombstones (used by ``dataset ls --include-removed``).
+        """
 
     @abstractmethod
     def count_datasets(self, project_id: int | None = None) -> int:
@@ -433,16 +452,22 @@ class AbstractMetastore(ABC, Serializable):
         error_message="",
         error_stack="",
         script_output="",
+        expected_status: int | None = None,
     ) -> DatasetRecord:
-        """Updates dataset status and appropriate fields related to status."""
+        """Updates dataset status and appropriate fields related to status.
+        When ``expected_status`` is given the version-level UPDATE is
+        guarded by ``status = :expected``; if no version row matches, raises
+        :class:`DataChainError` before touching the dataset-level row."""
 
     @abstractmethod
     def mark_job_dataset_versions_as_failed(self, job_id: str) -> None:
         """
-        Mark all non-COMPLETE dataset versions created by a job as FAILED.
+        Flip CREATED dataset versions belonging to a failed job to FAILED.
 
-        This is called when a job fails to ensure that any dataset versions
-        it was creating are marked as failed rather than left in CREATED state.
+        Only the in-flight CREATED state is touched. Terminal states
+        (COMPLETE, FAILED, REMOVED) are left as-is - otherwise tombstones
+        from a user-issued delete inside the failing job would be
+        resurrected as FAILED and then wiped by GC.
 
         Args:
             job_id: ID of the failed job whose dataset versions should be marked
@@ -474,9 +499,13 @@ class AbstractMetastore(ABC, Serializable):
 
     @abstractmethod
     def get_direct_dataset_dependencies(
-        self, dataset: DatasetRecord, version: str
+        self,
+        dataset: DatasetRecord,
+        version: str,
     ) -> list[DatasetDependency | None]:
-        """Gets direct dataset dependencies."""
+        """Gets direct dataset dependencies. Each returned ``DatasetDependency``
+        carries a ``removed`` flag so callers can filter or badge tombstoned
+        deps without a separate query."""
 
     @abstractmethod
     def get_dataset_dependency_nodes(
@@ -848,6 +877,8 @@ class AbstractDBMetastore(AbstractMetastore):
             Column("schema", JSON, nullable=True),
             Column("job_id", Text, nullable=True),
             Column("content_hash", Text, nullable=True),
+            Column("removed_at", DateTime(timezone=True), nullable=True),
+            Column("pending_metadata_drop", Boolean, nullable=False, default=False),
             UniqueConstraint("dataset_id", "version"),
         ]
 
@@ -1312,6 +1343,7 @@ class AbstractDBMetastore(AbstractMetastore):
             preview=json.dumps(preview or []),
             job_id=job_id or os.getenv("DATACHAIN_JOB_ID"),
             content_hash=content_hash,
+            pending_metadata_drop=False,
         )
         if ignore_if_exists:
             query = query.on_conflict_do_nothing(  # type: ignore[attr-defined]
@@ -1394,9 +1426,14 @@ class AbstractDBMetastore(AbstractMetastore):
         return result_ds
 
     def update_dataset_version(
-        self, dataset: DatasetRecord, version: str, **kwargs
-    ) -> DatasetVersion:
-        """Updates dataset fields."""
+        self,
+        dataset: DatasetRecord,
+        version: str,
+        *,
+        expected_status: int | None = None,
+        **kwargs,
+    ) -> DatasetVersion | None:
+        """Updates dataset version fields."""
         logger.debug(
             "Metastore.update_dataset_version called for %s@%s: "
             "num_objects=%s, size=%s, preview_len=%s, all_fields=%s",
@@ -1453,10 +1490,10 @@ class AbstractDBMetastore(AbstractMetastore):
                 values[field] = value
                 version_values[field] = value
 
-        dataset_version = dataset.get_version(version)
+        version_obj = dataset.get_version(version)
 
         if not values:
-            return dataset_version
+            return version_obj
 
         logger.debug(
             "Writing to database for %s@%s: num_objects=%s, size=%s, "
@@ -1470,23 +1507,26 @@ class AbstractDBMetastore(AbstractMetastore):
         )
 
         dv = self._datasets_versions
-        self.db.execute(
-            self._datasets_versions_update()
-            .where(dv.c.dataset_id == dataset.id, dv.c.version == version)
-            .values(values),
-        )  # type: ignore [attr-defined]
+        update_stmt = self._datasets_versions_update().where(
+            dv.c.dataset_id == dataset.id, dv.c.version == version
+        )
+        if expected_status is not None:
+            update_stmt = update_stmt.where(dv.c.status == expected_status)
+        result = self.db.execute(update_stmt.values(values))  # type: ignore [attr-defined]
+        if expected_status is not None and result.rowcount == 0:  # type: ignore [attr-defined]
+            return None
 
-        dataset_version.update(**version_values)
+        version_obj.update(**version_values)
         logger.debug(
             "Dataset version updated successfully: %s@%s, "
             "final_num_objects=%s, final_size=%s, has_preview=%s",
             dataset.name,
             version,
-            dataset_version.num_objects,
-            dataset_version.size,
-            bool(getattr(dataset_version, "_preview_data", None)),
+            version_obj.num_objects,
+            version_obj.size,
+            bool(getattr(version_obj, "_preview_data", None)),
         )
-        return dataset_version
+        return version_obj
 
     def _parse_dataset(
         self,
@@ -1549,6 +1589,7 @@ class AbstractDBMetastore(AbstractMetastore):
         include_incomplete: bool = True,
         include_preview: bool = False,
         versions: Sequence[str] | None = None,
+        include_removed: bool = False,
     ) -> "Select":
         if not (
             self.db.has_table(self._datasets.name)
@@ -1570,12 +1611,15 @@ class AbstractDBMetastore(AbstractMetastore):
             j = n.join(p, n.c.id == p.c.namespace_id).join(d, p.c.id == d.c.project_id)
             query = query.select_from(j)
             if not include_incomplete:
+                allowed = [DatasetStatus.COMPLETE]
+                if include_removed:
+                    allowed.append(DatasetStatus.REMOVED)
                 query = query.where(
                     select(literal(1))
                     .where(
                         and_(
                             dv.c.dataset_id == d.c.id,
-                            dv.c.status == DatasetStatus.COMPLETE,
+                            dv.c.status.in_(allowed),
                         )
                     )
                     .exists()
@@ -1599,8 +1643,12 @@ class AbstractDBMetastore(AbstractMetastore):
         # Build join condition with status filter
         join_condition = d.c.id == dv.c.dataset_id
         if not include_incomplete:
-            # Only include COMPLETE dataset versions (hide CREATED/FAILED)
-            join_condition = and_(join_condition, dv.c.status == DatasetStatus.COMPLETE)
+            # COMPLETE by default (hide CREATED/FAILED); include finalized
+            # REMOVED tombstones when explicitly requested.
+            allowed = [DatasetStatus.COMPLETE]
+            if include_removed:
+                allowed.append(DatasetStatus.REMOVED)
+            join_condition = and_(join_condition, dv.c.status.in_(allowed))
 
         j = (
             n.join(p, n.c.id == p.c.namespace_id)
@@ -1635,7 +1683,9 @@ class AbstractDBMetastore(AbstractMetastore):
             versions=versions,
         )
 
-    def _base_list_datasets_query(self, include_incomplete: bool = True) -> "Select":
+    def _base_list_datasets_query(
+        self, include_incomplete: bool = True, include_removed: bool = False
+    ) -> "Select":
         return self._get_dataset_query(
             self._namespaces_fields,
             self._projects_fields,
@@ -1643,24 +1693,41 @@ class AbstractDBMetastore(AbstractMetastore):
             self._dataset_list_version_fields,
             isouter=False,
             include_incomplete=include_incomplete,
+            include_removed=include_removed,
         )
 
     def list_datasets(
-        self, project_id: int | None = None
+        self,
+        project_id: int | None = None,
+        include_removed: bool = False,
     ) -> Iterator["DatasetListRecord"]:
         d = self._datasets
-        query = self._base_list_datasets_query(include_incomplete=False).order_by(
-            self._datasets.c.name, self._datasets_versions.c.version
-        )
+        query = self._base_list_datasets_query(
+            include_incomplete=False, include_removed=include_removed
+        ).order_by(self._datasets.c.name, self._datasets_versions.c.version)
         if project_id:
             query = query.where(d.c.project_id == project_id)
         yield from self._parse_dataset_list(self.db.execute(query))
 
     def count_datasets(self, project_id: int | None = None) -> int:
         d = self._datasets
+        dv = self._datasets_versions
         query = self._datasets_select()
         if project_id:
             query = query.where(d.c.project_id == project_id)
+
+        # Only count datasets that still have at least one non-removed
+        # version. Tombstones-only datasets are user-invisible and would
+        # otherwise block project deletion.
+        live_version_exists = (
+            select(1)
+            .where(
+                dv.c.dataset_id == d.c.id,
+                dv.c.status.notin_([DatasetStatus.REMOVING, DatasetStatus.REMOVED]),
+            )
+            .exists()
+        )
+        query = query.where(live_version_exists)
 
         query = select(f.count(1)).select_from(query.subquery())
 
@@ -1765,14 +1832,31 @@ class AbstractDBMetastore(AbstractMetastore):
             self.remove_dataset_dependencies(dataset, version)
             self.remove_dataset_dependants(dataset, version)
 
+            # Lock the parent dataset row so concurrent saves of a new
+            # version can't sneak in between the count and the delete-
+            # if-empty below. No-op on SQLite (writes are already
+            # serialized at the database level).
+            self.db.execute(
+                select(d.c.id).where(d.c.id == dataset.id).with_for_update()
+            )
+
             self.db.execute(
                 self._datasets_versions_delete().where(
                     (dv.c.dataset_id == dataset.id) & (dv.c.version == version)
                 )
             )
 
-            if dataset.versions and len(dataset.versions) == 1:
-                # had only one version, fully deleting dataset
+            # Count in DB: in-memory dataset.versions may hold only this
+            # version (GC fetches versions one-by-one), so its length is
+            # unreliable.
+            remaining = next(
+                self.db.execute(
+                    select(f.count())
+                    .select_from(dv)
+                    .where(dv.c.dataset_id == dataset.id)
+                )
+            )[0]
+            if remaining == 0:
                 self.db.execute(self._datasets_delete().where(d.c.id == dataset.id))
 
         dataset.remove_version(version)
@@ -1831,7 +1915,6 @@ class AbstractDBMetastore(AbstractMetastore):
             )
             .where(
                 or_(
-                    # Incomplete/failed/stale versions from finished jobs
                     and_(
                         dv.c.status.in_(
                             [
@@ -1903,6 +1986,7 @@ class AbstractDBMetastore(AbstractMetastore):
         error_message="",
         error_stack="",
         script_output="",
+        expected_status: int | None = None,
     ) -> DatasetRecord:
         """
         Updates dataset status and appropriate fields related to status
@@ -1919,29 +2003,43 @@ class AbstractDBMetastore(AbstractMetastore):
             update_data["error_message"] = error_message
             update_data["error_stack"] = error_stack
 
-        dataset = self.update_dataset(dataset, **update_data)
+        with self.db.transaction():
+            if version:
+                # Two-step write: first the version row (with the optional
+                # status guard), then the parent dataset row below. If the
+                # guard fails, abort before the second step.
+                updated = self.update_dataset_version(
+                    dataset,
+                    version,
+                    expected_status=expected_status,
+                    **update_data,
+                )
+                if expected_status is not None and updated is None:
+                    raise ConcurrentDatasetModificationError(
+                        f"Could not update status of {dataset.name}@{version}: "
+                        f"current status is not {expected_status}"
+                    )
 
-        if version:
-            self.update_dataset_version(dataset, version, **update_data)
-
-        return dataset
+            # Step 2: mirror the same fields onto the parent dataset row.
+            return self.update_dataset(dataset, **update_data)
 
     def mark_job_dataset_versions_as_failed(self, job_id: str) -> None:
         """
-        Mark all non-COMPLETE dataset versions created by a job as FAILED.
+        Finalize dataset versions still in CREATED for a failed job as FAILED.
 
-        This is called when a job fails to ensure that any dataset versions
-        it was creating are marked as failed rather than left in CREATED state.
+        Only flips the in-flight CREATED state. Terminal states
+        (COMPLETE, FAILED, REMOVED) must not be overwritten - otherwise
+        tombstones from a user-issued delete inside the failing job
+        would be resurrected as FAILED and then wiped by GC.
 
         Args:
             job_id: ID of the failed job whose dataset versions should be marked
         """
         dv = self._datasets_versions
 
-        # Update status to FAILED for all non-COMPLETE versions with this job_id
         update_stmt = (
             dv.update()
-            .where((dv.c.job_id == job_id) & (dv.c.status != DatasetStatus.COMPLETE))
+            .where((dv.c.job_id == job_id) & (dv.c.status == DatasetStatus.CREATED))
             .values(
                 status=DatasetStatus.FAILED,
                 finished_at=datetime.now(timezone.utc),
@@ -2019,7 +2117,9 @@ class AbstractDBMetastore(AbstractMetastore):
         """
 
     def get_direct_dataset_dependencies(
-        self, dataset: DatasetRecord, version: str
+        self,
+        dataset: DatasetRecord,
+        version: str,
     ) -> list[DatasetDependency | None]:
         n = self._namespaces
         p = self._projects
@@ -2031,6 +2131,10 @@ class AbstractDBMetastore(AbstractMetastore):
 
         select_cols = self._dataset_dependencies_select_columns()
 
+        where_clause = (dd.c.source_dataset_id == dataset.id) & (
+            dd.c.source_dataset_version_id == dataset_version.id
+        )
+
         query = (
             self._datasets_dependencies_select(*select_cols)
             .select_from(
@@ -2039,10 +2143,7 @@ class AbstractDBMetastore(AbstractMetastore):
                 .join(p, d.c.project_id == p.c.id, isouter=True)
                 .join(n, p.c.namespace_id == n.c.id, isouter=True)
             )
-            .where(
-                (dd.c.source_dataset_id == dataset.id)
-                & (dd.c.source_dataset_version_id == dataset_version.id)
-            )
+            .where(where_clause)
         )
 
         return [self.dependency_class.parse(*r) for r in self.db.execute(query)]
@@ -2843,6 +2944,7 @@ class AbstractDBMetastore(AbstractMetastore):
                 self._projects.c.name == project_name,
                 self._dataset_version_jobs.c.job_id.in_(job_ancestry),
                 self._dataset_version_jobs.c.is_creator.is_(True),
+                self._datasets_versions.c.status == DatasetStatus.COMPLETE,
             )
             .order_by(desc(self._dataset_version_jobs.c.created_at))
             .limit(1)

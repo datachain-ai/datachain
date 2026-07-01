@@ -41,14 +41,16 @@ from datachain.dataset import (
     parse_schema,
 )
 from datachain.error import (
+    ConcurrentDatasetModificationError,
     DataChainError,
     DatasetInvalidVersionError,
     DatasetNotFoundError,
     DatasetVersionNotFoundError,
     NamespaceNotFoundError,
     ProjectNotFoundError,
+    TableMissingError,
 )
-from datachain.lib.listing import get_listing
+from datachain.lib.listing import get_listing, is_listing_dataset
 from datachain.node import DirType, Node, NodeWithPath
 from datachain.nodes_thread_pool import NodesThreadPool
 from datachain.progress import tqdm
@@ -899,6 +901,11 @@ class Catalog:
 
         for attempt in range(1 + max_retries):
             if dataset.has_version(target_version):
+                if dataset.get_version(target_version).is_removed:
+                    raise DatasetInvalidVersionError(
+                        f"Version {target_version} of dataset {name} was "
+                        "removed. Pick a different version."
+                    )
                 raise DatasetInvalidVersionError(
                     f"Version {target_version} already exists in dataset {name}"
                 )
@@ -1082,15 +1089,27 @@ class Catalog:
         This refreshes warehouse-derived metadata first, then marks the version
         as COMPLETE.
         """
-        self.update_dataset_version_with_warehouse_info(dataset, version, **kwargs)
-        self.metastore.update_dataset_status(
-            dataset,
-            DatasetStatus.COMPLETE,
-            version=version,
-            error_message=error_message,
-            error_stack=error_stack,
-            script_output=script_output,
-        )
+        # Guard against a concurrent removal. Two narrow signals reach here:
+        # TableMissingError (rows table dropped between save and finalize)
+        # and ConcurrentDatasetModificationError (expected_status guard
+        # lost to a concurrent state change). Anything else propagates.
+        try:
+            self.update_dataset_version_with_warehouse_info(dataset, version, **kwargs)
+            self.metastore.update_dataset_status(
+                dataset,
+                DatasetStatus.COMPLETE,
+                version=version,
+                error_message=error_message,
+                error_stack=error_stack,
+                script_output=script_output,
+                expected_status=DatasetStatus.CREATED,
+            )
+        except (TableMissingError, ConcurrentDatasetModificationError) as e:
+            raise ConcurrentDatasetModificationError(
+                f"Could not save {dataset.name}@{version}: "
+                "the version was removed or modified before save completed. "
+                "This usually means it was deleted concurrently - please retry."
+            ) from e
 
     def update_dataset(self, dataset: DatasetRecord, **kwargs) -> DatasetRecord:
         """Updates dataset fields."""
@@ -1103,27 +1122,168 @@ class Catalog:
         return dataset_updated
 
     def remove_dataset_version(
-        self, dataset: DatasetRecord, version: str, drop_rows: bool | None = True
-    ) -> None:
-        """
-        Deletes one single dataset version.
-        If it was last version, it removes dataset completely.
-        """
-        if not dataset.has_version(version):
-            return
-        self.metastore.update_dataset_version(
-            dataset, version, status=DatasetStatus.REMOVING
-        )
-        if drop_rows:
-            self.warehouse.drop_dataset_rows_table(dataset, version)
-        dataset = self.metastore.remove_dataset_version(dataset, version)
+        self,
+        dataset: DatasetRecord,
+        version: str,
+        keep_metadata: bool,
+    ) -> bool:
+        """Remove a single dataset version.
 
-    def _remove_versions(self, pairs: Iterable[tuple[DatasetRecord, str]]) -> int:
+        If ``keep_metadata`` is True, drop the warehouse rows but keep the
+        version row so the version number stays reserved. Only allowed for
+        user-facing datasets in COMPLETE, REMOVING, or REMOVED state;
+        internal datasets (``lst__*`` / ``session_*``) ignore the flag and
+        are removed in full.
+
+        If ``keep_metadata`` is False, drop the warehouse rows and the
+        version row. If the version was previously removed with metadata
+        kept, the row is also removed.
+
+        Returns True if this call actually removed the version, False if it
+        was a no-op (already removed, or another caller is handling it).
+        Raises ``DatasetVersionNotFoundError`` if the version does not exist.
+        """
+        v = dataset.get_version(version)
+
+        if keep_metadata and dataset.is_internal:
+            raise DataChainError(
+                f"Internal dataset {dataset.name} cannot be removed "
+                "while keeping metadata"
+            )
+        if keep_metadata:
+            if v.status == DatasetStatus.REMOVING and v.pending_metadata_drop:
+                raise DataChainError(
+                    f"Cannot remove {dataset.name}@{version} with "
+                    "keep_metadata=True: removal with keep_metadata=False "
+                    "is already in progress."
+                )
+            if not (v.status == DatasetStatus.COMPLETE or v.is_removed):
+                raise DataChainError(
+                    f"Cannot remove {dataset.name}@{version} while keeping "
+                    f"metadata: current status is {v.status}, expected "
+                    "COMPLETE, REMOVING or REMOVED"
+                )
+        elif v.status == DatasetStatus.REMOVING and not v.pending_metadata_drop:
+            raise DataChainError(
+                f"Cannot remove {dataset.name}@{version} with "
+                "keep_metadata=False: removal with keep_metadata=True is "
+                "already in progress. Wait for it to finalize and retry."
+            )
+
+        return self._claim_and_remove(
+            dataset, version, expected_status=v.status, keep_metadata=keep_metadata
+        )
+
+    def _claim_and_remove(
+        self,
+        dataset: DatasetRecord,
+        version: str,
+        *,
+        expected_status: int,
+        keep_metadata: bool,
+    ) -> bool:
+        """One guarded UPDATE flips the version to REMOVING with the
+        appropriate ``pending_metadata_drop`` flag, then we drop the rows
+        table (best-effort, idempotent). With ``keep_metadata=False`` we
+        also delete the version row; with ``keep_metadata=True`` we flip
+        status to REMOVED so the tombstone is final and GC stops looking
+        at the row.
+
+        ``keep_metadata=True`` on a version already in REMOVING/REMOVED is
+        a no-op (removal is already in progress or finalized). On REMOVED,
+        ``keep_metadata=False`` escalates the tombstone through REMOVING
+        and then deletes the row. Returns True if a state change happened.
+        """
+        v = dataset.get_version(version)
+
+        if keep_metadata and expected_status in (
+            DatasetStatus.REMOVING,
+            DatasetStatus.REMOVED,
+        ):
+            return False
+
+        claimed = self.metastore.update_dataset_version(
+            dataset,
+            version,
+            expected_status=expected_status,
+            status=DatasetStatus.REMOVING,
+            removed_at=v.removed_at or datetime.now(timezone.utc),
+            pending_metadata_drop=not keep_metadata,
+        )
+        if claimed is None:
+            logger.debug(
+                "Skipped remove of %s@%s: another caller is already handling it",
+                dataset.name,
+                version,
+            )
+            return False
+
+        self.warehouse.drop_dataset_rows_table(dataset, version)
+
+        if keep_metadata:
+            self.metastore.update_dataset_version(
+                dataset, version, status=DatasetStatus.REMOVED
+            )
+        else:
+            self.metastore.remove_dataset_version(dataset, version)
+        return True
+
+    def _remove_versions(
+        self,
+        pairs: Iterable[tuple[DatasetRecord, str]],
+        *,
+        keep_metadata: bool | None = None,
+    ) -> int:
+        """Bulk remove versions (GC, session cleanup, CLI cleanup, job cleanup,
+        user-facing bulk delete).
+
+        When ``keep_metadata`` is None, infers per version:
+        - REMOVING + ``pending_metadata_drop=True``: finish the interrupted
+          wipe (retries rows-table drop, then deletes the version row).
+        - REMOVING + ``pending_metadata_drop=False``: finish the interrupted
+          keep-metadata remove (retries rows-table drop, flips status to
+          REMOVED).
+        - REMOVED: finalized tombstone, nothing to do.
+        - Anything else: wipe (incomplete/failed/stale versions to clean).
+
+        When given explicitly, honors the caller's intent per version, with
+        a downgrade to wipe for cases that can't keep metadata (internal
+        datasets, non-COMPLETE/REMOVING/REMOVED versions) - mirrors
+        ``catalog.remove_dataset`` so batch callers don't have to filter.
+        """
         num_removed = 0
         for dataset, version in pairs:
             try:
-                self.remove_dataset_version(dataset, version)
-                num_removed += 1
+                v = dataset.get_version(version)
+                if v.status == DatasetStatus.REMOVED:
+                    continue
+                if v.status == DatasetStatus.REMOVING:
+                    if v.pending_metadata_drop:
+                        keep = False
+                    elif keep_metadata is None:
+                        self.warehouse.drop_dataset_rows_table(dataset, version)
+                        self.metastore.update_dataset_version(
+                            dataset, version, status=DatasetStatus.REMOVED
+                        )
+                        continue
+                    else:
+                        keep = keep_metadata
+                elif keep_metadata is None:
+                    keep = False
+                else:
+                    keep = keep_metadata
+                if keep and (
+                    dataset.is_internal
+                    or v.status
+                    not in (
+                        DatasetStatus.COMPLETE,
+                        DatasetStatus.REMOVING,
+                        DatasetStatus.REMOVED,
+                    )
+                ):
+                    keep = False
+                if self.remove_dataset_version(dataset, version, keep_metadata=keep):
+                    num_removed += 1
             except Exception as e:  # noqa: BLE001
                 logger.warning(
                     "Failed to remove dataset %s version %s: %s",
@@ -1134,13 +1294,17 @@ class Catalog:
         return num_removed
 
     def remove_dataset_versions(
-        self, job_id: str | None = None, version_ids: list[int] | None = None
+        self,
+        job_id: str | None = None,
+        version_ids: list[int] | None = None,
+        *,
+        keep_metadata: bool | None = None,
     ) -> int:
         versions_to_remove = self.metastore.get_dataset_versions(
             job_id=job_id,
             version_ids=version_ids,
         )
-        return self._remove_versions(versions_to_remove)
+        return self._remove_versions(versions_to_remove, keep_metadata=keep_metadata)
 
     def get_temp_table_names(self) -> list[str]:
         return self.warehouse.get_temp_table_names()
@@ -1159,8 +1323,12 @@ class Catalog:
         Clean up dataset versions that are no longer needed.
 
         Removes dataset versions that:
-        - Have status CREATED, FAILED, STALE, or REMOVING
-        - Belong to completed/failed/canceled jobs (not running)
+        - Have status CREATED, FAILED, or STALE and belong to a finished job
+        - Have status REMOVING with ``pending_metadata_drop=True``
+          (interrupted wipe: GC drops the rows table and deletes the row)
+        - Have status REMOVING with ``pending_metadata_drop=False``
+          (interrupted keep-metadata remove: GC drops the rows table and
+          flips status to REMOVED)
         - Are session_* datasets from finished jobs (orphaned intermediates)
 
         Returns:
@@ -1271,7 +1439,6 @@ class Catalog:
         include_incomplete: bool = True,
         include_preview: bool = False,
     ) -> DatasetRecord:
-        from datachain.lib.listing import is_listing_dataset
 
         namespace_name = namespace_name or self.metastore.default_namespace_name
         project_name = project_name or self.metastore.default_project_name
@@ -1427,10 +1594,7 @@ class Catalog:
         dataset_version_id = dataset_version.id
 
         if not indirect:
-            return self.metastore.get_direct_dataset_dependencies(
-                dataset,
-                version,
-            )
+            return self.metastore.get_direct_dataset_dependencies(dataset, version)
 
         return self.get_dataset_dependencies_by_ids(
             dataset_id,
@@ -1444,6 +1608,7 @@ class Catalog:
         include_listing: bool = False,
         studio: bool = False,
         project: Project | None = None,
+        include_removed: bool = False,
     ) -> Iterator[DatasetListRecord]:
         from datachain.query.session import Session
         from datachain.remote.studio import StudioClient
@@ -1468,7 +1633,9 @@ class Catalog:
                 prefix, project_id=project_id
             )
         else:
-            datasets = self.metastore.list_datasets(project_id=project_id)
+            datasets = self.metastore.list_datasets(
+                project_id=project_id, include_removed=include_removed
+            )
 
         for d in datasets:
             if Session.is_temp_dataset(d.name):
@@ -1516,7 +1683,7 @@ class Catalog:
         Returns list of ListingInfo objects which are representing specific
         storage listing datasets
         """
-        from datachain.lib.listing import LISTING_PREFIX, is_listing_dataset
+        from datachain.lib.listing import LISTING_PREFIX
         from datachain.lib.listing_info import ListingInfo
 
         if prefix and not prefix.startswith(LISTING_PREFIX):
@@ -1594,6 +1761,7 @@ class Catalog:
             namespace_name=project.namespace.name if project else None,
             project_name=project.name if project else None,
             versions=[version],
+            include_incomplete=False,
         )
 
         self.warehouse.export_dataset_table(
@@ -1611,6 +1779,7 @@ class Catalog:
         project: Project | None = None,
         version: str | None = None,
         force: bool | None = False,
+        keep_metadata: bool = True,
     ):
         dataset = self.get_dataset(
             name,
@@ -1625,15 +1794,21 @@ class Catalog:
                 f"Dataset {name} doesn't have version {version}"
             )
 
-        if version:
-            self.remove_dataset_version(dataset, version)
-            return
-
-        for v in dataset.versions:
-            version = v.version
+        versions = [version] if version else [v.version for v in dataset.versions]
+        for ver in versions:
+            v = dataset.get_version(ver)
+            # keep_metadata only has meaning for user-facing datasets whose
+            # version reached COMPLETE; elsewhere there's no semver/lineage
+            # to preserve, so downgrade to wipe transparently.
+            effective_keep = (
+                keep_metadata
+                and not dataset.is_internal
+                and (v.status == DatasetStatus.COMPLETE or v.is_removed)
+            )
             self.remove_dataset_version(
                 dataset,
-                version,
+                ver,
+                keep_metadata=effective_keep,
             )
 
     def edit_dataset(
@@ -1804,8 +1979,22 @@ class Catalog:
                         self._instantiate_dataset(ds_uri, output, force, client_config)
                     return
 
+                if ver.is_removed:
+                    ds_uri = create_dataset_uri(
+                        ds.name,
+                        ds.project.namespace.name,
+                        ds.project.name,
+                        ver.version,
+                    )
+                    raise DataChainError(
+                        f"Cannot pull into {ds_uri}: that version was "
+                        "previously removed locally. Pull into a different "
+                        "version. To inspect the removed version, run "
+                        f"'datachain dataset ls {ds.name} --include-removed'."
+                    )
+
                 print("Cleaning up stale existing dataset version")
-                self.remove_dataset_version(ds, ver.version)
+                self.remove_dataset_version(ds, ver.version, keep_metadata=False)
             except DatasetNotFoundError:
                 pass
 
@@ -1840,6 +2029,15 @@ class Catalog:
                 )
                 if local_dataset.has_version(local_ds_version):
                     local_ver = local_dataset.get_version(local_ds_version)
+                    if local_ver.is_removed:
+                        raise DataChainError(
+                            f"Cannot pull into {local_ds_uri}: that version "
+                            "was previously removed locally. Pull into a "
+                            "different version. To inspect the removed "
+                            "version, run "
+                            f"'datachain dataset ls {local_dataset.name} "
+                            "--include-removed'."
+                        )
                     if local_ver.status != DatasetStatus.COMPLETE:
                         # Stale incomplete version from a different UUID —
                         # clean it up so this pull can proceed.
@@ -1847,7 +2045,9 @@ class Catalog:
                             "Cleaning up stale incomplete version "
                             f"(uuid={local_ver.uuid})"
                         )
-                        self.remove_dataset_version(local_dataset, local_ds_version)
+                        self.remove_dataset_version(
+                            local_dataset, local_ds_version, keep_metadata=False
+                        )
                     else:
                         raise DataChainError(
                             f"Local dataset {local_ds_uri} already exists with"
