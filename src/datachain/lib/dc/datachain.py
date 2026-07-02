@@ -17,6 +17,8 @@ from typing import (
     Literal,
     TypeVar,
     cast,
+    get_args,
+    get_origin,
     overload,
 )
 
@@ -566,6 +568,68 @@ class DataChain:
             column = f"{col}_expl"
 
         return self.map(json_to_model, params=col, output={column: model})
+
+    def unnest(self, col: str) -> "DataChain":
+        """Expands a list column into rows, one row per element. Sibling columns are
+        repeated for each emitted row. The element type is inferred from the column's
+        declared type. Empty lists and ``None`` values drop the source row.
+
+        Equivalent to SQL ``UNNEST``, pandas ``.explode()``, Spark ``explode``.
+
+        Example:
+            ```py
+            # rows: {id: 1, items: [a, b]}, {id: 2, items: [c]}
+            chain.unnest("items")
+            # rows: {id: 1, items: a}, {id: 1, items: b}, {id: 2, items: c}
+            ```
+
+        Args:
+            col: name of a top-level column whose type is ``list[T]``.
+
+        Returns:
+            DataChain: A new DataChain with one row per element of ``col``.
+        """
+        schema = self.signals_schema.clone_without_sys_signals()
+        if col not in schema.values:
+            raise SignalResolvingError([col], "is not a top-level column")
+
+        col_type, _ = unwrap_optional(schema.values[col])
+        origin = get_origin(col_type)
+        if origin is not list:
+            raise TypeError(
+                f"unnest() expects a list column; column {col!r} has type "
+                f"{schema.values[col]!r}"
+            )
+        type_args = get_args(col_type)
+        if not type_args:
+            raise TypeError(
+                f"unnest() needs an element type for {col!r}; got bare {col_type!r}"
+            )
+        elem_type = type_args[0]
+        elem_is_model = isinstance(elem_type, type) and issubclass(elem_type, BaseModel)
+
+        siblings = [name for name in schema.values if name != col]
+        params = [*siblings, col]
+        output = {name: schema.values[name] for name in siblings}
+        output[col] = elem_type
+
+        def _coerce(item):
+            if elem_is_model and isinstance(item, dict):
+                return elem_type(**item)
+            return item
+
+        def _unnest(*args):
+            items = args[-1]
+            if not items:
+                return
+            if siblings:
+                for item in items:
+                    yield (*args[:-1], _coerce(item))
+            else:
+                for item in items:
+                    yield _coerce(item)
+
+        return self.gen(_unnest, params=params, output=output)
 
     @property
     def namespace_name(self) -> str:
