@@ -10,7 +10,7 @@ from pyarrow.dataset import CsvFileFormat, dataset
 from datachain import json
 from datachain.fs.reference import ReferenceFileSystem
 from datachain.lib.convert.flatten import classify_field, iter_flat_columns
-from datachain.lib.data_model import dict_to_data_model, union_layout, union_slot_key
+from datachain.lib.data_model import arm_selector, dict_to_data_model, union_layout
 from datachain.lib.file import ArrowRow, File
 from datachain.lib.model_store import ModelStore
 from datachain.lib.signal_schema import SignalSchema
@@ -304,7 +304,7 @@ def _infer_active_arm(
 ) -> int | None:
     """Active arm inferred from non-null columns when the _type_tag is absent."""
     for i, arm in enumerate(layout.arms):
-        arm_prefix = f"{prefix}.{union_slot_key(i)}" if layout.use_slots else prefix
+        arm_prefix = f"{prefix}.{arm_selector(arm)}" if layout.use_slots else prefix
         if (fr := ModelStore.to_pydantic(arm)) is not None:
             if not _subtree_all_none(column_values, fr, arm_prefix):
                 return i
@@ -327,7 +327,7 @@ def _union_value(
     if active is None or active >= len(layout.arms):
         return None
     arm = layout.arms[active]
-    arm_prefix = f"{prefix}.{union_slot_key(active)}" if layout.use_slots else prefix
+    arm_prefix = f"{prefix}.{arm_selector(arm)}" if layout.use_slots else prefix
     if (fr := ModelStore.to_pydantic(arm)) is not None:
         return _nested_model_instantiate(column_values, fr, arm_prefix)
     return column_values.get(arm_prefix)

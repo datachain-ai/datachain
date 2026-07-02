@@ -23,7 +23,6 @@ from datachain.lib.data_model import (
     is_chain_type,
     union_arms,
     union_layout,
-    union_slot_key,
 )
 from datachain.lib.model_store import ModelStore
 from datachain.lib.signal_schema import SignalSchema, SignalSchemaWarning
@@ -120,20 +119,20 @@ def test_is_chain_type_multiarm_union():
 
 def test_schema_scalar_union_columns():
     schema = SignalSchema({"value": Union[str, int]})
-    # int sorts before str, so _0 = int, _1 = str.
-    assert schema.db_signals() == ["value___type_tag", "value___0", "value___1"]
+    # arms are stored under their type name
+    assert schema.db_signals() == ["value___type_tag", "value__int", "value__str"]
     # The discriminator is hidden from user-facing signals; arm slots are not.
-    assert schema.user_signals() == ["value._0", "value._1"]
+    assert schema.user_signals() == ["value.int", "value.str"]
 
 
 def test_schema_model_union_columns():
     schema = SignalSchema({"item": Union[Foo, Bar]})
-    # Bar ("Bar") sorts before Foo ("Foo").
+    # Bar ("Bar") sorts before Foo ("Foo"); each arm is stored under its model name
     assert schema.db_signals() == [
         "item___type_tag",
-        "item___0__x",
-        "item___1__a",
-        "item___1__b",
+        "item__Bar__x",
+        "item__Foo__a",
+        "item__Foo__b",
     ]
 
 
@@ -152,14 +151,15 @@ def test_arm_selector_stable_across_reload():
 def test_union_arm_leaves_are_nullable():
     cols = SignalSchema({"value": Union[str, int]}).db_signals(as_columns=True)
     by_name = {c.name: c for c in cols}
-    assert by_name["value___0"].type.dc_nullable  # int arm
-    assert by_name["value___1"].type.dc_nullable  # str arm
+    assert by_name["value__int"].type.dc_nullable  # int arm
+    assert by_name["value__str"].type.dc_nullable  # str arm
     assert by_name["value___type_tag"].type.dc_nullable
 
 
-def test_union_slot_key():
-    assert union_slot_key(0) == "_0"
-    assert union_slot_key(3) == "_3"
+def test_arm_selector():
+    assert arm_selector(int) == "int"
+    assert arm_selector(str) == "str"
+    assert arm_selector(Foo) == "Foo"
 
 
 # ---- flatten / unflatten round-trips ---------------------------------------
@@ -262,12 +262,12 @@ def test_signal_schema_union_path_edges():
 
 def test_union_value_infers_arm_when_tag_absent():
     layout = union_layout(Union[Foo, int])
-    fi, ii = layout.arms.index(Foo), layout.arms.index(int)
+    fk, ik = arm_selector(Foo), arm_selector(int)
 
-    foo = _union_value({f"v._{fi}.a": 5, f"v._{fi}.b": "z"}, layout, "v")
+    foo = _union_value({f"v.{fk}.a": 5, f"v.{fk}.b": "z"}, layout, "v")
     assert (foo.a, foo.b) == (5, "z")
 
-    empty_foo = {f"v._{fi}.a": float("nan"), f"v._{fi}.b": None, f"v._{ii}": 9}
+    empty_foo = {f"v.{fk}.a": float("nan"), f"v.{fk}.b": None, f"v.{ik}": 9}
     assert _union_value(empty_foo, layout, "v") == 9
 
-    assert _union_value({f"v._{fi}.a": None, f"v._{ii}": None}, layout, "v") is None
+    assert _union_value({f"v.{fk}.a": None, f"v.{ik}": None}, layout, "v") is None

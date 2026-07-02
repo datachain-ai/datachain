@@ -51,8 +51,6 @@ from datachain.lib.data_model import (
     compute_model_fingerprint,
     skip_optional_promotion,
     union_layout,
-    union_slot_index,
-    union_slot_key,
     unwrap_optional,
 )
 from datachain.lib.file import File
@@ -921,10 +919,14 @@ class SignalSchema:
         if name:
             name = self.to_db_col(name)
 
+            def _raw(s: "str | Column") -> str:
+                # Column.name, not str(Column) — the latter quotes mixed-case names
+                return s.name if isinstance(s, Column) else s
+
             signals = [
                 s
                 for s in signals
-                if str(s) == name or str(s).startswith(f"{name}{DEFAULT_DELIMITER}")
+                if _raw(s) == name or _raw(s).startswith(f"{name}{DEFAULT_DELIMITER}")
             ]
 
         return signals  # type: ignore[return-value]
@@ -1077,9 +1079,10 @@ class SignalSchema:
         return None, None, 0
 
     def resolve_arm_path(self, path: str) -> str | None:
-        """Readable arm path -> positional dotted path, e.g. ``block.name`` ->
-        ``block._2.name``. ``path`` may be dotted or ``__``-joined. None when it is
-        not a multi-arm union arm; raises on an ambiguous field."""
+        """Validate + normalize a readable arm path, e.g. ``block.name`` ->
+        ``block.Text.name`` (arms are stored under their type name). ``path`` may be
+        dotted or ``__``-joined. None when not a multi-arm union arm; raises on an
+        ambiguous field."""
         parts = path.split(".") if "." in path else path.split(DEFAULT_DELIMITER)
         if len(parts) < 2 or parts[0] not in self.values:
             return None
@@ -1094,7 +1097,7 @@ class SignalSchema:
                 if idx is None or arm is None:
                     return None
                 cur = arm
-                out.append(union_slot_key(idx))
+                out.append(arm_selector(arm))
                 rewrote = True
                 i += consumed
             else:
@@ -1107,8 +1110,8 @@ class SignalSchema:
         return ".".join(out) if rewrote else None
 
     def to_db_col(self, name: str) -> str:
-        """Readable signal/arm path -> positional DB column name: resolve a union arm
-        path (``block.name`` -> ``block._2.name``) then join to the ``__`` form."""
+        """Readable signal/arm path -> DB column name, e.g. ``block.name`` ->
+        ``block__Text__name`` (arm stored under its type name)."""
         return ColumnMeta.to_db_name(self.resolve_arm_path(name) or name)
 
     def multiarm_root_error(self, name: str) -> "DataChainColumnError | None":
@@ -1140,26 +1143,22 @@ class SignalSchema:
         return None
 
     def arm_display_path(self, path: list[str]) -> list[str]:
-        """Positional union path -> readable: ``["block", "_2", "name"]`` ->
-        ``["block", "ToolUseBlock", "name"]``. For display only; storage stays
-        positional."""
+        """Readable union path. Arms are stored under their type name (``block.name``,
+        ``block.ToolUseBlock.field``), so this walks the cursor to validate the arm
+        segments and returns the path unchanged."""
         if not path or path[0] not in self.values:
             return path
         cur: DataType = self.values[path[0]]
         out = [path[0]]
         for seg in path[1:]:
             layout = union_layout(cur)
-            if (
-                layout is not None
-                and layout.use_slots
-                and (slot := union_slot_index(seg)) is not None
-                and slot < len(layout.arms)
-            ):
-                cur = layout.arms[slot]
-                out.append(arm_selector(cur))
-            else:
-                out.append(seg)
-                cur = self._field_type(cur, seg)  # type: ignore[assignment]
+            arm = (
+                next((a for a in layout.arms if arm_selector(a) == seg), None)
+                if layout is not None and layout.use_slots
+                else None
+            )
+            out.append(seg)
+            cur = arm if arm is not None else self._field_type(cur, seg)  # type: ignore[assignment]
         return out
 
     def order_by_column(
@@ -1597,13 +1596,13 @@ class SignalSchema:
         subtree: dict[str, tuple[DataType, dict | None]] = {
             SignalSchema._TYPE_TAG_FIELD: sentinel
         }
-        for i, arm in enumerate(layout.arms):
+        for arm in layout.arms:
             arm_sub = (
                 SignalSchema._build_tree_for_model(fr)
                 if (fr := ModelStore.to_pydantic(arm)) is not None
                 else None
             )
-            subtree[union_slot_key(i)] = (arm, arm_sub)
+            subtree[arm_selector(arm)] = (arm, arm_sub)
         return subtree
 
     @staticmethod

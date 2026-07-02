@@ -150,10 +150,9 @@ def test_select_arm_path_on_union_nested_in_model(test_session):
 
     s = dc.read_values(o=[Outer(name="x", val=10)], output={"o": Outer}).save("u_sel")
     whole = s.select("o.val").to_records()
-    # selecting any arm/slot keeps the whole atomic union, same as select('o.val')
+    # selecting any arm keeps the whole atomic union, same as select('o.val')
     assert s.select("o.val.int").to_records() == whole
     assert s.select("o.val.str").to_records() == whole
-    assert s.select("o.val._0").to_records() == whole
 
 
 def test_union_nested_in_model_roundtrip(test_session):
@@ -238,14 +237,14 @@ def test_union_count_present(test_session):
 def test_union_filter_on_arm(test_session):
     chain = _nullable_union(test_session)
     # int sorts before str, so value._0 is the int arm.
-    assert chain.filter(C("value._0") == 42).to_values("value") == [42]
-    assert chain.filter(C("value._1") == "hi").to_values("value") == ["hi"]
+    assert chain.filter(C("value.int") == 42).to_values("value") == [42]
+    assert chain.filter(C("value.str") == "hi").to_values("value") == ["hi"]
 
 
 def test_union_mutate_on_arm(test_session):
     chain = _nullable_union(test_session)
     # value._0 is the int arm: present only for int rows, NULL elsewhere.
-    assert _ordered(chain.mutate(z=C("value._0")), "z") == [
+    assert _ordered(chain.mutate(z=C("value.int")), "z") == [
         (1, None),
         (2, 42),
         (3, None),
@@ -330,7 +329,7 @@ def test_union_select_except_atomic(test_session):
         output={"id": int, "value": Union[str, int], "name": str},
         session=test_session,
     )
-    for arg in ("value.int", "value._0"):
+    for arg in ("value.int", "value.str"):
         with pytest.raises(SignalRemoveError, match="Union is atomic"):
             chain.select_except(arg).to_records()
     assert sorted(chain.select_except("value").to_records()[0]) == ["id", "name"]
@@ -352,7 +351,7 @@ def test_union_root_reference_raises_guard(test_session):
 def test_union_select_keeps_whole_signal(test_session):
     chain = _nullable_union(test_session)
     # A union is atomic: selecting any part keeps the whole value.
-    assert [v for _, v in _ordered(chain.select("id", "value._0"), "value")] == [
+    assert [v for _, v in _ordered(chain.select("id", "value.int"), "value")] == [
         "hi",
         42,
         "yo",
@@ -370,13 +369,13 @@ def test_union_distinct_on_arm(test_session):
         output={"id": int, "value": Union[str, int]},
         session=test_session,
     )
-    assert sorted(chain.distinct("value._1").to_values("value"), key=str) == [
+    assert sorted(chain.distinct("value.str").to_values("value"), key=str) == [
         1,
         2,
         "a",
         "b",
     ]
-    assert chain.distinct("value._1").count() == chain.distinct("value._0").count()
+    assert chain.distinct("value.str").count() == chain.distinct("value.int").count()
 
 
 def test_readable_arm_access_across_ops(test_session):
@@ -643,7 +642,8 @@ def test_window_over_readable_arm_path(test_session):
         w = func.window(partition_by=arm_path, order_by="id")
         return chain.mutate(rn=func.row_number().over(w)).order_by("id").to_values("rn")
 
-    assert row_numbers("value.int") == row_numbers("value._0")
+    # readable arm path and its DB-name form resolve to the same slot
+    assert row_numbers("value.int") == row_numbers("value__int")
 
 
 def test_union_arm_name_collision_errors(test_session):

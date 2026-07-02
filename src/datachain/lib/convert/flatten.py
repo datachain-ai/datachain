@@ -8,8 +8,8 @@ from pydantic import BaseModel
 
 from datachain.lib.data_model import (
     UnionLayout,
+    arm_selector,
     union_layout,
-    union_slot_key,
     unwrap_optional,
 )
 from datachain.lib.model_store import ModelStore
@@ -49,8 +49,8 @@ def iter_flat_columns(
 def _iter_field_columns(anno: Any, path: tuple[str, ...]) -> Iterator[FlatColumn]:
     if (layout := union_layout(anno)) is not None:
         yield FlatColumn(path, True)  # _type_tag
-        for i, arm in enumerate(layout.arms):
-            arm_path = (*path, union_slot_key(i)) if layout.use_slots else path
+        for arm in layout.arms:
+            arm_path = (*path, arm_selector(arm)) if layout.use_slots else path
             if (fr := ModelStore.to_pydantic(arm)) is not None:
                 yield from iter_flat_columns(fr, arm_path)
             else:

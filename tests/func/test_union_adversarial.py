@@ -55,14 +55,14 @@ def test_row_func_over_inactive_arm_is_none(test_session):
     # value._1 is the str arm; for int rows it is NULL, so string length is None
     # (must not coerce to 0 on ClickHouse).
     chain = _si(test_session, [1, 2, 3], ["hi", 42, "yoyo"])
-    got = _vals(chain.mutate(n=func.string.length("value._1")), "n")
+    got = _vals(chain.mutate(n=func.string.length("value.str")), "n")
     assert got == [2, None, 4]
 
 
 def test_arithmetic_over_inactive_arm_is_none(test_session):
     # value._0 is the int arm; NULL + 1 must stay None, not become 1.
     chain = _si(test_session, [1, 2, 3], ["hi", 42, 7])
-    got = _vals(chain.mutate(y=C("value._0") + 1), "y")
+    got = _vals(chain.mutate(y=C("value.int") + 1), "y")
     assert got == [None, 43, 8]
 
 
@@ -70,13 +70,13 @@ def test_cast_over_inactive_arm_is_none(test_session):
     # func.cast over the int arm: int rows cast to str; str rows (inactive int arm,
     # NULL) stay None — must not coerce to "" on ClickHouse (cast targets Nullable).
     chain = _si(test_session, [1, 2, 3], ["hi", 42, "yo"])
-    got = _vals(chain.mutate(c=func.cast("value._0", str)), "c")
+    got = _vals(chain.mutate(c=func.cast("value.int", str)), "c")
     assert got == [None, "42", None]
 
 
 def test_sum_over_arm_leaf(test_session):
     chain = _si(test_session, [1, 2, 3, 4], ["hi", 42, "yo", 7])
-    assert chain.group_by(s=func.sum("value._0")).to_values("s") == [49]
+    assert chain.group_by(s=func.sum("value.int")).to_values("s") == [49]
 
 
 def test_sum_over_all_inactive_partition_is_none(test_session):
@@ -88,14 +88,16 @@ def test_sum_over_all_inactive_partition_is_none(test_session):
         output={"id": int, "g": int, "value": Union[str, int]},
         session=test_session,
     )
-    rows = chain.group_by(s=func.sum("value._0"), partition_by="g").to_records()
+    rows = chain.group_by(s=func.sum("value.int"), partition_by="g").to_records()
     by_g = {r["g"]: r["s"] for r in rows}
     assert by_g == {0: None, 1: 30}
 
 
 def test_min_max_over_arm_leaf(test_session):
     chain = _si(test_session, [1, 2, 3, 4], [5, "x", 2, 9])
-    rows = chain.group_by(lo=func.min("value._0"), hi=func.max("value._0")).to_records()
+    rows = chain.group_by(
+        lo=func.min("value.int"), hi=func.max("value.int")
+    ).to_records()
     assert (rows[0]["lo"], rows[0]["hi"]) == (2, 9)
 
 
@@ -105,13 +107,13 @@ def test_min_max_over_arm_leaf(test_session):
 def test_order_by_arm_leaf_nulls_last(test_session):
     chain = _si(test_session, [1, 2, 3, 4], [5, "x", 2, 9])
     # int values ascending, then the str row (NULL int arm) last on both backends.
-    assert chain.order_by("value._0").to_values("value") == [2, 5, 9, "x"]
+    assert chain.order_by("value.int").to_values("value") == [2, 5, 9, "x"]
 
 
 def test_distinct_arm_leaf_values(test_session):
     chain = _si(test_session, [1, 2, 3, 4, 5], [5, "x", 5, "y", 2])
     got = sorted(
-        v for v in chain.distinct("value._0").to_values("value") if isinstance(v, int)
+        v for v in chain.distinct("value.int").to_values("value") if isinstance(v, int)
     )
     assert got == [2, 5]
 
@@ -353,7 +355,7 @@ def test_group_by_partition_arm_leaf(test_session):
         output={"id": int, "value": Union[str, int]},
         session=test_session,
     )
-    rows = chain.group_by(c=func.count(), partition_by="value._1").to_records()
+    rows = chain.group_by(c=func.count(), partition_by="value.str").to_records()
     counts = sorted(r["c"] for r in rows)
     assert counts == [1, 1, 2]  # group 'a' (2), group 'b' (1), group NULL/int (1)
 

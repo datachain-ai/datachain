@@ -178,8 +178,8 @@ def _is_taggable_arm(arm: Any) -> bool:
 
 class UnionLayout(NamedTuple):
     """Physical layout of a tagged union. ``use_slots`` is True for multi-arm unions
-    (arms in indexed slots ``_0``, ``_1``, ...); False for ``Optional[Model]``, whose
-    single model arm flattens directly under the signal."""
+    (each arm in a column named by its type, ``int``/``Pet``); False for
+    ``Optional[Model]``, whose single model arm flattens directly under the signal."""
 
     arms: tuple[Any, ...]
     has_none: bool
@@ -208,24 +208,23 @@ def _union_layout(anno: Any) -> "UnionLayout | None":
                 f"Union has indistinguishable arms named {dup!r}; arms must have "
                 "distinct type names (rename one of the models)"
             )
+        # each arm is a column named by its type; those names must be unique
+        slots = [arm_selector(arm) for arm in arms]
+        if len(set(slots)) != len(slots):
+            dup = next(s for s in slots if slots.count(s) > 1)
+            raise DataChainParamsError(
+                f"Union arms map to the same column name {dup!r}; rename one arm."
+            )
         return UnionLayout(arms, has_none, use_slots=True)
     if len(arms) == 1 and has_none and ModelStore.is_pydantic(arms[0]):
         return UnionLayout(arms, has_none=True, use_slots=False)
     return None
 
 
-def union_slot_key(index: int) -> str:
-    return f"_{index}"
-
-
-def union_slot_index(seg: str) -> int | None:
-    """Inverse of ``union_slot_key``: the arm index a slot segment names, or None."""
-    return int(seg[1:]) if seg.startswith("_") and seg[1:].isdigit() else None
-
-
 def arm_selector(arm: Any) -> str:
-    """User-facing name of a union arm: a model's stable logical name (reload-safe,
-    survives reading a dataset without the model code) or a scalar type name."""
+    """Name of a union arm — its DB-column slot and its readable-path segment, which
+    are the same. A model's stable logical name (reload-safe, survives reading a
+    dataset without the model code) or a scalar type name."""
     if (fr := ModelStore.to_pydantic(arm)) is not None:
         return ModelStore._base_name(fr)
     return arm.__name__
