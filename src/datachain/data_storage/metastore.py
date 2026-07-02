@@ -300,6 +300,7 @@ class AbstractMetastore(ABC, Serializable):
         job_id: str | None = None,
         uuid: str | None = None,
         content_hash: str | None = None,
+        stats: dict | None = None,
     ) -> tuple[DatasetRecord, bool]:
         """Creates new dataset version.
 
@@ -848,6 +849,11 @@ class AbstractDBMetastore(AbstractMetastore):
             Column("schema", JSON, nullable=True),
             Column("job_id", Text, nullable=True),
             Column("content_hash", Text, nullable=True),
+            # Per-column distribution statistics (row counts, numeric ranges /
+            # histograms, top-K categorical values, ...).  ``None`` means stats
+            # have not been computed yet; they are filled lazily or eagerly
+            # depending on the warehouse backend.
+            Column("stats", JSON, nullable=True),
             UniqueConstraint("dataset_id", "version"),
         ]
 
@@ -1278,6 +1284,7 @@ class AbstractDBMetastore(AbstractMetastore):
         job_id: str | None = None,
         uuid: str | None = None,
         content_hash: str | None = None,
+        stats: dict | None = None,
     ) -> tuple[DatasetRecord, bool]:
         """Creates new dataset version.
 
@@ -1312,6 +1319,7 @@ class AbstractDBMetastore(AbstractMetastore):
             preview=json.dumps(preview or []),
             job_id=job_id or os.getenv("DATACHAIN_JOB_ID"),
             content_hash=content_hash,
+            stats=json.dumps(stats) if stats is not None else None,
         )
         if ignore_if_exists:
             query = query.on_conflict_do_nothing(  # type: ignore[attr-defined]
@@ -1449,6 +1457,9 @@ class AbstractDBMetastore(AbstractMetastore):
                     values[field] = json.dumps(value, serialize_bytes=True)
                 version_values["_preview_data"] = value
                 version_values["_preview_loaded"] = True
+            elif field == "stats":
+                values[field] = json.dumps(value) if value is not None else None
+                version_values[field] = value
             else:
                 values[field] = value
                 version_values[field] = value

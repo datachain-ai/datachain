@@ -306,6 +306,34 @@ def get_parser() -> ArgumentParser:  # noqa: PLR0915
         help="The team to delete a dataset. By default, it will use team from config",
     )
 
+    stats_dataset_parser = datasets_subparser.add_parser(
+        "stats",
+        parents=[parent_parser],
+        description="Show per-column distribution statistics for a dataset.",
+        formatter_class=CustomHelpFormatter,
+    )
+    stats_dataset_parser.add_argument("name", type=str, help="Dataset name")
+    stats_dataset_parser.add_argument(
+        "--version",
+        action="store",
+        default=None,
+        type=str,
+        help="Dataset version (defaults to the latest version)",
+    )
+    stats_dataset_parser.add_argument(
+        "--force",
+        default=False,
+        action="store_true",
+        help="Recompute stats even if a cached value exists",
+    )
+    stats_dataset_parser.add_argument(
+        "--json",
+        dest="as_json",
+        default=False,
+        action="store_true",
+        help="Output raw stats as JSON instead of a formatted table",
+    )
+
     parse_ls = subp.add_parser(
         "ls",
         parents=[parent_parser],

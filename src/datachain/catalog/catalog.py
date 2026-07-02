@@ -1062,10 +1062,64 @@ class Catalog:
                 preview_rows,
             )
 
+        # Compute distribution stats eagerly on backends where it is cheap
+        # (e.g. ClickHouse).  Slow backends (SQLite) leave this for lazy
+        # computation on first access via ``get_dataset_stats``.
+        if self.warehouse.stats_compute_is_cheap() and dataset_version.stats is None:
+            try:
+                values["stats"] = self.warehouse.compute_dataset_stats(dataset, version)
+            except Exception:
+                # Stats are best-effort and must never break dataset creation.
+                logger.warning(
+                    "Failed to compute stats for %s@%s",
+                    dataset.name,
+                    version,
+                    exc_info=True,
+                )
+
         if not values:
             return
 
         self.metastore.update_dataset_version(dataset, version, **values)
+
+    def get_dataset_stats(
+        self,
+        name: str,
+        version: str | None = None,
+        *,
+        namespace_name: str | None = None,
+        project_name: str | None = None,
+        force: bool = False,
+        **compute_kwargs,
+    ) -> dict:
+        """Return per-column distribution statistics for a dataset version.
+
+        Stats are cached on the dataset version: a previously computed value is
+        returned as-is unless ``force=True``.  Otherwise they are computed via
+        the warehouse and persisted for next time.
+        """
+        namespace_name, project_name, name = self.get_full_dataset_name(
+            name, project_name=project_name, namespace_name=namespace_name
+        )
+        dataset = self.get_dataset(
+            name,
+            namespace_name=namespace_name,
+            project_name=project_name,
+            versions=None,
+            include_incomplete=False,
+        )
+        version = version or dataset.latest_version
+        dataset_version = dataset.get_version(version)
+
+        if dataset_version.stats is not None and not force and not compute_kwargs:
+            return dataset_version.stats
+
+        stats = self.warehouse.compute_dataset_stats(dataset, version, **compute_kwargs)
+        # Persist only the default (un-parameterized) computation so the cache
+        # stays consistent with what callers get back by default.
+        if not compute_kwargs:
+            self.metastore.update_dataset_version(dataset, version, stats=stats)
+        return stats
 
     def complete_dataset_version(
         self,
