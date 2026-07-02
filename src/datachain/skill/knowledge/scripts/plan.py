@@ -49,16 +49,13 @@ def plan_datasets(
     dc, db_last_updated: str, studio: bool = False
 ) -> tuple[list[dict], bool]:
     """Plan dataset updates. Returns (datasets_out, up_to_date)."""
-    # Read existing index.md to check timestamp
     index_path = "dc-knowledge/index.md"
     index_fm = read_frontmatter(index_path)
     index_db_updated = index_fm.get("db_last_updated", "")
 
-    # Early exit if timestamps match
     if db_last_updated and db_last_updated == index_db_updated:
         return [], True
 
-    # Collect datasets
     all_datasets = list(collect_datasets(dc, studio=False))
     if studio:
         seen_keys = {(e["name"], e["version"]) for e in all_datasets}
@@ -71,7 +68,6 @@ def plan_datasets(
     # Drop calibration artifacts (see _is_calibration definition above).
     all_datasets = [e for e in all_datasets if not _is_calibration(e)]
 
-    # Group by name
     by_name: dict[str, list[dict]] = {}
     for entry in all_datasets:
         by_name.setdefault(entry["name"], []).append(entry)
@@ -209,7 +205,6 @@ def cmd_plan(studio: bool = False, output: str | None = None):
     """Compute what needs updating and output a JSON plan."""
     dc = dc_import()
 
-    # Get DB mtime
     matches = glob(".datachain/db*")
     if not matches:
         db_last_updated = "1970-01-01T00:00:00Z"
@@ -218,10 +213,8 @@ def cmd_plan(studio: bool = False, output: str | None = None):
         dt = datetime.fromtimestamp(mtime, tz=timezone.utc)
         db_last_updated = dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    # Plan datasets
     datasets_out, datasets_up_to_date = plan_datasets(dc, db_last_updated, studio)
 
-    # Auto-discover buckets from catalog listings
     buckets_out = plan_buckets()
     buckets_up_to_date = not buckets_out or all(
         b["status"] == "ok" for b in buckets_out
