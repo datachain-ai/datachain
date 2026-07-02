@@ -396,18 +396,22 @@ def get_listing_finished_at(uri: str) -> str | None:
         return None
 
 
-def source_to_https(source: str) -> str | None:
+def source_to_https(source: str, account_name: str | None = None) -> str | None:
     """Convert a storage URI to an HTTPS URL prefix for the bucket root.
 
     File paths in listings are relative to the bucket root, so the prefix
     must point to the bucket root — not the subdirectory being listed.
 
-    Returns None for local paths or unrecognized schemes.
+    Returns None for local paths or unrecognized schemes. For `az://`, the
+    netloc is the *container* and the storage account is external config that
+    isn't part of the URI — so a link can only be built when the caller passes
+    `account_name`; without it, az returns None.
 
     Examples:
         s3://my-bucket/prefix/  -> https://my-bucket.s3.amazonaws.com
         gs://demo/data/         -> https://storage.googleapis.com/demo
-        az://acct/container/    -> https://acct.blob.core.windows.net/container
+        az://container/data/    -> https://<account>.blob.core.windows.net/container
+                                   (only when account_name is supplied)
     """
     parts = parse_uri(source)
     scheme = parts["scheme"]
@@ -417,12 +421,6 @@ def source_to_https(source: str) -> str | None:
         return f"https://{bucket}.s3.amazonaws.com"
     if scheme == "gs":
         return f"https://storage.googleapis.com/{bucket}"
-    if scheme == "az":
-        # az://account/container/... → bucket=account, prefix=container/...
-        # Azure needs account + container in the URL
-        prefix = parts["prefix"].rstrip("/")
-        container = prefix.split("/", 1)[0] if prefix else None
-        if container:
-            return f"https://{bucket}.blob.core.windows.net/{container}"
-        return None
+    if scheme == "az" and account_name:
+        return f"https://{account_name}.blob.core.windows.net/{bucket}"
     return None
