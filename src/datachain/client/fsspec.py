@@ -63,6 +63,144 @@ class BucketStatus(NamedTuple):
     error: str | None = None
 
 
+class AnonFallbackFS:
+    """Proxy for an fsspec ``AbstractFileSystem`` that retries read methods
+    on ``PermissionError`` with ``anon=True``, and caches the decision per
+    ``(protocol, bucket)`` so future calls go straight to the right mode.
+
+    Only read methods are wrapped - anon is read-only on every cloud
+    backend, so retrying writes would always fail and would mis-mark the
+    bucket as anon-impossible, defeating the feature for later reads.
+    """
+
+    # fsspec read-side methods we wrap. ``open`` / ``_open`` are also here
+    # but the wrapper checks ``mode`` and skips retry for write modes.
+    READ_METHODS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "_info",
+            "_open",
+            "open",
+            "_cat_file",
+            "_ls",
+            "_get_file",
+            "_glob",
+            "_walk",
+            "_find",
+            "_du",
+            "_size",
+            "_exists",
+            "_isdir",
+            "_isfile",
+            "_modified",
+            "sign",
+        }
+    )
+
+    def __init__(self, client: "Client") -> None:
+        self._client = client
+        kwargs = dict(client.fs_kwargs)
+        if (
+            self._should_use_anon_cache()
+            and client._bucket_needs_anon(client.name) is True
+        ):
+            kwargs["anon"] = True
+        self._inner_fs = type(client).create_fs(**kwargs)
+
+    @property  # type: ignore[misc]
+    def __class__(self):
+        # Pretend to be the underlying fsspec class so isinstance checks
+        # (e.g. pyarrow's ``isinstance(fs, AbstractFileSystem)``) pass.
+        return type(self._inner_fs)
+
+    def __getattr__(self, name: str):
+        attr = getattr(self._inner_fs, name)
+        if not callable(attr) or name not in self.READ_METHODS:
+            return attr
+        if asyncio.iscoroutinefunction(attr):
+            return self._wrap_async(name, attr)
+        return self._wrap_sync(name, attr)
+
+    @staticmethod
+    def _is_write_open(args, kwargs) -> bool:
+        """``open`` / ``_open`` mode arg indicates write/append/exclusive."""
+        mode = args[1] if len(args) >= 2 else kwargs.get("mode", "rb")
+        return any(c in mode for c in "wax+")
+
+    def _should_use_anon_cache(self) -> bool:
+        # Clients with explicit creds skip the shared anon cache - reading
+        # could lock them out of paths their creds cover, writing could
+        # mis-flag a bucket as anon-needed for future no-creds callers.
+        return not type(self._client).has_explicit_credentials(self._client.fs_kwargs)
+
+    def _can_retry(self) -> bool:
+        if self._client.fs_kwargs.get("anon"):
+            return False
+        if not self._should_use_anon_cache():
+            return True
+        return self._client._bucket_needs_anon(self._client.name) is None
+
+    def _swap_to_anon(self) -> None:
+        self._inner_fs = type(self._client).create_fs(
+            **{**self._client.fs_kwargs, "anon": True}
+        )
+
+    def _wrap_sync(self, name, attr):
+        def call(*args, **kwargs):
+            if name in ("open", "_open") and self._is_write_open(args, kwargs):
+                return attr(*args, **kwargs)
+            try:
+                return attr(*args, **kwargs)
+            except PermissionError:
+                if not self._can_retry():
+                    raise
+                saved = self._inner_fs
+                self._swap_to_anon()
+                keep_anon = False
+                try:
+                    result = getattr(self._inner_fs, name)(*args, **kwargs)
+                    keep_anon = True
+                    if self._should_use_anon_cache():
+                        self._client._mark_bucket_anon(self._client.name, True)
+                    return result
+                except PermissionError:
+                    if self._should_use_anon_cache():
+                        self._client._mark_bucket_anon(self._client.name, False)
+                    raise
+                finally:
+                    if not keep_anon:
+                        self._inner_fs = saved
+
+        return call
+
+    def _wrap_async(self, name, attr):
+        async def call(*args, **kwargs):
+            if name in ("open", "_open") and self._is_write_open(args, kwargs):
+                return await attr(*args, **kwargs)
+            try:
+                return await attr(*args, **kwargs)
+            except PermissionError:
+                if not self._can_retry():
+                    raise
+                saved = self._inner_fs
+                self._swap_to_anon()
+                keep_anon = False
+                try:
+                    result = await getattr(self._inner_fs, name)(*args, **kwargs)
+                    keep_anon = True
+                    if self._should_use_anon_cache():
+                        self._client._mark_bucket_anon(self._client.name, True)
+                    return result
+                except PermissionError:
+                    if self._should_use_anon_cache():
+                        self._client._mark_bucket_anon(self._client.name, False)
+                    raise
+                finally:
+                    if not keep_anon:
+                        self._inner_fs = saved
+
+        return call
+
+
 class Client(ABC):
     MAX_THREADS = multiprocessing.cpu_count()
     FS_CLASS: ClassVar[type["AbstractFileSystem"]]
@@ -70,6 +208,15 @@ class Client(ABC):
     protocol: ClassVar[str]
     # client_config keys this backend treats as credentials.
     CREDENTIAL_KEYS: ClassVar[frozenset[str]] = frozenset()
+    # Whether ``anon=True`` is a meaningful fsspec kwarg for this backend.
+    # Subclasses for S3/GCS/Azure flip this to True so ``Client.fs`` returns
+    # an ``AnonFallbackFS`` proxy.
+    _ANON_FALLBACK: ClassVar[bool] = False
+    # Process-local cache of (protocol, bucket) anon decisions.
+    # True  = anon retry succeeded, use anon from the start.
+    # False = anon retry also failed, don't bother retrying again.
+    # Missing key = no decision yet.
+    _anon_buckets: ClassVar[dict[tuple[str, str], bool]] = {}
 
     @classmethod
     def has_explicit_credentials(cls, client_config: dict | None) -> bool:
@@ -77,6 +224,14 @@ class Client(ABC):
         if not client_config:
             return False
         return any(k in client_config for k in cls.CREDENTIAL_KEYS)
+
+    @classmethod
+    def _bucket_needs_anon(cls, name: str) -> bool | None:
+        return cls._anon_buckets.get((cls.protocol, name))
+
+    @classmethod
+    def _mark_bucket_anon(cls, name: str, anon: bool) -> None:
+        cls._anon_buckets[(cls.protocol, name)] = anon
 
     def __init__(self, name: str, fs_kwargs: dict[str, Any], cache: Cache) -> None:
         self.name = name
@@ -232,7 +387,10 @@ class Client(ABC):
     @property
     def fs(self) -> "AbstractFileSystem":
         if not self._fs:
-            self._fs = self.create_fs(**self.fs_kwargs)
+            if type(self)._ANON_FALLBACK:
+                self._fs = AnonFallbackFS(self)  # type: ignore[assignment]
+            else:
+                self._fs = self.create_fs(**self.fs_kwargs)
         return self._fs
 
     def url(
