@@ -38,6 +38,21 @@ class DataChainColumnError(DataChainParamsError):
         super().__init__(f"Error for column {col_name}: {msg}")
 
 
+def assert_unique_export_columns(paths: "Sequence[Sequence[str]]", delimiter: str):
+    seen: dict[str, str] = {}
+    for path in paths:
+        parts = [p for p in path if p]
+        dotted = ".".join(parts)
+        flat = delimiter.join(parts)
+        if flat in seen:
+            raise DataChainColumnError(
+                dotted,
+                f"maps to the same export column as '{seen[flat]}'; "
+                "rename one of the columns",
+            )
+        seen[flat] = dotted
+
+
 def callable_name(obj: object) -> str:
     """Return a friendly name for a callable or UDF-like instance."""
     # UDF classes in DataChain inherit from AbstractUDF; prefer class name

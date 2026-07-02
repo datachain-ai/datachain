@@ -7,3 +7,8 @@ change here.
 
 Keep general product insights in `AGENT.md` (not here); this file is only for
 Claude-specific notes.
+
+## Rules I repeatedly miss
+
+The AGENT.md section I most often violate: **"Comments and docstrings"** — weight
+it accordingly.
