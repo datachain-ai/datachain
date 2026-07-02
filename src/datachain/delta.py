@@ -5,7 +5,11 @@ from typing import TYPE_CHECKING, TypeVar
 
 import datachain
 from datachain.dataset import DatasetDependency, DatasetRecord
-from datachain.error import DatasetNotFoundError, SchemaDriftError
+from datachain.error import (
+    DatasetNotFoundError,
+    DatasetVersionNotFoundError,
+    SchemaDriftError,
+)
 from datachain.project import Project
 from datachain.query.dataset import UnionSchemaMismatchError
 
@@ -382,8 +386,8 @@ def delta_retry_update(
             include_incomplete=False,
         )
         latest_version = dataset.latest_version
-    except DatasetNotFoundError:
-        # First creation of result dataset
+    except (DatasetNotFoundError, DatasetVersionNotFoundError):
+        # First creation of result dataset (dataset missing, or only tombstones left)
         return None, None, True
 
     delta_sources = dc._query.delta_sources()
