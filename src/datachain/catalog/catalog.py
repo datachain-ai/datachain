@@ -1159,7 +1159,7 @@ class Catalog:
         Clean up dataset versions that are no longer needed.
 
         Removes dataset versions that:
-        - Have status CREATED, FAILED, STALE, or REMOVING
+        - Have status CREATED, FAILED, or REMOVING
         - Belong to completed/failed/canceled jobs (not running)
         - Are session_* datasets from finished jobs (orphaned intermediates)
 
