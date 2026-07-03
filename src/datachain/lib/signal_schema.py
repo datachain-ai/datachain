@@ -1570,10 +1570,10 @@ class SignalSchema:
             register_pydantic=True,
         )
 
-    # `_type_tag` = 0-based index of the active arm (Optional[X] == Union[X, None]:
-    # present=0, None=1). Leading-underscore internal column, int | None.
+    # `_type_tag` = the active arm's selector name (``int``, ``Pet``), or NULL for None
+    # — the same name that keys the arm's columns. Leading-underscore internal column.
     _TYPE_TAG_FIELD = "_type_tag"
-    _TYPE_TAG_TYPE = int | None  # type: ignore[valid-type]
+    _TYPE_TAG_TYPE = str | None  # type: ignore[valid-type]
 
     @staticmethod
     def _model_subtree(

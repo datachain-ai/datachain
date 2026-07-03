@@ -18,7 +18,12 @@ from pydantic import BaseModel
 from datachain.lib.convert.flatten import flatten
 from datachain.lib.convert.unflatten import unflatten_to_json
 from datachain.lib.convert.values_to_tuples import _infer_type_from_sequence
-from datachain.lib.data_model import DataModel, is_chain_type, unwrap_optional
+from datachain.lib.data_model import (
+    DataModel,
+    arm_selector,
+    is_chain_type,
+    unwrap_optional,
+)
 from datachain.lib.model_store import ModelStore
 from datachain.lib.signal_schema import SignalSchema
 
@@ -202,7 +207,7 @@ class _Outer(DataModel):
 
 def test_flatten_optional_datamodel_present():
     out = _Outer(name="Alice", addr=_Addr(city="Berlin", zip="10115"))
-    assert flatten(out) == ("Alice", 0, "Berlin", "10115")
+    assert flatten(out) == ("Alice", arm_selector(_Addr), "Berlin", "10115")
 
 
 def test_flatten_optional_datamodel_absent():
@@ -212,7 +217,7 @@ def test_flatten_optional_datamodel_absent():
 
 
 def test_unflatten_optional_datamodel_present():
-    row = ("Alice", 0, "Berlin", "10115")
+    row = ("Alice", arm_selector(_Addr), "Berlin", "10115")
     j = unflatten_to_json(_Outer, row)
     assert j == {
         "name": "Alice",
@@ -223,15 +228,15 @@ def test_unflatten_optional_datamodel_present():
 
 
 def test_unflatten_optional_datamodel_absent():
-    row = ("Bob", 1, None, None)
+    row = ("Bob", None, None, None)
     j = unflatten_to_json(_Outer, row)
     assert j == {"name": "Bob", "addr": None}
     assert _Outer(**j).addr is None
 
 
 def test_unflatten_ignores_leaf_garbage_when_sentinel_absent():
-    # tag=1 (None arm) hydrates the parent as None even when the leaves hold values.
-    row = ("Bob", 1, "garbage-city", "garbage-zip")
+    # NULL tag (None arm) hydrates the parent as None even when leaves hold values.
+    row = ("Bob", None, "garbage-city", "garbage-zip")
     j = unflatten_to_json(_Outer, row)
     assert j == {"name": "Bob", "addr": None}
 
@@ -359,9 +364,9 @@ def test_optional_datamodel_roundtrip_at_top_level():
     ]
     assert "item._type_tag" in flat
     assert "item.city" in flat
-    # row_to_objs with tag=1 (None arm) returns None for top-level Optional[Model].
-    assert schema.row_to_objs((1, None, None)) == [None]
-    assert schema.row_to_objs((0, "Paris", "75001")) == [
+    # NULL tag (None arm) returns None for top-level Optional[Model].
+    assert schema.row_to_objs((None, None, None)) == [None]
+    assert schema.row_to_objs((arm_selector(_Addr), "Paris", "75001")) == [
         _Addr(city="Paris", zip="75001")
     ]
 
@@ -377,8 +382,8 @@ def test_nested_optional_datamodel_roundtrip():
     # Outer present, inner absent
     obj = Top(mid=Mid(addr=None, tag="x"))
     flat = flatten(obj)
-    # tags: mid=0 (present), addr=NULL (None arm); then city=None, zip=None, tag="x"
-    assert flat == (0, None, None, None, "x")
+    # tags: mid present (Mid selector), addr NULL (None); then city/zip None, tag="x"
+    assert flat == (arm_selector(Mid), None, None, None, "x")
     rec = unflatten_to_json(Top, flat)
     assert rec == {"mid": {"addr": None, "tag": "x"}}
 

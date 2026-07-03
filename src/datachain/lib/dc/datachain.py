@@ -44,6 +44,7 @@ from datachain.lib.data_model import (
     DataType,
     DataValue,
     StandardType,
+    arm_selector,
     dict_to_data_model,
     union_layout,
     unwrap_optional,
@@ -1956,10 +1957,10 @@ class DataChain:
         right_add: dict[str, Any] = {}
         sentinel_field = SignalSchema._TYPE_TAG_FIELD
 
-        def _present_sentinel() -> Any:
-            # nullable to match the natural side's _type_tag column type.
-            col = literal(0)
-            col.type = SQLType.as_nullable(python_to_sql(int))
+        def _present_sentinel(arm: Any) -> Any:
+            # the active arm's selector name; nullable to match the _type_tag column
+            col = literal(arm_selector(arm))
+            col.type = SQLType.as_nullable(python_to_sql(str))
             return col
 
         def _nullable_leaf_casts(name: str, promoted: dict[str, Any]) -> dict[str, Any]:
@@ -1982,7 +1983,9 @@ class DataChain:
             prom[name] = inner | None
             add.update(_nullable_leaf_casts(name, prom))
             if ModelStore.is_pydantic(inner):
-                add[f"{name}{DEFAULT_DELIMITER}{sentinel_field}"] = _present_sentinel()
+                add[f"{name}{DEFAULT_DELIMITER}{sentinel_field}"] = _present_sentinel(
+                    inner
+                )
 
         for name in lvals:
             l_inner, l_opt = unwrap_optional(lvals[name])

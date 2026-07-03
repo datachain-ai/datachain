@@ -321,12 +321,13 @@ def _union_value(
     """Reconstruct a tagged-union value from flat columns, hydrating the active arm."""
     tag_key = f"{prefix}.{SignalSchema._TYPE_TAG_FIELD}"
     if tag_key in column_values:
-        active = column_values[tag_key]
+        tag = column_values[tag_key]
+        arm = next((a for a in layout.arms if arm_selector(a) == tag), None)
     else:
-        active = _infer_active_arm(column_values, layout, prefix)
-    if active is None or active >= len(layout.arms):
+        idx = _infer_active_arm(column_values, layout, prefix)
+        arm = layout.arms[idx] if idx is not None else None
+    if arm is None:
         return None
-    arm = layout.arms[active]
     arm_prefix = f"{prefix}.{arm_selector(arm)}" if layout.use_slots else prefix
     if (fr := ModelStore.to_pydantic(arm)) is not None:
         return _nested_model_instantiate(column_values, fr, arm_prefix)

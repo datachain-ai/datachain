@@ -97,7 +97,8 @@ def flatten_value(value, anno) -> tuple:
 
 def _flatten_union(value, layout: UnionLayout) -> Generator:
     active = _match_union_arm(value, layout)
-    yield active  # _type_tag: arm index, or NULL for None
+    # _type_tag: the active arm's selector name, or NULL for None
+    yield None if active is None else arm_selector(layout.arms[active])
     for i, arm in enumerate(layout.arms):
         yield from _flatten_arm(value if i == active else None, arm)
 

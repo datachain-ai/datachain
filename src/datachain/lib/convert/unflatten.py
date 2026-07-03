@@ -7,7 +7,12 @@ from typing import Any
 from pydantic import BaseModel
 
 from datachain.lib.convert.flatten import _leaf_count
-from datachain.lib.data_model import UnionLayout, union_layout, unwrap_optional
+from datachain.lib.data_model import (
+    UnionLayout,
+    arm_selector,
+    union_layout,
+    unwrap_optional,
+)
 from datachain.lib.model_store import ModelStore
 from datachain.query.schema import DEFAULT_DELIMITER
 
@@ -36,8 +41,8 @@ def read_union(
     tag = row[pos]
     pos += 1
     result: Any = None
-    for i, arm in enumerate(layout.arms):
-        if i == tag:
+    for arm in layout.arms:
+        if arm_selector(arm) == tag:
             if (fr := ModelStore.to_pydantic(arm)) is not None:
                 result, pos = read_model(fr, row, pos)
             else:

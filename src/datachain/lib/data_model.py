@@ -159,8 +159,8 @@ NULLABLE_SCALARS: "tuple[type, ...]" = (int, float, str, bool, bytes, datetime)
 
 
 def union_arms(anno: Any) -> tuple[list[Any], bool]:
-    """``(non_none_arms, has_none)``, arms sorted by type string so the ``_type_tag``
-    index is stable regardless of how the Union was written."""
+    """``(non_none_arms, has_none)``, arms sorted by type string for a deterministic,
+    order-independent column layout (``Union[int, str]`` == ``Union[str, int]``)."""
     if get_origin(anno) in (Union, types.UnionType):
         args = get_args(anno)
         non_none = sorted((a for a in args if a is not type(None)), key=type_to_str)

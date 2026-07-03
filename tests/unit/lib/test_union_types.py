@@ -177,11 +177,11 @@ def _roundtrip(value, anno):
 @pytest.mark.parametrize(
     "value,anno,tag",
     [
-        ("hello", Union[str, int], 1),  # str is arm 1
-        (42, Union[str, int], 0),  # int is arm 0
-        ("hi", Union[str, int, None], 1),
-        (7, Union[str, int, None], 0),
-        (None, Union[str, int, None], None),  # None arm -> NULL discriminator
+        ("hello", Union[str, int], "str"),
+        (42, Union[str, int], "int"),
+        ("hi", Union[str, int, None], "str"),
+        (7, Union[str, int, None], "int"),
+        (None, Union[str, int, None], None),  # None -> NULL discriminator
     ],
 )
 def test_flatten_scalar_union(value, anno, tag):
@@ -209,9 +209,8 @@ def test_flatten_bool_not_swallowed_by_int_arm():
     assert layout is not None
     flat_true = flatten_value(True, Union[int, bool])
     flat_one = flatten_value(1, Union[int, bool])
-    # bool ("bool") sorts before int ("int"): bool = arm 0, int = arm 1.
-    assert flat_true[0] == 0
-    assert flat_one[0] == 1
+    assert flat_true[0] == "bool"
+    assert flat_one[0] == "int"
 
 
 def test_flatten_datetime_arm():
@@ -223,7 +222,7 @@ def test_flatten_datetime_arm():
 def test_flatten_inactive_arms_are_none():
     # str active -> the int slot and (model) arm leaves are None placeholders.
     flat = flatten_value("hi", Union[int, str, Foo])
-    assert flat[0] == 2  # Foo=0? no: arms sorted Foo,int,str -> str index 2
+    assert flat[0] == "str"
     # exactly one arm column is non-None (the active str slot).
     assert sum(1 for v in flat[1:] if v is not None) == 1
 
