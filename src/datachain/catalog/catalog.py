@@ -1089,10 +1089,11 @@ class Catalog:
         This refreshes warehouse-derived metadata first, then marks the version
         as COMPLETE.
         """
-        # Guard against a concurrent removal. Two narrow signals reach here:
-        # TableMissingError (rows table dropped between save and finalize)
-        # and ConcurrentDatasetModificationError (expected_status guard
-        # lost to a concurrent state change). Anything else propagates.
+        # Guard against a concurrent remove_dataset_version (usually GC, but
+        # also explicit `dataset rm` or session cleanup). Two narrow signals
+        # reach here: TableMissingError (rows table dropped between save and
+        # finalize) and ConcurrentDatasetModificationError (expected_status
+        # guard lost to a concurrent state change). Anything else propagates.
         try:
             self.update_dataset_version_with_warehouse_info(dataset, version, **kwargs)
             self.metastore.update_dataset_status(
@@ -1154,8 +1155,8 @@ class Catalog:
             if v.status == DatasetStatus.REMOVING and v.pending_metadata_drop:
                 raise DataChainError(
                     f"Cannot remove {dataset.name}@{version} with "
-                    "keep_metadata=True: removal with keep_metadata=False "
-                    "is already in progress."
+                    "keep_metadata=True: a wipe (keep_metadata=False) is "
+                    "already in progress or interrupted."
                 )
             if not (v.status == DatasetStatus.COMPLETE or v.is_removed):
                 raise DataChainError(
@@ -1166,9 +1167,15 @@ class Catalog:
         elif v.status == DatasetStatus.REMOVING and not v.pending_metadata_drop:
             raise DataChainError(
                 f"Cannot remove {dataset.name}@{version} with "
-                "keep_metadata=False: removal with keep_metadata=True is "
-                "already in progress. Wait for it to finalize and retry."
+                "keep_metadata=False: a keep-metadata removal is already "
+                "in progress or interrupted."
             )
+
+        if keep_metadata and v.status in (
+            DatasetStatus.REMOVING,
+            DatasetStatus.REMOVED,
+        ):
+            return False
 
         return self._claim_and_remove(
             dataset, version, expected_status=v.status, keep_metadata=keep_metadata
@@ -1189,18 +1196,11 @@ class Catalog:
         status to REMOVED so the tombstone is final and GC stops looking
         at the row.
 
-        ``keep_metadata=True`` on a version already in REMOVING/REMOVED is
-        a no-op (removal is already in progress or finalized). On REMOVED,
-        ``keep_metadata=False`` escalates the tombstone through REMOVING
-        and then deletes the row. Returns True if a state change happened.
+        On REMOVED, ``keep_metadata=False`` escalates the tombstone through
+        REMOVING and then deletes the row. Returns True if a state change
+        happened.
         """
         v = dataset.get_version(version)
-
-        if keep_metadata and expected_status in (
-            DatasetStatus.REMOVING,
-            DatasetStatus.REMOVED,
-        ):
-            return False
 
         claimed = self.metastore.update_dataset_version(
             dataset,
@@ -1222,7 +1222,10 @@ class Catalog:
 
         if keep_metadata:
             self.metastore.update_dataset_version(
-                dataset, version, status=DatasetStatus.REMOVED
+                dataset,
+                version,
+                expected_status=DatasetStatus.REMOVING,
+                status=DatasetStatus.REMOVED,
             )
         else:
             self.metastore.remove_dataset_version(dataset, version)
