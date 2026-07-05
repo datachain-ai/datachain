@@ -1620,7 +1620,9 @@ class Catalog:
 
         if studio:
             client = StudioClient()
-            response = client.ls_datasets(prefix=prefix)
+            response = client.ls_datasets(
+                prefix=prefix, include_removed=include_removed
+            )
             if not response.ok:
                 raise DataChainError(response.message)
             if not response.data:
@@ -1633,7 +1635,7 @@ class Catalog:
             )
         elif prefix:
             datasets = self.metastore.list_datasets_by_prefix(
-                prefix, project_id=project_id
+                prefix, project_id=project_id, include_removed=include_removed
             )
         else:
             datasets = self.metastore.list_datasets(
@@ -1653,6 +1655,7 @@ class Catalog:
         with_job: bool = True,
         studio: bool = False,
         project: Project | None = None,
+        include_removed: bool = False,
     ) -> Iterator[tuple[DatasetListRecord, "DatasetListVersion", "Job | None"]]:
         """Iterate over all dataset versions with related jobs."""
         datasets = list(
@@ -1661,6 +1664,7 @@ class Catalog:
                 include_listing=include_listing,
                 studio=studio,
                 project=project,
+                include_removed=include_removed,
             )
         )
 

@@ -531,6 +531,33 @@ def test_move_dataset(
         assert table_row_count(catalog.warehouse.db, new_table_name) == 3
 
 
+def test_datasets_include_removed(test_session, no_studio_dataset):
+    live_ds = "dc_datasets_live"
+    tombstoned_ds = "dc_datasets_tombstoned"
+
+    dc.read_values(num=[1, 2, 3], session=test_session).save(live_ds)
+    dc.read_values(num=[1, 2, 3], session=test_session).save(tombstoned_ds)
+    dc.delete_dataset(tombstoned_ds, force=True, session=test_session)
+
+    default_names = {
+        d.name
+        for d in dc.datasets(column="dataset", session=test_session).to_values(
+            "dataset"
+        )
+    }
+    assert live_ds in default_names
+    assert tombstoned_ds not in default_names
+
+    with_removed_names = {
+        d.name
+        for d in dc.datasets(
+            column="dataset", session=test_session, include_removed=True
+        ).to_values("dataset")
+    }
+    assert live_ds in with_removed_names
+    assert tombstoned_ds in with_removed_names
+
+
 def test_move_dataset_then_save_into(test_session, old_new_projects):
     old_name = "old.old.numbers"
     new_name = "new.new.numbers"
