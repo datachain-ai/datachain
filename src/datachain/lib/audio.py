@@ -10,6 +10,7 @@ from datachain.lib.file import FileError
 if TYPE_CHECKING:
     from numpy import ndarray
 
+    from datachain.client.writeconfig import WriteConfig
     from datachain.lib.file import Audio, AudioFile, File
 
 try:
@@ -174,6 +175,7 @@ def save_audio(
     start: float = 0,
     end: float | None = None,
     client_config: dict | None = None,
+    write_config: "WriteConfig | None" = None,
 ) -> "AudioFile":
     """Save audio file or extract fragment to specified format.
 
@@ -253,7 +255,7 @@ def save_audio(
             ) from exc
 
     client, rel_path = audio._resolve_destination(output_file, client_config)
-    result = client.upload(audio_bytes, rel_path)
+    result = client.upload(audio_bytes, rel_path, write_config=write_config)
     af = AudioFile(**result.model_dump())
     af._set_stream(audio._catalog)
     return af

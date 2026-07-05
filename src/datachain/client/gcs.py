@@ -3,7 +3,7 @@ import json
 import os
 from collections.abc import Iterable
 from datetime import datetime
-from typing import Any, BinaryIO, cast
+from typing import TYPE_CHECKING, Any, BinaryIO, cast
 from urllib.parse import quote
 
 from dateutil.parser import isoparse
@@ -17,6 +17,9 @@ from datachain.lib.file import File
 from datachain.progress import tqdm
 
 from .fsspec import DELIMITER, BucketStatus, Client, ResultQueue
+
+if TYPE_CHECKING:
+    from datachain.client.writeconfig import WriteConfig
 
 # Patch gcsfs for consistency with s3fs
 GCSFileSystem.set_session = GCSFileSystem._set_session
@@ -90,6 +93,34 @@ class GCSClient(Client):
                 error=f"Access denied to GCS bucket '{name}'"
                 " — check credentials/permissions",
             )
+
+    def _write_kwargs(self, cfg: "WriteConfig", *, streaming: bool) -> dict[str, Any]:
+        # gcsfs open() and pipe_file() both accept content_type, metadata
+        # (custom) and fixed_key_metadata (Google's fixed fields). gcsfs has no
+        # raw write-kwargs passthrough (pipe_file has a fixed signature; the
+        # streaming path silently drops extras), so reject write_options rather
+        # than crash or silently ignore.
+        if cfg.extra:
+            raise NotImplementedError(
+                "write_options is not supported on GCS; use content_type, "
+                "content_disposition, cache_control, content_encoding or "
+                "metadata instead."
+            )
+        kw: dict[str, Any] = {}
+        if cfg.content_type:
+            kw["content_type"] = cfg.content_type
+        if cfg.metadata:
+            kw["metadata"] = dict(cfg.metadata)
+        fixed: dict[str, Any] = {}
+        if cfg.content_disposition:
+            fixed["content_disposition"] = cfg.content_disposition
+        if cfg.cache_control:
+            fixed["cache_control"] = cfg.cache_control
+        if cfg.content_encoding:
+            fixed["content_encoding"] = cfg.content_encoding
+        if fixed:
+            kw["fixed_key_metadata"] = fixed
+        return kw
 
     def url(
         self,

@@ -1,5 +1,6 @@
 import asyncio
 import functools
+import io
 import logging
 import multiprocessing
 import os
@@ -26,6 +27,7 @@ from datachain.progress import tqdm
 if TYPE_CHECKING:
     from fsspec.spec import AbstractFileSystem
 
+    from datachain.client.writeconfig import WriteConfig
     from datachain.dataset import StorageURI
     from datachain.lib.file import File
 
@@ -450,7 +452,11 @@ class Client(ABC):
         )  # type: ignore[return-value]
 
     def upload(
-        self, data: bytes | bytearray | memoryview | BinaryIO, path: str
+        self,
+        data: bytes | bytearray | memoryview | BinaryIO,
+        path: str,
+        *,
+        write_config: "WriteConfig | None" = None,
     ) -> "File":
         """Upload *data* to *path*.
 
@@ -463,7 +469,15 @@ class Client(ABC):
             backends) flushes a multipart part every ``self.blocksize``
             bytes (e.g. 5 MiB on s3fs), so peak RAM is bounded by the
             backend's part size rather than the file size.
+
+        ``write_config`` carries normalized object metadata (content type,
+        content disposition, custom metadata, …) mapped to the backend's
+        native write parameters.
         """
+        from datachain.client.writeconfig import WriteConfig
+
+        cfg = write_config or WriteConfig()
+
         if path.startswith(self.PREFIX):
             full_path = path
             _, rel_path = self.split_url(path)
@@ -476,19 +490,54 @@ class Client(ABC):
         parent = posixpath.dirname(full_path)
         self.fs.makedirs(parent, exist_ok=True)
 
-        if isinstance(data, (bytes, bytearray, memoryview)):
-            self.fs.pipe_file(full_path, data)
+        if isinstance(data, (bytes, bytearray, memoryview)) and self._can_pipe_upload():
+            self.fs.pipe_file(
+                full_path, data, **self._write_kwargs(cfg, streaming=False)
+            )
+            streamed = False
         else:
-            with self.fs.open(full_path, "wb") as dst:
+            src: BinaryIO = (
+                io.BytesIO(data)
+                if isinstance(data, (bytes, bytearray, memoryview))
+                else data
+            )
+            with self.fs.open(
+                full_path, "wb", **self._write_kwargs(cfg, streaming=True)
+            ) as dst:
                 # Use a larger copy buffer than shutil's 16 KiB default to
                 # reduce per-chunk overhead on multi-GB uploads. The
                 # destination's blocksize (when exposed by fsspec backends)
                 # matches the multipart part size it will flush at, making it
                 # a natural choice; fall back to 8 MiB otherwise.
                 buf_size = getattr(dst, "blocksize", None) or 8 * 1024 * 1024
-                shutil.copyfileobj(data, dst, length=buf_size)
-        file_info = self.fs.info(full_path, **self._file_info_kwargs())
+                shutil.copyfileobj(src, dst, length=buf_size)
+            streamed = True
+        new_version = self._finalize_write(cfg, full_path, streaming=streamed)
+        file_info = self.fs.info(full_path, **self._file_info_kwargs(new_version))
         return self.info_to_file(file_info, rel_path)
+
+    def _can_pipe_upload(self) -> bool:
+        """Whether bytes uploads may use ``pipe_file`` (vs. a streaming open)."""
+        return True
+
+    def _write_kwargs(self, cfg: "WriteConfig", *, streaming: bool) -> dict[str, Any]:
+        """Map a :class:`WriteConfig` to native ``fs.open``/``pipe_file`` kwargs.
+
+        The base implementation forwards only the raw ``extra`` escape hatch;
+        cloud subclasses translate the normalized fields to backend parameters.
+        """
+        return dict(cfg.extra or {})
+
+    def _finalize_write(
+        self, cfg: "WriteConfig", full_path: str, *, streaming: bool
+    ) -> str | None:
+        """Apply any write metadata the write call itself could not carry.
+
+        Returns a new version id when the post-write update created one (Azure
+        on a versioned account), so callers can pin metadata refresh to it. A
+        no-op returning ``None`` for backends that set everything inline.
+        """
+        return None
 
     def download(self, file: "File", *, callback: Callback = DEFAULT_CALLBACK) -> None:
         sync(get_loop(), functools.partial(self._download, file, callback=callback))

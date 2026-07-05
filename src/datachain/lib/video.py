@@ -6,7 +6,7 @@ import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from math import atan2, ceil, degrees, floor, hypot
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 from fsspec.utils import stringify_path
@@ -21,6 +21,9 @@ from datachain.lib.file import (
     VideoFile,
     VideoFrame,
 )
+
+if TYPE_CHECKING:
+    from datachain.client.writeconfig import WriteConfig
 
 try:
     import av
@@ -610,6 +613,7 @@ def save_video_fragment(
     format: str | None = None,
     client_config: dict | None = None,
     timeout: float | None = None,
+    write_config: "WriteConfig | None" = None,
 ) -> VideoFile:
     """
     Saves video interval as a new video file. If ``destination`` is a remote
@@ -671,7 +675,7 @@ def save_video_fragment(
                 ) from exc
 
             with open(temp_output, "rb") as data:
-                result = client.upload(data, rel_path)
+                result = client.upload(data, rel_path, write_config=write_config)
     vf = VideoFile(**result.model_dump())
     vf._set_stream(catalog)
     return vf

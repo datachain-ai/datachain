@@ -1,4 +1,4 @@
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from adlfs import AzureBlobFileSystem
 from azure.core.exceptions import (
@@ -13,6 +13,9 @@ from datachain.lib.file import File
 from datachain.progress import tqdm
 
 from .fsspec import DELIMITER, BucketStatus, Client, ResultQueue
+
+if TYPE_CHECKING:
+    from datachain.client.writeconfig import WriteConfig
 
 
 class AzureClient(Client):
@@ -87,6 +90,57 @@ class AzureClient(Client):
             last_modified=v["last_modified"],
             size=v.get("size", ""),
         )
+
+    def _can_pipe_upload(self) -> bool:
+        # adlfs.pipe_file hardcodes the blob metadata and cannot set content
+        # settings, so always stream: metadata is passed inline and content
+        # settings are applied by a post-write header update.
+        return False
+
+    def _write_kwargs(self, cfg: "WriteConfig", *, streaming: bool) -> dict[str, Any]:
+        # adlfs does not apply arbitrary write kwargs (they are stored on the
+        # file object and never sent), so reject write_options rather than
+        # silently drop it. Content settings are applied in _finalize_write.
+        if cfg.extra:
+            raise NotImplementedError(
+                "write_options is not supported on Azure; use content_type, "
+                "content_disposition, cache_control, content_encoding or "
+                "metadata instead."
+            )
+        kw: dict[str, Any] = {}
+        if cfg.metadata:
+            # adlfs defaults blob metadata to {"is_directory": "false"};
+            # keep it so directory detection during listing still works.
+            kw["metadata"] = {"is_directory": "false", **dict(cfg.metadata)}
+        return kw
+
+    def _finalize_write(
+        self, cfg: "WriteConfig", full_path: str, *, streaming: bool
+    ) -> str | None:
+        if not cfg.has_content_settings():
+            return None
+        from azure.storage.blob import ContentSettings
+
+        settings = ContentSettings(
+            content_type=cfg.content_type,
+            content_disposition=cfg.content_disposition,
+            cache_control=cfg.cache_control,
+            content_encoding=cfg.content_encoding,
+        )
+        container, blob, _ = self.fs.split_path(full_path)
+        # On a versioned account, set_http_headers creates a new current
+        # version carrying the content settings; return it so the write path
+        # refreshes to that version instead of the pre-settings one.
+        version_id = sync(
+            get_loop(), self._set_content_settings, container, blob, settings
+        )
+        self.fs.invalidate_cache(full_path)
+        return version_id
+
+    async def _set_content_settings(self, container, blob, settings) -> str | None:
+        async with self.fs.service_client.get_blob_client(container, blob) as bc:
+            resp = await bc.set_http_headers(content_settings=settings)
+        return resp.get("version_id")
 
     def url(
         self,
