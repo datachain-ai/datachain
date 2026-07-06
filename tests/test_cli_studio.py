@@ -441,9 +441,13 @@ def test_studio_datasets(capsys, studio_datasets, mocker):
 
     assert main(["dataset", "ls"]) == 0
     out = capsys.readouterr().out
-    assert sorted(out.splitlines()) == sorted(both_output.splitlines())
+    assert sorted(out.splitlines()) == sorted(local_output.splitlines())
 
     assert main(["dataset", "ls", "--versions"]) == 0
+    out = capsys.readouterr().out
+    assert sorted(out.splitlines()) == sorted(local_output.splitlines())
+
+    assert main(["dataset", "ls", "--versions", "--all"]) == 0
     out = capsys.readouterr().out
     assert sorted(out.splitlines()) == sorted(both_output_versions.splitlines())
 
