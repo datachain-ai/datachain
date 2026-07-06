@@ -465,10 +465,11 @@ class AbstractMetastore(ABC, Serializable):
         """
         Flip CREATED dataset versions belonging to a failed job to FAILED.
 
-        Only the in-flight CREATED state is touched. Terminal states
-        (COMPLETE, FAILED, REMOVED) are left as-is - otherwise tombstones
-        from a user-issued delete inside the failing job would be
-        resurrected as FAILED and then wiped by GC.
+        Only the in-flight CREATED state is touched. Terminal or in-progress
+        states (COMPLETE, FAILED, REMOVING, REMOVED) are left as-is -
+        otherwise tombstones from a user-issued delete inside the failing
+        job would be resurrected as FAILED and then wiped by GC, and an
+        in-progress removal would be knocked out of its state machine.
 
         Args:
             job_id: ID of the failed job whose dataset versions should be marked
@@ -1717,18 +1718,20 @@ class AbstractDBMetastore(AbstractMetastore):
         if project_id:
             query = query.where(d.c.project_id == project_id)
 
-        # Only count datasets that still have at least one non-removed
-        # version. Tombstones-only datasets are user-invisible and would
-        # otherwise block project deletion.
-        live_version_exists = (
+        # Count datasets that have at least one non-REMOVED version. A
+        # REMOVING version still owns a warehouse rows table, so it must
+        # be finalized before the project can be dropped; REMOVED
+        # tombstones have already dropped their rows table and are safe
+        # to CASCADE away with the project.
+        blocking_version_exists = (
             select(1)
             .where(
                 dv.c.dataset_id == d.c.id,
-                dv.c.status.notin_([DatasetStatus.REMOVING, DatasetStatus.REMOVED]),
+                dv.c.status != DatasetStatus.REMOVED,
             )
             .exists()
         )
-        query = query.where(live_version_exists)
+        query = query.where(blocking_version_exists)
 
         query = select(f.count(1)).select_from(query.subquery())
 
@@ -2031,10 +2034,12 @@ class AbstractDBMetastore(AbstractMetastore):
         """
         Finalize dataset versions still in CREATED for a failed job as FAILED.
 
-        Only flips the in-flight CREATED state. Terminal states
-        (COMPLETE, FAILED, REMOVED) must not be overwritten - otherwise
-        tombstones from a user-issued delete inside the failing job
-        would be resurrected as FAILED and then wiped by GC.
+        Only flips the in-flight CREATED state. Terminal or in-progress
+        states (COMPLETE, FAILED, REMOVING, REMOVED) must not be
+        overwritten - otherwise tombstones from a user-issued delete inside
+        the failing job would be resurrected as FAILED and then wiped by
+        GC, and an in-progress removal would be knocked out of its state
+        machine.
 
         Args:
             job_id: ID of the failed job whose dataset versions should be marked

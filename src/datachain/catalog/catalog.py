@@ -1167,8 +1167,8 @@ class Catalog:
         elif v.status == DatasetStatus.REMOVING and not v.pending_metadata_drop:
             raise DataChainError(
                 f"Cannot remove {dataset.name}@{version} with "
-                "keep_metadata=False: a keep-metadata removal is already "
-                "in progress or interrupted."
+                "keep_metadata=False: a removal with keep_metadata=True is "
+                "already in progress or interrupted."
             )
 
         if keep_metadata and v.status in (
@@ -1812,11 +1812,22 @@ class Catalog:
                 and not dataset.is_internal
                 and (v.status == DatasetStatus.COMPLETE or v.is_removed)
             )
-            self.remove_dataset_version(
-                dataset,
-                ver,
-                keep_metadata=effective_keep,
-            )
+            try:
+                self.remove_dataset_version(
+                    dataset,
+                    ver,
+                    keep_metadata=effective_keep,
+                )
+            except DataChainError as e:
+                # A version stuck in REMOVING (interrupted removal by another
+                # caller/GC) can raise here. Log and continue so one stuck
+                # version doesn't abort removal of the rest.
+                logger.warning(
+                    "Failed to remove dataset %s version %s: %s",
+                    dataset.name,
+                    ver,
+                    e,
+                )
 
     def edit_dataset(
         self,
