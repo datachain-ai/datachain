@@ -623,8 +623,8 @@ class File(DataModel):
 
         finalized_version = client._finalize_write(write_cfg, full_path, streaming=True)
 
-        # A post-write metadata update (Azure content settings on a versioned
-        # account) supersedes the version the write handle produced.
+        # Azure content settings on a versioned account create a version newer
+        # than the write handle's.
         version_hint = finalized_version or self._extract_write_version(raw_handle)
 
         # refresh metadata pinned to the version that was just written

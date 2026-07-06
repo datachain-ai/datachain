@@ -95,11 +95,9 @@ class GCSClient(Client):
             )
 
     def _write_kwargs(self, cfg: "WriteConfig", *, streaming: bool) -> dict[str, Any]:
-        # gcsfs open() and pipe_file() both accept content_type, metadata
-        # (custom) and fixed_key_metadata (Google's fixed fields). gcsfs has no
-        # raw write-kwargs passthrough (pipe_file has a fixed signature; the
-        # streaming path silently drops extras), so reject write_options rather
-        # than crash or silently ignore.
+        # gcsfs has no raw write-kwargs passthrough, so reject write_options
+        # rather than crash (pipe_file has a fixed signature) or silently drop
+        # it (the streaming path swallows extras).
         if cfg.extra:
             raise NotImplementedError(
                 "write_options is not supported on GCS; use content_type, "

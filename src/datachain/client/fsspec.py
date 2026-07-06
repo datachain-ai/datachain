@@ -517,25 +517,19 @@ class Client(ABC):
         return self.info_to_file(file_info, rel_path)
 
     def _can_pipe_upload(self) -> bool:
-        """Whether bytes uploads may use ``pipe_file`` (vs. a streaming open)."""
         return True
 
     def _write_kwargs(self, cfg: "WriteConfig", *, streaming: bool) -> dict[str, Any]:
-        """Map a :class:`WriteConfig` to native ``fs.open``/``pipe_file`` kwargs.
-
-        The base implementation forwards only the raw ``extra`` escape hatch;
-        cloud subclasses translate the normalized fields to backend parameters.
-        """
+        """Map a :class:`WriteConfig` to native ``fs.open``/``pipe_file`` kwargs."""
         return dict(cfg.extra or {})
 
     def _finalize_write(
         self, cfg: "WriteConfig", full_path: str, *, streaming: bool
     ) -> str | None:
-        """Apply any write metadata the write call itself could not carry.
+        """Apply write metadata the write call couldn't carry.
 
-        Returns a new version id when the post-write update created one (Azure
-        on a versioned account), so callers can pin metadata refresh to it. A
-        no-op returning ``None`` for backends that set everything inline.
+        Returns a new version id when the update created one, so callers can pin
+        the metadata refresh to it.
         """
         return None
 

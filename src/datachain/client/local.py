@@ -34,8 +34,7 @@ class FileClient(Client):
         self.use_symlinks = use_symlinks
 
     def _write_kwargs(self, cfg: "WriteConfig", *, streaming: bool) -> dict[str, Any]:
-        # The local filesystem has no notion of content type/disposition or
-        # object metadata; write metadata is silently ignored.
+        # Local files carry no content type / metadata; write metadata is ignored.
         return {}
 
     def url(

@@ -424,7 +424,6 @@ WRITE_CLOUD_TYPES = ["s3", "gs", "azure"]
 
 
 def _read_object_meta(client, cloud_type, full_path):
-    """Normalized {content_type, content_disposition, cache_control, metadata}."""
     fs = client.fs
     if cloud_type == "s3":
         bucket, key, _ = fs.split_path(full_path)
@@ -623,7 +622,6 @@ def test_upload_write_options_applied_on_s3(cloud_test_catalog_upload, cloud_typ
     ctc = cloud_test_catalog_upload
     catalog = ctc.catalog
 
-    # Raw, backend-native S3 kwarg via the escape hatch.
     f = File.upload(
         b"raw",
         f"{ctc.src_uri}/wm/wo.bin",
