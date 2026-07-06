@@ -968,6 +968,54 @@ def test_map_multiple_signals_rejects_params(test_session):
         chain.map(a=lambda n: n, b=lambda n: n, params=["name"])
 
 
+def test_map_multiple_signals_chained(test_session):
+    """Second function receives first function's output as its param."""
+    chain = dc.read_values(name=["foo.txt", "bar.md"], session=test_session).map(
+        stem=lambda name: name.rsplit(".", 1)[0],
+        upper=lambda stem: stem.upper(),
+    )
+    rows = sorted(chain.to_iter("name", "stem", "upper"))
+    assert rows == [("bar.md", "bar", "BAR"), ("foo.txt", "foo", "FOO")]
+
+
+def test_map_multiple_signals_chained_three_deep(test_session):
+    """Three-function chain: f1 -> f2 -> f3, and f2 also uses an input col."""
+
+    def wc(text: str) -> int:
+        return len(text.split())
+
+    def avg_len(text: str, wc: int) -> float:
+        return len(text) / wc
+
+    def is_short(avg_len: float) -> bool:
+        return avg_len < 10.0
+
+    chain = dc.read_values(text=["hello world"], session=test_session).map(
+        wc=wc, avg_len=avg_len, is_short=is_short
+    )
+    rows = list(chain.to_iter("wc", "avg_len", "is_short"))
+    assert rows == [(2, 5.5, True)]
+
+
+def test_map_multiple_signals_chained_ignores_kwarg_order(test_session):
+    """Producer declared AFTER consumer still runs first (topological order)."""
+    chain = dc.read_values(name=["foo.txt"], session=test_session).map(
+        upper=lambda stem: stem.upper(),  # consumer written first
+        stem=lambda name: name.rsplit(".", 1)[0],  # producer written second
+    )
+    rows = list(chain.to_iter("name", "upper", "stem"))
+    assert rows == [("foo.txt", "FOO", "foo")]
+
+
+def test_map_multiple_signals_chained_rejects_cycle(test_session):
+    chain = dc.read_values(name=["foo"], session=test_session)
+    with pytest.raises(ValueError, match="Cyclic dependency"):
+        chain.map(
+            a=lambda b: b,
+            b=lambda a: a,
+        )
+
+
 def test_map_multiple_signals_single_stage(test_session):
     """Verify multi-kwarg map adds exactly one UDF stage, not N chained ones."""
     base = dc.read_values(name=["foo.txt"], session=test_session)

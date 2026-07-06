@@ -4,6 +4,7 @@ import logging
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import closing, nullcontext
 from functools import partial
+from graphlib import CycleError, TopologicalSorter
 from typing import TYPE_CHECKING, Any, TypeVar
 
 import attrs
@@ -515,32 +516,59 @@ class _MultiSignalMapper(Mapper):
     """Mapper that runs N user functions per row, yielding N output signals.
 
     Implements `.map(a=f1, b=f2, ...)` as a single UDF stage: each row is
-    iterated once, both functions run, and no intermediate column is
+    iterated once, all functions run, and no intermediate column is
     materialized between them.
+
+    If a function's parameter name matches another function's output name
+    in the same call, the dependent function receives the producer's
+    result instead of a row column. Execution order is a topological sort
+    of that dependency graph; the order the user wrote the kwargs is
+    irrelevant. Cycles raise ``ValueError`` at construction time.
     """
 
     def __init__(self, signal_map: dict[str, Callable]):
         super().__init__()
         self._signal_map = signal_map
-        # per-function param names (positional order from signature)
+        output_names = set(signal_map)
         self._per_func_params: dict[str, list[str]] = {}
-        # union of all functions' params, deduped, positional order
+        # For each function: which of its params come from another
+        # function's output (dependencies) vs from an input row column.
+        deps: dict[str, set[str]] = {}
+        for name, fn in signal_map.items():
+            params = list(inspect.signature(fn).parameters.keys())
+            self._per_func_params[name] = params
+            deps[name] = {p for p in params if p in output_names and p != name}
+
+        try:
+            self._exec_order = list(TopologicalSorter(deps).static_order())
+        except CycleError as e:
+            raise ValueError(
+                f"Cyclic dependency between map functions: {e.args[1]}"
+            ) from e
+
+        # combined_params = union of params NOT resolved from other outputs,
+        # in first-seen order. Consumed positionally by the UDF layer.
         seen: set[str] = set()
         self.combined_params: list[str] = []
-        for name, fn in signal_map.items():
-            param_names = list(inspect.signature(fn).parameters.keys())
-            self._per_func_params[name] = param_names
-            for p in param_names:
+        for name in signal_map:
+            for p in self._per_func_params[name]:
+                if p in output_names:
+                    continue
                 if p not in seen:
                     seen.add(p)
                     self.combined_params.append(p)
 
     def process(self, *args):
         kwargs = dict(zip(self.combined_params, args, strict=True))
-        return tuple(
-            fn(**{p: kwargs[p] for p in self._per_func_params[name]})
-            for name, fn in self._signal_map.items()
-        )
+        results: dict[str, Any] = {}
+        for name in self._exec_order:
+            fn_kwargs = {
+                p: (results[p] if p in results else kwargs[p])
+                for p in self._per_func_params[name]
+            }
+            results[name] = self._signal_map[name](**fn_kwargs)
+        # Output order follows the user's declared kwarg order, not exec order.
+        return tuple(results[name] for name in self._signal_map)
 
     def hash(self, include_body: bool = True) -> str:
         # cache key must vary with the wrapped functions; the base
