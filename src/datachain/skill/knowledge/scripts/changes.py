@@ -1,5 +1,3 @@
-"""Dependency serialization and version-diff logic."""
-
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:

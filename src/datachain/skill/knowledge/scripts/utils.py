@@ -1,5 +1,3 @@
-"""Shared pure helpers for the dc-knowledge skill scripts."""
-
 import json
 import os
 import re

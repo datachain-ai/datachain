@@ -1,12 +1,3 @@
-"""Scan a bucket URI: compute metadata aggregations and sample files.
-
-Outputs a JSON data file with extensions, directories, size distribution,
-time range, listing timestamps, and content samples.
-
-Usage:
-    python3 bucket_scan.py <uri> --output <path.json>
-"""
-
 import argparse
 import json
 import signal

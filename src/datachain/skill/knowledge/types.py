@@ -109,6 +109,21 @@ class ChangesEntry(DepChanges):
     previous_script: str | None
 
 
+class ColumnSummary(TypedDict):
+    category: str
+    line: str
+    stats: dict[str, Any]
+
+
+class SummarySnapshot(TypedDict):
+    overview: str
+    total_rows: int
+    sampled: bool
+    columns: dict[str, ColumnSummary]
+    warnings: list[str]
+    sample_size: NotRequired[int]
+
+
 class DatasetVersionEntry(TypedDict):
     version: str
     uuid: str | None
@@ -116,7 +131,7 @@ class DatasetVersionEntry(TypedDict):
     updated: str | None
     schema: dict[str, SchemaEntry]
     preview: PreviewData | None
-    summary: dict[str, Any] | None
+    summary: SummarySnapshot | None
     query_script: str | None
     changes: ChangesEntry | None
     dependencies: list[DependencyEntry]

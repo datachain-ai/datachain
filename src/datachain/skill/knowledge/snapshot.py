@@ -1,5 +1,3 @@
-"""Build the dataset knowledge snapshot fed to the skill enrichment prompt."""
-
 import inspect
 import json
 import types

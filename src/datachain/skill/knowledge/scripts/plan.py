@@ -1,5 +1,3 @@
-"""Compute what needs updating and output a JSON plan."""
-
 import argparse
 import json
 import os

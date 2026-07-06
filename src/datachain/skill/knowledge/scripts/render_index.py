@@ -1,9 +1,3 @@
-"""Render index.md from a plan JSON file.
-
-Supports both datasets and buckets sections in a single index.
-Reads enriched .md files for summaries and dependencies.
-"""
-
 import argparse
 import json
 import os

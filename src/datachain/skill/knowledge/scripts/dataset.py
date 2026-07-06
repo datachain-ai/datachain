@@ -1,5 +1,3 @@
-"""Fetch schema, preview, query_script, changes, and deps for one dataset version."""
-
 import argparse
 import json
 import sys

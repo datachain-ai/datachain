@@ -1,9 +1,3 @@
-"""Compute per-field statistical summaries for a dataset.
-
-Usage:
-    python3 summary.py <name@version> [--output path.json]
-"""
-
 import argparse
 import inspect
 import json
@@ -17,6 +11,7 @@ from utils import dc_import, human_size, write_json
 
 if TYPE_CHECKING:
     from datachain import DataChain
+    from datachain.skill.knowledge.types import ColumnSummary, SummarySnapshot
 
 
 def _hs(nbytes):
@@ -498,7 +493,7 @@ def _build_overview(total_rows, columns_info, col_results, schema):
     return SEP.join(parts)
 
 
-def dataset_summary_from_chain(chain: "DataChain") -> dict:
+def dataset_summary_from_chain(chain: "DataChain") -> "SummarySnapshot":
     """Compute per-field stats and overview from an open DataChain.
 
     Calls chain.persist() internally for efficient multi-query execution.
@@ -577,7 +572,7 @@ def dataset_summary_from_chain(chain: "DataChain") -> dict:
         schema,
     )
 
-    result = {
+    result: SummarySnapshot = {
         "overview": overview,
         "total_rows": total_rows,
         "sampled": sampled,
@@ -590,8 +585,10 @@ def dataset_summary_from_chain(chain: "DataChain") -> dict:
     return result
 
 
-def _build_column_results(columns_info, agg_data, all_values, warnings_list):
-    col_results = {}
+def _build_column_results(
+    columns_info, agg_data, all_values, warnings_list
+) -> dict[str, "ColumnSummary"]:
+    col_results: dict[str, ColumnSummary] = {}
 
     for col_path, info in columns_info.items():
         cat = info["category"]
@@ -631,7 +628,7 @@ def _summarize_column(cat, col_path, agg_data, values):
     return {"line": "", "stats": {}}
 
 
-def dataset_summary(name_version: str) -> dict:
+def dataset_summary(name_version: str) -> "SummarySnapshot":
     """Open dataset by name@version, compute summary.
 
     Args:

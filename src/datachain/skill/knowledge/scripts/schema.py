@@ -1,5 +1,3 @@
-"""Schema extraction and preview generation for a live DataChain."""
-
 import inspect
 from typing import TYPE_CHECKING
 

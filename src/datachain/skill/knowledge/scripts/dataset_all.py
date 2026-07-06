@@ -1,5 +1,3 @@
-"""Fetch data for all versions of a dataset in one call."""
-
 import argparse
 import json
 import sys

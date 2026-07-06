@@ -1,5 +1,3 @@
-"""Build a dataset snapshot from any `AbstractMetastore`."""
-
 from typing import TYPE_CHECKING
 
 from datachain.dataset import DatasetDependencyType
