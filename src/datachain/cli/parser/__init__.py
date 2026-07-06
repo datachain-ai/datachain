@@ -249,21 +249,21 @@ def get_parser() -> ArgumentParser:  # noqa: PLR0915
         "--studio",
         action="store_true",
         default=False,
-        help="List the files in the Studio",
+        help="List the datasets in the Studio",
     )
     datasets_ls_parser.add_argument(
         "-L",
         "--local",
         action="store_true",
         default=False,
-        help="List local files only",
+        help="List local datasets (default)",
     )
     datasets_ls_parser.add_argument(
         "-a",
         "--all",
         action="store_true",
-        default=True,
-        help="List all files including hidden files",
+        default=False,
+        help="List both local and Studio datasets",
     )
     datasets_ls_parser.add_argument(
         "--team",
@@ -333,20 +333,20 @@ def get_parser() -> ArgumentParser:  # noqa: PLR0915
         "--local",
         action="store_true",
         default=False,
-        help="List local files only",
+        help="List local files (default)",
     )
     parse_ls.add_argument(
         "-a",
         "--all",
         action="store_true",
-        default=True,
-        help="List all files including hidden files",
+        default=False,
+        help="List both local and Studio files",
     )
     parse_ls.add_argument(
         "--team",
         action="store",
         default=None,
-        help="The team to list datasets for. By default, it will use team from config",
+        help="The team to list files for. By default, it will use team from config",
     )
 
     parse_du = subp.add_parser(

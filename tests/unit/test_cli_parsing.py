@@ -6,7 +6,8 @@ import pytest
 from datachain.cli import get_logging_level, get_parser
 from datachain.cli.parser.utils import CustomArgumentParser as ArgumentParser
 from datachain.cli.parser.utils import find_columns_type
-from datachain.cli.utils import CommaSeparatedArgs
+from datachain.cli.utils import CommaSeparatedArgs, determine_flavors
+from datachain.error import DataChainError
 
 
 def test_find_columns_type():
@@ -95,3 +96,43 @@ def test_bucket_no_subcommand():
     args = parser.parse_args(("bucket",))
     assert args.command == "bucket"
     assert args.bucket_cmd is None
+
+
+def test_ls_flavor_defaults():
+    parser = get_parser()
+    args = parser.parse_args(("ls", "s3://example/"))
+    assert args.local is False
+    assert args.studio is False
+    assert args.all is False
+
+
+def test_datasets_ls_flavor_defaults():
+    parser = get_parser()
+    args = parser.parse_args(("dataset", "ls"))
+    assert args.local is False
+    assert args.studio is False
+    assert args.all is False
+
+
+@pytest.mark.parametrize(
+    "studio,local,all,token,expected",
+    [
+        # No flags defaults to local-only (regardless of token presence)
+        (False, False, False, None, (False, True, False)),
+        (False, False, False, "tok", (False, True, False)),
+        # Explicit --all keeps both on with a token, downgrades to local without
+        (False, False, True, "tok", (True, False, False)),
+        (False, False, True, None, (False, True, False)),
+        # Explicit single-source flags clear --all
+        (True, False, False, "tok", (False, False, True)),
+        (False, True, False, None, (False, True, False)),
+        (True, True, False, "tok", (False, True, True)),
+    ],
+)
+def test_determine_flavors(studio, local, all, token, expected):
+    assert determine_flavors(studio, local, all, token) == expected
+
+
+def test_determine_flavors_studio_without_token():
+    with pytest.raises(DataChainError, match="Not logged in to Studio"):
+        determine_flavors(studio=True, local=False, all=False, token=None)

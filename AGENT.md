@@ -36,7 +36,11 @@ that tend to drift apart:
 - **each backend.**
 
 So a change to how signals map to storage must be **fanned out and verified across the
-whole matrix**. One path passing tells you nothing about the others.
+whole matrix**. One path passing tells you nothing about the others. "I covered the
+matrix" without an enumeration is the failure mode: before claiming done, write the matrix
+out as a literal list — every path above × each backend × the composition axes under
+*Working effectively* — and tick each cell against a real read-back, not a belief that the
+paths are similar.
 
 ## Backends diverge — design for the set, not for one
 
@@ -61,6 +65,19 @@ The outlier is per-axis, not global: on the NaN axis SQLite is the odd one. It s
 there, while every other backend keeps them distinct (IEEE). `None` itself round-trips
 consistently everywhere. Conform to the standard/majority; document the lone backend's
 limit rather than contorting the others to match it.
+
+Two divergences go beyond null *handling* and can't be converted away:
+
+- **Collections aren't nullable everywhere.** ClickHouse and BigQuery have no nullable
+  array/map, so an `Optional[list]`/`dict` `None` is indistinguishable from empty there
+  (`None` → `[]`/`''`). A discriminator column can rescue a nullable scalar or whole model,
+  but not a single-column collection cleanly. Don't encode meaning in the null-vs-empty
+  distinction for a collection across backends; lift it into a nullable scalar or model if
+  it must survive.
+- **Some functions are intrinsically backend-local.** Hashing, regex dialects, and RNG use
+  each engine's own implementation, so the same input yields different values per backend.
+  Never compare a hash computed on one backend against another, or assume regex edge cases
+  match.
 
 ## Serialization is a boundary
 
@@ -94,13 +111,62 @@ months later on `main` has no notion of "this change". Watch for change-narrativ
 - **Docstrings:** expected on public-facing APIs; rarely wanted on internal functions and
   helpers, where a clear name and signature should be enough.
 
+## Definition of done — changes to the signal→column layer
+
+This layer has **no single chokepoint**: signals→columns is reimplemented per
+op / export / backend, so a change that works in `save`/`read` routinely breaks in
+`mutate` / `window` / an export / on the strict backend. The bugs are not random —
+they cluster in a knowable matrix. Therefore, for any change here:
+
+- **Done ≠ your tests are green.** A change is done only after you have adversarially
+  swept the matrix in *Working effectively* below and left a permanent test for each
+  path. Assume bugs exist until the sweep proves otherwise. "Looks implemented" and
+  "happy-path passes" are not "ready for review" — do not claim ready until every
+  path is a green test or an explicitly documented limitation.
+- **Leave a test, not a probe.** Every path you exercise becomes a parametrized test
+  in the repo, running on **both backends** — never a throwaway script you delete.
+  The next change then re-runs the whole matrix automatically; this is what stops
+  these regressions returning without a person re-asking for an audit.
+- **Build tests to break it, not to confirm it.** Defaulting to happy-path tests is
+  the failure mode that hides this bug class; write the degenerate and adversarial
+  cases first, and stay skeptical of your own "it works".
+
 ## Working effectively (people and agents)
 
 - **Run the full matrix.** Test on every backend and across the supported Python versions
   before calling something done; a single convenient setup hides divergences.
-- **Test across feature boundaries**, not a feature in isolation — the surprising bugs
-  live in compositions (two features used together, or one used as the only signal in a
-  chain).
+- **Verify read-back values, not the declared schema.** The `SignalSchema` / `.schema`
+  entry can report a type the stored data doesn't honor (nullability dropped, a default
+  silently filled in). The unit of verification is the value read back **on the strict
+  backend** — passing on the permissive default tells you nothing. Assert the actual data.
+- **Probe the surprising compositions, designed to break the feature** (degenerate inputs:
+  all-null, empty, single-element, present-on-one-side-only), not to confirm it works.
+  A feature in isolation is the easy case; the bugs cluster in a knowable, recurring set:
+  - the new signal as the **only** signal in the chain;
+  - through **every op**, not just the leaf read: filter / order_by / mutate / group_by /
+    distinct / **merge** (on the signal *and* carried through a join) / subtract /
+    **`window`** (`.over` with the **readable name and the slot form**) / aggregates over
+    the leaf **with NULL rows mixed in**;
+  - through **`union`**, in **both arm orders** — the operation is not symmetric;
+  - under **`.label()`/aliasing**, and as a leaf **inside a composed `Func`** (`f(x) + 1`),
+    not just the bare leaf;
+  - through **each export path individually** (pandas / parquet / csv / json / records /
+    database / storage) — hidden/internal columns must not leak, and **flat export names
+    must stay unique**;
+  - through **UDF shapes**: generator (`yield`) / aggregator / batched / multi-output (the
+    signal as one of several outputs **and** wrapped in a cover object), and **cross-process**
+    clone/serialize of the schema;
+  - combined with **special signal types** (e.g. `File`), not only plain models;
+  - the type **and a subclass of it**; two types that **share a name** across modules; a
+    value that matches **none** of the declared cases (must error, never silently drop);
+  - **reloading a dataset saved before the change** — including when a referenced type is
+    **not importable** — backward-compat is a test, not an assumption.
 - **Separate a correctness bug from a design decision.** Fix the bugs; raise design and
   strategy questions — especially anything that would overfit the shared layer to one
   backend — with the maintainers instead of quietly encoding them.
+- **Tell a real divergence from a harness artifact.** A *value* that differs between
+  backends is a real signal worth chasing. A *crash* in a long shared-warehouse test run is
+  often the harness under load (metastore teardown, memory limits) and vanishes when the
+  test runs alone — re-run a suspected crash in isolation before treating it as a bug.
+  Probe small and isolated; a large single-session run against the shared backend is itself
+  a source of false failures.
