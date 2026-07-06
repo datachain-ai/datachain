@@ -494,7 +494,6 @@ class Client(ABC):
             self.fs.pipe_file(
                 full_path, data, **self._write_kwargs(cfg, streaming=False)
             )
-            streamed = False
         else:
             src: BinaryIO = (
                 io.BytesIO(data)
@@ -511,9 +510,7 @@ class Client(ABC):
                 # a natural choice; fall back to 8 MiB otherwise.
                 buf_size = getattr(dst, "blocksize", None) or 8 * 1024 * 1024
                 shutil.copyfileobj(src, dst, length=buf_size)
-            streamed = True
-        new_version = self._finalize_write(cfg, full_path, streaming=streamed)
-        file_info = self.fs.info(full_path, **self._file_info_kwargs(new_version))
+        file_info = self.fs.info(full_path, **self._file_info_kwargs())
         return self.info_to_file(file_info, rel_path)
 
     def _can_pipe_upload(self) -> bool:
@@ -528,16 +525,6 @@ class Client(ABC):
         if cfg.extra:
             raise NotImplementedError("write_options is not supported on this backend.")
         return {}
-
-    def _finalize_write(
-        self, cfg: "WriteConfig", full_path: str, *, streaming: bool
-    ) -> str | None:
-        """Apply write metadata the write call couldn't carry.
-
-        Returns a new version id when the update created one, so callers can pin
-        the metadata refresh to it.
-        """
-        return None
 
     def download(self, file: "File", *, callback: Callback = DEFAULT_CALLBACK) -> None:
         sync(get_loop(), functools.partial(self._download, file, callback=callback))

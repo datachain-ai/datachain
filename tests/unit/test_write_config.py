@@ -64,12 +64,15 @@ def test_gcs_write_kwargs():
         }
 
 
-def test_azure_write_kwargs_metadata_only_inline():
-    # Azure carries only metadata inline (with the is_directory marker
-    # preserved); content settings are applied post-write, not here.
-    assert _wk(AzureClient, NORMALIZED, streaming=True) == {
-        "metadata": {"is_directory": "false", "a": "b"},
-    }
+def test_azure_write_kwargs_inline():
+    # Azure sets metadata and content settings inline in the streaming write.
+    kw = _wk(AzureClient, NORMALIZED, streaming=True)
+    assert kw["metadata"] == {"a": "b"}
+    cs = kw["content_settings"]
+    assert cs.content_type == "application/pdf"
+    assert cs.content_disposition == "attachment"
+    assert cs.cache_control == "max-age=3600"
+    assert cs.content_encoding == "gzip"
 
 
 def test_azure_never_pipes():

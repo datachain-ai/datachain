@@ -621,11 +621,7 @@ class File(DataModel):
             ) as wrapped:
                 yield wrapped
 
-        finalized_version = client._finalize_write(write_cfg, full_path, streaming=True)
-
-        # Azure content settings on a versioned account create a version newer
-        # than the write handle's.
-        version_hint = finalized_version or self._extract_write_version(raw_handle)
+        version_hint = self._extract_write_version(raw_handle)
 
         # refresh metadata pinned to the version that was just written
         refreshed = client.get_file_info(self.path, version_id=version_hint)
