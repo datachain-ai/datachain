@@ -1853,9 +1853,7 @@ class AbstractDBMetastore(AbstractMetastore):
                 )
             )
 
-            # Count in DB: in-memory dataset.versions may hold only this
-            # version (GC fetches versions one-by-one), so its length is
-            # unreliable.
+            # Count from DB - in-memory dataset.versions may be incomplete.
             remaining = next(
                 self.db.execute(
                     select(f.count())

@@ -1132,9 +1132,11 @@ class Catalog:
 
         If ``keep_metadata`` is True, drop the warehouse rows but keep the
         version row so the version number stays reserved. Only allowed for
-        user-facing datasets in COMPLETE, REMOVING, or REMOVED state;
-        internal datasets (``lst__*`` / ``session_*``) ignore the flag and
-        are removed in full.
+        user-facing datasets in COMPLETE, REMOVING, or REMOVED state.
+        Raises ``DataChainError`` for internal datasets (``lst__*`` /
+        ``session_*``) - callers that don't care about metadata should pass
+        ``keep_metadata=False`` explicitly, or go through
+        ``remove_dataset`` which downgrades transparently.
 
         If ``keep_metadata`` is False, drop the warehouse rows and the
         version row. If the version was previously removed with metadata
@@ -1266,7 +1268,10 @@ class Catalog:
                     elif keep_metadata is None:
                         self.warehouse.drop_dataset_rows_table(dataset, version)
                         self.metastore.update_dataset_version(
-                            dataset, version, status=DatasetStatus.REMOVED
+                            dataset,
+                            version,
+                            status=DatasetStatus.REMOVED,
+                            removed_at=v.removed_at or datetime.now(timezone.utc),
                         )
                         continue
                     else:
