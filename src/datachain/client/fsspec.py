@@ -520,8 +520,14 @@ class Client(ABC):
         return True
 
     def _write_kwargs(self, cfg: "WriteConfig", *, streaming: bool) -> dict[str, Any]:
-        """Map a :class:`WriteConfig` to native ``fs.open``/``pipe_file`` kwargs."""
-        return dict(cfg.extra or {})
+        """Map a :class:`WriteConfig` to native ``fs.open``/``pipe_file`` kwargs.
+
+        Backends with metadata support override this; the base maps nothing and
+        rejects the raw ``write_options`` escape hatch, which only S3 forwards.
+        """
+        if cfg.extra:
+            raise NotImplementedError("write_options is not supported on this backend.")
+        return {}
 
     def _finalize_write(
         self, cfg: "WriteConfig", full_path: str, *, streaming: bool

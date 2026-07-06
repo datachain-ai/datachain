@@ -2,6 +2,7 @@ import pytest
 
 from datachain.client.azure import AzureClient
 from datachain.client.gcs import GCSClient
+from datachain.client.hf import HfClient
 from datachain.client.local import FileClient
 from datachain.client.s3 import ClientS3
 from datachain.client.writeconfig import WriteConfig
@@ -75,13 +76,19 @@ def test_azure_never_pipes():
     assert object.__new__(AzureClient)._can_pipe_upload() is False
 
 
-def test_gcs_and_azure_reject_write_options():
-    # gcsfs/adlfs have no raw write-kwargs passthrough, so the escape hatch
-    # must raise rather than crash cryptically or silently drop.
-    for cls in (GCSClient, AzureClient):
+def test_write_options_rejected_unless_backend_supports_it():
+    # Only S3 forwards the raw escape hatch; GCS/Azure and the base default
+    # (e.g. HfClient) reject it rather than crash or silently drop.
+    for cls in (GCSClient, AzureClient, HfClient):
         for streaming in (True, False):
             with pytest.raises(NotImplementedError, match="write_options"):
                 _wk(cls, FULL, streaming=streaming)
+
+
+def test_base_default_maps_nothing():
+    # HfClient uses the base _write_kwargs (no override): normalized fields are
+    # dropped and only the escape hatch is rejected.
+    assert _wk(HfClient, NORMALIZED, streaming=True) == {}
 
 
 def test_local_ignores_all_write_kwargs():
