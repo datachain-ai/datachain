@@ -5,6 +5,7 @@ import traceback
 from multiprocessing import freeze_support
 
 from datachain.cli.utils import get_logging_level
+from datachain.log_routing import setup_internal_log_routing
 from datachain.studio import process_pipeline_args
 
 from .commands import (
@@ -37,6 +38,8 @@ def main(argv: list[str] | None = None) -> int:
     datachain_parser = get_parser()
     args = datachain_parser.parse_args(argv)
 
+    logs_routed = setup_internal_log_routing()
+
     if args.command == "internal-run-udf":
         return handle_udf()
     if args.command == "internal-run-udf-worker":
@@ -46,9 +49,13 @@ def main(argv: list[str] | None = None) -> int:
         datachain_parser.print_help(sys.stderr)
         return 1
 
-    logger.addHandler(logging.StreamHandler())
     logging_level = get_logging_level(args)
-    logger.setLevel(logging_level)
+    if not logs_routed:
+        logger.addHandler(logging.StreamHandler())
+        logger.setLevel(logging_level)
+    elif logging_level < logging.INFO:
+        # -v widens what reaches the internal stream
+        logger.setLevel(logging_level)
 
     client_config = (
         {

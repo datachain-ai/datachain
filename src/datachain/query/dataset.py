@@ -56,6 +56,7 @@ from datachain.lib.listing import is_listing_dataset, listing_dataset_expired
 from datachain.lib.signal_schema import SignalSchema, generate_merge_root_mapping
 from datachain.lib.udf import JsonSerializationError, UdfError, _get_cache
 from datachain.lib.utils import type_to_str
+from datachain.log_routing import internal_log_fds
 from datachain.progress import (
     CombinedDownloadCallback,
     TqdmCombinedDownloadCallback,
@@ -853,7 +854,10 @@ class UDFStep(Step, ABC):
                     process_data = filtered_cloudpickle_dumps(udf_info)
 
                     with subprocess.Popen(  # noqa: S603
-                        cmd, env=envs, stdin=subprocess.PIPE
+                        cmd,
+                        env=envs,
+                        stdin=subprocess.PIPE,
+                        pass_fds=internal_log_fds(),
                     ) as process:
                         try:
                             process.communicate(process_data)
