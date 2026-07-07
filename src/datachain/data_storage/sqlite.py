@@ -767,20 +767,6 @@ class SQLiteWarehouse(AbstractWarehouse):
         (db_class, db_args, db_kwargs) = db_clone_params
         return cls(db=db_class(*db_args, **db_kwargs))
 
-    def _reflect_tables(self, filter_tables=None):
-        """
-        Since some tables are prone to schema extension, meaning we can add
-        additional columns to it, we should reflect changes in metadata
-        to have the latest columns when dealing with those tables.
-        If filter function is defined, it's used to filter out tables to reflect,
-        otherwise all tables are reflected
-        """
-        self.db.metadata.reflect(
-            bind=self.db.engine,
-            extend_existing=True,
-            only=filter_tables,
-        )
-
     def create_dataset_rows_table(
         self,
         name: str,
@@ -847,11 +833,14 @@ class SQLiteWarehouse(AbstractWarehouse):
         return cast(func.instr(source, target), sqlalchemy.Boolean)
 
     def get_table(self, name: str) -> sqlalchemy.Table:
-        # load table with latest schema to metadata
-        self._reflect_tables(filter_tables=lambda t, _: t == name)
         try:
-            return self.db.metadata.tables[name]
-        except KeyError:
+            return Table(
+                name,
+                self.db.metadata,
+                autoload_with=self.db.engine,
+                extend_existing=True,
+            )
+        except sqlalchemy.exc.NoSuchTableError:
             raise TableMissingError(f"Table '{name}' not found") from None
 
     def python_type(self, col_type: Union["TypeEngine", "SQLType"]) -> Any:
