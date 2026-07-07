@@ -15,8 +15,9 @@ JSON fields:
   - `preview` (latest version only) — `{columns, rows}` plus optional `file_url_prefix` (HTTPS URL prefix for clickable file links)
   - `summary` (latest version only, may be `null`) — `{overview, sampled, sample_size, columns}` where `columns[col].line` is a pre-formatted statistical summary
   - `query_script` — Python code that produced this version (may be `null`)
-  - `changes` — diff vs previous (`null` for first version): `script_changed`, `previous_script`, `deps_added`, `deps_removed`, `deps_updated`
+  - `changes` — diff vs previous (`null` for first version): `script_changed`, `previous_script`, `deps_added`/`deps_removed` (`{name, version}`), `deps_updated` (`{name, version_from, version_to}`)
   - `dependencies[]` — upstream datasets/listings with `name`, `version`, `type`, optional `file_path`
+- `warnings` (optional) — collection diagnostics. A few flag incomplete data (version history truncated, no versions, a dependency on a deleted dataset); most are raw internal error strings (e.g. `schema: …`, `summary: …`).
 
 ## Output Format
 
@@ -33,6 +34,11 @@ cast_layer: {container | asset | sense | task, or empty}
 cast_scope: {bucket | directory | sample | onetime, or empty}
 cast_source: {bucket slug for L1-L3, task slug for L4, or empty}
 ---
+
+Frontmatter values derive from the dataset and its **latest** version — the last entry in
+`versions[]` (the list is oldest-first): `last_version`, `last_version_uuid`, `updated`, and
+`records` from that entry; `is_local` from `source`; `known_versions` from the version strings
+in `versions[]`.
 
 # {dataset_name}
 
@@ -92,13 +98,15 @@ Omit this section entirely if `preview` is null.
 
 ## Schema
 
+Each `schema` entry maps a column to `{"type": ..., "fields": ...}`. Render `{column}: {type}`;
+when `fields` is non-null, indent each `{field}: {type}` beneath it:
+
 ```
 {column}: {type}
-  {nested_field}: {type}
+  {field}: {type}
 ```
 
-Use the latest version's schema. Show nested fields indented under their parent.
-Add a brief comment after each field explaining what it represents.
+Use the latest version's schema. Add a brief comment after each field explaining what it represents.
 
 ## Stats
 
@@ -136,17 +144,19 @@ One subsection per version, newest first.
 - **Older versions with `changes.script_changed == false`**: 1-2 sentences on what changed (dep updates, refresh, etc.). No code block.
 - **Initial version** (no changes): "Initial version." plus `query_script` if available.
 - If `query_script` is null for all versions, omit code blocks entirely.
+- If a `warnings` entry names this version as depending on a deleted dataset, note the broken lineage in its summary.
 
 ## Guidelines
 
 - **Be concise.** Each version summary is 1-2 sentences max.
 - **Omit empty sections.** If preview is null, skip Preview. If schema is empty, skip Schema. If no session context, skip Session Context.
+- **Completeness caveats.** If `warnings` shows the data is incomplete — version history truncated, no versions, or a dependency on a deleted dataset — say so plainly so the reader knows the picture is partial. Never reproduce raw internal error strings (`schema: …`, `summary: …`, etc.) in the output; they are diagnostics, not reader-facing.
 - **Session context is verbatim on re-enrichment.** Do not paraphrase, merge with description, or rewrite.
 - **No duplication.** Description = what the dataset contains. Session context = why it was created.
-- **No dependency tables in version summaries.** Only mention a dependency if it was added, removed, or significantly changed.
+- **No dependency tables in version summaries.** Only mention a dependency if it was added, removed, or version-bumped (`deps_updated`).
 - **Human-readable timestamps:** `YYYY-MM-DD HH:MM:SS` (no `T`, no `Z`).
 - **No functional change?** Write "Data refreshed; no functional changes."
-- **`known_versions` lists every version string**, comma-separated inside brackets.
+- **`known_versions` lists the version strings present in `versions[]`**, comma-separated inside brackets. When `warnings` shows the history was truncated, these are only the most recent versions — do not imply the list is complete (the completeness caveat in the body covers the omission).
 - **CAST frontmatter resolution order:**
   1. If the existing `.md` has `cast_layer` / `cast_scope` / `cast_source` in frontmatter, **preserve verbatim** (same rule as Session Context).
   2. Otherwise, read `attrs`. `cast:<layer>` → `cast_layer`; `scope:<scope>` → `cast_scope`; `source:<slug>` → `cast_source`.
