@@ -806,8 +806,10 @@ class DatasetRecord:
     @property
     def _max_version(self) -> str:
         """Highest semver across all versions including REMOVED ones. Used for
-        collision avoidance — once a semver is claimed it's reserved forever,
+        collision avoidance - once a semver is claimed it's reserved forever,
         even after removal."""
+        if not self.versions:
+            raise DatasetVersionNotFoundError(f"Dataset {self.name} has no versions")
         return max(self.versions).version
 
     @property
@@ -820,7 +822,7 @@ class DatasetRecord:
         live = self._live_versions
         if not live:
             raise DatasetVersionNotFoundError(
-                f"Dataset {self.name} has no live versions"
+                f"Dataset {self.name} has only removed versions"
             )
         return max(live).version
 
@@ -1010,7 +1012,7 @@ class DatasetListRecord:
         live = [v for v in self.versions if not v.is_removed]
         if not live:
             raise DatasetVersionNotFoundError(
-                f"Dataset {self.name} has no live versions"
+                f"Dataset {self.name} has only removed versions"
             )
         return max(live, key=lambda v: v.version_value)
 

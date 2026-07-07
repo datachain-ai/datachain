@@ -956,13 +956,23 @@ def test_gc_skips_finalized_tombstones(test_session, dataset_complete):
     assert _find_removed(ds, version) is not None
 
 
-def test_gc_resumes_interrupted_full_remove(test_session, dataset_complete):
+@pytest.mark.parametrize("drop_rows_first", [False, True])
+def test_gc_resumes_interrupted_full_remove(
+    test_session, dataset_complete, drop_rows_first
+):
     """A version stuck in REMOVING + pending_metadata_drop=True (a
     keep_metadata=False remove that crashed before the version row was
-    dropped) is finished by the GC path."""
+    dropped) is finished by the GC path - whether or not the rows table
+    was already dropped before the crash."""
     catalog = test_session.catalog
+    warehouse = catalog.warehouse
     version = dataset_complete.latest_version
     name = dataset_complete.name
+    rows_table = warehouse.dataset_table_name(dataset_complete, version)
+    if drop_rows_first:
+        warehouse.drop_dataset_rows_table(dataset_complete, version)
+    assert warehouse.db.has_table(rows_table) is not drop_rows_first
+
     ds = _force_status(
         catalog,
         dataset_complete,
@@ -976,17 +986,24 @@ def test_gc_resumes_interrupted_full_remove(test_session, dataset_complete):
 
     with pytest.raises(DatasetNotFoundError):
         catalog.get_dataset(name, include_incomplete=True)
+    assert not warehouse.db.has_table(rows_table)
 
 
-def test_gc_resumes_interrupted_keep_metadata(test_session, dataset_complete):
+@pytest.mark.parametrize("drop_rows_first", [False, True])
+def test_gc_resumes_interrupted_keep_metadata(
+    test_session, dataset_complete, drop_rows_first
+):
     """A version stuck in REMOVING + pending_metadata_drop=False (a
     keep-metadata remove that crashed mid-drop) gets the rows table cleaned
-    up and the status flipped to REMOVED by the GC path."""
+    up and the status flipped to REMOVED by the GC path - whether or not
+    the rows table was already dropped before the crash."""
     catalog = test_session.catalog
     warehouse = catalog.warehouse
     version = dataset_complete.latest_version
     rows_table = warehouse.dataset_table_name(dataset_complete, version)
-    assert warehouse.db.has_table(rows_table)
+    if drop_rows_first:
+        warehouse.drop_dataset_rows_table(dataset_complete, version)
+    assert warehouse.db.has_table(rows_table) is not drop_rows_first
 
     ds = _force_status(catalog, dataset_complete, version, DatasetStatus.REMOVING)
     vid = ds.get_version(version).id

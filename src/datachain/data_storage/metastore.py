@@ -49,6 +49,7 @@ from datachain.checkpoint_event import (
 from datachain.data_storage import JobQueryType, JobStatus
 from datachain.data_storage.serializer import Serializable
 from datachain.dataset import (
+    SESSION_DATASET_PREFIX,
     DatasetDependency,
     DatasetListRecord,
     DatasetListVersion,
@@ -1947,7 +1948,7 @@ class AbstractDBMetastore(AbstractMetastore):
                     ),
                     # Session datasets from finished jobs (orphaned intermediates)
                     and_(
-                        d.c.name.startswith("session_"),
+                        d.c.name.startswith(SESSION_DATASET_PREFIX),
                         dv.c.status == DatasetStatus.COMPLETE,
                         dv.c.job_id.isnot(None),
                         j.c.status.in_(

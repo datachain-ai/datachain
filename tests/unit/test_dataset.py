@@ -411,7 +411,7 @@ def test_preview_raises_when_not_loaded(dataset_record):
 
 def test_latest_version_empty_raises(dataset_record):
     record = replace(dataset_record, _versions=[], _versions_loaded=True)
-    with pytest.raises(DatasetVersionNotFoundError, match="has no live versions"):
+    with pytest.raises(DatasetVersionNotFoundError, match="has only removed versions"):
         _ = record.latest_version
 
 
@@ -450,7 +450,7 @@ def test_latest_version_all_removed_raises(dataset_record):
         dataset_record, [DatasetStatus.REMOVED, DatasetStatus.REMOVED]
     )
     record = replace(dataset_record, _versions=versions, _versions_loaded=True)
-    with pytest.raises(DatasetVersionNotFoundError, match="has no live versions"):
+    with pytest.raises(DatasetVersionNotFoundError, match="has only removed versions"):
         _ = record.latest_version
 
 
@@ -593,7 +593,7 @@ def test_dataset_list_record_latest_version_all_removed_raises(dataset_list_reco
         replace(v, status=DatasetStatus.REMOVED) for v in dataset_list_record.versions
     ]
     record = replace(dataset_list_record, versions=versions)
-    with pytest.raises(DatasetVersionNotFoundError, match="has no live versions"):
+    with pytest.raises(DatasetVersionNotFoundError, match="has only removed versions"):
         record.latest_version()
 
 

@@ -1270,6 +1270,7 @@ class Catalog:
                         self.metastore.update_dataset_version(
                             dataset,
                             version,
+                            expected_status=DatasetStatus.REMOVING,
                             status=DatasetStatus.REMOVED,
                             removed_at=v.removed_at or datetime.now(timezone.utc),
                         )

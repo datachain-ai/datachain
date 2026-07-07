@@ -341,9 +341,12 @@ class StudioClient:
     def ls_datasets(
         self, prefix: str | None = None, include_removed: bool = False
     ) -> Response[LsData]:
+        params: dict[str, Any] = {"prefix": prefix}
+        if include_removed:
+            params["include_removed"] = True
         return self._send_request(
             "datachain/datasets",
-            {"prefix": prefix, "include_removed": include_removed},
+            params,
             method="GET",
         )
 

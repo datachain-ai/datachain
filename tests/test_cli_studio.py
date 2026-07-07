@@ -473,6 +473,23 @@ def test_studio_client_ls_datasets_forwards_include_removed(mocker):
     assert send.call_args[1] == {"method": "GET"}
 
 
+def test_studio_client_ls_datasets_omits_include_removed_when_false(mocker):
+    from datachain.remote.studio import Response, StudioClient
+
+    send = mocker.patch.object(
+        StudioClient,
+        "_send_request",
+        return_value=Response(data=[], ok=True, message="", status=200),
+    )
+    client = StudioClient(team="team")
+    client.ls_datasets(prefix="foo")
+    assert send.call_args[0] == (
+        "datachain/datasets",
+        {"prefix": "foo"},
+    )
+    assert send.call_args[1] == {"method": "GET"}
+
+
 @skip_if_not_sqlite
 @pytest.mark.parametrize("is_studio", (False,))
 def test_studio_edit_dataset(capsys, mocker):

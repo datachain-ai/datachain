@@ -275,7 +275,7 @@ def get_parser() -> ArgumentParser:  # noqa: PLR0915
         "--include-removed",
         action="store_true",
         default=False,
-        help="Include locally removed datasets in the output (local only)",
+        help="Include removed datasets in the output",
     )
 
     rm_dataset_parser = datasets_subparser.add_parser(
