@@ -100,9 +100,18 @@ chain.settings(parallel=8).map(emb=compute_embedding)
 chain.map(ext=lambda file: file.path.rsplit(".", 1)[-1])
 ```
 
-## One Signal Per Operation
+## Multiple Signals Per `map()`
 
-Each `map()`/`gen()`/`agg()` produces one output signal. Group outputs in a Pydantic model.
+`map()` accepts multiple keyword-function pairs; all functions run in a single pass over the rows, so it's faster than chaining separate `.map()` calls. If one function's parameter name matches another's output name, it receives that function's result (kwarg order doesn't matter).
+
+```python
+chain.map(
+    stem=lambda name: name.rsplit(".", 1)[0],
+    upper=lambda stem: stem.upper(),  # receives stem's output
+)
+```
+
+For related fields produced together (e.g. by one LLM call), return a Pydantic model instead:
 
 ```python
 from pydantic import BaseModel
@@ -111,11 +120,7 @@ class Result(BaseModel):
     label: str
     confidence: float
 
-# GOOD
 chain.map(result=classify)
-
-# BAD -- multiple keywords
-# chain.map(label=get_label, confidence=get_confidence)
 ```
 
 ## Use Native Analytics, Not Pandas
