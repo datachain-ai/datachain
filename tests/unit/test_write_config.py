@@ -13,7 +13,7 @@ FULL = WriteConfig(
     cache_control="max-age=3600",
     content_encoding="gzip",
     metadata={"a": "b"},
-    extra={"ACL": "public-read"},
+    write_options={"ACL": "public-read"},
 )
 # Same normalized fields, without the raw escape hatch (GCS/Azure reject extra).
 NORMALIZED = WriteConfig(

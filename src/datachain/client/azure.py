@@ -121,7 +121,11 @@ class AzureClient(Client):
         # adlfs does not forward content settings on write, so write via the
         # azure-storage-blob SDK, which sets content settings and metadata inline
         # in a single atomic upload (accepts bytes or a stream).
-        if cfg.extra:
+        # TODO: once adlfs forwards content settings on write in a released
+        # version (https://github.com/fsspec/adlfs/pull/554), this can go through
+        # fs.open()/pipe_file() with a _write_kwargs mapping like the other
+        # backends, dropping this SDK path.
+        if cfg.write_options:
             raise NotImplementedError(
                 "write_options is not supported on Azure; use content_type, "
                 "content_disposition, cache_control, content_encoding or "

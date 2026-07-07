@@ -7,14 +7,20 @@ from typing import Any
 class WriteConfig:
     """Normalized, backend-agnostic metadata for object writes.
 
-    Each :class:`~datachain.client.fsspec.Client` maps these fields to its
-    backend's native parameters (S3 ``s3_additional_kwargs``, GCS
-    ``fixed_key_metadata``, Azure ``ContentSettings``). Fields left as ``None``
-    are not sent. ``extra`` is an escape hatch of raw, backend-native kwargs for
-    keys this vocabulary doesn't cover (e.g. S3 ``ACL``); it is forwarded on S3
-    only — GCS and Azure raise ``NotImplementedError`` because their fsspec
-    backends have no raw write-kwargs passthrough. The local filesystem has no
-    notion of any of these and ignores all fields.
+    The first fields are portable content settings, mapped by each
+    :class:`~datachain.client.fsspec.Client` to its backend's native parameters
+    (S3 ``s3_additional_kwargs``, GCS ``fixed_key_metadata``, Azure
+    ``ContentSettings``); ``None`` fields are not sent.
+
+    - ``metadata`` is *custom* user-defined key/value object metadata (S3 user
+      metadata / ``x-amz-meta-*``, GCS custom metadata, Azure blob metadata).
+    - ``write_options`` is a raw, backend-native escape hatch for keys this
+      vocabulary doesn't cover (e.g. S3 ``ACL``, ``Tagging``). It is forwarded on
+      S3 only (into ``s3_additional_kwargs``); GCS and Azure raise
+      ``NotImplementedError`` because their fsspec backends have no raw
+      write-kwargs passthrough.
+
+    The local filesystem has no notion of any of these and ignores all fields.
     """
 
     content_type: str | None = None
@@ -22,7 +28,7 @@ class WriteConfig:
     cache_control: str | None = None
     content_encoding: str | None = None
     metadata: Mapping[str, str] | None = None
-    extra: Mapping[str, Any] | None = None
+    write_options: Mapping[str, Any] | None = None
 
     def is_empty(self) -> bool:
         return not (
@@ -31,7 +37,7 @@ class WriteConfig:
             or self.cache_control
             or self.content_encoding
             or self.metadata
-            or self.extra
+            or self.write_options
         )
 
     def has_content_settings(self) -> bool:

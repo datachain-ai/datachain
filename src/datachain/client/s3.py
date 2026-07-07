@@ -127,7 +127,7 @@ class ClientS3(Client):
             kw["ContentEncoding"] = cfg.content_encoding
         if cfg.metadata:
             kw["Metadata"] = dict(cfg.metadata)
-        kw.update(cfg.extra or {})
+        kw.update(cfg.write_options or {})
         return kw
 
     def url(

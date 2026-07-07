@@ -98,7 +98,7 @@ class GCSClient(Client):
         # gcsfs has no raw write-kwargs passthrough, so reject write_options
         # rather than crash (pipe_file has a fixed signature) or silently drop
         # it (the streaming path swallows extras).
-        if cfg.extra:
+        if cfg.write_options:
             raise NotImplementedError(
                 "write_options is not supported on GCS; use content_type, "
                 "content_disposition, cache_control, content_encoding or "

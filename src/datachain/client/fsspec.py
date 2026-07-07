@@ -535,10 +535,13 @@ class Client(ABC):
     def open_for_write(
         self, full_path: str, fs_mode: str, cfg: "WriteConfig", binary_kwargs: dict
     ) -> "Iterator[Any]":
-        """Yield a writable handle for a streaming ``File.open`` write.
+        """Yield a writable handle for a write-mode ``File.open``.
 
-        The handle carries the written version on ``version_id`` after close.
-        Backends that set metadata through a different API (Azure) override this.
+        Consumed by :meth:`datachain.lib.file.File.open` in write modes (it is
+        the streaming counterpart of :meth:`_write_object`, which handles the
+        whole-payload ``upload``). The handle carries the written version on
+        ``version_id`` after close; backends that set metadata through a
+        different API (Azure) override this.
         """
         kwargs = {**binary_kwargs, **self._write_kwargs(cfg, streaming=True)}
         with self.fs.open(full_path, fs_mode, **kwargs) as handle:
@@ -553,7 +556,7 @@ class Client(ABC):
         Backends with metadata support override this; the base maps nothing and
         rejects the raw ``write_options`` escape hatch, which only S3 forwards.
         """
-        if cfg.extra:
+        if cfg.write_options:
             raise NotImplementedError("write_options is not supported on this backend.")
         return {}
 

@@ -51,24 +51,6 @@ FileType = Literal["binary", "text", "image", "video", "audio"]
 EXPORT_FILES_MAX_THREADS = 5
 
 
-def _build_write_config(
-    content_type: str | None = None,
-    content_disposition: str | None = None,
-    cache_control: str | None = None,
-    content_encoding: str | None = None,
-    metadata: dict[str, str] | None = None,
-    write_options: dict[str, Any] | None = None,
-) -> WriteConfig:
-    return WriteConfig(
-        content_type=content_type,
-        content_disposition=content_disposition,
-        cache_control=cache_control,
-        content_encoding=content_encoding,
-        metadata=metadata,
-        extra=write_options,
-    )
-
-
 class FileExporter(NodesThreadPool):
     """Class that does file exporting concurrently with thread pool"""
 
@@ -459,7 +441,7 @@ class File(DataModel):
         file = client.upload(
             data,
             rel_path,
-            write_config=_build_write_config(
+            write_config=WriteConfig(
                 content_type=content_type,
                 content_disposition=content_disposition,
                 cache_control=cache_control,
@@ -568,7 +550,7 @@ class File(DataModel):
         """
         writing = any(ch in mode for ch in "wax+")
 
-        write_cfg = _build_write_config(
+        write_cfg = WriteConfig(
             content_type=content_type,
             content_disposition=content_disposition,
             cache_control=cache_control,
@@ -743,7 +725,7 @@ class File(DataModel):
 
         destination = stringify_path(destination)
         client, rel_path = self._resolve_destination(destination, client_config)
-        write_config = _build_write_config(
+        write_config = WriteConfig(
             content_type=content_type,
             content_disposition=content_disposition,
             cache_control=cache_control,
@@ -1273,7 +1255,7 @@ class ImageFile(File):
         result = client.upload(
             buf.getvalue(),
             rel_path,
-            write_config=_build_write_config(
+            write_config=WriteConfig(
                 content_type=content_type,
                 content_disposition=content_disposition,
                 cache_control=cache_control,
@@ -1631,7 +1613,7 @@ class AudioFile(File):
             start,
             end,
             client_config,
-            write_config=_build_write_config(
+            write_config=WriteConfig(
                 content_type=content_type,
                 content_disposition=content_disposition,
                 cache_control=cache_control,
@@ -1733,7 +1715,7 @@ class AudioFragment(DataModel):
             self.start,
             self.end,
             client_config=client_config,
-            write_config=_build_write_config(
+            write_config=WriteConfig(
                 content_type=content_type,
                 content_disposition=content_disposition,
                 cache_control=cache_control,
@@ -1893,7 +1875,7 @@ class VideoFrame(DataModel):
         result = client.upload(
             image_bytes,
             rel_path,
-            write_config=_build_write_config(
+            write_config=WriteConfig(
                 content_type=content_type,
                 content_disposition=content_disposition,
                 cache_control=cache_control,
@@ -1974,7 +1956,7 @@ class VideoFragment(DataModel):
             format,
             client_config=client_config,
             timeout=timeout,
-            write_config=_build_write_config(
+            write_config=WriteConfig(
                 content_type=content_type,
                 content_disposition=content_disposition,
                 cache_control=cache_control,
