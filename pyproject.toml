@@ -191,9 +191,6 @@ filterwarnings = [
 [tool.coverage.run]
 branch = true
 source = ["datachain", "tests"]
-# Temporary vendored bridge mirroring fsspec/adlfs#554; its copied edge branches
-# (empty-blob/append) can't be exercised via azurite. Remove with the module.
-omit = ["*/datachain/client/_adlfs_patch.py"]
 
 [tool.coverage.paths]
 source = ["src", "*/site-packages"]

@@ -64,25 +64,18 @@ def test_gcs_write_kwargs():
         }
 
 
-def test_azure_write_kwargs_inline():
-    # Azure sets metadata and content settings inline in the streaming write.
-    kw = _wk(AzureClient, NORMALIZED, streaming=True)
-    assert kw["metadata"] == {"a": "b"}
-    cs = kw["content_settings"]
-    assert cs.content_type == "application/pdf"
-    assert cs.content_disposition == "attachment"
-    assert cs.cache_control == "max-age=3600"
-    assert cs.content_encoding == "gzip"
-
-
-def test_azure_never_pipes():
-    assert object.__new__(AzureClient)._can_pipe_upload() is False
+def test_azure_write_object_rejects_write_options():
+    # Azure writes via the SDK in _write_object, which rejects the escape hatch
+    # before any I/O. (Content settings/metadata mapping is covered end-to-end by
+    # the azure functional read-back tests.)
+    with pytest.raises(NotImplementedError, match="write_options"):
+        object.__new__(AzureClient)._write_object("az://c/blob", b"x", FULL)
 
 
 def test_write_options_rejected_unless_backend_supports_it():
-    # Only S3 forwards the raw escape hatch; GCS/Azure and the base default
-    # (e.g. HfClient) reject it rather than crash or silently drop.
-    for cls in (GCSClient, AzureClient, HfClient):
+    # Only S3 forwards the raw escape hatch; GCS and the base default (e.g.
+    # HfClient) reject it rather than crash or silently drop.
+    for cls in (GCSClient, HfClient):
         for streaming in (True, False):
             with pytest.raises(NotImplementedError, match="write_options"):
                 _wk(cls, FULL, streaming=streaming)
@@ -100,6 +93,6 @@ def test_local_ignores_all_write_kwargs():
 
 
 def test_empty_config_produces_no_kwargs():
-    for cls in (ClientS3, GCSClient, AzureClient, FileClient):
+    for cls in (ClientS3, GCSClient, FileClient):
         assert _wk(cls, WriteConfig(), streaming=True) == {}
         assert _wk(cls, WriteConfig(), streaming=False) == {}

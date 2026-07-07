@@ -612,8 +612,9 @@ class File(DataModel):
         binary_kwargs = {
             k: v for k, v in open_kwargs.items() if k not in self._TEXT_WRAPPER_ALLOWED
         }
-        binary_kwargs.update(client._write_kwargs(write_cfg, streaming=True))
-        with client.fs.open(full_path, fs_mode, **binary_kwargs) as raw_handle:
+        with client.open_for_write(
+            full_path, fs_mode, write_cfg, binary_kwargs
+        ) as raw_handle:
             with self._wrap_text(
                 raw_handle,
                 mode,

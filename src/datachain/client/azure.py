@@ -1,3 +1,8 @@
+import io
+import shutil
+from collections.abc import Iterator
+from contextlib import contextmanager
+from tempfile import SpooledTemporaryFile
 from typing import TYPE_CHECKING, Any
 
 from adlfs import AzureBlobFileSystem
@@ -12,13 +17,24 @@ from fsspec.asyn import get_loop, sync
 from datachain.lib.file import File
 from datachain.progress import tqdm
 
-from . import _adlfs_patch
 from .fsspec import DELIMITER, BucketStatus, Client, ResultQueue
 
 if TYPE_CHECKING:
     from datachain.client.writeconfig import WriteConfig
 
-_adlfs_patch.apply()
+# Streams larger than this spill to disk while being buffered for upload_blob;
+# smaller ones stay in memory.
+_SPOOL_MAX_SIZE = 128 * 1024 * 1024
+
+
+class _AzureWriteBuffer(io.BytesIO):
+    """In-memory buffer for a streaming ``File.open`` write to Azure.
+
+    ``upload_blob`` needs the payload up front, so buffered ``open("wb")`` writes
+    are uploaded on close; the resulting version is exposed on ``version_id``.
+    """
+
+    version_id: str | None = None
 
 
 class AzureClient(Client):
@@ -94,32 +110,90 @@ class AzureClient(Client):
             size=v.get("size", ""),
         )
 
-    def _can_pipe_upload(self) -> bool:
-        # adlfs.pipe_file hardcodes the blob metadata, so route writes through
-        # the streaming path where metadata and content settings are both set
-        # inline (see datachain.client._adlfs_patch).
-        return False
-
-    def _write_kwargs(self, cfg: "WriteConfig", *, streaming: bool) -> dict[str, Any]:
+    def _write_object(
+        self,
+        full_path: str,
+        data: "bytes | bytearray | memoryview | Any",
+        cfg: "WriteConfig",
+        *,
+        overwrite: bool = True,
+    ) -> str | None:
+        # adlfs does not forward content settings on write, so write via the
+        # azure-storage-blob SDK, which sets content settings and metadata inline
+        # in a single atomic upload (accepts bytes or a stream).
         if cfg.extra:
             raise NotImplementedError(
                 "write_options is not supported on Azure; use content_type, "
                 "content_disposition, cache_control, content_encoding or "
                 "metadata instead."
             )
-        kw: dict[str, Any] = {}
-        if cfg.metadata:
-            kw["metadata"] = dict(cfg.metadata)
+        container, blob, _ = self.fs.split_path(full_path)
+        content_settings = None
         if cfg.has_content_settings():
             from azure.storage.blob import ContentSettings
 
-            kw["content_settings"] = ContentSettings(
+            content_settings = ContentSettings(
                 content_type=cfg.content_type,
                 content_disposition=cfg.content_disposition,
                 cache_control=cfg.cache_control,
                 content_encoding=cfg.content_encoding,
             )
-        return kw
+        # Match adlfs: custom metadata replaces the default directory marker.
+        metadata = dict(cfg.metadata) if cfg.metadata else {"is_directory": "false"}
+
+        if isinstance(data, (bytes, bytearray, memoryview)):
+            version_id = self._do_upload(
+                container, blob, data, content_settings, metadata, overwrite
+            )
+        else:
+            # upload_blob runs on the fsspec event loop; reading a loop-backed
+            # source stream there would re-enter sync(). Buffer it to a plain
+            # file (main thread) first so the loop reads a non-fsspec object.
+            with SpooledTemporaryFile(max_size=_SPOOL_MAX_SIZE) as spool:
+                shutil.copyfileobj(data, spool)
+                spool.seek(0)
+                version_id = self._do_upload(
+                    container, blob, spool, content_settings, metadata, overwrite
+                )
+        self.fs.invalidate_cache(full_path)
+        return version_id
+
+    def _do_upload(
+        self, container, blob, payload, content_settings, metadata, overwrite
+    ) -> str | None:
+        return sync(
+            get_loop(),
+            self._upload_blob,
+            container,
+            blob,
+            payload,
+            content_settings,
+            metadata,
+            overwrite,
+        )
+
+    async def _upload_blob(
+        self, container, blob, data, content_settings, metadata, overwrite
+    ) -> str | None:
+        async with self.fs.service_client.get_blob_client(container, blob) as bc:
+            resp = await bc.upload_blob(
+                data,
+                overwrite=overwrite,
+                content_settings=content_settings,
+                metadata=metadata,
+                max_concurrency=self.fs.max_concurrency,
+            )
+        return resp.get("version_id")
+
+    @contextmanager
+    def open_for_write(
+        self, full_path: str, fs_mode: str, cfg: "WriteConfig", binary_kwargs: dict
+    ) -> Iterator[Any]:
+        buf = _AzureWriteBuffer()
+        yield buf
+        buf.version_id = self._write_object(
+            full_path, buf.getvalue(), cfg, overwrite="x" not in fs_mode
+        )
 
     def url(
         self,

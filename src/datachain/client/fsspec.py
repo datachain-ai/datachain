@@ -9,6 +9,7 @@ import re
 import shutil
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Iterator, Sequence
+from contextlib import contextmanager
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, BinaryIO, ClassVar, Literal, NamedTuple
 from urllib.parse import urlparse
@@ -492,6 +493,22 @@ class Client(ABC):
         parent = posixpath.dirname(full_path)
         self.fs.makedirs(parent, exist_ok=True)
 
+        version = self._write_object(full_path, data, cfg)
+        file_info = self.fs.info(full_path, **self._file_info_kwargs(version))
+        return self.info_to_file(file_info, rel_path)
+
+    def _write_object(
+        self,
+        full_path: str,
+        data: "bytes | bytearray | memoryview | BinaryIO",
+        cfg: "WriteConfig",
+    ) -> str | None:
+        """Write *data* to *full_path*, applying *cfg*.
+
+        Returns a version id when the write itself produced one, else ``None``
+        (the caller then reads the latest). Backends that set metadata through a
+        different API (Azure) override this.
+        """
         if isinstance(data, (bytes, bytearray, memoryview)) and self._can_pipe_upload():
             self.fs.pipe_file(
                 full_path, data, **self._write_kwargs(cfg, streaming=False)
@@ -512,8 +529,20 @@ class Client(ABC):
                 # a natural choice; fall back to 8 MiB otherwise.
                 buf_size = getattr(dst, "blocksize", None) or 8 * 1024 * 1024
                 shutil.copyfileobj(src, dst, length=buf_size)
-        file_info = self.fs.info(full_path, **self._file_info_kwargs())
-        return self.info_to_file(file_info, rel_path)
+        return None
+
+    @contextmanager
+    def open_for_write(
+        self, full_path: str, fs_mode: str, cfg: "WriteConfig", binary_kwargs: dict
+    ) -> "Iterator[Any]":
+        """Yield a writable handle for a streaming ``File.open`` write.
+
+        The handle carries the written version on ``version_id`` after close.
+        Backends that set metadata through a different API (Azure) override this.
+        """
+        kwargs = {**binary_kwargs, **self._write_kwargs(cfg, streaming=True)}
+        with self.fs.open(full_path, fs_mode, **kwargs) as handle:
+            yield handle
 
     def _can_pipe_upload(self) -> bool:
         return True
