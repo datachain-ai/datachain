@@ -189,6 +189,8 @@ def save_audio(
         start: Start time in seconds (>= 0). Defaults to 0.
         end: End time in seconds. If None, extracts to end of file.
         client_config: Optional client configuration (e.g. credentials).
+        write_config: Normalized object write metadata (content type/disposition,
+            cache control, custom metadata) applied to the uploaded object.
 
     Returns:
         AudioFile: New audio file with format conversion/extraction applied.

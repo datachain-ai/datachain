@@ -628,6 +628,8 @@ def save_video_fragment(
         client_config: Optional client configuration (e.g. credentials).
         timeout: FFmpeg subprocess timeout in seconds. If None, a timeout is
             computed from the fragment duration. Set to 0 to disable.
+        write_config: Normalized object write metadata (content type/disposition,
+            cache control, custom metadata) applied to the uploaded object.
 
     Returns:
         VideoFile: Video fragment model.
