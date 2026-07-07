@@ -1,9 +1,9 @@
-"""Route framework (datachain/datachain_saas/compute) logs to a Studio-provided fd.
+"""Route framework logs to a caller-provided fd.
 
-Inside a SaaS job, framework log records go to the fd from
-DATACHAIN_INTERNAL_LOG_FD as one JSON line each (message, time, level, logger)
-instead of the captured stdout/stderr, so the parent worker can tell framework
-logs from user output.
+Inside a SaaS job, records from the `datachain` logger (plus any loggers named
+in DATACHAIN_INTERNAL_LOG_LOGGERS) go to the fd from DATACHAIN_INTERNAL_LOG_FD as
+one JSON line each (message, time, level, logger) instead of the captured
+stdout/stderr, so the parent worker can tell framework logs from user output.
 """
 
 import json
@@ -15,8 +15,7 @@ from io import TextIOWrapper
 
 INTERNAL_LOG_FD_ENV = "DATACHAIN_INTERNAL_LOG_FD"
 INTERNAL_LOG_LEVEL_ENV = "DATACHAIN_INTERNAL_LOG_LEVEL"
-
-_FRAMEWORK_LOGGERS = ("datachain", "datachain_saas", "compute")
+INTERNAL_LOG_LOGGERS_ENV = "DATACHAIN_INTERNAL_LOG_LOGGERS"
 
 _routed = False
 
@@ -41,7 +40,7 @@ def setup_internal_log_routing() -> bool:
         level = logging.INFO
 
     handler = _FdJsonHandler(pipe)
-    for name in _FRAMEWORK_LOGGERS:
+    for name in _framework_loggers():
         framework_logger = logging.getLogger(name)
         framework_logger.handlers[:] = [handler]
         framework_logger.setLevel(level)
@@ -74,6 +73,12 @@ def _fd_from_env() -> int | None:
         return int(fd_raw)
     except ValueError:
         return None
+
+
+def _framework_loggers() -> tuple[str, ...]:
+    extra = os.getenv(INTERNAL_LOG_LOGGERS_ENV, "")
+    names = ["datachain", *(n.strip() for n in extra.split(",") if n.strip())]
+    return tuple(dict.fromkeys(names))
 
 
 class _FdJsonHandler(logging.Handler):

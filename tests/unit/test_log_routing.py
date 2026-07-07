@@ -12,6 +12,7 @@ from datachain.cli import main
 from datachain.log_routing import (
     INTERNAL_LOG_FD_ENV,
     INTERNAL_LOG_LEVEL_ENV,
+    INTERNAL_LOG_LOGGERS_ENV,
     internal_log_fds,
     setup_internal_log_routing,
 )
@@ -73,6 +74,7 @@ def test_unopenable_fd_is_noop(tmp_path, monkeypatch, restore_loggers):
 
 @pytest.mark.parametrize("name", ["datachain", "datachain_saas", "compute"])
 def test_records_go_to_fd_as_json(monkeypatch, restore_loggers, internal_fd, name):
+    monkeypatch.setenv(INTERNAL_LOG_LOGGERS_ENV, "datachain_saas,compute")
     studio = io.StringIO()
     monkeypatch.setattr(sys, "stderr", studio)
 
@@ -89,6 +91,7 @@ def test_records_go_to_fd_as_json(monkeypatch, restore_loggers, internal_fd, nam
 
 
 def test_warning_also_goes_to_fd(monkeypatch, restore_loggers, internal_fd):
+    monkeypatch.setenv(INTERNAL_LOG_LOGGERS_ENV, "compute")
     studio = io.StringIO()
     monkeypatch.setattr(sys, "stderr", studio)
 
@@ -99,6 +102,19 @@ def test_warning_also_goes_to_fd(monkeypatch, restore_loggers, internal_fd):
     assert entry["message"] == "hello-warn"
     assert entry["level"] == "warning"
     assert "hello-warn" not in studio.getvalue()
+
+
+def test_own_logger_routed_extras_opt_in(monkeypatch, restore_loggers, internal_fd):
+    monkeypatch.delenv(INTERNAL_LOG_LOGGERS_ENV, raising=False)
+    logging.getLogger("datachain_saas").propagate = True
+
+    assert setup_internal_log_routing() is True
+    logging.getLogger("datachain").info("own")
+    logging.getLogger("datachain_saas").info("extra")
+
+    lines = internal_fd.read_text().splitlines()
+    assert [json.loads(line)["message"] for line in lines] == ["own"]
+    assert logging.getLogger("datachain_saas").propagate is True
 
 
 def test_level_env_widens_fd_band(monkeypatch, restore_loggers, internal_fd):
