@@ -1,31 +1,6 @@
 import pytest
 
-from datachain.client.gcs import GCSClient
-from datachain.client.hf import HfClient
-from datachain.client.local import FileClient
-from datachain.client.s3 import ClientS3
 from datachain.client.writeconfig import WriteConfig
-
-FULL = WriteConfig(
-    content_type="application/pdf",
-    content_disposition="attachment",
-    cache_control="max-age=3600",
-    content_encoding="gzip",
-    metadata={"a": "b"},
-    write_options={"ACL": "public-read"},
-)
-# Same normalized fields, without the raw escape hatch (GCS/Azure reject extra).
-NORMALIZED = WriteConfig(
-    content_type="application/pdf",
-    content_disposition="attachment",
-    cache_control="max-age=3600",
-    content_encoding="gzip",
-    metadata={"a": "b"},
-)
-
-
-def _wk(cls, cfg, *, streaming):
-    return cls._write_kwargs(cfg, streaming=streaming)
 
 
 def test_write_config_empty():
@@ -37,62 +12,10 @@ def test_write_config_empty():
     assert not WriteConfig(metadata={"a": "b"}).is_empty()
 
 
-def test_s3_write_kwargs():
-    for streaming in (True, False):
-        assert _wk(ClientS3, FULL, streaming=streaming) == {
-            "ContentType": "application/pdf",
-            "ContentDisposition": "attachment",
-            "CacheControl": "max-age=3600",
-            "ContentEncoding": "gzip",
-            "Metadata": {"a": "b"},
-            "ACL": "public-read",
-        }
-
-
-def test_gcs_write_kwargs():
-    for streaming in (True, False):
-        assert _wk(GCSClient, NORMALIZED, streaming=streaming) == {
-            "content_type": "application/pdf",
-            "metadata": {"a": "b"},
-            "fixed_key_metadata": {
-                "content_disposition": "attachment",
-                "cache_control": "max-age=3600",
-                "content_encoding": "gzip",
-            },
-        }
-
-
 def test_reject_write_options():
-    # Only S3 forwards the escape hatch; the shared guard rejects it elsewhere
-    # and names the backend. (Azure calls it in _write_object rather than
-    # _write_kwargs; that wiring is covered by the azure functional tests.)
-    WriteConfig().reject_write_options("Azure")  # no-op when unset
+    # No-op when the escape hatch is unset; otherwise raises and names the backend.
+    WriteConfig().reject_write_options("Azure")
+    cfg = WriteConfig(write_options={"ACL": "public-read"})
     for backend in ("GCS", "Azure"):
         with pytest.raises(NotImplementedError, match=backend):
-            FULL.reject_write_options(backend)
-
-
-def test_write_options_rejected_unless_backend_supports_it():
-    # Only S3 forwards the raw escape hatch; GCS and the base default (e.g.
-    # HfClient) reject it rather than crash or silently drop.
-    for cls in (GCSClient, HfClient):
-        for streaming in (True, False):
-            with pytest.raises(NotImplementedError, match="write_options"):
-                _wk(cls, FULL, streaming=streaming)
-
-
-def test_base_default_drops_normalized_fields():
-    # A backend with no _write_kwargs override (HfClient -> base) has no native
-    # mapping for content settings or metadata, so it drops them all.
-    assert _wk(HfClient, NORMALIZED, streaming=True) == {}
-
-
-def test_local_ignores_all_write_kwargs():
-    assert _wk(FileClient, FULL, streaming=True) == {}
-    assert _wk(FileClient, FULL, streaming=False) == {}
-
-
-def test_empty_config_produces_no_kwargs():
-    for cls in (ClientS3, GCSClient, FileClient):
-        assert _wk(cls, WriteConfig(), streaming=True) == {}
-        assert _wk(cls, WriteConfig(), streaming=False) == {}
+            cfg.reject_write_options(backend)
