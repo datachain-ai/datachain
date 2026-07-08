@@ -1158,7 +1158,8 @@ class Catalog:
                 raise DataChainError(
                     f"Cannot remove {dataset.name}@{version} with "
                     "keep_metadata=True: a wipe (keep_metadata=False) is "
-                    "already in progress or interrupted."
+                    "already in progress or interrupted. Wait for it to "
+                    "finish, or run 'datachain gc' to resume."
                 )
             if not (v.status == DatasetStatus.COMPLETE or v.is_removed):
                 raise DataChainError(
@@ -1170,7 +1171,8 @@ class Catalog:
             raise DataChainError(
                 f"Cannot remove {dataset.name}@{version} with "
                 "keep_metadata=False: a removal with keep_metadata=True is "
-                "already in progress or interrupted."
+                "already in progress or interrupted. Wait for it to finish, "
+                "or run 'datachain gc' to resume."
             )
 
         if keep_metadata and v.status in (
