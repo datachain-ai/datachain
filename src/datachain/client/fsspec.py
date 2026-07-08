@@ -550,14 +550,14 @@ class Client(ABC):
     def _can_pipe_upload(self) -> bool:
         return True
 
-    def _write_kwargs(self, cfg: "WriteConfig", *, streaming: bool) -> dict[str, Any]:
+    @staticmethod
+    def _write_kwargs(cfg: "WriteConfig", *, streaming: bool) -> dict[str, Any]:
         """Map a :class:`WriteConfig` to native ``fs.open``/``pipe_file`` kwargs.
 
         Backends with metadata support override this; the base maps nothing and
         rejects the raw ``write_options`` escape hatch, which only S3 forwards.
         """
-        if cfg.write_options:
-            raise NotImplementedError("write_options is not supported on this backend.")
+        cfg.reject_write_options()
         return {}
 
     def download(self, file: "File", *, callback: Callback = DEFAULT_CALLBACK) -> None:

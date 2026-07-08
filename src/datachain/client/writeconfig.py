@@ -47,3 +47,15 @@ class WriteConfig:
             or self.cache_control
             or self.content_encoding
         )
+
+    def reject_write_options(self, backend: str = "this backend") -> None:
+        """Raise if the raw escape hatch is set. Only S3 forwards it; the other
+        backends have no fsspec passthrough, so they reject rather than crash on
+        a fixed signature or silently drop the options.
+        """
+        if self.write_options:
+            raise NotImplementedError(
+                f"write_options is not supported on {backend}; use content_type, "
+                "content_disposition, cache_control, content_encoding or metadata "
+                "instead."
+            )

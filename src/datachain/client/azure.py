@@ -142,12 +142,7 @@ class AzureClient(Client):
         # version (https://github.com/fsspec/adlfs/pull/554), this can go through
         # fs.open()/pipe_file() with a _write_kwargs mapping like the other
         # backends, dropping this SDK path.
-        if cfg.write_options:
-            raise NotImplementedError(
-                "write_options is not supported on Azure; use content_type, "
-                "content_disposition, cache_control, content_encoding or "
-                "metadata instead."
-            )
+        cfg.reject_write_options("Azure")
         container, blob, _ = self.fs.split_path(full_path)
         content_settings = None
         if cfg.has_content_settings():

@@ -94,16 +94,9 @@ class GCSClient(Client):
                 " — check credentials/permissions",
             )
 
-    def _write_kwargs(self, cfg: "WriteConfig", *, streaming: bool) -> dict[str, Any]:
-        # gcsfs has no raw write-kwargs passthrough, so reject write_options
-        # rather than crash (pipe_file has a fixed signature) or silently drop
-        # it (the streaming path swallows extras).
-        if cfg.write_options:
-            raise NotImplementedError(
-                "write_options is not supported on GCS; use content_type, "
-                "content_disposition, cache_control, content_encoding or "
-                "metadata instead."
-            )
+    @staticmethod
+    def _write_kwargs(cfg: "WriteConfig", *, streaming: bool) -> dict[str, Any]:
+        cfg.reject_write_options("GCS")
         kw: dict[str, Any] = {}
         if cfg.content_type:
             kw["content_type"] = cfg.content_type

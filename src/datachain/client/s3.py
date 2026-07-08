@@ -113,7 +113,8 @@ class ClientS3(Client):
                 exists=False, access="denied", error=f"S3 bucket '{name}' not found"
             )
 
-    def _write_kwargs(self, cfg: "WriteConfig", *, streaming: bool) -> dict[str, Any]:
+    @staticmethod
+    def _write_kwargs(cfg: "WriteConfig", *, streaming: bool) -> dict[str, Any]:
         # Both pipe_file and fs.open forward extra kwargs into
         # s3_additional_kwargs, which become boto3 put_object / multipart args.
         kw: dict[str, Any] = {}

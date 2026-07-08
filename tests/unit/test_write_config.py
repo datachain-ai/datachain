@@ -1,6 +1,5 @@
 import pytest
 
-from datachain.client.azure import AzureClient
 from datachain.client.gcs import GCSClient
 from datachain.client.hf import HfClient
 from datachain.client.local import FileClient
@@ -26,8 +25,7 @@ NORMALIZED = WriteConfig(
 
 
 def _wk(cls, cfg, *, streaming):
-    # _write_kwargs does not touch instance state, so bypass __init__.
-    return object.__new__(cls)._write_kwargs(cfg, streaming=streaming)
+    return cls._write_kwargs(cfg, streaming=streaming)
 
 
 def test_write_config_empty():
@@ -64,12 +62,14 @@ def test_gcs_write_kwargs():
         }
 
 
-def test_azure_write_object_rejects_write_options():
-    # Azure writes via the SDK in _write_object, which rejects the escape hatch
-    # before any I/O. (Content settings/metadata mapping is covered end-to-end by
-    # the azure functional read-back tests.)
-    with pytest.raises(NotImplementedError, match="write_options"):
-        object.__new__(AzureClient)._write_object("az://c/blob", b"x", FULL)
+def test_reject_write_options():
+    # Only S3 forwards the escape hatch; the shared guard rejects it elsewhere
+    # and names the backend. (Azure calls it in _write_object rather than
+    # _write_kwargs; that wiring is covered by the azure functional tests.)
+    WriteConfig().reject_write_options("Azure")  # no-op when unset
+    for backend in ("GCS", "Azure"):
+        with pytest.raises(NotImplementedError, match=backend):
+            FULL.reject_write_options(backend)
 
 
 def test_write_options_rejected_unless_backend_supports_it():
