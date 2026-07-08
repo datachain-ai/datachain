@@ -1680,7 +1680,7 @@ class AbstractDBMetastore(AbstractMetastore):
         query = self._base_list_datasets_query(include_incomplete=include_incomplete)
         if project_id:
             query = query.where(d.c.project_id == project_id)
-        query = query.where(self._datasets.c.name.startswith(prefix))
+        query = query.where(self._datasets.c.name.startswith(prefix, autoescape=True))
         yield from self._parse_dataset_list(self.db.execute(query))
 
     def get_dataset_by_version_uuid(
@@ -1863,7 +1863,7 @@ class AbstractDBMetastore(AbstractMetastore):
                     ),
                     # Session datasets from finished jobs (orphaned intermediates)
                     and_(
-                        d.c.name.startswith("session_"),
+                        d.c.name.startswith("session_", autoescape=True),
                         dv.c.status == DatasetStatus.COMPLETE,
                         dv.c.job_id.isnot(None),
                         j.c.status.in_(
@@ -1917,7 +1917,7 @@ class AbstractDBMetastore(AbstractMetastore):
             .select_from(base_from)
             .where(
                 d.c.project_id == self.listing_project.id,
-                d.c.name.startswith(LISTING_PREFIX),
+                d.c.name.startswith(LISTING_PREFIX, autoescape=True),
                 dv.c.status == DatasetStatus.COMPLETE,
                 dv.c.finished_at.isnot(None),
                 dv.c.finished_at < cutoff,

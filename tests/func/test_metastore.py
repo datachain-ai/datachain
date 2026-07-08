@@ -1258,3 +1258,22 @@ def test_keeps_last_complete_listing_when_newer_version_incomplete(
     to_clean = metastore.get_dataset_versions_to_clean()
 
     assert (ds.name, "1.0.0") not in {(d.name, v) for d, v in to_clean}
+
+
+def test_listing_prefix_is_matched_literally(metastore):
+    old = datetime.now(timezone.utc) - timedelta(days=10)
+    project = metastore.listing_project
+    # "lstXX" matches LIKE 'lst__%' only if the underscores are wildcards.
+    decoy = metastore.create_dataset(
+        "lstXX", project_id=project.id, status=DatasetStatus.COMPLETE
+    )
+    decoy, _ = metastore.create_dataset_version(
+        decoy, "1.0.0", DatasetStatus.COMPLETE, finished_at=old
+    )
+    metastore.create_dataset_version(
+        decoy, "1.0.1", DatasetStatus.COMPLETE, finished_at=old
+    )
+
+    to_clean = metastore.get_dataset_versions_to_clean()
+
+    assert not any(ds.name == "lstXX" for ds, _ in to_clean)
