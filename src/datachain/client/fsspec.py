@@ -1,5 +1,6 @@
 import asyncio
 import functools
+import io
 import logging
 import multiprocessing
 import os
@@ -8,6 +9,7 @@ import re
 import shutil
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Iterator, Sequence
+from contextlib import contextmanager
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, BinaryIO, ClassVar, Literal, NamedTuple
 from urllib.parse import urlparse
@@ -26,6 +28,7 @@ from datachain.progress import tqdm
 if TYPE_CHECKING:
     from fsspec.spec import AbstractFileSystem
 
+    from datachain.client.writeconfig import WriteConfig
     from datachain.dataset import StorageURI
     from datachain.lib.file import File
 
@@ -450,20 +453,34 @@ class Client(ABC):
         )  # type: ignore[return-value]
 
     def upload(
-        self, data: bytes | bytearray | memoryview | BinaryIO, path: str
+        self,
+        data: bytes | bytearray | memoryview | BinaryIO,
+        path: str,
+        *,
+        write_config: "WriteConfig | None" = None,
     ) -> "File":
         """Upload *data* to *path*.
 
         ``data`` may be:
           - a bytes-like object (``bytes``/``bytearray``/``memoryview``) —
-            written in a single ``pipe_file`` call.
+            written in a single ``pipe_file`` call, unless the backend opts out
+            of piping (``_can_pipe_upload`` is False) or overrides
+            ``_write_object`` (e.g. Azure, which uploads via the SDK).
           - a binary readable stream — copied into the destination via
             ``fs.open(path, 'wb')`` using ``shutil.copyfileobj``. The
             destination handle (an ``AbstractBufferedFile`` on cloud
             backends) flushes a multipart part every ``self.blocksize``
             bytes (e.g. 5 MiB on s3fs), so peak RAM is bounded by the
             backend's part size rather than the file size.
+
+        ``write_config`` carries normalized object metadata (content type,
+        content disposition, custom metadata, …) mapped to the backend's
+        native write parameters.
         """
+        from datachain.client.writeconfig import WriteConfig
+
+        cfg = write_config or WriteConfig()
+
         if path.startswith(self.PREFIX):
             full_path = path
             _, rel_path = self.split_url(path)
@@ -476,19 +493,72 @@ class Client(ABC):
         parent = posixpath.dirname(full_path)
         self.fs.makedirs(parent, exist_ok=True)
 
-        if isinstance(data, (bytes, bytearray, memoryview)):
-            self.fs.pipe_file(full_path, data)
+        version = self._write_object(full_path, data, cfg)
+        file_info = self.fs.info(full_path, **self._file_info_kwargs(version))
+        return self.info_to_file(file_info, rel_path)
+
+    def _write_object(
+        self,
+        full_path: str,
+        data: "bytes | bytearray | memoryview | BinaryIO",
+        cfg: "WriteConfig",
+    ) -> str | None:
+        """Write *data* to *full_path*, applying *cfg*.
+
+        Returns a version id when the write itself produced one, else ``None``
+        (the caller then reads the latest). Backends that set metadata through a
+        different API (Azure) override this.
+        """
+        if isinstance(data, (bytes, bytearray, memoryview)) and self._can_pipe_upload():
+            self.fs.pipe_file(
+                full_path, data, **self._write_kwargs(cfg, streaming=False)
+            )
         else:
-            with self.fs.open(full_path, "wb") as dst:
+            src: BinaryIO = (
+                io.BytesIO(data)
+                if isinstance(data, (bytes, bytearray, memoryview))
+                else data
+            )
+            with self.fs.open(
+                full_path, "wb", **self._write_kwargs(cfg, streaming=True)
+            ) as dst:
                 # Use a larger copy buffer than shutil's 16 KiB default to
                 # reduce per-chunk overhead on multi-GB uploads. The
                 # destination's blocksize (when exposed by fsspec backends)
                 # matches the multipart part size it will flush at, making it
                 # a natural choice; fall back to 8 MiB otherwise.
                 buf_size = getattr(dst, "blocksize", None) or 8 * 1024 * 1024
-                shutil.copyfileobj(data, dst, length=buf_size)
-        file_info = self.fs.info(full_path, **self._file_info_kwargs())
-        return self.info_to_file(file_info, rel_path)
+                shutil.copyfileobj(src, dst, length=buf_size)
+        return None
+
+    @contextmanager
+    def open_for_write(
+        self, full_path: str, fs_mode: str, cfg: "WriteConfig", binary_kwargs: dict
+    ) -> "Iterator[Any]":
+        """Yield a writable handle for a write-mode ``File.open``.
+
+        Consumed by :meth:`datachain.lib.file.File.open` in write modes (it is
+        the streaming counterpart of :meth:`_write_object`, which handles the
+        whole-payload ``upload``). The handle carries the written version on
+        ``version_id`` after close; backends that set metadata through a
+        different API (Azure) override this.
+        """
+        kwargs = {**binary_kwargs, **self._write_kwargs(cfg, streaming=True)}
+        with self.fs.open(full_path, fs_mode, **kwargs) as handle:
+            yield handle
+
+    def _can_pipe_upload(self) -> bool:
+        return True
+
+    @staticmethod
+    def _write_kwargs(cfg: "WriteConfig", *, streaming: bool) -> dict[str, Any]:
+        """Map a :class:`WriteConfig` to native ``fs.open``/``pipe_file`` kwargs.
+
+        Backends with metadata support override this; the base maps nothing and
+        rejects the raw ``write_options`` escape hatch, which only S3 forwards.
+        """
+        cfg.reject_write_options()
+        return {}
 
     def download(self, file: "File", *, callback: Callback = DEFAULT_CALLBACK) -> None:
         sync(get_loop(), functools.partial(self._download, file, callback=callback))
