@@ -464,8 +464,8 @@ class Client(ABC):
         ``data`` may be:
           - a bytes-like object (``bytes``/``bytearray``/``memoryview``) —
             written in a single ``pipe_file`` call, unless the backend opts out
-            of piping (``_can_pipe_upload`` is False, e.g. Azure), in which case
-            it is streamed like the case below.
+            of piping (``_can_pipe_upload`` is False) or overrides
+            ``_write_object`` (e.g. Azure, which uploads via the SDK).
           - a binary readable stream — copied into the destination via
             ``fs.open(path, 'wb')`` using ``shutil.copyfileobj``. The
             destination handle (an ``AbstractBufferedFile`` on cloud

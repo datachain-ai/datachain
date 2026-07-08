@@ -25,6 +25,8 @@ if TYPE_CHECKING:
 # Streams larger than this spill to disk while being buffered for upload_blob;
 # smaller ones stay in memory.
 _SPOOL_MAX_SIZE = 128 * 1024 * 1024
+# Copy chunk size when spooling a source stream, matching the fsspec upload path.
+_COPY_BUFFER_SIZE = 8 * 1024 * 1024
 
 
 class _AzureWriteBuffer(SpooledTemporaryFile):
@@ -126,7 +128,7 @@ class AzureClient(Client):
         # stream there would re-enter sync(). Buffer it to a plain file (main
         # thread, spilling to disk) first so the loop reads a non-fsspec object.
         with SpooledTemporaryFile(max_size=_SPOOL_MAX_SIZE) as spool:
-            shutil.copyfileobj(data, spool)
+            shutil.copyfileobj(data, spool, length=_COPY_BUFFER_SIZE)
             spool.seek(0)
             return self._upload_payload(full_path, spool, cfg, overwrite=overwrite)
 
