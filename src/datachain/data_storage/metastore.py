@@ -350,7 +350,7 @@ class AbstractMetastore(ABC, Serializable):
           - there is no associated job (job_id is NULL) and the version is
             older than STALE_CREATED_THRESHOLD_HOURS
         - Status REMOVING: marked for deletion
-        - Listing versions that are not the latest, older than
+        - Listing versions superseded by a newer completed version, older than
           LISTING_GC_MIN_AGE_SECONDS, and unused by any dataset
 
         Returns:
@@ -1899,9 +1899,13 @@ class AbstractDBMetastore(AbstractMetastore):
         cutoff = datetime.now(timezone.utc) - timedelta(seconds=min_age_seconds)
 
         newer = dv.alias("dv_newer")
-        has_newer_version = (
+        has_newer_complete_version = (
             select(newer.c.id)
-            .where(newer.c.dataset_id == dv.c.dataset_id, newer.c.id > dv.c.id)
+            .where(
+                newer.c.dataset_id == dv.c.dataset_id,
+                newer.c.id > dv.c.id,
+                newer.c.status == DatasetStatus.COMPLETE,
+            )
             .exists()
         )
         is_referenced = (
@@ -1917,7 +1921,7 @@ class AbstractDBMetastore(AbstractMetastore):
                 dv.c.status == DatasetStatus.COMPLETE,
                 dv.c.finished_at.isnot(None),
                 dv.c.finished_at < cutoff,
-                has_newer_version,
+                has_newer_complete_version,
                 ~is_referenced,
             )
         )

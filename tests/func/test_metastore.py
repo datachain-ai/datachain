@@ -1239,3 +1239,22 @@ def test_get_dataset_versions_to_clean_excludes_listings_when_scoped_to_job(meta
     to_clean = metastore.get_dataset_versions_to_clean(job_id=str(uuid4()))
 
     assert not any(ds.name.startswith("lst__") for ds, _ in to_clean)
+
+
+@pytest.mark.parametrize("newer_status", [DatasetStatus.CREATED, DatasetStatus.FAILED])
+def test_keeps_last_complete_listing_when_newer_version_incomplete(
+    metastore, newer_status
+):
+    old = datetime.now(timezone.utc) - timedelta(days=10)
+    project = metastore.listing_project
+    ds = metastore.create_dataset(
+        "lst__s3://bkt/", project_id=project.id, status=DatasetStatus.COMPLETE
+    )
+    ds, _ = metastore.create_dataset_version(
+        ds, "1.0.0", DatasetStatus.COMPLETE, finished_at=old
+    )
+    metastore.create_dataset_version(ds, "1.0.1", newer_status, finished_at=old)
+
+    to_clean = metastore.get_dataset_versions_to_clean()
+
+    assert (ds.name, "1.0.0") not in {(d.name, v) for d, v in to_clean}
