@@ -414,8 +414,6 @@ def test_file_save_roundtrip(cloud_test_catalog_upload, version_aware):
         assert dest.version, "versioned backend must capture a version on save"
 
 
-# --- write-metadata (content type / disposition / custom metadata) ---
-
 CT = "application/pdf"
 CD = 'attachment; filename="report.pdf"'
 CC = "max-age=3600"
@@ -668,12 +666,17 @@ def test_open_append_azure_rejects_write_metadata(cloud_test_catalog_upload):
 
 
 @pytest.mark.parametrize("cloud_type", ["azure"], indirect=True)
-def test_open_exclusive_azure_conflict(cloud_test_catalog_upload):
+@pytest.mark.parametrize(
+    "meta", [{}, {"content_type": "application/pdf"}], ids=["native", "upload_blob"]
+)
+def test_open_exclusive_azure_conflict(cloud_test_catalog_upload, meta):
+    # Both the native path (no metadata) and the upload_blob path (with content
+    # settings) must raise FileExistsError on an existing blob.
     ctc = cloud_test_catalog_upload
-    path = f"{ctc.src_uri}/wm/excl.bin"
+    path = f"{ctc.src_uri}/wm/excl-{'meta' if meta else 'native'}.bin"
     with File.at(path, ctc.session).open("wb") as f:
         f.write(b"first")
     with pytest.raises(FileExistsError):
-        with File.at(path, ctc.session).open("xb") as f:
+        with File.at(path, ctc.session).open("xb", **meta) as f:
             f.write(b"second")
     assert File.at(path, ctc.session).read() == b"first"
