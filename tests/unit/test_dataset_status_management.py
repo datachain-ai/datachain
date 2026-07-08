@@ -269,6 +269,33 @@ def test_remove_dataset_version_already_tombstoned_returns_false(
     assert catalog.remove_dataset_version(ds, version, keep_metadata=True) is False
 
 
+@pytest.mark.parametrize("drop_rows_first", [False, True])
+def test_remove_dataset_version_resumes_stuck_tombstone(
+    test_session, dataset_complete, drop_rows_first
+):
+    """Same-intent retry on a version stuck at REMOVING + pending_metadata_drop=False
+    finishes the tombstone (flips to REMOVED) instead of silently no-op'ing."""
+    catalog = test_session.catalog
+    warehouse = catalog.warehouse
+    version = dataset_complete.latest_version
+    rows_table = warehouse.dataset_table_name(dataset_complete, version)
+    if drop_rows_first:
+        warehouse.drop_dataset_rows_table(dataset_complete, version)
+    assert warehouse.db.has_table(rows_table) is not drop_rows_first
+
+    ds = _force_status(catalog, dataset_complete, version, DatasetStatus.REMOVING)
+
+    assert catalog.remove_dataset_version(ds, version, keep_metadata=True) is True
+
+    assert not warehouse.db.has_table(rows_table)
+    ds = catalog.get_dataset(
+        dataset_complete.name, versions=None, include_incomplete=True
+    )
+    finalized = _find_removed(ds, version)
+    assert finalized is not None
+    assert finalized.status == DatasetStatus.REMOVED
+
+
 def test_create_dataset_explicit_removed_version_rejected(
     test_session, dataset_complete
 ):

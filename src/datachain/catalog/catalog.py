@@ -1175,10 +1175,7 @@ class Catalog:
                 "or run 'datachain gc' to resume."
             )
 
-        if keep_metadata and v.status in (
-            DatasetStatus.REMOVING,
-            DatasetStatus.REMOVED,
-        ):
+        if keep_metadata and v.status == DatasetStatus.REMOVED:
             return False
 
         return self._claim_and_remove(
