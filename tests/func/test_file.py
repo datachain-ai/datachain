@@ -644,3 +644,24 @@ def test_write_options_rejected_on_gcs_azure(cloud_test_catalog_upload, cloud_ty
             ctc.catalog,
             write_options={"foo": "bar"},
         )
+
+
+@pytest.mark.parametrize("cloud_type", ["azure"], indirect=True)
+def test_open_append_azure(cloud_test_catalog_upload):
+    ctc = cloud_test_catalog_upload
+    path = f"{ctc.src_uri}/wm/append.txt"
+    file = File.at(path, ctc.session)
+    with file.open("ab") as f:
+        f.write(b"AB")
+    with file.open("ab") as f:
+        f.write(b"CD")
+    assert File.at(path, ctc.session).read() == b"ABCD"
+
+
+@pytest.mark.parametrize("cloud_type", ["azure"], indirect=True)
+def test_open_append_azure_rejects_write_metadata(cloud_test_catalog_upload):
+    ctc = cloud_test_catalog_upload
+    file = File.at(f"{ctc.src_uri}/wm/append-meta.txt", ctc.session)
+    with pytest.raises(NotImplementedError, match="append"):
+        with file.open("ab", content_type="text/plain"):
+            pass

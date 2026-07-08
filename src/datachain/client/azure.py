@@ -193,6 +193,18 @@ class AzureClient(Client):
     def open_for_write(
         self, full_path: str, fs_mode: str, cfg: "WriteConfig", binary_kwargs: dict
     ) -> Iterator[Any]:
+        if "a" in fs_mode:
+            # Append blobs need adlfs's append semantics; upload_blob only writes
+            # a whole object. Content settings/metadata aren't applied on append.
+            if not cfg.is_empty():
+                raise NotImplementedError(
+                    "write metadata is not supported for Azure append ('a') writes"
+                )
+            with self.fs.open(full_path, fs_mode, **binary_kwargs) as handle:
+                yield handle
+            return
+        # Overwrite ('w') / exclusive ('x'): buffer, then write the whole object
+        # via the SDK so content settings apply.
         buf = _AzureWriteBuffer()
         yield buf
         buf.version_id = self._write_object(
