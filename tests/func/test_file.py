@@ -412,3 +412,271 @@ def test_file_save_roundtrip(cloud_test_catalog_upload, version_aware):
     assert dest.read() == data
     if version_aware:
         assert dest.version, "versioned backend must capture a version on save"
+
+
+CT = "application/pdf"
+CD = 'attachment; filename="report.pdf"'
+CC = "max-age=3600"
+META = {"origin": "datachain-test"}
+WRITE_CLOUD_TYPES = ["s3", "gs", "azure"]
+
+
+def _read_object_meta(client, cloud_type, full_path):
+    fs = client.fs
+    if cloud_type == "s3":
+        bucket, key, _ = fs.split_path(full_path)
+        head = fs.call_s3("head_object", Bucket=bucket, Key=key)
+        return {
+            "content_type": head.get("ContentType"),
+            "content_disposition": head.get("ContentDisposition"),
+            "cache_control": head.get("CacheControl"),
+            "metadata": head.get("Metadata") or {},
+        }
+    if cloud_type == "gs":
+        info = fs.info(full_path, refresh=True)
+        return {
+            "content_type": info.get("contentType"),
+            "content_disposition": info.get("contentDisposition"),
+            "cache_control": info.get("cacheControl"),
+            "metadata": info.get("metadata") or {},
+        }
+    info = fs.info(full_path)  # azure
+    cs = info.get("content_settings") or {}
+    md = {k: v for k, v in (info.get("metadata") or {}).items() if k != "is_directory"}
+    return {
+        "content_type": cs.get("content_type"),
+        "content_disposition": cs.get("content_disposition"),
+        "cache_control": cs.get("cache_control"),
+        "metadata": md,
+    }
+
+
+def _cd_readback(cloud_type, streamed):
+    # fake-gcs-server drops fixed metadata (content-disposition) on resumable
+    # (streaming) uploads; real GCS persists it, as do S3/Azure on both paths.
+    return not (cloud_type == "gs" and streamed)
+
+
+def _metadata_readback(cloud_type):
+    # moto does not echo user metadata via head_object.
+    return cloud_type != "s3"
+
+
+def _cache_control_readback(cloud_type):
+    # fake-gcs-server does not persist cacheControl (real GCS does).
+    return cloud_type != "gs"
+
+
+@pytest.mark.parametrize("cloud_type", WRITE_CLOUD_TYPES, indirect=True)
+def test_upload_sets_object_metadata(cloud_test_catalog_upload, cloud_type):
+    ctc = cloud_test_catalog_upload
+    catalog = ctc.catalog
+    path = f"{ctc.src_uri}/wm/upload.bin"
+
+    f = File.upload(
+        b"data",
+        path,
+        catalog,
+        content_type=CT,
+        content_disposition=CD,
+        cache_control=CC,
+        metadata=META,
+    )
+
+    client = catalog.get_client(ctc.src_uri)
+    meta = _read_object_meta(client, cloud_type, client.get_uri(f.path))
+    assert meta["content_type"] == CT
+    assert meta["content_disposition"] == CD
+    if _cache_control_readback(cloud_type):
+        assert meta["cache_control"] == CC
+    if _metadata_readback(cloud_type):
+        assert meta["metadata"] == META
+    assert f.read() == b"data"
+
+
+@pytest.mark.parametrize("cloud_type", WRITE_CLOUD_TYPES, indirect=True)
+def test_save_sets_object_metadata(cloud_test_catalog_upload, cloud_type):
+    ctc = cloud_test_catalog_upload
+    catalog = ctc.catalog
+    src = File.upload(b"payload", f"{ctc.src_uri}/wm/save-src.bin", catalog)
+
+    dest = src.save(
+        f"{ctc.src_uri}/wm/save-dest.bin",
+        client_config=ctc.client_config,
+        content_type=CT,
+        content_disposition=CD,
+        metadata=META,
+    )
+
+    client = catalog.get_client(ctc.src_uri)
+    meta = _read_object_meta(client, cloud_type, client.get_uri(dest.path))
+    assert meta["content_type"] == CT
+    if _cd_readback(cloud_type, streamed=True):
+        assert meta["content_disposition"] == CD
+    if _metadata_readback(cloud_type):
+        assert meta["metadata"] == META
+    assert dest.read() == b"payload"
+
+
+@pytest.mark.parametrize("cloud_type", WRITE_CLOUD_TYPES, indirect=True)
+def test_open_write_sets_object_metadata(cloud_test_catalog_upload, cloud_type):
+    ctc = cloud_test_catalog_upload
+    file = File.at(f"{ctc.src_uri}/wm/open.bin", ctc.session)
+    with file.open("wb", content_type=CT, content_disposition=CD, metadata=META) as f:
+        f.write(b"streamed")
+
+    client = ctc.catalog.get_client(ctc.src_uri)
+    meta = _read_object_meta(client, cloud_type, client.get_uri(file.path))
+    assert meta["content_type"] == CT
+    if _cd_readback(cloud_type, streamed=True):
+        assert meta["content_disposition"] == CD
+    if _metadata_readback(cloud_type):
+        assert meta["metadata"] == META
+    assert file.read() == b"streamed"
+
+
+@pytest.mark.parametrize("cloud_type", WRITE_CLOUD_TYPES, indirect=True)
+def test_export_sets_object_metadata(cloud_test_catalog_upload, cloud_type):
+    ctc = cloud_test_catalog_upload
+    catalog = ctc.catalog
+    src = File.upload(b"exp", f"{ctc.src_uri}/wm/exp-src.bin", catalog)
+
+    src.export(
+        f"{ctc.src_uri}/wm/exported",
+        placement="filename",
+        client_config=ctc.client_config,
+        content_type=CT,
+        content_disposition=CD,
+    )
+
+    client = catalog.get_client(ctc.src_uri)
+    full = client.get_uri("wm/exported/exp-src.bin")
+    meta = _read_object_meta(client, cloud_type, full)
+    assert meta["content_type"] == CT
+    if _cd_readback(cloud_type, streamed=True):
+        assert meta["content_disposition"] == CD
+
+
+@pytest.mark.parametrize("cloud_type", WRITE_CLOUD_TYPES, indirect=True)
+def test_text_file_save_sets_object_metadata(cloud_test_catalog_upload, cloud_type):
+    from datachain.lib.file import TextFile
+
+    ctc = cloud_test_catalog_upload
+    catalog = ctc.catalog
+    src = File.upload(b"hello text", f"{ctc.src_uri}/wm/text-src.txt", catalog)
+    tf = TextFile(**src.model_dump())
+    tf._set_stream(catalog)
+
+    dest = tf.save(
+        f"{ctc.src_uri}/wm/text-dest.txt",
+        client_config=ctc.client_config,
+        content_type="text/plain",
+        content_disposition=CD,
+    )
+
+    client = catalog.get_client(ctc.src_uri)
+    meta = _read_object_meta(client, cloud_type, client.get_uri(dest.path))
+    assert meta["content_type"] == "text/plain"
+    if _cd_readback(cloud_type, streamed=True):
+        assert meta["content_disposition"] == CD
+
+
+@pytest.mark.parametrize("cloud_type", WRITE_CLOUD_TYPES, indirect=True)
+def test_image_file_save_sets_object_metadata(cloud_test_catalog_upload, cloud_type):
+    from io import BytesIO
+
+    from PIL import Image as PilImage
+
+    from datachain.lib.file import ImageFile
+
+    ctc = cloud_test_catalog_upload
+    catalog = ctc.catalog
+
+    buf = BytesIO()
+    PilImage.new("RGB", (4, 4), color="red").save(buf, format="PNG")
+    src = File.upload(buf.getvalue(), f"{ctc.src_uri}/wm/img-src.png", catalog)
+    img = ImageFile(**src.model_dump())
+    img._set_stream(catalog)
+
+    dest = img.save(
+        f"{ctc.src_uri}/wm/img-dest.png",
+        client_config=ctc.client_config,
+        content_type="image/png",
+        content_disposition=CD,
+        metadata=META,
+    )
+
+    client = catalog.get_client(ctc.src_uri)
+    meta = _read_object_meta(client, cloud_type, client.get_uri(dest.path))
+    assert meta["content_type"] == "image/png"
+    # ImageFile.save uploads bytes (pipe path), so gcs disposition persists too.
+    assert meta["content_disposition"] == CD
+    if _metadata_readback(cloud_type):
+        assert meta["metadata"] == META
+
+
+@pytest.mark.parametrize("cloud_type", ["s3"], indirect=True)
+def test_upload_write_options_applied_on_s3(cloud_test_catalog_upload, cloud_type):
+    ctc = cloud_test_catalog_upload
+    catalog = ctc.catalog
+
+    f = File.upload(
+        b"raw",
+        f"{ctc.src_uri}/wm/wo.bin",
+        catalog,
+        write_options={"ContentDisposition": CD},
+    )
+
+    client = catalog.get_client(ctc.src_uri)
+    meta = _read_object_meta(client, cloud_type, client.get_uri(f.path))
+    assert meta["content_disposition"] == CD
+
+
+@pytest.mark.parametrize("cloud_type", ["gs", "azure"], indirect=True)
+def test_write_options_rejected_on_gcs_azure(cloud_test_catalog_upload, cloud_type):
+    ctc = cloud_test_catalog_upload
+    with pytest.raises(NotImplementedError, match="write_options"):
+        File.upload(
+            b"x",
+            f"{ctc.src_uri}/wm/wo-reject.bin",
+            ctc.catalog,
+            write_options={"foo": "bar"},
+        )
+
+
+@pytest.mark.parametrize("cloud_type", ["azure"], indirect=True)
+def test_open_append_azure(cloud_test_catalog_upload):
+    ctc = cloud_test_catalog_upload
+    path = f"{ctc.src_uri}/wm/append.txt"
+    file = File.at(path, ctc.session)
+    with file.open("ab") as f:
+        f.write(b"AB")
+    with file.open("ab") as f:
+        f.write(b"CD")
+    assert File.at(path, ctc.session).read() == b"ABCD"
+
+
+@pytest.mark.parametrize("cloud_type", ["azure"], indirect=True)
+def test_open_append_azure_rejects_write_metadata(cloud_test_catalog_upload):
+    ctc = cloud_test_catalog_upload
+    file = File.at(f"{ctc.src_uri}/wm/append-meta.txt", ctc.session)
+    with pytest.raises(NotImplementedError, match="append"):
+        with file.open("ab", content_type="text/plain"):
+            pass
+
+
+@pytest.mark.parametrize("cloud_type", ["azure"], indirect=True)
+@pytest.mark.parametrize(
+    "meta", [{}, {"content_type": "application/pdf"}], ids=["native", "upload_blob"]
+)
+def test_open_exclusive_azure_conflict(cloud_test_catalog_upload, meta):
+    # Both the native path (no metadata) and the upload_blob path (with content
+    # settings) must raise FileExistsError on an existing blob.
+    ctc = cloud_test_catalog_upload
+    path = f"{ctc.src_uri}/wm/excl-{'meta' if meta else 'native'}.bin"
+    with File.at(path, ctc.session).open("wb") as f:
+        f.write(b"first")
+    with pytest.raises(FileExistsError):
+        with File.at(path, ctc.session).open("xb", **meta) as f:
+            f.write(b"second")
+    assert File.at(path, ctc.session).read() == b"first"
