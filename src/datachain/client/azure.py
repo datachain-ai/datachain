@@ -9,6 +9,7 @@ from adlfs import AzureBlobFileSystem
 from azure.core.exceptions import (
     ClientAuthenticationError,
     HttpResponseError,
+    ResourceExistsError,
     ResourceNotFoundError,
 )
 from azure.storage.blob import BlobServiceClient
@@ -180,13 +181,16 @@ class AzureClient(Client):
         self, container, blob, data, content_settings, metadata, overwrite
     ) -> str | None:
         async with self.fs.service_client.get_blob_client(container, blob) as bc:
-            resp = await bc.upload_blob(
-                data,
-                overwrite=overwrite,
-                content_settings=content_settings,
-                metadata=metadata,
-                max_concurrency=self.fs.max_concurrency,
-            )
+            try:
+                resp = await bc.upload_blob(
+                    data,
+                    overwrite=overwrite,
+                    content_settings=content_settings,
+                    metadata=metadata,
+                    max_concurrency=self.fs.max_concurrency,
+                )
+            except ResourceExistsError as e:  # exclusive ("x") write to existing blob
+                raise FileExistsError(blob) from e
         return resp.get("version_id")
 
     @contextmanager

@@ -665,3 +665,15 @@ def test_open_append_azure_rejects_write_metadata(cloud_test_catalog_upload):
     with pytest.raises(NotImplementedError, match="append"):
         with file.open("ab", content_type="text/plain"):
             pass
+
+
+@pytest.mark.parametrize("cloud_type", ["azure"], indirect=True)
+def test_open_exclusive_azure_conflict(cloud_test_catalog_upload):
+    ctc = cloud_test_catalog_upload
+    path = f"{ctc.src_uri}/wm/excl.bin"
+    with File.at(path, ctc.session).open("wb") as f:
+        f.write(b"first")
+    with pytest.raises(FileExistsError):
+        with File.at(path, ctc.session).open("xb") as f:
+            f.write(b"second")
+    assert File.at(path, ctc.session).read() == b"first"
