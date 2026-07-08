@@ -394,7 +394,11 @@ class StudioClient:
         )
 
     def dataset_info(
-        self, namespace: str, project: str, name: str
+        self,
+        namespace: str,
+        project: str,
+        name: str,
+        include_removed: bool = False,
     ) -> Response[DatasetInfoData]:
         def _parse_dataset_info(dataset_info):
             _parse_dates(dataset_info, ["created_at", "finished_at"])
@@ -405,9 +409,16 @@ class StudioClient:
 
             return dataset_info
 
+        params: dict[str, Any] = {
+            "namespace": namespace,
+            "project": project,
+            "name": name,
+        }
+        if include_removed:
+            params["include_removed"] = True
         response = self._send_request(
             "datachain/datasets/info",
-            {"namespace": namespace, "project": project, "name": name},
+            params,
             method="GET",
         )
         if response.ok:

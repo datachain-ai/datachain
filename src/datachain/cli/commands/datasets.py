@@ -61,7 +61,9 @@ def list_datasets(
     local_datasets = {(n, v) for n, v, _ in local_pairs}
     local_removed = {(n, v) for n, v, r in local_pairs if r}
     studio_datasets = (
-        set(list_datasets_studio(team=team, name=name)) if all or studio else set()
+        set(list_datasets_studio(team=team, name=name, include_removed=include_removed))
+        if all or studio
+        else set()
     )
 
     # Group the datasets for both local and studio sources.
@@ -122,7 +124,7 @@ def list_datasets_local(
         return
 
     for d in catalog.ls_datasets(include_removed=include_removed):
-        for v in d.versions:
+        for v in d.all_versions:
             yield d.full_name, v.version, v.is_removed
 
 
@@ -142,7 +144,7 @@ def list_datasets_local_versions(
         versions=None,
         include_incomplete=include_removed,
     )
-    for v in ds.versions:
+    for v in ds.all_versions:
         if v.status == DatasetStatus.COMPLETE:
             yield name, v.version, False
         elif include_removed and v.status == DatasetStatus.REMOVED:

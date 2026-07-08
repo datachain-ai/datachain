@@ -387,8 +387,8 @@ def test_remove_dataset(test_session, saved_dataset):
 
     # Dataset row stays with REMOVED versions; rows table gone.
     ds = catalog.get_dataset(saved_dataset.name, versions=None, include_incomplete=True)
-    assert not ds._live_versions
-    assert all(v.status == DatasetStatus.REMOVED for v in ds.versions)
+    assert not ds.versions
+    assert all(v.status == DatasetStatus.REMOVED for v in ds.all_versions)
     assert table_row_count(warehouse.db, rows_table) is None
 
 
@@ -412,9 +412,9 @@ def test_remove_dataset_with_multiple_versions(test_session, saved_dataset):
     ds = catalog.get_dataset(
         updated_dataset.name, versions=None, include_incomplete=True
     )
-    assert not ds._live_versions
+    assert not ds.versions
     removed = sorted(
-        (v for v in ds.versions if v.status == DatasetStatus.REMOVED),
+        (v for v in ds.all_versions if v.status == DatasetStatus.REMOVED),
         key=lambda v: v.version,
     )
     assert [v.version for v in removed] == ["1.0.0", "2.0.0"]

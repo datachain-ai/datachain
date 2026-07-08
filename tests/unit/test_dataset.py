@@ -583,16 +583,17 @@ def test_dataset_list_record_latest_version_skips_removed(dataset_list_record):
     )
     record = replace(
         dataset_list_record,
-        versions=[*dataset_list_record.versions, v3],
+        _versions=[*dataset_list_record.all_versions, v3],
     )
     assert record.latest_version().version == "2.0.0"
 
 
 def test_dataset_list_record_latest_version_all_removed_raises(dataset_list_record):
     versions = [
-        replace(v, status=DatasetStatus.REMOVED) for v in dataset_list_record.versions
+        replace(v, status=DatasetStatus.REMOVED)
+        for v in dataset_list_record.all_versions
     ]
-    record = replace(dataset_list_record, versions=versions)
+    record = replace(dataset_list_record, _versions=versions)
     with pytest.raises(DatasetVersionNotFoundError, match="has only removed versions"):
         record.latest_version()
 
@@ -697,5 +698,5 @@ def test_dataset_list_record_has_version_with_uuid(dataset_list_record):
     )
     assert dataset_list_record.has_version_with_uuid("nonexistent") is False
 
-    record = replace(dataset_list_record, versions=[])
+    record = replace(dataset_list_record, _versions=[])
     assert record.has_version_with_uuid("anything") is False

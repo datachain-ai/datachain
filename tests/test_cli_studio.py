@@ -490,6 +490,65 @@ def test_studio_client_ls_datasets_omits_include_removed_when_false(mocker):
     assert send.call_args[1] == {"method": "GET"}
 
 
+def test_studio_client_dataset_info_forwards_include_removed(mocker):
+    from datachain.remote.studio import Response, StudioClient
+
+    send = mocker.patch.object(
+        StudioClient,
+        "_send_request",
+        return_value=Response(
+            data={
+                "versions": [],
+                "project": {"created_at": None, "namespace": {"created_at": None}},
+                "created_at": None,
+                "finished_at": None,
+            },
+            ok=True,
+            message="",
+            status=200,
+        ),
+    )
+    client = StudioClient(team="team")
+    client.dataset_info("dev", "animals", "cats", include_removed=True)
+    assert send.call_args[0] == (
+        "datachain/datasets/info",
+        {
+            "namespace": "dev",
+            "project": "animals",
+            "name": "cats",
+            "include_removed": True,
+        },
+    )
+    assert send.call_args[1] == {"method": "GET"}
+
+
+def test_studio_client_dataset_info_omits_include_removed_when_false(mocker):
+    from datachain.remote.studio import Response, StudioClient
+
+    send = mocker.patch.object(
+        StudioClient,
+        "_send_request",
+        return_value=Response(
+            data={
+                "versions": [],
+                "project": {"created_at": None, "namespace": {"created_at": None}},
+                "created_at": None,
+                "finished_at": None,
+            },
+            ok=True,
+            message="",
+            status=200,
+        ),
+    )
+    client = StudioClient(team="team")
+    client.dataset_info("dev", "animals", "cats")
+    assert send.call_args[0] == (
+        "datachain/datasets/info",
+        {"namespace": "dev", "project": "animals", "name": "cats"},
+    )
+    assert send.call_args[1] == {"method": "GET"}
+
+
 @skip_if_not_sqlite
 @pytest.mark.parametrize("is_studio", (False,))
 def test_studio_edit_dataset(capsys, mocker):

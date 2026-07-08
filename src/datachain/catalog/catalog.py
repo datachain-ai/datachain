@@ -864,7 +864,7 @@ class Catalog:
     @staticmethod
     def _next_auto_version(dataset: "DatasetRecord", update_version: str | None) -> str:
         """Compute the next version for a dataset based on the update strategy."""
-        if not dataset.versions:
+        if not dataset.all_versions:
             return DEFAULT_DATASET_VERSION
         if update_version == "major":
             return dataset.next_version_major
@@ -1677,7 +1677,7 @@ class Catalog:
         jobs: dict[str, Job] = {}
         if with_job:
             jobs_ids: set[str] = {
-                v.job_id for ds in datasets for v in ds.versions if v.job_id
+                v.job_id for ds in datasets for v in ds.all_versions if v.job_id
             }
             if jobs_ids:
                 jobs = {
@@ -1687,7 +1687,7 @@ class Catalog:
         for d in datasets:
             yield from (
                 (d, v, jobs.get(str(v.job_id)) if with_job and v.job_id else None)
-                for v in d.versions
+                for v in d.all_versions
             )
 
     def listings(self, prefix: str | None = None) -> list["ListingInfo"]:
@@ -1806,7 +1806,7 @@ class Catalog:
                 f"Dataset {name} doesn't have version {version}"
             )
 
-        versions = [version] if version else [v.version for v in dataset.versions]
+        versions = [version] if version else [v.version for v in dataset.all_versions]
         for ver in versions:
             v = dataset.get_version(ver)
             # keep_metadata only has meaning for user-facing datasets whose
@@ -1817,21 +1817,27 @@ class Catalog:
                 and not dataset.is_internal
                 and (v.status == DatasetStatus.COMPLETE or v.is_removed)
             )
-            try:
+            if force:
+                # Bulk sweep: one stuck version (interrupted removal by another
+                # caller/GC) shouldn't abort removal of the rest.
+                try:
+                    self.remove_dataset_version(
+                        dataset,
+                        ver,
+                        keep_metadata=effective_keep,
+                    )
+                except DataChainError as e:
+                    logger.warning(
+                        "Failed to remove dataset %s version %s: %s",
+                        dataset.name,
+                        ver,
+                        e,
+                    )
+            else:
                 self.remove_dataset_version(
                     dataset,
                     ver,
                     keep_metadata=effective_keep,
-                )
-            except DataChainError as e:
-                # A version stuck in REMOVING (interrupted removal by another
-                # caller/GC) can raise here. Log and continue so one stuck
-                # version doesn't abort removal of the rest.
-                logger.warning(
-                    "Failed to remove dataset %s version %s: %s",
-                    dataset.name,
-                    ver,
-                    e,
                 )
 
     def edit_dataset(

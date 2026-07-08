@@ -1548,12 +1548,12 @@ class AbstractDBMetastore(AbstractMetastore):
         if not versions_loaded:
             return dataset
 
-        dataset_versions = dataset.versions
+        dataset_versions = list(dataset.all_versions)
         for row in all_rows[1:]:
             tmp = self.dataset_class.parse(
                 *row, versions_loaded=True, preview_loaded=preview_loaded
             )
-            dataset_versions.extend(tmp.versions)
+            dataset_versions.extend(tmp.all_versions)
 
         if len(dataset_versions) > 1:
             dataset_versions.sort(key=lambda v: v.version_value)
@@ -1565,10 +1565,10 @@ class AbstractDBMetastore(AbstractMetastore):
             return None
 
         dataset = self.dataset_list_class.parse(*rows[0])
-        dataset_versions = dataset.versions
+        dataset_versions = list(dataset.all_versions)
         for row in rows[1:]:
             tmp = self.dataset_list_class.parse(*row)
-            dataset_versions.extend(tmp.versions)
+            dataset_versions.extend(tmp.all_versions)
 
         if len(dataset_versions) > 1:
             dataset_versions.sort(key=lambda v: v.version_value)
@@ -1896,8 +1896,8 @@ class AbstractDBMetastore(AbstractMetastore):
         results: list[tuple[DatasetRecord, str]] = []
         for row in self.db.execute(query):
             dataset = self.dataset_class.parse(*row, preview_loaded=False)
-            if dataset.versions:
-                results.append((dataset, dataset.versions[0].version))
+            if dataset.all_versions:
+                results.append((dataset, dataset.all_versions[0].version))
         return results
 
     def get_dataset_versions_to_clean(

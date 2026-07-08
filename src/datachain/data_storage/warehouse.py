@@ -466,7 +466,7 @@ class AbstractWarehouse(ABC, Serializable):
         If nothing important is changed, nothing will be renamed (no DB calls
         will be made at all).
         """
-        for version in [v.version for v in dataset_updated.versions]:
+        for version in [v.version for v in dataset_updated.all_versions]:
             if not dataset.has_version(version):
                 continue
             # Removed versions have no rows table (dropped at soft/hard delete

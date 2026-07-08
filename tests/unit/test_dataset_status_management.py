@@ -186,7 +186,7 @@ def test_get_dataset_versions_to_clean(
     # Verify each tuple contains dataset and version
     for dataset, version in to_clean:
         assert version is not None
-        assert len(dataset.versions) == 1
+        assert len(dataset.all_versions) == 1
 
 
 def test_get_dataset_versions_to_clean_skips_running_jobs(
@@ -525,7 +525,7 @@ def test_cleanup_dataset_versions_removes_marked_for_removal(
 
 def _find_removed(ds: DatasetRecord, version: str):
     """Find a REMOVED version by its semver."""
-    for v in ds.versions:
+    for v in ds.all_versions:
         if v.status == DatasetStatus.REMOVED and v.version == version:
             return v
     return None
@@ -587,7 +587,7 @@ def test_remove_is_idempotent_on_already_removed(test_session, dataset_complete)
     ds = catalog.get_dataset(
         dataset_complete.name, versions=None, include_incomplete=True
     )
-    assert len([v for v in ds.versions if v.status == DatasetStatus.REMOVED]) == 1
+    assert len([v for v in ds.all_versions if v.status == DatasetStatus.REMOVED]) == 1
     assert _find_removed(ds, version).removed_at == first_removed_at
 
 

@@ -237,7 +237,7 @@ def test_list_datasets_include_removed(metastore):
     metastore.create_dataset_version(ds, "1.0.1", DatasetStatus.REMOVED)
 
     results = {d.name: d for d in metastore.list_datasets(include_removed=True)}
-    versions = results["list-with-removed"].versions
+    versions = results["list-with-removed"].all_versions
     assert [v.version for v in versions] == ["1.0.0", "1.0.1"]
     assert versions[1].is_removed
 
