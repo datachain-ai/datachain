@@ -81,9 +81,9 @@ def test_write_options_rejected_unless_backend_supports_it():
                 _wk(cls, FULL, streaming=streaming)
 
 
-def test_base_default_maps_nothing():
-    # HfClient uses the base _write_kwargs (no override): normalized fields are
-    # dropped and only the escape hatch is rejected.
+def test_base_default_drops_normalized_fields():
+    # A backend with no _write_kwargs override (HfClient -> base) has no native
+    # mapping for content settings or metadata, so it drops them all.
     assert _wk(HfClient, NORMALIZED, streaming=True) == {}
 
 
