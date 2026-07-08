@@ -1878,7 +1878,7 @@ class AbstractDBMetastore(AbstractMetastore):
             )
         )
 
-        if job_id:
+        if job_id is not None:
             query = query.where(dv.c.job_id == job_id)
 
         versions = self._fetch_version_pairs(query)
