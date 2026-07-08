@@ -157,7 +157,9 @@ def test_export_placements_build_expected_destination_for_each_source(
     monkeypatch.setattr(
         File,
         "save",
-        lambda _self, destination, client_config=None: saved.append(destination),
+        lambda _self, destination, client_config=None, **kwargs: saved.append(
+            destination
+        ),
     )
 
     file.export(output, placement="filename", use_cache=False)
@@ -952,3 +954,140 @@ def test_audio_get_channel_name():
     # Test out of range indices
     assert Audio.get_channel_name(2, 5) == "Ch6"
     assert Audio.get_channel_name(1, 1) == "Ch2"
+
+
+def test_save_write_metadata_ignored_on_local(tmp_path, catalog: Catalog):
+    data = b"local ignores object metadata"
+    (tmp_path / "src.bin").write_bytes(data)
+    file = File(path="src.bin", source=f"file://{tmp_path}")
+    file._set_stream(catalog, False)
+
+    result = file.save(
+        tmp_path / "dest.bin",
+        content_type="application/pdf",
+        content_disposition="attachment",
+        cache_control="max-age=60",
+        content_encoding="gzip",
+        metadata={"origin": "test"},
+        write_options={"ignored": "value"},
+    )
+
+    assert result.read() == data
+
+
+def test_open_write_metadata_ignored_on_local(tmp_path, catalog: Catalog):
+    f = File(path="out.bin", source=f"file://{tmp_path}")
+    f._set_stream(catalog, False)
+    with f.open("wb", content_type="application/pdf", metadata={"a": "b"}) as h:
+        h.write(b"payload")
+    assert f.read() == b"payload"
+
+
+def test_open_read_mode_rejects_write_metadata(tmp_path, catalog: Catalog):
+    (tmp_path / "src.bin").write_bytes(b"data")
+    file = File(path="src.bin", source=f"file://{tmp_path}")
+    file._set_stream(catalog, False)
+
+    with pytest.raises(ValueError, match="write metadata"):
+        with file.open("rb", content_disposition="attachment"):
+            pass
+
+    with pytest.raises(ValueError, match="write metadata"):
+        with file.open("r", metadata={"a": "b"}):
+            pass
+
+
+def test_audio_file_save_forwards_write_config(tmp_path, catalog, monkeypatch):
+    import datachain.lib.audio as audio_mod
+
+    captured = {}
+    monkeypatch.setattr(
+        audio_mod,
+        "save_audio",
+        lambda *a, write_config=None, **k: captured.setdefault("cfg", write_config),
+    )
+    af = AudioFile(path="a.wav", source=f"file://{tmp_path}")
+    af._set_stream(catalog, False)
+
+    af.save(
+        str(tmp_path / "out"),
+        content_type="audio/wav",
+        content_disposition="attachment",
+        metadata={"k": "v"},
+    )
+
+    cfg = captured["cfg"]
+    assert cfg.content_type == "audio/wav"
+    assert cfg.content_disposition == "attachment"
+    assert cfg.metadata == {"k": "v"}
+
+
+def test_audio_fragment_save_forwards_write_config(tmp_path, catalog, monkeypatch):
+    import datachain.lib.audio as audio_mod
+    from datachain.lib.file import AudioFragment
+
+    captured = {}
+    monkeypatch.setattr(
+        audio_mod,
+        "save_audio",
+        lambda *a, write_config=None, **k: captured.setdefault("cfg", write_config),
+    )
+    af = AudioFile(path="a.wav", source=f"file://{tmp_path}")
+    af._set_stream(catalog, False)
+    frag = AudioFragment(audio=af, start=0.0, end=1.0)
+
+    frag.save(str(tmp_path / "out"), content_encoding="gzip")
+
+    assert captured["cfg"].content_encoding == "gzip"
+
+
+def test_video_fragment_save_forwards_write_config(tmp_path, catalog, monkeypatch):
+    import datachain.lib.video as video_mod
+    from datachain.lib.file import VideoFragment
+
+    captured = {}
+    monkeypatch.setattr(
+        video_mod,
+        "save_video_fragment",
+        lambda *a, write_config=None, **k: captured.setdefault("cfg", write_config),
+    )
+    vf = VideoFile(path="v.mp4", source=f"file://{tmp_path}")
+    vf._set_stream(catalog, False)
+    frag = VideoFragment(video=vf, start=0.0, end=1.0)
+
+    frag.save(str(tmp_path / "out"), cache_control="max-age=60")
+
+    assert captured["cfg"].cache_control == "max-age=60"
+
+
+def test_video_frame_save_forwards_write_config(tmp_path, catalog, monkeypatch):
+    from datachain.client.local import FileClient
+    from datachain.lib.file import VideoFrame
+
+    captured = {}
+
+    def fake_upload(self, data, path, *, write_config=None):
+        captured["cfg"] = write_config
+        f = File(path=path, source=f"file://{tmp_path}")
+        f._set_stream(catalog, False)
+        return f
+
+    monkeypatch.setattr(FileClient, "upload", fake_upload)
+    monkeypatch.setattr(VideoFrame, "read_bytes", lambda self, format: b"framebytes")
+
+    vf = VideoFile(path="v.mp4", source=f"file://{tmp_path}")
+    vf._set_stream(catalog, False)
+    frame = VideoFrame(video=vf, frame=3, timestamp=0.1)
+
+    frame.save(
+        str(tmp_path / "out"),
+        format="png",
+        content_type="image/png",
+        content_disposition="attachment",
+        metadata={"k": "v"},
+    )
+
+    cfg = captured["cfg"]
+    assert cfg.content_type == "image/png"
+    assert cfg.content_disposition == "attachment"
+    assert cfg.metadata == {"k": "v"}

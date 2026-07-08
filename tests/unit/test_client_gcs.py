@@ -7,7 +7,42 @@ from fsspec.callbacks import DEFAULT_CALLBACK
 from datachain.asyn import get_loop
 from datachain.client import Client
 from datachain.client.gcs import GCSClient
+from datachain.client.writeconfig import WriteConfig
 from datachain.lib.file import File
+
+
+@pytest.mark.parametrize("streaming", [True, False])
+def test_write_kwargs_maps_fields(streaming):
+    # gcsfs takes content_type directly and the other content settings via
+    # fixed_key_metadata; custom metadata goes to metadata.
+    cfg = WriteConfig(
+        content_type="application/pdf",
+        content_disposition="attachment",
+        cache_control="max-age=3600",
+        content_encoding="gzip",
+        metadata={"a": "b"},
+    )
+    assert GCSClient._write_kwargs(cfg, streaming=streaming) == {
+        "content_type": "application/pdf",
+        "metadata": {"a": "b"},
+        "fixed_key_metadata": {
+            "content_disposition": "attachment",
+            "cache_control": "max-age=3600",
+            "content_encoding": "gzip",
+        },
+    }
+
+
+def test_write_kwargs_empty_config_maps_nothing():
+    assert GCSClient._write_kwargs(WriteConfig(), streaming=False) == {}
+
+
+def test_write_kwargs_rejects_write_options():
+    # gcsfs has no raw write-kwargs passthrough, so the escape hatch is rejected.
+    cfg = WriteConfig(write_options={"foo": "bar"})
+    with pytest.raises(NotImplementedError, match="write_options"):
+        GCSClient._write_kwargs(cfg, streaming=False)
+
 
 _FAKE_SAS = "https://storage.googleapis.com/foo/bar?x-goog-signature=abc"
 _VER = "1234567890"
