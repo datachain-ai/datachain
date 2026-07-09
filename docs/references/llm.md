@@ -108,9 +108,9 @@ chain.filter("tok.retries > 0")
 
 Notes:
 
-- `retries` is the count of `datachain.llm`'s schema-validation reasks (it feeds
-  the failed output back and asks again), not LiteLLM's transient retries; only
-  structured output ever exceeds 0.
+- `retries` counts extra attempts in the structured-output loop, whether a schema
+  reask (it feeds the failed output back and asks again) or a transient provider
+  error retried in that loop; only structured output ever exceeds 0.
 - Token counts accumulate across all attempts, so reasked calls are billed in full.
 - Embeddings report no output tokens, so `output_tokens` stays 0.
 - In `.gen()` (1:N) the call's usage is replicated onto every emitted row.

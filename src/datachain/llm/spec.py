@@ -133,7 +133,7 @@ class LLMSpec(BoundSpec):
         if self.schema is not None:
             elem, is_list = _element_type(self.schema)
             if hasattr(elem, "model_json_schema"):
-                schema_repr = (str(elem.model_json_schema()), is_list)
+                schema_repr = (_canonical(elem.model_json_schema()), is_list)
             else:
                 schema_repr = str(self.schema)
         params = self.params
