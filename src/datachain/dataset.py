@@ -241,7 +241,8 @@ class DatasetDependency:
             dataset_version,  # type: ignore[arg-type]
             dataset_version_created_at,  # type: ignore[arg-type]
             [],
-            removed=dataset_version_status
+            removed=dataset_version_status is None
+            or dataset_version_status
             in (DatasetStatus.REMOVING, DatasetStatus.REMOVED),
         )
 
