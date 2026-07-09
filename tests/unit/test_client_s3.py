@@ -1,7 +1,35 @@
 import pytest
 
+from datachain.client.s3 import ClientS3
+from datachain.client.writeconfig import WriteConfig
 from datachain.node import DirType, Node
 from datachain.nodes_thread_pool import NodeChunk
+
+
+@pytest.mark.parametrize("streaming", [True, False])
+def test_write_kwargs_maps_all_fields(streaming):
+    # s3fs forwards extra kwargs into s3_additional_kwargs (boto3 put_object /
+    # multipart args), including the raw write_options escape hatch.
+    cfg = WriteConfig(
+        content_type="application/pdf",
+        content_disposition="attachment",
+        cache_control="max-age=3600",
+        content_encoding="gzip",
+        metadata={"a": "b"},
+        write_options={"ACL": "public-read"},
+    )
+    assert ClientS3._write_kwargs(cfg, streaming=streaming) == {
+        "ContentType": "application/pdf",
+        "ContentDisposition": "attachment",
+        "CacheControl": "max-age=3600",
+        "ContentEncoding": "gzip",
+        "Metadata": {"a": "b"},
+        "ACL": "public-read",
+    }
+
+
+def test_write_kwargs_empty_config_maps_nothing():
+    assert ClientS3._write_kwargs(WriteConfig(), streaming=False) == {}
 
 
 @pytest.fixture
