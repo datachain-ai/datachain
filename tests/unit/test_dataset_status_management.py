@@ -269,6 +269,25 @@ def test_remove_dataset_version_already_tombstoned_returns_false(
     assert catalog.remove_dataset_version(ds, version, keep_metadata=True) is False
 
 
+def test_remove_dataset_version_returns_false_on_state_race(
+    test_session, dataset_complete
+):
+    """When the DB status changed since the caller loaded the dataset, the
+    guarded UPDATE inside `_claim_and_remove` refuses to overwrite and the
+    call returns False - the concurrent caller wins the claim."""
+    catalog = test_session.catalog
+    version = dataset_complete.latest_version
+    stale_ds = catalog.get_dataset(dataset_complete.name, versions=None)
+
+    catalog.metastore.update_dataset_version(
+        dataset_complete, version, status=DatasetStatus.REMOVED
+    )
+
+    assert (
+        catalog.remove_dataset_version(stale_ds, version, keep_metadata=True) is False
+    )
+
+
 @pytest.mark.parametrize("drop_rows_first", [False, True])
 def test_remove_dataset_version_resumes_stuck_tombstone(
     test_session, dataset_complete, drop_rows_first
@@ -326,6 +345,19 @@ def test_remove_dataset_version_missing_raises(test_session, dataset_complete):
         catalog.remove_dataset_version(dataset_complete, "99.0.0", keep_metadata=True)
 
 
+def test_remove_keep_metadata_refused_when_status_not_removable(
+    test_session, dataset_failed
+):
+    """keep_metadata=True is only defined for COMPLETE/REMOVING/REMOVED
+    versions - anything else (FAILED, PENDING, CREATED, STALE) must be
+    refused with a clear message instead of tombstoning garbage state."""
+    catalog = test_session.catalog
+    version = dataset_failed.latest_version
+
+    with pytest.raises(DataChainError, match="expected COMPLETE, REMOVING or REMOVED"):
+        catalog.remove_dataset_version(dataset_failed, version, keep_metadata=True)
+
+
 def test_remove_dataset_versions_job_id_filter(test_session, job, dataset_created):
     test_session.catalog.metastore.set_job_status(job.id, JobStatus.FAILED)
     ds = test_session.catalog.get_dataset(dataset_created.name, versions=None)
@@ -345,6 +377,20 @@ def test_remove_dataset_versions_job_id_filter(test_session, job, dataset_create
     )
     with pytest.raises(DatasetNotFoundError):
         test_session.catalog.get_dataset(dataset_created.name)
+
+
+def test_remove_versions_swallows_per_version_error(test_session, dataset_complete):
+    """A per-version failure in the bulk loop must not abort the whole
+    batch - the exception is logged and the loop moves on. Verify with a
+    phantom version that raises alongside a real one that succeeds."""
+    catalog = test_session.catalog
+    version = dataset_complete.latest_version
+    pairs = [(dataset_complete, "99.99.99"), (dataset_complete, version)]
+
+    n = catalog._remove_versions(pairs, keep_metadata=False)
+    assert n == 1
+    with pytest.raises(DatasetNotFoundError):
+        catalog.get_dataset(dataset_complete.name)
 
 
 def test_get_dataset_versions_to_clean_finds_no_job_id(test_session):
@@ -1067,6 +1113,31 @@ def test_dataset_ls_include_removed_marks_output(
     list_datasets(catalog, local=True, all=False, include_removed=True)
     out = capsys.readouterr().out
     assert "(removed)" in out
+
+
+def test_list_datasets_local_versions_by_name_yields_tombstone(
+    test_session, dataset_complete
+):
+    """Passing a specific dataset name delegates to
+    `list_datasets_local_versions`, which yields COMPLETE versions and
+    (when include_removed=True) REMOVED tombstones with the correct
+    removed flag."""
+    from datachain.cli.commands.datasets import list_datasets_local
+
+    catalog = test_session.catalog
+    name = dataset_complete.name
+    tomb_version = dataset_complete.latest_version
+    catalog.remove_dataset_version(dataset_complete, tomb_version, keep_metadata=True)
+    live_ds = dc.read_values(value=["v3"], session=test_session).save(name).dataset
+    live_version = live_ds.latest_version
+
+    default = list(list_datasets_local(catalog, name))
+    assert (name, live_version, False) in default
+    assert all(v != tomb_version for _, v, _ in default)
+
+    with_removed = list(list_datasets_local(catalog, name, include_removed=True))
+    assert (name, live_version, False) in with_removed
+    assert (name, tomb_version, True) in with_removed
 
 
 def test_remove_keep_metadata_lands_on_removed(test_session, dataset_complete):
