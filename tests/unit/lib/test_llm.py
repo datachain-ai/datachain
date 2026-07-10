@@ -657,12 +657,17 @@ def test_identity_changes_with_input_column():
     [
         (llm.complete("t", "p"), llm.complete("t", "p", fallback="x/y")),
         (llm.complete("t", "p"), llm.complete("t", "p", media="image")),
-        (llm.complete("t", "p", retries=1), llm.complete("t", "p", retries=2)),
         (llm.complete("t", "p"), llm.complete("t", "p", context="ctx")),
     ],
 )
 def test_identity_changes_with_output_affecting_field(a_spec, b_spec):
     assert a_spec.identity("m") != b_spec.identity("m")
+
+
+def test_retries_not_in_identity():
+    a = llm.complete("t", "p", retries=1).identity("m")
+    b = llm.complete("t", "p", retries=5).identity("m")
+    assert a == b
 
 
 def test_identity_changes_with_list_schema_fields():

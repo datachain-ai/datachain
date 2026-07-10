@@ -127,7 +127,8 @@ class LLMSpec(BoundSpec):
         invalidate the cache. A callable ``llm_params`` is resolved per worker at
         runtime (e.g. credentials) and is not part of the key; put output-affecting
         params in the dict form of ``llm_params`` or in per-call kwargs so they are
-        captured here.
+        captured here. ``retries`` is excluded (a reliability budget, not part of
+        the request) so bumping it resumes from the checkpoint.
         """
         schema_repr: Any = None
         if self.schema is not None:
@@ -148,7 +149,6 @@ class LLMSpec(BoundSpec):
             self.col,
             self.context_col,
             self.media,
-            self.retries,
             tuple(self.fallback) if isinstance(self.fallback, list) else self.fallback,
             self.include_usage,
             _canonical(params),
