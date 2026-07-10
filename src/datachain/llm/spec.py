@@ -110,12 +110,13 @@ class LLMSpec(BoundSpec):
     def return_annotation(self, to_many: bool = False) -> Any:
         """Annotation seen by the verb. ``.gen()`` (``to_many``) fans a list schema
         into ``Iterator[Item]``; ``.map()`` keeps the whole value (``list[Item]`` or
-        a scalar). ``include_usage`` pairs each value with a ``Usage``."""
+        a scalar), optional since a ``None`` input yields ``None``.
+        ``include_usage`` pairs each value with a ``Usage``."""
         if to_many and self._can_fan_out():
             elem = _element_type(self.schema)[0]
             item = tuple[elem, Usage] if self.include_usage else elem  # type: ignore[valid-type]
             return Iterator[item]  # type: ignore[valid-type]
-        out = self.output_type()
+        out = self.output_type() | None
         return tuple[out, Usage] if self.include_usage else out  # type: ignore[valid-type]
 
     def identity(self, model: str, llm_params: Any = None) -> tuple:
@@ -181,6 +182,10 @@ class LLMSpec(BoundSpec):
         context: Any,
         to_many: bool,
     ) -> Any:
+        if value is None:  # no input, no model call: propagate None (empty in .gen())
+            if to_many:
+                return []
+            return (None, Usage()) if self.include_usage else None
         result, usage = self._call(model, params, value, context)
         if to_many:  # .gen(): fan the list out, one row per item
             return [(item, usage) for item in result] if self.include_usage else result

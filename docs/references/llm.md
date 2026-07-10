@@ -61,6 +61,8 @@ Rules to keep in mind:
 - `media="document"` covers "summarize/extract from this PDF"; heavy document work
   (chunk by section or clause, pull embedded figures) is better done by decoding
   first, then `llm.*`.
+- A `None` (missing) input skips the model call and yields `None`, so an `llm.*`
+  output column is always optional. In `.gen()` a `None` input emits no rows.
 
 `embed` takes text only (`str`, `TextFile`, or a model); embedding an image or
 document raises. Embed a text column or a caption you generated, then vector-search:

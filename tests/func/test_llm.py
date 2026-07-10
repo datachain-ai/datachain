@@ -47,10 +47,10 @@ def test_map_materializes_typed_columns(fake_llm, test_session):
         .map(summary=llm.complete("text", "summarize"))
     )
 
-    assert chain.schema["topic"] is str
-    assert chain.schema["risk"] is float
-    assert chain.schema["scene"] is Scene
-    assert chain.schema["summary"] is str
+    assert chain.schema["topic"] == (str | None)
+    assert chain.schema["risk"] == (float | None)
+    assert chain.schema["scene"] == (Scene | None)
+    assert chain.schema["summary"] == (str | None)
 
     rows = chain.to_list("topic", "risk", "scene", "vec", "summary")
     assert len(rows) == 3
@@ -94,7 +94,7 @@ def test_save_and_reload_preserves_types(fake_llm, test_session):
     base(test_session).map(scene=llm.complete("text", schema=Scene)).save("scenes")
 
     reloaded = dc.read_dataset("scenes", session=test_session)
-    assert reloaded.schema["scene"] is Scene
+    assert reloaded.schema["scene"] == (Scene | None)
     assert all(s.risk == 0.5 for s in reloaded.to_values("scene"))
 
 
@@ -143,9 +143,21 @@ def test_list_schema_in_map_yields_list_column(fake_llm, test_session):
     )
     chain = base(test_session).map(chunks=llm.complete("text", schema=list[Chunk]))
 
-    assert chain.schema["chunks"] == list[Chunk]
+    assert chain.schema["chunks"] == (list[Chunk] | None)
     first = chain.to_values("chunks")[0]
     assert [c.text for c in first] == ["one", "two"]
+
+
+def test_none_input_propagates_without_calling_model(fake_llm, test_session):
+    chain = (
+        dc.read_values(text=["hi", None], session=test_session)
+        .settings(llm="anthropic/claude-haiku-4-5")
+        .map(scene=llm.complete("text", schema=Scene))
+    )
+    scenes = chain.to_values("scene")
+    assert None in scenes  # None input -> None output
+    assert any(isinstance(s, Scene) for s in scenes)  # real input -> real call
+    assert len(fake_llm.calls) == 1  # the None row never hit the model
 
 
 def test_list_schema_in_agg_rejected(test_session):

@@ -66,7 +66,7 @@ def test_complete_schema_output_is_model():
 def test_complete_list_schema_annotation_depends_on_verb():
     spec = llm.complete("text", schema=list[Chunk])
     assert spec.output_type() == list[Chunk]
-    assert spec.return_annotation() == list[Chunk]  # .map(): one list-valued column
+    assert spec.return_annotation() == (list[Chunk] | None)  # .map(): list column
     assert spec.return_annotation(to_many=True) == Iterator[Chunk]  # .gen(): fan out
 
 
@@ -87,7 +87,7 @@ def test_bound_callable_declares_input_column_and_return_type():
 
     f = bind(llm.complete("file", schema=Scene), llm="m")
     assert f.__datachain_params__ == ["file"]
-    assert inspect.signature(f).return_annotation is Scene
+    assert inspect.signature(f).return_annotation == (Scene | None)
 
 
 def test_bound_callable_declares_context_column():
@@ -556,16 +556,42 @@ def test_usage_defaults():
     assert (u.input_tokens, u.output_tokens, u.retries) == (0, 0, 0)
 
 
+def test_none_input_skips_model_call(fake_llm):
+    assert bind(llm.complete("t", schema=Scene), llm="m")(None) is None
+    assert bind(llm.score("t"), llm="m")(None) is None
+    assert bind(llm.embed("t"), llm="m")(None) is None
+    assert fake_llm.calls == []
+    assert fake_llm.embedding_calls == []
+
+
+def test_none_input_return_annotation_is_optional():
+    assert llm.complete("t", schema=Scene).return_annotation() == (Scene | None)
+    assert llm.score("t").return_annotation() == (float | None)
+
+
+def test_none_input_with_usage_pairs_none_and_zero_usage(fake_llm):
+    value, usage = bind(llm.complete("t", include_usage=True), llm="m")(None)
+    assert value is None
+    assert (usage.input_tokens, usage.output_tokens, usage.retries) == (0, 0, 0)
+    assert fake_llm.calls == []
+
+
+def test_none_input_in_gen_yields_no_rows(fake_llm):
+    out = bind(llm.complete("t", schema=list[Chunk]), target=GEN, llm="m")(None)
+    assert list(out) == []
+    assert fake_llm.calls == []
+
+
 def test_include_usage_return_annotation():
     text = llm.complete("c", include_usage=True).return_annotation()
-    assert text == tuple[str, Usage]
+    assert text == tuple[str | None, Usage]
     ann = llm.complete("c", schema=Scene, include_usage=True).return_annotation()
-    assert ann == tuple[Scene, Usage]
+    assert ann == tuple[Scene | None, Usage]
 
 
 def test_include_usage_list_return_annotation():
     spec = llm.complete("c", schema=list[Scene], include_usage=True)
-    assert spec.return_annotation() == tuple[list[Scene], Usage]  # .map()
+    assert spec.return_annotation() == tuple[list[Scene] | None, Usage]  # .map()
     gen = spec.return_annotation(to_many=True)  # .gen()
     assert gen == Iterator[tuple[Scene, Usage]]
 
