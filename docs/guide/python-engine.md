@@ -188,6 +188,18 @@ chain.map(result=classify)
 # chain.map(label=..., confidence=..., tokens=...)  # not supported
 ```
 
+A function that returns a tuple is the exception. In the keyword form its parts
+are split into suffixed signals (`res_0`, `res_1`, ...) with no error, so name
+them explicitly with `output`:
+
+```python
+def split(text) -> tuple[str, float]:
+    ...
+
+chain.map(res=split)                        # res_0: str, res_1: float
+chain.map(split, output={"label": str, "score": float})   # label, score
+```
+
 ## Complete Examples
 
 ### Image Captioning
