@@ -78,6 +78,8 @@ from datachain.project import Project
 # cleaning up in-flight operations.
 STALE_CREATED_THRESHOLD_HOURS = 1
 
+LISTING_GC_MIN_AGE_SECONDS = 7 * 24 * 60 * 60
+
 if TYPE_CHECKING:
     from sqlalchemy import CTE, Delete, Insert, Select, Subquery, Update
     from sqlalchemy.schema import SchemaItem
@@ -362,6 +364,8 @@ class AbstractMetastore(ABC, Serializable):
           pending_metadata_drop=True) or flips status to REMOVED.
         - Finalized tombstones (status REMOVED) are not returned - they
           have no pending cleanup work.
+        - Listing versions superseded by a newer completed version, older than
+          LISTING_GC_MIN_AGE_SECONDS, and unused by any dataset
 
         Returns:
             List of (DatasetRecord, version_string) tuples. Each DatasetRecord
@@ -1751,7 +1755,7 @@ class AbstractDBMetastore(AbstractMetastore):
         )
         if project_id:
             query = query.where(d.c.project_id == project_id)
-        query = query.where(self._datasets.c.name.startswith(prefix))
+        query = query.where(self._datasets.c.name.startswith(prefix, autoescape=True))
         yield from self._parse_dataset_list(self.db.execute(query))
 
     def get_dataset_by_version_uuid(
@@ -1948,7 +1952,7 @@ class AbstractDBMetastore(AbstractMetastore):
                     ),
                     # Session datasets from finished jobs (orphaned intermediates)
                     and_(
-                        d.c.name.startswith(SESSION_DATASET_PREFIX),
+                        d.c.name.startswith(SESSION_DATASET_PREFIX, autoescape=True),
                         dv.c.status == DatasetStatus.COMPLETE,
                         dv.c.job_id.isnot(None),
                         j.c.status.in_(
@@ -1963,9 +1967,53 @@ class AbstractDBMetastore(AbstractMetastore):
             )
         )
 
-        if job_id:
+        if job_id is not None:
             query = query.where(dv.c.job_id == job_id)
 
+        versions = self._fetch_version_pairs(query)
+        if job_id is None:
+            versions += self._listing_versions_to_clean(LISTING_GC_MIN_AGE_SECONDS)
+        return versions
+
+    def _listing_versions_to_clean(
+        self, min_age_seconds: int
+    ) -> list[tuple[DatasetRecord, str]]:
+        from datachain.lib.listing import LISTING_PREFIX
+
+        select_cols, base_from = self._dataset_version_query_base()
+        d = self._datasets
+        dv = self._datasets_versions
+        dd = self._datasets_dependencies
+
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=min_age_seconds)
+
+        newer = dv.alias("dv_newer")
+        has_newer_complete_version = (
+            select(newer.c.id)
+            .where(
+                newer.c.dataset_id == dv.c.dataset_id,
+                newer.c.id > dv.c.id,
+                newer.c.status == DatasetStatus.COMPLETE,
+            )
+            .exists()
+        )
+        is_referenced = (
+            select(dd.c.id).where(dd.c.dataset_version_id == dv.c.id).exists()
+        )
+
+        query = (
+            self._datasets_select(*select_cols)
+            .select_from(base_from)
+            .where(
+                d.c.project_id == self.listing_project.id,
+                d.c.name.startswith(LISTING_PREFIX, autoescape=True),
+                dv.c.status == DatasetStatus.COMPLETE,
+                dv.c.finished_at.isnot(None),
+                dv.c.finished_at < cutoff,
+                has_newer_complete_version,
+                ~is_referenced,
+            )
+        )
         return self._fetch_version_pairs(query)
 
     def get_dataset_versions(

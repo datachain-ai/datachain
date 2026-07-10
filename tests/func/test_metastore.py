@@ -1182,3 +1182,98 @@ def test_cleanup_session_dataset_versions(
     to_clean = metastore.get_dataset_versions_to_clean()
     found = ds.name in {d.name for d, _ in to_clean}
     assert found == expected
+
+
+def _create_listing(metastore, uri, specs):
+    project = metastore.listing_project
+    dataset = metastore.create_dataset(
+        f"lst__{uri}", project_id=project.id, status=DatasetStatus.COMPLETE
+    )
+    for version, finished_at in specs:
+        dataset, _ = metastore.create_dataset_version(
+            dataset, version, DatasetStatus.COMPLETE, finished_at=finished_at
+        )
+    return metastore.get_dataset(
+        dataset.name,
+        namespace_name=project.namespace.name,
+        project_name=project.name,
+        versions=None,
+    )
+
+
+def test_get_dataset_versions_to_clean_cleans_superseded_unused_listings(metastore):
+    old = datetime.now(timezone.utc) - timedelta(days=10)
+    recent = datetime.now(timezone.utc) - timedelta(hours=1)
+
+    lst = _create_listing(
+        metastore, "s3://bkt/", [("1.0.0", old), ("1.0.1", old), ("1.0.2", old)]
+    )
+    consumer = metastore.create_dataset("consumer")
+    consumer, _ = metastore.create_dataset_version(
+        consumer, "1.0.0", DatasetStatus.COMPLETE, finished_at=old
+    )
+    consumer = metastore.get_dataset("consumer", versions=None)
+    metastore.add_dataset_dependency(consumer, "1.0.0", lst, "1.0.1")
+
+    _create_listing(metastore, "s3://bkt2/", [("1.0.0", recent), ("1.0.1", recent)])
+
+    to_clean = metastore.get_dataset_versions_to_clean()
+
+    cleaned = {(ds.name, v) for ds, v in to_clean if ds.name.startswith("lst__")}
+    assert cleaned == {(lst.name, "1.0.0")}
+
+
+def test_get_dataset_versions_to_clean_keeps_single_version_listing(metastore):
+    old = datetime.now(timezone.utc) - timedelta(days=10)
+    _create_listing(metastore, "s3://only/", [("1.0.0", old)])
+
+    to_clean = metastore.get_dataset_versions_to_clean()
+
+    assert not any(ds.name.startswith("lst__") for ds, _ in to_clean)
+
+
+def test_get_dataset_versions_to_clean_excludes_listings_when_scoped_to_job(metastore):
+    old = datetime.now(timezone.utc) - timedelta(days=10)
+    _create_listing(metastore, "s3://bkt/", [("1.0.0", old), ("1.0.1", old)])
+
+    to_clean = metastore.get_dataset_versions_to_clean(job_id=str(uuid4()))
+
+    assert not any(ds.name.startswith("lst__") for ds, _ in to_clean)
+
+
+@pytest.mark.parametrize("newer_status", [DatasetStatus.CREATED, DatasetStatus.FAILED])
+def test_keeps_last_complete_listing_when_newer_version_incomplete(
+    metastore, newer_status
+):
+    old = datetime.now(timezone.utc) - timedelta(days=10)
+    project = metastore.listing_project
+    ds = metastore.create_dataset(
+        "lst__s3://bkt/", project_id=project.id, status=DatasetStatus.COMPLETE
+    )
+    ds, _ = metastore.create_dataset_version(
+        ds, "1.0.0", DatasetStatus.COMPLETE, finished_at=old
+    )
+    metastore.create_dataset_version(ds, "1.0.1", newer_status, finished_at=old)
+
+    to_clean = metastore.get_dataset_versions_to_clean()
+
+    assert (ds.name, "1.0.0") not in {(d.name, v) for d, v in to_clean}
+
+
+def test_listing_prefix_is_matched_literally(metastore):
+    old = datetime.now(timezone.utc) - timedelta(days=10)
+    project = metastore.listing_project
+    # "lstXX" matches LIKE 'lst__%' only if the underscores are wildcards.
+    decoy = metastore.create_dataset(
+        "lstXX", project_id=project.id, status=DatasetStatus.COMPLETE
+    )
+    decoy, _ = metastore.create_dataset_version(
+        decoy, "1.0.0", DatasetStatus.COMPLETE, finished_at=old
+    )
+    metastore.create_dataset_version(
+        decoy, "1.0.1", DatasetStatus.COMPLETE, finished_at=old
+    )
+
+    to_clean = metastore.get_dataset_versions_to_clean()
+
+    assert not any(ds.name == "lstXX" for ds, _ in to_clean)
