@@ -1006,6 +1006,35 @@ def test_remove_dataset_force_keep_metadata_internal_downgrades(test_session):
         catalog.get_dataset(ds.name, include_incomplete=True)
 
 
+def test_remove_dataset_force_retries_after_crash(test_session, dataset_complete):
+    """`remove_dataset(force=True, keep_metadata=True)` on a dataset where a
+    previous run crashed mid-tombstone (one version stuck at REMOVING +
+    pending_metadata_drop=False, rows table still around) finishes the stuck
+    version and tombstones the rest - a second call is enough to converge."""
+    catalog = test_session.catalog
+    warehouse = catalog.warehouse
+    name = dataset_complete.name
+    stuck_version = dataset_complete.latest_version
+
+    live_ds = dc.read_values(value=["v2"], session=test_session).save(name).dataset
+    live_version = live_ds.latest_version
+
+    stuck_table = warehouse.dataset_table_name(dataset_complete, stuck_version)
+    live_table = warehouse.dataset_table_name(live_ds, live_version)
+    assert warehouse.db.has_table(stuck_table)
+    assert warehouse.db.has_table(live_table)
+
+    _force_status(catalog, dataset_complete, stuck_version, DatasetStatus.REMOVING)
+
+    catalog.remove_dataset(name, force=True, keep_metadata=True)
+
+    ds = catalog.get_dataset(name, versions=None, include_incomplete=True)
+    assert _find_removed(ds, stuck_version) is not None
+    assert _find_removed(ds, live_version) is not None
+    assert not warehouse.db.has_table(stuck_table)
+    assert not warehouse.db.has_table(live_table)
+
+
 def _force_status(catalog, dataset: DatasetRecord, version: str, status: int, **extra):
     """Put a version into a specific status directly. Simulates a mid-flight
     removal that crashed, or another caller having claimed the transition."""

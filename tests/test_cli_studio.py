@@ -456,97 +456,42 @@ def test_studio_datasets(capsys, studio_datasets, mocker):
     assert sorted(out.splitlines()) == sorted(dogs_output.splitlines())
 
 
-def test_studio_client_ls_datasets_forwards_include_removed(mocker):
-    from datachain.remote.studio import Response, StudioClient
-
-    send = mocker.patch.object(
-        StudioClient,
-        "_send_request",
-        return_value=Response(data=[], ok=True, message="", status=200),
-    )
-    client = StudioClient(team="team")
-    client.ls_datasets(prefix="foo", include_removed=True)
-    assert send.call_args[0] == (
-        "datachain/datasets",
-        {"prefix": "foo", "include_removed": True},
-    )
-    assert send.call_args[1] == {"method": "GET"}
-
-
-def test_studio_client_ls_datasets_omits_include_removed_when_false(mocker):
-    from datachain.remote.studio import Response, StudioClient
-
-    send = mocker.patch.object(
-        StudioClient,
-        "_send_request",
-        return_value=Response(data=[], ok=True, message="", status=200),
-    )
-    client = StudioClient(team="team")
-    client.ls_datasets(prefix="foo")
-    assert send.call_args[0] == (
-        "datachain/datasets",
-        {"prefix": "foo"},
-    )
-    assert send.call_args[1] == {"method": "GET"}
-
-
-def test_studio_client_dataset_info_forwards_include_removed(mocker):
-    from datachain.remote.studio import Response, StudioClient
-
-    send = mocker.patch.object(
-        StudioClient,
-        "_send_request",
-        return_value=Response(
-            data={
+@pytest.mark.parametrize(
+    "extra_cli_args,route,ok_body",
+    [
+        pytest.param([], "datachain/datasets", [], id="ls-all"),
+        pytest.param(
+            ["dev.animals.cats"],
+            "datachain/datasets/info",
+            {
                 "versions": [],
-                "project": {"created_at": None, "namespace": {"created_at": None}},
+                "project": {
+                    "created_at": None,
+                    "namespace": {"created_at": None},
+                },
                 "created_at": None,
                 "finished_at": None,
             },
-            ok=True,
-            message="",
-            status=200,
+            id="ls-by-name",
         ),
-    )
-    client = StudioClient(team="team")
-    client.dataset_info("dev", "animals", "cats", include_removed=True)
-    assert send.call_args[0] == (
-        "datachain/datasets/info",
-        {
-            "namespace": "dev",
-            "project": "animals",
-            "name": "cats",
-            "include_removed": True,
-        },
-    )
-    assert send.call_args[1] == {"method": "GET"}
+    ],
+)
+def test_dataset_ls_include_removed_flows_to_studio(
+    requests_mock, studio_token, extra_cli_args, route, ok_body
+):
+    """`dataset ls --include-removed --studio` forwards the flag as a
+    query parameter to Studio on both the list-all
+    (`/datachain/datasets`) and list-by-name (`/datachain/datasets/info`)
+    endpoints, and omits it when the flag isn't set."""
+    m = requests_mock.get(f"{STUDIO_URL}/api/{route}", json=ok_body)
 
+    assert main(["dataset", "ls", "--studio", *extra_cli_args]) == 0
+    assert "include_removed" not in m.last_request.qs
 
-def test_studio_client_dataset_info_omits_include_removed_when_false(mocker):
-    from datachain.remote.studio import Response, StudioClient
-
-    send = mocker.patch.object(
-        StudioClient,
-        "_send_request",
-        return_value=Response(
-            data={
-                "versions": [],
-                "project": {"created_at": None, "namespace": {"created_at": None}},
-                "created_at": None,
-                "finished_at": None,
-            },
-            ok=True,
-            message="",
-            status=200,
-        ),
+    assert (
+        main(["dataset", "ls", "--studio", "--include-removed", *extra_cli_args]) == 0
     )
-    client = StudioClient(team="team")
-    client.dataset_info("dev", "animals", "cats")
-    assert send.call_args[0] == (
-        "datachain/datasets/info",
-        {"namespace": "dev", "project": "animals", "name": "cats"},
-    )
-    assert send.call_args[1] == {"method": "GET"}
+    assert m.last_request.qs.get("include_removed") == ["true"]
 
 
 @skip_if_not_sqlite

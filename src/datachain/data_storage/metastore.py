@@ -438,6 +438,7 @@ class AbstractMetastore(ABC, Serializable):
         *,
         versions: Sequence[str] | None = (),
         include_incomplete: bool = True,
+        include_removed: bool = False,
         include_preview: bool = False,
     ) -> DatasetRecord:
         """Gets a single dataset by name.
@@ -1673,6 +1674,7 @@ class AbstractDBMetastore(AbstractMetastore):
         self,
         include_incomplete: bool = True,
         *,
+        include_removed: bool = False,
         include_preview: bool = False,
         versions: Sequence[str] | None = None,
     ) -> "Select":
@@ -1686,6 +1688,7 @@ class AbstractDBMetastore(AbstractMetastore):
             self._dataset_version_fields,
             isouter=isouter,
             include_incomplete=include_incomplete,
+            include_removed=include_removed,
             include_preview=include_preview,
             versions=versions,
         )
@@ -1789,6 +1792,7 @@ class AbstractDBMetastore(AbstractMetastore):
         *,
         versions: Sequence[str] | None = (),
         include_incomplete: bool = True,
+        include_removed: bool = False,
         include_preview: bool = False,
     ) -> DatasetRecord:
         """
@@ -1803,6 +1807,7 @@ class AbstractDBMetastore(AbstractMetastore):
 
         query = self._base_dataset_query(
             include_incomplete=include_incomplete,
+            include_removed=include_removed,
             include_preview=include_preview,
             versions=versions,
         )

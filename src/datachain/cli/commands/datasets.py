@@ -135,19 +135,18 @@ def list_datasets_local_versions(
 
     namespace_name, project_name, name = catalog.get_full_dataset_name(name)
 
-    # include_incomplete=True lets the query return REMOVED tombstones too;
-    # we then keep COMPLETE (and REMOVED when the caller asked for it).
     ds = catalog.get_dataset(
         name,
         namespace_name=namespace_name,
         project_name=project_name,
         versions=None,
-        include_incomplete=include_removed,
+        include_incomplete=False,
+        include_removed=include_removed,
     )
     for v in ds.all_versions:
         if v.status == DatasetStatus.COMPLETE:
             yield name, v.version, False
-        elif include_removed and v.status == DatasetStatus.REMOVED:
+        elif v.status == DatasetStatus.REMOVED:
             yield name, v.version, True
 
 
