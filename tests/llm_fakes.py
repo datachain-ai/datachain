@@ -44,17 +44,12 @@ class FakeLiteLLM:
         self.embedding_response = [0.1, 0.2, 0.3]
         self.invalid_json_attempts = 0
         self.structured_overrides: dict[str, str] = {}
-        self.pdf_supported = True
-        self.no_pdf_models: set[str] = set()
         self.embedding_empty = False
         self.embedding_as_object = False
         self.finish_reason = "stop"
         self.fail_models: set[str] = set()
         self.transient_failures = 0
         self.fatal_status: int | None = None
-
-    def supports_pdf_input(self, model):
-        return self.pdf_supported and model not in self.no_pdf_models
 
     def completion(self, **kwargs):
         self.calls.append(kwargs)

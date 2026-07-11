@@ -460,7 +460,7 @@ def test_to_text_on_image_file_errors():
             to_text(ImageFile(path="a.png", source="s3://x"))
 
 
-def test_document_passthrough_when_model_supports_it(fake_llm):
+def test_document_passed_to_model(fake_llm):
     fake_llm.text_response = "summary"
     pdf = File(path="r.pdf", source="s3://x")
     with mock.patch.object(File, "read_bytes", return_value=b"%PDF-1.4 x"):
@@ -468,25 +468,6 @@ def test_document_passthrough_when_model_supports_it(fake_llm):
     assert out == "summary"
     content = fake_llm.calls[-1]["messages"][0]["content"]
     assert any(p["type"] == "file" for p in content)
-
-
-def test_document_rejected_when_model_lacks_support(fake_llm):
-    fake_llm.pdf_supported = False
-    pdf = File(path="r.pdf", source="s3://x")
-    with mock.patch.object(File, "read_bytes", return_value=b"%PDF-1.4 x"):
-        runner = bind(llm.complete("file", "summarize", media="document"), llm="m")
-        with pytest.raises(engine.LLMError, match="does not accept document"):
-            runner(pdf)
-
-
-def test_document_gate_ignores_fallback_models(fake_llm):
-    # Only the primary is gated; a non-document fallback must not block the call.
-    fake_llm.no_pdf_models = {"bad/fallback"}
-    pdf = File(path="r.pdf", source="s3://x")
-    with mock.patch.object(File, "read_bytes", return_value=b"%PDF-1.4 x"):
-        spec = llm.complete("file", "s", media="document", fallback="bad/fallback")
-        out = bind(spec, llm="good/primary")(pdf)
-    assert isinstance(out, str)
 
 
 @pytest.mark.parametrize(
@@ -864,25 +845,6 @@ def test_litellm_helper_missing_raises(monkeypatch):
     monkeypatch.setitem(sys.modules, "litellm", None)  # makes `import litellm` fail
     with pytest.raises(ImportError, match=r"pip install 'datachain\[llm\]'"):
         engine._litellm()
-
-
-_DOC_MSGS = [{"role": "user", "content": [{"type": "file", "file": {}}]}]
-
-
-def test_document_gate_skipped_when_probe_absent(monkeypatch):
-    # A LiteLLM without supports_pdf_input must not block the call.
-    monkeypatch.setattr(engine, "_litellm", types.SimpleNamespace)
-    engine._check_document_support("m", _DOC_MSGS)
-
-
-def test_document_gate_ignores_probe_error(monkeypatch):
-    def boom(model):
-        raise RuntimeError("probe failed")
-
-    monkeypatch.setattr(
-        engine, "_litellm", lambda: types.SimpleNamespace(supports_pdf_input=boom)
-    )
-    engine._check_document_support("m", _DOC_MSGS)
 
 
 def test_content_raises_on_no_choices():

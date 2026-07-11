@@ -47,32 +47,6 @@ def _is_transient(exc: Exception) -> bool:
     return status in (408, 429) or status >= 500
 
 
-def _has_document(messages: list[dict[str, Any]]) -> bool:
-    return any(
-        isinstance(m.get("content"), list)
-        and any(p.get("type") == "file" for p in m["content"])
-        for m in messages
-    )
-
-
-def _check_document_support(model: str, messages: list[dict[str, Any]]) -> None:
-    # Gate only the primary; a fallback handles unrelated transient failures.
-    if not _has_document(messages):
-        return
-    supports = getattr(_litellm(), "supports_pdf_input", None)
-    if supports is None:
-        return
-    try:
-        ok = supports(model=model)
-    except Exception:  # noqa: BLE001 - a capability probe must not block the call
-        return
-    if not ok:
-        raise LLMError(
-            f"model '{model}' does not accept document input; use "
-            "document-capable models or extract the text first"
-        )
-
-
 def _base_kwargs(
     model: str,
     retries: int,
@@ -93,7 +67,6 @@ def _completion_kwargs(
     fallback: str | list[str] | None,
     params: dict[str, Any],
 ) -> dict[str, Any]:
-    _check_document_support(model, messages)
     kwargs = _base_kwargs(model, retries, fallback, params)
     kwargs["messages"] = messages
     return kwargs
