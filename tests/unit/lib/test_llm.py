@@ -228,6 +228,20 @@ def test_list_schema_tolerates_bare_array_response(fake_llm):
     assert [c.text for c in out] == ["a", "b"]
 
 
+def test_list_schema_raises_on_unparsable_output(fake_llm):
+    fake_llm.structured_overrides["LLMListOutput"] = "not a json list"
+    with pytest.raises(engine.LLMError, match=r"list\[Chunk\]"):
+        bind(llm.complete("t", schema=list[Chunk], retries=0), llm="m")("doc")
+
+
+def test_reask_survives_empty_response(fake_llm):
+    # a contentless provider response must not crash the reask loop; it reasks
+    fake_llm.empty_choice_attempts = 1
+    out = bind(llm.complete("t", schema=Scene, retries=1), llm="m")("doc")
+    assert isinstance(out, Scene)
+    assert len(fake_llm.calls) == 2
+
+
 def test_classify_requires_categories():
     with pytest.raises(ValueError, match="non-empty list of strings"):
         llm.classify("t", into=[])
