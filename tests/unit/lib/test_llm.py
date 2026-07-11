@@ -250,6 +250,11 @@ def test_classify_rejects_duplicate_categories():
         llm.classify("t", into=["a", "a"])
 
 
+def test_classify_rejects_string_into():
+    with pytest.raises(ValueError, match="not a single string"):
+        llm.classify("t", into="yes")
+
+
 def test_complete_with_schema_kind():
     spec = llm.complete("t", schema=Scene)
     assert spec.kind == "complete"
@@ -759,6 +764,13 @@ def test_transient_error_propagates_when_budget_exhausted(fake_llm):
     fake_llm.transient_failures = 5
     with pytest.raises(RuntimeError):
         bind(llm.complete("c", schema=Scene, retries=1), llm="m")("hi")
+
+
+def test_fatal_error_is_not_retried(fake_llm):
+    fake_llm.fatal_status = 401
+    with pytest.raises(RuntimeError):
+        bind(llm.complete("c", schema=Scene, retries=5), llm="m")("hi")
+    assert len(fake_llm.calls) == 1
 
 
 def test_fallback_engages_on_primary_failure(fake_llm):

@@ -38,6 +38,15 @@ def _fallbacks(fallback: str | list[str] | None) -> list[str] | None:
     return [fallback] if isinstance(fallback, str) else list(fallback)
 
 
+def _is_transient(exc: Exception) -> bool:
+    """Worth retrying: timeout (408), rate limit (429), and server errors; other
+    client errors (bad auth/request) are fatal."""
+    status = getattr(exc, "status_code", None)
+    if not isinstance(status, int):
+        return True
+    return status in (408, 429) or status >= 500
+
+
 def _has_document(messages: list[dict[str, Any]]) -> bool:
     return any(
         isinstance(m.get("content"), list)
@@ -214,7 +223,9 @@ def _parse_with_retries(
     for attempt in range(attempts):
         try:
             resp = litellm.completion(**kwargs)
-        except Exception as exc:  # noqa: BLE001 - transient/provider error; retry
+        except Exception as exc:
+            if not _is_transient(exc):
+                raise
             last_error = exc
             continue
         tokens_in, tokens_out = _tokens(resp)

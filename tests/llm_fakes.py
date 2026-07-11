@@ -51,12 +51,17 @@ class FakeLiteLLM:
         self.finish_reason = "stop"
         self.fail_models: set[str] = set()
         self.transient_failures = 0
+        self.fatal_status: int | None = None
 
     def supports_pdf_input(self, model):
         return self.pdf_supported and model not in self.no_pdf_models
 
     def completion(self, **kwargs):
         self.calls.append(kwargs)
+        if self.fatal_status is not None:
+            exc = RuntimeError(f"http {self.fatal_status}")
+            exc.status_code = self.fatal_status  # type: ignore[attr-defined]
+            raise exc
         if self.transient_failures > 0:
             self.transient_failures -= 1
             raise RuntimeError("transient error")

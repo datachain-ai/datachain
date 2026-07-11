@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from typing import Any
 
 from datachain.llm.content import Media
@@ -74,7 +75,7 @@ def complete(
 
 def classify(
     col: str,
-    into: list[str],
+    into: Sequence[str],
     prompt: str | None = None,
     *,
     context: str | None = None,
@@ -103,6 +104,10 @@ def classify(
     Returns:
         LLMSpec: A spec whose output type is ``str``.
     """
+    if isinstance(into, str):
+        raise ValueError(  # noqa: TRY004 - a config value error, not a type guard
+            "llm.classify(into=...) expects a list of categories, not a single string"
+        )
     return LLMSpec(
         kind="classify",
         col=col,
