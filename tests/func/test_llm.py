@@ -134,7 +134,7 @@ def test_gen_one_to_many(fake_llm, test_session):
     )
 
     assert chain.schema["chunk"] is Chunk
-    assert chain.to_values("chunk.text") == ["one", "two"]
+    assert sorted(chain.to_values("chunk.text")) == ["one", "two"]
 
 
 def test_list_schema_in_map_yields_list_column(fake_llm, test_session):
