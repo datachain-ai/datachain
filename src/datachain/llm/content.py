@@ -68,33 +68,36 @@ def _sniff_image_mime(data: bytes) -> str | None:
     return f"image/{fmt.lower()}" if fmt else None
 
 
-def _read_text(file: File) -> str:
+def _binary_error(what: str, media_hint: bool) -> LLMError:
+    fix = (
+        "set media='image'/'document', or decode it to text first"
+        if media_hint
+        else "decode it to text first"
+    )
+    return LLMError(f"cannot read {what} as text (it looks binary); {fix}")
+
+
+def _read_text(file: File, media_hint: bool = True) -> str:
     try:
         return file.read_text()
     except UnicodeDecodeError as e:
-        raise LLMError(
-            f"cannot read '{file.path}' as text (it looks binary); if it is an "
-            "image or PDF set media='image'/'document', otherwise decode it first"
-        ) from e
+        raise _binary_error(f"'{file.path}'", media_hint) from e
 
 
-def _decode(data: bytes) -> str:
+def _decode(data: bytes, media_hint: bool = True) -> str:
     try:
         return data.decode("utf-8")
     except UnicodeDecodeError as e:
-        raise LLMError(
-            "cannot read bytes as text (they look binary); if they are an image "
-            "or PDF set media='image'/'document', otherwise decode them first"
-        ) from e
+        raise _binary_error("the bytes", media_hint) from e
 
 
-def _as_text(value: Any) -> Text:
+def _as_text(value: Any, media_hint: bool = True) -> Text:
     if isinstance(value, File):
-        return Text(_read_text(value))
+        return Text(_read_text(value, media_hint))
     if isinstance(value, BaseModel):
         return Text(value.model_dump_json())
     if isinstance(value, bytes):
-        return Text(_decode(value))
+        return Text(_decode(value, media_hint))
     return Text(str(value))
 
 
@@ -154,7 +157,7 @@ def resolve(value: Any, media: Media | None = None) -> Content:
 
 
 def to_text(value: Any) -> str:
-    return _as_text(value).text
+    return _as_text(value, media_hint=False).text
 
 
 def build_messages(

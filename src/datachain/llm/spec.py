@@ -82,6 +82,19 @@ class LLMSpec(BoundSpec):
             raise ValueError(  # noqa: TRY004 - a config value error, not a type guard
                 f"retries must be an int, got {self.retries!r}"
             )
+        if self.retries < 0:
+            raise ValueError(f"retries must be >= 0, got {self.retries}")
+        if self.fallback is not None and not (
+            isinstance(self.fallback, str)
+            or (
+                isinstance(self.fallback, list)
+                and all(isinstance(m, str) for m in self.fallback)
+            )
+        ):
+            raise ValueError(
+                "fallback must be a model string or a list of model strings, "
+                f"got {self.fallback!r}"
+            )
         if self.context_col is not None and self.context_col == self.col:
             raise ValueError("col and context must be different columns")
         reserved = engine.RESERVED_PARAMS & set(self.params)
@@ -160,7 +173,7 @@ class LLMSpec(BoundSpec):
         if not model:
             raise LLMConfigError(
                 f"no model configured for llm.{self.kind}(); set one with "
-                '.settings(llm="provider/model") or a per-call llm=.'
+                '.settings(llm="provider/model") or a per-call llm="provider/model".'
             )
         return model
 
@@ -268,8 +281,12 @@ class LLMSpec(BoundSpec):
         def params() -> dict[str, Any]:
             # Resolve credentials once per worker, then overlay per-call params.
             if not resolved:
-                base = llm_params() if callable(llm_params) else dict(llm_params or {})
-                resolved.append({**base, **spec.params})
+                base = llm_params() if callable(llm_params) else llm_params
+                if base is not None and not isinstance(base, dict):
+                    raise TypeError(
+                        f"llm_params must resolve to a dict, got {type(base).__name__}"
+                    )
+                resolved.append({**(base or {}), **spec.params})
             return resolved[0]
 
         # `_id` default arg bakes the cache key into the UDF hash (via __defaults__).

@@ -54,8 +54,8 @@ For raw `bytes` or an untyped `File`, declare the modality with `media=`:
 
 Rules to keep in mind:
 
-- `media` is validated up front: `media="image"` on non-image bytes, or
-  `media="document"` on a non-PDF, raises a clear error.
+- A `media` mismatch (`media="image"` on non-image bytes, `media="document"` on
+  a non-PDF) raises a clear error when the row is processed.
 - A `str` is sent **verbatim**, so a column holding a *path* sends the path, not the
   file's contents; read it as a `File` (`read_storage(...)`) to send the content.
 - `media="document"` covers "summarize/extract from this PDF"; heavy document work

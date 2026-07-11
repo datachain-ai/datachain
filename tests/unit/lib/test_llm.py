@@ -176,12 +176,6 @@ def test_retries_are_not_multiplied(fake_llm):
     assert len(fake_llm.calls) == 4  # retries + 1, never (retries + 1) ** 2
 
 
-def test_negative_retries_still_makes_one_attempt(fake_llm):
-    fake_llm.text_response = "ok"
-    assert bind(llm.complete("t", retries=-5), llm="m")("hi") == "ok"
-    assert len(fake_llm.calls) == 1
-
-
 def test_structured_raises_after_exhausting_retries(fake_llm):
     fake_llm.invalid_json_attempts = 5
     with pytest.raises(engine.LLMError, match="did not match schema"):
@@ -355,6 +349,15 @@ def test_utf8_bytes_resolve_to_text():
     assert resolve(b"hello") == Text("hello")
 
 
+def test_binary_error_hint_depends_on_context():
+    # resolve() (complete) may set media; to_text() (embed/context) cannot
+    with pytest.raises(engine.LLMError, match="media="):
+        resolve(b"\x00\xff")
+    with pytest.raises(engine.LLMError) as exc:
+        to_text(b"\x00\xff")
+    assert "media=" not in str(exc.value)
+
+
 def test_media_image_on_bytes_sniffs_format():
     c = resolve(_png(), media="image")
     assert isinstance(c, Image)
@@ -502,6 +505,24 @@ def test_col_equal_context_rejected():
 def test_retries_must_be_int():
     with pytest.raises(ValueError, match="retries must be an int"):
         llm.complete("c", retries=1.5)
+
+
+def test_retries_must_be_non_negative():
+    with pytest.raises(ValueError, match="retries must be >= 0"):
+        llm.complete("c", retries=-5)
+
+
+def test_fallback_must_be_string_or_list_of_strings():
+    with pytest.raises(ValueError, match="fallback must be"):
+        llm.complete("c", fallback=123)
+    with pytest.raises(ValueError, match="fallback must be"):
+        llm.complete("c", fallback=["ok", 5])
+
+
+def test_llm_params_callable_returning_non_dict_raises(fake_llm):
+    f = bind(llm.complete("t"), llm="m", llm_params=lambda: ["not", "a", "dict"])
+    with pytest.raises(TypeError, match="llm_params must resolve to a dict"):
+        f("hi")
 
 
 def test_identity_stable_across_param_dict_order():
