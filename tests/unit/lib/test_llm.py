@@ -707,7 +707,6 @@ def test_identity_changes_with_input_column():
 @pytest.mark.parametrize(
     ("a_spec", "b_spec"),
     [
-        (llm.complete("t", "p"), llm.complete("t", "p", fallback="x/y")),
         (llm.complete("t", "p"), llm.complete("t", "p", media="image")),
         (llm.complete("t", "p"), llm.complete("t", "p", context="ctx")),
     ],
@@ -716,10 +715,10 @@ def test_identity_changes_with_output_affecting_field(a_spec, b_spec):
     assert a_spec.identity("m") != b_spec.identity("m")
 
 
-def test_retries_not_in_identity():
-    a = llm.complete("t", "p", retries=1).identity("m")
-    b = llm.complete("t", "p", retries=5).identity("m")
-    assert a == b
+def test_retries_and_fallback_not_in_identity():
+    base = llm.complete("t", "p").identity("m")
+    assert llm.complete("t", "p", retries=5).identity("m") == base
+    assert llm.complete("t", "p", fallback="x/y").identity("m") == base
 
 
 def test_identity_changes_with_list_schema_fields():
