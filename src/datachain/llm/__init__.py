@@ -13,7 +13,7 @@ def complete(
     *,
     schema: Any = None,
     context: str | None = None,
-    media: Media | None = None,
+    type: Media | None = None,
     llm: str | None = None,
     retries: int = 1,
     fallback: str | list[str] | None = None,
@@ -29,14 +29,14 @@ def complete(
     Args:
         col (str): Input column. Its type decides the encoding (text files and
             strings as text, images/frames as vision input); for raw ``bytes`` or
-            an untyped ``File`` set ``media``. See the Inputs section.
+            an untyped ``File`` set ``type``. See the Inputs section.
         prompt (str | None): Instruction text added before the input.
         schema (type | None): Pydantic model (or ``list[Model]``) for structured
             output. When omitted, the output is plain ``str``.
         context (str | None): Column whose value is serialized into the prompt.
-        media ("text" | "image" | "document" | None): Force how ``col`` is
+        type ("text" | "image" | "document" | None): Override how ``col`` is
             encoded. Needed for raw ``bytes`` or an untyped ``File``: e.g.
-            ``media="image"`` for an image-bytes column, ``media="document"`` for
+            ``type="image"`` for an image-bytes column, ``type="document"`` for
             a PDF (sent to a document-capable model).
         llm (str | None): Per-call model override, taking precedence over
             ``settings(llm=...)``.
@@ -64,7 +64,7 @@ def complete(
         prompt=prompt,
         schema=schema,
         context_col=context,
-        media=media,
+        type=type,
         llm=llm,
         retries=retries,
         fallback=fallback,
@@ -79,7 +79,7 @@ def classify(
     prompt: str | None = None,
     *,
     context: str | None = None,
-    media: Media | None = None,
+    type: Media | None = None,
     llm: str | None = None,
     retries: int = 1,
     fallback: str | list[str] | None = None,
@@ -93,7 +93,7 @@ def classify(
         into (list[str]): Allowed categories; the output is constrained to one.
         prompt (str | None): Optional extra guidance added to the instruction.
         context (str | None): Column whose value is serialized into the prompt.
-        media ("text" | "image" | "document" | None): Force how ``col`` is encoded
+        type ("text" | "image" | "document" | None): Override how ``col`` is encoded
             (see ``complete``).
         llm (str | None): Per-call model override.
         retries (int): Transient and schema-validation retry budget.
@@ -114,7 +114,7 @@ def classify(
         prompt=prompt,
         into=list(into),
         context_col=context,
-        media=media,
+        type=type,
         llm=llm,
         retries=retries,
         fallback=fallback,
@@ -128,7 +128,7 @@ def score(
     prompt: str | None = None,
     *,
     context: str | None = None,
-    media: Media | None = None,
+    type: Media | None = None,
     llm: str | None = None,
     retries: int = 1,
     fallback: str | list[str] | None = None,
@@ -141,7 +141,7 @@ def score(
         col (str): Input column passed to the model.
         prompt (str | None): The scoring criterion (e.g. ``"accident risk 0..1"``).
         context (str | None): Column whose value is serialized into the prompt.
-        media ("text" | "image" | "document" | None): Force how ``col`` is encoded
+        type ("text" | "image" | "document" | None): Override how ``col`` is encoded
             (see ``complete``).
         llm (str | None): Per-call model override.
         retries (int): Transient and schema-validation retry budget.
@@ -157,7 +157,7 @@ def score(
         col=col,
         prompt=prompt,
         context_col=context,
-        media=media,
+        type=type,
         llm=llm,
         retries=retries,
         fallback=fallback,

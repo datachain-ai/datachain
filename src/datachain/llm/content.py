@@ -68,36 +68,36 @@ def _sniff_image_mime(data: bytes) -> str | None:
     return f"image/{fmt.lower()}" if fmt else None
 
 
-def _binary_error(what: str, media_hint: bool) -> LLMError:
+def _binary_error(what: str, suggest_type: bool) -> LLMError:
     fix = (
-        "set media='image'/'document', or decode it to text first"
-        if media_hint
+        "set type='image'/'document', or decode it to text first"
+        if suggest_type
         else "decode it to text first"
     )
     return LLMError(f"cannot read {what} as text (it looks binary); {fix}")
 
 
-def _read_text(file: File, media_hint: bool = True) -> str:
+def _read_text(file: File, suggest_type: bool = True) -> str:
     try:
         return file.read_text()
     except UnicodeDecodeError as e:
-        raise _binary_error(f"'{file.path}'", media_hint) from e
+        raise _binary_error(f"'{file.path}'", suggest_type) from e
 
 
-def _decode(data: bytes, media_hint: bool = True) -> str:
+def _decode(data: bytes, suggest_type: bool = True) -> str:
     try:
         return data.decode("utf-8")
     except UnicodeDecodeError as e:
-        raise _binary_error("the bytes", media_hint) from e
+        raise _binary_error("the bytes", suggest_type) from e
 
 
-def _as_text(value: Any, media_hint: bool = True) -> Text:
+def _as_text(value: Any, suggest_type: bool = True) -> Text:
     if isinstance(value, File):
-        return Text(_read_text(value, media_hint))
+        return Text(_read_text(value, suggest_type))
     if isinstance(value, BaseModel):
         return Text(value.model_dump_json())
     if isinstance(value, bytes):
-        return Text(_decode(value, media_hint))
+        return Text(_decode(value, suggest_type))
     return Text(str(value))
 
 
@@ -126,24 +126,24 @@ def _as_document(value: Any) -> Document:
         raise LLMError(f"cannot send {type(value).__name__} as a document")
     if not data.startswith(b"%PDF-"):
         raise LLMError(
-            "media='document' expects a PDF, but the value is not a PDF "
+            "type='document' expects a PDF, but the value is not a PDF "
             "(convert it to PDF, or extract its text first)"
         )
     return Document(data, "application/pdf")
 
 
-def resolve(value: Any, media: Media | None = None) -> Content:
+def resolve(value: Any, type_: Media | None = None) -> Content:
     """Resolve a column value to the modality the model receives.
 
-    With no ``media``, the value's type decides: image types become images and
-    everything else becomes text. ``media`` forces a modality for raw ``bytes``
-    or an untyped ``File``.
+    With no ``type_``, the value's type decides: image types become images and
+    everything else becomes text. ``type_`` overrides the modality for raw
+    ``bytes`` or an untyped ``File``.
     """
-    if media == "image":
+    if type_ == "image":
         return _as_image(value)
-    if media == "document":
+    if type_ == "document":
         return _as_document(value)
-    if media == "text":
+    if type_ == "text":
         return _as_text(value)
     if isinstance(value, (ImageFile, VideoFrame)):
         return _as_image(value)
@@ -157,13 +157,13 @@ def resolve(value: Any, media: Media | None = None) -> Content:
 
 
 def to_text(value: Any) -> str:
-    return _as_text(value, media_hint=False).text
+    return _as_text(value, suggest_type=False).text
 
 
 def build_messages(
     prompt: str | None,
     value: Any,
-    media: Media | None = None,
+    type_: Media | None = None,
     context: Any = None,
 ) -> list[dict[str, Any]]:
     """Build a single-user-message chat payload, collapsing to plain text when
@@ -171,7 +171,7 @@ def build_messages(
     parts: list[ContentPart] = []
     if prompt:
         parts.append(Text(prompt).as_part())
-    parts.append(resolve(value, media).as_part())
+    parts.append(resolve(value, type_).as_part())
     if context is not None and (ctx := to_text(context)):
         parts.append(Text(f"Context:\n{ctx}").as_part())
 

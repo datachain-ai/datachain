@@ -70,7 +70,7 @@ class LLMSpec(BoundSpec):
     schema: Any = None
     into: list[str] | None = None
     context_col: str | None = None
-    media: Media | None = None
+    type: Media | None = None
     llm: str | None = None
     retries: int = 1
     fallback: str | list[str] | None = None
@@ -92,9 +92,9 @@ class LLMSpec(BoundSpec):
                 )
             if len(set(self.into)) != len(self.into):
                 raise ValueError("llm.classify(into=...) categories must be distinct")
-        if self.media is not None and self.media not in MEDIA_VALUES:
+        if self.type is not None and self.type not in MEDIA_VALUES:
             raise ValueError(
-                f"media must be 'text', 'image', or 'document', got {self.media!r}"
+                f"type must be 'text', 'image', or 'document', got {self.type!r}"
             )
         if not isinstance(self.retries, int) or isinstance(self.retries, bool):
             raise ValueError(  # noqa: TRY004 - a config value error, not a type guard
@@ -183,7 +183,7 @@ class LLMSpec(BoundSpec):
             tuple(self.into) if self.into else None,
             self.col,
             self.context_col,
-            self.media,
+            self.type,
             self.include_usage,
             _canonical(params),
         )
@@ -234,7 +234,7 @@ class LLMSpec(BoundSpec):
                 model, to_text(value), self.retries, self.fallback, params
             )
 
-        messages = build_messages(self._build_prompt(), value, self.media, context)
+        messages = build_messages(self._build_prompt(), value, self.type, context)
         if self.kind == "classify":
             return engine.classify(
                 model,

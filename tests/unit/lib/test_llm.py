@@ -350,42 +350,42 @@ def test_utf8_bytes_resolve_to_text():
 
 
 def test_binary_error_hint_depends_on_context():
-    # resolve() (complete) may set media; to_text() (embed/context) cannot
-    with pytest.raises(engine.LLMError, match="media="):
+    # resolve() (complete) may set type; to_text() (embed/context) cannot
+    with pytest.raises(engine.LLMError, match="type="):
         resolve(b"\x00\xff")
     with pytest.raises(engine.LLMError) as exc:
         to_text(b"\x00\xff")
-    assert "media=" not in str(exc.value)
+    assert "type=" not in str(exc.value)
 
 
-def test_media_image_on_bytes_sniffs_format():
-    c = resolve(_png(), media="image")
+def test_type_image_on_bytes_sniffs_format():
+    c = resolve(_png(), type_="image")
     assert isinstance(c, Image)
     assert c.mime == "image/png"
 
 
-def test_media_image_on_non_image_bytes_errors():
+def test_type_image_on_non_image_bytes_errors():
     with pytest.raises(engine.LLMError, match="not a recognized image"):
-        resolve(b"\x00\x01 not an image", media="image")
+        resolve(b"\x00\x01 not an image", type_="image")
 
 
-def test_media_image_on_untyped_file_sniffs_bytes():
+def test_type_image_on_untyped_file_sniffs_bytes():
     f = File(path="blob", source="s3://x")  # no image extension -> sniff bytes
     with mock.patch.object(File, "read_bytes", return_value=_png()):
-        c = resolve(f, media="image")
+        c = resolve(f, type_="image")
     assert isinstance(c, Image)
     assert c.mime == "image/png"
 
 
-def test_media_image_on_untyped_file_rejects_non_image():
+def test_type_image_on_untyped_file_rejects_non_image():
     f = File(path="blob", source="s3://x")
     with mock.patch.object(File, "read_bytes", return_value=b"raw"):
         with pytest.raises(engine.LLMError, match="not a recognized image"):
-            resolve(f, media="image")
+            resolve(f, type_="image")
 
 
-def test_media_document_on_pdf_bytes():
-    c = resolve(b"%PDF-1.7\nbody", media="document")
+def test_type_document_on_pdf_bytes():
+    c = resolve(b"%PDF-1.7\nbody", type_="document")
     assert isinstance(c, Document)
     part = c.as_part()
     assert part["type"] == "file"
@@ -393,26 +393,26 @@ def test_media_document_on_pdf_bytes():
     assert part["file"]["file_data"].startswith("data:application/pdf;base64,")
 
 
-def test_media_document_on_pdf_file():
+def test_type_document_on_pdf_file():
     f = File(path="r.pdf", source="s3://x")
     with mock.patch.object(File, "read_bytes", return_value=b"%PDF-1.4 x"):
-        c = resolve(f, media="document")
+        c = resolve(f, type_="document")
     assert isinstance(c, Document)
 
 
-def test_media_document_on_non_pdf_errors():
+def test_type_document_on_non_pdf_errors():
     with pytest.raises(engine.LLMError, match="expects a PDF"):
-        resolve(b"not a pdf at all", media="document")
+        resolve(b"not a pdf at all", type_="document")
 
 
-def test_media_image_on_unsupported_value_type():
+def test_type_image_on_unsupported_value_type():
     with pytest.raises(engine.LLMError, match="cannot send int as an image"):
-        resolve(123, media="image")
+        resolve(123, type_="image")
 
 
-def test_media_document_on_unsupported_value_type():
+def test_type_document_on_unsupported_value_type():
     with pytest.raises(engine.LLMError, match="cannot send str as a document"):
-        resolve("just text", media="document")
+        resolve("just text", type_="document")
 
 
 def test_build_messages_rejects_empty_input():
@@ -420,14 +420,14 @@ def test_build_messages_rejects_empty_input():
         build_messages(None, "")
 
 
-def test_media_text_forces_model_json():
-    c = resolve(Scene(objects=[], risk=0.0), media="text")
+def test_type_text_forces_model_json():
+    c = resolve(Scene(objects=[], risk=0.0), type_="text")
     assert c == Text('{"objects":[],"risk":0.0}')
 
 
-def test_invalid_media_rejected_at_build_time():
-    with pytest.raises(ValueError, match="media must be"):
-        llm.complete("t", media="vidjo")
+def test_invalid_type_rejected_at_build_time():
+    with pytest.raises(ValueError, match="type must be"):
+        llm.complete("t", type="vidjo")
 
 
 def test_build_messages_text_only_collapses_to_string():
@@ -464,7 +464,7 @@ def test_document_passed_to_model(fake_llm):
     fake_llm.text_response = "summary"
     pdf = File(path="r.pdf", source="s3://x")
     with mock.patch.object(File, "read_bytes", return_value=b"%PDF-1.4 x"):
-        out = bind(llm.complete("file", "summarize", media="document"), llm="m")(pdf)
+        out = bind(llm.complete("file", "summarize", type="document"), llm="m")(pdf)
     assert out == "summary"
     content = fake_llm.calls[-1]["messages"][0]["content"]
     assert any(p["type"] == "file" for p in content)
@@ -688,7 +688,7 @@ def test_identity_changes_with_input_column():
 @pytest.mark.parametrize(
     ("a_spec", "b_spec"),
     [
-        (llm.complete("t", "p"), llm.complete("t", "p", media="image")),
+        (llm.complete("t", "p"), llm.complete("t", "p", type="image")),
         (llm.complete("t", "p"), llm.complete("t", "p", context="ctx")),
     ],
 )

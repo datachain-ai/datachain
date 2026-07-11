@@ -34,7 +34,8 @@ class Scene(BaseModel):
 ## Inputs
 
 A column value is sent to the model as **text**, an **image**, or a **document**.
-The column's **type** decides how it is encoded:
+Its **type** decides the encoding automatically, so loading a column with the
+matching `read_storage(type=...)` is usually all you need:
 
 | Column type | Sent as |
 |---|---|
@@ -45,20 +46,29 @@ The column's **type** decides how it is encoded:
 | `bytes` | text (errors if not UTF-8) |
 | `AudioFile` / `VideoFile` | error; decode first (extract frames or a transcript) |
 
-For raw `bytes` or an untyped `File`, declare the modality with `media=`:
+```python
+# ImageFile is encoded as an image automatically; no type= needed:
+dc.read_storage("s3://bucket/imgs/", type="image").map(cap=llm.complete("file"))
+```
+
+`type=` is an override for when the type is ambiguous (raw `bytes` or an untyped
+`File`) or for a PDF (there is no document file type). Its values line up with
+`read_storage`'s `type` (`text`, `image`), plus `document` for PDF input:
 
 ```python
-.map(cap=llm.complete("frames", media="image"))     # bytes / File -> image
-.map(ext=llm.complete("file",  media="document"))    # File / bytes -> PDF (document-capable model)
+.map(cap=llm.complete("frames", type="image"))     # raw bytes / untyped File -> image
+.map(ext=llm.complete("file",  type="document"))    # File / bytes -> PDF (document-capable model)
 ```
 
 Rules to keep in mind:
 
-- A `media` mismatch (`media="image"` on non-image bytes, `media="document"` on
+- A `type` mismatch (`type="image"` on non-image bytes, `type="document"` on
   a non-PDF) raises a clear error when the row is processed.
+- `type` is the send modality (aligned with `read_storage`'s `type`), distinct
+  from an object's `content_type` (its exact MIME type, e.g. `image/png`).
 - A `str` is sent **verbatim**, so a column holding a *path* sends the path, not the
   file's contents; read it as a `File` (`read_storage(...)`) to send the content.
-- `media="document"` covers "summarize/extract from this PDF"; heavy document work
+- `type="document"` covers "summarize/extract from this PDF"; heavy document work
   (chunk by section or clause, pull embedded figures) is better done by decoding
   first, then `llm.*`.
 - A `None` (missing) input skips the model call and yields `None`, so an `llm.*`
@@ -132,7 +142,7 @@ Reliability is layered:
 
 Materialized `llm.*` columns are cached and versioned, so re-running a chain reads
 the stored result instead of re-calling the model; the cache invalidates when any
-output-affecting input changes (model, prompt, schema, the input column, `media`,
+output-affecting input changes (model, prompt, schema, the input column, `type`,
 params, ...).
 
 ## No fused predicate

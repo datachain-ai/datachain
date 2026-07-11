@@ -113,7 +113,7 @@ def check_image() -> None:
         .settings(llm=CHAT, cache=True)
         .map(
             out=llm.complete(
-                "img", "Name the dominant color in one word.", media="image"
+                "img", "Name the dominant color in one word.", type="image"
             )
         )
         .to_values("out")
@@ -128,7 +128,7 @@ def check_document() -> None:
     text = (
         dc.read_values(doc=[_pdf("DataChain")])
         .settings(llm=CHAT, cache=True)
-        .map(out=llm.complete("doc", "What does this document say?", media="document"))
+        .map(out=llm.complete("doc", "What does this document say?", type="document"))
         .to_values("out")
     )
     assert isinstance(text[0], str) and text[0], text
