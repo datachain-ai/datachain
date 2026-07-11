@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any, Literal, get_args, get_origin
 
 from pydantic import BaseModel
 
+from datachain.lib.file import AudioFile, VideoFile
 from datachain.lib.udf import BindContext, BoundSpec
 from datachain.llm import engine
 from datachain.llm.content import MEDIA_VALUES, Media, build_messages, to_text
@@ -293,6 +294,19 @@ class LLMSpec(BoundSpec):
                 f"llm.{self.kind}() yields one value per row; use .map()"
             )
 
+    def _validate_input_type(self, col_type: Any) -> None:
+        """Reject a clear column-type mismatch at bind time, before any row runs.
+        Audio/video columns are never sendable and must be decoded first."""
+        if col_type is None:
+            return
+        inner = get_args(col_type)[0] if get_origin(col_type) else col_type
+        if isinstance(inner, type) and issubclass(inner, (AudioFile, VideoFile)):
+            raise LLMConfigError(
+                f"{inner.__name__} column '{self.col}' cannot be sent to the model; "
+                "decode it first (extract video frames or an audio transcript) and "
+                "pass that column"
+            )
+
     def _stamp(self, fn: Any, to_many: bool) -> Callable:
         # Output type is declared as a normal return annotation; inputs flow via
         # __datachain_params__ because column names may be dotted (e.g. "file.path"),
@@ -304,6 +318,7 @@ class LLMSpec(BoundSpec):
 
     def bind(self, ctx: BindContext) -> Callable:
         self._validate_target(ctx.target)
+        self._validate_input_type(ctx.input_types.get(self.col))
         spec = self
         # .gen() fans a list schema into rows; .map() keeps the whole value.
         to_many = getattr(ctx.target, "is_output_batched", False)

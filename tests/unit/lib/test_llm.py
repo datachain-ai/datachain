@@ -100,6 +100,18 @@ def test_nested_column_name_is_supported():
     assert f.__datachain_params__ == ["file.path"]
 
 
+def test_audio_video_column_rejected_at_bind_time():
+    for ft in (AudioFile, VideoFile):
+        ctx = BindContext(settings=Settings(llm="m"), input_types={"file": ft})
+        with pytest.raises(LLMConfigError, match="decode it first"):
+            llm.complete("file").bind(ctx)
+
+
+def test_sendable_column_type_passes_bind():
+    ctx = BindContext(settings=Settings(llm="m"), input_types={"file": ImageFile})
+    llm.complete("file").bind(ctx)  # no raise
+
+
 def test_per_call_model_overrides_settings(fake_llm):
     bind(llm.complete("t", llm="call/m"), llm="settings/m")("hi")
     assert fake_llm.calls[-1]["model"] == "call/m"

@@ -1194,12 +1194,27 @@ class DataChain:
 
     def _bind_udf_settings(self, func, target_class):
         """Resolve a `BoundSpec` (e.g. a `datachain.llm` operation) into a concrete
-        callable, handing it the chain settings and target verb via a `BindContext`
-        so it can pick up `settings(llm=...)` and choose its shape from the verb.
+        callable, handing it the chain settings, target verb, and its input column
+        types via a `BindContext` so it can pick up `settings(llm=...)`, choose its
+        shape from the verb, and reject a clear type mismatch before running.
         """
-        if isinstance(func, BoundSpec):
-            return func.bind(BindContext(settings=self._settings, target=target_class))
-        return func
+        if not isinstance(func, BoundSpec):
+            return func
+        input_types: dict[str, Any] = {}
+        for col in func.input_columns():
+            try:
+                input_types[col] = self.signals_schema.get_column_type(
+                    col, with_subtree=True
+                )
+            except SignalResolvingError:
+                pass  # unresolved columns surface later in UdfSignature/slice
+        return func.bind(
+            BindContext(
+                settings=self._settings,
+                target=target_class,
+                input_types=input_types,
+            )
+        )
 
     @staticmethod
     def _bound_udf_params(func, signal_map) -> "Sequence[str] | None":
