@@ -810,6 +810,18 @@ def test_fatal_error_is_not_retried(fake_llm):
     assert len(fake_llm.calls) == 1
 
 
+def test_is_transient_only_for_transient_statuses():
+    def with_status(code):
+        exc = RuntimeError("x")
+        exc.status_code = code
+        return exc
+
+    assert engine._is_transient(with_status(429)) is True
+    assert engine._is_transient(with_status(503)) is True
+    assert engine._is_transient(with_status(401)) is False
+    assert engine._is_transient(ValueError("bug")) is False  # no status -> no retry
+
+
 def test_fallback_engages_on_primary_failure(fake_llm):
     fake_llm.fail_models = {"primary/m"}
     fake_llm.text_response = "ok"

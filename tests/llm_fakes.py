@@ -60,7 +60,9 @@ class FakeLiteLLM:
             raise exc
         if self.transient_failures > 0:
             self.transient_failures -= 1
-            raise RuntimeError("transient error")
+            exc = RuntimeError("transient error")
+            exc.status_code = 503  # type: ignore[attr-defined]
+            raise exc
         if self.empty_choice_attempts > 0:
             self.empty_choice_attempts -= 1
             usage = types.SimpleNamespace(prompt_tokens=11, completion_tokens=7)

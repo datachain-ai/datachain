@@ -35,11 +35,12 @@ def _fallbacks(fallback: str | list[str] | None) -> list[str] | None:
 
 
 def _is_transient(exc: Exception) -> bool:
-    """Worth retrying: timeout (408), rate limit (429), and server errors; other
-    client errors (bad auth/request) are fatal."""
+    """Worth retrying: timeout (408), rate limit (429), and server errors. Client
+    errors (bad auth/request) and errors with no HTTP status (e.g. a ValueError
+    from a bug) are fatal and not retried."""
     status = getattr(exc, "status_code", None)
     if not isinstance(status, int):
-        return True
+        return False
     return status in (408, 429) or status >= 500
 
 
