@@ -631,13 +631,17 @@ def test_without_usage_returns_bare_value(fake_llm):
     assert bind(llm.complete("c"), llm="m")("x") == "hi"
 
 
-def test_include_usage_list_yields_pairs_in_gen(fake_llm):
+def test_include_usage_gen_attributes_usage_to_first_row(fake_llm):
+    fake_llm.structured_overrides["LLMListOutput"] = (
+        '{"items": [{"objects": [], "risk": 0.1}, {"objects": [], "risk": 0.2}]}'
+    )
     spec = llm.complete("c", schema=list[Scene], include_usage=True)
     rows = bind(spec, target=GEN, llm="m")("x")  # .gen() fans out
-    assert len(rows) >= 1
-    for item, usage in rows:
-        assert isinstance(item, Scene)
-        assert isinstance(usage, Usage)
+    assert len(rows) == 2
+    (i0, u0), (i1, u1) = rows
+    assert isinstance(i0, Scene) and isinstance(i1, Scene)
+    assert u0.input_tokens == 11
+    assert (u1.input_tokens, u1.output_tokens) == (0, 0)
 
 
 def test_list_schema_in_map_returns_list_value(fake_llm):

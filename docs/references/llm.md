@@ -123,7 +123,8 @@ Notes:
   error retried in that loop; only structured output ever exceeds 0.
 - Token counts accumulate across all attempts, so reasked calls are billed in full.
 - Embeddings report no output tokens, so `output_tokens` stays 0.
-- In `.gen()` (1:N) the call's usage is replicated onto every emitted row.
+- In `.gen()` (1:N) a call's usage is attributed to one emitted row and zero on
+  the rest, so summing it counts each call once (a naive `sum` is correct).
 
 ## Scaling and caching
 

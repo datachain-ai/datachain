@@ -236,7 +236,12 @@ class LLMSpec(BoundSpec):
             return (None, Usage()) if self.include_usage else None
         result, usage = self._call(model, params, value, context)
         if to_many:  # .gen(): fan the list out, one row per item
-            return [(item, usage) for item in result] if self.include_usage else result
+            if not self.include_usage:
+                return result
+            # per-call usage on the first row, zero on the rest, so a sum counts it once
+            return [
+                (item, usage if i == 0 else Usage()) for i, item in enumerate(result)
+            ]
         return (result, usage) if self.include_usage else result
 
     def _call(

@@ -77,7 +77,10 @@ def test_include_usage_multi_output_map(fake_llm, test_session):
     assert all(t.retries == 0 for t in toks)
 
 
-def test_include_usage_gen_replicates_usage(fake_llm, test_session):
+def test_include_usage_gen_usage_at_call_grain(fake_llm, test_session):
+    fake_llm.structured_overrides["LLMListOutput"] = (
+        '{"items": [{"text": "a"}, {"text": "b"}]}'
+    )
     chain = base(test_session).gen(
         llm.complete("text", schema=list[Chunk], include_usage=True),
         output={"chunk": Chunk, "tok": Usage},
@@ -86,8 +89,10 @@ def test_include_usage_gen_replicates_usage(fake_llm, test_session):
     assert chain.schema["tok"] is Usage
 
     toks = chain.to_values("tok")
-    assert toks
-    assert all(t.input_tokens == 11 for t in toks)
+    assert len(toks) == 6  # 3 input rows x 2 chunks
+    # 3 calls x 11 tokens = 33, not 66
+    assert sum(t.input_tokens for t in toks) == 33
+    assert sorted(t.input_tokens for t in toks) == [0, 0, 0, 11, 11, 11]
 
 
 def test_save_and_reload_preserves_types(fake_llm, test_session):
