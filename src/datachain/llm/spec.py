@@ -1,3 +1,5 @@
+import re
+import warnings
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, get_args, get_origin
@@ -25,6 +27,11 @@ def _element_type(schema: Any) -> tuple[Any, bool]:
     return schema, False
 
 
+# A value with no custom repr shows its memory address (``<Cls object at 0x...>``),
+# which changes each run and would make the cache key unstable.
+_DEFAULT_REPR = re.compile(r" object at 0x[0-9a-fA-F]+>")
+
+
 def _canonical(value: Any) -> Any:
     """Order-independent form of a value, so the cache key is stable across
     processes (``repr`` of a ``set`` or unsorted ``dict`` is not)."""
@@ -35,6 +42,12 @@ def _canonical(value: Any) -> Any:
         return tuple(sorted((_canonical(v) for v in value), key=repr))
     if isinstance(value, (list, tuple)):
         return tuple(_canonical(v) for v in value)
+    if _DEFAULT_REPR.search(repr(value)):
+        warnings.warn(
+            f"llm param {type(value).__name__!r} has no stable repr; it breaks "
+            "caching (full recompute every run).",
+            stacklevel=2,
+        )
     return value
 
 

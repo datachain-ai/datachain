@@ -725,6 +725,22 @@ def test_callable_llm_params_not_in_identity():
     assert spec.identity("m", lambda: {"k": "v"}) == spec.identity("m")
 
 
+def test_opaque_param_value_warns_about_unstable_cache_key():
+    class Opaque:
+        pass
+
+    with pytest.warns(UserWarning, match="no stable repr"):
+        llm.complete("t", client=Opaque()).identity("m")
+
+
+def test_stable_param_values_do_not_warn():
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        llm.complete("t", temperature=0.0, opt={"a": 1}).identity("m")
+
+
 def test_secret_params_not_in_identity():
     base = llm.complete("t", "p").identity("m")
     assert llm.complete("t", "p", api_key="sk-123").identity("m") == base
