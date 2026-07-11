@@ -756,9 +756,18 @@ def test_stable_param_values_do_not_warn():
 
 def test_secret_params_not_in_identity():
     base = llm.complete("t", "p").identity("m")
-    assert llm.complete("t", "p", api_key="sk-123").identity("m") == base
-    assert llm.complete("t", "p", api_key="sk-456").identity("m") == base
-    assert llm.complete("t", "p", temperature=0.7).identity("m") != base
+    secret_keys = ("api_key", "api_token", "access_token", "client_secret")
+    for k in secret_keys:
+        assert llm.complete("t", "p", **{k: "SECRET"}).identity("m") == base
+    # rotating a nested secret must not change the key
+    a = llm.complete("t", "p", extra_headers={"Authorization": "OLD"}).identity("m")
+    b = llm.complete("t", "p", extra_headers={"Authorization": "NEW"}).identity("m")
+    assert a == b
+    # max_tokens is output-affecting, not a secret
+    assert (
+        llm.complete("t", "p", max_tokens=100).identity("m")
+        != llm.complete("t", "p", max_tokens=200).identity("m")
+    )
 
 
 def test_embed_object_style_data_item(fake_llm):

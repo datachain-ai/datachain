@@ -51,22 +51,24 @@ def _canonical(value: Any) -> Any:
     return value
 
 
-# Credential params kept out of the cache key (no secrets in the UDF hash).
-_SECRET_PARAMS = frozenset(
-    {
-        "api_key",
-        "authorization",
-        "aws_access_key_id",
-        "aws_secret_access_key",
-        "aws_session_token",
-        "azure_ad_token",
-        "vertex_credentials",
-    }
-)
+def _is_secret_key(key: Any) -> bool:
+    if not isinstance(key, str):
+        return False
+    k = key.lower()
+    hints = ("key", "secret", "password", "authorization", "credential")
+    # `_token` as a suffix so `max_tokens` is not treated as a secret
+    return any(s in k for s in hints) or k == "token" or k.endswith("_token")
 
 
-def _without_secrets(params: dict[str, Any]) -> dict[str, Any]:
-    return {k: v for k, v in params.items() if k.lower() not in _SECRET_PARAMS}
+def _without_secrets(value: Any) -> Any:
+    """Recursively drop credential-like keys so secrets never enter the cache key."""
+    if isinstance(value, dict):
+        return {
+            k: _without_secrets(v) for k, v in value.items() if not _is_secret_key(k)
+        }
+    if isinstance(value, (list, tuple)):
+        return [_without_secrets(v) for v in value]
+    return value
 
 
 @dataclass
