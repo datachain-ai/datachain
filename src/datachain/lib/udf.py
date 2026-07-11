@@ -3,7 +3,7 @@ import logging
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import closing, nullcontext
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from functools import partial
 from typing import TYPE_CHECKING, Any, TypeVar
 
@@ -58,7 +58,6 @@ class BindContext:
 
     settings: "Settings"
     target: Any = None  # the verb's UDF class (Mapper/Generator/Aggregator)
-    input_types: dict[str, Any] = field(default_factory=dict)  # input column -> type
 
 
 class BoundSpec(ABC):
@@ -69,11 +68,6 @@ class BoundSpec(ABC):
 
     @abstractmethod
     def bind(self, ctx: BindContext) -> Callable: ...
-
-    def input_columns(self) -> list[str]:
-        """Input columns the spec reads, so the chain can resolve their types for
-        ``BindContext.input_types``. Empty by default (no bind-time type checks)."""
-        return []
 
 
 class UdfError(DataChainParamsError):

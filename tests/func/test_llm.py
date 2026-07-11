@@ -3,9 +3,7 @@ from pydantic import BaseModel
 
 import datachain as dc
 from datachain import llm
-from datachain.lib.file import AudioFile
 from datachain.llm import engine
-from datachain.llm.spec import LLMConfigError
 from datachain.llm.types import Usage
 from tests.llm_fakes import FakeLiteLLM
 
@@ -148,15 +146,6 @@ def test_list_schema_in_map_yields_list_column(fake_llm, test_session):
     assert chain.schema["chunks"] == (list[Chunk] | None)
     first = chain.to_values("chunks")[0]
     assert [c.text for c in first] == ["one", "two"]
-
-
-def test_audio_column_rejected_at_build_time(fake_llm, test_session):
-    chain = dc.read_values(
-        file=[AudioFile(path="a.mp3", source="s3://x")], session=test_session
-    ).settings(llm="anthropic/claude-haiku-4-5")
-    with pytest.raises(LLMConfigError, match="decode it first"):
-        chain.map(caption=llm.complete("file"))
-    assert fake_llm.calls == []  # rejected before any model call
 
 
 def test_none_input_propagates_without_calling_model(fake_llm, test_session):
