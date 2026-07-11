@@ -5012,7 +5012,7 @@ def test_delete_dataset_and_create_with_same_name(test_session):
     # Removed semver is reserved; auto-bump claims the next slot.
     new_chain = chain.save("nums")
     assert "nums" in dc.datasets(session=test_session).to_values("name")
-    assert new_chain.dataset.latest_version != "1.0.0"
+    assert new_chain.dataset.latest_version == "1.0.1"
 
 
 def test_union_does_not_break_schema_order(test_session):

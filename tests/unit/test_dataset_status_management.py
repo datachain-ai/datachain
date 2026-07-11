@@ -379,18 +379,47 @@ def test_remove_dataset_versions_job_id_filter(test_session, job, dataset_create
         test_session.catalog.get_dataset(dataset_created.name)
 
 
-def test_remove_versions_swallows_per_version_error(test_session, dataset_complete):
+def test_remove_versions_swallows_per_version_error(
+    test_session, dataset_complete, mocker
+):
     """A per-version failure in the bulk loop must not abort the whole
-    batch - the exception is logged and the loop moves on. Verify with a
-    phantom version that raises alongside a real one that succeeds."""
+    batch - the exception is logged and the loop moves on. Mock the
+    warehouse rows-table drop to raise for one version and pass through
+    for the other, then confirm the batch still counts the survivor."""
     catalog = test_session.catalog
-    version = dataset_complete.latest_version
-    pairs = [(dataset_complete, "99.99.99"), (dataset_complete, version)]
+    doomed_version = dataset_complete.latest_version
+    doomed_vid = dataset_complete.get_version(doomed_version).id
 
-    n = catalog._remove_versions(pairs, keep_metadata=False)
+    live_ds = (
+        dc.read_values(value=["survivor"], session=test_session)
+        .save(dataset_complete.name)
+        .dataset
+    )
+    live_version = live_ds.latest_version
+    live_vid = live_ds.get_version(live_version).id
+
+    original = catalog.warehouse.drop_dataset_rows_table
+    doomed_id = dataset_complete.id
+
+    def maybe_raise(dataset, version):
+        if dataset.id == doomed_id and version == doomed_version:
+            raise RuntimeError("boom")
+        return original(dataset, version)
+
+    mocker.patch.object(
+        catalog.warehouse, "drop_dataset_rows_table", side_effect=maybe_raise
+    )
+
+    n = catalog.remove_dataset_versions(
+        version_ids=[doomed_vid, live_vid], keep_metadata=False
+    )
     assert n == 1
-    with pytest.raises(DatasetNotFoundError):
-        catalog.get_dataset(dataset_complete.name)
+
+    ds = catalog.get_dataset(
+        dataset_complete.name, versions=None, include_incomplete=True
+    )
+    assert not ds.has_version(live_version)
+    assert ds.has_version(doomed_version)
 
 
 def test_get_dataset_versions_to_clean_finds_no_job_id(test_session):
