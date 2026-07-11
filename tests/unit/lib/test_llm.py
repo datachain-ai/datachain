@@ -1,4 +1,3 @@
-import sys
 import types
 from collections.abc import Iterator
 from unittest import mock
@@ -855,12 +854,6 @@ def test_settings_llm_not_in_to_dict():
 def test_litellm_helper_returns_module():
     litellm = pytest.importorskip("litellm")
     assert engine._litellm() is litellm
-
-
-def test_litellm_helper_missing_raises(monkeypatch):
-    monkeypatch.setitem(sys.modules, "litellm", None)  # makes `import litellm` fail
-    with pytest.raises(ImportError, match=r"pip install 'datachain\[llm\]'"):
-        engine._litellm()
 
 
 def test_content_raises_on_no_choices():

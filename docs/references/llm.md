@@ -94,8 +94,6 @@ explicitly with `.settings(llm_params=...)`. A dict of params is part of the cac
 key; a callable (resolved per worker, e.g. for secrets) is not, so put
 output-affecting params in the dict form or in per-call keyword arguments.
 
-Install the optional dependency with `pip install 'datachain[llm]'`.
-
 ## Token usage
 
 Pass `include_usage=True` to capture token counts for a call. The function then

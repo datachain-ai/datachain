@@ -56,6 +56,7 @@ dependencies = [
   "dvc-studio-client>=0.23.0,<1",
   "tabulate",
   "websockets",
+  "litellm>=1.77.0,<2",
   "tomli;python_version<'3.11'"
 ]
 
@@ -101,11 +102,8 @@ postgres = [
 zarr = [
   "zarr>=3.0.0 ; python_version >= '3.11'"
 ]
-llm = [
-  "litellm>=1.77.0,<2"
-]
 tests = [
-  "datachain[torch,audio,remote,vector,hf,video,postgres,zarr,llm]",
+  "datachain[torch,audio,remote,vector,hf,video,postgres,zarr]",
   "pytest>=8,<10",
   "pytest-asyncio",
   "pytest-sugar>=0.9.6",

@@ -5,7 +5,7 @@ provider client by hand in `.setup()`, the model call is a named operation used
 inside `.map()`. The model is selected once with `.settings(llm=...)` and routed
 by LiteLLM, so the same code runs against any provider by changing the string.
 
-Requires: pip install 'datachain[llm]' and an ANTHROPIC_API_KEY in the environment.
+Requires: an ANTHROPIC_API_KEY in the environment.
 """
 
 from pydantic import BaseModel

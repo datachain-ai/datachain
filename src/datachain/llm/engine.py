@@ -22,13 +22,9 @@ RESERVED_PARAMS = frozenset(
 
 
 def _litellm():
-    try:
-        import litellm
-    except ImportError as exc:  # pragma: no cover - exercised via tests with stub
-        raise ImportError(
-            "datachain.llm requires the 'litellm' package. "
-            "Install it with: pip install 'datachain[llm]'"
-        ) from exc
+    # Imported lazily (it is slow to import) so `import datachain` stays fast.
+    import litellm
+
     return litellm
 
 

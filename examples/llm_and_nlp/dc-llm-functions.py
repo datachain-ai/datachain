@@ -5,8 +5,8 @@ a tiny in-memory dataset and asserts on the results, so a break in the real
 request or response wire format is caught here rather than only by the unit-test
 fakes. It is exercised by the examples CI job.
 
-Requires: pip install 'datachain[llm]', an ANTHROPIC_API_KEY (chat, vision and
-PDF) and an OPENAI_API_KEY (embeddings).
+Requires: an ANTHROPIC_API_KEY (chat, vision and PDF) and an OPENAI_API_KEY
+(embeddings).
 """
 
 from io import BytesIO
