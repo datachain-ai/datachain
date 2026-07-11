@@ -744,6 +744,13 @@ def test_callable_llm_params_not_in_identity():
     assert spec.identity("m", lambda: {"k": "v"}) == spec.identity("m")
 
 
+def test_secret_params_not_in_identity():
+    base = llm.complete("t", "p").identity("m")
+    assert llm.complete("t", "p", api_key="sk-123").identity("m") == base
+    assert llm.complete("t", "p", api_key="sk-456").identity("m") == base
+    assert llm.complete("t", "p", temperature=0.7).identity("m") != base
+
+
 def test_embed_object_style_data_item(fake_llm):
     fake_llm.embedding_as_object = True
     fake_llm.embedding_response = [0.1, 0.2]

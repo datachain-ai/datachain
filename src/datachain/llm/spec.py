@@ -38,6 +38,24 @@ def _canonical(value: Any) -> Any:
     return value
 
 
+# Credential params kept out of the cache key (no secrets in the UDF hash).
+_SECRET_PARAMS = frozenset(
+    {
+        "api_key",
+        "authorization",
+        "aws_access_key_id",
+        "aws_secret_access_key",
+        "aws_session_token",
+        "azure_ad_token",
+        "vertex_credentials",
+    }
+)
+
+
+def _without_secrets(params: dict[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in params.items() if k.lower() not in _SECRET_PARAMS}
+
+
 @dataclass
 class LLMSpec(BoundSpec):
     """A configured `datachain.llm` operation, used inside `.map()` / `.gen()`.
@@ -141,7 +159,8 @@ class LLMSpec(BoundSpec):
         invalidate the cache. A callable ``llm_params`` is resolved per worker at
         runtime (e.g. credentials) and is not part of the key; put output-affecting
         params in the dict form of ``llm_params`` or in per-call kwargs so they are
-        captured here. ``retries`` and ``fallback`` are excluded (reliability
+        captured here. Well-known credential keys are stripped so secrets never
+        enter the key. ``retries`` and ``fallback`` are excluded (reliability
         policy, not part of the request) so changing them resumes from the
         checkpoint instead of re-running primary-answered rows.
         """
@@ -155,6 +174,7 @@ class LLMSpec(BoundSpec):
         params = self.params
         if isinstance(llm_params, dict):
             params = {**llm_params, **self.params}
+        params = _without_secrets(params)
         return (
             self.kind,
             model,
