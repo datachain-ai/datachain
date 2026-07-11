@@ -144,7 +144,7 @@ def parse_one(schema: type[T], content: str) -> T:
         except ValidationError as exc:
             last_error = exc
     raise LLMError(
-        f"stored output could not be parsed as '{schema.__name__}'"
+        f"model output could not be parsed as '{schema.__name__}'"
     ) from last_error
 
 
@@ -161,7 +161,7 @@ def parse_list(item_type: type, content: str) -> list:
             except ValidationError as exc:
                 last_error = exc
     raise LLMError(
-        f"stored output could not be parsed as list[{item_type.__name__}]"
+        f"model output could not be parsed as list[{item_type.__name__}]"
     ) from last_error
 
 

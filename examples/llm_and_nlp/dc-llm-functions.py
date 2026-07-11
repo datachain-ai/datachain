@@ -49,7 +49,7 @@ def _pdf(text: str) -> bytes:
 
 
 def check_text() -> None:
-    rows = dc.read_values(review=[POSITIVE, NEGATIVE]).settings(llm=CHAT, cache=True)
+    rows = dc.read_values(review=[POSITIVE, NEGATIVE]).settings(llm=CHAT)
 
     summary = rows.map(out=llm.complete("review", "Summarize in one word.")).to_values(
         "out"
@@ -72,7 +72,7 @@ def check_text() -> None:
 def check_structured() -> None:
     extracted = (
         dc.read_values(review=[NEGATIVE])
-        .settings(llm=CHAT, cache=True)
+        .settings(llm=CHAT)
         .map(
             out=llm.complete("review", "Extract sentiment and summary.", schema=Review)
         )
@@ -84,7 +84,7 @@ def check_structured() -> None:
     # list[Model] is a 1:N stream consumed by .gen()
     sentences = (
         dc.read_values(review=[f"{POSITIVE} {NEGATIVE}"])
-        .settings(llm=CHAT, cache=True)
+        .settings(llm=CHAT)
         .gen(
             out=llm.complete("review", "One item per sentence.", schema=list[Sentence])
         )
@@ -110,7 +110,7 @@ def check_embed() -> None:
 def check_image() -> None:
     color = (
         dc.read_values(img=[_png("red")])
-        .settings(llm=CHAT, cache=True)
+        .settings(llm=CHAT)
         .map(
             out=llm.complete(
                 "img", "Name the dominant color in one word.", type="image"
@@ -127,7 +127,7 @@ def check_image() -> None:
 def check_document() -> None:
     text = (
         dc.read_values(doc=[_pdf("DataChain")])
-        .settings(llm=CHAT, cache=True)
+        .settings(llm=CHAT)
         .map(out=llm.complete("doc", "What does this document say?", type="document"))
         .to_values("out")
     )
@@ -138,7 +138,7 @@ def check_document() -> None:
 def check_context() -> None:
     judged = (
         dc.read_values(review=[NEGATIVE], rubric=["Penalize unanswered questions."])
-        .settings(llm=CHAT, cache=True)
+        .settings(llm=CHAT)
         .map(out=llm.complete("review", "Judge the dialogue.", context="rubric"))
         .to_values("out")
     )
@@ -149,7 +149,7 @@ def check_context() -> None:
 def check_usage() -> None:
     toks = (
         dc.read_values(review=[POSITIVE, NEGATIVE])
-        .settings(llm=CHAT, cache=True)
+        .settings(llm=CHAT)
         .map(
             llm.complete("review", "Summarize in one word.", include_usage=True),
             output={"out": str, "tok": llm.Usage},
