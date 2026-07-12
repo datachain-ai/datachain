@@ -745,10 +745,9 @@ def test_secret_params_not_in_identity():
     b = llm.complete("t", "p", extra_headers={"Authorization": "NEW"}).identity("m")
     assert a == b
     # max_tokens is output-affecting, not a secret
-    assert (
-        llm.complete("t", "p", max_tokens=100).identity("m")
-        != llm.complete("t", "p", max_tokens=200).identity("m")
-    )
+    assert llm.complete("t", "p", max_tokens=100).identity("m") != llm.complete(
+        "t", "p", max_tokens=200
+    ).identity("m")
 
 
 def test_embed_object_style_data_item(fake_llm):
