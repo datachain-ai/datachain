@@ -168,17 +168,11 @@ def test_fallback_list_forwarded(fake_llm):
     assert fake_llm.calls[-1]["fallbacks"] == ["a", "b"]
 
 
-def test_retries_are_not_multiplied(fake_llm):
-    fake_llm.invalid_json_attempts = 99
-    with pytest.raises(engine.LLMError):
-        bind(llm.complete("t", schema=Scene, retries=3), llm="m")("hi")
-    assert len(fake_llm.calls) == 4  # retries + 1, never (retries + 1) ** 2
-
-
-def test_structured_raises_after_exhausting_retries(fake_llm):
-    fake_llm.invalid_json_attempts = 5
-    with pytest.raises(engine.LLMError, match="did not match schema"):
-        bind(llm.complete("t", schema=Scene, retries=1), llm="m")("hi")
+def test_structured_raises_on_unparsable_output(fake_llm):
+    fake_llm.invalid_json_attempts = 1
+    with pytest.raises(engine.LLMError, match="could not be parsed"):
+        bind(llm.complete("t", schema=Scene), llm="m")("hi")
+    assert len(fake_llm.calls) == 1
 
 
 def test_retries_delegated_to_litellm(fake_llm):
@@ -232,14 +226,6 @@ def test_list_schema_raises_on_unparsable_output(fake_llm):
     fake_llm.structured_overrides["LLMListOutput"] = "not a json list"
     with pytest.raises(engine.LLMError, match=r"list\[Chunk\]"):
         bind(llm.complete("t", schema=list[Chunk], retries=0), llm="m")("doc")
-
-
-def test_reask_survives_empty_response(fake_llm):
-    # a contentless provider response must not crash the reask loop; it reasks
-    fake_llm.empty_choice_attempts = 1
-    out = bind(llm.complete("t", schema=Scene, retries=1), llm="m")("doc")
-    assert isinstance(out, Scene)
-    assert len(fake_llm.calls) == 2
 
 
 def test_classify_requires_categories():
@@ -552,7 +538,6 @@ def test_empty_fallback_is_noop(fake_llm):
 
 def test_structured_truncation_raises(fake_llm):
     fake_llm.finish_reason = "length"
-    fake_llm.invalid_json_attempts = 1
     with pytest.raises(engine.LLMError, match="truncated"):
         bind(llm.complete("c", schema=Scene), llm="m")("hi")
 
@@ -573,7 +558,7 @@ def test_invalid_schema_rejected(bad):
 
 def test_usage_defaults():
     u = Usage()
-    assert (u.input_tokens, u.output_tokens, u.retries) == (0, 0, 0)
+    assert (u.input_tokens, u.output_tokens) == (0, 0)
 
 
 def test_none_input_skips_model_call(fake_llm):
@@ -592,7 +577,7 @@ def test_none_input_return_annotation_is_optional():
 def test_none_input_with_usage_pairs_none_and_zero_usage(fake_llm):
     value, usage = bind(llm.complete("t", include_usage=True), llm="m")(None)
     assert value is None
-    assert (usage.input_tokens, usage.output_tokens, usage.retries) == (0, 0, 0)
+    assert (usage.input_tokens, usage.output_tokens) == (0, 0)
     assert fake_llm.calls == []
 
 
@@ -623,7 +608,6 @@ def test_include_usage_runtime_pairs_value_and_usage(fake_llm):
     assert isinstance(usage, Usage)
     assert usage.input_tokens == 11
     assert usage.output_tokens == 7
-    assert usage.retries == 0
 
 
 def test_without_usage_returns_bare_value(fake_llm):
@@ -648,13 +632,6 @@ def test_list_schema_in_map_returns_list_value(fake_llm):
     value = bind(llm.complete("c", schema=list[Scene]), llm="m")("x")  # .map()
     assert isinstance(value, list)
     assert all(isinstance(s, Scene) for s in value)
-
-
-def test_include_usage_retries_counter(fake_llm):
-    fake_llm.invalid_json_attempts = 1  # one reask before success
-    spec = llm.complete("c", schema=Scene, retries=2, include_usage=True)
-    _, usage = bind(spec, llm="m")("x")
-    assert usage.retries == 1
 
 
 def test_embed_usage_has_no_output_tokens(fake_llm):
@@ -780,59 +757,16 @@ def test_embed_object_style_data_item(fake_llm):
     assert bind(llm.embed("c"), llm="m")("x") == [0.1, 0.2]
 
 
-def test_reask_feeds_failed_output_back(fake_llm):
-    fake_llm.invalid_json_attempts = 1  # first attempt invalid, then corrected
-    spec = llm.complete("c", schema=Scene, retries=2, include_usage=True)
-    value, usage = bind(spec, llm="m")("hi")
-
-    assert isinstance(value, Scene)
-    assert usage.retries == 1
-    # tokens accumulate across both attempts (11+11 in, 7+7 out)
-    assert usage.input_tokens == 22
-    assert usage.output_tokens == 14
-    # the second call carried the bad output + a correction turn
-    msgs = fake_llm.calls[-1]["messages"]
-    assert [m["role"] for m in msgs] == ["user", "assistant", "user"]
-    assert msgs[1]["content"] == "not json"
-    assert "could not be parsed" in msgs[2]["content"]
-
-
-def test_structured_path_disables_litellm_retries(fake_llm):
-    # The reask loop owns the budget, so litellm num_retries is 0 (no multiplication).
+def test_retries_delegated_to_litellm_on_structured_path(fake_llm):
     bind(llm.complete("c", schema=Scene, retries=3), llm="m")("hi")
-    assert fake_llm.calls[-1]["num_retries"] == 0
+    assert fake_llm.calls[-1]["num_retries"] == 3
 
 
-def test_transient_error_retried_by_reask_loop(fake_llm):
-    fake_llm.transient_failures = 1  # first call raises, second succeeds
-    out = bind(llm.complete("c", schema=Scene, retries=1), llm="m")("hi")
-    assert isinstance(out, Scene)
-    assert len(fake_llm.calls) == 2
-
-
-def test_transient_error_propagates_when_budget_exhausted(fake_llm):
-    fake_llm.transient_failures = 5
-    with pytest.raises(RuntimeError):
-        bind(llm.complete("c", schema=Scene, retries=1), llm="m")("hi")
-
-
-def test_fatal_error_is_not_retried(fake_llm):
-    fake_llm.fatal_status = 401
+def test_provider_error_propagates(fake_llm):
+    fake_llm.fatal_status = 500
     with pytest.raises(RuntimeError):
         bind(llm.complete("c", schema=Scene, retries=5), llm="m")("hi")
     assert len(fake_llm.calls) == 1
-
-
-def test_is_transient_only_for_transient_statuses():
-    def with_status(code):
-        exc = RuntimeError("x")
-        exc.status_code = code
-        return exc
-
-    assert engine._is_transient(with_status(429)) is True
-    assert engine._is_transient(with_status(503)) is True
-    assert engine._is_transient(with_status(401)) is False
-    assert engine._is_transient(ValueError("bug")) is False  # no status -> no retry
 
 
 def test_fallback_engages_on_primary_failure(fake_llm):

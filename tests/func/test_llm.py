@@ -74,7 +74,6 @@ def test_include_usage_multi_output_map(fake_llm, test_session):
     toks = chain.to_values("tok")
     assert all(t.input_tokens == 11 for t in toks)
     assert all(t.output_tokens == 7 for t in toks)
-    assert all(t.retries == 0 for t in toks)
 
 
 def test_include_usage_gen_usage_at_call_grain(fake_llm, test_session):

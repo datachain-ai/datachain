@@ -48,9 +48,7 @@ class FakeLiteLLM:
         self.embedding_as_object = False
         self.finish_reason = "stop"
         self.fail_models: set[str] = set()
-        self.transient_failures = 0
         self.fatal_status: int | None = None
-        self.empty_choice_attempts = 0
 
     def completion(self, **kwargs):
         self.calls.append(kwargs)
@@ -58,15 +56,6 @@ class FakeLiteLLM:
             exc = RuntimeError(f"http {self.fatal_status}")
             exc.status_code = self.fatal_status  # type: ignore[attr-defined]
             raise exc
-        if self.transient_failures > 0:
-            self.transient_failures -= 1
-            exc = RuntimeError("transient error")
-            exc.status_code = 503  # type: ignore[attr-defined]
-            raise exc
-        if self.empty_choice_attempts > 0:
-            self.empty_choice_attempts -= 1
-            usage = types.SimpleNamespace(prompt_tokens=11, completion_tokens=7)
-            return types.SimpleNamespace(choices=[], usage=usage)
         # LiteLLM transparently routes to a fallback; with none, the call errors.
         if kwargs.get("model") in self.fail_models and not kwargs.get("fallbacks"):
             raise RuntimeError(f"model {kwargs.get('model')} failed")

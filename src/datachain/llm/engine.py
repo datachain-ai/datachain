@@ -34,16 +34,6 @@ def _fallbacks(fallback: str | list[str] | None) -> list[str] | None:
     return [fallback] if isinstance(fallback, str) else list(fallback)
 
 
-def _is_transient(exc: Exception) -> bool:
-    """Worth retrying: timeout (408), rate limit (429), and server errors. Client
-    errors (bad auth/request) and errors with no HTTP status (e.g. a ValueError
-    from a bug) are fatal and not retried."""
-    status = getattr(exc, "status_code", None)
-    if not isinstance(status, int):
-        return False
-    return status in (408, 429) or status >= 500
-
-
 def _base_kwargs(
     model: str,
     retries: int,
@@ -94,22 +84,7 @@ def _tokens(response: Any) -> tuple[int, int]:
 
 def _usage(response: Any) -> Usage:
     input_tokens, output_tokens = _tokens(response)
-    return Usage(input_tokens=input_tokens, output_tokens=output_tokens, retries=0)
-
-
-def _content_or_empty(response: Any) -> str:
-    try:
-        return _content(response)
-    except LLMError:
-        return ""
-
-
-def _reask_prompt(name: str, error: Exception) -> str:
-    detail = str(error.__cause__ or error)[:500]
-    return (
-        f"Your previous response could not be parsed as {name}: {detail}. "
-        "Return only valid JSON matching the schema, with no extra text."
-    )
+    return Usage(input_tokens=input_tokens, output_tokens=output_tokens)
 
 
 def _strip_fences(text: str) -> str:
@@ -141,7 +116,8 @@ def parse_one(schema: type[T], content: str) -> T:
         except ValidationError as exc:
             last_error = exc
     raise LLMError(
-        f"model output could not be parsed as '{schema.__name__}'"
+        f"model output could not be parsed as '{schema.__name__}'; use a model with "
+        "structured-output support or simplify the schema"
     ) from last_error
 
 
@@ -158,7 +134,8 @@ def parse_list(item_type: type, content: str) -> list:
             except ValidationError as exc:
                 last_error = exc
     raise LLMError(
-        f"model output could not be parsed as list[{item_type.__name__}]"
+        f"model output could not be parsed as list[{item_type.__name__}]; use a "
+        "model with structured-output support or simplify the schema"
     ) from last_error
 
 
@@ -175,51 +152,16 @@ def complete_text(
     return _content(resp), _usage(resp)
 
 
-def _parse_with_retries(
+def _complete_and_parse(
     kwargs: dict[str, Any],
-    retries: int,
     parse: "Callable[[str], Any]",
     name: str,
 ) -> tuple[Any, Usage]:
-    # This loop owns the retry budget (num_retries=0) so it does not multiply with
-    # LiteLLM's. A schema mismatch reasks (feeds the failed output back); a `length`
-    # finish aborts; tokens accumulate across attempts.
-    litellm = _litellm()
-    messages: list[dict[str, Any]] = list(kwargs["messages"])
-    kwargs = {**kwargs, "messages": messages, "num_retries": 0}
-    attempts = max(retries, 0) + 1
-    total_in = total_out = 0
-    last_error: Exception | None = None
-    for attempt in range(attempts):
-        try:
-            resp = litellm.completion(**kwargs)
-        except Exception as exc:
-            if not _is_transient(exc):
-                raise
-            last_error = exc
-            continue
-        tokens_in, tokens_out = _tokens(resp)
-        total_in += tokens_in
-        total_out += tokens_out
-        try:
-            value = parse(_content(resp))
-            usage = Usage(
-                input_tokens=total_in, output_tokens=total_out, retries=attempt
-            )
-            return value, usage
-        except LLMError as exc:
-            if _finish_reason(resp) == "length":
-                raise _truncated_error(name) from exc
-            last_error = exc
-            if bad := _content_or_empty(resp):
-                messages.append({"role": "assistant", "content": bad})
-            messages.append({"role": "user", "content": _reask_prompt(name, exc)})
-    if isinstance(last_error, LLMError):
-        raise LLMError(
-            f"model output did not match {name} after {attempts} attempt(s)"
-        ) from last_error
-    assert last_error is not None  # attempts >= 1, so a failure was recorded
-    raise last_error
+    # a bad parse won't fix on retry; litellm handles transient errors
+    resp = _litellm().completion(**kwargs)
+    if _finish_reason(resp) == "length":
+        raise _truncated_error(name)
+    return parse(_content(resp)), _usage(resp)
 
 
 def complete_structured(
@@ -232,8 +174,8 @@ def complete_structured(
 ) -> tuple[T, Usage]:
     kwargs = _completion_kwargs(model, messages, retries, fallback, params)
     kwargs["response_format"] = schema
-    return _parse_with_retries(
-        kwargs, retries, lambda c: parse_one(schema, c), f"schema '{schema.__name__}'"
+    return _complete_and_parse(
+        kwargs, lambda c: parse_one(schema, c), f"schema '{schema.__name__}'"
     )
 
 
@@ -296,11 +238,8 @@ def complete_structured_list(
 ) -> tuple[list, Usage]:
     kwargs = _completion_kwargs(model, messages, retries, fallback, params)
     kwargs["response_format"] = _list_container(item_type)
-    return _parse_with_retries(
-        kwargs,
-        retries,
-        lambda c: parse_list(item_type, c),
-        f"list[{item_type.__name__}]",
+    return _complete_and_parse(
+        kwargs, lambda c: parse_list(item_type, c), f"list[{item_type.__name__}]"
     )
 
 

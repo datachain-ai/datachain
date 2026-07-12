@@ -108,23 +108,20 @@ multi-output form (the value column keeps its plain type, no wrapper):
 # res: Scene   (res.risk works),  tok: Usage
 ```
 
-`Usage` has `input_tokens`, `output_tokens`, and `retries` (extra attempts beyond
-the first; 0 on a first-try success). Aggregate or filter on it afterwards:
+`Usage` has `input_tokens` and `output_tokens`. Aggregate on it afterwards:
 
 ```python
 chain.agg(in_tok=dc.func.sum("tok.input_tokens"))
-chain.filter("tok.retries > 0")
 ```
 
 Notes:
 
-- `retries` counts extra attempts in the structured-output loop, whether a schema
-  reask (it feeds the failed output back and asks again) or a transient provider
-  error retried in that loop; only structured output ever exceeds 0.
-- Token counts accumulate across all attempts, so reasked calls are billed in full.
 - Embeddings report no output tokens, so `output_tokens` stays 0.
 - In `.gen()` (1:N) a call's usage is attributed to one emitted row and zero on
   the rest, so summing it counts each call once (a naive `sum` is correct).
+- Transient provider errors are retried by LiteLLM (with backoff); structured
+  output relies on the provider's response_format and is not re-asked on a bad
+  parse (that raises a clear error).
 
 ## Scaling and caching
 
