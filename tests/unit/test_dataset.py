@@ -598,6 +598,12 @@ def test_dataset_list_record_latest_version_all_removed_raises(dataset_list_reco
         record.latest_version()
 
 
+def test_dataset_list_record_latest_version_empty_raises(dataset_list_record):
+    record = replace(dataset_list_record, _versions=[])
+    with pytest.raises(DatasetVersionNotFoundError, match="has no versions"):
+        record.latest_version()
+
+
 @pytest.mark.parametrize(
     "prop,expected",
     [
