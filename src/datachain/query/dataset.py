@@ -2907,7 +2907,7 @@ class DatasetQuery:
 
             async def get_params(row: Sequence) -> tuple:
                 row_dict = RowDict(zip(query_fields, row, strict=False))
-                return tuple(  # noqa: C409
+                return tuple(
                     [
                         await p.get_value_async(
                             self.catalog, row_dict, mapper, **kwargs
