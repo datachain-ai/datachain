@@ -1064,6 +1064,43 @@ def test_remove_dataset_force_retries_after_crash(test_session, dataset_complete
     assert not warehouse.db.has_table(live_table)
 
 
+def test_remove_dataset_force_logs_and_continues_on_error(
+    test_session, dataset_complete, mocker, caplog
+):
+    """`remove_dataset(force=True)` must not abort the whole loop when a
+    single version fails - the DataChainError is logged and the remaining
+    versions still get removed."""
+    catalog = test_session.catalog
+    doomed_version = dataset_complete.latest_version
+
+    live_ds = (
+        dc.read_values(value=["v2"], session=test_session)
+        .save(dataset_complete.name)
+        .dataset
+    )
+    live_version = live_ds.latest_version
+
+    original = catalog.remove_dataset_version
+
+    def maybe_raise(dataset, version, keep_metadata=True):
+        if version == doomed_version:
+            raise DataChainError("boom")
+        return original(dataset, version, keep_metadata=keep_metadata)
+
+    mocker.patch.object(catalog, "remove_dataset_version", side_effect=maybe_raise)
+
+    with caplog.at_level("WARNING"):
+        catalog.remove_dataset(dataset_complete.name, force=True, keep_metadata=False)
+
+    assert "Failed to remove dataset" in caplog.text
+    assert doomed_version in caplog.text
+
+    ds = catalog.get_dataset(
+        dataset_complete.name, versions=None, include_incomplete=True
+    )
+    assert not ds.has_version(live_version)
+
+
 def _force_status(catalog, dataset: DatasetRecord, version: str, status: int, **extra):
     """Put a version into a specific status directly. Simulates a mid-flight
     removal that crashed, or another caller having claimed the transition."""
