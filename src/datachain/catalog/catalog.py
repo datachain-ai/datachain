@@ -1292,12 +1292,11 @@ class Catalog:
                     keep = False
                 if self.remove_dataset_version(dataset, version, keep_metadata=keep):
                     num_removed += 1
-            except Exception as e:  # noqa: BLE001
-                logger.warning(
-                    "Failed to remove dataset %s version %s: %s",
+            except Exception:
+                logger.exception(
+                    "Failed to remove dataset %s version %s",
                     dataset.name,
                     version,
-                    e,
                 )
         return num_removed
 

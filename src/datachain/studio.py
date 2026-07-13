@@ -322,7 +322,7 @@ def list_dataset_versions(
 
     namespace_name, project_name, name = parse_dataset_name(name)
     if not namespace_name or not project_name:
-        raise DataChainError(f"Missing namespace or project form dataset name {name}")
+        raise DataChainError(f"Missing namespace or project from dataset name {name}")
     response = client.dataset_info(
         namespace_name, project_name, name, include_removed=include_removed
     )

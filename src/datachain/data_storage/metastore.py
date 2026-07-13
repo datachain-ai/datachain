@@ -1075,15 +1075,20 @@ class AbstractDBMetastore(AbstractMetastore):
         return self.get_namespace(name)
 
     def remove_namespace(self, namespace_id: int) -> None:
-        num_projects = self.count_projects(namespace_id)
-        if num_projects > 0:
-            raise NamespaceDeleteNotAllowedError(
-                f"Namespace cannot be removed. It contains {num_projects} project(s). "
-                "Please remove the project(s) first."
-            )
-
         n = self._namespaces
         with self.db.transaction():
+            # Lock the namespace row so concurrent project inserts can't
+            # sneak in between the count and the delete below. No-op on
+            # SQLite (writes are already serialized at the database level).
+            self.db.execute(
+                select(n.c.id).where(n.c.id == namespace_id).with_for_update()
+            )
+            num_projects = self.count_projects(namespace_id)
+            if num_projects > 0:
+                raise NamespaceDeleteNotAllowedError(
+                    f"Namespace cannot be removed. It contains {num_projects} "
+                    "project(s). Please remove the project(s) first."
+                )
             self.db.execute(self._namespaces_delete().where(n.c.id == namespace_id))
 
     def get_namespace(self, name: str) -> Namespace:
@@ -1206,15 +1211,20 @@ class AbstractDBMetastore(AbstractMetastore):
         return next(self.db.execute(query))[0]
 
     def remove_project(self, project_id: int) -> None:
-        num_datasets = self.count_datasets(project_id)
-        if num_datasets > 0:
-            raise ProjectDeleteNotAllowedError(
-                f"Project cannot be removed. It contains {num_datasets} dataset(s). "
-                "Please remove the dataset(s) first."
-            )
-
         p = self._projects
         with self.db.transaction():
+            # Lock the project row so concurrent dataset inserts can't
+            # sneak in between the count and the delete below. No-op on
+            # SQLite (writes are already serialized at the database level).
+            self.db.execute(
+                select(p.c.id).where(p.c.id == project_id).with_for_update()
+            )
+            num_datasets = self.count_datasets(project_id)
+            if num_datasets > 0:
+                raise ProjectDeleteNotAllowedError(
+                    f"Project cannot be removed. It contains {num_datasets} "
+                    "dataset(s). Please remove the dataset(s) first."
+                )
             self.db.execute(self._projects_delete().where(p.c.id == project_id))
 
     def list_projects(self, namespace_id: int | None = None) -> list[Project]:

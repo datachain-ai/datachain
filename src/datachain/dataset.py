@@ -824,6 +824,10 @@ class DatasetRecord:
     def latest_version(self) -> str:
         """Latest non-REMOVED version."""
         if not self.versions:
+            if not self.all_versions:
+                raise DatasetVersionNotFoundError(
+                    f"Dataset {self.name} has no versions"
+                )
             raise DatasetVersionNotFoundError(
                 f"Dataset {self.name} has only removed versions"
             )
@@ -1025,6 +1029,10 @@ class DatasetListRecord:
 
     def latest_version(self) -> DatasetListVersion:
         if not self.versions:
+            if not self.all_versions:
+                raise DatasetVersionNotFoundError(
+                    f"Dataset {self.name} has no versions"
+                )
             raise DatasetVersionNotFoundError(
                 f"Dataset {self.name} has only removed versions"
             )
