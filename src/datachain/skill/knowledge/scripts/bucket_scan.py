@@ -1,23 +1,25 @@
-"""Scan a bucket URI: compute metadata aggregations and sample files.
-
-Outputs a JSON data file with extensions, directories, size distribution,
-time range, listing timestamps, and content samples.
-
-Usage:
-    python3 bucket_scan.py <uri> --output <path.json>
-"""
-
 import argparse
 import json
 import os
 import signal
 import sys
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, cast
 
 from utils import dc_import, parse_uri, source_to_https, write_json
 
 from datachain import bucket_status
+
+if TYPE_CHECKING:
+    from datachain import DataChain, File
+    from datachain.skill.knowledge.types import (
+        BucketSnapshot,
+        DirStat,
+        ExtensionStat,
+        ListingMeta,
+        SizeDistribution,
+        TimeRange,
+    )
 
 
 class ScanTimeoutError(Exception):
@@ -27,10 +29,6 @@ class ScanTimeoutError(Exception):
 def _alarm_handler(signum, frame):
     raise ScanTimeoutError
 
-
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
 
 MAX_EXTENSIONS = 20
 MAX_DIRECTORIES = 100
@@ -44,8 +42,8 @@ STRUCTURED_EXTS = {"csv", "json", "jsonl", "parquet", "tsv", "ndjson"}
 TEXT_EXTS = {"txt", "md", "log", "xml", "html", "yaml", "yml", "cfg", "ini"}
 
 
-def get_listing_info(uri: str) -> dict:
-    """Get listing metadata (timestamps, expiration) from DataChain catalog."""
+def get_listing_info(uri: str) -> "ListingMeta":
+    """Get listing metadata (timestamps) from DataChain catalog."""
     try:
         from datachain.query import Session
 
@@ -64,10 +62,6 @@ def get_listing_info(uri: str) -> dict:
                     "listing_finished": (
                         listing.finished_at.isoformat() if listing.finished_at else None
                     ),
-                    "listing_expires": (
-                        listing.expires.isoformat() if listing.expires else None
-                    ),
-                    "listing_expired": listing.is_expired,
                 }
     except Exception as e:  # noqa: BLE001
         print(f"[dc-knowledge warning] listing info: {e}", file=sys.stderr)
@@ -76,17 +70,10 @@ def get_listing_info(uri: str) -> dict:
         "listing_uuid": None,
         "listing_created": None,
         "listing_finished": None,
-        "listing_expires": None,
-        "listing_expired": None,
     }
 
 
-# ---------------------------------------------------------------------------
-# Metadata aggregation (all use DataChain operations)
-# ---------------------------------------------------------------------------
-
-
-def compute_extensions(chain) -> list[dict[str, Any]]:
+def compute_extensions(chain: "DataChain") -> "list[ExtensionStat]":
     """File extension breakdown via DataChain group_by."""
     from datachain import C, func
 
@@ -104,7 +91,7 @@ def compute_extensions(chain) -> list[dict[str, Any]]:
     total_files = int(df["cnt"].sum()) if len(df) > 0 else 0
     total_bytes_all = int(df["total_bytes"].sum()) if len(df) > 0 else 0
 
-    results: list[dict[str, Any]] = []
+    results: list[ExtensionStat] = []
     for _, row in df.iterrows():
         raw_ext = str(row.get("ext", "") or "")
         ext_display = f".{raw_ext}" if raw_ext else ""
@@ -149,7 +136,7 @@ def compute_extensions(chain) -> list[dict[str, Any]]:
     return results
 
 
-def compute_directories(chain) -> list[dict[str, Any]]:
+def compute_directories(chain: "DataChain") -> "list[DirStat]":
     """Directory breakdown via DataChain group_by, capped at MAX_DIRECTORIES."""
     from datachain import C, func
 
@@ -164,7 +151,7 @@ def compute_directories(chain) -> list[dict[str, Any]]:
     except Exception:  # noqa: BLE001
         return []
 
-    results: list[dict[str, Any]] = []
+    results: list[DirStat] = []
     for _, row in df.iterrows():
         dir_path = str(row.get("dir", "") or "")
         if dir_path and not dir_path.endswith("/"):
@@ -202,7 +189,7 @@ def compute_directories(chain) -> list[dict[str, Any]]:
     return kept
 
 
-def compute_size_distribution(chain) -> dict:
+def compute_size_distribution(chain: "DataChain") -> "SizeDistribution":
     """Size distribution: min, max, percentiles, empty count."""
     from datachain import C, func
 
@@ -223,10 +210,10 @@ def compute_size_distribution(chain) -> dict:
     # Percentiles via Python (DataChain lacks percentile funcs)
     try:
         if total <= 10000:
-            sizes = sorted(v for (v,) in chain.to_iter("file.size"))
+            sizes = sorted(cast("int", v) for (v,) in chain.to_iter("file.size"))
         else:
             sizes = sorted(
-                v
+                cast("int", v)
                 for (v,) in chain.mutate(rnd=func.rand())
                 .order_by("rnd")
                 .limit(10000)
@@ -235,7 +222,7 @@ def compute_size_distribution(chain) -> dict:
     except Exception:  # noqa: BLE001
         sizes = []
 
-    result = {"min_bytes": min_bytes, "max_bytes": max_bytes}
+    result: SizeDistribution = {"min_bytes": min_bytes, "max_bytes": max_bytes}
 
     if sizes:
         n = len(sizes)
@@ -254,7 +241,7 @@ def compute_size_distribution(chain) -> dict:
     return result
 
 
-def compute_time_range(chain) -> dict:
+def compute_time_range(chain: "DataChain") -> "TimeRange":
     """Oldest and newest file timestamps."""
     from datachain import C, func
 
@@ -287,12 +274,7 @@ def compute_time_range(chain) -> dict:
         return {}
 
 
-# ---------------------------------------------------------------------------
-# Sampling
-# ---------------------------------------------------------------------------
-
-
-def sample_files(chain, extensions: list[dict]) -> dict:
+def sample_files(chain: "DataChain", extensions: "list[ExtensionStat]") -> dict:
     """Sample files per extension for content type detection."""
     from datachain import C, func
 
@@ -304,14 +286,14 @@ def sample_files(chain, extensions: list[dict]) -> dict:
             ext_bare = ext.lstrip(".")
             ext_chain = chain.filter(C("file.path").glob(f"*.{ext_bare}"))
 
-            sample_rows = []
+            sample_rows: list[File] = []
             for row in (
                 ext_chain.mutate(rnd=func.rand())
                 .order_by("rnd")
                 .limit(SAMPLES_PER_EXT)
                 .to_iter()
             ):
-                sample_rows.append(row[0])
+                sample_rows.append(cast("File", row[0]))
 
             if not sample_rows:
                 continue
@@ -433,19 +415,14 @@ def _enrich_text(file_obj, info):
         pass
 
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-
-
 def compute_bucket_metadata(
-    chain,
+    chain: "DataChain",
     uri: str,
     is_anon: bool,
     sampled: bool = False,
     dataset_name: str | None = None,
     account_name: str | None = None,
-) -> dict:
+) -> "BucketSnapshot":
     """Aggregate metadata + samples from a File-shape DataChain into a bucket JSON dict.
 
     Reusable across full bucket scans and sampled overviews. `sampled=True`
@@ -458,7 +435,6 @@ def compute_bucket_metadata(
 
     parts = parse_uri(uri)
     now = datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    listing_info = get_listing_info(uri) if not sampled else {}
 
     try:
         totals = chain.group_by(
@@ -479,7 +455,7 @@ def compute_bucket_metadata(
     samples = sample_files(chain, extensions)
     url_prefix = source_to_https(uri, account_name)
 
-    result = {
+    result: BucketSnapshot = {
         "uri": uri,
         "scheme": parts["scheme"],
         "bucket": parts["bucket"],
@@ -487,16 +463,19 @@ def compute_bucket_metadata(
         "anon": is_anon,
         "sampled": sampled,
         "scanned": now,
-        **listing_info,
         "total_files": total_files,
         "total_size_bytes": total_size_bytes,
         "max_depth": max((d["depth"] for d in directories), default=0),
         "extensions": extensions,
         "directories": directories,
-        "size_distribution": size_distribution,
-        "time_range": time_range,
+        # `{}` (empty/failed aggregation) collapses to None so both producers emit the
+        # same "absent" sentinel the snapshot type declares.
+        "size_distribution": size_distribution or None,
+        "time_range": time_range or None,
         "samples": samples,
     }
+    if not sampled:
+        result.update(get_listing_info(uri))
     if url_prefix and is_anon:
         result["file_url_prefix"] = url_prefix
     if dataset_name:

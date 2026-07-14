@@ -1,9 +1,3 @@
-"""Render index.md from a plan JSON file.
-
-Supports both datasets and buckets sections in a single index.
-Reads enriched .md files for summaries and dependencies.
-"""
-
 import argparse
 import json
 import os
@@ -272,7 +266,6 @@ def render_index(plan: dict) -> str:
     local_ds = [d for d in datasets if d["source"] == "local"]
     studio_ds = [d for d in datasets if d["source"] == "studio"]
 
-    # Frontmatter
     now = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     lines = ["---"]
     lines.append(f"generated: {now}")
@@ -284,17 +277,12 @@ def render_index(plan: dict) -> str:
     lines.append("---")
     lines.append("")
 
-    # Local datasets, grouped by CAST layer
-    # (Container, Asset, Sense, Task Dataset).
-    # Untagged datasets fall into "Task Dataset" as the catch-all.
     if local_ds:
         lines.append("## Datasets")
         lines.append("")
         lines.extend(_render_cast_grouped(local_ds))
 
-    # Studio datasets grouped by namespace
     if studio_ds:
-        # Group by namespace (namespace.project)
         by_ns: dict[str, list[dict]] = {}
         for ds in studio_ds:
             parts = ds["name"].split(".", 2)
@@ -316,7 +304,6 @@ def render_index(plan: dict) -> str:
             lines.extend(_render_dataset_table(by_ns[ns], strip_namespace=bool(ns)))
             lines.append("")
 
-    # Buckets table — merge plan-derived entries with on-disk markdowns
     bucket_rows = _collect_bucket_rows(buckets)
     if bucket_rows:
         lines.append("## Buckets")
@@ -335,9 +322,9 @@ def render_index(plan: dict) -> str:
 def _collect_bucket_rows(buckets: list[dict]) -> list[tuple[str, str, str, str]]:
     """Return (link, files, size, scanned) rows for plan-derived bucket mds.
 
-    Single source of truth is the markdown frontmatter — JSON is intermediate
-    and may be cleaned up. Plan entries without an md on disk are skipped
-    so the index never contains broken links.
+    The markdown frontmatter is authoritative — JSON is intermediate and may be
+    cleaned up. Plan entries without an md on disk are skipped so the index never
+    contains broken links.
     """
     rows: list[tuple[str, str, str, str]] = []
 

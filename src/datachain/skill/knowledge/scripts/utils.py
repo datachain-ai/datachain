@@ -1,10 +1,12 @@
-"""Shared pure helpers for the dc-knowledge skill scripts."""
-
 import json
 import os
 import re
 import sys
+from typing import TYPE_CHECKING
 from urllib.parse import urlparse
+
+if TYPE_CHECKING:
+    from datachain.skill.knowledge.types import DatasetVersionEntry, DependencyEntry
 
 
 def write_text(path: str, content: str) -> None:
@@ -48,13 +50,11 @@ def studio_available() -> bool:
 
 
 def parse_semver(v: object) -> tuple[int, int, int]:
-    """Parse a dotted version into a fixed (major, minor, patch) tuple for sorting.
+    """Parse a dotted version into a (major, minor, patch) tuple for sorting.
 
-    The fixed length keeps ordering total and length-independent: "1", "1.0" and
-    "1.0.0" all normalize to (1, 0, 0), so a 2-part version no longer sorts below
-    its 3-part equal. Components past patch are dropped. Unparsable input sorts
-    strictly below every real version — and below a literal "0.0.0" — via a
-    (-1, -1, -1) sentinel, so garbage is never mistaken for (or tied with) 0.0.0.
+    Short versions pad with zeros, so "1", "1.0" and "1.0.0" all sort equal.
+    Anything past patch is dropped. Unparsable input returns (-1, -1, -1) so it
+    sorts below every real version, including "0.0.0".
     """
     try:
         parts = [int(x) for x in str(v).split(".")]
@@ -69,7 +69,7 @@ def split_frontmatter(content: str) -> tuple[dict[str, str], str]:
 
     Tolerates a single outer ```/```markdown ... ``` fence — the enrichment
     prompt's Output Format section shows the document inside such a fence, and
-    some models echo it. Only a *bare* wrapper fence is stripped: a document
+    some models echo it. Only a bare wrapper fence is stripped: a document
     that legitimately begins with a language-tagged code block (e.g. ```python)
     is left intact. Returns ({}, body) when there's no frontmatter block.
     """
@@ -78,7 +78,7 @@ def split_frontmatter(content: str) -> tuple[dict[str, str], str]:
     if first_line.strip().lower() in ("```", "```markdown", "```md"):
         lines = rest.rstrip().splitlines()
         # Strip the wrapper's closing fence, but only when it's an unmatched
-        # *standalone* fence line (a line that is only ```).
+        # standalone fence line (a line that is only ```).
         fence_lines = sum(1 for ln in lines if ln.lstrip().startswith("```"))
         if lines and lines[-1].strip() == "```" and fence_lines % 2 == 1:
             lines = lines[:-1]
@@ -271,9 +271,7 @@ def collect_datasets(dc, studio: bool) -> list[dict]:
                 continue
             namespace = getattr(info, "namespace", None)
             project = getattr(info, "project", None)
-            # Fully-qualify Studio dataset names using
-            # dot-notation (namespace.project.name).
-            # Dots in human-visible content; / for file paths.
+            # Fully-qualify Studio dataset names as namespace.project.name.
             if studio and namespace and project:
                 full_name = f"{namespace}.{project}.{info.name}"
             else:
@@ -294,6 +292,11 @@ def collect_datasets(dc, studio: bool) -> list[dict]:
                         if getattr(info, "created_at", None) is not None
                         else None
                     ),
+                    "finished": (
+                        info.finished_at.isoformat()
+                        if getattr(info, "finished_at", None) is not None
+                        else None
+                    ),
                     "updated": (
                         info.updated_at.isoformat()
                         if getattr(info, "updated_at", None) is not None
@@ -307,11 +310,6 @@ def collect_datasets(dc, studio: bool) -> list[dict]:
             file=sys.stderr,
         )
     return results
-
-
-# ---------------------------------------------------------------------------
-# Bucket helpers
-# ---------------------------------------------------------------------------
 
 
 def parse_uri(uri: str) -> dict:
@@ -356,6 +354,74 @@ def bucket_file_path(uri: str) -> str:
     return f"buckets/{parts['scheme']}/{bucket_slug}"
 
 
+def clean_dep_name(name: str) -> str:
+    """Convert listing dataset names (lst__...) to clean URIs."""
+    try:
+        from datachain.lib.listing import is_listing_dataset, listing_uri_from_name
+
+        if is_listing_dataset(name):
+            return listing_uri_from_name(name)
+    except Exception:  # noqa: BLE001, S110
+        pass
+    return name
+
+
+def dep_entry(
+    raw_name: str | None,
+    version: str | None,
+    type: str | None,
+) -> "DependencyEntry":
+    """Assemble one dependency entry from primitives, shared by the cluster scan and
+    the Studio-side collector.
+
+    `raw_name` is the source-side name (a `lst__...` listing name or a dataset name),
+    cleaned to a URI for listings. `file_path` points at the dependency's own
+    knowledge doc so links resolve: a storage URI maps to its bucket doc, a dataset
+    name to its dataset doc."""
+    name = clean_dep_name(raw_name) if raw_name is not None else None
+    entry: DependencyEntry = {
+        "name": name,
+        "version": str(version) if version is not None else None,
+        "type": str(type) if type is not None else None,
+    }
+    if name is not None:
+        if "://" in name:
+            # Storage URIs map to a bucket doc; `bucket_file_path` tolerates a
+            # missing trailing slash.
+            entry["file_path"] = bucket_file_path(name)
+        else:
+            # A 3-part dotted name means a Studio dataset; anything else is a flat
+            # local dataset. That's all `source` controls in `dataset_file_path`.
+            source = "studio" if len(name.split(".", 2)) == 3 else "local"
+            entry["file_path"] = dataset_file_path(name, source)
+    return entry
+
+
+def drop_unchanged_scripts(versions: "list[DatasetVersionEntry]") -> None:
+    """Null `query_script` on older versions whose script didn't change — the prompt
+    renders no code block for them, so an identical script would be dead weight. The
+    latest version (last entry) and the initial version (`changes is None`) keep their
+    script. `versions` must be oldest-first; entries are mutated in place. Run before
+    `dedupe_previous_scripts`, which keys off the previous entry's `query_script`."""
+    last = len(versions) - 1
+    for i, version in enumerate(versions):
+        changes = version["changes"]
+        if i != last and changes is not None and not changes["script_changed"]:
+            version["query_script"] = None
+
+
+def dedupe_previous_scripts(versions: "list[DatasetVersionEntry]") -> None:
+    """Null each version's `changes.previous_script` when the previous entry already
+    carries that script as its own `query_script` — the prompt would otherwise render
+    the same script twice. `versions` must be oldest-first; entries are mutated in
+    place. A `previous_script` is kept only when the previous entry omitted its script
+    (an unchanged-older version), so the diff isn't lost."""
+    for i in range(1, len(versions)):
+        changes = versions[i]["changes"]
+        if changes and versions[i - 1]["query_script"] is not None:
+            changes["previous_script"] = None
+
+
 def read_json_data(path: str) -> dict | None:
     """Read a JSON data file. Returns dict or None."""
     try:
@@ -374,26 +440,6 @@ def human_size(nbytes: float) -> str:
         if nbytes < 1024:
             return f"{nbytes:.1f} {unit}"
     return f"{nbytes:.1f} PB"
-
-
-def get_listing_finished_at(uri: str) -> str | None:
-    """Get the listing finished_at timestamp for a URI."""
-    try:
-        from datachain.query import Session
-
-        session = Session.get()
-        catalog = session.catalog
-        listings = catalog.listings()
-
-        for listing in listings:
-            uri_match = listing.uri.rstrip("/") == uri.rstrip("/") or uri.rstrip(
-                "/"
-            ).startswith(listing.uri.rstrip("/"))
-            if uri_match and listing.finished_at:
-                return listing.finished_at.isoformat()
-        return None
-    except Exception:  # noqa: BLE001
-        return None
 
 
 def source_to_https(source: str, account_name: str | None = None) -> str | None:

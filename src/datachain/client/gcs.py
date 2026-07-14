@@ -3,7 +3,7 @@ import json
 import os
 from collections.abc import Iterable
 from datetime import datetime
-from typing import Any, BinaryIO, cast
+from typing import TYPE_CHECKING, Any, BinaryIO, cast
 from urllib.parse import quote
 
 from dateutil.parser import isoparse
@@ -17,6 +17,9 @@ from datachain.lib.file import File
 from datachain.progress import tqdm
 
 from .fsspec import DELIMITER, BucketStatus, Client, ResultQueue
+
+if TYPE_CHECKING:
+    from datachain.client.writeconfig import WriteConfig
 
 # Patch gcsfs for consistency with s3fs
 GCSFileSystem.set_session = GCSFileSystem._set_session
@@ -90,6 +93,25 @@ class GCSClient(Client):
                 error=f"Access denied to GCS bucket '{name}'"
                 " — check credentials/permissions",
             )
+
+    @staticmethod
+    def _write_kwargs(cfg: "WriteConfig", *, streaming: bool) -> dict[str, Any]:
+        cfg.reject_write_options("GCS")
+        kw: dict[str, Any] = {}
+        if cfg.content_type:
+            kw["content_type"] = cfg.content_type
+        if cfg.metadata:
+            kw["metadata"] = dict(cfg.metadata)
+        fixed: dict[str, Any] = {}
+        if cfg.content_disposition:
+            fixed["content_disposition"] = cfg.content_disposition
+        if cfg.cache_control:
+            fixed["cache_control"] = cfg.cache_control
+        if cfg.content_encoding:
+            fixed["content_encoding"] = cfg.content_encoding
+        if fixed:
+            kw["fixed_key_metadata"] = fixed
+        return kw
 
     def url(
         self,

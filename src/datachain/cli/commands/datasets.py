@@ -42,7 +42,7 @@ def list_datasets(
     catalog: "Catalog",
     studio: bool = False,
     local: bool = False,
-    all: bool = True,
+    all: bool = False,
     team: str | None = None,
     latest_only: bool = True,
     name: str | None = None,
@@ -54,9 +54,7 @@ def list_datasets(
 
     local_datasets = set(list_datasets_local(catalog, name)) if all or local else set()
     studio_datasets = (
-        set(list_datasets_studio(team=team, name=name))
-        if (all or studio) and token
-        else set()
+        set(list_datasets_studio(team=team, name=name)) if all or studio else set()
     )
 
     # Group the datasets for both local and studio sources.
@@ -96,7 +94,7 @@ def list_datasets(
     rows = [
         _datasets_tabulate_row(
             name=n,
-            both=(all or (local and studio)) and token,
+            both=all or (local and studio),
             local_version=local_version,
             studio_version=studio_version,
         )

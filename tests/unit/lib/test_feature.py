@@ -366,4 +366,12 @@ def test_dict_to_feature():
         "val__id",
         "val__type",
     ]
-    assert list(spec.values()) == [String, String, Int64, Int64, String]
+    # Optional scalar leaves yield a marked type instance (dc_nullable); others
+    # stay as the type class. Normalize to the class to compare the SQL types.
+    assert [v if isinstance(v, type) else type(v) for v in spec.values()] == [
+        String,
+        String,
+        Int64,
+        Int64,
+        String,
+    ]

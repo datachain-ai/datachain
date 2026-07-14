@@ -21,6 +21,7 @@ from pydantic import Field, field_validator, model_validator
 
 from datachain import json
 from datachain.client.fileslice import FileSlice
+from datachain.client.writeconfig import WriteConfig
 from datachain.fs.utils import path_to_fsspec_uri
 from datachain.lib.data_model import DataModel
 from datachain.lib.utils import DataChainError, rebase_path
@@ -73,14 +74,15 @@ class FileExporter(NodesThreadPool):
         for task in done:
             task.result()
 
-    def do_task(self, file: "File"):
-        file.export(
-            self.output,
-            self.placement,
-            self.use_cache,
-            link_type=self.link_type,
-            client_config=self.client_config,
-        )
+    def do_task(self, file: "File | None"):
+        if file is not None:
+            file.export(
+                self.output,
+                self.placement,
+                self.use_cache,
+                link_type=self.link_type,
+                client_config=self.client_config,
+            )
         self.increase_counter(1)
 
 
@@ -375,6 +377,13 @@ class File(DataModel):
         data: bytes,
         path: str | os.PathLike[str],
         catalog: "Catalog | None" = None,
+        *,
+        content_type: str | None = None,
+        content_disposition: str | None = None,
+        cache_control: str | None = None,
+        content_encoding: str | None = None,
+        metadata: dict[str, str] | None = None,
+        write_options: dict[str, Any] | None = None,
     ) -> "Self":
         """Upload bytes to a storage path and return a File pointing to it.
 
@@ -383,6 +392,17 @@ class File(DataModel):
             path: Destination path (local or remote, e.g. ``s3://bucket/file.txt``).
             catalog: Optional catalog instance. If None, the current session
                 catalog is used.
+            content_type: ``Content-Type`` to set on the object.
+            content_disposition: ``Content-Disposition`` to set on the object.
+            cache_control: ``Cache-Control`` to set on the object.
+            content_encoding: ``Content-Encoding`` to set on the object.
+            metadata: Custom key/value metadata to attach to the object.
+            write_options: Raw, backend-native write kwargs merged after the
+                normalized fields; forwarded on S3 only (e.g.
+                ``{"ACL": "public-read"}``) and rejected on GCS/Azure.
+
+        The normalized metadata fields are mapped to each backend's native
+        parameters and ignored by the local filesystem.
 
         Returns:
             File: A new File object with metadata populated from the upload.
@@ -390,6 +410,12 @@ class File(DataModel):
         Example:
             ```py
             file = File.upload(b"hello world", "s3://bucket/hello.txt")
+            file = File.upload(
+                pdf_bytes,
+                "s3://bucket/report.pdf",
+                content_type="application/pdf",
+                content_disposition='attachment; filename="report.pdf"',
+            )
             ```
 
         Note:
@@ -412,7 +438,18 @@ class File(DataModel):
         source, rel_path = client_cls.split_url(path_str)
 
         client = catalog.get_client(client_cls.storage_uri(source))
-        file = client.upload(data, rel_path)
+        file = client.upload(
+            data,
+            rel_path,
+            write_config=WriteConfig(
+                content_type=content_type,
+                content_disposition=content_disposition,
+                cache_control=cache_control,
+                content_encoding=content_encoding,
+                metadata=metadata,
+                write_options=write_options,
+            ),
+        )
         if not isinstance(file, cls):
             file = cls(**file.model_dump())
         file._set_stream(catalog)
@@ -490,6 +527,12 @@ class File(DataModel):
         mode: str = "rb",
         *,
         client_config: dict[str, Any] | None = None,
+        content_type: str | None = None,
+        content_disposition: str | None = None,
+        cache_control: str | None = None,
+        content_encoding: str | None = None,
+        metadata: dict[str, str] | None = None,
+        write_options: dict[str, Any] | None = None,
         **open_kwargs,
     ) -> Iterator[Any]:
         """Open the file and return a file-like object.
@@ -499,8 +542,25 @@ class File(DataModel):
 
         Reads always consult the cache (hit → local, miss → remote stream);
         ``_caching_enabled`` only governs whether a miss is also persisted.
+
+        In write modes, ``content_type``, ``content_disposition``,
+        ``cache_control``, ``content_encoding``, ``metadata`` and the raw
+        ``write_options`` escape hatch set object metadata on the written
+        object (mapped per backend, ignored on the local filesystem).
         """
         writing = any(ch in mode for ch in "wax+")
+
+        write_cfg = WriteConfig(
+            content_type=content_type,
+            content_disposition=content_disposition,
+            cache_control=cache_control,
+            content_encoding=content_encoding,
+            metadata=metadata,
+            write_options=write_options,
+        )
+        if not writing and not write_cfg.is_empty():
+            raise ValueError("write metadata options are only valid in write modes")
+
         if self.location and writing:
             raise VFileError(
                 "Writing to virtual file is not supported",
@@ -534,7 +594,9 @@ class File(DataModel):
         binary_kwargs = {
             k: v for k, v in open_kwargs.items() if k not in self._TEXT_WRAPPER_ALLOWED
         }
-        with client.fs.open(full_path, fs_mode, **binary_kwargs) as raw_handle:
+        with client.open_for_write(
+            full_path, fs_mode, write_cfg, binary_kwargs
+        ) as raw_handle:
             with self._wrap_text(
                 raw_handle,
                 mode,
@@ -605,7 +667,18 @@ class File(DataModel):
         """Returns file contents."""
         return self.read_bytes(length)
 
-    def save(self, destination: str, client_config: dict | None = None) -> "File":
+    def save(
+        self,
+        destination: str,
+        client_config: dict | None = None,
+        *,
+        content_type: str | None = None,
+        content_disposition: str | None = None,
+        cache_control: str | None = None,
+        content_encoding: str | None = None,
+        metadata: dict[str, str] | None = None,
+        write_options: dict[str, Any] | None = None,
+    ) -> "File":
         """Write file contents to *destination*.
 
         Args:
@@ -619,6 +692,17 @@ class File(DataModel):
                 paths containing spaces, ``#``, or ``%``.
             client_config: Optional extra kwargs forwarded to the storage
                 client (e.g. credentials, endpoint URL).
+            content_type: ``Content-Type`` to set on the written object.
+            content_disposition: ``Content-Disposition`` to set on the object.
+            cache_control: ``Cache-Control`` to set on the object.
+            content_encoding: ``Content-Encoding`` to set on the object.
+            metadata: Custom key/value metadata to attach to the object.
+            write_options: Raw, backend-native write kwargs merged after the
+                normalized fields; forwarded on S3 only (e.g.
+                ``{"ACL": "public-read"}``) and rejected on GCS/Azure.
+
+        The normalized metadata fields are mapped to each backend's native
+        parameters and ignored by the local filesystem.
 
         Returns:
             A ``File`` representing the newly written destination, with
@@ -629,6 +713,11 @@ class File(DataModel):
             file.save("/local/output/result.bin")
             file.save("s3://my-bucket/output/result.bin")
             file.save("~/output/result.bin")
+            file.save(
+                "s3://my-bucket/report.pdf",
+                content_type="application/pdf",
+                content_disposition='attachment; filename="report.pdf"',
+            )
             ```
         """
         if self._catalog is None:
@@ -636,8 +725,16 @@ class File(DataModel):
 
         destination = stringify_path(destination)
         client, rel_path = self._resolve_destination(destination, client_config)
+        write_config = WriteConfig(
+            content_type=content_type,
+            content_disposition=content_disposition,
+            cache_control=cache_control,
+            content_encoding=content_encoding,
+            metadata=metadata,
+            write_options=write_options,
+        )
         with self.open(mode="rb") as src:
-            result = client.upload(src, rel_path)
+            result = client.upload(src, rel_path, write_config=write_config)
         result._set_stream(self._catalog)
         return result
 
@@ -677,6 +774,13 @@ class File(DataModel):
         use_cache: bool = True,
         link_type: Literal["copy", "symlink"] = "copy",
         client_config: dict | None = None,
+        *,
+        content_type: str | None = None,
+        content_disposition: str | None = None,
+        cache_control: str | None = None,
+        content_encoding: str | None = None,
+        metadata: dict[str, str] | None = None,
+        write_options: dict[str, Any] | None = None,
     ) -> None:
         """Copy or link this file into an output directory.
 
@@ -695,6 +799,15 @@ class File(DataModel):
                 Symlink falls back to copy for virtual files and for
                 remote files when *use_cache* is False.
             client_config: Extra kwargs forwarded to the storage client.
+            content_type: ``Content-Type`` to set on the exported object.
+            content_disposition: ``Content-Disposition`` to set on the object.
+            cache_control: ``Cache-Control`` to set on the object.
+            content_encoding: ``Content-Encoding`` to set on the object.
+            metadata: Custom key/value metadata to attach to the object.
+            write_options: Raw, backend-native write kwargs merged after the
+                normalized fields above. Object metadata is applied only to
+                copied (not symlinked) files and is ignored on the local
+                filesystem.
 
         Example:
             ```py
@@ -760,7 +873,16 @@ class File(DataModel):
                 if exc.errno not in (errno.ENOTSUP, errno.EXDEV, errno.ENOSYS):
                     raise
 
-        self.save(dst, client_config=client_config)
+        self.save(
+            dst,
+            client_config=client_config,
+            content_type=content_type,
+            content_disposition=content_disposition,
+            cache_control=cache_control,
+            content_encoding=content_encoding,
+            metadata=metadata,
+            write_options=write_options,
+        )
 
     def _set_stream(
         self,
@@ -1039,9 +1161,29 @@ class TextFile(File):
         with self.open(**open_kwargs) as stream:
             return stream.read()
 
-    def save(self, destination: str, client_config: dict | None = None) -> "TextFile":
+    def save(
+        self,
+        destination: str,
+        client_config: dict | None = None,
+        *,
+        content_type: str | None = None,
+        content_disposition: str | None = None,
+        cache_control: str | None = None,
+        content_encoding: str | None = None,
+        metadata: dict[str, str] | None = None,
+        write_options: dict[str, Any] | None = None,
+    ) -> "TextFile":
         """Writes its content to destination"""
-        result = super().save(destination, client_config=client_config)
+        result = super().save(
+            destination,
+            client_config=client_config,
+            content_type=content_type,
+            content_disposition=content_disposition,
+            cache_control=cache_control,
+            content_encoding=content_encoding,
+            metadata=metadata,
+            write_options=write_options,
+        )
         tf = TextFile(**result.model_dump())
         tf._set_stream(self._catalog)
         return tf
@@ -1073,11 +1215,19 @@ class ImageFile(File):
         destination: str,
         format: str | None = None,
         client_config: dict | None = None,
+        *,
+        content_type: str | None = None,
+        content_disposition: str | None = None,
+        cache_control: str | None = None,
+        content_encoding: str | None = None,
+        metadata: dict[str, str] | None = None,
+        write_options: dict[str, Any] | None = None,
     ) -> "ImageFile":
         """Save the image to *destination*, optionally re-encoding to *format*.
 
         If ``destination`` is a remote path, the image will be uploaded to
-        remote storage.  See :meth:`File.save` for full destination semantics.
+        remote storage.  See :meth:`File.save` for full destination semantics
+        and the object-metadata keyword arguments.
         """
         if self._catalog is None:
             raise RuntimeError("Cannot save file: catalog is not set")
@@ -1102,7 +1252,18 @@ class ImageFile(File):
         buf = BytesIO()
         self.read().save(buf, format=format)
         client, rel_path = self._resolve_destination(destination, client_config)
-        result = client.upload(buf.getvalue(), rel_path)
+        result = client.upload(
+            buf.getvalue(),
+            rel_path,
+            write_config=WriteConfig(
+                content_type=content_type,
+                content_disposition=content_disposition,
+                cache_control=cache_control,
+                content_encoding=content_encoding,
+                metadata=metadata,
+                write_options=write_options,
+            ),
+        )
         img = ImageFile(**result.model_dump())
         img._set_stream(self._catalog)
         return img
@@ -1287,9 +1448,25 @@ class VideoFile(File):
         self,
         destination: str,
         client_config: dict | None = None,
+        *,
+        content_type: str | None = None,
+        content_disposition: str | None = None,
+        cache_control: str | None = None,
+        content_encoding: str | None = None,
+        metadata: dict[str, str] | None = None,
+        write_options: dict[str, Any] | None = None,
     ) -> "VideoFile":
         """Writes its content to destination"""
-        result = super().save(destination, client_config=client_config)
+        result = super().save(
+            destination,
+            client_config=client_config,
+            content_type=content_type,
+            content_disposition=content_disposition,
+            cache_control=cache_control,
+            content_encoding=content_encoding,
+            metadata=metadata,
+            write_options=write_options,
+        )
         vf = VideoFile(**result.model_dump())
         vf._set_stream(self._catalog)
         return vf
@@ -1389,6 +1566,13 @@ class AudioFile(File):
         start: float = 0,
         end: float | None = None,
         client_config: dict | None = None,
+        *,
+        content_type: str | None = None,
+        content_disposition: str | None = None,
+        cache_control: str | None = None,
+        content_encoding: str | None = None,
+        metadata: dict[str, str] | None = None,
+        write_options: dict[str, Any] | None = None,
     ) -> "AudioFile":
         """Save audio file or extract fragment to specified format.
 
@@ -1401,6 +1585,13 @@ class AudioFile(File):
             start: Start time in seconds (>= 0). Defaults to 0.
             end: End time in seconds. If None, extracts to end of file.
             client_config: Optional client configuration.
+            content_type: ``Content-Type`` to set on the written object.
+            content_disposition: ``Content-Disposition`` to set on the object.
+            cache_control: ``Cache-Control`` to set on the object.
+            content_encoding: ``Content-Encoding`` to set on the object.
+            metadata: Custom key/value metadata to attach to the object.
+            write_options: Raw, backend-native write kwargs merged after the
+                normalized fields above.
 
         Returns:
             AudioFile: New audio file with format conversion/extraction applied.
@@ -1415,7 +1606,22 @@ class AudioFile(File):
 
         from .audio import save_audio
 
-        return save_audio(self, destination, format, start, end, client_config)
+        return save_audio(
+            self,
+            destination,
+            format,
+            start,
+            end,
+            client_config,
+            write_config=WriteConfig(
+                content_type=content_type,
+                content_disposition=content_disposition,
+                cache_control=cache_control,
+                content_encoding=content_encoding,
+                metadata=metadata,
+                write_options=write_options,
+            ),
+        )
 
 
 class AudioFragment(DataModel):
@@ -1470,6 +1676,13 @@ class AudioFragment(DataModel):
         destination: str,
         format: str | None = None,
         client_config: dict | None = None,
+        *,
+        content_type: str | None = None,
+        content_disposition: str | None = None,
+        cache_control: str | None = None,
+        content_encoding: str | None = None,
+        metadata: dict[str, str] | None = None,
+        write_options: dict[str, Any] | None = None,
     ) -> "AudioFile":
         """
         Saves the audio fragment as a new audio file.
@@ -1482,6 +1695,13 @@ class AudioFragment(DataModel):
             format: Output audio format (e.g., 'wav', 'mp3').
                     If None, inferred from the file extension.
             client_config: Optional client configuration (e.g. credentials).
+            content_type: ``Content-Type`` to set on the written object.
+            content_disposition: ``Content-Disposition`` to set on the object.
+            cache_control: ``Cache-Control`` to set on the object.
+            content_encoding: ``Content-Encoding`` to set on the object.
+            metadata: Custom key/value metadata to attach to the object.
+            write_options: Raw, backend-native write kwargs merged after the
+                normalized fields above.
 
         Returns:
             AudioFile: A Model representing the saved audio file.
@@ -1495,6 +1715,14 @@ class AudioFragment(DataModel):
             self.start,
             self.end,
             client_config=client_config,
+            write_config=WriteConfig(
+                content_type=content_type,
+                content_disposition=content_disposition,
+                cache_control=cache_control,
+                content_encoding=content_encoding,
+                metadata=metadata,
+                write_options=write_options,
+            ),
         )
 
 
@@ -1554,21 +1782,23 @@ class VideoFrame(DataModel):
         without a second decode pass regardless of whether the frame came
         from ``VideoFile.get_frames()`` or ``VideoFile.get_frame()``.
 
+        Display rotation is applied (matching FFmpeg/OpenCV), so a 90/270
+        rotation swaps width and height. Channels are RGB; consumers expecting
+        BGR (e.g. OpenCV, Ultralytics) must convert.
+
         Returns:
             ndarray: A NumPy array representing the video frame,
                      in the shape (height, width, channels).
         """
-        if self._decoded is not None:
-            return self._decoded.to_ndarray(format="rgb24")
+        from .video import _decode_video_frame, _frame_to_ndarray
 
-        from .video import _decode_video_frame
-
-        self._decoded, _ = _decode_video_frame(
-            self.video,
-            self.frame,
-            self.video_stream_index,
-        )
-        return self._decoded.to_ndarray(format="rgb24")
+        if self._decoded is None:
+            self._decoded, _ = _decode_video_frame(
+                self.video,
+                self.frame,
+                self.video_stream_index,
+            )
+        return _frame_to_ndarray(self._decoded)
 
     def read_bytes(self, format: str = "jpg") -> bytes:
         """
@@ -1598,6 +1828,13 @@ class VideoFrame(DataModel):
         destination: str | os.PathLike[str],
         format: str = "jpg",
         client_config: dict | None = None,
+        *,
+        content_type: str | None = None,
+        content_disposition: str | None = None,
+        cache_control: str | None = None,
+        content_encoding: str | None = None,
+        metadata: dict[str, str] | None = None,
+        write_options: dict[str, Any] | None = None,
     ) -> "ImageFile":
         """
         Saves the current video frame as an image file.
@@ -1613,6 +1850,13 @@ class VideoFrame(DataModel):
             destination: Output directory path or URI (e.g. ``s3://…``, ``gs://…``).
             format: Image format (e.g., 'jpg', 'png'). Defaults to 'jpg'.
             client_config: Optional client configuration (e.g. credentials).
+            content_type: ``Content-Type`` to set on the written object.
+            content_disposition: ``Content-Disposition`` to set on the object.
+            cache_control: ``Cache-Control`` to set on the object.
+            content_encoding: ``Content-Encoding`` to set on the object.
+            metadata: Custom key/value metadata to attach to the object.
+            write_options: Raw, backend-native write kwargs merged after the
+                normalized fields above.
 
         Returns:
             ImageFile: A Model representing the saved image file.
@@ -1628,7 +1872,18 @@ class VideoFrame(DataModel):
             destination, f"{self.video.get_file_stem()}_{self.frame:04d}.{extension}"
         )
         client, rel_path = self.video._resolve_destination(output_file, client_config)
-        result = client.upload(image_bytes, rel_path)
+        result = client.upload(
+            image_bytes,
+            rel_path,
+            write_config=WriteConfig(
+                content_type=content_type,
+                content_disposition=content_disposition,
+                cache_control=cache_control,
+                content_encoding=content_encoding,
+                metadata=metadata,
+                write_options=write_options,
+            ),
+        )
         image = ImageFile(**result.model_dump())
         image._set_stream(catalog)
         return image
@@ -1659,6 +1914,13 @@ class VideoFragment(DataModel):
         format: str | None = None,
         client_config: dict | None = None,
         timeout: float | None = None,
+        *,
+        content_type: str | None = None,
+        content_disposition: str | None = None,
+        cache_control: str | None = None,
+        content_encoding: str | None = None,
+        metadata: dict[str, str] | None = None,
+        write_options: dict[str, Any] | None = None,
     ) -> "VideoFile":
         """
         Saves the video fragment as a new video file.
@@ -1673,6 +1935,13 @@ class VideoFragment(DataModel):
             client_config: Optional client configuration (e.g. credentials).
             timeout: FFmpeg subprocess timeout in seconds. If None, a timeout is
                 computed from the fragment duration. Set to 0 to disable.
+            content_type: ``Content-Type`` to set on the written object.
+            content_disposition: ``Content-Disposition`` to set on the object.
+            cache_control: ``Cache-Control`` to set on the object.
+            content_encoding: ``Content-Encoding`` to set on the object.
+            metadata: Custom key/value metadata to attach to the object.
+            write_options: Raw, backend-native write kwargs merged after the
+                normalized fields above.
 
         Returns:
             VideoFile: A Model representing the saved video file.
@@ -1687,6 +1956,14 @@ class VideoFragment(DataModel):
             format,
             client_config=client_config,
             timeout=timeout,
+            write_config=WriteConfig(
+                content_type=content_type,
+                content_disposition=content_disposition,
+                cache_control=cache_control,
+                content_encoding=content_encoding,
+                metadata=metadata,
+                write_options=write_options,
+            ),
         )
 
 
@@ -1695,8 +1972,10 @@ class Video(DataModel):
     A data model representing metadata for a video file.
 
     Attributes:
-        width (int): The width of the video in pixels. Defaults to -1 if unknown.
-        height (int): The height of the video in pixels. Defaults to -1 if unknown.
+        width (int): Display width in pixels (after stream rotation).
+                     Defaults to -1 if unknown.
+        height (int): Display height in pixels (after stream rotation).
+                      Defaults to -1 if unknown.
         fps (float): The frame rate of the video (frames per second).
                      Defaults to -1.0 if unknown.
         duration (float): The total duration of the video in seconds.

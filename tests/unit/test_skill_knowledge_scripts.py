@@ -4,6 +4,7 @@ import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 # Insert the scripts directory so bare imports work (matches runtime behavior).
 SCRIPTS_DIR = str(
@@ -18,6 +19,9 @@ from schema import parse_dataset_name, type_name  # noqa: E402
 from utils import (  # noqa: E402
     bucket_file_path,
     dataset_file_path,
+    dedupe_previous_scripts,
+    dep_entry,
+    drop_unchanged_scripts,
     escape_table_cell,
     extract_description,
     human_size,
@@ -96,6 +100,49 @@ def test_is_sys_column():
     assert is_sys_column("sys__rand")
     assert not is_sys_column("file")
     assert not is_sys_column("system")
+
+
+def test_dedupe_previous_scripts():
+    versions = [
+        {"query_script": "s0", "changes": None},
+        {"query_script": "s1", "changes": {"previous_script": "s0"}},
+        {"query_script": None, "changes": {"previous_script": "s1"}},
+        {"query_script": "s3", "changes": {"previous_script": "s2"}},
+    ]
+    dedupe_previous_scripts(versions)
+    # Nulled: the previous entry already renders its own query_script.
+    assert versions[1]["changes"]["previous_script"] is None
+    assert versions[2]["changes"]["previous_script"] is None
+    # Kept: the previous entry (v2) omitted its script, so the diff would be lost.
+    assert versions[3]["changes"]["previous_script"] == "s2"
+
+
+def test_drop_unchanged_scripts():
+    versions = [
+        {"query_script": "s0", "changes": None},
+        {"query_script": "s1", "changes": {"script_changed": True}},
+        {"query_script": "s1", "changes": {"script_changed": False}},
+        {"query_script": "s2", "changes": {"script_changed": False}},
+    ]
+    drop_unchanged_scripts(versions)
+    # Initial (changes None) and the script-changed version keep their script.
+    assert versions[0]["query_script"] == "s0"
+    assert versions[1]["query_script"] == "s1"
+    # An unchanged older version drops its script (prompt renders no code block).
+    assert versions[2]["query_script"] is None
+    # The latest entry keeps its script even when unchanged.
+    assert versions[3]["query_script"] == "s2"
+
+
+def test_dep_entry_storage_uri_without_trailing_slash():
+    # A legacy bare-URI listing name (no trailing slash) still routes to a bucket doc.
+    entry = dep_entry("s3://my-bucket", "1.0.0", "storage")
+    assert entry["file_path"] == "buckets/s3/my_bucket"
+
+
+def test_dep_entry_dataset_links_to_dataset_doc():
+    entry = dep_entry("ns.proj.my_ds", "1.0.0", "dataset")
+    assert entry["file_path"] == "datasets/ns/proj/my_ds"
 
 
 def test_read_frontmatter_normal(tmp_path):
@@ -427,6 +474,85 @@ def test_build_changes_script_unchanged():
     )
     assert result["script_changed"] is False
     assert result["previous_script"] is None
+
+
+# ---------------------------------------------------------------------------
+# dataset_all.py
+# ---------------------------------------------------------------------------
+
+
+def test_merge_versions_no_duplicates():
+    from dataset_all import _merge_versions
+
+    existing = [{"version": "1.0.0"}, {"version": "1.0.1"}]
+    # The fetch returns every version; only 1.0.2 is in the plan. A version present in
+    # both the file and the fetch must not be duplicated.
+    new = [{"version": "1.0.0"}, {"version": "1.0.1"}, {"version": "1.0.2"}]
+    merged = _merge_versions(existing, new, versions_to_fetch=["1.0.2"])
+    assert [v["version"] for v in merged] == ["1.0.0", "1.0.1", "1.0.2"]
+
+
+def _ds_version(version, version_value, *, query_script=""):
+    return SimpleNamespace(
+        version=version,
+        version_value=version_value,
+        uuid=f"uuid-{version}",
+        num_objects=1,
+        size=1,
+        created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        finished_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+        query_script=query_script,
+        schema={},
+        feature_schema=None,
+        preview=None,
+    )
+
+
+def test_fetch_all_versions_overlays_live_enrichment_on_latest(monkeypatch):
+    import dataset_all
+    import summary
+
+    record = SimpleNamespace(
+        attrs=["cast:l1"],
+        description="pets",
+        versions=[_ds_version("1.0.1", 2, query_script="b"), _ds_version("1.0.0", 1)],
+    )
+    catalog = SimpleNamespace(
+        get_dataset=lambda *a, **k: record,
+        get_dataset_dependencies=lambda **k: [],
+    )
+    monkeypatch.setattr(dataset_all, "get_catalog", lambda: catalog)
+    monkeypatch.setattr(
+        dataset_all,
+        "dc_import",
+        lambda: SimpleNamespace(read_dataset=lambda name: object()),
+    )
+    monkeypatch.setattr(
+        dataset_all,
+        "extract_schema",
+        lambda chain: {"col": {"type": "str", "fields": None}},
+    )
+    monkeypatch.setattr(
+        dataset_all,
+        "extract_preview",
+        lambda chain: {"columns": ["col"], "rows": [["v"]]},
+    )
+    monkeypatch.setattr(
+        summary, "dataset_summary_from_chain", lambda chain: {"overview": "1 items"}
+    )
+
+    snap = dataset_all._fetch_all_versions("my_ds")
+
+    assert snap["name"] == "my_ds"
+    assert snap["source"] == "local"
+    oldest, latest = snap["versions"]
+    assert latest["version"] == "1.0.1"
+    assert latest["schema"] == {"col": {"type": "str", "fields": None}}
+    assert latest["preview"] == {"columns": ["col"], "rows": [["v"]]}
+    assert latest["summary"] == {"overview": "1 items"}
+    assert oldest["schema"] == {}
+    assert oldest["preview"] is None
+    assert oldest["summary"] is None
 
 
 # ---------------------------------------------------------------------------

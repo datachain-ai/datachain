@@ -140,6 +140,7 @@ nav:
               - Random: references/functions/random.md
               - String: references/functions/string.md
               - Window: references/functions/window.md
+          - LLM: references/llm.md
           - Toolkit: references/toolkit.md
       - 📖 CLI Reference:
           - Overview: commands/index.md
