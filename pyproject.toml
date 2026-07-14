@@ -122,7 +122,7 @@ tests = [
 ]
 dev = [
   "datachain[docs,tests]",
-  "mypy==2.1.0",
+  "mypy==2.3.0",
   "types-python-dateutil",
   "types-dateparser",
   "types-pytz",

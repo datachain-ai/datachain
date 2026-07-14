@@ -1,6 +1,5 @@
 import contextlib
 import hashlib
-import inspect
 import logging
 import os
 import secrets
@@ -539,7 +538,7 @@ def get_col_types(
         (
             col_name,
             # Check if type is already instantiated or not
-            col_type_inst := col_type() if inspect.isclass(col_type) else col_type,
+            col_type_inst := col_type() if isinstance(col_type, type) else col_type,
             warehouse.python_type(col_type_inst),
             type(col_type_inst).__name__,
             None
@@ -2907,7 +2906,7 @@ class DatasetQuery:
 
             async def get_params(row: Sequence) -> tuple:
                 row_dict = RowDict(zip(query_fields, row, strict=False))
-                return tuple(  # noqa: C409
+                return tuple(
                     [
                         await p.get_value_async(
                             self.catalog, row_dict, mapper, **kwargs

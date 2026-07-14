@@ -223,6 +223,8 @@ def login(args: "Namespace"):
         file_path = _save_default_team(team_names[0], level)
         print(f"Set default team to '{team_names[0]}' in {file_path}")
     else:
+        with Config(level).edit() as conf:
+            conf.get("studio", {}).pop("team", None)
         print("You can now use 'datachain auth team' to set the default team.")
     return 0
 
@@ -263,6 +265,7 @@ def logout(local: bool = False):
 
     with Config(level).edit() as conf:
         del conf["studio"]["token"]
+        conf["studio"].pop("team", None)
 
     print("Logged out from Studio. (you can log back in with 'datachain auth login')")
 
