@@ -139,6 +139,9 @@ When any storage URI is encountered, enlist the whole bucket first.
    python3 {skill_dir}/scripts/bucket_scan.py {root_uri} \
      --output dc-knowledge/buckets/{scheme}/{bucket_slug}.json --timeout 60
    ```
+   For `az://` URIs, add `--account-name <storage-account>` (defaults to
+   `$AZURE_STORAGE_ACCOUNT_NAME`) — the account isn't part of the URI, and
+   without it file links and the anonymous-access probe are skipped.
 5. **Handle timeout** (exit code 124). Run the hierarchical fallback:
    ```bash
    python3 {skill_dir}/scripts/bucket_overview.py {root_uri} \
