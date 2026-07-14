@@ -670,7 +670,9 @@ class DataChain:
 
         # Handle retry and delta functionality
         if not result:
-            result = self._handle_delta(name, version, project, schema, kwargs)
+            result = self._handle_delta(
+                name, version, project, schema, update_version, kwargs
+            )
 
         if not result:
             # calculate chain if we already don't have result from checkpoint or delta
@@ -841,6 +843,7 @@ class DataChain:
         version: str | None,
         project: Project,
         schema: dict,
+        update_version: str | None,
         kwargs: dict,
     ) -> "DataChain | None":
         """Try to save as a delta dataset.
@@ -872,6 +875,7 @@ class DataChain:
                     project=project,
                     feature_schema=schema,
                     dependencies=dependencies,
+                    update_version=update_version,
                     **kwargs,
                 )
             )

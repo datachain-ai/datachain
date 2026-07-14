@@ -106,6 +106,23 @@ def test_delta_update_from_dataset(test_session, tmp_dir, tmp_path):
     create_delta_dataset(ds_name)
 
 
+def test_delta_update_respects_update_version(test_session):
+    source_name = f"delta_uv_source_{uuid.uuid4().hex[:8]}"
+    result_name = f"delta_uv_result_{uuid.uuid4().hex[:8]}"
+
+    dc.read_values(id=[1, 2, 3], session=test_session).save(source_name)
+    dc.read_dataset(source_name, session=test_session, delta=True, delta_on="id").save(
+        result_name
+    )
+
+    dc.read_values(id=[1, 2, 3, 4], session=test_session).save(source_name)
+    res = dc.read_dataset(
+        source_name, session=test_session, delta=True, delta_on="id"
+    ).save(result_name, update_version="major")
+
+    assert res.version == "2.0.0"
+
+
 def test_delta_falls_back_when_dependency_missing(test_session, no_studio_dataset):
     catalog = test_session.catalog
 
