@@ -88,7 +88,18 @@ def bucket_overview(
     netloc = urlparse(uri).netloc if scheme in REMOTE else ""
     files = [_make_file(scheme, netloc, e) for e in _sample(fs, root, limit)]
     name = name or f"overview_{_slug(uri)}_{int(time.time())}"
-    return dc.read_values(file=files).save(name)
+
+    # The saved File rows are read back during enrichment through this chain's
+    # session, so it needs the same access config the raw listing used.
+    # Session.get (not Session()) so the atexit hook cleans up the temp dataset
+    # read_values creates.
+    client_config: dict = {}
+    if anon:
+        client_config["anon"] = True
+    if scheme == "az" and account_name:
+        client_config["account_name"] = account_name
+    session = dc.Session.get(client_config=client_config or None)
+    return dc.read_values(file=files, session=session).save(name)
 
 
 def _to_bucket_json(

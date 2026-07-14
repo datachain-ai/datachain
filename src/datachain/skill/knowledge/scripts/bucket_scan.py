@@ -487,26 +487,28 @@ def scan_bucket(
     uri: str,
     output: str | None = None,
     timeout: int = 0,
-    account_name: str | None = None,
+    client_config: dict | None = None,
 ):
-    """Full bucket scan: list via read_storage and emit a bucket JSON.
-
-    `account_name` (Azure only) enables the az anonymous-access probe and the
-    `https://<account>.blob.core.windows.net/<container>` file-link prefix — the
-    account isn't part of the `az://` URI, so it must be passed explicitly.
-    """
+    """Full bucket scan: list via read_storage and emit a bucket JSON."""
 
     if timeout > 0:
         signal.signal(signal.SIGALRM, _alarm_handler)
         signal.alarm(timeout)
 
     parts = parse_uri(uri)
-    status_kwargs = (
-        {"account_name": account_name}
-        if account_name and parts["scheme"] == "az"
-        else {}
-    )
-    status = bucket_status(f"{parts['scheme']}://{parts['bucket']}/", **status_kwargs)
+    try:
+        status = bucket_status(
+            f"{parts['scheme']}://{parts['bucket']}/", **(client_config or {})
+        )
+    except ScanTimeoutError:
+        print(
+            json.dumps({"error": "timeout", "uri": uri, "timeout": timeout}),
+            file=sys.stderr,
+        )
+        sys.exit(124)
+    except Exception as e:  # noqa: BLE001
+        print(json.dumps({"error": str(e), "uri": uri}), file=sys.stderr)
+        sys.exit(1)
     if not status.exists or status.access == "denied":
         print(json.dumps({"error": status.error, "uri": uri}), file=sys.stderr)
         sys.exit(1)
@@ -516,16 +518,18 @@ def scan_bucket(
         dc = dc_import()
         # Never pass update=True. Listing is already cached from a prior
         # read_storage() call. Pass anon=True for public buckets so listing
-        # doesn't hang on credential lookup. For az://, the account isn't in
-        # the URI — thread account_name through client_config so adlfs can
-        # resolve the storage account (the probe alone getting it isn't enough).
+        # doesn't hang on credential lookup. client_config goes to the listing
+        # too: the probe getting the az account_name alone isn't enough for
+        # adlfs to resolve the storage account.
         read_kwargs: dict = {}
         if is_anon:
             read_kwargs["anon"] = True
-        if account_name and parts["scheme"] == "az":
-            read_kwargs["client_config"] = {"account_name": account_name}
+        if client_config:
+            read_kwargs["client_config"] = client_config
         chain = dc.read_storage(uri, **read_kwargs)
-        result = compute_bucket_metadata(chain, uri, is_anon, account_name=account_name)
+        result = compute_bucket_metadata(
+            chain, uri, is_anon, account_name=(client_config or {}).get("account_name")
+        )
 
         if timeout > 0:
             signal.alarm(0)
@@ -556,13 +560,16 @@ def main():
     )
     parser.add_argument(
         "--account-name",
-        # az:// URIs don't carry the storage account; fall back to the adlfs
-        # env var so a configured environment yields clickable az file links.
         default=os.environ.get("AZURE_STORAGE_ACCOUNT_NAME"),
         help="Azure storage account name (for az:// link prefixes + anon probe).",
     )
     args = parser.parse_args()
-    scan_bucket(args.uri, args.output, args.timeout, args.account_name)
+    client_config = (
+        {"account_name": args.account_name}
+        if args.account_name and parse_uri(args.uri)["scheme"] == "az"
+        else None
+    )
+    scan_bucket(args.uri, args.output, args.timeout, client_config)
 
 
 if __name__ == "__main__":

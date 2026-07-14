@@ -450,14 +450,14 @@ def source_to_https(source: str, account_name: str | None = None) -> str | None:
 
     Returns None for local paths or unrecognized schemes. For `az://`, the
     netloc is the *container* and the storage account is external config that
-    isn't part of the URI — so a link can only be built when the caller passes
-    `account_name`; without it, az returns None.
+    isn't part of the URI — so a link can only be built from `account_name`
+    (falling back to `AZURE_STORAGE_ACCOUNT_NAME`); without it, az returns None.
 
     Examples:
         s3://my-bucket/prefix/  -> https://my-bucket.s3.amazonaws.com
         gs://demo/data/         -> https://storage.googleapis.com/demo
         az://container/data/    -> https://<account>.blob.core.windows.net/container
-                                   (only when account_name is supplied)
+                                   (only when the account name is available)
     """
     parts = parse_uri(source)
     scheme = parts["scheme"]
@@ -467,6 +467,8 @@ def source_to_https(source: str, account_name: str | None = None) -> str | None:
         return f"https://{bucket}.s3.amazonaws.com"
     if scheme == "gs":
         return f"https://storage.googleapis.com/{bucket}"
-    if scheme == "az" and account_name:
-        return f"https://{account_name}.blob.core.windows.net/{bucket}"
+    if scheme == "az" and bucket:
+        account_name = account_name or os.environ.get("AZURE_STORAGE_ACCOUNT_NAME")
+        if account_name:
+            return f"https://{account_name}.blob.core.windows.net/{bucket}"
     return None
