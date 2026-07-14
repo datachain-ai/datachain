@@ -56,7 +56,10 @@ dependencies = [
   "dvc-studio-client>=0.23.0,<1",
   "tabulate",
   "websockets",
-  "litellm>=1.83.0,<2",  # >=1.83 excludes the compromised 1.82.7/1.82.8 releases
+  # >=1.83 excludes the compromised 1.82.7/1.82.8 releases;
+  # <1.92 is the last pure-python release — 1.92.0 adds a Rust extension with
+  # no cp314/macOS/Windows wheels and an sdist that can't build on Python 3.14
+  "litellm>=1.83.0,<1.92",
   "tomli;python_version<'3.11'"
 ]
 
