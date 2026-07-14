@@ -23,7 +23,7 @@ def _slug(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_") or "root"
 
 
-def _open(uri: str, anon: bool):
+def _open(uri: str, anon: bool, account_name: str | None = None):
     import fsspec
 
     scheme = urlparse(uri).scheme
@@ -32,6 +32,8 @@ def _open(uri: str, anon: bool):
         kw: dict[str, str | bool] = {}
         if anon:
             kw = {"token": "anon"} if scheme == "gs" else {"anon": True}
+        if scheme == "az" and account_name:
+            kw["account_name"] = account_name
         return fsspec.filesystem(scheme, **kw), path, scheme
     raw = uri.removeprefix("file://") if scheme == "file" else uri
     return (
@@ -74,18 +76,29 @@ def _make_file(scheme: str, netloc: str, entry: dict):
 
 
 def bucket_overview(
-    uri: str, limit: int = SAMPLE, anon: bool = False, name: str | None = None
+    uri: str,
+    limit: int = SAMPLE,
+    anon: bool = False,
+    name: str | None = None,
+    account_name: str | None = None,
 ):
     import datachain as dc
 
-    fs, root, scheme = _open(uri, anon)
+    fs, root, scheme = _open(uri, anon, account_name)
     netloc = urlparse(uri).netloc if scheme in REMOTE else ""
     files = [_make_file(scheme, netloc, e) for e in _sample(fs, root, limit)]
     name = name or f"overview_{_slug(uri)}_{int(time.time())}"
     return dc.read_values(file=files).save(name)
 
 
-def _to_bucket_json(ds, uri: str, anon: bool, dataset_name: str, output: str) -> None:
+def _to_bucket_json(
+    ds,
+    uri: str,
+    anon: bool,
+    dataset_name: str,
+    output: str,
+    account_name: str | None = None,
+) -> None:
     """Derive bucket-shape JSON from the sampled dataset.
 
     Reuses `bucket_scan.compute_bucket_metadata` so a sampled overview
@@ -96,7 +109,12 @@ def _to_bucket_json(ds, uri: str, anon: bool, dataset_name: str, output: str) ->
     from utils import write_json
 
     payload = compute_bucket_metadata(
-        ds, uri, anon, sampled=True, dataset_name=dataset_name
+        ds,
+        uri,
+        anon,
+        sampled=True,
+        dataset_name=dataset_name,
+        account_name=account_name,
     )
     write_json(output, payload)
 
@@ -108,12 +126,17 @@ def main():
     p.add_argument("--limit", type=int, default=SAMPLE)
     p.add_argument("--anon", action="store_true")
     p.add_argument("--bucket-json", help="Also write bucket-shape JSON for enrichment")
+    p.add_argument(
+        "--account-name",
+        default=os.environ.get("AZURE_STORAGE_ACCOUNT_NAME"),
+        help="Azure storage account name (for az:// access + link prefixes).",
+    )
     a = p.parse_args()
     name = a.name or f"overview_{_slug(a.uri)}_{int(time.time())}"
-    ds = bucket_overview(a.uri, a.limit, a.anon, name)
+    ds = bucket_overview(a.uri, a.limit, a.anon, name, a.account_name)
     print(f"Saved {ds.count()} files as dataset {name}")
     if a.bucket_json:
-        _to_bucket_json(ds, a.uri, a.anon, name, a.bucket_json)
+        _to_bucket_json(ds, a.uri, a.anon, name, a.bucket_json, a.account_name)
         print(f"Wrote bucket JSON: {a.bucket_json}")
     ds.select("file.path", "file.size").limit(5).show()
 

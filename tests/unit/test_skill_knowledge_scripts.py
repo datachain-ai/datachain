@@ -401,6 +401,49 @@ def test_source_to_https_empty_returns_none():
     assert source_to_https("") is None
 
 
+def test_bucket_overview_open_az_passes_account_name(monkeypatch):
+    import fsspec
+    from bucket_overview import _open
+
+    monkeypatch.delenv("AZURE_STORAGE_ACCOUNT_NAME", raising=False)
+    captured = {}
+
+    def fake_filesystem(scheme, **kw):
+        captured["scheme"] = scheme
+        captured["kwargs"] = kw
+        return object()
+
+    monkeypatch.setattr(fsspec, "filesystem", fake_filesystem)
+
+    _, path, scheme = _open("az://container/data", anon=True, account_name="myacct")
+
+    assert scheme == "az"
+    assert path == "container/data/"
+    assert captured["kwargs"] == {"anon": True, "account_name": "myacct"}
+
+
+def test_bucket_overview_to_bucket_json_threads_account_name(monkeypatch, tmp_path):
+    import bucket_scan
+    from bucket_overview import _to_bucket_json
+
+    monkeypatch.delenv("AZURE_STORAGE_ACCOUNT_NAME", raising=False)
+    captured = {}
+
+    def fake_compute(
+        ds, uri, anon, sampled=False, dataset_name=None, account_name=None
+    ):
+        captured["account_name"] = account_name
+        return {"uri": uri}
+
+    monkeypatch.setattr(bucket_scan, "compute_bucket_metadata", fake_compute)
+    out = tmp_path / "bucket.json"
+
+    _to_bucket_json(None, "az://container/", True, "ds", str(out), "myacct")
+
+    assert captured["account_name"] == "myacct"
+    assert json.loads(out.read_text())["uri"] == "az://container/"
+
+
 # ---------------------------------------------------------------------------
 # changes.py
 # ---------------------------------------------------------------------------
