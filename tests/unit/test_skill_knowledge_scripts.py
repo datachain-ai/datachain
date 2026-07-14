@@ -487,6 +487,32 @@ def test_scan_bucket_probe_error_emits_error_json(monkeypatch, capsys):
     assert err == {"error": "dns failure", "uri": "az://container/"}
 
 
+def test_scan_bucket_listing_error_emits_error_json(monkeypatch, capsys):
+    import bucket_scan
+
+    monkeypatch.setattr(
+        bucket_scan,
+        "bucket_status",
+        lambda uri, **kw: SimpleNamespace(exists=True, access="anonymous", error=None),
+    )
+
+    def raising_read_storage(uri, **kw):
+        raise PermissionError("access denied mid-listing")
+
+    monkeypatch.setattr(
+        bucket_scan,
+        "dc_import",
+        lambda: SimpleNamespace(read_storage=raising_read_storage),
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        bucket_scan.scan_bucket("s3://bucket/")
+
+    assert exc.value.code == 1
+    err = json.loads(capsys.readouterr().err.strip())
+    assert err == {"error": "access denied mid-listing", "uri": "s3://bucket/"}
+
+
 def test_bucket_overview_to_bucket_json_threads_account_name(monkeypatch, tmp_path):
     import bucket_scan
     from bucket_overview import _to_bucket_json

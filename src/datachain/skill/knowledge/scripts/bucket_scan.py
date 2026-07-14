@@ -544,6 +544,9 @@ def scan_bucket(
             file=sys.stderr,
         )
         sys.exit(124)
+    except Exception as e:  # noqa: BLE001
+        print(json.dumps({"error": str(e), "uri": uri}), file=sys.stderr)
+        sys.exit(1)
 
 
 def main():
