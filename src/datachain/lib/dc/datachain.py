@@ -671,14 +671,14 @@ class DataChain:
         # Handle retry and delta functionality
         if not result:
             result = self._handle_delta(
-                name,
-                version,
-                project,
-                schema,
-                description,
-                attrs,
-                update_version,
-                kwargs,
+                name=name,
+                version=version,
+                project=project,
+                schema=schema,
+                description=description,
+                attrs=attrs,
+                update_version=update_version,
+                kwargs=kwargs,
             )
 
         if not result:
