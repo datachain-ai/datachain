@@ -118,9 +118,12 @@ def test_delta_update_respects_update_version(test_session):
     dc.read_values(id=[1, 2, 3, 4], session=test_session).save(source_name)
     res = dc.read_dataset(
         source_name, session=test_session, delta=True, delta_on="id"
-    ).save(result_name, update_version="major")
+    ).save(result_name, update_version="major", description="new desc", attrs=["NLP"])
 
     assert res.version == "2.0.0"
+    dataset = test_session.catalog.get_dataset(result_name)
+    assert dataset.description == "new desc"
+    assert dataset.attrs == ["NLP"]
 
 
 def test_delta_falls_back_when_dependency_missing(test_session, no_studio_dataset):
