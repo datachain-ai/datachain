@@ -428,9 +428,9 @@ def test_studio_team_global():
 
 
 def test_studio_datasets(capsys, studio_datasets, mocker):
-    def list_datasets_local(_, __):
-        yield "local.local.local", "1.0.0"
-        yield "dev.animals.both", "1.0.0"
+    def list_datasets_local(_, __, include_removed=False):
+        yield "local.local.local", "1.0.0", False
+        yield "dev.animals.both", "1.0.0", False
 
     mocker.patch(
         "datachain.cli.commands.datasets.list_datasets_local",
@@ -506,6 +506,44 @@ def test_studio_datasets(capsys, studio_datasets, mocker):
     assert main(["dataset", "ls", "dev.animals.dogs", "--studio"]) == 0
     out = capsys.readouterr().out
     assert sorted(out.splitlines()) == sorted(dogs_output.splitlines())
+
+
+@pytest.mark.parametrize(
+    "extra_cli_args,route,ok_body",
+    [
+        pytest.param([], "datachain/datasets", [], id="ls-all"),
+        pytest.param(
+            ["dev.animals.cats"],
+            "datachain/datasets/info",
+            {
+                "versions": [],
+                "project": {
+                    "created_at": None,
+                    "namespace": {"created_at": None},
+                },
+                "created_at": None,
+                "finished_at": None,
+            },
+            id="ls-by-name",
+        ),
+    ],
+)
+def test_dataset_ls_include_removed_flows_to_studio(
+    requests_mock, studio_token, extra_cli_args, route, ok_body
+):
+    """`dataset ls --include-removed --studio` forwards the flag as a
+    query parameter to Studio on both the list-all
+    (`/datachain/datasets`) and list-by-name (`/datachain/datasets/info`)
+    endpoints, and omits it when the flag isn't set."""
+    m = requests_mock.get(f"{STUDIO_URL}/api/{route}", json=ok_body)
+
+    assert main(["dataset", "ls", "--studio", *extra_cli_args]) == 0
+    assert "include_removed" not in m.last_request.qs
+
+    assert (
+        main(["dataset", "ls", "--studio", "--include-removed", *extra_cli_args]) == 0
+    )
+    assert m.last_request.qs.get("include_removed") == ["true"]
 
 
 @skip_if_not_sqlite

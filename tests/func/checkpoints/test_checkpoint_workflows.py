@@ -258,20 +258,20 @@ def test_checkpoint_with_deleted_dataset_version(test_session, nums_dataset):
 
     catalog.remove_dataset("nums_deleted", version="1.0.0", force=True)
 
+    # v1.0.0 is no longer visible via the user-facing read path
     with pytest.raises(DatasetNotFoundError):
-        catalog.get_dataset("nums_deleted")
+        catalog.get_dataset("nums_deleted", include_incomplete=False)
 
     # -------------- SECOND RUN: Checkpoint exists but version gone
     reset_session_job_state()
     chain.save("nums_deleted")
     job2_id = test_session.get_or_create_job().id
 
-    # Should create a NEW version since old one was deleted
+    # The REMOVED 1.0.0 slot is reserved forever — the new save auto-bumps to 1.0.1.
     dataset = catalog.get_dataset("nums_deleted", versions=None)
-    assert len(dataset.versions) == 1
-    assert dataset.latest_version == "1.0.0"
+    assert dataset.latest_version == "1.0.1"
 
-    new_version = dataset.get_version("1.0.0")
+    new_version = dataset.get_version("1.0.1")
     assert new_version.job_id == job2_id
 
 

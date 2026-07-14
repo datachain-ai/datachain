@@ -3352,18 +3352,21 @@ class DatasetQuery:
 
         project = project or self.catalog.metastore.default_project
         try:
-            if (
-                name
-                and version
-                and self.catalog.get_dataset(
+            if name and version:
+                existing = self.catalog.get_dataset(
                     name,
                     namespace_name=project.namespace.name,
                     project_name=project.name,
                     versions=[version],
                     include_incomplete=True,
-                ).has_version(version)
-            ):
-                raise RuntimeError(f"Dataset {name} already has version {version}")
+                )
+                if existing.has_version(version):
+                    if existing.get_version(version).is_removed:
+                        raise RuntimeError(
+                            f"Version {version} of dataset {name} was "
+                            "removed. Pick a different version."
+                        )
+                    raise RuntimeError(f"Dataset {name} already has version {version}")
         except DatasetNotFoundError:
             pass
         if not name and version:
@@ -3497,7 +3500,7 @@ class DatasetQuery:
         if old_fp != new_fp:
             return None
 
-        self.catalog.remove_dataset_version(full_dataset, version)
+        self.catalog.remove_dataset_version(full_dataset, version, keep_metadata=False)
         # updating TTL of a bucket listing
         self.catalog.metastore.update_dataset_version(
             full_dataset, prev_version, finished_at=datetime.now(timezone.utc)

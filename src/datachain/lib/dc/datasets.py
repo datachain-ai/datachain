@@ -246,6 +246,7 @@ def datasets(
     include_listing: bool = False,
     studio: bool = False,
     attrs: list[str] | None = None,
+    include_removed: bool = False,
 ) -> "DataChain":
     """Generate chain with list of registered datasets.
 
@@ -262,6 +263,7 @@ def datasets(
             attribute without value e.g "NLP", or attribute with value
             e.g "location=US". Attribute with value can also accept "*" to target
             all that have specific name e.g "location=*"
+        include_removed: If True, also lists REMOVED tombstones. Defaults to False.
 
     Returns:
         DataChain: A new DataChain instance containing dataset information.
@@ -281,7 +283,9 @@ def datasets(
     datasets_values = [
         DatasetInfo.from_models(d, v, j)
         for d, v, j in catalog.list_datasets_versions(
-            include_listing=include_listing, studio=studio
+            include_listing=include_listing,
+            studio=studio,
+            include_removed=include_removed,
         )
     ]
     datasets_values = [d for d in datasets_values if not d.is_temp]
@@ -331,6 +335,9 @@ def delete_dataset(
 ) -> None:
     """Removes specific dataset version or all dataset versions, depending on
     a force flag.
+
+    The rows table is dropped but the version metadata is kept so the semver
+    stays reserved and dependents can still resolve lineage.
 
     Args:
         name: The dataset name, which can be a fully qualified name including the
