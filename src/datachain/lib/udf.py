@@ -1,7 +1,9 @@
 import hashlib
 import logging
+from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import closing, nullcontext
+from dataclasses import dataclass
 from functools import partial
 from typing import TYPE_CHECKING, Any, TypeVar
 
@@ -40,11 +42,32 @@ if TYPE_CHECKING:
 
     from datachain.cache import Cache
     from datachain.catalog import Catalog
+    from datachain.lib.settings import Settings
     from datachain.lib.signal_schema import SignalSchema
     from datachain.lib.udf_signature import UdfSignature
     from datachain.query.batch import RowsOutput
 
 T = TypeVar("T", bound=Sequence[Any])
+
+
+@dataclass
+class BindContext:
+    """Context handed to a ``BoundSpec`` when it is attached to a verb. Carries the
+    chain settings and the target UDF class; new fields (catalog, session, ...) can
+    be added here without changing the ``bind`` signature."""
+
+    settings: "Settings"
+    target: Any = None  # the verb's UDF class (Mapper/Generator/Aggregator)
+
+
+class BoundSpec(ABC):
+    """A UDF spec that resolves itself against the chain when attached to a verb.
+    ``DataChain._udf_to_obj`` calls ``bind`` with a ``BindContext`` to get the
+    concrete per-row callable, so a spec can read ``.settings(...)`` and choose its
+    shape from the target verb at build time."""
+
+    @abstractmethod
+    def bind(self, ctx: BindContext) -> Callable: ...
 
 
 class UdfError(DataChainParamsError):

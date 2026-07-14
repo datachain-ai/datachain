@@ -56,6 +56,7 @@ dependencies = [
   "dvc-studio-client>=0.23.0,<1",
   "tabulate",
   "websockets",
+  "litellm>=1.83.0,<2",  # >=1.83 excludes the compromised 1.82.7/1.82.8 releases
   "tomli;python_version<'3.11'"
 ]
 
