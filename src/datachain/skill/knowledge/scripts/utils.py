@@ -462,12 +462,14 @@ def source_to_https(source: str, account_name: str | None = None) -> str | None:
     parts = parse_uri(source)
     scheme = parts["scheme"]
     bucket = parts["bucket"]
+    if not bucket:
+        return None
 
     if scheme == "s3":
         return f"https://{bucket}.s3.amazonaws.com"
     if scheme == "gs":
         return f"https://storage.googleapis.com/{bucket}"
-    if scheme == "az" and bucket:
+    if scheme == "az":
         account_name = account_name or os.environ.get("AZURE_STORAGE_ACCOUNT_NAME")
         if account_name:
             return f"https://{account_name}.blob.core.windows.net/{bucket}"

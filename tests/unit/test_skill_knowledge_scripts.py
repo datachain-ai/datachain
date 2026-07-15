@@ -409,6 +409,11 @@ def test_source_to_https_az_empty_container_returns_none():
     assert source_to_https("az:///container", account_name="myacct") is None
 
 
+def test_source_to_https_empty_bucket_returns_none():
+    assert source_to_https("s3://") is None
+    assert source_to_https("gs:///data") is None
+
+
 def test_source_to_https_local_returns_none():
     assert source_to_https("file:///home/user/data") is None
 

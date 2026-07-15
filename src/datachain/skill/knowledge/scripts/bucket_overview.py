@@ -94,7 +94,7 @@ def bucket_overview(
     # Session.get (not Session()) so the atexit hook cleans up the temp dataset
     # read_values creates.
     client_config: dict = {}
-    if anon:
+    if anon and scheme in REMOTE:
         client_config["anon"] = True
     if scheme == "az" and account_name:
         client_config["account_name"] = account_name
