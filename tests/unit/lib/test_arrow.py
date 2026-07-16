@@ -155,7 +155,8 @@ def test_arrow_generator_partitioned(tmp_path, catalog, cache):
         (pa.large_string(), str),
         (pa.map_(pa.string(), pa.int32()), dict),
         (pa.dictionary(pa.int64(), pa.string()), str),
-        (pa.list_(pa.string()), list[str]),
+        (pa.list_(pa.string()), list[str | None]),
+        (pa.list_(pa.field("item", pa.string(), nullable=False)), list[str]),
         (pa.null(), str),
     ),
 )
