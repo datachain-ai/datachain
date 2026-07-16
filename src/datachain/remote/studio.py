@@ -338,9 +338,16 @@ class StudioClient:
             response = self._send_request_msgpack("datachain/ls", {"source": path})
             yield path, response
 
-    def ls_datasets(self, prefix: str | None = None) -> Response[LsData]:
+    def ls_datasets(
+        self, prefix: str | None = None, include_removed: bool = False
+    ) -> Response[LsData]:
+        params: dict[str, Any] = {"prefix": prefix}
+        if include_removed:
+            params["include_removed"] = True
         return self._send_request(
-            "datachain/datasets", {"prefix": prefix}, method="GET"
+            "datachain/datasets",
+            params,
+            method="GET",
         )
 
     def edit_dataset(
@@ -387,7 +394,11 @@ class StudioClient:
         )
 
     def dataset_info(
-        self, namespace: str, project: str, name: str
+        self,
+        namespace: str,
+        project: str,
+        name: str,
+        include_removed: bool = False,
     ) -> Response[DatasetInfoData]:
         def _parse_dataset_info(dataset_info):
             _parse_dates(dataset_info, ["created_at", "finished_at"])
@@ -398,9 +409,16 @@ class StudioClient:
 
             return dataset_info
 
+        params: dict[str, Any] = {
+            "namespace": namespace,
+            "project": project,
+            "name": name,
+        }
+        if include_removed:
+            params["include_removed"] = True
         response = self._send_request(
             "datachain/datasets/info",
-            {"namespace": namespace, "project": project, "name": name},
+            params,
             method="GET",
         )
         if response.ok:

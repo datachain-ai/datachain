@@ -113,6 +113,11 @@ class TableMissingError(DataChainError):
     pass
 
 
+class ConcurrentDatasetModificationError(DataChainError):
+    """Raised when a guarded dataset-state write fails because another
+    caller changed the row first (typically a concurrent remove)."""
+
+
 class TableRenameError(DataChainError):
     pass
 

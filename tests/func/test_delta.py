@@ -106,6 +106,26 @@ def test_delta_update_from_dataset(test_session, tmp_dir, tmp_path):
     create_delta_dataset(ds_name)
 
 
+def test_delta_update_respects_update_version(test_session):
+    source_name = f"delta_uv_source_{uuid.uuid4().hex[:8]}"
+    result_name = f"delta_uv_result_{uuid.uuid4().hex[:8]}"
+
+    dc.read_values(id=[1, 2, 3], session=test_session).save(source_name)
+    dc.read_dataset(source_name, session=test_session, delta=True, delta_on="id").save(
+        result_name
+    )
+
+    dc.read_values(id=[1, 2, 3, 4], session=test_session).save(source_name)
+    res = dc.read_dataset(
+        source_name, session=test_session, delta=True, delta_on="id"
+    ).save(result_name, update_version="major", description="new desc", attrs=["NLP"])
+
+    assert res.version == "2.0.0"
+    dataset = test_session.catalog.get_dataset(result_name)
+    assert dataset.description == "new desc"
+    assert dataset.attrs == ["NLP"]
+
+
 def test_delta_falls_back_when_dependency_missing(test_session, no_studio_dataset):
     catalog = test_session.catalog
 
@@ -140,14 +160,9 @@ def test_delta_falls_back_when_dependency_missing(test_session, no_studio_datase
     with pytest.raises(DatasetNotFoundError):
         dc.read_dataset(source_ds, session=test_session, version="1.0.0")
 
-    deps_after_removal = catalog.get_dataset_dependencies(
-        delta_ds,
-        "1.0.0",
-        namespace_name=catalog.metastore.default_project.namespace.name,
-        project_name=catalog.metastore.default_project.name,
-        indirect=False,
-    )
-    assert deps_after_removal == [None]
+    # The dep row still points at the now-REMOVED v1.0.0 of the source
+    # so the dependent's lineage view still resolves.
+    assert _get_dependencies(catalog, delta_ds, "1.0.0") == [(source_ds, "1.0.0")]
 
     dc.read_dataset(
         source_ds,
@@ -168,6 +183,44 @@ def test_delta_falls_back_when_dependency_missing(test_session, no_studio_datase
     # Fallback rebuilds the dataset, so ids 1 and 2 appear twice across both runs.
     assert sorted(process_log[:2]) == [1, 2]
     assert sorted(process_log[2:]) == [1, 2, 10, 20, 30]
+
+
+def test_delta_falls_back_when_all_result_versions_tombstoned(
+    test_session, no_studio_dataset
+):
+    source_ds = "delta_tombstoned_result_source"
+    delta_ds = "delta_tombstoned_result_target"
+
+    dc.read_values(id=[1, 2], session=test_session).save(source_ds)
+    dc.read_dataset(
+        source_ds,
+        session=test_session,
+        delta=True,
+        delta_on="id",
+    ).save(delta_ds)
+
+    # Tombstone every version of the delta result. The dataset record
+    # stays in the metastore but has no live versions.
+    dc.delete_dataset(delta_ds, force=True, session=test_session)
+
+    # Extend the source and re-run delta. Without the fallback catching
+    # DatasetVersionNotFoundError, dataset.latest_version would raise
+    # because every result version is a tombstone.
+    dc.read_values(id=[1, 2, 3, 4], session=test_session).save(source_ds)
+    dc.read_dataset(
+        source_ds,
+        session=test_session,
+        delta=True,
+        delta_on="id",
+    ).save(delta_ds)
+
+    # Fresh version reserved past the tombstoned semver.
+    assert set(dc.read_dataset(delta_ds, session=test_session).to_values("id")) == {
+        1,
+        2,
+        3,
+        4,
+    }
 
 
 @pytest.mark.parametrize("is_studio", [True])

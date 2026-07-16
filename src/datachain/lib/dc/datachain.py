@@ -59,6 +59,8 @@ from datachain.lib.signal_schema import (
 )
 from datachain.lib.udf import (
     Aggregator,
+    BindContext,
+    BoundSpec,
     Generator,
     Mapper,
     UDFBase,
@@ -117,6 +119,8 @@ if TYPE_CHECKING:
     import pandas as pd
     from sqlalchemy.orm import Session as OrmSession
     from typing_extensions import ParamSpec, Self
+
+    from datachain.lib.settings import LLMParams
 
     P = ParamSpec("P")
 
@@ -459,6 +463,8 @@ class DataChain:
         batch_size: int | None = None,
         sys: bool | None = None,
         ephemeral: bool | None = None,
+        llm: str | None = None,
+        llm_params: "LLMParams | None" = None,
     ) -> "Self":
         """Set chain execution parameters. Returns the chain itself, allowing method
         chaining for subsequent operations. To restore all settings to their default
@@ -485,6 +491,13 @@ class DataChain:
                 (no jobs, checkpoints, or datasets). UDF execution still uses
                 temporary tables. Calling .save() in ephemeral mode will raise
                 an error.
+            llm: Provider-prefixed model string (e.g. `"anthropic/claude-haiku-4-5"`)
+                used by `datachain.llm` operations downstream in the chain. Inherited
+                by every `llm.*` call unless overridden by a per-call `llm=`.
+            llm_params: Extra parameters passed to the underlying model call (e.g.
+                credentials, `api_base`). Either a dict, or a no-argument callable
+                returning a dict that is resolved per-worker (so secrets are never
+                serialized into the task).
 
         Example:
             ```py
@@ -509,6 +522,8 @@ class DataChain:
                 min_task_size=min_task_size,
                 batch_size=batch_size,
                 ephemeral=ephemeral,
+                llm=llm,
+                llm_params=llm_params,
             )
         )
         return self._evolve(settings=settings, _sys=sys)
@@ -677,7 +692,16 @@ class DataChain:
 
         # Handle retry and delta functionality
         if not result:
-            result = self._handle_delta(name, version, project, schema, kwargs)
+            result = self._handle_delta(
+                name=name,
+                version=version,
+                project=project,
+                schema=schema,
+                description=description,
+                attrs=attrs,
+                update_version=update_version,
+                kwargs=kwargs,
+            )
 
         if not result:
             # calculate chain if we already don't have result from checkpoint or delta
@@ -848,6 +872,9 @@ class DataChain:
         version: str | None,
         project: Project,
         schema: dict,
+        description: str | None,
+        attrs: list[str] | None,
+        update_version: str | None,
         kwargs: dict,
     ) -> "DataChain | None":
         """Try to save as a delta dataset.
@@ -879,6 +906,9 @@ class DataChain:
                     project=project,
                     feature_schema=schema,
                     dependencies=dependencies,
+                    description=description,
+                    attrs=attrs,
+                    update_version=update_version,
                     **kwargs,
                 )
             )
@@ -1215,6 +1245,13 @@ class DataChain:
         is_generator = target_class.is_output_batched
         name = self.name or ""
 
+        func = self._bind_udf_settings(func, target_class)
+        signal_map = {
+            k: self._bind_udf_settings(v, target_class) for k, v in signal_map.items()
+        }
+        if params is None:
+            params = self._bound_udf_params(func, signal_map)
+
         sign = UdfSignature.parse(name, signal_map, func, params, output, is_generator)
         DataModel.register(list(sign.output_schema.values.values()))
 
@@ -1223,6 +1260,27 @@ class DataChain:
         )
 
         return target_class._create(sign, params_schema)
+
+    def _bind_udf_settings(self, func, target_class):
+        """Resolve a `BoundSpec` (e.g. a `datachain.llm` operation) into a concrete
+        callable, handing it the chain settings and target verb via a `BindContext`
+        so it can pick up `settings(llm=...)` and choose its shape from the verb.
+        """
+        if isinstance(func, BoundSpec):
+            return func.bind(BindContext(settings=self._settings, target=target_class))
+        return func
+
+    @staticmethod
+    def _bound_udf_params(func, signal_map) -> "Sequence[str] | None":
+        """Input columns declared by a settings-bound UDF spec (e.g. `datachain.llm`),
+        used when the verb is called without an explicit ``params=``. Lets a spec
+        consume nested/dotted columns that can't be expressed as signature names.
+        """
+        for udf in (func, *signal_map.values()):
+            cols = getattr(udf, "__datachain_params__", None)
+            if isinstance(cols, list):
+                return cols
+        return None
 
     def _extend_to_data_model(self, method_name, *args, **kwargs):
         query_func = getattr(self._query, method_name)

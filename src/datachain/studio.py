@@ -223,6 +223,8 @@ def login(args: "Namespace"):
         file_path = _save_default_team(team_names[0], level)
         print(f"Set default team to '{team_names[0]}' in {file_path}")
     else:
+        with Config(level).edit() as conf:
+            conf.get("studio", {}).pop("team", None)
         print("You can now use 'datachain auth team' to set the default team.")
     return 0
 
@@ -263,6 +265,7 @@ def logout(local: bool = False):
 
     with Config(level).edit() as conf:
         del conf["studio"]["token"]
+        conf["studio"].pop("team", None)
 
     print("Logged out from Studio. (you can log back in with 'datachain auth login')")
 
@@ -278,19 +281,23 @@ def token():
     print(token)
 
 
-def list_datasets(team: str | None = None, name: str | None = None):
+def list_datasets(
+    team: str | None = None,
+    name: str | None = None,
+    include_removed: bool = False,
+):
     def ds_full_name(ds: dict) -> str:
         return (
             f"{ds['project']['namespace']['name']}.{ds['project']['name']}.{ds['name']}"
         )
 
     if name:
-        yield from list_dataset_versions(team, name)
+        yield from list_dataset_versions(team, name, include_removed=include_removed)
         return
 
     client = StudioClient(team=team)
 
-    response = client.ls_datasets()
+    response = client.ls_datasets(include_removed=include_removed)
 
     if not response.ok:
         raise DataChainError(response.message)
@@ -309,13 +316,19 @@ def list_datasets(team: str | None = None, name: str | None = None):
             yield (full_name, version)
 
 
-def list_dataset_versions(team: str | None = None, name: str = ""):
+def list_dataset_versions(
+    team: str | None = None,
+    name: str = "",
+    include_removed: bool = False,
+):
     client = StudioClient(team=team)
 
     namespace_name, project_name, name = parse_dataset_name(name)
     if not namespace_name or not project_name:
-        raise DataChainError(f"Missing namespace or project form dataset name {name}")
-    response = client.dataset_info(namespace_name, project_name, name)
+        raise DataChainError(f"Missing namespace or project from dataset name {name}")
+    response = client.dataset_info(
+        namespace_name, project_name, name, include_removed=include_removed
+    )
 
     if not response.ok:
         raise DataChainError(response.message)
