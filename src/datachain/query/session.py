@@ -21,6 +21,18 @@ if TYPE_CHECKING:
 logger = logging.getLogger("datachain")
 
 
+def _copy_client_config(value):
+    """Recursively copy the mapping/sequence structure of a client config so
+    later caller-side mutation (including nested ``client_kwargs`` etc.)
+    cannot change a session's configuration. Leaf objects (credential
+    providers, SSL contexts, ...) are kept by reference."""
+    if isinstance(value, dict):
+        return {k: _copy_client_config(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return type(value)(_copy_client_config(v) for v in value)
+    return value
+
+
 def is_script_run() -> bool:
     """
     Returns True if this was ran as python script, e.g python my_script.py.
@@ -57,10 +69,12 @@ class Session:
     """
 
     GLOBAL_SESSION_CTX: "Session | None" = None
-    # The implicit in-memory session (see _get_in_memory_session) and
-    # sessions wrapping explicitly supplied in-memory catalogs (see get).
+    # The implicit in-memory session; see _get_in_memory_session.
     IN_MEMORY_SESSION_CTX: "Session | None" = None
-    IN_MEMORY_SESSIONS: ClassVar[dict[str, "Session"]] = {}
+    # Owned non-context sessions created by implicit resolution: wrappers for
+    # explicitly supplied in-memory catalogs ("catalog-<id>") and per-call
+    # client_config overrides of the persistent session ("config-<repr>").
+    SIDE_SESSIONS: ClassVar[dict[str, "Session"]] = {}
     SESSION_CONTEXTS: ClassVar[list["Session"]] = []
     _ALL_SESSIONS: ClassVar[WeakSet["Session"]] = WeakSet()
     ORIGINAL_EXCEPT_HOOK = None
@@ -334,10 +348,10 @@ class Session:
             # An accepted explicit catalog must be the one actually used,
             # regardless of ambient/global state.
             key = f"catalog-{id(catalog)}"
-            explicit = cls.IN_MEMORY_SESSIONS.get(key)
+            explicit = cls.SIDE_SESSIONS.get(key)
             if explicit is None:
                 explicit = Session("inmemory", catalog=catalog)
-                cls.IN_MEMORY_SESSIONS[key] = explicit
+                cls.SIDE_SESSIONS[key] = explicit
             return explicit
 
         # Access the active (most recent) context from the stack
@@ -372,13 +386,16 @@ class Session:
             return cls._get_in_memory_session(session, client_config)
 
         if client_config and session.catalog.client_config != client_config:
-            session = Session(
-                "session" + uuid4().hex[:4],
-                catalog,
-                client_config=client_config,
-                in_memory=in_memory,
-            )
-            session.__enter__()
+            # A config override scoped to this call: an owned, non-context
+            # session (cached per config), so the ambient/default resolution
+            # of later calls is unaffected.
+            config = _copy_client_config(client_config)
+            key = f"config-{sorted(config.items())!r}"
+            override = cls.SIDE_SESSIONS.get(key)
+            if override is None:
+                override = Session("sideconfig", catalog, client_config=config)
+                cls.SIDE_SESSIONS[key] = override
+            session = override
 
         return session
 
@@ -390,32 +407,31 @@ class Session:
 
         There is one implicit in-memory session per process, created on first
         use with its ``client_config`` frozen then (explicit, else inherited
-        from the ambient session). A request with a *different* explicit
-        config raises: the shared throwaway database cannot isolate data per
-        config, so pretending otherwise would silently rebind storage
-        credentials. Callers needing another config must create their own
-        ``Session(in_memory=True, client_config=...)``. Never entered as a
-        context.
+        from the ambient session). Any later effective config that differs —
+        explicit or inherited — raises: the process-wide throwaway database
+        cannot isolate data per config, so reusing it under another storage
+        identity would silently rebind credentials/endpoints. Never entered
+        as a context.
         """
+        effective = client_config
         if ambient is not None and ambient.catalog.in_memory:
             session = ambient
         else:
+            if effective is None and ambient is not None:
+                effective = ambient.catalog.client_config
             if cls.IN_MEMORY_SESSION_CTX is None:
-                config = client_config if client_config is not None else None
-                if config is None and ambient is not None:
-                    config = ambient.catalog.client_config
                 cls.IN_MEMORY_SESSION_CTX = Session(
                     "inmemory",
-                    client_config=dict(config) if config else config,
+                    client_config=_copy_client_config(effective),
                     in_memory=True,
                 )
             session = cls.IN_MEMORY_SESSION_CTX
 
-        if client_config is not None and session.catalog.client_config != client_config:
+        if effective is not None and session.catalog.client_config != effective:
             raise ValueError(
-                "an in-memory session already exists with a different "
-                "client_config; create an explicit "
-                "Session(in_memory=True, client_config=...) instead"
+                "the process-wide in-memory catalog is bound to a single "
+                "client_config, and a different one was requested "
+                "(explicitly or inherited from the ambient session)"
             )
         return session
 
@@ -445,9 +461,9 @@ class Session:
     @classmethod
     def cleanup_for_tests(cls):
         cls._close_all_contexts()
-        for in_memory_session in cls.IN_MEMORY_SESSIONS.values():
-            in_memory_session.__exit__(None, None, None)
-        cls.IN_MEMORY_SESSIONS.clear()
+        for side_session in cls.SIDE_SESSIONS.values():
+            side_session.__exit__(None, None, None)
+        cls.SIDE_SESSIONS.clear()
         if cls.IN_MEMORY_SESSION_CTX is not None:
             cls.IN_MEMORY_SESSION_CTX.__exit__(None, None, None)
             cls.IN_MEMORY_SESSION_CTX = None

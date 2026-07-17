@@ -258,11 +258,18 @@ def test_in_memory_session_has_one_config(catalog):
     assert Session.get(in_memory=True, client_config={}) is default
 
     # The implicit in-memory session's config is frozen at creation; a
-    # different explicit config must be loud, not silently rebound
+    # different effective config must be loud, not silently rebound —
+    # whether explicit...
     with pytest.raises(ValueError, match="client_config"):
         Session.get(in_memory=True, client_config={"anon": True})
 
-    # Escape hatch: an explicit session owns its own config
+    # ...or inherited from a differently-configured ambient session
+    with Session("amb1", client_config={"anon": True}):
+        with pytest.raises(ValueError, match="client_config"):
+            Session.get(in_memory=True)
+    assert Session.get(in_memory=True) is default
+
+    # An explicit in-memory session context owns its own config
     with Session("own1", client_config={"anon": True}, in_memory=True) as own:
         assert Session.get(in_memory=True) is own
         assert own.catalog.client_config == {"anon": True}
@@ -270,6 +277,29 @@ def test_in_memory_session_has_one_config(catalog):
     # Implicit resolution must not leak contexts or change the default
     assert not Session.SESSION_CONTEXTS
     assert Session.get() is Session.GLOBAL_SESSION_CTX
+
+
+def test_in_memory_session_config_deeply_frozen(catalog):
+    Session.get(catalog=catalog)
+
+    cfg = {"client_kwargs": {"endpoint_url": "A"}}
+    session = Session.get(in_memory=True, client_config=cfg)
+    cfg["client_kwargs"]["endpoint_url"] = "B"
+
+    assert session.catalog.client_config == {"client_kwargs": {"endpoint_url": "A"}}
+
+
+def test_persistent_config_override_is_call_scoped(catalog):
+    global_session = Session.get(catalog=catalog)
+
+    override = Session.get(client_config={"anon": True})
+    assert override is not global_session
+    assert override.catalog.client_config == {"anon": True}
+    assert Session.get(client_config={"anon": True}) is override
+
+    # The override must not become ambient state
+    assert not Session.SESSION_CONTEXTS
+    assert Session.get() is global_session
 
 
 def test_in_memory_context_with_conflicting_config():
