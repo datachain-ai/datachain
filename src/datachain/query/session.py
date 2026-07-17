@@ -57,8 +57,8 @@ class Session:
     """
 
     GLOBAL_SESSION_CTX: "Session | None" = None
-    # In-memory sessions, keyed by client_config, plus the first-created one;
-    # see _get_in_memory_session.
+    # The implicit in-memory session (see _get_in_memory_session) and
+    # sessions wrapping explicitly supplied in-memory catalogs (see get).
     IN_MEMORY_SESSION_CTX: "Session | None" = None
     IN_MEMORY_SESSIONS: ClassVar[dict[str, "Session"]] = {}
     SESSION_CONTEXTS: ClassVar[list["Session"]] = []
@@ -115,8 +115,10 @@ class Session:
             self.catalog.metastore.close_on_exit()
             self.catalog.warehouse.close_on_exit()
 
-        if Session.SESSION_CONTEXTS:
-            Session.SESSION_CONTEXTS.pop()
+        # Only ever remove *this* session: exiting a non-context session (or
+        # exiting out of order) must not corrupt the context stack.
+        if self in Session.SESSION_CONTEXTS:
+            Session.SESSION_CONTEXTS.remove(self)
         Session._ALL_SESSIONS.discard(self)
 
     def get_job(self) -> "Job | None":
@@ -324,10 +326,19 @@ class Session:
                 )
             return session
 
-        if in_memory and catalog is not None and not catalog.in_memory:
-            raise ValueError(
-                "in_memory=True conflicts with the provided persistent catalog"
-            )
+        if in_memory and catalog is not None:
+            if not catalog.in_memory:
+                raise ValueError(
+                    "in_memory=True conflicts with the provided persistent catalog"
+                )
+            # An accepted explicit catalog must be the one actually used,
+            # regardless of ambient/global state.
+            key = f"catalog-{id(catalog)}"
+            explicit = cls.IN_MEMORY_SESSIONS.get(key)
+            if explicit is None:
+                explicit = Session("inmemory", catalog=catalog)
+                cls.IN_MEMORY_SESSIONS[key] = explicit
+            return explicit
 
         # Access the active (most recent) context from the stack
         if cls.SESSION_CONTEXTS:
@@ -357,7 +368,7 @@ class Session:
         else:
             session = cls.GLOBAL_SESSION_CTX
 
-        if in_memory and not session.catalog.in_memory:
+        if in_memory:
             return cls._get_in_memory_session(session, client_config)
 
         if client_config and session.catalog.client_config != client_config:
@@ -373,26 +384,39 @@ class Session:
 
     @classmethod
     def _get_in_memory_session(
-        cls, base_session: "Session | None", client_config: dict | None = None
+        cls, ambient: "Session | None", client_config: dict | None = None
     ) -> "Session":
-        """The process-wide in-memory session, created on first use.
+        """Resolve an implicit ``in_memory=True`` request.
 
-        Backs ``in_memory=True`` chains when the ambient session has a
-        persistent catalog (e.g. inside a Studio job). Sessions are cached by
-        effective ``client_config`` (explicit, else inherited from the
-        ambient session) and never entered as contexts. All are backed by the
-        same shared-cache database, so their chains stay combinable.
+        There is one implicit in-memory session per process, created on first
+        use with its ``client_config`` frozen then (explicit, else inherited
+        from the ambient session). A request with a *different* explicit
+        config raises: the shared throwaway database cannot isolate data per
+        config, so pretending otherwise would silently rebind storage
+        credentials. Callers needing another config must create their own
+        ``Session(in_memory=True, client_config=...)``. Never entered as a
+        context.
         """
-        if client_config is None and base_session is not None:
-            client_config = base_session.catalog.client_config
-
-        key = "None" if client_config is None else repr(sorted(client_config.items()))
-        session = cls.IN_MEMORY_SESSIONS.get(key)
-        if session is None:
-            session = Session("inmemory", client_config=client_config, in_memory=True)
-            cls.IN_MEMORY_SESSIONS[key] = session
+        if ambient is not None and ambient.catalog.in_memory:
+            session = ambient
+        else:
             if cls.IN_MEMORY_SESSION_CTX is None:
-                cls.IN_MEMORY_SESSION_CTX = session
+                config = client_config if client_config is not None else None
+                if config is None and ambient is not None:
+                    config = ambient.catalog.client_config
+                cls.IN_MEMORY_SESSION_CTX = Session(
+                    "inmemory",
+                    client_config=dict(config) if config else config,
+                    in_memory=True,
+                )
+            session = cls.IN_MEMORY_SESSION_CTX
+
+        if client_config is not None and session.catalog.client_config != client_config:
+            raise ValueError(
+                "an in-memory session already exists with a different "
+                "client_config; create an explicit "
+                "Session(in_memory=True, client_config=...) instead"
+            )
         return session
 
     @staticmethod
@@ -424,7 +448,9 @@ class Session:
         for in_memory_session in cls.IN_MEMORY_SESSIONS.values():
             in_memory_session.__exit__(None, None, None)
         cls.IN_MEMORY_SESSIONS.clear()
-        cls.IN_MEMORY_SESSION_CTX = None
+        if cls.IN_MEMORY_SESSION_CTX is not None:
+            cls.IN_MEMORY_SESSION_CTX.__exit__(None, None, None)
+            cls.IN_MEMORY_SESSION_CTX = None
         if cls.GLOBAL_SESSION_CTX is not None:
             cls.GLOBAL_SESSION_CTX.__exit__(None, None, None)
             cls.GLOBAL_SESSION_CTX = None

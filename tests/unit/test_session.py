@@ -249,26 +249,53 @@ def test_first_in_memory_call_in_studio_does_not_become_default(monkeypatch):
         Session.cleanup_for_tests()
 
 
-def test_in_memory_sessions_cached_by_client_config(catalog):
+def test_in_memory_session_has_one_config(catalog):
     Session.get(catalog=catalog)  # global, client_config == {}
 
     default = Session.get(in_memory=True)  # inherits {} from global
     assert default.catalog.client_config == {}
     assert Session.get(in_memory=True) is default
+    assert Session.get(in_memory=True, client_config={}) is default
 
-    anon = Session.get(in_memory=True, client_config={"anon": True})
-    assert anon is not default
-    assert anon.catalog.client_config == {"anon": True}
-    assert Session.get(in_memory=True, client_config={"anon": True}) is anon
+    # The implicit in-memory session's config is frozen at creation; a
+    # different explicit config must be loud, not silently rebound
+    with pytest.raises(ValueError, match="client_config"):
+        Session.get(in_memory=True, client_config={"anon": True})
 
-    # Config inherited from the ambient session selects the same session
-    # as passing it explicitly
-    with Session("ambient1", client_config={"anon": True}):
-        assert Session.get(in_memory=True) is anon
+    # Escape hatch: an explicit session owns its own config
+    with Session("own1", client_config={"anon": True}, in_memory=True) as own:
+        assert Session.get(in_memory=True) is own
+        assert own.catalog.client_config == {"anon": True}
 
     # Implicit resolution must not leak contexts or change the default
     assert not Session.SESSION_CONTEXTS
     assert Session.get() is Session.GLOBAL_SESSION_CTX
+
+
+def test_in_memory_context_with_conflicting_config():
+    Session.cleanup_for_tests()
+    try:
+        with Session("outer1", client_config={"anon": True}, in_memory=True) as outer:
+            assert Session.get(in_memory=True) is outer
+            with pytest.raises(ValueError, match="client_config"):
+                Session.get(in_memory=True, client_config={"anon": False})
+            # conflict resolution must not have touched the context stack
+            assert [outer] == Session.SESSION_CONTEXTS
+        assert Session.SESSION_CONTEXTS == []
+    finally:
+        Session.cleanup_for_tests()
+
+
+def test_explicit_in_memory_catalog_is_used(catalog):
+    from datachain.catalog import get_catalog
+
+    Session.get(catalog=catalog)  # persistent global exists
+
+    with get_catalog(in_memory=True) as supplied:
+        resolved = Session.get(catalog=supplied, in_memory=True)
+        assert resolved.catalog is supplied
+        assert Session.get(catalog=supplied, in_memory=True) is resolved
+        Session.cleanup_for_tests()
 
 
 def test_in_memory_session_cleanup_for_tests(catalog):
