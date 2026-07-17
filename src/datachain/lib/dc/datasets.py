@@ -43,6 +43,7 @@ def read_dataset(
     delta_retry: bool | str | None = None,
     delta_unsafe: bool = False,
     update: bool = False,
+    in_memory: bool = False,
 ) -> "DataChain":
     """Get data from a saved Dataset. It returns the chain itself.
     If dataset or version is not found locally, it will try to pull it from Studio.
@@ -88,6 +89,9 @@ def read_dataset(
             diff, file_diff, agg, group_by, distinct. When multiple delta
             sources participate in one composed query, this must be enabled on
             every participating delta source.
+        in_memory: If True, resolve the dataset in the process's in-memory
+            (SQLite) catalog — the one where chains created with
+            ``in_memory=True`` save their datasets. Defaults to False.
 
 
     Example:
@@ -152,7 +156,7 @@ def read_dataset(
 
     telemetry.send_event_once("class", "datachain_init", name=name, version=version)
 
-    session = Session.get(session)
+    session = Session.get(session, in_memory=in_memory)
     catalog = session.catalog
 
     namespace_name, project_name, name = catalog.get_full_dataset_name(

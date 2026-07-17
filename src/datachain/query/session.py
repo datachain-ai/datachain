@@ -164,10 +164,16 @@ class Session:
         Note:
             Job is shared across all Session instances to ensure one job per
             process, except for sessions with an in-memory catalog, which use
-            a session-local job (see _get_or_create_session_job).
+            a session-local job created in the throwaway metastore.
         """
         if self.catalog.in_memory:
-            return self._get_or_create_session_job()
+            # The catalog is a throwaway database: a job referenced by
+            # DATACHAIN_JOB_ID lives in the configured metastore and does not
+            # exist here, so the env var is deliberately ignored and the job
+            # is session-local instead of process-wide.
+            if self._session_job is None:
+                self._session_job = self._create_job()
+            return self._session_job
 
         if Session._CURRENT_JOB:
             return Session._CURRENT_JOB
@@ -190,33 +196,7 @@ class Session:
             )
         else:
             # Local run: create new job
-            query = ""
-            if is_script_run():
-                script = os.path.abspath(sys.argv[0])
-                try:
-                    with open(script) as f:
-                        query = f.read()
-                except OSError:
-                    pass
-            else:
-                # Interactive session or module run - use unique name to avoid
-                # linking unrelated sessions
-                script = str(uuid4())
-            python_version = f"{sys.version_info.major}.{sys.version_info.minor}"
-
-            # try to find the parent job for checkpoint/rerun chain
-            parent = self.catalog.metastore.get_last_job_by_name(script)
-
-            job_id = self.catalog.metastore.create_job(
-                name=script,
-                query=query,
-                query_type=JobQueryType.PYTHON,
-                status=JobStatus.RUNNING,
-                python_version=python_version,
-                rerun_from_job_id=parent.id if parent else None,
-                run_group_id=parent.run_group_id if parent else None,
-            )
-            Session._CURRENT_JOB = self.catalog.metastore.get_job(job_id)
+            Session._CURRENT_JOB = self._create_job()
             Session._OWNS_JOB = True
             Session._JOB_STATUS = JobStatus.RUNNING
 
@@ -233,28 +213,37 @@ class Session:
         assert Session._CURRENT_JOB is not None
         return Session._CURRENT_JOB
 
-    def _get_or_create_session_job(self) -> "Job":
-        """Session-local job for in-memory catalogs.
+    def _create_job(self) -> "Job":
+        """Create a new job for a local run in this session's metastore."""
+        query = ""
+        if is_script_run():
+            script = os.path.abspath(sys.argv[0])
+            try:
+                with open(script) as f:
+                    query = f.read()
+            except OSError:
+                pass
+        else:
+            # Interactive session or module run - use unique name to avoid
+            # linking unrelated sessions
+            script = str(uuid4())
+        python_version = f"{sys.version_info.major}.{sys.version_info.minor}"
 
-        An in-memory catalog is a throwaway SQLite database: a job referenced
-        by ``DATACHAIN_JOB_ID`` lives in the configured metastore and does not
-        exist here, so the env var is deliberately ignored. A job is created
-        in the in-memory metastore instead (UDF checkpoints require one) and
-        kept per-session — never shared through the class-level cache, so it
-        can't leak into datasets of persistent catalogs (or vice versa).
-        """
-        if self._session_job is None:
-            python_version = f"{sys.version_info.major}.{sys.version_info.minor}"
-            job_id = self.catalog.metastore.create_job(
-                name=f"in-memory-{self.name}",
-                query="",
-                query_type=JobQueryType.PYTHON,
-                status=JobStatus.RUNNING,
-                python_version=python_version,
-            )
-            self._session_job = self.catalog.metastore.get_job(job_id)
-        assert self._session_job is not None
-        return self._session_job
+        # try to find the parent job for checkpoint/rerun chain
+        parent = self.catalog.metastore.get_last_job_by_name(script)
+
+        job_id = self.catalog.metastore.create_job(
+            name=script,
+            query=query,
+            query_type=JobQueryType.PYTHON,
+            status=JobStatus.RUNNING,
+            python_version=python_version,
+            rerun_from_job_id=parent.id if parent else None,
+            run_group_id=parent.run_group_id if parent else None,
+        )
+        job = self.catalog.metastore.get_job(job_id)
+        assert job is not None
+        return job
 
     def _finalize_job_success(self):
         """Mark the current job as completed."""
@@ -368,18 +357,7 @@ class Session:
             session = cls.GLOBAL_SESSION_CTX
 
         if in_memory and catalog is None and not session.catalog.in_memory:
-            # An in-memory catalog was requested, but the resolved session is
-            # backed by a persistent one (e.g. inside a Studio job). Route to
-            # a dedicated throwaway session instead of silently ignoring the
-            # request. A single cached session is reused so all in-memory
-            # chains share one warehouse and can be combined.
-            if cls.IN_MEMORY_SESSION_CTX is None:
-                cls.IN_MEMORY_SESSION_CTX = Session(
-                    "inmemory",
-                    client_config=client_config or session.catalog.client_config,
-                    in_memory=True,
-                )
-            return cls.IN_MEMORY_SESSION_CTX
+            session = cls._get_in_memory_session(session, client_config)
 
         if client_config and session.catalog.client_config != client_config:
             session = Session(
@@ -391,6 +369,26 @@ class Session:
             session.__enter__()
 
         return session
+
+    @classmethod
+    def _get_in_memory_session(
+        cls, base_session: "Session", client_config: dict | None = None
+    ) -> "Session":
+        """The process-wide in-memory session, created on first use.
+
+        Backs chains that request ``in_memory=True`` while the ambient session
+        uses a persistent catalog (e.g. inside a Studio job): their listings
+        and datasets belong in a throwaway SQLite catalog, not in the
+        configured metastore/warehouse. A single cached session is reused so
+        all such chains share one database and can be combined.
+        """
+        if cls.IN_MEMORY_SESSION_CTX is None:
+            cls.IN_MEMORY_SESSION_CTX = Session(
+                "inmemory",
+                client_config=client_config or base_session.catalog.client_config,
+                in_memory=True,
+            )
+        return cls.IN_MEMORY_SESSION_CTX
 
     @staticmethod
     def except_hook(exc_type, exc_value, exc_traceback):
@@ -443,10 +441,9 @@ class Session:
 
     @staticmethod
     def _global_cleanup():
+        # IN_MEMORY_SESSION_CTX needs no special handling here: it is closed
+        # by the _ALL_SESSIONS loop below.
         Session._close_all_contexts()
-        if Session.IN_MEMORY_SESSION_CTX is not None:
-            Session.IN_MEMORY_SESSION_CTX.__exit__(None, None, None)
-            Session.IN_MEMORY_SESSION_CTX = None
         if Session.GLOBAL_SESSION_CTX is not None:
             Session.GLOBAL_SESSION_CTX.__exit__(None, None, None)
 

@@ -3140,7 +3140,21 @@ class DatasetQuery:
         query.steps.append(SQLGroupBy(cols, group_by))
         return query
 
+    def _ensure_combinable(self, other: "DatasetQuery", op: str) -> None:
+        """Two chains can be combined only if their catalogs live in the same
+        database: in-memory catalogs share one throwaway database, persistent
+        catalogs share the configured one, but a mix would reference tables
+        across two databases and fail deep inside SQL execution."""
+        if self.catalog.in_memory != other.catalog.in_memory:
+            raise ValueError(
+                f"Cannot {op} a chain backed by an in-memory catalog with one "
+                "backed by a persistent catalog: they live in different "
+                "databases. Recreate both chains with the same `in_memory` "
+                "setting."
+            )
+
     def union(self, dataset_query: "DatasetQuery") -> "DatasetQuery":
+        self._ensure_combinable(dataset_query, "union")
         left = self.clone()
         right = dataset_query.clone()
         return DatasetQuery(
@@ -3158,6 +3172,7 @@ class DatasetQuery:
         full=False,
         rname="right_",
     ) -> "DatasetQuery":
+        self._ensure_combinable(dataset_query, "join")
         left = self.clone(new_table=False)
         if self.table.name == dataset_query.table.name:
             # for use case where we join with itself, e.g dogs.join(dogs, "name")
@@ -3240,6 +3255,7 @@ class DatasetQuery:
 
     @detach
     def subtract(self, dq: "DatasetQuery", on: Sequence[tuple[str, str]]) -> "Self":
+        self._ensure_combinable(dq, "subtract")
         query = self.clone()
         query.steps.append(Subtract(dq, self.catalog, on=on))
         return query

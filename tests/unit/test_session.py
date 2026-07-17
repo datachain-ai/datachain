@@ -267,3 +267,26 @@ def test_read_storage_in_memory_keeps_listing_out_of_catalog(
     # The listing dataset lives only in the throwaway catalog
     assert list(global_session.catalog.listings()) == []
     assert len(list(chain.session.catalog.listings())) == 1
+
+    # Datasets saved through the chain stay in the throwaway catalog too
+    chain.save("mem_only_ds")
+    assert dc.read_dataset("mem_only_ds", in_memory=True).count() == 2
+    with pytest.raises(DatasetNotFoundError):
+        dc.read_dataset("mem_only_ds")
+
+
+def test_combining_in_memory_and_persistent_chains_raises(catalog_tmpfile, monkeypatch):
+    monkeypatch.delenv("DATACHAIN_JOB_ID", raising=False)
+    Session.get(catalog=catalog_tmpfile)
+
+    mem = dc.read_values(num=[1, 2], in_memory=True)
+    persistent = dc.read_values(num=[3, 4])
+
+    with pytest.raises(ValueError, match="in-memory"):
+        mem.union(persistent)
+    with pytest.raises(ValueError, match="in-memory"):
+        persistent.union(mem)
+    with pytest.raises(ValueError, match="in-memory"):
+        persistent.merge(mem, on="num")
+    with pytest.raises(ValueError, match="in-memory"):
+        persistent.subtract(mem, on="num")
