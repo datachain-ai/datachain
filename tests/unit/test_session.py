@@ -440,3 +440,6 @@ def test_combining_in_memory_and_persistent_chains_raises(catalog_tmpfile, monke
         persistent.merge(mem, on="num")
     with pytest.raises(ValueError, match="in-memory"):
         persistent.subtract(mem, on="num")
+    # diff funnels through merge/join and must be guarded transitively
+    with pytest.raises(ValueError, match="in-memory"):
+        persistent.diff(mem, on="num")
