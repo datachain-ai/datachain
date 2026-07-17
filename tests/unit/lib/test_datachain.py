@@ -968,6 +968,15 @@ def test_map_multiple_signals_rejects_params(test_session):
         chain.map(a=lambda n: n, b=lambda n: n, params=["name"])
 
 
+def test_map_multiple_signals_rejects_positional_only(test_session):
+    def upper_only(name, /):
+        return name.upper()
+
+    chain = dc.read_values(name=["foo"], session=test_session)
+    with pytest.raises(DataChainParamsError, match="positional-only"):
+        chain.map(up=upper_only, lower=lambda name: name.lower())
+
+
 def test_map_multiple_signals_chained(test_session):
     """Second function receives first function's output as its param."""
     chain = dc.read_values(name=["foo.txt", "bar.md"], session=test_session).map(

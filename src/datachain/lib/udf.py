@@ -568,7 +568,19 @@ class _MultiSignalMapper(Mapper):
                 self._bound_style.add(name)
                 deps[name] = set()
             else:
-                params = list(inspect.signature(fn).parameters.keys())
+                sig_params = list(inspect.signature(fn).parameters.values())
+                positional_only = [
+                    p.name
+                    for p in sig_params
+                    if p.kind is inspect.Parameter.POSITIONAL_ONLY
+                ]
+                if positional_only:
+                    raise DataChainParamsError(
+                        f"map() function {name!r} has positional-only "
+                        f"parameters ({positional_only}); use plain params so "
+                        "they can be passed by name in multi-signal .map()"
+                    )
+                params = [p.name for p in sig_params]
                 self._per_func_params[name] = params
                 deps[name] = {p for p in params if p in output_names and p != name}
 
