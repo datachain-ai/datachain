@@ -1040,6 +1040,9 @@ class DataChain:
                 "to a top-level column with a single .map() first."
             )
 
+        signal_map = {
+            k: self._bind_udf_settings(v, Mapper) for k, v in signal_map.items()
+        }
         multi_mapper = _MultiSignalMapper(signal_map)
         output_dict: dict[str, Any] = {}
         for name, fn in signal_map.items():

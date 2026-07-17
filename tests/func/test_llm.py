@@ -62,6 +62,27 @@ def test_map_materializes_typed_columns(fake_llm, test_session):
     assert summary == "summary"
 
 
+def test_map_multi_signal_llm(fake_llm, test_session):
+    fake_llm.text_response = "summary"
+
+    chain = base(test_session).map(
+        topic=llm.classify("text", into=["accident", "normal"]),
+        scene=llm.complete("text", schema=Scene),
+        summary=llm.complete("text", "summarize"),
+    )
+
+    assert chain.schema["topic"] == (str | None)
+    assert chain.schema["scene"] == (Scene | None)
+    assert chain.schema["summary"] == (str | None)
+
+    rows = chain.to_list("topic", "scene", "summary")
+    assert len(rows) == 3
+    topic, scene, summary = rows[0]
+    assert topic in {"accident", "normal"}
+    assert scene.objects == ["x"]
+    assert summary == "summary"
+
+
 def test_include_usage_multi_output_map(fake_llm, test_session):
     chain = base(test_session).map(
         llm.complete("text", schema=Scene, include_usage=True),

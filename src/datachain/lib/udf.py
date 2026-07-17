@@ -554,13 +554,23 @@ class _MultiSignalMapper(Mapper):
         self._signal_map = signal_map
         output_names = set(signal_map)
         self._per_func_params: dict[str, list[str]] = {}
+        # Functions stamped with `__datachain_params__` (e.g. bound BoundSpec
+        # callables from `datachain.llm.*`) take their inputs as literal chain
+        # column names and are called positionally instead of by kwargs.
+        self._bound_style: set[str] = set()
         # For each function: which of its params come from another
         # function's output (dependencies) vs from an input row column.
         deps: dict[str, set[str]] = {}
         for name, fn in signal_map.items():
-            params = list(inspect.signature(fn).parameters.keys())
-            self._per_func_params[name] = params
-            deps[name] = {p for p in params if p in output_names and p != name}
+            cols = getattr(fn, "__datachain_params__", None)
+            if isinstance(cols, list):
+                self._per_func_params[name] = list(cols)
+                self._bound_style.add(name)
+                deps[name] = set()
+            else:
+                params = list(inspect.signature(fn).parameters.keys())
+                self._per_func_params[name] = params
+                deps[name] = {p for p in params if p in output_names and p != name}
 
         try:
             self._exec_order = list(TopologicalSorter(deps).static_order())
@@ -574,22 +584,27 @@ class _MultiSignalMapper(Mapper):
         seen: set[str] = set()
         self.combined_params: list[str] = []
         for name in signal_map:
+            bound = name in self._bound_style
             for p in self._per_func_params[name]:
-                if p in output_names:
+                if not bound and p in output_names:
                     continue
                 if p not in seen:
                     seen.add(p)
                     self.combined_params.append(p)
 
     def process(self, *args):
-        kwargs = dict(zip(self.combined_params, args, strict=True))
+        row_by_name = dict(zip(self.combined_params, args, strict=True))
         results: dict[str, Any] = {}
         for name in self._exec_order:
-            fn_kwargs = {
-                p: (results[p] if p in results else kwargs[p])
-                for p in self._per_func_params[name]
-            }
-            results[name] = self._signal_map[name](**fn_kwargs)
+            fn = self._signal_map[name]
+            params = self._per_func_params[name]
+            if name in self._bound_style:
+                results[name] = fn(*[row_by_name[c] for c in params])
+            else:
+                fn_kwargs = {
+                    p: (results[p] if p in results else row_by_name[p]) for p in params
+                }
+                results[name] = fn(**fn_kwargs)
         # Output order follows the user's declared kwarg order, not exec order.
         return tuple(results[name] for name in self._signal_map)
 
