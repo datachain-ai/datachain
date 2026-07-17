@@ -226,25 +226,14 @@ def test_in_memory_with_explicit_in_memory_session():
         assert chain.to_values("num") == [1]
 
 
-def test_first_in_memory_call_becomes_process_default():
+def test_in_memory_never_becomes_process_default():
     Session.cleanup_for_tests()
     try:
         session = Session.get(in_memory=True)
         assert session.catalog.in_memory
-        assert Session.GLOBAL_SESSION_CTX is session
-        assert Session.get() is session  # legacy: unflagged calls share it
-    finally:
-        Session.cleanup_for_tests()
-
-
-def test_first_in_memory_call_in_studio_does_not_become_default(monkeypatch):
-    monkeypatch.setenv("DATACHAIN_IS_STUDIO", "True")
-    Session.cleanup_for_tests()
-    try:
-        session = Session.get(in_memory=True)
-        assert session.catalog.in_memory
-        assert Session.GLOBAL_SESSION_CTX is None
         assert Session.IN_MEMORY_SESSION_CTX is session
+        assert Session.GLOBAL_SESSION_CTX is None
+        assert Session.get(in_memory=True) is session
     finally:
         Session.cleanup_for_tests()
 
@@ -322,10 +311,8 @@ def test_explicit_in_memory_catalog_is_used(catalog):
     Session.get(catalog=catalog)  # persistent global exists
 
     with get_catalog(in_memory=True) as supplied:
-        resolved = Session.get(catalog=supplied, in_memory=True)
-        assert resolved.catalog is supplied
-        assert Session.get(catalog=supplied, in_memory=True) is resolved
-        Session.cleanup_for_tests()
+        assert Session.get(catalog=supplied, in_memory=True).catalog is supplied
+        assert Session.get(catalog=supplied, in_memory=True).catalog is supplied
 
 
 def test_in_memory_session_cleanup_for_tests(catalog):

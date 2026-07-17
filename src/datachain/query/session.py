@@ -71,9 +71,9 @@ class Session:
     GLOBAL_SESSION_CTX: "Session | None" = None
     # The implicit in-memory session; see _get_in_memory_session.
     IN_MEMORY_SESSION_CTX: "Session | None" = None
-    # Owned non-context sessions created by implicit resolution: explicit
-    # in-memory catalog wrappers and per-call client_config overrides.
-    SIDE_SESSIONS: ClassVar[dict[str, "Session"]] = {}
+    # Owned non-context sessions: per-call client_config overrides and
+    # wrappers for explicitly provided in-memory catalogs.
+    OVERRIDE_SESSIONS: ClassVar[dict[str, "Session"]] = {}
     SESSION_CONTEXTS: ClassVar[list["Session"]] = []
     _ALL_SESSIONS: ClassVar[WeakSet["Session"]] = WeakSet()
     ORIGINAL_EXCEPT_HOOK = None
@@ -112,6 +112,7 @@ class Session:
         )
         # Session-local job for in-memory catalogs; see get_or_create_job.
         self._session_job: Job | None = None
+        self._closed = False
         Session._ALL_SESSIONS.add(self)
 
     def __enter__(self):
@@ -121,9 +122,20 @@ class Session:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
+        # Idempotent: a session may be exited by both its `with` block and a
+        # cleanup sweep; a second exit would reconnect the already-closed
+        # database just to query temp datasets, leaking the new connection.
+        if self._closed:
+            return
+        self._closed = True
+
         # Don't cleanup created versions on exception
         # Datasets should persist even if the session fails
-        self._cleanup_temp_datasets()
+        if not getattr(self.catalog.metastore.db, "is_closed", False):
+            # A session over an already-closed database (e.g. a wrapper whose
+            # owner was cleaned up first) has nothing left to clean; querying
+            # would silently reconnect and leak the connection.
+            self._cleanup_temp_datasets()
         if self.is_new_catalog:
             self.catalog.metastore.close_on_exit()
             self.catalog.warehouse.close_on_exit()
@@ -325,12 +337,19 @@ class Session:
         client_config: dict | None = None,
         in_memory: bool = False,
     ) -> "Session":
-        """Creates a Session() object from a catalog.
+        """Resolve the session to use, by precedence:
 
-        Parameters:
-            session (Session): Optional Session(). If not provided a new session will
-                    be created. It's needed mostly for simple API purposes.
-            catalog (Catalog): Optional catalog. By default, a new catalog is created.
+        1. An explicit ``session=`` (validated against ``in_memory``).
+        2. An explicit in-memory ``catalog=``: a wrapper session for exactly
+           that catalog — never the global slot.
+        3. ``in_memory=True``: the process in-memory session — never the
+           global slot.
+        4. The ambient session: active context, else the process-global
+           session created on first use.
+        5. A ``client_config`` differing from the ambient session's returns
+           an owned per-config override session.
+
+        Implicit resolution never enters contexts.
         """
         if session:
             if in_memory and not session.catalog.in_memory:
@@ -339,79 +358,69 @@ class Session:
                 )
             return session
 
-        if in_memory and catalog is not None:
-            if not catalog.in_memory:
+        if catalog is not None and catalog.in_memory:
+            return cls._get_catalog_session(catalog)
+
+        if in_memory:
+            if catalog is not None:
                 raise ValueError(
                     "in_memory=True conflicts with the provided persistent catalog"
                 )
-            # An accepted explicit catalog must be the one actually used,
-            # regardless of ambient/global state.
-            key = f"catalog-{id(catalog)}"
-            explicit = cls.SIDE_SESSIONS.get(key)
-            if explicit is None:
-                explicit = Session("inmemory", catalog=catalog)
-                cls.SIDE_SESSIONS[key] = explicit
-            return explicit
+            return cls._get_in_memory_session(client_config)
 
-        # Access the active (most recent) context from the stack
-        if cls.SESSION_CONTEXTS:
-            session = cls.SESSION_CONTEXTS[-1]
-
-        elif cls.GLOBAL_SESSION_CTX is None:
-            from datachain.lib.dc.utils import is_studio
-
-            if in_memory and catalog is None and is_studio():
-                # Never let a throwaway catalog become the process default in
-                # Studio; locally a first in-memory call does become the
-                # default (legacy behavior).
-                return cls._get_in_memory_session(None, client_config)
-
-            cls.GLOBAL_SESSION_CTX = Session(
-                cls.GLOBAL_SESSION_NAME,
-                catalog,
-                client_config=client_config,
-                in_memory=in_memory,
-            )
-            session = cls.GLOBAL_SESSION_CTX
-
-            atexit.register(cls._global_cleanup)
-            cls.ORIGINAL_EXCEPT_HOOK = sys.excepthook
-            sys.excepthook = cls.except_hook
-        else:
-            session = cls.GLOBAL_SESSION_CTX
-
-        if in_memory:
-            return cls._get_in_memory_session(session, client_config)
+        session = cls._get_ambient_session(catalog, client_config)
 
         if client_config and session.catalog.client_config != client_config:
-            # A per-call config override: an owned, non-context session, so
-            # later calls' default resolution is unaffected.
-            config = _copy_client_config(client_config)
-            key = f"config-{sorted(config.items())!r}"
-            override = cls.SIDE_SESSIONS.get(key)
-            if override is None:
-                override = Session("sideconfig", catalog, client_config=config)
-                cls.SIDE_SESSIONS[key] = override
-            session = override
+            session = cls._get_override_session(client_config)
 
         return session
 
     @classmethod
-    def _get_in_memory_session(
-        cls, ambient: "Session | None", client_config: dict | None = None
+    def _get_ambient_session(
+        cls, catalog: "Catalog | None", client_config: dict | None
     ) -> "Session":
-        """Resolve an implicit ``in_memory=True`` request.
+        """The active context if any, else the process-global session,
+        created on first use (this is the only place that sets it)."""
+        if cls.SESSION_CONTEXTS:
+            return cls.SESSION_CONTEXTS[-1]
+
+        if cls.GLOBAL_SESSION_CTX is None:
+            cls.GLOBAL_SESSION_CTX = Session(
+                cls.GLOBAL_SESSION_NAME, catalog, client_config=client_config
+            )
+            atexit.register(cls._global_cleanup)
+            cls.ORIGINAL_EXCEPT_HOOK = sys.excepthook
+            sys.excepthook = cls.except_hook
+        return cls.GLOBAL_SESSION_CTX
+
+    @classmethod
+    def _get_catalog_session(cls, catalog: "Catalog") -> "Session":
+        """A session for an explicitly provided in-memory catalog. Cached per
+        catalog; owns nothing (the caller owns the catalog)."""
+        key = f"catalog:{id(catalog)}"
+        session = cls.OVERRIDE_SESSIONS.get(key)
+        if session is None:
+            session = Session("inmemory", catalog=catalog)
+            cls.OVERRIDE_SESSIONS[key] = session
+        return session
+
+    @classmethod
+    def _get_in_memory_session(cls, client_config: dict | None) -> "Session":
+        """Resolve an ``in_memory=True`` request.
 
         One implicit in-memory session exists per process; its
         ``client_config`` is frozen at creation (explicit, else inherited
-        from the ambient session). A later call whose effective config
-        differs raises — the process-wide throwaway database cannot isolate
-        data per config. Never entered as a context.
+        from the ambient session). A call whose effective config differs
+        raises — the process-wide throwaway database cannot isolate data per
+        config. Never entered as a context, never the global session.
         """
-        effective = client_config
+        ambient = (
+            cls.SESSION_CONTEXTS[-1] if cls.SESSION_CONTEXTS else cls.GLOBAL_SESSION_CTX
+        )
         if ambient is not None and ambient.catalog.in_memory:
-            session = ambient
+            session, effective = ambient, client_config
         else:
+            effective = client_config
             if effective is None and ambient is not None:
                 effective = ambient.catalog.client_config
             if cls.IN_MEMORY_SESSION_CTX is None:
@@ -429,6 +438,18 @@ class Session:
                 "(explicitly or inherited from the ambient session)"
             )
         return session
+
+    @classmethod
+    def _get_override_session(cls, client_config: dict) -> "Session":
+        """An owned, non-context session for a per-call ``client_config``
+        override, so later calls' default resolution is unaffected."""
+        config = _copy_client_config(client_config)
+        key = repr(sorted(config.items()))
+        override = cls.OVERRIDE_SESSIONS.get(key)
+        if override is None:
+            override = Session("sideconfig", client_config=config)
+            cls.OVERRIDE_SESSIONS[key] = override
+        return override
 
     @staticmethod
     def except_hook(exc_type, exc_value, exc_traceback):
@@ -456,9 +477,9 @@ class Session:
     @classmethod
     def cleanup_for_tests(cls):
         cls._close_all_contexts()
-        for side_session in cls.SIDE_SESSIONS.values():
-            side_session.__exit__(None, None, None)
-        cls.SIDE_SESSIONS.clear()
+        for override_session in cls.OVERRIDE_SESSIONS.values():
+            override_session.__exit__(None, None, None)
+        cls.OVERRIDE_SESSIONS.clear()
         if cls.IN_MEMORY_SESSION_CTX is not None:
             cls.IN_MEMORY_SESSION_CTX.__exit__(None, None, None)
             cls.IN_MEMORY_SESSION_CTX = None

@@ -213,7 +213,7 @@ def test_from_features_basic(test_session):
 
     ds_name = "my_ds"
     ds.save(ds_name)
-    ds = dc.read_dataset(name=ds_name)
+    ds = dc.read_dataset(name=ds_name, in_memory=True)
 
     assert isinstance(ds._query.feature_schema, dict)
     assert isinstance(ds.signals_schema, SignalSchema)
@@ -231,7 +231,7 @@ def test_read_records_basic_in_memory():
 
     ds_name = "my_ds"
     ds.save(ds_name)
-    ds = dc.read_dataset(name=ds_name)
+    ds = dc.read_dataset(name=ds_name, in_memory=True)
 
     assert isinstance(ds._query.feature_schema, dict)
     assert isinstance(ds.signals_schema, SignalSchema)
@@ -273,7 +273,7 @@ def test_read_record_empty_chain_with_schema(test_session):
 
     ds_name = "my_ds"
     ds.save(ds_name)
-    ds = dc.read_dataset(name=ds_name)
+    ds = dc.read_dataset(name=ds_name, in_memory=True)
 
     assert isinstance(ds._query.feature_schema, dict)
     assert isinstance(ds.signals_schema, SignalSchema)
@@ -524,9 +524,9 @@ def test_datasets_in_memory():
     datasets = [d for d in ds.to_values("dataset") if d.name == "fibonacci"]
     assert len(datasets) == 0
 
-    dc.read_values(fib=[1, 1, 2, 3, 5, 8]).save("fibonacci")
+    dc.read_values(fib=[1, 1, 2, 3, 5, 8], in_memory=True).save("fibonacci")
 
-    ds = dc.datasets(column="dataset")
+    ds = dc.datasets(column="dataset", in_memory=True)
     assert ds.session.catalog.in_memory is True
     assert ds.session.catalog.metastore.db.db_file == ":memory:"
     assert ds.session.catalog.warehouse.db.db_file == ":memory:"
@@ -534,7 +534,7 @@ def test_datasets_in_memory():
     assert len(datasets) == 1
     assert datasets[0].num_objects == 6
 
-    ds = dc.datasets(column="foo")
+    ds = dc.datasets(column="foo", in_memory=True)
     assert ds.session.catalog.in_memory is True
     assert ds.session.catalog.metastore.db.db_file == ":memory:"
     assert ds.session.catalog.warehouse.db.db_file == ":memory:"
