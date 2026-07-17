@@ -268,11 +268,14 @@ def test_read_storage_in_memory_keeps_listing_out_of_catalog(
     assert list(global_session.catalog.listings()) == []
     assert len(list(chain.session.catalog.listings())) == 1
 
-    # Datasets saved through the chain stay in the throwaway catalog too
+    # Datasets saved through the chain stay in the throwaway catalog too.
+    # Check the persistent catalog directly — an unflagged read_dataset()
+    # would go through Studio remote fallback in environments with a
+    # non-local default namespace.
     chain.save("mem_only_ds")
     assert dc.read_dataset("mem_only_ds", in_memory=True).count() == 2
     with pytest.raises(DatasetNotFoundError):
-        dc.read_dataset("mem_only_ds")
+        global_session.catalog.get_dataset("mem_only_ds")
 
 
 def test_in_memory_save_read_roundtrip_in_studio_job_env(catalog_tmpfile, monkeypatch):
