@@ -275,6 +275,49 @@ def test_read_storage_in_memory_keeps_listing_out_of_catalog(
         dc.read_dataset("mem_only_ds")
 
 
+def test_in_memory_save_read_roundtrip_in_studio_job_env(catalog_tmpfile, monkeypatch):
+    from datachain.data_storage import JobQueryType, JobStatus
+
+    # Simulate a Studio job: is_studio() is true, the job lives in the
+    # persistent metastore and is advertised via env, and the job's project
+    # is routed via DATACHAIN_PROJECT (applies to any session — env is
+    # process-global).
+    job_id = catalog_tmpfile.metastore.create_job(
+        "studio-job", "", query_type=JobQueryType.PYTHON, status=JobStatus.RUNNING
+    )
+    monkeypatch.setenv("DATACHAIN_IS_STUDIO", "True")
+    monkeypatch.setenv("DATACHAIN_JOB_ID", job_id)
+    monkeypatch.setenv("DATACHAIN_PROJECT", "dev.analytics")
+
+    Session.get(catalog=catalog_tmpfile)
+
+    # Save resolves the env project and auto-creates it (is_studio() ⇒
+    # create=True) in the throwaway metastore; the session-local job is
+    # used, not the env job.
+    dc.read_values(num=[1, 2, 3], in_memory=True).save("gate")
+
+    # Symmetric read: same env resolution, same throwaway catalog.
+    assert dc.read_dataset("gate", in_memory=True).count() == 3
+    assert dc.read_dataset("dev.analytics.gate", in_memory=True).count() == 3
+
+    in_memory_catalog = Session.IN_MEMORY_SESSION_CTX.catalog
+    ds = in_memory_catalog.get_dataset(
+        "gate", namespace_name="dev", project_name="analytics", versions=None
+    )
+    assert ds.versions[-1].job_id != job_id  # session-local job attributed
+
+    # Nothing leaked into the persistent catalog.
+    with pytest.raises(DatasetNotFoundError):
+        catalog_tmpfile.get_dataset(
+            "gate", namespace_name="dev", project_name="analytics"
+        )
+
+    # And in Studio there is no remote fallback: an unknown dataset in the
+    # in-memory catalog fails cleanly.
+    with pytest.raises(DatasetNotFoundError):
+        dc.read_dataset("missing_ds", in_memory=True)
+
+
 def test_combining_in_memory_and_persistent_chains_raises(catalog_tmpfile, monkeypatch):
     monkeypatch.delenv("DATACHAIN_JOB_ID", raising=False)
     Session.get(catalog=catalog_tmpfile)
