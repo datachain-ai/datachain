@@ -211,6 +211,60 @@ def test_get_in_memory_session_with_persistent_session_present(catalog):
     assert session.catalog.client_config == global_session.catalog.client_config
 
 
+def test_in_memory_conflicts_with_explicit_persistent_session(catalog):
+    with Session("conflict1", catalog=catalog) as session:
+        with pytest.raises(ValueError, match="in_memory"):
+            dc.read_values(num=[1], session=session, in_memory=True)
+
+    with pytest.raises(ValueError, match="in_memory"):
+        Session.get(catalog=catalog, in_memory=True)
+
+
+def test_in_memory_with_explicit_in_memory_session():
+    with Session("mem1", in_memory=True) as session:
+        chain = dc.read_values(num=[1], session=session, in_memory=True)
+        assert chain.to_values("num") == [1]
+
+
+def test_first_in_memory_call_becomes_process_default():
+    Session.cleanup_for_tests()
+    try:
+        session = Session.get(in_memory=True)
+        assert session.catalog.in_memory
+        assert Session.GLOBAL_SESSION_CTX is session
+        assert Session.get() is session  # legacy: unflagged calls share it
+    finally:
+        Session.cleanup_for_tests()
+
+
+def test_first_in_memory_call_in_studio_does_not_become_default(monkeypatch):
+    monkeypatch.setenv("DATACHAIN_IS_STUDIO", "True")
+    Session.cleanup_for_tests()
+    try:
+        session = Session.get(in_memory=True)
+        assert session.catalog.in_memory
+        assert Session.GLOBAL_SESSION_CTX is None
+        assert Session.IN_MEMORY_SESSION_CTX is session
+    finally:
+        Session.cleanup_for_tests()
+
+
+def test_in_memory_sessions_with_differing_client_config(catalog):
+    Session.get(catalog=catalog)
+
+    first = Session.get(in_memory=True, client_config={"anon": True})
+    same = Session.get(in_memory=True)
+    other = Session.get(in_memory=True, client_config={"anon": False})
+
+    assert first is same
+    assert other is not first
+    assert other.catalog.client_config == {"anon": False}
+    assert Session.get(in_memory=True, client_config={"anon": False}) is other
+    # Implicit resolution must not leak contexts or change the default
+    assert not Session.SESSION_CONTEXTS
+    assert Session.get() is Session.GLOBAL_SESSION_CTX
+
+
 def test_in_memory_session_cleanup_for_tests(catalog):
     Session.get(catalog=catalog)
     session = Session.get(in_memory=True)

@@ -1388,14 +1388,12 @@ def test_parse_tabular_partitions(tmp_dir, test_session):
 
 
 def test_parse_tabular_no_files(test_session):
-    chain = dc.read_values(
-        f1=features, num=range(len(features)), session=test_session, in_memory=True
-    )
+    chain = dc.read_values(f1=features, num=range(len(features)), session=test_session)
     with pytest.raises(DatasetPrepareError):
         chain.parse_tabular()
 
     schema = {"file": File, "my_col": int}
-    chain = dc.read_records([], schema=schema, session=test_session, in_memory=True)
+    chain = dc.read_records([], schema=schema, session=test_session)
 
     with pytest.raises(DatasetPrepareError):
         chain.parse_tabular()

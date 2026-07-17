@@ -103,7 +103,9 @@ def read_storage(
             chain land in a throwaway database that disappears with the
             process. Useful for one-off reads of ephemeral locations (e.g. a
             job's local working directory) that should not leave persistent
-            listings behind. Default is False.
+            listings behind. Outside Studio, if this is the first session in
+            the process, the in-memory session also becomes the process
+            default, so later unflagged calls share it. Default is False.
         anon: If True, we will treat cloud bucket as public one.
         client_config: Optional client configuration for the storage client.
         delta: If True, only process new or changed files instead of reprocessing
