@@ -213,7 +213,7 @@ def test_from_features_basic(test_session):
 
     ds_name = "my_ds"
     ds.save(ds_name)
-    ds = dc.read_dataset(name=ds_name, in_memory=True)
+    ds = dc.read_dataset(name=ds_name, session=test_session)
 
     assert isinstance(ds._query.feature_schema, dict)
     assert isinstance(ds.signals_schema, SignalSchema)
@@ -273,7 +273,7 @@ def test_read_record_empty_chain_with_schema(test_session):
 
     ds_name = "my_ds"
     ds.save(ds_name)
-    ds = dc.read_dataset(name=ds_name, in_memory=True)
+    ds = dc.read_dataset(name=ds_name, session=test_session)
 
     assert isinstance(ds._query.feature_schema, dict)
     assert isinstance(ds.signals_schema, SignalSchema)

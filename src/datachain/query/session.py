@@ -122,9 +122,18 @@ class Session:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        # Idempotent: a session may be exited by both its `with` block and a
-        # cleanup sweep; a second exit would reconnect the already-closed
-        # database just to query temp datasets, leaking the new connection.
+        # Each exit removes only *this* session's most recent stack entry:
+        # exiting a non-context session, exiting out of order, or re-entrant
+        # `with session:` blocks must not corrupt the context stack.
+        for i in range(len(Session.SESSION_CONTEXTS) - 1, -1, -1):
+            if Session.SESSION_CONTEXTS[i] is self:
+                del Session.SESSION_CONTEXTS[i]
+                break
+
+        # Resource cleanup is idempotent: a session may be exited by both its
+        # `with` block and a cleanup sweep; a second pass would reconnect the
+        # already-closed database just to query temp datasets, leaking the
+        # new connection.
         if self._closed:
             return
         self._closed = True
@@ -140,10 +149,6 @@ class Session:
             self.catalog.metastore.close_on_exit()
             self.catalog.warehouse.close_on_exit()
 
-        # Only ever remove *this* session: exiting a non-context session (or
-        # exiting out of order) must not corrupt the context stack.
-        if self in Session.SESSION_CONTEXTS:
-            Session.SESSION_CONTEXTS.remove(self)
         Session._ALL_SESSIONS.discard(self)
 
     def get_job(self) -> "Job | None":
@@ -371,6 +376,14 @@ class Session:
         session = cls._get_ambient_session(catalog, client_config)
 
         if client_config and session.catalog.client_config != client_config:
+            if not session.is_new_catalog:
+                # The override session rebuilds its catalog from the default/
+                # environment configuration; an explicitly provided catalog
+                # object cannot be reconstructed with another config.
+                raise ValueError(
+                    "client_config conflicts with the session's explicitly "
+                    "provided catalog; pass an explicit session instead"
+                )
             session = cls._get_override_session(client_config)
 
         return session

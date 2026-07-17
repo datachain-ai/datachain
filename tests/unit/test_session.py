@@ -278,17 +278,37 @@ def test_in_memory_session_config_deeply_frozen(catalog):
     assert session.catalog.client_config == {"client_kwargs": {"endpoint_url": "A"}}
 
 
-def test_persistent_config_override_is_call_scoped(catalog):
-    global_session = Session.get(catalog=catalog)
+def test_reentrant_session_context_keeps_stack_consistent(catalog):
+    with Session("reenter1", catalog=catalog) as session:
+        with session:
+            assert [session, session] == Session.SESSION_CONTEXTS
+        assert [session] == Session.SESSION_CONTEXTS
+    assert Session.SESSION_CONTEXTS == []
 
-    override = Session.get(client_config={"anon": True})
-    assert override is not global_session
-    assert override.catalog.client_config == {"anon": True}
-    assert Session.get(client_config={"anon": True}) is override
 
-    # The override must not become ambient state
-    assert not Session.SESSION_CONTEXTS
-    assert Session.get() is global_session
+def test_config_override_with_explicit_catalog_raises(catalog):
+    with Session("customcat", catalog=catalog):
+        with pytest.raises(ValueError, match="explicitly provided catalog"):
+            Session.get(client_config={"anon": True})
+
+
+def test_persistent_config_override_is_call_scoped():
+    # Overrides rebuild the catalog from default/env config, so the global
+    # session here must not wrap an explicitly provided catalog object.
+    Session.cleanup_for_tests()
+    try:
+        global_session = Session.get()
+
+        override = Session.get(client_config={"anon": True})
+        assert override is not global_session
+        assert override.catalog.client_config == {"anon": True}
+        assert Session.get(client_config={"anon": True}) is override
+
+        # The override must not become ambient state
+        assert not Session.SESSION_CONTEXTS
+        assert Session.get() is global_session
+    finally:
+        Session.cleanup_for_tests()
 
 
 def test_in_memory_context_with_conflicting_config():
