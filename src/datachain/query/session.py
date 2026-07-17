@@ -95,7 +95,7 @@ class Session:
             client_config=client_config, in_memory=in_memory
         )
         # Session-local job used for in-memory catalogs; see
-        # _get_or_create_session_job.
+        # get_or_create_job.
         self._session_job: Job | None = None
         Session._ALL_SESSIONS.add(self)
 
@@ -154,9 +154,10 @@ class Session:
             - If a job already exists, it is returned.
             - If in Studio without DATACHAIN_JOB_ID, raises an error.
             - If ``DATACHAIN_JOB_ID`` is set, the corresponding job is fetched.
-            - Otherwise, a new job is created:
-                * Name = absolute path to the Python script.
-                * Query = empty string.
+            - Otherwise, a new job is created (see _create_job):
+                * Name = absolute path to the Python script, or a UUID for
+                  interactive/module runs.
+                * Query = the script contents when available, else empty.
                 * Parent = last job with the same name, if available.
                 * Status = "running".
               Exit hooks are registered to finalize the job.
