@@ -249,17 +249,23 @@ def test_first_in_memory_call_in_studio_does_not_become_default(monkeypatch):
         Session.cleanup_for_tests()
 
 
-def test_in_memory_sessions_with_differing_client_config(catalog):
-    Session.get(catalog=catalog)
+def test_in_memory_sessions_cached_by_client_config(catalog):
+    Session.get(catalog=catalog)  # global, client_config == {}
 
-    first = Session.get(in_memory=True, client_config={"anon": True})
-    same = Session.get(in_memory=True)
-    other = Session.get(in_memory=True, client_config={"anon": False})
+    default = Session.get(in_memory=True)  # inherits {} from global
+    assert default.catalog.client_config == {}
+    assert Session.get(in_memory=True) is default
 
-    assert first is same
-    assert other is not first
-    assert other.catalog.client_config == {"anon": False}
-    assert Session.get(in_memory=True, client_config={"anon": False}) is other
+    anon = Session.get(in_memory=True, client_config={"anon": True})
+    assert anon is not default
+    assert anon.catalog.client_config == {"anon": True}
+    assert Session.get(in_memory=True, client_config={"anon": True}) is anon
+
+    # Config inherited from the ambient session selects the same session
+    # as passing it explicitly
+    with Session("ambient1", client_config={"anon": True}):
+        assert Session.get(in_memory=True) is anon
+
     # Implicit resolution must not leak contexts or change the default
     assert not Session.SESSION_CONTEXTS
     assert Session.get() is Session.GLOBAL_SESSION_CTX

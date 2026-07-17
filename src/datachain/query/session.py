@@ -57,9 +57,9 @@ class Session:
     """
 
     GLOBAL_SESSION_CTX: "Session | None" = None
+    # In-memory sessions, keyed by client_config, plus the first-created one;
+    # see _get_in_memory_session.
     IN_MEMORY_SESSION_CTX: "Session | None" = None
-    # Extra in-memory sessions, keyed by client_config; see
-    # _get_in_memory_session.
     IN_MEMORY_SESSIONS: ClassVar[dict[str, "Session"]] = {}
     SESSION_CONTEXTS: ClassVar[list["Session"]] = []
     _ALL_SESSIONS: ClassVar[WeakSet["Session"]] = WeakSet()
@@ -378,28 +378,22 @@ class Session:
         """The process-wide in-memory session, created on first use.
 
         Backs ``in_memory=True`` chains when the ambient session has a
-        persistent catalog (e.g. inside a Studio job). Cached so such chains
-        share one throwaway database. A request with a different
-        ``client_config`` gets its own session — never entered as a context —
-        backed by the same shared-cache database, so chains stay combinable.
+        persistent catalog (e.g. inside a Studio job). Sessions are cached by
+        effective ``client_config`` (explicit, else inherited from the
+        ambient session) and never entered as contexts. All are backed by the
+        same shared-cache database, so their chains stay combinable.
         """
         if client_config is None and base_session is not None:
             client_config = base_session.catalog.client_config
 
-        cached = cls.IN_MEMORY_SESSION_CTX
-        if cached is None:
-            cls.IN_MEMORY_SESSION_CTX = Session(
-                "inmemory", client_config=client_config, in_memory=True
-            )
-            return cls.IN_MEMORY_SESSION_CTX
-        if client_config and cached.catalog.client_config != client_config:
-            key = repr(sorted(client_config.items()))
-            if key not in cls.IN_MEMORY_SESSIONS:
-                cls.IN_MEMORY_SESSIONS[key] = Session(
-                    "inmemory", client_config=client_config, in_memory=True
-                )
-            return cls.IN_MEMORY_SESSIONS[key]
-        return cached
+        key = "None" if client_config is None else repr(sorted(client_config.items()))
+        session = cls.IN_MEMORY_SESSIONS.get(key)
+        if session is None:
+            session = Session("inmemory", client_config=client_config, in_memory=True)
+            cls.IN_MEMORY_SESSIONS[key] = session
+            if cls.IN_MEMORY_SESSION_CTX is None:
+                cls.IN_MEMORY_SESSION_CTX = session
+        return session
 
     @staticmethod
     def except_hook(exc_type, exc_value, exc_traceback):
@@ -427,12 +421,10 @@ class Session:
     @classmethod
     def cleanup_for_tests(cls):
         cls._close_all_contexts()
-        for extra in cls.IN_MEMORY_SESSIONS.values():
-            extra.__exit__(None, None, None)
+        for in_memory_session in cls.IN_MEMORY_SESSIONS.values():
+            in_memory_session.__exit__(None, None, None)
         cls.IN_MEMORY_SESSIONS.clear()
-        if cls.IN_MEMORY_SESSION_CTX is not None:
-            cls.IN_MEMORY_SESSION_CTX.__exit__(None, None, None)
-            cls.IN_MEMORY_SESSION_CTX = None
+        cls.IN_MEMORY_SESSION_CTX = None
         if cls.GLOBAL_SESSION_CTX is not None:
             cls.GLOBAL_SESSION_CTX.__exit__(None, None, None)
             cls.GLOBAL_SESSION_CTX = None
