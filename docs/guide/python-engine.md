@@ -168,24 +168,38 @@ chain = (
 )
 ```
 
-## One Signal Per Operation
+## Multiple Signals Per `map()`
 
-Each `map()`, `gen()`, or `agg()` call produces exactly one output signal. Group multiple outputs in a Pydantic model:
+`map()` accepts multiple keyword-function pairs, each producing one output signal. All functions run in one pass over the rows, so this is faster than chaining separate `.map()` calls:
+
+```python
+chain.map(
+    stem=lambda name: name.rsplit(".", 1)[0],
+    ext=lambda name: name.rsplit(".", 1)[1],
+)
+```
+
+Each function's return type annotation defines the signal's type (defaults to `str` if unannotated).
+
+If one function's parameter name matches another's output name, it receives that function's result instead of a row column. Kwarg order doesn't matter; cycles raise `ValueError`:
+
+```python
+chain.map(
+    stem=lambda name: name.rsplit(".", 1)[0],
+    upper=lambda stem: stem.upper(),  # receives stem's output
+)
+```
+
+For related fields produced together (e.g. by one LLM call), return a Pydantic model instead:
 
 ```python
 from pydantic import BaseModel
-import datachain as dc
 
 class Result(BaseModel):
     label: str
     confidence: float
-    tokens: int
 
-# GOOD: one Pydantic model
 chain.map(result=classify)
-
-# BAD: multiple outputs per call
-# chain.map(label=..., confidence=..., tokens=...)  # not supported
 ```
 
 A function that returns a tuple is the exception. In the keyword form its parts
