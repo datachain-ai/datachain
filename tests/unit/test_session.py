@@ -191,3 +191,79 @@ def test_get_or_create_job_raises_in_studio_without_env(catalog, monkeypatch):
     with Session("testjob", catalog=catalog) as session:
         with pytest.raises(DataChainError, match="Cannot create job in Studio"):
             session.get_or_create_job()
+
+
+def test_get_in_memory_session_with_persistent_session_present(catalog):
+    global_session = Session.get(catalog=catalog)
+    assert not global_session.catalog.in_memory
+
+    session = Session.get(in_memory=True)
+    assert session is not global_session
+    assert session.catalog.in_memory
+
+    # A single in-memory session is cached and reused
+    assert Session.get(in_memory=True) is session
+
+    # Default resolution is unaffected
+    assert Session.get() is global_session
+
+    # client_config is inherited from the session it shadows
+    assert session.catalog.client_config == global_session.catalog.client_config
+
+
+def test_in_memory_session_cleanup_for_tests(catalog):
+    Session.get(catalog=catalog)
+    session = Session.get(in_memory=True)
+    assert Session.IN_MEMORY_SESSION_CTX is session
+
+    Session.cleanup_for_tests()
+    assert Session.IN_MEMORY_SESSION_CTX is None
+
+
+def test_in_memory_session_job_isolated_from_env(catalog, monkeypatch):
+    from datachain.data_storage import JobQueryType, JobStatus
+
+    # A job exists in the persistent metastore and is advertised via env,
+    # as inside a Studio job run.
+    job_id = catalog.metastore.create_job(
+        "env-job", "", query_type=JobQueryType.PYTHON, status=JobStatus.RUNNING
+    )
+    monkeypatch.setenv("DATACHAIN_JOB_ID", job_id)
+
+    Session.get(catalog=catalog)
+    session = Session.get(in_memory=True)
+
+    # The env job must not leak into the throwaway catalog
+    assert session.get_job() is None
+
+    job = session.get_or_create_job()
+    assert job is not None
+    assert job.id != job_id
+    assert session.get_or_create_job() is job
+    assert session.get_job() is job
+
+    # ...and the session-local job must not leak into the process-wide cache
+    assert Session._CURRENT_JOB is None
+
+
+def test_read_storage_in_memory_keeps_listing_out_of_catalog(
+    catalog_tmpfile, tmp_path, monkeypatch
+):
+    # catalog_tmpfile: a file-backed catalog is required here — an in-memory
+    # test catalog would share the process-wide SQLite shared-cache database
+    # with the throwaway catalog, defeating the isolation this test checks.
+    monkeypatch.delenv("DATACHAIN_JOB_ID", raising=False)
+    data_dir = tmp_path / "data"  # tmp_path itself holds the catalog's db file
+    data_dir.mkdir()
+    (data_dir / "a.txt").write_text("a")
+    (data_dir / "b.txt").write_text("b")
+
+    global_session = Session.get(catalog=catalog_tmpfile)
+
+    chain = dc.read_storage(data_dir.as_uri(), in_memory=True)
+    assert chain.count() == 2
+    assert chain.session.catalog.in_memory
+
+    # The listing dataset lives only in the throwaway catalog
+    assert list(global_session.catalog.listings()) == []
+    assert len(list(chain.session.catalog.listings())) == 1

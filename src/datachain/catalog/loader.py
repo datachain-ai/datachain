@@ -21,14 +21,21 @@ DISTRIBUTED_IMPORT_PYTHONPATH = "DATACHAIN_DISTRIBUTED_PYTHONPATH"
 DISTRIBUTED_IMPORT_PATH = "DATACHAIN_DISTRIBUTED"
 DISTRIBUTED_DISABLED = "DATACHAIN_DISTRIBUTED_DISABLED"
 
-IN_MEMORY_ERROR_MESSAGE = "In-memory is only supported on SQLite"
-
 
 def get_metastore(in_memory: bool = False) -> "AbstractMetastore":
     ensure_plugins_loaded()
 
     from datachain.data_storage import AbstractMetastore
     from datachain.data_storage.serializer import deserialize
+
+    if in_memory:
+        # An explicit in-memory request always wins over environment-provided
+        # configuration: the caller asked for a throwaway catalog, not the
+        # configured one (e.g. to avoid persisting listings of ephemeral
+        # locations when running inside a job).
+        from datachain.data_storage.sqlite import SQLiteMetastore
+
+        return SQLiteMetastore(in_memory=True)
 
     metastore_serialized = os.environ.get(METASTORE_SERIALIZED)
     if metastore_serialized:
@@ -50,10 +57,7 @@ def get_metastore(in_memory: bool = False) -> "AbstractMetastore":
     if not metastore_import_path:
         from datachain.data_storage.sqlite import SQLiteMetastore
 
-        metastore_args["in_memory"] = in_memory
         return SQLiteMetastore(**metastore_args)
-    if in_memory:
-        raise RuntimeError(IN_MEMORY_ERROR_MESSAGE)
     # Metastore paths are specified as (for example):
     # datachain.data_storage.SQLiteMetastore
     if "." not in metastore_import_path:
@@ -71,6 +75,12 @@ def get_warehouse(in_memory: bool = False) -> "AbstractWarehouse":
 
     from datachain.data_storage import AbstractWarehouse
     from datachain.data_storage.serializer import deserialize
+
+    if in_memory:
+        # See get_metastore: explicit in-memory beats environment config.
+        from datachain.data_storage.sqlite import SQLiteWarehouse
+
+        return SQLiteWarehouse(in_memory=True)
 
     warehouse_serialized = os.environ.get(WAREHOUSE_SERIALIZED)
     if warehouse_serialized:
@@ -92,10 +102,7 @@ def get_warehouse(in_memory: bool = False) -> "AbstractWarehouse":
     if not warehouse_import_path:
         from datachain.data_storage.sqlite import SQLiteWarehouse
 
-        warehouse_args["in_memory"] = in_memory
         return SQLiteWarehouse(**warehouse_args)
-    if in_memory:
-        raise RuntimeError(IN_MEMORY_ERROR_MESSAGE)
     # Warehouse paths are specified as (for example):
     # datachain.data_storage.SQLiteWarehouse
     if "." not in warehouse_import_path:

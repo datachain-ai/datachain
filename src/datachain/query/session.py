@@ -57,6 +57,7 @@ class Session:
     """
 
     GLOBAL_SESSION_CTX: "Session | None" = None
+    IN_MEMORY_SESSION_CTX: "Session | None" = None
     SESSION_CONTEXTS: ClassVar[list["Session"]] = []
     _ALL_SESSIONS: ClassVar[WeakSet["Session"]] = WeakSet()
     ORIGINAL_EXCEPT_HOOK = None
@@ -93,6 +94,9 @@ class Session:
         self.catalog = catalog or get_catalog(
             client_config=client_config, in_memory=in_memory
         )
+        # Session-local job used for in-memory catalogs; see
+        # _get_or_create_session_job.
+        self._session_job: Job | None = None
         Session._ALL_SESSIONS.add(self)
 
     def __enter__(self):
@@ -119,7 +123,15 @@ class Session:
 
         Checks the cached ``_CURRENT_JOB`` and ``DATACHAIN_JOB_ID`` env var.
         Returns None if no job is found.
+
+        Sessions with an in-memory catalog only ever see their session-local
+        job: jobs referenced by ``DATACHAIN_JOB_ID`` live in the configured
+        metastore, not in the throwaway one, and the process-wide job must not
+        leak into (or out of) the temporary catalog.
         """
+        if self.catalog.in_memory:
+            return self._session_job
+
         if Session._CURRENT_JOB:
             return Session._CURRENT_JOB
 
@@ -150,8 +162,13 @@ class Session:
               Exit hooks are registered to finalize the job.
 
         Note:
-            Job is shared across all Session instances to ensure one job per process.
+            Job is shared across all Session instances to ensure one job per
+            process, except for sessions with an in-memory catalog, which use
+            a session-local job (see _get_or_create_session_job).
         """
+        if self.catalog.in_memory:
+            return self._get_or_create_session_job()
+
         if Session._CURRENT_JOB:
             return Session._CURRENT_JOB
 
@@ -215,6 +232,29 @@ class Session:
 
         assert Session._CURRENT_JOB is not None
         return Session._CURRENT_JOB
+
+    def _get_or_create_session_job(self) -> "Job":
+        """Session-local job for in-memory catalogs.
+
+        An in-memory catalog is a throwaway SQLite database: a job referenced
+        by ``DATACHAIN_JOB_ID`` lives in the configured metastore and does not
+        exist here, so the env var is deliberately ignored. A job is created
+        in the in-memory metastore instead (UDF checkpoints require one) and
+        kept per-session — never shared through the class-level cache, so it
+        can't leak into datasets of persistent catalogs (or vice versa).
+        """
+        if self._session_job is None:
+            python_version = f"{sys.version_info.major}.{sys.version_info.minor}"
+            job_id = self.catalog.metastore.create_job(
+                name=f"in-memory-{self.name}",
+                query="",
+                query_type=JobQueryType.PYTHON,
+                status=JobStatus.RUNNING,
+                python_version=python_version,
+            )
+            self._session_job = self.catalog.metastore.get_job(job_id)
+        assert self._session_job is not None
+        return self._session_job
 
     def _finalize_job_success(self):
         """Mark the current job as completed."""
@@ -327,6 +367,20 @@ class Session:
         else:
             session = cls.GLOBAL_SESSION_CTX
 
+        if in_memory and catalog is None and not session.catalog.in_memory:
+            # An in-memory catalog was requested, but the resolved session is
+            # backed by a persistent one (e.g. inside a Studio job). Route to
+            # a dedicated throwaway session instead of silently ignoring the
+            # request. A single cached session is reused so all in-memory
+            # chains share one warehouse and can be combined.
+            if cls.IN_MEMORY_SESSION_CTX is None:
+                cls.IN_MEMORY_SESSION_CTX = Session(
+                    "inmemory",
+                    client_config=client_config or session.catalog.client_config,
+                    in_memory=True,
+                )
+            return cls.IN_MEMORY_SESSION_CTX
+
         if client_config and session.catalog.client_config != client_config:
             session = Session(
                 "session" + uuid4().hex[:4],
@@ -364,6 +418,9 @@ class Session:
     @classmethod
     def cleanup_for_tests(cls):
         cls._close_all_contexts()
+        if cls.IN_MEMORY_SESSION_CTX is not None:
+            cls.IN_MEMORY_SESSION_CTX.__exit__(None, None, None)
+            cls.IN_MEMORY_SESSION_CTX = None
         if cls.GLOBAL_SESSION_CTX is not None:
             cls.GLOBAL_SESSION_CTX.__exit__(None, None, None)
             cls.GLOBAL_SESSION_CTX = None
@@ -387,6 +444,9 @@ class Session:
     @staticmethod
     def _global_cleanup():
         Session._close_all_contexts()
+        if Session.IN_MEMORY_SESSION_CTX is not None:
+            Session.IN_MEMORY_SESSION_CTX.__exit__(None, None, None)
+            Session.IN_MEMORY_SESSION_CTX = None
         if Session.GLOBAL_SESSION_CTX is not None:
             Session.GLOBAL_SESSION_CTX.__exit__(None, None, None)
 
