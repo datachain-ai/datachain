@@ -1,5 +1,6 @@
 import copy
 import hashlib
+import inspect
 import io
 import logging
 import os
@@ -63,6 +64,7 @@ from datachain.lib.udf import (
     Generator,
     Mapper,
     UDFBase,
+    _MultiSignalMapper,
 )
 from datachain.lib.udf_signature import UdfSignature
 from datachain.lib.utils import DataChainColumnError, DataChainParamsError
@@ -989,8 +991,18 @@ class DataChain:
             )
             chain.save("new_dataset")
             ```
+
+            Defining multiple signals in one call (single UDF stage, both
+            functions run per row, no intermediate column materialized):
+            ```py
+            chain = chain.map(stem=lambda name: name[:-4], ext=lambda name: name[-3:])
+            chain.save("new_dataset")
+            ```
         """
-        udf_obj = self._udf_to_obj(Mapper, func, params, output, signal_map)
+        if len(signal_map) > 1:
+            udf_obj = self._build_multi_signal_mapper(func, params, output, signal_map)
+        else:
+            udf_obj = self._udf_to_obj(Mapper, func, params, output, signal_map)
         if (prefetch := self._settings.prefetch) is not None:
             udf_obj.prefetch = prefetch
 
@@ -1001,6 +1013,48 @@ class DataChain:
                 **self._settings.to_dict(),
             ),
             signal_schema=sys_schema | self.signals_schema | udf_obj.output,
+        )
+
+    def _build_multi_signal_mapper(
+        self,
+        func: Callable | None,
+        params: str | Sequence[str] | None,
+        output: OutputType,
+        signal_map: dict[str, Callable],
+    ) -> "Mapper":
+        """Build a single Mapper that runs all functions in `signal_map` per row."""
+        if func is not None:
+            raise DataChainParamsError(
+                "map() can't combine 'func' with multiple signal kwargs"
+            )
+        if output is not None:
+            raise DataChainParamsError(
+                "map() can't combine 'output' with multiple signal kwargs; "
+                "use function return-type annotations instead"
+            )
+        if params is not None:
+            raise DataChainParamsError(
+                "map() can't combine 'params' with multiple signal kwargs; "
+                "each function's parameter names are matched to chain columns "
+                "individually. For nested columns (e.g. 'file.path'), extract "
+                "to a top-level column with a single .map() first."
+            )
+
+        multi_mapper = _MultiSignalMapper(signal_map)
+        output_dict: dict[str, Any] = {}
+        for name, fn in signal_map.items():
+            anno = inspect.signature(fn).return_annotation
+            output_dict[name] = (
+                anno
+                if anno is not inspect.Signature.empty
+                else UdfSignature.DEFAULT_RETURN_TYPE
+            )
+        return self._udf_to_obj(
+            Mapper,
+            multi_mapper,
+            params=multi_mapper.combined_params,
+            output=output_dict,
+            signal_map={},
         )
 
     def gen(
