@@ -51,6 +51,7 @@ def running_img_masks() -> torch.Tensor:
 
 
 def _assert_segment_shape(segment, expected_title, bbox, tol=2):
+    assert set(segment) == {"title", "x", "y"}
     assert segment["title"] == expected_title
     x, y = segment["x"], segment["y"]
     assert len(x) > 0 and len(x) == len(y)
@@ -291,7 +292,7 @@ def test_yolo_seg_from_results(running_img, running_img_masks):
         "coords": [12, 178, 71, 239],
         "title": "dog",
     }
-    _assert_segment_shape(model_dict["segment"], "dog", [12, 178, 71, 239])
+    _assert_segment_shape(model_dict["segment"], "dog", model_dict["box"]["coords"])
 
     model = YoloSegments.from_results([result])
     model_dict = model.model_dump()
@@ -310,8 +311,12 @@ def test_yolo_seg_from_results(running_img, running_img_masks):
         {"coords": [101, 84, 183, 238], "title": "person"},
     ]
     assert len(model_dict["segment"]) == 2
-    _assert_segment_shape(model_dict["segment"][0], "dog", [12, 178, 71, 239])
-    _assert_segment_shape(model_dict["segment"][1], "person", [101, 84, 183, 238])
+    _assert_segment_shape(
+        model_dict["segment"][0], "dog", model_dict["box"][0]["coords"]
+    )
+    _assert_segment_shape(
+        model_dict["segment"][1], "person", model_dict["box"][1]["coords"]
+    )
 
 
 def test_yolo_pose_from_results_empty(running_img):
