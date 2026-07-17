@@ -425,21 +425,49 @@ def test_in_memory_save_read_roundtrip_in_studio_job_env(catalog_tmpfile, monkey
         dc.read_dataset("missing_ds", in_memory=True)
 
 
-def test_combining_in_memory_and_persistent_chains_raises(catalog_tmpfile, monkeypatch):
+def _compare_and_split(left, right):
+    from datachain.diff import compare_and_split
+
+    return compare_and_split(left, right, on="num")
+
+
+@pytest.mark.parametrize(
+    "op",
+    [
+        pytest.param(lambda left, right: left.union(right), id="union"),
+        pytest.param(lambda left, right: left.merge(right, on="num"), id="merge"),
+        pytest.param(lambda left, right: left.subtract(right, on="num"), id="subtract"),
+        pytest.param(lambda left, right: left.diff(right, on="num"), id="diff"),
+        pytest.param(_compare_and_split, id="compare_and_split"),
+    ],
+)
+@pytest.mark.parametrize("mem_side", ["left", "right"])
+def test_two_chain_apis_guard_mixed_catalogs(
+    catalog_tmpfile, monkeypatch, op, mem_side
+):
+    # Every public API combining two chains must reject an in-memory x
+    # persistent pair up front, whichever side is in-memory.
     monkeypatch.delenv("DATACHAIN_JOB_ID", raising=False)
     Session.get(catalog=catalog_tmpfile)
 
     mem = dc.read_values(num=[1, 2], in_memory=True)
     persistent = dc.read_values(num=[3, 4])
+    left, right = (mem, persistent) if mem_side == "left" else (persistent, mem)
 
     with pytest.raises(ValueError, match="in-memory"):
-        mem.union(persistent)
+        op(left, right)
+
+
+@pytest.mark.parametrize("mem_side", ["left", "right"])
+def test_file_diff_guards_mixed_catalogs(catalog_tmpfile, monkeypatch, mem_side):
+    from datachain.lib.file import File
+
+    monkeypatch.delenv("DATACHAIN_JOB_ID", raising=False)
+    Session.get(catalog=catalog_tmpfile)
+
+    mem = dc.read_values(file=[File(path="a")], in_memory=True)
+    persistent = dc.read_values(file=[File(path="b")])
+    left, right = (mem, persistent) if mem_side == "left" else (persistent, mem)
+
     with pytest.raises(ValueError, match="in-memory"):
-        persistent.union(mem)
-    with pytest.raises(ValueError, match="in-memory"):
-        persistent.merge(mem, on="num")
-    with pytest.raises(ValueError, match="in-memory"):
-        persistent.subtract(mem, on="num")
-    # diff funnels through merge/join and must be guarded transitively
-    with pytest.raises(ValueError, match="in-memory"):
-        persistent.diff(mem, on="num")
+        left.file_diff(right)
