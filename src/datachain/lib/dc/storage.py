@@ -100,12 +100,9 @@ def read_storage(
         update: force storage reindexing. Default is False.
         in_memory: If True, run this chain against a temporary in-memory
             (SQLite) catalog: the listing and anything saved through the
-            chain land in a throwaway database that disappears with the
-            process. Useful for one-off reads of ephemeral locations (e.g. a
-            job's local working directory) that should not leave persistent
-            listings behind. Outside Studio, if this is the first session in
-            the process, the in-memory session also becomes the process
-            default, so later unflagged calls share it. Default is False.
+            chain disappear with the process. Useful for one-off reads of
+            ephemeral locations (e.g. a job's working directory) that should
+            not leave persistent listings behind. Default is False.
         anon: If True, we will treat cloud bucket as public one.
         client_config: Optional client configuration for the storage client.
         delta: If True, only process new or changed files instead of reprocessing

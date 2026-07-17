@@ -71,9 +71,8 @@ class Session:
     GLOBAL_SESSION_CTX: "Session | None" = None
     # The implicit in-memory session; see _get_in_memory_session.
     IN_MEMORY_SESSION_CTX: "Session | None" = None
-    # Owned non-context sessions created by implicit resolution: wrappers for
-    # explicitly supplied in-memory catalogs ("catalog-<id>") and per-call
-    # client_config overrides of the persistent session ("config-<repr>").
+    # Owned non-context sessions created by implicit resolution: explicit
+    # in-memory catalog wrappers and per-call client_config overrides.
     SIDE_SESSIONS: ClassVar[dict[str, "Session"]] = {}
     SESSION_CONTEXTS: ClassVar[list["Session"]] = []
     _ALL_SESSIONS: ClassVar[WeakSet["Session"]] = WeakSet()
@@ -362,10 +361,9 @@ class Session:
             from datachain.lib.dc.utils import is_studio
 
             if in_memory and catalog is None and is_studio():
-                # A throwaway catalog must never become the process default
-                # in Studio. Locally, legacy behavior is kept: a first
-                # in-memory call becomes the default, so later unflagged
-                # calls share it.
+                # Never let a throwaway catalog become the process default in
+                # Studio; locally a first in-memory call does become the
+                # default (legacy behavior).
                 return cls._get_in_memory_session(None, client_config)
 
             cls.GLOBAL_SESSION_CTX = Session(
@@ -386,9 +384,8 @@ class Session:
             return cls._get_in_memory_session(session, client_config)
 
         if client_config and session.catalog.client_config != client_config:
-            # A config override scoped to this call: an owned, non-context
-            # session (cached per config), so the ambient/default resolution
-            # of later calls is unaffected.
+            # A per-call config override: an owned, non-context session, so
+            # later calls' default resolution is unaffected.
             config = _copy_client_config(client_config)
             key = f"config-{sorted(config.items())!r}"
             override = cls.SIDE_SESSIONS.get(key)
@@ -405,13 +402,11 @@ class Session:
     ) -> "Session":
         """Resolve an implicit ``in_memory=True`` request.
 
-        There is one implicit in-memory session per process, created on first
-        use with its ``client_config`` frozen then (explicit, else inherited
-        from the ambient session). Any later effective config that differs —
-        explicit or inherited — raises: the process-wide throwaway database
-        cannot isolate data per config, so reusing it under another storage
-        identity would silently rebind credentials/endpoints. Never entered
-        as a context.
+        One implicit in-memory session exists per process; its
+        ``client_config`` is frozen at creation (explicit, else inherited
+        from the ambient session). A later call whose effective config
+        differs raises — the process-wide throwaway database cannot isolate
+        data per config. Never entered as a context.
         """
         effective = client_config
         if ambient is not None and ambient.catalog.in_memory:
