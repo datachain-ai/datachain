@@ -29,10 +29,8 @@ def get_metastore(in_memory: bool = False) -> "AbstractMetastore":
     from datachain.data_storage.serializer import deserialize
 
     if in_memory:
-        # An explicit in-memory request always wins over environment-provided
-        # configuration: the caller asked for a throwaway catalog, not the
-        # configured one (e.g. to avoid persisting listings of ephemeral
-        # locations when running inside a job).
+        # An explicit in-memory request wins over environment-provided
+        # configuration: the caller asked for a throwaway catalog.
         from datachain.data_storage.sqlite import SQLiteMetastore
 
         return SQLiteMetastore(in_memory=True)

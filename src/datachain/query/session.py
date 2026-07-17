@@ -94,8 +94,7 @@ class Session:
         self.catalog = catalog or get_catalog(
             client_config=client_config, in_memory=in_memory
         )
-        # Session-local job used for in-memory catalogs; see
-        # get_or_create_job.
+        # Session-local job for in-memory catalogs; see get_or_create_job.
         self._session_job: Job | None = None
         Session._ALL_SESSIONS.add(self)
 
@@ -122,12 +121,8 @@ class Session:
         Return the current job if one exists, without creating a new one.
 
         Checks the cached ``_CURRENT_JOB`` and ``DATACHAIN_JOB_ID`` env var.
-        Returns None if no job is found.
-
-        Sessions with an in-memory catalog only ever see their session-local
-        job: jobs referenced by ``DATACHAIN_JOB_ID`` live in the configured
-        metastore, not in the throwaway one, and the process-wide job must not
-        leak into (or out of) the temporary catalog.
+        Returns None if no job is found. Sessions with an in-memory catalog
+        only see their session-local job (see get_or_create_job).
         """
         if self.catalog.in_memory:
             return self._session_job
@@ -145,33 +140,17 @@ class Session:
 
     def get_or_create_job(self) -> "Job":
         """
-        Get or create a Job for this process.
+        Get or create the Job for this process.
 
-        Returns:
-            Job: The active Job instance.
-
-        Behavior:
-            - If a job already exists, it is returned.
-            - If in Studio without DATACHAIN_JOB_ID, raises an error.
-            - If ``DATACHAIN_JOB_ID`` is set, the corresponding job is fetched.
-            - Otherwise, a new job is created (see _create_job):
-                * Name = absolute path to the Python script, or a UUID for
-                  interactive/module runs.
-                * Query = the script contents when available, else empty.
-                * Parent = last job with the same name, if available.
-                * Status = "running".
-              Exit hooks are registered to finalize the job.
-
-        Note:
-            Job is shared across all Session instances to ensure one job per
-            process, except for sessions with an in-memory catalog, which use
-            a session-local job created in the throwaway metastore.
+        Resolution order: the already-active job, then ``DATACHAIN_JOB_ID``
+        (required in Studio), then a new job created via _create_job with
+        exit hooks registered to finalize it. Sessions with an in-memory
+        catalog are the exception: they use a session-local, never-finalized
+        job in the throwaway metastore — ``DATACHAIN_JOB_ID`` points into the
+        configured metastore and is deliberately ignored, and the job is not
+        shared through the process-wide cache in either direction.
         """
         if self.catalog.in_memory:
-            # The catalog is a throwaway database: a job referenced by
-            # DATACHAIN_JOB_ID lives in the configured metastore and does not
-            # exist here, so the env var is deliberately ignored and the job
-            # is session-local instead of process-wide.
             if self._session_job is None:
                 self._session_job = self._create_job()
             return self._session_job
@@ -222,7 +201,7 @@ class Session:
             try:
                 with open(script) as f:
                     query = f.read()
-            except OSError:
+            except (OSError, UnicodeDecodeError):
                 pass
         else:
             # Interactive session or module run - use unique name to avoid
@@ -377,11 +356,9 @@ class Session:
     ) -> "Session":
         """The process-wide in-memory session, created on first use.
 
-        Backs chains that request ``in_memory=True`` while the ambient session
-        uses a persistent catalog (e.g. inside a Studio job): their listings
-        and datasets belong in a throwaway SQLite catalog, not in the
-        configured metastore/warehouse. A single cached session is reused so
-        all such chains share one database and can be combined.
+        Backs ``in_memory=True`` chains when the ambient session has a
+        persistent catalog (e.g. inside a Studio job). Cached so all such
+        chains share one throwaway database and can be combined.
         """
         if cls.IN_MEMORY_SESSION_CTX is None:
             cls.IN_MEMORY_SESSION_CTX = Session(
@@ -442,8 +419,7 @@ class Session:
 
     @staticmethod
     def _global_cleanup():
-        # IN_MEMORY_SESSION_CTX needs no special handling here: it is closed
-        # by the _ALL_SESSIONS loop below.
+        # IN_MEMORY_SESSION_CTX is closed by the _ALL_SESSIONS loop below.
         Session._close_all_contexts()
         if Session.GLOBAL_SESSION_CTX is not None:
             Session.GLOBAL_SESSION_CTX.__exit__(None, None, None)

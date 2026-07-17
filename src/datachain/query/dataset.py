@@ -3141,10 +3141,8 @@ class DatasetQuery:
         return query
 
     def _ensure_combinable(self, other: "DatasetQuery", op: str) -> None:
-        """Two chains can be combined only if their catalogs live in the same
-        database: in-memory catalogs share one throwaway database, persistent
-        catalogs share the configured one, but a mix would reference tables
-        across two databases and fail deep inside SQL execution."""
+        """In-memory and persistent catalogs live in different databases, so
+        a mixed combination would fail deep inside SQL execution."""
         if self.catalog.in_memory != other.catalog.in_memory:
             raise ValueError(
                 f"Cannot {op} a chain backed by an in-memory catalog with one "
