@@ -90,8 +90,8 @@ def read_dataset(
             sources participate in one composed query, this must be enabled on
             every participating delta source.
         in_memory: If True, resolve the dataset in the process's in-memory
-            (SQLite) catalog — the one where chains created with
-            ``in_memory=True`` save their datasets. Defaults to False.
+            catalog — the one where chains created with ``in_memory=True``
+            save their datasets. Defaults to False.
 
 
     Example:

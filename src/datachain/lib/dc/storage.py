@@ -99,10 +99,10 @@ def read_storage(
         column: Column name that will contain File objects. Default is "file".
         update: force storage reindexing. Default is False.
         in_memory: If True, run this chain against a temporary in-memory
-            (SQLite) catalog: the listing and anything saved through the
-            chain disappear with the process. Useful for one-off reads of
-            ephemeral locations (e.g. a job's working directory) that should
-            not leave persistent listings behind. Default is False.
+            catalog: the listing and anything saved through the chain
+            disappear with the process. Useful for one-off reads of ephemeral
+            locations (e.g. a job's working directory) that should not leave
+            persistent listings behind. Default is False.
         anon: If True, we will treat cloud bucket as public one.
         client_config: Optional client configuration for the storage client.
         delta: If True, only process new or changed files instead of reprocessing
