@@ -1,10 +1,19 @@
+import inspect
+import sys
 from collections.abc import Generator, Iterator
+from functools import lru_cache
 from typing import Any, NamedTuple
 
 from pydantic import BaseModel
 
-from datachain.lib.data_model import unwrap_optional
+from datachain.lib.data_model import (
+    UnionLayout,
+    arm_selector,
+    union_layout,
+    unwrap_optional,
+)
 from datachain.lib.model_store import ModelStore
+from datachain.lib.utils import DataChainParamsError
 
 
 class FieldKind(NamedTuple):
@@ -21,9 +30,8 @@ def classify_field(annotation: Any) -> FieldKind:
 
 
 class FlatColumn(NamedTuple):
-    """One column a model emits, in DB-column order. ``is_sentinel`` marks the
-    ``_type_tag`` discriminator prepended for an ``Optional[DataModel]`` node; otherwise
-    it is a scalar/list/dict leaf."""
+    """One column a model emits. ``is_sentinel`` marks a tagged-union ``_type_tag``
+    discriminator; otherwise it is a leaf."""
 
     path: tuple[str, ...]
     is_sentinel: bool
@@ -32,47 +40,117 @@ class FlatColumn(NamedTuple):
 def iter_flat_columns(
     model: type[BaseModel], _prefix: tuple[str, ...] = ()
 ) -> Iterator[FlatColumn]:
-    """Yield the flat columns ``model`` emits, in order: each ``Optional[DataModel]``
-    node contributes a leading sentinel, then its (recursively flattened) leaves.
-    """
+    """Flat columns ``model`` emits, in storage order; a tagged-union node yields a
+    leading _type_tag then its arms."""
     for name, f_info in model.model_fields.items():
-        kind = classify_field(f_info.annotation)
-        path = (*_prefix, name)
-        if kind.is_model:
-            if kind.is_optional:
-                yield FlatColumn(path, True)
-            yield from iter_flat_columns(kind.inner, path)
-        else:
-            yield FlatColumn(path, False)
+        yield from _iter_field_columns(f_info.annotation, (*_prefix, name))
+
+
+def _iter_field_columns(anno: Any, path: tuple[str, ...]) -> Iterator[FlatColumn]:
+    if (layout := union_layout(anno)) is not None:
+        yield FlatColumn(path, True)  # _type_tag
+        for arm in layout.arms:
+            arm_path = (*path, arm_selector(arm)) if layout.use_slots else path
+            if (fr := ModelStore.to_pydantic(arm)) is not None:
+                yield from iter_flat_columns(fr, arm_path)
+            else:
+                yield FlatColumn(arm_path, False)
+        return
+    inner, _ = unwrap_optional(anno)
+    if (fr := ModelStore.to_pydantic(inner)) is not None:
+        yield from iter_flat_columns(fr, path)
+    else:
+        yield FlatColumn(path, False)
 
 
 def flatten(obj: BaseModel) -> tuple:
     return tuple(_flatten_fields_values(type(obj).model_fields, obj))
 
 
-def is_optional_model(anno: Any) -> bool:
-    kind = classify_field(anno)
-    return kind.is_optional and kind.is_model
+def union_value_match(obj, anno) -> bool:
+    # flatten via flatten_value for a bare union value (incl. None, so a non-nullable
+    # union rejects it); a non-arm BaseModel is a cover to flatten field-wise
+    layout = union_layout(anno)
+    if layout is None:
+        return False
+    if obj is None:
+        return True
+    if any(_arm_matches(obj, arm, exact=False) for arm in layout.arms):
+        return True
+    return not isinstance(obj, BaseModel)
 
 
-def flatten_value(value: Any, anno: Any) -> tuple:
-    """Flatten ``value`` for one column declared with annotation ``anno``.
-
-    ``Optional[DataModel]`` emits a leading ``_type_tag`` before its leaves.
-    ``Optional[basic]`` is a plain nullable column. Nulls inside collections
-    (``list[Optional[T]]``) and bare ``Union[A, B]`` are not represented.
-    """
+def flatten_value(value, anno) -> tuple:
+    """Flatten ``value`` for a column of type ``anno``. A tagged union emits its
+    ``_type_tag`` then every arm's columns, only the active arm populated."""
+    if (layout := union_layout(anno)) is not None:
+        return tuple(_flatten_union(value, layout))
+    if isinstance(value, (list, dict)):
+        return (_flatten_scalar(value),)
     kind = classify_field(anno)
     if kind.is_model:
-        if kind.is_optional:
-            if value is None:
-                return (1, *_emit_absent(kind.inner))
-            return (0, *flatten(value))
-        if value is None:
-            # Non-Optional model None (outer-merge pad): per-leaf placeholders.
+        if value is None:  # outer-merge pad
             return tuple(_emit_absent(kind.inner))
         return flatten(value)
     return (value,)
+
+
+def _flatten_union(value, layout: UnionLayout) -> Generator:
+    active = _match_union_arm(value, layout)
+    # _type_tag: the active arm's selector name, or NULL for None
+    yield None if active is None else arm_selector(layout.arms[active])
+    for i, arm in enumerate(layout.arms):
+        yield from _flatten_arm(value if i == active else None, arm)
+
+
+def _flatten_arm(value, arm) -> Generator:
+    if (fr := ModelStore.to_pydantic(arm)) is not None:
+        if value is None:
+            yield from _emit_absent(fr)
+        else:
+            # flatten by the declared fields, not the (maybe subclass) instance's
+            yield from _flatten_fields_values(fr.model_fields, value)
+    else:
+        yield _flatten_scalar(value)
+
+
+def _match_union_arm(value, layout: UnionLayout) -> int | None:
+    """Arm index for ``value`` (None for the None arm). Exact-type match beats
+    ``isinstance`` so ``bool`` isn't swallowed by an ``int`` arm."""
+    # numpy scalar -> native type; via sys.modules to keep numpy a lazy import
+    if (np := sys.modules.get("numpy")) is not None and isinstance(value, np.generic):
+        value = value.item()
+    if value is None:
+        if not layout.has_none:
+            raise DataChainParamsError(
+                f"value None does not match any arm of union {layout.arms}"
+            )
+        return None
+    for exact in (True, False):
+        for i, arm in enumerate(layout.arms):
+            if _arm_matches(value, arm, exact=exact):
+                return i
+    raise DataChainParamsError(
+        f"value {value!r} does not match any arm of union {layout.arms}"
+    )
+
+
+def _arm_matches(value, arm, *, exact: bool) -> bool:
+    # exact match (incl. models) so a subclass isn't swallowed by a base-class arm
+    if not inspect.isclass(arm):
+        return False
+    return type(value) is arm if exact else isinstance(value, arm)
+
+
+def _flatten_scalar(value):
+    if isinstance(value, list):
+        return _flatten_list_field(value)
+    if isinstance(value, dict):
+        return {
+            key: val.model_dump() if ModelStore.is_pydantic(type(val)) else val
+            for key, val in value.items()
+        }
+    return value
 
 
 def flatten_list(obj_list: list[BaseModel]) -> tuple:
@@ -92,39 +170,18 @@ def _flatten_list_field(value: list) -> list:
     return value
 
 
+@lru_cache(maxsize=4096)
 def _leaf_count(model: type[BaseModel]) -> int:
     """Count of flat columns ``model`` emits (sentinels included)."""
     return sum(1 for _ in iter_flat_columns(model))
 
 
-def _emit_absent(model: type[BaseModel]) -> Generator[int | None, None, None]:
-    """Placeholder values shaped like ``model``'s flat columns, used when an
-    ``Optional[DataModel]`` parent is None and the leaves still need a slot."""
-    for col in iter_flat_columns(model):
-        yield 1 if col.is_sentinel else None
+def _emit_absent(model: type[BaseModel]) -> Generator:
+    """NULL for each of ``model``'s flat columns (an absent/inactive arm's slots)."""
+    for _ in iter_flat_columns(model):
+        yield None
 
 
 def _flatten_fields_values(fields: dict, obj: BaseModel) -> Generator[Any, None, None]:
     for name, f_info in fields.items():
-        kind = classify_field(f_info.annotation)
-        # Direct attribute access skips Pydantic's model_dump().
-        value = getattr(obj, name)
-        if isinstance(value, list):
-            yield _flatten_list_field(value)
-        elif isinstance(value, dict):
-            yield {
-                key: val.model_dump() if ModelStore.is_pydantic(type(val)) else val
-                for key, val in value.items()
-            }
-        elif kind.is_model:
-            if kind.is_optional:
-                if value is None:
-                    yield 1
-                    yield from _emit_absent(kind.inner)
-                else:
-                    yield 0
-                    yield from _flatten_fields_values(kind.inner.model_fields, value)
-            else:
-                yield from _flatten_fields_values(kind.inner.model_fields, value)
-        else:
-            yield value
+        yield from flatten_value(getattr(obj, name), f_info.annotation)

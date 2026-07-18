@@ -6,14 +6,19 @@ from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime
-from typing import Any, ClassVar, Union, get_args, get_origin
+from functools import lru_cache
+from typing import Any, ClassVar, NamedTuple, Union, get_args, get_origin
 
 from pydantic import AliasChoices, BaseModel, Field, create_model
 from pydantic.fields import FieldInfo
 
 from datachain import json
 from datachain.lib.model_store import ModelStore
-from datachain.lib.utils import normalize_col_names, type_to_str
+from datachain.lib.utils import (
+    DataChainParamsError,
+    normalize_col_names,
+    type_to_str,
+)
 
 _skip_optional_promotion: ContextVar[bool] = ContextVar(
     "_skip_optional_promotion", default=False
@@ -107,7 +112,9 @@ def compute_model_fingerprint(
 
             inner_type, _ = unwrap_optional(field_type)
             child_model = ModelStore.to_pydantic(inner_type)
-            if sub_sel is not None:
+            layout = union_layout(field_type)
+            atomic_union = layout is not None and layout.use_slots
+            if sub_sel is not None and not atomic_union:
                 if child_model is None:
                     raise ValueError(
                         f"Field {field_name} in {model_type.__name__} is not a model"
@@ -150,14 +157,77 @@ def unwrap_optional(t: Any) -> tuple[Any, bool]:
 # (the other backends keep them distinct); None itself is consistent everywhere.
 NULLABLE_SCALARS: "tuple[type, ...]" = (int, float, str, bool, bytes, datetime)
 
-# _type_tag discriminator for Optional[DataModel]: this value marks the present arm.
-OPTIONAL_PRESENT_TAG = 0
+
+def union_arms(anno: Any) -> tuple[list[Any], bool]:
+    """``(non_none_arms, has_none)``, arms sorted by type string for a deterministic,
+    order-independent column layout (``Union[int, str]`` == ``Union[str, int]``)."""
+    if get_origin(anno) in (Union, types.UnionType):
+        args = get_args(anno)
+        non_none = sorted((a for a in args if a is not type(None)), key=type_to_str)
+        return non_none, type(None) in args
+    return [anno], False
 
 
-def optional_tag_is_absent(tag: "Any") -> bool:
-    """An Optional[DataModel] subtree is absent when its ``_type_tag`` is NULL
-    (outer-join padding) or not the present-arm value."""
-    return tag is None or tag != OPTIONAL_PRESENT_TAG
+# Scalar arm types a tagged union stores as its own column (DataModels handled too).
+_TAGGABLE_SCALARS: "tuple[type, ...]" = NULLABLE_SCALARS
+
+
+def _is_taggable_arm(arm: Any) -> bool:
+    return ModelStore.is_pydantic(arm) or arm in _TAGGABLE_SCALARS
+
+
+class UnionLayout(NamedTuple):
+    """Physical layout of a tagged union. ``use_slots`` is True for multi-arm unions
+    (each arm in a column named by its type, ``int``/``Pet``); False for
+    ``Optional[Model]``, whose single model arm flattens directly under the signal."""
+
+    arms: tuple[Any, ...]
+    has_none: bool
+    use_slots: bool
+
+
+def union_layout(anno: Any) -> "UnionLayout | None":
+    """Tagged-union layout, or None when no ``_type_tag`` is needed (plain leaf,
+    ``Optional[basic]``, plain model, or a union with a non-taggable arm)."""
+    return _union_layout(anno)
+
+
+@lru_cache(maxsize=4096)
+def _union_layout(anno: Any) -> "UnionLayout | None":
+    arms_list, has_none = union_arms(anno)
+    arms = tuple(arms_list)  # immutable: a cached layout must not be mutable
+    if not all(_is_taggable_arm(arm) for arm in arms):
+        return None
+    if len(arms) >= 2:
+        # arms sharing a type string collapse into one on reload (it is their
+        # storage identity), so reject indistinguishable arms up front
+        keys = [type_to_str(arm) for arm in arms]
+        if len(set(keys)) != len(keys):
+            dup = next(k for k in keys if keys.count(k) > 1)
+            raise DataChainParamsError(
+                f"Union has indistinguishable arms named {dup!r}; arms must have "
+                "distinct type names (rename one of the models)"
+            )
+        # each arm is a column named by its type; those names must be unique
+        slots = [arm_selector(arm) for arm in arms]
+        if len(set(slots)) != len(slots):
+            dup = next(s for s in slots if slots.count(s) > 1)
+            raise DataChainParamsError(
+                f"Union arms map to the same column name {dup!r}; rename one arm."
+            )
+        return UnionLayout(arms, has_none, use_slots=True)
+    if len(arms) == 1 and has_none and ModelStore.is_pydantic(arms[0]):
+        return UnionLayout(arms, has_none=True, use_slots=False)
+    return None
+
+
+def arm_selector(arm: Any) -> str:
+    """Name of a union arm — its DB-column slot and its readable-path segment, which
+    are the same. A model's stable logical name (reload-safe, survives reading a
+    dataset without the model code) or a scalar type name."""
+    if (fr := ModelStore.to_pydantic(arm)) is not None:
+        return ModelStore._base_name(fr)
+    return arm.__name__
 
 
 def promote_default_none(model: type[BaseModel]) -> None:
@@ -195,20 +265,41 @@ def is_chain_type(t: type) -> bool:
         return True
     if any(t is ft or t is get_args(ft)[0] for ft in get_args(StandardType)):
         return True
-
     inner, is_optional = unwrap_optional(t)
     if is_optional:
         return is_chain_type(inner)
+    return _is_chain_container_type(t)
 
-    orig = get_origin(t)
-    args = get_args(t)
+
+def _is_chain_container_type(t: type) -> bool:
+    """Whether a union / list / dict annotation is a supported DataChain type."""
+    arms, _ = union_arms(t)
+    if len(arms) >= 2:
+        # multi-arm union: supported only as a tagged union (scalar/DataModel arms)
+        return union_layout(t) is not None and all(is_chain_type(arm) for arm in arms)
+
+    orig, args = get_origin(t), get_args(t)
     if orig is list and len(args) == 1:
-        return is_chain_type(get_args(t)[0])
-
+        _reject_list_of_model_union(args[0])
+        return is_chain_type(args[0])
     if orig is dict and len(args) == 2:
         return is_chain_type(args[0]) and is_chain_type(args[1])
-
     return False
+
+
+def _reject_list_of_model_union(elem: Any) -> None:
+    """Reject a list of a union with a DataModel arm (model elements collapse to
+    dicts on read; scalar arms round-trip via JSON)."""
+    layout = union_layout(elem)
+    if (
+        layout is not None
+        and layout.use_slots
+        and any(ModelStore.is_pydantic(arm) for arm in layout.arms)
+    ):
+        raise DataChainParamsError(
+            "list[Union[...]] with a DataModel arm is not supported: list elements "
+            "lose their model type. Put the Union inside a DataModel field instead."
+        )
 
 
 def dict_to_data_model(

@@ -75,7 +75,8 @@ class FileExporter(NodesThreadPool):
             task.result()
 
     def do_task(self, file: "File | None"):
-        if file is not None:
+        # a union arm may be a non-File value (e.g. Union[File, str]); skip it
+        if isinstance(file, File):
             file.export(
                 self.output,
                 self.placement,

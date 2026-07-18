@@ -3,11 +3,12 @@ import itertools
 import os
 import sqlite3
 from collections.abc import Iterator, Mapping, Sequence
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import sqlalchemy
 
-from datachain.query.schema import ColumnMeta
+from datachain.lib.utils import assert_unique_export_columns
+from datachain.query.schema import DEFAULT_DELIMITER, ColumnMeta
 from datachain.utils import batched
 
 DEFAULT_DATABASE_BATCH_SIZE = 10_000
@@ -95,9 +96,19 @@ def to_database(
         )
 
     signals_schema = chain.signals_schema.clone_without_sys_signals()
+    db_cols = cast(
+        "list[Any]",
+        signals_schema.db_signals(as_columns=True, include_sentinels=False),
+    )
+    # readable arm names (value.int), not internal slot indices (value._0)
+    display_paths = [
+        signals_schema.arm_display_path(c.name.split(DEFAULT_DELIMITER))
+        for c in db_cols
+    ]
+    assert_unique_export_columns(display_paths, DEFAULT_DELIMITER)
     all_columns = [
-        sqlalchemy.Column(c.name, c.type)  # type: ignore[union-attr]
-        for c in signals_schema.db_signals(as_columns=True, include_sentinels=False)
+        sqlalchemy.Column(DEFAULT_DELIMITER.join(path), c.type)
+        for c, path in zip(db_cols, display_paths, strict=True)
     ]
 
     column_mapping = column_mapping or {}
