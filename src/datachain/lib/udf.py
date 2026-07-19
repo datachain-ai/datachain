@@ -396,12 +396,17 @@ class UDFBase(AbstractUDF):
         if isinstance(obj, File):
             obj._set_stream(catalog, caching_enabled=cache, download_cb=download_cb)
 
-        # Check all fields for nested File objects, but only for DataModel objects
         if isinstance(obj, DataModel):
             for field_name in type(obj).model_fields:
-                field_value = getattr(obj, field_name, None)
-                if isinstance(field_value, DataModel):
-                    self._set_stream_recursive(field_value, catalog, cache, download_cb)
+                self._set_stream_recursive(
+                    getattr(obj, field_name, None), catalog, cache, download_cb
+                )
+        elif isinstance(obj, Mapping):
+            for value in obj.values():
+                self._set_stream_recursive(value, catalog, cache, download_cb)
+        elif isinstance(obj, (list, tuple, set)):
+            for value in obj:
+                self._set_stream_recursive(value, catalog, cache, download_cb)
 
     def _prepare_row(
         self, row, udf_fields, catalog, cache, download_cb, include_id=False

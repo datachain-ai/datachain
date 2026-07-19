@@ -615,7 +615,11 @@ class SignalSchema:
                 obj, pos = self._hydrate_model(fr, is_optional, row, pos, label=name)
                 objs.append(obj)
             else:
-                objs.append(row[pos])
+                objs.append(
+                    self._convert_feature_value(
+                        fr_type, row[pos], catalog=None, cache=False
+                    )
+                )
                 pos += 1
         return objs
 
@@ -763,7 +767,7 @@ class SignalSchema:
         self,
         annotation: DataType,
         value: Any,
-        catalog: "Catalog",
+        catalog: "Catalog | None",
         cache: bool,
     ) -> Any:
         """Convert raw DB value into declared annotation if needed."""
@@ -789,7 +793,8 @@ class SignalSchema:
             else:
                 return result
             assert isinstance(obj, BaseModel)
-            SignalSchema._set_file_stream(obj, catalog, cache)
+            if catalog is not None:
+                SignalSchema._set_file_stream(obj, catalog, cache)
             result = obj
         elif origin is list:
             args = get_args(annotation)

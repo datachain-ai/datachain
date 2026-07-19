@@ -913,6 +913,26 @@ def test_map(test_session):
         assert x.my_name == test_fr.my_name
 
 
+def test_map_hydrates_models_in_nested_collection_param(test_session):
+    class ModelCollection(DataModel):
+        items: list[MyFr]
+
+    def get_count(items: list[MyFr]) -> int:
+        assert isinstance(items[0], MyFr)
+        return items[0].count
+
+    chain = dc.read_values(
+        collection=[ModelCollection(items=[MyFr(nnn="item", count=2)])],
+        session=test_session,
+    ).map(
+        get_count,
+        params=["collection.items"],
+        output={"count": int},
+    )
+
+    assert chain.to_values("count") == [2]
+
+
 def test_map_multiple_signals(test_session):
     chain = dc.read_values(name=["foo.txt", "bar.md"], session=test_session).map(
         stem=lambda name: name.rsplit(".", 1)[0],
