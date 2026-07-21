@@ -87,7 +87,7 @@ remote = [
 ]
 vector = [
   "usearch",
-  # sdist-only numkong release breaks macOS install; unpin per #1874
+  # Temporary macOS workaround: exclude sdist-only numkong 7.7.1; remove per #1874
   "numkong!=7.7.1 ; sys_platform == 'darwin'"
 ]
 hf = [
