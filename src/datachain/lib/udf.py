@@ -71,6 +71,9 @@ class BoundSpec(ABC):
     @abstractmethod
     def bind(self, ctx: BindContext) -> Callable: ...
 
+    @abstractmethod
+    def input_columns(self) -> list[str]: ...
+
 
 class UdfError(DataChainParamsError):
     """Exception raised for UDF-related errors."""
@@ -549,40 +552,40 @@ class _MultiSignalMapper(Mapper):
     irrelevant. Cycles raise ``ValueError`` at construction time.
     """
 
-    def __init__(self, signal_map: dict[str, Callable]):
+    def __init__(
+        self,
+        signal_map: dict[str, Callable],
+        *,
+        bound_columns: dict[str, list[str]] | None = None,
+    ):
         super().__init__()
         self._signal_map = signal_map
+        self._bound_columns = bound_columns or {}
         output_names = set(signal_map)
         self._per_func_params: dict[str, list[str]] = {}
-        # Functions stamped with `__datachain_params__` (e.g. bound BoundSpec
-        # callables from `datachain.llm.*`) take their inputs as literal chain
-        # column names and are called positionally instead of by kwargs.
-        self._bound_style: set[str] = set()
         # For each function: which of its params come from another
         # function's output (dependencies) vs from an input row column.
         deps: dict[str, set[str]] = {}
         for name, fn in signal_map.items():
-            cols = getattr(fn, "__datachain_params__", None)
-            if isinstance(cols, list):
-                self._per_func_params[name] = list(cols)
-                self._bound_style.add(name)
+            if name in self._bound_columns:
+                self._per_func_params[name] = list(self._bound_columns[name])
                 deps[name] = set()
-            else:
-                sig_params = list(inspect.signature(fn).parameters.values())
-                positional_only = [
-                    p.name
-                    for p in sig_params
-                    if p.kind is inspect.Parameter.POSITIONAL_ONLY
-                ]
-                if positional_only:
-                    raise DataChainParamsError(
-                        f"map() function {name!r} has positional-only "
-                        f"parameters ({positional_only}); use plain params so "
-                        "they can be passed by name in multi-signal .map()"
-                    )
-                params = [p.name for p in sig_params]
-                self._per_func_params[name] = params
-                deps[name] = {p for p in params if p in output_names and p != name}
+                continue
+            sig_params = list(inspect.signature(fn).parameters.values())
+            positional_only = [
+                p.name
+                for p in sig_params
+                if p.kind is inspect.Parameter.POSITIONAL_ONLY
+            ]
+            if positional_only:
+                raise DataChainParamsError(
+                    f"map() function {name!r} has positional-only "
+                    f"parameters ({positional_only}); use plain params so "
+                    "they can be passed by name in multi-signal .map()"
+                )
+            params = [p.name for p in sig_params]
+            self._per_func_params[name] = params
+            deps[name] = {p for p in params if p in output_names and p != name}
 
         try:
             self._exec_order = list(TopologicalSorter(deps).static_order())
@@ -596,7 +599,7 @@ class _MultiSignalMapper(Mapper):
         seen: set[str] = set()
         self.combined_params: list[str] = []
         for name in signal_map:
-            bound = name in self._bound_style
+            bound = name in self._bound_columns
             for p in self._per_func_params[name]:
                 if not bound and p in output_names:
                     continue
@@ -610,7 +613,7 @@ class _MultiSignalMapper(Mapper):
         for name in self._exec_order:
             fn = self._signal_map[name]
             params = self._per_func_params[name]
-            if name in self._bound_style:
+            if name in self._bound_columns:
                 results[name] = fn(*[row_by_name[c] for c in params])
             else:
                 fn_kwargs = {
