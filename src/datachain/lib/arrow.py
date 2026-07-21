@@ -265,13 +265,14 @@ def _arrow_field_type_mapper(
     field: pa.Field, column: str = "", *, nullable_scalars_only: bool = False
 ) -> type:
     dtype = arrow_type_mapper(field.type, column)
-    if (
-        field.nullable
-        and not ModelStore.is_pydantic(dtype)
-        and (not nullable_scalars_only or dtype in NULLABLE_SCALARS)
-    ):
-        return dtype | None  # type: ignore[return-value]
-    return dtype
+    if not field.nullable:
+        return dtype
+    if nullable_scalars_only and dtype not in NULLABLE_SCALARS:
+        # https://github.com/datachain-ai/datachain/issues/1873
+        return dtype
+    if ModelStore.is_pydantic(dtype):
+        return dtype
+    return dtype | None  # type: ignore[return-value]
 
 
 def _get_hf_schema(
