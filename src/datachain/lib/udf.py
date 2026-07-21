@@ -620,6 +620,13 @@ class _MultiSignalMapper(Mapper):
         # Output order follows the user's declared kwarg order, not exec order.
         return tuple(results[name] for name in self._signal_map)
 
+    @property
+    def verbose_name(self) -> str:
+        # UDFBase.verbose_name reads self._func, which is None for AbstractUDF
+        # instances like this one, so the base falls through to "<unknown>".
+        # Surface the signal names instead so job diagnostics stay useful.
+        return f"map({', '.join(self._signal_map)})"
+
     def hash(self, include_body: bool = True) -> str:
         # cache key must vary with the wrapped functions; the base
         # implementation would hash this class's process method, which is
