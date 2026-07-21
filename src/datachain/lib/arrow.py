@@ -10,7 +10,11 @@ from pyarrow.dataset import CsvFileFormat, dataset
 from datachain import json
 from datachain.fs.reference import ReferenceFileSystem
 from datachain.lib.convert.flatten import classify_field, iter_flat_columns
-from datachain.lib.data_model import dict_to_data_model, optional_tag_is_absent
+from datachain.lib.data_model import (
+    NULLABLE_SCALARS,
+    dict_to_data_model,
+    optional_tag_is_absent,
+)
 from datachain.lib.file import ArrowRow, File
 from datachain.lib.model_store import ModelStore
 from datachain.lib.signal_schema import SignalSchema
@@ -239,7 +243,9 @@ def arrow_type_mapper(col_type: pa.DataType, column: str = "") -> type:  # noqa:
     if pa.types.is_string(col_type) or pa.types.is_large_string(col_type):
         return str
     if pa.types.is_list(col_type):
-        item_type = _arrow_field_type_mapper(col_type.value_field, column)
+        item_type = _arrow_field_type_mapper(
+            col_type.value_field, column, nullable_scalars_only=True
+        )
         return list[item_type]  # type: ignore[return-value, valid-type]
     if pa.types.is_struct(col_type):
         type_dict = {}
@@ -255,9 +261,15 @@ def arrow_type_mapper(col_type: pa.DataType, column: str = "") -> type:  # noqa:
     raise TypeError(f"{col_type!r} datatypes not supported, column: {column}")
 
 
-def _arrow_field_type_mapper(field: pa.Field, column: str = "") -> type:
+def _arrow_field_type_mapper(
+    field: pa.Field, column: str = "", *, nullable_scalars_only: bool = False
+) -> type:
     dtype = arrow_type_mapper(field.type, column)
-    if field.nullable and not ModelStore.is_pydantic(dtype):
+    if (
+        field.nullable
+        and not ModelStore.is_pydantic(dtype)
+        and (not nullable_scalars_only or dtype in NULLABLE_SCALARS)
+    ):
         return dtype | None  # type: ignore[return-value]
     return dtype
 

@@ -173,11 +173,40 @@ def test_arrow_type_mapper_struct():
     assert dtypes == [int | None, str | None, str | None]
 
 
-def test_arrow_type_mapper_list_struct_preserves_column_name():
-    item_field = pa.field("item", pa.struct({"x": pa.int32()}), nullable=False)
-    (item_type,) = get_args(arrow_type_mapper(pa.list_(item_field), "items"))
+def test_arrow_type_mapper_list_struct_models_distinct_per_column():
+    users = pa.list_(pa.struct({"name": pa.string()}))
+    orders = pa.list_(pa.struct({"amount": pa.int32()}))
 
-    assert item_type.__name__ == "ArrowDataModel_items"
+    (users_model,) = get_args(arrow_type_mapper(users, "users"))
+    (orders_model,) = get_args(arrow_type_mapper(orders, "orders"))
+
+    assert users_model.__name__ != orders_model.__name__
+    assert "users" in users_model.__name__
+
+
+def test_arrow_type_mapper_nested_list_only_nullable_scalars():
+    nested = pa.list_(pa.list_(pa.string()))
+
+    assert arrow_type_mapper(nested) == list[list[str | None]]
+
+
+def test_read_parquet_multiple_struct_list_columns_roundtrip(test_session, tmp_path):
+    df = pd.DataFrame(
+        {
+            "users": [[{"name": "alice"}, {"name": "bob"}]],
+            "orders": [[{"amount": 5}]],
+        }
+    )
+    path = tmp_path / "data.parquet"
+    df.to_parquet(path)
+
+    dc.read_parquet(path.as_posix(), session=test_session).save("two_structs")
+    back = dc.read_dataset("two_structs", session=test_session)
+
+    (users,) = back.to_values("users")
+    (orders,) = back.to_values("orders")
+    assert [user.name for user in users] == ["alice", "bob"]
+    assert [order.amount for order in orders] == [5]
 
 
 def test_arrow_type_error():
