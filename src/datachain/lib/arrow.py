@@ -239,7 +239,7 @@ def arrow_type_mapper(col_type: pa.DataType, column: str = "") -> type:  # noqa:
     if pa.types.is_string(col_type) or pa.types.is_large_string(col_type):
         return str
     if pa.types.is_list(col_type):
-        item_type = _arrow_field_type_mapper(col_type.value_field)
+        item_type = _arrow_field_type_mapper(col_type.value_field, column)
         return list[item_type]  # type: ignore[return-value, valid-type]
     if pa.types.is_struct(col_type):
         type_dict = {}

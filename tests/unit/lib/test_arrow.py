@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import get_args
 
 import pandas as pd
 import pyarrow as pa
@@ -170,6 +171,13 @@ def test_arrow_type_mapper_struct():
     assert list(fields.keys()) == ["x", "y", "z"]
     dtypes = [field.annotation for field in fields.values()]
     assert dtypes == [int | None, str | None, str | None]
+
+
+def test_arrow_type_mapper_list_struct_preserves_column_name():
+    item_field = pa.field("item", pa.struct({"x": pa.int32()}), nullable=False)
+    (item_type,) = get_args(arrow_type_mapper(pa.list_(item_field), "items"))
+
+    assert item_type.__name__ == "ArrowDataModel_items"
 
 
 def test_arrow_type_error():
