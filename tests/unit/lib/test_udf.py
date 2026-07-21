@@ -3,9 +3,10 @@ import pickle
 import pytest
 from cloudpickle import dumps, loads
 from fsspec.callbacks import DEFAULT_CALLBACK
+from pydantic import BaseModel
 
 import datachain as dc
-from datachain import DataModel, Mapper
+from datachain import Mapper
 from datachain.lib.file import File
 from datachain.lib.udf import JsonSerializationError, UDFBase, UdfError, UdfRunError
 from datachain.lib.utils import DataChainError
@@ -133,7 +134,7 @@ def test_udf_verbose_name_unknown():
 
 
 def test_udf_sets_streams_in_nested_collections():
-    class FileHolder(DataModel):
+    class FileHolder(BaseModel):
         file: File
 
     def process(value: str) -> int:
@@ -142,13 +143,12 @@ def test_udf_sets_streams_in_nested_collections():
     sign = get_sign(process, output="res")
     udf = UDFBase._create(sign, sign.output_schema)
     file = File(path="nested.txt")
+    holder = FileHolder(file=file)
     catalog = object()
 
-    udf._set_stream_recursive(
-        [{"holder": FileHolder(file=file)}], catalog, False, DEFAULT_CALLBACK
-    )
+    udf._set_stream_recursive([{"holder": holder}], catalog, False, DEFAULT_CALLBACK)
 
-    assert file._catalog is catalog
+    assert holder.file._catalog is catalog
 
 
 def test_udf_output_type_error_message(monkeypatch, test_session):

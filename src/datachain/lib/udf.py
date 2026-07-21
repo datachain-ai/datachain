@@ -23,7 +23,7 @@ from datachain.lib.convert.flatten import (
     flatten_value,
     is_optional_model,
 )
-from datachain.lib.file import DataModel, File, FileError
+from datachain.lib.file import File, FileError
 from datachain.lib.utils import AbstractUDF, DataChainParamsError
 from datachain.query.batch import (
     Batch,
@@ -396,7 +396,7 @@ class UDFBase(AbstractUDF):
         if isinstance(obj, File):
             obj._set_stream(catalog, caching_enabled=cache, download_cb=download_cb)
 
-        if isinstance(obj, DataModel):
+        if isinstance(obj, BaseModel):
             for field_name in type(obj).model_fields:
                 self._set_stream_recursive(
                     getattr(obj, field_name, None), catalog, cache, download_cb
