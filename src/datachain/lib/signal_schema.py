@@ -3,11 +3,12 @@ import hashlib
 import logging
 import math
 import types
+import typing
 import warnings
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Hashable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from functools import cached_property
+from functools import cached_property, lru_cache
 from inspect import isclass
 from typing import (
     IO,
@@ -20,6 +21,7 @@ from typing import (
     get_origin,
 )
 
+from fsspec.callbacks import DEFAULT_CALLBACK, Callback
 from pydantic import BaseModel, Field, ValidationError, create_model
 from sqlalchemy import Cast, asc, cast, desc, nulls_last
 from sqlalchemy.sql.elements import BinaryExpression, Grouping, Label
@@ -615,13 +617,65 @@ class SignalSchema:
                 obj, pos = self._hydrate_model(fr, is_optional, row, pos, label=name)
                 objs.append(obj)
             else:
-                objs.append(
-                    self._convert_feature_value(
-                        fr_type, row[pos], catalog=None, cache=False
+                value = row[pos]
+                if self._requires_feature_conversion(fr_type):
+                    value = self._convert_feature_value(
+                        fr_type, value, catalog=None, cache=False
                     )
-                )
+                objs.append(value)
                 pos += 1
         return objs
+
+    @classmethod
+    def _requires_feature_conversion(cls, annotation: DataType) -> bool:
+        if ModelStore.is_pydantic(annotation):
+            return True
+
+        origin = get_origin(annotation)
+        args = get_args(annotation)
+        if origin in (Union, types.UnionType):
+            inner, has_none = unwrap_optional(annotation)
+            return has_none and cls._requires_feature_conversion(inner)
+        if origin is list:
+            return bool(args) and cls._requires_feature_conversion(args[0])
+        if origin is dict and len(args) == 2:
+            key_type, value_type = args
+            return key_type is not str or cls._requires_feature_conversion(value_type)
+        return False
+
+    @staticmethod
+    def _annotation_contains_type(annotation: Any, target: type) -> bool:
+        return SignalSchema._annotation_contains_type_cached(
+            typing.cast("Hashable", annotation), target
+        )
+
+    @staticmethod
+    @lru_cache
+    def _annotation_contains_type_cached(annotation: Hashable, target: type) -> bool:
+        def contains(current: Any, seen: set[type]) -> bool:
+            if isclass(current) and issubclass(current, target):
+                return True
+
+            origin = get_origin(current)
+            if origin in (Union, types.UnionType, list, dict, tuple, set):
+                return any(
+                    arg is not Ellipsis
+                    and arg is not type(None)
+                    and contains(arg, seen)
+                    for arg in get_args(current)
+                )
+
+            model = ModelStore.to_pydantic(current)
+            if model is None or model in seen:
+                return False
+            seen.add(model)
+            return any(
+                contains(field.annotation, seen)
+                for field in model.model_fields.values()
+                if field.annotation is not None
+            )
+
+        return contains(annotation, set())
 
     @staticmethod
     def _all_values_none(value: Any) -> bool:
@@ -830,17 +884,50 @@ class SignalSchema:
 
     @staticmethod
     def _set_file_stream(
-        obj: BaseModel, catalog: "Catalog", cache: bool = False
+        obj: Any,
+        catalog: "Catalog",
+        cache: bool = False,
+        download_cb: Callback = DEFAULT_CALLBACK,
+        annotation: DataType | None = None,
+        _seen: set[int] | None = None,
     ) -> None:
+        seen = _seen if _seen is not None else set()
+        if id(obj) in seen:
+            return
+        seen.add(id(obj))
+
         if isinstance(obj, File):
-            obj._set_stream(catalog, caching_enabled=cache)
-        for field, finfo in type(obj).model_fields.items():
-            # Unwrap Optional so a File under Optional[...] still gets its stream.
-            inner, _ = unwrap_optional(finfo.annotation)
-            if ModelStore.is_pydantic(inner):
-                value = getattr(obj, field)
-                if value is not None:
-                    SignalSchema._set_file_stream(value, catalog, cache)
+            obj._set_stream(catalog, caching_enabled=cache, download_cb=download_cb)
+
+        if isinstance(obj, BaseModel):
+            for field, finfo in type(obj).model_fields.items():
+                field_annotation = finfo.annotation
+                if (
+                    field_annotation is not None
+                    and SignalSchema._annotation_contains_type(field_annotation, File)
+                ):
+                    SignalSchema._set_file_stream(
+                        getattr(obj, field),
+                        catalog,
+                        cache,
+                        download_cb,
+                        field_annotation,
+                        seen,
+                    )
+        elif isinstance(obj, Mapping):
+            args = get_args(annotation) if annotation is not None else ()
+            value_annotation = args[1] if len(args) == 2 else None
+            for value in obj.values():
+                SignalSchema._set_file_stream(
+                    value, catalog, cache, download_cb, value_annotation, seen
+                )
+        elif isinstance(obj, (list, tuple, set)):
+            args = get_args(annotation) if annotation is not None else ()
+            item_annotation = args[0] if args else None
+            for value in obj:
+                SignalSchema._set_file_stream(
+                    value, catalog, cache, download_cb, item_annotation, seen
+                )
 
     def get_column_type(self, col_name: str, with_subtree: bool = False) -> DataType:
         """
