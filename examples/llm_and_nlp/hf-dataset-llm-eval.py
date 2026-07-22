@@ -33,7 +33,7 @@ def eval_dialog(
 ) -> DialogEval:
     try:
         completion = client.chat_completion(
-            model="Qwen/Qwen2.5-7B-Instruct",
+            model="openai/gpt-oss-20b",
             messages=[
                 {
                     "role": "user",
@@ -64,7 +64,8 @@ def eval_dialog(
         "hf://datasets/infinite-dataset-hub/MobilePlanAssistant/data.csv", source=False
     )
     .settings(parallel=True)
-    .setup(client=lambda: InferenceClient(api_key=HF_TOKEN))
+    # Pin the provider: auto-routing may pick one that ignores json_schema.
+    .setup(client=lambda: InferenceClient(api_key=HF_TOKEN, provider="together"))
     .map(response=eval_dialog)
     .to_parquet("hf://datasets/dvcorg/test-datachain-llm-eval/data.parquet")
 )
