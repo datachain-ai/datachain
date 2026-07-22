@@ -340,9 +340,9 @@ class Session:
 
     @staticmethod
     def except_hook(exc_type, exc_value, exc_traceback):
-        if hasattr(sys, "ps1"):
-            if Session.ORIGINAL_EXCEPT_HOOK:
-                Session.ORIGINAL_EXCEPT_HOOK(exc_type, exc_value, exc_traceback)
+        if getattr(sys, "ps1", None):
+            original_hook = Session.ORIGINAL_EXCEPT_HOOK or sys.__excepthook__
+            original_hook(exc_type, exc_value, exc_traceback)
             return
 
         if Session.GLOBAL_SESSION_CTX:

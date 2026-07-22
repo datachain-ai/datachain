@@ -148,6 +148,7 @@ def test_nested_sessions_share_same_job(test_session, patch_argv, monkeypatch):
 def test_except_hook_delegates_to_original(test_session, patch_argv, monkeypatch):
     """Test that Session.except_hook delegates to ORIGINAL_EXCEPT_HOOK."""
     monkeypatch.delenv("DATACHAIN_JOB_ID", raising=False)
+    monkeypatch.setattr("sys.ps1", None, raising=False)
 
     # Set up global session for this test
     Session.GLOBAL_SESSION_CTX = test_session
@@ -202,6 +203,18 @@ def test_except_hook_preserves_interactive_session(test_session, monkeypatch):
         assert db_job.status == JobStatus.RUNNING
     finally:
         Session.GLOBAL_SESSION_CTX = None
+
+
+def test_except_hook_uses_default_hook_in_interactive_session(monkeypatch):
+    monkeypatch.setattr("sys.ps1", ">>> ", raising=False)
+    monkeypatch.setattr(Session, "ORIGINAL_EXCEPT_HOOK", None)
+    called = []
+    monkeypatch.setattr("sys.__excepthook__", lambda *args: called.append(args))
+
+    exc = AttributeError("typo")
+    Session.except_hook(type(exc), exc, exc.__traceback__)
+
+    assert called == [(AttributeError, exc, None)]
 
 
 @pytest.mark.parametrize("use_datachain_job_id_env", [True, False])
