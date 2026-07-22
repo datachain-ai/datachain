@@ -148,6 +148,7 @@ def test_nested_sessions_share_same_job(test_session, patch_argv, monkeypatch):
 def test_except_hook_delegates_to_original(test_session, patch_argv, monkeypatch):
     """Test that Session.except_hook delegates to ORIGINAL_EXCEPT_HOOK."""
     monkeypatch.delenv("DATACHAIN_JOB_ID", raising=False)
+    monkeypatch.setattr("sys.ps1", None, raising=False)
 
     # Set up global session for this test
     Session.GLOBAL_SESSION_CTX = test_session
@@ -174,6 +175,46 @@ def test_except_hook_delegates_to_original(test_session, patch_argv, monkeypatch
     assert "bad stuff" in called["exc"][1]
     db_job = test_session.catalog.metastore.get_job(test_session.get_or_create_job().id)
     assert db_job.status == JobStatus.FAILED
+
+
+def test_except_hook_preserves_interactive_session(test_session, monkeypatch):
+    monkeypatch.delenv("DATACHAIN_JOB_ID", raising=False)
+    monkeypatch.setattr("sys.ps1", ">>> ", raising=False)
+    called = []
+    monkeypatch.setattr(
+        Session, "ORIGINAL_EXCEPT_HOOK", lambda *args: called.append(args)
+    )
+    Session.GLOBAL_SESSION_CTX = test_session
+    chain = dc.read_values(value=[1, 2], session=test_session).persist()
+    job = test_session.get_or_create_job()
+
+    try:
+        try:
+            raise AttributeError("typo")
+        except AttributeError as exc:
+            Session.except_hook(type(exc), exc, exc.__traceback__)
+
+        assert len(called) == 1
+        assert called[0][0] is AttributeError
+        assert str(called[0][1]) == "typo"
+        assert called[0][2] is not None
+        assert chain.to_values("value") == [1, 2]
+        db_job = test_session.catalog.metastore.get_job(job.id)
+        assert db_job.status == JobStatus.RUNNING
+    finally:
+        Session.GLOBAL_SESSION_CTX = None
+
+
+def test_except_hook_uses_default_hook_in_interactive_session(monkeypatch):
+    monkeypatch.setattr("sys.ps1", ">>> ", raising=False)
+    monkeypatch.setattr(Session, "ORIGINAL_EXCEPT_HOOK", None)
+    called = []
+    monkeypatch.setattr("sys.__excepthook__", lambda *args: called.append(args))
+
+    exc = AttributeError("typo")
+    Session.except_hook(type(exc), exc, exc.__traceback__)
+
+    assert called == [(AttributeError, exc, None)]
 
 
 @pytest.mark.parametrize("use_datachain_job_id_env", [True, False])

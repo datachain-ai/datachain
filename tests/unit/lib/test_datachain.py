@@ -1716,6 +1716,14 @@ def test_explode(tmp_dir, test_session, column_type, column, model_name):
     assert chain.limit(1).to_values(column)[0].__class__.__name__ == model_name
 
 
+def test_explode_list_with_null_items(test_session):
+    chain = dc.read_values(
+        json=[{"email": ["user@example.com", None]}], session=test_session
+    ).explode("json")
+
+    assert chain.to_values("json_expl.email") == [["user@example.com", None]]
+
+
 def test_explode_raises_on_wrong_column_type(test_session):
     chain = dc.read_values(f1=features, session=test_session)
 

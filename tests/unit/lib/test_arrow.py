@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import get_args
 
 import pandas as pd
 import pyarrow as pa
@@ -155,7 +156,8 @@ def test_arrow_generator_partitioned(tmp_path, catalog, cache):
         (pa.large_string(), str),
         (pa.map_(pa.string(), pa.int32()), dict),
         (pa.dictionary(pa.int64(), pa.string()), str),
-        (pa.list_(pa.string()), list[str]),
+        (pa.list_(pa.string()), list[str | None]),
+        (pa.list_(pa.field("item", pa.string(), nullable=False)), list[str]),
         (pa.null(), str),
     ),
 )
@@ -169,6 +171,42 @@ def test_arrow_type_mapper_struct():
     assert list(fields.keys()) == ["x", "y", "z"]
     dtypes = [field.annotation for field in fields.values()]
     assert dtypes == [int | None, str | None, str | None]
+
+
+def test_arrow_type_mapper_list_struct_models_distinct_per_column():
+    users = pa.list_(pa.struct({"name": pa.string()}))
+    orders = pa.list_(pa.struct({"amount": pa.int32()}))
+
+    (users_model,) = get_args(arrow_type_mapper(users, "users"))
+    (orders_model,) = get_args(arrow_type_mapper(orders, "orders"))
+
+    assert users_model.__name__ != orders_model.__name__
+    assert "users" in users_model.__name__
+
+
+def test_arrow_type_mapper_nested_list_only_nullable_scalars():
+    nested = pa.list_(pa.list_(pa.string()))
+
+    assert arrow_type_mapper(nested) == list[list[str | None]]
+
+
+def test_read_parquet_multiple_struct_list_columns_roundtrip(test_session, tmp_path):
+    df = pd.DataFrame(
+        {
+            "users": [[{"name": "alice"}, {"name": "bob"}]],
+            "orders": [[{"amount": 5}]],
+        }
+    )
+    path = tmp_path / "data.parquet"
+    df.to_parquet(path)
+
+    dc.read_parquet(path.as_posix(), session=test_session).save("two_structs")
+    back = dc.read_dataset("two_structs", session=test_session)
+
+    (users,) = back.to_values("users")
+    (orders,) = back.to_values("orders")
+    assert [user.name for user in users] == ["alice", "bob"]
+    assert [order.amount for order in orders] == [5]
 
 
 def test_arrow_type_error():
