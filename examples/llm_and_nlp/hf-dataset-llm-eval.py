@@ -75,7 +75,8 @@ result = dc.read_parquet(
 errors = result.filter(dc.C("response.result") == "Error")
 
 if result.count() == errors.count():
-    errors.show(3)
+    for (reason,) in errors.limit(3).to_iter("response.reason"):
+        print(reason)
     raise RuntimeError("All Hugging Face inference requests failed.")
 
 # Read it back to filter and show.
