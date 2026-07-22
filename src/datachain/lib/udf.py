@@ -75,6 +75,26 @@ class BoundSpec(ABC):
     def input_columns(self) -> list[str]: ...
 
 
+def _reject_var_params(
+    func: Callable, label: str, *, allow_var_positional: bool = False
+) -> None:
+    """Reject user callables with ``**kwargs`` unconditionally (a positional
+    call raises ``TypeError``) and with ``*args`` unless the caller opts in
+    (works only when column names are given explicitly)."""
+    kinds: set[inspect._ParameterKind] = {inspect.Parameter.VAR_KEYWORD}
+    if not allow_var_positional:
+        kinds.add(inspect.Parameter.VAR_POSITIONAL)
+    var_params = [
+        f"*{p.name}" if p.kind is inspect.Parameter.VAR_POSITIONAL else f"**{p.name}"
+        for p in inspect.signature(func).parameters.values()
+        if p.kind in kinds
+    ]
+    if var_params:
+        raise DataChainParamsError(
+            f"{label} uses {var_params}; list the input column names as regular params"
+        )
+
+
 class UdfError(DataChainParamsError):
     """Exception raised for UDF-related errors."""
 
@@ -571,6 +591,7 @@ class _MultiSignalMapper(Mapper):
                 self._per_func_params[name] = list(self._bound_columns[name])
                 deps[name] = set()
                 continue
+            _reject_var_params(fn, f"map() function {name!r}")
             sig_params = list(inspect.signature(fn).parameters.values())
             positional_only = [
                 p.name
@@ -628,7 +649,7 @@ class _MultiSignalMapper(Mapper):
         # UDFBase.verbose_name reads self._func, which is None for AbstractUDF
         # instances like this one, so the base falls through to "<unknown>".
         # Surface the signal names instead so job diagnostics stay useful.
-        return f"map({', '.join(self._signal_map)})"
+        return ", ".join(self._signal_map)
 
     def hash(self, include_body: bool = True) -> str:
         # cache key must vary with the wrapped functions; the base

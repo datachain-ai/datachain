@@ -5,7 +5,7 @@ from typing import Any, get_args, get_origin
 
 from datachain.lib.data_model import DataType, DataTypeNames, is_chain_type
 from datachain.lib.signal_schema import SignalSchema
-from datachain.lib.udf import UDFBase
+from datachain.lib.udf import UDFBase, _reject_var_params
 from datachain.lib.utils import AbstractUDF, DataChainParamsError, callable_name
 
 
@@ -69,6 +69,13 @@ class UdfSignature:  # noqa: PLW1641
         func_params_map_sign, func_outs_sign, is_iterator, has_return_annotation = (
             cls._func_signature(chain, udf_func)
         )
+
+        if not isinstance(udf_func, AbstractUDF):
+            _reject_var_params(
+                udf_func,
+                f"function '{callable_name(udf_func)}'",
+                allow_var_positional=params is not None,
+            )
 
         # For generators/aggregators, users must return an Iterator/Generator.
         # Previously, this validation only happened when `output` was not explicitly

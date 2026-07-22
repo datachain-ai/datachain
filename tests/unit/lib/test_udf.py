@@ -137,7 +137,7 @@ def test_udf_verbose_name_multi_signal_mapper(test_session):
         ext=lambda name: name.rsplit(".", 1)[1],
     )
     udf = chain._query.steps[-1].udf.inner
-    assert udf.verbose_name == "map(stem, ext)"
+    assert udf.verbose_name == "stem, ext"
 
 
 def test_udf_output_type_error_message(monkeypatch, test_session):
