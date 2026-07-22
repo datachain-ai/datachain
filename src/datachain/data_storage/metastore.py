@@ -2012,8 +2012,29 @@ class AbstractDBMetastore(AbstractMetastore):
             )
             .exists()
         )
+        # Ignore dependency rows whose referrer is a tombstone
+        # (REMOVING/REMOVED). Tombstoned datasets keep their dep rows so their
+        # lineage stays intact, but they must not pin listings from GC.
+        src_dv = dv.alias("dv_src")
         is_referenced = (
-            select(dd.c.id).where(dd.c.dataset_version_id == dv.c.id).exists()
+            select(dd.c.id)
+            .select_from(
+                dd.join(
+                    src_dv,
+                    src_dv.c.id == dd.c.source_dataset_version_id,
+                    isouter=True,
+                )
+            )
+            .where(
+                dd.c.dataset_version_id == dv.c.id,
+                or_(
+                    src_dv.c.status.is_(None),
+                    src_dv.c.status.notin_(
+                        [DatasetStatus.REMOVING, DatasetStatus.REMOVED]
+                    ),
+                ),
+            )
+            .exists()
         )
 
         query = (
