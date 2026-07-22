@@ -811,6 +811,65 @@ def test_deserialize_custom_type_bad_schema():
         )
 
 
+def test_deserialize_same_name_different_shape_not_shadowed():
+    def payload(fields):
+        return {
+            "obj": "CollidingGenModel@v1",
+            "_custom_types": {
+                "CollidingGenModel@v1": {
+                    "schema_version": 2,
+                    "name": "CollidingGenModel@v1",
+                    "fields": fields,
+                    "bases": [],
+                }
+            },
+        }
+
+    model_a = SignalSchema.deserialize(payload({"a": "int"})).values["obj"]
+    model_b = SignalSchema.deserialize(payload({"b": "str"})).values["obj"]
+
+    assert set(model_a.model_fields) == {"a"}
+    assert set(model_b.model_fields) == {"b"}
+
+    assert SignalSchema.deserialize(payload({"a": "int"})).values["obj"] is model_a
+    assert SignalSchema.deserialize(payload({"b": "str"})).values["obj"] is model_b
+
+
+def test_deserialize_nested_shape_divergence_not_shadowed():
+    def payload(inner_fields):
+        return {
+            "obj": "CollidingOuterModel@v1",
+            "_custom_types": {
+                "CollidingOuterModel@v1": {
+                    "schema_version": 2,
+                    "name": "CollidingOuterModel@v1",
+                    "fields": {"inner": "CollidingInnerModel@v1"},
+                    "bases": [],
+                },
+                "CollidingInnerModel@v1": {
+                    "schema_version": 2,
+                    "name": "CollidingInnerModel@v1",
+                    "fields": inner_fields,
+                    "bases": [],
+                },
+            },
+        }
+
+    outer_a = SignalSchema.deserialize(payload({"a": "int"})).values["obj"]
+    outer_b = SignalSchema.deserialize(payload({"b": "str"})).values["obj"]
+
+    inner_a = outer_a.model_fields["inner"].annotation
+    inner_b = outer_b.model_fields["inner"].annotation
+    assert set(inner_a.model_fields) == {"a"}
+    assert set(inner_b.model_fields) == {"b"}
+
+
+def test_deserialize_prefers_registered_model_when_spec_matches():
+    schema = SignalSchema({"fr": MyType2}).serialize()
+
+    assert SignalSchema.deserialize(schema).values["fr"] is MyType2
+
+
 def test_select_nested_names():
     schema = SignalSchema.deserialize(
         {
