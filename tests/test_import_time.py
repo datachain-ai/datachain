@@ -10,7 +10,7 @@ import datachain as dc
 logger = logging.getLogger(__name__)
 
 MAX_ATTEMPTS = 3
-MAX_IMPORT_TIME_MS = 800
+MAX_IMPORT_TIME_MS = 1000
 
 lazy_modules = [
     "adlfs",

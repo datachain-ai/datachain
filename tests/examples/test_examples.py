@@ -25,8 +25,25 @@ computer_vision_examples = sorted(
     ]
 )
 
+# API keys are unavailable on fork, Dependabot and Copilot PRs — skip instead
+# of failing there.
+required_env_vars = {
+    "claude-query.py": ("ANTHROPIC_API_KEY",),
+    "dc-llm-query.py": ("ANTHROPIC_API_KEY",),
+    "dc-llm-functions.py": ("ANTHROPIC_API_KEY", "OPENAI_API_KEY"),
+    "hf-dataset-llm-eval.py": ("HF_TOKEN",),
+    "openai_image_desc_lib.py": ("OPENAI_API_KEY",),
+}
+
 
 def smoke_test(example: str, env: dict | None = None):
+    missing = [
+        var
+        for var in required_env_vars.get(os.path.basename(example), ())
+        if not os.environ.get(var)
+    ]
+    if missing:
+        pytest.skip(f"requires {', '.join(missing)}")
     try:
         completed_process = subprocess.run(  # noqa: S603
             [sys.executable, example],
