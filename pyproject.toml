@@ -86,7 +86,9 @@ remote = [
   "requests>=2.22.0"
 ]
 vector = [
-  "usearch"
+  "usearch",
+  # Temporary macOS workaround: exclude sdist-only numkong 7.7.1; remove per #1874
+  "numkong!=7.7.1 ; sys_platform == 'darwin'"
 ]
 hf = [
   "numba>=0.60.0",
