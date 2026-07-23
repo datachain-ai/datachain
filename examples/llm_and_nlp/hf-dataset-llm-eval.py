@@ -33,7 +33,7 @@ def eval_dialog(
 ) -> DialogEval:
     try:
         completion = client.chat_completion(
-            model="Qwen/Qwen2.5-7B-Instruct",
+            model="openai/gpt-oss-20b",
             messages=[
                 {
                     "role": "user",
@@ -64,7 +64,7 @@ def eval_dialog(
         "hf://datasets/infinite-dataset-hub/MobilePlanAssistant/data.csv", source=False
     )
     .settings(parallel=True)
-    .setup(client=lambda: InferenceClient(api_key=HF_TOKEN))
+    .setup(client=lambda: InferenceClient(api_key=HF_TOKEN, provider="together"))
     .map(response=eval_dialog)
     .to_parquet("hf://datasets/dvcorg/test-datachain-llm-eval/data.parquet")
 )
@@ -75,7 +75,8 @@ result = dc.read_parquet(
 errors = result.filter(dc.C("response.result") == "Error")
 
 if result.count() == errors.count():
-    errors.show(3)
+    for (reason,) in errors.limit(3).to_iter("response.reason"):
+        print(reason)
     raise RuntimeError("All Hugging Face inference requests failed.")
 
 # Read it back to filter and show.

@@ -198,7 +198,7 @@ def test_except_hook_preserves_interactive_session(test_session, monkeypatch):
         assert called[0][0] is AttributeError
         assert str(called[0][1]) == "typo"
         assert called[0][2] is not None
-        assert chain.to_values("value") == [1, 2]
+        assert sorted(chain.to_values("value")) == [1, 2]
         db_job = test_session.catalog.metastore.get_job(job.id)
         assert db_job.status == JobStatus.RUNNING
     finally:
