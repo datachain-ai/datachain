@@ -913,6 +913,70 @@ def test_map(test_session):
         assert x.my_name == test_fr.my_name
 
 
+def test_map_hydrates_models_in_nested_collection_param(test_session):
+    class ModelCollection(DataModel):
+        items: list[MyFr]
+
+    def get_count(items: list[MyFr]) -> int:
+        assert isinstance(items[0], MyFr)
+        return items[0].count
+
+    chain = dc.read_values(
+        collection=[ModelCollection(items=[MyFr(nnn="item", count=2)])],
+        session=test_session,
+    ).map(
+        get_count,
+        params=["collection.items"],
+        output={"count": int},
+    )
+
+    assert chain.to_values("count") == [2]
+
+
+def test_map_hydrates_models_in_optional_dict_param(test_session):
+    class ModelCollection(DataModel):
+        lookup: dict[str, MyFr] | None
+
+    def get_count(lookup: dict[str, MyFr] | None) -> int:
+        assert lookup is not None
+        return lookup["item"].count
+
+    chain = dc.read_values(
+        collection=[ModelCollection(lookup={"item": MyFr(nnn="item", count=3)})],
+        session=test_session,
+    ).map(
+        get_count,
+        params=["collection.lookup"],
+        output={"count": int},
+    )
+
+    assert chain.to_values("count") == [3]
+
+
+def test_map_reads_file_in_nested_collection(test_session, tmp_path):
+    class FileCollection(DataModel):
+        files: list[File]
+
+    path = tmp_path / "nested.txt"
+    path.write_text("contents")
+
+    chain = (
+        dc.read_storage(tmp_path.as_uri(), session=test_session)
+        .map(
+            collection=lambda file: FileCollection(files=[file]),
+            params=["file"],
+            output={"collection": FileCollection},
+        )
+        .map(
+            content=lambda files: files[0].read().decode(),
+            params=["collection.files"],
+            output={"content": str},
+        )
+    )
+
+    assert chain.to_values("content") == ["contents"]
+
+
 def test_map_multiple_signals(test_session):
     chain = dc.read_values(name=["foo.txt", "bar.md"], session=test_session).map(
         stem=lambda name: name.rsplit(".", 1)[0],

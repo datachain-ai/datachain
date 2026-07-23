@@ -23,7 +23,8 @@ from datachain.lib.convert.flatten import (
     flatten_value,
     is_optional_model,
 )
-from datachain.lib.file import DataModel, File, FileError
+from datachain.lib.file import File, FileError
+from datachain.lib.signal_schema import SignalSchema
 from datachain.lib.utils import AbstractUDF, DataChainParamsError
 from datachain.query.batch import (
     Batch,
@@ -45,7 +46,6 @@ if TYPE_CHECKING:
     from datachain.cache import Cache
     from datachain.catalog import Catalog
     from datachain.lib.settings import Settings
-    from datachain.lib.signal_schema import SignalSchema
     from datachain.lib.udf_signature import UdfSignature
     from datachain.query.batch import RowsOutput
 
@@ -385,23 +385,29 @@ class UDFBase(AbstractUDF):
         assert self.params
         row = [row_dict[p] for p in self.params.to_udf_spec()]
         obj_row = self.params.row_to_objs(row)
-        for obj in obj_row:
-            self._set_stream_recursive(obj, catalog, cache, download_cb)
+        for obj, annotation in zip(obj_row, self.params.values.values(), strict=True):
+            if self.params._annotation_contains_type(annotation, File):
+                self._set_stream_recursive(
+                    obj, catalog, cache, download_cb, annotation=annotation
+                )
         return obj_row
 
     def _set_stream_recursive(
-        self, obj: Any, catalog: "Catalog", cache: bool, download_cb: Callback
+        self,
+        obj: Any,
+        catalog: "Catalog",
+        cache: bool,
+        download_cb: Callback,
+        annotation: Any = None,
     ) -> None:
         """Recursively set the catalog stream on all File objects within an object."""
-        if isinstance(obj, File):
-            obj._set_stream(catalog, caching_enabled=cache, download_cb=download_cb)
-
-        # Check all fields for nested File objects, but only for DataModel objects
-        if isinstance(obj, DataModel):
-            for field_name in type(obj).model_fields:
-                field_value = getattr(obj, field_name, None)
-                if isinstance(field_value, DataModel):
-                    self._set_stream_recursive(field_value, catalog, cache, download_cb)
+        SignalSchema._set_file_stream(
+            obj,
+            catalog,
+            cache,
+            download_cb=download_cb,
+            annotation=annotation,
+        )
 
     def _prepare_row(
         self, row, udf_fields, catalog, cache, download_cb, include_id=False

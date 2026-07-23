@@ -1012,6 +1012,26 @@ def test_row_to_features_optional_collection(test_session):
     assert isinstance(items[0], MyType1)
 
 
+def test_row_to_features_sets_stream_in_model_collection(test_session):
+    class FileCollection(DataModel):
+        files: list[File]
+
+    file = File(path="nested.txt")
+    schema = SignalSchema({"collection": FileCollection})
+
+    (collection,) = schema.row_to_features(([file.model_dump()],), test_session.catalog)
+
+    assert collection.files[0]._catalog is test_session.catalog
+
+
+def test_row_to_objs_preserves_plain_collection():
+    values = [1.0, 2.0]
+
+    (converted,) = SignalSchema({"values": list[float]}).row_to_objs((values,))
+
+    assert converted is values
+
+
 @pytest.mark.parametrize(
     "union_type,union_name",
     [
