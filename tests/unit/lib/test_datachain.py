@@ -973,7 +973,7 @@ def test_map_multiple_signals_rejects_positional_only(test_session):
         return name.upper()
 
     chain = dc.read_values(name=["foo"], session=test_session)
-    with pytest.raises(DataChainParamsError, match="positional-only"):
+    with pytest.raises(DataChainParamsError, match="can't be passed by name"):
         chain.map(up=upper_only, lower=lambda name: name.lower())
 
 
@@ -997,7 +997,7 @@ def test_map_single_signal_rejects_var_params(test_session, fn, match):
 
 @pytest.mark.parametrize(
     "fn,match",
-    [(_var_args_fn, r"\*args"), (_var_kwargs_fn, r"\*\*kwargs")],
+    [(_var_args_fn, r"'args'"), (_var_kwargs_fn, r"'kwargs'")],
 )
 def test_map_multiple_signals_rejects_var_params(test_session, fn, match):
     chain = dc.read_values(name=["foo"], session=test_session)

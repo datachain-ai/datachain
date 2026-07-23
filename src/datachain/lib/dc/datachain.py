@@ -68,6 +68,7 @@ from datachain.lib.udf import (
 )
 from datachain.lib.udf_signature import UdfSignature
 from datachain.lib.utils import DataChainColumnError, DataChainParamsError
+from datachain.llm.spec import LLMSpec
 from datachain.progress import tqdm
 from datachain.project import Project
 from datachain.query import Session
@@ -1039,6 +1040,15 @@ class DataChain:
                 "individually. For nested columns (e.g. 'file.path'), extract "
                 "to a top-level column with a single .map() first."
             )
+
+        for k, v in signal_map.items():
+            if isinstance(v, LLMSpec) and v.include_usage:
+                raise DataChainParamsError(
+                    f"map() entry {k!r} uses include_usage=True which "
+                    "produces two outputs; multi-signal .map() only "
+                    "supports one output per entry. Use a single "
+                    ".map(...) with output={...} to name both columns"
+                )
 
         bound_columns: dict[str, list[str]] = {}
         for k, v in signal_map.items():

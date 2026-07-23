@@ -591,18 +591,21 @@ class _MultiSignalMapper(Mapper):
                 self._per_func_params[name] = list(self._bound_columns[name])
                 deps[name] = set()
                 continue
-            _reject_var_params(fn, f"map() function {name!r}")
             sig_params = list(inspect.signature(fn).parameters.values())
-            positional_only = [
+            bad = [
                 p.name
                 for p in sig_params
-                if p.kind is inspect.Parameter.POSITIONAL_ONLY
+                if p.kind
+                not in (
+                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                    inspect.Parameter.KEYWORD_ONLY,
+                )
             ]
-            if positional_only:
+            if bad:
                 raise DataChainParamsError(
-                    f"map() function {name!r} has positional-only "
-                    f"parameters ({positional_only}); use plain params so "
-                    "they can be passed by name in multi-signal .map()"
+                    f"map() function {name!r} has parameters that can't "
+                    f"be passed by name ({bad}); multi-signal .map() calls "
+                    "each function with keyword arguments"
                 )
             params = [p.name for p in sig_params]
             self._per_func_params[name] = params

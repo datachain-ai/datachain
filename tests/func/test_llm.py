@@ -3,6 +3,7 @@ from pydantic import BaseModel
 
 import datachain as dc
 from datachain import llm
+from datachain.lib.utils import DataChainParamsError
 from datachain.llm import engine
 from datachain.llm.types import Usage
 from tests.llm_fakes import FakeLiteLLM
@@ -81,6 +82,15 @@ def test_map_multi_signal_llm(fake_llm, test_session):
     assert topic in {"accident", "normal"}
     assert scene.objects == ["x"]
     assert summary == "summary"
+
+
+def test_map_multi_signal_rejects_include_usage(test_session):
+    chain = base(test_session)
+    with pytest.raises(DataChainParamsError, match="include_usage=True"):
+        chain.map(
+            scene=llm.complete("text", schema=Scene, include_usage=True),
+            label=llm.complete("text", "x"),
+        )
 
 
 def test_include_usage_multi_output_map(fake_llm, test_session):
