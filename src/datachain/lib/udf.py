@@ -651,9 +651,7 @@ class _MultiSignalMapper(Mapper):
 
     @property
     def verbose_name(self) -> str:
-        # UDFBase.verbose_name reads self._func, which is None for AbstractUDF
-        # instances like this one, so the base falls through to "<unknown>".
-        # Surface the signal names instead so job diagnostics stay useful.
+        # The base property reads self._func, which is unset here.
         return ", ".join(self._signal_map)
 
     def hash(self, include_body: bool = True) -> str:

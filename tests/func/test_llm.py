@@ -84,6 +84,36 @@ def test_map_multi_signal_llm(fake_llm, test_session):
     assert summary == "summary"
 
 
+def test_map_multi_signal_llm_dotted_column(fake_llm, test_session):
+    fake_llm.text_response = "ok"
+    out = (
+        dc.read_values(doc=[Doc(body="hello")], other=["x"], session=test_session)
+        .settings(llm="m")
+        .map(
+            label=llm.complete("doc.body", "summarize"),
+            upper=lambda other: other.upper(),
+        )
+        .to_list("label", "upper")
+    )
+    assert out == [("ok", "X")]
+
+
+def test_map_multi_signal_llm_none_input(fake_llm, test_session):
+    chain = (
+        dc.read_values(text=["hi", None], session=test_session)
+        .settings(llm="m")
+        .map(
+            scene=llm.complete("text", schema=Scene),
+            label=llm.complete("text", "x"),
+        )
+    )
+    scenes = chain.to_values("scene")
+    assert None in scenes
+    assert any(isinstance(s, Scene) for s in scenes)
+    # only the non-None input reached the model, once per spec entry
+    assert len(fake_llm.calls) == 2
+
+
 def test_map_multi_signal_rejects_include_usage(test_session):
     chain = base(test_session)
     with pytest.raises(DataChainParamsError, match="include_usage=True"):
