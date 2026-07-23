@@ -93,6 +93,22 @@ def test_map_multi_signal_rejects_include_usage(test_session):
         )
 
 
+def test_map_multi_signal_spec_reads_sibling_output(fake_llm, test_session):
+    fake_llm.text_response = "ok"
+    out = (
+        dc.read_values(name=["frame"], session=test_session)
+        .settings(llm="m")
+        .map(
+            prepared=lambda name: f"say {name}",
+            label=llm.complete("prepared", "p"),
+        )
+        .to_list("prepared", "label")
+    )
+    assert out == [("say frame", "ok")]
+    # spec receives the sibling's output verbatim
+    assert any("say frame" in str(c) for c in fake_llm.calls)
+
+
 def test_include_usage_multi_output_map(fake_llm, test_session):
     chain = base(test_session).map(
         llm.complete("text", schema=Scene, include_usage=True),

@@ -588,8 +588,9 @@ class _MultiSignalMapper(Mapper):
         deps: dict[str, set[str]] = {}
         for name, fn in signal_map.items():
             if name in self._bound_columns:
-                self._per_func_params[name] = list(self._bound_columns[name])
-                deps[name] = set()
+                params = list(self._bound_columns[name])
+                self._per_func_params[name] = params
+                deps[name] = {p for p in params if p in output_names and p != name}
                 continue
             sig_params = list(inspect.signature(fn).parameters.values())
             bad = [
@@ -623,9 +624,8 @@ class _MultiSignalMapper(Mapper):
         seen: set[str] = set()
         self.combined_params: list[str] = []
         for name in signal_map:
-            bound = name in self._bound_columns
             for p in self._per_func_params[name]:
-                if not bound and p in output_names:
+                if p in output_names:
                     continue
                 if p not in seen:
                     seen.add(p)
@@ -638,7 +638,9 @@ class _MultiSignalMapper(Mapper):
             fn = self._signal_map[name]
             params = self._per_func_params[name]
             if name in self._bound_columns:
-                results[name] = fn(*[row_by_name[c] for c in params])
+                results[name] = fn(
+                    *[(results[c] if c in results else row_by_name[c]) for c in params]
+                )
             else:
                 fn_kwargs = {
                     p: (results[p] if p in results else row_by_name[p]) for p in params
