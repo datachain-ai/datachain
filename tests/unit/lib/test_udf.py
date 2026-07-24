@@ -131,6 +131,15 @@ def test_udf_verbose_name_unknown():
     assert udf.verbose_name == "<unknown>"
 
 
+def test_udf_verbose_name_multi_signal_mapper(test_session):
+    chain = dc.read_values(name=["foo.txt"], session=test_session).map(
+        stem=lambda name: name.rsplit(".", 1)[0],
+        ext=lambda name: name.rsplit(".", 1)[1],
+    )
+    udf = chain._query.steps[-1].udf.inner
+    assert udf.verbose_name == "stem, ext"
+
+
 def test_udf_output_type_error_message(monkeypatch, test_session):
     monkeypatch.delenv("DATACHAIN_DISTRIBUTED", raising=False)
 

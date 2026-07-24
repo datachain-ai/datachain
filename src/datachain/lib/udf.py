@@ -71,6 +71,29 @@ class BoundSpec(ABC):
     @abstractmethod
     def bind(self, ctx: BindContext) -> Callable: ...
 
+    @abstractmethod
+    def input_columns(self) -> list[str]: ...
+
+
+def _reject_var_params(
+    func: Callable, label: str, *, allow_var_positional: bool = False
+) -> None:
+    """Reject user callables with ``**kwargs`` unconditionally (a positional
+    call raises ``TypeError``) and with ``*args`` unless the caller opts in
+    (works only when column names are given explicitly)."""
+    kinds: set[inspect._ParameterKind] = {inspect.Parameter.VAR_KEYWORD}
+    if not allow_var_positional:
+        kinds.add(inspect.Parameter.VAR_POSITIONAL)
+    var_params = [
+        f"*{p.name}" if p.kind is inspect.Parameter.VAR_POSITIONAL else f"**{p.name}"
+        for p in inspect.signature(func).parameters.values()
+        if p.kind in kinds
+    ]
+    if var_params:
+        raise DataChainParamsError(
+            f"{label} uses {var_params}; list the input column names as regular params"
+        )
+
 
 class UdfError(DataChainParamsError):
     """Exception raised for UDF-related errors."""
@@ -549,16 +572,43 @@ class _MultiSignalMapper(Mapper):
     irrelevant. Cycles raise ``ValueError`` at construction time.
     """
 
-    def __init__(self, signal_map: dict[str, Callable]):
+    def __init__(
+        self,
+        signal_map: dict[str, Callable],
+        *,
+        bound_columns: dict[str, list[str]] | None = None,
+    ):
         super().__init__()
         self._signal_map = signal_map
+        self._bound_columns = bound_columns or {}
         output_names = set(signal_map)
         self._per_func_params: dict[str, list[str]] = {}
         # For each function: which of its params come from another
         # function's output (dependencies) vs from an input row column.
         deps: dict[str, set[str]] = {}
         for name, fn in signal_map.items():
-            params = list(inspect.signature(fn).parameters.keys())
+            if name in self._bound_columns:
+                params = list(self._bound_columns[name])
+                self._per_func_params[name] = params
+                deps[name] = {p for p in params if p in output_names and p != name}
+                continue
+            sig_params = list(inspect.signature(fn).parameters.values())
+            bad = [
+                p.name
+                for p in sig_params
+                if p.kind
+                not in (
+                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                    inspect.Parameter.KEYWORD_ONLY,
+                )
+            ]
+            if bad:
+                raise DataChainParamsError(
+                    f"map() function {name!r} has parameters that can't "
+                    f"be passed by name ({bad}); multi-signal .map() calls "
+                    "each function with keyword arguments"
+                )
+            params = [p.name for p in sig_params]
             self._per_func_params[name] = params
             deps[name] = {p for p in params if p in output_names and p != name}
 
@@ -582,16 +632,27 @@ class _MultiSignalMapper(Mapper):
                     self.combined_params.append(p)
 
     def process(self, *args):
-        kwargs = dict(zip(self.combined_params, args, strict=True))
+        row_by_name = dict(zip(self.combined_params, args, strict=True))
         results: dict[str, Any] = {}
         for name in self._exec_order:
-            fn_kwargs = {
-                p: (results[p] if p in results else kwargs[p])
-                for p in self._per_func_params[name]
-            }
-            results[name] = self._signal_map[name](**fn_kwargs)
+            fn = self._signal_map[name]
+            params = self._per_func_params[name]
+            if name in self._bound_columns:
+                results[name] = fn(
+                    *[(results[c] if c in results else row_by_name[c]) for c in params]
+                )
+            else:
+                fn_kwargs = {
+                    p: (results[p] if p in results else row_by_name[p]) for p in params
+                }
+                results[name] = fn(**fn_kwargs)
         # Output order follows the user's declared kwarg order, not exec order.
         return tuple(results[name] for name in self._signal_map)
+
+    @property
+    def verbose_name(self) -> str:
+        # The base property reads self._func, which is unset here.
+        return ", ".join(self._signal_map)
 
     def hash(self, include_body: bool = True) -> str:
         # cache key must vary with the wrapped functions; the base

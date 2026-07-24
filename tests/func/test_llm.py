@@ -3,6 +3,7 @@ from pydantic import BaseModel
 
 import datachain as dc
 from datachain import llm
+from datachain.lib.utils import DataChainParamsError
 from datachain.llm import engine
 from datachain.llm.types import Usage
 from tests.llm_fakes import FakeLiteLLM
@@ -60,6 +61,82 @@ def test_map_materializes_typed_columns(fake_llm, test_session):
     assert scene.objects == ["x"]
     assert vec == [0.5, 0.6]
     assert summary == "summary"
+
+
+def test_map_multi_signal_llm(fake_llm, test_session):
+    fake_llm.text_response = "summary"
+
+    chain = base(test_session).map(
+        topic=llm.classify("text", into=["accident", "normal"]),
+        scene=llm.complete("text", schema=Scene),
+        summary=llm.complete("text", "summarize"),
+    )
+
+    assert chain.schema["topic"] == (str | None)
+    assert chain.schema["scene"] == (Scene | None)
+    assert chain.schema["summary"] == (str | None)
+
+    rows = chain.to_list("topic", "scene", "summary")
+    assert len(rows) == 3
+    topic, scene, summary = rows[0]
+    assert topic in {"accident", "normal"}
+    assert scene.objects == ["x"]
+    assert summary == "summary"
+
+
+def test_map_multi_signal_llm_dotted_column(fake_llm, test_session):
+    fake_llm.text_response = "ok"
+    out = (
+        dc.read_values(doc=[Doc(body="hello")], other=["x"], session=test_session)
+        .settings(llm="m")
+        .map(
+            label=llm.complete("doc.body", "summarize"),
+            upper=lambda other: other.upper(),
+        )
+        .to_list("label", "upper")
+    )
+    assert out == [("ok", "X")]
+
+
+def test_map_multi_signal_llm_none_input(fake_llm, test_session):
+    chain = (
+        dc.read_values(text=["hi", None], session=test_session)
+        .settings(llm="m")
+        .map(
+            scene=llm.complete("text", schema=Scene),
+            label=llm.complete("text", "x"),
+        )
+    )
+    scenes = chain.to_values("scene")
+    assert None in scenes
+    assert any(isinstance(s, Scene) for s in scenes)
+    # only the non-None input reached the model, once per spec entry
+    assert len(fake_llm.calls) == 2
+
+
+def test_map_multi_signal_rejects_include_usage(test_session):
+    chain = base(test_session)
+    with pytest.raises(DataChainParamsError, match="include_usage=True"):
+        chain.map(
+            scene=llm.complete("text", schema=Scene, include_usage=True),
+            label=llm.complete("text", "x"),
+        )
+
+
+def test_map_multi_signal_spec_reads_sibling_output(fake_llm, test_session):
+    fake_llm.text_response = "ok"
+    out = (
+        dc.read_values(name=["frame"], session=test_session)
+        .settings(llm="m")
+        .map(
+            prepared=lambda name: f"say {name}",
+            label=llm.complete("prepared", "p"),
+        )
+        .to_list("prepared", "label")
+    )
+    assert out == [("say frame", "ok")]
+    # spec receives the sibling's output verbatim
+    assert any("say frame" in str(c) for c in fake_llm.calls)
 
 
 def test_include_usage_multi_output_map(fake_llm, test_session):

@@ -68,6 +68,7 @@ from datachain.lib.udf import (
 )
 from datachain.lib.udf_signature import UdfSignature
 from datachain.lib.utils import DataChainColumnError, DataChainParamsError
+from datachain.llm.spec import LLMSpec
 from datachain.progress import tqdm
 from datachain.project import Project
 from datachain.query import Session
@@ -1020,7 +1021,7 @@ class DataChain:
         func: Callable | None,
         params: str | Sequence[str] | None,
         output: OutputType,
-        signal_map: dict[str, Callable],
+        signal_map: dict[str, Callable | BoundSpec],
     ) -> "Mapper":
         """Build a single Mapper that runs all functions in `signal_map` per row."""
         if func is not None:
@@ -1040,9 +1041,25 @@ class DataChain:
                 "to a top-level column with a single .map() first."
             )
 
-        multi_mapper = _MultiSignalMapper(signal_map)
+        for k, v in signal_map.items():
+            if isinstance(v, LLMSpec) and v.include_usage:
+                raise DataChainParamsError(
+                    f"map() entry {k!r} uses include_usage=True which "
+                    "produces two outputs; multi-signal .map() only "
+                    "supports one output per entry. Use a single "
+                    ".map(...) with output={...} to name both columns"
+                )
+
+        bound_columns: dict[str, list[str]] = {}
+        for k, v in signal_map.items():
+            if isinstance(v, BoundSpec):
+                bound_columns[k] = v.input_columns()
+        bound_signal_map: dict[str, Callable] = {
+            k: self._bind_udf_settings(v, Mapper) for k, v in signal_map.items()
+        }
+        multi_mapper = _MultiSignalMapper(bound_signal_map, bound_columns=bound_columns)
         output_dict: dict[str, Any] = {}
-        for name, fn in signal_map.items():
+        for name, fn in bound_signal_map.items():
             anno = inspect.signature(fn).return_annotation
             output_dict[name] = (
                 anno

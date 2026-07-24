@@ -968,6 +968,43 @@ def test_map_multiple_signals_rejects_params(test_session):
         chain.map(a=lambda n: n, b=lambda n: n, params=["name"])
 
 
+def test_map_multiple_signals_rejects_positional_only(test_session):
+    def upper_only(name, /):
+        return name.upper()
+
+    chain = dc.read_values(name=["foo"], session=test_session)
+    with pytest.raises(DataChainParamsError, match="can't be passed by name"):
+        chain.map(up=upper_only, lower=lambda name: name.lower())
+
+
+def _var_args_fn(*args) -> str:
+    return str(args)
+
+
+def _var_kwargs_fn(**kwargs) -> str:
+    return str(kwargs)
+
+
+@pytest.mark.parametrize(
+    "fn,match",
+    [(_var_args_fn, r"\*args"), (_var_kwargs_fn, r"\*\*kwargs")],
+)
+def test_map_single_signal_rejects_var_params(test_session, fn, match):
+    chain = dc.read_values(name=["foo"], session=test_session)
+    with pytest.raises(DataChainParamsError, match=match):
+        chain.map(fn)
+
+
+@pytest.mark.parametrize(
+    "fn,match",
+    [(_var_args_fn, r"'args'"), (_var_kwargs_fn, r"'kwargs'")],
+)
+def test_map_multiple_signals_rejects_var_params(test_session, fn, match):
+    chain = dc.read_values(name=["foo"], session=test_session)
+    with pytest.raises(DataChainParamsError, match=match):
+        chain.map(bad=fn, ok=lambda name: name.lower())
+
+
 def test_map_multiple_signals_chained(test_session):
     """Second function receives first function's output as its param."""
     chain = dc.read_values(name=["foo.txt", "bar.md"], session=test_session).map(
@@ -1014,6 +1051,35 @@ def test_map_multiple_signals_chained_rejects_cycle(test_session):
             a=lambda b: b,
             b=lambda a: a,
         )
+
+
+def test_map_multiple_signals_all_zero_arg(test_session):
+    """All entries take zero args; nothing to read from chain."""
+    chain = dc.read_values(name=["a", "b"], session=test_session).map(
+        x=lambda: "X",
+        y=lambda: "Y",
+    )
+    rows = list(chain.to_iter("x", "y"))
+    assert rows == [("X", "Y"), ("X", "Y")]
+
+
+def test_map_multiple_signals_zero_arg_producer_with_consumers(test_session):
+    """Producer takes no args; consumers chain off its output only."""
+
+    def seed() -> int:
+        return 10
+
+    def double(seed: int) -> int:
+        return seed * 2
+
+    def triple(seed: int) -> int:
+        return seed * 3
+
+    chain = dc.read_values(name=["a"], session=test_session).map(
+        seed=seed, double=double, triple=triple
+    )
+    rows = list(chain.to_iter("seed", "double", "triple"))
+    assert rows == [(10, 20, 30)]
 
 
 def test_map_multiple_signals_single_stage(test_session):
