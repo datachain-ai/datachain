@@ -34,6 +34,7 @@ def eval_dialog(
     try:
         completion = client.chat_completion(
             model="openai/gpt-oss-20b",
+            max_tokens=512,
             messages=[
                 {
                     "role": "user",
