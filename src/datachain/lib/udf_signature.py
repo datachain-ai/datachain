@@ -93,7 +93,7 @@ class UdfSignature:  # noqa: PLW1641
             )
 
         udf_params: dict[str, DataType | Any] = {}
-        if params:
+        if params is not None:
             udf_params = (
                 {params: Any} if isinstance(params, str) else dict.fromkeys(params, Any)
             )

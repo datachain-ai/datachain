@@ -1053,6 +1053,35 @@ def test_map_multiple_signals_chained_rejects_cycle(test_session):
         )
 
 
+def test_map_multiple_signals_all_zero_arg(test_session):
+    """All entries take zero args; nothing to read from chain."""
+    chain = dc.read_values(name=["a", "b"], session=test_session).map(
+        x=lambda: "X",
+        y=lambda: "Y",
+    )
+    rows = list(chain.to_iter("x", "y"))
+    assert rows == [("X", "Y"), ("X", "Y")]
+
+
+def test_map_multiple_signals_zero_arg_producer_with_consumers(test_session):
+    """Producer takes no args; consumers chain off its output only."""
+
+    def seed() -> int:
+        return 10
+
+    def double(seed: int) -> int:
+        return seed * 2
+
+    def triple(seed: int) -> int:
+        return seed * 3
+
+    chain = dc.read_values(name=["a"], session=test_session).map(
+        seed=seed, double=double, triple=triple
+    )
+    rows = list(chain.to_iter("seed", "double", "triple"))
+    assert rows == [(10, 20, 30)]
+
+
 def test_map_multiple_signals_single_stage(test_session):
     """Verify multi-kwarg map adds exactly one UDF stage, not N chained ones."""
     base = dc.read_values(name=["foo.txt"], session=test_session)
