@@ -189,15 +189,14 @@ def read_storage(
 
     if anon is not None:
         client_config = (client_config or {}) | {"anon": anon}
-    session = Session.get(session, client_config=client_config, in_memory=in_memory)
+    session = Session.get(session, in_memory=in_memory)
     catalog = session.catalog
     cache = catalog.cache
-    client_config = session.catalog.client_config
-    if anon is not None:
-        # Session.get discards our client_config when an existing session is
-        # passed. Re-apply anon locally for the listing path without mutating
-        # the caller's session.
-        client_config = client_config | {"anon": anon}
+    # The per-call config (including auto-detected anon) is registered for
+    # each listed source below, so every later access to it — listing, file
+    # reads inside UDFs (including worker processes), exports — resolves the
+    # same config through the catalog instead of a session-wide default.
+    per_source_config = client_config or None
     listing_namespace_name = catalog.metastore.system_namespace_name
     listing_project_name = catalog.metastore.listing_project_name
 
@@ -229,8 +228,17 @@ def read_storage(
             update_single_uri = True
 
         list_ds_name, list_uri, list_path, _ = get_listing(
-            list_uri_to_use, session, update=update_single_uri
+            list_uri_to_use,
+            session,
+            update=update_single_uri,
+            client_config=per_source_config,
         )
+
+        if per_source_config:
+            # `list_uri` is the canonical form of the source (matches the
+            # `source` field of listed files), so register under it.
+            catalog.register_client_config(list_uri, per_source_config)
+        client_config = catalog.client_config_for(list_uri)
 
         # list_ds_name is None if object is a file, we don't want to use cache
         # or do listing in that case - just read that single object
@@ -256,10 +264,10 @@ def read_storage(
         dc._query.update = update
         dc.signals_schema = dc.signals_schema.mutate({f"{column}": file_type})
 
-        def lst_fn(ds_name, lst_uri):
+        def lst_fn(ds_name, lst_uri, lst_config):
             # Seed for .gen() iteration. content_hash=None because hash_callable
             # doesn't capture list_func's closure (which holds `lst_uri`, `cache`,
-            # `client_config`) -- auto-hashing the seed would let the UDF
+            # `lst_config`) -- auto-hashing the seed would let the UDF
             # checkpoint cache return a stale listing across URIs/runs.
             (
                 create_records_dataset(
@@ -276,7 +284,7 @@ def read_storage(
                     project=listing_project_name,
                 )
                 .gen(
-                    list_bucket(lst_uri, cache, client_config=client_config),
+                    list_bucket(lst_uri, cache, client_config=lst_config),
                     output={f"{column}": file_type},
                 )
                 # for internal listing datasets, we always bump major version
@@ -284,8 +292,11 @@ def read_storage(
             )
 
         # Always attach listing_fn so resolve_listing can refresh stale listings.
+        # Bind loop variables via defaults: `client_config` differs per URI.
         dc._query.set_listing_fn(
-            lambda ds_name=list_ds_name, lst_uri=list_uri: lst_fn(ds_name, lst_uri)
+            lambda ds_name=list_ds_name, lst_uri=list_uri, cfg=client_config: lst_fn(
+                ds_name, lst_uri, cfg
+            )
         )
 
         # If a glob pattern was detected, use it for filtering

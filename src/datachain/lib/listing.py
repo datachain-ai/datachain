@@ -256,7 +256,10 @@ def _reraise_as_client_error() -> Iterator[None]:
 
 
 def get_listing(
-    uri: str | os.PathLike[str], session: "Session", update: bool = False
+    uri: str | os.PathLike[str],
+    session: "Session",
+    update: bool = False,
+    client_config: dict | None = None,
 ) -> tuple[str | None, str, str, bool]:
     """Returns correct listing dataset name that must be used for saving listing
     operation. It takes into account existing listings and reusability of those.
@@ -270,7 +273,8 @@ def get_listing(
 
     catalog = session.catalog
     cache = catalog.cache
-    client_config = catalog.client_config
+    if client_config is None:
+        client_config = catalog.client_config_for(uri)
 
     client = Client.get_client(uri, cache, **client_config)
     telemetry.log_param("client", client.PREFIX)

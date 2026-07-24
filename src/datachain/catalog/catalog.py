@@ -506,6 +506,24 @@ def clone_catalog_with_cache(catalog: "Catalog", cache: "Cache") -> "Catalog":
     return clone
 
 
+def _copy_client_config(value):
+    """Recursively copy the mapping/sequence structure of a client config so
+    later caller-side mutation (including nested ``client_kwargs`` etc.)
+    cannot change a registered configuration. Leaf objects (credential
+    providers, SSL contexts, ...) are kept by reference."""
+    if isinstance(value, dict):
+        return {k: _copy_client_config(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return type(value)(_copy_client_config(v) for v in value)
+    return value
+
+
+# Auto-detected public-bucket access (see ``read_storage``). Unlike a
+# user-supplied config it is a derived guess, so an explicit config may
+# overwrite it in the registry.
+AUTO_ANON_CLIENT_CONFIG = {"anon": True}
+
+
 class Catalog:
     def __init__(
         self,
@@ -514,6 +532,7 @@ class Catalog:
         cache_dir=None,
         tmp_dir=None,
         client_config: dict[str, Any] | None = None,
+        source_client_configs: dict[str, dict[str, Any]] | None = None,
         in_memory: bool = False,
     ):
         datachain_dir = DataChainDir(cache=cache_dir, tmp=tmp_dir)
@@ -522,6 +541,11 @@ class Catalog:
         self.warehouse = warehouse
         self.cache = Cache(datachain_dir.cache, datachain_dir.tmp)
         self.client_config = client_config if client_config is not None else {}
+        # Per-source client configs: {storage URI -> config}, registered by
+        # read_storage. Wins over `client_config` for the registered source.
+        self.source_client_configs: dict[str, dict[str, Any]] = dict(
+            source_client_configs or {}
+        )
         self._init_params = {
             "cache_dir": cache_dir,
             "tmp_dir": tmp_dir,
@@ -539,6 +563,7 @@ class Catalog:
         return {
             **self._init_params,
             "client_config": self.client_config,
+            "source_client_configs": self.source_client_configs,
         }
 
     def copy(self, cache=True, db=True):
@@ -575,11 +600,52 @@ class Catalog:
     def generate_query_dataset_name(cls) -> str:
         return f"{QUERY_DATASET_PREFIX}_{uuid4().hex}"
 
+    @staticmethod
+    def storage_uri_for(uri: "str | os.PathLike[str]") -> str:
+        """Normalize `uri` to its storage root (e.g. ``s3://bucket``) — the
+        key under which per-source client configs are registered. Uses the
+        same client-side parsing that produces ``File.source``, so lookups by
+        a file's source are exact."""
+        storage, _ = Client.parse_url(str(uri))
+        return storage
+
+    def register_client_config(
+        self, uri: "str | os.PathLike[str]", config: dict[str, Any]
+    ) -> None:
+        """Register `config` for the storage root of `uri`.
+
+        Re-registering the same config is a no-op. An explicit config may
+        replace an auto-detected ``{"anon": True}`` entry (a derived guess);
+        any other mismatch raises, because one process-wide catalog cannot
+        hold two configurations for the same source.
+        """
+        storage = self.storage_uri_for(uri)
+        existing = self.source_client_configs.get(storage)
+        if existing is not None and existing not in (config, AUTO_ANON_CLIENT_CONFIG):
+            raise ValueError(
+                f"{storage} was already accessed with a different client_config "
+                "in this session; pass an explicit Session(client_config=...) "
+                "to isolate it"
+            )
+        self.source_client_configs[storage] = _copy_client_config(config)
+
+    def client_config_for(self, uri: "str | os.PathLike[str]") -> dict[str, Any]:
+        """The effective client config for `uri`: its registered per-source
+        config if any, else the catalog-wide default."""
+        uri_str = str(uri)
+        config = self.source_client_configs.get(self.storage_uri_for(uri_str))
+        if config is None and not uri_str.endswith("/"):
+            # A local directory given without a trailing slash parses to its
+            # parent, while listings canonicalize directories with a trailing
+            # slash (see parse_listing_uri) — try the directory form too.
+            config = self.source_client_configs.get(self.storage_uri_for(f"{uri_str}/"))
+        return config if config is not None else self.client_config
+
     def get_client(self, uri: str, **config: Any) -> Client:
         """
         Return the client corresponding to the given source `uri`.
         """
-        config = config or self.client_config
+        config = config or self.client_config_for(uri)
         cls = Client.get_implementation(uri)
         return cls.from_source(StorageURI(uri), self.cache, **config)
 

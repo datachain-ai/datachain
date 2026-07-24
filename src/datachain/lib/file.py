@@ -571,7 +571,7 @@ class File(DataModel):
         if self._catalog is None:
             raise RuntimeError("Cannot open file: catalog is not set")
 
-        base_cfg = getattr(self._catalog, "client_config", {}) or {}
+        base_cfg = self._catalog.client_config_for(self.source) or {}
         merged_cfg = {**base_cfg, **(client_config or {})}
         client: Client = self._catalog.get_client(self.source, **merged_cfg)
 
