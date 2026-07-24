@@ -1715,6 +1715,25 @@ def test_explode_list_with_null_items(test_session):
     assert chain.to_values("json_expl.email") == [["user@example.com", None]]
 
 
+def test_explode_same_column_name_across_datasets(test_session):
+    dc.read_values(json=[{"a": 1}], session=test_session).explode("json").save(
+        "expl_collide_a"
+    )
+    dc.read_values(json=[{"b": "x"}], session=test_session).explode("json").save(
+        "expl_collide_b"
+    )
+
+    values_b = dc.read_dataset("expl_collide_b", session=test_session).to_values(
+        "json_expl"
+    )
+    values_a = dc.read_dataset("expl_collide_a", session=test_session).to_values(
+        "json_expl"
+    )
+
+    assert values_b[0].b == "x"
+    assert values_a[0].a == 1
+
+
 def test_explode_raises_on_wrong_column_type(test_session):
     chain = dc.read_values(f1=features, session=test_session)
 
