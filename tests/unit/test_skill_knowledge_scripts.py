@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 # Insert the scripts directory so bare imports work (matches runtime behavior).
 SCRIPTS_DIR = str(
     Path(__file__).resolve().parents[2] / "src/datachain/skill/knowledge/scripts"
@@ -382,11 +384,34 @@ def test_source_to_https_gs():
     assert source_to_https("gs://demo") == "https://storage.googleapis.com/demo"
 
 
-def test_source_to_https_az():
+def test_source_to_https_az_without_account_returns_none(monkeypatch):
+    monkeypatch.delenv("AZURE_STORAGE_ACCOUNT_NAME", raising=False)
+    assert source_to_https("az://container/data") is None
+
+
+def test_source_to_https_az_with_account():
     assert (
-        source_to_https("az://account/container")
-        == "https://account.blob.core.windows.net/container"
+        source_to_https("az://container/data", account_name="myacct")
+        == "https://myacct.blob.core.windows.net/container"
     )
+
+
+def test_source_to_https_az_account_from_env(monkeypatch):
+    monkeypatch.setenv("AZURE_STORAGE_ACCOUNT_NAME", "envacct")
+    assert (
+        source_to_https("az://container/data")
+        == "https://envacct.blob.core.windows.net/container"
+    )
+
+
+def test_source_to_https_az_empty_container_returns_none():
+    assert source_to_https("az://", account_name="myacct") is None
+    assert source_to_https("az:///container", account_name="myacct") is None
+
+
+def test_source_to_https_empty_bucket_returns_none():
+    assert source_to_https("s3://") is None
+    assert source_to_https("gs:///data") is None
 
 
 def test_source_to_https_local_returns_none():
@@ -395,6 +420,124 @@ def test_source_to_https_local_returns_none():
 
 def test_source_to_https_empty_returns_none():
     assert source_to_https("") is None
+
+
+def test_bucket_overview_open_az_passes_account_name(monkeypatch):
+    import fsspec
+    from bucket_overview import _open
+
+    monkeypatch.delenv("AZURE_STORAGE_ACCOUNT_NAME", raising=False)
+    captured = {}
+
+    def fake_filesystem(scheme, **kw):
+        captured["scheme"] = scheme
+        captured["kwargs"] = kw
+        return object()
+
+    monkeypatch.setattr(fsspec, "filesystem", fake_filesystem)
+
+    _, path, scheme = _open("az://container/data", anon=True, account_name="myacct")
+
+    assert scheme == "az"
+    assert path == "container/data/"
+    assert captured["kwargs"] == {"anon": True, "account_name": "myacct"}
+
+
+def test_bucket_overview_session_gets_client_config(monkeypatch):
+    import fsspec
+    from bucket_overview import bucket_overview
+
+    import datachain
+
+    monkeypatch.delenv("AZURE_STORAGE_ACCOUNT_NAME", raising=False)
+    monkeypatch.setattr(
+        fsspec,
+        "filesystem",
+        lambda scheme, **kw: SimpleNamespace(ls=lambda *a, **k: []),
+    )
+    captured = {}
+
+    def fake_get(client_config=None, **kw):
+        captured["client_config"] = client_config
+        return "session-sentinel"
+
+    def fake_read_values(session=None, **fr_map):
+        captured["session"] = session
+        return SimpleNamespace(save=lambda name: None)
+
+    monkeypatch.setattr(datachain.Session, "get", fake_get)
+    monkeypatch.setattr(datachain, "read_values", fake_read_values)
+
+    bucket_overview("az://container/data", anon=True, name="n", account_name="myacct")
+
+    assert captured["client_config"] == {"anon": True, "account_name": "myacct"}
+    assert captured["session"] == "session-sentinel"
+
+
+def test_scan_bucket_probe_error_emits_error_json(monkeypatch, capsys):
+    import bucket_scan
+
+    def boom(uri, **kw):
+        raise RuntimeError("dns failure")
+
+    monkeypatch.setattr(bucket_scan, "bucket_status", boom)
+
+    with pytest.raises(SystemExit) as exc:
+        bucket_scan.scan_bucket(
+            "az://container/", client_config={"account_name": "acct"}
+        )
+
+    assert exc.value.code == 1
+    err = json.loads(capsys.readouterr().err.strip())
+    assert err == {"error": "dns failure", "uri": "az://container/"}
+
+
+def test_scan_bucket_listing_error_emits_error_json(monkeypatch, capsys):
+    import bucket_scan
+
+    monkeypatch.setattr(
+        bucket_scan,
+        "bucket_status",
+        lambda uri, **kw: SimpleNamespace(exists=True, access="anonymous", error=None),
+    )
+
+    def raising_read_storage(uri, **kw):
+        raise PermissionError("access denied mid-listing")
+
+    monkeypatch.setattr(
+        bucket_scan,
+        "dc_import",
+        lambda: SimpleNamespace(read_storage=raising_read_storage),
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        bucket_scan.scan_bucket("s3://bucket/")
+
+    assert exc.value.code == 1
+    err = json.loads(capsys.readouterr().err.strip())
+    assert err == {"error": "access denied mid-listing", "uri": "s3://bucket/"}
+
+
+def test_bucket_overview_to_bucket_json_threads_account_name(monkeypatch, tmp_path):
+    import bucket_scan
+    from bucket_overview import _to_bucket_json
+
+    monkeypatch.delenv("AZURE_STORAGE_ACCOUNT_NAME", raising=False)
+    captured = {}
+
+    def fake_compute(
+        ds, uri, anon, sampled=False, dataset_name=None, account_name=None
+    ):
+        captured["account_name"] = account_name
+        return {"uri": uri}
+
+    monkeypatch.setattr(bucket_scan, "compute_bucket_metadata", fake_compute)
+    out = tmp_path / "bucket.json"
+
+    _to_bucket_json(None, "az://container/", True, "ds", str(out), "myacct")
+
+    assert captured["account_name"] == "myacct"
+    assert json.loads(out.read_text())["uri"] == "az://container/"
 
 
 # ---------------------------------------------------------------------------

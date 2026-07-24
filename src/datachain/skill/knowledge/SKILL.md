@@ -144,7 +144,14 @@ When any storage URI is encountered, enlist the whole bucket first.
    python3 {skill_dir}/scripts/bucket_overview.py {root_uri} \
      --bucket-json dc-knowledge/buckets/{scheme}/{bucket_slug}.json
    ```
+   Add `--anon` when the access check (point 3) reported `Access: anonymous`.
 6. **Report.** "Enlisted bucket {bucket} — {N} files, total size {size}, primarily {top 2-3 extensions}." Do **not** enrich here; Step 4 batches it.
+
+For `az://` URIs, add `--account-name <storage-account>` to all three commands
+above (access check, scan, fallback) — the account isn't part of the URI, and
+without it access probes fail and file links are skipped. The scripts default
+to `$AZURE_STORAGE_ACCOUNT_NAME`; `datachain bucket status` does not, so pass
+the flag there explicitly.
 
 Step 1 runs **once per bucket root** per session.
 
@@ -172,6 +179,7 @@ For each bucket where `status != "ok"` (and not enlisted in Step 1):
 ```bash
 python3 {skill_dir}/scripts/bucket_scan.py <uri> --output dc-knowledge/<file_path>.json
 ```
+(For `az://` URIs, the Step 1 `--account-name` rule applies.)
 
 Run independent calls concurrently.
 

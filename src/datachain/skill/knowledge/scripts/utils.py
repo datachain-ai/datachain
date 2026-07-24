@@ -442,33 +442,35 @@ def human_size(nbytes: float) -> str:
     return f"{nbytes:.1f} PB"
 
 
-def source_to_https(source: str) -> str | None:
+def source_to_https(source: str, account_name: str | None = None) -> str | None:
     """Convert a storage URI to an HTTPS URL prefix for the bucket root.
 
     File paths in listings are relative to the bucket root, so the prefix
     must point to the bucket root — not the subdirectory being listed.
 
-    Returns None for local paths or unrecognized schemes.
+    Returns None for local paths or unrecognized schemes. For `az://`, the
+    netloc is the *container* and the storage account is external config that
+    isn't part of the URI — so a link can only be built from `account_name`
+    (falling back to `AZURE_STORAGE_ACCOUNT_NAME`); without it, az returns None.
 
     Examples:
         s3://my-bucket/prefix/  -> https://my-bucket.s3.amazonaws.com
         gs://demo/data/         -> https://storage.googleapis.com/demo
-        az://acct/container/    -> https://acct.blob.core.windows.net/container
+        az://container/data/    -> https://<account>.blob.core.windows.net/container
+                                   (only when the account name is available)
     """
     parts = parse_uri(source)
     scheme = parts["scheme"]
     bucket = parts["bucket"]
+    if not bucket:
+        return None
 
     if scheme == "s3":
         return f"https://{bucket}.s3.amazonaws.com"
     if scheme == "gs":
         return f"https://storage.googleapis.com/{bucket}"
     if scheme == "az":
-        # az://account/container/... -> bucket=account, prefix=container/...
-        # Azure needs account + container in the URL
-        prefix = parts["prefix"].rstrip("/")
-        container = prefix.split("/", 1)[0] if prefix else None
-        if container:
-            return f"https://{bucket}.blob.core.windows.net/{container}"
-        return None
+        account_name = account_name or os.environ.get("AZURE_STORAGE_ACCOUNT_NAME")
+        if account_name:
+            return f"https://{account_name}.blob.core.windows.net/{bucket}"
     return None

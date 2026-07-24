@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 import signal
 import sys
 from datetime import datetime, timezone
@@ -420,6 +421,7 @@ def compute_bucket_metadata(
     is_anon: bool,
     sampled: bool = False,
     dataset_name: str | None = None,
+    account_name: str | None = None,
 ) -> "BucketSnapshot":
     """Aggregate metadata + samples from a File-shape DataChain into a bucket JSON dict.
 
@@ -451,7 +453,7 @@ def compute_bucket_metadata(
     size_distribution = compute_size_distribution(chain)
     time_range = compute_time_range(chain)
     samples = sample_files(chain, extensions)
-    url_prefix = source_to_https(uri)
+    url_prefix = source_to_https(uri, account_name)
 
     result: BucketSnapshot = {
         "uri": uri,
@@ -481,7 +483,12 @@ def compute_bucket_metadata(
     return result
 
 
-def scan_bucket(uri: str, output: str | None = None, timeout: int = 0):
+def scan_bucket(
+    uri: str,
+    output: str | None = None,
+    timeout: int = 0,
+    client_config: dict | None = None,
+):
     """Full bucket scan: list via read_storage and emit a bucket JSON."""
 
     if timeout > 0:
@@ -489,7 +496,19 @@ def scan_bucket(uri: str, output: str | None = None, timeout: int = 0):
         signal.alarm(timeout)
 
     parts = parse_uri(uri)
-    status = bucket_status(f"{parts['scheme']}://{parts['bucket']}/")
+    try:
+        status = bucket_status(
+            f"{parts['scheme']}://{parts['bucket']}/", **(client_config or {})
+        )
+    except ScanTimeoutError:
+        print(
+            json.dumps({"error": "timeout", "uri": uri, "timeout": timeout}),
+            file=sys.stderr,
+        )
+        sys.exit(124)
+    except Exception as e:  # noqa: BLE001
+        print(json.dumps({"error": str(e), "uri": uri}), file=sys.stderr)
+        sys.exit(1)
     if not status.exists or status.access == "denied":
         print(json.dumps({"error": status.error, "uri": uri}), file=sys.stderr)
         sys.exit(1)
@@ -499,9 +518,18 @@ def scan_bucket(uri: str, output: str | None = None, timeout: int = 0):
         dc = dc_import()
         # Never pass update=True. Listing is already cached from a prior
         # read_storage() call. Pass anon=True for public buckets so listing
-        # doesn't hang on credential lookup.
-        chain = dc.read_storage(uri, anon=True) if is_anon else dc.read_storage(uri)
-        result = compute_bucket_metadata(chain, uri, is_anon)
+        # doesn't hang on credential lookup. client_config goes to the listing
+        # too: the probe getting the az account_name alone isn't enough for
+        # adlfs to resolve the storage account.
+        read_kwargs: dict = {}
+        if is_anon:
+            read_kwargs["anon"] = True
+        if client_config:
+            read_kwargs["client_config"] = client_config
+        chain = dc.read_storage(uri, **read_kwargs)
+        result = compute_bucket_metadata(
+            chain, uri, is_anon, account_name=(client_config or {}).get("account_name")
+        )
 
         if timeout > 0:
             signal.alarm(0)
@@ -516,6 +544,9 @@ def scan_bucket(uri: str, output: str | None = None, timeout: int = 0):
             file=sys.stderr,
         )
         sys.exit(124)
+    except Exception as e:  # noqa: BLE001
+        print(json.dumps({"error": str(e), "uri": uri}), file=sys.stderr)
+        sys.exit(1)
 
 
 def main():
@@ -530,8 +561,18 @@ def main():
         default=0,
         help="Timeout in seconds (0 = no timeout). Exit code 124 on timeout.",
     )
+    parser.add_argument(
+        "--account-name",
+        default=os.environ.get("AZURE_STORAGE_ACCOUNT_NAME"),
+        help="Azure storage account name (for az:// link prefixes + anon probe).",
+    )
     args = parser.parse_args()
-    scan_bucket(args.uri, args.output, args.timeout)
+    client_config = (
+        {"account_name": args.account_name}
+        if args.account_name and parse_uri(args.uri)["scheme"] == "az"
+        else None
+    )
+    scan_bucket(args.uri, args.output, args.timeout, client_config)
 
 
 if __name__ == "__main__":
