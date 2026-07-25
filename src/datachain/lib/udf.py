@@ -574,7 +574,7 @@ class _MultiSignalMapper(Mapper):
 
     def __init__(
         self,
-        signal_map: dict[str, Callable],
+        signal_map: "dict[str, Callable | UDFBase]",
         *,
         bound_columns: dict[str, list[str]] | None = None,
     ):
@@ -583,6 +583,9 @@ class _MultiSignalMapper(Mapper):
         self._bound_columns = bound_columns or {}
         output_names = set(signal_map)
         self._per_func_params: dict[str, list[str]] = {}
+        # Entries that are UDFBase subclass instances (e.g. Mapper subclass);
+        # invoked via .process() and their setup()/teardown() run per worker.
+        self._mapper_entries: set[str] = set()
         # For each function: which of its params come from another
         # function's output (dependencies) vs from an input row column.
         deps: dict[str, set[str]] = {}
@@ -592,7 +595,12 @@ class _MultiSignalMapper(Mapper):
                 self._per_func_params[name] = params
                 deps[name] = {p for p in params if p in output_names and p != name}
                 continue
-            sig_params = list(inspect.signature(fn).parameters.values())
+            if isinstance(fn, UDFBase):
+                self._mapper_entries.add(name)
+                sig_target = fn.process
+            else:
+                sig_target = fn
+            sig_params = list(inspect.signature(sig_target).parameters.values())
             bad = [
                 p.name
                 for p in sig_params
@@ -645,9 +653,24 @@ class _MultiSignalMapper(Mapper):
                 fn_kwargs = {
                     p: (results[p] if p in results else row_by_name[p]) for p in params
                 }
-                results[name] = fn(**fn_kwargs)
+                if name in self._mapper_entries:
+                    results[name] = fn.process(**fn_kwargs)
+                else:
+                    results[name] = fn(**fn_kwargs)
         # Output order follows the user's declared kwarg order, not exec order.
         return tuple(results[name] for name in self._signal_map)
+
+    def setup(self) -> None:
+        for name in self._signal_map:
+            fn = self._signal_map[name]
+            if isinstance(fn, UDFBase):
+                fn.setup()
+
+    def teardown(self) -> None:
+        for name in self._signal_map:
+            fn = self._signal_map[name]
+            if isinstance(fn, UDFBase):
+                fn.teardown()
 
     @property
     def verbose_name(self) -> str:
@@ -659,7 +682,10 @@ class _MultiSignalMapper(Mapper):
         # implementation would hash this class's process method, which is
         # identical across instances.
         parts = [
-            hash_callable(fn, include_body=include_body)
+            hash_callable(
+                fn.process if isinstance(fn, UDFBase) else fn,
+                include_body=include_body,
+            )
             for fn in self._signal_map.values()
         ]
         parts.append(self.params.hash() if self.params else "")

@@ -1082,6 +1082,31 @@ def test_map_multiple_signals_zero_arg_producer_with_consumers(test_session):
     assert rows == [(10, 20, 30)]
 
 
+def test_map_multiple_signals_mapper_subclass(test_session):
+    """A Mapper subclass instance can be used alongside plain lambdas."""
+    setup_calls = []
+    teardown_calls = []
+
+    class Upper(dc.Mapper):
+        def setup(self) -> None:
+            setup_calls.append("Upper")
+
+        def teardown(self) -> None:
+            teardown_calls.append("Upper")
+
+        def process(self, name: str) -> str:
+            return name.upper()
+
+    chain = dc.read_values(name=["foo", "bar"], session=test_session).map(
+        upper=Upper(),
+        lower=lambda name: name.lower(),
+    )
+    rows = sorted(chain.to_iter("upper", "lower"))
+    assert rows == [("BAR", "bar"), ("FOO", "foo")]
+    assert setup_calls == ["Upper"]
+    assert teardown_calls == ["Upper"]
+
+
 def test_map_multiple_signals_single_stage(test_session):
     """Verify multi-kwarg map adds exactly one UDF stage, not N chained ones."""
     base = dc.read_values(name=["foo.txt"], session=test_session)

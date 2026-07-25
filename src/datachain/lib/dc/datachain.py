@@ -1054,13 +1054,14 @@ class DataChain:
         for k, v in signal_map.items():
             if isinstance(v, BoundSpec):
                 bound_columns[k] = v.input_columns()
-        bound_signal_map: dict[str, Callable] = {
+        bound_signal_map: dict[str, Callable | UDFBase] = {
             k: self._bind_udf_settings(v, Mapper) for k, v in signal_map.items()
         }
         multi_mapper = _MultiSignalMapper(bound_signal_map, bound_columns=bound_columns)
         output_dict: dict[str, Any] = {}
         for name, fn in bound_signal_map.items():
-            anno = inspect.signature(fn).return_annotation
+            sig_target = fn.process if isinstance(fn, UDFBase) else fn
+            anno = inspect.signature(sig_target).return_annotation
             output_dict[name] = (
                 anno
                 if anno is not inspect.Signature.empty
