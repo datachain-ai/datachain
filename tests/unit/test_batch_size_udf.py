@@ -38,8 +38,6 @@ def test_map_with_default_batch_size(test_session, warehouse):
 
 
 def test_map_with_custom_batch_size(test_session, warehouse):
-    """Test map UDF with custom batch_size."""
-
     def simple_udf(value: int) -> int:
         return value * 2
 

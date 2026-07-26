@@ -145,7 +145,6 @@ def test_nested_sessions_share_same_job(test_session, patch_argv, monkeypatch):
 
 
 def test_except_hook_delegates_to_original(test_session, patch_argv, monkeypatch):
-    """Test that Session.except_hook delegates to ORIGINAL_EXCEPT_HOOK."""
     monkeypatch.delenv("DATACHAIN_JOB_ID", raising=False)
     monkeypatch.setattr("sys.ps1", None, raising=False)
 
