@@ -7,10 +7,6 @@ import pytest
 
 from datachain.cli.parser import get_parser
 
-# ---------------------------------------------------------------------------
-# Argument parsing tests
-# ---------------------------------------------------------------------------
-
 
 def test_skill_install_defaults():
     parser = get_parser()
@@ -69,11 +65,6 @@ def test_skill_list_no_args():
     args = parser.parse_args(["skill", "list"])
     assert args.command == "skill"
     assert args.skill_cmd == "list"
-
-
-# ---------------------------------------------------------------------------
-# install_skills() functional tests
-# ---------------------------------------------------------------------------
 
 
 def test_install_invalid_skill_raises(tmp_path, fake_skills_src, fake_home):
@@ -365,11 +356,6 @@ def test_pycache_not_copied(tmp_path, fake_skills_src, fake_home):
     assert not (skills_base / "knowledge" / "scripts" / "__pycache__").exists()
 
 
-# ---------------------------------------------------------------------------
-# list_skills() smoke test
-# ---------------------------------------------------------------------------
-
-
 def test_list_skills_output(capsys):
     from datachain.cli.commands.skill import list_skills
 
@@ -382,11 +368,6 @@ def test_list_skills_output(capsys):
     assert "cursor" in out
     assert "codex" in out
     assert "pi" in out
-
-
-# ---------------------------------------------------------------------------
-# install edge cases
-# ---------------------------------------------------------------------------
 
 
 def test_install_missing_source_returns_nonzero(tmp_path, fake_home):
