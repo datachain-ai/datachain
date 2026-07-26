@@ -1,3 +1,4 @@
+import os
 import shutil
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -11,6 +12,7 @@ from azure.core.exceptions import (
     ResourceExistsError,
     ResourceNotFoundError,
 )
+from azure.core.utils import parse_connection_string
 from azure.storage.blob import BlobServiceClient
 from fsspec.asyn import get_loop, sync
 
@@ -20,7 +22,31 @@ from datachain.progress import tqdm
 from .fsspec import DELIMITER, BucketStatus, Client, ResultQueue
 
 if TYPE_CHECKING:
+    from datachain.cache import Cache
     from datachain.client.writeconfig import WriteConfig
+    from datachain.dataset import StorageURI
+
+
+def _reject_connection_string_mismatch(account: str, kwargs: dict[str, Any]) -> None:
+    # adlfs gives a connection string precedence over account_name, which
+    # would silently route the URI's account to the connection string's one.
+    conn = kwargs.get("connection_string") or os.getenv(
+        "AZURE_STORAGE_CONNECTION_STRING"
+    )
+    if not conn:
+        return
+    try:
+        conn_account = parse_connection_string(conn, case_sensitive_keys=False).get(
+            "accountname"
+        )
+    except ValueError:
+        return
+    if conn_account and conn_account != account:
+        raise ValueError(
+            f"Azure account '{account}' from the URI conflicts with the"
+            f" configured connection string for account '{conn_account}'"
+        )
+
 
 # Streams larger than this spill to disk while being buffered for upload_blob;
 # smaller ones stay in memory.
@@ -57,8 +83,29 @@ class AzureClient(Client):
         }
     )
 
+    def __init__(self, name: str, fs_kwargs: dict[str, Any], cache: "Cache") -> None:
+        # An az:// netloc is "container" or "container@account"; the account,
+        # when present, overrides any account_name from fs kwargs.
+        netloc = name.split("/", 1)[0]
+        self.container, _, account = netloc.partition("@")
+        if account:
+            _reject_connection_string_mismatch(account, fs_kwargs)
+            fs_kwargs = {**fs_kwargs, "account_name": account}
+        super().__init__(name, fs_kwargs, cache)
+
+    @classmethod
+    def from_source(cls, uri: "StorageURI", cache: "Cache", **kwargs) -> "AzureClient":
+        # adlfs._strip_protocol drops the "@account" part, so strip the
+        # protocol manually to keep the account in the client name.
+        return cls(uri[len(cls.PREFIX) :].rstrip("/"), kwargs, cache)
+
     @classmethod
     def bucket_status(cls, name: str, **kwargs) -> BucketStatus:
+        container, _, account = name.partition("@")
+        if account:
+            _reject_connection_string_mismatch(account, kwargs)
+            kwargs = {**kwargs, "account_name": account}
+
         # Step 1: Anonymous probe — uses BlobServiceClient directly (not adlfs)
         # to avoid picking up credentials from environment variables like
         # AZURE_STORAGE_CONNECTION_STRING.
@@ -67,7 +114,7 @@ class AzureClient(Client):
             try:
                 url = f"https://{account_name}.blob.core.windows.net"
                 anon_client = BlobServiceClient(account_url=url)
-                anon_client.get_container_client(name).get_container_properties()
+                anon_client.get_container_client(container).get_container_properties()
                 return BucketStatus(exists=True, access="anonymous")
             except ClientAuthenticationError:
                 pass
@@ -75,7 +122,7 @@ class AzureClient(Client):
                 return BucketStatus(
                     exists=False,
                     access="denied",
-                    error=f"Azure container '{name}' not found",
+                    error=f"Azure container '{container}' not found",
                 )
             except HttpResponseError as e:
                 if e.status_code not in (401, 403):
@@ -84,20 +131,20 @@ class AzureClient(Client):
         # Step 2: Authenticated probe.
         try:
             auth_fs = cls.create_fs(**kwargs)
-            sync(get_loop(), auth_fs._info, name)
+            sync(get_loop(), auth_fs._info, container)
             return BucketStatus(exists=True, access="authenticated")
         except (PermissionError, ClientAuthenticationError):
             return BucketStatus(
                 exists=True,
                 access="denied",
-                error=f"Access denied to Azure container '{name}'"
+                error=f"Access denied to Azure container '{container}'"
                 " — check credentials/configuration",
             )
         except FileNotFoundError:
             return BucketStatus(
                 exists=False,
                 access="denied",
-                error=f"Azure container '{name}' not found",
+                error=f"Azure container '{container}' not found",
             )
         except ValueError as e:
             return BucketStatus(exists=False, access="denied", error=str(e))
@@ -260,7 +307,7 @@ class AzureClient(Client):
         try:
             with tqdm(desc=f"Listing {self.uri}", unit=" objects", leave=False) as pbar:
                 async with self.fs.service_client.get_container_client(
-                    container=self.name
+                    container=self.container
                 ) as container_client:
                     async for page in container_client.list_blobs(
                         include=["metadata", "versions"], name_starts_with=prefix

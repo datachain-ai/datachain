@@ -5,6 +5,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import MagicMock, call
 
 # Insert the scripts directory so bare imports work (matches runtime behavior).
 SCRIPTS_DIR = str(
@@ -13,6 +14,7 @@ SCRIPTS_DIR = str(
 if SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, SCRIPTS_DIR)
 
+from bucket_overview import bucket_overview  # noqa: E402
 from changes import build_changes, compute_dep_changes  # noqa: E402
 from render_index import render_index  # noqa: E402
 from schema import parse_dataset_name, type_name  # noqa: E402
@@ -382,9 +384,31 @@ def test_source_to_https_gs():
     assert source_to_https("gs://demo") == "https://storage.googleapis.com/demo"
 
 
-def test_source_to_https_az():
+def test_source_to_https_az(monkeypatch):
+    monkeypatch.delenv("AZURE_STORAGE_ACCOUNT_NAME", raising=False)
     assert (
-        source_to_https("az://account/container")
+        source_to_https("az://container@account/prefix/")
+        == "https://account.blob.core.windows.net/container"
+    )
+
+
+def test_source_to_https_az_no_account_returns_none(monkeypatch):
+    monkeypatch.delenv("AZURE_STORAGE_ACCOUNT_NAME", raising=False)
+    assert source_to_https("az://container/prefix/") is None
+
+
+def test_source_to_https_az_account_from_env(monkeypatch):
+    monkeypatch.setenv("AZURE_STORAGE_ACCOUNT_NAME", "envacct")
+    assert (
+        source_to_https("az://container/")
+        == "https://envacct.blob.core.windows.net/container"
+    )
+
+
+def test_source_to_https_az_uri_account_wins_over_env(monkeypatch):
+    monkeypatch.setenv("AZURE_STORAGE_ACCOUNT_NAME", "envacct")
+    assert (
+        source_to_https("az://container@account/")
         == "https://account.blob.core.windows.net/container"
     )
 
@@ -395,6 +419,76 @@ def test_source_to_https_local_returns_none():
 
 def test_source_to_https_empty_returns_none():
     assert source_to_https("") is None
+
+
+# ---------------------------------------------------------------------------
+# bucket_overview.py
+# ---------------------------------------------------------------------------
+
+
+def _overview_fs(monkeypatch, entries):
+    fs = MagicMock()
+    fs.ls.return_value = entries
+    filesystem = MagicMock(return_value=fs)
+    monkeypatch.setattr("fsspec.filesystem", filesystem)
+    return filesystem
+
+
+def _capture_read_values(monkeypatch):
+    captured = {}
+
+    def fake_read_values(file, session=None):
+        captured["files"] = file
+        captured["session"] = session
+        return MagicMock()
+
+    monkeypatch.setattr("datachain.read_values", fake_read_values)
+    return captured
+
+
+def test_bucket_overview_az_account_in_uri(monkeypatch):
+    filesystem = _overview_fs(
+        monkeypatch, [{"name": "container/dir/blob.txt", "type": "file", "size": 5}]
+    )
+    captured = _capture_read_values(monkeypatch)
+
+    bucket_overview("az://container@account/", name="ds")
+
+    assert filesystem.call_args == call("az", account_name="account")
+    (f,) = captured["files"]
+    assert f.source == "az://container@account/"
+    assert f.path == "dir/blob.txt"
+    assert captured["session"] is None
+
+
+def test_bucket_overview_az_without_account(monkeypatch):
+    filesystem = _overview_fs(
+        monkeypatch, [{"name": "container/blob.txt", "type": "file", "size": 5}]
+    )
+    captured = _capture_read_values(monkeypatch)
+
+    bucket_overview("az://container/", name="ds")
+
+    assert filesystem.call_args == call("az")
+    (f,) = captured["files"]
+    assert f.source == "az://container/"
+    assert f.path == "blob.txt"
+
+
+def test_bucket_overview_anon_creates_anon_session(monkeypatch):
+    filesystem = _overview_fs(
+        monkeypatch, [{"name": "container/blob.txt", "type": "file", "size": 5}]
+    )
+    captured = _capture_read_values(monkeypatch)
+    fake_session = object()
+    session_get = MagicMock(return_value=fake_session)
+    monkeypatch.setattr("datachain.Session.get", session_get)
+
+    bucket_overview("az://container@account/", anon=True, name="ds")
+
+    assert filesystem.call_args == call("az", anon=True, account_name="account")
+    session_get.assert_called_once_with(client_config={"anon": True})
+    assert captured["session"] is fake_session
 
 
 # ---------------------------------------------------------------------------

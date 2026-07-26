@@ -7,8 +7,9 @@ def bucket_status(uri: str, **client_config) -> BucketStatus:
     Args:
         uri: Bucket URI, e.g. "s3://my-bucket/", "gs://my-bucket/", "az://my-container/"
         **client_config: Storage client configuration (aws_key, etc.)
-            For Azure, pass ``account_name`` to enable anonymous access detection;
-            without it, only authenticated access is probed.
+            For Azure, the storage account is needed to enable anonymous access
+            detection; embed it in the URI ("az://container@account/") or pass
+            ``account_name``. Without it, only authenticated access is probed.
 
     Returns:
         BucketStatus(exists, access) where access is one of:
