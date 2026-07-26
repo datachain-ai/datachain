@@ -183,7 +183,6 @@ def test_negative_batch_size(test_session):
     def simple_udf(value: int) -> int:
         return value
 
-    # This should raise an error
     with pytest.raises(SettingsError):
         (
             dc.read_values(value=list(range(10)), session=test_session)
@@ -200,7 +199,6 @@ def test_zero_batch_size(test_session):
     def simple_udf(value: int) -> int:
         return value
 
-    # This should raise an error
     with pytest.raises(SettingsError):
         (
             dc.read_values(value=list(range(10)), session=test_session)

@@ -350,9 +350,7 @@ def test_pycache_not_copied(tmp_path, fake_skills_src, fake_home):
     _run_install(fake_skills_src, fake_home, skills=None, target="claude", local=False)
 
     skills_base = fake_home / ".claude" / "skills"
-    # Scripts should exist
     assert (skills_base / "knowledge" / "scripts" / "plan.py").exists()
-    # But __pycache__ should NOT
     assert not (skills_base / "knowledge" / "scripts" / "__pycache__").exists()
 
 

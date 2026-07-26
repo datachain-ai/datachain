@@ -315,7 +315,6 @@ def test_read_records_with_file_objects(test_session):
     # Insert records
     ds = dc.read_records(records, schema={"file": File}, session=test_session)
 
-    # Verify count
     assert ds.count() == 3
 
     # Verify we can retrieve File objects back
@@ -347,7 +346,6 @@ def test_read_records_with_nested_datamodel(test_session):
     # Insert records
     ds = dc.read_records(records, schema={"data": MyNested}, session=test_session)
 
-    # Verify count
     assert ds.count() == 3
 
     # Verify we can retrieve nested DataModel objects back
@@ -2688,7 +2686,6 @@ def test_count_with_empty_results(test_session):
     empty_chain = chain.filter(C("numbers") > 10)
     assert empty_chain.count() == 0
 
-    # Limit to 0
     assert chain.limit(0).count() == 0
     assert empty_chain.limit(0).count() == 0
     assert chain.count() == 5

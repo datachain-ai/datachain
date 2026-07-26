@@ -127,7 +127,6 @@ def test_nested_sessions_share_same_job(test_session, patch_argv, monkeypatch):
     # Outer session creates a job
     job1 = test_session.get_or_create_job()
 
-    # Create nested session
     with Session("nested", catalog=test_session.catalog) as nested_session:
         job2 = nested_session.get_or_create_job()
 
