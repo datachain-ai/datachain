@@ -133,9 +133,6 @@ def _run_install(
         install_skills(skills=skills, target=target, local=local)
 
 
-# --- claude, global ---
-
-
 def test_install_all_claude_global(tmp_path, fake_skills_src, fake_home):
     _run_install(fake_skills_src, fake_home, skills=None, target="claude", local=False)
 
@@ -177,9 +174,6 @@ def test_install_only_graph_claude_global(tmp_path, fake_skills_src, fake_home):
     assert not (skills_base / "core").exists()
 
 
-# --- cursor, global ---
-
-
 def test_install_all_cursor_global(tmp_path, fake_skills_src, fake_home):
     _run_install(fake_skills_src, fake_home, skills=None, target="cursor", local=False)
 
@@ -198,9 +192,6 @@ def test_install_all_cursor_global(tmp_path, fake_skills_src, fake_home):
         assert "triggers:" not in content
 
 
-# --- codex, global ---
-
-
 def test_install_all_codex_global(tmp_path, fake_skills_src, fake_home):
     _run_install(fake_skills_src, fake_home, skills=None, target="codex", local=False)
 
@@ -210,9 +201,6 @@ def test_install_all_codex_global(tmp_path, fake_skills_src, fake_home):
 
     # codex has no commands dir
     assert not (fake_home / ".codex" / "commands").exists()
-
-
-# --- pi, global + local ---
 
 
 def test_install_all_pi_global(tmp_path, fake_skills_src, fake_home):
@@ -259,9 +247,6 @@ def test_install_pi_local(tmp_path, fake_skills_src, fake_home, monkeypatch):
     assert not (project_dir / ".pi" / "agent").exists()
     # And the user home is untouched.
     assert not (fake_home / ".pi").exists()
-
-
-# --- copilot, global ---
 
 
 def test_install_all_copilot_global(tmp_path, fake_skills_src, fake_home):
@@ -315,9 +300,6 @@ def test_install_copilot_local_uses_github_path(
     assert not (fake_home / ".copilot").exists()
 
 
-# --- local install ---
-
-
 def test_install_claude_local(tmp_path, fake_skills_src, fake_home, monkeypatch):
     project_dir = tmp_path / "project"
     project_dir.mkdir()
@@ -340,9 +322,6 @@ def test_install_claude_local(tmp_path, fake_skills_src, fake_home, monkeypatch)
 
     # Nothing written to home
     assert not (fake_home / ".claude").exists()
-
-
-# --- __pycache__ filtering ---
 
 
 def test_pycache_not_copied(tmp_path, fake_skills_src, fake_home):
