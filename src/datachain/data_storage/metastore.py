@@ -398,8 +398,7 @@ class AbstractMetastore(ABC, Serializable):
     ) -> Iterator[DatasetListRecord]:
         """Lists all datasets in some project or in all projects.
 
-        When ``include_removed=True`` also returns finalized REMOVED
-        tombstones (used by ``dataset ls --include-removed``).
+        When ``include_removed=True`` also returns REMOVING and REMOVED tombstones.
         """
 
     @abstractmethod
@@ -1631,7 +1630,7 @@ class AbstractDBMetastore(AbstractMetastore):
             if not include_incomplete:
                 allowed = [DatasetStatus.COMPLETE]
                 if include_removed:
-                    allowed.append(DatasetStatus.REMOVED)
+                    allowed.extend((DatasetStatus.REMOVING, DatasetStatus.REMOVED))
                 query = query.where(
                     select(literal(1))
                     .where(
@@ -1661,11 +1660,10 @@ class AbstractDBMetastore(AbstractMetastore):
         # Build join condition with status filter
         join_condition = d.c.id == dv.c.dataset_id
         if not include_incomplete:
-            # COMPLETE by default (hide CREATED/FAILED); include finalized
-            # REMOVED tombstones when explicitly requested.
+            # COMPLETE by default; REMOVING/REMOVED when include_removed.
             allowed = [DatasetStatus.COMPLETE]
             if include_removed:
-                allowed.append(DatasetStatus.REMOVED)
+                allowed.extend((DatasetStatus.REMOVING, DatasetStatus.REMOVED))
             join_condition = and_(join_condition, dv.c.status.in_(allowed))
 
         j = (
@@ -2012,8 +2010,29 @@ class AbstractDBMetastore(AbstractMetastore):
             )
             .exists()
         )
+        # Ignore dependency rows whose referrer is a tombstone
+        # (REMOVING/REMOVED). Tombstoned datasets keep their dep rows so their
+        # lineage stays intact, but they must not pin listings from GC.
+        src_dv = dv.alias("dv_src")
         is_referenced = (
-            select(dd.c.id).where(dd.c.dataset_version_id == dv.c.id).exists()
+            select(dd.c.id)
+            .select_from(
+                dd.join(
+                    src_dv,
+                    src_dv.c.id == dd.c.source_dataset_version_id,
+                    isouter=True,
+                )
+            )
+            .where(
+                dd.c.dataset_version_id == dv.c.id,
+                or_(
+                    src_dv.c.status.is_(None),
+                    src_dv.c.status.notin_(
+                        [DatasetStatus.REMOVING, DatasetStatus.REMOVED]
+                    ),
+                ),
+            )
+            .exists()
         )
 
         query = (

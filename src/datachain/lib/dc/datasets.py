@@ -263,7 +263,8 @@ def datasets(
             attribute without value e.g "NLP", or attribute with value
             e.g "location=US". Attribute with value can also accept "*" to target
             all that have specific name e.g "location=*"
-        include_removed: If True, also lists REMOVED tombstones. Defaults to False.
+        include_removed: If True, also lists REMOVING and REMOVED versions.
+            Defaults to False.
 
     Returns:
         DataChain: A new DataChain instance containing dataset information.

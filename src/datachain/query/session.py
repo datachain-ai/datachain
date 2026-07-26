@@ -340,6 +340,11 @@ class Session:
 
     @staticmethod
     def except_hook(exc_type, exc_value, exc_traceback):
+        if getattr(sys, "ps1", None):
+            original_hook = Session.ORIGINAL_EXCEPT_HOOK or sys.__excepthook__
+            original_hook(exc_type, exc_value, exc_traceback)
+            return
+
         if Session.GLOBAL_SESSION_CTX:
             # Handle KeyboardInterrupt specially - mark as canceled and exit with
             # signal code
