@@ -95,6 +95,13 @@ def test_no_uri_account_ignores_connection_string_account():
     assert "account_name" not in client.fs_kwargs
 
 
+def test_malformed_connection_string_skips_conflict_check():
+    client = AzureClient(
+        "mycontainer@myaccount", {"connection_string": "garbage"}, MagicMock()
+    )
+    assert client.fs_kwargs["account_name"] == "myaccount"
+
+
 def test_parse_url_with_account():
     uri, rel_path = Client.parse_url("az://mycontainer@myaccount/dir/blob.txt")
     assert uri == "az://mycontainer@myaccount"
