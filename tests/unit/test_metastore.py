@@ -87,7 +87,6 @@ def test_expire_checkpoints():
         old = now - timedelta(hours=2)
         ttl_threshold = now - timedelta(hours=1)
 
-        # Create two jobs
         job1_id = metastore.create_job(
             "job1", "q", query_type=JobQueryType.PYTHON, status=JobStatus.COMPLETE
         )

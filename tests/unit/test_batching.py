@@ -115,7 +115,6 @@ def test_batching_ids_only(batch_size, warehouse, numbers_table):
 def numbers_partitioned(warehouse, numbers_table):
     partition_by = [numbers_table.c.primality]
 
-    # create table with partitions
     partition_tbl = warehouse.create_udf_table(partition_columns())
 
     # fill table with partitions
