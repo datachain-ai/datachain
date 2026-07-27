@@ -89,7 +89,6 @@ def test_list_tables(catalog):
     tables = db.list_tables()
     assert isinstance(tables, list)
 
-    # Create a test table
     table = catalog.warehouse.create_udf_table([], name="test_list_tables_abc")
     try:
         tables_after = db.list_tables()

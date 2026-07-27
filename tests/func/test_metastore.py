@@ -875,14 +875,12 @@ def test_update_dataset_dependency_source(metastore):
         dataset=tgt, version="1.0.0", status=DatasetStatus.COMPLETE
     )
 
-    # Add dependency: src1@1.0.0 -> tgt@1.0.0
     metastore.add_dataset_dependency(src1, "1.0.0", tgt, "1.0.0")
     deps = metastore.get_direct_dataset_dependencies(src1, "1.0.0")
     assert len(deps) == 1
     assert deps[0].name == "tgt"
     assert deps[0].version == "1.0.0"
 
-    # Update dependency to src2@1.0.0
     metastore.update_dataset_dependency_source(
         src1, "1.0.0", new_source_dataset=src2, new_source_dataset_version="1.0.0"
     )
@@ -909,7 +907,6 @@ def test_update_dataset_dependency_source_default_new_source(metastore):
         dataset=tgt, version="1.0.0", status=DatasetStatus.COMPLETE
     )
 
-    # Add dependency: src@1.0.0 -> tgt@1.0.0
     metastore.add_dataset_dependency(src, "1.0.0", tgt, "1.0.0")
     deps = metastore.get_direct_dataset_dependencies(src, "1.0.0")
     assert len(deps) == 1
