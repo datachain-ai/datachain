@@ -464,8 +464,7 @@ def source_to_https(source: str) -> str | None:
     if scheme == "gs":
         return f"https://storage.googleapis.com/{bucket}"
     if scheme == "az":
-        # Azure needs account + container in the URL; the account comes from
-        # the container@account netloc or the environment.
+        # Azure needs account + container in the URL.
         container, _, account = bucket.partition("@")
         account = account or os.environ.get("AZURE_STORAGE_ACCOUNT_NAME", "")
         if container and account:

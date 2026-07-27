@@ -84,8 +84,6 @@ class AzureClient(Client):
     )
 
     def __init__(self, name: str, fs_kwargs: dict[str, Any], cache: "Cache") -> None:
-        # An az:// netloc is "container" or "container@account"; the account,
-        # when present, overrides any account_name from fs kwargs.
         netloc = name.split("/", 1)[0]
         self.container, _, account = netloc.partition("@")
         if account:
