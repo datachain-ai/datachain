@@ -475,8 +475,11 @@ def test_show_transpose(capsys, test_session):
 def test_show_truncate(capsys, test_session):
     client = ["Alice A", "Bob B", "Charles C"]
     details = [
-        "This is a very long piece of text that would not fit in the default output "
-        "because pandas will truncate the column",
+        (
+            "This is a very long piece of text that would not fit in the default "
+            "output "
+            "because pandas will truncate the column"
+        ),
         "Gives good tips",
         "Not very nice",
     ]
@@ -499,8 +502,11 @@ def test_show_truncate(capsys, test_session):
 def test_show_no_truncate(capsys, test_session):
     client = ["Alice A", "Bob B", "Charles C"]
     details = [
-        "This is a very long piece of text that would not fit in the default output "
-        "because pandas will truncate the column",
+        (
+            "This is a very long piece of text that would not fit in the default "
+            "output "
+            "because pandas will truncate the column"
+        ),
         "Gives good tips",
         "Not very nice",
     ]
