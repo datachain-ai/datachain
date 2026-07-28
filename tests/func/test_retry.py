@@ -114,7 +114,6 @@ def test_retry_with_missing_records(test_session):
         .save("partial_result")
     )
 
-    # Should now have all 4 records
     assert retry_chain.count() == 4
 
     # Verify all records are present
@@ -165,7 +164,6 @@ def test_retry_with_missing_and_new_records(test_session):
         .save("partial_result")
     )
 
-    # Should now have all 3 records
     assert retry_chain.count() == 5
 
     # Verify all records are present

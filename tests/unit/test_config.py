@@ -156,7 +156,6 @@ def test_edit_config_global_level(global_config_dir):
 
     create_global_config(global_config_dir)
 
-    # Edit the global config
     with Config(ConfigLevel.GLOBAL).edit() as config:
         config["new_key"] = "new_value"
         config["studio"]["token"] = "new-token"  # noqa: S105 # nosec B105

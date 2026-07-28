@@ -63,7 +63,6 @@ def test_read_dataset_version_specifiers_no_match(test_session):
 
 
 def test_read_dataset_version_specifiers_exact_version(test_session):
-    """Test that version specifiers work alongside with exact version reads."""
     dataset_name = "test_backward_compatibility"
 
     dc.read_values(data=[1, 2], session=test_session).save(

@@ -315,7 +315,6 @@ def test_read_records_with_file_objects(test_session):
     # Insert records
     ds = dc.read_records(records, schema={"file": File}, session=test_session)
 
-    # Verify count
     assert ds.count() == 3
 
     # Verify we can retrieve File objects back
@@ -347,7 +346,6 @@ def test_read_records_with_nested_datamodel(test_session):
     # Insert records
     ds = dc.read_records(records, schema={"data": MyNested}, session=test_session)
 
-    # Verify count
     assert ds.count() == 3
 
     # Verify we can retrieve nested DataModel objects back
@@ -2752,7 +2750,6 @@ def test_count_with_empty_results(test_session):
     empty_chain = chain.filter(C("numbers") > 10)
     assert empty_chain.count() == 0
 
-    # Limit to 0
     assert chain.limit(0).count() == 0
     assert empty_chain.limit(0).count() == 0
     assert chain.count() == 5
@@ -2802,7 +2799,6 @@ def test_distinct_basic(test_session):
 
 
 def test_distinct_multiple_columns(test_session):
-    """Test distinct with multiple columns."""
     chain = dc.read_values(
         category=["A", "A", "B", "B", "C"], value=[1, 2, 1, 2, 2], session=test_session
     )
@@ -2899,14 +2895,12 @@ def test_distinct_after_operations(test_session):
 
 
 def test_distinct_with_empty_chain(test_session):
-    """Test distinct with empty chain."""
     chain = dc.read_values(numbers=[], session=test_session)
     distinct_chain = chain.distinct("numbers")
     assert distinct_chain.count() == 0
 
 
 def test_distinct_with_single_item(test_session):
-    """Test distinct with single item."""
     chain = dc.read_values(numbers=[42], session=test_session)
     distinct_chain = chain.distinct("numbers")
     assert distinct_chain.count() == 1
@@ -3071,7 +3065,6 @@ def test_filter_with_strings(test_session):
 
 
 def test_filter_with_glob_patterns(test_session):
-    """Test filter with glob patterns."""
     files = [
         File(path="image1.jpg", size=100),
         File(path="image2.png", size=200),
@@ -3162,7 +3155,6 @@ def test_filter_with_regexp(test_session):
 
 
 def test_filter_with_in_operator(test_session):
-    """Test filter with 'in' operator."""
     chain = dc.read_values(
         numbers=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
         categories=["A", "B", "A", "C", "B", "A", "C", "B", "A", "C"],
@@ -3213,7 +3205,6 @@ def test_filter_with_and_operator(test_session):
 
 
 def test_filter_with_or_operator(test_session):
-    """Test filter with OR operator."""
     chain = dc.read_values(
         numbers=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
         categories=["A", "B", "A", "C", "B", "A", "C", "B", "A", "C"],
@@ -3236,7 +3227,6 @@ def test_filter_with_or_operator(test_session):
 
 
 def test_filter_with_not_operator(test_session):
-    """Test filter with NOT operator."""
     chain = dc.read_values(
         numbers=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
         categories=["A", "B", "A", "C", "B", "A", "C", "B", "A", "C"],
@@ -3266,7 +3256,6 @@ def test_filter_with_not_operator(test_session):
 
 
 def test_filter_with_complex_objects(test_session):
-    """Test filter with complex objects."""
     files = [
         File(path="image1.jpg", size=100),
         File(path="image2.png", size=200),

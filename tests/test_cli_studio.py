@@ -785,7 +785,6 @@ def test_studio_run(capsys, mocker, tmp_dir):
         first_request.url
         == f"{STUDIO_URL}/api/datachain/jobs/files?team_name=team_name"
     )
-    # Check that it's multipart/form-data request
     assert "multipart/form-data" in first_request.headers.get("Content-Type", "")
     # Check query parameters
     assert first_request.qs["team_name"] == ["team_name"]
