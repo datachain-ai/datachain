@@ -38,8 +38,10 @@ class UdfSignature:  # noqa: PLW1641
             raise UdfSignatureError(
                 chain,
                 (
-                    f"multiple signals '{keys}' are not supported in processors."
-                    " Chain multiple processors instead.",
+                    (
+                        f"multiple signals '{keys}' are not supported in processors."
+                        " Chain multiple processors instead."
+                    ),
                 ),
             )
         udf_func: UDFBase | Callable

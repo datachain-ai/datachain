@@ -246,7 +246,6 @@ ignore = [
   "PLR0917",  # too-many-positional-arguments
   "PLW2901",  # redefined-loop-name
   "ISC001",  # single-line-implicit-string-concatenation, incompatible with ruff format
-  "ISC004",  # implicit-string-concatenation-in-collection-literal
   "RET502",  # implicit-return-value
   "RET503",  # implicit-return
   "SIM105",  # suppressible-exception
@@ -254,8 +253,6 @@ ignore = [
   "SIM117",  # multiple-with-statements
   "PERF203",  # perflint - try-except-in-loop, irrelevant for Python>=3.11
   "PERF401",
-  "FURB192",  # sorted-min-max
-  "RUF036",  # none-not-at-end-of-union
   "D100",  # undocumented-public-module
   "D205",  # one-blank-line-after-class
   "PLC0415"  # import-outside-top-level

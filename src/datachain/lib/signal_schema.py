@@ -1374,7 +1374,7 @@ class SignalSchema:
 
     @staticmethod
     def _type_to_str(
-        type_: type | None | types.EllipsisType, subtypes: list | None = None
+        type_: type | types.EllipsisType | None, subtypes: list | None = None
     ) -> str:
         """Convert a type to a string-based representation."""
 
