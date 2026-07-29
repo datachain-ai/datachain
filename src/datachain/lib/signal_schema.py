@@ -475,7 +475,7 @@ class SignalSchema:
             return None
 
         bracket_idx = type_name.find("[")
-        subtypes: tuple[object | None | types.EllipsisType, ...] | None = None
+        subtypes: tuple[object | types.EllipsisType | None, ...] | None = None
         if bracket_idx > -1:
             if bracket_idx == 0:
                 raise ValueError("Type cannot start with '['")
@@ -1466,7 +1466,7 @@ class SignalSchema:
 
     @staticmethod
     def _type_to_str(
-        type_: type | None | types.EllipsisType, subtypes: list | None = None
+        type_: type | types.EllipsisType | None, subtypes: list | None = None
     ) -> str:
         """Convert a type to a string-based representation."""
 

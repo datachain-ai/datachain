@@ -296,7 +296,7 @@ def get_listing(
     # - if an exact listing exists it will have the same name as `ds_name`
     #   anyway below
     if listings and not update:
-        listing = sorted(listings, key=lambda ls: ls.created_at)[-1]
+        listing = max(listings, key=lambda ls: ls.created_at)
 
     # for local file system we need to fix listing path / prefix
     # if we are reusing existing listing
