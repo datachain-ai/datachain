@@ -3,7 +3,6 @@ import hashlib
 import logging
 import math
 import types
-import typing
 import warnings
 from collections.abc import Callable, Hashable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
@@ -20,6 +19,7 @@ from typing import (
     get_args,
     get_origin,
 )
+from typing import cast as typing_cast
 
 from fsspec.callbacks import DEFAULT_CALLBACK, Callback
 from pydantic import BaseModel, Field, ValidationError, create_model
@@ -618,7 +618,7 @@ class SignalSchema:
                 objs.append(obj)
             else:
                 value = row[pos]
-                if self._requires_feature_conversion(fr_type):
+                if self._row_conversion_required[name]:
                     value = self._convert_feature_value(
                         fr_type, value, catalog=None, cache=False
                     )
@@ -626,8 +626,15 @@ class SignalSchema:
                 pos += 1
         return objs
 
+    @cached_property
+    def _row_conversion_required(self) -> dict[str, bool]:
+        return {
+            name: self._requires_row_conversion(annotation)
+            for name, annotation in self.values.items()
+        }
+
     @classmethod
-    def _requires_feature_conversion(cls, annotation: DataType) -> bool:
+    def _requires_row_conversion(cls, annotation: DataType) -> bool:
         if ModelStore.is_pydantic(annotation):
             return True
 
@@ -635,23 +642,17 @@ class SignalSchema:
         args = get_args(annotation)
         if origin in (Union, types.UnionType):
             inner, has_none = unwrap_optional(annotation)
-            return has_none and cls._requires_feature_conversion(inner)
+            return has_none and cls._requires_row_conversion(inner)
         if origin is list:
-            return bool(args) and cls._requires_feature_conversion(args[0])
+            return bool(args) and cls._requires_row_conversion(args[0])
         if origin is dict and len(args) == 2:
             key_type, value_type = args
-            return key_type is not str or cls._requires_feature_conversion(value_type)
+            return key_type is not str or cls._requires_row_conversion(value_type)
         return False
 
     @staticmethod
-    def _annotation_contains_type(annotation: Any, target: type) -> bool:
-        return SignalSchema._annotation_contains_type_cached(
-            typing.cast("Hashable", annotation), target
-        )
-
-    @staticmethod
     @lru_cache
-    def _annotation_contains_type_cached(annotation: Hashable, target: type) -> bool:
+    def _annotation_contains_type(annotation: Hashable, target: type) -> bool:
         def contains(current: Any, seen: set[type]) -> bool:
             if isclass(current) and issubclass(current, target):
                 return True
@@ -904,7 +905,9 @@ class SignalSchema:
                 field_annotation = finfo.annotation
                 if (
                     field_annotation is not None
-                    and SignalSchema._annotation_contains_type(field_annotation, File)
+                    and SignalSchema._annotation_contains_type(
+                        typing_cast("Hashable", field_annotation), File
+                    )
                 ):
                     SignalSchema._set_file_stream(
                         getattr(obj, field),

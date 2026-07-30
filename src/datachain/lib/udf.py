@@ -7,7 +7,7 @@ from contextlib import closing, nullcontext
 from dataclasses import dataclass
 from functools import partial
 from graphlib import CycleError, TopologicalSorter
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 import attrs
 from fsspec.callbacks import DEFAULT_CALLBACK, Callback
@@ -386,28 +386,17 @@ class UDFBase(AbstractUDF):
         row = [row_dict[p] for p in self.params.to_udf_spec()]
         obj_row = self.params.row_to_objs(row)
         for obj, annotation in zip(obj_row, self.params.values.values(), strict=True):
-            if self.params._annotation_contains_type(annotation, File):
-                self._set_stream_recursive(
-                    obj, catalog, cache, download_cb, annotation=annotation
+            if self.params._annotation_contains_type(
+                cast("abc.Hashable", annotation), File
+            ):
+                SignalSchema._set_file_stream(
+                    obj,
+                    catalog,
+                    cache,
+                    download_cb=download_cb,
+                    annotation=annotation,
                 )
         return obj_row
-
-    def _set_stream_recursive(
-        self,
-        obj: Any,
-        catalog: "Catalog",
-        cache: bool,
-        download_cb: Callback,
-        annotation: Any = None,
-    ) -> None:
-        """Recursively set the catalog stream on all File objects within an object."""
-        SignalSchema._set_file_stream(
-            obj,
-            catalog,
-            cache,
-            download_cb=download_cb,
-            annotation=annotation,
-        )
 
     def _prepare_row(
         self, row, udf_fields, catalog, cache, download_cb, include_id=False

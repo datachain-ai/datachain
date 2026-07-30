@@ -139,16 +139,13 @@ def test_udf_sets_streams_in_nested_collections():
     class FileHolder(BaseModel):
         file: File
 
-    def process(value: str) -> int:
-        return len(value)
-
-    sign = get_sign(process, output="res")
-    udf = UDFBase._create(sign, sign.output_schema)
     file = File(path="nested.txt")
     holder = FileHolder(file=file)
     catalog = object()
 
-    udf._set_stream_recursive([{"holder": holder}], catalog, False, DEFAULT_CALLBACK)
+    SignalSchema._set_file_stream(
+        [{"holder": holder}], catalog, annotation=list[dict[str, FileHolder]]
+    )
 
     assert holder.file._catalog is catalog
 

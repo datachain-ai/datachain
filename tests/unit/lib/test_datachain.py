@@ -911,7 +911,7 @@ def test_map(test_session):
         assert x.my_name == test_fr.my_name
 
 
-def test_map_hydrates_models_in_nested_collection_param(test_session):
+def test_map_converts_nested_collection_items_to_models(test_session):
     class ModelCollection(DataModel):
         items: list[MyFr]
 
