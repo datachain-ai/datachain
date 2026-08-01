@@ -315,3 +315,18 @@ def test_brace_expansion_combined_patterns(tmp_dir):
     result = dc.read_storage(f"{tmp_dir}/deep/data-*-{{10..12}}.csv")
     files = sorted(f.name for f in result.to_values("file"))
     assert files == ["data-2005-10.csv", "data-2005-11.csv", "data-2005-12.csv"]
+
+
+def test_prefix_with_special_chars_reuses_broader_listing(tmp_path):
+    # https://github.com/datachain-ai/datachain/issues/1891
+    # the relative subpath is recovered from the sanitized listing dataset
+    # name and must be decoded back into the real path
+    (tmp_path / "some.dir").mkdir()
+    (tmp_path / "some.dir" / "a.txt").write_text("a")
+    (tmp_path / "some.dir" / "b.txt").write_text("b")
+    (tmp_path / "other").mkdir()
+    (tmp_path / "other" / "c.txt").write_text("c")
+
+    assert dc.read_storage(f"{tmp_path}/").count() == 3
+    assert dc.read_storage(f"{tmp_path}/some.dir/").count() == 2
+    assert dc.read_storage(f"{tmp_path}/some.dir/*.txt").count() == 2

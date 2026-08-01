@@ -97,6 +97,28 @@ def test_get_listing_returns_exact_math_on_update(test_session):
     assert not exists
 
 
+def test_get_listing_reuse_desanitizes_relative_path(test_session):
+    # https://github.com/datachain-ai/datachain/issues/1891
+    # the subpath recovered from the sanitized dataset name must be decoded
+    # back into the real path before being used as a filter prefix
+    fake_uri = path_to_fsspec_uri("/desanitize")
+    catalog = test_session.catalog
+    broad_name, _, _, _ = get_listing(fake_uri, test_session)
+    (
+        dc.read_values(file=[File(path="some.dir/a.csv")])
+        .settings(
+            namespace=catalog.metastore.system_namespace_name,
+            project=catalog.metastore.listing_project_name,
+        )
+        .save(broad_name, listing=True)
+    )
+
+    name, _, list_path, exists = get_listing(f"{fake_uri}/some.dir", test_session)
+    assert exists
+    assert name == broad_name
+    assert list_path == "some.dir/"
+
+
 def test_resolve_path_in_root(listing):
     node = listing.resolve_path("dir1")
     assert node.dir_type == DirType.DIR
