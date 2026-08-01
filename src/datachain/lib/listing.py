@@ -301,8 +301,6 @@ def get_listing(
     # for local file system we need to fix listing path / prefix
     # if we are reusing existing listing
     if isinstance(client, FileClient) and listing and listing.name != ds_name:
-        # dataset names are sanitized, so the remainder must be decoded back
-        # into a real path before being used as a filter prefix
         relpath = _desanitize_ds_name(ds_name.removeprefix(listing.name)).strip("/")
         list_path = f"{relpath}/{list_path}"
 
