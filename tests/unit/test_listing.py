@@ -25,7 +25,13 @@ TREE = {
         "d2": {None: ["file1.csv", "file2.csv"]},
         None: ["dataset.csv"],
     },
-    "dir2": {None: ["diagram.png"]},
+    "dir2": {
+        "spécial": {
+            "dir_%1": {None: ["a.csv", "b.csv"]},
+            "dirXX2": {None: ["d.csv"]},
+        },
+        None: ["diagram.png"],
+    },
     None: ["users.csv"],
 }
 
@@ -50,37 +56,6 @@ def listing(test_session):
     (
         dc.read_values(file=list(_tree_to_entries(TREE)))
         .settings(namespace=listing_namespace_name, project=listing_project_name)
-        .save(dataset_name, listing=True)
-    )
-
-    with Listing(
-        catalog.metastore.clone(),
-        catalog.warehouse.clone(),
-        Client.get_client(fake_uri, catalog.cache, **catalog.client_config),
-        dataset_name=dataset_name,
-        column="file",
-    ) as listing_obj:
-        yield listing_obj
-
-
-UNDERSCORE_TREE = {
-    "dir_1": {None: ["a.csv", "b.csv"]},
-    "dirX1": {None: ["c.csv"]},
-    "dirX2": {None: ["d.csv"]},
-}
-
-
-@pytest.fixture
-def listing_with_underscores(test_session):
-    fake_uri = path_to_fsspec_uri("/underscores")
-    catalog = test_session.catalog
-    dataset_name, _, _, _ = get_listing(fake_uri, test_session)
-    (
-        dc.read_values(file=list(_tree_to_entries(UNDERSCORE_TREE)))
-        .settings(
-            namespace=catalog.metastore.system_namespace_name,
-            project=catalog.metastore.listing_project_name,
-        )
         .save(dataset_name, listing=True)
     )
 
@@ -208,25 +183,22 @@ def test_list_dir(listing):
     assert {n[0] for n in names} == {"dir1/d2", "dir1/dataset.csv"}
 
 
-def test_resolve_path_underscore_is_not_a_wildcard(listing_with_underscores):
-    # https://github.com/datachain-ai/datachain/issues/1891
-    node = listing_with_underscores.resolve_path("dir_1")
+def test_resolve_unicode_path_prefix_is_literal(listing):
+    node = listing.resolve_path("dir2/spécial/dir_%1")
     assert node.dir_type == DirType.DIR
 
-    # "dir_2" must not resolve via "dirX2" (`_` treated as a LIKE wildcard)
     with pytest.raises(FileNotFoundError):
-        listing_with_underscores.resolve_path("dir_2")
+        listing.resolve_path("dir2/spécial/dir_%2")
 
 
-def test_ls_path_tar_parent_with_underscore(listing_with_underscores):
-    # https://github.com/datachain-ai/datachain/issues/1891
-    # the LIKE-based prefix match dropped all rows on SQLite (escaped
-    # pattern without an ESCAPE clause) and must not match "dirX1" either
-    listing = listing_with_underscores
+def test_ls_path_tar_unicode_parent_prefix_is_literal(listing):
     rows = listing.warehouse.select_node_fields_by_parent_path_tar(
-        listing.dataset_rows, "dir_1", ["path"]
+        listing.dataset_rows, "dir2/spécial/dir_%1", ["path"]
     )
-    assert sorted(r[0] for r in rows) == ["dir_1/a.csv", "dir_1/b.csv"]
+    assert sorted(r[0] for r in rows) == [
+        "dir2/spécial/dir_%1/a.csv",
+        "dir2/spécial/dir_%1/b.csv",
+    ]
 
 
 def test_list_file(listing):

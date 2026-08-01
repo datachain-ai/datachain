@@ -792,9 +792,7 @@ class AbstractWarehouse(ABC, Serializable):
             dr.select()
             .where(
                 dr.c("is_latest") == true(),
-                # not startswith(): LIKE treats `_`/`%` in the path as wildcards
-                # and is case-insensitive on SQLite
-                sa.func.substr(dr.c("path"), 1, len(path)) == path,
+                sa.func.substr(dr.c("path"), 1, sa.func.length(path)) == path,
             )
             .exists()
         )
@@ -863,10 +861,7 @@ class AbstractWarehouse(ABC, Serializable):
         q = (
             sa.select(*(field_to_expr(f) for f in fields))
             .where(
-                # not like(): the escaped pattern needs an explicit ESCAPE clause
-                # on SQLite (where LIKE is also case-insensitive), and ClickHouse
-                # doesn't support ESCAPE at all
-                sa.func.substr(dr.c("path"), 1, len(dirpath)) == dirpath,
+                sa.func.substr(dr.c("path"), 1, sa.func.length(dirpath)) == dirpath,
                 ~self.instr(pathfunc.name(dr.c("path")), "/"),
                 dr.c("is_latest") == true(),
             )
