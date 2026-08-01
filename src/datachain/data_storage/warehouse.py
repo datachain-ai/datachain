@@ -35,7 +35,7 @@ from datachain.query.batch import RowsOutput
 from datachain.query.schema import ColumnMeta
 from datachain.sql.functions import path as pathfunc
 from datachain.sql.types import SQLType
-from datachain.utils import safe_closing, sql_escape_like
+from datachain.utils import safe_closing
 
 if TYPE_CHECKING:
     from sqlalchemy.sql._typing import (
@@ -792,7 +792,9 @@ class AbstractWarehouse(ABC, Serializable):
             dr.select()
             .where(
                 dr.c("is_latest") == true(),
-                dr.c("path").startswith(path),
+                # not startswith(): LIKE treats `_`/`%` in the path as wildcards
+                # and is case-insensitive on SQLite
+                sa.func.substr(dr.c("path"), 1, len(path)) == path,
             )
             .exists()
         )
@@ -861,7 +863,10 @@ class AbstractWarehouse(ABC, Serializable):
         q = (
             sa.select(*(field_to_expr(f) for f in fields))
             .where(
-                dr.c("path").like(f"{sql_escape_like(dirpath)}%"),
+                # not like(): the escaped pattern needs an explicit ESCAPE clause
+                # on SQLite (where LIKE is also case-insensitive), and ClickHouse
+                # doesn't support ESCAPE at all
+                sa.func.substr(dr.c("path"), 1, len(dirpath)) == dirpath,
                 ~self.instr(pathfunc.name(dr.c("path")), "/"),
                 dr.c("is_latest") == true(),
             )
