@@ -97,6 +97,40 @@ def test_get_listing_returns_exact_math_on_update(test_session):
     assert not exists
 
 
+@pytest.mark.parametrize(
+    "subdir,expected_list_path",
+    [
+        ("plain", "plain/"),
+        # sanitized in the dataset name as "some_x2edir"; must come back decoded
+        ("some.dir", "some.dir/"),
+        ("nested/some.dir", "nested/some.dir/"),
+        # a dir literally named like an encoding token: pre-escaped to
+        # "v_x_x2e0" in the name, so decoding must not turn it into "v.0"
+        ("v_x2e0", "v_x2e0/"),
+    ],
+)
+def test_get_listing_reuse_returns_decoded_subpath(
+    test_session, subdir, expected_list_path
+):
+    catalog = test_session.catalog
+    fake_uri = path_to_fsspec_uri("/reuse")
+    broad_name, _, _, _ = get_listing(fake_uri, test_session)
+    (
+        dc.read_values(file=[File(path=f"{subdir}/a.csv")])
+        .settings(
+            namespace=catalog.metastore.system_namespace_name,
+            project=catalog.metastore.listing_project_name,
+        )
+        .save(broad_name, listing=True)
+    )
+
+    name, _, list_path, reused = get_listing(f"{fake_uri}/{subdir}", test_session)
+
+    assert reused
+    assert name == broad_name
+    assert list_path == expected_list_path
+
+
 def test_resolve_path_in_root(listing):
     node = listing.resolve_path("dir1")
     assert node.dir_type == DirType.DIR
