@@ -315,3 +315,14 @@ def test_brace_expansion_combined_patterns(tmp_dir):
     result = dc.read_storage(f"{tmp_dir}/deep/data-*-{{10..12}}.csv")
     files = sorted(f.name for f in result.to_values("file"))
     assert files == ["data-2005-10.csv", "data-2005-11.csv", "data-2005-12.csv"]
+
+
+def test_read_special_chars_prefix_after_parent_listed(tmp_dir):
+    special = tmp_dir / "some.dir"
+    special.mkdir()
+    (special / "file").touch()
+
+    # listing the parent first is what makes the read below reuse it
+    assert dc.read_storage(f"{tmp_dir}/").count() == count_dict_items(DEEP_TREE) + 1
+    files = dc.read_storage(f"{special}/").to_values("file")
+    assert [f.name for f in files] == ["file"]
