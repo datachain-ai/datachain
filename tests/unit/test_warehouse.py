@@ -5,8 +5,10 @@ from unittest.mock import patch
 import pytest
 import sqlalchemy as sa
 
+import datachain as dc
 from datachain.data_storage.serializer import deserialize
 from datachain.data_storage.sqlite import SQLiteWarehouse
+from datachain.lib.file import File
 
 
 def test_serialize(sqlite_db):
@@ -177,3 +179,49 @@ def test_dataset_rows_select_from_ids_requires_sys_id(
                 is_batched=is_batched,
             )
         )
+
+
+WILDCARD_PATHS = [
+    "dir_%1/a.csv",
+    "dir_%1/b.csv",
+    "dir_%1/nested/c.csv",
+    # decoy: unescaped, `dir_%1/` is the pattern `dir?<any>1/`, which matches this
+    "dirXX1/d.csv",
+]
+
+
+@pytest.fixture
+def wildcard_rows(test_session, warehouse):
+    saved = dc.read_values(
+        file=[File(path=p) for p in WILDCARD_PATHS], session=test_session
+    ).save("wildcard_paths")
+    dataset = saved.dataset
+    assert dataset is not None
+    yield warehouse.dataset_rows(dataset, dataset.latest_version, column="file")
+    dc.delete_dataset(dataset.name, force=True, session=test_session)
+
+
+def test_prefix_match_treats_wildcards_literally(warehouse, wildcard_rows):
+    query = wildcard_rows.select(wildcard_rows.c("path")).where(
+        warehouse.prefix_match(wildcard_rows.c("path"), "dir_%1/")
+    )
+
+    assert sorted(r[0] for r in warehouse.db.execute(query)) == [
+        "dir_%1/a.csv",
+        "dir_%1/b.csv",
+        "dir_%1/nested/c.csv",
+    ]
+
+
+def test_select_node_fields_by_parent_path_tar_wildcards_are_literal(
+    warehouse, wildcard_rows
+):
+    rows = warehouse.select_node_fields_by_parent_path_tar(
+        wildcard_rows, "dir_%1", ["path"]
+    )
+
+    assert sorted(r[0] for r in rows) == [
+        "dir_%1/a.csv",
+        "dir_%1/b.csv",
+        "dir_%1/nested/c.csv",
+    ]

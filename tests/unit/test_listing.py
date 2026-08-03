@@ -25,7 +25,13 @@ TREE = {
         "d2": {None: ["file1.csv", "file2.csv"]},
         None: ["dataset.csv"],
     },
-    "dir2": {None: ["diagram.png"]},
+    "dir2": {
+        "spécial": {
+            "dir_%1": {None: ["a.csv", "b.csv"]},
+            "dirXX2": {None: ["d.csv"]},
+        },
+        None: ["diagram.png"],
+    },
     None: ["users.csv"],
 }
 
@@ -209,6 +215,16 @@ def test_list_dir(listing):
     dir1 = listing.resolve_path("dir1/")
     names = listing.ls_path(dir1, ["path"])
     assert {n[0] for n in names} == {"dir1/d2", "dir1/dataset.csv"}
+
+
+def test_resolve_path_with_wildcard_chars_is_literal(listing):
+    node = listing.resolve_path("dir2/spécial/dir_%1")
+    assert node.dir_type == DirType.DIR
+
+    # must not resolve via the dirXX2/ sibling, which `dir_%2` matches as a
+    # LIKE pattern
+    with pytest.raises(FileNotFoundError):
+        listing.resolve_path("dir2/spécial/dir_%2")
 
 
 def test_list_file(listing):
