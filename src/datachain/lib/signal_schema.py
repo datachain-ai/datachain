@@ -2,6 +2,7 @@ import copy
 import hashlib
 import logging
 import math
+import re
 import types
 import warnings
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
@@ -416,12 +417,57 @@ class SignalSchema:
         return subtypes
 
     @staticmethod
+    def _model_matches_custom_type(
+        fr: type[BaseModel], type_name: str, custom_types: dict[str, Any]
+    ) -> bool:
+        """Check that a registered model's field spec equals the spec stored for
+        ``type_name``, including every nested custom type."""
+        if ModelStore.get_name(fr) != type_name:
+            return False
+        reserialized: dict[str, Any] = {}
+        try:
+            SignalSchema._serialize_custom_model(type_name, fr, reserialized)
+            for name, data in reserialized.items():
+                if name not in custom_types:
+                    return False
+                stored = CustomType.deserialize(custom_types[name], name)
+                current = CustomType.deserialize(data, name)
+                if current.fields != stored.fields:
+                    return False
+        except ValidationError:
+            return False
+        return True
+
+    @staticmethod
+    def _custom_type_fingerprint(type_name: str, custom_types: dict[str, Any]) -> str:
+        """Deterministic fingerprint of a stored custom type spec, covering every
+        nested custom type reachable from it."""
+        spec: dict[str, Any] = {}
+        pending = [type_name]
+        while pending:
+            name = pending.pop()
+            if name in spec or name not in custom_types:
+                continue
+            try:
+                ct = CustomType.deserialize(custom_types[name], name)
+            except ValidationError:
+                continue
+            spec[name] = ct.model_dump(exclude={"schema_version"}, exclude_none=True)
+            for field_type in ct.fields.values():
+                pending.extend(re.findall(r"[A-Za-z_]\w*(?:@v\d+)?", field_type))
+        payload = json.dumps(spec, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    @staticmethod
     def _deserialize_custom_type(
         type_name: str, custom_types: dict[str, Any]
     ) -> type | None:
         """Given a type name like MyType@v1 gets a type from ModelStore or recreates
         it based on the information from the custom types dict that includes fields and
-        bases."""
+        bases. A registered model resolves the type only when it matches the stored
+        spec; a same-named model with a different shape is recreated from the spec
+        under a spec-fingerprinted alias, so reads are not shadowed by whichever
+        same-named model happened to register first."""
         model_name, target_version = ModelStore.parse_name_version(type_name)
 
         if type_name in custom_types:
@@ -433,7 +479,15 @@ class SignalSchema:
                 ) from exc
 
             if fr := ModelStore.get(model_name, target_version):
-                return fr
+                if SignalSchema._model_matches_custom_type(fr, type_name, custom_types):
+                    return fr
+                fingerprint = SignalSchema._custom_type_fingerprint(
+                    type_name, custom_types
+                )
+                alias = f"{model_name}_{fingerprint[:10]}"
+                if cached := ModelStore.get(alias, target_version):
+                    return cached
+                type_name = f"{alias}@v{target_version}" if target_version else alias
 
             fields = {
                 field_name: SignalSchema._resolve_type(field_type_str, custom_types)
