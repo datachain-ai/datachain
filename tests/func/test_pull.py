@@ -269,6 +269,42 @@ def test_datachain_read_dataset_pull(
     assert dataset.name == "dogs"
 
 
+@pytest.mark.parametrize("cloud_type, version_aware", [("s3", False)], indirect=True)
+@pytest.mark.parametrize("is_studio", (False,))
+@skip_if_not_sqlite
+def test_datachain_read_dataset_pull_in_memory(
+    studio_token,
+    cloud_test_catalog_tmpfile,
+    remote_dataset_info,
+    dataset_export,
+    dataset_export_status,
+    dataset_export_data_chunk,
+):
+    # Local pull-through with in_memory=True: the dataset is pulled from
+    # Studio into the throwaway catalog, not the persistent one. A
+    # file-backed catalog is required — an in-memory test catalog would
+    # share the shared-cache database with the throwaway catalog.
+    catalog = cloud_test_catalog_tmpfile.catalog
+
+    with Session("testSession", catalog=catalog):
+        ds = dc.read_dataset(
+            name=f"{REMOTE_NAMESPACE_NAME}.{REMOTE_PROJECT_NAME}.dogs",
+            version="1.0.0",
+            in_memory=True,
+        )
+
+    assert ds.session.catalog.in_memory
+    assert ds.dataset.name == "dogs"
+    assert ds.dataset.status == DatasetStatus.COMPLETE
+
+    with pytest.raises(DatasetNotFoundError):
+        catalog.get_dataset(
+            "dogs",
+            namespace_name=REMOTE_NAMESPACE_NAME,
+            project_name=REMOTE_PROJECT_NAME,
+        )
+
+
 @skip_if_not_sqlite
 def test_pull_dataset_wrong_dataset_uri_format(
     studio_token,

@@ -48,14 +48,36 @@ def test_get_metastore(sqlite_db):
 
 
 def test_get_metastore_in_memory():
-    if os.environ.get("DATACHAIN_METASTORE"):
-        with pytest.raises(RuntimeError):
-            get_metastore(in_memory=True)
-    else:
+    metastore = get_metastore(in_memory=True)
+    try:
+        assert isinstance(metastore, SQLiteMetastore)
+        assert metastore.db.db_file == ":memory:"
+    finally:
+        metastore.close_on_exit()
+
+
+def test_get_metastore_in_memory_ignores_env():
+    # An explicit in-memory request must win over environment-provided
+    # configuration: neither the serialized metastore nor the import path
+    # should even be consulted.
+    with (
+        patch.dict(
+            os.environ,
+            {
+                "DATACHAIN__METASTORE": "dummy",
+                "DATACHAIN_METASTORE": "nonexistent.module.Metastore",
+            },
+        ),
+        patch(
+            "datachain.data_storage.serializer.deserialize",
+            return_value=object(),
+        ) as mock_deserialize,
+    ):
         metastore = get_metastore(in_memory=True)
         try:
             assert isinstance(metastore, SQLiteMetastore)
             assert metastore.db.db_file == ":memory:"
+            mock_deserialize.assert_not_called()
         finally:
             metastore.close_on_exit()
 
@@ -86,14 +108,34 @@ def test_get_warehouse(sqlite_db):
 
 
 def test_get_warehouse_in_memory():
-    if os.environ.get("DATACHAIN_WAREHOUSE"):
-        with pytest.raises(RuntimeError):
-            get_warehouse(in_memory=True)
-    else:
+    warehouse = get_warehouse(in_memory=True)
+    try:
+        assert isinstance(warehouse, SQLiteWarehouse)
+        assert warehouse.db.db_file == ":memory:"
+    finally:
+        warehouse.close_on_exit()
+
+
+def test_get_warehouse_in_memory_ignores_env():
+    # See test_get_metastore_in_memory_ignores_env.
+    with (
+        patch.dict(
+            os.environ,
+            {
+                "DATACHAIN__WAREHOUSE": "dummy",
+                "DATACHAIN_WAREHOUSE": "nonexistent.module.Warehouse",
+            },
+        ),
+        patch(
+            "datachain.data_storage.serializer.deserialize",
+            return_value=object(),
+        ) as mock_deserialize,
+    ):
         warehouse = get_warehouse(in_memory=True)
         try:
             assert isinstance(warehouse, SQLiteWarehouse)
             assert warehouse.db.db_file == ":memory:"
+            mock_deserialize.assert_not_called()
         finally:
             warehouse.close_on_exit()
 
