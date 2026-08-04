@@ -73,7 +73,7 @@ def test_registered_config_reaches_parallel_workers(tmp_dir, test_session_tmpfil
         .map(
             cfg=lambda file: json.dumps(
                 {
-                    "config": file._catalog.client_config_for(file.source),
+                    "config": file._catalog.client_config_for(file._full_uri()),
                     "in_worker": os.getpid() != main_pid,
                 }
             ),
@@ -102,3 +102,19 @@ def test_saved_dataset_resolves_registered_config(tmp_dir, test_session):
     file = files[0]
     assert file._catalog.client_config_for(file.source) == config
     assert file.read_text() == "content of a.txt"
+
+
+def test_nested_prefix_overrides_parent(tmp_dir, test_session):
+    """A subtree can be registered with its own config; the longest
+    registered prefix wins — including for files listed via the parent."""
+    sub = tmp_dir / "sub"
+    _make_tree(tmp_dir, ["root.txt"])
+    _make_tree(sub, ["nested.txt"])
+
+    dc.read_storage(tmp_dir.as_uri(), client_config={"use_symlinks": True})
+    dc.read_storage(sub.as_uri(), client_config={"use_symlinks": False})
+
+    catalog = test_session.catalog
+    root_uri, sub_uri = tmp_dir.as_uri(), sub.as_uri()
+    assert catalog.client_config_for(f"{root_uri}/root.txt") == {"use_symlinks": True}
+    assert catalog.client_config_for(f"{sub_uri}/nested.txt") == {"use_symlinks": False}

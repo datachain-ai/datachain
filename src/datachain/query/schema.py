@@ -115,7 +115,9 @@ class Object(UDFParameter):
         **kwargs,
     ) -> Any:
         file = File._from_row(file_signals(row))
-        client = catalog.get_client(file.source)
+        client = catalog.get_client(
+            file.source, **catalog.client_config_for(file._full_uri())
+        )
         if cache:
             client.download(file, callback=cb)
         with client.open_object(file, use_cache=True, cb=cb) as f:
@@ -132,7 +134,9 @@ class Object(UDFParameter):
         **kwargs,
     ) -> Any:
         file = File._from_row(file_signals(row))
-        client = catalog.get_client(file.source)
+        client = catalog.get_client(
+            file.source, **catalog.client_config_for(file._full_uri())
+        )
         if cache:
             await client._download(file, callback=cb)
         obj = await mapper.to_thread(
@@ -158,7 +162,9 @@ class Stream(UDFParameter):
         **kwargs,
     ) -> Any:
         file = File._from_row(file_signals(row))
-        client = catalog.get_client(file.source)
+        client = catalog.get_client(
+            file.source, **catalog.client_config_for(file._full_uri())
+        )
         if cache:
             client.download(file, callback=cb)
         return client.open_object(file, use_cache=True, cb=cb)
@@ -174,7 +180,9 @@ class Stream(UDFParameter):
         **kwargs,
     ) -> Any:
         file = File._from_row(file_signals(row))
-        client = catalog.get_client(file.source)
+        client = catalog.get_client(
+            file.source, **catalog.client_config_for(file._full_uri())
+        )
         if cache:
             await client._download(file, callback=cb)
         return await mapper.to_thread(
@@ -207,7 +215,9 @@ class LocalFilename(UDFParameter):
             # does not match it, then return None
             return None
         file = File._from_row(file_signals(row))
-        client = catalog.get_client(file.source)
+        client = catalog.get_client(
+            file.source, **catalog.client_config_for(file._full_uri())
+        )
         client.download(file, callback=cb)
         return client.cache.get_path(file)
 
@@ -226,7 +236,9 @@ class LocalFilename(UDFParameter):
             # does not match it, then return None
             return None
         file = File._from_row(file_signals(row))
-        client = catalog.get_client(file.source)
+        client = catalog.get_client(
+            file.source, **catalog.client_config_for(file._full_uri())
+        )
         await client._download(file, callback=cb)
         return client.cache.get_path(file)
 

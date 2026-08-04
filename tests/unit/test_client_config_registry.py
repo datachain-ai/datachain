@@ -3,30 +3,36 @@ import pytest
 from datachain.catalog.catalog import AUTO_ANON_CLIENT_CONFIG
 
 
-def test_registry_keys_normalize_to_storage_root(catalog):
-    catalog.register_client_config("s3://bkt/dir/file.csv", {"anon": True})
-    catalog.register_client_config("gs://other/x", {"anon": True})
-    # Local: the storage root is the directory.
+def test_registry_keys_are_rstripped_uris(catalog):
+    catalog.register_client_config("s3://bkt/dir/", {"anon": True})
     catalog.register_client_config("file:///tmp/data/", {"use_symlinks": True})
-    catalog.register_client_config("file:///tmp/data/f.csv", {"use_symlinks": True})
     assert catalog.source_client_configs == {
-        "s3://bkt": {"anon": True},
-        "gs://other": {"anon": True},
+        "s3://bkt/dir": {"anon": True},
         "file:///tmp/data": {"use_symlinks": True},
     }
 
 
-def test_register_and_lookup(catalog):
-    catalog.register_client_config("s3://bkt/dir/x", {"anon": True})
-    assert catalog.client_config_for("s3://bkt/other.csv") == {"anon": True}
-    assert catalog.client_config_for("s3://bkt") == {"anon": True}
+def test_lookup_by_longest_prefix(catalog):
+    catalog.register_client_config("s3://bkt", {"anon": True})
+    catalog.register_client_config("s3://bkt/team-b", {"key": "b"})
+
+    assert catalog.client_config_for("s3://bkt/x.csv") == {"anon": True}
+    assert catalog.client_config_for("s3://bkt/team-b/x.csv") == {"key": "b"}
+    assert catalog.client_config_for("s3://bkt/team-b") == {"key": "b"}
     # Unregistered source falls back to the catalog-wide default.
     assert catalog.client_config_for("s3://elsewhere/x") == catalog.client_config
 
 
-def test_lookup_matches_dir_registered_with_trailing_slash(catalog):
-    # Listings canonicalize local directories with a trailing slash; a lookup
-    # by the slash-less form must still resolve.
+def test_prefix_matches_on_path_boundary(catalog):
+    catalog.register_client_config("s3://bkt/team-a", {"key": "a"})
+    assert catalog.client_config_for("s3://bkt/team-a/f") == {"key": "a"}
+    # Similar names must not match across a path-segment boundary.
+    assert catalog.client_config_for("s3://bkt/team-ab/f") == catalog.client_config
+    # A parent of the registered prefix is not covered by it.
+    assert catalog.client_config_for("s3://bkt") == catalog.client_config
+
+
+def test_lookup_ignores_trailing_slash(catalog):
     catalog.register_client_config("file:///tmp/data/", {"use_symlinks": True})
     assert catalog.client_config_for("file:///tmp/data") == {"use_symlinks": True}
     assert catalog.client_config_for("file:///tmp/data/") == {"use_symlinks": True}
@@ -34,15 +40,16 @@ def test_lookup_matches_dir_registered_with_trailing_slash(catalog):
 
 def test_reregister_same_config_is_noop(catalog):
     catalog.register_client_config("s3://bkt", {"anon": True})
-    catalog.register_client_config("s3://bkt/sub/path", {"anon": True})
+    catalog.register_client_config("s3://bkt/", {"anon": True})
     assert catalog.source_client_configs == {"s3://bkt": {"anon": True}}
 
 
-def test_conflicting_register_raises(catalog):
+def test_conflicting_register_for_same_prefix_raises(catalog):
     catalog.register_client_config("s3://bkt", {"aws_endpoint_url": "http://a"})
     with pytest.raises(ValueError, match="different client_config"):
-        catalog.register_client_config("s3://bkt/x", {"aws_endpoint_url": "http://b"})
-    # A different bucket is unaffected.
+        catalog.register_client_config("s3://bkt", {"aws_endpoint_url": "http://b"})
+    # A different prefix — nested or not — is its own entry.
+    catalog.register_client_config("s3://bkt/sub", {"aws_endpoint_url": "http://b"})
     catalog.register_client_config("s3://other", {"aws_endpoint_url": "http://b"})
 
 
@@ -62,7 +69,7 @@ def test_registered_config_is_copied(catalog):
 
 
 def test_get_client_precedence(catalog):
-    """Explicit per-call kwargs > registry entry > catalog default."""
+    """Explicit per-call kwargs > registered prefix > catalog default."""
     catalog.client_config = {"anon": False}
     catalog.register_client_config("s3://bkt", {"anon": True})
 

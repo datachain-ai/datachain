@@ -227,18 +227,13 @@ def read_storage(
             updated_uris.add(list_uri_to_use)
             update_single_uri = True
 
-        list_ds_name, list_uri, list_path, _ = get_listing(
-            list_uri_to_use,
-            session,
-            update=update_single_uri,
-            client_config=per_source_config,
-        )
-
         if per_source_config:
-            # `list_uri` is the canonical form of the source (matches the
-            # `source` field of listed files), so register under it.
-            catalog.register_client_config(list_uri, per_source_config)
-        client_config = catalog.client_config_for(list_uri)
+            catalog.register_client_config(list_uri_to_use, per_source_config)
+        client_config = catalog.client_config_for(list_uri_to_use)
+
+        list_ds_name, list_uri, list_path, _ = get_listing(
+            list_uri_to_use, session, update=update_single_uri
+        )
 
         # list_ds_name is None if object is a file, we don't want to use cache
         # or do listing in that case - just read that single object

@@ -541,8 +541,8 @@ class Catalog:
         self.warehouse = warehouse
         self.cache = Cache(datachain_dir.cache, datachain_dir.tmp)
         self.client_config = client_config if client_config is not None else {}
-        # Per-source client configs: {storage URI -> config}, registered by
-        # read_storage. Wins over `client_config` for the registered source.
+        # Per-source client configs: {URI prefix -> config}, registered by
+        # read_storage. The longest matching prefix wins over `client_config`.
         self.source_client_configs: dict[str, dict[str, Any]] = dict(
             source_client_configs or {}
         )
@@ -603,38 +603,36 @@ class Catalog:
     def register_client_config(
         self, uri: "str | os.PathLike[str]", config: dict[str, Any]
     ) -> None:
-        """Register `config` for the storage root of `uri` (``s3://bucket``,
-        or the directory for local paths — the same parsing that produces
-        ``File.source``, so lookups by a file's source are exact).
+        """Register `config` for everything under `uri`.
 
+        Prefixes may nest; the longest registered prefix wins at lookup.
         Re-registering the same config is a no-op. An explicit config may
         replace an auto-detected ``{"anon": True}`` entry (a derived guess);
-        any other mismatch raises, because one process-wide catalog cannot
-        hold two configurations for the same source.
+        any other mismatch for the same prefix raises.
         """
-        storage, _ = Client.parse_url(str(uri))
-        existing = self.source_client_configs.get(storage)
+        prefix = str(uri).rstrip("/")
+        existing = self.source_client_configs.get(prefix)
         if existing is not None and existing not in (config, AUTO_ANON_CLIENT_CONFIG):
             raise ValueError(
-                f"{storage} was already accessed with a different client_config "
+                f"{prefix} was already accessed with a different client_config "
                 "in this session; pass an explicit Session(client_config=...) "
                 "to isolate it"
             )
-        self.source_client_configs[storage] = _copy_client_config(config)
+        self.source_client_configs[prefix] = _copy_client_config(config)
 
     def client_config_for(self, uri: "str | os.PathLike[str]") -> dict[str, Any]:
-        """The effective client config for `uri`: its registered per-source
-        config if any, else the catalog-wide default."""
-        uri_str = str(uri)
-        storage, _ = Client.parse_url(uri_str)
-        config = self.source_client_configs.get(storage)
-        if config is None and not uri_str.endswith("/"):
-            # A local directory given without a trailing slash parses to its
-            # parent, while listings canonicalize directories with a trailing
-            # slash (see parse_listing_uri) — try the directory form too.
-            storage, _ = Client.parse_url(f"{uri_str}/")
-            config = self.source_client_configs.get(storage)
-        return config if config is not None else self.client_config
+        """The effective client config for `uri`: the config registered for
+        its longest registered URI prefix, else the catalog-wide default."""
+        uri_str = str(uri).rstrip("/")
+        best = None
+        for prefix in self.source_client_configs:
+            if (uri_str == prefix or uri_str.startswith(f"{prefix}/")) and (
+                best is None or len(prefix) > len(best)
+            ):
+                best = prefix
+        if best is None:
+            return self.client_config
+        return self.source_client_configs[best]
 
     def get_client(self, uri: str, **config: Any) -> Client:
         """
