@@ -600,26 +600,19 @@ class Catalog:
     def generate_query_dataset_name(cls) -> str:
         return f"{QUERY_DATASET_PREFIX}_{uuid4().hex}"
 
-    @staticmethod
-    def storage_uri_for(uri: "str | os.PathLike[str]") -> str:
-        """Normalize `uri` to its storage root (e.g. ``s3://bucket``) — the
-        key under which per-source client configs are registered. Uses the
-        same client-side parsing that produces ``File.source``, so lookups by
-        a file's source are exact."""
-        storage, _ = Client.parse_url(str(uri))
-        return storage
-
     def register_client_config(
         self, uri: "str | os.PathLike[str]", config: dict[str, Any]
     ) -> None:
-        """Register `config` for the storage root of `uri`.
+        """Register `config` for the storage root of `uri` (``s3://bucket``,
+        or the directory for local paths — the same parsing that produces
+        ``File.source``, so lookups by a file's source are exact).
 
         Re-registering the same config is a no-op. An explicit config may
         replace an auto-detected ``{"anon": True}`` entry (a derived guess);
         any other mismatch raises, because one process-wide catalog cannot
         hold two configurations for the same source.
         """
-        storage = self.storage_uri_for(uri)
+        storage, _ = Client.parse_url(str(uri))
         existing = self.source_client_configs.get(storage)
         if existing is not None and existing not in (config, AUTO_ANON_CLIENT_CONFIG):
             raise ValueError(
@@ -633,12 +626,14 @@ class Catalog:
         """The effective client config for `uri`: its registered per-source
         config if any, else the catalog-wide default."""
         uri_str = str(uri)
-        config = self.source_client_configs.get(self.storage_uri_for(uri_str))
+        storage, _ = Client.parse_url(uri_str)
+        config = self.source_client_configs.get(storage)
         if config is None and not uri_str.endswith("/"):
             # A local directory given without a trailing slash parses to its
             # parent, while listings canonicalize directories with a trailing
             # slash (see parse_listing_uri) — try the directory form too.
-            config = self.source_client_configs.get(self.storage_uri_for(f"{uri_str}/"))
+            storage, _ = Client.parse_url(f"{uri_str}/")
+            config = self.source_client_configs.get(storage)
         return config if config is not None else self.client_config
 
     def get_client(self, uri: str, **config: Any) -> Client:

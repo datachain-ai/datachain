@@ -3,13 +3,17 @@ import pytest
 from datachain.catalog.catalog import AUTO_ANON_CLIENT_CONFIG
 
 
-def test_storage_uri_for_normalizes_to_storage_root(catalog):
-    assert catalog.storage_uri_for("s3://bkt/dir/file.csv") == "s3://bkt"
-    assert catalog.storage_uri_for("s3://bkt") == "s3://bkt"
-    assert catalog.storage_uri_for("gs://other/x") == "gs://other"
+def test_registry_keys_normalize_to_storage_root(catalog):
+    catalog.register_client_config("s3://bkt/dir/file.csv", {"anon": True})
+    catalog.register_client_config("gs://other/x", {"anon": True})
     # Local: the storage root is the directory.
-    assert catalog.storage_uri_for("file:///tmp/data/") == "file:///tmp/data"
-    assert catalog.storage_uri_for("file:///tmp/data/f.csv") == "file:///tmp/data"
+    catalog.register_client_config("file:///tmp/data/", {"use_symlinks": True})
+    catalog.register_client_config("file:///tmp/data/f.csv", {"use_symlinks": True})
+    assert catalog.source_client_configs == {
+        "s3://bkt": {"anon": True},
+        "gs://other": {"anon": True},
+        "file:///tmp/data": {"use_symlinks": True},
+    }
 
 
 def test_register_and_lookup(catalog):
