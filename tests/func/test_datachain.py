@@ -85,6 +85,12 @@ def test_read_storage_glob(cloud_test_catalog):
     assert chain.count() == 3
 
 
+def test_read_storage_glob_with_dir_component(cloud_test_catalog):
+    ctc = cloud_test_catalog
+    chain = dc.read_storage(f"{ctc.src_uri}/dogs/oth*/*", session=ctc.session)
+    assert chain.count() == 1
+
+
 def test_read_storage_as_image(cloud_test_catalog):
     ctc = cloud_test_catalog
     chain = dc.read_storage(ctc.src_uri, session=ctc.session, type="image")

@@ -6,6 +6,7 @@ import datachain as dc
 from datachain.catalog.catalog import DataSource
 from datachain.client import Client
 from datachain.fs.utils import path_to_fsspec_uri
+from datachain.lib.dc.storage_pattern import split_uri_pattern
 from datachain.lib.file import File
 from datachain.lib.listing import (
     LISTING_PREFIX,
@@ -135,6 +136,28 @@ def test_get_listing_reuse_returns_decoded_subpath(
     assert reused
     assert name == broad_name
     assert list_path == expected_list_path
+
+
+def test_get_listing_reuses_broader_listing_for_glob_base(test_session):
+    catalog = test_session.catalog
+    fake_uri = path_to_fsspec_uri("/globbase")
+    broad_name, _, _, _ = get_listing(fake_uri, test_session)
+    (
+        dc.read_values(file=[File(path="media/music/song.mp3")])
+        .settings(
+            namespace=catalog.metastore.system_namespace_name,
+            project=catalog.metastore.listing_project_name,
+        )
+        .save(broad_name, listing=True)
+    )
+
+    base, pattern = split_uri_pattern(f"{fake_uri}/media/mus*/*.mp3")
+    name, _, list_path, reused = get_listing(base, test_session)
+
+    assert pattern == "mus*/*.mp3"
+    assert reused
+    assert name == broad_name
+    assert list_path == "media/"
 
 
 def test_resolve_path_in_root(listing):

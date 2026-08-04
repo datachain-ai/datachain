@@ -202,6 +202,22 @@ def test_no_pattern_behavior_unchanged(tmp_dir):
     assert files == {"temp1.tmp", "temp2.tmp", "log1.log", "logfile"}
 
 
+def test_glob_with_literal_first_segment_under_broader_listing(tmp_dir):
+    assert dc.read_storage(f"{tmp_dir}/").count() == count_dict_items(DEEP_TREE)
+
+    result = dc.read_storage(f"{tmp_dir}/deep/media/mus*/rock/*")
+    files = {f.name for f in result.to_values("file")}
+    assert files == {"song1.mp3", "song2.flac"}
+
+
+def test_globstar_under_broader_listing(tmp_dir):
+    assert dc.read_storage(f"{tmp_dir}/").count() == count_dict_items(DEEP_TREE)
+
+    result = dc.read_storage(f"{tmp_dir}/deep/media/**/*.mp3")
+    files = {f.name for f in result.to_values("file")}
+    assert files == {"song1.mp3", "track2.mp3"}
+
+
 def test_mixed_pattern_types(tmp_dir):
     # Mix wildcard and brace expansion
     result = dc.read_storage(f"{tmp_dir}/deep/media/*/rock/*.{{mp3,flac}}")

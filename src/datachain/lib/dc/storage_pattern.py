@@ -243,11 +243,8 @@ def apply_glob_filter(
 
     chain = ls(dc, list_path, recursive=use_recursive, column=column)
 
-    if list_path and "/" not in pattern:
-        filter_pattern = f"{list_path.rstrip('/')}/{pattern}"
-    else:
-        filter_pattern = pattern
-
-    glob_pattern = convert_globstar_to_glob(filter_pattern)
+    glob_pattern = convert_globstar_to_glob(pattern)
+    if subpath := list_path.strip("/"):
+        glob_pattern = f"{subpath}/{glob_pattern}"
 
     return chain.filter(Column(f"{column}.path").glob(glob_pattern))
