@@ -571,7 +571,7 @@ class File(DataModel):
         if self._catalog is None:
             raise RuntimeError("Cannot open file: catalog is not set")
 
-        base_cfg = self._catalog.client_config_for_file(self.source, self.path)
+        base_cfg = self._catalog.client_config_for(self.source)
         merged_cfg = {**base_cfg, **(client_config or {})}
         client: Client = self._catalog.get_client(self.source, **merged_cfg)
 
@@ -894,14 +894,6 @@ class File(DataModel):
         self._caching_enabled = caching_enabled
         self._download_cb = download_cb
 
-    def _client(self) -> "Client":
-        """Build the storage client for this file, resolving the client
-        config registered for the file's URI (longest prefix wins)."""
-        assert self._catalog is not None
-        return self._catalog.get_client(
-            self.source, **self._catalog.client_config_for_file(self.source, self.path)
-        )
-
     def ensure_cached(self) -> None:
         """Download the file to the local cache.
 
@@ -920,7 +912,7 @@ class File(DataModel):
             raise RuntimeError(
                 "cannot download file to cache because catalog is not setup"
             )
-        client = self._client()
+        client = self._catalog.get_client(self.source)
         client.download(self, callback=self._download_cb)
 
     async def _prefetch(self, download_cb: "Callback | None" = None) -> bool:
@@ -931,7 +923,7 @@ class File(DataModel):
         if self.location:
             file = VFileRegistry.parent(self, self.location)  # type: ignore[arg-type]
 
-        client = self._client()
+        client = self._catalog.get_client(self.source)
         await client._download(file, callback=download_cb or self._download_cb)
         file._set_stream(
             self._catalog, caching_enabled=True, download_cb=DEFAULT_CALLBACK
@@ -1042,7 +1034,7 @@ class File(DataModel):
         return path.lstrip("/")
 
     def get_fs(self):
-        return self._client().fs
+        return self._catalog.get_client(self.source).fs
 
     def get_hash(self) -> str:
         fingerprint = f"{self.source}/{self.path}/{self.version}/{self.etag}"
@@ -1068,7 +1060,7 @@ class File(DataModel):
             )
 
         try:
-            client = self._client()
+            client = self._catalog.get_client(self.source)
         except NotImplementedError as e:
             raise RuntimeError(
                 f"Unsupported protocol for file source: {self.source}"

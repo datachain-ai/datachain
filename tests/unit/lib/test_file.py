@@ -757,7 +757,6 @@ def test_read_text_virtual_tar_file(tmp_path, catalog):
 
 def test_resolve_unsupported_protocol():
     mock_catalog = Mock()
-    mock_catalog.client_config_for_file.return_value = {}
     mock_catalog.get_client.side_effect = NotImplementedError("Unsupported protocol")
 
     file = File(source="unsupported://example.com", path="test.txt")
