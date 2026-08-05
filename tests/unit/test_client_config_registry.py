@@ -82,3 +82,26 @@ def test_init_params_ship_registry(catalog):
     catalog.register_client_config("s3://bkt", {"anon": True})
     params = catalog.get_init_params()
     assert params["source_client_configs"] == {"s3://bkt": {"anon": True}}
+
+
+def test_client_config_for_file_matches_uri_resolution(catalog):
+    catalog.register_client_config("s3://bkt/team-a", {"key": "a"})
+    catalog.register_client_config("s3://bkt", {"anon": True})
+
+    assert catalog.client_config_for_file("s3://bkt", "team-a/f.csv") == {"key": "a"}
+    assert catalog.client_config_for_file("s3://bkt", "team-ab/f.csv") == {"anon": True}
+    assert catalog.client_config_for_file("s3://bkt", "x.csv") == {"anon": True}
+    assert (
+        catalog.client_config_for_file("s3://other", "x.csv") == catalog.client_config
+    )
+    # A prefix registered above the source covers all of it.
+    catalog.register_client_config("file:///data", {"use_symlinks": True})
+    assert catalog.client_config_for_file("file:///data/photos", "f.jpg") == {
+        "use_symlinks": True
+    }
+
+
+def test_client_config_for_file_memo_invalidated_on_register(catalog):
+    assert catalog.client_config_for_file("s3://bkt", "f.csv") == {}
+    catalog.register_client_config("s3://bkt", {"anon": True})
+    assert catalog.client_config_for_file("s3://bkt", "f.csv") == {"anon": True}

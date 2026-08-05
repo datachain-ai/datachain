@@ -116,7 +116,7 @@ class Object(UDFParameter):
     ) -> Any:
         file = File._from_row(file_signals(row))
         client = catalog.get_client(
-            file.source, **catalog.client_config_for(file._full_uri())
+            file.source, **catalog.client_config_for_file(file.source, file.path)
         )
         if cache:
             client.download(file, callback=cb)
@@ -135,7 +135,7 @@ class Object(UDFParameter):
     ) -> Any:
         file = File._from_row(file_signals(row))
         client = catalog.get_client(
-            file.source, **catalog.client_config_for(file._full_uri())
+            file.source, **catalog.client_config_for_file(file.source, file.path)
         )
         if cache:
             await client._download(file, callback=cb)
@@ -163,7 +163,7 @@ class Stream(UDFParameter):
     ) -> Any:
         file = File._from_row(file_signals(row))
         client = catalog.get_client(
-            file.source, **catalog.client_config_for(file._full_uri())
+            file.source, **catalog.client_config_for_file(file.source, file.path)
         )
         if cache:
             client.download(file, callback=cb)
@@ -181,7 +181,7 @@ class Stream(UDFParameter):
     ) -> Any:
         file = File._from_row(file_signals(row))
         client = catalog.get_client(
-            file.source, **catalog.client_config_for(file._full_uri())
+            file.source, **catalog.client_config_for_file(file.source, file.path)
         )
         if cache:
             await client._download(file, callback=cb)
@@ -216,7 +216,7 @@ class LocalFilename(UDFParameter):
             return None
         file = File._from_row(file_signals(row))
         client = catalog.get_client(
-            file.source, **catalog.client_config_for(file._full_uri())
+            file.source, **catalog.client_config_for_file(file.source, file.path)
         )
         client.download(file, callback=cb)
         return client.cache.get_path(file)
@@ -237,7 +237,7 @@ class LocalFilename(UDFParameter):
             return None
         file = File._from_row(file_signals(row))
         client = catalog.get_client(
-            file.source, **catalog.client_config_for(file._full_uri())
+            file.source, **catalog.client_config_for_file(file.source, file.path)
         )
         await client._download(file, callback=cb)
         return client.cache.get_path(file)

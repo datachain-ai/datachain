@@ -571,7 +571,7 @@ class File(DataModel):
         if self._catalog is None:
             raise RuntimeError("Cannot open file: catalog is not set")
 
-        base_cfg = self._catalog.client_config_for(self._full_uri())
+        base_cfg = self._catalog.client_config_for_file(self.source, self.path)
         merged_cfg = {**base_cfg, **(client_config or {})}
         client: Client = self._catalog.get_client(self.source, **merged_cfg)
 
@@ -894,16 +894,12 @@ class File(DataModel):
         self._caching_enabled = caching_enabled
         self._download_cb = download_cb
 
-    def _full_uri(self) -> str:
-        """Full URI of the object (``<source>/<path>``)."""
-        return f"{self.source}/{self.path}" if self.path else self.source
-
     def _client(self) -> "Client":
         """Build the storage client for this file, resolving the client
         config registered for the file's URI (longest prefix wins)."""
         assert self._catalog is not None
         return self._catalog.get_client(
-            self.source, **self._catalog.client_config_for(self._full_uri())
+            self.source, **self._catalog.client_config_for_file(self.source, self.path)
         )
 
     def ensure_cached(self) -> None:

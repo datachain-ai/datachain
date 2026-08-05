@@ -73,7 +73,9 @@ def test_registered_config_reaches_parallel_workers(tmp_dir, test_session_tmpfil
         .map(
             cfg=lambda file: json.dumps(
                 {
-                    "config": file._catalog.client_config_for(file._full_uri()),
+                    "config": file._catalog.client_config_for_file(
+                        file.source, file.path
+                    ),
                     "in_worker": os.getpid() != main_pid,
                 }
             ),

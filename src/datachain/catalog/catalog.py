@@ -546,6 +546,9 @@ class Catalog:
         self.source_client_configs: dict[str, dict[str, Any]] = dict(
             source_client_configs or {}
         )
+        # Per-source resolution memo for client_config_for_file; rebuilt
+        # lazily after each register_client_config.
+        self._source_config_memo: dict[str, list[tuple[str, dict[str, Any]]]] = {}
         self._init_params = {
             "cache_dir": cache_dir,
             "tmp_dir": tmp_dir,
@@ -619,6 +622,7 @@ class Catalog:
                 "to isolate it"
             )
         self.source_client_configs[prefix] = _copy_client_config(config)
+        self._source_config_memo.clear()
 
     def client_config_for(self, uri: "str | os.PathLike[str]") -> dict[str, Any]:
         """The effective client config for `uri`: the config registered for
@@ -633,6 +637,42 @@ class Catalog:
         if best is None:
             return self.client_config
         return self.source_client_configs[best]
+
+    def client_config_for_file(self, source: str, path: str) -> dict[str, Any]:
+        """The effective client config for the object `path` under `source`.
+
+        Same resolution as :meth:`client_config_for` for the file's full URI,
+        but built for per-row use: the registry view is memoized per source,
+        so resolving a file costs one dict lookup plus, only when subtree
+        prefixes are registered under its source, a ``str.startswith`` on the
+        path.
+        """
+        for path_prefix, config in self._configs_under(source):
+            if (
+                not path_prefix
+                or path.startswith(path_prefix)
+                or path == path_prefix[:-1]
+            ):
+                return config
+        return self.client_config
+
+    def _configs_under(self, source: str) -> list[tuple[str, dict[str, Any]]]:
+        """Memoized registry view for one source: ``[(path_prefix, config)]``
+        ordered longest-prefix-first. An empty path prefix means the entry
+        covers the whole source (it was registered at or above it)."""
+        entries = self._source_config_memo.get(source)
+        if entries is None:
+            matches = []
+            for prefix, config in self.source_client_configs.items():
+                if source == prefix or source.startswith(f"{prefix}/"):
+                    matches.append((len(prefix), "", config))
+                elif prefix.startswith(f"{source}/"):
+                    remainder = prefix[len(source) + 1 :]
+                    matches.append((len(prefix), f"{remainder}/", config))
+            matches.sort(key=lambda entry: entry[0], reverse=True)
+            entries = [(path_prefix, config) for _, path_prefix, config in matches]
+            self._source_config_memo[source] = entries
+        return entries
 
     def get_client(self, uri: str, **config: Any) -> Client:
         """
