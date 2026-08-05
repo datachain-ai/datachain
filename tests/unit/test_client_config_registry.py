@@ -8,17 +8,15 @@ def test_registry_keys_are_rstripped(catalog):
     assert catalog.source_client_configs == {"s3://bkt": {"anon": True}}
 
 
-def test_lookup_by_source_and_covering_uri(catalog):
+def test_lookup_is_exact_by_source(catalog):
     catalog.register_client_config("s3://bkt", {"anon": True})
 
     assert catalog.client_config_for("s3://bkt") == {"anon": True}
     assert catalog.client_config_for("s3://bkt/") == {"anon": True}
-    # A URI below the source resolves to the source's entry.
-    assert catalog.client_config_for("s3://bkt/dir/x.csv") == {"anon": True}
-    # Similar names must not match across a path-segment boundary.
-    assert catalog.client_config_for("s3://bkt-other/x") == catalog.client_config
-    # Unregistered source falls back to the catalog-wide default.
-    assert catalog.client_config_for("s3://elsewhere/x") == catalog.client_config
+    # Lookup is exact: anything that is not a registered source falls back
+    # to the catalog-wide default.
+    assert catalog.client_config_for("s3://bkt/dir/x.csv") == catalog.client_config
+    assert catalog.client_config_for("s3://elsewhere") == catalog.client_config
 
 
 def test_distinct_sources_coexist(catalog):

@@ -273,13 +273,13 @@ def get_listing(
 
     catalog = session.catalog
     cache = catalog.cache
+    if not isinstance(uri, str):
+        uri = os.fspath(uri)
     if client_config is None:
-        client_config = catalog.client_config_for(uri)
+        client_config = catalog.client_config_for(Client.parse_url(uri)[0])
 
     client = Client.get_client(uri, cache, **client_config)
     telemetry.log_param("client", client.PREFIX)
-    if not isinstance(uri, str):
-        uri = os.fspath(uri)
 
     # we don't want to use cached dataset (e.g. for a single file listing)
     isfile = _reraise_as_client_error()(fsutils.isfile)

@@ -621,24 +621,12 @@ class Catalog:
             )
         self.source_client_configs[key] = _copy_client_config(config)
 
-    def client_config_for(self, uri: "str | os.PathLike[str]") -> dict[str, Any]:
-        """The effective client config for `uri`: the config registered for
-        its source, else the catalog-wide default.
-
-        A ``File.source`` value matches its registry entry directly; for a
-        URI below a source (e.g. ``s3://bucket/dir/x``) the covering source's
-        entry applies.
-        """
-        uri_str = str(uri).rstrip("/")
-        config = self.source_client_configs.get(uri_str)
-        if config is None:
-            for source, source_config in self.source_client_configs.items():
-                # The appended "/" keeps matches on path-segment boundaries:
-                # s3://bkt must not cover s3://bkt-other/...
-                if uri_str.startswith(f"{source}/"):
-                    config = source_config
-                    break
-        return config if config is not None else self.client_config
+    def client_config_for(self, source: "str | os.PathLike[str]") -> dict[str, Any]:
+        """The config registered for `source` (a ``File.source`` value), else
+        the catalog-wide default."""
+        return self.source_client_configs.get(
+            str(source).rstrip("/"), self.client_config
+        )
 
     def get_client(self, uri: str, **config: Any) -> Client:
         """

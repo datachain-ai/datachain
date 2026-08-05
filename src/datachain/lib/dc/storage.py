@@ -234,11 +234,11 @@ def read_storage(
             client_config=per_source_config,
         )
 
+        # `list_uri` parses to the same source the listed files carry.
+        source, _ = Client.parse_url(list_uri)
         if per_source_config:
-            # `list_uri` parses to the same source the listed files carry.
-            source, _ = Client.parse_url(list_uri)
             catalog.register_client_config(source, per_source_config)
-        client_config = catalog.client_config_for(list_uri_to_use)
+        client_config = catalog.client_config_for(source)
 
         # list_ds_name is None if object is a file, we don't want to use cache
         # or do listing in that case - just read that single object
