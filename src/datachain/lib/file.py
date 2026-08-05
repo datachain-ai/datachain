@@ -741,7 +741,11 @@ class File(DataModel):
     def _resolve_destination(
         self, destination: str, client_config: dict | None = None
     ) -> "tuple[Client, str]":
-        """Return (client rooted at the storage, rel_path) for *destination*."""
+        """Return (client rooted at the storage, rel_path) for *destination*.
+
+        With no explicit `client_config`, the client resolves the config
+        registered for the destination's source, if any (via `get_client`).
+        """
         from datachain.client.fsspec import Client as FSClient
 
         uri = path_to_fsspec_uri(destination)
@@ -831,7 +835,7 @@ class File(DataModel):
 
         suffix = self._get_destination_suffix(placement)
         output_str = stringify_path(output)
-        client = self._catalog.get_client(output_str, **(client_config or {}))
+        client, _ = self._resolve_destination(output_str, client_config)
 
         # Normalization and traversal safety: for local exports, resolve to absolute
         # and validate the suffix. Cloud exports skip this — the cloud client already

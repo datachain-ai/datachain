@@ -72,3 +72,23 @@ def test_init_params_ship_registry(catalog):
     catalog.register_client_config("s3://bkt", {"anon": True})
     params = catalog.get_init_params()
     assert params["source_client_configs"] == {"s3://bkt": {"anon": True}}
+
+
+def test_destination_client_resolves_registered_source_config(catalog):
+    """save/export destinations derive their source and resolve its
+    registered config; an explicit per-call config still wins."""
+    from datachain.lib.file import File
+
+    catalog.register_client_config("s3://bkt", {"anon": True})
+    file = File(source="s3://src", path="f.txt")
+    file._set_stream(catalog)
+
+    client, rel_path = file._resolve_destination("s3://bkt/out/f.txt")
+    assert client.fs_kwargs == {"anon": True}
+    assert rel_path == "out/f.txt"
+
+    client, _ = file._resolve_destination("s3://bkt/out/f.txt", {"anon": False})
+    assert client.fs_kwargs == {"anon": False}
+
+    client, _ = file._resolve_destination("s3://elsewhere/out/f.txt")
+    assert client.fs_kwargs == catalog.client_config
