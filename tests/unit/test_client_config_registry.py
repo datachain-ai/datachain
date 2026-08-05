@@ -92,3 +92,17 @@ def test_destination_client_resolves_registered_source_config(catalog):
 
     client, _ = file._resolve_destination("s3://elsewhere/out/f.txt")
     assert client.fs_kwargs == catalog.client_config
+
+
+def test_auto_anon_entry_refines_the_default(catalog):
+    """A derived {"anon": True} entry overlays the default config (so e.g. a
+    default endpoint URL survives); an explicit config replaces the default."""
+    catalog.client_config = {"endpoint_url": "http://fake"}
+    catalog.register_client_config("gs://bkt", dict(AUTO_ANON_CLIENT_CONFIG))
+    assert catalog.client_config_for("gs://bkt") == {
+        "endpoint_url": "http://fake",
+        "anon": True,
+    }
+
+    catalog.register_client_config("gs://bkt", {"token": "t"})
+    assert catalog.client_config_for("gs://bkt") == {"token": "t"}

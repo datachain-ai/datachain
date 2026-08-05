@@ -180,10 +180,12 @@ def read_storage(
         session.catalog.client_config if session is not None else None
     )
 
-    if (
-        anon is None
-        and not _backends_have_credentials(uris, probe_config)
-        and _all_buckets_anonymous(uris, probe_config)
+    if anon is not None:
+        # Normalize to a plain bool: callers pass truthy strings ("True"),
+        # and the value participates in registry equality checks.
+        anon = bool(anon)
+    elif not _backends_have_credentials(uris, probe_config) and _all_buckets_anonymous(
+        uris, probe_config
     ):
         anon = True
 

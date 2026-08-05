@@ -624,9 +624,14 @@ class Catalog:
     def client_config_for(self, source: "str | os.PathLike[str]") -> dict[str, Any]:
         """The config registered for `source` (a ``File.source`` value), else
         the catalog-wide default."""
-        return self.source_client_configs.get(
-            str(source).rstrip("/"), self.client_config
-        )
+        config = self.source_client_configs.get(str(source).rstrip("/"))
+        if config is None:
+            return self.client_config
+        if config == AUTO_ANON_CLIENT_CONFIG:
+            # Auto-detected anon refines the default config (which may carry
+            # e.g. an endpoint URL); an explicit config replaces it.
+            return {**self.client_config, **config}
+        return config
 
     def get_client(self, uri: str, **config: Any) -> Client:
         """

@@ -123,3 +123,12 @@ def test_config_follows_the_listing_source(tmp_dir, test_session):
         assert catalog.client_config_for(file.source) == {"use_symlinks": True}
     for file in child_files:
         assert catalog.client_config_for(file.source) == {"use_symlinks": False}
+
+
+def test_anon_value_is_normalized(tmp_dir, test_session):
+    """Truthy anon values (e.g. the string "True") normalize to a bool, so
+    repeated reads register equal configs instead of conflicting."""
+    _make_tree(tmp_dir, ["a.txt"])
+    dc.read_storage(tmp_dir.as_uri(), anon="True")
+    dc.read_storage(tmp_dir.as_uri(), anon=True)
+    assert test_session.catalog.client_config_for(tmp_dir.as_uri()) == {"anon": True}
