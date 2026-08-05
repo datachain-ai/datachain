@@ -606,13 +606,18 @@ class Catalog:
         """Register `config` for a storage source (a ``File.source`` value:
         the bucket for cloud storage, the directory for local paths).
 
-        Re-registering the same config is a no-op. An explicit config may
-        replace an auto-detected ``{"anon": True}`` entry (a derived guess);
-        any other mismatch raises, because one catalog cannot hold two
-        configurations for the same source.
+        Re-registering the same config is a no-op. An auto-detected
+        ``{"anon": True}`` entry is a derived guess: an explicit config may
+        replace it, and it never replaces or conflicts with an existing
+        entry. Any other mismatch raises, because one catalog cannot hold
+        two configurations for the same source.
         """
         key = str(source).rstrip("/")
         existing = self.source_client_configs.get(key)
+        if existing is not None and config == AUTO_ANON_CLIENT_CONFIG:
+            # A derived guess never overrides or conflicts with an existing
+            # entry.
+            return
         if existing is not None and existing not in (config, AUTO_ANON_CLIENT_CONFIG):
             raise ValueError(
                 f"{key} was already accessed with a different client_config "

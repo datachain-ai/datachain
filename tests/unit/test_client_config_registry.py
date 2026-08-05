@@ -106,3 +106,11 @@ def test_auto_anon_entry_refines_the_default(catalog):
 
     catalog.register_client_config("gs://bkt", {"token": "t"})
     assert catalog.client_config_for("gs://bkt") == {"token": "t"}
+
+
+def test_derived_anon_yields_to_existing_entry(catalog):
+    """The derived {"anon": True} guess never conflicts with or overrides an
+    existing entry (the reverse of the upgrade rule)."""
+    catalog.register_client_config("gs://bkt", {"endpoint_url": "http://fake"})
+    catalog.register_client_config("gs://bkt", dict(AUTO_ANON_CLIENT_CONFIG))
+    assert catalog.client_config_for("gs://bkt") == {"endpoint_url": "http://fake"}
