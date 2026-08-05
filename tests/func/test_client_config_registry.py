@@ -132,3 +132,23 @@ def test_anon_value_is_normalized(tmp_dir, test_session):
     dc.read_storage(tmp_dir.as_uri(), anon="True")
     dc.read_storage(tmp_dir.as_uri(), anon=True)
     assert test_session.catalog.client_config_for(tmp_dir.as_uri()) == {"anon": True}
+
+
+def test_listing_probe_gets_refined_anon_config(tmp_dir, test_session):
+    """When only bare anon is detected/passed, get_listing's probe must see
+    the catalog default refined with anon, not bare anon alone."""
+    from unittest.mock import patch
+
+    from datachain.lib.listing import get_listing
+
+    _make_tree(tmp_dir, ["a.txt"])
+    test_session.catalog.client_config = {"use_symlinks": True}
+    with patch(
+        "datachain.lib.dc.storage.get_listing", wraps=get_listing
+    ) as mock_get_listing:
+        dc.read_storage(tmp_dir.as_uri(), anon=True)
+
+    assert mock_get_listing.call_args.kwargs["client_config"] == {
+        "use_symlinks": True,
+        "anon": True,
+    }

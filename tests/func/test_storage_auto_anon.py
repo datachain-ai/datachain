@@ -77,3 +77,18 @@ def test_explicit_anon_skips_auto_detect(probe, explicit, tmp_dir, catalog):
     catalog = chain.session.catalog
     assert catalog.client_config_for(tmp_dir.as_uri()).get("anon") is explicit
     assert "anon" not in catalog.client_config
+
+
+@pytest.mark.parametrize("cloud_type", ["gs"], indirect=True)
+def test_auto_anon_single_file_read(cloud_test_catalog):
+    """The single-file probe in get_listing must use the effective config
+    (default refined with detected anon), not bare anon: with an
+    endpoint-style default, bare anon would probe the wrong endpoint and
+    misclassify the file as a directory. Reproducible on gs only: its test
+    config carries no credential keys, so auto-anon fires for bare reads.
+    (moto-s3 forbids anonymous HeadObject, so an s3 variant cannot work.)"""
+    ctc = cloud_test_catalog
+    chain = dc.read_storage(f"{ctc.src_uri}/description", session=ctc.session)
+    files = chain.to_values("file")
+    assert len(files) == 1
+    assert files[0].path.endswith("description")

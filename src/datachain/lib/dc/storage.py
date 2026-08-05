@@ -3,6 +3,7 @@ from collections.abc import Sequence
 from functools import reduce
 from typing import TYPE_CHECKING
 
+from datachain.catalog.catalog import AUTO_ANON_CLIENT_CONFIG
 from datachain.client import Client
 from datachain.lib.dc.storage_pattern import (
     apply_glob_filter,
@@ -199,6 +200,12 @@ def read_storage(
     # reads inside UDFs (including worker processes), exports — resolves the
     # same config through the catalog instead of a session-wide default.
     per_source_config = client_config or None
+    # A bare {"anon": True} refines the catalog default at use time (see
+    # Catalog.client_config_for); give get_listing the same effective view so
+    # its file/dir probe talks to the right endpoint.
+    listing_config = per_source_config
+    if listing_config == AUTO_ANON_CLIENT_CONFIG:
+        listing_config = catalog.client_config | listing_config
     listing_namespace_name = catalog.metastore.system_namespace_name
     listing_project_name = catalog.metastore.listing_project_name
 
@@ -233,7 +240,7 @@ def read_storage(
             list_uri_to_use,
             session,
             update=update_single_uri,
-            client_config=per_source_config,
+            client_config=listing_config,
         )
 
         # `list_uri` parses to the same source the listed files carry.
