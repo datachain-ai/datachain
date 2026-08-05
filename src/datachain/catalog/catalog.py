@@ -633,6 +633,8 @@ class Catalog:
         config = self.source_client_configs.get(uri_str)
         if config is None:
             for source, source_config in self.source_client_configs.items():
+                # The appended "/" keeps matches on path-segment boundaries:
+                # s3://bkt must not cover s3://bkt-other/...
                 if uri_str.startswith(f"{source}/"):
                     config = source_config
                     break
