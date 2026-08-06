@@ -243,6 +243,7 @@ explicit-preview-rules = true
 ignore = [
   "S101",  # assert
   "PLR2004",  # magic-value-comparison
+  "PLR0917",  # too-many-positional-arguments
   "PLW2901",  # redefined-loop-name
   "ISC001",  # single-line-implicit-string-concatenation, incompatible with ruff format
   "RET502",  # implicit-return-value
