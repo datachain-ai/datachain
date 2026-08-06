@@ -1969,6 +1969,11 @@ class AbstractDBMetastore(AbstractMetastore):
                             ),
                         ),
                     ),
+                    # Re-queued tombstones have no running job to wait for.
+                    and_(
+                        dv.c.status == DatasetStatus.REMOVED,
+                        dv.c.pending_metadata_drop.is_(True),
+                    ),
                     # Session datasets from finished jobs (orphaned intermediates)
                     and_(
                         d.c.name.startswith(SESSION_DATASET_PREFIX, autoescape=True),
