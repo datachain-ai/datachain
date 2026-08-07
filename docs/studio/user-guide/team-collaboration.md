@@ -7,7 +7,7 @@ control what they can do.
 
 Each collaborator has a team role (Admin, Editor, or Viewer). On top of that,
 access to individual namespaces, projects, and datasets is controlled by
-**fine-grained permissions** , admins organize people into **groups** and write
+**fine-grained permissions**, admins organize people into **groups** and write
 **rules** that grant `read` or `write` on specific resources.
 
 In this page, you will learn about:
@@ -51,7 +51,7 @@ creating the team, and
 ## Roles
 
 Every collaborator has one of three team roles. The role controls team-level
-capabilities — but, except for admins, it does **not** by itself grant access to
+capabilities, but, except for admins, it does **not** by itself grant access to
 any namespace, project, or dataset. That access comes from
 [fine-grained permissions](#permissions).
 
@@ -59,16 +59,19 @@ any namespace, project, or dataset. That access comes from
   modify every namespace, project, and dataset regardless of permission rules,
   invite and remove collaborators, manage groups and rules, manage team settings,
   configure cloud credentials, and manage billing.
-- **`Editors`** - Can create resources and, where they have a `write`
-  [grant](#permissions), edit datasets, jobs, queries, and projects, upload
-  files, and run jobs. They cannot modify team settings, manage collaborators, or
-  manage permissions.
-- **`Viewers`** - Can explore the resources they have a `read` grant on. They
-  cannot create or modify resources, and cannot change team settings.
+- **`Editors`** - Can create resources, run jobs, and work with queries and
+  experiment projects. On datasets, they can edit or delete a dataset and its
+  files where they have a `write` [grant](#permissions) on it (or on the
+  namespace/project that contains it). They cannot modify team settings, manage
+  collaborators, or manage permissions.
+- **`Viewers`** - Have read-only access. They can explore jobs and experiments,
+  and any dataset they have a `read` [grant](#permissions) on. They cannot create
+  or modify resources, and cannot change team settings.
 
-For both Editors and Viewers, access to a specific resource is determined by
-permission rules and groups (see [How access is resolved](#how-access-is-resolved)),
-not by the role alone. A collaborator with no matching grant sees no resources.
+Fine-grained grants only gate datasets and the namespaces and projects that
+contain them (see [How access is resolved](#how-access-is-resolved)), an Editor
+or Viewer with no matching grant sees no datasets. Jobs, queries, experiments,
+and storage are governed by the team role itself, not by grants.
 
 DataChain Studio does not have the concept of an `Owner` role. The user who
 creates the team has the `Admin` role. The privileges of such an admin is the
@@ -89,7 +92,7 @@ this:
   no matter what rules exist.
 - **Access is grant-only.** For non-admins, access to a resource comes only from
   an explicit permission rule (targeting you or a group you belong to) or from
-  ownership. If nothing grants you access, you have none — there is no fallback to
+  ownership. If nothing grants you access, you have none, there is no fallback to
   your team role.
 - **Grants are additive; the highest one wins.** If several rules apply to you
   (directly or through groups), you get the highest permission among them. A
@@ -104,24 +107,26 @@ this:
 !!! note
 
     Existing teams keep working after this feature rolls out. Each team starts
-    with two ready-made groups — **All members (read)** and **All members
-    (write)** — that grant every member access to all existing namespaces. Admins
+    with two ready-made groups, **All members (read)** and **All members
+    (write)**, that grant every member access to all existing namespaces. Admins
     can edit or remove these groups to start scoping access down.
 
 **Example.** Suppose a dataset lives at `prod.analytics.metrics`. A rule that
 grants the `ml-team` group `read` on the `prod` namespace lets every member of
 `ml-team` read `prod.analytics.metrics` (and everything else under `prod`). If
 one of those members also has a personal `write` rule on
-`prod.analytics.metrics`, they get `write` on it — the higher grant wins.
+`prod.analytics.metrics`, they get `write` on it, the higher grant wins.
 
-These rules are enforced everywhere resources are accessed , the web dashboard,
-the API, and running DataChain jobs (for example, `dc.read_dataset(...)`) — not
-just in the UI.
+These rules are enforced everywhere datasets are accessed, the web dashboard,
+the API, and running DataChain jobs (for example, `dc.read_dataset(...)` runs
+under the submitting user's grants), not just in the UI.
 
 
-The tables in this section show what a `read` versus `write`
-[grant](#permissions) allows on a resource you can access. Admins can perform
-every action regardless of grants.
+Fine-grained grants govern **datasets** (and, by cascade, the namespaces and
+projects that contain them); the datasets table below shows what a `read` versus
+`write` [grant](#permissions) allows. **Jobs, queries, experiments, and storage**
+are governed by the **team role** instead, their tables show what each role can
+do. Admins can perform every action regardless of grant or role.
 
 ### Privileges for datasets
 
@@ -144,49 +149,49 @@ every action regardless of grants.
 
 ### Privileges for jobs
 
-| Feature              | Read | Write |
-| -------------------- | ---- | ----- |
-| List jobs            | Yes  | Yes   |
-| View job details     | Yes  | Yes   |
-| View job logs        | Yes  | Yes   |
-| List clusters        | Yes  | Yes   |
-| Create jobs          | No   | Yes   |
-| Cancel running jobs  | No   | Yes   |
-| Update job status    | No   | Yes   |
+| Feature              | Viewer | Editor | Admin |
+| -------------------- | ------ | ------ | ----- |
+| List jobs            | Yes    | Yes    | Yes   |
+| View job details     | Yes    | Yes    | Yes   |
+| View job logs        | Yes    | Yes    | Yes   |
+| List clusters        | Yes    | Yes    | Yes   |
+| Create jobs          | No     | Yes    | Yes   |
+| Cancel running jobs  | No     | Yes    | Yes   |
+| Update job status    | No     | Yes    | Yes   |
 
 ### Privileges for queries
 
-| Feature                 | Read | Write |
-| ----------------------- | ---- | ----- |
-| List queries            | Yes  | Yes   |
-| View query details      | Yes  | Yes   |
-| Create queries          | No   | Yes   |
-| Update queries          | No   | Yes   |
-| Duplicate queries       | No   | Yes   |
-| Delete queries          | No   | Yes   |
+| Feature                 | Viewer | Editor | Admin |
+| ----------------------- | ------ | ------ | ----- |
+| List queries            | Yes    | Yes    | Yes   |
+| View query details      | Yes    | Yes    | Yes   |
+| Create queries          | No     | Yes    | Yes   |
+| Update queries          | No     | Yes    | Yes   |
+| Duplicate queries       | No     | Yes    | Yes   |
+| Delete queries          | No     | Yes    | Yes   |
 
 ### Privileges for experiments
 
-| Feature                                       | Read | Write |
-| --------------------------------------------- | ---- | ----- |
-| Open a team's project                         | Yes  | Yes   |
-| View experiments and metrics                  | Yes  | Yes   |
-| Apply filters                                 | Yes  | Yes   |
-| Show / hide columns                           | Yes  | Yes   |
-| Save filters and column settings              | No   | Yes   |
-| Add a new project                             | No   | Yes   |
-| Edit project settings                         | No   | Yes   |
-| Delete a project                              | No   | Yes   |
-| Share a project                               | No   | Yes   |
+| Feature                                       | Viewer | Editor | Admin |
+| --------------------------------------------- | ------ | ------ | ----- |
+| Open a team's project                         | Yes    | Yes    | Yes   |
+| View experiments and metrics                  | Yes    | Yes    | Yes   |
+| Apply filters                                 | Yes    | Yes    | Yes   |
+| Show / hide columns                           | Yes    | Yes    | Yes   |
+| Save filters and column settings              | No     | Yes    | Yes   |
+| Add a new project                             | No     | Yes    | Yes   |
+| Edit project settings                         | No     | Yes    | Yes   |
+| Delete a project                              | No     | Yes    | Yes   |
+| Share a project                               | No     | Yes    | Yes   |
 
 ### Privileges for storage and activity logs
 
-| Feature                  | Read | Write |
-| ------------------------ | ---- | ----- |
-| List storage files       | Yes  | Yes   |
-| View activity logs       | Yes  | Yes   |
-| Create activity logs     | No   | Yes   |
-| Get presigned URLs       | No   | Yes   |
+| Feature                  | Viewer | Editor | Admin |
+| ------------------------ | ------ | ------ | ----- |
+| List storage files       | Yes    | Yes    | Yes   |
+| View activity logs       | Yes    | Yes    | Yes   |
+| Create activity logs     | No     | Yes    | Yes   |
+| Get presigned URLs       | No     | Yes    | Yes   |
 
 ### Privileges to manage the team
 
@@ -206,13 +211,13 @@ permission rules), and are reserved for admins:
 
 ## Permissions
 
-Team roles are coarse — an Editor can write across everything they're granted, a
+Team roles are coarse, an Editor can write across everything they're granted, a
 Viewer can read it. **Permissions** let admins be specific: sort collaborators
 into **groups** and write **rules** that grant `read` or `write` on individual
 namespaces, projects, and datasets.
 
 You'll find Permissions under **Collaborators & Permissions** in the team
-settings page, below the Collaborators list. This area is **admin-only** — other
+settings page, below the Collaborators list. This area is **admin-only**, other
 collaborators see "Only team admins can manage permissions."
 
 !!! note
@@ -243,7 +248,7 @@ Groups bundle people so one rule can grant access to many at once.
 
 To create a group, open the **Groups** section and click **New group**. Give it a
 name (for example, `ML Platform`) and an optional description. You can tick **Add
-all N team members** to seed the group with everyone currently on the team — this
+all N team members** to seed the group with everyone currently on the team, this
 is a one-time snapshot, so new teammates aren't added automatically.
 
 ![Add Group](../../assets/permissions/permissions_groups_v1.png)
@@ -268,11 +273,11 @@ highest matching grant wins, and a namespace grant covers everything inside it
 To add a rule, open the **Rules** section and click **New rule**:
 
 1. **Pick the resource.** Choose the resource type (namespace, project, or
-   dataset), then select it through the cascading pickers — for a dataset you
+   dataset), then select it through the cascading pickers, for a dataset you
    pick its namespace, then its project, then the dataset.
 2. **Assign it.** Choose whether the rule targets a **group** or a **user**, then
    pick which one.
-3. **Choose the permission** — **Read** (view only) or **Write** (read &
+3. **Choose the permission**, **Read** (view only) or **Write** (read &
    modify).
 
 ![Add Rules](../../assets/permissions/permissions_new_rule_v1.png)
@@ -283,8 +288,8 @@ rule for that user or group on that resource already exists, the dialog offers t
 update it to the new permission instead of erroring. Use **Create & add another**
 to add several rules without re-walking the resource picker.
 
-Existing rules can be browsed three ways — **All rules**, **By resource**, or
-**By user / group** (the default) — and filtered by resource type or search. You
+Existing rules can be browsed three ways, **All rules**, **By resource**, or
+**By user / group** (the default), and filtered by resource type or search. You
 can change a rule's permission inline from its row, or delete it.
 
 ![Rules](../../assets/permissions/permissions_rules_v1.png)
@@ -303,7 +308,7 @@ In this workspace, you can manage the team's:
 
 ## Datasets
 
-The datasets dashboard shows the datasets you can access , admins see all of the
+The datasets dashboard shows the datasets you can access, admins see all of the
 team's datasets, while other members see the ones they've been granted (see
 [Permissions](#permissions)). Whether you can only explore a dataset or also edit
 and delete it depends on whether your grant is `read` or `write`.
@@ -314,15 +319,17 @@ create datasets from DataChain queries.
 ## Jobs
 
 The jobs dashboard shows the DataChain jobs running on the team's compute
-clusters. A member with `write` on the relevant resources can create, run, and
-cancel jobs; `read` lets you view job status and logs; admins have full control
-(see [Permissions](#permissions)).
+clusters. Access follows the team role: Editors can create, run, and cancel jobs,
+Viewers can view job status and logs, and admins have full control. (Datasets a
+job reads or writes are still subject to the submitter's
+[grants](#permissions).)
 
 ## Projects (Experiments)
 
 This is the projects dashboard for DVC (acquired by lakeFS) experiment
-tracking. Which projects you see, and whether you can edit them, follows the same
-[permissions](#permissions) as other resources.
+tracking. What you can do here follows your team role: Viewers can explore
+experiments and metrics, Editors can add and edit projects, and admins have full
+control.
 
 To add a project to this dashboard, click on `Add a project`. The process for
 adding a project is the same as that for adding personal projects
