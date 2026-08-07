@@ -7,10 +7,6 @@ import pytest
 
 from datachain.cli.parser import get_parser
 
-# ---------------------------------------------------------------------------
-# Argument parsing tests
-# ---------------------------------------------------------------------------
-
 
 def test_skill_install_defaults():
     parser = get_parser()
@@ -69,11 +65,6 @@ def test_skill_list_no_args():
     args = parser.parse_args(["skill", "list"])
     assert args.command == "skill"
     assert args.skill_cmd == "list"
-
-
-# ---------------------------------------------------------------------------
-# install_skills() functional tests
-# ---------------------------------------------------------------------------
 
 
 def test_install_invalid_skill_raises(tmp_path, fake_skills_src, fake_home):
@@ -142,9 +133,6 @@ def _run_install(
         install_skills(skills=skills, target=target, local=local)
 
 
-# --- claude, global ---
-
-
 def test_install_all_claude_global(tmp_path, fake_skills_src, fake_home):
     _run_install(fake_skills_src, fake_home, skills=None, target="claude", local=False)
 
@@ -186,9 +174,6 @@ def test_install_only_graph_claude_global(tmp_path, fake_skills_src, fake_home):
     assert not (skills_base / "core").exists()
 
 
-# --- cursor, global ---
-
-
 def test_install_all_cursor_global(tmp_path, fake_skills_src, fake_home):
     _run_install(fake_skills_src, fake_home, skills=None, target="cursor", local=False)
 
@@ -207,9 +192,6 @@ def test_install_all_cursor_global(tmp_path, fake_skills_src, fake_home):
         assert "triggers:" not in content
 
 
-# --- codex, global ---
-
-
 def test_install_all_codex_global(tmp_path, fake_skills_src, fake_home):
     _run_install(fake_skills_src, fake_home, skills=None, target="codex", local=False)
 
@@ -219,9 +201,6 @@ def test_install_all_codex_global(tmp_path, fake_skills_src, fake_home):
 
     # codex has no commands dir
     assert not (fake_home / ".codex" / "commands").exists()
-
-
-# --- pi, global + local ---
 
 
 def test_install_all_pi_global(tmp_path, fake_skills_src, fake_home):
@@ -268,9 +247,6 @@ def test_install_pi_local(tmp_path, fake_skills_src, fake_home, monkeypatch):
     assert not (project_dir / ".pi" / "agent").exists()
     # And the user home is untouched.
     assert not (fake_home / ".pi").exists()
-
-
-# --- copilot, global ---
 
 
 def test_install_all_copilot_global(tmp_path, fake_skills_src, fake_home):
@@ -324,9 +300,6 @@ def test_install_copilot_local_uses_github_path(
     assert not (fake_home / ".copilot").exists()
 
 
-# --- local install ---
-
-
 def test_install_claude_local(tmp_path, fake_skills_src, fake_home, monkeypatch):
     project_dir = tmp_path / "project"
     project_dir.mkdir()
@@ -351,23 +324,13 @@ def test_install_claude_local(tmp_path, fake_skills_src, fake_home, monkeypatch)
     assert not (fake_home / ".claude").exists()
 
 
-# --- __pycache__ filtering ---
-
-
 def test_pycache_not_copied(tmp_path, fake_skills_src, fake_home):
     """Verify __pycache__ and .pyc files are not copied to the destination."""
     _run_install(fake_skills_src, fake_home, skills=None, target="claude", local=False)
 
     skills_base = fake_home / ".claude" / "skills"
-    # Scripts should exist
     assert (skills_base / "knowledge" / "scripts" / "plan.py").exists()
-    # But __pycache__ should NOT
     assert not (skills_base / "knowledge" / "scripts" / "__pycache__").exists()
-
-
-# ---------------------------------------------------------------------------
-# list_skills() smoke test
-# ---------------------------------------------------------------------------
 
 
 def test_list_skills_output(capsys):
@@ -382,11 +345,6 @@ def test_list_skills_output(capsys):
     assert "cursor" in out
     assert "codex" in out
     assert "pi" in out
-
-
-# ---------------------------------------------------------------------------
-# install edge cases
-# ---------------------------------------------------------------------------
 
 
 def test_install_missing_source_returns_nonzero(tmp_path, fake_home):

@@ -54,8 +54,10 @@ def remote_dataset_version_v1(
         "schema": remote_dataset_schema,
         "sources": "",
         "query_script": (
-            "from datachain.query.dataset import DatasetQuery\n"
-            'DatasetQuery(path="s3://test-bucket")',
+            (
+                "from datachain.query.dataset import DatasetQuery\n"
+                'DatasetQuery(path="s3://test-bucket")'
+            ),
         ),
         "created_by_id": 1,
         "_preview_loaded": True,
@@ -84,8 +86,10 @@ def remote_dataset_version_v2(
         "schema": remote_dataset_schema,
         "sources": "",
         "query_script": (
-            "from datachain.query.dataset import DatasetQuery\n"
-            'DatasetQuery(path="s3://test-bucket")',
+            (
+                "from datachain.query.dataset import DatasetQuery\n"
+                'DatasetQuery(path="s3://test-bucket")'
+            ),
         ),
         "created_by_id": 1,
         "_preview_loaded": True,
@@ -192,8 +196,10 @@ def mock_export_endpoint_with_urls(requests_mock):
         return {
             "export_id": 1,
             "signed_urls": [
-                f"https://studio-blobvault.s3.amazonaws.com/"
-                f"datachain_ds_export_{version_file}.parquet.lz4"
+                (
+                    "https://studio-blobvault.s3.amazonaws.com/"
+                    f"datachain_ds_export_{version_file}.parquet.lz4"
+                )
             ],
         }
 

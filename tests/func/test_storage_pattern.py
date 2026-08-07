@@ -202,6 +202,22 @@ def test_no_pattern_behavior_unchanged(tmp_dir):
     assert files == {"temp1.tmp", "temp2.tmp", "log1.log", "logfile"}
 
 
+def test_glob_with_literal_first_segment_under_broader_listing(tmp_dir):
+    assert dc.read_storage(f"{tmp_dir}/").count() == count_dict_items(DEEP_TREE)
+
+    result = dc.read_storage(f"{tmp_dir}/deep/media/mus*/rock/*")
+    files = {f.name for f in result.to_values("file")}
+    assert files == {"song1.mp3", "song2.flac"}
+
+
+def test_globstar_under_broader_listing(tmp_dir):
+    assert dc.read_storage(f"{tmp_dir}/").count() == count_dict_items(DEEP_TREE)
+
+    result = dc.read_storage(f"{tmp_dir}/deep/media/**/*.mp3")
+    files = {f.name for f in result.to_values("file")}
+    assert files == {"song1.mp3", "track2.mp3"}
+
+
 def test_mixed_pattern_types(tmp_dir):
     # Mix wildcard and brace expansion
     result = dc.read_storage(f"{tmp_dir}/deep/media/*/rock/*.{{mp3,flac}}")
@@ -315,3 +331,14 @@ def test_brace_expansion_combined_patterns(tmp_dir):
     result = dc.read_storage(f"{tmp_dir}/deep/data-*-{{10..12}}.csv")
     files = sorted(f.name for f in result.to_values("file"))
     assert files == ["data-2005-10.csv", "data-2005-11.csv", "data-2005-12.csv"]
+
+
+def test_read_special_chars_prefix_after_parent_listed(tmp_dir):
+    special = tmp_dir / "some.dir"
+    special.mkdir()
+    (special / "file").touch()
+
+    # listing the parent first is what makes the read below reuse it
+    assert dc.read_storage(f"{tmp_dir}/").count() == count_dict_items(DEEP_TREE) + 1
+    files = dc.read_storage(f"{special}/").to_values("file")
+    assert [f.name for f in files] == ["file"]

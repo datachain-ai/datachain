@@ -81,6 +81,33 @@ def test_ls_not_found(cloud_test_catalog):
         ls([f"{src}/cats/bogus*"], catalog=cloud_test_catalog.catalog)
 
 
+WILDCARD_TREE = {
+    "dir_1": {"a.csv": "a", "b.csv": "b"},
+    # decoy: `_` is a LIKE wildcard, so an unescaped `dir_2/` prefix matches this
+    "dirX2": {"c.csv": "c"},
+}
+
+
+@pytest.mark.parametrize("tree", [WILDCARD_TREE], indirect=True)
+def test_ls_dir_with_underscore_lists_only_its_own_files(cloud_test_catalog, capsys):
+    src = cloud_test_catalog.src_uri
+    catalog = cloud_test_catalog.catalog
+    dc.read_storage(src, session=cloud_test_catalog.session).exec()
+
+    ls([f"{src}/dir_1/"], catalog=catalog)
+    assert same_lines(capsys.readouterr().out, "a.csv\nb.csv\n")
+
+
+@pytest.mark.parametrize("tree", [WILDCARD_TREE], indirect=True)
+def test_ls_missing_dir_raises_instead_of_matching_sibling(cloud_test_catalog):
+    src = cloud_test_catalog.src_uri
+    catalog = cloud_test_catalog.catalog
+    dc.read_storage(src, session=cloud_test_catalog.session).exec()
+
+    with pytest.raises(FileNotFoundError):
+        ls([f"{src}/dir_2/"], catalog=catalog)
+
+
 # TODO return file test when https://github.com/datachain-ai/datachain/issues/318
 # is done
 @pytest.mark.parametrize("cloud_type", ["s3", "gs", "azure"], indirect=True)

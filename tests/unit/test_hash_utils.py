@@ -268,7 +268,6 @@ def test_hash_callable_include_body_false_ignores_body():
 
 
 def test_hash_callable_include_body_false_different_qualname():
-    """Different qualname → different hash even with include_body=False."""
     h1 = hash_callable(double, include_body=False)
     h2 = hash_callable(double_arg_annot, include_body=False)
     assert h1 != h2

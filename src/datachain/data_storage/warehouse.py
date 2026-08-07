@@ -35,7 +35,7 @@ from datachain.query.batch import RowsOutput
 from datachain.query.schema import ColumnMeta
 from datachain.sql.functions import path as pathfunc
 from datachain.sql.types import SQLType
-from datachain.utils import safe_closing, sql_escape_like
+from datachain.utils import LIKE_ESCAPE_CHAR, safe_closing, sql_escape_like
 
 if TYPE_CHECKING:
     from sqlalchemy.sql._typing import (
@@ -562,6 +562,20 @@ class AbstractWarehouse(ABC, Serializable):
         source string column
         """
 
+    def prefix_match(self, col: sa.ColumnElement, prefix: str) -> sa.ColumnElement:
+        """
+        Return SQLAlchemy Boolean matching rows whose `col` starts with `prefix`,
+        with `prefix` taken literally.
+
+        `%` and `_` are LIKE wildcards, so the prefix is escaped and the escape
+        character declared alongside it -- the standard spelling, and the one
+        SQLite needs, since it has no default escape character of its own.
+
+        Backends whose LIKE cannot take an ESCAPE clause should override this and
+        rely on their own default escape character instead.
+        """
+        return col.startswith(sql_escape_like(prefix), escape=LIKE_ESCAPE_CHAR)
+
     @abstractmethod
     def get_table(self, name: str) -> sa.Table:
         """
@@ -792,7 +806,7 @@ class AbstractWarehouse(ABC, Serializable):
             dr.select()
             .where(
                 dr.c("is_latest") == true(),
-                dr.c("path").startswith(path),
+                self.prefix_match(dr.c("path"), path),
             )
             .exists()
         )
@@ -861,7 +875,7 @@ class AbstractWarehouse(ABC, Serializable):
         q = (
             sa.select(*(field_to_expr(f) for f in fields))
             .where(
-                dr.c("path").like(f"{sql_escape_like(dirpath)}%"),
+                self.prefix_match(dr.c("path"), dirpath),
                 ~self.instr(pathfunc.name(dr.c("path")), "/"),
                 dr.c("is_latest") == true(),
             )

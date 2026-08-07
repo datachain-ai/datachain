@@ -1631,7 +1631,7 @@ class UDFStep(Step, ABC):
         self,
         input_query: Select,
         partial_table: "Table",
-        incomplete_input_ids: None | list[int] = None,
+        incomplete_input_ids: list[int] | None = None,
     ) -> Select:
         """
         Calculate which input rows haven't been processed yet.
