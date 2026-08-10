@@ -37,10 +37,8 @@ class UdfSignature:  # noqa: PLW1641
         if len(signal_map) > 1:
             raise UdfSignatureError(
                 chain,
-                (
-                    f"multiple signals '{keys}' are not supported in processors."
-                    " Chain multiple processors instead.",
-                ),
+                f"multiple signals '{keys}' are not supported in processors."
+                " Chain multiple processors instead.",
             )
         udf_func: UDFBase | Callable
         if len(signal_map) == 1:

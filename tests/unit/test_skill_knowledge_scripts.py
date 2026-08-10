@@ -37,10 +37,6 @@ from utils import (  # noqa: E402
     split_frontmatter,
 )
 
-# ---------------------------------------------------------------------------
-# utils.py
-# ---------------------------------------------------------------------------
-
 
 def test_parse_semver_valid():
     assert parse_semver("1.2.3") == (1, 2, 3)
@@ -397,11 +393,6 @@ def test_source_to_https_empty_returns_none():
     assert source_to_https("") is None
 
 
-# ---------------------------------------------------------------------------
-# changes.py
-# ---------------------------------------------------------------------------
-
-
 def test_compute_dep_changes_added():
     result = compute_dep_changes(
         [{"name": "a", "version": "1.0"}],
@@ -470,11 +461,6 @@ def test_build_changes_script_unchanged():
     )
     assert result["script_changed"] is False
     assert result["previous_script"] is None
-
-
-# ---------------------------------------------------------------------------
-# dataset_all.py
-# ---------------------------------------------------------------------------
 
 
 def test_merge_versions_no_duplicates():
@@ -551,11 +537,6 @@ def test_fetch_all_versions_overlays_live_enrichment_on_latest(monkeypatch):
     assert oldest["summary"] is None
 
 
-# ---------------------------------------------------------------------------
-# schema.py
-# ---------------------------------------------------------------------------
-
-
 def test_type_name_primitives():
     assert type_name(str) == "str"
     assert type_name(int) == "int"
@@ -598,11 +579,6 @@ def test_parse_dataset_name_dot_separated():
 
 def test_parse_dataset_name_slash_separated():
     assert parse_dataset_name("ns/proj/name") == ("ns", "proj", "name")
-
-
-# ---------------------------------------------------------------------------
-# render_index.py
-# ---------------------------------------------------------------------------
 
 
 def test_render_index_local_datasets():
