@@ -81,9 +81,11 @@ def _reject_var_params(
     """Reject user callables with ``**kwargs`` unconditionally (a positional
     call raises ``TypeError``) and with ``*args`` unless the caller opts in
     (works only when column names are given explicitly)."""
-    kinds: set[inspect._ParameterKind] = {inspect.Parameter.VAR_KEYWORD}
-    if not allow_var_positional:
-        kinds.add(inspect.Parameter.VAR_POSITIONAL)
+    kinds = (
+        {inspect.Parameter.VAR_KEYWORD}
+        if allow_var_positional
+        else {inspect.Parameter.VAR_KEYWORD, inspect.Parameter.VAR_POSITIONAL}
+    )
     var_params = [
         f"*{p.name}" if p.kind is inspect.Parameter.VAR_POSITIONAL else f"**{p.name}"
         for p in inspect.signature(func).parameters.values()

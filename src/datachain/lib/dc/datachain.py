@@ -1021,7 +1021,7 @@ class DataChain:
         func: Callable | None,
         params: str | Sequence[str] | None,
         output: OutputType,
-        signal_map: dict[str, Callable | BoundSpec],
+        signal_map: dict[str, Callable | BoundSpec | UDFBase],
     ) -> "Mapper":
         """Build a single Mapper that runs all functions in `signal_map` per row."""
         if func is not None:
