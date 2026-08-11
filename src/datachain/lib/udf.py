@@ -72,7 +72,9 @@ class BoundSpec(ABC):
     def bind(self, ctx: BindContext) -> Callable: ...
 
     @abstractmethod
-    def input_columns(self) -> list[str]: ...
+    def input_columns(self) -> list[str]:
+        """Return the chain columns this spec reads, in the order the bound
+        callable expects them. Must be stable across ``bind()``."""
 
 
 def _reject_var_params(
