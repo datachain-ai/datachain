@@ -223,7 +223,6 @@ def test_get_file_signal():
 
 
 def test_to_partial_complex_signal_entire_file():
-    """Test to_partial with entire complex signal requested."""
     schema = SignalSchema({"file": File, "name": str})
     partial = schema.to_partial("file")
 
@@ -253,7 +252,6 @@ def test_to_partial_complex_nested_signal():
 
 
 def test_to_partial_complex_deeply_nested_signal():
-    """Test to_partial with deeply nested complex signals (3+ levels)."""
     from datachain.lib.file import ImageFile
 
     class Level1(DataModel):
@@ -290,8 +288,6 @@ def test_to_partial_complex_deeply_nested_signal():
 
 
 def test_to_partial_complex_nested_multiple_complex_signals():
-    """Test to_partial with multiple nested complex signals."""
-
     class Container(DataModel):
         file1: File
         file2: TextFile
@@ -376,7 +372,6 @@ def test_to_partial_complex_nested_same_type_different_paths():
 
 
 def test_to_partial_complex_signal_file_single_field():
-    """Test to_partial with File complex signal - single field."""
     schema = SignalSchema({"name": str, "file": File})
     partial = schema.to_partial("file.path")
 
@@ -416,7 +411,6 @@ def test_to_partial_complex_signal_mixed_entire_and_fields():
 
 
 def test_to_partial_complex_signal_multiple_entire_files():
-    """Test to_partial with multiple entire complex signals."""
     schema = SignalSchema({"file1": File, "file2": File, "name": str})
     partial = schema.to_partial("file1", "file2")
 
@@ -426,8 +420,6 @@ def test_to_partial_complex_signal_multiple_entire_files():
 
 
 def test_to_partial_complex_signal_nested_entire():
-    """Test to_partial with nested complex signal - entire parent."""
-
     class Container(DataModel):
         name: str
         file: File
@@ -464,7 +456,6 @@ def test_to_partial_complex_signal_error_invalid_signal():
 
 
 def test_to_partial_complex_signal_error_invalid_field():
-    """Test to_partial with invalid field in complex signal."""
     schema = SignalSchema({"file": File})
 
     with pytest.raises(

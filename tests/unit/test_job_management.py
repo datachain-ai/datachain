@@ -127,7 +127,6 @@ def test_nested_sessions_share_same_job(test_session, patch_argv, monkeypatch):
     # Outer session creates a job
     job1 = test_session.get_or_create_job()
 
-    # Create nested session
     with Session("nested", catalog=test_session.catalog) as nested_session:
         job2 = nested_session.get_or_create_job()
 
@@ -146,7 +145,6 @@ def test_nested_sessions_share_same_job(test_session, patch_argv, monkeypatch):
 
 
 def test_except_hook_delegates_to_original(test_session, patch_argv, monkeypatch):
-    """Test that Session.except_hook delegates to ORIGINAL_EXCEPT_HOOK."""
     monkeypatch.delenv("DATACHAIN_JOB_ID", raising=False)
     monkeypatch.setattr("sys.ps1", None, raising=False)
 
@@ -198,7 +196,7 @@ def test_except_hook_preserves_interactive_session(test_session, monkeypatch):
         assert called[0][0] is AttributeError
         assert str(called[0][1]) == "typo"
         assert called[0][2] is not None
-        assert chain.to_values("value") == [1, 2]
+        assert sorted(chain.to_values("value")) == [1, 2]
         db_job = test_session.catalog.metastore.get_job(job.id)
         assert db_job.status == JobStatus.RUNNING
     finally:

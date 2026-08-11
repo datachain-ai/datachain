@@ -42,7 +42,6 @@ def test_insert_rows_custom_batch_size(warehouse):
 
 
 def test_insert_rows_small_batch_size(warehouse):
-    """Test insert_rows with a very small batch size."""
     table = warehouse.create_udf_table([sa.Column("value", sa.Integer)])
 
     rows = [{"sys__id": i, "value": i} for i in range(10)]
@@ -130,33 +129,28 @@ def test_insert_rows_preserves_data_integrity(warehouse):
 
 
 def test_batch_size_default_is_none():
-    """Test that default batch_size is None."""
     settings = Settings()
     assert settings.batch_size is None
 
 
 def test_batch_size_explicit_none():
-    """Test that explicit None returns None."""
     settings = Settings(batch_size=None)
     assert settings.batch_size is None
 
 
 @pytest.mark.parametrize("batch_size", [1, 10, 100, 1000])
 def test_batch_size_custom_value(batch_size):
-    """Test that custom batch_size value is returned."""
     settings = Settings(batch_size=batch_size)
     assert settings.batch_size == batch_size
 
 
 def test_batch_size_not_in_to_dict_when_none():
-    """Test that batch_size is not in to_dict when None."""
     settings = Settings(batch_size=None)
     d = settings.to_dict()
     assert "batch_size" not in d
 
 
 def test_batch_size_in_to_dict_when_set():
-    """Test that batch_size is in to_dict when set."""
     settings = Settings(batch_size=500)
     d = settings.to_dict()
     assert d["batch_size"] == 500

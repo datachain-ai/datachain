@@ -875,14 +875,12 @@ def test_update_dataset_dependency_source(metastore):
         dataset=tgt, version="1.0.0", status=DatasetStatus.COMPLETE
     )
 
-    # Add dependency: src1@1.0.0 -> tgt@1.0.0
     metastore.add_dataset_dependency(src1, "1.0.0", tgt, "1.0.0")
     deps = metastore.get_direct_dataset_dependencies(src1, "1.0.0")
     assert len(deps) == 1
     assert deps[0].name == "tgt"
     assert deps[0].version == "1.0.0"
 
-    # Update dependency to src2@1.0.0
     metastore.update_dataset_dependency_source(
         src1, "1.0.0", new_source_dataset=src2, new_source_dataset_version="1.0.0"
     )
@@ -909,7 +907,6 @@ def test_update_dataset_dependency_source_default_new_source(metastore):
         dataset=tgt, version="1.0.0", status=DatasetStatus.COMPLETE
     )
 
-    # Add dependency: src@1.0.0 -> tgt@1.0.0
     metastore.add_dataset_dependency(src, "1.0.0", tgt, "1.0.0")
     deps = metastore.get_direct_dataset_dependencies(src, "1.0.0")
     assert len(deps) == 1
@@ -1216,6 +1213,68 @@ def test_get_dataset_versions_to_clean_cleans_superseded_unused_listings(metasto
     metastore.add_dataset_dependency(consumer, "1.0.0", lst, "1.0.1")
 
     _create_listing(metastore, "s3://bkt2/", [("1.0.0", recent), ("1.0.1", recent)])
+
+    to_clean = metastore.get_dataset_versions_to_clean()
+
+    cleaned = {(ds.name, v) for ds, v in to_clean if ds.name.startswith("lst__")}
+    assert cleaned == {(lst.name, "1.0.0")}
+
+
+@pytest.mark.parametrize(
+    "referrer_status", [DatasetStatus.REMOVED, DatasetStatus.REMOVING]
+)
+def test_get_dataset_versions_to_clean_ignores_tombstoned_referrers(
+    metastore, referrer_status
+):
+    old = datetime.now(timezone.utc) - timedelta(days=10)
+
+    lst = _create_listing(
+        metastore, "s3://bkt/", [("1.0.0", old), ("1.0.1", old), ("1.0.2", old)]
+    )
+    consumer = metastore.create_dataset("consumer")
+    consumer, _ = metastore.create_dataset_version(
+        consumer, "1.0.0", DatasetStatus.COMPLETE, finished_at=old
+    )
+    consumer = metastore.get_dataset("consumer", versions=None)
+    metastore.add_dataset_dependency(consumer, "1.0.0", lst, "1.0.1")
+
+    dv = metastore._datasets_versions
+    metastore.db.execute(
+        dv.update().where(dv.c.dataset_id == consumer.id).values(status=referrer_status)
+    )
+
+    to_clean = metastore.get_dataset_versions_to_clean()
+
+    cleaned = {(ds.name, v) for ds, v in to_clean if ds.name.startswith("lst__")}
+    assert cleaned == {(lst.name, "1.0.0"), (lst.name, "1.0.1")}
+
+
+def test_get_dataset_versions_to_clean_keeps_listing_with_live_referrer(metastore):
+    old = datetime.now(timezone.utc) - timedelta(days=10)
+
+    lst = _create_listing(
+        metastore, "s3://bkt/", [("1.0.0", old), ("1.0.1", old), ("1.0.2", old)]
+    )
+    live = metastore.create_dataset("live_consumer")
+    live, _ = metastore.create_dataset_version(
+        live, "1.0.0", DatasetStatus.COMPLETE, finished_at=old
+    )
+    live = metastore.get_dataset("live_consumer", versions=None)
+    metastore.add_dataset_dependency(live, "1.0.0", lst, "1.0.1")
+
+    dead = metastore.create_dataset("dead_consumer")
+    dead, _ = metastore.create_dataset_version(
+        dead, "1.0.0", DatasetStatus.COMPLETE, finished_at=old
+    )
+    dead = metastore.get_dataset("dead_consumer", versions=None)
+    metastore.add_dataset_dependency(dead, "1.0.0", lst, "1.0.1")
+
+    dv = metastore._datasets_versions
+    metastore.db.execute(
+        dv.update()
+        .where(dv.c.dataset_id == dead.id)
+        .values(status=DatasetStatus.REMOVED)
+    )
 
     to_clean = metastore.get_dataset_versions_to_clean()
 

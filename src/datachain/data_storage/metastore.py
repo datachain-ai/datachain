@@ -398,8 +398,7 @@ class AbstractMetastore(ABC, Serializable):
     ) -> Iterator[DatasetListRecord]:
         """Lists all datasets in some project or in all projects.
 
-        When ``include_removed=True`` also returns finalized REMOVED
-        tombstones (used by ``dataset ls --include-removed``).
+        When ``include_removed=True`` also returns REMOVING and REMOVED tombstones.
         """
 
     @abstractmethod
@@ -1081,7 +1080,9 @@ class AbstractDBMetastore(AbstractMetastore):
             # sneak in between the count and the delete below. No-op on
             # SQLite (writes are already serialized at the database level).
             self.db.execute(
-                select(n.c.id).where(n.c.id == namespace_id).with_for_update()
+                self._namespaces_select(n.c.id)
+                .where(n.c.id == namespace_id)
+                .with_for_update()
             )
             num_projects = self.count_projects(namespace_id)
             if num_projects > 0:
@@ -1217,7 +1218,9 @@ class AbstractDBMetastore(AbstractMetastore):
             # sneak in between the count and the delete below. No-op on
             # SQLite (writes are already serialized at the database level).
             self.db.execute(
-                select(p.c.id).where(p.c.id == project_id).with_for_update()
+                self._projects_select(p.c.id)
+                .where(p.c.id == project_id)
+                .with_for_update()
             )
             num_datasets = self.count_datasets(project_id)
             if num_datasets > 0:
@@ -1631,7 +1634,7 @@ class AbstractDBMetastore(AbstractMetastore):
             if not include_incomplete:
                 allowed = [DatasetStatus.COMPLETE]
                 if include_removed:
-                    allowed.append(DatasetStatus.REMOVED)
+                    allowed.extend((DatasetStatus.REMOVING, DatasetStatus.REMOVED))
                 query = query.where(
                     select(literal(1))
                     .where(
@@ -1661,11 +1664,10 @@ class AbstractDBMetastore(AbstractMetastore):
         # Build join condition with status filter
         join_condition = d.c.id == dv.c.dataset_id
         if not include_incomplete:
-            # COMPLETE by default (hide CREATED/FAILED); include finalized
-            # REMOVED tombstones when explicitly requested.
+            # COMPLETE by default; REMOVING/REMOVED when include_removed.
             allowed = [DatasetStatus.COMPLETE]
             if include_removed:
-                allowed.append(DatasetStatus.REMOVED)
+                allowed.extend((DatasetStatus.REMOVING, DatasetStatus.REMOVED))
             join_condition = and_(join_condition, dv.c.status.in_(allowed))
 
         j = (
@@ -1864,7 +1866,9 @@ class AbstractDBMetastore(AbstractMetastore):
             # if-empty below. No-op on SQLite (writes are already
             # serialized at the database level).
             self.db.execute(
-                select(d.c.id).where(d.c.id == dataset.id).with_for_update()
+                self._datasets_select(d.c.id)
+                .where(d.c.id == dataset.id)
+                .with_for_update()
             )
 
             self.db.execute(
@@ -1876,7 +1880,7 @@ class AbstractDBMetastore(AbstractMetastore):
             # Count from DB - in-memory dataset.versions may be incomplete.
             remaining = next(
                 self.db.execute(
-                    select(f.count())
+                    self._datasets_versions_select(f.count())
                     .select_from(dv)
                     .where(dv.c.dataset_id == dataset.id)
                 )
@@ -2012,8 +2016,29 @@ class AbstractDBMetastore(AbstractMetastore):
             )
             .exists()
         )
+        # Ignore dependency rows whose referrer is a tombstone
+        # (REMOVING/REMOVED). Tombstoned datasets keep their dep rows so their
+        # lineage stays intact, but they must not pin listings from GC.
+        src_dv = dv.alias("dv_src")
         is_referenced = (
-            select(dd.c.id).where(dd.c.dataset_version_id == dv.c.id).exists()
+            select(dd.c.id)
+            .select_from(
+                dd.join(
+                    src_dv,
+                    src_dv.c.id == dd.c.source_dataset_version_id,
+                    isouter=True,
+                )
+            )
+            .where(
+                dd.c.dataset_version_id == dv.c.id,
+                or_(
+                    src_dv.c.status.is_(None),
+                    src_dv.c.status.notin_(
+                        [DatasetStatus.REMOVING, DatasetStatus.REMOVED]
+                    ),
+                ),
+            )
+            .exists()
         )
 
         query = (
@@ -2169,6 +2194,16 @@ class AbstractDBMetastore(AbstractMetastore):
         q = q.values(**data)
         self.db.execute(q)
 
+    @cached_property
+    def _dependency_datasets_source(self):
+        # Source alias for direct-dependency queries; cached so the column hook
+        # and the FROM clause reference the same object. Override to filter.
+        return self._datasets
+
+    @cached_property
+    def _dependency_namespaces_source(self):
+        return self._namespaces
+
     @abstractmethod
     def _dataset_dependencies_select_columns(self) -> list["SchemaItem"]:
         """
@@ -2192,9 +2227,9 @@ class AbstractDBMetastore(AbstractMetastore):
         dataset: DatasetRecord,
         version: str,
     ) -> list[DatasetDependency | None]:
-        n = self._namespaces
+        n = self._dependency_namespaces_source
         p = self._projects
-        d = self._datasets
+        d = self._dependency_datasets_source
         dd = self._datasets_dependencies
         dv = self._datasets_versions
 
@@ -2906,7 +2941,7 @@ class AbstractDBMetastore(AbstractMetastore):
 
             # Also update dataset_version.job_id to point to this job
             update_query = (
-                self._datasets_versions.update()
+                self._datasets_versions_update()
                 .where(self._datasets_versions.c.id == dataset_version_id)
                 .values(job_id=job_id)
             )

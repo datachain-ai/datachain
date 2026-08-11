@@ -70,7 +70,6 @@ def test_mark_job_dataset_versions_as_failed(test_session, job, dataset_created)
     assert dataset_version.status == DatasetStatus.CREATED
     assert dataset_version.job_id == job.id
 
-    # Mark dataset versions as failed
     test_session.catalog.metastore.mark_job_dataset_versions_as_failed(job.id)
 
     # Verify status is now FAILED
@@ -89,7 +88,6 @@ def test_mark_job_dataset_versions_as_failed_skips_complete(
     assert dataset_version.status == DatasetStatus.COMPLETE
     assert dataset_version.job_id == job.id
 
-    # Mark dataset versions as failed
     test_session.catalog.metastore.mark_job_dataset_versions_as_failed(job.id)
 
     # Verify COMPLETE status is unchanged
@@ -174,7 +172,6 @@ def test_get_dataset_versions_to_clean(
     # Mark job as failed
     test_session.catalog.metastore.set_job_status(job.id, JobStatus.FAILED)
 
-    # Get failed versions to clean
     to_clean = test_session.catalog.metastore.get_dataset_versions_to_clean()
 
     # Should return CREATED and FAILED datasets, not COMPLETE
@@ -502,11 +499,9 @@ def test_public_api_read_dataset_rejects_non_complete(test_session, studio_job):
         ds_failed, DatasetStatus.FAILED, version=ds_failed.latest_version
     )
 
-    # Should raise error for CREATED dataset
     with pytest.raises(DatasetNotFoundError):
         read_dataset(ds_created.name, session=test_session)
 
-    # Should raise error for FAILED dataset
     with pytest.raises(DatasetNotFoundError):
         read_dataset(ds_failed.name, session=test_session)
 
@@ -514,11 +509,9 @@ def test_public_api_read_dataset_rejects_non_complete(test_session, studio_job):
 def test_public_api_delete_dataset_rejects_non_complete(
     test_session, dataset_created, dataset_failed
 ):
-    # Should raise error for CREATED dataset
     with pytest.raises(DatasetNotFoundError):
         delete_dataset(dataset_created.name, session=test_session)
 
-    # Should raise error for FAILED dataset
     with pytest.raises(DatasetNotFoundError):
         delete_dataset(dataset_failed.name, session=test_session)
 
@@ -526,11 +519,9 @@ def test_public_api_delete_dataset_rejects_non_complete(
 def test_public_api_move_dataset_rejects_non_complete(
     test_session, dataset_created, dataset_failed
 ):
-    # Should raise error for CREATED dataset
     with pytest.raises(DatasetNotFoundError):
         move_dataset(dataset_created.name, "new_name_created", session=test_session)
 
-    # Should raise error for FAILED dataset
     with pytest.raises(DatasetNotFoundError):
         move_dataset(dataset_failed.name, "new_name_failed", session=test_session)
 
