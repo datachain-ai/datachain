@@ -77,7 +77,7 @@ class BoundSpec(ABC):
         callable expects them. Must be stable across ``bind()``."""
 
 
-def _reject_var_params(
+def reject_var_params(
     func: Callable, label: str, *, allow_var_positional: bool = False
 ) -> None:
     """Reject user callables with ``**kwargs`` unconditionally (a positional
@@ -600,6 +600,13 @@ class _MultiSignalMapper(Mapper):
                 deps[name] = {p for p in params if p in output_names and p != name}
                 continue
             if isinstance(fn, UDFBase):
+                if not isinstance(fn, Mapper):
+                    raise DataChainParamsError(
+                        f"map() entry {name!r} is a {type(fn).__name__}; only "
+                        "Mapper subclasses (or plain callables) are supported "
+                        "in multi-signal .map() - use .gen() / .agg() for "
+                        "other UDF types"
+                    )
                 self._mapper_entries.add(name)
                 sig_target = fn.process
             else:

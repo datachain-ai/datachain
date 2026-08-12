@@ -966,6 +966,16 @@ def test_map_multiple_signals_rejects_params(test_session):
         chain.map(a=lambda n: n, b=lambda n: n, params=["name"])
 
 
+def test_map_multiple_signals_rejects_non_mapper_udf(test_session):
+    class SomeGen(dc.Generator):
+        def process(self, name: str):
+            yield (name.upper(),)
+
+    chain = dc.read_values(name=["foo"], session=test_session)
+    with pytest.raises(DataChainParamsError, match=r"use \.gen"):
+        chain.map(bad=SomeGen(), ok=lambda name: name.lower())
+
+
 def test_map_multiple_signals_rejects_positional_only(test_session):
     def upper_only(name, /):
         return name.upper()

@@ -5,7 +5,7 @@ from typing import Any, get_args, get_origin
 
 from datachain.lib.data_model import DataType, DataTypeNames, is_chain_type
 from datachain.lib.signal_schema import SignalSchema
-from datachain.lib.udf import UDFBase, _reject_var_params
+from datachain.lib.udf import UDFBase, reject_var_params
 from datachain.lib.utils import AbstractUDF, DataChainParamsError, callable_name
 
 
@@ -69,7 +69,7 @@ class UdfSignature:  # noqa: PLW1641
         )
 
         if not isinstance(udf_func, AbstractUDF):
-            _reject_var_params(
+            reject_var_params(
                 udf_func,
                 f"function '{callable_name(udf_func)}'",
                 allow_var_positional=params is not None,
