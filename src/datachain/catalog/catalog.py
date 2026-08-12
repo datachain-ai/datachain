@@ -1193,10 +1193,21 @@ class Catalog:
         expected_status: int,
         keep_metadata: bool,
     ) -> bool:
-        """Claim the version (guarded UPDATE), drop its rows table, then flip to
-        REMOVED or delete the row. Dropping rows is retry-safe. Also works on an
-        already-REMOVED version, letting a wipe finish a previous tombstone.
-        Returns False if another caller already claimed it.
+        """Flip the version status to REMOVING (guarded UPDATE) with the
+        appropriate ``pending_metadata_drop`` flag, then drop the rows
+        table. Dropping the rows table can be safely retried.
+
+        With ``keep_metadata=True`` the status is then flipped to REMOVED
+        so the version row stays as a tombstone, which GC leaves alone for
+        as long as ``pending_metadata_drop`` stays False.
+
+        With ``keep_metadata=False`` the version row is deleted. This
+        path also works when the version is already REMOVED: the guarded
+        UPDATE flips REMOVED to REMOVING and the version row is deleted,
+        which lets a wipe finish removing a previous tombstone.
+
+        Returns True if this call actually changed state, False if
+        another caller had already claimed it.
         """
         v = dataset.get_version(version)
 
@@ -1235,13 +1246,24 @@ class Catalog:
         *,
         keep_metadata: bool | None = None,
     ) -> int:
-        """Bulk remove versions. A tombstone with ``pending_metadata_drop`` set
-        always wins: its version row is deleted whatever the caller asked for.
+        """Bulk remove versions (GC, session cleanup, CLI cleanup, job cleanup,
+        user-facing bulk delete).
 
-        ``keep_metadata=None`` infers per version: REMOVING finishes the
-        interrupted remove, REMOVED is left alone, anything else is wiped.
-        Explicit intent is honored, except internal or non-COMPLETE/tombstone
-        versions are wiped.
+        A tombstone carrying ``pending_metadata_drop=True`` is wiped whatever
+        the caller asked for, because the flag already promised its version
+        row: REMOVING is an interrupted wipe, REMOVED is a tombstone re-queued
+        for one. Both retry the rows-table drop, then delete the version row.
+
+        Otherwise, when ``keep_metadata`` is None, infers per version:
+        - REMOVING: finish the interrupted keep-metadata remove (retries
+          rows-table drop, flips status to REMOVED).
+        - REMOVED: finalized tombstone, nothing to do.
+        - Anything else: wipe (incomplete/failed/stale versions to clean).
+
+        When given explicitly, honors the caller's intent per version, with
+        a downgrade to wipe for cases that can't keep metadata (internal
+        datasets, non-COMPLETE/REMOVING/REMOVED versions) - mirrors
+        ``catalog.remove_dataset`` so batch callers don't have to filter.
         """
         num_removed = 0
         for dataset, version in pairs:
