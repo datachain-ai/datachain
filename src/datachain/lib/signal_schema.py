@@ -27,7 +27,7 @@ from sqlalchemy.sql.elements import BinaryExpression, Grouping, Label
 from datachain import json
 from datachain.func import literal
 from datachain.func.func import Func
-from datachain.lib.convert.flatten import is_optional_model
+from datachain.lib.convert.flatten import is_optional_model, iter_flat_columns
 from datachain.lib.convert.python_to_sql import python_to_sql
 from datachain.lib.convert.sql_to_python import sql_to_python
 from datachain.lib.convert.unflatten import (
@@ -604,20 +604,44 @@ class SignalSchema:
 
     def row_to_objs(self, row: Sequence[Any]) -> list[Any]:
         self._init_setup_values()
+        positions = {name: i for i, name in enumerate(self.to_udf_spec())}
 
         objs: list[Any] = []
-        pos = 0
         for name, fr_type in self.values.items():
             inner_type, is_optional = unwrap_optional(fr_type)
             if self.setup_values and name in self.setup_values:
                 objs.append(self.setup_values.get(name))
             elif (fr := ModelStore.to_pydantic(inner_type)) is not None:
-                obj, pos = self._hydrate_model(fr, is_optional, row, pos, label=name)
+                sub = self._sub_row_for_model(name, fr, is_optional, row, positions)
+                obj, _ = self._hydrate_model(fr, is_optional, sub, 0, label=name)
                 objs.append(obj)
             else:
-                objs.append(row[pos])
-                pos += 1
+                objs.append(row[positions[DEFAULT_DELIMITER.join(name.split("."))]])
         return objs
+
+    @staticmethod
+    def _sub_row_for_model(
+        name: str,
+        fr: type[BaseModel],
+        is_optional: bool,
+        row: Sequence[Any],
+        positions: Mapping[str, int],
+    ) -> list[Any]:
+        """Gather the columns for one model value from the shared row, in the
+        order `_hydrate_model` / `unflatten_to_json_pos` expect."""
+        parts = name.split(".")
+        sub: list[Any] = []
+        if is_optional:
+            db_name = DEFAULT_DELIMITER.join(
+                [*parts, SignalSchema._OPTIONAL_SENTINEL_FIELD]
+            )
+            sub.append(row[positions[db_name]])
+        for col in iter_flat_columns(fr):
+            path = [*parts, *col.path]
+            if col.is_sentinel:
+                path.append(SignalSchema._OPTIONAL_SENTINEL_FIELD)
+            sub.append(row[positions[DEFAULT_DELIMITER.join(path)]])
+        return sub
 
     @staticmethod
     def _all_values_none(value: Any) -> bool:
@@ -736,21 +760,24 @@ class SignalSchema:
     def row_to_features(
         self, row: Sequence, catalog: "Catalog", cache: bool = False
     ) -> list[DataValue]:
+        positions: dict[str, int] = {
+            str(name): i for i, name in enumerate(self.db_signals())
+        }
+
         res = []
-        pos = 0
-        for fr_cls in self.values.values():
+        for name, fr_cls in self.values.items():
             inner_cls, is_optional = unwrap_optional(fr_cls)
             if (fr := ModelStore.to_pydantic(inner_cls)) is None:
-                value = row[pos]
-                pos += 1
+                value = row[positions[DEFAULT_DELIMITER.join(name.split("."))]]
                 converted = self._convert_feature_value(fr_cls, value, catalog, cache)
                 res.append(converted)
             else:
-                obj, pos = self._hydrate_model(
+                sub = self._sub_row_for_model(name, fr, is_optional, row, positions)
+                obj, _ = self._hydrate_model(
                     fr,
                     is_optional,
-                    row,
-                    pos,
+                    sub,
+                    0,
                     catalog=catalog,
                     cache=cache,
                     set_stream=True,
