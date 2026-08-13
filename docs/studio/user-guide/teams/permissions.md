@@ -1,59 +1,15 @@
-# Teams
+# Security & Permissions
 
-DataChain Studio enables collaborative work through teams, allowing you to share
-projects, datasets, and jobs with team members. You can create teams with one or
-more team members, also called collaborators, and assign different roles to
-control what they can do.
-
-Each collaborator has a team role (Admin, Editor, or Viewer). On top of that,
-access to individual namespaces, projects, and datasets is controlled by
-**fine-grained permissions**, admins organize people into **groups** and write
-**rules** that grant `read` or `write` on specific resources.
-
-In this page, you will learn about:
-
-- [How to create a team](#create-a-team)
-- [How to invite collaborators (team members)](#invite-collaborators)
-- [The privileges (access permissions) of different roles](#roles)
-- [How access to resources is resolved](#how-access-is-resolved)
-- [How to set up fine-grained permissions (groups and rules)](#permissions)
-- [How to manage connections to self-hosted GitLab servers](#manage-connections-to-self-hosted-gitlab-servers)
-- [How to configure Single Sign-on (SSO)](#configure-single-sign-on-sso)
-- [How to upgrade to an Enterprise plan](#get-enterprise)
-
-## Create a team
-
-Click on the drop down next to `Personal`. All the teams that you have created
-so far will be listed within `Teams` in the drop down menu. If you have not
-created any team so far, this list will be empty.
-
-To create a new team, click on `Create a team`.
-![](https://static.iterative.ai/img/studio/team_create_v3.png)
-
-You will be asked to enter the URL namespace for your team. Enter a unique name.
-The URL for your team will be formed using this name.
-![](https://static.iterative.ai/img/studio/team_enter_name_v3.png)
-
-Then, click the `Create team` button on the top right corner.
-
-## Invite collaborators
-
-To add collaborators, enter their email addresses. Each collaborator can be
-assigned the [Admin, Edit, or View role](#roles). An email invite will be sent
-to each invitee. Then, click on `Send invites and close`.
-
-![](https://static.iterative.ai/img/studio/team_roles_v3.png)
-
-You can also click on `Skip and close` to skip adding collaborators while
-creating the team, and
-[add them later by accessing team settings](#edit-collaborators).
+Access inside a team comes from two things: each collaborator's **team role**,
+and the **fine-grained permissions** that grant `read` or `write` on individual
+namespaces, projects, and datasets.
 
 ## Roles
 
 Every collaborator has one of three team roles. The role controls team-level
 capabilities, but, except for admins, it does **not** by itself grant access to
 any namespace, project, or dataset. That access comes from
-[fine-grained permissions](#permissions).
+[fine-grained permissions](#fine-grained-permissions).
 
 - **`Admins`** - Have full access to everything in the team. Admins can see and
   modify every namespace, project, and dataset regardless of permission rules,
@@ -61,12 +17,12 @@ any namespace, project, or dataset. That access comes from
   configure cloud credentials, and manage billing.
 - **`Editors`** - Can create resources, run jobs, and work with queries and
   experiment projects. On datasets, they can edit or delete a dataset and its
-  files where they have a `write` [grant](#permissions) on it (or on the
-  namespace/project that contains it). They cannot modify team settings, manage
-  collaborators, or manage permissions.
+  files where they have a `write` [grant](#fine-grained-permissions) on it (or on
+  the namespace/project that contains it). They cannot modify team settings,
+  manage collaborators, or manage permissions.
 - **`Viewers`** - Have read-only access. They can explore jobs and experiments,
-  and any dataset they have a `read` [grant](#permissions) on. They cannot create
-  or modify resources, and cannot change team settings.
+  and any dataset they have a `read` [grant](#fine-grained-permissions) on. They
+  cannot create or modify resources, and cannot change team settings.
 
 Fine-grained grants only gate datasets and the namespaces and projects that
 contain them (see [How access is resolved](#how-access-is-resolved)), an Editor
@@ -121,12 +77,11 @@ These rules are enforced everywhere datasets are accessed, the web dashboard,
 the API, and running DataChain jobs (for example, `dc.read_dataset(...)` runs
 under the submitting user's grants), not just in the UI.
 
-
 Fine-grained grants govern **datasets** (and, by cascade, the namespaces and
 projects that contain them); the datasets table below shows what a `read` versus
-`write` [grant](#permissions) allows. **Jobs, queries, experiments, and storage**
-are governed by the **team role** instead, their tables show what each role can
-do. Admins can perform every action regardless of grant or role.
+`write` [grant](#fine-grained-permissions) allows. **Jobs, queries, experiments,
+and storage** are governed by the **team role** instead, their tables show what
+each role can do. Admins can perform every action regardless of grant or role.
 
 ### Privileges for datasets
 
@@ -209,24 +164,24 @@ permission rules), and are reserved for admins:
 | Manage team plan and billing       | No     | No     | Yes   |
 | Delete a team                      | No     | No     | Yes   |
 
-## Permissions
+## Fine-grained permissions
 
 Team roles are coarse, an Editor can write across everything they're granted, a
 Viewer can read it. **Permissions** let admins be specific: sort collaborators
 into **groups** and write **rules** that grant `read` or `write` on individual
 namespaces, projects, and datasets.
 
-You'll find Permissions under **Collaborators & Permissions** in the team
-settings page, below the Collaborators list. This area is **admin-only**, other
-collaborators see "Only team admins can manage permissions."
+You'll find Permissions under **Collaborators & Permissions** in the
+[team settings](settings.md) page, below the Collaborators list. This area is
+**admin-only**, other collaborators see "Only team admins can manage
+permissions."
 
 !!! note
 
     Non-admins only reach namespaces, projects, and datasets through permissions.
     Put people in groups, then add rules that grant read or write.
 
-
-![Permissions](../../assets/permissions/permissions_overview_v1.png)
+![Permissions](../../../assets/permissions/permissions_overview_v1.png)
 
 ### Resources: namespaces, projects, and datasets
 
@@ -240,7 +195,7 @@ for example `prod.analytics.metrics`. A rule can target any level of this
 hierarchy, and it **cascades downward**: a rule on the `prod` namespace covers
 every project and dataset inside it, and a rule on `prod.analytics` covers every
 dataset in that project. For more on how datasets are organized, see
-[Organizing Datasets with Namespace and Project](../../guide/namespaces.md).
+[Organizing Datasets with Namespace and Project](../../../guide/namespaces.md).
 
 ### Groups
 
@@ -251,18 +206,16 @@ name (for example, `ML Platform`) and an optional description. You can tick **Ad
 all N team members** to seed the group with everyone currently on the team, this
 is a one-time snapshot, so new teammates aren't added automatically.
 
-![Add Group](../../assets/permissions/permissions_groups_v1.png)
+![Add Group](../../../assets/permissions/permissions_groups_v1.png)
 
 To manage an existing group, use its edit button. From there you can rename it,
 edit its description, and add or remove members. Removing a member revokes any
 access they had through that group.
-![Edit Group](../../assets/permissions/permissions_group_members_v1.png)
-
+![Edit Group](../../../assets/permissions/permissions_group_members_v1.png)
 
 Deleting a group asks for confirmation and warns that it *"Deletes this group and
 every rule granted through it. Members lose that access but keep their team
 role."* Deletion can't be undone.
-
 
 ### Rules
 
@@ -280,7 +233,7 @@ To add a rule, open the **Rules** section and click **New rule**:
 3. **Choose the permission**, **Read** (view only) or **Write** (read &
    modify).
 
-![Add Rules](../../assets/permissions/permissions_new_rule_v1.png)
+![Add Rules](../../../assets/permissions/permissions_new_rule_v1.png)
 
 Before you save, the dialog spells out exactly what the rule grants, including
 the cascade (for example, "…including every project and dataset inside it"). If a
@@ -292,111 +245,14 @@ Existing rules can be browsed three ways, **All rules**, **By resource**, or
 **By user / group** (the default), and filtered by resource type or search. You
 can change a rule's permission inline from its row, or delete it.
 
-![Rules](../../assets/permissions/permissions_rules_v1.png)
+![Rules](../../../assets/permissions/permissions_rules_v1.png)
 
-## Manage your team and its resources
+## Next Steps
 
-Once you have created the team, the team's workspace opens up.
-
-![](https://static.iterative.ai/img/studio/team_page_v6.png)
-
-In this workspace, you can manage the team's:
-- [Datasets](#datasets)
-- [Jobs](#jobs)
-- [Projects (Experiments)](#projects-experiments)
-- [Settings](#settings)
-
-## Datasets
-
-The datasets dashboard shows the datasets you can access, admins see all of the
-team's datasets, while other members see the ones they've been granted (see
-[Permissions](#permissions)). Whether you can only explore a dataset or also edit
-and delete it depends on whether your grant is `read` or `write`.
-
-To create a new dataset, you can upload files, connect to cloud storage, or
-create datasets from DataChain queries.
-
-## Jobs
-
-The jobs dashboard shows the DataChain jobs running on the team's compute
-clusters. Access follows the team role: Editors can create, run, and cancel jobs,
-Viewers can view job status and logs, and admins have full control. (Datasets a
-job reads or writes are still subject to the submitter's
-[grants](#permissions).)
-
-## Projects (Experiments)
-
-This is the projects dashboard for DVC (acquired by lakeFS) experiment
-tracking. What you can do here follows your team role: Viewers can explore
-experiments and metrics, Editors can add and edit projects, and admins have full
-control.
-
-To add a project to this dashboard, click on `Add a project`. The process for
-adding a project is the same as that for adding personal projects
-([instructions](./experiments/create-a-project.md)).
-
-## Settings
-
-In the [team settings](#settings) page, you can change the team name, add
-credentials for the data remotes, and delete the team. Note that these settings
-are applicable to the team and are thus different from
-[project settings](./experiments/configure-a-project.md).
-
-Additionally, you can also
-[manage connections to self-hosted GitLab servers](#manage-connections-to-self-hosted-gitlab-servers),
-[configure sso](#configure-single-sign-on-sso),
-[edit collaborators](#edit-collaborators), and
-[set up fine-grained permissions](#permissions).
-
-### Manage connections to self-hosted GitLab servers
-
-If your team’s Git repositories are on a self-hosted GitLab server, you can go
-to the `GitLab connections` section of the team settings page to set up a
-connection to this server. Once you set up the connection, all your team members
-can connect to the Git repositories on this server. For more details, refer to
-[Custom GitLab Server Connection](./git-connections/custom-gitlab-server.md).
-
-### Configure Single Sign-on (SSO)
-
-Single Sign-on (SSO) allows your team members to authenticate to DataChain
-Studio using your organization's identity Provider (IdP) such as Okta, LDAP,
-Microsoft AD, etc.
-
-Details on how to configure SSO for your team can be found
-[here](./authentication/single-sign-on.md).
-
-Once the SSO configuration is complete, users can login to DataChain Studio
-using their team's login page at
-`http://studio.datachain.ai/api/teams/<TEAM_NAME>/sso`. They can also login
-directly from their Okta dashboards by clicking on the DataChain Studio
-integration icon.
-
-If a user does not have a pre-assigned role when they sign in to a team, they
-will be auto-assigned the [`Viewer` role](#roles).
-
-### Edit collaborators
-
-To manage the collaborators (team members) of your team, go to the
-`Collaborators & Permissions` section of the team settings page. Here you can
-invite new team members as well as remove or change the [roles](#roles) of
-existing team members. To grant access to specific resources beyond a member's
-role, use [fine-grained permissions](#permissions).
-
-The number of collaborators in your team depends on your team plan. By default,
-all teams are on the Free plan, and can have 2 collaborators. To add more
-collaborators, [upgrade to the Enterprise plan](#get-enterprise).
-
-All collaborators and pending invites get counted in the subscription. Suppose
-you have subscribed for a 10 member team. If you have 5 members who have
-accepted your team invite and 3 pending invites, then you will have 2 remaining
-seats. This means that you can invite 2 more collaborators. At this point, if
-you remove any one team member or pending invite, that seat becomes available
-and so you will have 3 remaining seats.
-
-## Get Enterprise
-
-**To upgrade to the Enterprise plan**, [schedule a call] with our in-house
-experts. They will try to understand your needs and suggest a suitable plan and
-pricing.
-
-[schedule a call]: https://calendly.com/gtm-2/studio-introduction
+- [Manage collaborators](settings.md#edit-collaborators) and the rest of your
+  [team settings](settings.md)
+- [Configure Single Sign-on](../authentication/single-sign-on.md) so members
+  authenticate through your identity provider
+- Read up on
+  [namespaces and projects](../../../guide/namespaces.md), the hierarchy that
+  rules cascade through

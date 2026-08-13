@@ -61,4 +61,4 @@ Access processed data through the Studio interface, with datasets saved automati
 - Learn how to [create and run jobs](create-and-run.md)
 - Explore [job monitoring capabilities](monitor-jobs.md)
 - Set up [webhooks](../../webhooks.md) for job notifications
-- Configure [team collaboration](../team-collaboration.md) for shared access
+- Configure [team permissions](../teams/permissions.md) for shared access
