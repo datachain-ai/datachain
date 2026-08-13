@@ -562,6 +562,16 @@ class Mapper(UDFBase):
         self.teardown()
 
 
+def _make_bound_adapter(fn: Callable, cols: list[str]) -> Callable:
+    """Wrap a positional bound-spec callable so it can be invoked with
+    column-name kwargs, uniformly with the other multi-signal entries."""
+
+    def adapter(**kw: Any) -> Any:
+        return fn(*(kw[c] for c in cols))
+
+    return adapter
+
+
 class _MultiSignalMapper(Mapper):
     """Mapper that runs N user functions per row, yielding N output signals.
 
@@ -650,24 +660,26 @@ class _MultiSignalMapper(Mapper):
                     seen.add(p)
                     self.combined_params.append(p)
 
+        # Pre-build one uniform kwargs-callable per entry so process() has a
+        # single call path regardless of entry kind.
+        self._callers: dict[str, Callable[..., Any]] = {}
+        for name, fn in signal_map.items():
+            if isinstance(fn, UDFBase):
+                self._callers[name] = fn.process
+            elif name in self._bound_columns:
+                self._callers[name] = _make_bound_adapter(
+                    fn, self._per_func_params[name]
+                )
+            else:
+                self._callers[name] = fn
+
     def process(self, *args):
         row_by_name = dict(zip(self.combined_params, args, strict=True))
         results: dict[str, Any] = {}
         for name in self._exec_order:
-            fn = self._signal_map[name]
             params = self._per_func_params[name]
-            if name in self._bound_columns:
-                results[name] = fn(
-                    *[(results[c] if c in results else row_by_name[c]) for c in params]
-                )
-            else:
-                fn_kwargs = {
-                    p: (results[p] if p in results else row_by_name[p]) for p in params
-                }
-                if name in self._mapper_entries:
-                    results[name] = fn.process(**fn_kwargs)
-                else:
-                    results[name] = fn(**fn_kwargs)
+            kw = {p: (results[p] if p in results else row_by_name[p]) for p in params}
+            results[name] = self._callers[name](**kw)
         # Output order follows the user's declared kwarg order, not exec order.
         return tuple(results[name] for name in self._signal_map)
 
