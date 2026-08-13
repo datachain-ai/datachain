@@ -78,20 +78,17 @@ class BoundSpec(ABC):
 
 
 def reject_var_params(
-    func: Callable, label: str, *, allow_var_positional: bool = False
+    func: Callable, label: str, *, columns_explicit: bool = False
 ) -> None:
-    """Reject user callables with ``**kwargs`` unconditionally (a positional
-    call raises ``TypeError``) and with ``*args`` unless the caller opts in
-    (works only when column names are given explicitly)."""
-    kinds = (
-        {inspect.Parameter.VAR_KEYWORD}
-        if allow_var_positional
-        else {inspect.Parameter.VAR_KEYWORD, inspect.Parameter.VAR_POSITIONAL}
-    )
+    """Reject user callables with ``*args`` / ``**kwargs`` when we need to
+    infer column routing from the signature. When ``columns_explicit`` is
+    True (caller passed ``params=``), both are safe and pass through."""
+    if columns_explicit:
+        return
     var_params = [
         f"*{p.name}" if p.kind is inspect.Parameter.VAR_POSITIONAL else f"**{p.name}"
         for p in inspect.signature(func).parameters.values()
-        if p.kind in kinds
+        if p.kind in {inspect.Parameter.VAR_KEYWORD, inspect.Parameter.VAR_POSITIONAL}
     ]
     if var_params:
         raise DataChainParamsError(

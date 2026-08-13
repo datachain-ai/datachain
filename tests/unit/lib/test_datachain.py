@@ -1003,6 +1003,22 @@ def test_map_single_signal_rejects_var_params(test_session, fn, match):
         chain.map(fn)
 
 
+def _kwargs_passthrough(name, **options) -> str:
+    return name.upper()
+
+
+def _args_passthrough(*args) -> str:
+    return args[0].upper()
+
+
+@pytest.mark.parametrize("fn", [_kwargs_passthrough, _args_passthrough])
+def test_map_single_signal_allows_var_params_with_explicit_params(test_session, fn):
+    chain = dc.read_values(name=["foo", "bar"], session=test_session).map(
+        fn, params=["name"], output={"res": str}
+    )
+    assert sorted(chain.to_values("res")) == ["BAR", "FOO"]
+
+
 @pytest.mark.parametrize(
     "fn,match",
     [(_var_args_fn, r"'args'"), (_var_kwargs_fn, r"'kwargs'")],

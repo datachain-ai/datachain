@@ -72,7 +72,7 @@ class UdfSignature:  # noqa: PLW1641
             reject_var_params(
                 udf_func,
                 f"function '{callable_name(udf_func)}'",
-                allow_var_positional=params is not None,
+                columns_explicit=params is not None,
             )
 
         # For generators/aggregators, users must return an Iterator/Generator.
