@@ -41,7 +41,7 @@ from datachain.lib.signal_schema import (
     SignalResolvingTypeError,
     SignalSchema,
 )
-from datachain.lib.udf import UDFAdapter
+from datachain.lib.udf import BindContext, BoundSpec, UDFAdapter
 from datachain.lib.udf_signature import UdfSignatureError
 from datachain.lib.utils import DataChainColumnError, DataChainParamsError
 from datachain.sql.types import Float, Int64, String
@@ -964,6 +964,23 @@ def test_map_multiple_signals_rejects_params(test_session):
     chain = dc.read_values(name=["x"], session=test_session)
     with pytest.raises(DataChainParamsError, match="can't combine 'params'"):
         chain.map(a=lambda n: n, b=lambda n: n, params=["name"])
+
+
+def test_map_multiple_signals_rejects_bound_spec_multi_output(test_session):
+    class TwoOutputSpec(BoundSpec):
+        def bind(self, ctx: BindContext):
+            return lambda name: (name.upper(), len(name))
+
+        def input_columns(self):
+            return ["name"]
+
+        @property
+        def output_count(self):
+            return 2
+
+    chain = dc.read_values(name=["foo"], session=test_session)
+    with pytest.raises(DataChainParamsError, match="produces 2 outputs"):
+        chain.map(bad=TwoOutputSpec(), ok=lambda name: name.lower())
 
 
 def test_map_multiple_signals_rejects_non_mapper_udf(test_session):

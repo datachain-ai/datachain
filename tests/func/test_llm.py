@@ -116,7 +116,7 @@ def test_map_multi_signal_llm_none_input(fake_llm, test_session):
 
 def test_map_multi_signal_rejects_include_usage(test_session):
     chain = base(test_session)
-    with pytest.raises(DataChainParamsError, match="include_usage=True"):
+    with pytest.raises(DataChainParamsError, match="produces 2 outputs"):
         chain.map(
             scene=llm.complete("text", schema=Scene, include_usage=True),
             label=llm.complete("text", "x"),

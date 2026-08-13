@@ -76,6 +76,11 @@ class BoundSpec(ABC):
         """Return the chain columns this spec reads, in the order the bound
         callable expects them. Must be stable across ``bind()``."""
 
+    @property
+    @abstractmethod
+    def output_count(self) -> int:
+        """How many chain columns the bound callable produces per row."""
+
 
 def reject_var_params(
     func: Callable, label: str, *, columns_explicit: bool = False

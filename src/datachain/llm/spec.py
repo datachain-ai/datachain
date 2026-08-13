@@ -345,3 +345,7 @@ class LLMSpec(BoundSpec):
 
     def input_columns(self) -> list[str]:
         return [self.col, self.context_col] if self.context_col else [self.col]
+
+    @property
+    def output_count(self) -> int:
+        return 2 if self.include_usage else 1

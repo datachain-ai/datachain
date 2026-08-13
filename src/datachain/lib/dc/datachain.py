@@ -68,7 +68,6 @@ from datachain.lib.udf import (
 )
 from datachain.lib.udf_signature import UdfSignature
 from datachain.lib.utils import DataChainColumnError, DataChainParamsError
-from datachain.llm.spec import LLMSpec
 from datachain.progress import tqdm
 from datachain.project import Project
 from datachain.query import Session
@@ -1042,12 +1041,12 @@ class DataChain:
             )
 
         for k, v in signal_map.items():
-            if isinstance(v, LLMSpec) and v.include_usage:
+            if isinstance(v, BoundSpec) and v.output_count > 1:
                 raise DataChainParamsError(
-                    f"map() entry {k!r} uses include_usage=True which "
-                    "produces two outputs; multi-signal .map() only "
-                    "supports one output per entry. Use a single "
-                    ".map(...) with output={...} to name both columns"
+                    f"map() entry {k!r} produces {v.output_count} outputs; "
+                    "multi-signal .map() only supports one output per entry. "
+                    "Use a single .map(...) with output={...} to name all "
+                    "columns"
                 )
 
         bound_columns: dict[str, list[str]] = {}
