@@ -607,39 +607,18 @@ class _MultiSignalMapper(Mapper):
         for name, fn in signal_map.items():
             if name in self._bound_columns:
                 params = list(self._bound_columns[name])
-                self._per_func_params[name] = params
-                deps[name] = {p for p in params if p in output_names and p != name}
-                continue
-            if isinstance(fn, UDFBase):
-                if not isinstance(fn, Mapper):
-                    raise DataChainParamsError(
-                        f"map() entry {name!r} is a {type(fn).__name__}; only "
-                        "Mapper subclasses (or plain callables) are supported "
-                        "in multi-signal .map() - use .gen() / .agg() for "
-                        "other UDF types"
-                    )
-                sig_target = fn.process
             else:
-                sig_target = fn
-            sig_params = list(inspect.signature(sig_target).parameters.values())
-            bad = [
-                p.name
-                for p in sig_params
-                if p.kind
-                not in (
-                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                    inspect.Parameter.KEYWORD_ONLY,
-                )
-            ]
-            if bad:
-                raise DataChainParamsError(
-                    f"map() function {name!r} has parameters that can't "
-                    f"be passed by name ({bad}); multi-signal .map() calls "
-                    "each function with keyword arguments"
-                )
-            params = [p.name for p in sig_params]
+                params = self._resolve_sig_params(name, fn)
             self._per_func_params[name] = params
             deps[name] = {p for p in params if p in output_names and p != name}
+
+        for name, params in self._per_func_params.items():
+            if name in params:
+                raise DataChainParamsError(
+                    f"map() entry {name!r} declares a parameter named {name!r} "
+                    "- an entry can't read a column with the same name as its "
+                    "own output. Rename the output or the parameter."
+                )
 
         try:
             self._exec_order = list(TopologicalSorter(deps).static_order())
@@ -672,6 +651,38 @@ class _MultiSignalMapper(Mapper):
                 )
             else:
                 self._callers[name] = fn
+
+    def _resolve_sig_params(self, name: str, fn: "Callable | UDFBase") -> list[str]:
+        """Derive parameter names from an entry's signature, rejecting shapes we
+        can't call by kwarg."""
+        if isinstance(fn, UDFBase):
+            if not isinstance(fn, Mapper):
+                raise DataChainParamsError(
+                    f"map() entry {name!r} is a {type(fn).__name__}; only "
+                    "Mapper subclasses (or plain callables) are supported "
+                    "in multi-signal .map() - use .gen() / .agg() for "
+                    "other UDF types"
+                )
+            sig_target = fn.process
+        else:
+            sig_target = fn
+        sig_params = list(inspect.signature(sig_target).parameters.values())
+        bad = [
+            p.name
+            for p in sig_params
+            if p.kind
+            not in (
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                inspect.Parameter.KEYWORD_ONLY,
+            )
+        ]
+        if bad:
+            raise DataChainParamsError(
+                f"map() function {name!r} has parameters that can't "
+                f"be passed by name ({bad}); multi-signal .map() calls "
+                "each function with keyword arguments"
+            )
+        return [p.name for p in sig_params]
 
     def _init(self, sign, params, func):
         super()._init(sign, params, func)

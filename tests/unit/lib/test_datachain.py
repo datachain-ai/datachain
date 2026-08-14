@@ -992,6 +992,12 @@ def test_map_multiple_signals_rejects_tuple_output(test_session):
         chain.map(p=pair, u=lambda name: name.upper())
 
 
+def test_map_multiple_signals_rejects_self_shadow(test_session):
+    chain = dc.read_values(name=["foo"], session=test_session)
+    with pytest.raises(DataChainParamsError, match="declares a parameter"):
+        chain.map(a=lambda a: a.upper(), b=lambda name: name)
+
+
 def test_map_multiple_signals_rejects_non_mapper_udf(test_session):
     class SomeGen(dc.Generator):
         def process(self, name: str):
