@@ -18,6 +18,8 @@ from typing import (
     Literal,
     TypeVar,
     cast,
+    get_args,
+    get_origin,
     overload,
 )
 
@@ -1041,13 +1043,23 @@ class DataChain:
             )
 
         for k, v in signal_map.items():
-            if isinstance(v, BoundSpec) and v.output_count > 1:
+            if isinstance(v, BoundSpec) and v.output_count != 1:
                 raise DataChainParamsError(
                     f"map() entry {k!r} produces {v.output_count} outputs; "
                     "multi-signal .map() only supports one output per entry. "
                     "Use a single .map(...) with output={...} to name all "
                     "columns"
                 )
+            if not isinstance(v, BoundSpec):
+                sig_target = v.process if isinstance(v, UDFBase) else v
+                anno = inspect.signature(sig_target).return_annotation
+                if anno is not inspect.Signature.empty and get_origin(anno) is tuple:
+                    raise DataChainParamsError(
+                        f"map() entry {k!r} returns a tuple of "
+                        f"{len(get_args(anno))} values; multi-signal .map() only "
+                        "supports one output per entry. Use a single .map(...) "
+                        "with output={...} to name all columns"
+                    )
 
         bound_columns: dict[str, list[str]] = {}
         for k, v in signal_map.items():

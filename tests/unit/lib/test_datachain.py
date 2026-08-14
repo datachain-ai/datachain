@@ -983,6 +983,15 @@ def test_map_multiple_signals_rejects_bound_spec_multi_output(test_session):
         chain.map(bad=TwoOutputSpec(), ok=lambda name: name.lower())
 
 
+def test_map_multiple_signals_rejects_tuple_output(test_session):
+    def pair(name: str) -> tuple[str, int]:
+        return name, len(name)
+
+    chain = dc.read_values(name=["ab", "cde"], session=test_session)
+    with pytest.raises(DataChainParamsError, match="tuple of 2 values"):
+        chain.map(p=pair, u=lambda name: name.upper())
+
+
 def test_map_multiple_signals_rejects_non_mapper_udf(test_session):
     class SomeGen(dc.Generator):
         def process(self, name: str):
@@ -1146,6 +1155,46 @@ def test_map_multiple_signals_mapper_subclass(test_session):
     assert rows == [("BAR", "bar"), ("FOO", "foo")]
     assert setup_calls == ["Upper"]
     assert teardown_calls == ["Upper"]
+
+
+def test_map_multiple_signals_mapper_subclass_reads_signal_names(test_session):
+    class UsesSignalNames(dc.Mapper):
+        def process(self, name: str) -> str:
+            return ",".join(self.signal_names)
+
+    chain = dc.read_values(name=["a", "b"], session=test_session).map(
+        sig=UsesSignalNames(),
+        low=lambda name: name.lower(),
+    )
+    rows = sorted(chain.to_iter("name", "sig", "low"))
+    assert rows == [("a", "sig", "a"), ("b", "sig", "b")]
+
+
+def test_map_multiple_signals_mapper_subclass_reads_output(test_session):
+    class UsesOutput(dc.Mapper):
+        def process(self, name: str) -> str:
+            return next(iter(self.output.values))
+
+    chain = dc.read_values(name=["a", "b"], session=test_session).map(
+        sig=UsesOutput(),
+        low=lambda name: name.lower(),
+    )
+    rows = sorted(chain.to_iter("name", "sig", "low"))
+    assert rows == [("a", "sig", "a"), ("b", "sig", "b")]
+
+
+def test_map_multiple_signals_mapper_subclass_reads_params(test_session):
+    class UsesParams(dc.Mapper):
+        def process(self, name: str) -> str:
+            assert self.params is not None
+            return next(iter(self.params.values))
+
+    chain = dc.read_values(name=["a", "b"], session=test_session).map(
+        sig=UsesParams(),
+        low=lambda name: name.lower(),
+    )
+    rows = sorted(chain.to_iter("name", "sig", "low"))
+    assert rows == [("a", "name", "a"), ("b", "name", "b")]
 
 
 def test_map_multiple_signals_single_stage(test_session):

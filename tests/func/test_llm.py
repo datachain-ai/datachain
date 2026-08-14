@@ -139,6 +139,18 @@ def test_map_multi_signal_spec_reads_sibling_output(fake_llm, test_session):
     assert any("say frame" in str(c) for c in fake_llm.calls)
 
 
+def test_map_multi_signal_llm_to_llm_chain(fake_llm, test_session):
+    fake_llm.text_response = "the summary"
+    chain = base(test_session).map(
+        summary=llm.complete("text", "summarize"),
+        topic=llm.classify("summary", into=["accident", "normal"]),
+    )
+    rows = chain.to_list("summary", "topic")
+    assert all(s == "the summary" for s, _ in rows)
+    assert all(t == "accident" for _, t in rows)
+    assert any("the summary" in str(c) for c in fake_llm.calls)
+
+
 def test_include_usage_multi_output_map(fake_llm, test_session):
     chain = base(test_session).map(
         llm.complete("text", schema=Scene, include_usage=True),

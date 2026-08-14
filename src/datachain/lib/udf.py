@@ -24,6 +24,7 @@ from datachain.lib.convert.flatten import (
     is_optional_model,
 )
 from datachain.lib.file import DataModel, File, FileError
+from datachain.lib.signal_schema import SignalSchema
 from datachain.lib.utils import AbstractUDF, DataChainParamsError
 from datachain.query.batch import (
     Batch,
@@ -45,7 +46,6 @@ if TYPE_CHECKING:
     from datachain.cache import Cache
     from datachain.catalog import Catalog
     from datachain.lib.settings import Settings
-    from datachain.lib.signal_schema import SignalSchema
     from datachain.lib.udf_signature import UdfSignature
     from datachain.query.batch import RowsOutput
 
@@ -601,9 +601,6 @@ class _MultiSignalMapper(Mapper):
         self._bound_columns = bound_columns or {}
         output_names = set(signal_map)
         self._per_func_params: dict[str, list[str]] = {}
-        # Entries that are UDFBase subclass instances (e.g. Mapper subclass);
-        # invoked via .process() and their setup()/teardown() run per worker.
-        self._mapper_entries: set[str] = set()
         # For each function: which of its params come from another
         # function's output (dependencies) vs from an input row column.
         deps: dict[str, set[str]] = {}
@@ -621,7 +618,6 @@ class _MultiSignalMapper(Mapper):
                         "in multi-signal .map() - use .gen() / .agg() for "
                         "other UDF types"
                     )
-                self._mapper_entries.add(name)
                 sig_target = fn.process
             else:
                 sig_target = fn
@@ -676,6 +672,16 @@ class _MultiSignalMapper(Mapper):
                 )
             else:
                 self._callers[name] = fn
+
+    def _init(self, sign, params, func):
+        super()._init(sign, params, func)
+        # Give each inner UDFBase entry its own params/output so framework
+        # attrs like self.signal_names, self.output, self.params work.
+        output_values = sign.output_schema.values
+        for name, fn in self._signal_map.items():
+            if isinstance(fn, UDFBase):
+                fn.params = params
+                fn.output = SignalSchema({name: output_values[name]})
 
     def process(self, *args):
         row_by_name = dict(zip(self.combined_params, args, strict=True))
