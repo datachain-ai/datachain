@@ -2,16 +2,15 @@
 
 DataChain Studio enables collaborative work through teams, allowing you to share
 projects, datasets, and jobs with team members. You can create teams with one or
-more team members, also called collaborators, and assign different roles to
-control what they can do.
+more team members, also called collaborators.
 
-Each collaborator has a team role (Admin, Editor, or Viewer). On top of that,
-access to individual namespaces, projects, and datasets is controlled by
-**fine-grained permissions**, admins organize people into **groups** and write
-**rules** that grant `read` or `write` on specific resources.
+Access to a namespace, project, or dataset comes from **permissions**: admins
+sort people into **groups** and write **rules** that grant `read` or `write` on
+specific resources. Each collaborator also has a team role (Admin, Editor, or
+Viewer), which caps what they can do with whatever they've been granted.
 
-- **[Security & Permissions](permissions.md)** - Team roles, how access to a
-  resource is resolved, and how to grant it with groups and rules
+- **[Security & Permissions](permissions.md)** - How access works, granting it
+  with groups and rules, and what each team role allows
 - **[Team Settings](settings.md)** - Team name, cloud credentials,
   collaborators, GitLab connections, SSO, and your team plan
 
@@ -61,7 +60,7 @@ The datasets dashboard shows the datasets you can access, admins see all of the
 team's datasets, while other members see the ones they've been granted (see
 [Security & Permissions](permissions.md)). Whether you can only explore a
 dataset or also edit and delete it depends on whether your grant is `read` or
-`write`.
+`write`, and on your role, since a Viewer can only ever read.
 
 To create a new dataset, you can upload files, connect to cloud storage, or
 create datasets from DataChain queries.
@@ -72,7 +71,7 @@ The jobs dashboard shows the DataChain jobs running on the team's compute
 clusters. Access follows the team role: Editors can create, run, and cancel jobs,
 Viewers can view job status and logs, and admins have full control. (Datasets a
 job reads or writes are still subject to the submitter's
-[grants](permissions.md#fine-grained-permissions).)
+[grants](permissions.md#permissions).)
 
 ## Projects (Experiments)
 
@@ -87,7 +86,7 @@ adding a project is the same as that for adding personal projects
 
 ## Next Steps
 
-- Learn how [roles, groups, and rules](permissions.md) control who can reach
+- Learn how [groups, rules, and roles](permissions.md) control who can reach
   which datasets
 - [Configure your team](settings.md), including collaborators, SSO, and cloud
   credentials

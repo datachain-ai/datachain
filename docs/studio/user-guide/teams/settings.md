@@ -9,7 +9,7 @@ Additionally, you can also
 [manage connections to self-hosted GitLab servers](#manage-connections-to-self-hosted-gitlab-servers),
 [configure sso](#configure-single-sign-on-sso),
 [edit collaborators](#edit-collaborators), and
-[set up fine-grained permissions](permissions.md#fine-grained-permissions).
+[set up permissions](permissions.md#permissions).
 
 ## Manage connections to self-hosted GitLab servers
 
@@ -40,9 +40,9 @@ will be auto-assigned the [`Viewer` role](permissions.md#roles).
 To manage the collaborators (team members) of your team, go to the
 `Collaborators & Permissions` section of the team settings page. Here you can
 invite new team members as well as remove or change the
-[roles](permissions.md#roles) of existing team members. To grant access to
-specific resources beyond a member's role, use
-[fine-grained permissions](permissions.md#fine-grained-permissions).
+[roles](permissions.md#roles) of existing team members. A role does not grant
+access to any dataset on its own, use
+[permissions](permissions.md#permissions) for that.
 
 The number of collaborators in your team depends on your team plan. By default,
 all teams are on the Free plan, and can have 2 collaborators. To add more
@@ -66,6 +66,6 @@ pricing.
 ## Next Steps
 
 - Scope access to datasets with
-  [groups and rules](permissions.md#fine-grained-permissions)
+  [groups and rules](permissions.md#permissions)
 - Connect a [self-hosted GitLab server](../git-connections/custom-gitlab-server.md)
   or the [GitHub App](../git-connections/github-app.md)
