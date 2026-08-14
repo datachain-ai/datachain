@@ -83,16 +83,18 @@ class BoundSpec(ABC):
 
 
 def reject_var_params(
-    func: Callable, label: str, *, columns_explicit: bool = False
+    udf_func: "Callable | UDFBase", label: str, *, columns_explicit: bool = False
 ) -> None:
     """Reject user callables with ``*args`` / ``**kwargs`` when we need to
     infer column routing from the signature. When ``columns_explicit`` is
-    True (caller passed ``params=``), both are safe and pass through."""
+    True (caller passed ``params=``), both are safe and pass through. For
+    UDFBase subclasses, the check runs against ``.process``."""
     if columns_explicit:
         return
+    target = udf_func.process if isinstance(udf_func, AbstractUDF) else udf_func
     var_params = [
         f"*{p.name}" if p.kind is inspect.Parameter.VAR_POSITIONAL else f"**{p.name}"
-        for p in inspect.signature(func).parameters.values()
+        for p in inspect.signature(target).parameters.values()
         if p.kind in {inspect.Parameter.VAR_KEYWORD, inspect.Parameter.VAR_POSITIONAL}
     ]
     if var_params:

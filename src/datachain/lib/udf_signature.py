@@ -68,12 +68,11 @@ class UdfSignature:  # noqa: PLW1641
             cls._func_signature(chain, udf_func)
         )
 
-        if not isinstance(udf_func, AbstractUDF):
-            reject_var_params(
-                udf_func,
-                f"function '{callable_name(udf_func)}'",
-                columns_explicit=params is not None,
-            )
+        reject_var_params(
+            udf_func,
+            f"function '{callable_name(udf_func)}'",
+            columns_explicit=params is not None,
+        )
 
         # For generators/aggregators, users must return an Iterator/Generator.
         # Previously, this validation only happened when `output` was not explicitly
