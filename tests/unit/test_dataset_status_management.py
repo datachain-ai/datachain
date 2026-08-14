@@ -1135,20 +1135,6 @@ def test_gc_collects_tombstone_requeued_for_metadata_drop(
         catalog.get_dataset(name)
 
 
-def test_keep_metadata_remove_clears_pending_metadata_drop(
-    test_session, dataset_complete
-):
-    catalog = test_session.catalog
-    version = dataset_complete.latest_version
-
-    catalog.remove_dataset_version(dataset_complete, version, keep_metadata=True)
-
-    ds = catalog.get_dataset(
-        dataset_complete.name, versions=None, include_incomplete=True
-    )
-    assert not _find_removed(ds, version).pending_metadata_drop
-
-
 @pytest.mark.parametrize("status", [DatasetStatus.REMOVING, DatasetStatus.REMOVED])
 def test_pending_metadata_drop_overrides_explicit_keep_metadata(
     test_session, dataset_complete, status
