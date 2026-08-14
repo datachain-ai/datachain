@@ -1158,6 +1158,44 @@ def test_pending_metadata_drop_overrides_explicit_keep_metadata(
         catalog.get_dataset(name, include_incomplete=True)
 
 
+@pytest.mark.parametrize(
+    "keep_metadata,expected_removed,expected_status",
+    [
+        (True, 1, DatasetStatus.REMOVED),
+        (False, 0, DatasetStatus.REMOVING),
+    ],
+)
+def test_explicit_keep_metadata_decides_interrupted_keep(
+    test_session,
+    dataset_complete,
+    keep_metadata,
+    expected_removed,
+    expected_status,
+):
+    """Without the flag set, the caller's keep_metadata decides an interrupted
+    keep-metadata remove: True finishes the tombstone, False conflicts with it
+    and is skipped."""
+    catalog = test_session.catalog
+    version = dataset_complete.latest_version
+    ds = _force_status(
+        catalog,
+        dataset_complete,
+        version,
+        DatasetStatus.REMOVING,
+        pending_metadata_drop=False,
+    )
+
+    num_removed = catalog.remove_dataset_versions(
+        version_ids=[ds.get_version(version).id], keep_metadata=keep_metadata
+    )
+
+    ds = catalog.get_dataset(
+        dataset_complete.name, versions=None, include_incomplete=True
+    )
+    assert num_removed == expected_removed
+    assert ds.get_version(version).status == expected_status
+
+
 def test_metadata_drop_requeue_survives_tombstone_finalize(
     monkeypatch, test_session, dataset_complete
 ):
