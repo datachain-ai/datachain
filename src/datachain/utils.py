@@ -73,18 +73,12 @@ class DataChainDir:
             if config is not None
             else osp.join(self.root, self.CONFIG)
         )
-        self.config = (
-            osp.abspath(config)
-            if config is not None
-            else osp.join(self.root, self.CONFIG)
-        )
 
     def init(self):
         os.makedirs(self.root, exist_ok=True)
         os.makedirs(self.cache, exist_ok=True)
         os.makedirs(self.tmp, exist_ok=True)
         os.makedirs(osp.split(self.db)[0], exist_ok=True)
-        os.makedirs(osp.split(self.config)[0], exist_ok=True)
         os.makedirs(osp.split(self.config)[0], exist_ok=True)
 
     @classmethod
