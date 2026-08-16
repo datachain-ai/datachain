@@ -1,6 +1,8 @@
 import hashlib
 import inspect
 import logging
+import pickle
+import re
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import closing, nullcontext
@@ -33,7 +35,7 @@ from datachain.query.batch import (
     Partition,
     RowsOutputBatch,
 )
-from datachain.utils import safe_closing, with_last_flag
+from datachain.utils import filtered_cloudpickle_dumps, safe_closing, with_last_flag
 
 logger = logging.getLogger("datachain")
 
@@ -175,6 +177,148 @@ class UDFAdapter:
         return self.inner.prefetch
 
 
+# Hashed independently via function body and schemas, not as constructor state.
+_UDF_RUNTIME_ATTRS = frozenset(
+    {
+        "params",
+        "output",
+        "output_schema",
+        "_func",
+        "_signal_map",
+        "_per_func_params",
+        "_exec_order",
+        "combined_params",
+        "_state_digest",
+    }
+)
+_STATE_DIGEST_UNSET = object()
+_OBJECT_ADDR_RE = re.compile(r" at 0x[0-9a-fA-F]+")
+
+
+def _unpickleable_token(value: Any) -> tuple[str, str, str, str]:
+    typ = type(value)
+    return (
+        "unpickleable",
+        typ.__module__,
+        typ.__qualname__,
+        _OBJECT_ADDR_RE.sub("", repr(value)),
+    )
+
+
+def _cycle_or_mark(value: Any, seen: dict[int, int]) -> tuple[str, int] | None:
+    obj_id = id(value)
+    if obj_id in seen:
+        return ("cycle", seen[obj_id])
+    seen[obj_id] = len(seen)
+    return None
+
+
+def _stable_state_value(value: Any, seen: dict[int, int] | None = None) -> Any:
+    seen = {} if seen is None else seen
+    if isinstance(value, (dict, set, frozenset, list, tuple)):
+        if token := _cycle_or_mark(value, seen):
+            result: Any = token
+        elif isinstance(value, dict):
+            result = (
+                "dict",
+                [
+                    (_stable_state_value(key, seen), _stable_state_value(item, seen))
+                    for key, item in sorted(
+                        value.items(),
+                        key=lambda kv: (
+                            type(kv[0]).__module__,
+                            type(kv[0]).__qualname__,
+                            repr(kv[0]),
+                        ),
+                    )
+                ],
+            )
+        elif isinstance(value, (set, frozenset)):
+            tag = "frozenset" if isinstance(value, frozenset) else "set"
+            result = (
+                tag,
+                sorted((_stable_state_value(item, seen) for item in value), key=repr),
+            )
+        else:
+            tag = "tuple" if isinstance(value, tuple) else "list"
+            result = (tag, [_stable_state_value(item, seen) for item in value])
+        return result
+    try:
+        filtered_cloudpickle_dumps(value)
+    except (TypeError, pickle.PicklingError, AttributeError, RecursionError):
+        if token := _cycle_or_mark(value, seen):
+            result = token
+        else:
+            items = _instance_state_items(value)
+            if items:
+                result = (
+                    "unpickleable",
+                    type(value).__module__,
+                    type(value).__qualname__,
+                    {
+                        key: _stable_state_value(item, seen)
+                        for key, item in sorted(items.items())
+                    },
+                )
+            else:
+                result = _unpickleable_token(value)
+        return result
+    return value
+
+
+def _object_state_map(obj: Any, seen: dict[int, int] | None = None) -> dict[str, Any]:
+    seen = {} if seen is None else seen
+    skip = _UDF_RUNTIME_ATTRS if isinstance(obj, AbstractUDF) else frozenset()
+    items = [
+        (key, value)
+        for key, value in _instance_state_items(obj).items()
+        if key not in skip
+    ]
+    return {key: _stable_state_value(value, seen) for key, value in sorted(items)}
+
+
+def _callable_instance_state(
+    func: Any, seen: dict[int, int] | None = None
+) -> dict[str, Any] | None:
+    if func is None or inspect.isfunction(func) or inspect.isclass(func):
+        return None
+    if inspect.ismethod(func):
+        owner = getattr(func, "__self__", None)
+        if owner is None or inspect.isclass(owner):
+            return None
+        items = _object_state_map(owner, seen)
+        return {"__self__": items} if items else None
+    if not callable(func):
+        return None
+    items = _object_state_map(func, seen)
+    return items or None
+
+
+def _instance_state_items(obj: Any) -> dict[str, Any]:
+    state: dict[str, Any] = {}
+    try:
+        state.update(vars(obj))
+    except TypeError:
+        pass
+    for cls in type(obj).__mro__:
+        slots = getattr(cls, "__slots__", ())
+        if isinstance(slots, str):
+            slots = (slots,)
+        for slot in slots:
+            if slot in ("__dict__", "__weakref__"):
+                continue
+            name = slot
+            if slot.startswith("__") and not slot.endswith("__"):
+                name = f"_{cls.__name__.lstrip('_')}{slot}"
+            if name in state:
+                continue
+            try:
+                state[name] = getattr(obj, name)
+            except AttributeError:
+                continue
+    return state
+
+
 class UDFBase(AbstractUDF):
     """Base class for stateful user-defined functions.
 
@@ -232,13 +376,37 @@ class UDFBase(AbstractUDF):
         self.output = None
         self._func = None
 
+    def _instance_state_hash(self) -> str | None:
+        seen: dict[int, int] = {}
+        items = [
+            (key, value)
+            for key, value in _instance_state_items(self).items()
+            if key not in _UDF_RUNTIME_ATTRS
+        ]
+        extra = {key: _stable_state_value(value, seen) for key, value in sorted(items)}
+        func_state = _callable_instance_state(getattr(self, "_func", None), seen)
+        if func_state is not None:
+            extra["__func_instance_state__"] = func_state
+        if not extra:
+            return None
+        payload = filtered_cloudpickle_dumps(dict(sorted(extra.items())))
+        return hashlib.sha256(payload).hexdigest()
+
+    def _frozen_state_digest(self) -> str | None:
+        # Last bind's digest. hash() does not re-read live attrs, so setup()
+        # mutations stay out until the next _init.
+        if getattr(self, "_state_digest", _STATE_DIGEST_UNSET) is _STATE_DIGEST_UNSET:
+            self._state_digest = self._instance_state_hash()
+        return self._state_digest
+
     def hash(self, include_body: bool = True) -> str:
         """
         Creates SHA hash of this UDF function. It takes into account function,
-        inputs and outputs.
+        inputs, outputs, and instance state.
 
         For function-based UDFs, hashes self._func.
-        For class-based UDFs, hashes the process method.
+        For class-based UDFs, hashes the process method and constructor
+        attributes that are not part of the UDF runtime.
 
         When include_body=False, the function body is excluded (identity-only:
         __module__ + __qualname__ + defaults). Lambdas always include their
@@ -252,6 +420,8 @@ class UDFBase(AbstractUDF):
             self.params.hash() if self.params else "",
             self.output.hash(),
         ]
+        if state := self._frozen_state_digest():
+            parts.append(state)
 
         return hashlib.sha256(
             b"".join([bytes.fromhex(part) for part in parts])
@@ -282,6 +452,7 @@ class UDFBase(AbstractUDF):
         self.params = params
         self.output = sign.output_schema
         self._func = func
+        self._state_digest = self._instance_state_hash()
 
     @classmethod
     def _create(

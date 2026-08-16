@@ -350,3 +350,81 @@ def test_map_prefetch_skips_invalid_path_files(
 
     assert result == [(bad_path,)] * 3
     assert any("Skipping prefetch" in m for m in caplog.messages)
+
+
+def test_class_mapper_constructor_state_does_not_reuse_cached_rows(test_session):
+    class Scale(Mapper):
+        def __init__(self, factor: int):
+            self.factor = factor
+
+        def process(self, x):
+            return x * self.factor
+
+    src = dc.read_values(x=[1, 2, 3], session=test_session)
+    doubled = src.map(Scale(2), params=["x"], output={"y": int}).to_list("y")
+    tripled = src.map(Scale(3), params=["x"], output={"y": int}).to_list("y")
+    assert doubled == [(2,), (4,), (6,)]
+    assert tripled == [(3,), (6,), (9,)]
+
+
+def test_callable_instance_constructor_state_does_not_reuse_cached_rows(test_session):
+    class Scale:
+        def __init__(self, factor: int):
+            self.factor = factor
+
+        def __call__(self, x):
+            return x * self.factor
+
+    src = dc.read_values(x=[1, 2, 3], session=test_session)
+    doubled = src.map(Scale(2), params=["x"], output={"y": int}).to_list("y")
+    tripled = src.map(Scale(3), params=["x"], output={"y": int}).to_list("y")
+    assert doubled == [(2,), (4,), (6,)]
+    assert tripled == [(3,), (6,), (9,)]
+
+
+def test_bound_method_constructor_state_does_not_reuse_cached_rows(test_session):
+    class Scale:
+        def __init__(self, factor: int):
+            self.factor = factor
+
+        def apply(self, x):
+            return x * self.factor
+
+    src = dc.read_values(x=[1, 2, 3], session=test_session)
+    doubled = src.map(Scale(2).apply, params=["x"], output={"y": int}).to_list("y")
+    tripled = src.map(Scale(3).apply, params=["x"], output={"y": int}).to_list("y")
+    assert doubled == [(2,), (4,), (6,)]
+    assert tripled == [(3,), (6,), (9,)]
+
+
+def test_class_aggregator_constructor_state_does_not_reuse_cached_rows(test_session):
+    class Out(BaseModel):
+        key: int
+        n: int
+
+    class CountAbove(dc.Aggregator):
+        def __init__(self, limit: int):
+            self.limit = limit
+
+        def process(self, key, value):
+            yield Out(key=key[0], n=sum(1 for v in value if v > self.limit))
+
+    src = dc.read_values(
+        key=[1] * 5 + [2] * 5,
+        value=[1, 2, 3, 4, 5, 1, 2, 3, 4, 5],
+        session=test_session,
+    )
+    rows0 = src.agg(
+        CountAbove(0),
+        partition_by="key",
+        params=["key", "value"],
+        output={"o": Out},
+    ).to_list("o.key", "o.n")
+    rows3 = src.agg(
+        CountAbove(3),
+        partition_by="key",
+        params=["key", "value"],
+        output={"o": Out},
+    ).to_list("o.key", "o.n")
+    assert sorted(rows0) == [(1, 5), (2, 5)]
+    assert sorted(rows3) == [(1, 2), (2, 2)]

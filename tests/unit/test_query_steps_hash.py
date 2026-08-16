@@ -10,7 +10,7 @@ from datachain import C, func
 from datachain.dataset import DatasetRecord, DatasetVersion
 from datachain.func.func import Func
 from datachain.lib.signal_schema import SignalSchema
-from datachain.lib.udf import Aggregator, Generator, Mapper
+from datachain.lib.udf import Aggregator, Generator, Mapper, _stable_state_value
 from datachain.lib.udf_signature import UdfSignature
 from datachain.query.dataset import (
     QueryStep,
@@ -335,6 +335,322 @@ def test_udf_mapper_hash(
     sign = UdfSignature.parse("", {}, func, params, output, False)
     udf_adapter = Mapper._create(sign, SignalSchema(sign.params)).to_udf_wrapper()
     assert UDFSignal(udf_adapter, None).hash() == _hash
+
+
+class ScaleMapper(Mapper):
+    def __init__(self, factor: int):
+        self.factor = factor
+
+    def process(self, x):
+        return x * self.factor
+
+
+class CountAbove(Aggregator):
+    def __init__(self, limit: int):
+        self.limit = limit
+
+    def process(self, key, value):
+        yield key[0], sum(1 for v in value if v > self.limit)
+
+
+def _udf_hash(cls, udf, params, output):
+    sign = UdfSignature.parse("", {}, udf, params, output, False)
+    return cls._create(sign, SignalSchema(sign.params)).hash()
+
+
+def test_class_mapper_hash_includes_constructor_state():
+    h2 = _udf_hash(Mapper, ScaleMapper(2), ["x"], {"y": int})
+    h3 = _udf_hash(Mapper, ScaleMapper(3), ["x"], {"y": int})
+    h2_again = _udf_hash(Mapper, ScaleMapper(2), ["x"], {"y": int})
+    assert h2 == h2_again
+    assert h2 != h3
+
+
+def test_class_aggregator_hash_includes_constructor_state():
+    h0 = _udf_hash(Aggregator, CountAbove(0), ["key", "value"], {"n": int})
+    h3 = _udf_hash(Aggregator, CountAbove(3), ["key", "value"], {"n": int})
+    h0_again = _udf_hash(Aggregator, CountAbove(0), ["key", "value"], {"n": int})
+    assert h0 == h0_again
+    assert h0 != h3
+
+
+def test_class_udf_hash_ignores_setup_runtime_state():
+    class Scale(Mapper):
+        def __init__(self, factor: int):
+            self.factor = factor
+
+        def process(self, x):
+            return x * self.factor
+
+        def setup(self):
+            self.ready = True
+
+    sign = UdfSignature.parse("", {}, Scale(2), ["x"], {"y": int}, False)
+    udf = Mapper._create(sign, SignalSchema(sign.params))
+    before = udf.hash()
+    udf.setup()
+    assert udf.hash() == before
+    assert before != _udf_hash(Mapper, Scale(3), ["x"], {"y": int})
+
+
+def test_class_udf_hash_includes_type_constructor_state():
+    class Cast(Mapper):
+        def __init__(self, typ):
+            self.typ = typ
+
+        def process(self, x):
+            return self.typ(x)
+
+    hint = _udf_hash(Mapper, Cast(int), ["x"], {"y": int})
+    hbool = _udf_hash(Mapper, Cast(bool), ["x"], {"y": int})
+    hint_again = _udf_hash(Mapper, Cast(int), ["x"], {"y": int})
+    assert hint == hint_again
+    assert hint != hbool
+
+
+def test_class_udf_hash_canonicalizes_unordered_constructor_state():
+    class HasLabels(Mapper):
+        def __init__(self, labels):
+            self.labels = labels
+
+        def process(self, x):
+            return x in self.labels
+
+    left = _udf_hash(
+        Mapper, HasLabels(frozenset({"alpha", "beta", "gamma"})), ["x"], {"y": bool}
+    )
+    right = _udf_hash(
+        Mapper, HasLabels(frozenset({"gamma", "beta", "alpha"})), ["x"], {"y": bool}
+    )
+    assert _stable_state_value(frozenset({"b", "a", "c"})) == (
+        "frozenset",
+        ["a", "b", "c"],
+    )
+    assert left == right
+
+
+def test_class_udf_hash_distinguishes_dict_from_pair_list():
+    class Hold(Mapper):
+        def __init__(self, payload):
+            self.payload = payload
+
+        def process(self, x):
+            return x
+
+    hdict = _udf_hash(Mapper, Hold({"a": 1}), ["x"], {"y": int})
+    hlist = _udf_hash(Mapper, Hold([("a", 1)]), ["x"], {"y": int})
+    assert hdict != hlist
+
+
+def test_class_udf_hash_updates_when_rebound_after_mutation():
+    class Scale(Mapper):
+        def __init__(self, factor: int):
+            self.factor = factor
+
+        def process(self, x):
+            return x * self.factor
+
+    sign = UdfSignature.parse("", {}, Scale(2), ["x"], {"y": int}, False)
+    udf = Mapper._create(sign, SignalSchema(sign.params))
+    before = udf.hash()
+    udf.factor = 3
+    rebound = Mapper._create(sign, SignalSchema(sign.params))
+    assert rebound.hash() != before
+
+
+def test_class_udf_hash_includes_new_attr_on_rebind():
+    class Scale(Mapper):
+        def __init__(self, factor: int):
+            self.factor = factor
+
+        def process(self, x):
+            return x * self.factor + getattr(self, "bonus", 0)
+
+    sign = UdfSignature.parse("", {}, Scale(2), ["x"], {"y": int}, False)
+    udf = Mapper._create(sign, SignalSchema(sign.params))
+    before = udf.hash()
+    udf.bonus = 3
+    assert udf.hash() == before
+    rebound = Mapper._create(sign, SignalSchema(sign.params))
+    assert rebound.hash() != before
+
+
+def test_class_udf_hash_includes_slotted_constructor_state():
+    class Scale(Mapper):
+        __slots__ = ("factor",)
+
+        def __init__(self, factor: int):
+            self.factor = factor
+
+        def process(self, x):
+            return x * self.factor
+
+    assert _udf_hash(Mapper, Scale(2), ["x"], {"y": int}) != _udf_hash(
+        Mapper, Scale(3), ["x"], {"y": int}
+    )
+
+
+def test_class_udf_hash_preserves_dict_key_types():
+    class Lookup(Mapper):
+        def __init__(self, table):
+            self.table = table
+
+        def process(self, x):
+            return self.table.get(x)
+
+    hint = _udf_hash(Mapper, Lookup({1: "a"}), ["x"], {"y": str})
+    hstr = _udf_hash(Mapper, Lookup({"1": "a"}), ["x"], {"y": str})
+    assert hint != hstr
+
+
+def test_class_udf_hash_distinguishes_local_type_state():
+    def make(factor: int):
+        class Kind:
+            def __call__(self, x):
+                return x * factor
+
+        class Scale(Mapper):
+            def __init__(self):
+                self.kind = Kind
+
+            def process(self, x):
+                return self.kind()(x)
+
+        return _udf_hash(Mapper, Scale(), ["x"], {"y": int})
+
+    assert make(2) != make(3)
+
+
+def test_class_udf_hash_tolerates_unpickleable_setup_state():
+    import threading
+
+    class Scale(Mapper):
+        def __init__(self, factor: int):
+            self.factor = factor
+
+        def process(self, x):
+            return x * self.factor
+
+        def setup(self):
+            self.lock = threading.Lock()
+
+    sign = UdfSignature.parse("", {}, Scale(2), ["x"], {"y": int}, False)
+    udf = Mapper._create(sign, SignalSchema(sign.params))
+    before = udf.hash()
+    udf.setup()
+    assert udf.hash() == before
+    rebound = Mapper._create(sign, SignalSchema(sign.params))
+    assert rebound.hash()  # rebind after Lock must not raise
+
+
+def test_class_udf_hash_includes_unpickleable_constructor_state():
+    import threading
+
+    class LockMode(Mapper):
+        def __init__(self, lock):
+            self.lock = lock
+
+        def process(self, x):
+            return x if self.lock.locked() else -x
+
+    open_lock = threading.Lock()
+    locked_lock = threading.Lock()
+    locked_lock.acquire()
+    opened = _udf_hash(Mapper, LockMode(open_lock), ["x"], {"y": int})
+    locked = _udf_hash(Mapper, LockMode(locked_lock), ["x"], {"y": int})
+    opened_again = _udf_hash(Mapper, LockMode(threading.Lock()), ["x"], {"y": int})
+    assert opened != locked
+    assert opened == opened_again
+
+
+def test_class_udf_hash_walks_unpickleable_instance_state():
+    import threading
+
+    class Holder:
+        def __init__(self, n: int):
+            self.n = n
+            self.lock = threading.Lock()
+
+        def __repr__(self):
+            return "Holder()"
+
+    class Scale(Mapper):
+        def __init__(self, holder):
+            self.holder = holder
+
+        def process(self, x):
+            return x * self.holder.n
+
+    left = _udf_hash(Mapper, Scale(Holder(2)), ["x"], {"y": int})
+    right = _udf_hash(Mapper, Scale(Holder(3)), ["x"], {"y": int})
+    left_again = _udf_hash(Mapper, Scale(Holder(2)), ["x"], {"y": int})
+    assert left != right
+    assert left == left_again
+
+
+def test_class_udf_hash_handles_cyclic_constructor_state():
+    class Hold(Mapper):
+        def __init__(self, payload):
+            self.payload = payload
+
+        def process(self, x):
+            return x
+
+    cyclic = []
+    cyclic.append(cyclic)
+    other = []
+    other.append(other)
+    left = _udf_hash(Mapper, Hold(cyclic), ["x"], {"y": int})
+    right = _udf_hash(Mapper, Hold(other), ["x"], {"y": int})
+    assert left == right
+
+
+def test_function_udf_hash_includes_callable_instance_state():
+    class Scale:
+        def __init__(self, factor: int):
+            self.factor = factor
+
+        def __call__(self, x):
+            return x * self.factor
+
+    h2 = _udf_hash(Mapper, Scale(2), ["x"], {"y": int})
+    h3 = _udf_hash(Mapper, Scale(3), ["x"], {"y": int})
+    h2_again = _udf_hash(Mapper, Scale(2), ["x"], {"y": int})
+    assert h2 == h2_again
+    assert h2 != h3
+
+
+def test_function_udf_hash_includes_bound_method_owner_state():
+    class Scale:
+        def __init__(self, factor: int):
+            self.factor = factor
+
+        def apply(self, x):
+            return x * self.factor
+
+    h2 = _udf_hash(Mapper, Scale(2).apply, ["x"], {"y": int})
+    h3 = _udf_hash(Mapper, Scale(3).apply, ["x"], {"y": int})
+    h2_again = _udf_hash(Mapper, Scale(2).apply, ["x"], {"y": int})
+    assert h2 == h2_again
+    assert h2 != h3
+
+
+def test_class_udf_hash_distinguishes_aliased_constructor_state():
+    class Alias(Mapper):
+        def __init__(self, left, right):
+            self.left = left
+            self.right = right
+
+        def process(self, x):
+            return x if self.left is self.right else -x
+
+    shared = []
+    other = []
+    h_shared = _udf_hash(Mapper, Alias(shared, shared), ["x"], {"y": int})
+    h_shared_again = _udf_hash(Mapper, Alias(other, other), ["x"], {"y": int})
+    h_separate = _udf_hash(Mapper, Alias([], []), ["x"], {"y": int})
+    assert h_shared == h_shared_again
+    assert h_shared != h_separate
 
 
 @pytest.mark.parametrize(
