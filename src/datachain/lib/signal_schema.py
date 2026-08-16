@@ -4,10 +4,17 @@ import logging
 import math
 import types
 import warnings
-from collections.abc import Callable, Hashable, Iterable, Iterator, Mapping, Sequence
+import weakref
+from collections.abc import (
+    Callable,
+    Iterable,
+    Iterator,
+    Mapping,
+    Sequence,
+)
 from dataclasses import dataclass
 from datetime import datetime
-from functools import cached_property, lru_cache
+from functools import cached_property
 from inspect import isclass
 from typing import (
     IO,
@@ -19,7 +26,6 @@ from typing import (
     get_args,
     get_origin,
 )
-from typing import cast as typing_cast
 
 from fsspec.callbacks import DEFAULT_CALLBACK, Callback
 from pydantic import BaseModel, Field, ValidationError, create_model
@@ -41,7 +47,12 @@ from datachain.lib.data_model import (
     DataModel,
     DataType,
     DataValue,
+    annotation_parts,
     compute_model_fingerprint,
+    is_mapping_annotation,
+    is_sequence_annotation,
+    is_tuple_annotation,
+    key_needs_json_decode,
     skip_optional_promotion,
     unwrap_optional,
 )
@@ -56,6 +67,8 @@ from datachain.query.schema import DEFAULT_DELIMITER, C, Column, ColumnExpr, Col
 from datachain.sql.types import SQLType
 
 if TYPE_CHECKING:
+    from collections.abc import MutableMapping
+
     from datachain.catalog import Catalog
 
 
@@ -80,6 +93,15 @@ NAMES_TO_TYPES = {
     "Literal": Any,
     "Any": Any,
 }
+
+
+# Keyed on the model class, not the annotation: a program defines a fixed handful
+# of models but an unbounded variety of annotations, so an annotation-keyed cache
+# can thrash. Weak keys keep dynamically created models (`create_model`, setup
+# values) collectable in long-lived processes.
+_FILE_BEARING_FIELDS: "MutableMapping[type[BaseModel], tuple]" = (
+    weakref.WeakKeyDictionary()
+)
 
 
 class SignalSchemaError(DataChainParamsError):
@@ -626,6 +648,39 @@ class SignalSchema:
                 pos += 1
         return objs
 
+    def set_file_streams(
+        self,
+        objs: Sequence[Any],
+        catalog: "Catalog",
+        cache: bool = False,
+        download_cb: Callback = DEFAULT_CALLBACK,
+    ) -> None:
+        """Give every `File` reachable from `objs` the stream it needs to read."""
+        for obj, name in zip(objs, self.values, strict=True):
+            if name not in self._file_stream_params:
+                continue
+            annotation = self._file_stream_params[name]
+            # An untyped param is only inspected when it is a model or a file, so
+            # arbitrary (or cyclic) setup containers are never walked.
+            if annotation is None and not isinstance(obj, BaseModel):
+                continue
+            self._set_file_stream(obj, catalog, cache, download_cb, annotation)
+
+    @cached_property
+    def _file_stream_params(self) -> dict[str, DataType | None]:
+        """Params that may carry a `File`, mapped to the annotation to traverse.
+
+        Params that cannot carry one are absent. A value of `None` means the
+        annotation says nothing useful: setup params are typed `str` as a
+        placeholder, so their value has to be inspected at runtime instead.
+        """
+        return {
+            name: None if name in self.setup_func else annotation
+            for name, annotation in self.values.items()
+            if name in self.setup_func
+            or self._annotation_contains_type(annotation, File)
+        }
+
     @cached_property
     def _row_conversion_required(self) -> dict[str, bool]:
         return {
@@ -638,33 +693,32 @@ class SignalSchema:
         if ModelStore.is_pydantic(annotation):
             return True
 
-        origin = get_origin(annotation)
-        args = get_args(annotation)
-        if origin in (Union, types.UnionType):
+        if get_origin(annotation) in (Union, types.UnionType):
             inner, has_none = unwrap_optional(annotation)
             return has_none and cls._requires_row_conversion(inner)
-        if origin is list:
-            return bool(args) and cls._requires_row_conversion(args[0])
-        if origin is dict and len(args) == 2:
-            key_type, value_type = args
-            return key_type is not str or cls._requires_row_conversion(value_type)
+        parts = annotation_parts(annotation)
+        if is_mapping_annotation(annotation):
+            return len(parts) == 2 and (
+                key_needs_json_decode(parts[0])
+                or cls._requires_row_conversion(parts[1])
+            )
+        if is_sequence_annotation(annotation):
+            # a declared tuple always needs rebuilding: the DB hands back a list
+            if is_tuple_annotation(annotation):
+                return bool(parts)
+            return any(cls._requires_row_conversion(part) for part in parts)
         return False
 
     @staticmethod
-    @lru_cache
-    def _annotation_contains_type(annotation: Hashable, target: type) -> bool:
+    def _annotation_contains_type(annotation: Any, target: type) -> bool:
+        """Whether a value declared as `annotation` could contain a `target`."""
+
         def contains(current: Any, seen: set[type]) -> bool:
             if isclass(current) and issubclass(current, target):
                 return True
 
-            origin = get_origin(current)
-            if origin in (Union, types.UnionType, list, dict, tuple, set):
-                return any(
-                    arg is not Ellipsis
-                    and arg is not type(None)
-                    and contains(arg, seen)
-                    for arg in get_args(current)
-                )
+            if parts := annotation_parts(current):
+                return any(contains(part, seen) for part in parts)
 
             model = ModelStore.to_pydantic(current)
             if model is None or model in seen:
@@ -677,6 +731,29 @@ class SignalSchema:
             )
 
         return contains(annotation, set())
+
+    @staticmethod
+    def _file_bearing_fields(model: type[BaseModel]) -> tuple[str, ...]:
+        """Names of the fields of `model` that could contain a `File`.
+
+        Names only, never annotations: a recursive model's annotation refers back
+        to the model, which would pin the weak key and keep the class alive.
+        """
+        try:
+            return _FILE_BEARING_FIELDS[model]
+        except KeyError:
+            pass
+        fields = tuple(
+            name
+            for name, finfo in model.model_fields.items()
+            if finfo.annotation is not None
+            and SignalSchema._annotation_contains_type(finfo.annotation, File)
+        )
+        # An incomplete model may still have unresolved forward refs, so the answer
+        # can change once `model_rebuild()` runs; don't freeze it.
+        if getattr(model, "__pydantic_complete__", True):
+            _FILE_BEARING_FIELDS[model] = fields
+        return fields
 
     @staticmethod
     def _all_values_none(value: Any) -> bool:
@@ -851,29 +928,43 @@ class SignalSchema:
             if catalog is not None:
                 SignalSchema._set_file_stream(obj, catalog, cache)
             result = obj
-        elif origin is list:
-            args = get_args(annotation)
-            if args and isinstance(value, (list, tuple)):
-                item_type = args[0]
-                result = [
-                    self._convert_feature_value(item_type, item, catalog, cache)
+        elif is_sequence_annotation(annotation):
+            parts = annotation_parts(annotation)
+            if parts and isinstance(value, (list, tuple)):
+                # `tuple[A, B]` is positional; every other collection is uniform
+                positional = is_tuple_annotation(annotation) and len(parts) > 1
+                converted = [
+                    self._convert_feature_value(
+                        parts[i] if positional and i < len(parts) else parts[0],
+                        item,
+                        catalog,
+                        cache,
+                    )
                     if item is not None
                     else None
-                    for item in value
+                    for i, item in enumerate(value)
                 ]
-        elif origin is dict:
-            args = get_args(annotation)
-            if len(args) == 2 and isinstance(value, dict):
-                key_type, val_type = args
+                # the DB hands back a list; a declared tuple must arrive as one
+                result = (
+                    tuple(converted) if is_tuple_annotation(annotation) else converted
+                )
+        elif is_mapping_annotation(annotation):
+            parts = annotation_parts(annotation)
+            if len(parts) == 2 and isinstance(value, Mapping):
+                key_type, val_type = parts
+                decode_keys = key_needs_json_decode(key_type)
                 result = {}
                 for key, val in value.items():
-                    if key_type is str:
-                        converted_key = key
-                    else:
-                        loaded_key = json.loads(key)
-                        converted_key = self._convert_feature_value(
-                            key_type, loaded_key, catalog, cache
-                        )
+                    converted_key = key
+                    if decode_keys:
+                        try:
+                            converted_key = self._convert_feature_value(
+                                key_type, json.loads(key), catalog, cache
+                            )
+                        except ValueError:
+                            # Declared type and stored key disagree; keep the raw key
+                            # rather than failing the whole row.
+                            converted_key = key
                     converted_val = (
                         self._convert_feature_value(val_type, val, catalog, cache)
                         if val_type is not Any
@@ -901,32 +992,33 @@ class SignalSchema:
             obj._set_stream(catalog, caching_enabled=cache, download_cb=download_cb)
 
         if isinstance(obj, BaseModel):
-            for field, finfo in type(obj).model_fields.items():
-                field_annotation = finfo.annotation
-                if (
-                    field_annotation is not None
-                    and SignalSchema._annotation_contains_type(
-                        typing_cast("Hashable", field_annotation), File
-                    )
-                ):
-                    SignalSchema._set_file_stream(
-                        getattr(obj, field),
-                        catalog,
-                        cache,
-                        download_cb,
-                        field_annotation,
-                        seen,
-                    )
+            model_fields = type(obj).model_fields
+            for field in SignalSchema._file_bearing_fields(type(obj)):
+                SignalSchema._set_file_stream(
+                    getattr(obj, field),
+                    catalog,
+                    cache,
+                    download_cb,
+                    model_fields[field].annotation,
+                    seen,
+                )
         elif isinstance(obj, Mapping):
-            args = get_args(annotation) if annotation is not None else ()
-            value_annotation = args[1] if len(args) == 2 else None
-            for value in obj.values():
+            parts = annotation_parts(annotation) if annotation is not None else ()
+            key_annotation = parts[0] if len(parts) == 2 else None
+            value_annotation = parts[1] if len(parts) == 2 else None
+            for key, value in obj.items():
+                # Keys can be models too, when they are hashable.
+                SignalSchema._set_file_stream(
+                    key, catalog, cache, download_cb, key_annotation, seen
+                )
                 SignalSchema._set_file_stream(
                     value, catalog, cache, download_cb, value_annotation, seen
                 )
-        elif isinstance(obj, (list, tuple, set)):
-            args = get_args(annotation) if annotation is not None else ()
-            item_annotation = args[0] if args else None
+        elif isinstance(obj, (set, Sequence)) and not isinstance(obj, (str, bytes)):
+            # abc.Sequence so that a declared Sequence[File] backed by deque or
+            # UserList is walked, not only the built-in list/tuple
+            parts = annotation_parts(annotation) if annotation is not None else ()
+            item_annotation = parts[0] if parts else None
             for value in obj:
                 SignalSchema._set_file_stream(
                     value, catalog, cache, download_cb, item_annotation, seen
