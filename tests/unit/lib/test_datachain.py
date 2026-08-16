@@ -951,6 +951,58 @@ def test_map_hydrates_models_in_optional_dict_param(test_session):
     assert chain.to_values("count") == [3]
 
 
+def test_map_hydrates_models_in_tuple_param(test_session):
+    class TupleCollection(DataModel):
+        items: tuple[MyFr, ...]
+
+    def get_count(items: tuple[MyFr, ...]) -> int:
+        assert isinstance(items[0], MyFr)
+        return items[0].count
+
+    chain = dc.read_values(
+        collection=[TupleCollection(items=(MyFr(nnn="item", count=4),))],
+        session=test_session,
+    ).map(
+        get_count,
+        params=["collection.items"],
+        output={"count": int},
+    )
+
+    assert chain.to_values("count") == [4]
+
+
+def test_map_keeps_string_dict_keys_in_union(test_session):
+    class UnionKeyCollection(DataModel):
+        lookup: dict[str | None, int]
+
+    def total(lookup: dict[str | None, int]) -> int:
+        return sum(lookup.values())
+
+    chain = dc.read_values(
+        collection=[UnionKeyCollection(lookup={"item": 5})],
+        session=test_session,
+    ).map(
+        total,
+        params=["collection.lookup"],
+        output={"count": int},
+    )
+
+    assert chain.to_values("count") == [5]
+
+
+def test_map_reads_file_from_setup_value(test_session, tmp_path):
+    (tmp_path / "reference.txt").write_text("reference")
+    uri = tmp_path.as_uri()
+
+    chain = (
+        dc.read_storage(uri, session=test_session)
+        .setup(ref=lambda: File(path="reference.txt", source=uri))
+        .map(size=lambda ref: len(ref.read()), output=int)
+    )
+
+    assert chain.to_values("size") == [len("reference")]
+
+
 def test_map_reads_file_in_nested_collection(test_session, tmp_path):
     class FileCollection(DataModel):
         files: list[File]
