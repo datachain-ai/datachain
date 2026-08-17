@@ -1,18 +1,22 @@
 import json
 import pickle
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from datetime import datetime
 from typing import (
     Any,
     Final,
     ForwardRef,
+    Generic,
     Optional,
+    TypeVar,
     Union,
     get_args,
     get_origin,
 )
 
 import pytest
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError
+from typing_extensions import TypedDict
 
 from datachain import Column, DataModel, Sys, func
 from datachain.lib.convert.flatten import flatten
@@ -55,6 +59,13 @@ def nested_file_schema():
     schema = {"name": str, "age": float, "f": File, "my_f": _MyFile}
 
     return SignalSchema(schema)
+
+
+_T = TypeVar("_T")
+
+
+class GenericTypedRow(TypedDict, Generic[_T]):
+    x: int
 
 
 class MyType1(DataModel):
@@ -1010,6 +1021,255 @@ def test_row_to_features_optional_collection(test_session):
     items = features[0]
     assert isinstance(items, list)
     assert isinstance(items[0], MyType1)
+
+
+def test_row_to_features_sets_stream_in_model_collection(test_session):
+    class FileCollection(DataModel):
+        files: list[File]
+
+    file = File(path="nested.txt")
+    schema = SignalSchema({"collection": FileCollection})
+
+    (collection,) = schema.row_to_features(([file.model_dump()],), test_session.catalog)
+
+    assert collection.files[0]._catalog is test_session.catalog
+
+
+def test_row_to_objs_preserves_plain_collection():
+    values = [1.0, 2.0]
+
+    (converted,) = SignalSchema({"values": list[float]}).row_to_objs((values,))
+
+    assert converted is values
+
+
+@pytest.mark.parametrize(
+    "key_type,raw,expected",
+    [
+        # Keys that can be ordinary strings must not be JSON-decoded.
+        (str, {"foo": 1}, {"foo": 1}),
+        (Optional[str], {"foo": 1}, {"foo": 1}),
+        (Any, {"foo": 1}, {"foo": 1}),
+        # Keys that cannot be strings are decoded back to the declared type.
+        (int, {"1": 2}, {1: 2}),
+        (Optional[int], {"1": 2}, {1: 2}),
+    ],
+)
+def test_row_to_objs_dict_key_decoding(key_type, raw, expected):
+    (converted,) = SignalSchema({"m": dict[key_type, int]}).row_to_objs((raw,))
+
+    assert converted == expected
+
+
+def test_row_to_features_does_not_decode_string_keys(test_session):
+    schema = SignalSchema({"m": dict[Optional[str], int]})
+
+    (converted,) = schema.row_to_features(({"foo": 1},), test_session.catalog)
+
+    assert converted == {"foo": 1}
+
+
+def test_row_to_objs_restores_tuple_shape_without_conversion():
+    # Nothing to convert, but the declared tuple must not arrive as a list.
+    (converted,) = SignalSchema({"t": tuple[int, ...]}).row_to_objs(([1, 2],))
+
+    assert converted == (1, 2)
+
+
+def test_row_to_objs_converts_fixed_tuple_positionally():
+    raw = [1, {"path": "a.txt"}]
+
+    (converted,) = SignalSchema({"t": tuple[int, File]}).row_to_objs((raw,))
+
+    assert converted[0] == 1
+    assert isinstance(converted[1], File)
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        # A key type that admits plain strings is never decoded, so a key that
+        # happens to look like JSON stays a string.
+        ({"foo": 1}, {"foo": 1}),
+        ({"null": 1}, {"null": 1}),
+    ],
+)
+def test_row_to_objs_leaves_string_admitting_keys_alone(raw, expected):
+    (converted,) = SignalSchema({"m": dict[Optional[str], int]}).row_to_objs((raw,))
+
+    assert converted == expected
+
+
+@pytest.mark.parametrize(
+    "annotation",
+    [Collection[MyType1], Iterable[MyType1], Sequence[MyType1], list[MyType1]],
+)
+def test_both_readers_hydrate_the_same_collections(annotation, test_session):
+    raw = [{"aa": 1, "bb": "b"}]
+    schema = SignalSchema({"x": annotation})
+
+    (from_objs,) = schema.row_to_objs((raw,))
+    (from_features,) = schema.row_to_features((raw,), test_session.catalog)
+
+    assert isinstance(next(iter(from_objs)), MyType1)
+    assert isinstance(next(iter(from_features)), MyType1)
+
+
+def test_row_to_objs_keeps_sequence_as_a_list():
+    # Sequence is satisfiable by a tuple but is not one, so a stored list must
+    # come back as a list, unlike a declared tuple.
+    (converted,) = SignalSchema({"s": Sequence[MyType1]}).row_to_objs(
+        ([{"aa": 1, "bb": "b"}],)
+    )
+
+    assert isinstance(converted, list)
+    assert isinstance(converted[0], MyType1)
+
+
+def test_row_to_objs_decodes_tuple_keys():
+    (converted,) = SignalSchema({"m": dict[tuple[str, int], int]}).row_to_objs(
+        ({'["a",1]': 2},)
+    )
+
+    assert converted == {("a", 1): 2}
+
+
+def test_row_to_objs_hydrates_tuple_collection():
+    raw = [{"aa": 1, "bb": "b"}]
+
+    (converted,) = SignalSchema({"items": tuple[MyType1, ...]}).row_to_objs((raw,))
+
+    assert isinstance(converted, tuple)
+    assert isinstance(converted[0], MyType1)
+
+
+def test_file_bearing_fields_does_not_pin_recursive_models():
+    import gc
+    import weakref
+
+    refs = []
+    for i in range(5):
+        # plain BaseModel: a DataModel would be pinned by ModelStore, not the cache
+        node = type(
+            f"Node{i}",
+            (BaseModel,),
+            {
+                "__annotations__": {"file": File, "child": f"Node{i} | None"},
+                "child": None,
+            },
+        )
+        node.model_rebuild(_types_namespace={f"Node{i}": node, "File": File})
+        # names only, so the cached value cannot refer back to the class
+        assert SignalSchema._file_bearing_fields(node) == ("file", "child")
+        refs.append(weakref.ref(node))
+        del node
+
+    gc.collect()
+
+    assert [r() for r in refs] == [None] * 5
+
+
+def test_set_file_streams_with_generic_typed_dict_field(test_session):
+    class Bundle(DataModel):
+        payload: GenericTypedRow[int]
+        file: File
+
+    file = File(path="a.txt")
+
+    # Scanning for File fields must not trip over a field that rejects issubclass.
+    SignalSchema({"b": Bundle}).set_file_streams(
+        [Bundle(payload={"x": 1}, file=file)], test_session.catalog
+    )
+
+    assert file._catalog is test_session.catalog
+
+
+def test_set_file_streams_in_nested_collections(test_session):
+    class FileHolder(DataModel):
+        file: File
+
+    file = File(path="nested.txt")
+    holder = FileHolder(file=file)
+
+    SignalSchema({"c": list[dict[str, FileHolder]]}).set_file_streams(
+        [[{"holder": holder}]], test_session.catalog
+    )
+
+    assert file._catalog is test_session.catalog
+
+
+def test_set_file_streams_handles_abstract_sequence(test_session):
+    class SeqHolder(DataModel):
+        files: Sequence[File]
+
+    file = File(path="nested.txt")
+
+    SignalSchema({"h": SeqHolder}).set_file_streams(
+        [SeqHolder(files=[file])], test_session.catalog
+    )
+
+    assert file._catalog is test_session.catalog
+
+
+def test_set_file_streams_handles_abstract_mapping(test_session):
+    class MapHolder(DataModel):
+        files: Mapping[str, File]
+
+    file = File(path="nested.txt")
+
+    SignalSchema({"h": MapHolder}).set_file_streams(
+        [MapHolder(files={"k": file})], test_session.catalog
+    )
+
+    assert file._catalog is test_session.catalog
+
+
+def test_set_file_streams_visits_a_shared_object_once(test_session):
+    class Holder(DataModel):
+        left: File
+        right: File
+
+    file = File(path="shared.txt")
+    calls = []
+    original = File._set_stream
+    File._set_stream = lambda self, *a, **k: (
+        calls.append(self),
+        original(self, *a, **k),
+    )[1]
+    try:
+        SignalSchema({"h": Holder}).set_file_streams(
+            [Holder(left=file, right=file)], test_session.catalog
+        )
+    finally:
+        File._set_stream = original
+
+    assert calls == [file]
+    assert file._catalog is test_session.catalog
+
+
+def test_set_file_streams_visits_mapping_keys(test_session):
+    class HashableFile(File):
+        model_config = ConfigDict(frozen=True)
+
+    key = HashableFile(path="key.txt")
+
+    SignalSchema({"m": dict[HashableFile, int]}).set_file_streams(
+        [{key: 1}], test_session.catalog
+    )
+
+    assert key._catalog is test_session.catalog
+
+
+def test_set_file_streams_skips_params_that_cannot_hold_a_file(test_session):
+    class Plain(DataModel):
+        name: str
+
+    schema = SignalSchema({"p": Plain, "f": File})
+    file = File(path="nested.txt")
+
+    schema.set_file_streams([Plain(name="x"), file], test_session.catalog)
+
+    assert file._catalog is test_session.catalog
 
 
 @pytest.mark.parametrize(

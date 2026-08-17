@@ -2,10 +2,14 @@ import pickle
 
 import pytest
 from cloudpickle import dumps, loads
+from fsspec.callbacks import DEFAULT_CALLBACK
+from pydantic import BaseModel
 
 import datachain as dc
 from datachain import Mapper
+from datachain.dataset import RowDict
 from datachain.lib.file import File
+from datachain.lib.signal_schema import SignalSchema
 from datachain.lib.udf import JsonSerializationError, UDFBase, UdfError, UdfRunError
 from datachain.lib.utils import DataChainError
 
@@ -138,6 +142,50 @@ def test_udf_verbose_name_multi_signal_mapper(test_session):
     )
     udf = chain._query.steps[-1].udf.inner
     assert udf.verbose_name == "stem, ext"
+
+
+def test_udf_does_not_traverse_setup_value():
+    value = {}
+    value["self"] = value
+    udf = UDFBase()
+    udf.params = SignalSchema({"config": str}, setup={"config": lambda: value})
+
+    assert udf._parse_row(RowDict(), object(), False, DEFAULT_CALLBACK) == [value]
+
+
+def test_udf_sets_stream_on_setup_file():
+    file = File(path="reference.txt")
+    udf = UDFBase()
+    udf.params = SignalSchema({"ref": str}, setup={"ref": lambda: file})
+    catalog = object()
+
+    udf._parse_row(RowDict(), catalog, False, DEFAULT_CALLBACK)
+
+    assert file._catalog is catalog
+
+
+def test_udf_sets_stream_in_setup_model_collection():
+    class Bundle(BaseModel):
+        files: list[File]
+
+    file = File(path="reference.txt")
+    udf = UDFBase()
+    udf.params = SignalSchema({"ref": str}, setup={"ref": lambda: Bundle(files=[file])})
+    catalog = object()
+
+    udf._parse_row(RowDict(), catalog, False, DEFAULT_CALLBACK)
+
+    assert file._catalog is catalog
+
+
+def test_udf_does_not_traverse_bare_setup_collection():
+    files = [File(path="reference.txt")]
+    udf = UDFBase()
+    udf.params = SignalSchema({"ref": str}, setup={"ref": lambda: files})
+
+    udf._parse_row(RowDict(), object(), False, DEFAULT_CALLBACK)
+
+    assert files[0]._catalog is None
 
 
 def test_udf_output_type_error_message(monkeypatch, test_session):
