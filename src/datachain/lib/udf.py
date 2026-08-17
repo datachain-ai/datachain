@@ -715,10 +715,9 @@ class _MultiSignalMapper(Mapper):
         # implementation would hash this class's process method, which is
         # identical across instances.
         parts = [
-            hash_callable(
-                fn.process if isinstance(fn, UDFBase) else fn,
-                include_body=include_body,
-            )
+            fn.hash(include_body=include_body)
+            if isinstance(fn, UDFBase)
+            else hash_callable(fn, include_body=include_body)
             for fn in self._signal_map.values()
         ]
         # _bound_columns carries the chain-column routing for BoundSpec entries;

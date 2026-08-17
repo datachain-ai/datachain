@@ -1,4 +1,5 @@
 import datetime
+import hashlib
 import io
 import json
 import math
@@ -1272,6 +1273,24 @@ def test_map_multiple_signals_hash_varies_with_bound_column(test_session):
     base = dc.read_values(c1=["a"], c2=["b"], session=test_session)
     udf_a = base.map(x=lambda c1, c2: c1 + c2, a=ColSpec("c1"))._query.steps[-1].udf
     udf_b = base.map(x=lambda c1, c2: c1 + c2, a=ColSpec("c2"))._query.steps[-1].udf
+    assert udf_a.hash() != udf_b.hash()
+
+
+def test_map_multiple_signals_hash_respects_mapper_hash_override(test_session):
+    class Tagged(dc.Mapper):
+        def __init__(self, tag: str):
+            super().__init__()
+            self._tag = tag
+
+        def process(self, name: str) -> str:
+            return f"{self._tag}:{name}"
+
+        def hash(self, include_body: bool = True) -> str:
+            return hashlib.sha256(f"Tagged:{self._tag}".encode()).hexdigest()
+
+    base = dc.read_values(name=["x"], session=test_session)
+    udf_a = base.map(t=Tagged("a"), u=lambda name: name)._query.steps[-1].udf
+    udf_b = base.map(t=Tagged("b"), u=lambda name: name)._query.steps[-1].udf
     assert udf_a.hash() != udf_b.hash()
 
 
