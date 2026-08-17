@@ -674,7 +674,13 @@ class _MultiSignalMapper(Mapper):
         output_values = sign.output_schema.values
         for name, fn in self._signal_map.items():
             if isinstance(fn, UDFBase):
-                fn.params = params
+                fn.params = SignalSchema(
+                    {
+                        p: params.values[p]
+                        for p in self._per_func_params[name]
+                        if p in params.values
+                    }
+                )
                 fn.output = SignalSchema({name: output_values[name]})
 
     def process(self, *args):
