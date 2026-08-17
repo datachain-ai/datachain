@@ -301,12 +301,8 @@ class LLMSpec(BoundSpec):
             )
 
     def _stamp(self, fn: Any, to_many: bool) -> Callable:
-        # Output type is declared as a normal return annotation; inputs flow via
-        # __datachain_params__ because column names may be dotted (e.g. "file.path"),
-        # which can't be function parameters.
         fn.__annotations__["return"] = self.return_annotation(to_many)
         fn.__name__ = fn.__qualname__ = f"llm_{self.kind}"
-        fn.__datachain_params__ = self.input_columns()
         return fn
 
     def bind(self, ctx: BindContext) -> Callable:

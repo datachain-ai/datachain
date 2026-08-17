@@ -1274,12 +1274,12 @@ class DataChain:
         is_generator = target_class.is_output_batched
         name = self.name or ""
 
+        if params is None:
+            params = self._bound_udf_params(func, signal_map)
         func = self._bind_udf_settings(func, target_class)
         signal_map = {
             k: self._bind_udf_settings(v, target_class) for k, v in signal_map.items()
         }
-        if params is None:
-            params = self._bound_udf_params(func, signal_map)
 
         sign = UdfSignature.parse(name, signal_map, func, params, output, is_generator)
         DataModel.register(list(sign.output_schema.values.values()))
@@ -1301,14 +1301,13 @@ class DataChain:
 
     @staticmethod
     def _bound_udf_params(func, signal_map) -> "Sequence[str] | None":
-        """Input columns declared by a settings-bound UDF spec (e.g. `datachain.llm`),
-        used when the verb is called without an explicit ``params=``. Lets a spec
-        consume nested/dotted columns that can't be expressed as signature names.
+        """Input columns declared by a BoundSpec (e.g. `datachain.llm`), used when
+        the verb is called without an explicit ``params=``. Lets a spec consume
+        nested/dotted columns that can't be expressed as signature names.
         """
-        for udf in (func, *signal_map.values()):
-            cols = getattr(udf, "__datachain_params__", None)
-            if isinstance(cols, list):
-                return cols
+        for spec in (func, *signal_map.values()):
+            if isinstance(spec, BoundSpec):
+                return spec.input_columns()
         return None
 
     def _extend_to_data_model(self, method_name, *args, **kwargs):
