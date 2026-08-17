@@ -128,6 +128,82 @@ def compute_model_fingerprint(
     return hashlib.sha256(json_str.encode("utf-8")).hexdigest()
 
 
+def _origin_accepts(container: type, t: Any) -> bool:
+    """Whether `container` would satisfy the origin of `t`.
+
+    Note the direction: `issubclass(dict, origin)`, not `origin is dict`, so
+    abstract spellings like `Mapping[str, X]` are recognised too. Some classes
+    refuse `issubclass` outright -- TypedDicts and non-method protocols raise --
+    and for those the answer is simply no.
+    """
+    orig = get_origin(t)
+    if not inspect.isclass(orig):
+        return False
+    try:
+        return issubclass(container, orig)
+    except TypeError:
+        return False
+
+
+def is_mapping_annotation(t: Any) -> bool:
+    """Whether `t` is a dict-like type, so `Mapping[str, X]` counts too.
+
+    Origins loose enough to accept a list as well -- `Collection`, `Iterable` --
+    are not mappings. Excluding them keeps this predicate mutually exclusive with
+    `is_sequence_annotation`, so callers cannot disagree by testing in a different
+    order, and matches `python_to_sql`, which maps those to `Array`.
+    """
+    return _origin_accepts(dict, t) and not _origin_accepts(list, t)
+
+
+def is_sequence_annotation(t: Any) -> bool:
+    """Whether `t` is a list- or tuple-like type; `Sequence[X]` counts too.
+
+    `set` is excluded because it is not a `DataType` and `python_to_sql` has no
+    column type for it.
+    """
+    return _origin_accepts(list, t) or _origin_accepts(tuple, t)
+
+
+def is_tuple_annotation(t: Any) -> bool:
+    """Whether `t` is genuinely a tuple, whose shape must be restored on read.
+
+    Note the direction: `issubclass(orig, tuple)`, not the reversed form used by
+    the container predicates. `Sequence[X]` is satisfiable by a tuple but is not
+    one, and rebuilding an ordinary list as a tuple would be wrong.
+    """
+    orig = get_origin(t)
+    return inspect.isclass(orig) and issubclass(orig, tuple)
+
+
+def annotation_parts(t: Any) -> tuple[Any, ...]:
+    """Components of a union or collection, `()` for a leaf.
+
+    `list[X]` -> `(X,)`, `dict[K, V]` -> `(K, V)`, `X | None` -> `(X,)`.
+    """
+    if get_origin(t) in (Union, types.UnionType):
+        return tuple(a for a in get_args(t) if a is not type(None))
+    if is_mapping_annotation(t) or is_sequence_annotation(t):
+        return tuple(a for a in get_args(t) if a is not Ellipsis)
+    return ()
+
+
+def key_needs_json_decode(t: Any) -> bool:
+    """Whether mapping keys of type `t` are JSON-encoded in the DB.
+
+    Keys are stored as strings, so `dict[int, ...]` reads back as `{"1": ...}`
+    and needs decoding, but a key type that can be a plain string must not --
+    `"foo"` is not valid JSON.
+    """
+    if t is str or t is Any:
+        return False
+    if get_origin(t) in (Union, types.UnionType):
+        # one arm that can be a plain string makes decoding unsafe for all of them
+        return all(key_needs_json_decode(p) for p in annotation_parts(t))
+    # a collection key is never a plain string, whatever its components are
+    return True
+
+
 def unwrap_optional(t: Any) -> tuple[Any, bool]:
     """Unwrap a type that includes `None` to `(non_none, True)`.
 
@@ -200,13 +276,19 @@ def is_chain_type(t: type) -> bool:
     if is_optional:
         return is_chain_type(inner)
 
+    # Deliberately not using `annotation_parts` here. This is validation, not
+    # traversal: it must see the raw args, since normalising away `Ellipsis` would
+    # let `list[int, ...]` through to be serialized as `list[int]`. Only `list` and
+    # `dict` at the exact arity `type_to_str` can write back out are accepted --
+    # abstract origins serialize as a bare "Sequence"/"Mapping", and `python_to_sql`
+    # mis-types tuples. Matching on the origin identity also avoids `issubclass`
+    # against generics that reject it (TypedDicts, some protocols).
     orig = get_origin(t)
     args = get_args(t)
-    if orig is list and len(args) == 1:
-        return is_chain_type(get_args(t)[0])
-
-    if orig is dict and len(args) == 2:
-        return is_chain_type(args[0]) and is_chain_type(args[1])
+    if orig is list:
+        return len(args) == 1 and is_chain_type(args[0])
+    if orig is dict:
+        return len(args) == 2 and all(is_chain_type(arg) for arg in args)
 
     return False
 

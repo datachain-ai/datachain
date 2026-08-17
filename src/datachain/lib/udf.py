@@ -9,7 +9,7 @@ from contextlib import closing, nullcontext
 from dataclasses import dataclass
 from functools import partial
 from graphlib import CycleError, TopologicalSorter
-from typing import TYPE_CHECKING, Any, TypeVar, cast
+from typing import TYPE_CHECKING, Any, TypeVar
 
 import attrs
 from fsspec.callbacks import DEFAULT_CALLBACK, Callback
@@ -26,7 +26,6 @@ from datachain.lib.convert.flatten import (
     is_optional_model,
 )
 from datachain.lib.file import File, FileError
-from datachain.lib.signal_schema import SignalSchema
 from datachain.lib.utils import AbstractUDF, DataChainParamsError
 from datachain.query.batch import (
     Batch,
@@ -48,6 +47,7 @@ if TYPE_CHECKING:
     from datachain.cache import Cache
     from datachain.catalog import Catalog
     from datachain.lib.settings import Settings
+    from datachain.lib.signal_schema import SignalSchema
     from datachain.lib.udf_signature import UdfSignature
     from datachain.query.batch import RowsOutput
 
@@ -556,17 +556,7 @@ class UDFBase(AbstractUDF):
         assert self.params
         row = [row_dict[p] for p in self.params.to_udf_spec()]
         obj_row = self.params.row_to_objs(row)
-        for obj, annotation in zip(obj_row, self.params.values.values(), strict=True):
-            if self.params._annotation_contains_type(
-                cast("abc.Hashable", annotation), File
-            ):
-                SignalSchema._set_file_stream(
-                    obj,
-                    catalog,
-                    cache,
-                    download_cb=download_cb,
-                    annotation=annotation,
-                )
+        self.params.set_file_streams(obj_row, catalog, cache, download_cb)
         return obj_row
 
     def _prepare_row(
