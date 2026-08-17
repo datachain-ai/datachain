@@ -721,6 +721,11 @@ class _MultiSignalMapper(Mapper):
             )
             for fn in self._signal_map.values()
         ]
+        # _bound_columns carries the chain-column routing for BoundSpec entries;
+        # the bound closures don't encode it in their bytecode, so we mix it in
+        # here to keep different routings distinct.
+        routing = repr(sorted((k, tuple(v)) for k, v in self._bound_columns.items()))
+        parts.append(hashlib.sha256(routing.encode()).hexdigest())
         parts.append(self.params.hash() if self.params else "")
         parts.append(self.output.hash())
         return hashlib.sha256(b"".join([bytes.fromhex(p) for p in parts])).hexdigest()

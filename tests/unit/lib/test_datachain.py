@@ -1254,6 +1254,27 @@ def test_map_multiple_signals_zero_arg_producer_with_consumers(test_session):
     assert rows == [(10, 20, 30)]
 
 
+def test_map_multiple_signals_hash_varies_with_bound_column(test_session):
+    class ColSpec(BoundSpec):
+        def __init__(self, col: str):
+            self._col = col
+
+        def bind(self, ctx: BindContext):
+            return lambda value: f"V:{value}"
+
+        def input_columns(self):
+            return [self._col]
+
+        @property
+        def output_count(self):
+            return 1
+
+    base = dc.read_values(c1=["a"], c2=["b"], session=test_session)
+    udf_a = base.map(x=lambda c1, c2: c1 + c2, a=ColSpec("c1"))._query.steps[-1].udf
+    udf_b = base.map(x=lambda c1, c2: c1 + c2, a=ColSpec("c2"))._query.steps[-1].udf
+    assert udf_a.hash() != udf_b.hash()
+
+
 def test_map_multiple_signals_mapper_subclass(test_session):
     """A Mapper subclass instance can be used alongside plain lambdas."""
     setup_calls = []
