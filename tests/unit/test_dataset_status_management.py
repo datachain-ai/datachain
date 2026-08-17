@@ -1172,9 +1172,6 @@ def test_explicit_keep_metadata_decides_interrupted_keep(
     expected_removed,
     expected_status,
 ):
-    """Without the flag set, the caller's keep_metadata decides an interrupted
-    keep-metadata remove: True finishes the tombstone, False conflicts with it
-    and is skipped."""
     catalog = test_session.catalog
     version = dataset_complete.latest_version
     ds = _force_status(
