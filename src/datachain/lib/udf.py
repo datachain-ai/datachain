@@ -594,16 +594,14 @@ class _MultiSignalMapper(Mapper):
                 params = list(self._bound_columns[name])
             else:
                 params = self._resolve_sig_params(name, fn)
-            self._per_func_params[name] = params
-            deps[name] = {p for p in params if p in output_names and p != name}
-
-        for name, params in self._per_func_params.items():
             if name in params:
                 raise DataChainParamsError(
                     f"map() entry {name!r} declares a parameter named {name!r} "
                     "- an entry can't read a column with the same name as its "
                     "own output. Rename the output or the parameter."
                 )
+            self._per_func_params[name] = params
+            deps[name] = {p for p in params if p in output_names}
 
         try:
             self._exec_order = list(TopologicalSorter(deps).static_order())
