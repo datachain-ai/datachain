@@ -1115,6 +1115,119 @@ def test_gc_skips_finalized_tombstones(test_session, dataset_complete):
     assert _find_removed(ds, version) is not None
 
 
+def test_gc_collects_tombstone_requeued_for_metadata_drop(
+    test_session, dataset_complete
+):
+    catalog = test_session.catalog
+    version = dataset_complete.latest_version
+    name = dataset_complete.name
+    _force_status(
+        catalog,
+        dataset_complete,
+        version,
+        DatasetStatus.REMOVED,
+        pending_metadata_drop=True,
+    )
+
+    catalog.cleanup_dataset_versions()
+
+    with pytest.raises(DatasetNotFoundError):
+        catalog.get_dataset(name)
+
+
+@pytest.mark.parametrize("status", [DatasetStatus.REMOVING, DatasetStatus.REMOVED])
+def test_pending_metadata_drop_overrides_explicit_keep_metadata(
+    test_session, dataset_complete, status
+):
+    catalog = test_session.catalog
+    name = dataset_complete.name
+    version = dataset_complete.latest_version
+    ds = _force_status(
+        catalog,
+        dataset_complete,
+        version,
+        status,
+        pending_metadata_drop=True,
+    )
+
+    catalog.remove_dataset_versions(
+        version_ids=[ds.get_version(version).id], keep_metadata=True
+    )
+
+    with pytest.raises(DatasetNotFoundError):
+        catalog.get_dataset(name, include_incomplete=True)
+
+
+@pytest.mark.parametrize(
+    "keep_metadata,expected_removed,expected_status",
+    [
+        (True, 1, DatasetStatus.REMOVED),
+        (False, 0, DatasetStatus.REMOVING),
+    ],
+)
+def test_explicit_keep_metadata_decides_interrupted_keep(
+    test_session,
+    dataset_complete,
+    keep_metadata,
+    expected_removed,
+    expected_status,
+):
+    catalog = test_session.catalog
+    version = dataset_complete.latest_version
+    ds = _force_status(
+        catalog,
+        dataset_complete,
+        version,
+        DatasetStatus.REMOVING,
+        pending_metadata_drop=False,
+    )
+
+    num_removed = catalog.remove_dataset_versions(
+        version_ids=[ds.get_version(version).id], keep_metadata=keep_metadata
+    )
+
+    ds = catalog.get_dataset(
+        dataset_complete.name, versions=None, include_incomplete=True
+    )
+    assert num_removed == expected_removed
+    assert ds.get_version(version).status == expected_status
+
+
+def test_metadata_drop_requeue_survives_tombstone_finalize(
+    monkeypatch, test_session, dataset_complete
+):
+    catalog = test_session.catalog
+    version = dataset_complete.latest_version
+    name = dataset_complete.name
+    drop_rows = catalog.warehouse.drop_dataset_rows_table
+
+    def drop_rows_and_requeue(dataset, dataset_version):
+        drop_rows(dataset, dataset_version)
+        updated = catalog.metastore.update_dataset_version(
+            dataset,
+            dataset_version,
+            expected_status=DatasetStatus.REMOVING,
+            pending_metadata_drop=True,
+        )
+        assert updated is not None
+
+    monkeypatch.setattr(
+        catalog.warehouse, "drop_dataset_rows_table", drop_rows_and_requeue
+    )
+
+    catalog.remove_dataset_version(dataset_complete, version, keep_metadata=True)
+
+    ds = catalog.get_dataset(name, versions=None, include_incomplete=True)
+    tombstone = _find_removed(ds, version)
+    assert tombstone.status == DatasetStatus.REMOVED
+    assert tombstone.pending_metadata_drop
+
+    catalog.cleanup_dataset_versions()
+
+    with pytest.raises(DatasetNotFoundError):
+        catalog.get_dataset(name)
+
+
 @pytest.mark.parametrize("drop_rows_first", [False, True])
 def test_gc_resumes_interrupted_full_remove(
     test_session, dataset_complete, drop_rows_first

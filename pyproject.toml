@@ -71,6 +71,7 @@ docs = [
   "mkdocstrings-python>=1.6.3",
   "mkdocs-literate-nav>=0.6.1",
   "mkdocs-section-index>=0.3.10",
+  "mkdocs-redirects>=1.2.1",
   "eval-type-backport"
 ]
 torch = [
