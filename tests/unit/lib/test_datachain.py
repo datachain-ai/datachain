@@ -1,4 +1,5 @@
 import datetime
+import enum
 import io
 import json
 import math
@@ -14,6 +15,7 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+import sqlalchemy
 from pydantic import BaseModel
 
 import datachain as dc
@@ -40,11 +42,12 @@ from datachain.lib.signal_schema import (
     SignalResolvingError,
     SignalResolvingTypeError,
     SignalSchema,
+    SignalSchemaWarning,
 )
 from datachain.lib.udf import UDFAdapter
 from datachain.lib.udf_signature import UdfSignatureError
 from datachain.lib.utils import DataChainColumnError, DataChainParamsError
-from datachain.sql.types import Float, Int64, String
+from datachain.sql.types import Float, Int64, SQLType, String
 from datachain.utils import STUDIO_URL
 from tests.utils import (
     ANY_VALUE,
@@ -3671,6 +3674,209 @@ def test_mutate_with_composed_func_expression(test_session):
     )
     # "a" + ".csv" = 5, "hello" + ".csv" = 9, "readme" + ".csv" = 10
     assert result == [5, 9, 10]
+
+
+def test_mutate_expression_column_is_in_saved_schema(test_session):
+    dc.read_values(id=[1, 2], session=test_session).mutate(
+        half=dc.C("id") / 2, minus=dc.C("id") - 1
+    ).save("mutated")
+
+    dataset = test_session.catalog.get_dataset("mutated", versions=None)
+    schema = dataset.get_version("1.0.0").schema
+    assert schema["half"] == Float
+    assert schema["minus"] == Int64
+
+    ds = dc.read_dataset("mutated", session=test_session).order_by("id")
+    assert ds.to_list("half", "minus") == [(0.5, 0), (1.0, 1)]
+
+
+def test_mutate_composed_expression_column_is_in_saved_schema(test_session):
+    dc.read_values(id=[1, 2], session=test_session).mutate(
+        composed=(dc.C("id") - 1) * 2 + dc.C("id") / 2
+    ).save("mutated-composed")
+
+    dataset = test_session.catalog.get_dataset("mutated-composed", versions=None)
+    assert dataset.get_version("1.0.0").schema["composed"] == Float
+
+    ds = dc.read_dataset("mutated-composed", session=test_session).order_by("id")
+    assert ds.to_values("composed") == [0.5, 3.0]
+
+
+def test_mutate_expression_column_only_signal_in_saved_chain(test_session):
+    dc.read_values(id=[1, 2], session=test_session).mutate(minus=dc.C("id") - 1).select(
+        "minus"
+    ).save("mutated-only")
+
+    dataset = test_session.catalog.get_dataset("mutated-only", versions=None)
+    schema = dataset.get_version("1.0.0").schema
+    assert schema["minus"] == Int64
+    assert "id" not in schema
+
+    ds = dc.read_dataset("mutated-only", session=test_session).order_by("minus")
+    assert ds.to_values("minus") == [0, 1]
+
+
+@pytest.mark.parametrize("swap", [False, True])
+def test_mutate_expression_column_through_union(test_session, swap):
+    mutated = dc.read_values(id=[1], session=test_session).mutate(minus=dc.C("id") - 1)
+    plain = dc.read_values(id=[2], minus=[1], session=test_session)
+    first, second = (plain, mutated) if swap else (mutated, plain)
+    first.union(second).save("mutated-union")
+
+    dataset = test_session.catalog.get_dataset("mutated-union", versions=None)
+    assert dataset.get_version("1.0.0").schema["minus"] == Int64
+
+    ds = dc.read_dataset("mutated-union", session=test_session).order_by("id")
+    assert ds.to_list("id", "minus") == [(1, 0), (2, 1)]
+
+
+def test_mutate_renamed_expression_column_is_in_saved_schema(test_session):
+    dc.read_values(id=[1, 2], session=test_session).mutate(minus=dc.C("id") - 1).mutate(
+        renamed=dc.C("minus")
+    ).save("mutated-renamed")
+
+    dataset = test_session.catalog.get_dataset("mutated-renamed", versions=None)
+    schema = dataset.get_version("1.0.0").schema
+    assert schema["renamed"] == Int64
+    assert "minus" not in schema
+
+    ds = dc.read_dataset("mutated-renamed", session=test_session).order_by("id")
+    assert ds.to_values("renamed") == [0, 1]
+
+
+def test_read_dataset_with_expression_column_missing_from_schema(test_session):
+    dc.read_values(id=[1, 2], session=test_session).mutate(minus=dc.C("id") - 1).save(
+        "mutated-legacy"
+    )
+
+    metastore = test_session.catalog.metastore
+    dataset = metastore.get_dataset("mutated-legacy", versions=None)
+    version = dataset.get_version("1.0.0")
+    legacy_schema = {
+        name: typ.to_dict() if isinstance(typ, SQLType) else typ().to_dict()
+        for name, typ in version.schema.items()
+        if name != "minus"
+    }
+    metastore.update_dataset_version(dataset, "1.0.0", schema=legacy_schema)
+
+    ds = dc.read_dataset("mutated-legacy", session=test_session).order_by("id")
+    assert ds.signals_schema.values["minus"] is int
+    assert ds.to_list("id", "minus") == [(1, 0), (2, 1)]
+
+
+def test_mutate_expression_column_composed_with_func(test_session):
+    dc.read_values(name=["ab", "abcd"], session=test_session).mutate(
+        length_plus=string.length("name") + 1
+    ).save("mutated-func-expr")
+
+    dataset = test_session.catalog.get_dataset("mutated-func-expr", versions=None)
+    assert dataset.get_version("1.0.0").schema["length_plus"] == Int64
+
+    ds = dc.read_dataset("mutated-func-expr", session=test_session).order_by("name")
+    assert ds.to_values("length_plus") == [3, 5]
+
+
+def test_mutate_expression_column_through_filter_and_distinct(test_session):
+    dc.read_values(id=[1, 2, 3, 3], session=test_session).mutate(
+        minus=dc.C("id") - 1
+    ).filter(dc.C("minus") > 0).distinct("minus").order_by("minus").save("mutated-ops")
+
+    dataset = test_session.catalog.get_dataset("mutated-ops", versions=None)
+    assert dataset.get_version("1.0.0").schema["minus"] == Int64
+
+    ds = dc.read_dataset("mutated-ops", session=test_session).order_by("minus")
+    assert ds.to_values("minus") == [1, 2]
+
+
+def test_mutate_expression_column_through_group_by(test_session):
+    dc.read_values(id=[1, 2, 3], grp=["a", "a", "b"], session=test_session).mutate(
+        minus=dc.C("id") - 1
+    ).group_by(total=func.sum("minus"), partition_by="grp").save("mutated-group")
+
+    dataset = test_session.catalog.get_dataset("mutated-group", versions=None)
+    assert dataset.get_version("1.0.0").schema["total"] == Int64
+
+    ds = dc.read_dataset("mutated-group", session=test_session).order_by("grp")
+    assert ds.to_list("grp", "total") == [("a", 1), ("b", 2)]
+
+
+def test_mutate_expression_column_through_window(test_session):
+    window = func.window(partition_by="grp", order_by="minus", desc=True)
+    dc.read_values(id=[1, 2, 3], grp=["a", "a", "b"], session=test_session).mutate(
+        minus=dc.C("id") - 1
+    ).mutate(rank=func.row_number().over(window)).save("mutated-window")
+
+    dataset = test_session.catalog.get_dataset("mutated-window", versions=None)
+    schema = dataset.get_version("1.0.0").schema
+    assert schema["minus"] == Int64
+    assert schema["rank"] == Int64
+
+    ds = dc.read_dataset("mutated-window", session=test_session).order_by("id")
+    assert ds.to_list("minus", "rank") == [(0, 2), (1, 1), (2, 1)]
+
+
+def test_mutate_expression_column_through_merge(test_session):
+    left = dc.read_values(id=[1, 2], session=test_session).mutate(minus=dc.C("id") - 1)
+    right = dc.read_values(minus=[0, 1], tag=["x", "y"], session=test_session)
+    left.merge(right, on="minus").save("mutated-merge")
+
+    dataset = test_session.catalog.get_dataset("mutated-merge", versions=None)
+    assert dataset.get_version("1.0.0").schema["minus"] == Int64
+
+    ds = dc.read_dataset("mutated-merge", session=test_session).order_by("id")
+    assert ds.to_list("minus", "tag") == [(0, "x"), (1, "y")]
+
+
+def test_mutate_expression_column_through_subtract(test_session):
+    left = dc.read_values(id=[1, 2, 3], session=test_session).mutate(
+        minus=dc.C("id") - 1
+    )
+    right = dc.read_values(id=[1], session=test_session).mutate(minus=dc.C("id") - 1)
+    left.subtract(right, on="minus").save("mutated-subtract")
+
+    dataset = test_session.catalog.get_dataset("mutated-subtract", versions=None)
+    assert dataset.get_version("1.0.0").schema["minus"] == Int64
+
+    ds = dc.read_dataset("mutated-subtract", session=test_session).order_by("id")
+    assert ds.to_values("minus") == [1, 2]
+
+
+def test_mutate_enum_typed_expression_column(test_session):
+    # int-valued: clickhouse-sqlalchemy cannot compile string-valued Enum casts
+    class Kind(enum.Enum):
+        A = 1
+
+    chain = dc.read_values(id=[1, 2], session=test_session).mutate(
+        kind=sqlalchemy.cast(sqlalchemy.literal(1), sqlalchemy.Enum(Kind))
+    )
+    # rendering is backend-specific (SQLite "1", ClickHouse "A"), type is not
+    assert [type(v) for v in chain.to_values("kind")] == [str, str]
+
+    with pytest.warns(SignalSchemaWarning, match="'Kind'"):
+        chain.save("mutated-enum")
+        ds = dc.read_dataset("mutated-enum", session=test_session).order_by("id")
+        ids = ds.to_values("id")
+
+    dataset = test_session.catalog.get_dataset("mutated-enum", versions=None)
+    assert dataset.get_version("1.0.0").schema["kind"] == Int64
+    assert ids == [1, 2]
+
+    # enum definitions are not persisted in feature_schema yet, so the
+    # enum-typed signal itself is dropped on reload
+    with pytest.raises(SignalResolvingError, match="kind"):
+        ds.to_values("kind")
+
+
+def test_mutate_expression_column_on_empty_chain(test_session):
+    dc.read_values(id=[], session=test_session, output={"id": int}).mutate(
+        minus=dc.C("id") - 1
+    ).save("mutated-empty")
+
+    dataset = test_session.catalog.get_dataset("mutated-empty", versions=None)
+    assert dataset.get_version("1.0.0").schema["minus"] == Int64
+
+    ds = dc.read_dataset("mutated-empty", session=test_session)
+    assert ds.to_values("minus") == []
 
 
 @skip_if_not_sqlite

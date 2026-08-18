@@ -1675,13 +1675,11 @@ class DataChain:
                     val.type = python_to_sql(type(value))()
                     mutated[name] = val  # type: ignore[assignment]
                 else:
+                    sql_type: Any = python_to_sql(sql_to_python(value))
                     # nullable physical type so ClickHouse keeps the NULL
                     if schema._expr_references_nullable(value):
-                        sql_type = SQLType.as_nullable(
-                            python_to_sql(sql_to_python(value))
-                        )
-                        value = sqlalchemy.type_coerce(value, sql_type)
-                    mutated[name] = value
+                        sql_type = SQLType.as_nullable(sql_type)
+                    mutated[name] = sqlalchemy.type_coerce(value, sql_type)  # type: ignore[assignment]
 
             new_schema = schema.mutate(kwargs)
         except SignalResolvingError as err:
