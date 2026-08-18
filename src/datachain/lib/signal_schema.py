@@ -310,6 +310,7 @@ class SignalSchema:
 
         self.setup_func = setup or {}
         self.setup_values = None
+        self._undecodable_key_signals: set[str] = set()
         for key, func in self.setup_func.items():
             if not callable(func):
                 raise SetupError(key, "value must be function or callable class")
@@ -642,7 +643,7 @@ class SignalSchema:
                 value = row[pos]
                 if self._row_conversion_required[name]:
                     value = self._convert_feature_value(
-                        fr_type, value, catalog=None, cache=False
+                        fr_type, value, catalog=None, cache=False, signal=name
                     )
                 objs.append(value)
                 pos += 1
@@ -874,12 +875,14 @@ class SignalSchema:
     ) -> list[DataValue]:
         res = []
         pos = 0
-        for fr_cls in self.values.values():
+        for name, fr_cls in self.values.items():
             inner_cls, is_optional = unwrap_optional(fr_cls)
             if (fr := ModelStore.to_pydantic(inner_cls)) is None:
                 value = row[pos]
                 pos += 1
-                converted = self._convert_feature_value(fr_cls, value, catalog, cache)
+                converted = self._convert_feature_value(
+                    fr_cls, value, catalog, cache, signal=name
+                )
                 res.append(converted)
             else:
                 obj, pos = self._hydrate_model(
@@ -895,14 +898,36 @@ class SignalSchema:
                 res.append(obj)
         return res
 
+    def _warn_undecodable_key(self, signal: str, key: Any, key_type: Any) -> None:
+        """Report a stored mapping key that contradicts its declared type.
+
+        Once per signal per schema instance: this sits on a per-row path, so
+        warning on every occurrence would flood the log on a large dataset.
+        """
+        if signal in self._undecodable_key_signals:
+            return
+        self._undecodable_key_signals.add(signal)
+        logger.warning(
+            "Signal %r declares mapping keys as %s, but the stored key %r cannot be "
+            "decoded to it. Keeping it as-is; further occurrences in this signal are "
+            "not reported.",
+            signal,
+            type_to_str(key_type),
+            key,
+        )
+
     def _convert_feature_value(
         self,
         annotation: DataType,
         value: Any,
         catalog: "Catalog | None",
         cache: bool,
+        signal: str,
     ) -> Any:
-        """Convert raw DB value into declared annotation if needed."""
+        """Convert raw DB value into declared annotation if needed.
+
+        ``signal`` names the top-level signal being converted, for diagnostics.
+        """
         if value is None:
             return None
 
@@ -939,6 +964,7 @@ class SignalSchema:
                         item,
                         catalog,
                         cache,
+                        signal,
                     )
                     if item is not None
                     else None
@@ -959,14 +985,18 @@ class SignalSchema:
                     if decode_keys:
                         try:
                             converted_key = self._convert_feature_value(
-                                key_type, json.loads(key), catalog, cache
+                                key_type, json.loads(key), catalog, cache, signal
                             )
                         except ValueError:
-                            # Declared type and stored key disagree; keep the raw key
-                            # rather than failing the whole row.
+                            # The stored key contradicts the declared type. Keeping it
+                            # raw beats failing the whole row, but it is reported once
+                            # per signal so the mismatch is not invisible.
                             converted_key = key
+                            self._warn_undecodable_key(signal, key, key_type)
                     converted_val = (
-                        self._convert_feature_value(val_type, val, catalog, cache)
+                        self._convert_feature_value(
+                            val_type, val, catalog, cache, signal
+                        )
                         if val_type is not Any
                         else val
                     )

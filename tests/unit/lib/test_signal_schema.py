@@ -1,4 +1,5 @@
 import json
+import logging
 import pickle
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from datetime import datetime
@@ -1059,6 +1060,67 @@ def test_row_to_objs_dict_key_decoding(key_type, raw, expected):
     (converted,) = SignalSchema({"m": dict[key_type, int]}).row_to_objs((raw,))
 
     assert converted == expected
+
+
+SCHEMA_LOGGER = "datachain.lib.signal_schema"
+
+
+@pytest.mark.parametrize(
+    "read_row",
+    [
+        lambda schema, catalog: schema.row_to_objs(({"foo": 1},)),
+        lambda schema, catalog: schema.row_to_features(({"foo": 1},), catalog),
+    ],
+    ids=["row_to_objs", "row_to_features"],
+)
+def test_non_json_dict_key_is_kept_and_reported(read_row, test_session, caplog):
+    schema = SignalSchema({"m": dict[int, int]})
+
+    with caplog.at_level(logging.WARNING, logger=SCHEMA_LOGGER):
+        (converted,) = read_row(schema, test_session.catalog)
+
+    assert converted == {"foo": 1}
+    assert "'m'" in caplog.text
+    assert "'foo'" in caplog.text
+    assert "int" in caplog.text
+
+
+def test_non_json_dict_key_is_reported_once_per_signal(caplog):
+    schema = SignalSchema({"m": dict[int, int], "n": dict[int, int]})
+
+    with caplog.at_level(logging.WARNING, logger=SCHEMA_LOGGER):
+        for _ in range(3):
+            schema.row_to_objs(({"foo": 1}, {"bar": 2}))
+
+    assert len(caplog.records) == 2
+    assert {"'m'", "'n'"} <= {w for r in caplog.records for w in r.getMessage().split()}
+
+
+def test_json_decodable_dict_key_is_not_reported(caplog):
+    schema = SignalSchema({"m": dict[int, int]})
+
+    with caplog.at_level(logging.WARNING, logger=SCHEMA_LOGGER):
+        (converted,) = schema.row_to_objs(({"1": 2},))
+
+    assert converted == {1: 2}
+    assert caplog.records == []
+
+
+@pytest.mark.parametrize(
+    "rebuild",
+    [
+        lambda s: SignalSchema.deserialize(s.serialize()),
+        lambda s: pickle.loads(pickle.dumps(s)),  # noqa: S301
+    ],
+    ids=["deserialize", "pickle"],
+)
+def test_rebuilt_schema_still_reports_non_json_dict_key(rebuild, caplog):
+    schema = rebuild(SignalSchema({"m": dict[int, int]}))
+
+    with caplog.at_level(logging.WARNING, logger=SCHEMA_LOGGER):
+        schema.row_to_objs(({"foo": 1},))
+
+    assert len(caplog.records) == 1
 
 
 def test_row_to_features_does_not_decode_string_keys(test_session):
