@@ -362,8 +362,11 @@ class AbstractMetastore(ABC, Serializable):
         - Status REMOVING: a remove that didn't finish. GC drops the rows
           table and then either deletes the version row (if
           pending_metadata_drop=True) or flips status to REMOVED.
-        - Finalized tombstones (status REMOVED) are not returned - they
-          have no pending cleanup work.
+        - Status REMOVED with pending_metadata_drop=True: a tombstone
+          re-queued for a wipe. GC drops the rows table and deletes the
+          version row.
+        - Other finalized tombstones (status REMOVED) are not returned -
+          they have no pending cleanup work.
         - Listing versions superseded by a newer completed version, older than
           LISTING_GC_MIN_AGE_SECONDS, and unused by any dataset
 
@@ -1968,6 +1971,11 @@ class AbstractDBMetastore(AbstractMetastore):
                                 - timedelta(hours=STALE_CREATED_THRESHOLD_HOURS),
                             ),
                         ),
+                    ),
+                    # Re-queued tombstones have no running job to wait for.
+                    and_(
+                        dv.c.status == DatasetStatus.REMOVED,
+                        dv.c.pending_metadata_drop.is_(True),
                     ),
                     # Session datasets from finished jobs (orphaned intermediates)
                     and_(

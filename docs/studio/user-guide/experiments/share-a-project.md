@@ -5,12 +5,12 @@ also [make a project public](#make-a-project-public) to share it on the web.
 
 ## Share a project within a team
 
-Each team that you [create in DataChain Studio](../team-collaboration.md) will have
+Each team that you [create in DataChain Studio](../teams/index.md) will have
 its own projects dashboard. All the projects that you create in the team's
 dashboard will be accessible to all members (collaborators) of the team.
 
 To add more than 2 collaborators in your team,
-[upgrade to the **Enterprise** plan](../team-collaboration.md#get-enterprise).
+[upgrade to the **Enterprise** plan](../teams/settings.md#get-enterprise).
 
 ## Make a project public
 
@@ -40,5 +40,5 @@ Projects that are shared on the web can be opened by anyone, including people
 who are not logged in to DataChain Studio. These anonymous users have the `Visitor`
 role. Their access is limited to opening the project's experiment table,
 applying filters, and showing/hiding columns for themselves without saving any
-changes permanently. Refer to the [Roles](../team-collaboration.md#roles)
+changes permanently. Refer to the [Roles](../teams/permissions.md#roles)
 section for details on the features available for different roles.

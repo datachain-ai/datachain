@@ -1198,7 +1198,8 @@ class Catalog:
         table. Dropping the rows table can be safely retried.
 
         With ``keep_metadata=True`` the status is then flipped to REMOVED
-        so the version row stays as a tombstone and GC ignores it.
+        so the version row stays as a tombstone, which GC leaves alone for
+        as long as ``pending_metadata_drop`` stays False.
 
         With ``keep_metadata=False`` the version row is deleted. This
         path also works when the version is already REMOVED: the guarded
@@ -1248,12 +1249,14 @@ class Catalog:
         """Bulk remove versions (GC, session cleanup, CLI cleanup, job cleanup,
         user-facing bulk delete).
 
-        When ``keep_metadata`` is None, infers per version:
-        - REMOVING + ``pending_metadata_drop=True``: finish the interrupted
-          wipe (retries rows-table drop, then deletes the version row).
-        - REMOVING + ``pending_metadata_drop=False``: finish the interrupted
-          keep-metadata remove (retries rows-table drop, flips status to
-          REMOVED).
+        A tombstone carrying ``pending_metadata_drop=True`` is wiped whatever
+        the caller asked for, because the flag already promised its version
+        row: REMOVING is an interrupted wipe, REMOVED is a tombstone re-queued
+        for one. Both retry the rows-table drop, then delete the version row.
+
+        Otherwise, when ``keep_metadata`` is None, infers per version:
+        - REMOVING: finish the interrupted keep-metadata remove (retries
+          rows-table drop, flips status to REMOVED).
         - REMOVED: finalized tombstone, nothing to do.
         - Anything else: wipe (incomplete/failed/stale versions to clean).
 
@@ -1266,13 +1269,15 @@ class Catalog:
         for dataset, version in pairs:
             try:
                 v = dataset.get_version(version)
-                if v.status == DatasetStatus.REMOVED:
+                if v.pending_metadata_drop and v.status in (
+                    DatasetStatus.REMOVING,
+                    DatasetStatus.REMOVED,
+                ):
+                    keep = False
+                elif v.status == DatasetStatus.REMOVED:
                     continue
-                if v.status == DatasetStatus.REMOVING:
-                    if v.pending_metadata_drop:
-                        keep = False
-                    elif keep_metadata is None:
-                        # Tombstone-in-progress: finish the tombstone.
+                elif v.status == DatasetStatus.REMOVING:
+                    if keep_metadata is None:
                         keep = True
                     else:
                         keep = keep_metadata
@@ -1336,6 +1341,8 @@ class Catalog:
         - Have status REMOVING with ``pending_metadata_drop=False``
           (interrupted keep-metadata remove: GC drops the rows table and
           flips status to REMOVED)
+        - Have status REMOVED with ``pending_metadata_drop=True``
+          (re-queued tombstone: GC deletes the row)
         - Are session_* datasets from finished jobs (orphaned intermediates)
 
         Returns:
