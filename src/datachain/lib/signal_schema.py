@@ -256,27 +256,28 @@ def _is_enum_annotation(annotation: Any) -> "TypeGuard[type[Enum]]":
 
 
 def unwrap_enum_binds(expr: "ColumnExpr") -> "ColumnExpr":
-    """Return the expression with enum members in bind parameters unwrapped to
-    their values, since DB drivers cannot bind enum instances."""
+    """Return the expression with enum bind parameters unwrapped to their values."""
     enum_binds: dict[int, BindParameter] = {}
     plain_binds: list[BindParameter] = []
 
     for element in iterate(expr):
         if not isinstance(element, BindParameter):
             continue
+
         value = element.value
         if isinstance(value, Enum):
-            clone = element._clone()
-            clone.value = value.value
-            enum_binds[id(element)] = clone
+            unwrapped = value.value
         elif isinstance(value, (list, tuple)) and any(
             isinstance(v, Enum) for v in value
         ):
-            clone = element._clone()
-            clone.value = [v.value if isinstance(v, Enum) else v for v in value]
-            enum_binds[id(element)] = clone
+            unwrapped = [v.value if isinstance(v, Enum) else v for v in value]
         else:
             plain_binds.append(element)
+            continue
+
+        # _with_value clones with a fresh key, so repeated unwrapping of a
+        # shared expression cannot produce same-name unique binds.
+        enum_binds[id(element)] = element._with_value(unwrapped)
 
     if not enum_binds:
         return expr
