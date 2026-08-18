@@ -10,7 +10,7 @@ import datachain as dc
 from datachain.data_storage.serializer import deserialize
 from datachain.data_storage.sqlite import SQLiteWarehouse
 from datachain.lib.file import File
-from datachain.sql.types import Array, Float, Int64, String
+from datachain.sql.types import Array, Float, Int64, SQLType, String
 
 
 def test_serialize(sqlite_db):
@@ -250,11 +250,16 @@ class PlainKind(enum.Enum):
         ([StrMixinKind.A, "b"], Array(String), ["a", "b"]),
         ([PlainKind.X], Array(String), ["x"]),
         ([1, IntGrade.HIGH], Array(Float), [1.0, 2.0]),
+        ([1, 2.5], Array(Float), [1.0, 2.5]),
+        ([True, 1], Array(Int64), [True, 1]),
+        ([1.0, None], Array(SQLType.as_nullable(Float)), [1.0, None]),
+        ([1, None], Array(SQLType.as_nullable(Float)), [1.0, None]),
+        ([None, 1.0], Array(SQLType.as_nullable(Float)), [None, 1.0]),
         (IntGrade.HIGH, Int64(), 2),
         (StrMixinKind.A, String(), "a"),
     ),
 )
-def test_convert_type_unwraps_enums(sqlite_db, val, col_type, expected):
+def test_convert_type_conversions(sqlite_db, val, col_type, expected):
     warehouse = SQLiteWarehouse(sqlite_db)
     python_type = list if isinstance(val, list) else type(expected)
     converted = warehouse.convert_type(
@@ -273,9 +278,16 @@ def test_convert_type_unwraps_enums(sqlite_db, val, col_type, expected):
         ([1, PlainKind.X], Array(Int64)),
         (["a", IntGrade.HIGH], Array(String)),
         (PlainKind.X, Int64()),
+        ([StrMixinKind.A, 1], Array(String)),
+        (["a", 1], Array(String)),
+        ([1, "a"], Array(Int64)),
+        ([1, "a"], Array(Float)),
+        ([None, 1.0], Array(Float)),
+        ([1.0, None], Array(Float)),
+        ([1, None], Array(Float)),
     ),
 )
-def test_convert_type_validates_unwrapped_enums(sqlite_db, val, col_type):
+def test_convert_type_rejects_incompatible_values(sqlite_db, val, col_type):
     warehouse = SQLiteWarehouse(sqlite_db)
     python_type = list if isinstance(val, list) else int
     with pytest.raises(ValueError, match="incompatible for column type"):

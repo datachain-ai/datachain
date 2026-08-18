@@ -162,26 +162,31 @@ class AbstractWarehouse(ABC, Serializable):
                 col_name,
             )
 
+            item_nullable = getattr(col_type.item_type, "dc_nullable", False)
+
             if item_python_type is not list:
-                if isinstance(val[0], item_python_type):
+                if all(
+                    (i is None and item_nullable)
+                    or (isinstance(i, item_python_type) and not isinstance(i, Enum))
+                    for i in val
+                ):
                     # SQLite ARRAY storage expects a list; tuples/sets must be
                     # converted to lists even when element types already match.
-                    # Enum elements go through full conversion for validation.
-                    return [
-                        self.convert_type(i, *item_type_info)
-                        if isinstance(i, Enum)
-                        else i
-                        for i in val
-                    ]
-                if item_python_type is float and isinstance(val[0], int):
-                    return [
-                        self.convert_type(i, *item_type_info)
-                        if isinstance(i, Enum)
-                        else float(i)
-                        for i in val
-                    ]
+                    # None stays NULL in nullable arrays.
+                    return list(val)
+                if item_python_type is float and all(
+                    (i is None and item_nullable)
+                    or (isinstance(i, int) and not isinstance(i, Enum))
+                    for i in val
+                ):
+                    return [None if i is None else float(i) for i in val]
 
-            return [self.convert_type(i, *item_type_info) for i in val]
+            return [
+                None
+                if i is None and item_nullable
+                else self.convert_type(i, *item_type_info)
+                for i in val
+            ]
 
         # Special use case with JSON type as we save it as string
         if col_python_type is dict or col_type_name == "JSON":
