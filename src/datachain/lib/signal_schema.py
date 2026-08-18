@@ -51,13 +51,13 @@ from datachain.lib.convert.unflatten import (
     unflatten_to_json_pos,
 )
 from datachain.lib.data_model import (
-    NULLABLE_SCALARS,
     DataModel,
     DataType,
     DataValue,
     annotation_parts,
     compute_model_fingerprint,
     is_mapping_annotation,
+    is_nullable_scalar,
     is_sequence_annotation,
     is_tuple_annotation,
     key_needs_json_decode,
@@ -1119,13 +1119,11 @@ class SignalSchema:
         raise SignalResolvingError([col_name], "is not found")
 
     def is_nullable_column(self, db_col: str, anno: DataType) -> bool:
-        """Whether a scalar leaf stores real NULL (``dc_nullable``) instead of the
-        type default: its base type is in ``NULLABLE_SCALARS`` and it is either an
-        ``Optional[scalar]`` or sits under an ``Optional[DataModel]`` ancestor."""
+        """Return whether a scalar leaf stores real NULL (``dc_nullable``)
+        instead of the type default: its base type is a nullable scalar and it is
+        an ``Optional[scalar]`` or sits under an ``Optional[DataModel]`` ancestor."""
         inner, is_optional = unwrap_optional(anno)
-        if inner not in NULLABLE_SCALARS and not (
-            isclass(inner) and issubclass(inner, Enum)
-        ):
+        if not is_nullable_scalar(inner):
             return False
         return is_optional or self.optional_parent_sentinel(db_col) is not None
 
@@ -1459,7 +1457,7 @@ class SignalSchema:
         def _nullable(type_: DataType, nullable: bool) -> DataType:
             # widen scalars to Optional (collections/models can't be Nullable on CH)
             inner, is_optional = unwrap_optional(type_)
-            if not nullable or is_optional or inner not in NULLABLE_SCALARS:
+            if not nullable or is_optional or not is_nullable_scalar(inner):
                 return type_
             return type_ | None  # type: ignore[return-value]
 

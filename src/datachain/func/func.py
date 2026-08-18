@@ -11,7 +11,7 @@ from sqlalchemy.sql.elements import ColumnElement
 
 from datachain.lib.convert.python_to_sql import python_to_sql
 from datachain.lib.convert.sql_to_python import sql_to_python
-from datachain.lib.data_model import NULLABLE_SCALARS, unwrap_optional
+from datachain.lib.data_model import is_nullable_scalar, unwrap_optional
 from datachain.lib.model_store import ModelStore
 from datachain.lib.utils import DataChainColumnError, DataChainParamsError
 from datachain.query.schema import DEFAULT_DELIMITER, Column, ColumnExpr, ColumnMeta
@@ -428,14 +428,14 @@ class Func(Function):  # noqa: PLW1641
         signals_schema: "SignalSchema | None",
         col_type: "DataType | None" = None,
     ) -> bool:
-        """Whether this func's result column may hold NULL: a result type in
-        NULLABLE_SCALARS over a nullable source."""
+        """Return whether this func's result column may hold NULL: a
+        nullable-scalar result type over a nullable source."""
         if signals_schema is None:
             return False
         if col_type is None:
             col_type = self.get_result_type(signals_schema)
         inner, _ = unwrap_optional(col_type)
-        return inner in NULLABLE_SCALARS and any(
+        return is_nullable_scalar(inner) and any(
             _source_is_nullable(c, signals_schema) for c in self._db_cols
         )
 

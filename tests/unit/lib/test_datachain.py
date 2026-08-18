@@ -6238,3 +6238,111 @@ def test_enum_bind_unwrapping_across_operations(test_session):
     window = func.window(partition_by="id", order_by="id")
     windowed = ds.mutate(w=func.first(two_first).over(window))
     assert sorted(windowed.to_values("w")) == [0, 1]
+
+
+def test_window_func_over_nullable_enum(test_session):
+    class Species(enum.Enum):
+        CAT = "cat"
+        DOG = "dog"
+
+    class Pet(BaseModel):
+        breed: Species | None
+        grp: str
+
+    named = func.window(partition_by="pet.grp", order_by="id")
+    slotted = func.window(partition_by=dc.C("pet.grp"), order_by=dc.C("id"))
+    with pytest.warns(SignalSchemaWarning, match="'Species'"):
+        # all rows NULL: ClickHouse first_value skips NULLs, so a mixed
+        # partition reads back differently per backend
+        dc.read_values(id=[1, 2], session=test_session).map(
+            pet=lambda id: Pet(breed=None, grp="g"),
+            output=Pet,
+        ).mutate(
+            first_named=func.first("pet.breed").over(named),
+            first_slotted=func.first("pet.breed").over(slotted),
+        ).save("enum-window")
+
+        dataset = test_session.catalog.get_dataset("enum-window", versions=None)
+        schema = dataset.get_version("1.0.0").schema
+        assert schema["first_named"].dc_nullable
+        assert schema["first_slotted"].dc_nullable
+
+        ds = dc.read_dataset("enum-window", session=test_session).order_by("id")
+        assert ds.to_values("first_named") == [None, None]
+        assert ds.to_values("first_slotted") == [None, None]
+
+
+def test_composed_func_over_nullable_enum(test_session):
+    class Grade(enum.Enum):
+        LOW = 1
+        HIGH = 2
+
+    class Pet(BaseModel):
+        grade: Grade | None
+        grp: str
+
+    window = func.window(partition_by="pet.grp", order_by="id")
+    with pytest.warns(SignalSchemaWarning, match="'Grade'"):
+        dc.read_values(id=[1, 2], session=test_session).map(
+            pet=lambda id: Pet(grade=None, grp="g"),
+            output=Pet,
+        ).mutate(
+            composed=func.first("pet.grade").over(window) - 1,
+            labeled=func.first("pet.grade").over(window).label("labeled"),
+        ).save("enum-composed")
+
+        dataset = test_session.catalog.get_dataset("enum-composed", versions=None)
+        schema = dataset.get_version("1.0.0").schema
+        assert schema["composed"].dc_nullable
+        assert schema["labeled"].dc_nullable
+
+        ds = dc.read_dataset("enum-composed", session=test_session).order_by("id")
+        assert ds.to_values("composed") == [None, None]
+        assert ds.to_values("labeled") == [None, None]
+
+
+def test_merge_widens_enum_signal(test_session):
+    class Species(enum.Enum):
+        CAT = "cat"
+        DOG = "dog"
+
+    class Pet(BaseModel):
+        species: Species
+
+    left = dc.read_values(id=[1, 2], session=test_session)
+    right = (
+        dc.read_values(id=[1], session=test_session)
+        .map(pet=lambda id: Pet(species=Species.CAT), output=Pet)
+        .mutate(species=dc.C("pet.species"))
+        .select("id", "species")
+    )
+    merged = left.merge(right, on="id", full=True).order_by("id")
+
+    assert merged.signals_schema.values["species"] == (Species | None)
+    assert merged.to_list("id", "species") == [(1, "cat"), (2, None)]
+
+
+def test_merge_on_enum_signal(test_session):
+    class Species(enum.Enum):
+        CAT = "cat"
+        DOG = "dog"
+
+    class Pet(BaseModel):
+        species: Species
+
+    def enum_chain(ids, kinds):
+        return (
+            dc.read_values(id=ids, kind=kinds, session=test_session)
+            .map(pet=lambda kind: Pet(species=Species(kind)), output=Pet)
+            .mutate(species=dc.C("pet.species"))
+            .select("id", "species")
+        )
+
+    left = enum_chain([1, 2], ["cat", "dog"])
+    right = enum_chain([10], ["dog"])
+    merged = left.merge(right, on="species").order_by("id")
+
+    assert merged.to_list("id", "species", "right_id") == [
+        (1, "cat", None),
+        (2, "dog", 10),
+    ]

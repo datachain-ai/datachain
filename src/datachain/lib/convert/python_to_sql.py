@@ -8,8 +8,8 @@ from pydantic import BaseModel
 from typing_extensions import Literal as LiteralEx
 
 from datachain.lib.data_model import (
-    NULLABLE_SCALARS,
     is_mapping_annotation,
+    is_nullable_scalar,
     is_sequence_annotation,
     unwrap_optional,
 )
@@ -105,10 +105,7 @@ def _list_to_array(typ, args):
     # Optional[scalar] elements map to a nullable Array element so None survives
     # (ClickHouse: Array(Nullable(T))).
     inner, is_optional = unwrap_optional(args0)
-    if is_optional and (
-        inner in NULLABLE_SCALARS
-        or (inspect.isclass(inner) and issubclass(inner, Enum))
-    ):
+    if is_optional and is_nullable_scalar(inner):
         list_type = SQLType.as_nullable(list_type)
     return Array(list_type)
 
