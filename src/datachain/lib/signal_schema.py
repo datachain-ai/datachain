@@ -38,7 +38,7 @@ from sqlalchemy.sql.elements import (
     Grouping,
     Label,
 )
-from sqlalchemy.sql.visitors import replacement_traverse
+from sqlalchemy.sql.visitors import iterate, replacement_traverse
 
 from datachain import json
 from datachain.func import literal
@@ -252,6 +252,41 @@ def _is_enum_annotation(annotation: Any) -> "TypeGuard[type[Enum]]":
         isclass(annotation)
         and issubclass(annotation, Enum)
         and next(iter(annotation), None) is not None
+    )
+
+
+def unwrap_enum_binds(expr: "ColumnExpr") -> "ColumnExpr":
+    """Return the expression with enum members in bind parameters unwrapped to
+    their values, since DB drivers cannot bind enum instances."""
+    enum_binds: dict[int, BindParameter] = {}
+    plain_binds: list[BindParameter] = []
+
+    for element in iterate(expr):
+        if not isinstance(element, BindParameter):
+            continue
+        value = element.value
+        if isinstance(value, Enum):
+            clone = element._clone()
+            clone.value = value.value
+            enum_binds[id(element)] = clone
+        elif isinstance(value, (list, tuple)) and any(
+            isinstance(v, Enum) for v in value
+        ):
+            clone = element._clone()
+            clone.value = [v.value if isinstance(v, Enum) else v for v in value]
+            enum_binds[id(element)] = clone
+        else:
+            plain_binds.append(element)
+
+    if not enum_binds:
+        return expr
+
+    # replacement_traverse clones visited bind params by default; stop_on
+    # preserves the ordinary ones so unique bind names stay unique.
+    return replacement_traverse(
+        expr,
+        {"stop_on": plain_binds},
+        lambda element, **_kwargs: enum_binds.get(id(element)),
     )
 
 
@@ -1245,27 +1280,7 @@ class SignalSchema:
         unwrapped to their values, since DB drivers cannot bind enum instances.
         """
 
-        def unwrap_enum_bind(element, **_kwargs):
-            if not isinstance(element, BindParameter):
-                return None
-
-            value = element.value
-
-            if isinstance(value, Enum):
-                clone = element._clone()
-                clone.value = value.value
-                return clone
-
-            if isinstance(value, (list, tuple)) and any(
-                isinstance(v, Enum) for v in value
-            ):
-                clone = element._clone()
-                clone.value = [v.value if isinstance(v, Enum) else v for v in value]
-                return clone
-
-            return None
-
-        expr = replacement_traverse(expr, {}, unwrap_enum_bind)
+        expr = unwrap_enum_binds(expr)
 
         typed_cols = {
             c.name: c for c in self.db_signals(as_columns=True) if isinstance(c, Column)

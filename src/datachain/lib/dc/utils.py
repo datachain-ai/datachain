@@ -8,6 +8,7 @@ from sqlalchemy.sql.visitors import iterate, replacement_traverse
 
 from datachain.func.base import Function
 from datachain.lib.data_model import DataModel, DataType
+from datachain.lib.signal_schema import unwrap_enum_binds
 from datachain.lib.utils import DataChainParamsError
 from datachain.query.schema import DEFAULT_DELIMITER, ColumnExpr
 from datachain.utils import getenv_bool
@@ -85,7 +86,9 @@ def resolve_columns(
 
         for arg in args:
             if isinstance(arg, Function):
-                resolved_args.append(arg.get_column(self.signals_schema))
+                resolved_args.append(
+                    unwrap_enum_binds(arg.get_column(self.signals_schema))
+                )
             elif isinstance(arg, ColumnExpr):
                 resolved_args.append(resolve_expr(arg))
             else:

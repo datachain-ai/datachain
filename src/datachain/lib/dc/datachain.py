@@ -56,6 +56,7 @@ from datachain.lib.signal_schema import (
     SignalResolvingError,
     SignalResolvingTypeError,
     SignalSchema,
+    unwrap_enum_binds,
 )
 from datachain.lib.udf import (
     Aggregator,
@@ -1669,7 +1670,7 @@ class DataChain:
                         mutated[mutated_name] = signal
                 elif isinstance(value, Func):
                     # adding new signal
-                    mutated[name] = value.get_column(schema)
+                    mutated[name] = unwrap_enum_binds(value.get_column(schema))  # type: ignore[assignment]
                 elif isinstance(value, primitives):
                     val = literal(value)
                     val.type = python_to_sql(type(value))()

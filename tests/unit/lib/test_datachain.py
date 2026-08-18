@@ -6169,6 +6169,12 @@ def test_filter_and_mutate_by_enum_member(test_session):
             (dc.C("pet.rank") == Rank.FIRST) | (dc.C("pet.species") == Species.DOG)
         ).to_values("id")
     ) == [1, 2]
+    assert ds.filter(
+        func.and_(dc.C("pet.species") == Species.DOG, dc.C("id") > 0)
+    ).to_values("id") == [2]
     assert ds.mutate(is_dog=dc.C("pet.species") == Species.DOG).order_by(
         "id"
     ).to_values("is_dog") == [False, True]
+    assert ds.mutate(
+        func_dog=func.and_(dc.C("pet.species") == Species.DOG, dc.C("id") > 0)
+    ).order_by("id").to_values("func_dog") == [False, True]
