@@ -32,7 +32,7 @@ from datachain.query.batch import (
     Partition,
     RowsOutputBatch,
 )
-from datachain.utils import safe_closing, with_last_flag
+from datachain.utils import filtered_cloudpickle_dumps, safe_closing, with_last_flag
 
 logger = logging.getLogger("datachain")
 
@@ -252,10 +252,23 @@ class UDFBase(AbstractUDF):
             self.params.hash() if self.params else "",
             self.output.hash(),
         ]
+        # For class-based UDFs, mix in instance state so two instances that
+        # differ only in constructor args don't collide.
+        if self._func is None and (state := self._hash_state()) is not None:
+            parts.append(hashlib.sha256(state).hexdigest())
 
         return hashlib.sha256(
             b"".join([bytes.fromhex(part) for part in parts])
         ).hexdigest()
+
+    def _hash_state(self) -> bytes | None:
+        """State bytes to mix into hash() for class-based UDFs. Default is a
+        cloudpickle of the whole instance. Subclasses can override when the
+        default contains non-deterministic data (e.g. dynamically-named
+        pydantic classes) or when they want to declare identity explicitly.
+        Return None to skip the state part entirely.
+        """
+        return filtered_cloudpickle_dumps(self)
 
     def process(self, *args, **kwargs):
         """Processing function that needs to be defined by user"""

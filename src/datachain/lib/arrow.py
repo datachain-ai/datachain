@@ -21,6 +21,7 @@ from datachain.lib.signal_schema import SignalSchema
 from datachain.lib.udf import Generator
 from datachain.lib.utils import normalize_col_names
 from datachain.progress import tqdm
+from datachain.utils import filtered_cloudpickle_dumps
 
 if TYPE_CHECKING:
     from datasets.features.features import Features
@@ -74,6 +75,19 @@ class ArrowGenerator(Generator):
         self.nrows = nrows
         self.parse_options = kwargs.pop("parse_options", None)
         self.kwargs = kwargs
+
+    def _hash_state(self) -> bytes:
+        # output_schema is a dynamically-created pydantic class with a random
+        # name suffix; its stable field shape is already in self.output.hash().
+        return filtered_cloudpickle_dumps(
+            {
+                "input_schema": self.input_schema,
+                "source": self.source,
+                "nrows": self.nrows,
+                "parse_options": self.parse_options,
+                "kwargs": self.kwargs,
+            }
+        )
 
     def process(self, file: File):
         if file._caching_enabled:

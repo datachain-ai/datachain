@@ -135,6 +135,22 @@ def test_udf_verbose_name_unknown():
     assert udf.verbose_name == "<unknown>"
 
 
+def test_class_udf_hash_varies_with_instance_state():
+    class Limited(Mapper):
+        def __init__(self, limit: int):
+            super().__init__()
+            self.limit = limit
+
+        def process(self, x: int) -> int:
+            return x + self.limit
+
+    sign_a = get_sign(Limited(0), output="y")
+    sign_b = get_sign(Limited(3), output="y")
+    udf_a = Mapper._create(sign_a, sign_a.output_schema)
+    udf_b = Mapper._create(sign_b, sign_b.output_schema)
+    assert udf_a.hash() != udf_b.hash()
+
+
 def test_udf_does_not_traverse_setup_value():
     value = {}
     value["self"] = value
