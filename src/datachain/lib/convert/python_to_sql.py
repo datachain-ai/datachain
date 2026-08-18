@@ -31,7 +31,6 @@ PYTHON_TO_SQL = {
     str: String,
     Literal: String,
     LiteralEx: String,
-    Enum: String,
     float: Float,
     bool: Boolean,
     datetime: DateTime,  # Note, list of datetime is not supported yet
@@ -46,7 +45,20 @@ def python_to_sql(typ):  # noqa: PLR0911
         if issubclass(typ, SQLType):
             return typ
         if issubclass(typ, Enum):
-            return str
+            value_types = {type(m.value) for m in typ}
+            if not value_types:
+                return String
+
+            sql_type = (
+                PYTHON_TO_SQL.get(value_types.pop()) if len(value_types) == 1 else None
+            )
+            if sql_type is None or sql_type in (Array, JSON):
+                raise TypeError(
+                    f"Cannot recognize type {typ}: enum member values"
+                    " must all be of one supported scalar type"
+                )
+
+            return sql_type
 
     res = PYTHON_TO_SQL.get(typ)
     if res:

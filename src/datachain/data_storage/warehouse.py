@@ -7,6 +7,7 @@ import string
 import sys
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
+from enum import Enum
 from typing import TYPE_CHECKING, Any, Union, cast
 from urllib.parse import urlparse
 
@@ -140,6 +141,8 @@ class AbstractWarehouse(ABC, Serializable):
 
         if isinstance(val, (np.ndarray, np.generic)):
             val = val.tolist()
+        if isinstance(val, Enum):
+            val = val.value
 
         # Optimization: Precompute all the column type variables.
         value_type = type(val)
@@ -150,14 +153,6 @@ class AbstractWarehouse(ABC, Serializable):
 
             item_python_type = self.python_type(col_type.item_type)
 
-            if item_python_type is not list:
-                if isinstance(val[0], item_python_type):
-                    # SQLite ARRAY storage expects a list; tuples/sets must be
-                    # converted to lists even when element types already match.
-                    return list(val)
-                if item_python_type is float and isinstance(val[0], int):
-                    return [float(i) for i in val]
-
             # Optimization: Reuse these values for each function call within the
             # list comprehension.
             item_type_info = (
@@ -166,6 +161,26 @@ class AbstractWarehouse(ABC, Serializable):
                 type(col_type.item_type).__name__,
                 col_name,
             )
+
+            if item_python_type is not list:
+                if isinstance(val[0], item_python_type):
+                    # SQLite ARRAY storage expects a list; tuples/sets must be
+                    # converted to lists even when element types already match.
+                    # Enum elements go through full conversion for validation.
+                    return [
+                        self.convert_type(i, *item_type_info)
+                        if isinstance(i, Enum)
+                        else i
+                        for i in val
+                    ]
+                if item_python_type is float and isinstance(val[0], int):
+                    return [
+                        self.convert_type(i, *item_type_info)
+                        if isinstance(i, Enum)
+                        else float(i)
+                        for i in val
+                    ]
+
             return [self.convert_type(i, *item_type_info) for i in val]
 
         # Special use case with JSON type as we save it as string

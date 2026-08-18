@@ -1,4 +1,5 @@
 import datetime
+import enum
 import io
 import json
 import math
@@ -44,7 +45,7 @@ from datachain.lib.signal_schema import (
 from datachain.lib.udf import UDFAdapter
 from datachain.lib.udf_signature import UdfSignatureError
 from datachain.lib.utils import DataChainColumnError, DataChainParamsError
-from datachain.sql.types import Float, Int64, String
+from datachain.sql.types import Array, Float, Int64, String
 from datachain.utils import STUDIO_URL
 from tests.utils import (
     ANY_VALUE,
@@ -3671,6 +3672,66 @@ def test_mutate_with_composed_func_expression(test_session):
     )
     # "a" + ".csv" = 5, "hello" + ".csv" = 9, "readme" + ".csv" = 10
     assert result == [5, 9, 10]
+
+
+def test_enum_fields_in_data_model(test_session):
+    class Species(enum.Enum):
+        CAT = "cat"
+        DOG = "dog"
+
+    class Rank(enum.Enum):
+        FIRST = 1
+        SECOND = 2
+
+    class Grade(enum.IntEnum):
+        LOW = 1
+        HIGH = 2
+
+    class Pet(BaseModel):
+        species: Species
+        rank: Rank
+        tags: list[Species]
+        grades: list[Grade]
+
+    chain = dc.read_values(id=[1, 2], session=test_session).map(
+        pet=lambda id: Pet(
+            species=Species.CAT if id == 1 else Species.DOG,
+            rank=Rank.FIRST if id == 1 else Rank.SECOND,
+            tags=[Species.CAT, Species.DOG],
+            grades=[Grade.LOW, Grade.HIGH],
+        ),
+        output=Pet,
+    )
+    chain.save("enum-model")
+
+    dataset = test_session.catalog.get_dataset("enum-model", versions=None)
+    schema = dataset.get_version("1.0.0").schema
+    assert schema["pet__species"] == String
+    assert schema["pet__rank"] == Int64
+    assert isinstance(schema["pet__tags"], Array)
+    assert isinstance(schema["pet__grades"], Array)
+
+    expected = [
+        Pet(
+            species=Species.CAT,
+            rank=Rank.FIRST,
+            tags=[Species.CAT, Species.DOG],
+            grades=[Grade.LOW, Grade.HIGH],
+        ),
+        Pet(
+            species=Species.DOG,
+            rank=Rank.SECOND,
+            tags=[Species.CAT, Species.DOG],
+            grades=[Grade.LOW, Grade.HIGH],
+        ),
+    ]
+    ds = dc.read_dataset("enum-model", session=test_session).order_by("id")
+    assert ds.to_values("pet") == expected
+
+    filtered = ds.filter(dc.C("pet.rank") == Rank.SECOND.value).order_by(
+        "pet.species", descending=True
+    )
+    assert filtered.to_values("pet") == [expected[1]]
 
 
 @skip_if_not_sqlite

@@ -1,4 +1,5 @@
 import base64
+import enum
 import json
 from unittest.mock import patch
 
@@ -9,6 +10,7 @@ import datachain as dc
 from datachain.data_storage.serializer import deserialize
 from datachain.data_storage.sqlite import SQLiteWarehouse
 from datachain.lib.file import File
+from datachain.sql.types import Array, Float, Int64, String
 
 
 def test_serialize(sqlite_db):
@@ -225,3 +227,58 @@ def test_select_node_fields_by_parent_path_tar_wildcards_are_literal(
         "dir_%1/b.csv",
         "dir_%1/nested/c.csv",
     ]
+
+
+class IntGrade(enum.IntEnum):
+    LOW = 1
+    HIGH = 2
+
+
+class StrMixinKind(str, enum.Enum):
+    A = "a"
+
+
+class PlainKind(enum.Enum):
+    X = "x"
+
+
+@pytest.mark.parametrize(
+    "val,col_type,expected",
+    (
+        ([1, IntGrade.HIGH], Array(Int64), [1, 2]),
+        ([IntGrade.LOW, IntGrade.HIGH], Array(Int64), [1, 2]),
+        ([StrMixinKind.A, "b"], Array(String), ["a", "b"]),
+        ([PlainKind.X], Array(String), ["x"]),
+        ([1, IntGrade.HIGH], Array(Float), [1.0, 2.0]),
+        (IntGrade.HIGH, Int64(), 2),
+        (StrMixinKind.A, String(), "a"),
+    ),
+)
+def test_convert_type_unwraps_enums(sqlite_db, val, col_type, expected):
+    warehouse = SQLiteWarehouse(sqlite_db)
+    python_type = list if isinstance(val, list) else type(expected)
+    converted = warehouse.convert_type(
+        val, col_type, python_type, type(col_type).__name__, "col"
+    )
+    assert converted == expected
+    if isinstance(converted, list):
+        assert [type(i) for i in converted] == [type(i) for i in expected]
+    else:
+        assert type(converted) is type(expected)
+
+
+@pytest.mark.parametrize(
+    "val,col_type",
+    (
+        ([1, PlainKind.X], Array(Int64)),
+        (["a", IntGrade.HIGH], Array(String)),
+        (PlainKind.X, Int64()),
+    ),
+)
+def test_convert_type_validates_unwrapped_enums(sqlite_db, val, col_type):
+    warehouse = SQLiteWarehouse(sqlite_db)
+    python_type = list if isinstance(val, list) else int
+    with pytest.raises(ValueError, match="incompatible for column type"):
+        warehouse.convert_type(
+            val, col_type, python_type, type(col_type).__name__, "col"
+        )
