@@ -81,6 +81,14 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha || github.ref }}
 
+      - name: Fail over apt mirrors on stalled connections
+        if: runner.os == 'Linux'
+        # The runner image already lists fallback mirrors in /etc/apt/apt-mirrors.txt
+        # (Azure first, then archive.ubuntu.com), but failover only fires on an
+        # error, and a stalled Azure mirror connection never becomes one without
+        # a timeout.
+        run: echo 'Acquire::http::Timeout "10";' | sudo tee /etc/apt/apt.conf.d/99-timeout
+
       - name: Setup PostgreSQL
         if: runner.os != 'Windows'
         uses: ikalnytskyi/action-setup-postgres@c4dda34aae1c821e3a771b68b73b13af3198a7ee # v8
@@ -132,6 +140,7 @@ jobs:
 
       - name: Install FFmpeg on Ubuntu
         if: runner.os == 'Linux'
+        timeout-minutes: 5
         run: |
           sudo apt update
           sudo apt install -y ffmpeg
@@ -220,8 +229,17 @@ jobs:
           brew install ffmpeg
           echo 'DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib' >> "$GITHUB_ENV"
 
+      - name: Fail over apt mirrors on stalled connections
+        if: runner.os == 'Linux'
+        # The runner image already lists fallback mirrors in /etc/apt/apt-mirrors.txt
+        # (Azure first, then archive.ubuntu.com), but failover only fires on an
+        # error, and a stalled Azure mirror connection never becomes one without
+        # a timeout.
+        run: echo 'Acquire::http::Timeout "10";' | sudo tee /etc/apt/apt.conf.d/99-timeout
+
       - name: Install FFmpeg on Ubuntu
         if: runner.os == 'Linux'
+        timeout-minutes: 5
         run: |
           sudo apt update
           sudo apt install -y ffmpeg

@@ -104,7 +104,15 @@ jobs:
         working-directory: backend
         run: make update_datachain_deps "${{ env.BRANCH }}"
 
+      - name: Fail over apt mirrors on stalled connections
+        # The runner image already lists fallback mirrors in /etc/apt/apt-mirrors.txt
+        # (Azure first, then archive.ubuntu.com), but failover only fires on an
+        # error, and a stalled Azure mirror connection never becomes one without
+        # a timeout.
+        run: echo 'Acquire::http::Timeout "10";' | sudo tee /etc/apt/apt.conf.d/99-timeout
+
       - name: Install FFmpeg
+        timeout-minutes: 5
         run: |
           sudo apt update
           sudo apt install -y ffmpeg
