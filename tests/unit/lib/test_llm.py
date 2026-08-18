@@ -222,6 +222,14 @@ def test_list_schema_tolerates_bare_array_response(fake_llm):
     assert [c.text for c in out] == ["a", "b"]
 
 
+def test_list_schema_tolerates_double_encoded_items(fake_llm):
+    fake_llm.structured_overrides["LLMListOutput"] = (
+        '{"items": "[\\n  {\\"text\\": \\"a\\"},\\n  {\\"text\\": \\"b\\"}\\n]"}'
+    )
+    out = bind(llm.complete("t", schema=list[Chunk]), llm="m")("doc")
+    assert [c.text for c in out] == ["a", "b"]
+
+
 def test_list_schema_raises_on_unparsable_output(fake_llm):
     fake_llm.structured_overrides["LLMListOutput"] = "not a json list"
     with pytest.raises(engine.LLMError, match=r"list\[Chunk\]"):
