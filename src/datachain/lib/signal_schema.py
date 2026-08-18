@@ -44,7 +44,7 @@ from datachain import json
 from datachain.func import literal
 from datachain.func.func import Func
 from datachain.lib.convert.flatten import is_optional_model
-from datachain.lib.convert.python_to_sql import python_to_sql
+from datachain.lib.convert.python_to_sql import is_nullable_scalar, python_to_sql
 from datachain.lib.convert.sql_to_python import sql_to_python
 from datachain.lib.convert.unflatten import (
     read_optional_sentinel,
@@ -57,7 +57,6 @@ from datachain.lib.data_model import (
     annotation_parts,
     compute_model_fingerprint,
     is_mapping_annotation,
-    is_nullable_scalar,
     is_sequence_annotation,
     is_tuple_annotation,
     key_needs_json_decode,

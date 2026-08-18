@@ -9,7 +9,6 @@ from typing_extensions import Literal as LiteralEx
 
 from datachain.lib.data_model import (
     is_mapping_annotation,
-    is_nullable_scalar,
     is_sequence_annotation,
     unwrap_optional,
 )
@@ -38,6 +37,17 @@ PYTHON_TO_SQL = {
     list: Array,
     dict: JSON,
 }
+
+
+def is_nullable_scalar(typ) -> bool:
+    try:
+        sql_type = python_to_sql(typ)
+    except TypeError:
+        return False
+
+    if inspect.isclass(sql_type):
+        return not issubclass(sql_type, (Array, JSON))
+    return not isinstance(sql_type, (Array, JSON))
 
 
 def python_to_sql(typ):  # noqa: PLR0911

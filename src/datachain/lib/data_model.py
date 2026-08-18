@@ -6,7 +6,6 @@ from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime
-from enum import Enum
 from typing import Any, ClassVar, Union, get_args, get_origin
 
 from pydantic import AliasChoices, BaseModel, Field, create_model
@@ -226,13 +225,6 @@ def unwrap_optional(t: Any) -> tuple[Any, bool]:
 # real NULL. SQLite stores NaN as NULL, so a stored NaN reads back as None there
 # (the other backends keep them distinct); None itself is consistent everywhere.
 NULLABLE_SCALARS: "tuple[type, ...]" = (int, float, str, bool, bytes, datetime)
-
-
-def is_nullable_scalar(typ: "Any") -> bool:
-    """Return whether a type maps to a nullable scalar column."""
-    if typ in NULLABLE_SCALARS:
-        return True
-    return inspect.isclass(typ) and issubclass(typ, Enum)
 
 
 # _type_tag discriminator for Optional[DataModel]: this value marks the present arm.

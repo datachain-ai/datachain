@@ -9,9 +9,9 @@ from sqlalchemy import cast as sa_cast
 from sqlalchemy.sql import func as sa_func
 from sqlalchemy.sql.elements import ColumnElement
 
-from datachain.lib.convert.python_to_sql import python_to_sql
+from datachain.lib.convert.python_to_sql import is_nullable_scalar, python_to_sql
 from datachain.lib.convert.sql_to_python import sql_to_python
-from datachain.lib.data_model import is_nullable_scalar, unwrap_optional
+from datachain.lib.data_model import unwrap_optional
 from datachain.lib.model_store import ModelStore
 from datachain.lib.utils import DataChainColumnError, DataChainParamsError
 from datachain.query.schema import DEFAULT_DELIMITER, Column, ColumnExpr, ColumnMeta

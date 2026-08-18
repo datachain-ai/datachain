@@ -1,10 +1,10 @@
 import enum
 from collections.abc import Mapping
-from typing import Dict, Literal  # noqa: UP035
+from typing import Annotated, Dict, Literal  # noqa: UP035
 
 import pytest
 
-from datachain.lib.convert.python_to_sql import python_to_sql
+from datachain.lib.convert.python_to_sql import is_nullable_scalar, python_to_sql
 from datachain.sql.types import JSON, Array, Float, Int64, String
 from tests.unit.lib.test_utils import MyModel
 
@@ -92,6 +92,26 @@ def test_enum_value_type_mapping(typ, expected):
 def test_enum_unsupported_value_types(typ):
     with pytest.raises(TypeError, match="enum member values"):
         python_to_sql(typ)
+
+
+@pytest.mark.parametrize(
+    "typ,expected",
+    (
+        (int, True),
+        (str, True),
+        (IntKind, True),
+        (StrMixinKind, True),
+        (Literal["a", "b"], True),
+        (Annotated[int, "meta"], True),
+        (Annotated[list[int], "meta"], False),
+        (MixedKind, False),
+        (list[int], False),
+        (dict[str, int], False),
+        (MyModel, False),
+    ),
+)
+def test_is_nullable_scalar(typ, expected):
+    assert is_nullable_scalar(typ) is expected
 
 
 def test_list_of_tuples_matching_types():

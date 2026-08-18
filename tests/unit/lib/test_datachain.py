@@ -9,7 +9,7 @@ import sqlite3
 import uuid
 from collections import Counter
 from collections.abc import Generator, Iterator
-from typing import Annotated
+from typing import Annotated, Literal
 from unittest.mock import ANY, patch
 
 import numpy as np
@@ -6320,6 +6320,44 @@ def test_merge_widens_enum_signal(test_session):
 
     assert merged.signals_schema.values["species"] == (Species | None)
     assert merged.to_list("id", "species") == [(1, "cat"), (2, None)]
+
+
+def test_optional_literal_field_is_nullable(test_session):
+    class Doc(BaseModel):
+        kind: Literal["text", "image"] | None
+        grp: str
+
+    window = func.window(partition_by="doc.grp", order_by="id")
+    dc.read_values(id=[1, 2], session=test_session).map(
+        doc=lambda id: Doc(kind=None, grp="g"),
+        output=Doc,
+    ).mutate(first_kind=func.first("doc.kind").over(window)).save("lit-model")
+
+    dataset = test_session.catalog.get_dataset("lit-model", versions=None)
+    schema = dataset.get_version("1.0.0").schema
+    assert schema["doc__kind"].dc_nullable
+    assert schema["first_kind"].dc_nullable
+
+    ds = dc.read_dataset("lit-model", session=test_session).order_by("id")
+    assert ds.to_values("doc") == [Doc(kind=None, grp="g"), Doc(kind=None, grp="g")]
+    assert ds.to_values("first_kind") == [None, None]
+
+
+def test_merge_widens_literal_signal(test_session):
+    class Doc(BaseModel):
+        kind: Literal["text", "image"]
+
+    left = dc.read_values(id=[1, 2], session=test_session)
+    right = (
+        dc.read_values(id=[1], session=test_session)
+        .map(doc=lambda id: Doc(kind="text"), output=Doc)
+        .mutate(kind=dc.C("doc.kind"))
+        .select("id", "kind")
+    )
+    merged = left.merge(right, on="id", full=True).order_by("id")
+
+    assert merged.signals_schema.values["kind"] == (Literal["text", "image"] | None)
+    assert merged.to_list("id", "kind") == [(1, "text"), (2, None)]
 
 
 def test_merge_on_enum_signal(test_session):
