@@ -32,7 +32,13 @@ from typing import (
 from fsspec.callbacks import DEFAULT_CALLBACK, Callback
 from pydantic import BaseModel, Field, ValidationError, create_model
 from sqlalchemy import Cast, asc, cast, desc, nulls_last
-from sqlalchemy.sql.elements import BinaryExpression, Grouping, Label
+from sqlalchemy.sql.elements import (
+    BinaryExpression,
+    BindParameter,
+    Grouping,
+    Label,
+)
+from sqlalchemy.sql.visitors import replacement_traverse
 
 from datachain import json
 from datachain.func import literal
@@ -1235,8 +1241,31 @@ class SignalSchema:
 
         dc.C("col") creates untyped columns (NullType). This method rebuilds the
         expression tree replacing them with typed columns so SQLAlchemy propagates
-        types correctly through operators.
+        types correctly through operators. Enum members in bind parameters are
+        unwrapped to their values, since DB drivers cannot bind enum instances.
         """
+
+        def unwrap_enum_bind(element, **_kwargs):
+            if not isinstance(element, BindParameter):
+                return None
+
+            value = element.value
+
+            if isinstance(value, Enum):
+                clone = element._clone()
+                clone.value = value.value
+                return clone
+
+            if isinstance(value, (list, tuple)) and any(
+                isinstance(v, Enum) for v in value
+            ):
+                clone = element._clone()
+                clone.value = [v.value if isinstance(v, Enum) else v for v in value]
+                return clone
+
+            return None
+
+        expr = replacement_traverse(expr, {}, unwrap_enum_bind)
 
         typed_cols = {
             c.name: c for c in self.db_signals(as_columns=True) if isinstance(c, Column)

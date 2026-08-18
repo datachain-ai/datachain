@@ -6131,3 +6131,44 @@ def test_count_after_limit_then_distinct(test_session, boundary_counter):
 
     assert chain.limit(4).distinct("session_id", "position").count() == 2
     boundary_counter.assert_count(1)
+
+
+def test_filter_and_mutate_by_enum_member(test_session):
+    class Species(enum.Enum):
+        CAT = "cat"
+        DOG = "dog"
+
+    class Rank(enum.Enum):
+        FIRST = 1
+        SECOND = 2
+
+    class Pet(BaseModel):
+        species: Species
+        rank: Rank
+
+    dc.read_values(id=[1, 2], session=test_session).map(
+        pet=lambda id: Pet(
+            species=Species.CAT if id == 1 else Species.DOG,
+            rank=Rank.FIRST if id == 1 else Rank.SECOND,
+        ),
+        output=Pet,
+    ).save("enum-filter")
+
+    ds = dc.read_dataset("enum-filter", session=test_session)
+    assert ds.filter(dc.C("pet.species") == Species.DOG).to_values("id") == [2]
+    assert ds.filter(dc.C("pet.rank") != Rank.SECOND).to_values("id") == [1]
+    assert ds.filter(dc.C("pet.rank") < Rank.SECOND).to_values("id") == [1]
+    assert sorted(
+        ds.filter(dc.C("pet.species").in_([Species.CAT, Species.DOG])).to_values("id")
+    ) == [1, 2]
+    assert ds.filter(
+        (dc.C("pet.rank") == Rank.SECOND) & (dc.C("pet.species") == Species.DOG)
+    ).to_values("id") == [2]
+    assert sorted(
+        ds.filter(
+            (dc.C("pet.rank") == Rank.FIRST) | (dc.C("pet.species") == Species.DOG)
+        ).to_values("id")
+    ) == [1, 2]
+    assert ds.mutate(is_dog=dc.C("pet.species") == Species.DOG).order_by(
+        "id"
+    ).to_values("is_dog") == [False, True]
