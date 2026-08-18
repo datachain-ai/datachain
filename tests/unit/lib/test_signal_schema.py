@@ -1,13 +1,20 @@
 import json
 import pickle
+import subprocess
+import sys
 from collections import UserDict, UserList
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from datetime import datetime
+from enum import Enum, IntEnum
 from typing import (
+    Annotated,
     Any,
+    ClassVar,
     Final,
     ForwardRef,
     Generic,
+    Literal,
+    NewType,
     Optional,
     TypeVar,
     Union,
@@ -1060,6 +1067,302 @@ def test_row_to_objs_dict_key_decoding_policy(key_type, raw, expected):
     (converted,) = SignalSchema({"m": dict[key_type, int]}).row_to_objs((raw,))
 
     assert converted == expected
+
+
+class KeyEnum(str, Enum):
+    NULL = "null"
+
+
+class KeyIntEnum(IntEnum):
+    ONE = 1
+
+
+class PlainKeyEnum(Enum):
+    A = "a"
+
+
+class KeyEnum2(str, Enum):
+    A = "a"
+
+
+class MixedKeyEnum(Enum):
+    NULL = "null"
+    ONE = 1
+
+
+class AliasLookalike(DataModel):
+    __value__: ClassVar[type] = int
+    x: int
+
+
+class UnbuildableKey(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    a: int
+
+
+@pytest.mark.parametrize(
+    "key_type,raw,expected",
+    [
+        (Literal["null", "ok"], "null", "null"),
+        (Literal["a", 1], "a", "a"),
+        (Literal["a", 1], "1", 1),
+        (Literal["1", 1], "1", "1"),
+        (Literal["[]"], "[]", "[]"),
+        (Annotated[str, "meta"], "null", "null"),
+        (KeyEnum, "null", KeyEnum.NULL),
+        (Literal[1, 2], "1", 1),
+        (Annotated[int, "meta"], "1", 1),
+        (KeyIntEnum, "1", KeyIntEnum.ONE),
+    ],
+    ids=[
+        "literal-str",
+        "literal-mixed-string-arm",
+        "literal-mixed-int-arm",
+        "literal-ambiguous",
+        "literal-bracket",
+        "annotated-str",
+        "str-enum",
+        "literal-int",
+        "annotated-int",
+        "int-enum",
+    ],
+)
+def test_row_to_objs_restores_declared_dict_key_type(key_type, raw, expected):
+    (converted,) = SignalSchema({"m": dict[key_type, int]}).row_to_objs(({raw: 1},))
+
+    (key,) = converted
+    assert key == expected
+    assert type(key) is type(expected)
+
+
+@pytest.mark.parametrize(
+    "key_type,raw,expected",
+    [
+        (Optional[Literal["null", 1]], "null", "null"),
+        (Optional[Literal["null", 1]], "1", 1),
+        (Optional[Literal["[]", 1]], "[]", "[]"),
+        (Union[Literal["a"], int], "1", 1),
+        (Annotated[Optional[KeyEnum], "meta"], "null", KeyEnum.NULL),
+        (Optional[Annotated[KeyEnum, "meta"]], "null", KeyEnum.NULL),
+        (PlainKeyEnum, "a", PlainKeyEnum.A),
+    ],
+    ids=[
+        "optional-literal-string-arm",
+        "optional-literal-int-arm",
+        "optional-literal-bracket",
+        "union-literal-int-arm",
+        "alias-outside-optional",
+        "alias-inside-optional",
+        "enum-without-str-mixin",
+    ],
+)
+def test_row_to_objs_resolves_wrapped_dict_key(key_type, raw, expected):
+    (converted,) = SignalSchema({"m": dict[key_type, int]}).row_to_objs(({raw: 1},))
+
+    (key,) = converted
+    assert key == expected
+    assert type(key) is type(expected)
+
+
+@pytest.mark.parametrize(
+    "key_type,raw",
+    [
+        (KeyEnum, "nope"),
+        (KeyIntEnum, "2"),
+        (UnbuildableKey, "{}"),
+        (UnbuildableKey, "x"),
+    ],
+    ids=["unknown-str-enum", "unknown-int-enum", "unhashable-decode", "undecodable"],
+)
+def test_row_to_objs_keeps_the_stored_key_when_conversion_fails(key_type, raw):
+    (converted,) = SignalSchema({"m": dict[key_type, int]}).row_to_objs(({raw: 1},))
+
+    assert converted == {raw: 1}
+    (key,) = converted
+    assert type(key) is str
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="PEP 695 type aliases need Python 3.12"
+)
+def test_recursive_alias_does_not_stall_the_conversion_gate():
+    namespace: dict = dict(globals())
+    exec("type Recursive = list[Recursive]", namespace)  # noqa: S102
+
+    assert SignalSchema._requires_row_conversion(namespace["Recursive"]) is False
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="PEP 695 type aliases need Python 3.12"
+)
+@pytest.mark.xfail(strict=True, reason="#1942: alias specialisations are not stored")
+def test_generic_alias_specialisation_survives_a_reload():
+    namespace: dict = dict(globals())
+    exec("type Key[T] = T", namespace)  # noqa: S102
+
+    specialised = namespace["Key"][str]
+    holder = type(
+        "Holder", (DataModel,), {"__annotations__": {"m": dict[specialised, int]}}
+    )
+
+    reloaded = SignalSchema.deserialize(SignalSchema({"Holder": holder}).serialize())
+
+    # what matters is the behaviour a reload produces, not the exact spelling
+    # `type_to_str` chose; expanding to `str` would be an equally valid fix
+    (converted,) = reloaded.row_to_objs(({"null": 1},))
+    assert next(iter(converted)) == "null"
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [("1", 1), ("a", KeyEnum2.A)],
+    ids=["non-member-decodes", "member-rebuilds"],
+)
+def test_row_to_objs_lets_union_arms_past_a_finite_enum(raw, expected):
+    schema = SignalSchema({"m": dict[KeyEnum2 | int, int]})
+
+    (converted,) = schema.row_to_objs(({raw: 1},))
+
+    (key,) = converted
+    assert key == expected
+    assert type(key) is type(expected)
+
+
+def test_row_to_objs_rebuilds_a_mixed_value_enum_key():
+    (converted,) = SignalSchema({"m": dict[MixedKeyEnum, int]}).row_to_objs(
+        ({"null": 1},)
+    )
+
+    assert next(iter(converted)) is MixedKeyEnum.NULL
+
+
+@pytest.mark.parametrize(
+    "bound,raw,expected",
+    [(KeyIntEnum, "1", KeyIntEnum.ONE), (KeyEnum2, "a", KeyEnum2.A)],
+    ids=["int-enum-bound", "str-enum-bound"],
+)
+def test_row_to_objs_rebuilds_through_a_bounded_type_var(bound, raw, expected):
+    Bounded = TypeVar("Bounded", bound=bound)
+
+    (converted,) = SignalSchema({"m": dict[Bounded, int]}).row_to_objs(({raw: 1},))
+
+    (key,) = converted
+    assert key is expected
+
+
+def test_row_to_objs_keeps_a_model_that_merely_looks_like_an_alias():
+    (converted,) = SignalSchema({"m": dict[str, AliasLookalike]}).row_to_objs(
+        ({"a": {"x": 1}},)
+    )
+
+    assert converted["a"] == AliasLookalike(x=1)
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="PEP 695 type aliases need Python 3.12"
+)
+def test_recursive_generic_alias_does_not_stall_the_conversion_gate():
+    namespace: dict = dict(globals())
+    exec("type Tree[T] = list[Tree[T]]", namespace)  # noqa: S102
+
+    # substitution mints a fresh object each pass, so an identity guard never
+    # recognises the repeat
+    assert SignalSchema._requires_row_conversion(namespace["Tree"][int]) is False
+
+
+def test_row_to_objs_rebuilds_enum_dict_value():
+    (converted,) = SignalSchema({"m": dict[str, KeyEnum]}).row_to_objs(({"k": "null"},))
+
+    assert converted["k"] is KeyEnum.NULL
+
+
+def test_row_to_objs_rebuilds_int_enum_literal_value():
+    schema = SignalSchema({"m": dict[str, Literal[KeyIntEnum.ONE]]})
+
+    (converted,) = schema.row_to_objs(({"k": 1},))
+
+    assert converted["k"] is KeyIntEnum.ONE
+
+
+def test_row_to_objs_keeps_key_outside_the_declared_enum():
+    (converted,) = SignalSchema({"m": dict[KeyEnum, int]}).row_to_objs(({"nope": 1},))
+
+    assert converted == {"nope": 1}
+
+
+@pytest.mark.parametrize(
+    "annotation,raw",
+    [
+        (dict[str, KeyEnum], {"k": "nope"}),
+        (list[KeyEnum], ["nope"]),
+    ],
+    ids=["value", "item"],
+)
+def test_row_to_objs_rejects_value_outside_the_declared_enum(annotation, raw):
+    with pytest.raises(ValueError, match="not a valid KeyEnum"):
+        SignalSchema({"m": annotation}).row_to_objs((raw,))
+
+
+@pytest.mark.parametrize(
+    "key_type,raw,expected",
+    [
+        (Annotated[KeyEnum, "meta"], "null", KeyEnum.NULL),
+        (Literal[KeyEnum.NULL], "null", KeyEnum.NULL),
+        (NewType("StrKeyAlias", str), "null", "null"),
+        (NewType("IntKeyAlias", int), "1", 1),
+    ],
+    ids=["annotated-enum", "literal-enum", "newtype-str", "newtype-int"],
+)
+def test_row_to_objs_sees_through_key_wrappers(key_type, raw, expected):
+    (converted,) = SignalSchema({"m": dict[key_type, int]}).row_to_objs(({raw: 1},))
+
+    (key,) = converted
+    assert key == expected
+    assert type(key) is type(expected)
+
+
+RELOAD_IN_CLEAN_PROCESS = """
+import json, sys
+from datachain.lib.signal_schema import SignalSchema
+fields = SignalSchema.deserialize(json.loads(sys.argv[1])).values["Holder"].model_fields
+print(fields["lit"].annotation, "|", fields["enm"].annotation)
+"""
+
+
+@pytest.mark.xfail(strict=True, reason="#1942: type_to_str drops Literal arguments")
+def test_literal_arguments_survive_serialization():
+    class Holder(DataModel):
+        lit: dict[Literal["a"], int]
+
+    payload = SignalSchema({"Holder": Holder}).serialize()
+
+    assert payload["_custom_types"]["Holder@v1"]["fields"]["lit"] == (
+        "dict[Literal['a'], int]"
+    )
+
+
+@pytest.mark.xfail(
+    strict=True, reason="#1942: Literal and enum key types do not survive a reload"
+)
+def test_literal_and_enum_keys_survive_a_clean_process_reload():
+    class Shade(str, Enum):
+        A = "a"
+
+    class Holder(DataModel):
+        lit: dict[Literal["a"], int]
+        enm: dict[Shade, int]
+
+    payload = json.dumps(SignalSchema({"Holder": Holder}).serialize())
+
+    # must fork: in-process ModelStore returns the original class and hides this
+    result = subprocess.run(  # noqa: S603
+        [sys.executable, "-c", RELOAD_IN_CLEAN_PROCESS, payload],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    assert result.stdout.strip() != "dict[typing.Any, int] | dict[typing.Any, int]"
 
 
 def test_row_to_features_does_not_decode_string_keys(test_session):

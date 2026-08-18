@@ -47,13 +47,21 @@ from datachain.lib.data_model import (
     DataModel,
     DataType,
     DataValue,
+    alias_cycle_key,
     annotation_parts,
     compute_model_fingerprint,
+    is_enum_annotation,
     is_mapping_annotation,
     is_sequence_annotation,
     is_tuple_annotation,
+    key_is_stored_verbatim,
     key_needs_json_decode,
+    literal_members,
+    resolve_literal_member,
+    resolve_type_var,
     skip_optional_promotion,
+    union_arms,
+    unwrap_alias,
     unwrap_optional,
 )
 from datachain.lib.file import File
@@ -689,25 +697,42 @@ class SignalSchema:
         }
 
     @classmethod
-    def _requires_row_conversion(cls, annotation: DataType) -> bool:
+    def _requires_row_conversion(
+        cls, annotation: DataType, _seen: frozenset = frozenset()
+    ) -> bool:
+        key = alias_cycle_key(annotation)
+        annotation = unwrap_alias(annotation)
+        if key is not None:
+            if key in _seen:
+                # `type Tree[T] = list[Tree[T]]` mints a fresh object each pass,
+                # so the repeat has to be recognised structurally, not by id
+                return False
+            _seen = _seen | {key}
+        return cls._conversion_required(annotation, _seen)
+
+    @classmethod
+    def _conversion_required(cls, annotation: DataType, _seen: frozenset) -> bool:
+        annotation = resolve_type_var(annotation)
+
         if ModelStore.is_pydantic(annotation):
             return True
 
         if get_origin(annotation) in (Union, types.UnionType):
             inner, has_none = unwrap_optional(annotation)
-            return has_none and cls._requires_row_conversion(inner)
+            return has_none and cls._requires_row_conversion(inner, _seen)
         parts = annotation_parts(annotation)
         if is_mapping_annotation(annotation):
             return len(parts) == 2 and (
                 key_needs_json_decode(parts[0])
-                or cls._requires_row_conversion(parts[1])
+                or cls._requires_row_conversion(parts[0], _seen)
+                or cls._requires_row_conversion(parts[1], _seen)
             )
         if is_sequence_annotation(annotation):
             # a declared tuple always needs rebuilding: the DB hands back a list
             if is_tuple_annotation(annotation):
                 return bool(parts)
-            return any(cls._requires_row_conversion(part) for part in parts)
-        return False
+            return any(cls._requires_row_conversion(part, _seen) for part in parts)
+        return is_enum_annotation(annotation) or bool(literal_members(annotation))
 
     @staticmethod
     def _annotation_contains_type(annotation: Any, target: type) -> bool:
@@ -907,15 +932,29 @@ class SignalSchema:
             return None
 
         result = value
+        annotation = resolve_type_var(unwrap_alias(annotation))
+
+        if (member := resolve_literal_member(annotation, value)) is not None:
+            # a Literal must yield its declared member, not the stored value
+            return member
+
         origin = get_origin(annotation)
 
         if origin in (Union, types.UnionType):
             inner, has_none = unwrap_optional(annotation)
             # a None-free or multi-arm Union isn't converted to a single type
             if not has_none or get_origin(inner) in (Union, types.UnionType):
-                return result
-            annotation = inner
+                # the union as a whole stays as stored, but a value that is an
+                # actual member of one arm is rebuilt as that member
+                return self._enum_member_in_union(annotation, value, result)
+            # the arm may itself be wrapped, so normalise again
+            annotation = unwrap_alias(inner)
             origin = get_origin(annotation)
+
+        if is_enum_annotation(annotation):
+            # strict, like pydantic: an unknown value is an error, not a silent
+            # pass-through. Mapping keys catch this and keep the raw key.
+            return annotation(value)
 
         if ModelStore.is_pydantic(annotation):
             if isinstance(value, annotation):
@@ -952,27 +991,58 @@ class SignalSchema:
             parts = annotation_parts(annotation)
             if len(parts) == 2 and isinstance(value, Mapping):
                 key_type, val_type = parts
-                decode_keys = key_needs_json_decode(key_type)
-                result = {}
-                for key, val in value.items():
-                    converted_key = key
-                    if decode_keys:
-                        try:
-                            converted_key = self._convert_feature_value(
-                                key_type, json.loads(key), catalog, cache
-                            )
-                        except ValueError:
-                            # Declared type and stored key disagree; keep the raw key
-                            # rather than failing the whole row.
-                            converted_key = key
-                    converted_val = (
+                result = {
+                    self._convert_mapping_key(key_type, key, catalog, cache): (
                         self._convert_feature_value(val_type, val, catalog, cache)
                         if val_type is not Any
                         else val
                     )
-                    result[converted_key] = converted_val
+                    for key, val in value.items()
+                }
 
         return result
+
+    @staticmethod
+    def _enum_member_in_union(annotation: Any, value: Any, default: Any) -> Any:
+        """Rebuild `value` as an enum member of one of `annotation`'s arms."""
+        for arm in union_arms(annotation):
+            if is_enum_annotation(arm):
+                try:
+                    return arm(value)
+                except ValueError:
+                    continue
+        return default
+
+    def _convert_mapping_key(
+        self,
+        key_type: DataType,
+        raw_key: Any,
+        catalog: "Catalog | None",
+        cache: bool,
+    ) -> Any:
+        """Restore one stored mapping key to its declared type.
+
+        Keys are stored as strings. Types that cannot hold a plain string are
+        JSON-encoded and decoded back here; the rest are stored verbatim. Either
+        way the result still goes through the converter, so a declared enum
+        arrives as its member rather than the raw value.
+        """
+        decoded = raw_key
+        if not key_is_stored_verbatim(key_type, raw_key):
+            try:
+                decoded = json.loads(raw_key)
+            except ValueError:
+                # Declared type and stored key disagree; keep the stored key
+                # rather than failing the whole row.
+                return raw_key
+        try:
+            return self._convert_feature_value(key_type, decoded, catalog, cache)
+        except ValueError:
+            # e.g. a value outside the declared enum, or a model the stored key
+            # cannot build. Every fallback yields the *stored* key, since the
+            # decoded object may not even be hashable. Leniency is deliberate
+            # for keys only; ordinary values raise, as pydantic would.
+            return raw_key
 
     @staticmethod
     def _set_file_stream(

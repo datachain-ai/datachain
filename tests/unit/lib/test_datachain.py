@@ -7,6 +7,8 @@ import re
 import uuid
 from collections import Counter
 from collections.abc import Generator, Iterator
+from enum import Enum, IntEnum
+from typing import Annotated, Literal
 from unittest.mock import ANY, patch
 
 import numpy as np
@@ -14,7 +16,7 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 import datachain as dc
 import datachain.query.dataset as query_dataset
@@ -5653,3 +5655,115 @@ def test_count_after_limit_then_distinct(test_session, boundary_counter):
 
     assert chain.limit(4).distinct("session_id", "position").count() == 2
     boundary_counter.assert_count(1)
+
+
+class SessionKey(str, Enum):
+    NULL = "null"
+
+
+class SessionCode(IntEnum):
+    ONE = 1
+
+
+@pytest.mark.parametrize(
+    "annotation,value,pick",
+    [
+        (dict[SessionKey, int], {SessionKey.NULL: 1}, lambda m: next(iter(m))),
+        (dict[Literal["null"], int], {"null": 1}, lambda m: next(iter(m))),
+        (
+            dict[Annotated[SessionKey, "meta"], int],
+            {SessionKey.NULL: 1},
+            lambda m: next(iter(m)),
+        ),
+        (dict[str, SessionKey], {"k": SessionKey.NULL}, lambda m: m["k"]),
+        (dict[str, SessionCode], {"k": SessionCode.ONE}, lambda m: m["k"]),
+    ],
+    ids=[
+        "str-enum-key",
+        "literal-key",
+        "annotated-enum-key",
+        "str-enum-value",
+        "int-enum-value",
+    ],
+)
+def test_dotted_param_and_whole_model_agree_on_mapping(
+    test_session, annotation, value, pick
+):
+    holder = type("Holder", (DataModel,), {"__annotations__": {"m": annotation}})
+
+    def describe(obj):
+        return f"{obj!r} ({type(obj).__name__})"
+
+    saved = dc.read_values(x=[holder(m=value)], session=test_session).save("agree")
+
+    (dotted,) = saved.map(
+        k=lambda m: describe(pick(m)), params=["x.m"], output=str
+    ).to_values("k")
+    (whole,) = saved.map(k=lambda x: describe(pick(x.m)), output=str).to_values("k")
+    (direct,) = saved.to_values("x.m")
+
+    assert dotted == whole
+    assert describe(pick(direct)) == whole
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="#1942: pydantic rejects the stored key for a non-string Literal member",
+)
+def test_literal_int_key_agrees_across_routes(test_session):
+    class Holder(DataModel):
+        m: dict[Literal["a", 1], int]
+
+    saved = dc.read_values(x=[Holder(m={1: 5})], session=test_session).save("mixed")
+
+    (dotted,) = saved.to_values("x.m")
+    (whole,) = saved.to_values("x")
+
+    assert next(iter(dotted)) == next(iter(whole.m))
+
+
+@pytest.mark.parametrize(
+    "annotation,value,pick",
+    [
+        (dict[SessionKey, int], {SessionKey.NULL: 1}, lambda m: next(iter(m))),
+        (dict[str, SessionKey], {"k": SessionKey.NULL}, lambda m: m["k"]),
+    ],
+    ids=["key", "value"],
+)
+def test_use_enum_values_reads_the_declared_annotation_on_the_dotted_route(
+    test_session, annotation, value, pick
+):
+    class Loose(DataModel):
+        model_config = ConfigDict(use_enum_values=True)
+        m: annotation  # type: ignore[valid-type]
+
+    saved = dc.read_values(x=[Loose(m=value)], session=test_session).save("loose")
+
+    dotted = pick(saved.to_values("x.m")[0])
+    whole = pick(saved.to_values("x")[0].m)
+
+    # an accepted breaking change: the declared annotation decides what a read
+    # produces, so the dotted route yields the member. `use_enum_values` shapes
+    # model construction, which only the whole-model route goes through. The
+    # type assertions matter: SessionKey.NULL == "null" is true. See #1932.
+    assert dotted is SessionKey.NULL
+    assert type(whole) is str
+    assert whole == SessionKey.NULL.value
+
+
+@pytest.mark.xfail(
+    strict=True, reason="#1932: a dotted selection does not carry model config"
+)
+def test_use_enum_values_agrees_across_routes(test_session):
+    class Loose(DataModel):
+        model_config = ConfigDict(use_enum_values=True)
+        m: dict[SessionKey, int]
+
+    saved = dc.read_values(
+        x=[Loose(m={SessionKey.NULL: 1})], session=test_session
+    ).save("loose_agree")
+
+    dotted = next(iter(saved.to_values("x.m")[0]))
+    whole = next(iter(saved.to_values("x")[0].m))
+
+    assert type(dotted) is type(whole)

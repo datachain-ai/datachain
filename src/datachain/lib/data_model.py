@@ -1,12 +1,26 @@
+import functools
 import hashlib
 import inspect
+import operator
 import types
 import uuid
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime
-from typing import Any, ClassVar, Union, get_args, get_origin
+from enum import Enum
+from typing import (
+    Annotated,
+    Any,
+    ClassVar,
+    Literal,
+    NewType,
+    TypeGuard,
+    TypeVar,
+    Union,
+    get_args,
+    get_origin,
+)
 
 from pydantic import AliasChoices, BaseModel, Field, create_model
 from pydantic.fields import FieldInfo
@@ -14,6 +28,15 @@ from pydantic.fields import FieldInfo
 from datachain import json
 from datachain.lib.model_store import ModelStore
 from datachain.lib.utils import normalize_col_names, type_to_str
+
+_TYPE_ALIAS_TYPES: tuple[type, ...] = tuple(
+    alias
+    for alias in (
+        getattr(types, "TypeAliasType", None),
+        getattr(__import__("typing"), "TypeAliasType", None),
+    )
+    if isinstance(alias, type)
+)
 
 _skip_optional_promotion: ContextVar[bool] = ContextVar(
     "_skip_optional_promotion", default=False
@@ -188,20 +211,259 @@ def annotation_parts(t: Any) -> tuple[Any, ...]:
     return ()
 
 
+def _is_new_type(t: Any) -> bool:
+    """Whether `t` is an actual `typing.NewType`, not merely shaped like one."""
+    return isinstance(t, NewType)
+
+
+def _is_type_alias(t: Any) -> bool:
+    """Whether `t` is an actual PEP-695 alias, not merely shaped like one.
+
+    Attribute-shaped duck typing would misread a user model that happens to
+    define `__value__`, so the concrete type is what decides.
+    """
+    return bool(_TYPE_ALIAS_TYPES) and isinstance(t, _TYPE_ALIAS_TYPES)
+
+
+def _effective_alias_args(alias: Any, supplied: tuple[Any, ...]) -> "tuple | None":
+    """Arguments for `alias`, filling PEP-696 defaults, or `None` if incomplete."""
+    params = getattr(alias, "__type_params__", ())
+    if len(supplied) > len(params):
+        return None
+    args = list(supplied)
+    for param in params[len(supplied) :]:
+        if not getattr(param, "has_default", lambda: False)():
+            return None
+        args.append(param.__default__)
+    return tuple(args)
+
+
+def _substitute_type_vars(t: Any, mapping: "dict[Any, Any]") -> Any:
+    """Replace type variables in `t` using `mapping`, as far as is reproducible."""
+    if isinstance(t, TypeVar):
+        return mapping.get(t, t)
+    args = get_args(t)
+    if not args:
+        return t
+    new_args = tuple(_substitute_type_vars(a, mapping) for a in args)
+    if new_args == args:
+        return t
+    try:
+        return _rebuild_with_args(t, new_args)
+    except Exception:  # noqa: BLE001 - typing internals vary across versions
+        return t
+
+
+def _rebuild_with_args(t: Any, new_args: tuple[Any, ...]) -> Any:
+    """Rebuild the generic `t` with `new_args` substituted in."""
+    origin = get_origin(t)
+    if origin is Annotated:
+        return Annotated[new_args]
+    if origin in (Union, types.UnionType):
+        # runtime rebuild from a tuple; `X | Y` has no splat form
+        return Union[new_args]  # noqa: UP007
+    if (copy_with := getattr(t, "copy_with", None)) is not None:
+        return copy_with(new_args)
+    # class subscription, not the origin's own __getitem__
+    return origin[new_args]
+
+
+def _resolve_generic_alias(t: Any) -> Any:
+    """Substitute a PEP-695 alias, e.g. `Key[str]` where `type Key[T] = T`.
+
+    Handles the unsubscripted form too when every parameter carries a PEP-696
+    default. Returns `t` unchanged when the parameters cannot be filled in.
+    """
+    alias = get_origin(t) if _is_type_alias(get_origin(t)) else t
+    if not _is_type_alias(alias) or not getattr(alias, "__type_params__", ()):
+        return t
+    args = _effective_alias_args(alias, get_args(t))
+    if args is None:
+        return t
+    return _substitute_type_vars(
+        alias.__value__, dict(zip(alias.__type_params__, args, strict=True))
+    )
+
+
+def alias_cycle_key(t: Any) -> Any:
+    """A stable key identifying an alias application, or `None`.
+
+    Object identity is unusable here: intermediate alias objects are freed and
+    their ids reused, and substitution mints a fresh object every pass, so a
+    finite chain can look cyclic and a genuine cycle can look finite.
+    """
+    origin = get_origin(t)
+    alias = origin if _is_type_alias(origin) else t
+    if not _is_type_alias(alias):
+        return None
+    try:
+        return (alias, get_args(t))
+    except TypeError:
+        return None
+
+
+def unwrap_alias(t: Any) -> Any:
+    """Strip `Annotated`, `NewType` and PEP-695 alias wrappers from `t`.
+
+    Each is transparent for storage: the DB sees whatever the wrapped type
+    produces, so every read-side decision must be made on the inner type.
+
+    Alias parameters are substituted, including PEP-696 defaults, so `Key[str]`
+    behaves as `str`. An alias body is used even when parameters remain free, so
+    `type TupleKey[T] = tuple[T, ...]` keeps its shape. Recursive aliases stop at
+    the repeat rather than spinning.
+    """
+    seen: set[Any] = set()
+    while True:
+        if (cycle_key := alias_cycle_key(t)) is not None:
+            if cycle_key in seen:
+                return t
+            seen.add(cycle_key)
+        if get_origin(t) is Annotated:
+            t = get_args(t)[0]
+        elif _is_new_type(t):
+            t = t.__supertype__
+        elif (resolved := _resolve_generic_alias(t)) is not t:
+            t = resolved
+        elif _is_type_alias(t):
+            t = t.__value__
+        else:
+            return t
+
+
+def literal_members(t: Any) -> tuple[Any, ...]:
+    """Members of a `Literal`, gathered through aliases and unions, `()` if none.
+
+    Members are returned as declared, so an `Enum` member stays a member rather
+    than collapsing to its value.
+    """
+    t = unwrap_alias(t)
+    if get_origin(t) is Literal:
+        return get_args(t)
+    if get_origin(t) in (Union, types.UnionType):
+        return tuple(m for p in annotation_parts(t) for m in literal_members(p))
+    return ()
+
+
+def union_arms(t: Any) -> tuple[Any, ...]:
+    """The arms of a union, normalised, or `(t,)` for a non-union."""
+    t = unwrap_alias(t)
+    if get_origin(t) in (Union, types.UnionType):
+        return tuple(unwrap_alias(p) for p in annotation_parts(t))
+    return (t,)
+
+
+def resolve_literal_member(t: Any, value: Any) -> Any:
+    """The declared `Literal` member equal to `value`, or `None` if there is none.
+
+    Exact type wins over mere equality, in two steps. `Literal[Colour.RED, "red"]`
+    resolves a stored `"red"` to the plain string member rather than the enum,
+    which matches pydantic and makes the answer independent of declaration order.
+    And a *non-Literal* arm whose type matches exactly keeps the value as it is:
+    `True == 1 == 1.0` in Python, so `Literal[1] | bool` must not turn a stored
+    `True` into `1`.
+    """
+    members = literal_members(t)
+    if not members:
+        return None
+    for member in members:
+        if type(member) is type(value) and member == value:
+            return member
+    for arm in union_arms(t):
+        if get_origin(arm) is None and arm is type(value):
+            return None
+    for member in members:
+        # `True == 1` and `1 == 1.0`: never let a bool cross-match a number
+        if isinstance(member, bool) == isinstance(value, bool) and member == value:
+            return member
+    return None
+
+
+def is_enum_annotation(t: Any) -> TypeGuard[type[Enum]]:
+    """Whether `t` is an `Enum` subclass, whose members the DB stores as values."""
+    return inspect.isclass(t) and issubclass(t, Enum)
+
+
+def _enum_values_are_strings(t: Any) -> bool:
+    return is_enum_annotation(t) and all(isinstance(member.value, str) for member in t)
+
+
+def type_var_target(t: Any) -> Any:
+    """The most specific type a type variable can stand for, or `None`.
+
+    A PEP-696 default, a bound, or a constraint set narrows what may have been
+    stored; an unconstrained variable narrows nothing.
+    """
+    if not isinstance(t, TypeVar):
+        return None
+    if getattr(t, "has_default", lambda: False)():
+        return getattr(t, "__default__", None)  # PEP-696, Python 3.13+
+    if t.__bound__ is not None:
+        return t.__bound__
+    if t.__constraints__:
+        return functools.reduce(operator.or_, t.__constraints__)
+    return None
+
+
+def resolve_type_var(t: Any) -> Any:
+    """`t` with a type variable replaced by what it can stand for."""
+    return type_var_target(t) or t if isinstance(t, TypeVar) else t
+
+
 def key_needs_json_decode(t: Any) -> bool:
-    """Whether mapping keys of type `t` are JSON-encoded in the DB.
+    """Whether some key of type `t` may be JSON-encoded in the DB.
 
     Keys are stored as strings, so `dict[int, ...]` reads back as `{"1": ...}`
-    and needs decoding, but a key type that can be a plain string must not --
-    `"foo"` is not valid JSON.
+    and needs decoding. This is the annotation-level question used to decide
+    whether a mapping needs converting at all; whether a *particular* key was
+    stored verbatim is `key_is_stored_verbatim`.
     """
-    if t is str or t is Any:
+    t = unwrap_alias(t)
+    if isinstance(t, TypeVar):
+        target = type_var_target(t)
+        # an unconstrained variable says nothing: do not risk decoding
+        return target is not None and key_needs_json_decode(target)
+    if t is str or t is Any or _is_type_alias(t):
+        # still an alias after unwrapping means a cycle we could not resolve
+        return False
+    if get_origin(t) is Literal:
+        return any(not isinstance(v, str) for v in get_args(t))
+    if _enum_values_are_strings(t) or (inspect.isclass(t) and issubclass(t, str)):
+        # a string-valued enum may be stored verbatim, so a key must be offered
+        # to the converter rather than decoded blind
         return False
     if get_origin(t) in (Union, types.UnionType):
-        # one arm that can be a plain string makes decoding unsafe for all of them
-        return all(key_needs_json_decode(p) for p in annotation_parts(t))
+        # any arm that may be encoded is enough to warrant looking at the key
+        return any(key_needs_json_decode(p) for p in annotation_parts(t))
     # a collection key is never a plain string, whatever its components are
     return True
+
+
+def key_is_stored_verbatim(t: Any, key: str) -> bool:
+    """Whether this exact stored `key` should be taken as a plain string.
+
+    `Literal` needs the key itself to decide: `Literal["a", 1]` stores `"a"`
+    verbatim but JSON-encodes `1`, and the same holds under a union or
+    `Optional` wrapper. A type that admits *any* string -- `str` itself, a `str`
+    subclass, a string-valued enum -- takes every key verbatim.
+    """
+    t = unwrap_alias(t)
+    if isinstance(t, TypeVar) or t is str or t is Any or _is_type_alias(t):
+        # a type variable defers to its target; anything still aliased after
+        # unwrapping is a cycle we could not resolve, and neither may be decoded
+        target = type_var_target(t) if isinstance(t, TypeVar) else None
+        return target is None or key_is_stored_verbatim(target, key)
+    if get_origin(t) is Literal:
+        return any(isinstance(v, str) and v == key for v in get_args(t))
+    if is_enum_annotation(t):
+        # finite, so only an actual member value is stored verbatim; anything
+        # else must stay available for the other union arms to decode
+        return any(member.value == key for member in t)
+    if inspect.isclass(t) and issubclass(t, str):
+        return True
+    if get_origin(t) in (Union, types.UnionType):
+        return any(key_is_stored_verbatim(p, key) for p in annotation_parts(t))
+    return False
 
 
 def unwrap_optional(t: Any) -> tuple[Any, bool]:
