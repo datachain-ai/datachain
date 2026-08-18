@@ -14,6 +14,7 @@ from collections.abc import (
 )
 from dataclasses import dataclass
 from datetime import datetime
+from enum import Enum
 from functools import cached_property
 from inspect import isclass
 from typing import (
@@ -1046,7 +1047,9 @@ class SignalSchema:
         type default: its base type is in ``NULLABLE_SCALARS`` and it is either an
         ``Optional[scalar]`` or sits under an ``Optional[DataModel]`` ancestor."""
         inner, is_optional = unwrap_optional(anno)
-        if inner not in NULLABLE_SCALARS:
+        if inner not in NULLABLE_SCALARS and not (
+            isclass(inner) and issubclass(inner, Enum)
+        ):
             return False
         return is_optional or self.optional_parent_sentinel(db_col) is not None
 

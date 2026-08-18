@@ -3690,15 +3690,19 @@ def test_enum_fields_in_data_model(test_session):
     class Pet(BaseModel):
         species: Species
         rank: Rank
+        breed: Species | None
         tags: list[Species]
         grades: list[Grade]
+        marks: list[Grade | None]
 
     chain = dc.read_values(id=[1, 2], session=test_session).map(
         pet=lambda id: Pet(
             species=Species.CAT if id == 1 else Species.DOG,
             rank=Rank.FIRST if id == 1 else Rank.SECOND,
+            breed=Species.CAT if id == 1 else None,
             tags=[Species.CAT, Species.DOG],
             grades=[Grade.LOW, Grade.HIGH],
+            marks=[Grade.LOW, None],
         ),
         output=Pet,
     )
@@ -3708,21 +3712,28 @@ def test_enum_fields_in_data_model(test_session):
     schema = dataset.get_version("1.0.0").schema
     assert schema["pet__species"] == String
     assert schema["pet__rank"] == Int64
+    assert isinstance(schema["pet__breed"], String)
+    assert schema["pet__breed"].dc_nullable
     assert isinstance(schema["pet__tags"], Array)
     assert isinstance(schema["pet__grades"], Array)
+    assert schema["pet__marks"].item_type.dc_nullable
 
     expected = [
         Pet(
             species=Species.CAT,
             rank=Rank.FIRST,
+            breed=Species.CAT,
             tags=[Species.CAT, Species.DOG],
             grades=[Grade.LOW, Grade.HIGH],
+            marks=[Grade.LOW, None],
         ),
         Pet(
             species=Species.DOG,
             rank=Rank.SECOND,
+            breed=None,
             tags=[Species.CAT, Species.DOG],
             grades=[Grade.LOW, Grade.HIGH],
+            marks=[Grade.LOW, None],
         ),
     ]
     ds = dc.read_dataset("enum-model", session=test_session).order_by("id")

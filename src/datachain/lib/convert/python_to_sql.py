@@ -105,7 +105,10 @@ def _list_to_array(typ, args):
     # Optional[scalar] elements map to a nullable Array element so None survives
     # (ClickHouse: Array(Nullable(T))).
     inner, is_optional = unwrap_optional(args0)
-    if is_optional and inner in NULLABLE_SCALARS:
+    if is_optional and (
+        inner in NULLABLE_SCALARS
+        or (inspect.isclass(inner) and issubclass(inner, Enum))
+    ):
         list_type = SQLType.as_nullable(list_type)
     return Array(list_type)
 
