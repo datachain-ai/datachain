@@ -1,7 +1,9 @@
 import hashlib
 import inspect
 import logging
+import re
 import textwrap
+import warnings
 from collections.abc import Sequence
 from typing import TypeAlias, TypeVar
 from uuid import uuid4
@@ -14,6 +16,48 @@ logger = logging.getLogger("datachain")
 
 T = TypeVar("T", bound=ColumnElement)
 ColumnLike: TypeAlias = str | T
+
+
+# A value with no custom repr shows its memory address (``<Cls object at 0x...>``
+# for plain objects, ``<function name at 0x...>`` for functions and methods),
+# which changes each run and would make the cache key unstable.
+_DEFAULT_REPR = re.compile(r" at 0x[0-9a-fA-F]+>")
+
+
+def normalize_hash_value(value):
+    """Order-independent form of a value for stable cache keys."""
+    if isinstance(value, dict):
+        items = (
+            (normalize_hash_value(k), normalize_hash_value(v)) for k, v in value.items()
+        )
+        return ("dict", tuple(sorted(items, key=repr)))
+    if isinstance(value, set):
+        return (
+            "set",
+            tuple(sorted(map(normalize_hash_value, value), key=repr)),
+        )
+    if isinstance(value, frozenset):
+        return (
+            "frozenset",
+            tuple(sorted(map(normalize_hash_value, value), key=repr)),
+        )
+    if isinstance(value, list):
+        return ("list", tuple(map(normalize_hash_value, value)))
+    if isinstance(value, tuple):
+        return ("tuple", tuple(map(normalize_hash_value, value)))
+    if _DEFAULT_REPR.search(repr(value)):
+        warnings.warn(
+            f"value of type {type(value).__name__!r} has no stable repr; it "
+            "breaks caching (full recompute every run).",
+            stacklevel=2,
+        )
+    return value
+
+
+def hash_value(value) -> str:
+    """Hash a value after normalizing unordered containers."""
+    normalized = normalize_hash_value(value)
+    return hashlib.sha256(repr(normalized).encode("utf-8")).hexdigest()
 
 
 def _serialize_value(val):  # noqa: PLR0911

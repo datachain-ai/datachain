@@ -1,4 +1,7 @@
+import os
 import pickle
+import subprocess
+import sys
 
 import pytest
 from cloudpickle import dumps, loads
@@ -165,6 +168,108 @@ def test_class_udf_hash_is_deterministic_across_instances():
     udf_a = Mapper._create(sign_a, sign_a.output_schema)
     udf_b = Mapper._create(sign_b, sign_b.output_schema)
     assert udf_a.hash() == udf_b.hash()
+
+
+@pytest.mark.parametrize(
+    "args,kwargs,matches_default",
+    [
+        ((), {}, True),
+        ((3,), {}, True),
+        ((), {"limit": 3}, True),
+        ((4,), {}, False),
+    ],
+)
+def test_class_udf_captures_normalized_constructor_arguments(
+    args, kwargs, matches_default
+):
+    class Limited(Mapper):
+        def __init__(self, limit: int = 3):
+            self.limit = limit
+
+        def process(self, x: int) -> int:
+            return x + self.limit
+
+    baseline = Limited(limit=3)
+    udf = Limited(*args, **kwargs)
+
+    assert (
+        udf._constructor_state_hash == baseline._constructor_state_hash
+    ) is matches_default
+
+
+def test_class_udf_constructor_hash_survives_cloudpickle_roundtrip():
+    class Limited(Mapper):
+        def __init__(self, limit: int):
+            self.limit = limit
+
+        def process(self, x: int) -> int:
+            return x + self.limit
+
+    udf = Limited(3)
+    restored = loads(dumps(udf))
+
+    assert restored._constructor_state_hash == udf._constructor_state_hash
+
+
+def test_class_udf_hash_is_deterministic_across_processes():
+    code = """
+from datachain import Mapper
+from datachain.lib.signal_schema import SignalSchema
+from datachain.lib.udf_signature import UdfSignature
+
+class Limited(Mapper):
+    def __init__(self, limit=3, labels=frozenset({"a", "b", "c"})):
+        self.limit = limit
+        self.labels = labels
+
+    def process(self, x):
+        return x + self.limit
+
+udf = Limited()
+sign = UdfSignature(
+    udf,
+    SignalSchema({"x": int}),
+    SignalSchema({"y": int}),
+)
+print(Mapper._create(sign, sign.output_schema).hash())
+"""
+
+    hashes = {
+        subprocess.check_output(  # noqa: S603
+            [sys.executable, "-c", code],
+            env={**os.environ, "PYTHONHASHSEED": seed},
+            text=True,
+        ).strip()
+        for seed in ("1", "2", "random")
+    }
+
+    assert len(hashes) == 1
+
+
+def test_class_udf_hash_without_body_ignores_process_implementation():
+    def make_udf(add: bool):
+        class Stateful(Mapper):
+            def __init__(self, limit: int = 3):
+                self.limit = limit
+
+            if add:
+
+                def process(self, x: int) -> int:
+                    return x + self.limit
+
+            else:
+
+                def process(self, x: int) -> int:
+                    return x * self.limit
+
+        sign = get_sign(Stateful(), output="y")  # type: ignore[arg-type]
+        return Mapper._create(sign, sign.output_schema)
+
+    added = make_udf(add=True)
+    multiplied = make_udf(add=False)
+
+    assert added.hash(include_body=False) == multiplied.hash(include_body=False)
+    assert added.hash() != multiplied.hash()
 
 
 def test_udf_does_not_traverse_setup_value():

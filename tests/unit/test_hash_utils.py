@@ -16,7 +16,46 @@ from sqlalchemy import (
 from sqlalchemy import func as sa_func
 
 from datachain import C, func
-from datachain.hash_utils import hash_callable, hash_column_elements
+from datachain.hash_utils import (
+    hash_callable,
+    hash_column_elements,
+    normalize_hash_value,
+)
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        (
+            {"y": 2, "x": 1},
+            ("dict", (("x", 1), ("y", 2))),
+        ),
+        (
+            {"outer": {"y": 2, "x": 1}},
+            ("dict", (("outer", ("dict", (("x", 1), ("y", 2)))),)),
+        ),
+        ({"c", "b", "a"}, ("set", ("a", "b", "c"))),
+        (frozenset({2, 1}), ("frozenset", (1, 2))),
+        ([1, 2], ("list", (1, 2))),
+        ((1, 2), ("tuple", (1, 2))),
+        (None, None),
+        (True, True),
+        (1, 1),
+        (1.5, 1.5),
+        ("value", "value"),
+        (b"value", b"value"),
+    ],
+)
+def test_normalize_hash_value(value, expected):
+    assert normalize_hash_value(value) == expected
+
+
+def test_normalize_hash_value_warns_for_unstable_repr():
+    class Opaque:
+        pass
+
+    with pytest.warns(UserWarning, match="no stable repr"):
+        normalize_hash_value(Opaque())
 
 
 def double(x):

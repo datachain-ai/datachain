@@ -16,7 +16,7 @@ from pydantic import BaseModel
 from datachain.asyn import AsyncMapper
 from datachain.cache import temporary_cache
 from datachain.dataset import RowDict
-from datachain.hash_utils import hash_callable
+from datachain.hash_utils import hash_callable, hash_value
 from datachain.lib.convert.flatten import (
     classify_field,
     flatten,
@@ -32,7 +32,7 @@ from datachain.query.batch import (
     Partition,
     RowsOutputBatch,
 )
-from datachain.utils import filtered_cloudpickle_dumps, safe_closing, with_last_flag
+from datachain.utils import safe_closing, with_last_flag
 
 logger = logging.getLogger("datachain")
 
@@ -226,6 +226,35 @@ class UDFBase(AbstractUDF):
     is_input_batched = False
     is_output_batched = False
     prefetch: int = 0
+    # Set in __new__ from bound constructor args (see hash()); default keeps
+    # mypy happy and acts as a safe fallback for instances that skip __new__.
+    _constructor_state_hash: str = ""
+
+    def __new__(cls, *args, **kwargs):
+        instance = super().__new__(cls)
+        signature = inspect.signature(cls.__init__)
+
+        try:
+            bound = signature.bind(instance, *args, **kwargs)
+        except TypeError:
+            # Pickle allocates an empty instance and restores its attributes
+            # afterwards, without calling __init__ or supplying its arguments.
+            return instance
+
+        bound.apply_defaults()
+        arguments = dict(bound.arguments)
+        if signature.parameters:
+            self_name = next(iter(signature.parameters))
+            arguments.pop(self_name, None)
+
+        arguments = cls._constructor_hash_args(arguments)
+        instance._constructor_state_hash = hash_value(arguments)
+        return instance
+
+    @classmethod
+    def _constructor_hash_args(cls, arguments: dict[str, Any]) -> dict[str, Any]:
+        """Constructor arguments that determine this UDF instance's identity."""
+        return arguments
 
     def __init__(self):
         self.params: SignalSchema | None = None
@@ -252,23 +281,14 @@ class UDFBase(AbstractUDF):
             self.params.hash() if self.params else "",
             self.output.hash(),
         ]
-        # For class-based UDFs, mix in instance state so two instances that
+        # For class-based UDFs, mix in constructor state so two instances that
         # differ only in constructor args don't collide.
-        if self._func is None and (state := self._hash_state()) is not None:
-            parts.append(hashlib.sha256(state).hexdigest())
+        if self._func is None:
+            parts.append(self._constructor_state_hash)
 
         return hashlib.sha256(
             b"".join([bytes.fromhex(part) for part in parts])
         ).hexdigest()
-
-    def _hash_state(self) -> bytes | None:
-        """State bytes to mix into hash() for class-based UDFs. Default is a
-        cloudpickle of the whole instance. Subclasses can override when the
-        default contains non-deterministic data (e.g. dynamically-named
-        pydantic classes) or when they want to declare identity explicitly.
-        Return None to skip the state part entirely.
-        """
-        return filtered_cloudpickle_dumps(self)
 
     def process(self, *args, **kwargs):
         """Processing function that needs to be defined by user"""
@@ -546,6 +566,12 @@ class _MultiSignalMapper(Mapper):
     of that dependency graph; the order the user wrote the kwargs is
     irrelevant. Cycles raise ``ValueError`` at construction time.
     """
+
+    @classmethod
+    def _constructor_hash_args(cls, arguments):
+        # hash() is fully overridden below; skip the base state hash so we
+        # don't warn on the callables in signal_map or store unused bytes.
+        return {}
 
     def __init__(self, signal_map: dict[str, Callable]):
         super().__init__()

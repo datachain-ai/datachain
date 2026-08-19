@@ -322,7 +322,7 @@ def test_subtract_hash(test_session, numbers_dataset, on):
             DoubleMapper(),
             ["x"],
             {"double": int},
-            "a91d1f4093958aff06588e39b69892eb108d22c452717d15740b271bfd3a6157",
+            "7c901f584e52f41ac22a5fed332da2c3093d7d03f0fc16a780a9ad11eb456379",
         ),
     ],
 )
@@ -362,7 +362,7 @@ def test_udf_mapper_hash(
             TripleGenerator(),
             ["x"],
             {"triple": int},
-            "b158fe7fb7396352ba1c4e47a92f70b3ec261228eb0968292340fb75ab60eea1",
+            "208bd4e553088f51983cadac3f645893bc44ffec7ccd625e28d7dfa0ea000170",
         ),
     ],
 )

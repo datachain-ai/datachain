@@ -1,11 +1,10 @@
-import re
-import warnings
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, get_args, get_origin
 
 from pydantic import BaseModel
 
+from datachain.hash_utils import normalize_hash_value
 from datachain.lib.udf import BindContext, BoundSpec
 from datachain.llm import engine
 from datachain.llm.content import MEDIA_VALUES, Media, build_messages, to_text
@@ -25,30 +24,6 @@ def _element_type(schema: Any) -> tuple[Any, bool]:
         args = get_args(schema)
         return (args[0] if args else str), True
     return schema, False
-
-
-# A value with no custom repr shows its memory address (``<Cls object at 0x...>``),
-# which changes each run and would make the cache key unstable.
-_DEFAULT_REPR = re.compile(r" object at 0x[0-9a-fA-F]+>")
-
-
-def _canonical(value: Any) -> Any:
-    """Order-independent form of a value, so the cache key is stable across
-    processes (``repr`` of a ``set`` or unsorted ``dict`` is not)."""
-    if isinstance(value, dict):
-        items = ((k, _canonical(v)) for k, v in value.items())
-        return tuple(sorted(items, key=lambda kv: repr(kv[0])))
-    if isinstance(value, (set, frozenset)):
-        return tuple(sorted((_canonical(v) for v in value), key=repr))
-    if isinstance(value, (list, tuple)):
-        return tuple(_canonical(v) for v in value)
-    if _DEFAULT_REPR.search(repr(value)):
-        warnings.warn(
-            f"llm param {type(value).__name__!r} has no stable repr; it breaks "
-            "caching (full recompute every run).",
-            stacklevel=2,
-        )
-    return value
 
 
 def _is_secret_key(key: Any) -> bool:
@@ -183,7 +158,7 @@ class LLMSpec(BoundSpec):
         if self.schema is not None:
             elem, is_list = _element_type(self.schema)
             if hasattr(elem, "model_json_schema"):
-                schema_repr = (_canonical(elem.model_json_schema()), is_list)
+                schema_repr = (normalize_hash_value(elem.model_json_schema()), is_list)
             else:
                 schema_repr = str(self.schema)
         params = self.params
@@ -200,7 +175,7 @@ class LLMSpec(BoundSpec):
             self.context_col,
             self.type,
             self.include_usage,
-            _canonical(params),
+            normalize_hash_value(params),
         )
 
     def _resolve_model(self, settings: "Settings") -> str:

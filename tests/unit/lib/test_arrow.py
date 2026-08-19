@@ -19,6 +19,18 @@ from datachain.lib.file import ArrowRow, File
 from datachain.lib.hf import HFClassLabel
 
 
+def test_arrow_generator_constructor_hash():
+    first_schema = dict_to_data_model("", {"value": int})
+    second_schema = dict_to_data_model("", {"value": int})
+
+    first = ArrowGenerator(output_schema=first_schema)
+    second = ArrowGenerator(output_schema=second_schema)
+    limited = ArrowGenerator(output_schema=second_schema, nrows=1)
+
+    assert first._constructor_state_hash == second._constructor_state_hash
+    assert first._constructor_state_hash != limited._constructor_state_hash
+
+
 @pytest.mark.parametrize("cache", [True, False])
 def test_arrow_generator(tmp_path, catalog, cache):
     ids = [12345, 67890, 34, 0xF0123]

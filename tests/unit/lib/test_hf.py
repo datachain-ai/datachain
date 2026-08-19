@@ -9,6 +9,19 @@ from datachain.lib.hf import (
 )
 
 
+def test_hf_generator_constructor_hash():
+    ds = Dataset.from_dict({"value": [1]})
+    first_schema = dict_to_data_model("", {"value": int})
+    second_schema = dict_to_data_model("", {"value": int})
+
+    first = HFGenerator(ds, first_schema)
+    second = HFGenerator(ds, second_schema)
+    limited = HFGenerator(ds, second_schema, limit=1)
+
+    assert first._constructor_state_hash == second._constructor_state_hash
+    assert first._constructor_state_hash != limited._constructor_state_hash
+
+
 def test_hf():
     ds = Dataset.from_dict({"pokemon": ["bulbasaur", "squirtle"]})
     schema, norm_names = get_output_schema(ds.features)

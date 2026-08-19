@@ -35,7 +35,6 @@ from datachain.lib.data_model import DataModel, DataType, dict_to_data_model
 from datachain.lib.udf import Generator
 from datachain.lib.utils import normalize_col_names
 from datachain.progress import tqdm
-from datachain.utils import filtered_cloudpickle_dumps
 
 if TYPE_CHECKING:
     import pyarrow as pa
@@ -94,17 +93,15 @@ class HFGenerator(Generator):
         self.args = args
         self.kwargs = kwargs
 
-    def _hash_state(self) -> bytes:
+    @classmethod
+    def _constructor_hash_args(cls, arguments):
         # output_schema is a dynamically-created pydantic class with a random
-        # name suffix; its stable field shape is already in self.output.hash().
-        return filtered_cloudpickle_dumps(
-            {
-                "ds": self.ds,
-                "limit": self.limit,
-                "args": self.args,
-                "kwargs": self.kwargs,
-            }
-        )
+        # name suffix; its stable field shape lands in the UDF hash via the
+        # output signal schema, so drop it here to keep the constructor hash
+        # deterministic across runs.
+        arguments = arguments.copy()
+        arguments.pop("output_schema", None)
+        return arguments
 
     def setup(self):
         self.ds_dict = stream_splits(self.ds, *self.args, **self.kwargs)
