@@ -47,7 +47,7 @@ from datachain.lib.signal_schema import (
 from datachain.lib.udf import UDFAdapter
 from datachain.lib.udf_signature import UdfSignatureError
 from datachain.lib.utils import DataChainColumnError, DataChainParamsError
-from datachain.sql.types import Float, Int64, SQLType, String
+from datachain.sql.types import Array, Float, Float32, Int64, SQLType, String
 from datachain.utils import STUDIO_URL
 from tests.utils import (
     ANY_VALUE,
@@ -3841,6 +3841,123 @@ def test_mutate_expression_column_through_subtract(test_session):
     assert ds.to_values("minus") == [1, 2]
 
 
+def test_mutate_explicitly_typed_expression_keeps_type(test_session):
+    dc.read_values(a=[1.5, 2.5], session=test_session).mutate(
+        typed_value=sqlalchemy.type_coerce(dc.C("a"), Float32())
+    ).save("mutated-typed")
+
+    dataset = test_session.catalog.get_dataset("mutated-typed", versions=None)
+    assert dataset.get_version("1.0.0").schema["typed_value"] == Float32
+
+    ds = dc.read_dataset("mutated-typed", session=test_session).order_by("a")
+    assert ds.to_values("typed_value") == [1.5, 2.5]
+
+
+def test_mutate_typed_expression_keeps_nullable_array_items(test_session):
+    item_type = SQLType.as_nullable(Float)
+    dc.read_values(
+        vals=[[1.0, None], [2.0, None]],
+        session=test_session,
+        output={"vals": list[float | None]},
+    ).mutate(typed_vals=sqlalchemy.type_coerce(dc.C("vals"), Array(item_type))).save(
+        "mutated-typed-array"
+    )
+
+    dataset = test_session.catalog.get_dataset("mutated-typed-array", versions=None)
+    schema = dataset.get_version("1.0.0").schema
+    assert isinstance(schema["typed_vals"], Array)
+    assert schema["typed_vals"].item_type.dc_nullable
+
+    ds = dc.read_dataset("mutated-typed-array", session=test_session).order_by("vals")
+    values = ds.to_values("typed_vals")
+    assert [v[0] for v in values] == [1.0, 2.0]
+    # None survives as NULL; SQLite reads it back as NaN, ClickHouse as None
+    assert all(v[1] is None or math.isnan(v[1]) for v in values)
+
+
+def test_mutate_expression_column_carried_through_merge(test_session):
+    left = dc.read_values(id=[1, 2], session=test_session).mutate(minus=dc.C("id") - 1)
+    right = dc.read_values(id=[1, 2], tag=["x", "y"], session=test_session)
+    left.merge(right, on="id").save("mutated-carried")
+
+    dataset = test_session.catalog.get_dataset("mutated-carried", versions=None)
+    assert dataset.get_version("1.0.0").schema["minus"] == Int64
+
+    ds = dc.read_dataset("mutated-carried", session=test_session).order_by("id")
+    assert ds.to_list("minus", "tag") == [(0, "x"), (1, "y")]
+
+
+def test_mutate_expression_column_through_slot_window(test_session):
+    window = func.window(partition_by=dc.C("grp"), order_by=dc.C("minus"), desc=True)
+    dc.read_values(id=[1, 2, 3], grp=["a", "a", "b"], session=test_session).mutate(
+        minus=dc.C("id") - 1
+    ).mutate(rank=func.row_number().over(window)).save("mutated-slot-window")
+
+    dataset = test_session.catalog.get_dataset("mutated-slot-window", versions=None)
+    assert dataset.get_version("1.0.0").schema["minus"] == Int64
+
+    ds = dc.read_dataset("mutated-slot-window", session=test_session).order_by("id")
+    assert ds.to_list("minus", "rank") == [(0, 2), (1, 1), (2, 1)]
+
+
+def test_mutate_labeled_expression_column(test_session):
+    dc.read_values(id=[1, 2], session=test_session).mutate(
+        labeled=(dc.C("id") - 1).label("labeled")
+    ).save("mutated-labeled")
+
+    dataset = test_session.catalog.get_dataset("mutated-labeled", versions=None)
+    assert dataset.get_version("1.0.0").schema["labeled"] == Int64
+
+    ds = dc.read_dataset("mutated-labeled", session=test_session).order_by("id")
+    assert ds.to_values("labeled") == [0, 1]
+
+
+def test_mutate_expression_column_as_udf_input(test_session):
+    result = (
+        dc.read_values(id=[1, 2], session=test_session)
+        .mutate(minus=dc.C("id") - 1)
+        .map(doubled=lambda minus: minus * 2, output=int)
+        .order_by("id")
+        .to_values("doubled")
+    )
+    assert result == [0, 2]
+
+
+def test_mutate_expression_column_through_exports(test_session, tmp_path):
+    chain = (
+        dc.read_values(id=[1, 2], session=test_session)
+        .mutate(minus=dc.C("id") - 1)
+        .order_by("id")
+    )
+
+    df = chain.to_pandas()
+    assert df["minus"].tolist() == [0, 1]
+
+    parquet = tmp_path / "out.parquet"
+    chain.to_parquet(parquet)
+    assert dc.read_parquet(parquet, session=test_session).order_by("id").to_values(
+        "minus"
+    ) == [0, 1]
+
+    csv = tmp_path / "out.csv"
+    chain.to_csv(csv)
+    assert dc.read_csv(str(csv), session=test_session).order_by("id").to_values(
+        "minus"
+    ) == [0, 1]
+
+    jsonl = tmp_path / "out.jsonl"
+    chain.to_jsonl(jsonl)
+    assert dc.read_json(str(jsonl), format="jsonl", session=test_session).order_by(
+        "jsonl.id"
+    ).to_values("jsonl.minus") == [0, 1]
+
+    db_url = f"sqlite:///{tmp_path / 'out.db'}"
+    chain.to_database("mutated", db_url)
+    assert dc.read_database(
+        "SELECT id, minus FROM mutated", db_url, session=test_session
+    ).order_by("id").to_values("minus") == [0, 1]
+
+
 def test_mutate_enum_typed_expression_column(test_session):
     # int-valued: clickhouse-sqlalchemy cannot compile string-valued Enum casts
     class Kind(enum.Enum):
@@ -3858,13 +3975,32 @@ def test_mutate_enum_typed_expression_column(test_session):
         ids = ds.to_values("id")
 
     dataset = test_session.catalog.get_dataset("mutated-enum", versions=None)
-    assert dataset.get_version("1.0.0").schema["kind"] == Int64
+    # python_to_sql cannot map an enum to a column type, so the expression is
+    # not coerced and stays out of the flat schema
+    assert "kind" not in dataset.get_version("1.0.0").schema
     assert ids == [1, 2]
 
     # enum definitions are not persisted in feature_schema yet, so the
     # enum-typed signal itself is dropped on reload
     with pytest.raises(SignalResolvingError, match="kind"):
         ds.to_values("kind")
+
+
+def test_mutate_expression_column_with_unmappable_type(test_session):
+    class Kind(enum.Enum):
+        A = 1
+
+    dated = dc.read_values(id=[1, 2], session=test_session).mutate(
+        d=sqlalchemy.cast(sqlalchemy.literal("2024-01-02"), sqlalchemy.Date)
+    )
+    assert len(dated.to_values("d")) == 2
+
+    arrays = dc.read_values(id=[1], session=test_session).mutate(
+        arr=sqlalchemy.cast(
+            sqlalchemy.literal(1), sqlalchemy.ARRAY(sqlalchemy.Enum(Kind))
+        )
+    )
+    assert arrays.signals_schema.values["arr"] == list[Kind]
 
 
 def test_mutate_expression_column_on_empty_chain(test_session):

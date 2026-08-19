@@ -138,6 +138,16 @@ if TYPE_CHECKING:
 T = TypeVar("T", bound="DataChain")
 
 
+def _is_coercible_sql_type(sql_type: Any) -> bool:
+    if inspect.isclass(sql_type):
+        return issubclass(sql_type, SQLType)
+    if not isinstance(sql_type, SQLType):
+        return False
+
+    item_type = getattr(sql_type, "item_type", None)
+    return item_type is None or _is_coercible_sql_type(item_type)
+
+
 class DataChainSchema(dict[str, DataType]):
     """Dict-like public view of a DataChain schema.
 
@@ -1675,11 +1685,22 @@ class DataChain:
                     val.type = python_to_sql(type(value))()
                     mutated[name] = val  # type: ignore[assignment]
                 else:
-                    sql_type: Any = python_to_sql(sql_to_python(value))
-                    # nullable physical type so ClickHouse keeps the NULL
-                    if schema._expr_references_nullable(value):
-                        sql_type = SQLType.as_nullable(sql_type)
-                    mutated[name] = sqlalchemy.type_coerce(value, sql_type)  # type: ignore[assignment]
+                    sql_type: Any = value.type
+                    if not isinstance(sql_type, SQLType):
+                        try:
+                            sql_type = python_to_sql(sql_to_python(value))
+                        except TypeError:
+                            sql_type = None
+
+                    # python_to_sql has no mapping for some expression types
+                    # (e.g. enums resolve to a plain python type, dates raise);
+                    # such expressions keep their raw type uncoerced
+                    if _is_coercible_sql_type(sql_type):
+                        # nullable physical type so ClickHouse keeps the NULL
+                        if schema._expr_references_nullable(value):
+                            sql_type = SQLType.as_nullable(sql_type)
+                        value = sqlalchemy.type_coerce(value, sql_type)
+                    mutated[name] = value  # type: ignore[assignment]
 
             new_schema = schema.mutate(kwargs)
         except SignalResolvingError as err:
