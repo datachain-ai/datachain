@@ -232,22 +232,17 @@ class UDFBase(AbstractUDF):
 
     def __new__(cls, *args, **kwargs):
         instance = super().__new__(cls)
-        signature = inspect.signature(cls.__init__)
-
         try:
-            bound = signature.bind(instance, *args, **kwargs)
+            # bound-method signature so `self` is already stripped; correct even
+            # when __init__ uses *args instead of a named `self` parameter.
+            bound = inspect.signature(instance.__init__).bind(*args, **kwargs)
         except TypeError:
             # Pickle allocates an empty instance and restores its attributes
             # afterwards, without calling __init__ or supplying its arguments.
             return instance
 
         bound.apply_defaults()
-        arguments = dict(bound.arguments)
-        if signature.parameters:
-            self_name = next(iter(signature.parameters))
-            arguments.pop(self_name, None)
-
-        arguments = cls._constructor_hash_args(arguments)
+        arguments = cls._constructor_hash_args(dict(bound.arguments))
         instance._constructor_state_hash = hash_value(arguments)
         return instance
 

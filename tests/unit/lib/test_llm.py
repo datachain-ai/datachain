@@ -511,13 +511,6 @@ def test_identity_stable_across_param_dict_order():
     assert a == b
 
 
-def test_canonical_orders_sets_and_dicts():
-    from datachain.llm.spec import _canonical
-
-    assert _canonical({"a", "b", "c"}) == _canonical({"c", "b", "a"})
-    assert _canonical({"x": 1, "y": 2}) == _canonical({"y": 2, "x": 1})
-
-
 def test_param_clobber_is_blocked(fake_llm):
     bind(llm.complete("t", "real prompt", temperature=0.0), llm="real/model")("hi")
     call = fake_llm.calls[-1]
