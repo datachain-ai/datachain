@@ -17,6 +17,7 @@ concurrency:
 jobs:
   studio:
     if: '!github.event.pull_request.head.repo.fork'
+    timeout-minutes: 60
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -105,6 +106,7 @@ jobs:
         run: make update_datachain_deps "${{ env.BRANCH }}"
 
       - name: Install FFmpeg
+        timeout-minutes: 10
         run: |
           sudo apt update
           sudo apt install -y ffmpeg
