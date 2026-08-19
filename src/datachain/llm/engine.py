@@ -3,6 +3,7 @@ from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError, create_model
 
+from datachain import json
 from datachain.lib.utils import DataChainError
 from datachain.llm.types import Usage
 
@@ -131,6 +132,17 @@ def parse_list(item_type: type, content: str) -> list:
         except ValidationError:
             try:
                 return adapter.validate_json(candidate)  # bare top-level array
+            except ValidationError as exc:
+                last_error = exc
+
+        # some models double-encode: {"items": "<the array as a JSON string>"}
+        try:
+            items = json.loads(candidate).get("items")
+        except (ValueError, AttributeError):
+            items = None
+        if isinstance(items, str):
+            try:
+                return adapter.validate_json(items)
             except ValidationError as exc:
                 last_error = exc
     raise LLMError(
