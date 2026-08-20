@@ -6319,7 +6319,7 @@ def test_merge_widens_enum_signal(test_session):
     merged = left.merge(right, on="id", full=True).order_by("id")
 
     assert merged.signals_schema.values["species"] == (Species | None)
-    assert merged.to_list("id", "species") == [(1, "cat"), (2, None)]
+    assert merged.to_list("id", "species") == [(1, Species.CAT), (2, None)]
 
 
 def test_optional_literal_field_is_nullable(test_session):
@@ -6381,6 +6381,6 @@ def test_merge_on_enum_signal(test_session):
     merged = left.merge(right, on="species").order_by("id")
 
     assert merged.to_list("id", "species", "right_id") == [
-        (1, "cat", None),
-        (2, "dog", 10),
+        (1, Species.CAT, None),
+        (2, Species.DOG, 10),
     ]
