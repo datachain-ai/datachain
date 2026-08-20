@@ -535,6 +535,8 @@ class Func(Function):  # noqa: PLW1641
         sql_type: Any,
         label: str | None,
     ) -> Any:
+        from datachain.lib.signal_schema import unwrap_enum_binds
+
         result: Any = func_col
 
         if self.is_window:
@@ -555,6 +557,7 @@ class Func(Function):  # noqa: PLW1641
             )
 
         result.type = sql_type() if inspect.isclass(sql_type) else sql_type
+        result = unwrap_enum_binds(result)
 
         if col_name := self.get_col_name(label):
             result = result.label(col_name)

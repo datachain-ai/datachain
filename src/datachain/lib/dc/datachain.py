@@ -1217,7 +1217,7 @@ class DataChain:
                     processed_partition_columns.append(column)
                 else:
                     # Assume it's already a ColumnExpr
-                    processed_partition_columns.append(col)
+                    processed_partition_columns.append(unwrap_enum_binds(col))
 
             processed_partition_by = processed_partition_columns
         else:
@@ -1670,7 +1670,7 @@ class DataChain:
                         mutated[mutated_name] = signal
                 elif isinstance(value, Func):
                     # adding new signal
-                    mutated[name] = unwrap_enum_binds(value.get_column(schema))  # type: ignore[assignment]
+                    mutated[name] = value.get_column(schema)  # type: ignore[assignment]
                 elif isinstance(value, primitives):
                     val = literal(value)
                     val.type = python_to_sql(type(value))()

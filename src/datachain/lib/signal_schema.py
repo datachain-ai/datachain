@@ -255,6 +255,21 @@ def _is_enum_annotation(annotation: Any) -> "TypeGuard[type[Enum]]":
     )
 
 
+def _unwrap_enum_value(value: Any) -> tuple[Any, bool]:
+    if isinstance(value, Enum):
+        return value.value, True
+
+    # a composite IN produces one bind whose value is a list of row tuples,
+    # so enum members can sit at any nesting depth
+    if isinstance(value, (list, tuple)):
+        pairs = [_unwrap_enum_value(v) for v in value]
+        if any(changed for _, changed in pairs):
+            items = [v for v, _ in pairs]
+            return (tuple(items) if isinstance(value, tuple) else items), True
+
+    return value, False
+
+
 def unwrap_enum_binds(expr: "ColumnExpr") -> "ColumnExpr":
     """Return the expression with enum bind parameters unwrapped to their values."""
     enum_binds: dict[int, BindParameter] = {}
@@ -264,14 +279,8 @@ def unwrap_enum_binds(expr: "ColumnExpr") -> "ColumnExpr":
         if not isinstance(element, BindParameter):
             continue
 
-        value = element.value
-        if isinstance(value, Enum):
-            unwrapped = value.value
-        elif isinstance(value, (list, tuple)) and any(
-            isinstance(v, Enum) for v in value
-        ):
-            unwrapped = [v.value if isinstance(v, Enum) else v for v in value]
-        else:
+        unwrapped, changed = _unwrap_enum_value(element.value)
+        if not changed:
             plain_binds.append(element)
             continue
 

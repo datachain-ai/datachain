@@ -17,6 +17,7 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+import sqlalchemy
 from pydantic import BaseModel, ConfigDict
 
 import datachain as dc
@@ -6178,3 +6179,62 @@ def test_filter_and_mutate_by_enum_member(test_session):
     assert ds.mutate(
         func_dog=func.and_(dc.C("pet.species") == Species.DOG, dc.C("id") > 0)
     ).order_by("id").to_values("func_dog") == [False, True]
+
+
+def test_enum_bind_unwrapping_across_operations(test_session):
+    class Code(enum.Enum):
+        ONE = 1
+        TWO = 2
+
+    class Item(BaseModel):
+        code: Code
+
+    dc.read_values(id=[1, 2], session=test_session).map(
+        item=lambda id: Item(code=Code.ONE if id == 1 else Code.TWO), output=Item
+    ).save("enum-binds")
+    ds = dc.read_dataset("enum-binds", session=test_session)
+
+    assert ds.filter(
+        sqlalchemy.tuple_(dc.C("item.code"), dc.C("id")).in_([(Code.TWO, 2)])
+    ).to_values("id") == [2]
+
+    grouped = ds.group_by(
+        cnt=func.count(),
+        partition_by=func.ifelse(dc.C("item.code") == Code.TWO, "two", "other"),
+    )
+    assert sorted((d["gr_0"], d["cnt"]) for d in grouped.to_records()) == [
+        ("other", 1),
+        ("two", 1),
+    ]
+
+    summed = ds.group_by(
+        s=func.sum(func.ifelse(dc.C("item.code") == Code.TWO, 1, 0)),
+        partition_by="id",
+    )
+    assert sorted(summed.to_values("s")) == [0, 1]
+
+    def count_codes(codes):
+        yield len(list(codes))
+
+    by_func = ds.agg(
+        n=count_codes,
+        params=["item.code"],
+        partition_by=func.ifelse(dc.C("item.code") == Code.TWO, "t", "o"),
+        output=int,
+    )
+    assert by_func.to_values("n") == [1, 1]
+
+    by_expr = ds.agg(
+        n=count_codes,
+        params=["item.code"],
+        partition_by=dc.C("item.code") == Code.TWO,
+        output=int,
+    )
+    assert by_expr.to_values("n") == [1, 1]
+
+    two_first = func.ifelse(dc.C("item.code") == Code.TWO, 0, 1)
+    assert ds.order_by(two_first, "id").to_values("id") == [2, 1]
+
+    window = func.window(partition_by="id", order_by="id")
+    windowed = ds.mutate(w=func.first(two_first).over(window))
+    assert sorted(windowed.to_values("w")) == [0, 1]
