@@ -3930,6 +3930,8 @@ def test_mutate_expression_column_through_exports(test_session, tmp_path):
         .order_by("id")
     )
 
+    assert [r["minus"] for r in chain.to_records()] == [0, 1]
+
     df = chain.to_pandas()
     assert df["minus"].tolist() == [0, 1]
 
