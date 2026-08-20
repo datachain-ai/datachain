@@ -855,3 +855,49 @@ def test_content_raises_on_no_message():
 
 def test_finish_reason_empty_on_no_choices():
     assert engine._finish_reason(types.SimpleNamespace(choices=[])) == ""
+
+
+def test_orcarouter_model_injects_gateway_kwargs(fake_llm, monkeypatch):
+    monkeypatch.setenv("ORCAROUTER_API_KEY", "sk-orca-test")
+    bind(llm.complete("t"), llm="orcarouter/auto")("hi")
+    call = fake_llm.calls[-1]
+    assert call["model"] == "orcarouter/auto"
+    assert call["api_base"] == "https://api.orcarouter.ai/v1"
+    assert call["api_key"] == "sk-orca-test"
+    assert call["custom_llm_provider"] == "openai"
+
+
+def test_orcarouter_key_from_llm_params(fake_llm):
+    bind(llm.complete("t"), llm="orcarouter/auto", llm_params={"api_key": "K"})("hi")
+    assert fake_llm.calls[-1]["api_key"] == "K"
+
+
+def test_orcarouter_key_prefers_params_over_env(fake_llm, monkeypatch):
+    monkeypatch.setenv("ORCAROUTER_API_KEY", "ENV")
+    bind(llm.complete("t"), llm="orcarouter/auto", llm_params={"api_key": "PARAM"})(
+        "hi"
+    )
+    assert fake_llm.calls[-1]["api_key"] == "PARAM"
+
+
+def test_orcarouter_missing_key_raises(fake_llm, monkeypatch):
+    monkeypatch.delenv("ORCAROUTER_API_KEY", raising=False)
+    with pytest.raises(engine.LLMError, match="ORCAROUTER_API_KEY"):
+        bind(llm.complete("t"), llm="orcarouter/auto")("hi")
+
+
+def test_orcarouter_embed_injects_gateway_kwargs(fake_llm, monkeypatch):
+    monkeypatch.setenv("ORCAROUTER_API_KEY", "sk-orca-test")
+    bind(llm.embed("t"), llm="orcarouter/auto")("hi")
+    call = fake_llm.embedding_calls[-1]
+    assert call["model"] == "orcarouter/auto"
+    assert call["api_base"] == "https://api.orcarouter.ai/v1"
+    assert call["api_key"] == "sk-orca-test"
+    assert call["custom_llm_provider"] == "openai"
+
+
+def test_non_orcarouter_model_unaffected(fake_llm):
+    bind(llm.complete("t"), llm="anthropic/claude-haiku-4-5")("hi")
+    call = fake_llm.calls[-1]
+    assert "custom_llm_provider" not in call
+    assert "api_base" not in call

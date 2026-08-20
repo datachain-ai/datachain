@@ -1,4 +1,5 @@
 from functools import cache
+from os import environ
 from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError, create_model
@@ -21,6 +22,9 @@ RESERVED_PARAMS = frozenset(
     {"model", "messages", "input", "num_retries", "fallbacks", "response_format"}
 )
 
+ORCAROUTER_API_BASE = "https://api.orcarouter.ai/v1"
+ORCAROUTER_API_KEY_ENV = "ORCAROUTER_API_KEY"
+
 
 def _litellm():
     # Imported lazily (it is slow to import) so `import datachain` stays fast.
@@ -35,6 +39,28 @@ def _fallbacks(fallback: str | list[str] | None) -> list[str] | None:
     return [fallback] if isinstance(fallback, str) else list(fallback)
 
 
+def _orcarouter_kwargs(params: dict[str, Any]) -> dict[str, Any]:
+    """Wire a `orcarouter/<model>` string to the OrcaRouter gateway.
+
+    OrcaRouter is an OpenAI-compatible router, so the call is routed as a plain
+    OpenAI chat/embedding request against `https://api.orcarouter.ai/v1`. An
+    `ORCAROUTER_API_KEY` must be set (or passed via `llm_params`); an explicit key
+    is required so an unrelated `OPENAI_API_KEY` is never sent to the gateway.
+    """
+    kwargs: dict[str, Any] = {
+        "api_base": ORCAROUTER_API_BASE,
+        "custom_llm_provider": "openai",
+    }
+    key = params.get("api_key") or environ.get(ORCAROUTER_API_KEY_ENV)
+    if not key:
+        raise LLMError(
+            f"model 'orcarouter/...' requires ${ORCAROUTER_API_KEY_ENV} or an "
+            "api_key passed via llm_params"
+        )
+    kwargs["api_key"] = key
+    return kwargs
+
+
 def _base_kwargs(
     model: str,
     retries: int,
@@ -43,6 +69,8 @@ def _base_kwargs(
 ) -> dict[str, Any]:
     # `params` first so datachain.llm's own keys always win.
     kwargs: dict[str, Any] = {**params, "model": model, "num_retries": max(retries, 0)}
+    if model.startswith("orcarouter/"):
+        kwargs.update(_orcarouter_kwargs(kwargs))
     if (fallbacks := _fallbacks(fallback)) is not None:
         kwargs["fallbacks"] = fallbacks
     return kwargs

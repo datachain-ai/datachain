@@ -94,6 +94,21 @@ explicitly with `.settings(llm_params=...)`. A dict of params is part of the cac
 key; a callable (resolved per worker, e.g. for secrets) is not, so put
 output-affecting params in the dict form or in per-call keyword arguments.
 
+### OrcaRouter
+
+[OrcaRouter](https://www.orcarouter.ai) is an OpenAI-compatible gateway; a model
+string of `orcarouter/<model>` routes to `https://api.orcarouter.ai/v1` with the
+`ORCAROUTER_API_KEY` credential (or an `api_key` passed via `llm_params`). Its
+`orcarouter/auto` alias picks a default model for you:
+
+```python
+.settings(llm="orcarouter/auto", llm_params={"api_key": os.environ["ORCAROUTER_API_KEY"]})
+```
+
+The gateway also runs gateway-level, zero-trust security for AI agents on the same
+endpoint — screening every prompt/response and governing every tool call on a
+default-deny basis, with no application code changes.
+
 ## Token usage
 
 Pass `include_usage=True` to capture token counts for a call. The function then
