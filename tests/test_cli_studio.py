@@ -681,6 +681,46 @@ def test_studio_rm_dataset(capsys, mocker):
         }
 
 
+def test_studio_list_jobs(capsys):
+    with Config(ConfigLevel.GLOBAL).edit() as conf:
+        conf["studio"] = {"token": "isat_access_token", "team": "team_name"}
+
+    with requests_mock.mock() as m:
+        m.get(
+            re.compile(rf"^{re.escape(STUDIO_URL)}/api/datachain/jobs/"),
+            json=[
+                {
+                    "id": "8bddde6c-c3ca-41b0-9d87-ee945bfdce70",
+                    "name": "on-cluster",
+                    "status": "COMPLETE",
+                    "compute_cluster_id": 1,
+                    "compute_cluster_name": "prod-cluster",
+                    "created_at": "2021-01-01T00:00:00Z",
+                    "created_by": "user",
+                },
+                {
+                    "id": "0502eef6-a32e-45fa-8e3b-d20ec0abbcf0",
+                    "name": "on-other-cluster",
+                    "status": "FAILED",
+                    "compute_cluster_id": 2,
+                    "compute_cluster_name": "dev-cluster",
+                    "created_at": "2021-01-02T00:00:00Z",
+                    "created_by": "user",
+                },
+            ],
+        )
+
+        assert main(["job", "ls"]) == 0
+        out = capsys.readouterr().out
+        assert "Cluster" not in out
+        assert "prod-cluster" not in out
+
+        assert main(["job", "ls", "--extended"]) == 0
+        out = capsys.readouterr().out
+        assert "Cluster" in out
+        assert "prod-cluster" in out
+
+
 def test_studio_cancel_job(capsys, mocker):
     job_id = "8bddde6c-c3ca-41b0-9d87-ee945bfdce70"
     with requests_mock.mock() as m:

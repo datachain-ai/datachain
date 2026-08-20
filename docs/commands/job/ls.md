@@ -5,7 +5,7 @@ List jobs in Studio.
 ## Synopsis
 
 ```usage
-usage: datachain job ls [-h] [-v] [-q] [--status STATUS] [--team TEAM] [--limit LIMIT]
+usage: datachain job ls [-h] [-v] [-q] [--status STATUS] [--team TEAM] [--limit LIMIT] [-e]
 ```
 
 ## Description
@@ -18,6 +18,7 @@ This command lists jobs in Studio. You can filter jobs by their status, specify 
 * `--status STATUS` - Status to filter jobs by
 * `--team TEAM` - Team to list jobs for (default: from config)
 * `--limit LIMIT` - Limit the number of jobs returned (default: 20)
+* `-e`, `--extended` - Show extra job details, such as the compute cluster
 * `-h`, `--help` - Show the help message and exit
 * `-v`, `--verbose` - Be verbose
 * `-q`, `--quiet` - Be quiet
@@ -75,6 +76,11 @@ datachain job ls --limit 50
 5. List jobs with verbose output:
 ```bash
 datachain job ls -v
+```
+
+6. List jobs with extra details, including the compute cluster they ran on:
+```bash
+datachain job ls --extended
 ```
 
 ## Notes
