@@ -45,7 +45,10 @@ def python_to_sql(typ):  # noqa: PLR0911
         if issubclass(typ, SQLType):
             return typ
         if issubclass(typ, Enum):
-            value_types = {type(m.value) for m in typ}
+            # __members__, not iteration: EnumMeta.__iter__ skips zero-valued
+            # and composite flag members on 3.11+, which would make the column
+            # type depend on the Python version
+            value_types = {type(m.value) for m in typ.__members__.values()}
             if not value_types:
                 return String
 

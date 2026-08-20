@@ -3810,6 +3810,23 @@ def test_enum_leaf_read_inside_annotated(test_session):
     assert ds.to_values("pet.tags") == [[Species.CAT]]
 
 
+def test_zero_only_flag_field_round_trips(test_session):
+    class Flags(enum.IntFlag):
+        NONE = 0
+
+    class M(BaseModel):
+        f: Flags
+
+    dc.read_values(id=[1], session=test_session).map(
+        m=lambda id: M(f=Flags.NONE), output=M
+    ).save("enum-zero-flag")
+
+    ds = dc.read_dataset("enum-zero-flag", session=test_session)
+    dataset = test_session.catalog.get_dataset("enum-zero-flag", versions=None)
+    assert dataset.get_version("1.0.0").schema["m__f"] == Int64
+    assert ds.to_values("m.f") == [Flags.NONE]
+
+
 def test_enum_leaf_read_ignores_use_enum_values(test_session):
     class Species(enum.Enum):
         CAT = "cat"

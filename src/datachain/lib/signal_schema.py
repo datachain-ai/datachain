@@ -240,12 +240,12 @@ class CustomType(BaseModel):
 
 
 def _is_enum_annotation(annotation: Any) -> "TypeGuard[type[Enum]]":
-    # matches python_to_sql: an enum without canonical members maps to String,
+    # matches python_to_sql: an enum without members maps to String,
     # so its stored values stay raw
     return (
         isclass(annotation)
         and issubclass(annotation, Enum)
-        and next(iter(annotation), None) is not None
+        and bool(annotation.__members__)
     )
 
 
