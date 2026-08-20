@@ -1,6 +1,7 @@
 import enum
 import json
 import pickle
+import sys
 from collections import UserDict, UserList
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from datetime import datetime
@@ -1086,13 +1087,19 @@ def test_row_to_objs_leaves_memberless_enum_raw():
     assert converted == "cat"
 
 
-def test_row_to_objs_leaves_zero_only_flag_raw():
+def test_row_to_objs_zero_only_flag_matches_column_mapping():
     class Flags(enum.IntFlag):
         NONE = 0
 
-    (converted,) = SignalSchema({"x": Flags}).row_to_objs(("0",))
-
-    assert converted == "0"
+    # 3.11 stopped iterating zero-valued flag members, so python_to_sql maps
+    # this flag to String there and to Int64 on 3.10; conversion must agree
+    # with that mapping on both versions
+    if sys.version_info >= (3, 11):
+        (converted,) = SignalSchema({"x": Flags}).row_to_objs(("0",))
+        assert converted == "0"
+    else:
+        (converted,) = SignalSchema({"x": Flags}).row_to_objs((0,))
+        assert converted is Flags.NONE
 
 
 def test_row_to_features_does_not_decode_string_keys(test_session):
