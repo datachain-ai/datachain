@@ -1,9 +1,7 @@
 import hashlib
 import inspect
 import logging
-import re
 import textwrap
-import warnings
 from collections.abc import Sequence
 from typing import TypeAlias, TypeVar
 from uuid import uuid4
@@ -18,40 +16,35 @@ T = TypeVar("T", bound=ColumnElement)
 ColumnLike: TypeAlias = str | T
 
 
-# A value with no custom repr shows its memory address (``<Cls object at 0x...>``
-# for plain objects, ``<function name at 0x...>`` for functions and methods),
-# which changes each run and would make the cache key unstable.
-_DEFAULT_REPR = re.compile(r" at 0x[0-9a-fA-F]+>")
+def normalize_hash_value(value):  # noqa: PLR0911
+    """Return a complete, deterministic representation for stable cache keys."""
+    value_type = type(value)
 
-
-def normalize_hash_value(value):
-    """Order-independent form of a value for stable cache keys."""
-    if isinstance(value, dict):
+    if value is None:
+        return ("none",)
+    if value_type in (bool, int, float, str, bytes):
+        return (value_type.__name__, value)
+    if value_type is dict:
         items = (
             (normalize_hash_value(k), normalize_hash_value(v)) for k, v in value.items()
         )
         return ("dict", tuple(sorted(items, key=repr)))
-    if isinstance(value, set):
+    if value_type is set:
         return (
             "set",
             tuple(sorted(map(normalize_hash_value, value), key=repr)),
         )
-    if isinstance(value, frozenset):
+    if value_type is frozenset:
         return (
             "frozenset",
             tuple(sorted(map(normalize_hash_value, value), key=repr)),
         )
-    if isinstance(value, list):
+    if value_type is list:
         return ("list", tuple(map(normalize_hash_value, value)))
-    if isinstance(value, tuple):
+    if value_type is tuple:
         return ("tuple", tuple(map(normalize_hash_value, value)))
-    if _DEFAULT_REPR.search(repr(value)):
-        warnings.warn(
-            f"value of type {type(value).__name__!r} has no stable repr; it "
-            "breaks caching (full recompute every run).",
-            stacklevel=2,
-        )
-    return value
+
+    raise TypeError(f"value of type {value_type.__name__!r} cannot be hashed safely")
 
 
 def hash_value(value) -> str:

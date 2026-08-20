@@ -6,6 +6,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 from datasets import Dataset
+from pyarrow.csv import ParseOptions
+from pyarrow.dataset import CsvFileFormat
 
 import datachain as dc
 from datachain.lib.arrow import (
@@ -23,9 +25,20 @@ def test_arrow_generator_constructor_hash():
     first_schema = dict_to_data_model("", {"value": int})
     second_schema = dict_to_data_model("", {"value": int})
 
-    first = ArrowGenerator(output_schema=first_schema)
-    second = ArrowGenerator(output_schema=second_schema)
-    limited = ArrowGenerator(output_schema=second_schema, nrows=1)
+    def make_generator(output_schema, nrows=None):
+        input_schema = pa.schema({"value": pa.int64()})
+        parse_options = ParseOptions(delimiter=";")
+        return ArrowGenerator(
+            input_schema=input_schema,
+            output_schema=output_schema,
+            nrows=nrows,
+            parse_options=parse_options,
+            format=CsvFileFormat(parse_options=parse_options),
+        )
+
+    first = make_generator(first_schema)
+    second = make_generator(second_schema)
+    limited = make_generator(second_schema, nrows=1)
 
     assert first._constructor_state_hash == second._constructor_state_hash
     assert first._constructor_state_hash != limited._constructor_state_hash

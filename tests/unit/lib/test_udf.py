@@ -170,6 +170,30 @@ def test_class_udf_hash_is_deterministic_across_instances():
     assert udf_a.hash() == udf_b.hash()
 
 
+def test_class_udf_unsupported_constructor_value_disables_cache_reuse(caplog):
+    class Opaque:
+        def __repr__(self):
+            return "Opaque()"
+
+    class Configured(Mapper):
+        def __init__(self, config: Opaque):
+            self.config = config
+
+        def process(self, x: int) -> int:
+            return x
+
+    first = Configured(Opaque())
+    second = Configured(Opaque())
+    sign_a = get_sign(first, output="y")
+    sign_b = get_sign(second, output="y")
+    udf_a = Mapper._create(sign_a, sign_a.output_schema)
+    udf_b = Mapper._create(sign_b, sign_b.output_schema)
+
+    assert udf_a.hash() == udf_a.hash()
+    assert udf_a.hash() != udf_b.hash()
+    assert "cache reuse across UDF instances is disabled" in caplog.text
+
+
 @pytest.mark.parametrize(
     "args,kwargs,matches_default",
     [

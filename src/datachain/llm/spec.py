@@ -1,6 +1,8 @@
+import logging
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, get_args, get_origin
+from uuid import uuid4
 
 from pydantic import BaseModel
 
@@ -12,6 +14,8 @@ from datachain.llm.types import Usage
 
 if TYPE_CHECKING:
     from datachain.lib.settings import Settings
+
+logger = logging.getLogger("datachain")
 
 
 class LLMConfigError(engine.LLMError):
@@ -44,6 +48,14 @@ def _without_secrets(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return [_without_secrets(v) for v in value]
     return value
+
+
+def _normalize_identity_value(value: Any) -> Any:
+    try:
+        return normalize_hash_value(value)
+    except TypeError as exc:
+        logger.warning("%s; cache reuse for this LLM operation is disabled", exc)
+        return ("unsupported", uuid4().hex)
 
 
 @dataclass
@@ -158,7 +170,10 @@ class LLMSpec(BoundSpec):
         if self.schema is not None:
             elem, is_list = _element_type(self.schema)
             if hasattr(elem, "model_json_schema"):
-                schema_repr = (normalize_hash_value(elem.model_json_schema()), is_list)
+                schema_repr = (
+                    _normalize_identity_value(elem.model_json_schema()),
+                    is_list,
+                )
             else:
                 schema_repr = str(self.schema)
         params = self.params
@@ -175,7 +190,7 @@ class LLMSpec(BoundSpec):
             self.context_col,
             self.type,
             self.include_usage,
-            normalize_hash_value(params),
+            _normalize_identity_value(params),
         )
 
     def _resolve_model(self, settings: "Settings") -> str:

@@ -1,3 +1,4 @@
+import pytest
 from datasets import Array2D, Dataset, DatasetDict, Sequence, Value
 
 from datachain.lib.data_model import dict_to_data_model
@@ -9,14 +10,19 @@ from datachain.lib.hf import (
 )
 
 
-def test_hf_generator_constructor_hash():
-    ds = Dataset.from_dict({"value": [1]})
+@pytest.mark.parametrize("as_dict", [False, True])
+def test_hf_generator_constructor_hash(as_dict):
+    first_ds = Dataset.from_dict({"value": [1]})
+    second_ds = Dataset.from_dict({"value": [1]})
+    if as_dict:
+        first_ds = DatasetDict({"train": first_ds})
+        second_ds = DatasetDict({"train": second_ds})
     first_schema = dict_to_data_model("", {"value": int})
     second_schema = dict_to_data_model("", {"value": int})
 
-    first = HFGenerator(ds, first_schema)
-    second = HFGenerator(ds, second_schema)
-    limited = HFGenerator(ds, second_schema, limit=1)
+    first = HFGenerator(first_ds, first_schema)
+    second = HFGenerator(second_ds, second_schema)
+    limited = HFGenerator(second_ds, second_schema, limit=1)
 
     assert first._constructor_state_hash == second._constructor_state_hash
     assert first._constructor_state_hash != limited._constructor_state_hash

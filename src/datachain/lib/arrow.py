@@ -1,4 +1,5 @@
 import math
+import pickle
 from collections.abc import Sequence
 from itertools import islice
 from typing import TYPE_CHECKING, Any
@@ -9,6 +10,7 @@ from pyarrow.dataset import CsvFileFormat, dataset
 
 from datachain import json
 from datachain.fs.reference import ReferenceFileSystem
+from datachain.hash_utils import hash_callable
 from datachain.lib.convert.flatten import classify_field, iter_flat_columns
 from datachain.lib.data_model import (
     NULLABLE_SCALARS,
@@ -31,6 +33,28 @@ if TYPE_CHECKING:
 
 
 DATACHAIN_SIGNAL_SCHEMA_PARQUET_KEY = b"DataChain SignalSchema"
+
+
+def _parse_options_hash_args(options: ParseOptions) -> dict[str, Any]:
+    handler = options.invalid_row_handler
+    return {
+        "delimiter": options.delimiter,
+        "double_quote": options.double_quote,
+        "escape_char": options.escape_char,
+        "ignore_empty_lines": options.ignore_empty_lines,
+        "invalid_row_handler": hash_callable(handler) if handler else None,
+        "newlines_in_values": options.newlines_in_values,
+        "quote_char": options.quote_char,
+    }
+
+
+def _csv_format_hash_args(format: CsvFileFormat) -> dict[str, Any]:
+    scan_options = format.default_fragment_scan_options
+    return {
+        "parse_options": _parse_options_hash_args(format.parse_options),
+        "read_options": pickle.dumps(scan_options.read_options),
+        "convert_options": pickle.dumps(scan_options.convert_options),
+    }
 
 
 def fix_pyarrow_format(format, parse_options=None):
@@ -83,6 +107,16 @@ class ArrowGenerator(Generator):
         # deterministic across runs.
         arguments = arguments.copy()
         arguments.pop("output_schema", None)
+        input_schema = arguments.get("input_schema")
+        if input_schema is not None:
+            arguments["input_schema"] = input_schema.serialize().to_pybytes()
+        kwargs = arguments["kwargs"].copy()
+        for name, value in kwargs.items():
+            if isinstance(value, ParseOptions):
+                kwargs[name] = _parse_options_hash_args(value)
+            elif isinstance(value, CsvFileFormat):
+                kwargs[name] = _csv_format_hash_args(value)
+        arguments["kwargs"] = kwargs
         return arguments
 
     def process(self, file: File):

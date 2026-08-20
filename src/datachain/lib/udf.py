@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from functools import partial
 from graphlib import CycleError, TopologicalSorter
 from typing import TYPE_CHECKING, Any, TypeVar
+from uuid import uuid4
 
 import attrs
 from fsspec.callbacks import DEFAULT_CALLBACK, Callback
@@ -175,6 +176,17 @@ class UDFAdapter:
         return self.inner.prefetch
 
 
+def _hash_constructor_args(arguments: dict[str, Any]) -> str:
+    try:
+        return hash_value(arguments)
+    except TypeError as exc:
+        logger.warning(
+            "%s; cache reuse across UDF instances is disabled",
+            exc,
+        )
+        return hashlib.sha256(uuid4().bytes).hexdigest()
+
+
 class UDFBase(AbstractUDF):
     """Base class for stateful user-defined functions.
 
@@ -243,7 +255,7 @@ class UDFBase(AbstractUDF):
 
         bound.apply_defaults()
         arguments = cls._constructor_hash_args(dict(bound.arguments))
-        instance._constructor_state_hash = hash_value(arguments)
+        instance._constructor_state_hash = _hash_constructor_args(arguments)
         return instance
 
     @classmethod

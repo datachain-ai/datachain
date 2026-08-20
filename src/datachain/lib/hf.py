@@ -46,6 +46,19 @@ HFDatasetType: TypeAlias = (
 )
 
 
+def _dataset_hash_args(ds: HFDatasetType) -> Any:
+    if isinstance(ds, (DatasetDict, IterableDatasetDict)):
+        return (
+            type(ds).__name__,
+            {name: _dataset_hash_args(split) for name, split in ds.items()},
+        )
+    if isinstance(ds, (Dataset, IterableDataset)):
+        fingerprint = getattr(ds, "_fingerprint", None)
+        if fingerprint is not None:
+            return (type(ds).__name__, fingerprint)
+    return ds
+
+
 class HFClassLabel(DataModel):
     string: str
     integer: int
@@ -101,6 +114,7 @@ class HFGenerator(Generator):
         # deterministic across runs.
         arguments = arguments.copy()
         arguments.pop("output_schema", None)
+        arguments["ds"] = _dataset_hash_args(arguments["ds"])
         return arguments
 
     def setup(self):

@@ -28,33 +28,56 @@ from datachain.hash_utils import (
     [
         (
             {"y": 2, "x": 1},
-            ("dict", (("x", 1), ("y", 2))),
+            (
+                "dict",
+                (
+                    (("str", "x"), ("int", 1)),
+                    (("str", "y"), ("int", 2)),
+                ),
+            ),
         ),
         (
             {"outer": {"y": 2, "x": 1}},
-            ("dict", (("outer", ("dict", (("x", 1), ("y", 2)))),)),
+            (
+                "dict",
+                (
+                    (
+                        ("str", "outer"),
+                        (
+                            "dict",
+                            (
+                                (("str", "x"), ("int", 1)),
+                                (("str", "y"), ("int", 2)),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
         ),
-        ({"c", "b", "a"}, ("set", ("a", "b", "c"))),
-        (frozenset({2, 1}), ("frozenset", (1, 2))),
-        ([1, 2], ("list", (1, 2))),
-        ((1, 2), ("tuple", (1, 2))),
-        (None, None),
-        (True, True),
-        (1, 1),
-        (1.5, 1.5),
-        ("value", "value"),
-        (b"value", b"value"),
+        (
+            {"c", "b", "a"},
+            ("set", (("str", "a"), ("str", "b"), ("str", "c"))),
+        ),
+        (frozenset({2, 1}), ("frozenset", (("int", 1), ("int", 2)))),
+        ([1, 2], ("list", (("int", 1), ("int", 2)))),
+        ((1, 2), ("tuple", (("int", 1), ("int", 2)))),
+        (None, ("none",)),
+        (True, ("bool", True)),
+        (1, ("int", 1)),
+        (1.5, ("float", 1.5)),
+        ("value", ("str", "value")),
+        (b"value", ("bytes", b"value")),
     ],
 )
 def test_normalize_hash_value(value, expected):
     assert normalize_hash_value(value) == expected
 
 
-def test_normalize_hash_value_warns_for_unstable_repr():
+def test_normalize_hash_value_rejects_unsupported_value():
     class Opaque:
         pass
 
-    with pytest.warns(UserWarning, match="no stable repr"):
+    with pytest.raises(TypeError, match="cannot be hashed safely"):
         normalize_hash_value(Opaque())
 
 
