@@ -23,6 +23,7 @@ from typing import (
     Any,
     Final,
     Optional,
+    TypeGuard,
     Union,
     get_args,
     get_origin,
@@ -236,6 +237,16 @@ class CustomType(BaseModel):
             }
 
         return cls(**data)
+
+
+def _is_enum_annotation(annotation: Any) -> "TypeGuard[type[Enum]]":
+    # matches python_to_sql: an enum without canonical members maps to String,
+    # so its stored values stay raw
+    return (
+        isclass(annotation)
+        and issubclass(annotation, Enum)
+        and next(iter(annotation), None) is not None
+    )
 
 
 def create_feature_model(
@@ -708,7 +719,7 @@ class SignalSchema:
             if is_tuple_annotation(annotation):
                 return bool(parts)
             return any(cls._requires_row_conversion(part) for part in parts)
-        return False
+        return _is_enum_annotation(annotation)
 
     @staticmethod
     def _annotation_contains_type(annotation: Any, target: type) -> bool:
@@ -918,6 +929,9 @@ class SignalSchema:
             annotation = inner
             origin = get_origin(annotation)
 
+        if _is_enum_annotation(annotation):
+            return annotation(value)
+
         if ModelStore.is_pydantic(annotation):
             if isinstance(value, annotation):
                 obj = value
@@ -956,16 +970,11 @@ class SignalSchema:
                 decode_keys = key_needs_json_decode(key_type)
                 result = {}
                 for key, val in value.items():
-                    converted_key = key
-                    if decode_keys:
-                        try:
-                            converted_key = self._convert_feature_value(
-                                key_type, json.loads(key), catalog, cache
-                            )
-                        except ValueError:
-                            # Declared type and stored key disagree; keep the raw key
-                            # rather than failing the whole row.
-                            converted_key = key
+                    converted_key = (
+                        self._convert_mapping_key(key_type, key, catalog, cache)
+                        if decode_keys
+                        else key
+                    )
                     converted_val = (
                         self._convert_feature_value(val_type, val, catalog, cache)
                         if val_type is not Any
@@ -974,6 +983,22 @@ class SignalSchema:
                     result[converted_key] = converted_val
 
         return result
+
+    def _convert_mapping_key(
+        self,
+        key_type: DataType,
+        key: str,
+        catalog: "Catalog | None",
+        cache: bool,
+    ) -> Any:
+        try:
+            return self._convert_feature_value(
+                key_type, json.loads(key), catalog, cache
+            )
+        except ValueError:
+            # Declared type and stored key disagree; keep the raw key
+            # rather than failing the whole row.
+            return key
 
     @staticmethod
     def _set_file_stream(

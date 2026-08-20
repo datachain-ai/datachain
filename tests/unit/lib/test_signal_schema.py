@@ -1,3 +1,4 @@
+import enum
 import json
 import pickle
 from collections import UserDict, UserList
@@ -1060,6 +1061,38 @@ def test_row_to_objs_dict_key_decoding_policy(key_type, raw, expected):
     (converted,) = SignalSchema({"m": dict[key_type, int]}).row_to_objs((raw,))
 
     assert converted == expected
+
+
+def test_row_to_objs_converts_enum_leaf():
+    class Species(enum.Enum):
+        CAT = "cat"
+
+    (converted,) = SignalSchema({"x": Species}).row_to_objs(("cat",))
+
+    assert converted is Species.CAT
+
+
+def test_row_to_objs_unknown_enum_value_raises():
+    class Species(enum.Enum):
+        CAT = "cat"
+
+    with pytest.raises(ValueError, match="bogus"):
+        SignalSchema({"x": Species}).row_to_objs(("bogus",))
+
+
+def test_row_to_objs_leaves_memberless_enum_raw():
+    (converted,) = SignalSchema({"x": enum.Enum}).row_to_objs(("cat",))
+
+    assert converted == "cat"
+
+
+def test_row_to_objs_leaves_zero_only_flag_raw():
+    class Flags(enum.IntFlag):
+        NONE = 0
+
+    (converted,) = SignalSchema({"x": Flags}).row_to_objs(("0",))
+
+    assert converted == "0"
 
 
 def test_row_to_features_does_not_decode_string_keys(test_session):

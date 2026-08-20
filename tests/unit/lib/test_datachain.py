@@ -5,9 +5,11 @@ import json
 import math
 import os
 import re
+import sqlite3
 import uuid
 from collections import Counter
 from collections.abc import Generator, Iterator
+from typing import Annotated
 from unittest.mock import ANY, patch
 
 import numpy as np
@@ -15,7 +17,7 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 import datachain as dc
 import datachain.query.dataset as query_dataset
@@ -37,10 +39,12 @@ from datachain.lib.dc.listings import read_listing_dataset
 from datachain.lib.file import File
 from datachain.lib.listing import LISTING_PREFIX, parse_listing_uri
 from datachain.lib.listing_info import ListingInfo
+from datachain.lib.model_store import ModelStore
 from datachain.lib.signal_schema import (
     SignalResolvingError,
     SignalResolvingTypeError,
     SignalSchema,
+    SignalSchemaWarning,
 )
 from datachain.lib.udf import UDFAdapter
 from datachain.lib.udf_signature import UdfSignatureError
@@ -3743,6 +3747,408 @@ def test_enum_fields_in_data_model(test_session):
         "pet.species", descending=True
     )
     assert filtered.to_values("pet") == [expected[1]]
+
+
+def test_enum_leaf_reads_return_members(test_session):
+    class Species(enum.Enum):
+        CAT = "cat"
+        DOG = "dog"
+
+    class Rank(enum.IntEnum):
+        FIRST = 1
+        SECOND = 2
+
+    class Pet(BaseModel):
+        species: Species
+        rank: Rank
+        breed: Species | None
+        tags: list[Species]
+        scores: dict[str, Rank]
+
+    chain = dc.read_values(id=[1, 2], session=test_session).map(
+        pet=lambda id: Pet(
+            species=Species.CAT if id == 1 else Species.DOG,
+            rank=Rank.FIRST if id == 1 else Rank.SECOND,
+            breed=Species.CAT if id == 1 else None,
+            tags=[Species.CAT, Species.DOG],
+            scores={"a": Rank.FIRST},
+        ),
+        output=Pet,
+    )
+    chain.save("enum-leaves")
+
+    ds = dc.read_dataset("enum-leaves", session=test_session).order_by("id")
+    assert ds.to_values("pet.species") == [Species.CAT, Species.DOG]
+    assert ds.to_values("pet.breed") == [Species.CAT, None]
+    assert ds.to_values("pet.tags") == [[Species.CAT, Species.DOG]] * 2
+
+    ranks = ds.to_values("pet.rank")
+    assert ranks == [Rank.FIRST, Rank.SECOND]
+    assert all(isinstance(r, Rank) for r in ranks)
+
+    scores = ds.to_values("pet.scores")
+    assert scores == [{"a": Rank.FIRST}] * 2
+    assert all(isinstance(v, Rank) for s in scores for v in s.values())
+
+
+@pytest.mark.xfail(
+    reason="#1918: Annotated annotations are not normalized on the read path",
+    strict=True,
+)
+def test_enum_leaf_read_inside_annotated(test_session):
+    class Species(enum.Enum):
+        CAT = "cat"
+
+    class Pet(BaseModel):
+        tags: list[Annotated[Species, "meta"]]
+
+    dc.read_values(id=[1], session=test_session).map(
+        pet=lambda id: Pet(tags=[Species.CAT]), output=Pet
+    ).save("enum-annotated")
+
+    ds = dc.read_dataset("enum-annotated", session=test_session)
+    assert ds.to_values("pet.tags") == [[Species.CAT]]
+
+
+def test_enum_leaf_read_ignores_use_enum_values(test_session):
+    class Species(enum.Enum):
+        CAT = "cat"
+        DOG = "dog"
+
+    class Pet(BaseModel):
+        model_config = ConfigDict(use_enum_values=True)
+        species: Species
+
+    dc.read_values(id=[1, 2], session=test_session).map(
+        pet=lambda id: Pet(species=Species.CAT), output=Pet
+    ).save("enum-uev")
+
+    ds = dc.read_dataset("enum-uev", session=test_session)
+    assert [p.species for p in ds.to_values("pet")] == ["cat", "cat"]
+    assert ds.to_values("pet.species") == [Species.CAT, Species.CAT]
+
+
+def test_enum_leaf_through_ops(test_session):
+    class Species(enum.Enum):
+        CAT = "cat"
+        DOG = "dog"
+
+    class Grade(enum.IntEnum):
+        LOW = 1
+        HIGH = 2
+
+    class Pet(BaseModel):
+        species: Species
+        grade: Grade
+        rank: int
+
+    chain = dc.read_values(id=[1, 2, 3], session=test_session).map(
+        pet=lambda id: Pet(
+            species=Species.CAT if id % 2 else Species.DOG,
+            grade=Grade.LOW if id % 2 else Grade.HIGH,
+            rank=id,
+        ),
+        output=Pet,
+    )
+    chain.save("enum-ops")
+    ds = dc.read_dataset("enum-ops", session=test_session)
+
+    assert ds.order_by("pet.species", "pet.rank").to_values("pet.species") == [
+        Species.CAT,
+        Species.CAT,
+        Species.DOG,
+    ]
+    assert ds.filter(dc.C("pet.species") == Species.CAT.value).to_values(
+        "pet.species"
+    ) == [Species.CAT, Species.CAT]
+    assert sorted(
+        ds.distinct("pet.species").to_values("pet.species"), key=lambda s: s.value
+    ) == [Species.CAT, Species.DOG]
+
+    top = ds.mutate(kind=dc.C("pet.species")).select("kind")
+    assert top.signals_schema.values["kind"] is Species
+    assert sorted(top.to_values("kind"), key=lambda s: s.value) == [
+        Species.CAT,
+        Species.CAT,
+        Species.DOG,
+    ]
+
+    labeled = ds.mutate(kind_alias=dc.C("pet.species").label("kind_alias"))
+    assert labeled.signals_schema.values["kind_alias"] is str
+    assert sorted(labeled.to_values("kind_alias")) == ["cat", "cat", "dog"]
+
+    composed = ds.mutate(g2=dc.C("pet.grade") + 1)
+    assert composed.signals_schema.values["g2"] is int
+    g2_values = sorted(composed.to_values("g2"))
+    assert g2_values == [2, 2, 3]
+    assert all(type(v) is int for v in g2_values)
+
+    counts = top.group_by(cnt=func.count(), partition_by="kind")
+    assert sorted(counts.to_list("kind", "cnt"), key=lambda t: t[0].value) == [
+        (Species.CAT, 2),
+        (Species.DOG, 1),
+    ]
+
+    window = func.window(partition_by="pet.species", order_by="pet.rank")
+    expected_firsts = [(1, Species.CAT), (2, Species.DOG), (3, Species.CAT)]
+    by_name = ds.mutate(first_kind=func.first("pet.species").over(window))
+    assert sorted(by_name.to_list("pet.rank", "first_kind")) == expected_firsts
+    by_slot = ds.mutate(first_kind=func.first(dc.C("pet.species")).over(window))
+    assert sorted(by_slot.to_list("pet.rank", "first_kind")) == expected_firsts
+
+
+def test_enum_leaf_through_set_ops(test_session):
+    class Species(enum.Enum):
+        CAT = "cat"
+        DOG = "dog"
+
+    class Pet(BaseModel):
+        species: Species
+
+    def pets(ids, kinds):
+        return dc.read_values(id=ids, session=test_session).map(
+            pet=lambda id: Pet(species=Species(kinds[id])), output=Pet
+        )
+
+    left = pets([1, 2], {1: "cat", 2: "dog"})
+    right = pets([3], {3: "cat"})
+
+    assert sorted(
+        left.union(right).to_values("pet.species"), key=lambda s: s.value
+    ) == [Species.CAT, Species.CAT, Species.DOG]
+    assert sorted(
+        right.union(left).to_values("pet.species"), key=lambda s: s.value
+    ) == [Species.CAT, Species.CAT, Species.DOG]
+
+    assert left.subtract(right, on="pet.species").to_values("pet.species") == [
+        Species.DOG
+    ]
+
+    merged = left.merge(right, on="id", right_on="id").order_by("id")
+    assert merged.to_values("pet.species") == [Species.CAT, Species.DOG]
+
+    on_enum = left.merge(right, on="pet.species", inner=True)
+    assert on_enum.to_values("pet.species") == [Species.CAT]
+    assert on_enum.to_values("right_pet.species") == [Species.CAT]
+
+
+def test_enum_leaf_export_paths(tmp_dir, test_session):
+    class Species(enum.Enum):
+        CAT = "cat"
+        DOG = "dog"
+
+    class Pet(BaseModel):
+        species: Species
+
+    chain = (
+        dc.read_values(id=[1, 2], session=test_session)
+        .map(
+            pet=lambda id: Pet(species=Species.CAT if id == 1 else Species.DOG),
+            output=Pet,
+        )
+        .order_by("id")
+    )
+
+    assert [r["pet__species"] for r in chain.to_records()] == ["cat", "dog"]
+
+    df = chain.to_pandas()
+    species_cols = [c for c in df.columns if "species" in str(c)]
+    assert len(species_cols) == 1
+    assert df[species_cols[0]].tolist() == ["cat", "dog"]
+
+    parquet_path = tmp_dir / "pets.parquet"
+    chain.to_parquet(parquet_path)
+    out = pd.read_parquet(parquet_path)
+    parquet_cols = [c for c in out.columns if "species" in str(c)]
+    assert len(parquet_cols) == 1
+    assert sorted(out[parquet_cols[0]]) == ["cat", "dog"]
+
+    csv_path = tmp_dir / "pets.csv"
+    chain.to_csv(csv_path)
+    header = csv_path.read_text().splitlines()[0].split(",")
+    assert len(header) == len(set(header))
+    csv_df = pd.read_csv(csv_path)
+    csv_species = [c for c in csv_df.columns if "species" in c]
+    assert len(csv_species) == 1
+    assert csv_df[csv_species[0]].tolist() == ["cat", "dog"]
+
+    json_path = tmp_dir / "pets.json"
+    chain.to_json(json_path)
+    with open(json_path) as f:
+        values = json.load(f)
+    assert [v["pet"]["species"] for v in values] == ["cat", "dog"]
+
+    jsonl_path = tmp_dir / "pets.jsonl"
+    chain.to_jsonl(jsonl_path)
+    lines = [json.loads(line) for line in jsonl_path.read_text().splitlines()]
+    assert [v["pet"]["species"] for v in lines] == ["cat", "dog"]
+
+    conn = sqlite3.connect(":memory:")
+    try:
+        chain.to_database("pets", conn)
+        rows = conn.execute("SELECT pet__species FROM pets").fetchall()
+        assert sorted(r[0] for r in rows) == ["cat", "dog"]
+    finally:
+        conn.close()
+
+
+def test_enum_leaf_adversarial_shapes(tmp_dir, test_session):
+    class Base(enum.Enum):
+        pass
+
+    class Species(Base):
+        CAT = "cat"
+        DOG = "dog"
+
+    class Pet(BaseModel):
+        species: Species
+        maybe: Species | None
+        file: File
+
+    src = tmp_dir / "src"
+    src.mkdir()
+    (src / "a.txt").write_text("hello")
+
+    chain = dc.read_values(id=[1], session=test_session).map(
+        pet=lambda id: Pet(
+            species=Species.CAT,
+            maybe=None,
+            file=File(source=src.as_uri(), path="a.txt"),
+        ),
+        output=Pet,
+    )
+    chain.save("enum-adv")
+    ds = dc.read_dataset("enum-adv", session=test_session)
+
+    assert ds.to_values("pet.species") == [Species.CAT]
+    assert ds.to_values("pet.maybe") == [None]
+    assert ds.to_values("pet.file.path") == ["a.txt"]
+
+    empty = ds.filter(dc.C("id") == 999)
+    assert empty.to_values("pet.species") == []
+
+    out = tmp_dir / "out"
+    ds.to_storage(out, signal="pet.file", placement="filename")
+    assert (out / "a.txt").read_text() == "hello"
+
+
+def test_enum_as_udf_output_is_rejected(test_session):
+    class Species(enum.Enum):
+        CAT = "cat"
+
+    with pytest.raises(UdfSignatureError, match="Species"):
+        dc.read_values(id=[1], session=test_session).map(
+            kind=lambda id: Species.CAT, output={"kind": Species}
+        )
+
+
+def test_enum_leaf_reads_degrade_when_enum_not_importable(test_session):
+    class Species(enum.Enum):
+        CAT = "cat"
+
+    class PetEnumReload(BaseModel):
+        species: Species
+
+    dc.read_values(id=[1], session=test_session).map(
+        pet=lambda id: PetEnumReload(species=Species.CAT), output=PetEnumReload
+    ).save("enum-reload")
+
+    original = ModelStore.store.pop("PetEnumReload", None)
+    try:
+        with pytest.warns(SignalSchemaWarning, match="Species"):
+            ds = dc.read_dataset("enum-reload", session=test_session)
+            assert ds.to_values("pet.species") == ["cat"]
+            (pet,) = ds.to_values("pet")
+            assert pet.species == "cat"
+    finally:
+        if original is not None:
+            ModelStore.store["PetEnumReload"] = original
+        else:
+            ModelStore.store.pop("PetEnumReload", None)
+
+
+def test_same_name_enums_across_models(test_session):
+    class Kind(enum.Enum):
+        A = "a"
+
+    class M1(BaseModel):
+        kind: Kind
+
+    first_kind = Kind
+
+    class Kind(enum.Enum):
+        B = "b"
+
+    class M2(BaseModel):
+        kind: Kind
+
+    dc.read_values(id=[1], session=test_session).map(
+        m1=lambda id: M1(kind=first_kind.A), output=M1
+    ).save("enum-name-1")
+    dc.read_values(id=[1], session=test_session).map(
+        m2=lambda id: M2(kind=Kind.B), output=M2
+    ).save("enum-name-2")
+
+    assert dc.read_dataset("enum-name-1", session=test_session).to_values(
+        "m1.kind"
+    ) == [first_kind.A]
+    assert dc.read_dataset("enum-name-2", session=test_session).to_values(
+        "m2.kind"
+    ) == [Kind.B]
+
+
+def test_enum_leaf_as_udf_input(test_session):
+    class Species(enum.Enum):
+        CAT = "cat"
+        DOG = "dog"
+
+    class Pet(BaseModel):
+        species: Species
+
+    chain = dc.read_values(id=[1, 2], session=test_session).map(
+        pet=lambda id: Pet(species=Species.CAT if id == 1 else Species.DOG),
+        output=Pet,
+    )
+    chain.save("enum-udf")
+    ds = dc.read_dataset("enum-udf", session=test_session).order_by("id")
+
+    def mapper(species):
+        assert isinstance(species, Species)
+        return species.value
+
+    assert sorted(
+        ds.map(mout=mapper, params=["pet.species"], output=str).to_values("mout")
+    ) == ["cat", "dog"]
+
+    def generator(species):
+        assert isinstance(species, Species)
+        yield species.value
+
+    assert sorted(
+        ds.gen(gout=generator, params=["pet.species"], output=str).to_values("gout")
+    ) == ["cat", "dog"]
+
+    def aggregator(species):
+        assert all(isinstance(s, Species) for s in species)
+        yield ",".join(s.value for s in species)
+
+    assert sorted(
+        ds.agg(
+            aout=aggregator,
+            params=["pet.species"],
+            partition_by="pet.species",
+            output=str,
+        ).to_values("aout")
+    ) == ["cat", "dog"]
+
+    def multi(species):
+        assert isinstance(species, Species)
+        return species.value, len(species.value)
+
+    multi_ds = ds.map(
+        multi_out=multi, params=["pet.species"], output={"val": str, "length": int}
+    )
+    assert sorted(multi_ds.to_list("val", "length")) == [("cat", 3), ("dog", 3)]
 
 
 @skip_if_not_sqlite
