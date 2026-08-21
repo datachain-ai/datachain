@@ -162,6 +162,13 @@ def add_jobs_parser(subparsers, parent_parser) -> None:
         default=20,
         help="Limit the number of jobs returned (default: 20)",
     )
+    studio_ls_parser.add_argument(
+        "-e",
+        "--extended",
+        action="store_true",
+        default=False,
+        help="Show extra job details, such as the compute cluster",
+    )
 
     studio_cancel_help = "Cancel a job in Studio"
     studio_cancel_description = "Cancel a running job in Studio."
