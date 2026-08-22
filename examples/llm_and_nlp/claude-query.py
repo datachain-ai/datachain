@@ -37,7 +37,7 @@ class Rating(BaseModel):
 
 def rate(client: anthropic.Anthropic, file: File) -> Rating:
     content = file.read()
-    response = client.beta.messages.parse(
+    response = client.messages.parse(
         model=MODEL,
         max_tokens=DEFAULT_OUTPUT_TOKENS,
         system=PROMPT,
