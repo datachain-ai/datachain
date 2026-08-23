@@ -271,6 +271,12 @@ def get_parser() -> ArgumentParser:  # noqa: PLR0915
         default=None,
         help="The team to list datasets for. By default, it will use team from config",
     )
+    datasets_ls_parser.add_argument(
+        "--include-removed",
+        action="store_true",
+        default=False,
+        help="Include removed datasets in the output",
+    )
 
     rm_dataset_parser = datasets_subparser.add_parser(
         "rm",

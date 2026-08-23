@@ -87,7 +87,6 @@ def test_expire_checkpoints():
         old = now - timedelta(hours=2)
         ttl_threshold = now - timedelta(hours=1)
 
-        # Create two jobs
         job1_id = metastore.create_job(
             "job1", "q", query_type=JobQueryType.PYTHON, status=JobStatus.COMPLETE
         )
@@ -220,3 +219,84 @@ def test_list_datasets_multiple_versions_sorted(metastore):
 
 def test_list_datasets_empty(metastore):
     assert list(metastore.list_datasets()) == []
+
+
+def test_list_datasets_hides_removed_by_default(metastore):
+    ds = metastore.create_dataset("list-removed")
+    metastore.create_dataset_version(ds, "1.0.0", DatasetStatus.COMPLETE)
+    metastore.create_dataset_version(ds, "1.0.1", DatasetStatus.REMOVED)
+
+    results = {d.name: d for d in metastore.list_datasets()}
+    assert [v.version for v in results["list-removed"].versions] == ["1.0.0"]
+
+
+def test_list_datasets_include_removed(metastore):
+    ds = metastore.create_dataset("list-with-removed")
+    metastore.create_dataset_version(ds, "1.0.0", DatasetStatus.COMPLETE)
+    metastore.create_dataset_version(ds, "1.0.1", DatasetStatus.REMOVED)
+
+    results = {d.name: d for d in metastore.list_datasets(include_removed=True)}
+    versions = results["list-with-removed"].all_versions
+    assert [v.version for v in versions] == ["1.0.0", "1.0.1"]
+    assert versions[1].is_removed
+
+
+def test_list_datasets_include_removed_includes_removing_excludes_failed(metastore):
+    ds = metastore.create_dataset("list-with-removing")
+    metastore.create_dataset_version(ds, "1.0.0", DatasetStatus.COMPLETE)
+    metastore.create_dataset_version(ds, "1.0.1", DatasetStatus.REMOVING)
+    metastore.create_dataset_version(ds, "1.0.2", DatasetStatus.FAILED)
+
+    default = {d.name: d for d in metastore.list_datasets()}
+    assert [v.version for v in default["list-with-removing"].versions] == ["1.0.0"]
+
+    results = {d.name: d for d in metastore.list_datasets(include_removed=True)}
+    versions = results["list-with-removing"].all_versions
+    assert [v.version for v in versions] == ["1.0.0", "1.0.1"]
+    assert versions[1].status == DatasetStatus.REMOVING
+    assert versions[1].is_removed
+
+
+def test_get_dataset_include_removed_includes_removing(metastore):
+    ds = metastore.create_dataset("get-with-removing")
+    metastore.create_dataset_version(ds, "1.0.0", DatasetStatus.COMPLETE)
+    metastore.create_dataset_version(ds, "1.0.1", DatasetStatus.REMOVING)
+
+    default = metastore.get_dataset(
+        "get-with-removing", versions=None, include_incomplete=False
+    )
+    assert [v.version for v in default.versions] == ["1.0.0"]
+
+    with_tombstones = metastore.get_dataset(
+        "get-with-removing",
+        versions=None,
+        include_incomplete=False,
+        include_removed=True,
+    )
+    versions = with_tombstones.all_versions
+    assert [v.version for v in versions] == ["1.0.0", "1.0.1"]
+    assert versions[1].status == DatasetStatus.REMOVING
+
+
+def test_list_datasets_include_removed_lists_dataset_with_only_removed_versions(
+    metastore,
+):
+    ds = metastore.create_dataset("tombstoned-only")
+    metastore.create_dataset_version(ds, "1.0.0", DatasetStatus.REMOVED)
+
+    assert "tombstoned-only" not in {d.name for d in metastore.list_datasets()}
+    assert "tombstoned-only" in {
+        d.name for d in metastore.list_datasets(include_removed=True)
+    }
+
+
+def test_list_datasets_include_removed_lists_dataset_with_only_removing_versions(
+    metastore,
+):
+    ds = metastore.create_dataset("removing-only")
+    metastore.create_dataset_version(ds, "1.0.0", DatasetStatus.REMOVING)
+
+    assert "removing-only" not in {d.name for d in metastore.list_datasets()}
+    assert "removing-only" in {
+        d.name for d in metastore.list_datasets(include_removed=True)
+    }

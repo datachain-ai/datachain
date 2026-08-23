@@ -31,6 +31,7 @@ DD = TypeVar("DD", bound="DatasetDependency")
 DATASET_PREFIX = "ds://"
 QUERY_DATASET_PREFIX = "ds_query_"
 LISTING_PREFIX = "lst__"
+SESSION_DATASET_PREFIX = "session_"
 
 DEFAULT_DATASET_VERSION = "1.0.0"
 DATASET_NAME_RESERVED_CHARS = [".", "@"]
@@ -183,6 +184,7 @@ class DatasetDependency:
     version: str
     created_at: datetime
     dependencies: list["DatasetDependency | None"]
+    removed: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -217,6 +219,7 @@ class DatasetDependency:
         dataset_name: str | None,
         dataset_version: str | None,
         dataset_version_created_at: datetime | None,
+        dataset_version_status: int | None = None,
     ) -> "DatasetDependency | None":
         from datachain.lib.listing import is_listing_dataset
 
@@ -235,9 +238,12 @@ class DatasetDependency:
             namespace_name,
             project_name,
             dataset_name,
-            dataset_version or None,  # type: ignore[arg-type]
+            dataset_version,  # type: ignore[arg-type]
             dataset_version_created_at,  # type: ignore[arg-type]
             [],
+            removed=dataset_version_status is None
+            or dataset_version_status
+            in (DatasetStatus.REMOVING, DatasetStatus.REMOVED),
         )
 
     @property
@@ -265,6 +271,7 @@ class DatasetStatus:
     COMPLETE = 4
     STALE = 6
     REMOVING = 7
+    REMOVED = 8
 
 
 @dataclass
@@ -296,6 +303,8 @@ class DatasetVersion:
     query_script: str = ""
     job_id: str | None = None
     content_hash: str | None = None
+    removed_at: datetime | None = None
+    pending_metadata_drop: bool = False
 
     @classmethod
     def parse(  # noqa: PLR0913
@@ -319,6 +328,8 @@ class DatasetVersion:
         query_script: str = "",
         job_id: str | None = None,
         content_hash: str | None = None,
+        removed_at: datetime | None = None,
+        pending_metadata_drop: bool = False,
         *,
         preview_loaded: bool = True,
     ):
@@ -347,6 +358,8 @@ class DatasetVersion:
             query_script=query_script,
             job_id=job_id,
             content_hash=content_hash,
+            removed_at=removed_at,
+            pending_metadata_drop=pending_metadata_drop,
             _preview_loaded=preview_loaded,
         )
 
@@ -372,8 +385,12 @@ class DatasetVersion:
             DatasetStatus.FAILED,
             DatasetStatus.COMPLETE,
             DatasetStatus.STALE,
-            DatasetStatus.REMOVING,
+            DatasetStatus.REMOVED,
         ]
+
+    @property
+    def is_removed(self) -> bool:
+        return self.status in (DatasetStatus.REMOVING, DatasetStatus.REMOVED)
 
     def update(self, **kwargs):
         for key, value in kwargs.items():
@@ -478,6 +495,10 @@ class DatasetListVersion:
     def version_value(self) -> int:
         return semver.value(self.version)
 
+    @property
+    def is_removed(self) -> bool:
+        return self.status in (DatasetStatus.REMOVING, DatasetStatus.REMOVED)
+
 
 @dataclass
 class DatasetRecord:
@@ -503,13 +524,21 @@ class DatasetRecord:
     _versions_loaded: bool = field(kw_only=True)
 
     @property
-    def versions(self) -> list[DatasetVersion]:
+    def all_versions(self) -> list[DatasetVersion]:
+        """Every version, including REMOVING/REMOVED tombstones. Use for
+        collision detection, lineage, and internal enumeration."""
         if not self._versions_loaded:
             raise DatasetStateNotLoadedError(
                 "Dataset versions were not loaded. Fetch the dataset with "
                 "versions=None or an explicit versions=[...] before accessing versions."
             )
         return self._versions
+
+    @property
+    def versions(self) -> list[DatasetVersion]:
+        """Live versions only (REMOVING/REMOVED filtered out). Default view
+        for callers that operate on user-visible versions."""
+        return [v for v in self.all_versions if not v.is_removed]
 
     @versions.setter
     def versions(self, value: list[DatasetVersion]) -> None:
@@ -577,6 +606,8 @@ class DatasetRecord:
         version_schema: str | None = None,
         version_job_id: str | None = None,
         version_content_hash: str | None = None,
+        version_removed_at: datetime | None = None,
+        version_pending_metadata_drop: bool = False,
         *,
         versions_loaded: bool = True,
         preview_loaded: bool = True,
@@ -635,6 +666,8 @@ class DatasetRecord:
                 version_query_script or "",
                 version_job_id,
                 version_content_hash,
+                version_removed_at,
+                version_pending_metadata_drop,
                 preview_loaded=preview_loaded,
             )
             versions_list = [dataset_version]
@@ -664,6 +697,14 @@ class DatasetRecord:
     def full_name(self) -> str:
         return f"{self.project.namespace.name}.{self.project.name}.{self.name}"
 
+    @property
+    def is_internal(self) -> bool:
+        """True for non-user-facing datasets (listing ``lst__*`` and
+        session ``session_*`` intermediates)."""
+        return self.name.startswith(LISTING_PREFIX) or self.name.startswith(
+            SESSION_DATASET_PREFIX
+        )
+
     def get_schema(self, version: str) -> dict[str, SQLType | type[SQLType]]:
         return self.get_version(version).schema if version else self.schema
 
@@ -673,41 +714,39 @@ class DatasetRecord:
                 setattr(self, key, value)
 
     def has_version(self, version: str) -> bool:
-        return version in [v.version for v in self.versions]
+        return version in [v.version for v in self.all_versions]
 
     def is_valid_next_version(self, version: str) -> bool:
         """
         Checks if a number can be a valid next latest version for dataset.
-        The only rule is that it cannot be lower than current latest version
+        Compares against the highest version ever used, including REMOVED
+        ones - a claimed semver stays reserved while its record is kept.
         """
-        if not self.versions:
+        if not self.all_versions:
             return True
 
-        return not (
-            self.latest_version
-            and semver.value(self.latest_version) >= semver.value(version)
-        )
+        return self._max_version_value < semver.value(version)
 
     def get_version(self, version: str) -> DatasetVersion:
         if not self.has_version(version):
             raise DatasetVersionNotFoundError(
                 f"Dataset {self.name} does not have version {version}"
             )
-        return next(v for v in self.versions if v.version == version)
+        return next(v for v in self.all_versions if v.version == version)
 
     def get_version_by_uuid(self, uuid: str) -> DatasetVersion:
         try:
-            return next(v for v in self.versions if v.uuid == uuid)
+            return next(v for v in self.all_versions if v.uuid == uuid)
         except StopIteration:
             raise DatasetVersionNotFoundError(
                 f"Dataset {self.name} does not have version with uuid {uuid}"
             ) from None
 
     def remove_version(self, version: str) -> None:
-        if not self.versions or not self.has_version(version):
+        if not self.all_versions or not self.has_version(version):
             return
 
-        self._versions = [v for v in self.versions if v.version != version]
+        self._versions = [v for v in self.all_versions if v.version != version]
 
     def identifier(self, version: str) -> str:
         """
@@ -733,40 +772,65 @@ class DatasetRecord:
     def next_version_major(self) -> str:
         """
         Returns the next auto-incremented version if the major part is being bumped.
+        Bumps past the highest semver ever used, including REMOVED ones,
+        so deleted semvers are never reclaimed.
         """
-        if not self.versions:
+        if not self.all_versions:
             return "1.0.0"
 
-        major, _, _ = semver.parse(self.latest_version)
+        major, _, _ = semver.parse(self._max_version)
         return semver.create(major + 1, 0, 0)
 
     @property
     def next_version_minor(self) -> str:
         """
         Returns the next auto-incremented version if the minor part is being bumped.
+        Bumps past the highest semver ever used, including REMOVED ones,
+        so deleted semvers are never reclaimed.
         """
-        if not self.versions:
+        if not self.all_versions:
             return "1.0.0"
 
-        major, minor, _ = semver.parse(self.latest_version)
+        major, minor, _ = semver.parse(self._max_version)
         return semver.create(major, minor + 1, 0)
 
     @property
     def next_version_patch(self) -> str:
         """
         Returns the next auto-incremented version if the patch part is being bumped.
+        Bumps past the highest semver ever used, including REMOVED ones,
+        so deleted semvers are never reclaimed.
         """
-        if not self.versions:
+        if not self.all_versions:
             return "1.0.0"
 
-        major, minor, patch = semver.parse(self.latest_version)
+        major, minor, patch = semver.parse(self._max_version)
         return semver.create(major, minor, patch + 1)
 
     @property
+    def _max_version(self) -> str:
+        """Highest semver across all versions including REMOVED ones. Used for
+        collision avoidance - once a semver is claimed it's reserved forever,
+        even after removal."""
+        if not self.all_versions:
+            raise DatasetVersionNotFoundError(f"Dataset {self.name} has no versions")
+        return max(self.all_versions).version
+
+    @property
+    def _max_version_value(self) -> int:
+        return semver.value(self._max_version)
+
+    @property
     def latest_version(self) -> str:
-        """Returns latest version of a dataset"""
+        """Latest non-REMOVED version."""
         if not self.versions:
-            raise DatasetVersionNotFoundError("Dataset has no versions")
+            if not self.all_versions:
+                raise DatasetVersionNotFoundError(
+                    f"Dataset {self.name} has no versions"
+                )
+            raise DatasetVersionNotFoundError(
+                f"Dataset {self.name} has only removed versions"
+            )
         return max(self.versions).version
 
     @property
@@ -861,9 +925,23 @@ class DatasetListRecord:
     project: Project
     description: str | None
     attrs: list[str]
-    versions: list[DatasetListVersion]
+    _versions: list[DatasetListVersion] = field(metadata={"alias": "versions"})
     created_at: datetime | None = None
     uuid: str = field(kw_only=True)
+
+    @property
+    def all_versions(self) -> list[DatasetListVersion]:
+        """Every version, including REMOVING/REMOVED tombstones."""
+        return self._versions
+
+    @property
+    def versions(self) -> list[DatasetListVersion]:
+        """Live versions only (REMOVING/REMOVED filtered out)."""
+        return [v for v in self._versions if not v.is_removed]
+
+    @versions.setter
+    def versions(self, value: list[DatasetListVersion]) -> None:
+        self._versions = value
 
     @classmethod
     def parse(  # noqa: PLR0913
@@ -941,7 +1019,7 @@ class DatasetListRecord:
             project=project,
             description=description,
             attrs=attrs_lst,
-            versions=[dataset_version],
+            _versions=[dataset_version],
             created_at=created_at,
         )
 
@@ -950,6 +1028,14 @@ class DatasetListRecord:
         return f"{self.project.namespace.name}.{self.project.name}.{self.name}"
 
     def latest_version(self) -> DatasetListVersion:
+        if not self.versions:
+            if not self.all_versions:
+                raise DatasetVersionNotFoundError(
+                    f"Dataset {self.name} has no versions"
+                )
+            raise DatasetVersionNotFoundError(
+                f"Dataset {self.name} has only removed versions"
+            )
         return max(self.versions, key=lambda v: v.version_value)
 
     @property
@@ -967,17 +1053,18 @@ class DatasetListRecord:
         )
 
     def has_version_with_uuid(self, uuid: str) -> bool:
-        return any(v.uuid == uuid for v in self.versions)
+        return any(v.uuid == uuid for v in self.all_versions)
 
     def to_dict(self) -> dict[str, Any]:
         result = {}
         for f in fields(self):
             value = getattr(self, f.name)
+            key = f.metadata.get("alias", f.name)
             if hasattr(value, "to_dict"):
                 value = value.to_dict()
             elif isinstance(value, list) and value and hasattr(value[0], "to_dict"):
                 value = [v.to_dict() for v in value]
-            result[f.name] = value
+            result[key] = value
         return result
 
     @classmethod
@@ -987,11 +1074,9 @@ class DatasetListRecord:
         kwargs = {
             f.name: d[f.name]
             for f in fields(cls)
-            if f.name in d and f.name not in {"project", "versions"}
+            if f.name in d and f.name not in {"project", "versions", "_versions"}
         }
-        kwargs["versions"] = versions
-        kwargs["project"] = project
-        return cls(**kwargs)
+        return cls(**kwargs, _versions=versions, project=project)
 
 
 class RowDict(dict):

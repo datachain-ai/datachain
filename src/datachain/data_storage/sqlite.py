@@ -668,6 +668,7 @@ class SQLiteMetastore(AbstractDBMetastore):
             self._datasets.c.name,
             self._datasets_versions.c.version,
             self._datasets_versions.c.created_at,
+            self._datasets_versions.c.status,
         ]
 
     def _dataset_dependency_nodes_select_columns(
@@ -688,6 +689,7 @@ class SQLiteMetastore(AbstractDBMetastore):
             dependency_tree_cte.c.source_dataset_id,
             dependency_tree_cte.c.source_dataset_version_id,
             dependency_tree_cte.c.depth,
+            self._datasets_versions.c.status,
         ]
 
     def _jobs_insert(self) -> "Insert":

@@ -296,12 +296,22 @@ def get_listing(
     # - if an exact listing exists it will have the same name as `ds_name`
     #   anyway below
     if listings and not update:
-        listing = sorted(listings, key=lambda ls: ls.created_at)[-1]
+        listing = max(listings, key=lambda ls: ls.created_at)
 
-    # for local file system we need to fix listing path / prefix
-    # if we are reusing existing listing
+    # `list_path` filters the listing's rows, so it has to be written the way
+    # those rows store their paths - and that differs by backend. Cloud rows
+    # keep the full bucket-relative key even when the listing covers only a
+    # prefix (a listing of "droid/" stores "droid/a.txt"), and `list_path` is
+    # bucket-relative too, so the two line up whichever listing is reused.
+    # Local rows drop the listed directory instead (a listing of "/a/b/" stores
+    # "c.txt") and `list_path` comes back empty, so reusing a listing rooted
+    # higher up would filter by nothing and match everything in it. Rebuild the
+    # missing prefix from the two names, which both spell out the full URI:
+    #   lst__file:///a/b/c/  minus  lst__file:///a/  ->  b/c/
     if isinstance(client, FileClient) and listing and listing.name != ds_name:
-        list_path = f"{ds_name.strip('/').removeprefix(listing.name)}/{list_path}"
+        # names are sanitized (`.` -> `_x2e` etc), so decode back into a path
+        relpath = _desanitize_ds_name(ds_name.removeprefix(listing.name)).strip("/")
+        list_path = f"{relpath}/{list_path}"
 
     ds_name = listing.name if listing else ds_name
     return ds_name, list_uri, list_path, bool(listing)

@@ -4,7 +4,7 @@ DataChain Studio is a web application that enables Machine Learning and Data tea
 
 - [Run and track jobs](user-guide/jobs/index.md)
 - [Track experiments and manage models](user-guide/experiments/index.md)
-- [Collaborate on data projects](user-guide/team-collaboration.md)
+- [Collaborate on data projects](user-guide/teams/index.md)
 
 DataChain Studio helps with unstructured data processing and transformation.
 
@@ -43,9 +43,9 @@ New to DataChain Studio? Start with these guides:
 - Visualize metrics and plots
 - Git-based experiment versioning
 
-### Team Collaboration
+### Teams & Permissions
 - Share projects with team members
-- Control access with role-based permissions
+- Grant read or write access per namespace, project, and dataset
 - Integrate with development workflows
 
 ### API Integration

@@ -149,6 +149,14 @@ def test_version_preview_pivots_list_of_dicts():
     }
 
 
+def test_version_preview_dots_nested_signal_columns():
+    rows = [{"file__source": "s3", "file__path": "a.jpg", "size": 10}]
+    assert version_preview(SimpleNamespace(preview=rows)) == {
+        "columns": ["file.source", "file.path", "size"],
+        "rows": [["s3", "a.jpg", 10]],
+    }
+
+
 def test_version_preview_passthrough_dict():
     shaped = {"columns": ["a"], "rows": [[1]]}
     assert version_preview(SimpleNamespace(preview=shaped)) == shaped

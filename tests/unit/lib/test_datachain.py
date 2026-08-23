@@ -315,7 +315,6 @@ def test_read_records_with_file_objects(test_session):
     # Insert records
     ds = dc.read_records(records, schema={"file": File}, session=test_session)
 
-    # Verify count
     assert ds.count() == 3
 
     # Verify we can retrieve File objects back
@@ -347,7 +346,6 @@ def test_read_records_with_nested_datamodel(test_session):
     # Insert records
     ds = dc.read_records(records, schema={"data": MyNested}, session=test_session)
 
-    # Verify count
     assert ds.count() == 3
 
     # Verify we can retrieve nested DataModel objects back
@@ -911,6 +909,220 @@ def test_map(test_session):
     for x, test_fr in zip(x_list, test_frs, strict=False):
         assert np.isclose(x.sqrt, test_fr.sqrt)
         assert x.my_name == test_fr.my_name
+
+
+def test_map_hydrates_models_in_nested_list_param(test_session):
+    class ListCollection(DataModel):
+        items: list[MyFr]
+
+    def get_count(items: list[MyFr]) -> int:
+        assert isinstance(items[0], MyFr)
+        return items[0].count
+
+    chain = dc.read_values(
+        collection=[ListCollection(items=[MyFr(nnn="item", count=2)])],
+        session=test_session,
+    ).map(count=get_count, params=["collection.items"])
+
+    assert chain.to_values("count") == [2]
+
+
+def test_map_hydrates_models_in_optional_dict_param(test_session):
+    class OptionalDictCollection(DataModel):
+        lookup: dict[str, MyFr] | None
+
+    def get_count(lookup: dict[str, MyFr] | None) -> int:
+        assert lookup is not None
+        return lookup["item"].count
+
+    chain = dc.read_values(
+        collection=[OptionalDictCollection(lookup={"item": MyFr(nnn="item", count=3)})],
+        session=test_session,
+    ).map(count=get_count, params=["collection.lookup"])
+
+    assert chain.to_values("count") == [3]
+
+
+def test_map_hydrates_models_in_variadic_tuple_param(test_session):
+    class TupleCollection(DataModel):
+        items: tuple[MyFr, ...]
+
+    def total(items: tuple[MyFr, ...]) -> int:
+        assert isinstance(items, tuple)
+        assert all(isinstance(item, MyFr) for item in items)
+        return sum(item.count for item in items)
+
+    chain = dc.read_values(
+        collection=[
+            TupleCollection(items=(MyFr(nnn="a", count=4), MyFr(nnn="b", count=5)))
+        ],
+        session=test_session,
+    ).map(count=total, params=["collection.items"])
+
+    assert chain.to_values("count") == [9]
+
+
+def test_map_preserves_json_looking_key_for_optional_str_key(test_session):
+    class OptionalStringKeyCollection(DataModel):
+        lookup: dict[str | None, int]
+
+    # "null" is valid JSON, so a decoded key would come back as None
+    def first_key(lookup: dict[str | None, int]) -> str | None:
+        (key,) = lookup
+        return key
+
+    chain = dc.read_values(
+        collection=[OptionalStringKeyCollection(lookup={"null": 5})],
+        session=test_session,
+    ).map(key=first_key, params=["collection.lookup"])
+
+    assert chain.to_values("key") == ["null"]
+
+
+def test_map_hydrates_models_in_top_level_list_param(test_session):
+    def get_count(items: list[MyFr]) -> int:
+        assert isinstance(items[0], MyFr)
+        return items[0].count
+
+    chain = dc.read_values(
+        items=[[MyFr(nnn="item", count=7)]],
+        session=test_session,
+    ).map(count=get_count)
+
+    assert chain.to_values("count") == [7]
+
+
+def test_gen_hydrates_models_in_nested_list_param(test_session):
+    class GenListCollection(DataModel):
+        items: list[MyFr]
+
+    def spread(items: list[MyFr]) -> Iterator[int]:
+        assert isinstance(items[0], MyFr)
+        yield from (item.count for item in items)
+
+    chain = dc.read_values(
+        collection=[
+            GenListCollection(items=[MyFr(nnn="a", count=1), MyFr(nnn="b", count=2)])
+        ],
+        session=test_session,
+    ).gen(count=spread, params=["collection.items"])
+
+    assert sorted(chain.to_values("count")) == [1, 2]
+
+
+def test_map_multiple_signals(test_session):
+    chain = dc.read_values(name=["foo.txt", "bar.md"], session=test_session).map(
+        stem=lambda name: name.rsplit(".", 1)[0],
+        ext=lambda name: name.rsplit(".", 1)[1],
+    )
+    rows = sorted(chain.to_iter("name", "stem", "ext"))
+    assert rows == [("bar.md", "bar", "md"), ("foo.txt", "foo", "txt")]
+
+
+def test_map_multiple_signals_typed_returns(test_session):
+    def stem(name: str) -> str:
+        return name.rsplit(".", 1)[0]
+
+    def count_chars(name: str) -> int:
+        return len(name)
+
+    chain = dc.read_values(name=["foo.txt", "bar.md"], session=test_session).map(
+        stem=stem, n=count_chars
+    )
+    rows = sorted(chain.to_iter("name", "stem", "n"))
+    assert rows == [("bar.md", "bar", 6), ("foo.txt", "foo", 7)]
+
+
+def test_map_multiple_signals_disjoint_params(test_session):
+    chain = dc.read_values(
+        name=["foo", "bar"], ext=["txt", "md"], session=test_session
+    ).map(
+        upper=lambda name: name.upper(),
+        full=lambda name, ext: f"{name}.{ext}",
+    )
+    rows = sorted(chain.to_iter("name", "ext", "upper", "full"))
+    assert rows == [
+        ("bar", "md", "BAR", "bar.md"),
+        ("foo", "txt", "FOO", "foo.txt"),
+    ]
+
+
+def test_map_multiple_signals_rejects_func(test_session):
+    chain = dc.read_values(name=["x"], session=test_session)
+    with pytest.raises(DataChainParamsError, match="can't combine 'func'"):
+        chain.map(lambda n: n, a=lambda n: n, b=lambda n: n)
+
+
+def test_map_multiple_signals_rejects_output(test_session):
+    chain = dc.read_values(name=["x"], session=test_session)
+    with pytest.raises(DataChainParamsError, match="can't combine 'output'"):
+        chain.map(a=lambda n: n, b=lambda n: n, output={"a": str, "b": str})
+
+
+def test_map_multiple_signals_rejects_params(test_session):
+    chain = dc.read_values(name=["x"], session=test_session)
+    with pytest.raises(DataChainParamsError, match="can't combine 'params'"):
+        chain.map(a=lambda n: n, b=lambda n: n, params=["name"])
+
+
+def test_map_multiple_signals_chained(test_session):
+    """Second function receives first function's output as its param."""
+    chain = dc.read_values(name=["foo.txt", "bar.md"], session=test_session).map(
+        stem=lambda name: name.rsplit(".", 1)[0],
+        upper=lambda stem: stem.upper(),
+    )
+    rows = sorted(chain.to_iter("name", "stem", "upper"))
+    assert rows == [("bar.md", "bar", "BAR"), ("foo.txt", "foo", "FOO")]
+
+
+def test_map_multiple_signals_chained_three_deep(test_session):
+    """Three-function chain: f1 -> f2 -> f3, and f2 also uses an input col."""
+
+    def wc(text: str) -> int:
+        return len(text.split())
+
+    def avg_len(text: str, wc: int) -> float:
+        return len(text) / wc
+
+    def is_short(avg_len: float) -> bool:
+        return avg_len < 10.0
+
+    chain = dc.read_values(text=["hello world"], session=test_session).map(
+        wc=wc, avg_len=avg_len, is_short=is_short
+    )
+    rows = list(chain.to_iter("wc", "avg_len", "is_short"))
+    assert rows == [(2, 5.5, True)]
+
+
+def test_map_multiple_signals_chained_ignores_kwarg_order(test_session):
+    """Producer declared AFTER consumer still runs first (topological order)."""
+    chain = dc.read_values(name=["foo.txt"], session=test_session).map(
+        upper=lambda stem: stem.upper(),  # consumer written first
+        stem=lambda name: name.rsplit(".", 1)[0],  # producer written second
+    )
+    rows = list(chain.to_iter("name", "upper", "stem"))
+    assert rows == [("foo.txt", "FOO", "foo")]
+
+
+def test_map_multiple_signals_chained_rejects_cycle(test_session):
+    chain = dc.read_values(name=["foo"], session=test_session)
+    with pytest.raises(ValueError, match="Cyclic dependency"):
+        chain.map(
+            a=lambda b: b,
+            b=lambda a: a,
+        )
+
+
+def test_map_multiple_signals_single_stage(test_session):
+    """Verify multi-kwarg map adds exactly one UDF stage, not N chained ones."""
+    base = dc.read_values(name=["foo.txt"], session=test_session)
+    before = len(base._query.steps)
+    chain = base.map(
+        stem=lambda name: name[:-4],
+        ext=lambda name: name[-3:],
+    )
+    after = len(chain._query.steps)
+    assert after - before == 1
 
 
 def test_map_existing_column_after_step(test_session):
@@ -1590,6 +1802,14 @@ def test_explode(tmp_dir, test_session, column_type, column, model_name):
     }
 
     assert chain.limit(1).to_values(column)[0].__class__.__name__ == model_name
+
+
+def test_explode_list_with_null_items(test_session):
+    chain = dc.read_values(
+        json=[{"email": ["user@example.com", None]}], session=test_session
+    ).explode("json")
+
+    assert chain.to_values("json_expl.email") == [["user@example.com", None]]
 
 
 def test_explode_raises_on_wrong_column_type(test_session):
@@ -2565,7 +2785,6 @@ def test_count_with_empty_results(test_session):
     empty_chain = chain.filter(C("numbers") > 10)
     assert empty_chain.count() == 0
 
-    # Limit to 0
     assert chain.limit(0).count() == 0
     assert empty_chain.limit(0).count() == 0
     assert chain.count() == 5
@@ -2615,7 +2834,6 @@ def test_distinct_basic(test_session):
 
 
 def test_distinct_multiple_columns(test_session):
-    """Test distinct with multiple columns."""
     chain = dc.read_values(
         category=["A", "A", "B", "B", "C"], value=[1, 2, 1, 2, 2], session=test_session
     )
@@ -2712,14 +2930,12 @@ def test_distinct_after_operations(test_session):
 
 
 def test_distinct_with_empty_chain(test_session):
-    """Test distinct with empty chain."""
     chain = dc.read_values(numbers=[], session=test_session)
     distinct_chain = chain.distinct("numbers")
     assert distinct_chain.count() == 0
 
 
 def test_distinct_with_single_item(test_session):
-    """Test distinct with single item."""
     chain = dc.read_values(numbers=[42], session=test_session)
     distinct_chain = chain.distinct("numbers")
     assert distinct_chain.count() == 1
@@ -2884,7 +3100,6 @@ def test_filter_with_strings(test_session):
 
 
 def test_filter_with_glob_patterns(test_session):
-    """Test filter with glob patterns."""
     files = [
         File(path="image1.jpg", size=100),
         File(path="image2.png", size=200),
@@ -2975,7 +3190,6 @@ def test_filter_with_regexp(test_session):
 
 
 def test_filter_with_in_operator(test_session):
-    """Test filter with 'in' operator."""
     chain = dc.read_values(
         numbers=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
         categories=["A", "B", "A", "C", "B", "A", "C", "B", "A", "C"],
@@ -3026,7 +3240,6 @@ def test_filter_with_and_operator(test_session):
 
 
 def test_filter_with_or_operator(test_session):
-    """Test filter with OR operator."""
     chain = dc.read_values(
         numbers=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
         categories=["A", "B", "A", "C", "B", "A", "C", "B", "A", "C"],
@@ -3049,7 +3262,6 @@ def test_filter_with_or_operator(test_session):
 
 
 def test_filter_with_not_operator(test_session):
-    """Test filter with NOT operator."""
     chain = dc.read_values(
         numbers=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
         categories=["A", "B", "A", "C", "B", "A", "C", "B", "A", "C"],
@@ -3079,7 +3291,6 @@ def test_filter_with_not_operator(test_session):
 
 
 def test_filter_with_complex_objects(test_session):
-    """Test filter with complex objects."""
     files = [
         File(path="image1.jpg", size=100),
         File(path="image2.png", size=200),
@@ -5009,8 +5220,10 @@ def test_delete_dataset_and_create_with_same_name(test_session):
     chain.save("nums", version="1.0.0")
     dc.delete_dataset("nums", force=True, session=test_session)
     assert "nums" not in dc.datasets(session=test_session).to_values("name")
-    chain.save("nums", version="1.0.0")
+    # Removed semver is reserved; auto-bump claims the next slot.
+    new_chain = chain.save("nums")
     assert "nums" in dc.datasets(session=test_session).to_values("name")
+    assert new_chain.dataset.latest_version == "1.0.1"
 
 
 def test_union_does_not_break_schema_order(test_session):

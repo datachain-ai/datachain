@@ -1,9 +1,12 @@
+from collections.abc import Callable
 from typing import Any
 
 from datachain.lib.utils import DataChainParamsError
 
 DEFAULT_CACHE = False
 DEFAULT_PREFETCH = 2
+
+LLMParams = dict[str, Any] | Callable[[], dict[str, Any]]
 
 
 class SettingsError(DataChainParamsError):
@@ -23,6 +26,8 @@ class Settings:
     _min_task_size: int | None
     _batch_size: int | None
     _ephemeral: bool | None
+    _llm: str | None
+    _llm_params: LLMParams | None
 
     def __init__(  # noqa: C901, PLR0912, PLR0915
         self,
@@ -35,6 +40,8 @@ class Settings:
         min_task_size: int | None = None,
         batch_size: int | None = None,
         ephemeral: bool | None = None,
+        llm: str | None = None,
+        llm_params: LLMParams | None = None,
     ) -> None:
         if cache is None:
             self._cache = None
@@ -154,6 +161,29 @@ class Settings:
                 )
             self._ephemeral = ephemeral
 
+        if llm is None:
+            self._llm = None
+        else:
+            if not isinstance(llm, str):
+                raise SettingsError(
+                    "'llm' argument must be a provider-prefixed model string"
+                    f" while {llm.__class__.__name__} was given"
+                )
+            self._llm = llm
+
+        if llm_params is None:
+            self._llm_params = None
+        else:
+            if not isinstance(llm_params, dict) and not callable(llm_params):
+                raise SettingsError(
+                    "'llm_params' argument must be a dict or a callable returning a"
+                    f" dict while {llm_params.__class__.__name__} was given"
+                )
+            # Copy the dict so later mutations of the caller's object don't leak in.
+            self._llm_params = (
+                dict(llm_params) if isinstance(llm_params, dict) else llm_params
+            )
+
     @property
     def cache(self) -> bool:
         return self._cache if self._cache is not None else DEFAULT_CACHE
@@ -190,6 +220,14 @@ class Settings:
     def ephemeral(self) -> bool:
         return self._ephemeral if self._ephemeral is not None else False
 
+    @property
+    def llm(self) -> str | None:
+        return self._llm
+
+    @property
+    def llm_params(self) -> LLMParams | None:
+        return self._llm_params
+
     def to_dict(self) -> dict[str, Any]:
         res: dict[str, Any] = {}
         if self._cache is not None:
@@ -210,6 +248,8 @@ class Settings:
             res["batch_size"] = self.batch_size
         if self._ephemeral is not None:
             res["ephemeral"] = self.ephemeral
+        # `llm`/`llm_params` are intentionally omitted: they are read at bind time
+        # (LLMSpec.bind), not round-tripped through this dict.
         return res
 
     def add(self, settings: "Settings") -> None:
@@ -231,3 +271,7 @@ class Settings:
             self._batch_size = settings._batch_size
         if settings._ephemeral is not None:
             self._ephemeral = settings._ephemeral
+        if settings._llm is not None:
+            self._llm = settings._llm
+        if settings._llm_params is not None:
+            self._llm_params = settings._llm_params

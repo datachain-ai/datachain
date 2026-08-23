@@ -4,6 +4,7 @@ import types
 import typing
 from typing import TYPE_CHECKING, Any
 
+from datachain.query.schema import DEFAULT_DELIMITER
 from datachain.skill.knowledge.scripts.changes import build_changes
 from datachain.skill.knowledge.scripts.utils import (
     dedupe_previous_scripts,
@@ -138,7 +139,10 @@ def version_preview(version: Any) -> "PreviewData | None":
     rows = [
         [_cap_cell(row.get(c)) for c in columns] for row in raw if isinstance(row, dict)
     ]
-    return {"columns": columns, "rows": rows} if rows else None
+    if not rows:
+        return None
+    columns = [c.replace(DEFAULT_DELIMITER, ".") for c in columns]
+    return {"columns": columns, "rows": rows}
 
 
 def type_name(tp: Any) -> str:

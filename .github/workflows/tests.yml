@@ -119,10 +119,12 @@ jobs:
 
       - name: Install FFmpeg on Windows
         if: runner.os == 'Windows'
+        timeout-minutes: 10
         run: choco install ffmpeg --version 7.0.2
 
       - name: Install FFmpeg on macOS
         if: runner.os == 'macOS'
+        timeout-minutes: 10
         # Using ffmpeg@7 since torchcodec does not support ffmpeg 8 yet
         # See: https://github.com/pytorch/torchcodec/issues/839
         # On Windows and Linux ffmpeg < 8 is installed by default
@@ -132,6 +134,7 @@ jobs:
 
       - name: Install FFmpeg on Ubuntu
         if: runner.os == 'Linux'
+        timeout-minutes: 10
         run: |
           sudo apt update
           sudo apt install -y ffmpeg
@@ -212,16 +215,19 @@ jobs:
 
       - name: Install FFmpeg on Windows
         if: runner.os == 'Windows'
+        timeout-minutes: 10
         run: choco install ffmpeg
 
       - name: Install FFmpeg on macOS
         if: runner.os == 'macOS'
+        timeout-minutes: 10
         run: |
           brew install ffmpeg
           echo 'DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib' >> "$GITHUB_ENV"
 
       - name: Install FFmpeg on Ubuntu
         if: runner.os == 'Linux'
+        timeout-minutes: 10
         run: |
           sudo apt update
           sudo apt install -y ffmpeg
@@ -233,7 +239,7 @@ jobs:
           # which now hits HTTP 429 rate limits. Authenticating raises the limit.
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           ANTHROPIC_API_KEY: ${{ matrix.group == 'llm_and_nlp' && secrets.ANTHROPIC_API_KEY || '' }}
-          OPENAI_API_KEY: ${{ matrix.group == 'multimodal' && secrets.OPENAI_API_KEY || '' }}
+          OPENAI_API_KEY: ${{ (matrix.group == 'multimodal' || matrix.group == 'llm_and_nlp') && secrets.OPENAI_API_KEY || '' }}
         run: nox -s examples -p ${{ matrix.pyv }} -- -m "${{ matrix.group }}"
 
   check:

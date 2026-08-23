@@ -451,7 +451,6 @@ def test_to_database_conflict_columns_normalization(postgres_connection, test_se
 
 
 def test_to_database_table_exists_different_schema(connection, test_session):
-    """Test to_database when table exists but has different schema."""
     engine = _get_engine_from_connection(connection)
     with engine.connect() as conn:
         with conn.begin():
@@ -729,8 +728,6 @@ def test_to_database_column_mapping_defaultdict_with_datachain_format(
 
 
 def test_to_database_column_mapping_complex_nested_names(connection, test_session):
-    """Test column mapping with complex/nested column names."""
-
     class NestedData(dc.DataModel):
         value: str
         metadata: dict

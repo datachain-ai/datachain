@@ -6,6 +6,7 @@ import datachain as dc
 from datachain.catalog.catalog import DataSource
 from datachain.client import Client
 from datachain.fs.utils import path_to_fsspec_uri
+from datachain.lib.dc.storage_pattern import split_uri_pattern
 from datachain.lib.file import File
 from datachain.lib.listing import (
     LISTING_PREFIX,
@@ -25,7 +26,13 @@ TREE = {
         "d2": {None: ["file1.csv", "file2.csv"]},
         None: ["dataset.csv"],
     },
-    "dir2": {None: ["diagram.png"]},
+    "dir2": {
+        "spécial": {
+            "dir_%1": {None: ["a.csv", "b.csv"]},
+            "dirXX2": {None: ["d.csv"]},
+        },
+        None: ["diagram.png"],
+    },
     None: ["users.csv"],
 }
 
@@ -95,6 +102,62 @@ def test_get_listing_returns_exact_math_on_update(test_session):
     assert dataset_name_dir1 == f"{LISTING_PREFIX}{fake_uri}/dir1/"
     # On update it is always false (there was no reason to complicate it for now)
     assert not exists
+
+
+@pytest.mark.parametrize(
+    "subdir,expected_list_path",
+    [
+        ("plain", "plain/"),
+        # sanitized in the dataset name as "some_x2edir"; must come back decoded
+        ("some.dir", "some.dir/"),
+        ("nested/some.dir", "nested/some.dir/"),
+        # a dir literally named like an encoding token: pre-escaped to
+        # "v_x_x2e0" in the name, so decoding must not turn it into "v.0"
+        ("v_x2e0", "v_x2e0/"),
+    ],
+)
+def test_get_listing_reuse_returns_decoded_subpath(
+    test_session, subdir, expected_list_path
+):
+    catalog = test_session.catalog
+    fake_uri = path_to_fsspec_uri("/reuse")
+    broad_name, _, _, _ = get_listing(fake_uri, test_session)
+    (
+        dc.read_values(file=[File(path=f"{subdir}/a.csv")])
+        .settings(
+            namespace=catalog.metastore.system_namespace_name,
+            project=catalog.metastore.listing_project_name,
+        )
+        .save(broad_name, listing=True)
+    )
+
+    name, _, list_path, reused = get_listing(f"{fake_uri}/{subdir}", test_session)
+
+    assert reused
+    assert name == broad_name
+    assert list_path == expected_list_path
+
+
+def test_get_listing_reuses_broader_listing_for_glob_base(test_session):
+    catalog = test_session.catalog
+    fake_uri = path_to_fsspec_uri("/globbase")
+    broad_name, _, _, _ = get_listing(fake_uri, test_session)
+    (
+        dc.read_values(file=[File(path="media/music/song.mp3")])
+        .settings(
+            namespace=catalog.metastore.system_namespace_name,
+            project=catalog.metastore.listing_project_name,
+        )
+        .save(broad_name, listing=True)
+    )
+
+    base, pattern = split_uri_pattern(f"{fake_uri}/media/mus*/*.mp3")
+    name, _, list_path, reused = get_listing(base, test_session)
+
+    assert pattern == "mus*/*.mp3"
+    assert reused
+    assert name == broad_name
+    assert list_path == "media/"
 
 
 def test_resolve_path_in_root(listing):
@@ -175,6 +238,16 @@ def test_list_dir(listing):
     dir1 = listing.resolve_path("dir1/")
     names = listing.ls_path(dir1, ["path"])
     assert {n[0] for n in names} == {"dir1/d2", "dir1/dataset.csv"}
+
+
+def test_resolve_path_with_wildcard_chars_is_literal(listing):
+    node = listing.resolve_path("dir2/spécial/dir_%1")
+    assert node.dir_type == DirType.DIR
+
+    # must not resolve via the dirXX2/ sibling, which `dir_%2` matches as a
+    # LIKE pattern
+    with pytest.raises(FileNotFoundError):
+        listing.resolve_path("dir2/spécial/dir_%2")
 
 
 def test_list_file(listing):

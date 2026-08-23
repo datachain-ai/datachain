@@ -428,9 +428,9 @@ def test_studio_team_global():
 
 
 def test_studio_datasets(capsys, studio_datasets, mocker):
-    def list_datasets_local(_, __):
-        yield "local.local.local", "1.0.0"
-        yield "dev.animals.both", "1.0.0"
+    def list_datasets_local(_, __, include_removed=False):
+        yield "local.local.local", "1.0.0", False
+        yield "dev.animals.both", "1.0.0", False
 
     mocker.patch(
         "datachain.cli.commands.datasets.list_datasets_local",
@@ -506,6 +506,44 @@ def test_studio_datasets(capsys, studio_datasets, mocker):
     assert main(["dataset", "ls", "dev.animals.dogs", "--studio"]) == 0
     out = capsys.readouterr().out
     assert sorted(out.splitlines()) == sorted(dogs_output.splitlines())
+
+
+@pytest.mark.parametrize(
+    "extra_cli_args,route,ok_body",
+    [
+        pytest.param([], "datachain/datasets", [], id="ls-all"),
+        pytest.param(
+            ["dev.animals.cats"],
+            "datachain/datasets/info",
+            {
+                "versions": [],
+                "project": {
+                    "created_at": None,
+                    "namespace": {"created_at": None},
+                },
+                "created_at": None,
+                "finished_at": None,
+            },
+            id="ls-by-name",
+        ),
+    ],
+)
+def test_dataset_ls_include_removed_flows_to_studio(
+    requests_mock, studio_token, extra_cli_args, route, ok_body
+):
+    """`dataset ls --include-removed --studio` forwards the flag as a
+    query parameter to Studio on both the list-all
+    (`/datachain/datasets`) and list-by-name (`/datachain/datasets/info`)
+    endpoints, and omits it when the flag isn't set."""
+    m = requests_mock.get(f"{STUDIO_URL}/api/{route}", json=ok_body)
+
+    assert main(["dataset", "ls", "--studio", *extra_cli_args]) == 0
+    assert "include_removed" not in m.last_request.qs
+
+    assert (
+        main(["dataset", "ls", "--studio", "--include-removed", *extra_cli_args]) == 0
+    )
+    assert m.last_request.qs.get("include_removed") == ["true"]
 
 
 @skip_if_not_sqlite
@@ -643,6 +681,46 @@ def test_studio_rm_dataset(capsys, mocker):
         }
 
 
+def test_studio_list_jobs(capsys):
+    with Config(ConfigLevel.GLOBAL).edit() as conf:
+        conf["studio"] = {"token": "isat_access_token", "team": "team_name"}
+
+    with requests_mock.mock() as m:
+        m.get(
+            re.compile(rf"^{re.escape(STUDIO_URL)}/api/datachain/jobs/"),
+            json=[
+                {
+                    "id": "8bddde6c-c3ca-41b0-9d87-ee945bfdce70",
+                    "name": "on-cluster",
+                    "status": "COMPLETE",
+                    "compute_cluster_id": 1,
+                    "compute_cluster_name": "prod-cluster",
+                    "created_at": "2021-01-01T00:00:00Z",
+                    "created_by": "user",
+                },
+                {
+                    "id": "0502eef6-a32e-45fa-8e3b-d20ec0abbcf0",
+                    "name": "on-other-cluster",
+                    "status": "FAILED",
+                    "compute_cluster_id": 2,
+                    "compute_cluster_name": "dev-cluster",
+                    "created_at": "2021-01-02T00:00:00Z",
+                    "created_by": "user",
+                },
+            ],
+        )
+
+        assert main(["job", "ls"]) == 0
+        out = capsys.readouterr().out
+        assert "Cluster" not in out
+        assert "prod-cluster" not in out
+
+        assert main(["job", "ls", "--extended"]) == 0
+        out = capsys.readouterr().out
+        assert "Cluster" in out
+        assert "prod-cluster" in out
+
+
 def test_studio_cancel_job(capsys, mocker):
     job_id = "8bddde6c-c3ca-41b0-9d87-ee945bfdce70"
     with requests_mock.mock() as m:
@@ -747,7 +825,6 @@ def test_studio_run(capsys, mocker, tmp_dir):
         first_request.url
         == f"{STUDIO_URL}/api/datachain/jobs/files?team_name=team_name"
     )
-    # Check that it's multipart/form-data request
     assert "multipart/form-data" in first_request.headers.get("Content-Type", "")
     # Check query parameters
     assert first_request.qs["team_name"] == ["team_name"]

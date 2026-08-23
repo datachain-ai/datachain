@@ -73,7 +73,7 @@ def process_jobs_args(args: "Namespace"):
         return show_job_logs(args.id, args.team)
 
     if args.cmd == "ls":
-        return list_jobs(args.status, args.team, args.limit)
+        return list_jobs(args.status, args.team, args.limit, args.extended)
 
     if args.cmd == "clusters":
         return list_clusters(args.team)
@@ -281,19 +281,23 @@ def token():
     print(token)
 
 
-def list_datasets(team: str | None = None, name: str | None = None):
+def list_datasets(
+    team: str | None = None,
+    name: str | None = None,
+    include_removed: bool = False,
+):
     def ds_full_name(ds: dict) -> str:
         return (
             f"{ds['project']['namespace']['name']}.{ds['project']['name']}.{ds['name']}"
         )
 
     if name:
-        yield from list_dataset_versions(team, name)
+        yield from list_dataset_versions(team, name, include_removed=include_removed)
         return
 
     client = StudioClient(team=team)
 
-    response = client.ls_datasets()
+    response = client.ls_datasets(include_removed=include_removed)
 
     if not response.ok:
         raise DataChainError(response.message)
@@ -312,13 +316,19 @@ def list_datasets(team: str | None = None, name: str | None = None):
             yield (full_name, version)
 
 
-def list_dataset_versions(team: str | None = None, name: str = ""):
+def list_dataset_versions(
+    team: str | None = None,
+    name: str = "",
+    include_removed: bool = False,
+):
     client = StudioClient(team=team)
 
     namespace_name, project_name, name = parse_dataset_name(name)
     if not namespace_name or not project_name:
-        raise DataChainError(f"Missing namespace or project form dataset name {name}")
-    response = client.dataset_info(namespace_name, project_name, name)
+        raise DataChainError(f"Missing namespace or project from dataset name {name}")
+    response = client.dataset_info(
+        namespace_name, project_name, name, include_removed=include_removed
+    )
 
     if not response.ok:
         raise DataChainError(response.message)
@@ -704,7 +714,9 @@ def cancel_job(job_id: str, team_name: str | None):
     print(f"Job {job_id} canceled")
 
 
-def list_jobs(status: str | None, team_name: str | None, limit: int):
+def list_jobs(
+    status: str | None, team_name: str | None, limit: int, extended: bool = False
+):
     client = StudioClient(team=team_name)
     response = client.get_jobs(status, limit)
     if not response.ok:
@@ -715,16 +727,18 @@ def list_jobs(status: str | None, team_name: str | None, limit: int):
         print("No jobs found")
         return
 
-    rows = [
-        {
+    rows = []
+    for job in jobs:
+        row = {
             "ID": job.get("id"),
             "Name": job.get("name"),
             "Status": job.get("status"),
             "Created at": job.get("created_at"),
             "Created by": job.get("created_by"),
         }
-        for job in jobs
-    ]
+        if extended:
+            row["Cluster"] = job.get("compute_cluster_name")
+        rows.append(row)
 
     print(tabulate.tabulate(rows, headers="keys", tablefmt="grid"))
 

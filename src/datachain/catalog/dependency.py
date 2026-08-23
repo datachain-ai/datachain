@@ -21,6 +21,7 @@ class DatasetDependencyNode:
     source_dataset_id: int
     source_dataset_version_id: int | None
     depth: int
+    dataset_version_status: int | None = None
 
     @classmethod
     def parse(
@@ -36,6 +37,7 @@ class DatasetDependencyNode:
         source_dataset_id: int,
         source_dataset_version_id: int | None,
         depth: int,
+        dataset_version_status: int | None = None,
     ) -> "DatasetDependencyNode | None":
         return cls(
             namespace,
@@ -49,6 +51,7 @@ class DatasetDependencyNode:
             source_dataset_id,
             source_dataset_version_id,
             depth,
+            dataset_version_status,
         )
 
     def to_dependency(self) -> "DatasetDependency | None":
@@ -61,6 +64,7 @@ class DatasetDependencyNode:
             dataset_name=self.dataset_name,
             dataset_version=self.dataset_version,
             dataset_version_created_at=self.created_at,
+            dataset_version_status=self.dataset_version_status,
         )
 
 

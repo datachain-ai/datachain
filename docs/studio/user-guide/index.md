@@ -14,7 +14,8 @@ This section covers how to use DataChain Studio for managing your data processin
 
 ## Collaboration
 
-- **[Team Collaboration](team-collaboration.md)** - Work with your team in Studio
+- **[Teams](teams/index.md)** - Work with your team in Studio
+- **[Security & Permissions](teams/permissions.md)** - Control who can read and write each namespace, project, and dataset
 
 ## Support
 

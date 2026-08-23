@@ -1,5 +1,6 @@
 import copy
 import hashlib
+import inspect
 import io
 import logging
 import os
@@ -58,7 +59,15 @@ from datachain.lib.signal_schema import (
     SignalResolvingTypeError,
     SignalSchema,
 )
-from datachain.lib.udf import Aggregator, Generator, Mapper, UDFBase
+from datachain.lib.udf import (
+    Aggregator,
+    BindContext,
+    BoundSpec,
+    Generator,
+    Mapper,
+    UDFBase,
+    _MultiSignalMapper,
+)
 from datachain.lib.udf_signature import UdfSignature
 from datachain.lib.utils import (
     DataChainColumnError,
@@ -116,6 +125,8 @@ if TYPE_CHECKING:
     import pandas as pd
     from sqlalchemy.orm import Session as OrmSession
     from typing_extensions import ParamSpec, Self
+
+    from datachain.lib.settings import LLMParams
 
     P = ParamSpec("P")
 
@@ -460,6 +471,8 @@ class DataChain:
         batch_size: int | None = None,
         sys: bool | None = None,
         ephemeral: bool | None = None,
+        llm: str | None = None,
+        llm_params: "LLMParams | None" = None,
     ) -> "Self":
         """Set chain execution parameters. Returns the chain itself, allowing method
         chaining for subsequent operations. To restore all settings to their default
@@ -486,6 +499,13 @@ class DataChain:
                 (no jobs, checkpoints, or datasets). UDF execution still uses
                 temporary tables. Calling .save() in ephemeral mode will raise
                 an error.
+            llm: Provider-prefixed model string (e.g. `"anthropic/claude-haiku-4-5"`)
+                used by `datachain.llm` operations downstream in the chain. Inherited
+                by every `llm.*` call unless overridden by a per-call `llm=`.
+            llm_params: Extra parameters passed to the underlying model call (e.g.
+                credentials, `api_base`). Either a dict, or a no-argument callable
+                returning a dict that is resolved per-worker (so secrets are never
+                serialized into the task).
 
         Example:
             ```py
@@ -510,6 +530,8 @@ class DataChain:
                 min_task_size=min_task_size,
                 batch_size=batch_size,
                 ephemeral=ephemeral,
+                llm=llm,
+                llm_params=llm_params,
             )
         )
         return self._evolve(settings=settings, _sys=sys)
@@ -678,7 +700,16 @@ class DataChain:
 
         # Handle retry and delta functionality
         if not result:
-            result = self._handle_delta(name, version, project, schema, kwargs)
+            result = self._handle_delta(
+                name=name,
+                version=version,
+                project=project,
+                schema=schema,
+                description=description,
+                attrs=attrs,
+                update_version=update_version,
+                kwargs=kwargs,
+            )
 
         if not result:
             # calculate chain if we already don't have result from checkpoint or delta
@@ -849,6 +880,9 @@ class DataChain:
         version: str | None,
         project: Project,
         schema: dict,
+        description: str | None,
+        attrs: list[str] | None,
+        update_version: str | None,
         kwargs: dict,
     ) -> "DataChain | None":
         """Try to save as a delta dataset.
@@ -880,6 +914,9 @@ class DataChain:
                     project=project,
                     feature_schema=schema,
                     dependencies=dependencies,
+                    description=description,
+                    attrs=attrs,
+                    update_version=update_version,
                     **kwargs,
                 )
             )
@@ -962,8 +999,18 @@ class DataChain:
             )
             chain.save("new_dataset")
             ```
+
+            Defining multiple signals in one call (single UDF stage, both
+            functions run per row, no intermediate column materialized):
+            ```py
+            chain = chain.map(stem=lambda name: name[:-4], ext=lambda name: name[-3:])
+            chain.save("new_dataset")
+            ```
         """
-        udf_obj = self._udf_to_obj(Mapper, func, params, output, signal_map)
+        if len(signal_map) > 1:
+            udf_obj = self._build_multi_signal_mapper(func, params, output, signal_map)
+        else:
+            udf_obj = self._udf_to_obj(Mapper, func, params, output, signal_map)
         if (prefetch := self._settings.prefetch) is not None:
             udf_obj.prefetch = prefetch
 
@@ -974,6 +1021,48 @@ class DataChain:
                 **self._settings.to_dict(),
             ),
             signal_schema=sys_schema | self.signals_schema | udf_obj.output,
+        )
+
+    def _build_multi_signal_mapper(
+        self,
+        func: Callable | None,
+        params: str | Sequence[str] | None,
+        output: OutputType,
+        signal_map: dict[str, Callable],
+    ) -> "Mapper":
+        """Build a single Mapper that runs all functions in `signal_map` per row."""
+        if func is not None:
+            raise DataChainParamsError(
+                "map() can't combine 'func' with multiple signal kwargs"
+            )
+        if output is not None:
+            raise DataChainParamsError(
+                "map() can't combine 'output' with multiple signal kwargs; "
+                "use function return-type annotations instead"
+            )
+        if params is not None:
+            raise DataChainParamsError(
+                "map() can't combine 'params' with multiple signal kwargs; "
+                "each function's parameter names are matched to chain columns "
+                "individually. For nested columns (e.g. 'file.path'), extract "
+                "to a top-level column with a single .map() first."
+            )
+
+        multi_mapper = _MultiSignalMapper(signal_map)
+        output_dict: dict[str, Any] = {}
+        for name, fn in signal_map.items():
+            anno = inspect.signature(fn).return_annotation
+            output_dict[name] = (
+                anno
+                if anno is not inspect.Signature.empty
+                else UdfSignature.DEFAULT_RETURN_TYPE
+            )
+        return self._udf_to_obj(
+            Mapper,
+            multi_mapper,
+            params=multi_mapper.combined_params,
+            output=output_dict,
+            signal_map={},
         )
 
     def gen(
@@ -1164,6 +1253,13 @@ class DataChain:
         is_generator = target_class.is_output_batched
         name = self.name or ""
 
+        func = self._bind_udf_settings(func, target_class)
+        signal_map = {
+            k: self._bind_udf_settings(v, target_class) for k, v in signal_map.items()
+        }
+        if params is None:
+            params = self._bound_udf_params(func, signal_map)
+
         sign = UdfSignature.parse(name, signal_map, func, params, output, is_generator)
         DataModel.register(list(sign.output_schema.values.values()))
 
@@ -1172,6 +1268,27 @@ class DataChain:
         )
 
         return target_class._create(sign, params_schema)
+
+    def _bind_udf_settings(self, func, target_class):
+        """Resolve a `BoundSpec` (e.g. a `datachain.llm` operation) into a concrete
+        callable, handing it the chain settings and target verb via a `BindContext`
+        so it can pick up `settings(llm=...)` and choose its shape from the verb.
+        """
+        if isinstance(func, BoundSpec):
+            return func.bind(BindContext(settings=self._settings, target=target_class))
+        return func
+
+    @staticmethod
+    def _bound_udf_params(func, signal_map) -> "Sequence[str] | None":
+        """Input columns declared by a settings-bound UDF spec (e.g. `datachain.llm`),
+        used when the verb is called without an explicit ``params=``. Lets a spec
+        consume nested/dotted columns that can't be expressed as signature names.
+        """
+        for udf in (func, *signal_map.values()):
+            cols = getattr(udf, "__datachain_params__", None)
+            if isinstance(cols, list):
+                return cols
+        return None
 
     def _extend_to_data_model(self, method_name, *args, **kwargs):
         query_func = getattr(self._query, method_name)

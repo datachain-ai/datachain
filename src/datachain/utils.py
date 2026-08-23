@@ -73,18 +73,12 @@ class DataChainDir:
             if config is not None
             else osp.join(self.root, self.CONFIG)
         )
-        self.config = (
-            osp.abspath(config)
-            if config is not None
-            else osp.join(self.root, self.CONFIG)
-        )
 
     def init(self):
         os.makedirs(self.root, exist_ok=True)
         os.makedirs(self.cache, exist_ok=True)
         os.makedirs(self.tmp, exist_ok=True)
         os.makedirs(osp.split(self.db)[0], exist_ok=True)
-        os.makedirs(osp.split(self.config)[0], exist_ok=True)
         os.makedirs(osp.split(self.config)[0], exist_ok=True)
 
     @classmethod
@@ -308,7 +302,14 @@ def datachain_paths_join(source_path: str, file_paths: Iterable[str]) -> Iterabl
     return (f"{source_stripped}/{path.lstrip('/')}" for path in file_paths)
 
 
-def sql_escape_like(search: str, escape: str = "\\") -> str:
+# Escape character `sql_escape_like()` inserts before `%` and `_`. A LIKE built
+# from its output has to declare the same character to SQL (SQLAlchemy's
+# `escape=`), or SQLite treats the backslashes literally and matches nothing.
+# `AbstractWarehouse.prefix_match()` does both steps together.
+LIKE_ESCAPE_CHAR = "\\"
+
+
+def sql_escape_like(search: str, escape: str = LIKE_ESCAPE_CHAR) -> str:
     return (
         search.replace(escape, escape * 2)
         .replace("%", f"{escape}%")

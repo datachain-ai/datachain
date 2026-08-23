@@ -1,8 +1,12 @@
 import hashlib
+import inspect
 import logging
+from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import closing, nullcontext
+from dataclasses import dataclass
 from functools import partial
+from graphlib import CycleError, TopologicalSorter
 from typing import TYPE_CHECKING, Any, TypeVar
 
 import attrs
@@ -18,7 +22,7 @@ from datachain.lib.convert.flatten import (
     flatten_value,
     union_value_match,
 )
-from datachain.lib.file import DataModel, File, FileError
+from datachain.lib.file import File, FileError
 from datachain.lib.utils import AbstractUDF, DataChainParamsError
 from datachain.query.batch import (
     Batch,
@@ -39,11 +43,32 @@ if TYPE_CHECKING:
 
     from datachain.cache import Cache
     from datachain.catalog import Catalog
+    from datachain.lib.settings import Settings
     from datachain.lib.signal_schema import SignalSchema
     from datachain.lib.udf_signature import UdfSignature
     from datachain.query.batch import RowsOutput
 
 T = TypeVar("T", bound=Sequence[Any])
+
+
+@dataclass
+class BindContext:
+    """Context handed to a ``BoundSpec`` when it is attached to a verb. Carries the
+    chain settings and the target UDF class; new fields (catalog, session, ...) can
+    be added here without changing the ``bind`` signature."""
+
+    settings: "Settings"
+    target: Any = None  # the verb's UDF class (Mapper/Generator/Aggregator)
+
+
+class BoundSpec(ABC):
+    """A UDF spec that resolves itself against the chain when attached to a verb.
+    ``DataChain._udf_to_obj`` calls ``bind`` with a ``BindContext`` to get the
+    concrete per-row callable, so a spec can read ``.settings(...)`` and choose its
+    shape from the target verb at build time."""
+
+    @abstractmethod
+    def bind(self, ctx: BindContext) -> Callable: ...
 
 
 class UdfError(DataChainParamsError):
@@ -356,23 +381,8 @@ class UDFBase(AbstractUDF):
         assert self.params
         row = [row_dict[p] for p in self.params.to_udf_spec()]
         obj_row = self.params.row_to_objs(row)
-        for obj in obj_row:
-            self._set_stream_recursive(obj, catalog, cache, download_cb)
+        self.params.set_file_streams(obj_row, catalog, cache, download_cb)
         return obj_row
-
-    def _set_stream_recursive(
-        self, obj: Any, catalog: "Catalog", cache: bool, download_cb: Callback
-    ) -> None:
-        """Recursively set the catalog stream on all File objects within an object."""
-        if isinstance(obj, File):
-            obj._set_stream(catalog, caching_enabled=cache, download_cb=download_cb)
-
-        # Check all fields for nested File objects, but only for DataModel objects
-        if isinstance(obj, DataModel):
-            for field_name in type(obj).model_fields:
-                field_value = getattr(obj, field_name, None)
-                if isinstance(field_value, DataModel):
-                    self._set_stream_recursive(field_value, catalog, cache, download_cb)
 
     def _prepare_row(
         self, row, udf_fields, catalog, cache, download_cb, include_id=False
@@ -504,6 +514,77 @@ class Mapper(UDFBase):
                 yield output
 
         self.teardown()
+
+
+class _MultiSignalMapper(Mapper):
+    """Mapper that runs N user functions per row, yielding N output signals.
+
+    Implements `.map(a=f1, b=f2, ...)` as a single UDF stage: each row is
+    iterated once, all functions run, and no intermediate column is
+    materialized between them.
+
+    If a function's parameter name matches another function's output name
+    in the same call, the dependent function receives the producer's
+    result instead of a row column. Execution order is a topological sort
+    of that dependency graph; the order the user wrote the kwargs is
+    irrelevant. Cycles raise ``ValueError`` at construction time.
+    """
+
+    def __init__(self, signal_map: dict[str, Callable]):
+        super().__init__()
+        self._signal_map = signal_map
+        output_names = set(signal_map)
+        self._per_func_params: dict[str, list[str]] = {}
+        # For each function: which of its params come from another
+        # function's output (dependencies) vs from an input row column.
+        deps: dict[str, set[str]] = {}
+        for name, fn in signal_map.items():
+            params = list(inspect.signature(fn).parameters.keys())
+            self._per_func_params[name] = params
+            deps[name] = {p for p in params if p in output_names and p != name}
+
+        try:
+            self._exec_order = list(TopologicalSorter(deps).static_order())
+        except CycleError as e:
+            raise ValueError(
+                f"Cyclic dependency between map functions: {e.args[1]}"
+            ) from e
+
+        # combined_params = union of params NOT resolved from other outputs,
+        # in first-seen order. Consumed positionally by the UDF layer.
+        seen: set[str] = set()
+        self.combined_params: list[str] = []
+        for name in signal_map:
+            for p in self._per_func_params[name]:
+                if p in output_names:
+                    continue
+                if p not in seen:
+                    seen.add(p)
+                    self.combined_params.append(p)
+
+    def process(self, *args):
+        kwargs = dict(zip(self.combined_params, args, strict=True))
+        results: dict[str, Any] = {}
+        for name in self._exec_order:
+            fn_kwargs = {
+                p: (results[p] if p in results else kwargs[p])
+                for p in self._per_func_params[name]
+            }
+            results[name] = self._signal_map[name](**fn_kwargs)
+        # Output order follows the user's declared kwarg order, not exec order.
+        return tuple(results[name] for name in self._signal_map)
+
+    def hash(self, include_body: bool = True) -> str:
+        # cache key must vary with the wrapped functions; the base
+        # implementation would hash this class's process method, which is
+        # identical across instances.
+        parts = [
+            hash_callable(fn, include_body=include_body)
+            for fn in self._signal_map.values()
+        ]
+        parts.append(self.params.hash() if self.params else "")
+        parts.append(self.output.hash())
+        return hashlib.sha256(b"".join([bytes.fromhex(p) for p in parts])).hexdigest()
 
 
 class Generator(UDFBase):
