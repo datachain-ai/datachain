@@ -19,8 +19,8 @@ from datachain.lib.convert.flatten import flatten_value
 from datachain.lib.convert.unflatten import unflatten_to_json_pos
 from datachain.lib.data_model import (
     DataModel,
-    _warn_index_tag,
     UnionLayout,
+    _warn_index_tag,
     arm_selector,
     is_chain_type,
     union_arms,
