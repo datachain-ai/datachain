@@ -265,7 +265,7 @@ def unwarned_index_tag():
 def test_index_tag_reads_optional_model(unwarned_index_tag):
     """An Optional[DataModel] written with the index layout still reads, deprecated."""
     layout = UnionLayout(arms=[Foo], has_none=True, use_slots=False)
-    with pytest.warns(FutureWarning, match="legacy Optional"):
+    with pytest.warns(FutureWarning, match="Legacy Optional"):
         got = _union_value({"v._type_tag": 0, "v.a": 7, "v.b": "z"}, layout, "v")
     assert (got.a, got.b) == (7, "z")
 
