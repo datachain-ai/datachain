@@ -12,7 +12,9 @@ from datachain.fs.reference import ReferenceFileSystem
 from datachain.lib.convert.flatten import classify_field, iter_flat_columns
 from datachain.lib.data_model import (
     NULLABLE_SCALARS,
+    arm_selector,
     dict_to_data_model,
+    union_layout,
 )
 from datachain.lib.file import ArrowRow, File
 from datachain.lib.model_store import ModelStore

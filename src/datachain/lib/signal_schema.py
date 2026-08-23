@@ -14,7 +14,7 @@ from collections.abc import (
 )
 from dataclasses import dataclass
 from datetime import datetime
-from functools import cached_property
+from functools import cached_property, partial
 from inspect import isclass
 from typing import (
     IO,
