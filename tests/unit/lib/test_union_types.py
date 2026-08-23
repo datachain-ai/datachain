@@ -13,6 +13,7 @@ from typing import Optional, Union
 
 import pytest
 
+from datachain.error import OutdatedDatasetFormatError
 from datachain.lib.arrow import _union_value
 from datachain.lib.convert.flatten import flatten_value
 from datachain.lib.convert.unflatten import unflatten_to_json_pos
@@ -247,9 +248,28 @@ def test_deserialize_union_with_unresolvable_arm_skips_signal():
     assert "kept" in schema.values
 
 
-def test_union_value_out_of_range_tag_returns_none():
+def test_union_value_unknown_arm_name_reads_none():
     layout = UnionLayout(arms=[Foo], has_none=True, use_slots=False)
-    assert _union_value({"v._type_tag": 1}, layout, "v") is None
+    assert _union_value({"v._type_tag": "Gone"}, layout, "v") is None
+    assert _union_value({"v._type_tag": None}, layout, "v") is None
+
+
+@pytest.mark.parametrize("tag", [0, 1])
+def test_index_tag_rejected(tag):
+    """A dataset storing the arm index instead of its name is not readable."""
+    layout = UnionLayout(arms=[Foo], has_none=True, use_slots=False)
+    with pytest.raises(OutdatedDatasetFormatError, match="stored the arm index"):
+        _union_value({"v._type_tag": tag, "v.a": 7, "v.b": "z"}, layout, "v")
+
+    schema = SignalSchema({"m": Optional[Foo]})
+    with pytest.raises(OutdatedDatasetFormatError, match="stored the arm index"):
+        schema.row_to_objs((tag, 7, "z"))
+
+
+def test_index_tag_rejected_multi_arm():
+    schema = SignalSchema({"value": Union[int, str]})
+    with pytest.raises(OutdatedDatasetFormatError, match="_type_tag=0"):
+        schema.row_to_objs((0, 42, None))
 
 
 def test_signal_schema_union_path_edges():

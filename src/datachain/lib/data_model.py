@@ -13,6 +13,7 @@ from pydantic import AliasChoices, BaseModel, Field, create_model
 from pydantic.fields import FieldInfo
 
 from datachain import json
+from datachain.error import OutdatedDatasetFormatError
 from datachain.lib.model_store import ModelStore
 from datachain.lib.utils import (
     DataChainParamsError,
@@ -304,6 +305,25 @@ def arm_selector(arm: Any) -> str:
     if (fr := ModelStore.to_pydantic(arm)) is not None:
         return ModelStore._base_name(fr)
     return arm.__name__
+
+
+def arm_for_tag(layout: "UnionLayout", tag: Any) -> Any:
+    """Union arm a stored ``_type_tag`` selects; None when the value is absent.
+
+    Arm names are strings, so a numeric tag is an arm index -- the layout stored
+    before arm names, which cannot be mapped back to an arm here.
+    """
+    for arm in layout.arms:
+        if arm_selector(arm) == tag:
+            return arm
+    if tag is not None and not isinstance(tag, str):
+        raise OutdatedDatasetFormatError(
+            f"union discriminator _type_tag={tag!r} is not an arm name "
+            f"{tuple(arm_selector(arm) for arm in layout.arms)}. This dataset was "
+            "written by a datachain version that stored the arm index instead; "
+            "re-create it with this version to read it."
+        )
+    return None
 
 
 def promote_default_none(model: type[BaseModel]) -> None:

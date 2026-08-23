@@ -126,6 +126,10 @@ class OutdatedDatabaseSchemaError(DataChainError):
     pass
 
 
+class OutdatedDatasetFormatError(DataChainError):
+    pass
+
+
 class CheckpointNotFoundError(NotFoundError):
     pass
 

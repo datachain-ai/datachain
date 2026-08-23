@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from datachain.lib.convert.flatten import _leaf_count
 from datachain.lib.data_model import (
     UnionLayout,
-    arm_selector,
+    arm_for_tag,
     union_layout,
     unwrap_optional,
 )
@@ -38,11 +38,11 @@ def read_union(
 ) -> tuple[Any, int]:
     """Read a tagged-union value: the ``_type_tag`` then every arm's columns,
     hydrating only the active arm. A NULL ``_type_tag`` reads back as None."""
-    tag = row[pos]
+    active = arm_for_tag(layout, row[pos])
     pos += 1
     result: Any = None
     for arm in layout.arms:
-        if arm_selector(arm) == tag:
+        if arm is active:
             if (fr := ModelStore.to_pydantic(arm)) is not None:
                 result, pos = read_model(fr, row, pos)
             else:

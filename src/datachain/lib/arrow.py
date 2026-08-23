@@ -12,6 +12,7 @@ from datachain.fs.reference import ReferenceFileSystem
 from datachain.lib.convert.flatten import classify_field, iter_flat_columns
 from datachain.lib.data_model import (
     NULLABLE_SCALARS,
+    arm_for_tag,
     arm_selector,
     dict_to_data_model,
     union_layout,
@@ -337,8 +338,7 @@ def _union_value(
     """Reconstruct a tagged-union value from flat columns, hydrating the active arm."""
     tag_key = f"{prefix}.{SignalSchema._TYPE_TAG_FIELD}"
     if tag_key in column_values:
-        tag = column_values[tag_key]
-        arm = next((a for a in layout.arms if arm_selector(a) == tag), None)
+        arm = arm_for_tag(layout, column_values[tag_key])
     else:
         idx = _infer_active_arm(column_values, layout, prefix)
         arm = layout.arms[idx] if idx is not None else None
