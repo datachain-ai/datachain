@@ -433,6 +433,22 @@ def test_merge_keeps_union_on_unmatched_rows(test_session):
     assert _ordered(merged, "value") == [(1, "a"), (2, 1), (3, "b")]
 
 
+def test_merge_widens_union_on_the_padded_side(test_session):
+    """A union on the padded side reads None for unmatched rows, so the schema
+    widens to include it -- as a plain scalar signal does."""
+    left = dc.read_values(id=[1, 2], session=test_session)
+    right = dc.read_values(
+        right_id=[1],
+        value=["x"],
+        output={"right_id": int, "value": Union[int, str]},
+        session=test_session,
+    )
+    merged = left.merge(right, on="id", right_on="right_id", inner=False)
+
+    assert _ordered(merged, "value") == [(1, "x"), (2, None)]
+    assert merged.signals_schema.values["value"] == Union[int, str, None]
+
+
 def test_union_with_missing_signal_names_the_signal(test_session):
     # The mismatch error reports the signal name, not internal arm-slot columns.
     from datachain.query.dataset import UnionSchemaMismatchError
@@ -592,6 +608,23 @@ def test_union_no_arm_value_raises_multi_output(test_session):
             output={"id": int, "v": Union[float, str]},
             session=test_session,
         ).save("u_noarm")
+
+
+def test_union_wrong_model_raises_multi_output(test_session):
+    """A model that is not an arm must not be flattened into the union's columns,
+    even when its fields happen to line up with them."""
+
+    class _Wrong(DataModel):
+        tag: str = ""
+        bar_x: float | None = None
+        foo_a: int = 0
+        foo_b: str = ""
+
+    with pytest.raises(DataChainParamsError, match="does not match any arm"):
+        dc.read_values(id=[1], session=test_session).map(
+            lambda id: (id, _Wrong(tag="_Foo", foo_a=7, foo_b="z")),
+            output={"id2": int, "v": Union[_Foo, _Bar]},
+        ).save("u_wrong_model")
 
 
 def test_union_none_value_raises_non_nullable(test_session):

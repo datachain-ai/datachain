@@ -357,9 +357,11 @@ class UDFBase(AbstractUDF):
                     "in output"
                 )
             flat: list[Any] = []
+            names = list(annos)
             # strict=False as shorter row is allowed for arrow/parquet (guarded above)
-            for obj, anno in zip(row, annos.values(), strict=False):
-                if union_value_match(obj, anno):
+            for i, (obj, anno) in enumerate(zip(row, annos.values(), strict=False)):
+                # names[i:] are the signals a cover model at this position holds
+                if union_value_match(obj, anno, names[i:]):
                     flat.extend(flatten_value(obj, anno))
                 else:
                     flat.extend(self._obj_to_list(obj))

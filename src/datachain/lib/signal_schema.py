@@ -1562,11 +1562,13 @@ class SignalSchema:
         right_nullable: bool = False,
     ) -> "SignalSchema":
         def _nullable(type_: DataType, nullable: bool) -> DataType:
-            # widen scalars to Optional (collections/models can't be Nullable on CH)
+            # widen scalars/unions; models/collections can't be Nullable on CH
             inner, is_optional = unwrap_optional(type_)
-            if not nullable or is_optional or inner not in NULLABLE_SCALARS:
+            if not nullable or is_optional:
                 return type_
-            return type_ | None  # type: ignore[return-value]
+            if inner in NULLABLE_SCALARS or union_layout(inner) is not None:
+                return type_ | None  # type: ignore[return-value]
+            return type_
 
         merged_values = {k: _nullable(t, left_nullable) for k, t in self.values.items()}
 

@@ -2,7 +2,7 @@ import inspect
 import sys
 from collections.abc import Generator, Iterator
 from functools import lru_cache
-from typing import Any, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from pydantic import BaseModel
 
@@ -14,6 +14,9 @@ from datachain.lib.data_model import (
 )
 from datachain.lib.model_store import ModelStore
 from datachain.lib.utils import DataChainParamsError
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 
 class FieldKind(NamedTuple):
@@ -67,17 +70,17 @@ def flatten(obj: BaseModel) -> tuple:
     return tuple(_flatten_fields_values(type(obj).model_fields, obj))
 
 
-def union_value_match(obj, anno) -> bool:
-    # flatten via flatten_value for a bare union value (incl. None, so a non-nullable
-    # union rejects it); a non-arm BaseModel is a cover to flatten field-wise
+def union_value_match(obj, anno, cover_names: "Sequence[str]" = ()) -> bool:
+    """Whether ``obj`` is a value of the tagged union ``anno`` rather than a model
+    covering the signals ``cover_names``, which is flattened field-wise."""
     layout = union_layout(anno)
     if layout is None:
         return False
-    if obj is None:
+    if obj is None or not isinstance(obj, BaseModel):
         return True
     if any(_arm_matches(obj, arm, exact=False) for arm in layout.arms):
         return True
-    return not isinstance(obj, BaseModel)
+    return tuple(type(obj).model_fields) != tuple(cover_names)
 
 
 def flatten_value(value, anno) -> tuple:

@@ -309,11 +309,7 @@ def arm_selector(arm: Any) -> str:
 
 
 def arm_for_tag(layout: "UnionLayout", tag: Any) -> Any:
-    """Union arm a stored ``_type_tag`` selects; None when the value is absent.
-
-    Arm names are strings, so a numeric tag is an arm index -- the layout datasets
-    were written with before arm names.
-    """
+    """Union arm a stored ``_type_tag`` selects; None when the value is absent."""
     for arm in layout.arms:
         if arm_selector(arm) == tag:
             return arm
@@ -322,8 +318,8 @@ def arm_for_tag(layout: "UnionLayout", tag: Any) -> Any:
     return None
 
 
-# The index layout only ever stored `Optional[DataModel]`: 0 for its single arm,
-# anything else for None. Read-only and deprecated; removal tracked in #1949.
+# Index layout, read-only and deprecated (removal: #1949): only ever stored
+# `Optional[DataModel]`, 0 for its single arm and anything else for None.
 LEGACY_PRESENT_TAG = 0
 
 
