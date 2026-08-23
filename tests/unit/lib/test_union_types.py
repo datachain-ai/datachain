@@ -19,6 +19,7 @@ from datachain.lib.convert.flatten import flatten_value
 from datachain.lib.convert.unflatten import unflatten_to_json_pos
 from datachain.lib.data_model import (
     DataModel,
+    _warn_index_tag,
     UnionLayout,
     arm_selector,
     is_chain_type,
@@ -254,21 +255,31 @@ def test_union_value_unknown_arm_name_reads_none():
     assert _union_value({"v._type_tag": None}, layout, "v") is None
 
 
-@pytest.mark.parametrize("tag", [0, 1])
-def test_index_tag_rejected(tag):
-    """A dataset storing the arm index instead of its name is not readable."""
+@pytest.fixture
+def unwarned_index_tag():
+    _warn_index_tag.cache_clear()
+    yield
+    _warn_index_tag.cache_clear()
+
+
+def test_index_tag_reads_optional_model(unwarned_index_tag):
+    """An Optional[DataModel] written with the index layout still reads, deprecated."""
     layout = UnionLayout(arms=[Foo], has_none=True, use_slots=False)
-    with pytest.raises(OutdatedDatasetFormatError, match="stored the arm index"):
-        _union_value({"v._type_tag": tag, "v.a": 7, "v.b": "z"}, layout, "v")
+    with pytest.warns(FutureWarning, match="legacy Optional"):
+        got = _union_value({"v._type_tag": 0, "v.a": 7, "v.b": "z"}, layout, "v")
+    assert (got.a, got.b) == (7, "z")
 
     schema = SignalSchema({"m": Optional[Foo]})
-    with pytest.raises(OutdatedDatasetFormatError, match="stored the arm index"):
-        schema.row_to_objs((tag, 7, "z"))
+    assert schema.row_to_objs((0, 7, "z")) == [Foo(a=7, b="z")]
+    # any other index meant the absent arm
+    assert schema.row_to_objs((1, 7, "z")) == [None]
+    assert _union_value({"v._type_tag": 1, "v.a": 7}, layout, "v") is None
 
 
-def test_index_tag_rejected_multi_arm():
+def test_index_tag_rejected_multi_arm(unwarned_index_tag):
+    """Only the single-arm layout was ever written with an index."""
     schema = SignalSchema({"value": Union[int, str]})
-    with pytest.raises(OutdatedDatasetFormatError, match="_type_tag=0"):
+    with pytest.raises(OutdatedDatasetFormatError, match="unknown _type_tag 0"):
         schema.row_to_objs((0, 42, None))
 
 

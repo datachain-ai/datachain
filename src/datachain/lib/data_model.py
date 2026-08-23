@@ -2,6 +2,7 @@ import hashlib
 import inspect
 import types
 import uuid
+import warnings
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -310,20 +311,38 @@ def arm_selector(arm: Any) -> str:
 def arm_for_tag(layout: "UnionLayout", tag: Any) -> Any:
     """Union arm a stored ``_type_tag`` selects; None when the value is absent.
 
-    Arm names are strings, so a numeric tag is an arm index -- the layout stored
-    before arm names, which cannot be mapped back to an arm here.
+    Arm names are strings, so a numeric tag is an arm index -- the layout datasets
+    were written with before arm names.
     """
     for arm in layout.arms:
         if arm_selector(arm) == tag:
             return arm
     if tag is not None and not isinstance(tag, str):
-        raise OutdatedDatasetFormatError(
-            f"union discriminator _type_tag={tag!r} is not an arm name "
-            f"{tuple(arm_selector(arm) for arm in layout.arms)}. This dataset was "
-            "written by a datachain version that stored the arm index instead; "
-            "re-create it with this version to read it."
-        )
+        return _arm_for_index_tag(layout, tag)
     return None
+
+
+# The index layout only ever stored `Optional[DataModel]`: 0 for its single arm,
+# anything else for None. Read-only and deprecated; removal tracked in #1949.
+LEGACY_PRESENT_TAG = 0
+
+
+def _arm_for_index_tag(layout: "UnionLayout", tag: Any) -> Any:
+    if layout.use_slots:
+        names = ", ".join(arm_selector(arm) for arm in layout.arms)
+        raise OutdatedDatasetFormatError(f"unknown _type_tag {tag!r}: expected {names}")
+    _warn_index_tag()
+    return layout.arms[0] if tag == LEGACY_PRESENT_TAG else None
+
+
+@lru_cache(maxsize=1)  # once per process: the read paths hit this per row
+def _warn_index_tag() -> None:
+    # FutureWarning: a DeprecationWarning is hidden by default outside __main__
+    warnings.warn(
+        "legacy Optional[DataModel] _type_tag: re-save the dataset",
+        FutureWarning,
+        stacklevel=2,
+    )
 
 
 def promote_default_none(model: type[BaseModel]) -> None:
