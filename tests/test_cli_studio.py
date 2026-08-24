@@ -1389,8 +1389,8 @@ def test_studio_run_log_blobs(capsys, mocker, tmp_dir, studio_token):
     assert "fetched log content" in out
 
 
-def test_studio_run_log_blobs_fetches_presigned_utf8(
-    capsys, mocker, tmp_dir, studio_token
+def test_studio_run_log_blobs_fetches_presigned_bytes(
+    capsysbinary, mocker, tmp_dir, studio_token
 ):
     job_id = str(uuid.uuid4())
 
@@ -1423,7 +1423,7 @@ def test_studio_run_log_blobs_fetches_presigned_utf8(
         )
         blob1 = m.get(
             "https://example.com/blob1",
-            content="signal at 5 μS".encode(),
+            content=b"signal:\xff at 5 \xc2\xb5S",
             headers={"Content-Type": "text/plain"},
         )
         blob2 = m.get(
@@ -1440,8 +1440,8 @@ def test_studio_run_log_blobs_fetches_presigned_utf8(
         assert "Authorization" not in blob1.last_request.headers
         assert "Authorization" not in blob2.last_request.headers
 
-    out = capsys.readouterr().out
-    assert "signal at 5 μS\nsecond blob\n" in out
+    out = capsysbinary.readouterr().out
+    assert b"signal:\xff at 5 \xc2\xb5S\nsecond blob\n" in out
 
 
 def test_studio_run_log_blobs_http_error_detail(
