@@ -157,7 +157,8 @@ class UdfSignature:  # noqa: PLW1641
                 if not is_chain_type(value):
                     raise UdfSignatureError(
                         chain,
-                        f"output type '{value.__name__}' of signal '{key}' is not"
+                        f"output type '{getattr(value, '__name__', value)}' of"
+                        f" signal '{key}' is not"
                         f" supported. Please use DataModel types: {DataTypeNames}",
                     )
 

@@ -226,3 +226,15 @@ def test_generator_requires_iterator_return_annotation_even_with_output_override
             {"a": int, "b": int},
             True,
         )
+
+
+@pytest.mark.parametrize(
+    "anno",
+    [t.Union[str, list[str]], str | list[str]],  # noqa: UP007  # both spellings
+)
+def test_unsupported_output_type_rejected_for_both_union_spellings(anno):
+    def func(p1) -> str:
+        return "x"
+
+    with pytest.raises(UdfSignatureError, match="is not supported"):
+        get_sign(func, output={"value": anno})
