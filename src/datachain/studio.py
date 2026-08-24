@@ -427,8 +427,13 @@ async def _show_log_blobs(log_blobs: list[str], client):
                     sys.stdout.buffer.write(b"\n")
                 sys.stdout.buffer.flush()
         except (requests.RequestException, OSError) as exc:
-            print(f"\n>>>> Warning: Failed to fetch logs from studio: {exc}")
             response = getattr(exc, "response", None)
+            detail = (
+                f"HTTP {response.status_code}"
+                if response is not None
+                else type(exc).__name__
+            )
+            print(f"\n>>>> Warning: Failed to fetch logs from studio ({detail})")
             if response is not None and response.text:
                 logger.debug("Log blob fetch failed, response body: %s", response.text)
 

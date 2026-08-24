@@ -1449,7 +1449,7 @@ def test_studio_run_log_blobs_http_error_detail(
     job_id = str(uuid.uuid4())
 
     async def mock_tail_job_logs(jid, no_follow=False):
-        yield {"log_blobs": ["https://example.com/blob1"]}
+        yield {"log_blobs": ["https://example.com/blob1?X-Amz-Signature=secretsig"]}
         yield {"job": {"status": "COMPLETE"}}
 
     mocker.patch(
@@ -1471,7 +1471,7 @@ def test_studio_run_log_blobs_http_error_detail(
             json={"dataset_versions": []},
         )
         m.get(
-            "https://example.com/blob1",
+            "https://example.com/blob1?X-Amz-Signature=secretsig",
             status_code=400,
             text="<Error><Code>InvalidArgument</Code></Error>",
         )
@@ -1484,7 +1484,8 @@ def test_studio_run_log_blobs_http_error_detail(
         assert exit_code == 0
 
     out = capsys.readouterr().out
-    assert "Warning: Failed to fetch logs from studio: 400" in out
+    assert "Warning: Failed to fetch logs from studio (HTTP 400)" in out
+    assert "secretsig" not in out
     assert "<Error><Code>InvalidArgument</Code></Error>" in caplog.text
 
 
