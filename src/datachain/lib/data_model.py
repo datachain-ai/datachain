@@ -264,6 +264,10 @@ class UnionLayout(NamedTuple):
     use_slots: bool
 
 
+# hidden discriminator column of a tagged union
+TYPE_TAG_FIELD = "_type_tag"
+
+
 def union_layout(anno: Any) -> "UnionLayout | None":
     """Tagged-union layout, or None when no ``_type_tag`` is needed (plain leaf,
     ``Optional[basic]``, plain model, or a union with a non-taggable arm)."""
@@ -286,12 +290,17 @@ def _union_layout(anno: Any) -> "UnionLayout | None":
                 f"Union has indistinguishable arms named {dup!r}; arms must have "
                 "distinct type names (rename one of the models)"
             )
-        # each arm is a column named by its type; those names must be unique
+        # each arm is a column named by its type; those names must be unique and
+        # must not shadow the discriminator column
         slots = [arm_selector(arm) for arm in arms]
         if len(set(slots)) != len(slots):
             dup = next(s for s in slots if slots.count(s) > 1)
             raise DataChainParamsError(
                 f"Union arms map to the same column name {dup!r}; rename one arm."
+            )
+        if TYPE_TAG_FIELD in slots:
+            raise DataChainParamsError(
+                f"Union arm {TYPE_TAG_FIELD!r} is reserved; rename that model."
             )
         return UnionLayout(arms, has_none, use_slots=True)
     if len(arms) == 1 and has_none and ModelStore.is_pydantic(arms[0]):

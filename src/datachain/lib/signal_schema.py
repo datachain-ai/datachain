@@ -52,6 +52,7 @@ from datachain.lib.convert.unflatten import (
 )
 from datachain.lib.data_model import (
     NULLABLE_SCALARS,
+    TYPE_TAG_FIELD,
     DataModel,
     DataType,
     DataValue,
@@ -1766,7 +1767,7 @@ class SignalSchema:
 
     # `_type_tag` = the active arm's selector name (``int``, ``Pet``), or NULL for None
     # — the same name that keys the arm's columns. Leading-underscore internal column.
-    _TYPE_TAG_FIELD = "_type_tag"
+    _TYPE_TAG_FIELD = TYPE_TAG_FIELD
     _TYPE_TAG_TYPE = str | None  # type: ignore[valid-type]
 
     @staticmethod

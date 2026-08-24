@@ -28,6 +28,7 @@ from datachain.lib.data_model import (
 )
 from datachain.lib.model_store import ModelStore
 from datachain.lib.signal_schema import SignalSchema, SignalSchemaWarning
+from datachain.lib.utils import DataChainParamsError
 
 
 @pytest.fixture(autouse=True)
@@ -247,6 +248,14 @@ def test_deserialize_union_with_unresolvable_arm_skips_signal():
         schema = SignalSchema.deserialize(serialized)
     assert "v" not in schema.values
     assert "kept" in schema.values
+
+
+def test_union_arm_named_like_the_discriminator_rejected():
+    class _type_tag(DataModel):  # noqa: N801
+        x: int = 0
+
+    with pytest.raises(DataChainParamsError, match="is reserved"):
+        SignalSchema({"value": Union[_type_tag, str]}).db_signals()
 
 
 def test_union_value_unknown_arm_name_reads_none():
