@@ -85,21 +85,38 @@ class BoundSpec(ABC):
 def reject_var_params(
     udf_func: "Callable | UDFBase", label: str, *, columns_explicit: bool = False
 ) -> None:
-    """Reject user callables with ``*args`` / ``**kwargs`` when we need to
-    infer column routing from the signature. When ``columns_explicit`` is
-    True (caller passed ``params=``), both are safe and pass through. For
-    UDFBase subclasses, the check runs against ``.process``."""
-    if columns_explicit:
-        return
+    """Reject user callables the single-signal ``.map()`` call site can't invoke.
+
+    Values are passed positionally, so a signature that can't accept positional
+    args (only ``**kwargs``, or only keyword-only params) is rejected in both
+    modes. Without ``columns_explicit`` (no ``params=``), ``*args`` / ``**kwargs``
+    are also rejected because we can't infer column routing from them.
+    For UDFBase subclasses, the check runs against ``.process``."""
     target = udf_func.process if isinstance(udf_func, AbstractUDF) else udf_func
-    var_params = [
-        f"*{p.name}" if p.kind is inspect.Parameter.VAR_POSITIONAL else f"**{p.name}"
-        for p in inspect.signature(target).parameters.values()
-        if p.kind in {inspect.Parameter.VAR_KEYWORD, inspect.Parameter.VAR_POSITIONAL}
-    ]
-    if var_params:
+    params = list(inspect.signature(target).parameters.values())
+    if not columns_explicit:
+        var_params = [
+            f"*{p.name}"
+            if p.kind is inspect.Parameter.VAR_POSITIONAL
+            else f"**{p.name}"
+            for p in params
+            if p.kind
+            in {inspect.Parameter.VAR_KEYWORD, inspect.Parameter.VAR_POSITIONAL}
+        ]
+        if var_params:
+            raise DataChainParamsError(
+                f"{label} uses {var_params}; list the input column names "
+                "as regular params"
+            )
+    positional_kinds = {
+        inspect.Parameter.POSITIONAL_ONLY,
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        inspect.Parameter.VAR_POSITIONAL,
+    }
+    if params and not any(p.kind in positional_kinds for p in params):
         raise DataChainParamsError(
-            f"{label} uses {var_params}; list the input column names as regular params"
+            f"{label} has no positional parameters; list the input column "
+            "names as regular params"
         )
 
 
@@ -257,6 +274,10 @@ class UDFBase(AbstractUDF):
     is_input_batched = False
     is_output_batched = False
     prefetch: int = 0
+    # Class-level default so subclasses that skip super().__init__() still
+    # have this attribute; _MultiSignalMapper sets params/output per entry
+    # but doesn't call _init(), so _func would otherwise be missing.
+    _func: Callable | None = None
 
     def __init__(self):
         self.params: SignalSchema | None = None
@@ -671,16 +692,18 @@ class _MultiSignalMapper(Mapper):
         super()._init(sign, params, func)
         # Give each inner UDFBase entry its own params/output so framework
         # attrs like self.signal_names, self.output, self.params work.
+        # Params can be outer-input columns or sibling-entry outputs; both
+        # flow into process() so both must show up in fn.params.
         output_values = sign.output_schema.values
         for name, fn in self._signal_map.items():
             if isinstance(fn, UDFBase):
-                fn.params = SignalSchema(
-                    {
-                        p: params.values[p]
-                        for p in self._per_func_params[name]
-                        if p in params.values
-                    }
-                )
+                fn_param_types = {}
+                for p in self._per_func_params[name]:
+                    if p in params.values:
+                        fn_param_types[p] = params.values[p]
+                    elif p in output_values:
+                        fn_param_types[p] = output_values[p]
+                fn.params = SignalSchema(fn_param_types)
                 fn.output = SignalSchema({name: output_values[name]})
 
     def process(self, *args):

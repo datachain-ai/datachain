@@ -1151,6 +1151,23 @@ def test_map_single_signal_allows_var_params_with_explicit_params(test_session, 
     assert sorted(chain.to_values("res")) == ["BAR", "FOO"]
 
 
+def _kwargs_only(**row) -> str:
+    return row["name"]
+
+
+def _keyword_only(*, name) -> str:
+    return name
+
+
+@pytest.mark.parametrize("fn", [_kwargs_only, _keyword_only])
+def test_map_single_signal_rejects_no_positional_params_with_explicit_params(
+    test_session, fn
+):
+    chain = dc.read_values(name=["foo"], session=test_session)
+    with pytest.raises(DataChainParamsError, match="no positional parameters"):
+        chain.map(fn, params=["name"], output={"res": str})
+
+
 @pytest.mark.parametrize(
     "fn,match",
     [(_var_args_fn, r"'args'"), (_var_kwargs_fn, r"'kwargs'")],
@@ -1340,6 +1357,40 @@ def test_map_multiple_signals_mapper_subclass_reads_params(test_session):
     )
     rows = sorted(chain.to_iter("name", "sig", "low"))
     assert rows == [("a", "name", "a"), ("b", "name", "b")]
+
+
+def test_map_multiple_signals_mapper_subclass_reads_sibling_output_type(test_session):
+    class ReadsMixed(dc.Mapper):
+        def process(self, name: str, prepared: str) -> str:
+            assert self.params is not None
+            types = self.params.values
+            return (
+                f"{types['name'].__name__}+{types['prepared'].__name__}"
+                f":{name}:{prepared}"
+            )
+
+    chain = dc.read_values(name=["x"], session=test_session).map(
+        prepared=lambda name: name.upper(),
+        final=ReadsMixed(),
+    )
+    rows = sorted(chain.to_iter("final"))
+    assert rows == [("str+str:x:X",)]
+
+
+def test_map_multiple_signals_mapper_subclass_without_super_init(test_session):
+    class Prefix(dc.Mapper):
+        def __init__(self, prefix: str):
+            self.prefix = prefix
+
+        def process(self, name: str) -> str:
+            return self.prefix + name
+
+    chain = dc.read_values(name=["x"], session=test_session).map(
+        prefixed=Prefix("p:"),
+        unchanged=lambda name: name,
+    )
+    rows = sorted(chain.to_iter("prefixed", "unchanged"))
+    assert rows == [("p:x", "x")]
 
 
 def test_map_multiple_signals_single_stage(test_session):
