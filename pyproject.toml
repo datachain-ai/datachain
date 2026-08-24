@@ -141,7 +141,7 @@ examples = [
   "datachain[tests]",
   "defusedxml",
   "accelerate",
-  "anthropic>=1.0.0",
+  "anthropic",
   "huggingface_hub[hf_transfer]",
   "transformers>=5.0.0",
   "ultralytics",
