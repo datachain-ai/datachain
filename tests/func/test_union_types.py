@@ -236,14 +236,13 @@ def test_union_count_present(test_session):
 
 def test_union_filter_on_arm(test_session):
     chain = _nullable_union(test_session)
-    # int sorts before str, so value._0 is the int arm.
     assert chain.filter(C("value.int") == 42).to_values("value") == [42]
     assert chain.filter(C("value.str") == "hi").to_values("value") == ["hi"]
 
 
 def test_union_mutate_on_arm(test_session):
     chain = _nullable_union(test_session)
-    # value._0 is the int arm: present only for int rows, NULL elsewhere.
+    # value.int is present only for int rows, NULL elsewhere.
     assert _ordered(chain.mutate(z=C("value.int")), "z") == [
         (1, None),
         (2, 42),

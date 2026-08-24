@@ -1160,7 +1160,7 @@ class SignalSchema:
         for field in names:
             if not isinstance(field, str):
                 raise SignalResolvingTypeError("select()", field)
-            # readable union-arm path (value.int) -> positional slot (value._0)
+            # readable arm path (block.name) -> arm-qualified (block.Text.name)
             field = self.resolve_arm_path(field) or field
             schema[field] = self._find_in_tree(field.split("."))
 
@@ -1381,7 +1381,7 @@ class SignalSchema:
         }
 
         def replace_col(node, **_kw):
-            # readable arm path (C("block.name")) -> positional slot column
+            # readable arm path (C("block.name")) -> arm-qualified column
             if not isinstance(node, Column):
                 return None
             db_col = self.to_db_col(node.name)
@@ -1862,8 +1862,8 @@ class SignalSchema:
         if not columns:
             return SignalSchema({})
 
-        # readable union-arm path (value.int) -> positional slot (value._0); leave
-        # non-str args for the validation below to reject with a clear error
+        # readable arm path -> arm-qualified; leave non-str args for the validation
+        # below to reject with a clear error
         columns = tuple(
             self.resolve_arm_path(c) or c if isinstance(c, str) else c for c in columns
         )

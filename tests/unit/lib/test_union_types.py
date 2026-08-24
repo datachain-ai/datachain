@@ -77,7 +77,7 @@ def test_union_arms_canonical_order(anno, expected_arms, has_none):
 
 
 def test_union_arms_order_is_serialization_stable():
-    # The two spellings are the same type; arm order (hence the _type_tag index)
+    # The two spellings are the same type; arm order (hence the column order)
     # must not depend on how the Union was written.
     assert union_arms(Union[str, int]) == union_arms(Union[int, str])
     assert union_arms(Union[Foo, Bar]) == union_arms(Union[Bar, Foo])

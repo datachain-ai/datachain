@@ -1663,7 +1663,7 @@ class DataChain:
         primitives = (bool, str, int, float)
 
         try:
-            # readable arm Column (C("block.name")) -> positional column
+            # readable arm Column (C("block.name")) -> arm-qualified column
             for col_name, expr in kwargs.items():
                 if (
                     isinstance(expr, Column)

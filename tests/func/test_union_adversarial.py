@@ -52,7 +52,7 @@ def _vals(chain, col):
 
 
 def test_row_func_over_inactive_arm_is_none(test_session):
-    # value._1 is the str arm; for int rows it is NULL, so string length is None
+    # value.str is NULL for int rows, so string length is None there
     # (must not coerce to 0 on ClickHouse).
     chain = _si(test_session, [1, 2, 3], ["hi", 42, "yoyo"])
     got = _vals(chain.mutate(n=func.string.length("value.str")), "n")
@@ -60,7 +60,7 @@ def test_row_func_over_inactive_arm_is_none(test_session):
 
 
 def test_arithmetic_over_inactive_arm_is_none(test_session):
-    # value._0 is the int arm; NULL + 1 must stay None, not become 1.
+    # value.int is NULL for str rows; NULL + 1 must stay None, not become 1.
     chain = _si(test_session, [1, 2, 3], ["hi", 42, 7])
     got = _vals(chain.mutate(y=C("value.int") + 1), "y")
     assert got == [None, 43, 8]
@@ -298,8 +298,8 @@ def test_file_arm_nested_in_model_gets_stream(test_session):
 
 
 def test_arm_order_stable_after_save_reload(test_session):
-    # Persisted schema serializes the Union; on reload the _type_tag index must
-    # still map to the same arm (canonical ordering is the guarantee).
+    # Persisted schema serializes the Union; on reload each arm must still map to
+    # the same column (canonical arm ordering is the guarantee).
     _si(test_session, [1, 2, 3], [10, "ten", 20]).save("u_stable")
     back = dc.read_dataset("u_stable", session=test_session)
     assert _vals(back, "value") == [10, "ten", 20]

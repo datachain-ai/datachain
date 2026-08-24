@@ -100,7 +100,7 @@ def to_database(
         "list[Any]",
         signals_schema.db_signals(as_columns=True, include_sentinels=False),
     )
-    # readable arm names (value.int), not internal slot indices (value._0)
+    # readable arm names (value.int), not raw db columns (value__int)
     display_paths = [
         signals_schema.arm_display_path(c.name.split(DEFAULT_DELIMITER))
         for c in db_cols
