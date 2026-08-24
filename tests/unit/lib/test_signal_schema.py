@@ -997,6 +997,16 @@ def test_get_features_nested(test_session, nested_file_schema):
             ("Fred", 0, "Fred", 129, "qwe"),
             ["Fred", MyType2(name="Fred", deep=MyType1(aa=129, bb="qwe"))],
         ),
+        (
+            {"fr.name": str, "fr.deep.aa": int, "fr": MyType2},
+            ("Fred", 129, "Fred", 129, "qwe"),
+            ["Fred", 129, MyType2(name="Fred", deep=MyType1(aa=129, bb="qwe"))],
+        ),
+        (
+            {"fr": MyType2, "fr.name": str},
+            ("Fred", 129, "qwe", "Fred"),
+            [MyType2(name="Fred", deep=MyType1(aa=129, bb="qwe")), "Fred"],
+        ),
     ],
 )
 def test_row_to_features_parent_and_child_overlap(test_session, spec, row, expected):
@@ -1583,6 +1593,16 @@ def test_row_to_objs_setup():
             {"fr.name": str, "fr": MyType2 | None},
             ("Fred", 0, 129, "qwe"),
             ["Fred", MyType2(name="Fred", deep=MyType1(aa=129, bb="qwe"))],
+        ),
+        (
+            {"fr.name": str, "fr.deep.aa": int, "fr": MyType2},
+            ("Fred", 129, "qwe"),
+            ["Fred", 129, MyType2(name="Fred", deep=MyType1(aa=129, bb="qwe"))],
+        ),
+        (
+            {"fr": MyType2, "fr.name": str},
+            ("Fred", 129, "qwe"),
+            [MyType2(name="Fred", deep=MyType1(aa=129, bb="qwe")), "Fred"],
         ),
     ],
 )

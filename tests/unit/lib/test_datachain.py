@@ -1141,6 +1141,14 @@ def test_to_iter_parent_and_nested_child_overlap(test_session):
     assert rows == expected
 
 
+def test_to_iter_parent_and_child_overlap_reversed(test_session):
+    chain = dc.read_values(t1=features, session=test_session)
+    key = lambda r: (r[0].nnn, r[0].count)  # noqa: E731
+    rows = sorted(chain.to_iter("t1", "t1.nnn"), key=key)
+    expected = sorted(((fr, fr.nnn) for fr in features), key=key)
+    assert rows == expected
+
+
 def test_map_params_parent_and_child_overlap(test_session):
     def combine(nnn: str, t1: MyFr) -> str:
         return f"{t1.nnn}:{nnn}:{t1.count}"
