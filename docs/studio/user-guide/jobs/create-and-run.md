@@ -231,5 +231,5 @@ for batch in read_storage("s3://large-dataset/").batch(1000):
 ## Next Steps
 
 - Learn how to [monitor running jobs](monitor-jobs.md)
-- Set up [team collaboration](../team-collaboration.md)
+- Set up a [team](../teams/index.md)
 - Explore [DataChain operations](../../../references/datachain.md)

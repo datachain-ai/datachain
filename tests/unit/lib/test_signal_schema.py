@@ -1,21 +1,27 @@
 import json
 import pickle
+from collections import UserDict, UserList
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from datetime import datetime
 from typing import (
     Any,
     Final,
     ForwardRef,
+    Generic,
     Optional,
+    TypeVar,
     Union,
     get_args,
     get_origin,
 )
 
 import pytest
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError
+from typing_extensions import TypedDict
 
 from datachain import Column, DataModel, Sys, func
 from datachain.lib.convert.flatten import flatten
+from datachain.lib.data_model import is_mapping_annotation
 from datachain.lib.file import File, TextFile
 from datachain.lib.model_store import ModelStore
 from datachain.lib.signal_schema import (
@@ -55,6 +61,13 @@ def nested_file_schema():
     schema = {"name": str, "age": float, "f": File, "my_f": _MyFile}
 
     return SignalSchema(schema)
+
+
+_T = TypeVar("_T")
+
+
+class GenericTypedRow(TypedDict, Generic[_T]):
+    x: _T
 
 
 class MyType1(DataModel):
@@ -1022,46 +1035,324 @@ def test_row_to_features_dict_of_models(test_session):
     assert lookup["second"].deep.aa == 2
 
 
-def test_row_to_features_optional_collection(test_session):
-    schema = SignalSchema({"items": list[MyType1] | None})
+def test_row_to_features_sets_stream_in_model_collection(test_session):
+    class FileCollection(DataModel):
+        files: list[File]
 
-    features_none = schema.row_to_features((None,), test_session.catalog)
-    assert features_none == [None]
+    file = File(path="nested.txt")
+    schema = SignalSchema({"collection": FileCollection})
 
-    row = ([{"aa": 3, "bb": "z"}],)
-    features = schema.row_to_features(row, test_session.catalog)
-    assert len(features) == 1
-    items = features[0]
-    assert isinstance(items, list)
-    assert isinstance(items[0], MyType1)
+    (collection,) = schema.row_to_features(([file.model_dump()],), test_session.catalog)
+
+    assert collection.files[0]._catalog is test_session.catalog
+
+
+def test_row_to_objs_preserves_plain_collection():
+    values = [1.0, 2.0]
+
+    (converted,) = SignalSchema({"values": list[float]}).row_to_objs((values,))
+
+    assert converted is values
 
 
 @pytest.mark.parametrize(
-    "union_type,union_name",
+    "key_type,raw,expected",
     [
-        (Union[list[MyType1], None], "Union[list[MyType1], None]"),
-        (list[MyType1] | None, "list[MyType1] | None"),
+        # These key types are left undecoded even when the key is valid JSON.
+        (str, {"null": 1}, {"null": 1}),
+        (Optional[str], {"null": 1}, {"null": 1}),
+        (Any, {"null": 1}, {"null": 1}),
+        # Keys that cannot be strings are decoded back to the declared type.
+        (int, {"1": 2}, {1: 2}),
+        # the contrast with optional-str, where "null" deliberately stays a string
+        (Optional[int], {"null": 2}, {None: 2}),
+        # both orders: deciding on either end alone would decode these
+        (int | str, {"null": 1}, {"null": 1}),
+        (str | int, {"null": 1}, {"null": 1}),
     ],
+    ids=[
+        "str",
+        "optional-str",
+        "any",
+        "int",
+        "optional-int-null",
+        "int-or-str",
+        "str-or-int",
+    ],
+)
+def test_row_to_objs_dict_key_decoding_policy(key_type, raw, expected):
+    (converted,) = SignalSchema({"m": dict[key_type, int]}).row_to_objs((raw,))
+
+    assert converted == expected
+
+
+def test_row_to_features_does_not_decode_string_keys(test_session):
+    schema = SignalSchema({"m": dict[Optional[str], int]})
+
+    (converted,) = schema.row_to_features(({"null": 1},), test_session.catalog)
+
+    assert converted == {"null": 1}
+
+
+def test_row_to_objs_restores_variadic_tuple_shape():
+    (converted,) = SignalSchema({"t": tuple[int, ...]}).row_to_objs(([1, 2],))
+
+    assert converted == (1, 2)
+
+
+def test_row_to_objs_converts_fixed_tuple_positionally():
+    raw = [1, {"path": "a.txt"}]
+
+    (converted,) = SignalSchema({"t": tuple[int, File]}).row_to_objs((raw,))
+
+    assert isinstance(converted, tuple)
+    assert converted[0] == 1
+    assert isinstance(converted[1], File)
+    assert converted[1].path == "a.txt"
+
+
+def _make_two_model_items():
+    return [{"aa": 1, "bb": "b"}, {"aa": 2, "bb": "c"}]
+
+
+def _make_two_model_entries():
+    return {"x": {"aa": 1, "bb": "b"}, "y": {"aa": 2, "bb": "c"}}
+
+
+def _make_two_user_dict_entries():
+    # the annotation already selects the mapping branch; a non-dict mapping is
+    # what proves the runtime guard accepts any Mapping
+    return UserDict(_make_two_model_entries())
+
+
+@pytest.mark.parametrize(
+    "annotation,make_raw",
+    [
+        (Collection[MyType1], _make_two_model_items),
+        (Iterable[MyType1], _make_two_model_items),
+        (Sequence[MyType1], _make_two_model_items),
+        (list[MyType1], _make_two_model_items),
+        (dict[str, MyType1], _make_two_model_entries),
+        (Mapping[str, MyType1], _make_two_user_dict_entries),
+    ],
+    ids=["Collection", "Iterable", "Sequence", "list", "dict", "Mapping"],
+)
+def test_row_readers_hydrate_collection_members(annotation, make_raw, test_session):
+    schema = SignalSchema({"x": annotation})
+
+    # a fresh value per reader, so neither can hydrate in place for the other
+    (from_objs,) = schema.row_to_objs((make_raw(),))
+    (from_features,) = schema.row_to_features((make_raw(),), test_session.catalog)
+
+    for converted in (from_objs, from_features):
+        if is_mapping_annotation(annotation):
+            assert isinstance(converted, Mapping)
+            assert {k: (type(v), v.aa) for k, v in converted.items()} == {
+                "x": (MyType1, 1),
+                "y": (MyType1, 2),
+            }
+        else:
+            assert [(type(m), m.aa) for m in converted] == [(MyType1, 1), (MyType1, 2)]
+
+
+def test_row_to_objs_keeps_sequence_as_a_list():
+    (converted,) = SignalSchema({"s": Sequence[MyType1]}).row_to_objs(
+        ([{"aa": 1, "bb": "b"}],)
+    )
+
+    assert isinstance(converted, list)
+    assert isinstance(converted[0], MyType1)
+
+
+def test_row_to_objs_keeps_raw_key_when_json_decode_fails():
+    (converted,) = SignalSchema({"m": dict[int, int]}).row_to_objs(({"foo": 1},))
+
+    assert converted == {"foo": 1}
+
+
+def test_row_to_objs_decodes_tuple_keys():
+    (converted,) = SignalSchema({"m": dict[tuple[str, int], int]}).row_to_objs(
+        ({'["a",1]': 2},)
+    )
+
+    assert converted == {("a", 1): 2}
+
+
+def test_set_file_streams_rereads_fields_after_a_forward_ref_resolves(test_session):
+    class Outer(BaseModel):
+        child: "OuterInner | None" = None
+
+    # model_construct skips validation, so an incomplete model can be traversed
+    SignalSchema({"s": str}, setup={"s": lambda: None}).set_file_streams(
+        [Outer.model_construct()], test_session.catalog
+    )
+
+    class OuterInner(BaseModel):
+        file: File
+
+    Outer.model_rebuild(_types_namespace={"OuterInner": OuterInner, "File": File})
+    file = File(path="resolved.txt")
+
+    SignalSchema({"s": str}, setup={"s": lambda: None}).set_file_streams(
+        [Outer(child=OuterInner(file=file))], test_session.catalog
+    )
+
+    assert file._catalog is test_session.catalog
+
+
+def test_set_file_streams_does_not_pin_recursive_model_classes(test_session):
+    import gc
+    import weakref
+
+    refs = []
+    for i in range(5):
+        # plain BaseModel: a DataModel would be pinned by ModelStore, not the cache
+        node_cls = type(
+            f"Node{i}",
+            (BaseModel,),
+            {
+                "__annotations__": {"file": File, "child": f"Node{i} | None"},
+                "child": None,
+            },
+        )
+        node_cls.model_rebuild(_types_namespace={f"Node{i}": node_cls, "File": File})
+        file = File(path=f"{i}.txt")
+        nested = File(path=f"{i}-nested.txt")
+        # a self-referential model cannot be a signal type, so go via setup
+        schema = SignalSchema({"s": str}, setup={"s": lambda: None})
+        schema.set_file_streams(
+            [node_cls(file=file, child=node_cls(file=nested))], test_session.catalog
+        )
+        assert file._catalog is test_session.catalog
+        assert nested._catalog is test_session.catalog
+        refs.append(weakref.ref(node_cls))
+        del node_cls
+
+    gc.collect()
+
+    assert [r() for r in refs] == [None] * 5
+
+
+def test_set_file_streams_handles_generic_typed_dict_field(test_session):
+    class Bundle(DataModel):
+        payload: GenericTypedRow[int]
+        file: File
+
+    file = File(path="a.txt")
+
+    SignalSchema({"b": Bundle}).set_file_streams(
+        [Bundle(payload={"x": 1}, file=file)], test_session.catalog
+    )
+
+    assert file._catalog is test_session.catalog
+
+
+def test_set_file_streams_in_nested_collections(test_session):
+    class FileHolder(DataModel):
+        file: File
+
+    file = File(path="nested.txt")
+    holder = FileHolder(file=file)
+
+    SignalSchema({"c": list[dict[str, FileHolder]]}).set_file_streams(
+        [[{"holder": holder}]], test_session.catalog
+    )
+
+    assert file._catalog is test_session.catalog
+
+
+def test_set_file_streams_handles_abstract_sequence(test_session):
+    class SeqHolder(DataModel):
+        files: Sequence[File]
+
+    files = [File(path="a.txt"), File(path="b.txt")]
+    holder = SeqHolder(files=UserList(files))
+    # the holder keeps a UserList, which is what makes this an abstract case
+    assert isinstance(holder.files, UserList)
+
+    SignalSchema({"h": SeqHolder}).set_file_streams([holder], test_session.catalog)
+
+    assert all(f._catalog is test_session.catalog for f in files)
+
+
+def test_set_file_streams_handles_abstract_mapping(test_session):
+    class MapHolder(DataModel):
+        files: Mapping[str, File]
+
+    files = [File(path="a.txt"), File(path="b.txt")]
+    # validation would coerce a UserDict to a plain dict, hiding the ABC branch
+    holder = MapHolder.model_construct(files=UserDict({"a": files[0], "b": files[1]}))
+
+    SignalSchema({"h": MapHolder}).set_file_streams([holder], test_session.catalog)
+
+    assert all(f._catalog is test_session.catalog for f in files)
+
+
+def test_set_file_streams_visits_a_shared_object_once(test_session, monkeypatch):
+    class Holder(DataModel):
+        left: File
+        right: File
+
+    file = File(path="shared.txt")
+    streamed = []
+    original = File._set_stream
+
+    def record(self, *args, **kwargs):
+        streamed.append(self)
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(File, "_set_stream", record)
+
+    SignalSchema({"h": Holder}).set_file_streams(
+        [Holder(left=file, right=file)], test_session.catalog
+    )
+
+    assert len(streamed) == 1
+    assert streamed[0] is file
+    assert file._catalog is test_session.catalog
+
+
+def test_set_file_streams_visits_mapping_keys(test_session):
+    class HashableFile(File):
+        model_config = ConfigDict(frozen=True)
+
+    key = HashableFile(path="key.txt")
+
+    SignalSchema({"m": dict[HashableFile, int]}).set_file_streams(
+        [{key: 1}], test_session.catalog
+    )
+
+    assert key._catalog is test_session.catalog
+
+
+def test_set_file_streams_reaches_a_file_after_a_plain_model(test_session):
+    class Plain(DataModel):
+        name: str
+
+    schema = SignalSchema({"p": Plain, "f": File})
+    file = File(path="nested.txt")
+
+    schema.set_file_streams([Plain(name="x"), file], test_session.catalog)
+
+    assert file._catalog is test_session.catalog
+
+
+@pytest.mark.parametrize(
+    "union_type",
+    [Union[list[MyType1], None], list[MyType1] | None],
     ids=["old-style-union", "new-style-union"],
 )
-def test_row_to_features_union_types(test_session, union_type, union_name):
-    """Test that both old-style Union[X, None] and new-style X | None work correctly."""
+def test_row_to_features_optional_collection(test_session, union_type):
     schema = SignalSchema({"items": union_type})
 
-    # Test None case
-    features_none = schema.row_to_features((None,), test_session.catalog)
-    assert features_none == [None], f"Failed for {union_name} with None value"
+    assert schema.row_to_features((None,), test_session.catalog) == [None]
 
-    # Test non-None case
-    row = ([{"aa": 5, "bb": "test"}],)
-    features = schema.row_to_features(row, test_session.catalog)
-    assert len(features) == 1, f"Failed for {union_name}"
-    items = features[0]
-    assert isinstance(items, list), f"Expected list for {union_name}, got {type(items)}"
-    assert len(items) == 1, f"Expected 1 item for {union_name}"
-    assert isinstance(items[0], MyType1), f"Expected MyType1 instance for {union_name}"
-    assert items[0].aa == 5, f"Wrong value for {union_name}"
-    assert items[0].bb == "test", f"Wrong value for {union_name}"
+    (items,) = schema.row_to_features(
+        ([{"aa": 5, "bb": "test"}],), test_session.catalog
+    )
+
+    assert isinstance(items, list)
+    assert [(type(i), i.aa, i.bb) for i in items] == [(MyType1, 5, "test")]
 
 
 def test_get_signals_subclass(nested_file_schema):

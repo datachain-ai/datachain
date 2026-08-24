@@ -911,6 +911,105 @@ def test_map(test_session):
         assert x.my_name == test_fr.my_name
 
 
+def test_map_hydrates_models_in_nested_list_param(test_session):
+    class ListCollection(DataModel):
+        items: list[MyFr]
+
+    def get_count(items: list[MyFr]) -> int:
+        assert isinstance(items[0], MyFr)
+        return items[0].count
+
+    chain = dc.read_values(
+        collection=[ListCollection(items=[MyFr(nnn="item", count=2)])],
+        session=test_session,
+    ).map(count=get_count, params=["collection.items"])
+
+    assert chain.to_values("count") == [2]
+
+
+def test_map_hydrates_models_in_optional_dict_param(test_session):
+    class OptionalDictCollection(DataModel):
+        lookup: dict[str, MyFr] | None
+
+    def get_count(lookup: dict[str, MyFr] | None) -> int:
+        assert lookup is not None
+        return lookup["item"].count
+
+    chain = dc.read_values(
+        collection=[OptionalDictCollection(lookup={"item": MyFr(nnn="item", count=3)})],
+        session=test_session,
+    ).map(count=get_count, params=["collection.lookup"])
+
+    assert chain.to_values("count") == [3]
+
+
+def test_map_hydrates_models_in_variadic_tuple_param(test_session):
+    class TupleCollection(DataModel):
+        items: tuple[MyFr, ...]
+
+    def total(items: tuple[MyFr, ...]) -> int:
+        assert isinstance(items, tuple)
+        assert all(isinstance(item, MyFr) for item in items)
+        return sum(item.count for item in items)
+
+    chain = dc.read_values(
+        collection=[
+            TupleCollection(items=(MyFr(nnn="a", count=4), MyFr(nnn="b", count=5)))
+        ],
+        session=test_session,
+    ).map(count=total, params=["collection.items"])
+
+    assert chain.to_values("count") == [9]
+
+
+def test_map_preserves_json_looking_key_for_optional_str_key(test_session):
+    class OptionalStringKeyCollection(DataModel):
+        lookup: dict[str | None, int]
+
+    # "null" is valid JSON, so a decoded key would come back as None
+    def first_key(lookup: dict[str | None, int]) -> str | None:
+        (key,) = lookup
+        return key
+
+    chain = dc.read_values(
+        collection=[OptionalStringKeyCollection(lookup={"null": 5})],
+        session=test_session,
+    ).map(key=first_key, params=["collection.lookup"])
+
+    assert chain.to_values("key") == ["null"]
+
+
+def test_map_hydrates_models_in_top_level_list_param(test_session):
+    def get_count(items: list[MyFr]) -> int:
+        assert isinstance(items[0], MyFr)
+        return items[0].count
+
+    chain = dc.read_values(
+        items=[[MyFr(nnn="item", count=7)]],
+        session=test_session,
+    ).map(count=get_count)
+
+    assert chain.to_values("count") == [7]
+
+
+def test_gen_hydrates_models_in_nested_list_param(test_session):
+    class GenListCollection(DataModel):
+        items: list[MyFr]
+
+    def spread(items: list[MyFr]) -> Iterator[int]:
+        assert isinstance(items[0], MyFr)
+        yield from (item.count for item in items)
+
+    chain = dc.read_values(
+        collection=[
+            GenListCollection(items=[MyFr(nnn="a", count=1), MyFr(nnn="b", count=2)])
+        ],
+        session=test_session,
+    ).gen(count=spread, params=["collection.items"])
+
+    assert sorted(chain.to_values("count")) == [1, 2]
+
+
 def test_map_multiple_signals(test_session):
     chain = dc.read_values(name=["foo.txt", "bar.md"], session=test_session).map(
         stem=lambda name: name.rsplit(".", 1)[0],

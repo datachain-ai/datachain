@@ -73,7 +73,7 @@ def process_jobs_args(args: "Namespace"):
         return show_job_logs(args.id, args.team)
 
     if args.cmd == "ls":
-        return list_jobs(args.status, args.team, args.limit)
+        return list_jobs(args.status, args.team, args.limit, args.extended)
 
     if args.cmd == "clusters":
         return list_clusters(args.team)
@@ -714,7 +714,9 @@ def cancel_job(job_id: str, team_name: str | None):
     print(f"Job {job_id} canceled")
 
 
-def list_jobs(status: str | None, team_name: str | None, limit: int):
+def list_jobs(
+    status: str | None, team_name: str | None, limit: int, extended: bool = False
+):
     client = StudioClient(team=team_name)
     response = client.get_jobs(status, limit)
     if not response.ok:
@@ -725,16 +727,18 @@ def list_jobs(status: str | None, team_name: str | None, limit: int):
         print("No jobs found")
         return
 
-    rows = [
-        {
+    rows = []
+    for job in jobs:
+        row = {
             "ID": job.get("id"),
             "Name": job.get("name"),
             "Status": job.get("status"),
             "Created at": job.get("created_at"),
             "Created by": job.get("created_by"),
         }
-        for job in jobs
-    ]
+        if extended:
+            row["Cluster"] = job.get("compute_cluster_name")
+        rows.append(row)
 
     print(tabulate.tabulate(rows, headers="keys", tablefmt="grid"))
 
