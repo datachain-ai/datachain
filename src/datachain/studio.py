@@ -406,7 +406,7 @@ def parse_start_time(start_time_str: str | None) -> str | None:
 
 # Sync usage
 async def _fetch_log_blob(blob_url: str, timeout: float) -> bytes:
-    """Fetch log content from a blob URL asynchronously."""
+    """Return the log blob content as bytes."""
 
     def _fetch():
         response = requests.get(blob_url, timeout=timeout)
