@@ -626,9 +626,14 @@ class SignalSchema:
                 res[db_name] = self._db_leaf_sql_type(path, type_)
         return res
 
+    @cached_property
+    def _udf_row_positions(self) -> dict[str, int]:
+        """Map deduplicated UDF column names to their positions in input rows."""
+        return {name: i for i, name in enumerate(self.to_udf_spec())}
+
     def row_to_objs(self, row: Sequence[Any]) -> list[Any]:
         self._init_setup_values()
-        positions = {name: i for i, name in enumerate(self.to_udf_spec())}
+        positions = self._udf_row_positions
 
         objs: list[Any] = []
         for name, fr_type in self.values.items():
@@ -896,9 +901,7 @@ class SignalSchema:
     def row_to_features(
         self, row: Sequence, catalog: "Catalog", cache: bool = False
     ) -> list[DataValue]:
-        positions: dict[str, int] = {
-            str(name): i for i, name in enumerate(self.db_signals())
-        }
+        positions = self._feature_row_positions
 
         res = []
         for name, fr_cls in self.values.items():
@@ -921,6 +924,11 @@ class SignalSchema:
                 )
                 res.append(obj)
         return res
+
+    @cached_property
+    def _feature_row_positions(self) -> dict[str, int]:
+        """Map selected DB column names to their positions in feature rows."""
+        return {str(name): i for i, name in enumerate(self.db_signals())}
 
     def _convert_feature_value(
         self,
