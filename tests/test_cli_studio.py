@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import re
@@ -1487,6 +1488,17 @@ def test_studio_run_log_blobs_http_error_detail(
     assert "Warning: Failed to fetch logs from studio (HTTP 400)" in out
     assert "secretsig" not in out
     assert "<Error><Code>InvalidArgument</Code></Error>" in caplog.text
+
+
+def test_show_log_blobs_propagates_broken_pipe(mocker):
+    from datachain.studio import _show_log_blobs
+
+    mocker.patch("datachain.studio._fetch_log_blob", return_value=b"content\n")
+    stdout = mocker.patch("datachain.studio.sys.stdout")
+    stdout.buffer.write.side_effect = BrokenPipeError
+
+    with pytest.raises(BrokenPipeError):
+        asyncio.run(_show_log_blobs(["https://example.com/blob1"], mocker.MagicMock()))
 
 
 def test_studio_run_log_blobs_fetch_failure(capsys, mocker, tmp_dir, studio_token):

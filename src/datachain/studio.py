@@ -426,6 +426,8 @@ async def _show_log_blobs(log_blobs: list[str], client):
                 if not log_content.endswith(b"\n"):
                     sys.stdout.buffer.write(b"\n")
                 sys.stdout.buffer.flush()
+        except BrokenPipeError:
+            raise
         except (requests.RequestException, OSError) as exc:
             response = getattr(exc, "response", None)
             detail = (
