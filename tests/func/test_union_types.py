@@ -433,8 +433,6 @@ def test_merge_keeps_union_on_unmatched_rows(test_session):
 
 
 def test_merge_widens_union_on_the_padded_side(test_session):
-    """A union on the padded side reads None for unmatched rows, so the schema
-    widens to include it -- as a plain scalar signal does."""
     left = dc.read_values(id=[1, 2], session=test_session)
     right = dc.read_values(
         right_id=[1],
@@ -610,9 +608,7 @@ def test_union_no_arm_value_raises_multi_output(test_session):
 
 
 def test_union_wrong_model_raises_multi_output(test_session):
-    """A model that is not an arm must not be flattened into the union's columns,
-    even when its fields happen to line up with them."""
-
+    # fields deliberately line up with the union's columns
     class _Wrong(DataModel):
         tag: str = ""
         bar_x: float | None = None

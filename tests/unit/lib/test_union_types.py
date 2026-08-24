@@ -272,7 +272,6 @@ def unwarned_index_tag():
 
 
 def test_index_tag_reads_optional_model(unwarned_index_tag):
-    """An Optional[DataModel] written with the index layout still reads, deprecated."""
     layout = UnionLayout(arms=[Foo], has_none=True, use_slots=False)
     with pytest.warns(FutureWarning, match="Legacy Optional"):
         got = _union_value({"v._type_tag": 0, "v.a": 7, "v.b": "z"}, layout, "v")
@@ -280,13 +279,13 @@ def test_index_tag_reads_optional_model(unwarned_index_tag):
 
     schema = SignalSchema({"m": Optional[Foo]})
     assert schema.row_to_objs((0, 7, "z")) == [Foo(a=7, b="z")]
-    # any other index meant the absent arm
+    # any other index is the absent arm
     assert schema.row_to_objs((1, 7, "z")) == [None]
     assert _union_value({"v._type_tag": 1, "v.a": 7}, layout, "v") is None
 
 
 def test_index_tag_rejected_multi_arm(unwarned_index_tag):
-    """Only the single-arm layout was ever written with an index."""
+    # only the single-arm layout is ever stored with an index
     schema = SignalSchema({"value": Union[int, str]})
     with pytest.raises(OutdatedDatasetFormatError, match="unknown _type_tag 0"):
         schema.row_to_objs((0, 42, None))
