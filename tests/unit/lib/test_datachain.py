@@ -1408,6 +1408,31 @@ def test_map_multiple_signals_single_stage(test_session):
     assert after - before == 1
 
 
+def test_map_multiple_signals_parent_and_child_overlap(test_session):
+    class ChildSpec(BoundSpec):
+        def bind(self, ctx: BindContext):
+            return lambda value: value.upper()
+
+        def input_columns(self):
+            return ["t1.nnn"]
+
+        @property
+        def output_count(self):
+            return 1
+
+    base = dc.read_values(t1=features, session=test_session)
+    before = len(base._query.steps)
+    chain = base.map(
+        child=ChildSpec(),
+        parent=lambda t1: f"{t1.nnn}:{t1.count}",
+    )
+
+    assert len(chain._query.steps) - before == 1
+    assert sorted(chain.to_iter("child", "parent")) == sorted(
+        (fr.nnn.upper(), f"{fr.nnn}:{fr.count}") for fr in features
+    )
+
+
 def test_to_iter_parent_and_child_overlap(test_session):
     chain = dc.read_values(t1=features, session=test_session)
     key = lambda r: (r[1].nnn, r[1].count)  # noqa: E731
