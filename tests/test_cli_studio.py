@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import re
@@ -681,6 +682,46 @@ def test_studio_rm_dataset(capsys, mocker):
         }
 
 
+def test_studio_list_jobs(capsys):
+    with Config(ConfigLevel.GLOBAL).edit() as conf:
+        conf["studio"] = {"token": "isat_access_token", "team": "team_name"}
+
+    with requests_mock.mock() as m:
+        m.get(
+            re.compile(rf"^{re.escape(STUDIO_URL)}/api/datachain/jobs/"),
+            json=[
+                {
+                    "id": "8bddde6c-c3ca-41b0-9d87-ee945bfdce70",
+                    "name": "on-cluster",
+                    "status": "COMPLETE",
+                    "compute_cluster_id": 1,
+                    "compute_cluster_name": "prod-cluster",
+                    "created_at": "2021-01-01T00:00:00Z",
+                    "created_by": "user",
+                },
+                {
+                    "id": "0502eef6-a32e-45fa-8e3b-d20ec0abbcf0",
+                    "name": "on-other-cluster",
+                    "status": "FAILED",
+                    "compute_cluster_id": 2,
+                    "compute_cluster_name": "dev-cluster",
+                    "created_at": "2021-01-02T00:00:00Z",
+                    "created_by": "user",
+                },
+            ],
+        )
+
+        assert main(["job", "ls"]) == 0
+        out = capsys.readouterr().out
+        assert "Cluster" not in out
+        assert "prod-cluster" not in out
+
+        assert main(["job", "ls", "--extended"]) == 0
+        out = capsys.readouterr().out
+        assert "Cluster" in out
+        assert "prod-cluster" in out
+
+
 def test_studio_cancel_job(capsys, mocker):
     job_id = "8bddde6c-c3ca-41b0-9d87-ee945bfdce70"
     with requests_mock.mock() as m:
@@ -1321,7 +1362,7 @@ def test_studio_run_log_blobs(capsys, mocker, tmp_dir, studio_token):
     )
     mocker.patch(
         "datachain.studio._fetch_log_blob",
-        return_value="fetched log content\n",
+        return_value=b"fetched log content\n",
     )
 
     with requests_mock.mock() as m:
@@ -1346,6 +1387,118 @@ def test_studio_run_log_blobs(capsys, mocker, tmp_dir, studio_token):
 
     out = capsys.readouterr().out
     assert "fetched log content" in out
+
+
+def test_studio_run_log_blobs_fetches_presigned_bytes(
+    capsysbinary, mocker, tmp_dir, studio_token
+):
+    job_id = str(uuid.uuid4())
+
+    async def mock_tail_job_logs(jid, no_follow=False):
+        yield {
+            "log_blobs": [
+                "https://example.com/blob1",
+                "https://example.com/blob2",
+            ]
+        }
+        yield {"job": {"status": "COMPLETE"}}
+
+    mocker.patch(
+        "datachain.studio.StudioClient.tail_job_logs",
+        side_effect=mock_tail_job_logs,
+    )
+
+    with requests_mock.mock() as m:
+        m.post(
+            f"{STUDIO_URL}/api/datachain/jobs/",
+            json={"id": job_id, "url": "https://example.com"},
+        )
+        m.get(
+            re.compile(rf"^{re.escape(STUDIO_URL)}/api/datachain/jobs/"),
+            json=[{"status": "COMPLETE"}],
+        )
+        m.get(
+            f"{STUDIO_URL}/api/datachain/datasets/dataset_job_versions?job_id={job_id}&team_name=team_name",
+            json={"dataset_versions": []},
+        )
+        blob1 = m.get(
+            "https://example.com/blob1",
+            content=b"signal:\xff at 5 \xc2\xb5S",
+            headers={"Content-Type": "text/plain"},
+        )
+        blob2 = m.get(
+            "https://example.com/blob2",
+            content=b"second blob\n",
+            headers={"Content-Type": "text/plain"},
+        )
+
+        (tmp_dir / "example_query.py").write_text("print(1)")
+
+        exit_code = main(["job", "run", "example_query.py"])
+
+        assert exit_code == 0
+        assert "Authorization" not in blob1.last_request.headers
+        assert "Authorization" not in blob2.last_request.headers
+
+    out = capsysbinary.readouterr().out
+    assert b"signal:\xff at 5 \xc2\xb5S\nsecond blob\n" in out
+
+
+def test_studio_run_log_blobs_http_error_detail(
+    capsys, caplog, mocker, tmp_dir, studio_token
+):
+    job_id = str(uuid.uuid4())
+
+    async def mock_tail_job_logs(jid, no_follow=False):
+        yield {"log_blobs": ["https://example.com/blob1?X-Amz-Signature=secretsig"]}
+        yield {"job": {"status": "COMPLETE"}}
+
+    mocker.patch(
+        "datachain.studio.StudioClient.tail_job_logs",
+        side_effect=mock_tail_job_logs,
+    )
+
+    with requests_mock.mock() as m:
+        m.post(
+            f"{STUDIO_URL}/api/datachain/jobs/",
+            json={"id": job_id, "url": "https://example.com"},
+        )
+        m.get(
+            re.compile(rf"^{re.escape(STUDIO_URL)}/api/datachain/jobs/"),
+            json=[{"status": "COMPLETE"}],
+        )
+        m.get(
+            f"{STUDIO_URL}/api/datachain/datasets/dataset_job_versions?job_id={job_id}&team_name=team_name",
+            json={"dataset_versions": []},
+        )
+        m.get(
+            "https://example.com/blob1?X-Amz-Signature=secretsig",
+            status_code=400,
+            text="<Error><Code>InvalidArgument</Code></Error>",
+        )
+
+        (tmp_dir / "example_query.py").write_text("print(1)")
+
+        with caplog.at_level(logging.DEBUG, logger="datachain"):
+            exit_code = main(["job", "run", "-v", "example_query.py"])
+
+        assert exit_code == 0
+
+    out = capsys.readouterr().out
+    assert "Warning: Failed to fetch logs from studio (HTTP 400)" in out
+    assert "secretsig" not in out
+    assert "<Error><Code>InvalidArgument</Code></Error>" in caplog.text
+
+
+def test_show_log_blobs_propagates_broken_pipe(mocker):
+    from datachain.studio import _show_log_blobs
+
+    mocker.patch("datachain.studio._fetch_log_blob", return_value=b"content\n")
+    stdout = mocker.patch("datachain.studio.sys.stdout")
+    stdout.buffer.write.side_effect = BrokenPipeError
+
+    with pytest.raises(BrokenPipeError):
+        asyncio.run(_show_log_blobs(["https://example.com/blob1"], mocker.MagicMock()))
 
 
 def test_studio_run_log_blobs_fetch_failure(capsys, mocker, tmp_dir, studio_token):
