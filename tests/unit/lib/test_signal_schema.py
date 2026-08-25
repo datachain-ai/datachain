@@ -80,6 +80,11 @@ class MyType2(DataModel):
     deep: MyType1
 
 
+class MyTypeOptionalNested(DataModel):
+    name: str
+    deep: MyType1 | None
+
+
 class MyType3(MyType1):
     name: str
 
@@ -1007,6 +1012,19 @@ def test_get_features_nested(test_session, nested_file_schema):
             ("Fred", 129, "qwe", "Fred"),
             [MyType2(name="Fred", deep=MyType1(aa=129, bb="qwe")), "Fred"],
         ),
+        (
+            {"fr.deep.aa": int, "fr": MyTypeOptionalNested},
+            (129, "Fred", 0, 129, "qwe"),
+            [
+                129,
+                MyTypeOptionalNested(name="Fred", deep=MyType1(aa=129, bb="qwe")),
+            ],
+        ),
+        (
+            {"fr.deep.aa": int, "fr": MyTypeOptionalNested},
+            (None, "Fred", 1, None, None),
+            [None, MyTypeOptionalNested(name="Fred", deep=None)],
+        ),
     ],
 )
 def test_row_to_features_parent_and_child_overlap(test_session, spec, row, expected):
@@ -1603,6 +1621,19 @@ def test_row_to_objs_setup():
             {"fr": MyType2, "fr.name": str},
             ("Fred", 129, "qwe"),
             [MyType2(name="Fred", deep=MyType1(aa=129, bb="qwe")), "Fred"],
+        ),
+        (
+            {"fr.deep.aa": int, "fr": MyTypeOptionalNested},
+            (129, "Fred", 0, "qwe"),
+            [
+                129,
+                MyTypeOptionalNested(name="Fred", deep=MyType1(aa=129, bb="qwe")),
+            ],
+        ),
+        (
+            {"fr.deep.aa": int, "fr": MyTypeOptionalNested},
+            (None, "Fred", 1, None),
+            [None, MyTypeOptionalNested(name="Fred", deep=None)],
         ),
     ],
 )
