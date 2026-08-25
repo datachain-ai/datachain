@@ -1,5 +1,6 @@
 import datetime
 import enum
+import hashlib
 import io
 import json
 import math
@@ -44,7 +45,7 @@ from datachain.lib.signal_schema import (
     SignalSchema,
     SignalSchemaWarning,
 )
-from datachain.lib.udf import UDFAdapter
+from datachain.lib.udf import BindContext, BoundSpec, UDFAdapter
 from datachain.lib.udf_signature import UdfSignatureError
 from datachain.lib.utils import DataChainColumnError, DataChainParamsError
 from datachain.sql.types import Array, Float, Float32, Int64, SQLType, String
@@ -1068,6 +1069,118 @@ def test_map_multiple_signals_rejects_params(test_session):
         chain.map(a=lambda n: n, b=lambda n: n, params=["name"])
 
 
+def test_map_multiple_signals_rejects_bound_spec_multi_output(test_session):
+    class TwoOutputSpec(BoundSpec):
+        def bind(self, ctx: BindContext):
+            return lambda name: (name.upper(), len(name))
+
+        def input_columns(self):
+            return ["name"]
+
+        @property
+        def output_count(self):
+            return 2
+
+    chain = dc.read_values(name=["foo"], session=test_session)
+    with pytest.raises(DataChainParamsError, match="produces 2 outputs"):
+        chain.map(bad=TwoOutputSpec(), ok=lambda name: name.lower())
+
+
+def test_map_multiple_signals_rejects_tuple_output(test_session):
+    def pair(name: str) -> tuple[str, int]:
+        return name, len(name)
+
+    chain = dc.read_values(name=["ab", "cde"], session=test_session)
+    with pytest.raises(DataChainParamsError, match="tuple of 2 values"):
+        chain.map(p=pair, u=lambda name: name.upper())
+
+
+def test_map_multiple_signals_rejects_self_shadow(test_session):
+    chain = dc.read_values(name=["foo"], session=test_session)
+    with pytest.raises(DataChainParamsError, match="declares a parameter"):
+        chain.map(a=lambda a: a.upper(), b=lambda name: name)
+
+
+def test_map_multiple_signals_rejects_non_mapper_udf(test_session):
+    class SomeGen(dc.Generator):
+        def process(self, name: str):
+            yield (name.upper(),)
+
+    chain = dc.read_values(name=["foo"], session=test_session)
+    with pytest.raises(DataChainParamsError, match=r"use \.gen"):
+        chain.map(bad=SomeGen(), ok=lambda name: name.lower())
+
+
+def test_map_multiple_signals_rejects_positional_only(test_session):
+    def upper_only(name, /):
+        return name.upper()
+
+    chain = dc.read_values(name=["foo"], session=test_session)
+    with pytest.raises(DataChainParamsError, match="can't be passed by name"):
+        chain.map(up=upper_only, lower=lambda name: name.lower())
+
+
+def _var_args_fn(*args) -> str:
+    return str(args)
+
+
+def _var_kwargs_fn(**kwargs) -> str:
+    return str(kwargs)
+
+
+@pytest.mark.parametrize(
+    "fn,match",
+    [(_var_args_fn, r"\*args"), (_var_kwargs_fn, r"\*\*kwargs")],
+)
+def test_map_single_signal_rejects_var_params(test_session, fn, match):
+    chain = dc.read_values(name=["foo"], session=test_session)
+    with pytest.raises(DataChainParamsError, match=match):
+        chain.map(fn)
+
+
+def _kwargs_passthrough(name, **options) -> str:
+    return name.upper()
+
+
+def _args_passthrough(*args) -> str:
+    return args[0].upper()
+
+
+@pytest.mark.parametrize("fn", [_kwargs_passthrough, _args_passthrough])
+def test_map_single_signal_allows_var_params_with_explicit_params(test_session, fn):
+    chain = dc.read_values(name=["foo", "bar"], session=test_session).map(
+        fn, params=["name"], output={"res": str}
+    )
+    assert sorted(chain.to_values("res")) == ["BAR", "FOO"]
+
+
+def _kwargs_only(**row) -> str:
+    return row["name"]
+
+
+def _keyword_only(*, name) -> str:
+    return name
+
+
+@pytest.mark.parametrize("fn", [_kwargs_only, _keyword_only])
+def test_map_single_signal_rejects_no_positional_params_with_explicit_params(
+    test_session, fn
+):
+    chain = dc.read_values(name=["foo"], session=test_session)
+    with pytest.raises(DataChainParamsError, match="no positional parameters"):
+        chain.map(fn, params=["name"], output={"res": str})
+
+
+@pytest.mark.parametrize(
+    "fn,match",
+    [(_var_args_fn, r"'args'"), (_var_kwargs_fn, r"'kwargs'")],
+)
+def test_map_multiple_signals_rejects_var_params(test_session, fn, match):
+    chain = dc.read_values(name=["foo"], session=test_session)
+    with pytest.raises(DataChainParamsError, match=match):
+        chain.map(bad=fn, ok=lambda name: name.lower())
+
+
 def test_map_multiple_signals_chained(test_session):
     """Second function receives first function's output as its param."""
     chain = dc.read_values(name=["foo.txt", "bar.md"], session=test_session).map(
@@ -1114,6 +1227,173 @@ def test_map_multiple_signals_chained_rejects_cycle(test_session):
             a=lambda b: b,
             b=lambda a: a,
         )
+
+
+def test_map_multiple_signals_all_zero_arg(test_session):
+    """All entries take zero args; nothing to read from chain."""
+    chain = dc.read_values(name=["a", "b"], session=test_session).map(
+        x=lambda: "X",
+        y=lambda: "Y",
+    )
+    rows = list(chain.to_iter("x", "y"))
+    assert rows == [("X", "Y"), ("X", "Y")]
+
+
+def test_map_multiple_signals_zero_arg_producer_with_consumers(test_session):
+    """Producer takes no args; consumers chain off its output only."""
+
+    def seed() -> int:
+        return 10
+
+    def double(seed: int) -> int:
+        return seed * 2
+
+    def triple(seed: int) -> int:
+        return seed * 3
+
+    chain = dc.read_values(name=["a"], session=test_session).map(
+        seed=seed, double=double, triple=triple
+    )
+    rows = list(chain.to_iter("seed", "double", "triple"))
+    assert rows == [(10, 20, 30)]
+
+
+def test_map_multiple_signals_hash_varies_with_bound_column(test_session):
+    class ColSpec(BoundSpec):
+        def __init__(self, col: str):
+            self._col = col
+
+        def bind(self, ctx: BindContext):
+            return lambda value: f"V:{value}"
+
+        def input_columns(self):
+            return [self._col]
+
+        @property
+        def output_count(self):
+            return 1
+
+    base = dc.read_values(c1=["a"], c2=["b"], session=test_session)
+    udf_a = base.map(x=lambda c1, c2: c1 + c2, a=ColSpec("c1"))._query.steps[-1].udf
+    udf_b = base.map(x=lambda c1, c2: c1 + c2, a=ColSpec("c2"))._query.steps[-1].udf
+    assert udf_a.hash() != udf_b.hash()
+
+
+def test_map_multiple_signals_hash_respects_mapper_hash_override(test_session):
+    class Tagged(dc.Mapper):
+        def __init__(self, tag: str):
+            super().__init__()
+            self._tag = tag
+
+        def process(self, name: str) -> str:
+            return f"{self._tag}:{name}"
+
+        def hash(self, include_body: bool = True) -> str:
+            return hashlib.sha256(f"Tagged:{self._tag}".encode()).hexdigest()
+
+    base = dc.read_values(name=["x"], session=test_session)
+    udf_a = base.map(t=Tagged("a"), u=lambda name: name)._query.steps[-1].udf
+    udf_b = base.map(t=Tagged("b"), u=lambda name: name)._query.steps[-1].udf
+    assert udf_a.hash() != udf_b.hash()
+
+
+def test_map_multiple_signals_mapper_subclass(test_session):
+    """A Mapper subclass instance can be used alongside plain lambdas."""
+    setup_calls = []
+    teardown_calls = []
+
+    class Upper(dc.Mapper):
+        def setup(self) -> None:
+            setup_calls.append("Upper")
+
+        def teardown(self) -> None:
+            teardown_calls.append("Upper")
+
+        def process(self, name: str) -> str:
+            return name.upper()
+
+    chain = dc.read_values(name=["foo", "bar"], session=test_session).map(
+        upper=Upper(),
+        lower=lambda name: name.lower(),
+    )
+    rows = sorted(chain.to_iter("upper", "lower"))
+    assert rows == [("BAR", "bar"), ("FOO", "foo")]
+    assert setup_calls == ["Upper"]
+    assert teardown_calls == ["Upper"]
+
+
+def test_map_multiple_signals_mapper_subclass_reads_signal_names(test_session):
+    class UsesSignalNames(dc.Mapper):
+        def process(self, name: str) -> str:
+            return ",".join(self.signal_names)
+
+    chain = dc.read_values(name=["a", "b"], session=test_session).map(
+        sig=UsesSignalNames(),
+        low=lambda name: name.lower(),
+    )
+    rows = sorted(chain.to_iter("name", "sig", "low"))
+    assert rows == [("a", "sig", "a"), ("b", "sig", "b")]
+
+
+def test_map_multiple_signals_mapper_subclass_reads_output(test_session):
+    class UsesOutput(dc.Mapper):
+        def process(self, name: str) -> str:
+            return next(iter(self.output.values))
+
+    chain = dc.read_values(name=["a", "b"], session=test_session).map(
+        sig=UsesOutput(),
+        low=lambda name: name.lower(),
+    )
+    rows = sorted(chain.to_iter("name", "sig", "low"))
+    assert rows == [("a", "sig", "a"), ("b", "sig", "b")]
+
+
+def test_map_multiple_signals_mapper_subclass_reads_params(test_session):
+    class UsesParams(dc.Mapper):
+        def process(self, name: str) -> str:
+            assert self.params is not None
+            return next(iter(self.params.values))
+
+    chain = dc.read_values(name=["a", "b"], session=test_session).map(
+        sig=UsesParams(),
+        low=lambda name: name.lower(),
+    )
+    rows = sorted(chain.to_iter("name", "sig", "low"))
+    assert rows == [("a", "name", "a"), ("b", "name", "b")]
+
+
+def test_map_multiple_signals_mapper_subclass_reads_sibling_output_type(test_session):
+    class ReadsMixed(dc.Mapper):
+        def process(self, name: str, prepared: str) -> str:
+            assert self.params is not None
+            types = self.params.values
+            return (
+                f"{types['name'].__name__}+{types['prepared'].__name__}"
+                f":{name}:{prepared}"
+            )
+
+    chain = dc.read_values(name=["x"], session=test_session).map(
+        prepared=lambda name: name.upper(),
+        final=ReadsMixed(),
+    )
+    rows = sorted(chain.to_iter("final"))
+    assert rows == [("str+str:x:X",)]
+
+
+def test_map_multiple_signals_mapper_subclass_without_super_init(test_session):
+    class Prefix(dc.Mapper):
+        def __init__(self, prefix: str):
+            self.prefix = prefix
+
+        def process(self, name: str) -> str:
+            return self.prefix + name
+
+    chain = dc.read_values(name=["x"], session=test_session).map(
+        prefixed=Prefix("p:"),
+        unchanged=lambda name: name,
+    )
+    rows = sorted(chain.to_iter("prefixed", "unchanged"))
+    assert rows == [("p:x", "x")]
 
 
 def test_map_multiple_signals_single_stage(test_session):
