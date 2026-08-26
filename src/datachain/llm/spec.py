@@ -50,12 +50,12 @@ def _without_secrets(value: Any) -> Any:
     return value
 
 
-def _normalize_identity_value(value: Any) -> Any:
+def _normalize_identity_value(value: Any, fallback: str) -> Any:
     try:
         return normalize_hash_value(value)
     except TypeError as exc:
         logger.warning("%s; cache reuse for this LLM operation is disabled", exc)
-        return ("unsupported", uuid4().hex)
+        return ("unsupported", fallback)
 
 
 @dataclass
@@ -78,6 +78,12 @@ class LLMSpec(BoundSpec):
     fallback: str | list[str] | None = None
     include_usage: bool = False
     params: dict[str, Any] = field(default_factory=dict)
+    _identity_fallback: str = field(
+        default_factory=lambda: uuid4().hex,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
         if self.schema is not None:
@@ -153,7 +159,7 @@ class LLMSpec(BoundSpec):
         return tuple[out, Usage] if self.include_usage else out  # type: ignore[valid-type]
 
     def identity(self, model: str, llm_params: Any = None) -> tuple:
-        """Cache key baked into the UDF hash; changes iff an output-affecting
+        """Cache key baked into the UDF hash; changes if an output-affecting
         input (model, prompt, schema, params, llm_params, ...) changes.
 
         The schema is keyed by its JSON schema (fields, types, constraints, name);
@@ -171,7 +177,9 @@ class LLMSpec(BoundSpec):
             elem, is_list = _element_type(self.schema)
             if hasattr(elem, "model_json_schema"):
                 schema_repr = (
-                    _normalize_identity_value(elem.model_json_schema()),
+                    _normalize_identity_value(
+                        elem.model_json_schema(), self._identity_fallback
+                    ),
                     is_list,
                 )
             else:
@@ -190,7 +198,7 @@ class LLMSpec(BoundSpec):
             self.context_col,
             self.type,
             self.include_usage,
-            _normalize_identity_value(params),
+            _normalize_identity_value(params, self._identity_fallback),
         )
 
     def _resolve_model(self, settings: "Settings") -> str:

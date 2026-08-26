@@ -736,6 +736,15 @@ def test_opaque_param_value_disables_cache_reuse():
     assert first != second
 
 
+def test_opaque_param_value_has_stable_identity_within_operation():
+    class Opaque:
+        pass
+
+    spec = llm.complete("t", client=Opaque())
+
+    assert spec.identity("m") == spec.identity("m")
+
+
 def test_stable_param_values_have_stable_identity():
     first = llm.complete("t", temperature=0.0, opt={"a": 1}).identity("m")
     second = llm.complete("t", temperature=0.0, opt={"a": 1}).identity("m")
