@@ -1,4 +1,6 @@
 import datetime
+import enum
+import hashlib
 import io
 import json
 import math
@@ -14,6 +16,7 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+import sqlalchemy
 from pydantic import BaseModel
 
 import datachain as dc
@@ -40,11 +43,12 @@ from datachain.lib.signal_schema import (
     SignalResolvingError,
     SignalResolvingTypeError,
     SignalSchema,
+    SignalSchemaWarning,
 )
-from datachain.lib.udf import UDFAdapter
+from datachain.lib.udf import BindContext, BoundSpec, UDFAdapter
 from datachain.lib.udf_signature import UdfSignatureError
 from datachain.lib.utils import DataChainColumnError, DataChainParamsError
-from datachain.sql.types import Float, Int64, String
+from datachain.sql.types import Array, Float, Float32, Int64, SQLType, String
 from datachain.utils import STUDIO_URL
 from tests.utils import (
     ANY_VALUE,
@@ -1065,6 +1069,118 @@ def test_map_multiple_signals_rejects_params(test_session):
         chain.map(a=lambda n: n, b=lambda n: n, params=["name"])
 
 
+def test_map_multiple_signals_rejects_bound_spec_multi_output(test_session):
+    class TwoOutputSpec(BoundSpec):
+        def bind(self, ctx: BindContext):
+            return lambda name: (name.upper(), len(name))
+
+        def input_columns(self):
+            return ["name"]
+
+        @property
+        def output_count(self):
+            return 2
+
+    chain = dc.read_values(name=["foo"], session=test_session)
+    with pytest.raises(DataChainParamsError, match="produces 2 outputs"):
+        chain.map(bad=TwoOutputSpec(), ok=lambda name: name.lower())
+
+
+def test_map_multiple_signals_rejects_tuple_output(test_session):
+    def pair(name: str) -> tuple[str, int]:
+        return name, len(name)
+
+    chain = dc.read_values(name=["ab", "cde"], session=test_session)
+    with pytest.raises(DataChainParamsError, match="tuple of 2 values"):
+        chain.map(p=pair, u=lambda name: name.upper())
+
+
+def test_map_multiple_signals_rejects_self_shadow(test_session):
+    chain = dc.read_values(name=["foo"], session=test_session)
+    with pytest.raises(DataChainParamsError, match="declares a parameter"):
+        chain.map(a=lambda a: a.upper(), b=lambda name: name)
+
+
+def test_map_multiple_signals_rejects_non_mapper_udf(test_session):
+    class SomeGen(dc.Generator):
+        def process(self, name: str):
+            yield (name.upper(),)
+
+    chain = dc.read_values(name=["foo"], session=test_session)
+    with pytest.raises(DataChainParamsError, match=r"use \.gen"):
+        chain.map(bad=SomeGen(), ok=lambda name: name.lower())
+
+
+def test_map_multiple_signals_rejects_positional_only(test_session):
+    def upper_only(name, /):
+        return name.upper()
+
+    chain = dc.read_values(name=["foo"], session=test_session)
+    with pytest.raises(DataChainParamsError, match="can't be passed by name"):
+        chain.map(up=upper_only, lower=lambda name: name.lower())
+
+
+def _var_args_fn(*args) -> str:
+    return str(args)
+
+
+def _var_kwargs_fn(**kwargs) -> str:
+    return str(kwargs)
+
+
+@pytest.mark.parametrize(
+    "fn,match",
+    [(_var_args_fn, r"\*args"), (_var_kwargs_fn, r"\*\*kwargs")],
+)
+def test_map_single_signal_rejects_var_params(test_session, fn, match):
+    chain = dc.read_values(name=["foo"], session=test_session)
+    with pytest.raises(DataChainParamsError, match=match):
+        chain.map(fn)
+
+
+def _kwargs_passthrough(name, **options) -> str:
+    return name.upper()
+
+
+def _args_passthrough(*args) -> str:
+    return args[0].upper()
+
+
+@pytest.mark.parametrize("fn", [_kwargs_passthrough, _args_passthrough])
+def test_map_single_signal_allows_var_params_with_explicit_params(test_session, fn):
+    chain = dc.read_values(name=["foo", "bar"], session=test_session).map(
+        fn, params=["name"], output={"res": str}
+    )
+    assert sorted(chain.to_values("res")) == ["BAR", "FOO"]
+
+
+def _kwargs_only(**row) -> str:
+    return row["name"]
+
+
+def _keyword_only(*, name) -> str:
+    return name
+
+
+@pytest.mark.parametrize("fn", [_kwargs_only, _keyword_only])
+def test_map_single_signal_rejects_no_positional_params_with_explicit_params(
+    test_session, fn
+):
+    chain = dc.read_values(name=["foo"], session=test_session)
+    with pytest.raises(DataChainParamsError, match="no positional parameters"):
+        chain.map(fn, params=["name"], output={"res": str})
+
+
+@pytest.mark.parametrize(
+    "fn,match",
+    [(_var_args_fn, r"'args'"), (_var_kwargs_fn, r"'kwargs'")],
+)
+def test_map_multiple_signals_rejects_var_params(test_session, fn, match):
+    chain = dc.read_values(name=["foo"], session=test_session)
+    with pytest.raises(DataChainParamsError, match=match):
+        chain.map(bad=fn, ok=lambda name: name.lower())
+
+
 def test_map_multiple_signals_chained(test_session):
     """Second function receives first function's output as its param."""
     chain = dc.read_values(name=["foo.txt", "bar.md"], session=test_session).map(
@@ -1111,6 +1227,173 @@ def test_map_multiple_signals_chained_rejects_cycle(test_session):
             a=lambda b: b,
             b=lambda a: a,
         )
+
+
+def test_map_multiple_signals_all_zero_arg(test_session):
+    """All entries take zero args; nothing to read from chain."""
+    chain = dc.read_values(name=["a", "b"], session=test_session).map(
+        x=lambda: "X",
+        y=lambda: "Y",
+    )
+    rows = list(chain.to_iter("x", "y"))
+    assert rows == [("X", "Y"), ("X", "Y")]
+
+
+def test_map_multiple_signals_zero_arg_producer_with_consumers(test_session):
+    """Producer takes no args; consumers chain off its output only."""
+
+    def seed() -> int:
+        return 10
+
+    def double(seed: int) -> int:
+        return seed * 2
+
+    def triple(seed: int) -> int:
+        return seed * 3
+
+    chain = dc.read_values(name=["a"], session=test_session).map(
+        seed=seed, double=double, triple=triple
+    )
+    rows = list(chain.to_iter("seed", "double", "triple"))
+    assert rows == [(10, 20, 30)]
+
+
+def test_map_multiple_signals_hash_varies_with_bound_column(test_session):
+    class ColSpec(BoundSpec):
+        def __init__(self, col: str):
+            self._col = col
+
+        def bind(self, ctx: BindContext):
+            return lambda value: f"V:{value}"
+
+        def input_columns(self):
+            return [self._col]
+
+        @property
+        def output_count(self):
+            return 1
+
+    base = dc.read_values(c1=["a"], c2=["b"], session=test_session)
+    udf_a = base.map(x=lambda c1, c2: c1 + c2, a=ColSpec("c1"))._query.steps[-1].udf
+    udf_b = base.map(x=lambda c1, c2: c1 + c2, a=ColSpec("c2"))._query.steps[-1].udf
+    assert udf_a.hash() != udf_b.hash()
+
+
+def test_map_multiple_signals_hash_respects_mapper_hash_override(test_session):
+    class Tagged(dc.Mapper):
+        def __init__(self, tag: str):
+            super().__init__()
+            self._tag = tag
+
+        def process(self, name: str) -> str:
+            return f"{self._tag}:{name}"
+
+        def hash(self, include_body: bool = True) -> str:
+            return hashlib.sha256(f"Tagged:{self._tag}".encode()).hexdigest()
+
+    base = dc.read_values(name=["x"], session=test_session)
+    udf_a = base.map(t=Tagged("a"), u=lambda name: name)._query.steps[-1].udf
+    udf_b = base.map(t=Tagged("b"), u=lambda name: name)._query.steps[-1].udf
+    assert udf_a.hash() != udf_b.hash()
+
+
+def test_map_multiple_signals_mapper_subclass(test_session):
+    """A Mapper subclass instance can be used alongside plain lambdas."""
+    setup_calls = []
+    teardown_calls = []
+
+    class Upper(dc.Mapper):
+        def setup(self) -> None:
+            setup_calls.append("Upper")
+
+        def teardown(self) -> None:
+            teardown_calls.append("Upper")
+
+        def process(self, name: str) -> str:
+            return name.upper()
+
+    chain = dc.read_values(name=["foo", "bar"], session=test_session).map(
+        upper=Upper(),
+        lower=lambda name: name.lower(),
+    )
+    rows = sorted(chain.to_iter("upper", "lower"))
+    assert rows == [("BAR", "bar"), ("FOO", "foo")]
+    assert setup_calls == ["Upper"]
+    assert teardown_calls == ["Upper"]
+
+
+def test_map_multiple_signals_mapper_subclass_reads_signal_names(test_session):
+    class UsesSignalNames(dc.Mapper):
+        def process(self, name: str) -> str:
+            return ",".join(self.signal_names)
+
+    chain = dc.read_values(name=["a", "b"], session=test_session).map(
+        sig=UsesSignalNames(),
+        low=lambda name: name.lower(),
+    )
+    rows = sorted(chain.to_iter("name", "sig", "low"))
+    assert rows == [("a", "sig", "a"), ("b", "sig", "b")]
+
+
+def test_map_multiple_signals_mapper_subclass_reads_output(test_session):
+    class UsesOutput(dc.Mapper):
+        def process(self, name: str) -> str:
+            return next(iter(self.output.values))
+
+    chain = dc.read_values(name=["a", "b"], session=test_session).map(
+        sig=UsesOutput(),
+        low=lambda name: name.lower(),
+    )
+    rows = sorted(chain.to_iter("name", "sig", "low"))
+    assert rows == [("a", "sig", "a"), ("b", "sig", "b")]
+
+
+def test_map_multiple_signals_mapper_subclass_reads_params(test_session):
+    class UsesParams(dc.Mapper):
+        def process(self, name: str) -> str:
+            assert self.params is not None
+            return next(iter(self.params.values))
+
+    chain = dc.read_values(name=["a", "b"], session=test_session).map(
+        sig=UsesParams(),
+        low=lambda name: name.lower(),
+    )
+    rows = sorted(chain.to_iter("name", "sig", "low"))
+    assert rows == [("a", "name", "a"), ("b", "name", "b")]
+
+
+def test_map_multiple_signals_mapper_subclass_reads_sibling_output_type(test_session):
+    class ReadsMixed(dc.Mapper):
+        def process(self, name: str, prepared: str) -> str:
+            assert self.params is not None
+            types = self.params.values
+            return (
+                f"{types['name'].__name__}+{types['prepared'].__name__}"
+                f":{name}:{prepared}"
+            )
+
+    chain = dc.read_values(name=["x"], session=test_session).map(
+        prepared=lambda name: name.upper(),
+        final=ReadsMixed(),
+    )
+    rows = sorted(chain.to_iter("final"))
+    assert rows == [("str+str:x:X",)]
+
+
+def test_map_multiple_signals_mapper_subclass_without_super_init(test_session):
+    class Prefix(dc.Mapper):
+        def __init__(self, prefix: str):
+            self.prefix = prefix
+
+        def process(self, name: str) -> str:
+            return self.prefix + name
+
+    chain = dc.read_values(name=["x"], session=test_session).map(
+        prefixed=Prefix("p:"),
+        unchanged=lambda name: name,
+    )
+    rows = sorted(chain.to_iter("prefixed", "unchanged"))
+    assert rows == [("p:x", "x")]
 
 
 def test_map_multiple_signals_single_stage(test_session):
@@ -3671,6 +3954,347 @@ def test_mutate_with_composed_func_expression(test_session):
     )
     # "a" + ".csv" = 5, "hello" + ".csv" = 9, "readme" + ".csv" = 10
     assert result == [5, 9, 10]
+
+
+def test_mutate_expression_column_is_in_saved_schema(test_session):
+    dc.read_values(id=[1, 2], session=test_session).mutate(
+        half=dc.C("id") / 2, minus=dc.C("id") - 1
+    ).save("mutated")
+
+    dataset = test_session.catalog.get_dataset("mutated", versions=None)
+    schema = dataset.get_version("1.0.0").schema
+    assert schema["half"] == Float
+    assert schema["minus"] == Int64
+
+    ds = dc.read_dataset("mutated", session=test_session).order_by("id")
+    assert ds.to_list("half", "minus") == [(0.5, 0), (1.0, 1)]
+
+
+def test_mutate_composed_expression_column_is_in_saved_schema(test_session):
+    dc.read_values(id=[1, 2], session=test_session).mutate(
+        composed=(dc.C("id") - 1) * 2 + dc.C("id") / 2
+    ).save("mutated-composed")
+
+    dataset = test_session.catalog.get_dataset("mutated-composed", versions=None)
+    assert dataset.get_version("1.0.0").schema["composed"] == Float
+
+    ds = dc.read_dataset("mutated-composed", session=test_session).order_by("id")
+    assert ds.to_values("composed") == [0.5, 3.0]
+
+
+def test_mutate_expression_column_only_signal_in_saved_chain(test_session):
+    dc.read_values(id=[1, 2], session=test_session).mutate(minus=dc.C("id") - 1).select(
+        "minus"
+    ).save("mutated-only")
+
+    dataset = test_session.catalog.get_dataset("mutated-only", versions=None)
+    schema = dataset.get_version("1.0.0").schema
+    assert schema["minus"] == Int64
+    assert "id" not in schema
+
+    ds = dc.read_dataset("mutated-only", session=test_session).order_by("minus")
+    assert ds.to_values("minus") == [0, 1]
+
+
+@pytest.mark.parametrize("swap", [False, True])
+def test_mutate_expression_column_through_union(test_session, swap):
+    mutated = dc.read_values(id=[1], session=test_session).mutate(minus=dc.C("id") - 1)
+    plain = dc.read_values(id=[2], minus=[1], session=test_session)
+    first, second = (plain, mutated) if swap else (mutated, plain)
+    first.union(second).save("mutated-union")
+
+    dataset = test_session.catalog.get_dataset("mutated-union", versions=None)
+    assert dataset.get_version("1.0.0").schema["minus"] == Int64
+
+    ds = dc.read_dataset("mutated-union", session=test_session).order_by("id")
+    assert ds.to_list("id", "minus") == [(1, 0), (2, 1)]
+
+
+def test_mutate_renamed_expression_column_is_in_saved_schema(test_session):
+    dc.read_values(id=[1, 2], session=test_session).mutate(minus=dc.C("id") - 1).mutate(
+        renamed=dc.C("minus")
+    ).save("mutated-renamed")
+
+    dataset = test_session.catalog.get_dataset("mutated-renamed", versions=None)
+    schema = dataset.get_version("1.0.0").schema
+    assert schema["renamed"] == Int64
+    assert "minus" not in schema
+
+    ds = dc.read_dataset("mutated-renamed", session=test_session).order_by("id")
+    assert ds.to_values("renamed") == [0, 1]
+
+
+def test_read_dataset_with_expression_column_missing_from_schema(test_session):
+    dc.read_values(id=[1, 2], session=test_session).mutate(minus=dc.C("id") - 1).save(
+        "mutated-legacy"
+    )
+
+    metastore = test_session.catalog.metastore
+    dataset = metastore.get_dataset("mutated-legacy", versions=None)
+    version = dataset.get_version("1.0.0")
+    legacy_schema = {
+        name: typ.to_dict() if isinstance(typ, SQLType) else typ().to_dict()
+        for name, typ in version.schema.items()
+        if name != "minus"
+    }
+    metastore.update_dataset_version(dataset, "1.0.0", schema=legacy_schema)
+
+    ds = dc.read_dataset("mutated-legacy", session=test_session).order_by("id")
+    assert ds.signals_schema.values["minus"] is int
+    assert ds.to_list("id", "minus") == [(1, 0), (2, 1)]
+
+
+def test_mutate_expression_column_composed_with_func(test_session):
+    dc.read_values(name=["ab", "abcd"], session=test_session).mutate(
+        length_plus=string.length("name") + 1
+    ).save("mutated-func-expr")
+
+    dataset = test_session.catalog.get_dataset("mutated-func-expr", versions=None)
+    assert dataset.get_version("1.0.0").schema["length_plus"] == Int64
+
+    ds = dc.read_dataset("mutated-func-expr", session=test_session).order_by("name")
+    assert ds.to_values("length_plus") == [3, 5]
+
+
+def test_mutate_expression_column_through_filter_and_distinct(test_session):
+    dc.read_values(id=[1, 2, 3, 3], session=test_session).mutate(
+        minus=dc.C("id") - 1
+    ).filter(dc.C("minus") > 0).distinct("minus").order_by("minus").save("mutated-ops")
+
+    dataset = test_session.catalog.get_dataset("mutated-ops", versions=None)
+    assert dataset.get_version("1.0.0").schema["minus"] == Int64
+
+    ds = dc.read_dataset("mutated-ops", session=test_session).order_by("minus")
+    assert ds.to_values("minus") == [1, 2]
+
+
+def test_mutate_expression_column_through_group_by(test_session):
+    dc.read_values(id=[1, 2, 3], grp=["a", "a", "b"], session=test_session).mutate(
+        minus=dc.C("id") - 1
+    ).group_by(total=func.sum("minus"), partition_by="grp").save("mutated-group")
+
+    dataset = test_session.catalog.get_dataset("mutated-group", versions=None)
+    assert dataset.get_version("1.0.0").schema["total"] == Int64
+
+    ds = dc.read_dataset("mutated-group", session=test_session).order_by("grp")
+    assert ds.to_list("grp", "total") == [("a", 1), ("b", 2)]
+
+
+def test_mutate_expression_column_through_window(test_session):
+    window = func.window(partition_by="grp", order_by="minus", desc=True)
+    dc.read_values(id=[1, 2, 3], grp=["a", "a", "b"], session=test_session).mutate(
+        minus=dc.C("id") - 1
+    ).mutate(rank=func.row_number().over(window)).save("mutated-window")
+
+    dataset = test_session.catalog.get_dataset("mutated-window", versions=None)
+    schema = dataset.get_version("1.0.0").schema
+    assert schema["minus"] == Int64
+    assert schema["rank"] == Int64
+
+    ds = dc.read_dataset("mutated-window", session=test_session).order_by("id")
+    assert ds.to_list("minus", "rank") == [(0, 2), (1, 1), (2, 1)]
+
+
+def test_mutate_expression_column_through_merge(test_session):
+    left = dc.read_values(id=[1, 2], session=test_session).mutate(minus=dc.C("id") - 1)
+    right = dc.read_values(minus=[0, 1], tag=["x", "y"], session=test_session)
+    left.merge(right, on="minus").save("mutated-merge")
+
+    dataset = test_session.catalog.get_dataset("mutated-merge", versions=None)
+    assert dataset.get_version("1.0.0").schema["minus"] == Int64
+
+    ds = dc.read_dataset("mutated-merge", session=test_session).order_by("id")
+    assert ds.to_list("minus", "tag") == [(0, "x"), (1, "y")]
+
+
+def test_mutate_expression_column_through_subtract(test_session):
+    left = dc.read_values(id=[1, 2, 3], session=test_session).mutate(
+        minus=dc.C("id") - 1
+    )
+    right = dc.read_values(id=[1], session=test_session).mutate(minus=dc.C("id") - 1)
+    left.subtract(right, on="minus").save("mutated-subtract")
+
+    dataset = test_session.catalog.get_dataset("mutated-subtract", versions=None)
+    assert dataset.get_version("1.0.0").schema["minus"] == Int64
+
+    ds = dc.read_dataset("mutated-subtract", session=test_session).order_by("id")
+    assert ds.to_values("minus") == [1, 2]
+
+
+def test_mutate_explicitly_typed_expression_keeps_type(test_session):
+    dc.read_values(a=[1.5, 2.5], session=test_session).mutate(
+        typed_value=sqlalchemy.type_coerce(dc.C("a"), Float32())
+    ).save("mutated-typed")
+
+    dataset = test_session.catalog.get_dataset("mutated-typed", versions=None)
+    assert dataset.get_version("1.0.0").schema["typed_value"] == Float32
+
+    ds = dc.read_dataset("mutated-typed", session=test_session).order_by("a")
+    assert ds.to_values("typed_value") == [1.5, 2.5]
+
+
+def test_mutate_typed_expression_keeps_nullable_array_items(test_session):
+    item_type = SQLType.as_nullable(Float)
+    dc.read_values(
+        vals=[[1.0, None], [2.0, None]],
+        session=test_session,
+        output={"vals": list[float | None]},
+    ).mutate(typed_vals=sqlalchemy.type_coerce(dc.C("vals"), Array(item_type))).save(
+        "mutated-typed-array"
+    )
+
+    dataset = test_session.catalog.get_dataset("mutated-typed-array", versions=None)
+    schema = dataset.get_version("1.0.0").schema
+    assert isinstance(schema["typed_vals"], Array)
+    assert schema["typed_vals"].item_type.dc_nullable
+
+    ds = dc.read_dataset("mutated-typed-array", session=test_session).order_by("vals")
+    values = ds.to_values("typed_vals")
+    assert [v[0] for v in values] == [1.0, 2.0]
+    # None survives as NULL; SQLite reads it back as NaN, ClickHouse as None
+    assert all(v[1] is None or math.isnan(v[1]) for v in values)
+
+
+def test_mutate_expression_column_carried_through_merge(test_session):
+    left = dc.read_values(id=[1, 2], session=test_session).mutate(minus=dc.C("id") - 1)
+    right = dc.read_values(id=[1, 2], tag=["x", "y"], session=test_session)
+    left.merge(right, on="id").save("mutated-carried")
+
+    dataset = test_session.catalog.get_dataset("mutated-carried", versions=None)
+    assert dataset.get_version("1.0.0").schema["minus"] == Int64
+
+    ds = dc.read_dataset("mutated-carried", session=test_session).order_by("id")
+    assert ds.to_list("minus", "tag") == [(0, "x"), (1, "y")]
+
+
+def test_mutate_expression_column_through_slot_window(test_session):
+    window = func.window(partition_by=dc.C("grp"), order_by=dc.C("minus"), desc=True)
+    dc.read_values(id=[1, 2, 3], grp=["a", "a", "b"], session=test_session).mutate(
+        minus=dc.C("id") - 1
+    ).mutate(rank=func.row_number().over(window)).save("mutated-slot-window")
+
+    dataset = test_session.catalog.get_dataset("mutated-slot-window", versions=None)
+    assert dataset.get_version("1.0.0").schema["minus"] == Int64
+
+    ds = dc.read_dataset("mutated-slot-window", session=test_session).order_by("id")
+    assert ds.to_list("minus", "rank") == [(0, 2), (1, 1), (2, 1)]
+
+
+def test_mutate_labeled_expression_column(test_session):
+    dc.read_values(id=[1, 2], session=test_session).mutate(
+        labeled=(dc.C("id") - 1).label("labeled")
+    ).save("mutated-labeled")
+
+    dataset = test_session.catalog.get_dataset("mutated-labeled", versions=None)
+    assert dataset.get_version("1.0.0").schema["labeled"] == Int64
+
+    ds = dc.read_dataset("mutated-labeled", session=test_session).order_by("id")
+    assert ds.to_values("labeled") == [0, 1]
+
+
+def test_mutate_expression_column_as_udf_input(test_session):
+    result = (
+        dc.read_values(id=[1, 2], session=test_session)
+        .mutate(minus=dc.C("id") - 1)
+        .map(doubled=lambda minus: minus * 2, output=int)
+        .order_by("id")
+        .to_values("doubled")
+    )
+    assert result == [0, 2]
+
+
+def test_mutate_expression_column_through_exports(test_session, tmp_path):
+    chain = (
+        dc.read_values(id=[1, 2], session=test_session)
+        .mutate(minus=dc.C("id") - 1)
+        .order_by("id")
+    )
+
+    assert [r["minus"] for r in chain.to_records()] == [0, 1]
+
+    df = chain.to_pandas()
+    assert df["minus"].tolist() == [0, 1]
+
+    parquet = tmp_path / "out.parquet"
+    chain.to_parquet(parquet)
+    assert dc.read_parquet(parquet, session=test_session).order_by("id").to_values(
+        "minus"
+    ) == [0, 1]
+
+    csv = tmp_path / "out.csv"
+    chain.to_csv(csv)
+    assert dc.read_csv(str(csv), session=test_session).order_by("id").to_values(
+        "minus"
+    ) == [0, 1]
+
+    jsonl = tmp_path / "out.jsonl"
+    chain.to_jsonl(jsonl)
+    assert dc.read_json(str(jsonl), format="jsonl", session=test_session).order_by(
+        "jsonl.id"
+    ).to_values("jsonl.minus") == [0, 1]
+
+    db_url = f"sqlite:///{tmp_path / 'out.db'}"
+    chain.to_database("mutated", db_url)
+    assert dc.read_database(
+        "SELECT id, minus FROM mutated", db_url, session=test_session
+    ).order_by("id").to_values("minus") == [0, 1]
+
+
+def test_mutate_enum_typed_expression_column(test_session):
+    # int-valued: clickhouse-sqlalchemy cannot compile string-valued Enum casts
+    class Kind(enum.Enum):
+        A = 1
+
+    chain = dc.read_values(id=[1, 2], session=test_session).mutate(
+        kind=sqlalchemy.cast(sqlalchemy.literal(1), sqlalchemy.Enum(Kind))
+    )
+    # rendering is backend-specific (SQLite "1", ClickHouse "A"), type is not
+    assert [type(v) for v in chain.to_values("kind")] == [str, str]
+
+    with pytest.warns(SignalSchemaWarning, match="'Kind'"):
+        chain.save("mutated-enum")
+        ds = dc.read_dataset("mutated-enum", session=test_session).order_by("id")
+        ids = ds.to_values("id")
+
+    dataset = test_session.catalog.get_dataset("mutated-enum", versions=None)
+    # python_to_sql cannot map an enum to a column type, so the expression is
+    # not coerced and stays out of the flat schema
+    assert "kind" not in dataset.get_version("1.0.0").schema
+    assert ids == [1, 2]
+
+    # enum definitions are not persisted in feature_schema yet, so the
+    # enum-typed signal itself is dropped on reload
+    with pytest.raises(SignalResolvingError, match="kind"):
+        ds.to_values("kind")
+
+
+def test_mutate_expression_column_with_unmappable_type(test_session):
+    class Kind(enum.Enum):
+        A = 1
+
+    dated = dc.read_values(id=[1, 2], session=test_session).mutate(
+        d=sqlalchemy.cast(sqlalchemy.literal("2024-01-02"), sqlalchemy.Date)
+    )
+    assert len(dated.to_values("d")) == 2
+
+    arrays = dc.read_values(id=[1], session=test_session).mutate(
+        arr=sqlalchemy.cast(
+            sqlalchemy.literal(1), sqlalchemy.ARRAY(sqlalchemy.Enum(Kind))
+        )
+    )
+    assert arrays.signals_schema.values["arr"] == list[Kind]
+
+
+def test_mutate_expression_column_on_empty_chain(test_session):
+    dc.read_values(id=[], session=test_session, output={"id": int}).mutate(
+        minus=dc.C("id") - 1
+    ).save("mutated-empty")
+
+    dataset = test_session.catalog.get_dataset("mutated-empty", versions=None)
+    assert dataset.get_version("1.0.0").schema["minus"] == Int64
+
+    ds = dc.read_dataset("mutated-empty", session=test_session)
+    assert ds.to_values("minus") == []
 
 
 @skip_if_not_sqlite
