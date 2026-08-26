@@ -1695,20 +1695,25 @@ class DataChain:
             raise self._named_expression_error("mutate()", args[0])
         return self._mutate("mutate()", **kwargs)
 
+    def _resolve_arm_columns(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        """``kwargs`` with readable arm columns (``C("block.name")``) arm-qualified."""
+        resolved_kwargs = dict(kwargs)
+        for col_name, expr in kwargs.items():
+            if (
+                isinstance(expr, Column)
+                and (resolved := self.signals_schema.resolve_arm_path(expr.name))
+                is not None
+            ):
+                resolved_kwargs[col_name] = Column(ColumnMeta.to_db_name(resolved))
+        return resolved_kwargs
+
     def _mutate(self, method: str, **kwargs) -> "Self":
         from sqlalchemy.sql.sqltypes import NullType
 
         primitives = (bool, str, int, float)
 
         try:
-            # readable arm Column (C("block.name")) -> arm-qualified column
-            for col_name, expr in kwargs.items():
-                if (
-                    isinstance(expr, Column)
-                    and (resolved := self.signals_schema.resolve_arm_path(expr.name))
-                    is not None
-                ):
-                    kwargs[col_name] = Column(ColumnMeta.to_db_name(resolved))
+            kwargs = self._resolve_arm_columns(kwargs)
 
             for col_name, expr in kwargs.items():
                 if not isinstance(expr, (*primitives, Column, Func)):
