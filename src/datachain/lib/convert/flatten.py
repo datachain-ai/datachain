@@ -119,7 +119,8 @@ def _flatten_arm(value, arm) -> Generator:
 
 def _match_union_arm(value, layout: UnionLayout) -> int | None:
     """Arm index for ``value`` (None for the None arm). Exact-type match beats
-    ``isinstance`` so ``bool`` isn't swallowed by an ``int`` arm."""
+    ``isinstance`` so ``bool`` isn't swallowed by an ``int`` arm; among arms matched
+    by ``isinstance`` the narrowest wins."""
     # numpy scalar -> native type; via sys.modules to keep numpy a lazy import
     if (np := sys.modules.get("numpy")) is not None and isinstance(value, np.generic):
         value = value.item()
@@ -129,13 +130,27 @@ def _match_union_arm(value, layout: UnionLayout) -> int | None:
                 f"value None does not match any arm of union {layout.arms}"
             )
         return None
-    for exact in (True, False):
-        for i, arm in enumerate(layout.arms):
-            if _arm_matches(value, arm, exact=exact):
-                return i
+    for i, arm in enumerate(layout.arms):
+        if _arm_matches(value, arm, exact=True):
+            return i
+    if matched := [
+        i for i, arm in enumerate(layout.arms) if _arm_matches(value, arm, exact=False)
+    ]:
+        return _narrowest_arm(layout.arms, matched)
     raise DataChainParamsError(
         f"value {value!r} does not match any arm of union {layout.arms}"
     )
+
+
+def _narrowest_arm(arms: tuple[Any, ...], matched: list[int]) -> int:
+    """The most derived of the ``matched`` arms: a wider arm stores only the fields it
+    declares, so a subclass value would lose the rest. Unrelated arms (multiple
+    inheritance) keep canonical order."""
+    best = matched[0]
+    for i in matched[1:]:
+        if issubclass(arms[i], arms[best]):
+            best = i
+    return best
 
 
 def _arm_matches(value, arm, *, exact: bool) -> bool:

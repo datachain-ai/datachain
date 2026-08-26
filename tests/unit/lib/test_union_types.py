@@ -216,6 +216,23 @@ def test_flatten_bool_not_swallowed_by_int_arm():
     assert flat_one[0] == "int"
 
 
+def test_flatten_subclass_matches_narrowest_arm():
+    # a value matching several arms by isinstance belongs to the most derived one;
+    # a wider arm stores only its own fields, silently dropping the rest.
+    class Animal(DataModel):
+        legs: int = 4
+
+    class Zebra(Animal):
+        stripes: int = 1
+
+    class BabyZebra(Zebra):
+        age: int = 0
+
+    flat, restored = _roundtrip(BabyZebra(stripes=9, age=2), Union[Animal, Zebra])
+    assert flat[0] == "Zebra"
+    assert restored == {"legs": 4, "stripes": 9}
+
+
 def test_flatten_datetime_arm():
     now = datetime(2024, 1, 2, 3, 4, 5)
     _, restored = _roundtrip(now, Union[str, datetime])

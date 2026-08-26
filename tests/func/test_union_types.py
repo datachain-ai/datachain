@@ -524,6 +524,10 @@ class _Zebra(_Animal):
     stripes: int = 0
 
 
+class _BabyZebra(_Zebra):
+    age: int = 0
+
+
 def test_union_model_subclass_arm_preserves_fields(test_session):
     dc.read_values(
         id=[1, 2],
@@ -534,6 +538,19 @@ def test_union_model_subclass_arm_preserves_fields(test_session):
     back = _ordered(dc.read_dataset("u_subclass", session=test_session), "item")
     assert [type(it).__name__ for _, it in back] == ["_Animal", "_Zebra"]
     assert back[1][1].stripes == 20
+
+
+def test_union_subclass_of_arm_uses_narrowest_arm(test_session):
+    # _BabyZebra is an instance of both arms; the narrower one keeps its fields.
+    dc.read_values(
+        id=[1],
+        item=[_BabyZebra(legs=4, stripes=9, age=2)],
+        output={"id": int, "item": Union[_Animal, _Zebra]},
+        session=test_session,
+    ).save("u_deep_subclass")
+    back = _ordered(dc.read_dataset("u_deep_subclass", session=test_session), "item")
+    assert [type(it).__name__ for _, it in back] == ["_Zebra"]
+    assert back[0][1].stripes == 9
 
 
 def test_list_of_union_roundtrip(test_session):
