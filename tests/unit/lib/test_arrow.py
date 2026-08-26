@@ -44,6 +44,24 @@ def test_arrow_generator_constructor_hash():
     assert first._constructor_state_hash != limited._constructor_state_hash
 
 
+def test_arrow_generator_constructor_hash_with_closure_handler():
+    def make_handler(prefix):
+        def handler(row):
+            return "skip" if row.text.startswith(prefix) else "error"
+
+        return handler
+
+    def make_generator(prefix):
+        return ArrowGenerator(
+            parse_options=ParseOptions(invalid_row_handler=make_handler(prefix))
+        )
+
+    comments = make_generator("#")
+    metadata = make_generator("!")
+
+    assert comments._constructor_state_hash != metadata._constructor_state_hash
+
+
 @pytest.mark.parametrize("cache", [True, False])
 def test_arrow_generator(tmp_path, catalog, cache):
     ids = [12345, 67890, 34, 0xF0123]
