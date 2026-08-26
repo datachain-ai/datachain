@@ -111,7 +111,7 @@ def test_udf_verbose_name_class():
         def process(self, key: str) -> int:
             return len(key)
 
-    sign = get_sign(MyMapper, output="res")
+    sign = get_sign(MyMapper, params=[], output="res")
     udf = UDFBase._create(sign, sign.output_schema)
     assert udf.verbose_name == "MyMapper"
 
@@ -294,6 +294,15 @@ def test_class_udf_hash_without_body_ignores_process_implementation():
 
     assert added.hash(include_body=False) == multiplied.hash(include_body=False)
     assert added.hash() != multiplied.hash()
+
+
+def test_udf_verbose_name_multi_signal_mapper(test_session):
+    chain = dc.read_values(name=["foo.txt"], session=test_session).map(
+        stem=lambda name: name.rsplit(".", 1)[0],
+        ext=lambda name: name.rsplit(".", 1)[1],
+    )
+    udf = chain._query.steps[-1].udf.inner
+    assert udf.verbose_name == "stem, ext"
 
 
 def test_udf_does_not_traverse_setup_value():

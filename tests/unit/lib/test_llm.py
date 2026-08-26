@@ -81,22 +81,21 @@ def test_embed_output_is_list_float():
     assert llm.embed("text").output_type() == list[float]
 
 
-def test_bound_callable_declares_input_column_and_return_type():
+def test_spec_declares_input_column_and_return_type():
     import inspect
 
-    f = bind(llm.complete("file", schema=Scene), llm="m")
-    assert f.__datachain_params__ == ["file"]
+    spec = llm.complete("file", schema=Scene)
+    assert spec.input_columns() == ["file"]
+    f = bind(spec, llm="m")
     assert inspect.signature(f).return_annotation == (Scene | None)
 
 
-def test_bound_callable_declares_context_column():
-    f = bind(llm.complete("file", context="meta"), llm="m")
-    assert f.__datachain_params__ == ["file", "meta"]
+def test_spec_declares_context_column():
+    assert llm.complete("file", context="meta").input_columns() == ["file", "meta"]
 
 
 def test_nested_column_name_is_supported():
-    f = bind(llm.complete("file.path"), llm="m")
-    assert f.__datachain_params__ == ["file.path"]
+    assert llm.complete("file.path").input_columns() == ["file.path"]
 
 
 def test_per_call_model_overrides_settings(fake_llm):

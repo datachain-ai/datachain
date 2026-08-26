@@ -9,7 +9,6 @@ from datachain import C, File
 
 DATA = "gs://datachain-demo/chatbot-KiT"
 MODEL = "claude-sonnet-4-5"
-TEMPERATURE = 0.9
 DEFAULT_OUTPUT_TOKENS = 1024
 
 PROMPT = """Consider the dialogue between the 'user' and the 'bot'. The 'user' is a
@@ -38,11 +37,10 @@ class Rating(BaseModel):
 
 def rate(client: anthropic.Anthropic, file: File) -> Rating:
     content = file.read()
-    response = client.beta.messages.parse(
+    response = client.messages.parse(
         model=MODEL,
         max_tokens=DEFAULT_OUTPUT_TOKENS,
         system=PROMPT,
-        temperature=TEMPERATURE,
         messages=[
             {"role": "user", "content": f"{content}"},
         ],
