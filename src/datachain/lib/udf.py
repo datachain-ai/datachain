@@ -224,14 +224,17 @@ class UDFAdapter:
         return self.inner.prefetch
 
 
-def _hash_constructor_args(arguments: dict[str, Any]) -> str:
+def _hash_constructor_args(
+    arguments: dict[str, Any], *, warn_on_unsupported: bool = True
+) -> str:
     try:
         return hash_value(arguments)
     except TypeError as exc:
-        logger.warning(
-            "%s; cache reuse across UDF instances is disabled",
-            exc,
-        )
+        if warn_on_unsupported:
+            logger.warning(
+                "%s; cache reuse across UDF instances is disabled",
+                exc,
+            )
         return hashlib.sha256(uuid4().bytes).hexdigest()
 
 
@@ -296,10 +299,6 @@ class UDFBase(AbstractUDF):
 
     def __new__(cls, *args, **kwargs):
         instance = super().__new__(cls)
-        if cls.state_hash is not UDFBase.state_hash:
-            # A public state_hash() override owns instance identity, so avoid
-            # normalizing constructor values or warning about opaque arguments.
-            return instance
         try:
             # bound-method signature so `self` is already stripped; correct even
             # when __init__ uses *args instead of a named `self` parameter.
@@ -311,7 +310,10 @@ class UDFBase(AbstractUDF):
 
         bound.apply_defaults()
         arguments = cls._constructor_hash_args(dict(bound.arguments))
-        instance._constructor_state_hash = _hash_constructor_args(arguments)
+        instance._constructor_state_hash = _hash_constructor_args(
+            arguments,
+            warn_on_unsupported=cls.state_hash is UDFBase.state_hash,
+        )
         return instance
 
     @classmethod

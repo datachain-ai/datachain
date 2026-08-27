@@ -289,6 +289,28 @@ def test_class_udf_state_hash_overrides_opaque_constructor_fallback(
     assert "cache reuse across UDF instances is disabled" not in caplog.text
 
 
+def test_class_udf_state_hash_can_extend_automatic_constructor_hash():
+    class Configured(Mapper):
+        def __init__(self, limit: int, extra: str):
+            self.limit = limit
+            self.extra = extra
+
+        def state_hash(self) -> str:
+            return hash_value((super().state_hash(), self.extra))
+
+        def process(self, x: int) -> int:
+            return x + self.limit
+
+    first = Configured(3, "shared")
+    second = Configured(5, "shared")
+    sign_a = get_sign(first, output="y")
+    sign_b = get_sign(second, output="y")
+    udf_a = Mapper._create(sign_a, sign_a.output_schema)
+    udf_b = Mapper._create(sign_b, sign_b.output_schema)
+
+    assert udf_a.hash() != udf_b.hash()
+
+
 @pytest.mark.parametrize(
     "invalid_hash",
     ["tokenizer-v1", None, "ab" * 16 + " " * 32],
