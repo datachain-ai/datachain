@@ -159,7 +159,8 @@ receive a unique identity instead, preventing incorrect cache reuse. Override
 `state_hash()` when you can identify such state safely:
 
 ```python
-from datachain.hash_utils import hash_value
+import hashlib
+import json
 from datachain.lib.udf import Mapper
 
 class Tokenize(Mapper):
@@ -169,7 +170,11 @@ class Tokenize(Mapper):
         self.max_length = max_length
 
     def state_hash(self) -> str:
-        return hash_value((self.tokenizer_id, self.max_length))
+        state = json.dumps(
+            {"tokenizer_id": self.tokenizer_id, "max_length": self.max_length},
+            sort_keys=True,
+        )
+        return hashlib.sha256(state.encode()).hexdigest()
 
     def process(self, text: str) -> list[str]:
         return self.tokenizer(text)[: self.max_length]
