@@ -1,6 +1,7 @@
 import hashlib
 import inspect
 import logging
+import struct
 import textwrap
 from collections.abc import Sequence
 from typing import TypeAlias, TypeVar
@@ -22,7 +23,9 @@ def normalize_hash_value(value):  # noqa: PLR0911
 
     if value is None:
         return ("none",)
-    if value_type in (bool, int, float, str, bytes):
+    if value_type is float:
+        return ("float", struct.pack("!d", value))
+    if value_type in (bool, int, str, bytes):
         return (value_type.__name__, value)
     if value_type is dict:
         items = (

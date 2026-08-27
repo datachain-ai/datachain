@@ -1,3 +1,5 @@
+import struct
+
 import pytest
 from sqlalchemy import (
     Float,
@@ -19,6 +21,7 @@ from datachain import C, func
 from datachain.hash_utils import (
     hash_callable,
     hash_column_elements,
+    hash_value,
     normalize_hash_value,
 )
 
@@ -64,7 +67,7 @@ from datachain.hash_utils import (
         (None, ("none",)),
         (True, ("bool", True)),
         (1, ("int", 1)),
-        (1.5, ("float", 1.5)),
+        (1.5, ("float", struct.pack("!d", 1.5))),
         ("value", ("str", "value")),
         (b"value", ("bytes", b"value")),
     ],
@@ -79,6 +82,20 @@ def test_normalize_hash_value_rejects_unsupported_value():
 
     with pytest.raises(TypeError, match="cannot be hashed safely"):
         normalize_hash_value(Opaque())
+
+
+@pytest.mark.parametrize(
+    "first_bits,second_bits",
+    [
+        ("7ff8000000000001", "7ff8000000000002"),
+        ("7ff8000000000001", "fff8000000000001"),
+    ],
+)
+def test_hash_value_distinguishes_float_bit_patterns(first_bits, second_bits):
+    first = struct.unpack("!d", bytes.fromhex(first_bits))[0]
+    second = struct.unpack("!d", bytes.fromhex(second_bits))[0]
+
+    assert hash_value(first) != hash_value(second)
 
 
 def double(x):
