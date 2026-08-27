@@ -296,6 +296,10 @@ class UDFBase(AbstractUDF):
 
     def __new__(cls, *args, **kwargs):
         instance = super().__new__(cls)
+        if cls.state_hash is not UDFBase.state_hash:
+            # A public state_hash() override owns instance identity, so avoid
+            # normalizing constructor values or warning about opaque arguments.
+            return instance
         try:
             # bound-method signature so `self` is already stripped; correct even
             # when __init__ uses *args instead of a named `self` parameter.
@@ -314,6 +318,16 @@ class UDFBase(AbstractUDF):
     def _constructor_hash_args(cls, arguments: dict[str, Any]) -> dict[str, Any]:
         """Constructor arguments that determine this UDF instance's identity."""
         return arguments
+
+    def state_hash(self) -> str:
+        """Return a stable SHA-256 hash for state that affects this UDF's output.
+
+        Override this when constructor arguments contain callables or other opaque
+        objects that DataChain cannot hash safely. The method is called after
+        ``__init__`` and must account for all per-instance behavioral state. By
+        default, DataChain returns its automatic constructor-argument hash.
+        """
+        return self._constructor_state_hash
 
     def __init__(self):
         self.params: SignalSchema | None = None
@@ -343,7 +357,18 @@ class UDFBase(AbstractUDF):
         # For class-based UDFs, mix in constructor state so two instances that
         # differ only in constructor args don't collide.
         if self._func is None:
-            parts.append(self._constructor_state_hash)
+            state_hash = self.state_hash()
+            if not isinstance(state_hash, str) or len(state_hash) != 64:
+                raise ValueError(
+                    "state_hash() must return a SHA-256 hexadecimal string"
+                )
+            try:
+                bytes.fromhex(state_hash)
+            except ValueError as exc:
+                raise ValueError(
+                    "state_hash() must return a SHA-256 hexadecimal string"
+                ) from exc
+            parts.append(state_hash)
 
         return hashlib.sha256(
             b"".join([bytes.fromhex(part) for part in parts])

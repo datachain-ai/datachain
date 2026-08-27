@@ -139,7 +139,8 @@ Reliability is layered:
 Materialized `llm.*` columns are cached and versioned, so re-running a chain reads
 the stored result instead of re-calling the model; the cache invalidates when any
 output-affecting input changes (model, prompt, schema, the input column, `type`,
-params, ...).
+params, ...). Custom objects in parameters receive a per-operation identity, safely
+disabling reuse across separately created operations.
 
 ## No fused predicate
 

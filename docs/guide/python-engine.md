@@ -151,6 +151,33 @@ class ImageEncoder(Mapper):
         del self.model
 ```
 
+### Caching class-based operations
+
+DataChain hashes UDF code, schemas, and constructor arguments. Primitive values and
+nested built-in containers are handled automatically. Callables and custom objects
+receive a unique identity instead, preventing incorrect cache reuse. Override
+`state_hash()` when you can identify such state safely:
+
+```python
+import hashlib
+from datachain.lib.udf import Mapper
+
+class Tokenize(Mapper):
+    def __init__(self, tokenizer, tokenizer_version: str):
+        self.tokenizer = tokenizer
+        self.tokenizer_version = tokenizer_version
+
+    def state_hash(self) -> str:
+        return hashlib.sha256(self.tokenizer_version.encode()).hexdigest()
+
+    def process(self, text: str) -> list[str]:
+        return self.tokenizer(text)
+```
+
+`state_hash()` must return a SHA-256 hexadecimal string covering all instance state
+that affects output. It replaces automatic constructor hashing; UDF code and schemas
+are still included. An incomplete hash can reuse an incorrect cached result.
+
 Use class-based operations sparingly; `.setup()` covers most cases.
 
 ## Execution and Scale

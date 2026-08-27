@@ -11,12 +11,38 @@ from pydantic import BaseModel
 import datachain as dc
 from datachain import Mapper
 from datachain.dataset import RowDict
+from datachain.hash_utils import hash_value
 from datachain.lib.file import File
 from datachain.lib.signal_schema import SignalSchema
 from datachain.lib.udf import JsonSerializationError, UDFBase, UdfError, UdfRunError
 from datachain.lib.utils import DataChainError
 
 from .test_udf_signature import get_sign
+
+
+class _OpaqueConstructorValue:
+    pass
+
+
+class _HashableConstructorValue:
+    def __hash__(self):
+        return 1
+
+
+class _CallableConstructorValue:
+    def __call__(self, value):
+        return value
+
+
+def _constructor_function(value):
+    return value
+
+
+def _make_constructor_closure(captured):
+    def closure(value):
+        return value, captured
+
+    return closure
 
 
 def test_udf_error():
@@ -192,6 +218,94 @@ def test_class_udf_unsupported_constructor_value_disables_cache_reuse(caplog):
     assert udf_a.hash() == udf_a.hash()
     assert udf_a.hash() != udf_b.hash()
     assert "cache reuse across UDF instances is disabled" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        pytest.param(_OpaqueConstructorValue(), id="custom-object"),
+        pytest.param(_HashableConstructorValue(), id="object-with-hash"),
+        pytest.param(_constructor_function, id="function"),
+        pytest.param(lambda value: value, id="lambda"),
+        pytest.param(_make_constructor_closure("captured"), id="closure"),
+        pytest.param(_CallableConstructorValue(), id="callable-object"),
+        pytest.param(
+            {"options": [{"client": _OpaqueConstructorValue()}]},
+            id="nested-custom-object",
+        ),
+    ],
+)
+def test_class_udf_unsupported_constructor_values_do_not_reuse_cache(config):
+    class Configured(Mapper):
+        def __init__(self, value):
+            self.value = value
+
+        def process(self, x: int) -> int:
+            return x
+
+    first = Configured(config)
+    second = Configured(config)
+    sign_a = get_sign(first, output="y")
+    sign_b = get_sign(second, output="y")
+    udf_a = Mapper._create(sign_a, sign_a.output_schema)
+    udf_b = Mapper._create(sign_b, sign_b.output_schema)
+
+    assert udf_a.hash() == udf_a.hash()
+    assert udf_a.hash() != udf_b.hash()
+
+
+@pytest.mark.parametrize(
+    "first_key,second_key,matches",
+    [
+        ("tokenizer-v1", "tokenizer-v1", True),
+        ("tokenizer-v1", "tokenizer-v2", False),
+    ],
+)
+def test_class_udf_state_hash_overrides_opaque_constructor_fallback(
+    first_key, second_key, matches, caplog
+):
+    class Opaque:
+        pass
+
+    class Configured(Mapper):
+        def __init__(self, config: Opaque, cache_key: str):
+            self.config = config
+            self.cache_key = cache_key
+
+        def state_hash(self) -> str:
+            return hash_value(self.cache_key)
+
+        def process(self, x: int) -> int:
+            return x
+
+    first = Configured(Opaque(), first_key)
+    second = Configured(Opaque(), second_key)
+    sign_a = get_sign(first, output="y")
+    sign_b = get_sign(second, output="y")
+    udf_a = Mapper._create(sign_a, sign_a.output_schema)
+    udf_b = Mapper._create(sign_b, sign_b.output_schema)
+
+    assert (udf_a.hash() == udf_b.hash()) is matches
+    assert "cache reuse across UDF instances is disabled" not in caplog.text
+
+
+@pytest.mark.parametrize("invalid_hash", ["tokenizer-v1", None])
+def test_class_udf_state_hash_rejects_invalid_hash(invalid_hash):
+    class Configured(Mapper):
+        def state_hash(self) -> str:
+            return invalid_hash
+
+        def process(self, x: int) -> int:
+            return x
+
+    udf = Configured()
+    sign = get_sign(udf, output="y")
+    udf = Mapper._create(sign, sign.output_schema)
+
+    with pytest.raises(
+        ValueError, match=r"state_hash\(\) must return a SHA-256 hexadecimal string"
+    ):
+        udf.hash()
 
 
 @pytest.mark.parametrize(
