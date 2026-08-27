@@ -327,7 +327,8 @@ class UDFBase(AbstractUDF):
         Override this when constructor arguments contain callables or other opaque
         objects that DataChain cannot hash safely. The method is called after
         ``__init__`` and must account for all per-instance behavioral state. By
-        default, DataChain returns its automatic constructor-argument hash.
+        default, DataChain returns its automatic constructor-argument hash. Call
+        ``super().state_hash()`` to include that hash in an override.
         """
         return self._constructor_state_hash
 
