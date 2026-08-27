@@ -289,7 +289,10 @@ def test_class_udf_state_hash_overrides_opaque_constructor_fallback(
     assert "cache reuse across UDF instances is disabled" not in caplog.text
 
 
-@pytest.mark.parametrize("invalid_hash", ["tokenizer-v1", None])
+@pytest.mark.parametrize(
+    "invalid_hash",
+    ["tokenizer-v1", None, "ab" * 16 + " " * 32],
+)
 def test_class_udf_state_hash_rejects_invalid_hash(invalid_hash):
     class Configured(Mapper):
         def state_hash(self) -> str:

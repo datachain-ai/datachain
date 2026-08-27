@@ -363,11 +363,15 @@ class UDFBase(AbstractUDF):
                     "state_hash() must return a SHA-256 hexadecimal string"
                 )
             try:
-                bytes.fromhex(state_hash)
+                state_hash_bytes = bytes.fromhex(state_hash)
             except ValueError as exc:
                 raise ValueError(
                     "state_hash() must return a SHA-256 hexadecimal string"
                 ) from exc
+            if len(state_hash_bytes) != 32:
+                raise ValueError(
+                    "state_hash() must return a SHA-256 hexadecimal string"
+                )
             parts.append(state_hash)
 
         return hashlib.sha256(

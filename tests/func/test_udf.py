@@ -275,22 +275,23 @@ def test_class_agg_instance_state_produces_distinct_results(test_session):
         value=[1, 2, 3, 4, 5, 1, 2, 3, 4, 5],
         session=test_session,
     )
-    rows_zero = sorted(
-        src.agg(
-            CountAbove(0),
-            partition_by="key",
-            params=["key", "value"],
-            output={"o": Out},
-        ).to_list("o.key", "o.n")
+    chain_zero = src.agg(
+        CountAbove(0),
+        partition_by="key",
+        params=["key", "value"],
+        output={"o": Out},
     )
-    rows_three = sorted(
-        src.agg(
-            CountAbove(3),
-            partition_by="key",
-            params=["key", "value"],
-            output={"o": Out},
-        ).to_list("o.key", "o.n")
+    chain_three = src.agg(
+        CountAbove(3),
+        partition_by="key",
+        params=["key", "value"],
+        output={"o": Out},
     )
+
+    assert chain_zero._query.hash() != chain_three._query.hash()
+
+    rows_zero = sorted(chain_zero.to_list("o.key", "o.n"))
+    rows_three = sorted(chain_three.to_list("o.key", "o.n"))
     assert rows_zero == [(1, 5), (2, 5)]
     assert rows_three == [(1, 2), (2, 2)]
 
