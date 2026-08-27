@@ -658,7 +658,7 @@ class SignalSchema:
         def read_model(
             fr: type[BaseModel], r: Sequence[Any], p: int
         ) -> tuple[Any, int]:
-            j, p = unflatten_to_json_pos(fr, r, p)
+            j, p = unflatten_to_json_pos(fr, r, p, build_model)
             return build_model(fr, j), p
 
         if (layout := union_layout(anno)) is not None:

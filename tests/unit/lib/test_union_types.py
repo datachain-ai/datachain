@@ -15,7 +15,7 @@ import pytest
 
 from datachain.error import OutdatedDatasetFormatError
 from datachain.lib.arrow import _union_value
-from datachain.lib.convert.flatten import flatten_value
+from datachain.lib.convert.flatten import flatten, flatten_value
 from datachain.lib.convert.unflatten import unflatten_to_json_pos
 from datachain.lib.data_model import (
     DataModel,
@@ -214,6 +214,21 @@ def test_flatten_bool_not_swallowed_by_int_arm():
     flat_one = flatten_value(1, Union[int, bool])
     assert flat_true[0] == "bool"
     assert flat_one[0] == "int"
+
+
+def test_nested_union_reads_the_tagged_arm():
+    class Cat(DataModel):
+        name: str = ""
+
+    class Dog(DataModel):
+        name: str = ""
+
+    class Holder(DataModel):
+        pet: Union[Cat, Dog]
+
+    row = flatten(Holder(pet=Dog(name="fido")))
+    (holder,) = SignalSchema({"h": Holder}).row_to_objs(row)
+    assert holder.pet == Dog(name="fido")
 
 
 def test_flatten_subclass_matches_narrowest_arm():

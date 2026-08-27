@@ -37,6 +37,18 @@ class _Holder(DataModel):
     payload: Union[str, int] = 0
 
 
+class _Cat(DataModel):
+    name: str = ""
+
+
+class _Dog(DataModel):
+    name: str = ""
+
+
+class _PetHolder(DataModel):
+    pet: Union[_Cat, _Dog]
+
+
 def _ordered(chain, *cols):
     return chain.order_by("id").to_list("id", *cols)
 
@@ -165,6 +177,17 @@ def test_union_nested_in_model_roundtrip(test_session):
     ).save("u_nested")
     back = dc.read_dataset("u_nested", session=test_session)
     assert [v for _, v in _ordered(back, "h")] == holders
+
+
+def test_union_nested_same_shaped_arms_roundtrip(test_session):
+    dc.read_values(
+        id=[1],
+        h=[_PetHolder(pet=_Dog(name="fido"))],
+        output={"id": int, "h": _PetHolder},
+        session=test_session,
+    ).save("u_nested_same_shape")
+    back = _ordered(dc.read_dataset("u_nested_same_shape", session=test_session), "h")
+    assert back[0][1].pet == _Dog(name="fido")
 
 
 # ---- ingestion via map -----------------------------------------------------

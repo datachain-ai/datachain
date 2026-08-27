@@ -53,17 +53,27 @@ def read_union(
 
 
 def unflatten_to_json_pos(
-    model: type[BaseModel], row: Sequence[Any], pos: int = 0
+    model: type[BaseModel],
+    row: Sequence[Any],
+    pos: int = 0,
+    build_model: Callable[[type[BaseModel], dict], Any] | None = None,
 ) -> tuple[dict, int]:
+    """``build_model`` instantiates a union's model arm, so the stored tag decides it
+    and not the enclosing model's own validation."""
+
+    def read_arm(fr: type[BaseModel], r: Sequence[Any], p: int) -> tuple[Any, int]:
+        fields, p = unflatten_to_json_pos(fr, r, p, build_model)
+        return (fields if build_model is None else build_model(fr, fields)), p
+
     res: dict[str, Any] = {}
     for name, f_info in model.model_fields.items():
         anno = f_info.annotation
         if (layout := union_layout(anno)) is not None:
-            res[name], pos = read_union(layout, row, pos, unflatten_to_json_pos)
+            res[name], pos = read_union(layout, row, pos, read_arm)
             continue
         inner, _ = unwrap_optional(anno)
         if ModelStore.is_pydantic(inner):
-            res[name], pos = unflatten_to_json_pos(inner, row, pos)
+            res[name], pos = unflatten_to_json_pos(inner, row, pos, build_model)
         else:
             res[name] = row[pos]
             pos += 1
