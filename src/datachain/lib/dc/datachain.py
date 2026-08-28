@@ -2689,6 +2689,8 @@ class DataChain:
             self._effective_signals_schema.serialize(), ensure_ascii=False
         ).encode("utf-8")
 
+        # parquet keeps the union discriminator: it is what makes the file read back
+        # as the arm it was written from
         column_names, column_chunks = self.to_columnar_data_with_names(
             chunk_size, include_sentinels=True
         )
