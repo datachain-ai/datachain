@@ -48,9 +48,6 @@ def _vals(chain, col):
     return [v for _, v in chain.order_by("id").to_list("id", col)]
 
 
-# ---- func / aggregate over an inactive arm leaf (CH type-default trap) -------
-
-
 def test_row_func_over_inactive_arm_is_none(test_session):
     # value.str is NULL for int rows, so string length is None there
     # (must not coerce to 0 on ClickHouse).
@@ -101,9 +98,6 @@ def test_min_max_over_arm_leaf(test_session):
     assert (rows[0]["lo"], rows[0]["hi"]) == (2, 9)
 
 
-# ---- ordering / distinct ----------------------------------------------------
-
-
 def test_order_by_arm_leaf_nulls_last(test_session):
     chain = _si(test_session, [1, 2, 3, 4], [5, "x", 2, 9])
     # int values ascending, then the str row (NULL int arm) last on both backends.
@@ -118,9 +112,6 @@ def test_distinct_arm_leaf_values(test_session):
     assert got == [2, 5]
 
 
-# ---- internal-column leaks --------------------------------------------------
-
-
 def test_print_schema_no_type_tag_leak(test_session):
     chain = _si(test_session, [1], ["hi"])
     assert "_type_tag" not in str(chain.schema)
@@ -133,9 +124,6 @@ def test_to_records_no_internal_columns(test_session):
     assert not any("_type_tag" in k or "_0" in k or "_1" in k for k in keys)
     # arms appear under readable type names instead
     assert {"value__int", "value__str"} <= keys
-
-
-# ---- JSON / parquet reconstruction -----------------------------------------
 
 
 def test_to_json_arms_and_none(test_session, tmp_path):
@@ -153,7 +141,6 @@ def test_to_json_arms_and_none(test_session, tmp_path):
 
 
 def test_parquet_union_in_model_in_union(test_session, tmp_path):
-    # A model arm that itself contains a union field, exported and re-read.
     class Inner(DataModel):
         tag: str | int = 0
 
@@ -173,9 +160,6 @@ def test_parquet_union_in_model_in_union(test_session, tmp_path):
     assert [o.inner.tag for o in got] == ["x", 7]
 
 
-# ---- to_pandas null cells ---------------------------------------------------
-
-
 def test_to_pandas_inactive_cells_are_null(test_session):
     df = _si(test_session, [1, 2], ["hi", 42]).order_by("id").to_pandas()
     # arm columns are shown by type name (not positional _0); int arm is NULL on
@@ -183,9 +167,6 @@ def test_to_pandas_inactive_cells_are_null(test_session):
     assert list(df.columns) == [("id", ""), ("value", "int"), ("value", "str")]
     int_col = df[("value", "int")].tolist()
     assert pd.isna(int_col[0]) and int_col[1] == 42
-
-
-# ---- union fed into a UDF ---------------------------------------------------
 
 
 def test_union_value_as_udf_input(test_session):
@@ -217,9 +198,6 @@ def test_nullable_union_annotated_udf_param(test_session):
         return "none" if value is None else type(value).__name__
 
     assert _vals(chain.map(k=kind, output={"k": str}), "k") == ["str", "int", "none"]
-
-
-# ---- issubclass-on-Union safety (schema has a union + a File signal) --------
 
 
 def test_file_signal_coexists_with_union(test_session):
@@ -294,9 +272,6 @@ def test_file_arm_nested_in_model_gets_stream(test_session):
     assert h.doc._catalog is not None
 
 
-# ---- arm-order stability across serialization -------------------------------
-
-
 def test_arm_order_stable_after_save_reload(test_session):
     # Persisted schema serializes the Union; on reload each arm must still map to
     # the same column (canonical arm ordering is the guarantee).
@@ -307,9 +282,6 @@ def test_arm_order_stable_after_save_reload(test_session):
     back.save("u_stable2")
     back2 = dc.read_dataset("u_stable2", session=test_session)
     assert _vals(back2, "value") == [10, "ten", 20]
-
-
-# ---- arm matching hazards ---------------------------------------------------
 
 
 def test_bool_int_union_preserves_type(test_session):
@@ -343,9 +315,6 @@ def test_int_float_union_preserves_type(test_session):
     got = [v for _, v in back.order_by("id").to_list("id", "v")]
     assert [type(x).__name__ for x in got] == ["int", "float", "int"]
     assert got == [5, 2.5, 7]
-
-
-# ---- group_by / merge -------------------------------------------------------
 
 
 def test_group_by_partition_arm_leaf(test_session):
@@ -388,7 +357,6 @@ def test_union_with_plain_scalar_raises_cleanly(test_session):
     assert "_0" not in str(exc.value) and "_type_tag" not in str(exc.value)
 
 
-# ---- modern LLM API response shapes ----------------------------------------
 # The dominant LLM-response union is `content: list[Block | ...]` (Anthropic
 # content blocks, OpenAI Responses output items, Gemini parts) — a union *inside a
 # list*, which is stored as a JSON column (not tagged) and round-trips via pydantic's
@@ -555,9 +523,6 @@ def test_llm_explode_content_blocks_with_id(test_session):
     ]
 
 
-# ---- readable arm access (no _0 / __ in user code) -------------------------
-
-
 def _exploded_blocks(test_session):
     msgs = [
         _AnthropicMessage(
@@ -589,7 +554,6 @@ def test_readable_arm_access_field_direct(test_session):
     # C("block.text") -> the TextBlock arm's text; NULL on other rows. No _0 / __.
     texts = blocks.mutate(t=C("block.text")).to_values("t")
     assert sorted(v for v in texts if v is not None) == ["hi", "ok"]
-    # filter / count on a readable arm field
     assert blocks.filter(func.not_(func.isnone("block.name"))).count() == 3
     assert blocks.group_by(c=func.count("block.text")).to_values("c") == [2]
 

@@ -68,9 +68,6 @@ def _ordered(chain, *cols):
     return chain.order_by("id").to_list("id", *cols)
 
 
-# ---- save round-trips ------------------------------------------------------
-
-
 def test_scalar_union_roundtrip(test_session):
     dc.read_values(
         id=[1, 2, 3, 4],
@@ -177,7 +174,6 @@ def test_select_arm_path_on_union_nested_in_model(test_session):
 
     s = dc.read_values(o=[Outer(name="x", val=10)], output={"o": Outer}).save("u_sel")
     whole = s.select("o.val").to_records()
-    # selecting any arm keeps the whole atomic union, same as select('o.val')
     assert s.select("o.val.int").to_records() == whole
     assert s.select("o.val.str").to_records() == whole
 
@@ -267,9 +263,6 @@ def test_literal_discriminator_keeps_arm_inside_a_collection(test_session):
     assert back[0][1].labels == [_ModelLabel(label="dog"), _HumanLabel(label="cat")]
 
 
-# ---- ingestion via map -----------------------------------------------------
-
-
 def test_map_returns_union(test_session):
     base = dc.read_values(id=[1, 2, 3, 4], session=test_session)
 
@@ -279,9 +272,6 @@ def test_map_returns_union(test_session):
     base.map(r=f, output={"r": str | int}).save("u_map")
     back = dc.read_dataset("u_map", session=test_session)
     assert _ordered(back, "r") == [(1, 1), (2, "even"), (3, 3), (4, "even")]
-
-
-# ---- export round-trips ----------------------------------------------------
 
 
 def test_union_parquet_roundtrip(test_session, tmp_path):
@@ -309,9 +299,6 @@ def test_union_jsonl_export(test_session, tmp_path):
         rows = [json.loads(line) for line in f.read().splitlines() if line]
     rows.sort(key=lambda r: r["id"])
     assert rows == [{"id": 1, "value": "hello"}, {"id": 2, "value": 42}]
-
-
-# ---- query ops -------------------------------------------------------------
 
 
 def _nullable_union(test_session):
@@ -342,7 +329,6 @@ def test_union_filter_on_arm(test_session):
 
 def test_union_mutate_on_arm(test_session):
     chain = _nullable_union(test_session)
-    # value.int is present only for int rows, NULL elsewhere.
     assert _ordered(chain.mutate(z=C("value.int")), "z") == [
         (1, None),
         (2, 42),
@@ -449,7 +435,6 @@ def test_union_root_reference_raises_guard(test_session):
 
 def test_union_select_keeps_whole_signal(test_session):
     chain = _nullable_union(test_session)
-    # A union is atomic: selecting any part keeps the whole value.
     assert [v for _, v in _ordered(chain.select("id", "value.int"), "value")] == [
         "hi",
         42,
@@ -478,7 +463,6 @@ def test_union_distinct_on_arm(test_session):
 
 
 def test_readable_arm_access_across_ops(test_session):
-    # A readable arm path (value.int) must work in every op, not only filter/mutate.
     chain = dc.read_values(
         id=[1, 2, 3, 4],
         value=["hi", 42, "yo", 7],
@@ -489,7 +473,6 @@ def test_readable_arm_access_across_ops(test_session):
     assert chain.distinct("value.int").count() == 4  # atomic: hi, 42, yo, 7
     # id breaks the tie between the two str rows (NULL int arm), undefined otherwise
     assert chain.order_by("value.int", "id").to_values("value") == [7, 42, "hi", "yo"]
-    # selecting an arm field keeps the whole (atomic) union
     assert _ordered(chain.select("id", "value.int"), "value") == [
         (1, "hi"),
         (2, 42),
@@ -547,7 +530,6 @@ def test_merge_widens_union_on_the_padded_side(test_session):
 
 
 def test_union_with_missing_signal_names_the_signal(test_session):
-    # The mismatch error reports the signal name, not internal arm-slot columns.
     from datachain.query.dataset import UnionSchemaMismatchError
 
     left = dc.read_values(
@@ -577,7 +559,6 @@ def test_to_database_readable_arm_columns(test_session):
             session=test_session,
         ).to_database("t", conn)
         cols = [d[0] for d in conn.execute("SELECT * FROM t").description]
-        # readable arm names, no internal slots or discriminator
         assert {"value__int", "value__str"} <= set(cols)
         assert not any("_0" in c or "_1" in c or "_type_tag" in c for c in cols)
 
@@ -598,8 +579,6 @@ def test_union_optional_nested_in_model_roundtrip(test_session):
 
 
 def test_union_schema_canonical_order_both_spellings(test_session):
-    # Union[str, int] and Union[int, str] are the same type; the persisted schema
-    # and values must match regardless of how the union is written.
     a = dc.read_values(
         id=[1, 2],
         value=["x", 1],
@@ -641,7 +620,6 @@ def test_union_model_subclass_arm_preserves_fields(test_session):
 
 
 def test_union_subclass_of_arm_uses_narrowest_arm(test_session):
-    # _BabyZebra is an instance of both arms; the narrower one keeps its fields.
     dc.read_values(
         id=[1],
         item=[_BabyZebra(legs=4, stripes=9, age=2)],

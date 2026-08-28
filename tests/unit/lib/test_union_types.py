@@ -50,20 +50,10 @@ class Bar(DataModel):
     x: float = 0.0
 
 
-class Wrap(DataModel):
-    """Wrapper used to drive flatten/unflatten of a single union field."""
-
-    value: str | int
-
-
-# ---- union_arms canonical ordering -----------------------------------------
-
-
 @pytest.mark.parametrize(
     "anno,expected_arms,has_none",
     [
         (Union[str, int], [int, str], False),  # noqa: UP007
-        # the two spellings are one type, so the arm order must not depend on them
         (Union[int, str], [int, str], False),  # noqa: UP007
         (Union[str, int, None], [int, str], True),  # noqa: UP007
         (Optional[int | str], [int, str], True),  # noqa: UP045
@@ -78,13 +68,8 @@ def test_union_arms_canonical_order(anno, expected_arms, has_none):
 
 
 def test_union_arms_order_is_serialization_stable():
-    # The two spellings are the same type; arm order (hence the column order)
-    # must not depend on how the Union was written.
     assert union_arms(Union[str, int]) == union_arms(Union[int, str])  # noqa: UP007
     assert union_arms(Union[Foo, Bar]) == union_arms(Union[Bar, Foo])  # noqa: UP007
-
-
-# ---- union_layout classification -------------------------------------------
 
 
 def test_union_layout_multiarm_uses_slots():
@@ -109,7 +94,6 @@ def test_union_layout_none_for_non_tagged(anno):
 
 
 def test_union_layout_json_union_not_tagged():
-    # Collection/JSON unions stay single JSON columns, not tagged unions.
     assert union_layout(dict | list[dict]) is None
     assert union_layout(dict | list[dict] | None) is None
 
@@ -210,7 +194,6 @@ def test_self_referential_model_field_walk_terminates():
 
 def test_schema_scalar_union_columns():
     schema = SignalSchema({"value": str | int})
-    # arms are stored under their type name
     assert schema.db_signals() == ["value___type_tag", "value__int", "value__str"]
     # The discriminator is hidden from user-facing signals; arm slots are not.
     assert schema.user_signals() == ["value.int", "value.str"]
@@ -247,13 +230,10 @@ def test_union_arm_leaves_are_nullable():
     assert by_name["value___type_tag"].type.dc_nullable
 
 
-def test_arm_selector():
+def test_arm_selector_is_the_type_name():
     assert arm_selector(int) == "int"
     assert arm_selector(str) == "str"
     assert arm_selector(Foo) == "Foo"
-
-
-# ---- flatten / unflatten round-trips ---------------------------------------
 
 
 def _roundtrip(value, anno):
@@ -320,8 +300,6 @@ def test_nested_union_reads_the_tagged_arm():
 
 
 def test_flatten_subclass_matches_narrowest_arm():
-    # a value matching several arms by isinstance belongs to the most derived one;
-    # a wider arm stores only its own fields, silently dropping the rest.
     class Animal(DataModel):
         legs: int = 4
 
@@ -346,7 +324,6 @@ def test_flatten_inactive_arms_are_none():
     # str active -> the int slot and (model) arm leaves are None placeholders.
     flat = flatten_value("hi", int | str | Foo)
     assert flat[0] == "str"
-    # exactly one arm column is non-None (the active str slot).
     assert sum(1 for v in flat[1:] if v is not None) == 1
 
 
@@ -411,11 +388,14 @@ def test_index_tag_rejected_multi_arm(unwarned_index_tag):
         schema.row_to_objs((0, 42, None))
 
 
-def test_signal_schema_union_path_edges():
+def test_arm_display_path_passes_through_unknown_paths():
     schema = SignalSchema({"v": int | str})
     assert schema.arm_display_path([]) == []
     assert schema.arm_display_path(["unknown"]) == ["unknown"]
-    assert schema.order_by_column("nonexistent") is None
+
+
+def test_order_by_column_none_for_unknown_signal():
+    assert SignalSchema({"v": int | str}).order_by_column("nonexistent") is None
 
 
 def test_union_value_infers_arm_when_tag_absent():
