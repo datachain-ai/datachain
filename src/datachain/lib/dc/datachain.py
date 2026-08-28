@@ -351,6 +351,9 @@ class DataChain:
                     raise err
                 return Column(name, python_to_sql(type_))
 
+        if (resolved := self.signals_schema.resolve_arm_path(name)) is not None:
+            return self.column(resolved)
+
         raise ValueError(f"Column with name {name} not found in the schema")
 
     def c(self, column: str | Column) -> Column:

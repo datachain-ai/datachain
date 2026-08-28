@@ -481,6 +481,24 @@ def test_readable_arm_access_across_ops(test_session):
     ]
 
 
+def test_arm_path_works_in_c_and_merge(test_session):
+    left = dc.read_values(
+        id=[1, 2],
+        value=["hi", 42],
+        output={"id": int, "value": str | int},
+        session=test_session,
+    )
+    assert left.c("value.str").name == "value__str"
+    right = dc.read_values(
+        rid=[9],
+        value=["hi"],
+        output={"rid": int, "value": str | int},
+        session=test_session,
+    )
+    merged = left.merge(right, on="value.str", right_on="value.str", inner=True)
+    assert merged.to_values("id") == [1]
+
+
 def test_union_combination_same_type(test_session):
     left = dc.read_values(
         id=[1, 2],
