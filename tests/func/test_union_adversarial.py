@@ -17,6 +17,7 @@ from collections.abc import Iterator
 from typing import Literal, Union
 
 import pandas as pd
+import pytest
 
 import datachain as dc
 from datachain import C, func
@@ -253,6 +254,33 @@ def test_to_storage_union_file_arm_placement_filename(test_session, tmp_path):
         session=test_session,
     ).to_storage(str(out), signal="v", placement="filename")
     assert sorted(p.name for p in out.rglob("*") if p.is_file()) == ["a.txt", "b.txt"]
+
+
+def test_to_storage_filename_ignores_rows_without_a_file(test_session, tmp_path):
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.txt").write_text("hi")
+    sub = src / "sub"
+    sub.mkdir()
+    (sub / "a.txt").write_text("yo")
+    fa = File(source=src.as_uri(), path="a.txt")
+    out = tmp_path / "out"
+    dc.read_values(
+        id=[1, 2, 3],
+        v=[fa, "one", "two"],
+        output={"id": int, "v": File | str},
+        session=test_session,
+    ).to_storage(str(out), signal="v", placement="filename")
+    assert [p.name for p in out.rglob("*") if p.is_file()] == ["a.txt"]
+
+    clashing = dc.read_values(
+        id=[1, 2, 3],
+        v=[fa, File(source=sub.as_uri(), path="a.txt"), "one"],
+        output={"id": int, "v": File | str},
+        session=test_session,
+    )
+    with pytest.raises(ValueError, match="same name"):
+        clashing.to_storage(str(tmp_path / "out2"), signal="v", placement="filename")
 
 
 def test_file_arm_nested_in_model_gets_stream(test_session):
